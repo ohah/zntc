@@ -63,7 +63,7 @@ describe('createMetroResolveRequestPlugin', () => {
     expect(handler({ path: 'polyfilled', importer: '/abs/x' })).toEqual({ disabled: true });
   });
 
-  test('default resolver 위임 (sentinel throw) → null (ZTS fallthrough)', () => {
+  test('default resolver 위임 (sentinel throw) → null (ZNTC fallthrough)', () => {
     const resolver: CustomResolver = (ctx, name, platform) =>
       ctx.resolveRequest(ctx, name, platform);
     const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });

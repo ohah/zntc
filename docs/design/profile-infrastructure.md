@@ -8,7 +8,7 @@
 
 ### 1.1 현재 측정 인프라의 파편화
 
-ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
+ZNTC 에는 여러 측정 도구가 독립적으로 존재한다:
 
 | 도구 | 범위 | 상세도 |
 |------|------|--------|
@@ -23,7 +23,7 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 2. **CLI ↔ NAPI 불일치**: `--timing` 은 single-file 만. NAPI watch 는 HMR 전용 포맷. 공통 출력 형식/옵션 없음.
 3. **Sub-phase 없음**: `emit 67ms` 안의 transform / codegen / metadata 비중 모름.
 4. **벤치마크 부재**: 특정 phase 만 반복 측정하는 도구가 없음. 최적화 전후 비교 수동.
-5. **활성화 방식 파편화**: `ZTS_DEBUG=`, `--timing`, `BundleOptions.debug` 각각 다른 규칙.
+5. **활성화 방식 파편화**: `ZNTC_DEBUG=`, `--timing`, `BundleOptions.debug` 각각 다른 규칙.
 
 ### 1.3 요구사항 (2026-04-22 합의)
 
@@ -31,7 +31,7 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 2. **CLI ↔ NAPI feature parity** — 같은 기능 같은 방식
 3. **Category 별 활성화** — 특정 phase 만 측정 가능
 4. **Sub-phase 계층적 상세도** — summary / detailed / per-module / per-pass
-5. **Phase 격리 실행** — `--stop-after` 또는 `zts bench` 로 특정 phase 만 반복 측정
+5. **Phase 격리 실행** — `--stop-after` 또는 `zntc bench` 로 특정 phase 만 반복 측정
 6. **통계 기반 벤치마크** — mean/median/p95/stddev + baseline save/compare
 7. **상세한 CLI help + 문서** — 모든 옵션에 예제
 8. **Zero-overhead when disabled** — Release 빌드에서 비활성 category 는 branch 한 번
@@ -49,7 +49,7 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 ```
 ┌──────────────────────────────────────────────────────┐
 │ Axis 1: Entry Point                                  │
-│   CLI --profile=... | NAPI option | ZTS_PROFILE env  │
+│   CLI --profile=... | NAPI option | ZNTC_PROFILE env  │
 └──────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────┐
@@ -167,7 +167,7 @@ pub inline fn beginPerModule(cat: Category, module_path: []const u8) Scope { ...
 /// 활성화 API (CLI/NAPI/env 공용).
 pub fn addCategories(names: []const []const u8) void;
 pub fn addFromCsv(csv: []const u8) void;
-pub fn initFromEnv(allocator: std.mem.Allocator) void;  // ZTS_PROFILE 읽음
+pub fn initFromEnv(allocator: std.mem.Allocator) void;  // ZNTC_PROFILE 읽음
 pub fn setLevel(level: Level) void;
 
 /// Reporting.
@@ -182,24 +182,24 @@ pub const Format = enum { table, tree, json, csv };
 
 ```bash
 # Summary (기존 --timing 완전 대체)
-zts transpile --profile=all ./input.ts
+zntc transpile --profile=all ./input.ts
 
 # 특정 category 만
-zts transpile --profile=parse,transform ./input.ts
+zntc transpile --profile=parse,transform ./input.ts
 
 # 상세 level
-zts transpile --profile=all --profile-level=detailed ./input.ts
+zntc transpile --profile=all --profile-level=detailed ./input.ts
 
 # JSON output (스크립트 용)
-zts bundle --profile=all --profile-format=json ./src/index.ts
+zntc bundle --profile=all --profile-format=json ./src/index.ts
 
 # 특정 phase 까지만 실행
-zts transpile --stop-after=semantic ./input.ts
+zntc transpile --stop-after=semantic ./input.ts
 
 # Repeat-measure benchmark
-zts bench --phase=parse --iterations=100 ./App.tsx
-zts bench --phase=parse --iterations=100 ./App.tsx --save=./baseline.json
-zts bench --phase=parse --iterations=100 ./App.tsx --compare=./baseline.json
+zntc bench --phase=parse --iterations=100 ./App.tsx
+zntc bench --phase=parse --iterations=100 ./App.tsx --save=./baseline.json
+zntc bench --phase=parse --iterations=100 ./App.tsx --compare=./baseline.json
 ```
 
 #### NAPI
@@ -245,10 +245,10 @@ const comparison = await benchmark({
 
 ```bash
 # All phases
-ZTS_PROFILE=all zts bundle ...
+ZNTC_PROFILE=all zntc bundle ...
 
 # Specific
-ZTS_PROFILE=parse,transform ZTS_PROFILE_LEVEL=detailed zts bundle ...
+ZNTC_PROFILE=parse,transform ZNTC_PROFILE_LEVEL=detailed zntc bundle ...
 ```
 
 ### 2.6 출력 포맷
@@ -256,7 +256,7 @@ ZTS_PROFILE=parse,transform ZTS_PROFILE_LEVEL=detailed zts bundle ...
 #### `table` (default)
 
 ```
-=== ZTS Profile ===
+=== ZNTC Profile ===
 Phase             Total   %       Count
 -----------------|-------|-------|-------
 scan               18ms   10.4%     1
@@ -274,7 +274,7 @@ total             173ms  100.0%
 #### `tree` (detailed level)
 
 ```
-=== ZTS Profile (detailed) ===
+=== ZNTC Profile (detailed) ===
 total: 173ms
 ├─ scan              18ms  (10.4%)
 ├─ parse             44ms  (25.4%)
@@ -357,18 +357,18 @@ parse           42.3ms    31.8ms   -10.5ms   -24.8%   ✓ improved
 | **2** | CLI/NAPI/env 진입점 + `--timing` 제거 + help 1차 | 300 | 1.5일 |
 | **3** | Scanner + Parser timer 삽입 | 50 | 0.5일 |
 | **4** | `--stop-after` + NAPI `stopAfter` | 150 | 1일 |
-| **5** | `zts bench` + NAPI `benchmark()` + 통계 + save/compare | 400 | 2일 |
+| **5** | `zntc bench` + NAPI `benchmark()` + 통계 + save/compare | 400 | 2일 |
 | **6** | Semantic + Graph + Bundler timer | 100 | 0.5일 |
 | **7** | Emitter + Transformer + Codegen timer + Release overhead benchmark | 150 | 1일 |
 | **8** | Linker + TreeShaker timer | 50 | 0.5일 |
 | **9** | HMR `phaseDurations` sub-phase 노출 | 150 | 1일 |
 | **10** | Report formats (table/tree/json/csv) + `tests/benchmark/pipeline.ts` 업데이트 | 200 | 1일 |
-| **11** | 문서 (DEBUG/USAGE/HMR) + `zts help` 최종 + CLI↔NAPI parity 통합 테스트 | 300 | 1일 |
+| **11** | 문서 (DEBUG/USAGE/HMR) + `zntc help` 최종 + CLI↔NAPI parity 통합 테스트 | 300 | 1일 |
 
 **총**: ~2300 LOC, **10-11일**
 
 **마일스톤**:
-- **PR 5 완료 시점** (~5일): `zts bench --phase=parse` 로 **파서만 격리 측정 가능**
+- **PR 5 완료 시점** (~5일): `zntc bench --phase=parse` 로 **파서만 격리 측정 가능**
 - **PR 9 완료 시점** (~8일): HMR detailed breakdown 외부 host 에서 실측 가능
 - **PR 11 완료**: 설계 완성
 
@@ -390,8 +390,8 @@ parse           42.3ms    31.8ms   -10.5ms   -24.8%   ✓ improved
 - `--stop-after` 가 정확히 거기까지만 실행하는지
 
 **3. CLI 테스트 (`tests/integration/tests/profile.test.ts`)**
-- `zts transpile --profile=all --profile-format=json input.ts` output 검증
-- `zts bench --phase=parse --iterations=5 input.ts` 통계 필드 검증
+- `zntc transpile --profile=all --profile-format=json input.ts` output 검증
+- `zntc bench --phase=parse --iterations=5 input.ts` 통계 필드 검증
 - `--stop-after=parse` 후 output 없음 확인
 - 모든 format (table/tree/json/csv) snapshot test
 
@@ -429,14 +429,14 @@ parse           42.3ms    31.8ms   -10.5ms   -24.8%   ✓ improved
 ### 5.1 상세도
 
 - 각 서브커맨드 `--help` 에 **예제 최소 3개**
-- `zts help profile` / `zts help bench` 전용 페이지
+- `zntc help profile` / `zntc help bench` 전용 페이지
 - 모든 category 명시 나열 (dot notation 포함)
 - `--profile-level` 각 값의 의미 설명
 - `--profile-format` 각 형식의 용도 설명
 
 ### 5.2 예시
 
-`zts help profile` 출력은 본 문서의 2.5 절 내용을 바탕으로 작성. `docs/DEBUG.md` 로 링크.
+`zntc help profile` 출력은 본 문서의 2.5 절 내용을 바탕으로 작성. `docs/DEBUG.md` 로 링크.
 
 ---
 
@@ -464,9 +464,9 @@ parse           42.3ms    31.8ms   -10.5ms   -24.8%   ✓ improved
 | **TypeScript (tsc)** | `--extendedDiagnostics` 로 phase breakdown | ❌ | 노출 O, 가장 근접 |
 | **Biome** | `--verbose` | ❌ | 제한적 |
 | **Rolldown** | ❌ | 내부 bench repo 별도 | 개발자 only |
-| **ZTS (계획)** | `--profile=...` + `--profile-level` | `zts bench` + NAPI | **CLI/NAPI 모두 노출** |
+| **ZNTC (계획)** | `--profile=...` + `--profile-level` | `zntc bench` + NAPI | **CLI/NAPI 모두 노출** |
 
-ZTS 의 `zts bench` 는 JS 번들러 분야에서 unique.
+ZNTC 의 `zntc bench` 는 JS 번들러 분야에서 unique.
 
 ---
 

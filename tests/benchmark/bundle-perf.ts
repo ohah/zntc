@@ -2,7 +2,7 @@
 /**
  * Bundle performance CI comparison runner.
  *
- * 결정론적 fixture 를 같은 CI 머신에서 ZTS / Rolldown / Rspack 으로 번들링해
+ * 결정론적 fixture 를 같은 CI 머신에서 ZNTC / Rolldown / Rspack 으로 번들링해
  * wall time 을 비교한다. 체크인된 절대 baseline 은 사용하지 않는다.
  *
  * 실행:
@@ -14,7 +14,7 @@
  *   - 워밍업 5회 (mtime/dentry 캐시 워밍)
  *   - wall time 측정 20회
  *   - 비교값은 no-profile CLI wall time median
- *   - ZTS `--profile=all --profile-level=detailed` 는 별도 진단 샘플로만 실행
+ *   - ZNTC `--profile=all --profile-level=detailed` 는 별도 진단 샘플로만 실행
  */
 
 import { spawnSync } from 'node:child_process';
@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
   ROOT,
-  ZTS_BIN,
+  ZNTC_BIN,
   buildBin as buildBinShared,
   findNodeModulesBin,
   getCommit,
@@ -36,14 +36,14 @@ const WARMUP = 5;
 const ITERATIONS = 20;
 const PROFILE_ITERATIONS = 5;
 
-type ToolName = 'zts' | 'rolldown' | 'rspack';
+type ToolName = 'zntc' | 'rolldown' | 'rspack';
 
-const TOOL_ORDER: ToolName[] = ['zts', 'rolldown', 'rspack'];
+const TOOL_ORDER: ToolName[] = ['zntc', 'rolldown', 'rspack'];
 
 function toolLabel(tool: ToolName): string {
   switch (tool) {
-    case 'zts':
-      return 'ZTS';
+    case 'zntc':
+      return 'ZNTC';
     case 'rolldown':
       return 'Rolldown';
     case 'rspack':
@@ -80,12 +80,12 @@ function makeFixture(dir: string, moduleCount: number, externals: string[]): str
 
 interface RunResult {
   wall_ms: number;
-  zts_profile_total_ms?: number;
+  zntc_profile_total_ms?: number;
   phases?: Record<string, number>;
   phase_selfs?: Record<string, number>;
 }
 
-function runZts(
+function runZntc(
   entry: string,
   outDir: string,
   externals: string[],
@@ -107,10 +107,10 @@ function runZts(
   }
 
   const start = performance.now();
-  const r = spawnSync(ZTS_BIN, args, { stdio: 'pipe', timeout: 30000 });
+  const r = spawnSync(ZNTC_BIN, args, { stdio: 'pipe', timeout: 30000 });
   const wall_ms = performance.now() - start;
   if (r.status !== 0) {
-    throw new Error(`zts failed: ${r.stderr?.toString().slice(0, 400)}`);
+    throw new Error(`zntc failed: ${r.stderr?.toString().slice(0, 400)}`);
   }
   if (!withProfile) return { wall_ms };
 
@@ -122,7 +122,7 @@ function runZts(
     if (data) phases[phase] = data.total_ms;
     if (data?.self_ms !== undefined) phase_selfs[phase] = data.self_ms;
   }
-  return { wall_ms, zts_profile_total_ms: profile.total_ms, phases, phase_selfs };
+  return { wall_ms, zntc_profile_total_ms: profile.total_ms, phases, phase_selfs };
 }
 
 function runRolldown(bin: string, entry: string, outDir: string, externals: string[]): RunResult {
@@ -207,7 +207,7 @@ const FIXTURES: FixtureSpec[] = [
 interface ToolResult {
   tool: ToolName;
   wall_ms_stats: JsonStats | null;
-  zts_profile_total_ms_stats?: JsonStats;
+  zntc_profile_total_ms_stats?: JsonStats;
   phase_median_ms?: Record<string, number>;
   phase_self_median_ms?: Record<string, number>;
   skipped?: string;
@@ -223,7 +223,7 @@ interface FixtureResult {
 interface RunReport {
   version: number;
   generated_at: string;
-  zts_commit: string;
+  zntc_commit: string;
   warmup: number;
   iterations: number;
   profile_iterations: number;
@@ -248,7 +248,7 @@ function createRunners(
   writeRspackConfig(rspackConfig, entry, rspackOut, externals);
 
   return {
-    zts: () => runZts(entry, join(tmp, 'zts-out'), externals),
+    zntc: () => runZntc(entry, join(tmp, 'zntc-out'), externals),
     rolldown: rolldownBin
       ? () => runRolldown(rolldownBin, entry, join(tmp, 'rolldown-out'), externals)
       : undefined,
@@ -257,7 +257,7 @@ function createRunners(
 }
 
 async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
-  const tmp = mkdtempSync(join(tmpdir(), 'zts-bundle-perf-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'zntc-bundle-perf-'));
   const fixDir = join(tmp, 'src');
   const entry = makeFixture(fixDir, spec.module_count, spec.externals);
   const runners = createRunners(entry, tmp, spec.externals);
@@ -268,7 +268,7 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
     }
 
     const wallSamples: Partial<Record<ToolName, number[]>> = {};
-    const ztsProfileTotals: number[] = [];
+    const zntcProfileTotals: number[] = [];
     const phaseSeries: Record<string, number[]> = {};
     const phaseSelfSeries: Record<string, number[]> = {};
 
@@ -281,10 +281,10 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
       }
     }
 
-    runZts(entry, join(tmp, 'zts-profile-warmup'), spec.externals, true);
+    runZntc(entry, join(tmp, 'zntc-profile-warmup'), spec.externals, true);
     for (let i = 0; i < PROFILE_ITERATIONS; i++) {
-      const r = runZts(entry, join(tmp, `zts-profile-${i}`), spec.externals, true);
-      if (r.zts_profile_total_ms !== undefined) ztsProfileTotals.push(r.zts_profile_total_ms);
+      const r = runZntc(entry, join(tmp, `zntc-profile-${i}`), spec.externals, true);
+      if (r.zntc_profile_total_ms !== undefined) zntcProfileTotals.push(r.zntc_profile_total_ms);
       for (const [k, v] of Object.entries(r.phases ?? {})) {
         (phaseSeries[k] ??= []).push(v);
       }
@@ -308,16 +308,16 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
         return {
           tool,
           wall_ms_stats: null,
-          skipped: tool === 'zts' ? 'missing zts runner' : `${tool} binary not found`,
+          skipped: tool === 'zntc' ? 'missing zntc runner' : `${tool} binary not found`,
         };
       }
       const result: ToolResult = {
         tool,
         wall_ms_stats: computeStats(samples),
       };
-      if (tool === 'zts') {
-        if (ztsProfileTotals.length > 0) {
-          result.zts_profile_total_ms_stats = computeStats(ztsProfileTotals);
+      if (tool === 'zntc') {
+        if (zntcProfileTotals.length > 0) {
+          result.zntc_profile_total_ms_stats = computeStats(zntcProfileTotals);
           result.phase_median_ms = phase_median_ms;
           result.phase_self_median_ms = phase_self_median_ms;
         }
@@ -365,8 +365,8 @@ function medianWall(fixture: FixtureResult, tool: ToolName): number | null {
   return toolResult(fixture, tool)?.wall_ms_stats?.median ?? null;
 }
 
-function ztsProfileMedian(fixture: FixtureResult): number | null {
-  return toolResult(fixture, 'zts')?.zts_profile_total_ms_stats?.median ?? null;
+function zntcProfileMedian(fixture: FixtureResult): number | null {
+  return toolResult(fixture, 'zntc')?.zntc_profile_total_ms_stats?.median ?? null;
 }
 
 function fastestTool(fixture: FixtureResult): string {
@@ -383,46 +383,46 @@ function printReport(runReport: RunReport): void {
   console.log('### bundle-perf — CI tool comparison context');
   console.log('| Field | Value |');
   console.log('| --- | --- |');
-  console.log(`| Current run commit | ${runReport.zts_commit} |`);
+  console.log(`| Current run commit | ${runReport.zntc_commit} |`);
   console.log('| Baseline | none; same-run CI wall-time comparison |');
-  console.log('| Tools | ZTS / Rolldown / Rspack |');
+  console.log('| Tools | ZNTC / Rolldown / Rspack |');
   console.log('| Primary metric | CLI wall time median |');
   console.log(
-    '| ZTS profile total | separate --profile=all --profile-level=detailed diagnostic run; not part of wall median |',
+    '| ZNTC profile total | separate --profile=all --profile-level=detailed diagnostic run; not part of wall median |',
   );
   console.log(
-    '| ZTS phase medians | inclusive total_ms; nested child rows overlap, self_ms medians are stored in JSON |',
+    '| ZNTC phase medians | inclusive total_ms; nested child rows overlap, self_ms medians are stored in JSON |',
   );
   console.log(`| Warmup / iterations | ${runReport.warmup} / ${runReport.iterations} |`);
-  console.log(`| ZTS profile iterations | ${runReport.profile_iterations} |`);
+  console.log(`| ZNTC profile iterations | ${runReport.profile_iterations} |`);
   console.log();
   console.log('### bundle-perf — CI wall-time tool comparison');
   console.log(
-    '| Fixture | ZTS wall median | Rolldown wall median | Rspack wall median | Fastest | Rolldown / ZTS | Rspack / ZTS | ZTS profile total |',
+    '| Fixture | ZNTC wall median | Rolldown wall median | Rspack wall median | Fastest | Rolldown / ZNTC | Rspack / ZNTC | ZNTC profile total |',
   );
   console.log(
     '|---------|-----------------|----------------------|--------------------|---------|----------------|--------------|-------------------|',
   );
   for (const fixture of runReport.fixtures) {
-    const zts = medianWall(fixture, 'zts');
+    const zntc = medianWall(fixture, 'zntc');
     const rolldown = medianWall(fixture, 'rolldown');
     const rspack = medianWall(fixture, 'rspack');
     console.log(
-      `| ${fixture.name} | ${fmtMarkdownMs(zts)} | ${fmtMarkdownMs(rolldown)} | ${fmtMarkdownMs(rspack)} | ${fastestTool(fixture)} | ${fmtRatio(rolldown, zts)} | ${fmtRatio(rspack, zts)} | ${fmtMarkdownMs(ztsProfileMedian(fixture))} |`,
+      `| ${fixture.name} | ${fmtMarkdownMs(zntc)} | ${fmtMarkdownMs(rolldown)} | ${fmtMarkdownMs(rspack)} | ${fastestTool(fixture)} | ${fmtRatio(rolldown, zntc)} | ${fmtRatio(rspack, zntc)} | ${fmtMarkdownMs(zntcProfileMedian(fixture))} |`,
     );
   }
   console.log();
-  console.log('### bundle-perf — ZTS phase medians (inclusive)');
+  console.log('### bundle-perf — ZNTC phase medians (inclusive)');
   console.log('| Fixture | Resolve | Graph | Link | Shake | Transform | Codegen | Emit |');
   console.log('|---------|---------|-------|------|-------|-----------|---------|------|');
   for (const fixture of runReport.fixtures) {
-    const phases = toolResult(fixture, 'zts')?.phase_median_ms ?? {};
+    const phases = toolResult(fixture, 'zntc')?.phase_median_ms ?? {};
     console.log(
       `| ${fixture.name} | ${fmtMarkdownMs(phases.resolve)} | ${fmtMarkdownMs(phases.graph)} | ${fmtMarkdownMs(phases.link)} | ${fmtMarkdownMs(phases.shake)} | ${fmtMarkdownMs(phases.transform)} | ${fmtMarkdownMs(phases.codegen)} | ${fmtMarkdownMs(phases.emit)} |`,
     );
   }
   console.log();
-  console.log('### bundle-perf — ZTS graph discovery read subphase medians (inclusive)');
+  console.log('### bundle-perf — ZNTC graph discovery read subphase medians (inclusive)');
   console.log(
     '| Fixture | Worker parse | PM setup | Setup read | Read file | Read+stat | Open | Stat | Read bytes | Parser setup |',
   );
@@ -430,13 +430,13 @@ function printReport(runReport: RunReport): void {
     '|---------|--------------|----------|------------|-----------|-----------|------|------|------------|--------------|',
   );
   for (const fixture of runReport.fixtures) {
-    const phases = toolResult(fixture, 'zts')?.phase_median_ms ?? {};
+    const phases = toolResult(fixture, 'zntc')?.phase_median_ms ?? {};
     console.log(
       `| ${fixture.name} | ${fmtMarkdownMs(phases['graph.discover.scan.worker.parse'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.read'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.read.file'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.read.with.stat'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.read.open'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.read.stat'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.read.bytes'])} | ${fmtMarkdownMs(phases['graph.discover.pm.setup.parser'])} |`,
     );
   }
   console.log();
-  console.log('### bundle-perf — ZTS graph prepass decision subphase medians (inclusive)');
+  console.log('### bundle-perf — ZNTC graph prepass decision subphase medians (inclusive)');
   console.log(
     '| Fixture | Prepass | Decision | Module gate | AST flags | Options | Unsupported walk | Run |',
   );
@@ -444,13 +444,13 @@ function printReport(runReport: RunReport): void {
     '|---------|---------|----------|-------------|-----------|---------|------------------|-----|',
   );
   for (const fixture of runReport.fixtures) {
-    const phases = toolResult(fixture, 'zts')?.phase_median_ms ?? {};
+    const phases = toolResult(fixture, 'zntc')?.phase_median_ms ?? {};
     console.log(
       `| ${fixture.name} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass'])} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass.decision'])} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass.decision.module.gate'])} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass.decision.ast.flags'])} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass.decision.options'])} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass.decision.unsupported.walk'])} | ${fmtMarkdownMs(phases['graph.discover.pm.prepass.run'])} |`,
     );
   }
   console.log();
-  console.log('### bundle-perf — ZTS resolve subphase medians (inclusive)');
+  console.log('### bundle-perf — ZNTC resolve subphase medians (inclusive)');
   console.log(
     '| Fixture | External | Cache key | Cache lookup | Browser override | Resolver | Path | File exists | Extensions | TS map | Directory index | Realpath | Cache store |',
   );
@@ -458,7 +458,7 @@ function printReport(runReport: RunReport): void {
     '|---------|----------|-----------|--------------|------------------|----------|------|-------------|------------|--------|-----------------|----------|-------------|',
   );
   for (const fixture of runReport.fixtures) {
-    const phases = toolResult(fixture, 'zts')?.phase_median_ms ?? {};
+    const phases = toolResult(fixture, 'zntc')?.phase_median_ms ?? {};
     console.log(
       `| ${fixture.name} | ${fmtMarkdownMs(phases['resolve.external'])} | ${fmtMarkdownMs(phases['resolve.cache.key'])} | ${fmtMarkdownMs(phases['resolve.cache.lookup'])} | ${fmtMarkdownMs(phases['resolve.browser.override'])} | ${fmtMarkdownMs(phases['resolve.resolver'])} | ${fmtMarkdownMs(phases['resolve.path'])} | ${fmtMarkdownMs(phases['resolve.file.exists'])} | ${fmtMarkdownMs(phases['resolve.extensions'])} | ${fmtMarkdownMs(phases['resolve.ts.extension.map'])} | ${fmtMarkdownMs(phases['resolve.directory.index'])} | ${fmtMarkdownMs(phases['resolve.realpath'])} | ${fmtMarkdownMs(phases['resolve.cache.store'])} |`,
     );
@@ -482,10 +482,10 @@ function parseArgs(argv: string[]): CliArgs {
 
 async function main(cli: CliArgs) {
   buildBin();
-  const available = TOOL_ORDER.filter((tool) => tool === 'zts' || findNodeModulesBin(tool)).join(
+  const available = TOOL_ORDER.filter((tool) => tool === 'zntc' || findNodeModulesBin(tool)).join(
     ',',
   );
-  console.log(`[bundle-perf] zts ${getCommit()} | warmup=${WARMUP} iter=${ITERATIONS}`);
+  console.log(`[bundle-perf] zntc ${getCommit()} | warmup=${WARMUP} iter=${ITERATIONS}`);
   console.log(`[bundle-perf] available tools: ${available}`);
   console.log();
 
@@ -493,11 +493,11 @@ async function main(cli: CliArgs) {
   for (const spec of FIXTURES) {
     process.stdout.write(`  ${spec.name}... `);
     const r = await measureFixture(spec);
-    const zts = medianWall(r, 'zts');
+    const zntc = medianWall(r, 'zntc');
     const rolldown = medianWall(r, 'rolldown');
     const rspack = medianWall(r, 'rspack');
     console.log(
-      `zts=${fmtMarkdownMs(zts)} rolldown=${fmtMarkdownMs(rolldown)} rspack=${fmtMarkdownMs(rspack)} zts_profile_total=${fmtMarkdownMs(ztsProfileMedian(r))}`,
+      `zntc=${fmtMarkdownMs(zntc)} rolldown=${fmtMarkdownMs(rolldown)} rspack=${fmtMarkdownMs(rspack)} zntc_profile_total=${fmtMarkdownMs(zntcProfileMedian(r))}`,
     );
     fixtures.push(r);
   }
@@ -505,7 +505,7 @@ async function main(cli: CliArgs) {
   const runReport: RunReport = {
     version: 3,
     generated_at: new Date().toISOString(),
-    zts_commit: getCommit(),
+    zntc_commit: getCommit(),
     warmup: WARMUP,
     iterations: ITERATIONS,
     profile_iterations: PROFILE_ITERATIONS,

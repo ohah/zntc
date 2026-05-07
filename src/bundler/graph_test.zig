@@ -257,7 +257,7 @@ test "graph: unresolved import — error diagnostic" {
 test "graph: unresolved type-only import — soft fail with warning (#2466)" {
     // react-native-screens/types 패턴: subpath 가 .d.ts 만 export 하므로 resolve 실패하지만
     // X 가 type position 에서만 쓰이면 babel typescript preset 처럼 statement 통째 elide
-    // 되어야 함. ZTS 는 hard fail 대신 warning + disabled stub.
+    // 되어야 함. ZNTC 는 hard fail 대신 warning + disabled stub.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts",

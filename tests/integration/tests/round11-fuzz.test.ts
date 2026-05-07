@@ -1,7 +1,7 @@
 /// Round 11 광역 fuzz 회귀 테스트.
 ///
 /// 50개 fixture 각각:
-///   1. ZTS 로 transpile (에러 없어야 함)
+///   1. ZNTC 로 transpile (에러 없어야 함)
 ///   2. bun 으로 transpiled output 실행 (런타임 에러 없어야 함)
 ///   3. stdout 을 snapshot 으로 저장 (회귀 감지)
 ///

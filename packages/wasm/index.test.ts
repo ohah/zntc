@@ -13,12 +13,12 @@ import {
 } from './index';
 
 beforeAll(() => {
-  const wasmPath = join(import.meta.dir, '../../zig-out/bin/zts.wasm');
+  const wasmPath = join(import.meta.dir, '../../zig-out/bin/zntc.wasm');
   const wasmBytes = readFileSync(wasmPath);
   initSync(wasmBytes);
 });
 
-describe('@zts/wasm', () => {
+describe('@zntc/wasm', () => {
   test('기본 TypeScript 트랜스파일', () => {
     const result = transpile('const x: number = 1;');
     expect(result.code).toContain('const x = 1;');
@@ -99,8 +99,8 @@ describe('@zts/wasm', () => {
   });
 
   test('파싱 에러', () => {
-    // miette 스타일 렌더: "× <message> [ZTS코드]"
-    expect(() => transpile('const = ;')).toThrow(/\[ZTS\d{4}\]/);
+    // miette 스타일 렌더: "× <message> [ZNTC코드]"
+    expect(() => transpile('const = ;')).toThrow(/\[ZNTC\d{4}\]/);
   });
 
   test('Flow 스트리핑', () => {
@@ -219,7 +219,7 @@ describe('@zts/wasm', () => {
 });
 
 // VirtualFileSystem (#1885 Phase 2 PR 6-2b) — bundler 의 host fs 추상화.
-// 단위 테스트는 pure JS (wasm 무관). bundler instance + zts_fs callback 통합은 PR 6-2c.
+// 단위 테스트는 pure JS (wasm 무관). bundler instance + zntc_fs callback 통합은 PR 6-2c.
 describe('VirtualFileSystem', () => {
   test('set / get string content (utf-8 encoded)', () => {
     const vfs = new VirtualFileSystem();
@@ -274,7 +274,7 @@ describe('VirtualFileSystem', () => {
 // esm/browser 단일 entry. 출력은 단일 파일 모드 (result.output) — 모듈 wrap + TS strip.
 describe('Bundler (minimal)', () => {
   beforeAll(async () => {
-    const wasmPath = join(import.meta.dir, '../../zig-out/bin/zts-bundler.wasm');
+    const wasmPath = join(import.meta.dir, '../../zig-out/bin/zntc-bundler.wasm');
     const wasmBytes = readFileSync(wasmPath);
     const vfs = new VirtualFileSystem();
     vfs.set('/index.ts', 'export const x = 42;');
@@ -282,7 +282,7 @@ describe('Bundler (minimal)', () => {
     await initBundler(vfs, wasmBytes);
   });
 
-  test('bundlerVersion = ABI v6 (ZTS 표준 진단 형식)', () => {
+  test('bundlerVersion = ABI v6 (ZNTC 표준 진단 형식)', () => {
     expect(bundlerVersion()).toBe(6);
   });
 
@@ -361,7 +361,7 @@ describe('Bundler (minimal)', () => {
     expect(chunks![0].code).toContain('"use strict"');
   });
 
-  test('buildChunks: 존재하지 않는 entry → null + ZTS 표준 진단 형식 에러', () => {
+  test('buildChunks: 존재하지 않는 entry → null + ZNTC 표준 진단 형식 에러', () => {
     const chunks = buildChunks('/nonexistent.ts');
     expect(chunks).toBeNull();
     const msg = bundlerLastErrorMessage();
@@ -369,7 +369,7 @@ describe('Bundler (minimal)', () => {
     // 표준 형식: `× <message> [<tag>]` (+ optional `\n  hint: ...`)
     expect(msg.startsWith('×')).toBe(true);
     // 에러 종류: bundle 단계 실패 / 빈 출력 / unresolved import 중 하나.
-    expect(msg).toMatch(/번들링 실패|nonexistent|빈 출력|ZTS\d{4}/);
+    expect(msg).toMatch(/번들링 실패|nonexistent|빈 출력|ZNTC\d{4}/);
   });
 
   test('bundlerLastErrorMessage: 성공 호출 후엔 비어있음', () => {

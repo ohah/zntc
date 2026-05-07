@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { createFixture, ZTS_BIN } from './helpers';
+import { createFixture, ZNTC_BIN } from './helpers';
 import { join } from 'node:path';
 
 // dev server 테스트는 서버를 백그라운드로 시작하고 HTTP 요청으로 검증
@@ -8,7 +8,7 @@ async function startDevServer(
   opts: { timeout?: number } = {},
 ): Promise<{ proc: ReturnType<typeof Bun.spawn>; port: number; kill: () => Promise<void> }> {
   const proc = Bun.spawn({
-    cmd: [ZTS_BIN, ...args],
+    cmd: [ZNTC_BIN, ...args],
     stdout: 'pipe',
     stderr: 'pipe',
   });

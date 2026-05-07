@@ -692,7 +692,7 @@ test "Circular: entry depends on circular pair" {
 
 test "Default: export default from namespace import assigns ns var" {
     // `import * as X from './lib'; export default X;` 패턴.
-    // ZTS가 var X$N을 호이스팅하지만 값 할당이 누락되던 버그 회귀 방지.
+    // ZNTC가 var X$N을 호이스팅하지만 값 할당이 누락되던 버그 회귀 방지.
     // Reanimated/GestureDetector가 `Reanimated.default.createAnimatedComponent`로
     // 접근할 때 default getter가 undefined 반환 → 드래그 동작 실패 (#1208).
     var tmp = std.testing.tmpDir(.{});

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { join, resolve } from 'node:path';
 import { symlink, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'bun';
@@ -29,7 +29,7 @@ async function mobxSmoke(code: string, extraArgs: string[] = []) {
   } catch {}
 
   const outFile = join(dir, 'out.js');
-  const bundle = await runZts(['--bundle', join(dir, 'index.ts'), '-o', outFile, ...extraArgs]);
+  const bundle = await runZntc(['--bundle', join(dir, 'index.ts'), '-o', outFile, ...extraArgs]);
   if (bundle.exitCode !== 0) {
     await cleanup();
     throw new Error('bundle failed: ' + bundle.stderr);

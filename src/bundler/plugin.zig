@@ -1,4 +1,4 @@
-//! ZTS Bundler — Plugin System
+//! ZNTC Bundler — Plugin System
 //!
 //! Rollup 호환 플러그인 인터페이스 (resolveId, load, transform, renderChunk, generateBundle).
 //! Builtin 플러그인은 Zig 함수 포인터로 구현하여 최고 성능.
@@ -86,7 +86,7 @@ pub const ResolveContextFn = ?*const fn (
 ) PluginError!?[]const []const u8;
 
 /// Rollup 호환 플러그인 인터페이스. 각 훅은 optional 함수 포인터 — null이면 해당 훅을 구현하지 않음.
-/// builtin 플러그인(worklet 등) 전용. JS 플러그인은 @zts/core NAPI 경로에서 처리된다.
+/// builtin 플러그인(worklet 등) 전용. JS 플러그인은 @zntc/core NAPI 경로에서 처리된다.
 pub const Plugin = struct {
     name: []const u8,
     /// 플러그인 상태 전달용 opaque 포인터 (대부분 null).
@@ -127,7 +127,7 @@ pub const Plugin = struct {
     closeBundle: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
 
     /// `require.context(dir, recursive, filter)` 매칭 결과 주입 (#1579 Phase 2).
-    /// ZTS 자체 regex executor 가 없어서 (#1771) host runtime 의 RegExp 에 위임.
+    /// ZNTC 자체 regex executor 가 없어서 (#1771) host runtime 의 RegExp 에 위임.
     ///
     /// **mode 인자 미포함**: Metro/webpack 모두 매칭 자체엔 mode 영향 없음 (mode 는 codegen
     /// 단계의 chunk 분할 결정만 좌우). 따라서 host plugin 은 파일 매칭에만 집중하고, mode 는

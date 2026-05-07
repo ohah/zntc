@@ -28,7 +28,7 @@ describe('runtime helper virtual module (#1961)', () => {
       'main.ts': `
         async function load() {
           const { greet } = await import("./greet");
-          return greet("ZTS");
+          return greet("ZNTC");
         }
         load().then((s) => console.log(s));
       `,
@@ -82,7 +82,7 @@ describe('runtime helper virtual module (#1961)', () => {
     expect(proc.stderr).toBe('');
   });
 
-  test("출력에 NULL byte (\\x00) / 'zts:runtime/' raw prefix 가 새지 않음", async () => {
+  test("출력에 NULL byte (\\x00) / 'zntc:runtime/' raw prefix 가 새지 않음", async () => {
     // sanitize 검증의 minimal 형태 — 모든 chunk 출력 텍스트를 검사.
     const fixture = await createFixture({
       'package.json': '{"type":"module"}',
@@ -113,7 +113,7 @@ describe('runtime helper virtual module (#1961)', () => {
     for (const f of fs.readdirSync(outDir)) {
       const text = fs.readFileSync(join(outDir, f), 'utf8');
       expect(text).not.toContain('\x00');
-      expect(text).not.toContain('zts:runtime/');
+      expect(text).not.toContain('zntc:runtime/');
     }
   });
 });

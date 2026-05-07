@@ -15,7 +15,7 @@ pub const AppBuildOptions = struct {
     base: []const u8 = "/",
     mode: []const u8 = "production",
     env_dir: ?[]const u8 = null,
-    env_prefixes: []const []const u8 = &.{ "VITE_", "ZTS_" },
+    env_prefixes: []const []const u8 = &.{ "VITE_", "ZNTC_" },
     define: []const DefineEntry = &.{},
     minify: bool = false,
     sourcemap: bool = false,
@@ -55,13 +55,13 @@ pub const AppBuildOptions = struct {
 
 pub const AppDevPrepareOptions = struct {
     root: []const u8 = ".",
-    outdir: []const u8 = ".zts-dev",
+    outdir: []const u8 = ".zntc-dev",
     entry_html: []const u8 = "index.html",
     public_dir: ?[]const u8 = "public",
     base: []const u8 = "/",
     mode: []const u8 = "development",
     env_dir: ?[]const u8 = null,
-    env_prefixes: []const []const u8 = &.{ "VITE_", "ZTS_" },
+    env_prefixes: []const []const u8 = &.{ "VITE_", "ZNTC_" },
 };
 
 pub const AppDevPrepareResult = struct {
@@ -839,7 +839,7 @@ test "app build emits rewritten html and public files" {
     try tmp.dir.makePath("public");
     try tmp.dir.writeFile(.{ .sub_path = "index.html", .data = "<title>%VITE_TITLE%</title><link rel=\"icon\" href=\"/favicon.svg\"><script type=\"module\" src=\"/src/main.ts\"></script>" });
     try tmp.dir.writeFile(.{ .sub_path = "src/main.ts", .data = "console.log(import.meta.env.VITE_TITLE, import.meta.env.BASE_URL);" });
-    try tmp.dir.writeFile(.{ .sub_path = ".env.production", .data = "VITE_TITLE=ZTS App\n" });
+    try tmp.dir.writeFile(.{ .sub_path = ".env.production", .data = "VITE_TITLE=ZNTC App\n" });
     try tmp.dir.writeFile(.{ .sub_path = "public/favicon.svg", .data = "<svg></svg>" });
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
@@ -851,7 +851,7 @@ test "app build emits rewritten html and public files" {
     defer std.testing.allocator.free(html_path);
     const html = try std.fs.cwd().readFileAlloc(std.testing.allocator, html_path, 1024 * 1024);
     defer std.testing.allocator.free(html);
-    try std.testing.expect(std.mem.indexOf(u8, html, "ZTS App") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "ZNTC App") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "/app/main-") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, ".js") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "/app/favicon.svg") != null);
@@ -873,7 +873,7 @@ test "app dev prepare emits html and returns script entry" {
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.endsWith(u8, result.entry_path, "src/main.ts"));
 
-    const html_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".zts-dev", "index.html" });
+    const html_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".zntc-dev", "index.html" });
     defer std.testing.allocator.free(html_path);
     const html = try std.fs.cwd().readFileAlloc(std.testing.allocator, html_path, 1024 * 1024);
     defer std.testing.allocator.free(html);

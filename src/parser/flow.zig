@@ -1693,7 +1693,7 @@ pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     const name = try self.parseSimpleIdentifier();
 
-    // optional `of <base>` — `of` 는 ZTS 에서 kw_of (`for...of` 와 공유).
+    // optional `of <base>` — `of` 는 ZNTC 에서 kw_of (`for...of` 와 공유).
     var base_type: FlowEnumBaseType = .none;
     if (self.current() == .kw_of) {
         try self.advance();

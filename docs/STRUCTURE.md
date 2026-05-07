@@ -2,13 +2,13 @@
 
 ```
 src/
-  main.zig                  # CLI 엔트리포인트 (zts 커맨드, zts.config.json 자동 로드)
+  main.zig                  # CLI 엔트리포인트 (zntc 커맨드, zntc.config.json 자동 로드)
   root.zig                  # 라이브러리 엔트리포인트 (모든 모듈 re-export)
   transpile.zig             # 트랜스파일 파이프라인 통합 (파일/stdin → JS 출력)
   diagnostic.zig            # 진단 (ParseError, SemanticError 통합, multi-span label)
   diagnostic_renderer.zig   # rich diagnostic 렌더러 (코드 프레임, ANSI, multi-span)
   rich_diagnostic.zig       # 렌더링 기반 구조 (SourceInfo, RenderOptions)
-  error_codes.zig           # ZTSxxxx 에러 코드 + docs URL 매핑
+  error_codes.zig           # ZNTCxxxx 에러 코드 + docs URL 매핑
   ansi.zig                  # ANSI 컬러 유틸
   levenshtein.zig           # "did you mean?" 제안
   string_escape.zig         # 공용 문자열 escape 유틸
@@ -27,7 +27,7 @@ src/
   test_fixtures.zig         # 통합 테스트용 fixture 로더
   test_regression.zig       # round1/2/4 회귀 fuzz 테스트 진입점
   fixtures/                 # Zig 단위 테스트 입력 자료 (transform 등)
-  app/                      # zts.app builder (Vite 대체 진입 — entry HTML/CSS/asset)
+  app/                      # zntc.app builder (Vite 대체 진입 — entry HTML/CSS/asset)
     mod.zig                 #   builder 엔트리
     build.zig               #   HTML 진입 그래프 + asset emit
     env.zig                 #   .env 처리, define 주입
@@ -142,7 +142,7 @@ src/
     chunk.zig               #   Code splitting (BitSet, 공통 청크, cross-chunk)
     emitter.zig             #   출력 생성 (exec_index 순서, ESM/CJS/IIFE)
     emitter/                #   emitter 서브 모듈
-      dev.zig               #     dev mode 번들링 (HMR, __zts_register)
+      dev.zig               #     dev mode 번들링 (HMR, __zntc_register)
       chunks.zig            #     code splitting + hash/naming
       esm_wrap.zig          #     __esm 래퍼 + export getter
       cjs_wrap.zig          #     __commonJS 래퍼
@@ -210,23 +210,23 @@ src/
     wyhash.zig              #   wyhash 해시 (콘텐츠 해시 / mangler)
 
 packages/
-  core/                     # @zts/core — C NAPI .node addon + Node CLI + lightningcss
-    bin/                    #   `zts` CLI 엔트리 (zts.mjs) — dev/preview/build app 시 @zts/web 을 lazy import
+  core/                     # @zntc/core — C NAPI .node addon + Node CLI + lightningcss
+    bin/                    #   `zntc` CLI 엔트리 (zntc.mjs) — dev/preview/build app 시 @zntc/web 을 lazy import
     src/                    #   napi_entry.zig + JS 사이드 (config-loader/load-env/workspace 등)
     index.ts                #   JS API (init/transpile/build) — NAPI .node 로드 + 옵션 검증
     dist/                   #   bun build 산출물 (배포용)
-  web/                      # @zts/web — dev server / postcss·sass / HMR overlay (#2539)
+  web/                      # @zntc/web — dev server / postcss·sass / HMR overlay (#2539)
     runtime/                #   APP_DEV_HMR_CLIENT (브라우저 inject 용)
     src/                    #   inject / dev-controller / style/ (postcss · sass · css-modules · css-parser · loader)
-    dist/                   #   zts self-build (server 가 inline)
-  server/                   # @zts/server — private (npm 미공개, web/RN 공통 protocol/watcher/HMR)
+    dist/                   #   zntc self-build (server 가 inline)
+  server/                   # @zntc/server — private (npm 미공개, web/RN 공통 protocol/watcher/HMR)
     src/                    #   protocol (HMR_MSG / 상수) / ws-frame (RFC 6455) / watcher / hmr-channel
-    dist/                   #   zts self-build — web 의 dist 에 자동 inline
-  wasm/                     # @zts/wasm — WASM 빌드 (브라우저 playground, Deno/Workers)
+    dist/                   #   zntc self-build — web 의 dist 에 자동 inline
+  wasm/                     # @zntc/wasm — WASM 빌드 (브라우저 playground, Deno/Workers)
     src/wasm_entry.zig      #   transpile only WASM 진입
     src/wasm_bundler_entry.zig  # 번들러 포함 WASM 진입 (wasm32-wasi + threads)
   shared/                   # core/wasm 공유 타입 (TranspileOptions, Target, compat-engines)
-  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체, @zts/core 만 사용)
+  vite-plugin-zntc/          # Vite 플러그인 (esbuild transform → ZNTC 교체, @zntc/core 만 사용)
 
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈, 50,504건)
@@ -235,7 +235,7 @@ tests/
       tsc/                  #   TypeScript 컴파일러 테스트케이스 포팅 (36개, ES 다운레벨/decorator/enum 등)
       fixtures/             #   round1/2/4 회귀, RN, RSC, AST 보존 등 fixture
       __snapshots__/        #   bun snapshot
-  e2e/                      # Playwright E2E 테스트 (dev server, browser, sourcemap, vite/zts builder)
+  e2e/                      # Playwright E2E 테스트 (dev server, browser, sourcemap, vite/zntc builder)
   benchmark/                # 스모크 테스트 + 벤치마크
     smoke.ts                #   144 케이스 패키지 빌드+실행 검증 (vs esbuild/rolldown/rspack)
     bundle-perf.ts          #   번들 perf 회귀 가드 (small/medium/large × median 비교)
@@ -273,13 +273,13 @@ tools/                      # 개발 도구
 
 | Step | 설명 |
 |------|------|
-| `zig build` | `zts` CLI + 정적 라이브러리 빌드 |
+| `zig build` | `zntc` CLI + 정적 라이브러리 빌드 |
 | `zig build run -- <args>` | CLI 직접 실행 |
 | `zig build test` | 모든 모듈 유닛 테스트 |
 | `zig build test262` | Test262 러너 자체 테스트 |
 | `zig build test262-run` | Test262 50,504건 실행 (pass-rate 측정) |
-| `zig build napi` | `@zts/core` 용 NAPI .node 빌드 (`zig-out/lib/zts.node`) |
-| `zig build wasm` | `@zts/wasm` transpile-only WASM |
+| `zig build napi` | `@zntc/core` 용 NAPI .node 빌드 (`zig-out/lib/zntc.node`) |
+| `zig build wasm` | `@zntc/wasm` transpile-only WASM |
 | `zig build wasm-bundler` | bundler 포함 WASM (wasm32-wasi + threads) |
 | `zig build schema` | `BuildOptions` JSON 스키마 자동 생성 |
 | `zig build bench-callback` | NAPI 콜백 hot-path 마이크로벤치 (#1891) |

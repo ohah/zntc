@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ROOT,
-  ZTS_BIN,
+  ZNTC_BIN,
   buildBin as buildBinShared,
   findNodeModulesBin,
   getCommit,
@@ -37,7 +37,7 @@ interface CliArgs {
 interface RunReport {
   version: number;
   generated_at: string;
-  zts_commit: string;
+  zntc_commit: string;
   fixture: {
     packages: number;
     modules_per_package: number;
@@ -53,10 +53,10 @@ interface RunReport {
 interface ToolResult {
   tool: string;
   wall_ms_stats: JsonStats | null;
-  ratio_vs_zts: number | null;
+  ratio_vs_zntc: number | null;
 }
 
-interface ZtsRun extends ProfileRun {
+interface ZntcRun extends ProfileRun {
   wallMs: number;
 }
 
@@ -109,16 +109,16 @@ function buildBin() {
   buildBinShared('monorepo-perf');
 }
 
-function runZts(entry: string, outDir: string, profile: boolean): ZtsRun {
+function runZntc(entry: string, outDir: string, profile: boolean): ZntcRun {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const args = ['--bundle', '--format=esm', '--splitting', entry, '--outdir', outDir];
   if (profile) args.push('--profile=all');
   const start = performance.now();
-  const r = spawnSync(ZTS_BIN, args, { stdio: 'pipe', timeout: 120000 });
+  const r = spawnSync(ZNTC_BIN, args, { stdio: 'pipe', timeout: 120000 });
   const wallMs = performance.now() - start;
   if (r.status !== 0) {
-    throw new Error(`zts failed: ${r.stderr.toString().slice(0, 800)}`);
+    throw new Error(`zntc failed: ${r.stderr.toString().slice(0, 800)}`);
   }
   const parsed = profile
     ? parseProfileOutput(`${r.stdout.toString()}\n${r.stderr.toString()}`)
@@ -126,16 +126,16 @@ function runZts(entry: string, outDir: string, profile: boolean): ZtsRun {
   return { ...parsed, wallMs };
 }
 
-function runTool(tool: 'zts' | 'esbuild' | 'rolldown', entry: string, outDir: string): WallRun {
+function runTool(tool: 'zntc' | 'esbuild' | 'rolldown', entry: string, outDir: string): WallRun {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
-  const bin = tool === 'zts' ? ZTS_BIN : findNodeModulesBin(tool);
+  const bin = tool === 'zntc' ? ZNTC_BIN : findNodeModulesBin(tool);
   if (!bin) throw new Error(`${tool} binary not found`);
 
   const args: string[] = (() => {
     switch (tool) {
-      case 'zts':
+      case 'zntc':
         return ['--bundle', '--format=esm', '--splitting', entry, '--outdir', outDir];
       case 'esbuild':
         return [entry, '--bundle', '--format=esm', '--splitting', `--outdir=${outDir}`];
@@ -187,7 +187,7 @@ function printMarkdown(report: RunReport) {
   }
 
   if (report.tool_comparison) {
-    console.log('\n| Tool | Median | Trimmed mean | p95 | vs ZTS |');
+    console.log('\n| Tool | Median | Trimmed mean | p95 | vs ZNTC |');
     console.log('|------|--------|--------------|-----|--------|');
     for (const tool of report.tool_comparison) {
       if (!tool.wall_ms_stats) {
@@ -195,19 +195,19 @@ function printMarkdown(report: RunReport) {
         continue;
       }
       console.log(
-        `| ${tool.tool} | ${formatMetric(tool.wall_ms_stats.median)} | ${formatMetric(tool.wall_ms_stats.trimmed_mean)} | ${formatMetric(tool.wall_ms_stats.p95)} | ${tool.ratio_vs_zts?.toFixed(2)}x |`,
+        `| ${tool.tool} | ${formatMetric(tool.wall_ms_stats.median)} | ${formatMetric(tool.wall_ms_stats.trimmed_mean)} | ${formatMetric(tool.wall_ms_stats.p95)} | ${tool.ratio_vs_zntc?.toFixed(2)}x |`,
       );
     }
   }
 }
 
 function measureComparisonTool(
-  tool: 'zts' | 'esbuild' | 'rolldown',
+  tool: 'zntc' | 'esbuild' | 'rolldown',
   entry: string,
   outDir: string,
   warmup: number,
   iterations: number,
-  ztsMedianMs: number,
+  zntcMedianMs: number,
 ): ToolResult {
   try {
     for (let i = 0; i < warmup; i++) runTool(tool, entry, outDir);
@@ -219,19 +219,19 @@ function measureComparisonTool(
     return {
       tool,
       wall_ms_stats: toJsonStats(stats),
-      ratio_vs_zts: ztsMedianMs === 0 ? null : stats.median / ztsMedianMs,
+      ratio_vs_zntc: zntcMedianMs === 0 ? null : stats.median / zntcMedianMs,
     };
   } catch (err) {
     console.error(
       `[monorepo-perf] ${tool} skipped: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return { tool, wall_ms_stats: null, ratio_vs_zts: null };
+    return { tool, wall_ms_stats: null, ratio_vs_zntc: null };
   }
 }
 
 async function main(cli: CliArgs) {
   buildBin();
-  const tmp = cli.keepFixture ?? mkdtempSync(join(tmpdir(), 'zts-monorepo-perf-'));
+  const tmp = cli.keepFixture ?? mkdtempSync(join(tmpdir(), 'zntc-monorepo-perf-'));
   if (cli.keepFixture) mkdirSync(tmp, { recursive: true });
 
   try {
@@ -242,16 +242,16 @@ async function main(cli: CliArgs) {
     const outDir = join(tmp, 'dist');
 
     console.log(
-      `[monorepo-perf] zts ${getCommit()} | packages=${cli.packages} modules/pkg=${cli.modulesPerPackage} total_modules=${fixture.moduleCount} warmup=${cli.warmup} iter=${cli.iterations}`,
+      `[monorepo-perf] zntc ${getCommit()} | packages=${cli.packages} modules/pkg=${cli.modulesPerPackage} total_modules=${fixture.moduleCount} warmup=${cli.warmup} iter=${cli.iterations}`,
     );
 
-    for (let i = 0; i < cli.warmup; i++) runZts(fixture.entry, outDir, false);
+    for (let i = 0; i < cli.warmup; i++) runZntc(fixture.entry, outDir, false);
 
     const wallTotals: number[] = [];
     const profileTotals: number[] = [];
     const phaseSeries: Record<string, number[]> = {};
     for (let i = 0; i < cli.iterations; i++) {
-      const r = runZts(fixture.entry, outDir, false);
+      const r = runZntc(fixture.entry, outDir, false);
       wallTotals.push(r.wallMs);
       console.log(`  run ${i + 1}/${cli.iterations}: wall=${formatMetric(r.wallMs)}`);
     }
@@ -261,7 +261,7 @@ async function main(cli: CliArgs) {
     // profile mode 는 instrumentation 오버헤드가 있어 wall 측정과 분리해 별도로 N회 돌린다.
     // wall stats 는 위의 비-profile 측정으로 고정, phase 통계는 여기서만 산출.
     for (let i = 0; i < cli.iterations; i++) {
-      const profileRun = runZts(fixture.entry, join(tmp, 'dist-profile'), true);
+      const profileRun = runZntc(fixture.entry, join(tmp, 'dist-profile'), true);
       profileTotals.push(profileRun.totalMs);
       for (const [phase, ms] of Object.entries(profileRun.phases)) {
         (phaseSeries[phase] ??= []).push(ms);
@@ -276,7 +276,7 @@ async function main(cli: CliArgs) {
     const report: RunReport = {
       version: 1,
       generated_at: new Date().toISOString(),
-      zts_commit: getCommit(),
+      zntc_commit: getCommit(),
       fixture: {
         packages: cli.packages,
         modules_per_package: cli.modulesPerPackage,
@@ -291,9 +291,9 @@ async function main(cli: CliArgs) {
     if (cli.compare) {
       report.tool_comparison = [
         measureComparisonTool(
-          'zts',
+          'zntc',
           fixture.entry,
-          join(tmp, 'dist-zts-compare'),
+          join(tmp, 'dist-zntc-compare'),
           cli.warmup,
           cli.iterations,
           wallStats.median,

@@ -1,4 +1,4 @@
-//! ZTS AST 공통 순회 유틸 — 자식 노드 iterator.
+//! ZNTC AST 공통 순회 유틸 — 자식 노드 iterator.
 //!
 //! `Node.Tag` 의 `dataKind` / `extraChildOffsets` / `extraListOffsets` 메타데이터를
 //! 기반으로 **모든 레이아웃 (leaf / unary / binary / ternary / list / extra)** 의 자식

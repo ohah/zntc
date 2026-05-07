@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { runZts, runZtsInDir, createFixture } from './helpers';
+import { runZntc, runZntcInDir, createFixture } from './helpers';
 import { decodeMappings } from './sourcemap-helpers';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,7 +21,7 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -45,7 +45,7 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -63,7 +63,7 @@ describe('배치 E: CLI 옵션', () => {
   });
 
   test('--allow-overwrite: 알 수 없는 옵션으로 에러 안 남', async () => {
-    const result = await runZts(['--allow-overwrite', '--help']);
+    const result = await runZntc(['--allow-overwrite', '--help']);
     // --allow-overwrite가 파싱되고 --help가 실행됨
     expect(result.exitCode).toBe(0);
   });
@@ -75,7 +75,7 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
 
     const input = join(fixture.dir, 'input.ts');
-    const result = await runZts([input, '-o', input]);
+    const result = await runZntc([input, '-o', input]);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('would overwrite input file');
@@ -89,7 +89,7 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
 
     const input = join(fixture.dir, 'input.ts');
-    const result = await runZts([input, '-o', input, '--allow-overwrite']);
+    const result = await runZntc([input, '-o', input, '--allow-overwrite']);
 
     expect(result.exitCode).toBe(0);
     expect(readFileSync(input, 'utf-8')).toContain('const x = 1');
@@ -102,19 +102,19 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
 
     const srcDir = join(fixture.dir, 'src');
-    const result = await runZts([srcDir, '--outdir', srcDir]);
+    const result = await runZntc([srcDir, '--outdir', srcDir]);
 
     expect(result.exitCode).toBe(0);
     expect(existsSync(join(srcDir, 'input.js'))).toBe(true);
   });
 
   test('--log-limit: 숫자가 아니면 에러 메시지 출력', async () => {
-    const result = await runZts(['--log-limit=abc', 'dummy.ts']);
+    const result = await runZntc(['--log-limit=abc', 'dummy.ts']);
     expect(result.stderr).toContain('--log-limit requires a number');
   });
 
   test('--line-limit: 숫자가 아니면 에러 메시지 출력', async () => {
-    const result = await runZts(['--line-limit=xyz', 'dummy.ts']);
+    const result = await runZntc(['--line-limit=xyz', 'dummy.ts']);
     expect(result.stderr).toContain('--line-limit requires a number');
   });
 
@@ -125,7 +125,7 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(
+    const result = await runZntcInDir(
       fixture.dir,
       ['--bundle', 'index.ts', '-o', outFile, '--minify', '--line-limit=40'],
       { bin: 'js' },
@@ -149,7 +149,7 @@ describe('배치 E: CLI 옵션', () => {
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(
+    const result = await runZntcInDir(
       fixture.dir,
       ['--bundle', 'index.ts', '-o', outFile, '--minify', '--line-limit=40', '--sourcemap'],
       { bin: 'js' },
@@ -170,52 +170,52 @@ describe('배치 E: CLI 옵션', () => {
   });
 
   test('--jsx-side-effects: 파싱됨', async () => {
-    const result = await runZts(['--jsx-side-effects', '--help']);
+    const result = await runZntc(['--jsx-side-effects', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--ignore-annotations: 파싱됨', async () => {
-    const result = await runZts(['--ignore-annotations', '--help']);
+    const result = await runZntc(['--ignore-annotations', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--drop-labels: 라벨 파싱됨', async () => {
-    const result = await runZts(['--drop-labels=DEV,TEST', '--help']);
+    const result = await runZntc(['--drop-labels=DEV,TEST', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--pure: 파싱됨', async () => {
-    const result = await runZts(['--pure:console.log', '--help']);
+    const result = await runZntc(['--pure:console.log', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--tsconfig-raw: 파싱됨', async () => {
-    const result = await runZts(['--tsconfig-raw={}', '--help']);
+    const result = await runZntc(['--tsconfig-raw={}', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--node-paths: 파싱됨', async () => {
-    const result = await runZts(['--node-paths=/usr/lib/node', '--help']);
+    const result = await runZntc(['--node-paths=/usr/lib/node', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--watch-delay: 파싱됨', async () => {
-    const result = await runZts(['--watch-delay=200', '--help']);
+    const result = await runZntc(['--watch-delay=200', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--watch-delay: 숫자가 아니면 에러 메시지 출력', async () => {
-    const result = await runZts(['--watch-delay=slow', 'dummy.ts']);
+    const result = await runZntc(['--watch-delay=slow', 'dummy.ts']);
     expect(result.stderr).toContain('--watch-delay requires a number');
   });
 
   test('--clean: 파싱됨', async () => {
-    const result = await runZts(['--clean', '--help']);
+    const result = await runZntc(['--clean', '--help']);
     expect(result.exitCode).toBe(0);
   });
 
   test('--outbase: 파싱됨', async () => {
-    const result = await runZts(['--outbase=src', '--help']);
+    const result = await runZntc(['--outbase=src', '--help']);
     expect(result.exitCode).toBe(0);
   });
 });

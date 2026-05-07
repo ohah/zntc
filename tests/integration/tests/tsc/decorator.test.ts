@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from '../helpers';
+import { createFixture, runZntc } from '../helpers';
 
 async function expectPass(code: string) {
   const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts(['--experimental-decorators', `${fixture.dir}/input.ts`]);
+    const result = await runZntc(['--experimental-decorators', `${fixture.dir}/input.ts`]);
     expect(result.exitCode).toBe(0);
     expect(result.stderr).not.toContain('error:');
   } finally {
@@ -15,7 +15,7 @@ async function expectPass(code: string) {
 async function expectError(code: string) {
   const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts(['--experimental-decorators', `${fixture.dir}/input.ts`]);
+    const result = await runZntc(['--experimental-decorators', `${fixture.dir}/input.ts`]);
     // 에러 복구로 exit code 0이 나올 수 있으므로 stderr에 error 포함 여부로 판단
     const hasError = result.exitCode !== 0 || result.stderr.includes('error');
     expect(hasError).toBe(true);

@@ -1,13 +1,13 @@
 ---
-title: Babel → ZTS Migration Guide
-description: How to map each plugin/preset when migrating a Metro babel.config.js to ZTS.
+title: Babel → ZNTC Migration Guide
+description: How to map each plugin/preset when migrating a Metro babel.config.js to ZNTC.
 ---
 
-A guide to mapping each plugin/preset when migrating a Metro-based `babel.config.js` to ZTS.
+A guide to mapping each plugin/preset when migrating a Metro-based `babel.config.js` to ZNTC.
 
 ## Mapping table
 
-| Babel config | ZTS equivalent | Note |
+| Babel config | ZNTC equivalent | Note |
 |---|---|---|
 | `@react-native/babel-preset` | `platform: "react-native"` | JSX/Flow/class props automatic |
 | `@babel/preset-env` | `target: "es2020"` etc. | engine targets also supported (`chrome80` etc.) |
@@ -23,7 +23,7 @@ A guide to mapping each plugin/preset when migrating a Metro-based `babel.config
 | `@emotion/babel-plugin` | `compiler.emotion` | 1st-party transform (see below) |
 | `transform-remove-console` | `drop: ["console"]` | |
 | `transform-react-remove-prop-types` | `pure: ["PropTypes.*"]` + DCE | Unnecessary with React 19+ |
-| Custom Babel plugins | **Babel bridge** (see below) | Or port to ZTS plugin |
+| Custom Babel plugins | **Babel bridge** (see below) | Or port to ZNTC plugin |
 
 ## Basic migration example
 
@@ -48,10 +48,10 @@ module.exports = {
 };
 ```
 
-### After — `zts.config.ts`
+### After — `zntc.config.ts`
 
 ```ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   platform: "react-native",
@@ -84,7 +84,7 @@ Caveat: the array form is `build()` (async) only. `buildSync()` cannot delegate 
 
 ## styled-components — `compiler.styledComponents`
 
-ZTS 1st-party equivalent of `babel-plugin-styled-components`. No plugin registration — just enable the option.
+ZNTC 1st-party equivalent of `babel-plugin-styled-components`. No plugin registration — just enable the option.
 
 ```ts
 defineConfig({
@@ -108,7 +108,7 @@ defineConfig({
 
 ## emotion — `compiler.emotion`
 
-ZTS 1st-party equivalent of `@emotion/babel-plugin`.
+ZNTC 1st-party equivalent of `@emotion/babel-plugin`.
 
 ```ts
 defineConfig({
@@ -139,10 +139,10 @@ For custom Babel plugins that can't be replaced by built-ins (e.g. in-house pres
 bun add -D @babel/core
 ```
 
-### `zts.config.ts`
+### `zntc.config.ts`
 
 ```ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zntc/core";
 import * as babel from "@babel/core";
 import mcpPreset from "@ohah/react-native-mcp-server/babel-preset";
 
@@ -174,28 +174,28 @@ export default defineConfig({
 ```
 
 **Key points**:
-- `babelrc: false, configFile: false` — explicitly prevents reading the project's `babel.config.js` recursively. Avoids double transformation with ZTS config.
+- `babelrc: false, configFile: false` — explicitly prevents reading the project's `babel.config.js` recursively. Avoids double transformation with ZNTC config.
 - `filter` — only required file patterns. To skip `node_modules`, add `!/node_modules/.test(id)` to the filter function.
-- `sourceMaps: true` — chains source maps. ZTS merges them in a later step.
-- Return format: `{ code, map? }`. Returning `null` falls back to the default ZTS pipeline.
+- `sourceMaps: true` — chains source maps. ZNTC merges them in a later step.
+- Return format: `{ code, map? }`. Returning `null` falls back to the default ZNTC pipeline.
 
 ### Performance considerations
 
-Running Babel for every module **slows down dev server warm-up**. For production bundles, `@babel/core` calls dominate over ZTS itself. Mitigations:
+Running Babel for every module **slows down dev server warm-up**. For production bundles, `@babel/core` calls dominate over ZNTC itself. Mitigations:
 
 1. Narrow the `filter` so only files that actually need Babel pass through (e.g. only `src/**/*.tsx`)
-2. **Port frequently used plugins** to ZTS plugins (see below)
-3. Split — use Babel bridge for dev, native ZTS for prod
+2. **Port frequently used plugins** to ZNTC plugins (see below)
+3. Split — use Babel bridge for dev, native ZNTC for prod
 
-## Porting to ZTS plugins
+## Porting to ZNTC plugins
 
-The Babel bridge is convenient but slow. If performance matters or you build often, rewrite with the ZTS plugin API.
+The Babel bridge is convenient but slow. If performance matters or you build often, rewrite with the ZNTC plugin API.
 
 Write custom plugins directly using Rollup/Vite-style hooks (`resolveId`, `load`, `transform`):
 
 ```ts
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   plugins: [
@@ -222,7 +222,7 @@ See: Plugin Guide, Plugin Recipes.
 
 In Metro, tree-shaking is weak, so `import { debounce } from 'lodash'` pulls in all of lodash (~70KB) → this plugin was required for cherry-picking.
 
-ZTS has working ESM tree-shaking, so:
+ZNTC has working ESM tree-shaking, so:
 - Use `lodash-es` → automatic cherry-picking (optimal)
 - Keep `lodash` → one-line `alias: { lodash: "lodash-es" }` solves it
 - Keep `lodash` + force path import → `moduleSpecifierMap: { lodash: "lodash/{name}" }` (only converts named specifiers without aliases; falls back to original import otherwise)
@@ -268,7 +268,7 @@ plugins: [
 You don't have to rip out Babel all at once:
 
 1. **Stage 1** — `platform: "react-native"` + alias + Babel bridge to keep all existing plugins working
-2. **Stage 2** — Replace Babel plugins one by one with built-in features or ZTS plugin ports → remove from bridge
+2. **Stage 2** — Replace Babel plugins one by one with built-in features or ZNTC plugin ports → remove from bridge
 3. **Stage 3** — Remove the bridge itself. Drop the `@babel/core` dependency.
 
 Each stage is independently deployable.

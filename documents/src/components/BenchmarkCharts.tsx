@@ -10,7 +10,7 @@ import benchmarkData from "../data/benchmark-data.json";
 echarts.use([BarChart, TooltipComponent, GridComponent, LegendComponent, CanvasRenderer]);
 
 const SERIES_COLORS: Record<string, string> = {
-  ZTS: "#f7a41d",
+  ZNTC: "#f7a41d",
   esbuild: "#2563eb",
   SWC: "#dc2626",
   Bun: "#9333ea",
@@ -237,12 +237,12 @@ export default function BenchmarkCharts() {
     },
     {
       title: "Bundle Perf CI Matrix",
-      description: "Same-run CI-style wall time comparison for ZTS, Rolldown, and Rspack.",
+      description: "Same-run CI-style wall time comparison for ZNTC, Rolldown, and Rspack.",
       entries: benchmarkData.results.bundlePerf,
     },
     {
-      title: "ZTS Pipeline Patterns",
-      description: "ZTS profile totals across generated simple, expression-heavy, string-heavy, object, and React-like sources.",
+      title: "ZNTC Pipeline Patterns",
+      description: "ZNTC profile totals across generated simple, expression-heavy, string-heavy, object, and React-like sources.",
       entries: benchmarkData.results.pipelineTotal,
     },
   ];

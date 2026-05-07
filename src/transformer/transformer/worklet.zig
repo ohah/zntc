@@ -640,8 +640,8 @@ pub fn buildWorkletPropertyAssignments(
 }
 
 /// Babel react-native-worklets/plugin 호환을 위한 worklet 플러그인 버전.
-/// Babel은 package.json의 version을 주입 — ZTS는 정적 문자열 사용.
-pub const WORKLET_PLUGIN_VERSION = "zts-0.0.1";
+/// Babel은 package.json의 version을 주입 — ZNTC는 정적 문자열 사용.
+pub const WORKLET_PLUGIN_VERSION = "zntc-0.0.1";
 
 /// { var1: var1, var2: var2, ... } 객체 리터럴 노드를 생성한다.
 /// explicit key-value 형식으로 생성하고, value의 identifier_reference에
@@ -827,7 +827,7 @@ fn buildInitDataObject(self: *Transformer, init_code: []const u8, source_locatio
     // 빈 문자열을 주입하면 Reanimated 네이티브가 JSON 파싱 시도 → 파싱 실패로
     // UI Runtime 초기화가 abort되어 _microtaskQueueFinalizers 등이 세팅 안 됨.
     // Babel plugin도 sourceMap 생성 성공 시에만 주입 (workletFactory.ts:187-191).
-    // ZTS는 worklet 수준 source map 미지원 → 필드 생략.
+    // ZNTC는 worklet 수준 source map 미지원 → 필드 생략.
 
     const obj_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{

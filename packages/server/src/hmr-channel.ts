@@ -56,7 +56,7 @@ interface WithStack {
 }
 
 function extractErrorText(error: unknown): string {
-  // zts.mjs parity (L1169): truthy chain — 빈 string 은 다음 fallback 으로 떨어짐.
+  // zntc.mjs parity (L1169): truthy chain — 빈 string 은 다음 fallback 으로 떨어짐.
   const e = (error ?? {}) as WithStack;
   return (
     (typeof e.stack === 'string' && e.stack) ||

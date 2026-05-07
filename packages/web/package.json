@@ -1,7 +1,7 @@
 {
-  "name": "@zts/web",
+  "name": "@zntc/web",
   "version": "0.1.0",
-  "description": "ZTS web platform — dev server + HMR overlay + postcss/sass pipeline + dev controller",
+  "description": "ZNTC web platform — dev server + HMR overlay + postcss/sass pipeline + dev controller",
   "license": "MIT",
   "files": [
     "dist/",
@@ -17,14 +17,14 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external postcss --external postcss-load-config --external sass",
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zntc/core --external postcss --external postcss-load-config --external sass",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test --timeout 10000"
   },
   "dependencies": {
-    "@zts/core": "workspace:*",
-    "@zts/server": "workspace:*"
+    "@zntc/core": "workspace:*",
+    "@zntc/server": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.5.2"

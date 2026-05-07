@@ -1,10 +1,10 @@
-# ZTS Code Splitting Design Document
+# ZNTC Code Splitting Design Document
 
 ## 1. Background
 
-### Current ZTS State (B1 + Linker Complete)
+### Current ZNTC State (B1 + Linker Complete)
 
-The ZTS bundler currently produces **a single output file**. Key infrastructure already in place:
+The ZNTC bundler currently produces **a single output file**. Key infrastructure already in place:
 
 - **`Module.dynamic_imports`** — `std.ArrayList(ModuleIndex)` already separates dynamic imports from static dependencies. `graph.zig` line 312-313 stores dynamic imports via `addDynamicImport()` when `record.kind == .dynamic_import`.
 - **`ImportKind.dynamic_import`** — already defined in `types.zig`.
@@ -291,7 +291,7 @@ const utils = await import("./utils"); // dynamic
 
 The static import makes `utils` part of the current chunk. The dynamic import is redundant but valid. esbuild handles this by checking `isExternalDynamicImport` -- if the target is in the same chunk, the dynamic import resolves to the already-loaded module (via `Promise.resolve()` + direct reference).
 
-For ZTS: if the dynamic import target is in the same chunk as the importer, rewrite it to:
+For ZNTC: if the dynamic import target is in the same chunk as the importer, rewrite it to:
 ```js
 Promise.resolve().then(() => utils_exports)
 ```

@@ -17,7 +17,7 @@ function runBun(args: string[]) {
 
 describe('benchmark smoke diagnostics', () => {
   test('--keep-output preserves bundler outputs under the requested directory', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-smoke-keep-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-smoke-keep-'));
     try {
       const r = runBun([
         'run',
@@ -28,7 +28,7 @@ describe('benchmark smoke diagnostics', () => {
 
       expect(r.status, r.stderr?.toString()).toBe(0);
       const projectDir = join(dir, 'safe-buffer');
-      expect(existsSync(join(projectDir, 'dist-zts.js'))).toBe(true);
+      expect(existsSync(join(projectDir, 'dist-zntc.js'))).toBe(true);
       expect(existsSync(join(projectDir, 'dist-esbuild.js'))).toBe(true);
       expect(readdirSync(projectDir).some((name) => name.includes('rolldown'))).toBe(true);
     } finally {
@@ -37,7 +37,7 @@ describe('benchmark smoke diagnostics', () => {
   });
 
   test('--json writes build args, output paths, sizes, output match, and stderr summaries', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-smoke-json-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-smoke-json-'));
     const jsonPath = join(dir, 'report.json');
     try {
       const r = runBun([
@@ -53,10 +53,10 @@ describe('benchmark smoke diagnostics', () => {
       const cookie = report.results[0];
       expect(cookie.project).toBe('cookie');
       expect(typeof cookie.outputMatch).toBe('boolean');
-      expect(cookie.zts.size).toBeGreaterThan(0);
-      expect(cookie.zts.outputPath).toContain('dist-zts.js');
-      expect(cookie.zts.buildArgs).toContain('--bundle');
-      expect(typeof cookie.zts.stderrSummary).toBe('string');
+      expect(cookie.zntc.size).toBeGreaterThan(0);
+      expect(cookie.zntc.outputPath).toContain('dist-zntc.js');
+      expect(cookie.zntc.buildArgs).toContain('--bundle');
+      expect(typeof cookie.zntc.stderrSummary).toBe('string');
       expect(cookie.esbuild.outputPath).toContain('dist-esbuild.js');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -67,7 +67,7 @@ describe('benchmark smoke diagnostics', () => {
     // 프로젝트 루트에서 `bun test` 가 부모일 때 자식 `bun` 의 stdout pipe 캡처가
     // 비는 Bun 런타임 quirk 가 있다 (cwd 가 워크스페이스 하위면 정상). exec 전
     // 셸 리다이렉트만 안전하게 stdout 을 받는다.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-size-gap-out-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-size-gap-out-'));
     const outPath = join(dir, 'out.txt');
     const r = spawnSync('sh', ['-c', `bun run tests/benchmark/size-gap.ts > "${outPath}"`], {
       cwd: ROOT,
@@ -83,7 +83,7 @@ describe('benchmark smoke diagnostics', () => {
     expect(stdout).toContain('path-to-regexp');
     expect(stdout).toContain('object-assign');
     expect(stdout).toContain('merge-descriptors');
-    expect(stdout).toContain('ZTS-only strings');
+    expect(stdout).toContain('ZNTC-only strings');
     expect(stdout).toContain('Wrapper markers');
     expect(stdout).toContain('Top-level declarations');
     expect(stdout).toContain('CJS export pattern audit');
@@ -95,19 +95,19 @@ describe('benchmark smoke diagnostics', () => {
     expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ value \}\): \d+/);
     expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ value: member \}\): \d+/);
     expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ get \}\): \d+/);
-    expect(stdout).toMatch(/Remaining ZTS export markers:\n(?:  - .+\n?)+/);
+    expect(stdout).toMatch(/Remaining ZNTC export markers:\n(?:  - .+\n?)+/);
     expect(stdout).toMatch(/Removed dead marker candidates:\n(?:  - .+\n?)+/);
     expect(stdout).toMatch(
       /## safe-buffer[\s\S]*Removed dead marker candidates:[\s\S]*exports\.Buffer =/,
     );
     expect(stdout).toMatch(
-      /## cookie[\s\S]*Remaining ZTS export markers:[\s\S]*exports\.serialize =/,
+      /## cookie[\s\S]*Remaining ZNTC export markers:[\s\S]*exports\.serialize =/,
     );
     expect(stdout).toMatch(
       /## cookie[\s\S]*Removed dead marker candidates:[\s\S]*exports\.parseCookie =/,
     );
     expect(stdout).toMatch(
-      /## path-to-regexp[\s\S]*Remaining ZTS export markers:[\s\S]*exports\.match =/,
+      /## path-to-regexp[\s\S]*Remaining ZNTC export markers:[\s\S]*exports\.match =/,
     );
     expect(stdout).toMatch(
       /## path-to-regexp[\s\S]*Removed dead marker candidates:[\s\S]*exports\.compile =/,
@@ -121,7 +121,7 @@ describe('benchmark smoke diagnostics', () => {
   });
 
   test('--filter accepts comma-separated patterns and produces multiple results', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-smoke-multi-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-smoke-multi-'));
     const jsonPath = join(dir, 'report.json');
     try {
       const r = runBun([

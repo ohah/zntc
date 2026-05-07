@@ -1,4 +1,4 @@
-//! Unicode utilities for the ZTS lexer.
+//! Unicode utilities for the ZNTC lexer.
 //!
 //! ECMAScript 식별자에 사용할 수 있는 유니코드 문자를 판별한다.
 //! - ID_Start: 식별자 시작 문자 (Unicode Lu, Ll, Lt, Lm, Lo, Nl + Other_ID_Start)

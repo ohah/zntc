@@ -376,7 +376,7 @@ fn skipWhitespace(source: []const u8, pos: *u32) void {
 
 test "convert simple object" {
     const allocator = std.testing.allocator;
-    const source = "{\"name\": \"zts\", \"version\": 1}";
+    const source = "{\"name\": \"zntc\", \"version\": 1}";
     var ast = try convert(allocator, source);
     defer ast.deinit();
 

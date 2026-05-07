@@ -1,4 +1,4 @@
-# ZTS Plugin System Design
+# ZNTC Plugin System Design
 
 플러그인 시스템 + 로더 + 특수 기능 상세 설계 문서.
 
@@ -85,17 +85,17 @@ watch callback 완료          ← [closeBundle 훅] JS layer, onReady/onRebuild
 > 완성된 이후 **중복 경로가 되어 제거**. 자세한 배경은 [DECISIONS.md](./DECISIONS.md) D101 참조.
 >
 > JS 플러그인은 이제 **3단계(NAPI) 경로로만** 지원. CLI 사용자는 npm 배포된
-> `zts` 명령(내부적으로 `@zts/core` NAPI 호출)을 사용하면 동일한 기능 + 더 빠른 속도.
+> `zntc` 명령(내부적으로 `@zntc/core` NAPI 호출)을 사용하면 동일한 기능 + 더 빠른 속도.
 
 ### 3단계: C NAPI 바인딩 ✅ 완료 (기본 경로, #975, #978, #979, #980)
 - `zig build napi` → `.node` 공유 라이브러리 빌드
-- `@zts/core` npm 패키지: `transpile()`, `buildSync()`, `build()`, `watch()` API
+- `@zntc/core` npm 패키지: `transpile()`, `buildSync()`, `build()`, `watch()` API
 - esbuild 스타일 JS 플러그인: `onResolve`, `onLoad`, `onTransform`, lifecycle hook
 - `napi_threadsafe_function` + mutex/condvar로 워커 스레드 ↔ 메인 스레드 동기화
 - Node.js + Bun 모두 지원, 80개 테스트 (1240 expect calls)
 
 ```typescript
-import { init, build } from "@zts/core";
+import { init, build } from "@zntc/core";
 init();
 const result = await build({
   entryPoints: ["src/index.ts"],
@@ -112,11 +112,11 @@ const result = await build({
 **제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` / `watch()`에서 사용 가능.
 
 ### 4단계: Vite/Rollup 호환 어댑터 ✅ 완료 (#992, #1004, #1007)
-- `vitePlugin()` 함수로 Rollup 스타일 플러그인을 ZTS 플러그인으로 변환
+- `vitePlugin()` 함수로 Rollup 스타일 플러그인을 ZNTC 플러그인으로 변환
 - `resolveId`, `load`, `transform`, `renderChunk`, `generateBundle`, lifecycle 훅 지원
 - `buildStart`, `buildEnd`, `closeBundle` lifecycle 훅 지원 (`watch()`는 초기 build와 매 rebuild)
 - 모든 훅 async/Promise 반환 지원 (`MaybePromise<T>`)
-- ZTS 네이티브 플러그인과 혼합 사용 가능
+- ZNTC 네이티브 플러그인과 혼합 사용 가능
 - `onRenderChunk`: 청크 코드 후처리 (체이닝), `onGenerateBundle`: 번들 완료 콜백
 - **미지원**: `this.resolve()`, `this.emitFile()` (후순위)
 
@@ -125,7 +125,7 @@ const result = await build({
 > 네이티브 속도 + webpack 훅 시스템을 동시에 달성하는 것이 목표.
 
 **왜 하이브리드인가:**
-- A (Rspack 방식, 풀 재작성): webpack 호환 90%+이지만 번들러 재설계 필요, ZTS의 단순함/속도 잃을 위험
+- A (Rspack 방식, 풀 재작성): webpack 호환 90%+이지만 번들러 재설계 필요, ZNTC의 단순함/속도 잃을 위험
 - B (어댑터 방식, JS 시뮬레이션): 코어 변경 없지만 플러그인 호출마다 JS 오버헤드
 - **C (하이브리드)**: Zig에 훅 포인트 추가 + NAPI 콜백으로 JS에 노출. 플러그인 없으면 오버헤드 제로
 
@@ -157,7 +157,7 @@ JS Compiler/Compilation 객체
 | `compilation.hooks.optimizeChunks` | 중간 | 청크 최적화 |
 
 **벤치마크 목표:**
-- 플러그인 없음: 현재 ZTS 성능과 동일 (훅 포인트만 조건 분기, 오버헤드 ~0)
+- 플러그인 없음: 현재 ZNTC 성능과 동일 (훅 포인트만 조건 분기, 오버헤드 ~0)
 - webpack 플러그인 사용: Rspack과 동등 수준
 
 ### 참고: 번들러별 JS 플러그인 아키텍처
@@ -166,7 +166,7 @@ JS Compiler/Compilation 객체
 | esbuild | subprocess + JSON IPC | esbuild 전용 (onResolve/onLoad) |
 | rolldown | NAPI (napi-rs) | Rollup 호환 (resolveId/load/transform) |
 | rspack | NAPI (napi-rs) | webpack 호환 (Tapable compiler.hooks) |
-| **ZTS** | **NAPI (C NAPI)** | **esbuild → Vite → webpack 점진적 확장** |
+| **ZNTC** | **NAPI (C NAPI)** | **esbuild → Vite → webpack 점진적 확장** |
 | Bun | JS 런타임 내장 (JSC) | esbuild 호환 |
 
 ## 플러그인 인터페이스
@@ -239,7 +239,7 @@ pub const Plugin = struct {
 
 ## 로더 시스템 (esbuild/Rolldown 호환)
 
-현재 ZTS는 .ts/.tsx/.js/.jsx/.css를 네이티브 처리. 그 외는 플러그인의 load 훅으로 구현:
+현재 ZNTC는 .ts/.tsx/.js/.jsx/.css를 네이티브 처리. 그 외는 플러그인의 load 훅으로 구현:
 - **CSS**: `import './style.css'` → 별도 `.css` 파일 emit, `@import` 인라이닝, `--minify` 시 Lightning CSS
 - **JSON**: `import pkg from './package.json'` → `export default {...}` + named exports
 - **Text**: 파일 내용을 문자열로 `export default "..."`

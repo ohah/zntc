@@ -1,5 +1,5 @@
 /// #2217 회귀 가드:
-/// `zts file.ts -o out.js --sourcemap` 시 출력 파일에 `//# sourceMappingURL=` footer
+/// `zntc file.ts -o out.js --sourcemap` 시 출력 파일에 `//# sourceMappingURL=` footer
 /// 부착 + map.file 필드가 *생성된 파일* (not 원본) 가리킴.
 
 import { describe, test, expect, afterEach } from 'bun:test';
@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runZts } from './helpers';
+import { runZntc } from './helpers';
 
 describe('#2217: sourcemap footer + map.file 필드', () => {
   let cleanup: (() => void) | undefined;
@@ -18,7 +18,7 @@ describe('#2217: sourcemap footer + map.file 필드', () => {
   });
 
   function setupFixture(source: string, ext: 'ts' | 'tsx' = 'ts') {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-sm-footer-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-sm-footer-'));
     const inFile = join(dir, `input.${ext}`);
     const outFile = join(dir, 'out.js');
     writeFileSync(inFile, source);
@@ -28,7 +28,7 @@ describe('#2217: sourcemap footer + map.file 필드', () => {
 
   test('footer 부착: //# sourceMappingURL=<basename>.map', async () => {
     const { inFile, outFile } = setupFixture('export const x = 1;\n');
-    const r = await runZts([inFile, '-o', outFile, '--sourcemap']);
+    const r = await runZntc([inFile, '-o', outFile, '--sourcemap']);
     expect(r.exitCode).toBe(0);
 
     const code = readFileSync(outFile, 'utf-8');
@@ -38,7 +38,7 @@ describe('#2217: sourcemap footer + map.file 필드', () => {
 
   test('map.file 필드는 출력 파일 basename (원본 아님)', async () => {
     const { inFile, outFile } = setupFixture('export const x = 1;\n');
-    const r = await runZts([inFile, '-o', outFile, '--sourcemap']);
+    const r = await runZntc([inFile, '-o', outFile, '--sourcemap']);
     expect(r.exitCode).toBe(0);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
@@ -56,7 +56,7 @@ describe('#2217: sourcemap footer + map.file 필드', () => {
         'try { level1(); } catch (e) { console.log(e.stack); }',
       ].join('\n'),
     );
-    const r = await runZts([inFile, '-o', outFile, '--sourcemap']);
+    const r = await runZntc([inFile, '-o', outFile, '--sourcemap']);
     expect(r.exitCode).toBe(0);
 
     const node = spawnSync('node', ['--enable-source-maps', outFile], {
@@ -71,7 +71,7 @@ describe('#2217: sourcemap footer + map.file 필드', () => {
 
   test('--sourcemap 없으면 footer 안 부착', async () => {
     const { inFile, outFile } = setupFixture('export const x = 1;\n');
-    const r = await runZts([inFile, '-o', outFile]);
+    const r = await runZntc([inFile, '-o', outFile]);
     expect(r.exitCode).toBe(0);
 
     const code = readFileSync(outFile, 'utf-8');
@@ -81,7 +81,7 @@ describe('#2217: sourcemap footer + map.file 필드', () => {
 
   test('stdout 출력 모드는 footer 안 부착 (output filename 모름)', async () => {
     const { inFile } = setupFixture('export const x = 1;\n');
-    const r = await runZts([inFile, '--sourcemap']);
+    const r = await runZntc([inFile, '--sourcemap']);
     expect(r.exitCode).toBe(0);
     // stdout 으로 코드만 출력. footer 안 부착 (어디로 쓰일지 모름).
     expect(r.stdout).not.toContain('sourceMappingURL');

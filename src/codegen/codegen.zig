@@ -1,4 +1,4 @@
-//! ZTS Codegen — AST를 JS 문자열로 출력
+//! ZNTC Codegen — AST를 JS 문자열로 출력
 //!
 //! 작동 원리:
 //!   1. AST의 루트(program) 노드부터 시작
@@ -128,10 +128,10 @@ pub const CodegenOptions = struct {
     /// `undefined` fallback). `var` 강등 후엔 ESM live binding 의미를 *대부분* 보존:
     /// cycle init 중 read 는 `undefined`, init 후 read 는 정상 값.
     force_var_for_cycle: bool = false,
-    /// dev mode 모듈 ID. 설정 시 import.meta.hot → __zts_make_hot("id") 변환.
+    /// dev mode 모듈 ID. 설정 시 import.meta.hot → __zntc_make_hot("id") 변환.
     dev_module_id: ?[]const u8 = null,
     /// require.context match 의 abs path → module ID 변환 base.
-    /// `__zts_modules[<id>]` lookup 이 모듈 등록 ID 와 일치해야 하므로 emitter 가 동일
+    /// `__zntc_modules[<id>]` lookup 이 모듈 등록 ID 와 일치해야 하므로 emitter 가 동일
     /// `root_dir` 을 전달. null 이면 변환 없음 (legacy 절대 경로).
     require_context_module_id_root: ?[]const u8 = null,
     /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
@@ -1880,10 +1880,10 @@ pub const Codegen = struct {
         // import.meta.* 프로퍼티 감지: hot (HMR) + polyfill (CJS/non-ESM)
         if (self.options.dev_module_id != null or self.options.module_format == .cjs or self.options.replace_import_meta) {
             if (self.resolveImportMetaProp(object, property)) |prop_text| {
-                // import.meta.hot → __zts_make_hot("dev_id") (dev mode HMR)
+                // import.meta.hot → __zntc_make_hot("dev_id") (dev mode HMR)
                 if (self.options.dev_module_id) |dev_id| {
                     if (std.mem.eql(u8, prop_text, "hot")) {
-                        try self.write("__zts_make_hot(\"");
+                        try self.write("__zntc_make_hot(\"");
                         try self.write(dev_id);
                         try self.write("\")");
                         return;
@@ -2077,12 +2077,12 @@ pub const Codegen = struct {
                     // 는 undefined — expo-router 가 `ctx(req)` 반환값을 route module 로 사용해
                     // tree 구성이 실패하고 "Unmatched Route" 로 fallback.
                     // 다른 require 호출과 동일한 `(fn(), __toCommonJS(.exports))` 패턴으로 emit.
-                    // `__zts_modules` 의 key 는 모듈 등록 ID — emitter 가 `dev.makeModuleId`
+                    // `__zntc_modules` 의 key 는 모듈 등록 ID — emitter 가 `dev.makeModuleId`
                     // 로 normalize 해서 등록하므로 lookup 도 동일 normalize 적용 (#2466 follow-up).
                     const id = dev.makeModuleId(abs, self.options.require_context_module_id_root);
-                    try self.write("(__zts_modules[\"");
+                    try self.write("(__zntc_modules[\"");
                     try self.writeJsStringContent(id);
-                    try self.write("\"].fn(),__toCommonJS(__zts_modules[\"");
+                    try self.write("\"].fn(),__toCommonJS(__zntc_modules[\"");
                     try self.writeJsStringContent(id);
                     try self.write("\"].exports))");
                 } else {
@@ -3719,7 +3719,7 @@ pub const Codegen = struct {
     ///   - string body + all defaulted (mirrored): \`require('flow-enums-runtime').Mirrored(['A', 'B'])\`
     ///   - 그 외 (Symbol/number/boolean/string-with-init): \`require('flow-enums-runtime')({A:<v>, B:<v>})\`
     ///   - Symbol body: 각 member 의 init 으로 \`Symbol('name')\` 자동 emit
-    ///   - number/boolean body + defaulted: ZTS 가 default value (auto-increment / false) 채움
+    ///   - number/boolean body + defaulted: ZNTC 가 default value (auto-increment / false) 채움
     fn emitFlowEnum(self: *Codegen, node: Node) Error!void {
         const e = node.data.extra;
         const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);

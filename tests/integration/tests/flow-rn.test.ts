@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { ZTS_BIN } from './helpers';
+import { ZNTC_BIN } from './helpers';
 import { resolve } from 'node:path';
 
 /**
@@ -12,7 +12,7 @@ const FIXTURES = resolve(import.meta.dir, 'fixtures/react-native');
 
 async function transpile(file: string): Promise<{ exitCode: number; stderr: string }> {
   const filePath = resolve(FIXTURES, file);
-  const proc = Bun.spawnSync([ZTS_BIN, '--flow', '--jsx-in-js', filePath]);
+  const proc = Bun.spawnSync([ZNTC_BIN, '--flow', '--jsx-in-js', filePath]);
   return {
     exitCode: proc.exitCode,
     stderr: proc.stderr.toString(),

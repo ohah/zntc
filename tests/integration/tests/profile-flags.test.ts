@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { runZts, createFixture } from './helpers';
+import { runZntc, createFixture } from './helpers';
 import { join } from 'node:path';
 
 // PR 2: profile infrastructure CLI/NAPI/env 진입점 통합 검증.
@@ -25,7 +25,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=all',
       '-o',
@@ -33,8 +33,8 @@ describe('profile CLI flags', () => {
     ]);
 
     expect(result.exitCode).toBe(0);
-    // 기본 format=table → ZTS Profile 헤더가 표시되어야 함.
-    expect(result.stderr).toContain('=== ZTS Profile ===');
+    // 기본 format=table → ZNTC Profile 헤더가 표시되어야 함.
+    expect(result.stderr).toContain('=== ZNTC Profile ===');
   });
 
   test('--profile-format=json 은 유효한 JSON 블록을 출력', async () => {
@@ -43,7 +43,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=all',
       '--profile-format=json',
@@ -69,7 +69,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=all',
       '--profile-format=csv',
@@ -87,7 +87,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=all',
       '--profile-level=detailed',
@@ -97,7 +97,7 @@ describe('profile CLI flags', () => {
     ]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).toContain('=== ZTS Profile (detailed) ===');
+    expect(result.stderr).toContain('=== ZNTC Profile (detailed) ===');
   });
 
   test('--profile-level 가 잘못된 값이면 exit 1', async () => {
@@ -106,7 +106,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=all',
       '--profile-level=bogus',
@@ -124,7 +124,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=all',
       '--profile-format=xml',
@@ -142,26 +142,30 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([join(fixture.dir, 'index.ts'), '-o', join(fixture.dir, 'out.js')]);
+    const result = await runZntc([
+      join(fixture.dir, 'index.ts'),
+      '-o',
+      join(fixture.dir, 'out.js'),
+    ]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).not.toContain('ZTS Profile');
+    expect(result.stderr).not.toContain('ZNTC Profile');
   });
 
-  test('ZTS_PROFILE env 로 활성화 가능', async () => {
+  test('ZNTC_PROFILE env 로 활성화 가능', async () => {
     const fixture = await createFixture({
       'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts(
+    const result = await runZntc(
       [
         join(fixture.dir, 'index.ts'),
         '-o',
         join(fixture.dir, 'out.js'),
         '--profile-format=json', // 활성 여부는 env 로, 포맷만 CLI 로.
       ],
-      { env: { ...process.env, ZTS_PROFILE: 'all' } },
+      { env: { ...process.env, ZNTC_PROFILE: 'all' } },
     );
 
     expect(result.exitCode).toBe(0);
@@ -177,7 +181,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--timing',
       '-o',
@@ -189,11 +193,11 @@ describe('profile CLI flags', () => {
   });
 
   test('--help 에 --profile 섹션 포함', async () => {
-    const result = await runZts(['--help']);
+    const result = await runZntc(['--help']);
     expect(result.stdout).toContain('--profile=');
     expect(result.stdout).toContain('--profile-level=');
     expect(result.stdout).toContain('--profile-format=');
-    expect(result.stdout).toContain('ZTS_PROFILE');
+    expect(result.stdout).toContain('ZNTC_PROFILE');
   });
 
   // ─── Phase 실제 수치 기록 검증 (PR 3+ 에서 hot-path timer 가 삽입됨) ───
@@ -213,7 +217,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--profile=parse',
       '--profile-format=json',
@@ -242,7 +246,7 @@ describe('profile CLI flags', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '--profile=shake',

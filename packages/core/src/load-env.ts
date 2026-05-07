@@ -7,9 +7,9 @@
  *  3. `.env.${mode}` (mode-specific, committed)
  *  4. `.env.${mode}.local` (mode-specific, gitignored)
  *
- * `prefixes` 로 시작하는 키만 반환. default 는 `["VITE_", "ZTS_"]` 두 개:
+ * `prefixes` 로 시작하는 키만 반환. default 는 `["VITE_", "ZNTC_"]` 두 개:
  *  - `VITE_` — Vite 호환 prefix (사용자가 Vite 에서 마이그레이션 시 동일 동작)
- *  - `ZTS_` — ZTS 전용 prefix (Vite 와 의도적으로 구분된 키 노출 시)
+ *  - `ZNTC_` — ZNTC 전용 prefix (Vite 와 의도적으로 구분된 키 노출 시)
  *
  * 빈 문자열 prefix `""` 를 포함하면 전체 노출 — 주의해서 사용.
  */
@@ -62,12 +62,12 @@ function parseDotenvFile(filePath: string): Record<string, string> {
  *
  * @param mode `--mode <name>` 으로 전달되는 값. 보통 `"production"` / `"development"`.
  * @param envDir `.env` 파일을 찾을 디렉토리. CLI 의 cwd 기본.
- * @param prefixes 노출할 키 prefix 목록. default `["VITE_", "ZTS_"]`. 단일 string 도 허용.
+ * @param prefixes 노출할 키 prefix 목록. default `["VITE_", "ZNTC_"]`. 단일 string 도 허용.
  */
 export function loadEnv(
   mode: string,
   envDir: string,
-  prefixes: string | string[] = ['VITE_', 'ZTS_'],
+  prefixes: string | string[] = ['VITE_', 'ZNTC_'],
 ): Record<string, string> {
   const prefixList = Array.isArray(prefixes) ? prefixes : [prefixes];
   const dir = pathResolve(envDir);
@@ -93,7 +93,7 @@ export function loadEnv(
  * `loadEnv` 결과 + 빌드 컨텍스트를 `import.meta.env.*` define 으로 변환.
  *
  * `import.meta.env.MODE` / `PROD` / `DEV` / `SSR` 를 자동 주입한다 (Vite 호환).
- * 사용자 정의 키는 모두 `JSON.stringify` 로 직렬화해 ZTS define 에 안전한 리터럴 형태로 전달.
+ * 사용자 정의 키는 모두 `JSON.stringify` 로 직렬화해 ZNTC define 에 안전한 리터럴 형태로 전달.
  */
 export function envToDefine(
   env: Record<string, string>,
@@ -104,7 +104,7 @@ export function envToDefine(
     MODE: mode,
     PROD: mode === 'production',
     DEV: mode !== 'production',
-    // ZTS 는 현재 SSR 빌드를 별도 mode 로 구분하지 않아 항상 false. 향후 SSR 지원 시
+    // ZNTC 는 현재 SSR 빌드를 별도 mode 로 구분하지 않아 항상 false. 향후 SSR 지원 시
     // BuildOptions 의 ssr 플래그 (또는 새 옵션) 와 연동해야 함.
     SSR: false,
     BASE_URL: baseUrl,

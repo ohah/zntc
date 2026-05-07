@@ -1015,7 +1015,7 @@ test "Worklet: __initData does NOT emit sourceMap when none generated" {
     // (workletFactory.ts:187). 빈 문자열을 넣으면 Reanimated 네이티브가
     // JSON 파싱 실패 → UI Runtime 초기화 abort →
     // `Expected microtaskQueueFinalizers to be defined` 에러로 이어짐.
-    // ZTS는 worklet 수준 source map 미지원 → 필드 생략이 정답.
+    // ZNTC는 worklet 수준 source map 미지원 → 필드 생략이 정답.
     var r = try transformWorklet(std.testing.allocator,
         \\function w() {
         \\  "worklet";

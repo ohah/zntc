@@ -16,7 +16,7 @@ export function isCssModuleFile(path: string): boolean {
 }
 
 export function cssModuleGeneratedCssPath(file: string): string {
-  return file.replace(/\.module\.css$/, '.module.zts.css');
+  return file.replace(/\.module\.css$/, '.module.zntc.css');
 }
 
 /**
@@ -160,7 +160,7 @@ export function isValidExportName(name: string): boolean {
 
 /**
  * proxy module — class-name map 의 default export 와 valid identifier named
- * export 를 emit. 실제 CSS 는 generated `.module.zts.css` 가 `<link>` 로 도달.
+ * export 를 emit. 실제 CSS 는 generated `.module.zntc.css` 가 `<link>` 로 도달.
  */
 export function buildCssModuleProxy(
   generatedCssPath: string,
@@ -209,7 +209,7 @@ export interface TransformCssModulesOptions {
 }
 
 /**
- * `moduleFiles` 의 `.module.css` 를 generated `.module.zts.css` + `.module.css.js`
+ * `moduleFiles` 의 `.module.css` 를 generated `.module.zntc.css` + `.module.css.js`
  * proxy 로 변환. `styleSources` 의 `import \"x.module.css\"` 는 proxy 로 redirect.
  *
  * dirtyOnly 가 주어지면 그 안에 든 파일만 재처리하지만 반환은 전체 list —

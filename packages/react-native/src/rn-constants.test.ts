@@ -8,7 +8,7 @@ import { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from './rn-cons
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-constants-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-constants-'));
 });
 
 afterEach(() => {
@@ -75,7 +75,7 @@ describe('resolveRnPolyfills', () => {
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     const result = resolveRnPolyfills(dir);
     expect(result).toEqual([]);
-    expect(warnSpy).toHaveBeenCalledWith('[zts] Could not resolve RN polyfills, skipping');
+    expect(warnSpy).toHaveBeenCalledWith('[zntc] Could not resolve RN polyfills, skipping');
     warnSpy.mockRestore();
   });
 

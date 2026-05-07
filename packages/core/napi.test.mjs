@@ -1,5 +1,5 @@
 /**
- * @zts/core NAPI 바인딩 Node.js 테스트
+ * @zntc/core NAPI 바인딩 Node.js 테스트
  *
  * Node.js에서 .node addon이 정상 로드되고 동작하는지 검증.
  * 실행: node --test packages/core/napi.test.mjs
@@ -15,14 +15,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
 // .node 파일 직접 로드
-const addonPath = join(__dirname, '../../zig-out/lib/zts.node');
+const addonPath = join(__dirname, '../../zig-out/lib/zntc.node');
 const native = require(addonPath);
 
 // 옵션은 단일 JSON payload (camelCase, Zig ConfigOptionsDto와 매핑).
 // 기본값(useDefineForClassFields, sourcesContent 등)은 Zig 측에서 처리하므로 생략 가능.
 const call = (src, filename, opts = {}) => native.transpile(src, filename, JSON.stringify(opts));
 
-describe('@zts/core NAPI (Node.js)', () => {
+describe('@zntc/core NAPI (Node.js)', () => {
   it('모듈이 transpile 함수를 export한다', () => {
     assert.equal(typeof native.transpile, 'function');
   });
@@ -111,8 +111,8 @@ describe('@zts/core NAPI (Node.js)', () => {
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-describe('@zts/core buildSync NAPI (Node.js)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'zts-napi-build-'));
+describe('@zntc/core buildSync NAPI (Node.js)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-napi-build-'));
   writeFileSync(
     join(dir, 'entry.ts'),
     'import { hello } from "./util";\nconsole.log(hello("world"));',

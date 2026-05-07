@@ -1,5 +1,5 @@
 // Babel 패스: 사용자 babel.config.js 의 custom plugin (Reanimated / NativeWind /
-// 사용자 worklet) 만 — ZTS 가 native 처리하는 plugin (TS strip / RN preset /
+// 사용자 worklet) 만 — ZNTC 가 native 처리하는 plugin (TS strip / RN preset /
 // JSX / class fields / worklets / flow / arrow / block-scoping 등) 은 zero-cost
 // pass. Babel/lazy-load — 첫 transform 호출 시점에 require, custom plugin 0 면
 // plugin 자체 등록 skip (createBabelPlugin 의 detectCustomPlugins false 분기).
@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-import type { ZtsPlugin } from '@zts/core';
+import type { ZntcPlugin } from '@zntc/core';
 
 import {
   type BabelInstance,
@@ -28,11 +28,11 @@ interface BabelConfigModule {
 type BabelEntry = string | [string, Record<string, unknown>?, string?];
 
 /**
- * ZTS native 처리 plugin patterns — Babel pass-through 시 제외 (이 list 에 매칭
- * 되면 ZTS 가 이미 처리). 사용자 babel.config.js 의 plugin 중 *이 list 외* 만
+ * ZNTC native 처리 plugin patterns — Babel pass-through 시 제외 (이 list 에 매칭
+ * 되면 ZNTC 가 이미 처리). 사용자 babel.config.js 의 plugin 중 *이 list 외* 만
  * Babel 로 forward.
  */
-export const ZTS_NATIVE_PLUGIN_PATTERNS = [
+export const ZNTC_NATIVE_PLUGIN_PATTERNS = [
   'optional-chaining',
   'nullish-coalescing',
   'class-properties',
@@ -53,9 +53,9 @@ export const ZTS_NATIVE_PLUGIN_PATTERNS = [
   '@react-native/babel-preset',
 ];
 
-/** Plugin name 이 ZTS 가 native 처리하는 list 에 매칭되는가. substring 매칭. */
-export function isZtsNativePlugin(name: string): boolean {
-  return ZTS_NATIVE_PLUGIN_PATTERNS.some((pattern) => name.includes(pattern));
+/** Plugin name 이 ZNTC 가 native 처리하는 list 에 매칭되는가. substring 매칭. */
+export function isZntcNativePlugin(name: string): boolean {
+  return ZNTC_NATIVE_PLUGIN_PATTERNS.some((pattern) => name.includes(pattern));
 }
 
 /**
@@ -66,7 +66,7 @@ export function isZtsNativePlugin(name: string): boolean {
  *  - `'@scope/foo'`     → `'@scope/babel-plugin-foo'`
  *  - 절대/상대 경로, `module:` prefix, 이미 prefix 를 가진 이름은 그대로.
  *
- * babel CLI 는 이 prefix 를 자동 적용하지만 ZTS 는 plugin 을 사전 절대경로로 resolve
+ * babel CLI 는 이 prefix 를 자동 적용하지만 ZNTC 는 plugin 을 사전 절대경로로 resolve
  * 해 babel 에 넘기므로 직접 적용해야 한다. 안 그러면 `'lodash'` 가 lodash 라이브러리
  * 자체로 풀려 babel 이 `.__wrapped__ is not a valid Plugin property` 로 reject.
  */
@@ -101,18 +101,18 @@ function hasNonNative(plugins: unknown[]): boolean {
     // 빈 string (number/object/null 같은 invalid plugin entry) 은 skip — bungae
     // 의 minor bug fix (#2540): 원본은 빈 string 도 native 외 로 카운트해 false
     // negative.
-    return typeof name === 'string' && name !== '' && !isZtsNativePlugin(name);
+    return typeof name === 'string' && name !== '' && !isZntcNativePlugin(name);
   });
 }
 
 /**
  * Babel pass 가 필요한지 판정. (a) babel.config.js 의 plugins 또는 (b) inline
- * config (zts.config.ts `transformer.babel`) 중 하나라도 ZTS native list 외
+ * config (zntc.config.ts `transformer.babel`) 중 하나라도 ZNTC native list 외
  * plugin/preset 이 있으면 true. 둘 다 0 → false (Babel pass skip).
  */
 export function detectCustomPlugins(projectRoot: string, inline?: InlineBabelConfig): boolean {
   // preset/plugin 모두 동일한 native filter 적용 — `@react-native/babel-preset`
-  // 같은 ZTS native 처리 항목을 inline 으로 적은 경우 detect=true 가 되면 transformer
+  // 같은 ZNTC native 처리 항목을 inline 으로 적은 경우 detect=true 가 되면 transformer
   // pass 가 켜진 후 filter 에서 제거되어 사용자 의도 (native preset 동작) 가 silent
   // drop. 둘 다 hasNonNative 통과 시점부터 진정한 custom 인 것.
   if (inline?.presets && hasNonNative(inline.presets)) return true;
@@ -133,7 +133,7 @@ export function detectCustomPlugins(projectRoot: string, inline?: InlineBabelCon
 
 /**
  * Lazy Babel transformer factory. 첫 transform 호출 시점에 require('@babel/core')
- * + babel.config.js 평가 + inline config (zts.config.ts `transformer.babel`)
+ * + babel.config.js 평가 + inline config (zntc.config.ts `transformer.babel`)
  * concat. Babel options 한 번 빌드 후 캐시. plugin require.resolve 는 user 의
  * node_modules 우선 (Bun deep-link symlink 미생성 케이스 대비 fallback 명시).
  */
@@ -147,7 +147,7 @@ export function createBabelTransformer(
   function ensureBabel(): void {
     if (babel) return;
     // project 기준 require — examples/<app>/node_modules 의 babel plugin 을
-    // 정확히 resolve. fallback 으로 zts CLI require (workspace hoist case).
+    // 정확히 resolve. fallback 으로 zntc CLI require (workspace hoist case).
     const projectRequire = createRequire(`${projectRoot}/package.json`);
     function resolvePluginPath(name: string): string {
       // Babel plugin 이름 컨벤션 적용: `'lodash'` → `'babel-plugin-lodash'`,
@@ -207,19 +207,19 @@ export function createBabelTransformer(
     const customPlugins: unknown[] = [];
     for (const plugin of [...filePlugins, ...inlinePlugins]) {
       const name = entryName(plugin);
-      if (typeof name === 'string' && name !== '' && !isZtsNativePlugin(name)) {
+      if (typeof name === 'string' && name !== '' && !isZntcNativePlugin(name)) {
         customPlugins.push(resolveEntry(plugin as BabelEntry));
       }
     }
 
-    // ZTS 가 항상 추가하는 preset (TS strip) + 사용자 inline preset.
+    // ZNTC 가 항상 추가하는 preset (TS strip) + 사용자 inline preset.
     const customPresets: unknown[] = [
       ['@babel/preset-typescript', { isTSX: true, allExtensions: true }],
     ];
     if (inline?.presets) {
       for (const preset of inline.presets) {
         const name = entryName(preset);
-        if (typeof name === 'string' && name !== '' && !isZtsNativePlugin(name)) {
+        if (typeof name === 'string' && name !== '' && !isZntcNativePlugin(name)) {
           customPresets.push(resolveEntry(preset as BabelEntry));
         }
       }
@@ -241,7 +241,7 @@ export function createBabelTransformer(
     const pluginNames = customPlugins.map((p) =>
       Array.isArray(p) ? (p[0] as string).split('/').pop() : String(p).split('/').pop(),
     );
-    process.stderr.write(`[zts:babel] loaded: ${pluginNames.join(', ')}\n`);
+    process.stderr.write(`[zntc:babel] loaded: ${pluginNames.join(', ')}\n`);
   }
 
   return (code: string, filename: string): string | null => {
@@ -253,13 +253,13 @@ export function createBabelTransformer(
       });
       if (result?.code && result.code !== code) {
         process.stderr.write(
-          `[zts:babel] ${filename.split('/').pop()}: ${code.length} -> ${result.code.length}\n`,
+          `[zntc:babel] ${filename.split('/').pop()}: ${code.length} -> ${result.code.length}\n`,
         );
         return result.code;
       }
       return null;
     } catch (err: unknown) {
-      process.stderr.write(`[zts:babel] error: ${getErrorMessage(err)}\n`);
+      process.stderr.write(`[zntc:babel] error: ${getErrorMessage(err)}\n`);
       throw err;
     }
   };
@@ -270,9 +270,9 @@ export function createBabelTransformer(
  * / NativeWind / 사용자 worklet) 을 source file 마다 적용. detectCustomPlugins
  * false 면 plugin 자체 등록 skip (NAPI build 의 startup latency 0).
  */
-export function createBabelPlugin(config: PluginConfig): ZtsPlugin {
+export function createBabelPlugin(config: PluginConfig): ZntcPlugin {
   return {
-    name: 'zts:react-native:babel-transform',
+    name: 'zntc:react-native:babel-transform',
     setup(build) {
       if (!detectCustomPlugins(config.projectRoot, config.inlineBabel)) return;
 

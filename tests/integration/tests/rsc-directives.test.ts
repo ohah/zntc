@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { runZts, runZtsInDir, createFixture, createReactStubFixture } from './helpers';
+import { runZntc, runZntcInDir, createFixture, createReactStubFixture } from './helpers';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -18,19 +18,19 @@ const FIXTURES = resolve(import.meta.dir, 'fixtures/rsc-directives');
  */
 describe('RSC 디렉티브 보존', () => {
   test('단일 파일: "use client" 첫 문장 보존', async () => {
-    const { stdout, exitCode } = await runZts([join(FIXTURES, 'use-client-counter.tsx')]);
+    const { stdout, exitCode } = await runZntc([join(FIXTURES, 'use-client-counter.tsx')]);
     expect(exitCode).toBe(0);
     expect(stdout.trimStart().startsWith('"use client"')).toBe(true);
   });
 
   test('단일 파일: "use server" 첫 문장 보존', async () => {
-    const { stdout, exitCode } = await runZts([join(FIXTURES, 'use-server-actions.ts')]);
+    const { stdout, exitCode } = await runZntc([join(FIXTURES, 'use-server-actions.ts')]);
     expect(exitCode).toBe(0);
     expect(stdout.trimStart().startsWith('"use server"')).toBe(true);
   });
 
   test("Next.js fixture client-entry-mixed: 'use strict' + 'use client' prologue 보존", async () => {
-    const { stdout, exitCode } = await runZts([join(FIXTURES, 'client-entry-mixed.mjs')]);
+    const { stdout, exitCode } = await runZntc([join(FIXTURES, 'client-entry-mixed.mjs')]);
     expect(exitCode).toBe(0);
     // 두 디렉티브 모두 prologue 영역에 등장해야 함
     const head = stdout.split('\n').slice(0, 20).join('\n');
@@ -39,7 +39,7 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test('--bundle --preserve-modules: "use client"가 import 위에 옴', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-pm-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-pm-'));
     try {
       const { dir } = await createReactStubFixture({
         'client.tsx': `"use client";\nimport { useState } from "react";\nexport default function C(){const[n]=useState(0);return n;}`,
@@ -47,7 +47,7 @@ describe('RSC 디렉티브 보존', () => {
         'entry.tsx': `"use client";\nimport C from "./client";\nimport { act } from "./server";\nexport default function E(){act();return <C/>;}`,
       });
       try {
-        const result = await runZtsInDir(dir, [
+        const result = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -81,7 +81,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.tsx': `"use client";\nimport { x } from "./dep";\nexport default x;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, [
+      const { stdout, exitCode } = await runZntcInDir(dir, [
         '--bundle',
         '--format=esm',
         'entry.tsx',
@@ -94,7 +94,7 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test("server action 인라인 (함수 내부 'use server')는 보존", async () => {
-    const { stdout, exitCode } = await runZts([join(FIXTURES, 'server-action-inline.tsx')]);
+    const { stdout, exitCode } = await runZntc([join(FIXTURES, 'server-action-inline.tsx')]);
     expect(exitCode).toBe(0);
     // 함수 내부의 'use server'는 expression statement로 그대로 남아야 함
     expect(stdout).toContain('"use server"');
@@ -105,7 +105,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.tsx': `'use client'\nimport { useState } from "react";\nexport default function C(){return useState(0)[0];}`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['entry.tsx']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['entry.tsx']);
       expect(exitCode).toBe(0);
       // 출력은 double-quote로 정규화될 수 있으나 디렉티브는 prologue에 존재
       const head = stdout.split('\n').slice(0, 3).join('\n');
@@ -121,7 +121,11 @@ describe('RSC 디렉티브 보존', () => {
       'entry.ts': `"use server";\nimport { v } from "./lib";\nexport function f(){return v;}`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['--bundle', '--format=esm', 'entry.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, [
+        '--bundle',
+        '--format=esm',
+        'entry.ts',
+      ]);
       expect(exitCode).toBe(0);
       const idx = stdout.indexOf('"use server"');
       const importIdx = stdout.indexOf('import');
@@ -138,7 +142,11 @@ describe('RSC 디렉티브 보존', () => {
       'entry.ts': `"use client";\nexport const x = 1;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['--bundle', '--format=cjs', 'entry.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, [
+        '--bundle',
+        '--format=cjs',
+        'entry.ts',
+      ]);
       expect(exitCode).toBe(0);
       // CJS는 자체적으로 "use strict" 추가 — "use client"도 prologue 내 존재해야
       expect(stdout).toContain('"use client"');
@@ -148,14 +156,14 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test('preserve-modules: 비-entry 모듈도 자기 디렉티브 보존', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-pm2-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-pm2-'));
     try {
       const { dir } = await createReactStubFixture({
         'client-comp.tsx': `"use client";\nimport { useState } from "react";\nexport default function C(){return useState(0)[0];}`,
         'entry.tsx': `import C from "./client-comp";\nexport default function E(){return <C/>;}`,
       });
       try {
-        const result = await runZtsInDir(dir, [
+        const result = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -176,14 +184,14 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test('preserve-modules: entry에 디렉티브 없으면 호이스트 안 함', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-pm3-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-pm3-'));
     try {
       const { dir } = await createFixture({
         'dep.ts': `export const x = 1;`,
         'entry.ts': `import { x } from "./dep";\nexport default x;`,
       });
       try {
-        const result = await runZtsInDir(dir, [
+        const result = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -209,7 +217,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.tsx': `"use client";\nimport { x } from "./dep";\nexport default x;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, [
+      const { stdout, exitCode } = await runZntcInDir(dir, [
         '--bundle',
         '--format=esm',
         '--minify',
@@ -227,7 +235,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.tsx': `"use client";\nexport default 1;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, [
+      const { stdout, exitCode } = await runZntcInDir(dir, [
         '--bundle',
         '--format=esm',
         '--banner:js=/* COPYRIGHT */',
@@ -249,7 +257,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.ts': `"use client";\n"random-directive";\nexport const x = 1;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['entry.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['entry.ts']);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use client"');
       expect(stdout).toContain('"random-directive"');
@@ -259,14 +267,14 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test('코드 스플리팅 (--splitting): entry 청크에 디렉티브 호이스트', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-split-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-split-'));
     try {
       const { dir } = await createFixture({
         'lazy.ts': `export const v = 42;`,
         'entry.tsx': `"use client";\nexport default async function(){const m = await import("./lazy");return m.v;}`,
       });
       try {
-        const result = await runZtsInDir(dir, [
+        const result = await runZntcInDir(dir, [
           '--bundle',
           '--splitting',
           '--format=esm',
@@ -294,7 +302,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.ts': `"use client";\n`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['entry.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['entry.ts']);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use client"');
     } finally {
@@ -303,16 +311,16 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test("Rollup module-level-directive fixture: 'use asm' 보존", async () => {
-    // Rollup은 경고 후 무시하지만, ZTS는 디렉티브를 단순 보존
-    const { stdout, exitCode } = await runZts([join(FIXTURES, 'module-level-directive.mjs')]);
+    // Rollup은 경고 후 무시하지만, ZNTC는 디렉티브를 단순 보존
+    const { stdout, exitCode } = await runZntc([join(FIXTURES, 'module-level-directive.mjs')]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain('"use asm"');
   });
 
   test('Rolldown preserve_modules fixture: 각 파일이 자기 디렉티브 보존', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rd-pm-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rd-pm-'));
     try {
-      const result = await runZtsInDir(join(FIXTURES, 'rolldown-preserve-modules'), [
+      const result = await runZntcInDir(join(FIXTURES, 'rolldown-preserve-modules'), [
         '--bundle',
         '--preserve-modules',
         '--outdir',
@@ -332,9 +340,9 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test('Rolldown chunk_level_directives fixture: entry 디렉티브 보존, shared 청크는 디렉티브 드롭', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rd-chunk-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rd-chunk-'));
     try {
-      const result = await runZtsInDir(join(FIXTURES, 'rolldown-chunk-directives'), [
+      const result = await runZntcInDir(join(FIXTURES, 'rolldown-chunk-directives'), [
         '--bundle',
         '--splitting',
         '--format=esm',
@@ -370,7 +378,7 @@ describe('RSC 디렉티브 보존', () => {
 
   test("Next.js server-action fixture (case-2,3,5): 'use server' 인라인 보존", async () => {
     for (const file of ['case-2.tsx', 'case-3.tsx', 'case-5.tsx']) {
-      const { stdout, exitCode } = await runZts([join(FIXTURES, 'nextjs-server-actions', file)]);
+      const { stdout, exitCode } = await runZntc([join(FIXTURES, 'nextjs-server-actions', file)]);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use server"');
     }
@@ -390,14 +398,14 @@ describe('RSC 디렉티브 보존', () => {
   ];
   for (const f of ACTION_CASES) {
     test(`Next.js fixture ${f}: 트랜스파일 성공 + use server 보존`, async () => {
-      const { stdout, exitCode } = await runZts([join(FIXTURES, 'nextjs-server-actions', f)]);
+      const { stdout, exitCode } = await runZntc([join(FIXTURES, 'nextjs-server-actions', f)]);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use server"');
     });
   }
 
   test("'use cache' (Next.js 15+) 디렉티브 보존", async () => {
-    const { stdout, exitCode } = await runZts([
+    const { stdout, exitCode } = await runZntc([
       join(FIXTURES, 'nextjs-server-actions', 'use-cache-life.tsx'),
     ]);
     expect(exitCode).toBe(0);
@@ -409,7 +417,7 @@ describe('RSC 디렉티브 보존', () => {
       'entry.ts': `export async function getData(){"use cache";\nreturn fetch("/api").then(r=>r.json());}`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['entry.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['entry.ts']);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use cache"');
     } finally {
@@ -418,7 +426,7 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test("Next.js case-9: top-level 'use server' + named export re-export 동작", async () => {
-    const { stdout, exitCode } = await runZts([
+    const { stdout, exitCode } = await runZntc([
       join(FIXTURES, 'nextjs-server-actions', 'case-9.tsx'),
     ]);
     expect(exitCode).toBe(0);
@@ -433,7 +441,7 @@ describe('RSC 디렉티브 보존', () => {
   });
 
   test("Next.js case-10: 'use server' + default async export", async () => {
-    const { stdout, exitCode } = await runZts([
+    const { stdout, exitCode } = await runZntc([
       join(FIXTURES, 'nextjs-server-actions', 'case-10.tsx'),
     ]);
     expect(exitCode).toBe(0);
@@ -452,7 +460,7 @@ describe('RSC 디렉티브 보존', () => {
  */
 describe('RSC 디렉티브 E2E (실제 Node 실행)', () => {
   test("ESM 번들: 'use client' 보존 + Node import 후 export 호출 동작", async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-e2e-esm-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-e2e-esm-'));
     try {
       const { dir } = await createFixture({
         'lib.ts': `export const greeting = (name: string) => \`hello \${name}\`;`,
@@ -460,7 +468,7 @@ describe('RSC 디렉티브 E2E (실제 Node 실행)', () => {
       });
       try {
         const out = join(outdir, 'bundle.mjs');
-        const r = await runZtsInDir(dir, ['--bundle', '--format=esm', '-o', out, 'entry.ts']);
+        const r = await runZntcInDir(dir, ['--bundle', '--format=esm', '-o', out, 'entry.ts']);
         expect(r.exitCode).toBe(0);
 
         const content = readFileSync(out, 'utf8');
@@ -487,7 +495,7 @@ describe('RSC 디렉티브 E2E (실제 Node 실행)', () => {
   });
 
   test('preserve-modules ESM: 각 파일을 Node로 import 가능 + 디렉티브 보존', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-e2e-pm-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-e2e-pm-'));
     try {
       const { dir } = await createFixture({
         'client.ts': `"use client";\nexport const tag = "CLIENT";`,
@@ -495,7 +503,7 @@ describe('RSC 디렉티브 E2E (실제 Node 실행)', () => {
         'entry.ts': `import { tag } from "./client";\nimport { action } from "./server";\nexport async function run(){return tag + ":" + (await action());}`,
       });
       try {
-        const r = await runZtsInDir(dir, [
+        const r = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--format=esm',
@@ -536,14 +544,14 @@ describe('RSC 디렉티브 E2E (실제 Node 실행)', () => {
   });
 
   test("CJS 번들: 'use client' 디렉티브 prologue 위치 + Node require로 SyntaxError 없음", async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-e2e-cjs-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-e2e-cjs-'));
     try {
       const { dir } = await createFixture({
         'entry.ts': `"use client";\nexport function add(a: number, b: number){return a + b;}`,
       });
       try {
         const out = join(outdir, 'bundle.cjs');
-        const r = await runZtsInDir(dir, ['--bundle', '--format=cjs', '-o', out, 'entry.ts']);
+        const r = await runZntcInDir(dir, ['--bundle', '--format=cjs', '-o', out, 'entry.ts']);
         expect(r.exitCode).toBe(0);
 
         const content = readFileSync(out, 'utf8');
@@ -587,8 +595,8 @@ describe('RSC 디렉티브 E2E (실제 Node 실행)', () => {
       's.ts': `"use server";\nexport async function f(){return 1;}`,
     });
     try {
-      const c = await runZtsInDir(dir, ['c.tsx']);
-      const s = await runZtsInDir(dir, ['s.ts']);
+      const c = await runZntcInDir(dir, ['c.tsx']);
+      const s = await runZntcInDir(dir, ['s.ts']);
       expect(c.exitCode).toBe(0);
       expect(s.exitCode).toBe(0);
       expect(detectClient(c.stdout)).toBe(true);
@@ -604,27 +612,27 @@ describe('TanStack Start RSC 호환성 (실제 코드)', () => {
   const TS_FIXTURES = join(FIXTURES, 'tanstack-start');
 
   test("Button.tsx (Pokemon demo): 'use client' 보존 + JSX 트랜스폼", async () => {
-    const { stdout, exitCode } = await runZts([join(TS_FIXTURES, 'pokemon-button.tsx')]);
+    const { stdout, exitCode } = await runZntc([join(TS_FIXTURES, 'pokemon-button.tsx')]);
     expect(exitCode).toBe(0);
     expect(stdout.trimStart().startsWith('"use client"')).toBe(true);
     expect(stdout).toContain('React.createElement');
   });
 
   test("ClientSlot.tsx (react-start-rsc): 'use client' + import + named export", async () => {
-    const { stdout, exitCode } = await runZts([join(TS_FIXTURES, 'client-slot.tsx')]);
+    const { stdout, exitCode } = await runZntc([join(TS_FIXTURES, 'client-slot.tsx')]);
     expect(exitCode).toBe(0);
     expect(stdout.trimStart().startsWith('"use client"')).toBe(true);
     expect(stdout).toContain('ClientSlot');
   });
 
   test("SlotContext.tsx (Context API + 'use client')", async () => {
-    const { stdout, exitCode } = await runZts([join(TS_FIXTURES, 'slot-context.tsx')]);
+    const { stdout, exitCode } = await runZntc([join(TS_FIXTURES, 'slot-context.tsx')]);
     expect(exitCode).toBe(0);
     expect(stdout.trimStart().startsWith('"use client"')).toBe(true);
   });
 
   test("createServerComponentFromStream.ts (복잡한 import + 'use client')", async () => {
-    const { stdout, exitCode } = await runZts([
+    const { stdout, exitCode } = await runZntc([
       join(TS_FIXTURES, 'create-server-component-from-stream.ts'),
     ]);
     expect(exitCode).toBe(0);
@@ -633,15 +641,15 @@ describe('TanStack Start RSC 호환성 (실제 코드)', () => {
 
   test('home-server-functions.tsx (createServerFn + JSX)', async () => {
     // 이 파일은 디렉티브 없이 createServerFn 사용 — 트랜스파일만 검증
-    const { stdout, exitCode } = await runZts([join(TS_FIXTURES, 'home-server-functions.tsx')]);
+    const { stdout, exitCode } = await runZntc([join(TS_FIXTURES, 'home-server-functions.tsx')]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain('createServerFn');
   });
 
   test("TanStack 번들: 'use client' 컴포넌트들이 preserve-modules 시 각자 디렉티브 유지", async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-tanstack-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-tanstack-'));
     try {
-      const r = await runZtsInDir(TS_FIXTURES, [
+      const r = await runZntcInDir(TS_FIXTURES, [
         '--bundle',
         '--preserve-modules',
         '--outdir',
@@ -661,13 +669,13 @@ describe('TanStack Start RSC 호환성 (실제 코드)', () => {
 
 describe('RSC 디렉티브 충돌 검증 (Next.js 스펙)', () => {
   test("'use client' + 'use server' 같은 청크에 → stderr 경고", async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-conflict-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-conflict-'));
     try {
       const { dir } = await createFixture({
         'bad.ts': `"use client";\n"use server";\nexport const x = 1;`,
       });
       try {
-        const r = await runZtsInDir(dir, [
+        const r = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -686,13 +694,13 @@ describe('RSC 디렉티브 충돌 검증 (Next.js 스펙)', () => {
   });
 
   test("'use client' + 'use cache' 같은 청크에 → stderr 경고", async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-conflict2-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-conflict2-'));
     try {
       const { dir } = await createFixture({
         'bad.ts': `"use client";\n"use cache";\nexport const x = 1;`,
       });
       try {
-        const r = await runZtsInDir(dir, [
+        const r = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -710,13 +718,13 @@ describe('RSC 디렉티브 충돌 검증 (Next.js 스펙)', () => {
   });
 
   test("'use client' 단독은 경고 없음", async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-noconflict-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-noconflict-'));
     try {
       const { dir } = await createFixture({
         'ok.ts': `"use client";\nexport const x = 1;`,
       });
       try {
-        const r = await runZtsInDir(dir, [
+        const r = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -741,7 +749,7 @@ describe('RSC 디렉티브 엣지 케이스', () => {
       'cli.ts': `#!/usr/bin/env node\n"use client";\nexport const x = 1;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['cli.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['cli.ts']);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use client"');
     } finally {
@@ -754,7 +762,7 @@ describe('RSC 디렉티브 엣지 케이스', () => {
       'empty.ts': `"use client";\nexport {};`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['empty.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['empty.ts']);
       expect(exitCode).toBe(0);
       expect(stdout.trimStart().startsWith('"use client"')).toBe(true);
     } finally {
@@ -767,7 +775,7 @@ describe('RSC 디렉티브 엣지 케이스', () => {
       'entry.tsx': `"use client";\nexport function f(): number { return 1; }`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['--sourcemap', 'entry.tsx']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['--sourcemap', 'entry.tsx']);
       expect(exitCode).toBe(0);
       expect(stdout.trimStart().startsWith('"use client"')).toBe(true);
     } finally {
@@ -781,7 +789,11 @@ describe('RSC 디렉티브 엣지 케이스', () => {
       'entry.ts': `import C from "./comp";\nexport default C;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['--bundle', '--format=esm', 'entry.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, [
+        '--bundle',
+        '--format=esm',
+        'entry.ts',
+      ]);
       expect(exitCode).toBe(0);
       // entry는 디렉티브 없음 → 출력 첫 문장이 "use client"가 아님 (호이스트 contract)
       expect(stdout.trimStart().startsWith('"use client"')).toBe(false);
@@ -797,7 +809,7 @@ describe('RSC 디렉티브 엣지 케이스', () => {
       'weird.ts': `        "use client";\nexport const x = 1;`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, ['weird.ts']);
+      const { stdout, exitCode } = await runZntcInDir(dir, ['weird.ts']);
       expect(exitCode).toBe(0);
       expect(stdout).toContain('"use client"');
     } finally {
@@ -806,13 +818,13 @@ describe('RSC 디렉티브 엣지 케이스', () => {
   });
 
   test('디렉티브 다수 (use strict + use client + use server) — 충돌 경고 포함', async () => {
-    const outdir = await mkdtemp(join(tmpdir(), 'zts-rsc-multi-'));
+    const outdir = await mkdtemp(join(tmpdir(), 'zntc-rsc-multi-'));
     try {
       const { dir } = await createFixture({
         'many.ts': `"use strict";\n"use client";\n"use server";\nexport const x = 1;`,
       });
       try {
-        const r = await runZtsInDir(dir, [
+        const r = await runZntcInDir(dir, [
           '--bundle',
           '--preserve-modules',
           '--outdir',
@@ -842,7 +854,7 @@ describe('RSC 디렉티브 엣지 케이스', () => {
       'entry.tsx': `"use client";\nexport function f(){return 1+2;}`,
     });
     try {
-      const { stdout, exitCode } = await runZtsInDir(dir, [
+      const { stdout, exitCode } = await runZntcInDir(dir, [
         '--bundle',
         '--format=esm',
         '--minify-syntax',

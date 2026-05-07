@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, ZTS_BIN } from './helpers';
+import { createFixture, ZNTC_BIN } from './helpers';
 import { resolve } from 'node:path';
 
 /**
@@ -55,7 +55,7 @@ describe('bundle: minify ignores orphan var_decls (#번개 실측)', () => {
     try {
       const entry = resolve(fixture.dir, 'entry.js');
       const proc = Bun.spawnSync([
-        ZTS_BIN,
+        ZNTC_BIN,
         '--bundle',
         '--platform=react-native',
         '--rn-platform=ios',

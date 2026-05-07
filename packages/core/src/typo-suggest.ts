@@ -83,7 +83,7 @@ export function warnUnknownKeys(
     if (!options.silent) {
       const where = options.sourceLabel ? ` (${options.sourceLabel})` : '';
       const hint = suggestion ? ` — did you mean '${suggestion}'?` : '';
-      console.warn(`@zts/core: unknown config key '${key}'${where}${hint}`);
+      console.warn(`@zntc/core: unknown config key '${key}'${where}${hint}`);
     }
   }
   return result;

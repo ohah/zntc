@@ -95,13 +95,13 @@ describe('warnUnknownKeys', () => {
     const calls: string[] = [];
     console.warn = (msg: string) => calls.push(msg);
     try {
-      warnUnknownKeys({ formatt: 'esm' }, ['format'], { sourceLabel: 'zts.config.ts' });
+      warnUnknownKeys({ formatt: 'esm' }, ['format'], { sourceLabel: 'zntc.config.ts' });
     } finally {
       console.warn = original;
     }
     expect(calls.length).toBe(1);
     expect(calls[0]).toContain('formatt');
-    expect(calls[0]).toContain('zts.config.ts');
+    expect(calls[0]).toContain('zntc.config.ts');
     expect(calls[0]).toContain("did you mean 'format'");
   });
 });
@@ -194,7 +194,7 @@ describe('KNOWN_CONFIG_KEYS', () => {
 });
 
 describe('KNOWN_CONFIG_KEYS — React Native config keys (#2605)', () => {
-  // 번개 BungaeConfig 영역 — runRnDev 가 zts.config.ts 에서 인식.
+  // 번개 BungaeConfig 영역 — runRnDev 가 zntc.config.ts 에서 인식.
   const rnConfigKeys = [
     'root',
     'entry',

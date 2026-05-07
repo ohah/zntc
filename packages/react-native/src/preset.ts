@@ -1,4 +1,4 @@
-// RN preset — `RnBundleInput` (사용자 입력) → `BuildOptions` (ZTS NAPI build/watch
+// RN preset — `RnBundleInput` (사용자 입력) → `BuildOptions` (ZNTC NAPI build/watch
 // 입력). 번개 napi-build.ts 의 RN 분기 (L74~L268) 와 동등 동작 + 번개 의존성 0.
 //
 // 자동 활성 필드 (RN platform 시): target=es5, flow=true, jsxInJs=true,
@@ -25,8 +25,8 @@ import {
   type WatchHandle,
   type WatchReadyEvent,
   type WatchRebuildEvent,
-  type ZtsPlugin,
-} from '@zts/core';
+  type ZntcPlugin,
+} from '@zntc/core';
 
 import type { CustomResolver, MetroPlatform } from './metro-resolver-types.ts';
 import { createAssetPlugin } from './plugins/asset.ts';
@@ -62,7 +62,7 @@ export interface RnBundleInput {
    *   (preset 의 array 무시)
    * - **Primitive** (`target` / `minify` 등) — replace
    *
-   * preset 의 default 가 ZTS RN 호환 보장 — array override 는 RN 동작 깨질
+   * preset 의 default 가 ZNTC RN 호환 보장 — array override 는 RN 동작 깨질
    * 위험 있음 (caller 가 의도적 변경 시만 사용).
    */
   override?: Partial<BuildOptions>;
@@ -72,7 +72,7 @@ export interface RnBundleInput {
     blockList?: (RegExp | string)[];
     fallback?: Record<string, string | false>;
     /** RN 외 사용자 plugin (asset/babel/codegen/require-context/metro-resolve-request 외 추가). */
-    additionalPlugins?: ZtsPlugin[];
+    additionalPlugins?: ZntcPlugin[];
     /** Custom Metro resolveRequest — Metro 시그니처 그대로. */
     metroResolveRequest?: CustomResolver;
     /** Metro 호환 babel transformer path (svg-transformer 등). */
@@ -85,7 +85,7 @@ export interface RnBundleInput {
     polyfills?: string[];
     /**
      * 추가 global 변수 — banner 의 `var <key>=<JSON.stringify(value)>` 로 inject.
-     * Metro `serializer.extraVars` 호환. zts 의 `define` 과 의도가 다름:
+     * Metro `serializer.extraVars` 호환. zntc 의 `define` 과 의도가 다름:
      * `define` 은 source 의 식별자 substitution (compile-time), `extraVars` 는
      * runtime-time prelude 의 globals declaration (RN 코드 도착 전에 평가).
      */
@@ -99,27 +99,27 @@ export interface RnBundleInput {
     prelude?: string[];
     /**
      * 사용자 babel preset / plugin (Metro `transformer.babel` 호환). babel.config.js
-     * 외에 zts.config.ts 안에서 inline 으로 babel 설정. ZTS native 처리 plugin (TS
+     * 외에 zntc.config.ts 안에서 inline 으로 babel 설정. ZNTC native 처리 plugin (TS
      * strip / RN preset / Reanimated 등) 은 자동 제외 — 충돌 회피.
      *
-     * 사용자 babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZTS native filter
-     * 통과 후 babel pass 에 forward. presets 는 zts 가 추가하는 `preset-typescript`
+     * 사용자 babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZNTC native filter
+     * 통과 후 babel pass 에 forward. presets 는 zntc 가 추가하는 `preset-typescript`
      * 외에 추가됨.
      */
     babel?: InlineBabelConfig;
     /**
      * Sourcemap 을 bundle 에 inline 으로 embed (Metro `serializer.inlineSourceMap`
-     * 호환). zts core 의 `sourcemapMode='inline'` 으로 forward.
+     * 호환). zntc core 의 `sourcemapMode='inline'` 으로 forward.
      */
     inlineSourceMap?: boolean;
     /**
      * Sourcemap 의 `sourceRoot` field (Metro `sourcemapSourcesRoot` 호환). 절대
-     * 경로를 source 로 변환하는 base. zts core 의 `sourceRoot` 으로 forward.
+     * 경로를 source 로 변환하는 base. zntc core 의 `sourceRoot` 으로 forward.
      */
     sourceRoot?: string;
     /**
      * `console.error` setter intercept 의 RegExp source string 배열 — match 시
-     * silent swallow. zts core 의 `silentConsoleErrorPatterns` 로 forward
+     * silent swallow. zntc core 의 `silentConsoleErrorPatterns` 로 forward
      * (Metro `server.silentConsoleErrorPatterns` 호환). consumer (e.g.
      * `withExpo()`) 가 환경 감지 후 패턴 주입.
      */
@@ -215,7 +215,7 @@ function buildAssetLoaders(assetExts: readonly string[]): Record<string, string>
 const PRELUDE_RESERVED = new Set([
   '__BUNDLE_START_TIME__',
   '__DEV__',
-  '__ZTS_RN_GLOBAL__',
+  '__ZNTC_RN_GLOBAL__',
   'global',
   'process',
 ]);
@@ -236,13 +236,13 @@ function buildPrelude(input: RnBundleInput): string {
   // 등) placeholder 를 `configurable: false` 로 lazy 등록 → 그 후 Reanimated/Expo 의 가드 없는
   // `Object.defineProperty(globalThis, ...)` 시도 → throw → 부팅 실패. Metro bundle 도 모든
   // globalThis assignment 를 module factory 안 (nested scope) 에 두는 패턴이라 trigger 회피.
-  // 추가 식별자가 필요하면 `__ZTS_RN_BUNDLER__` 처럼 footer 의 IIFE 안에서 세팅.
+  // 추가 식별자가 필요하면 `__ZNTC_RN_BUNDLER__` 처럼 footer 의 IIFE 안에서 세팅.
   const lines = [
     `var __BUNDLE_START_TIME__=this.nativePerformanceNow?nativePerformanceNow():Date.now();`,
     `var __DEV__=${dev};`,
-    `var __ZTS_RN_GLOBAL__=typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this;`,
-    `if(typeof global==='undefined')var global=__ZTS_RN_GLOBAL__;`,
-    `var process=__ZTS_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? 'development' : 'production'}";`,
+    `var __ZNTC_RN_GLOBAL__=typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this;`,
+    `if(typeof global==='undefined')var global=__ZNTC_RN_GLOBAL__;`,
+    `var process=__ZNTC_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? 'development' : 'production'}";`,
   ];
   if (extra?.extraVars && Object.keys(extra.extraVars).length > 0) {
     const formatted = formatExtraVars(extra.extraVars);
@@ -258,8 +258,8 @@ function buildPrelude(input: RnBundleInput): string {
  */
 function buildFooter(dev: boolean): string {
   const parts: string[] = [
-    // __ZTS_RN_BUNDLER__ flag — IIFE 안에서 set 해야 안전
-    `(function(g){g.__ZTS_RN_BUNDLER__=true;})(typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this);`,
+    // __ZNTC_RN_BUNDLER__ flag — IIFE 안에서 set 해야 안전
+    `(function(g){g.__ZNTC_RN_BUNDLER__=true;})(typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this);`,
   ];
   if (dev) {
     parts.push(`setTimeout(function(){try{NativeModules.DevLoadingView.hide()}catch(e){}},0);`);
@@ -318,7 +318,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   const assetExts = extra?.assetExts ?? DEFAULT_ASSET_EXTS;
 
   // Plugin set — RN preset 기본 4 + (옵션) MetroResolveRequest + (옵션) additional.
-  const plugins: ZtsPlugin[] = [
+  const plugins: ZntcPlugin[] = [
     createAssetPlugin({
       projectRoot,
       assetExts,
@@ -371,7 +371,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   }
 
   const define: Record<string, string> = {
-    global: '__ZTS_RN_GLOBAL__',
+    global: '__ZNTC_RN_GLOBAL__',
     __DEV__: String(dev),
     'process.env.NODE_ENV': `"${dev ? 'development' : 'production'}"`,
     // expo-router `_ctx.{ios,android,web}.js` 의 require.context 인자 정적 평가용
@@ -415,7 +415,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   const workletVersion = resolveWorkletPluginVersion(projectRoot, input.workletPluginVersion);
   if (workletVersion) preset.workletPluginVersion = workletVersion;
 
-  // Footer 는 항상 — `__ZTS_RN_BUNDLER__` flag 를 IIFE 로 wrap 해 iOS 26.4+ Hermes
+  // Footer 는 항상 — `__ZNTC_RN_BUNDLER__` flag 를 IIFE 로 wrap 해 iOS 26.4+ Hermes
   // spec global trigger 회피 (`buildPrelude` 의 주석 참조). dev 시 DevLoadingView
   // hide 도 추가.
   preset.footer = buildFooter(dev);

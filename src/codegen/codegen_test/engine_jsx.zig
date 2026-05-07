@@ -157,10 +157,10 @@ test "JSX automatic: fragment" {
 }
 
 test "JSX automatic: key is separated from props" {
-    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <App key=\"k\" name=\"zts\" />;");
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <App key=\"k\" name=\"zntc\" />;");
     defer r.deinit();
     // key는 3번째 인수로 분리
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ name: \"zts\" }, \"k\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ name: \"zntc\" }, \"k\"") != null);
     // key는 props에 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "key:") == null);
 }

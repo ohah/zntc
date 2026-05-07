@@ -1,12 +1,12 @@
 /**
- * ZTS CLI flag registry + parsing helpers.
+ * ZNTC CLI flag registry + parsing helpers.
  *
- * `zts.mjs` 의 `parseArgs` 가 60+ flag 를 hand-rolled if-chain 으로 처리하던 것을
+ * `zntc.mjs` 의 `parseArgs` 가 60+ flag 를 hand-rolled if-chain 으로 처리하던 것을
  * 메타데이터로 통합. 새 flag 추가 시 `FLAG_REGISTRY` 에 entry 한 줄만 추가하면
  * `parseArgs` / `KNOWN_FLAGS` / typo-suggest / schema-sync 모두 자동 합류.
  *
- * 별도 파일로 분리한 이유: `zts.mjs` 의 top-level `await import("../dist/index.js")` 가
- * NAPI 바인딩을 로드하므로 테스트가 `zts.mjs` 를 직접 import 하기 어렵다. registry 를
+ * 별도 파일로 분리한 이유: `zntc.mjs` 의 top-level `await import("../dist/index.js")` 가
+ * NAPI 바인딩을 로드하므로 테스트가 `zntc.mjs` 를 직접 import 하기 어렵다. registry 를
  * 분리해 schema-sync 테스트가 정적 정규식 파싱 대신 실제 export 를 import 하도록 함
  * (formatter 가 spec 을 multi-line 으로 reformat 해도 회귀 없음).
  *
@@ -111,8 +111,8 @@ export const FLAG_REGISTRY = [
   // #2540 PR #7 — RN preset 의 projectRoot. 기본 cwd, 사용자 monorepo root 지정 시 사용.
   { kind: 'string', flag: '--rn-project-root', target: 'rnProjectRoot', forms: ['equal'] },
   // ─── RN CLI 호환 flag 매트릭스 (#2605 audit P0) ───
-  // `react-native bundle` / Metro CLI 의 standard flag 들 — `zts bundle --platform=react-native`
-  // 가 dropin 으로 동작하기 위한 호환 layer. zts 내부 옵션 (outfile 등) 과 별개로 받아 매핑.
+  // `react-native bundle` / Metro CLI 의 standard flag 들 — `zntc bundle --platform=react-native`
+  // 가 dropin 으로 동작하기 위한 호환 layer. zntc 내부 옵션 (outfile 등) 과 별개로 받아 매핑.
   { kind: 'string', flag: '--bundle-output', target: 'bundleOutput' },
   { kind: 'string', flag: '--sourcemap-output', target: 'sourcemapOutput' },
   { kind: 'string', flag: '--source-map-url', target: 'sourceMapUrl' },
@@ -163,7 +163,7 @@ export const FLAG_REGISTRY = [
   { kind: 'int', flag: '--port', target: 'port' },
   { kind: 'int', flag: '--log-limit', target: 'logLimit', forms: ['equal'] },
   { kind: 'int', flag: '--line-limit', target: 'lineLimit', forms: ['equal'] },
-  // RN CLI 호환 — `--max-workers N` (Metro). zts `--jobs` 와 의미 동일이므로 alias.
+  // RN CLI 호환 — `--max-workers N` (Metro). zntc `--jobs` 와 의미 동일이므로 alias.
   { kind: 'int', flag: '--max-workers', target: 'jobs', forms: ['equal'] },
 
   // ─── kind=string-default — bool 단독 시 default, `--key=val` 시 val ───
@@ -194,7 +194,7 @@ export const FLAG_REGISTRY = [
   { kind: 'key-value', flag: '--loader', target: 'loader' },
   { kind: 'key-value', flag: '--global', target: 'globals' },
   // RN CLI 호환 (#2605 audit P0) — Metro `--transform-option key=value` /
-  // `--resolver-option key=value`. 반복 지정 가능. zts 내부에는 직접 매핑되지
+  // `--resolver-option key=value`. 반복 지정 가능. zntc 내부에는 직접 매핑되지
   // 않지만 `runRnBundle` 이 collected dict 를 platform-specific 처리 (현재는
   // 무시 — Metro graph-bundler 전용. 미지원 stderr 경고만).
   { kind: 'key-value', flag: '--transform-option', target: 'transformOptions' },
@@ -385,7 +385,7 @@ function tryMatchValueForms(spec, arg, args, i, allFlags, forms, parseValue, op 
  */
 export function applyFlagAction(opts, spec, action) {
   if (action.type === 'invalid-int') {
-    console.error(`zts: ${spec.flag} requires a number: ${action.raw}`);
+    console.error(`zntc: ${spec.flag} requires a number: ${action.raw}`);
     opts.parseError = true;
   } else if (action.type === 'noop') {
     // pass — noop spec 또는 누락된 pair-form value

@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
-export const ZTS_BIN = join(PROJECT_ROOT, 'zig-out/bin/zts');
+export const ZNTC_BIN = join(PROJECT_ROOT, 'zig-out/bin/zntc');
 /// JS CLI (NAPI 기반). `compiler.emotion` / `compiler.styledComponents` 같은 JS-only
 /// 옵션을 검증하려면 Zig CLI 대신 이 경로를 사용해야 함.
-export const ZTS_JS_CLI = join(PROJECT_ROOT, 'packages/core/bin/zts.mjs');
+export const ZNTC_JS_CLI = join(PROJECT_ROOT, 'packages/core/bin/zntc.mjs');
 const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, '../node_modules');
 const LOOKUP_ROOTS = [join(PROJECT_ROOT, 'node_modules'), INTEGRATION_NODE_MODULES];
 
@@ -26,7 +26,7 @@ export function hasPackage(name: string): boolean {
 export async function createFixture(
   files: Record<string, string>,
 ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
-  const dir = await mkdtemp(join(tmpdir(), 'zts-integration-'));
+  const dir = await mkdtemp(join(tmpdir(), 'zntc-integration-'));
 
   await Promise.all(
     Object.entries(files).map(async ([name, content]) => {
@@ -145,7 +145,7 @@ export async function createPnpmFarmFixture(opts: {
 }
 
 /// LOOKUP_ROOTS에서 패키지를 찾아 fixture dir로 symlink. 패키지 단위 병렬 실행.
-/// plugin host의 dynamic import + ZTS 번들 resolve 양쪽에서 사용.
+/// plugin host의 dynamic import + ZNTC 번들 resolve 양쪽에서 사용.
 ///
 /// symlink 자체는 존재하지 않는 target으로도 생성되므로, 먼저 target 존재를
 /// 확인한 뒤에 심볼릭 링크를 만든다 (broken symlink 방지).
@@ -219,14 +219,14 @@ async function runCmd(
   return { stdout, stderr, exitCode };
 }
 
-export async function runZts(
+export async function runZntc(
   args: string[],
   options?: RunOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return runCmd([ZTS_BIN, ...args], options);
+  return runCmd([ZNTC_BIN, ...args], options);
 }
 
-/// fixture 생성 → ZTS 실행 → 자동 cleanup 한 번에 묶는 헬퍼. caller 의 try/finally
+/// fixture 생성 → ZNTC 실행 → 자동 cleanup 한 번에 묶는 헬퍼. caller 의 try/finally
 /// 보일러플레이트 제거. `entry` 는 `files` 의 key 중 하나여야 하며, 절대경로로
 /// 변환되어 args 의 마지막에 추가된다. 호출자는 result 의 stdout/stderr/exitCode 만
 /// 검증하면 됨 — cleanup 은 throw 경로에서도 보장.
@@ -238,16 +238,16 @@ export async function runFixture(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const fixture = await createFixture(files);
   try {
-    return await runZts([...args, join(fixture.dir, entry)], options);
+    return await runZntc([...args, join(fixture.dir, entry)], options);
   } finally {
     await fixture.cleanup();
   }
 }
 
-/// Transpile-only (no `--bundle`) helper. ZTS 의 *transpile* path 단독 동작을
+/// Transpile-only (no `--bundle`) helper. ZNTC 의 *transpile* path 단독 동작을
 /// 격리 검증할 때 사용. `bundleAndRun` 은 `--bundle` 을 강제하므로 inner-name
 /// elision 같은 별도 pass 와 섞여 transpile 단독 동작을 잡아내기 어렵다 (#2194,
-/// #2197). source 를 임시 파일에 쓰고 ZTS 로 트랜스파일 → bun 으로 실행 → stdout/stderr
+/// #2197). source 를 임시 파일에 쓰고 ZNTC 로 트랜스파일 → bun 으로 실행 → stdout/stderr
 /// 비교를 한 번에.
 export async function transpileAndRun(
   source: string,
@@ -260,11 +260,11 @@ export async function transpileAndRun(
   runStderr: string;
   cleanup: () => Promise<void>;
 }> {
-  const dir = await mkdtemp(join(tmpdir(), 'zts-transpile-'));
+  const dir = await mkdtemp(join(tmpdir(), 'zntc-transpile-'));
   const inFile = join(dir, `in.${opts.ext ?? 'ts'}`);
   const outFile = join(dir, 'out.js');
   await writeFile(inFile, source);
-  const r = await runZts([inFile, '-o', outFile, ...extraArgs]);
+  const r = await runZntc([inFile, '-o', outFile, ...extraArgs]);
   const exec = await runCmd(['bun', 'run', outFile]);
   return {
     transpileExitCode: r.exitCode,
@@ -288,7 +288,7 @@ export async function runNode(file: string): Promise<{ stdout: string; stderr: s
 
 // ─── watch-json 테스트 공용 헬퍼 ───
 
-/// `zts --watch-json ...`을 shell 경유로 spawn하고 stdout을 jsonOutPath로 리다이렉트.
+/// `zntc --watch-json ...`을 shell 경유로 spawn하고 stdout을 jsonOutPath로 리다이렉트.
 /// bun test가 child process stdout pipe를 제대로 처리 못 해서 파일 리다이렉트 방식 사용.
 export function spawnWatchJson(
   args: string[],
@@ -296,7 +296,7 @@ export function spawnWatchJson(
 ): import('node:child_process').ChildProcess {
   const { spawn: spawnChild } = require('node:child_process');
   const quoted = args.map((a) => `"${a}"`).join(' ');
-  return spawnChild('sh', ['-c', `"${ZTS_BIN}" ${quoted} > "${jsonOutPath}" 2>/dev/null`]);
+  return spawnChild('sh', ['-c', `"${ZNTC_BIN}" ${quoted} > "${jsonOutPath}" 2>/dev/null`]);
 }
 
 /// watch 프로세스를 kill하고 종료를 기다림. 2초 후 SIGKILL fallback — 좀비 방지.
@@ -375,16 +375,16 @@ export async function waitForNdjsonLines<T = Record<string, unknown>>(
 }
 
 /// `bin` 옵션:
-///   - `"zig"` (기본) — Zig CLI (`zts` 바이너리). 빠르고 standalone.
-///   - `"js"` — JS CLI (`packages/core/bin/zts.mjs` via bun). NAPI 기반.
+///   - `"zig"` (기본) — Zig CLI (`zntc` 바이너리). 빠르고 standalone.
+///   - `"js"` — JS CLI (`packages/core/bin/zntc.mjs` via bun). NAPI 기반.
 ///     `compiler.emotion` / `compiler.styledComponents` 같은 JS-only 옵션이
-///     `zts.config.json` 으로부터 NAPI 로 forward 되는지 검증할 때 사용.
-export async function runZtsInDir(
+///     `zntc.config.json` 으로부터 NAPI 로 forward 되는지 검증할 때 사용.
+export async function runZntcInDir(
   dir: string,
   args: string[],
   options: { bin?: 'zig' | 'js' } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const cmd = options.bin === 'js' ? ['bun', ZTS_JS_CLI, ...args] : [ZTS_BIN, ...args];
+  const cmd = options.bin === 'js' ? ['bun', ZNTC_JS_CLI, ...args] : [ZNTC_BIN, ...args];
   const proc = spawn({ cmd, stdout: 'pipe', stderr: 'pipe', cwd: dir });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -394,7 +394,7 @@ export async function runZtsInDir(
   return { stdout, stderr, exitCode };
 }
 
-/// `zts.config.json` / CLI flag 통합 테스트의 `mkdtempSync → write → runZtsInDir`
+/// `zntc.config.json` / CLI flag 통합 테스트의 `mkdtempSync → write → runZntcInDir`
 /// 보일러플레이트 흡수. caller 는 `cleanup` 만 afterEach 에 등록하면 됨.
 ///
 /// `--bundle <entry>` 와 `-o outFile` (또는 `--outdir outDir`) 은 자동 주입 — caller 는
@@ -424,7 +424,7 @@ export async function runConfigBundle(opts: {
   const outFile = useOutDir ? undefined : join(dir, 'out.js');
   const outDir = useOutDir ? join(dir, opts.outDir!) : undefined;
   const ioArgs = useOutDir ? ['--outdir', outDir!] : ['-o', outFile!];
-  const result = await runZtsInDir(dir, [
+  const result = await runZntcInDir(dir, [
     '--bundle',
     join(dir, entry),
     ...ioArgs,
@@ -448,10 +448,10 @@ export async function bundleAndRun(
   const outFile = join(dir, 'out.js');
 
   try {
-    const bundle = await runZts(['--bundle', join(dir, entry), '-o', outFile, ...extraArgs]);
+    const bundle = await runZntc(['--bundle', join(dir, entry), '-o', outFile, ...extraArgs]);
 
     if (bundle.exitCode !== 0) {
-      throw new Error(`ZTS bundle failed: ${bundle.stderr}`);
+      throw new Error(`ZNTC bundle failed: ${bundle.stderr}`);
     }
 
     const run = await runCmd(['bun', 'run', outFile]);

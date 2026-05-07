@@ -1996,7 +1996,7 @@ fn getBinaryPrecedence(kind: Kind) u8 {
 /// esbuild 호환: <{}>() => {} 및 <[]>(y, z) => {} 같은 패턴에서
 /// <Type>이 type assertion이고 뒤따르는 () => {} 가 arrow function인 경우,
 /// type assertion은 스트리핑되므로 arrow function만 반환한다.
-/// esbuild는 parsePrefix를 호출해서 arrow를 직접 감지하지만, ZTS는
+/// esbuild는 parsePrefix를 호출해서 arrow를 직접 감지하지만, ZNTC는
 /// arrow 감지가 parseAssignmentExpression 레벨에서 일어나므로
 /// 여기서 직접 감지해야 한다.
 fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {

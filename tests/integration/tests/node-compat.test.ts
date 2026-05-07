@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { createFixture, runNode, runZts, runZtsInDir } from './helpers';
+import { createFixture, runNode, runZntc, runZntcInDir } from './helpers';
 import { join, basename } from 'node:path';
 import { readFileSync, readdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 /// CJS/Node 프리셋으로 번들하고 outFile 경로 반환. 번들 실패 시 throw.
 async function bundleCjsNode(dir: string, entry: string, outName = 'out.cjs'): Promise<string> {
   const outFile = join(dir, outName);
-  const bundle = await runZts([
+  const bundle = await runZntc([
     '--bundle',
     join(dir, entry),
     '--format=cjs',
@@ -16,7 +16,7 @@ async function bundleCjsNode(dir: string, entry: string, outName = 'out.cjs'): P
     outFile,
   ]);
   if (bundle.exitCode !== 0) {
-    throw new Error(`zts bundle failed: ${bundle.stderr}`);
+    throw new Error(`zntc bundle failed: ${bundle.stderr}`);
   }
   return outFile;
 }
@@ -77,7 +77,7 @@ describe('Node.js 호환 edge case', () => {
       symlinkSync(join(f.dir, 'real/app.ts'), linkEntry);
 
       const outFile = join(f.dir, 'out.cjs');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         linkEntry,
         '--format=cjs',
@@ -85,7 +85,7 @@ describe('Node.js 호환 edge case', () => {
         '-o',
         outFile,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const run = await runNode(outFile);
       expect(run.stdout).toBe('hello string');
@@ -111,7 +111,7 @@ describe('Node.js 호환 edge case', () => {
       );
 
       const outFile = join(f.dir, 'out.js');
-      const bundle = await runZtsInDir(f.dir, [
+      const bundle = await runZntcInDir(f.dir, [
         '--bundle',
         join(f.dir, 'entry.ts'),
         '--format=esm',
@@ -119,7 +119,7 @@ describe('Node.js 호환 edge case', () => {
         outFile,
         '--metafile=meta.json',
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const meta = JSON.parse(readFileSync(join(f.dir, 'meta.json'), 'utf8'));
       const inputs = Object.keys(meta.inputs);
@@ -140,7 +140,7 @@ describe('Node.js 호환 edge case', () => {
       );
 
       const outFile = join(f.dir, 'out.js');
-      const bundle = await runZtsInDir(f.dir, [
+      const bundle = await runZntcInDir(f.dir, [
         '--bundle',
         join(f.dir, 'entry.ts'),
         '--format=esm',
@@ -149,7 +149,7 @@ describe('Node.js 호환 edge case', () => {
         '--metafile=meta.json',
         '--preserve-symlinks',
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const meta = JSON.parse(readFileSync(join(f.dir, 'meta.json'), 'utf8'));
       const inputs = Object.keys(meta.inputs);
@@ -167,7 +167,7 @@ describe('Node.js 호환 edge case', () => {
       cleanup = f.cleanup;
 
       const outFile = join(f.dir, 'out.cjs');
-      const bundle = await runZtsInDir(f.dir, [
+      const bundle = await runZntcInDir(f.dir, [
         '--bundle',
         './sub/app.ts',
         '--format=cjs',
@@ -175,7 +175,7 @@ describe('Node.js 호환 edge case', () => {
         '-o',
         outFile,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const run = await runNode(outFile);
       expect(run.stdout).toBe('rel ok');
@@ -191,7 +191,7 @@ describe('Node.js 호환 edge case', () => {
       cleanup = f.cleanup;
 
       const outFile = join(f.dir, 'out.mjs');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(f.dir, 'app.ts'),
         '--format=esm',
@@ -199,7 +199,7 @@ describe('Node.js 호환 edge case', () => {
         '-o',
         outFile,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const run = await runNode(outFile);
       expect(run.stdout).toMatch(/^file:\/\//);
@@ -217,7 +217,7 @@ describe('Node.js 호환 edge case', () => {
       });
       cleanup = f.cleanup;
       const outFile = join(f.dir, 'out.mjs');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(f.dir, 'app.ts'),
         '--format=esm',
@@ -225,7 +225,7 @@ describe('Node.js 호환 edge case', () => {
         '-o',
         outFile,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
       const bundled = readFileSync(outFile, 'utf8');
       expect(bundled).toContain('import { createRequire } from "node:module"');
       const run = await runNode(outFile);
@@ -236,7 +236,7 @@ describe('Node.js 호환 edge case', () => {
       const f = await createFixture({ 'app.ts': `export const v = 1;\nconsole.log(v);` });
       cleanup = f.cleanup;
       const outFile = join(f.dir, 'out.mjs');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(f.dir, 'app.ts'),
         '--format=esm',
@@ -244,7 +244,7 @@ describe('Node.js 호환 edge case', () => {
         '-o',
         outFile,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
       expect(readFileSync(outFile, 'utf8')).not.toContain('createRequire');
     });
 
@@ -256,7 +256,7 @@ describe('Node.js 호환 edge case', () => {
       });
       cleanup = f.cleanup;
       const outFile = join(f.dir, 'out.mjs');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(f.dir, 'app.ts'),
         '--format=esm',
@@ -264,7 +264,7 @@ describe('Node.js 호환 edge case', () => {
         '-o',
         outFile,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
       const bundled = readFileSync(outFile, 'utf8');
       expect(bundled).not.toContain('node:module');
       expect(bundled).not.toContain('createRequire');
@@ -281,7 +281,7 @@ describe('Node.js 호환 edge case', () => {
       cleanup = f.cleanup;
 
       const outDir = join(f.dir, 'dist');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(f.dir, 'app.ts'),
         '--format=esm',
@@ -290,7 +290,7 @@ describe('Node.js 호환 edge case', () => {
         '--outdir',
         outDir,
       ]);
-      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const outputs = readdirSync(outDir).filter((n) => n.endsWith('.js') || n.endsWith('.mjs'));
       const hasShim = outputs.some((n) =>

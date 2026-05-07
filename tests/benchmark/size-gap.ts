@@ -2,7 +2,7 @@
 /**
  * Size-gap diagnostics for small package smoke benchmarks.
  *
- * Runs smoke.ts with preserved outputs, then compares ZTS against the smallest
+ * Runs smoke.ts with preserved outputs, then compares ZNTC against the smallest
  * successful baseline bundle to surface likely size-gap causes.
  */
 
@@ -20,7 +20,7 @@ type BundlerName = 'esbuild' | 'rolldown' | 'rspack';
 
 interface Candidate {
   value: string;
-  ztsCount: number;
+  zntcCount: number;
 }
 
 interface CjsExportAudit {
@@ -208,21 +208,21 @@ function packageSourceFiles(project: string): { path: string; content: string }[
   return [];
 }
 
-function cjsExportAudit(project: string, zts: string): CjsExportAudit {
+function cjsExportAudit(project: string, zntc: string): CjsExportAudit {
   const sourceFiles = packageSourceFiles(project);
   const source = sourceFiles.map((file) => file.content).join('\n');
   const sourceMarkers = collectCjsExportMarkers(source);
-  const ztsMarkers = collectCjsExportMarkers(zts);
+  const zntcMarkers = collectCjsExportMarkers(zntc);
 
   const patternCounts = countCjsExportPatterns(source);
-  const remainingMarkers = [...ztsMarkers]
-    .map(([value, ztsCount]) => ({ value, ztsCount }))
-    .sort((a, b) => b.ztsCount - a.ztsCount || a.value.localeCompare(b.value))
+  const remainingMarkers = [...zntcMarkers]
+    .map(([value, zntcCount]) => ({ value, zntcCount }))
+    .sort((a, b) => b.zntcCount - a.zntcCount || a.value.localeCompare(b.value))
     .slice(0, 12);
   const removedMarkerCandidates = [...sourceMarkers]
-    .filter(([value]) => !ztsMarkers.has(value))
-    .map(([value, ztsCount]) => ({ value, ztsCount }))
-    .sort((a, b) => b.ztsCount - a.ztsCount || a.value.localeCompare(b.value))
+    .filter(([value]) => !zntcMarkers.has(value))
+    .map(([value, zntcCount]) => ({ value, zntcCount }))
+    .sort((a, b) => b.zntcCount - a.zntcCount || a.value.localeCompare(b.value))
     .slice(0, 12);
 
   return {
@@ -233,10 +233,10 @@ function cjsExportAudit(project: string, zts: string): CjsExportAudit {
   };
 }
 
-function ztsOnlyStrings(zts: string, baseline: string): Candidate[] {
+function zntcOnlyStrings(zntc: string, baseline: string): Candidate[] {
   const strings = new Set<string>();
   const re = /(["'`])((?:\\.|(?!\1).){16,})\1/g;
-  for (const match of zts.matchAll(re)) {
+  for (const match of zntc.matchAll(re)) {
     const value = match[2];
     if (/^\s*$/.test(value) || baseline.includes(value)) continue;
     strings.add(value);
@@ -244,15 +244,15 @@ function ztsOnlyStrings(zts: string, baseline: string): Candidate[] {
   return [...strings]
     .map((raw) => ({
       value: JSON.stringify(raw).slice(0, 80),
-      ztsCount: countOccurrences(zts, raw),
-      weight: raw.length * countOccurrences(zts, raw),
+      zntcCount: countOccurrences(zntc, raw),
+      weight: raw.length * countOccurrences(zntc, raw),
     }))
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 8)
-    .map(({ value, ztsCount }) => ({ value, ztsCount }));
+    .map(({ value, zntcCount }) => ({ value, zntcCount }));
 }
 
-function wrapperMarkers(zts: string, baseline: string): Candidate[] {
+function wrapperMarkers(zntc: string, baseline: string): Candidate[] {
   const markers = [
     '__commonJS',
     '__export',
@@ -265,30 +265,30 @@ function wrapperMarkers(zts: string, baseline: string): Candidate[] {
     '__require',
   ];
   return markers
-    .filter((marker) => zts.includes(marker) && !baseline.includes(marker))
-    .map((value) => ({ value, ztsCount: countOccurrences(zts, value) }))
-    .sort((a, b) => b.ztsCount - a.ztsCount);
+    .filter((marker) => zntc.includes(marker) && !baseline.includes(marker))
+    .map((value) => ({ value, zntcCount: countOccurrences(zntc, value) }))
+    .sort((a, b) => b.zntcCount - a.zntcCount);
 }
 
-function topLevelDeclarations(zts: string, baseline: string): Candidate[] {
+function topLevelDeclarations(zntc: string, baseline: string): Candidate[] {
   const re = /^(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)\b/gm;
   const baselineNames = new Set<string>();
   for (const match of baseline.matchAll(re)) {
     baselineNames.add(match[1]);
   }
   const names = new Set<string>();
-  for (const match of zts.matchAll(re)) {
+  for (const match of zntc.matchAll(re)) {
     if (!baselineNames.has(match[1])) names.add(match[1]);
   }
   return [...names]
-    .map((value) => ({ value, ztsCount: countOccurrences(zts, value) }))
-    .sort((a, b) => b.ztsCount - a.ztsCount)
+    .map((value) => ({ value, zntcCount: countOccurrences(zntc, value) }))
+    .sort((a, b) => b.zntcCount - a.zntcCount)
     .slice(0, 12);
 }
 
 function formatCandidates(candidates: Candidate[]): string {
   if (candidates.length === 0) return '  - none';
-  return candidates.map((c) => `  - ${c.value} (${c.ztsCount}x)`).join('\n');
+  return candidates.map((c) => `  - ${c.value} (${c.zntcCount}x)`).join('\n');
 }
 
 function formatPatternCounts(patternCounts: Record<CjsExportPattern, number>): string {
@@ -296,14 +296,14 @@ function formatPatternCounts(patternCounts: Record<CjsExportPattern, number>): s
 }
 
 const projects = parseProjects();
-const tempDir = mkdtempSync(join(tmpdir(), 'zts-size-gap-'));
+const tempDir = mkdtempSync(join(tmpdir(), 'zntc-size-gap-'));
 const keepDir = join(tempDir, 'outputs');
 const jsonPath = join(tempDir, 'smoke.json');
 
 try {
   const results = runSmoke(projects, keepDir, jsonPath);
 
-  console.log('# ZTS Size Gap Diagnostics');
+  console.log('# ZNTC Size Gap Diagnostics');
   console.log(`Projects: ${projects.join(', ')}`);
 
   for (const result of results) {
@@ -314,29 +314,29 @@ try {
       continue;
     }
 
-    const zts = readOutput(result.zts);
+    const zntc = readOutput(result.zntc);
     const base = readOutput(baseline.result);
-    const ratio = result.zts.size > 0 ? result.zts.size / baseline.result.size : 0;
+    const ratio = result.zntc.size > 0 ? result.zntc.size / baseline.result.size : 0;
 
     console.log(
-      `ZTS: ${result.zts.size} bytes | Baseline: ${baseline.name} ${baseline.result.size} bytes | Ratio: ${ratio.toFixed(2)}x | Output: ${result.outputMatch ? 'MATCH' : 'DIFF'}`,
+      `ZNTC: ${result.zntc.size} bytes | Baseline: ${baseline.name} ${baseline.result.size} bytes | Ratio: ${ratio.toFixed(2)}x | Output: ${result.outputMatch ? 'MATCH' : 'DIFF'}`,
     );
     console.log(
-      `Files: ${basename(result.zts.outputPath ?? '')} vs ${basename(baseline.result.outputPath ?? '')}`,
+      `Files: ${basename(result.zntc.outputPath ?? '')} vs ${basename(baseline.result.outputPath ?? '')}`,
     );
 
-    console.log('\nZTS-only strings');
-    console.log(formatCandidates(ztsOnlyStrings(zts, base)));
+    console.log('\nZNTC-only strings');
+    console.log(formatCandidates(zntcOnlyStrings(zntc, base)));
     console.log('\nWrapper markers');
-    console.log(formatCandidates(wrapperMarkers(zts, base)));
+    console.log(formatCandidates(wrapperMarkers(zntc, base)));
     console.log('\nTop-level declarations');
-    console.log(formatCandidates(topLevelDeclarations(zts, base)));
-    const audit = cjsExportAudit(result.project, zts);
+    console.log(formatCandidates(topLevelDeclarations(zntc, base)));
+    const audit = cjsExportAudit(result.project, zntc);
     console.log('\nCJS export pattern audit');
     console.log(`  Source JS files: ${audit.sourceFileCount}`);
     console.log('  Pattern counts:');
     console.log(formatPatternCounts(audit.patternCounts));
-    console.log('  Remaining ZTS export markers:');
+    console.log('  Remaining ZNTC export markers:');
     console.log(formatCandidates(audit.remainingMarkers));
     console.log('  Removed dead marker candidates:');
     console.log(formatCandidates(audit.removedMarkerCandidates));

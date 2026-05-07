@@ -2136,7 +2136,7 @@ test "TreeShaking CJS: module.exports object live export keeps require target ev
 
 test "TreeShaking CJS: ES5 target preserves transformer-injected runtime helper module" {
     // Regression: transformer 가 graph parse 단계에서 inject 한 runtime helper import
-    // (예: `import { __read } from "\x00zts:runtime/read"`) 는 semantic scope_maps 에
+    // (예: `import { __read } from "\x00zntc:runtime/read"`) 는 semantic scope_maps 에
     // 등록되지 않아 cjs-wrap 모듈에서 isImportLiveInModule 가 항상 false 를 반환했다.
     // 결과: helper module 이 included 안 되어 dist 의 `__read` 호출이 정의를 못 찾아
     // ReferenceError (semver@es5 smoke 회귀).
@@ -3387,7 +3387,7 @@ test "sideEffects: CJS side-effect import must not be duplicated in barrel init 
 
 test "sideEffects: UserDefined lock — package.json sideEffects array MUST NOT be overridden by auto-purity" {
     // React-native-worklets의 lib/module/index.js는 top-level에서 init() 호출 (side-effect).
-    // 근데 `import` + `function_call()`만 있는 파일은 ZTS auto-purity 로직이 "pure"로 오판할 수도.
+    // 근데 `import` + `function_call()`만 있는 파일은 ZNTC auto-purity 로직이 "pure"로 오판할 수도.
     // package.json의 sideEffects 배열에 명시된 파일은 auto-purity가 덮어쓰면 안 됨.
     // 이 테스트는 해당 regression을 방지한다 (#1193 root cause).
     var tmp = std.testing.tmpDir(.{});

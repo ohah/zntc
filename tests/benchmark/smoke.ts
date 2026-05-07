@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * ZTS Smoke Test — 실제 프로젝트 빌드+실행 검증
+ * ZNTC Smoke Test — 실제 프로젝트 빌드+실행 검증
  *
- * npm에서 실제 라이브러리를 설치하고 ZTS/esbuild/rolldown으로 번들링하여
+ * npm에서 실제 라이브러리를 설치하고 ZNTC/esbuild/rolldown으로 번들링하여
  * 1) 빌드 성공  2) 실행 성공  3) 출력 일치 여부를 비교한다.
  *
- * esbuild 출력을 기준(baseline)으로 ZTS/rolldown 출력이 동일한지 검증.
+ * esbuild 출력을 기준(baseline)으로 ZNTC/rolldown 출력이 동일한지 검증.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 // bun workspace hoisting: devDependencies가 루트 node_modules에 설치될 수 있음
 const ESBUILD_BIN = existsSync(join(__dirname, 'node_modules/.bin/esbuild'))
   ? join(__dirname, 'node_modules/.bin/esbuild')
@@ -38,7 +38,7 @@ export interface BundlerResult {
 
 export interface SmokeResult {
   project: string;
-  zts: BundlerResult;
+  zntc: BundlerResult;
   esbuild: BundlerResult;
   rolldown: BundlerResult;
   rspack: BundlerResult;
@@ -133,7 +133,7 @@ interface ProjectConfig {
   platform?: 'node' | 'browser';
   tsconfig?: Record<string, boolean>;
   target?: string; // --target=es5, --target=es2015, etc.
-  minify?: boolean; // --minify 전파 (ZTS/esbuild/rolldown/rspack 공통)
+  minify?: boolean; // --minify 전파 (ZNTC/esbuild/rolldown/rspack 공통)
   production?: boolean; // rspack mode=production과 동일한 NODE_ENV define 적용 여부
 }
 
@@ -144,14 +144,14 @@ function isProductionBuild(p: ProjectConfig): boolean {
 function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult {
   const dir = options.keepOutputDir
     ? join(options.keepOutputDir, p.name)
-    : mkdtempSync(join(tmpdir(), `zts-smoke-${p.name}-`));
+    : mkdtempSync(join(tmpdir(), `zntc-smoke-${p.name}-`));
   if (options.keepOutputDir) {
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
   }
   const result: SmokeResult = {
     project: p.name,
-    zts: { ...emptyResult },
+    zntc: { ...emptyResult },
     esbuild: { ...emptyResult },
     rolldown: { ...emptyResult },
     rspack: { ...emptyResult },
@@ -179,7 +179,7 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
       writeFileSync(tsconfigFile, JSON.stringify({ compilerOptions: p.tsconfig }));
     }
 
-    const ztsOut = join(dir, 'dist-zts.js');
+    const zntcOut = join(dir, 'dist-zntc.js');
     const esOut = join(dir, 'dist-esbuild.js');
     const rdOut = join(dir, 'dist-rolldown.js');
     const ext = p.external ?? [];
@@ -188,32 +188,32 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
     const production = isProductionBuild(p);
     const nodeEnvDefine = production ? `"production"` : `"development"`;
 
-    // ZTS
-    const ztsExternalArgs = ext.flatMap((e) => ['--external', e]);
-    const ztsFormatArgs = format === 'cjs' ? ['--format=cjs'] : [];
-    const ztsTsconfigArgs = p.tsconfig ? ['-p', tsconfigFile] : [];
-    const ztsTargetArgs = p.target ? [`--target=${p.target}`] : [];
-    const ztsMinifyArgs = p.minify ? ['--minify'] : [];
-    const ztsDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
-    result.zts = bundleAndRun(
-      ZTS_BIN,
+    // ZNTC
+    const zntcExternalArgs = ext.flatMap((e) => ['--external', e]);
+    const zntcFormatArgs = format === 'cjs' ? ['--format=cjs'] : [];
+    const zntcTsconfigArgs = p.tsconfig ? ['-p', tsconfigFile] : [];
+    const zntcTargetArgs = p.target ? [`--target=${p.target}`] : [];
+    const zntcMinifyArgs = p.minify ? ['--minify'] : [];
+    const zntcDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
+    result.zntc = bundleAndRun(
+      ZNTC_BIN,
       [
         '--bundle',
         entryFile,
         '-o',
-        ztsOut,
+        zntcOut,
         `--platform=${platform}`,
-        ...ztsExternalArgs,
-        ...ztsFormatArgs,
-        ...ztsTsconfigArgs,
-        ...ztsTargetArgs,
-        ...ztsMinifyArgs,
-        ...ztsDefineArgs,
+        ...zntcExternalArgs,
+        ...zntcFormatArgs,
+        ...zntcTsconfigArgs,
+        ...zntcTargetArgs,
+        ...zntcMinifyArgs,
+        ...zntcDefineArgs,
       ],
-      ztsOut,
+      zntcOut,
     );
-    if (!result.zts.build && result.zts.size === 0) {
-      result.errors.push(`ZTS: build or run failed`);
+    if (!result.zntc.build && result.zntc.size === 0) {
+      result.errors.push(`ZNTC: build or run failed`);
     }
 
     // esbuild
@@ -301,19 +301,19 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
     }
 
     // 출력 비교: esbuild를 baseline으로
-    if (result.zts.build && result.esbuild.build) {
-      result.outputMatch = result.zts.stdout === result.esbuild.stdout;
+    if (result.zntc.build && result.esbuild.build) {
+      result.outputMatch = result.zntc.stdout === result.esbuild.stdout;
       if (!result.outputMatch) {
         result.errors.push(
-          `Output mismatch:\n  ZTS:     ${result.zts.stdout.slice(0, 100)}\n  esbuild: ${result.esbuild.stdout.slice(0, 100)}`,
+          `Output mismatch:\n  ZNTC:     ${result.zntc.stdout.slice(0, 100)}\n  esbuild: ${result.esbuild.stdout.slice(0, 100)}`,
         );
       }
-    } else if (result.zts.build && result.rolldown.build) {
+    } else if (result.zntc.build && result.rolldown.build) {
       // esbuild 실패 시 rolldown과 비교
-      result.outputMatch = result.zts.stdout === result.rolldown.stdout;
+      result.outputMatch = result.zntc.stdout === result.rolldown.stdout;
       if (!result.outputMatch) {
         result.errors.push(
-          `Output mismatch:\n  ZTS:      ${result.zts.stdout.slice(0, 100)}\n  rolldown: ${result.rolldown.stdout.slice(0, 100)}`,
+          `Output mismatch:\n  ZNTC:      ${result.zntc.stdout.slice(0, 100)}\n  rolldown: ${result.rolldown.stdout.slice(0, 100)}`,
         );
       }
     }
@@ -512,7 +512,7 @@ const projects: ProjectConfig[] = [
   },
   {
     // minified 쌍 — tree-shaking이 아니라 minifier 품질 비교용.
-    // unminified와 달리 ZTS가 esbuild보다 커지는 갭이 이 시나리오에서 드러난다.
+    // unminified와 달리 ZNTC가 esbuild보다 커지는 갭이 이 시나리오에서 드러난다.
     name: 'svelte-mount-min',
     pkg: 'svelte',
     platform: 'browser',
@@ -1171,7 +1171,7 @@ const projects: ProjectConfig[] = [
 // Run
 // ============================================================
 
-console.log('ZTS Smoke Test — Real Project Bundling\n');
+console.log('ZNTC Smoke Test — Real Project Bundling\n');
 
 // CLI: --filter=<패턴> 으로 이름 필터링 (예: --filter=@es5, --filter=lodash).
 // 콤마 분리로 여러 패턴 OR 매치: --filter=safe-buffer,cookie,path-to-regexp.
@@ -1204,10 +1204,10 @@ for (const p of filteredProjects) {
   const r = testProject(p, { keepOutputDir });
   results.push(r);
 
-  const status = r.zts.build ? 'OK' : 'FAIL';
-  const sizeKB = r.zts.size > 0 ? `${Math.round(r.zts.size / 1024)}KB` : '-';
-  const match = r.outputMatch ? '' : r.zts.build && r.esbuild.build ? ' [OUTPUT MISMATCH]' : '';
-  console.log(`${status} (${sizeKB}, ${r.zts.time}ms)${match}`);
+  const status = r.zntc.build ? 'OK' : 'FAIL';
+  const sizeKB = r.zntc.size > 0 ? `${Math.round(r.zntc.size / 1024)}KB` : '-';
+  const match = r.outputMatch ? '' : r.zntc.build && r.esbuild.build ? ' [OUTPUT MISMATCH]' : '';
+  console.log(`${status} (${sizeKB}, ${r.zntc.time}ms)${match}`);
 
   if (r.errors.length > 0) {
     for (const e of r.errors) {
@@ -1228,44 +1228,44 @@ function fmtStatus(build: boolean): string {
 
 console.log('\n### Smoke Test Results\n');
 console.log(
-  '| Project | ZTS | Size | Time | esbuild | Size | Time | rolldown | Size | Time | rspack | Size | Time | Output |',
+  '| Project | ZNTC | Size | Time | esbuild | Size | Time | rolldown | Size | Time | rspack | Size | Time | Output |',
 );
 console.log(
   '|---------|-----|------|------|---------|------|------|----------|------|------|--------|------|------|--------|',
 );
 for (const r of results) {
   const match =
-    !r.zts.build || (!r.esbuild.build && !r.rolldown.build)
+    !r.zntc.build || (!r.esbuild.build && !r.rolldown.build)
       ? '-'
       : r.outputMatch
         ? 'MATCH'
         : 'DIFF';
   console.log(
-    `| ${r.project} | ${fmtStatus(r.zts.build)} | ${fmtSize(r.zts.size)} | ${r.zts.time}ms | ${fmtStatus(r.esbuild.build)} | ${fmtSize(r.esbuild.size)} | ${r.esbuild.time}ms | ${fmtStatus(r.rolldown.build)} | ${fmtSize(r.rolldown.size)} | ${r.rolldown.time}ms | ${fmtStatus(r.rspack.build)} | ${fmtSize(r.rspack.size)} | ${r.rspack.time}ms | ${match} |`,
+    `| ${r.project} | ${fmtStatus(r.zntc.build)} | ${fmtSize(r.zntc.size)} | ${r.zntc.time}ms | ${fmtStatus(r.esbuild.build)} | ${fmtSize(r.esbuild.size)} | ${r.esbuild.time}ms | ${fmtStatus(r.rolldown.build)} | ${fmtSize(r.rolldown.size)} | ${r.rolldown.time}ms | ${fmtStatus(r.rspack.build)} | ${fmtSize(r.rspack.size)} | ${r.rspack.time}ms | ${match} |`,
   );
 }
 
-const passed = results.filter((r) => r.zts.build).length;
+const passed = results.filter((r) => r.zntc.build).length;
 const matched = results.filter((r) => r.outputMatch).length;
 const comparable = results.filter(
-  (r) => r.zts.build && (r.esbuild.build || r.rolldown.build),
+  (r) => r.zntc.build && (r.esbuild.build || r.rolldown.build),
 ).length;
 const total = results.length;
 console.log(`\n${passed}/${total} projects built successfully.`);
 console.log(`${matched}/${comparable} outputs match baseline.`);
 
-// Size comparison dashboard — ZTS는 esbuild/rolldown/rspack 중 가장 작은 결과를 baseline 으로
+// Size comparison dashboard — ZNTC는 esbuild/rolldown/rspack 중 가장 작은 결과를 baseline 으로
 // 비교한다. 가장 빡센 기준이라 셋 중 어느 하나라도 더 작아지면 격차가 즉시 드러난다.
 type SizeComparison = {
   name: string;
-  zts: number;
+  zntc: number;
   baselineName: 'esbuild' | 'rolldown' | 'rspack';
   baselineSize: number;
   ratio: number;
 };
 
 const sizeComparisons: SizeComparison[] = results
-  .filter((r) => r.zts.build && r.zts.size > 0)
+  .filter((r) => r.zntc.build && r.zntc.size > 0)
   .flatMap((r) => {
     const candidates: { name: SizeComparison['baselineName']; size: number }[] = [];
     if (r.esbuild.build && r.esbuild.size > 0)
@@ -1279,24 +1279,24 @@ const sizeComparisons: SizeComparison[] = results
     return [
       {
         name: r.project,
-        zts: r.zts.size,
+        zntc: r.zntc.size,
         baselineName: best.name,
         baselineSize: best.size,
-        ratio: r.zts.size / best.size,
+        ratio: r.zntc.size / best.size,
       },
     ];
   })
   .sort((a, b) => b.ratio - a.ratio);
 
 if (sizeComparisons.length > 0) {
-  console.log('\n### Size Comparison (ZTS vs smallest of esbuild/rolldown/rspack)\n');
-  console.log('| Project | ZTS | esbuild | rolldown | rspack | Baseline | Ratio | Status |');
+  console.log('\n### Size Comparison (ZNTC vs smallest of esbuild/rolldown/rspack)\n');
+  console.log('| Project | ZNTC | esbuild | rolldown | rspack | Baseline | Ratio | Status |');
   console.log('|---------|-----|---------|----------|--------|----------|-------|--------|');
   for (const c of sizeComparisons) {
     const r = results.find((r) => r.project === c.name)!;
     const status = c.ratio <= 1.1 ? '✅' : c.ratio <= 1.5 ? '⚠️' : '❌';
     console.log(
-      `| ${c.name} | ${fmtSize(c.zts)} | ${fmtSize(r.esbuild.size)} | ${fmtSize(r.rolldown.size)} | ${fmtSize(r.rspack.size)} | ${c.baselineName} | ${c.ratio.toFixed(2)}x | ${status} |`,
+      `| ${c.name} | ${fmtSize(c.zntc)} | ${fmtSize(r.esbuild.size)} | ${fmtSize(r.rolldown.size)} | ${fmtSize(r.rspack.size)} | ${c.baselineName} | ${c.ratio.toFixed(2)}x | ${status} |`,
     );
   }
   const avgRatio = sizeComparisons.reduce((s, c) => s + c.ratio, 0) / sizeComparisons.length;

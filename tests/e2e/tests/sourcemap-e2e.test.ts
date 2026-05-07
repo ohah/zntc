@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const ZTS_BIN = resolve(__dirname, '../../../zig-out/bin/zts');
+const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
 const TEST_PORT = 3997;
 
 // 10줄 소스 — "console.log(greeting)"은 10번째 줄(0-indexed 9)로 CDP breakpoint 테스트에 사용.
@@ -24,11 +24,11 @@ let server: ChildProcess | null = null;
 let fixtureDir: string;
 
 test.beforeAll(async ({ request }) => {
-  fixtureDir = await mkdtemp(join(tmpdir(), 'zts-sourcemap-e2e-'));
+  fixtureDir = await mkdtemp(join(tmpdir(), 'zntc-sourcemap-e2e-'));
   await writeFile(join(fixtureDir, 'app.ts'), APP_TS);
 
   server = spawn(
-    ZTS_BIN,
+    ZNTC_BIN,
     ['--serve', '--bundle', join(fixtureDir, 'app.ts'), '--sourcemap', '--port', String(TEST_PORT)],
     { stdio: 'pipe' },
   );

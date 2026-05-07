@@ -3291,7 +3291,7 @@ test "TS object type: mix of index signature and plain members" {
 }
 
 // Error recovery — TS 공식 `isUnambiguouslyIndexSignature` 가 parse 는 통과시키는 케이스들.
-// ZTS 는 tsc 수준의 semantic checker 가 없으므로, invalid syntax 가 조용히 통과하지
+// ZNTC 는 tsc 수준의 semantic checker 가 없으므로, invalid syntax 가 조용히 통과하지
 // 않도록 parser 단에서 diagnostic 을 찍고 토큰은 skip 해서 나머지 파싱은 계속한다.
 
 test "TS index signature: optional param `[k?: T]: V` is error" {

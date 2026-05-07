@@ -1,9 +1,9 @@
 ---
 title: Transpile 옵션
-description: ZTS 트랜스파일러의 전체 옵션 레퍼런스 (JSON Schema 기반)
+description: ZNTC 트랜스파일러의 전체 옵션 레퍼런스 (JSON Schema 기반)
 ---
 
-ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 comptime으로 자동 생성된 JSON Schema**를 단일 진실의 소스로 사용합니다. Zig struct를 수정한 뒤 `zig build schema`를 실행하면 이 문서의 기반이 되는 schema가 자동 갱신됩니다.
+ZNTC의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 comptime으로 자동 생성된 JSON Schema**를 단일 진실의 소스로 사용합니다. Zig struct를 수정한 뒤 `zig build schema`를 실행하면 이 문서의 기반이 되는 schema가 자동 갱신됩니다.
 
 ## Schema URL
 
@@ -11,13 +11,13 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 
 ```json
 {
-  "$schema": "https://ohah.github.io/zts/schemas/transpile-options.schema.json",
+  "$schema": "https://ohah.github.io/zntc/schemas/transpile-options.schema.json",
   "target": "es2022",
   "sourcemap": true
 }
 ```
 
-> **주의**: 본 문서가 가리키는 schema는 WASM/NAPI가 Zig 엔진으로 **내부 전달**하는 JSON payload의 스키마입니다. 사용자용 `zts.config.*` 로더와 CLI 머지 계층은 `@zts/core`에서 별도로 제공되며 camelCase 옵션을 받습니다. 이 schema의 enum은 Zig native 표현(`"react_native"`)을 사용하므로 config 파일/API 문법과 1:1로 같지 않을 수 있습니다.
+> **주의**: 본 문서가 가리키는 schema는 WASM/NAPI가 Zig 엔진으로 **내부 전달**하는 JSON payload의 스키마입니다. 사용자용 `zntc.config.*` 로더와 CLI 머지 계층은 `@zntc/core`에서 별도로 제공되며 camelCase 옵션을 받습니다. 이 schema의 enum은 Zig native 표현(`"react_native"`)을 사용하므로 config 파일/API 문법과 1:1로 같지 않을 수 있습니다.
 
 ## 옵션 목록
 
@@ -35,7 +35,7 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 `target`은 문법 다운레벨링을 담당하고, `runtimePolyfills`는 `Promise`, `Map`, `Object.values`, `String.prototype.replaceAll`, `Array.prototype.at`, `structuredClone` 같은 런타임 API를 `core-js` prelude로 보강합니다.
 
 ```ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   entryPoints: ["src/index.ts"],
@@ -120,7 +120,7 @@ runtimePolyfills: {
 | 옵션 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
 | `splitting` | `boolean` | `false` | dynamic import 경계에서 청크 분리 + 공유 모듈 추출 |
-| `manualChunks` | `(id, meta) => string \| null` 또는 `[{name, patterns}]` | — | Rollup 호환 사용자 정의 분할. JS API 는 함수형, `zts.config.json` 은 record form (#2186). [상세 가이드](/zts/guides/manual-chunks/) |
+| `manualChunks` | `(id, meta) => string \| null` 또는 `[{name, patterns}]` | — | Rollup 호환 사용자 정의 분할. JS API 는 함수형, `zntc.config.json` 은 record form (#2186). [상세 가이드](/zntc/guides/manual-chunks/) |
 | `inlineDynamicImports` | `boolean` | `false` | dynamic import target 을 importer chunk 로 흡수 + `__esm` 래핑 (단일 파일 출력). CLI: `--inline-dynamic-imports` (#2185) |
 | `external` | `string[]` | `[]` | 번들에서 제외할 specifier 목록. graph 에는 phantom Module 로 등록 |
 | `preserveModules` | `boolean` | `false` | 번들 대신 원본 디렉토리 구조 유지 (Rollup 호환) |
@@ -177,10 +177,10 @@ ESM 출력에서는 `outputExports` 가 무시됩니다.
 
 ## TS API와의 관계
 
-실제 프로그래머블 사용 시에는 `@zts/core` / `@zts/wasm` 패키지의 `transpile()` 함수에 **camelCase + kebab-case enum**이 허용되는 `TranspileOptions` 인터페이스를 씁니다. 프로젝트 설정은 `zts.config.{ts,mts,cts,mjs,js,cjs,json}` / `zts.workspace.*` 로더가 처리합니다:
+실제 프로그래머블 사용 시에는 `@zntc/core` / `@zntc/wasm` 패키지의 `transpile()` 함수에 **camelCase + kebab-case enum**이 허용되는 `TranspileOptions` 인터페이스를 씁니다. 프로젝트 설정은 `zntc.config.{ts,mts,cts,mjs,js,cjs,json}` / `zntc.workspace.*` 로더가 처리합니다:
 
 ```ts
-import { transpile } from "@zts/wasm";
+import { transpile } from "@zntc/wasm";
 
 transpile(source, {
   target: "es2021",
@@ -199,4 +199,4 @@ DTO 수정 후:
 zig build schema
 ```
 
-`documents/public/schemas/transpile-options.schema.json`이 갱신됩니다. 사이트 배포 시 자동으로 `/zts/schemas/transpile-options.schema.json`로 서빙.
+`documents/public/schemas/transpile-options.schema.json`이 갱신됩니다. 사이트 배포 시 자동으로 `/zntc/schemas/transpile-options.schema.json`로 서빙.

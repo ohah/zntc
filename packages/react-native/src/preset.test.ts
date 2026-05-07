@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { ZtsPlugin } from '@zts/core';
+import type { ZntcPlugin } from '@zntc/core';
 
 import { buildRnBundleOptions, type RnBundleInput } from './preset.ts';
 import { RN_GLOBAL_IDENTIFIERS } from './rn-constants.ts';
@@ -11,7 +11,7 @@ import { RN_GLOBAL_IDENTIFIERS } from './rn-constants.ts';
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-preset-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-preset-'));
 });
 
 afterEach(() => {
@@ -94,7 +94,7 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
       JSON.stringify(join(dir, 'app')),
     );
     expect(opts.define?.['process.env.EXPO_OS']).toBe('"android"');
-    expect(opts.define?.global).toBe('__ZTS_RN_GLOBAL__');
+    expect(opts.define?.global).toBe('__ZNTC_RN_GLOBAL__');
   });
 
   test('define — prod 시 NODE_ENV=production', () => {
@@ -107,10 +107,10 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     const opts = buildRnBundleOptions(baseInput({ dev: true }));
     expect(opts.banner).toContain('__BUNDLE_START_TIME__');
     expect(opts.banner).toContain('__DEV__=true');
-    expect(opts.banner).toContain('__ZTS_RN_GLOBAL__');
-    // __ZTS_RN_BUNDLER__ 는 footer 의 IIFE 안에서 set — banner 에 직접 두면 iOS 26.4+
+    expect(opts.banner).toContain('__ZNTC_RN_GLOBAL__');
+    // __ZNTC_RN_BUNDLER__ 는 footer 의 IIFE 안에서 set — banner 에 직접 두면 iOS 26.4+
     // Hermes 가 spec global lazy registration trigger.
-    expect(opts.banner).not.toContain('globalThis.__ZTS_RN_BUNDLER__');
+    expect(opts.banner).not.toContain('globalThis.__ZNTC_RN_BUNDLER__');
     expect(opts.banner).not.toContain('__BUNGAE_');
   });
 
@@ -122,19 +122,19 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     expect(opts.banner?.endsWith('globalThis.__APP_VERSION__="1.0";')).toBe(true);
   });
 
-  test('dev=true — footer 에 IIFE-wrapped __ZTS_RN_BUNDLER__ flag + DevLoadingView hide 포함', () => {
+  test('dev=true — footer 에 IIFE-wrapped __ZNTC_RN_BUNDLER__ flag + DevLoadingView hide 포함', () => {
     const opts = buildRnBundleOptions(baseInput({ dev: true }));
     // top-level globalThis assignment 회피 — IIFE 안에서 set
-    expect(opts.footer).toContain('__ZTS_RN_BUNDLER__');
-    expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZTS_RN_BUNDLER__/);
+    expect(opts.footer).toContain('__ZNTC_RN_BUNDLER__');
+    expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZNTC_RN_BUNDLER__/);
     expect(opts.footer).toContain('DevLoadingView.hide');
   });
 
-  test('dev=false — footer 에 IIFE-wrapped __ZTS_RN_BUNDLER__ flag (DevLoadingView 없음)', () => {
+  test('dev=false — footer 에 IIFE-wrapped __ZNTC_RN_BUNDLER__ flag (DevLoadingView 없음)', () => {
     const opts = buildRnBundleOptions(baseInput({ dev: false }));
     // prod 도 IIFE flag 는 emit (iOS 26.4 spec global trigger 회피 + identifier 표식 유지)
-    expect(opts.footer).toContain('__ZTS_RN_BUNDLER__');
-    expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZTS_RN_BUNDLER__/);
+    expect(opts.footer).toContain('__ZNTC_RN_BUNDLER__');
+    expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZNTC_RN_BUNDLER__/);
     // dev-only 는 부재
     expect(opts.footer).not.toContain('DevLoadingView.hide');
   });
@@ -184,7 +184,7 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
             global: 'x',
             process: 'y',
             __BUNDLE_START_TIME__: 0,
-            __ZTS_RN_GLOBAL__: 'z',
+            __ZNTC_RN_GLOBAL__: 'z',
             __OK__: 1,
           },
         },
@@ -198,7 +198,7 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
       'global',
       'process',
       '__BUNDLE_START_TIME__',
-      '__ZTS_RN_GLOBAL__',
+      '__ZNTC_RN_GLOBAL__',
     ]) {
       const re = new RegExp(`var ${id}=`, 'g');
       expect((opts.banner?.match(re) ?? []).length).toBe((baseline.match(re) ?? []).length);
@@ -313,10 +313,10 @@ describe('buildRnBundleOptions — plugins (asset/codegen/babel/require-context/
     expect(opts.plugins?.length).toBe(4);
     const names = opts.plugins?.map((p) => p.name);
     expect(names).toEqual([
-      'zts:react-native:runtime',
-      'zts:react-native:codegen-view-config',
-      'zts:react-native:babel-transform',
-      'zts:react-native:require-context',
+      'zntc:react-native:runtime',
+      'zntc:react-native:codegen-view-config',
+      'zntc:react-native:babel-transform',
+      'zntc:react-native:require-context',
     ]);
   });
 
@@ -329,11 +329,11 @@ describe('buildRnBundleOptions — plugins (asset/codegen/babel/require-context/
       }),
     );
     expect(opts.plugins?.length).toBe(5);
-    expect(opts.plugins?.[4]?.name).toBe('zts:react-native:metro-resolve-request');
+    expect(opts.plugins?.[4]?.name).toBe('zntc:react-native:metro-resolve-request');
   });
 
   test('extra.additionalPlugins → plugins 끝에 append', () => {
-    const userPlugin: ZtsPlugin = { name: 'user:custom', setup() {} };
+    const userPlugin: ZntcPlugin = { name: 'user:custom', setup() {} };
     const opts = buildRnBundleOptions(
       baseInput({
         extra: {
@@ -429,7 +429,7 @@ describe('buildRnBundleOptions — override (deep merge)', () => {
   });
 
   test('plugins — override 가 array 라 replace (deep merge 안 함)', () => {
-    const customPlugins: ZtsPlugin[] = [{ name: 'user:only', setup() {} }];
+    const customPlugins: ZntcPlugin[] = [{ name: 'user:only', setup() {} }];
     const opts = buildRnBundleOptions(
       baseInput({
         override: { plugins: customPlugins },

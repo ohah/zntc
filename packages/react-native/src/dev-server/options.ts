@@ -1,4 +1,4 @@
-// preset RnBundleInput 와 mirror. zts 외부 의존성 0.
+// preset RnBundleInput 와 mirror. zntc 외부 의존성 0.
 
 import type { RnBundleInput } from '../preset.ts';
 import type { FrameInfo, Middleware, MiddlewareEnhanceContext } from './types.ts';

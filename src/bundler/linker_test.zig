@@ -1219,7 +1219,7 @@ test "preamble: unresolved import generates require()" {
 }
 
 test "preamble: dev mode — named import uses namespace access pattern" {
-    // dev mode에서 named import는 namespace 접근 패턴: __ns_0_0 = __zts_require("./path")
+    // dev mode에서 named import는 namespace 접근 패턴: __ns_0_0 = __zntc_require("./path")
     // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
     // 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다.
     var tmp = std.testing.tmpDir(.{});
@@ -1238,9 +1238,9 @@ test "preamble: dev mode — named import uses namespace access pattern" {
 
     try std.testing.expect(md.cjs_import_preamble != null);
     const preamble = md.cjs_import_preamble.?;
-    // namespace 할당: __ns_0_0 = __zts_require("./path") (module_index=0, local=0)
+    // namespace 할당: __ns_0_0 = __zntc_require("./path") (module_index=0, local=0)
     try std.testing.expect(std.mem.indexOf(u8, preamble, "__ns_0_0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zntc_require(") != null);
     // 구조분해 패턴 없음 (var { add } 형태가 아님)
     try std.testing.expect(std.mem.indexOf(u8, preamble, "{ ") == null);
     // dev_ns_vars가 호이스팅용으로 설정됨
@@ -1276,7 +1276,7 @@ test "preamble: dev mode — default import uses .default" {
 
     try std.testing.expect(md.cjs_import_preamble != null);
     const preamble = md.cjs_import_preamble.?;
-    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zntc_require(") != null);
     try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") != null);
 }
 
@@ -1297,7 +1297,7 @@ test "preamble: dev mode — namespace import without .default" {
 
     try std.testing.expect(md.cjs_import_preamble != null);
     const preamble = md.cjs_import_preamble.?;
-    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zntc_require(") != null);
     // namespace는 .default 없이 모듈 전체
     try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") == null);
 }

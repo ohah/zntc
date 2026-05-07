@@ -1,6 +1,6 @@
-//! ZTS 디버그 로그 인프라.
+//! ZNTC 디버그 로그 인프라.
 //!
-//! 카테고리별 토글 가능한 진단 로그. `ZTS_DEBUG` env 또는 NAPI option
+//! 카테고리별 토글 가능한 진단 로그. `ZNTC_DEBUG` env 또는 NAPI option
 //! (`BundleOptions.debug`) 으로 활성화. 비활성 카테고리는 `enabled()` 의 분기
 //! 한 번만 통과하므로 hot path 영향 최소.
 //!
@@ -21,7 +21,7 @@
 //! `Category` enum 에 이름 추가 → 끝. wildcard 는 지원하지 않음 (쉼표 구분 명시만).
 //!
 //! ### env 형식
-//! `ZTS_DEBUG=compiled_cache,hmr` — 쉼표 구분. 공백/대소문자 무시.
+//! `ZNTC_DEBUG=compiled_cache,hmr` — 쉼표 구분. 공백/대소문자 무시.
 
 const std = @import("std");
 
@@ -84,10 +84,10 @@ pub fn addCategories(names: []const []const u8) void {
     }
 }
 
-/// 프로세스 시작 시 1회 호출. `ZTS_DEBUG` env 를 읽어 mask 초기화.
+/// 프로세스 시작 시 1회 호출. `ZNTC_DEBUG` env 를 읽어 mask 초기화.
 /// CLI main / NAPI entry 양쪽에서 호출 — 중복 호출 해도 idempotent.
 pub fn initFromEnv(allocator: std.mem.Allocator) void {
-    const value = std.process.getEnvVarOwned(allocator, "ZTS_DEBUG") catch return;
+    const value = std.process.getEnvVarOwned(allocator, "ZNTC_DEBUG") catch return;
     defer allocator.free(value);
     addFromCsv(value);
 }

@@ -15,7 +15,7 @@ describe('dev-server public surface — PR #A scaffold', () => {
   });
 });
 
-describe('@zts/react-native top-level re-export 정합성', () => {
+describe('@zntc/react-native top-level re-export 정합성', () => {
   test('buildRnDevServerOptions 가 패키지 entry 에서 import 가능', async () => {
     const mod = await import('../index.ts');
     expect(typeof mod.buildRnDevServerOptions).toBe('function');

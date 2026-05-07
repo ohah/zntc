@@ -4,7 +4,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const coverageDir = join(tmpdir(), `zts-runtime-polyfill-coverage-${process.pid}`);
+const coverageDir = join(tmpdir(), `zntc-runtime-polyfill-coverage-${process.pid}`);
 rmSync(coverageDir, { recursive: true, force: true });
 
 const test = spawnSync(

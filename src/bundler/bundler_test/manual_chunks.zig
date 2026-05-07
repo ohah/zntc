@@ -168,14 +168,14 @@ test "manualChunks: multiple groups → 서로 다른 청크로 분리" {
 }
 
 // ============================================================
-// rolldown parity 개념 (검증 개념만 이식, ZTS Phase 1 API 기준)
+// rolldown parity 개념 (검증 개념만 이식, ZNTC Phase 1 API 기준)
 // ============================================================
 
 test "manualChunks: transitive dependency follows matched module (rolldown include_dependencies_recursively)" {
     // 출처 개념: rolldown `advanced_chunks/include_dependencies_recursively`.
     // test regex 가 `foo.js` 만 매칭해도 snapshot 에서 `bar.js` (foo 의 dep) 가
     // 같은 vendor 청크에 들어감. 이유: dep 을 다른 청크로 두면 순서 보장/순환 이슈.
-    // ZTS Phase 1 정책도 동일 — 매칭 모듈의 단독 dep 은 같은 청크로.
+    // ZNTC Phase 1 정책도 동일 — 매칭 모듈의 단독 dep 은 같은 청크로.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",

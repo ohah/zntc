@@ -7,7 +7,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { spawn } from 'bun';
 import { join } from 'node:path';
 import { writeFileSync, readFileSync } from 'node:fs';
-import { bundleAndRun, createFixture, runZts, ZTS_BIN } from './helpers';
+import { bundleAndRun, createFixture, runZntc, ZNTC_BIN } from './helpers';
 
 describe('#2209: dynamic import default lazy-wrap', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -60,7 +60,7 @@ describe('#2209: dynamic import default lazy-wrap', () => {
     });
     cleanup = fixture.cleanup;
 
-    const r = await runZts([
+    const r = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '--splitting',
@@ -93,7 +93,7 @@ describe('#2209: dynamic import default lazy-wrap', () => {
     });
     cleanup = fixture.cleanup;
 
-    const r = await runZts([
+    const r = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -116,7 +116,7 @@ describe('#2209: dynamic import default lazy-wrap', () => {
     });
     cleanup = fixture.cleanup;
 
-    const r = await runZts([
+    const r = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '--splitting',

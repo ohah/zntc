@@ -101,7 +101,7 @@ test "virtual ns (#1603): opaque 사용 시 fallback — 전체 유지" {
 // 따라서 body 안의 `e.lifecycle_outside_component` 접근도 dead →
 // `lifecycle_outside_component` export도 제거 가능.
 //
-// 현재 ZTS 동작: namespace member access 분석이 "dead function 안의 access인지"를
+// 현재 ZNTC 동작: namespace member access 분석이 "dead function 안의 access인지"를
 // 구분하지 않아, `lifecycle_outside_component`가 accessed로 마킹 → errors.js의
 // 해당 export 보존. svelte 번들 기준 약 16-20개 에러 함수 불필요 보존.
 // ============================================================

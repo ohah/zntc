@@ -27,7 +27,7 @@ export function makeSyntheticMonorepo(
 
   mkdirSync(join(root, 'apps', 'app', 'src'), { recursive: true });
   mkdirSync(join(root, 'packages'), { recursive: true });
-  mkdirSync(join(root, 'node_modules', '@zts-fixture'), { recursive: true });
+  mkdirSync(join(root, 'node_modules', '@zntc-fixture'), { recursive: true });
 
   writeFileSync(
     join(root, 'package.json'),
@@ -55,7 +55,7 @@ export function makeSyntheticMonorepo(
 
   const packages: string[] = [];
   for (let p = 0; p < options.packageCount; p++) {
-    const pkgName = `@zts-fixture/pkg-${p}`;
+    const pkgName = `@zntc-fixture/pkg-${p}`;
     packages.push(pkgName);
     const pkgDir = join(root, 'packages', `pkg-${p}`);
     const srcDir = join(pkgDir, 'src');
@@ -74,7 +74,7 @@ export function makeSyntheticMonorepo(
       const prevImport = m === 0 ? '' : `import { v${p}_${m - 1} } from "./mod-${m - 1}";\n`;
       const crossImport =
         m === 0 && p > 0
-          ? `import { pkgValue as prevPkgValue } from "@zts-fixture/pkg-${p - 1}";\n`
+          ? `import { pkgValue as prevPkgValue } from "@zntc-fixture/pkg-${p - 1}";\n`
           : '';
       const prevValue = m === 0 ? (p > 0 ? 'prevPkgValue' : '0') : `v${p}_${m - 1}`;
       writeFileSync(
@@ -88,9 +88,9 @@ export function makeSyntheticMonorepo(
     );
     writeFileSync(join(srcDir, 'index.ts'), indexLines.join('\n') + '\n');
 
-    const linkPath = join(root, 'node_modules', '@zts-fixture', `pkg-${p}`);
+    const linkPath = join(root, 'node_modules', '@zntc-fixture', `pkg-${p}`);
     try {
-      symlinkSync(relative(join(root, 'node_modules', '@zts-fixture'), pkgDir), linkPath, 'dir');
+      symlinkSync(relative(join(root, 'node_modules', '@zntc-fixture'), pkgDir), linkPath, 'dir');
     } catch (err) {
       // Windows 는 비-Admin 에서 dir symlink 가 EPERM, 같은 경로 재실행이면 EEXIST.
       // 그 외 에러는 fixture 셋업 자체의 버그라 surface 시킨다.
@@ -115,7 +115,7 @@ export function makeSyntheticMonorepo(
 
   const entryLines: string[] = [];
   for (let p = 0; p < options.packageCount; p++) {
-    entryLines.push(`import { pkgValue as pkg${p} } from "@zts-fixture/pkg-${p}";`);
+    entryLines.push(`import { pkgValue as pkg${p} } from "@zntc-fixture/pkg-${p}";`);
   }
   entryLines.push(
     `console.log(${Array.from({ length: options.packageCount }, (_, p) => `pkg${p}`).join(' + ')});`,

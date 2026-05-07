@@ -1,4 +1,4 @@
-//! ZTS Bundler — Module Graph
+//! ZNTC Bundler — Module Graph
 //!
 //! 진입점에서 시작하여 모든 의존성을 재귀적으로 탐색하고,
 //! DFS 후위 순서로 ESM 실행 순서(exec_index)를 부여한다.
@@ -209,7 +209,7 @@ pub const ModuleGraph = struct {
     /// Runtime helper virtual module plugin (#1961) 의 `SourceOptions`.
     /// graph 가 build() 동안 owner — `Plugin.context` 에서 `*const SourceOptions` 로 참조.
     helper_plugin_opts: runtime_helper_modules.SourceOptions = .{},
-    /// `self.plugins` 앞에 ZTS builtin runtime helper plugin 을 prepend 한 slice.
+    /// `self.plugins` 앞에 ZNTC builtin runtime helper plugin 을 prepend 한 slice.
     /// `graph.allocator` 소유. `ensureBuiltinPlugins` 에서 lazy 초기화 후 PluginRunner.init
     /// 호출 site 들이 이걸 참조.
     plugins_with_helpers: ?[]plugin_mod.Plugin = null,
@@ -283,7 +283,7 @@ pub const ModuleGraph = struct {
         self.runtime_polyfill_roots.deinit(self.allocator);
     }
 
-    /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZTS builtin plugin 들 (runtime
+    /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZNTC builtin plugin 들 (runtime
     /// helper, RN codegen 등) 을 prepend 한 slice 를 graph allocator 로 만든다 (#1961, #2348).
     /// 빌드 옵션 (minify_whitespace 등) 은 이미 graph 에 set 됐다는 전제. `helper_plugin_opts`
     /// 도 같이 hydrate. 단일 thread 진입점 (`build` 등) 에서만 호출.
@@ -435,7 +435,7 @@ pub const ModuleGraph = struct {
     /// Phase 1: 모든 모듈 등록 + 파싱 + import resolve (BFS)
     /// Phase 2: DFS로 exec_index + 순환 감지
     pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
-        // #1961: ZTS builtin runtime helper plugin 을 plugin slice 앞에 prepend.
+        // #1961: ZNTC builtin runtime helper plugin 을 plugin slice 앞에 prepend.
         // 워커 스레드에서 호출하기 전 단일 thread 진입점에서 1회만.
         self.ensureBuiltinPlugins();
 
@@ -1585,7 +1585,7 @@ pub const ModuleGraph = struct {
             // #2466 implicit type-only import — `react-native-screens/types` 처럼 .d.ts 만
             // 있는 subpath 를 `import { X } from '...'` 로 가져와 X 를 type position 에서만
             // 쓰는 패턴. babel typescript preset 은 transform 시 statement 통째 제거하므로
-            // Metro 는 resolve 시도조차 안 함. ZTS 는 parser 가 type annotation 을 폐기
+            // Metro 는 resolve 시도조차 안 함. ZNTC 는 parser 가 type annotation 을 폐기
             // 해서 analyzer 가 type-position reference 를 못 보지만, 그게 오히려 도움 —
             // value position 참조가 0 이면 (truly unused 이거나 type-only) 어느 경우든
             // bundle 에서 빠져도 동작 동등. resolve 실패 + binding 전부 value-use 없음 →
@@ -3719,7 +3719,7 @@ pub const ModuleGraph = struct {
         const css_scanner_mod = @import("css_scanner.zig");
 
         if (std.mem.endsWith(u8, std.fs.path.basename(module.path), ".module.css")) {
-            self.addDiag(.no_loader, .@"error", module.path, Span.EMPTY, .parse, "CSS Modules (.module.css) are not supported by the native CSS pipeline yet", "Use plain CSS, or transform CSS Modules through a plugin before ZTS bundles the app");
+            self.addDiag(.no_loader, .@"error", module.path, Span.EMPTY, .parse, "CSS Modules (.module.css) are not supported by the native CSS pipeline yet", "Use plain CSS, or transform CSS Modules through a plugin before ZNTC bundles the app");
             module.state = .ready;
             return;
         }
@@ -4441,7 +4441,7 @@ fn expandGlobRecords(allocator: std.mem.Allocator, records: []types.ImportRecord
 }
 
 /// require.context(...) 레코드의 매칭 파일 목록을 host plugin (resolveContext) 으로 채운다.
-/// (#1579 Phase 2). ZTS 자체 regex executor 가 없어서 host runtime 의 RegExp 위임 (#1771).
+/// (#1579 Phase 2). ZNTC 자체 regex executor 가 없어서 host runtime 의 RegExp 위임 (#1771).
 ///
 /// 처리 순서:
 ///   1. invalid record (`context_invalid_reason != null`) → require_context_invalid error.
@@ -4502,7 +4502,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
             if (matches) |m| {
                 record.context_matches = m;
                 // 매치별 abs path resolve 결과를 record.context_resolved_paths 에 1:1 저장.
-                // codegen 이 webpackContext IIFE 의 module wrapper 호출 (`__zts_modules[<abs>]`) 에 사용.
+                // codegen 이 webpackContext IIFE 의 module wrapper 호출 (`__zntc_modules[<abs>]`) 에 사용.
                 // null 슬롯 = resolve 실패 — codegen 이 throw stub 으로 emit.
                 const source_dir = std.fs.path.dirname(module_path) orelse ".";
                 const resolved_paths_opt: ?[]?[]const u8 = arena_alloc.alloc(?[]const u8, m.len) catch null;
@@ -4543,7 +4543,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
             module_path,
             record.span,
             .resolve,
-            "require.context requires a host plugin to match files (ZTS regex executor not yet implemented — see #1771)",
+            "require.context requires a host plugin to match files (ZNTC regex executor not yet implemented — see #1771)",
             null,
         );
         record.context_matches = &.{};

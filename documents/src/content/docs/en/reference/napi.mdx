@@ -1,6 +1,6 @@
 ---
 title: NAPI / JavaScript API
-description: Reference for @zts/core's transpile / build / watch / vitePlugin and other primary entry points
+description: Reference for @zntc/core's transpile / build / watch / vitePlugin and other primary entry points
 ---
 
 {/* Options below are cherry-picked — source of truth is reference/options. Update both when adding options. */}
@@ -8,13 +8,13 @@ description: Reference for @zts/core's transpile / build / watch / vitePlugin an
 import Mermaid from "@components/Mermaid";
 import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
 
-`@zts/core` is the NAPI binding that runs the ZTS engine in-process from Node.js / Bun. The same options as the CLI are available programmatically.
+`@zntc/core` is the NAPI binding that runs the ZNTC engine in-process from Node.js / Bun. The same options as the CLI are available programmatically.
 
 > **TypeDoc-generated reference**: detailed type signatures for every export live under the **API Reference** sidebar group. This page is a user-friendly summary.
 
 ## Architecture
 
-`@zts/core` is structured as 3 layers: **JS surface (user API + plugin dispatcher)** + **NAPI bridge** + **Zig native engine**.
+`@zntc/core` is structured as 3 layers: **JS surface (user API + plugin dispatcher)** + **NAPI bridge** + **Zig native engine**.
 
 <Mermaid client:visible chart={NAPI_ARCHITECTURE_CHART} />
 
@@ -22,7 +22,7 @@ import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
 |---|---|
 | **JS** (`packages/core/index.ts`) | User-facing API surface, option normalization, plugin lifecycle dispatch |
 | **Plugin Dispatcher** | hook registration; per-module call into JS callbacks via NAPI threadsafe-fn |
-| **NAPI bridge** (`packages/core/src/napi_entry.zig` → `zts.node`) | JS↔Zig boundary. JSON payload conversion, plugin dispatch |
+| **NAPI bridge** (`packages/core/src/napi_entry.zig` → `zntc.node`) | JS↔Zig boundary. JSON payload conversion, plugin dispatch |
 | **Zig engine** (`src/`) | Scanner → Parser → Semantic → Transformer → Codegen for transpile + Bundler → Linker → Tree-shaker → Emitter for bundle |
 
 Plugin hooks like `onResolve` / `onLoad` are awoken via NAPI threadsafe-fn whenever the native bundler needs them — the Zig worker waits synchronously for the JS callback's response (including Promise resolution).
@@ -30,11 +30,11 @@ Plugin hooks like `onResolve` / `onLoad` are awoken via NAPI threadsafe-fn whene
 ## Install + initialize
 
 ```bash
-bun add @zts/core
+bun add @zntc/core
 ```
 
 ```ts
-import { init, close, transpile, build, watch } from "@zts/core";
+import { init, close, transpile, build, watch } from "@zntc/core";
 
 init();           // load NAPI addon (call once)
 // ... use ...
@@ -46,7 +46,7 @@ close();          // cleanup on shutdown
 Single-file transpile. TypeScript / JSX / Flow / decorator transforms only — no bundling.
 
 ```ts
-import { transpile } from "@zts/core";
+import { transpile } from "@zntc/core";
 
 const r = transpile("const x: number = 42;", {
   target: "es2020",
@@ -58,7 +58,7 @@ console.log(r.code);    // "const x = 42;"
 console.log(r.map);     // sourcemap JSON
 ```
 
-**Key options** (full list: [Transpile Options](/zts/en/reference/options/)):
+**Key options** (full list: [Transpile Options](/zntc/en/reference/options/)):
 - `target` — `es5` / `es2015`–`es2025` / `esnext`
 - `jsx` — `classic` / `automatic` / `automatic-dev`
 - `flow` — Flow type stripping
@@ -74,7 +74,7 @@ console.log(r.map);     // sourcemap JSON
 Lex a single file into a flat token array — no parser, no AST.
 
 ```ts
-import { tokenize } from "@zts/core";
+import { tokenize } from "@zntc/core";
 
 const tokens = tokenize("const x = 1;", { filename: "input.ts" });
 console.log(tokens[0]); // { kind, text, start, end, line, column, hasNewlineBefore }
@@ -90,7 +90,7 @@ that repeatedly transpile many files — saves 5–10 fs syscalls per file. Bypa
 `tsconfigRaw` is explicitly set.
 
 ```ts
-import { TsconfigCache, transpile } from "@zts/core";
+import { TsconfigCache, transpile } from "@zntc/core";
 
 using cache = new TsconfigCache();             // Symbol.dispose auto-clears
 for (const file of files) {
@@ -105,7 +105,7 @@ cache.clear();                                  // explicit clear (instance reus
 Enable profile categories and read the report. NAPI counterpart to CLI `--profile` / `--profile-level`.
 
 ```ts
-import { configureProfile, profileReport, transpile } from "@zts/core";
+import { configureProfile, profileReport, transpile } from "@zntc/core";
 
 configureProfile(["parse", "transform"], "summary");
 transpile(source, {});
@@ -119,7 +119,7 @@ console.log(profileReport("table"));            // "table" | "tree" | "json" | "
 Bundling. Options compatible with esbuild / Rollup / rolldown.
 
 ```ts
-import { build } from "@zts/core";
+import { build } from "@zntc/core";
 
 const result = await build({
   entryPoints: ["src/index.ts"],
@@ -164,7 +164,7 @@ the host — use `build()`).
 - `logLevel` (`silent | error | warning | info | debug | verbose`) — does NOT throw; check `result.errors` length to detect failure
 - `logOverride` / `logLimit`
 - `browserslist` — `string | string[]`. Takes precedence over `target`
-- `server` — `DevServerOptions` (defaults for `zts dev` / `--serve`. CLI flags override)
+- `server` — `DevServerOptions` (defaults for `zntc dev` / `--serve`. CLI flags override)
 
 ### `alias` forms
 
@@ -208,7 +208,7 @@ and `browserslist` are ignored.
 - `codegenTransform` — replace `codegenNativeComponent` calls with inline view configs. Auto-enabled on RN
 - `configurableExports` — add `configurable: true` on `Object.defineProperty` (RN/Hermes compatibility)
 - `reactRefresh` — enable React Fast Refresh
-- `devMode` — wrap modules with `__zts_register()` factory + inject HMR runtime
+- `devMode` — wrap modules with `__zntc_register()` factory + inject HMR runtime
 - `rootDir` — base path for dev-mode module IDs
 - `collectModuleCodes` — collect per-module code in dev mode (for HMR rebuild)
 - `moduleSpecifierMap` — `import { x } from 'lodash'` → `import x from 'lodash/x'` cherry-pick rewrite
@@ -257,7 +257,7 @@ Incremental watch-mode build. Auto rebuild on file change.
 every rebuild in this order: `buildStart → buildEnd → onReady/onRebuild → closeBundle`.
 
 ```ts
-import { watch } from "@zts/core";
+import { watch } from "@zntc/core";
 
 const handle = watch({
   entryPoints: ["src/index.ts"],
@@ -284,7 +284,7 @@ handle.stop();
 
 Default `phaseDurations` keys: `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`.
 
-Sub-phase keys (when `profile: ["..."]` or `ZTS_PROFILE` env is active): `scan` / `parse` / `resolve` /
+Sub-phase keys (when `profile: ["..."]` or `ZNTC_PROFILE` env is active): `scan` / `parse` / `resolve` /
 `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` /
 `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` /
 `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
@@ -309,10 +309,10 @@ HMR latency. Returns `null` when sourcemaps are disabled, before the first build
 
 ## `vitePlugin(rollupPlugin)`
 
-Adapter that converts a Rollup plugin into a ZTS `ZtsPlugin`. Vite plugins are Rollup-compatible, so they also work directly.
+Adapter that converts a Rollup plugin into a ZNTC `ZntcPlugin`. Vite plugins are Rollup-compatible, so they also work directly.
 
 ```ts
-import { build, vitePlugin } from "@zts/core";
+import { build, vitePlugin } from "@zntc/core";
 import someRollupPlugin from "rollup-plugin-something";
 
 await build({
@@ -324,14 +324,14 @@ await build({
 Forwarded hooks: `resolveId` / `load` / `transform` / `renderChunk` / `generateBundle` / `buildStart` / `buildEnd` / `closeBundle` (#2156).
 Lifecycle hooks are also forwarded in `watch()` for the initial build and every rebuild.
 
-## Authoring a ZTS plugin
+## Authoring a ZNTC plugin
 
-Rollup-style hook interface. See the [Plugins guide](/zts/en/guides/plugins/) for details.
+Rollup-style hook interface. See the [Plugins guide](/zntc/en/guides/plugins/) for details.
 
 ```ts
-import type { ZtsPlugin } from "@zts/core";
+import type { ZntcPlugin } from "@zntc/core";
 
-const myPlugin: ZtsPlugin = {
+const myPlugin: ZntcPlugin = {
   name: "my-plugin",
   setup(build) {
     build.onResolve({ filter: /^@my\// }, (args) => ({
@@ -378,13 +378,13 @@ const myPlugin: ZtsPlugin = {
 ## App build (Vite-style HTML entry)
 
 ```ts
-import { buildAppSync, prepareAppDevSync } from "@zts/core";
+import { buildAppSync, prepareAppDevSync } from "@zntc/core";
 
 // Production: scan modules / CSS / assets from an HTML entry → outdir
 const r = buildAppSync({ root: ".", outdir: "dist", entryHtml: "index.html" });
 
 // Development: temporary prepare for the dev server (mode = "development")
-const dev = prepareAppDevSync({ root: ".", outdir: ".zts-dev" });
+const dev = prepareAppDevSync({ root: ".", outdir: ".zntc-dev" });
 ```
 
 Additional `AppBuildOptions` / `AppDevPrepareOptions` fields: `publicDir` / `base` / `mode` / `envDir` /
@@ -395,7 +395,7 @@ Additional `AppBuildOptions` / `AppDevPrepareOptions` fields: `publicDir` / `bas
 ### Unified config loader
 
 ```ts
-import { loadConfig, defineConfig } from "@zts/core";
+import { loadConfig, defineConfig } from "@zntc/core";
 
 const env = { mode: "production", command: "build" };
 const config = await loadConfig({ cwd: process.cwd(), env });
@@ -408,7 +408,7 @@ Additional exports: `findConfigPath`, `findModeConfigPath`, `loadModuleDefault`,
 ### Workspace
 
 ```ts
-import { defineWorkspace, loadWorkspace } from "@zts/core";
+import { defineWorkspace, loadWorkspace } from "@zntc/core";
 
 export default defineWorkspace([
   "packages/*",
@@ -433,11 +433,11 @@ Additional exports: `loadWorkspace`, `filterWorkspaces`, `findWorkspacePath`,
 
 ## `defineConfig(config)`
 
-Type-safe helper for `zts.config.ts`. No runtime behavior — identity function only.
+Type-safe helper for `zntc.config.ts`. No runtime behavior — identity function only.
 
 ```ts
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   bundle: {
@@ -451,11 +451,11 @@ export default defineConfig({
 ## `benchmark(options)`
 
 Run a phase N times and return statistics (mean / median / p95 / p99 / stddev / min / max). NAPI
-counterpart to `zts bench --phase=...` — same engine. See [Benchmarks](/zts/en/reference/benchmarks/)
+counterpart to `zntc bench --phase=...` — same engine. See [Benchmarks](/zntc/en/reference/benchmarks/)
 for results.
 
 ```ts
-import { benchmark } from "@zts/core";
+import { benchmark } from "@zntc/core";
 
 const r = benchmark({
   file: "./src/App.tsx",
@@ -478,7 +478,7 @@ console.log(r.phases.parse.mean_ms);
 ## See also
 
 - Detailed signatures of every export: **API Reference** (sidebar) (TypeDoc auto-generated)
-- [CLI](/zts/en/reference/cli/) — same options on the command line
-- [Transpile Options](/zts/en/reference/options/) — full options table from JSON Schema
-- [Plugins guide](/zts/en/guides/plugins/) — how to author plugin hooks
-- [Vite plugin](/zts/en/guides/dev-server/) — `vite-plugin-zts`
+- [CLI](/zntc/en/reference/cli/) — same options on the command line
+- [Transpile Options](/zntc/en/reference/options/) — full options table from JSON Schema
+- [Plugins guide](/zntc/en/guides/plugins/) — how to author plugin hooks
+- [Vite plugin](/zntc/en/guides/dev-server/) — `vite-plugin-zntc`

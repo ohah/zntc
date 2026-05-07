@@ -1,18 +1,18 @@
 ---
 title: 번들링
-description: ZTS의 번들링 기능을 자세히 알아봅니다.
+description: ZNTC의 번들링 기능을 자세히 알아봅니다.
 ---
 
 ## 기본 번들링
 
 ```bash
-zts --bundle entry.ts -o bundle.js
+zntc --bundle entry.ts -o bundle.js
 ```
 
 ## 출력 디렉토리
 
 ```bash
-zts --bundle entry.ts --outdir dist/
+zntc --bundle entry.ts --outdir dist/
 ```
 
 ## 코드 스플리팅
@@ -20,7 +20,7 @@ zts --bundle entry.ts --outdir dist/
 동적 import와 공유 모듈을 별도 청크로 분리합니다.
 
 ```bash
-zts --bundle entry.ts --splitting --outdir dist/
+zntc --bundle entry.ts --splitting --outdir dist/
 ```
 
 ## Preserve Modules
@@ -28,16 +28,16 @@ zts --bundle entry.ts --splitting --outdir dist/
 라이브러리 빌드 시 원본 디렉토리 구조를 유지합니다 (Rollup/Rolldown 호환).
 
 ```bash
-zts --bundle src/index.ts --preserve-modules --outdir dist/
-zts --bundle src/index.ts --preserve-modules --preserve-modules-root=src --outdir dist/
+zntc --bundle src/index.ts --preserve-modules --outdir dist/
+zntc --bundle src/index.ts --preserve-modules --preserve-modules-root=src --outdir dist/
 ```
 
 ## 플랫폼
 
 ```bash
-zts --bundle entry.ts --platform=browser   # 기본, IIFE 래핑
-zts --bundle entry.ts --platform=node      # Node 내장 모듈 external
-zts --bundle entry.ts --platform=react-native  # RN 프리셋
+zntc --bundle entry.ts --platform=browser   # 기본, IIFE 래핑
+zntc --bundle entry.ts --platform=node      # Node 내장 모듈 external
+zntc --bundle entry.ts --platform=react-native  # RN 프리셋
 ```
 
 ### browser (기본)
@@ -59,13 +59,13 @@ zts --bundle entry.ts --platform=react-native  # RN 프리셋
 ## External
 
 ```bash
-zts --bundle entry.ts --external react --external react-dom
+zntc --bundle entry.ts --external react --external react-dom
 ```
 
 ## Alias
 
 ```bash
-zts --bundle entry.ts --alias:react=preact/compat
+zntc --bundle entry.ts --alias:react=preact/compat
 ```
 
 config 에서는 두 가지 형태를 지원합니다 (esbuild / Vite 호환).
@@ -125,7 +125,7 @@ defineConfig({
 ## Loader
 
 ```bash
-zts --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
+zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 ```
 
 지원 로더: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary`, `copy`, `empty`
@@ -133,7 +133,7 @@ zts --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 ## 파일명 패턴
 
 ```bash
-zts --bundle entry.ts --outdir dist/ \
+zntc --bundle entry.ts --outdir dist/ \
   --entry-names="[name]-[hash]" \
   --chunk-names="chunks/[name]-[hash]" \
   --asset-names="assets/[name]-[hash]"
@@ -144,7 +144,7 @@ zts --bundle entry.ts --outdir dist/ \
 `banner` / `footer` 는 format wrapper **밖**의 최상단/최하단에 텍스트를 삽입합니다 (라이선스 헤더, shebang 등). `intro` / `outro` 는 wrapper **안쪽**, 번들 코드 앞/뒤에 삽입합니다 (Rollup `output.intro`/`output.outro` 호환). IIFE/UMD 같은 wrapper format 에서 차이가 명확합니다.
 
 ```bash
-zts --bundle entry.ts -o bundle.js \
+zntc --bundle entry.ts -o bundle.js \
   --banner:js="/* MIT License */" \
   --footer:js="/* End of bundle */" \
   --intro="'use strict';" \
@@ -163,28 +163,28 @@ defineConfig({
 ## Metafile
 
 ```bash
-zts --bundle entry.ts -o bundle.js --metafile=meta.json
-zts --bundle entry.ts -o bundle.js --analyze
+zntc --bundle entry.ts -o bundle.js --metafile=meta.json
+zntc --bundle entry.ts -o bundle.js --analyze
 ```
 
-`meta.json`은 [Metafile 분석](/zts/analyze/) 페이지에 업로드해 output 크기, input 크기, import graph를 확인할 수 있습니다.
+`meta.json`은 [Metafile 분석](/zntc/analyze/) 페이지에 업로드해 output 크기, input 크기, import graph를 확인할 수 있습니다.
 
 ## Minify
 
 ```bash
-zts --bundle entry.ts -o bundle.js --minify  # 세 가지 모두
+zntc --bundle entry.ts -o bundle.js --minify  # 세 가지 모두
 
 # 세분화 (esbuild 호환) — 개별 토글
-zts --bundle entry.ts -o bundle.js --minify-whitespace
-zts --bundle entry.ts -o bundle.js --minify-syntax
-zts --bundle entry.ts -o bundle.js --minify-identifiers
+zntc --bundle entry.ts -o bundle.js --minify-whitespace
+zntc --bundle entry.ts -o bundle.js --minify-syntax
+zntc --bundle entry.ts -o bundle.js --minify-identifiers
 ```
 
 ## 코드 제거
 
 ```bash
-zts --bundle entry.ts --drop=console --drop=debugger
-zts --bundle entry.ts --drop-labels=DEV,TEST
+zntc --bundle entry.ts --drop=console --drop=debugger
+zntc --bundle entry.ts --drop-labels=DEV,TEST
 ```
 
 `--drop-labels`는 지정한 labeled statement 전체를 제거한다. 예를 들어
@@ -194,12 +194,12 @@ zts --bundle entry.ts --drop-labels=DEV,TEST
 
 ```bash
 # ES 버전 (es2015~esnext)
-zts --bundle entry.ts -o bundle.js --target=es2020
+zntc --bundle entry.ts -o bundle.js --target=es2020
 
 # 엔진 타겟 — feature-level 다운레벨링
-zts --bundle entry.ts -o bundle.js --target=chrome80,safari14
-zts --bundle entry.ts -o bundle.js --target=node18
-zts --bundle entry.ts -o bundle.js --target=hermes0.70
+zntc --bundle entry.ts -o bundle.js --target=chrome80,safari14
+zntc --bundle entry.ts -o bundle.js --target=node18
+zntc --bundle entry.ts -o bundle.js --target=hermes0.70
 ```
 
 ### `browserslist`
@@ -223,7 +223,7 @@ CSS 후처리(Lightning CSS) 와도 매트릭스를 공유합니다.
 ```bash
 bun add core-js core-js-compat
 
-zts --bundle entry.ts -o bundle.js \
+zntc --bundle entry.ts -o bundle.js \
   --target=es5 \
   --runtime-polyfills=auto \
   --runtime-target="ios_saf 12" \
@@ -244,7 +244,7 @@ zts --bundle entry.ts -o bundle.js \
 Config/API에서는 object 형태로 `include`/`exclude`를 세밀하게 지정할 수 있습니다.
 
 ```ts
-import { build } from "@zts/core";
+import { build } from "@zntc/core";
 
 await build({
   entryPoints: ["src/index.ts"],
@@ -284,7 +284,7 @@ defineConfig({
 디버깅이 필요하면 runtime polyfill debug category와 graph profile을 함께 켭니다.
 
 ```bash
-ZTS_DEBUG=runtime_polyfills zts --bundle entry.ts \
+ZNTC_DEBUG=runtime_polyfills zntc --bundle entry.ts \
   --runtime-polyfills=auto \
   --runtime-target="safari 12" \
   --profile=graph \
@@ -295,11 +295,11 @@ ZTS_DEBUG=runtime_polyfills zts --bundle entry.ts \
 ## 출력 포맷
 
 ```bash
-zts --bundle entry.ts --format=esm    # ESM (기본)
-zts --bundle entry.ts --format=cjs    # CommonJS
-zts --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
-zts --bundle entry.ts --format=umd --global-name=MyLib   # UMD
-zts --bundle entry.ts --format=amd                       # AMD
+zntc --bundle entry.ts --format=esm    # ESM (기본)
+zntc --bundle entry.ts --format=cjs    # CommonJS
+zntc --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
+zntc --bundle entry.ts --format=umd --global-name=MyLib   # UMD
+zntc --bundle entry.ts --format=amd                       # AMD
 ```
 
 ### IIFE/UMD external → 전역 매핑 (`globals`)
@@ -307,7 +307,7 @@ zts --bundle entry.ts --format=amd                       # AMD
 Rollup `output.globals` 호환. IIFE/UMD 출력에서 `external` 로 빠진 specifier 를 런타임 전역 변수로 치환합니다.
 
 ```bash
-zts --bundle entry.ts -o bundle.js --format=umd --global-name=MyLib \
+zntc --bundle entry.ts -o bundle.js --format=umd --global-name=MyLib \
   --external react --external react-dom \
   --global:react=React --global:react-dom=ReactDOM
 ```
@@ -324,6 +324,6 @@ defineConfig({
 ## Watch 모드
 
 ```bash
-zts --bundle entry.ts -o bundle.js --watch
-zts --bundle entry.ts -o bundle.js --watch-json  # NDJSON 이벤트 출력
+zntc --bundle entry.ts -o bundle.js --watch
+zntc --bundle entry.ts -o bundle.js --watch-json  # NDJSON 이벤트 출력
 ```

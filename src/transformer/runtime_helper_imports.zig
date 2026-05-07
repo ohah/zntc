@@ -1,7 +1,7 @@
 //! Runtime helper virtual module 의 named import statement 를 transformer finalize 단계에 emit (#1961).
 //!
 //! Transformer 가 visit 도중 set 한 `RuntimeHelpers` 비트맵을 보고, 각 비트가 가리키는
-//! helper base 들을 묶어 `import { __generator } from "\x00zts:runtime/generator"`
+//! helper base 들을 묶어 `import { __generator } from "\x00zntc:runtime/generator"`
 //! 형태의 import_declaration 노드를 program body 앞에 추가한다. graph parse 단계가
 //! 이 노드를 발견해 helper module 을 chunk 분배 대상으로 등록한다.
 //!

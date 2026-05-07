@@ -10,7 +10,7 @@ let dir: string;
 let entryPath: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-serve-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-serve-'));
   mkdirSync(join(dir, 'src'), { recursive: true });
   entryPath = join(dir, 'src/index.ts');
   writeFileSync(entryPath, 'console.log("hi");\n');

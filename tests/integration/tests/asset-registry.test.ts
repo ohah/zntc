@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, createRNFixture, runZts } from './helpers';
+import { createFixture, createRNFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -31,7 +31,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode, stderr } = await runZts([
+      const { exitCode, stderr } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -66,7 +66,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -92,7 +92,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -124,7 +124,7 @@ describe('--asset-registry', () => {
     const outDir = join(dir, 'dist');
     const outFile = join(outDir, 'bundle.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -155,7 +155,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -179,7 +179,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -203,7 +203,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -230,7 +230,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -258,7 +258,7 @@ describe('--asset-registry', () => {
 
     const outFile = join(dir, 'out.js');
     try {
-      const { stderr } = await runZts([
+      const { stderr } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',

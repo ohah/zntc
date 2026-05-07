@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * kangax compat-table → ZTS 호환성 데이터 추출기 (초안).
+ * kangax compat-table → ZNTC 호환성 데이터 추출기 (초안).
  *
  * 목적:
- *   - references/compat-table/의 kangax 데이터에서 ZTS가 관리하는 feature set을
+ *   - references/compat-table/의 kangax 데이터에서 ZNTC가 관리하는 feature set을
  *     읽어, src/transformer/compat.zig 엔트리를 재생성하기 위한 raw 데이터를
  *     얻는다.
  *   - 엔진 × feature × 최소 지원 버전 매핑을 JSON으로 덤프.
@@ -21,7 +21,7 @@
  *
  * 제한:
  *   - 현재는 async/await, generator, hashbang 등 대표 샘플만 매핑.
- *   - 전체 feature 매핑은 ZTS Feature enum과 kangax feature name 사이의
+ *   - 전체 feature 매핑은 ZNTC Feature enum과 kangax feature name 사이의
  *     매핑 테이블을 추가로 채워야 한다.
  */
 
@@ -54,7 +54,7 @@ type Dataset = { tests: Test[] };
 
 const ALL: Dataset[] = [es6, es2016plus, esnext];
 
-// ZTS의 Feature enum (src/transformer/compat.zig) → kangax 테스트 이름 매핑.
+// ZNTC의 Feature enum (src/transformer/compat.zig) → kangax 테스트 이름 매핑.
 // 핵심 샘플만 포함. 전체 커버를 위해선 이 맵을 확장.
 const FEATURE_MAP: Record<string, string[]> = {
   async_await: ["async functions"],
@@ -76,7 +76,7 @@ const FEATURE_MAP: Record<string, string[]> = {
   class_private_method: ["private class methods"],
   class_private_field: ["instance class fields"],
   hashbang: ["Hashbang Grammar"],
-  // ZTS compat.zig에 있으나 이전 커밋에서 누락된 feature (FEATURE_MAP 커버리지 확장).
+  // ZNTC compat.zig에 있으나 이전 커밋에서 누락된 feature (FEATURE_MAP 커버리지 확장).
   block_scoping: ["const", "let"],
   new_target: ["new.target"],
   object_extensions: ["object literal extensions"],
@@ -154,7 +154,7 @@ function findMinSupportedVersion(test: Test, engine: Engine): number[] | null {
   return null;
 }
 
-/** ZTS feature key에 해당하는 kangax test 찾기. */
+/** ZNTC feature key에 해당하는 kangax test 찾기. */
 function findTests(names: string[]): Test[] {
   const out: Test[] = [];
   for (const ds of ALL) {

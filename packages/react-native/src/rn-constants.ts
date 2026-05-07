@@ -33,7 +33,7 @@ export function resolveRnPolyfills(projectRoot: string): string[] {
       }
     }
   }
-  console.warn('[zts] Could not resolve RN polyfills, skipping');
+  console.warn('[zntc] Could not resolve RN polyfills, skipping');
   return [];
 }
 

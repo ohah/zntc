@@ -1,7 +1,7 @@
-//! ZTS 에러 코드 레지스트리
+//! ZNTC 에러 코드 레지스트리
 //!
 //! 모든 진단 메시지에 고유 코드를 부여한다.
-//! 코드 형식: "ZTS" + 4자리 숫자 (예: ZTS0001)
+//! 코드 형식: "ZNTC" + 4자리 숫자 (예: ZNTC0001)
 //!
 //! 번호 체계:
 //!   0001-0099  타겟/호환성
@@ -21,7 +21,7 @@
 //!   1400-1499  codegen: RN view config 빌드
 
 /// 문서 사이트 에러 레퍼런스 base URL. Code.docsUrl이 여기에 코드를 붙여 전체 URL 생성.
-const docs_url_base = "https://ohah.github.io/zts/reference/errors/";
+const docs_url_base = "https://ohah.github.io/zntc/reference/errors/";
 
 /// 에러 코드. 각 항목은 고유한 번호를 가진다.
 pub const Code = enum(u16) {
@@ -233,20 +233,20 @@ pub const Code = enum(u16) {
     /// 인헤리턴스 / intersection chain 깊이 한계 초과 (cycle 또는 이상 구조).
     codegen_inheritance_too_deep = 1404,
 
-    /// 에러 코드를 "ZTS0001" 형식의 문자열로 반환한다.
+    /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
         return switch (self) {
-            inline else => |v| comptime std.fmt.comptimePrint("ZTS{d:0>4}", .{@intFromEnum(v)}),
+            inline else => |v| comptime std.fmt.comptimePrint("ZNTC{d:0>4}", .{@intFromEnum(v)}),
         };
     }
 
     /// 이 코드에 해당하는 문서 URL. comptime const 반환, 할당 없음.
-    /// 문서 사이트 라우트는 소문자 `zts` 폴더를 사용 (사이트 빌더가 소문자 slug).
+    /// 문서 사이트 라우트는 소문자 `zntc` 폴더를 사용 (사이트 빌더가 소문자 slug).
     pub fn docsUrl(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
         return switch (self) {
-            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "zts{d:0>4}/", .{@intFromEnum(v)}),
+            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "zntc{d:0>4}/", .{@intFromEnum(v)}),
         };
     }
 
@@ -458,20 +458,20 @@ const std = @import("std");
 
 // ─── 테스트 ───
 
-test "Code.format: ZTS0001" {
-    try std.testing.expectEqualStrings("ZTS0001", Code.top_level_await_target.format());
+test "Code.format: ZNTC0001" {
+    try std.testing.expectEqualStrings("ZNTC0001", Code.top_level_await_target.format());
 }
 
-test "Code.format: ZTS0100" {
-    try std.testing.expectEqualStrings("ZTS0100", Code.unresolved_import.format());
+test "Code.format: ZNTC0100" {
+    try std.testing.expectEqualStrings("ZNTC0100", Code.unresolved_import.format());
 }
 
-test "Code.format: ZTS0300" {
-    try std.testing.expectEqualStrings("ZTS0300", Code.import_in_script.format());
+test "Code.format: ZNTC0300" {
+    try std.testing.expectEqualStrings("ZNTC0300", Code.import_in_script.format());
 }
 
-test "Code.format: ZTS1000" {
-    try std.testing.expectEqualStrings("ZTS1000", Code.identifier_redeclared.format());
+test "Code.format: ZNTC1000" {
+    try std.testing.expectEqualStrings("ZNTC1000", Code.identifier_redeclared.format());
 }
 
 test "Code.message: returns non-empty for all codes" {

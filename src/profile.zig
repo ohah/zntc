@@ -1,4 +1,4 @@
-//! ZTS 프로파일링 인프라.
+//! ZNTC 프로파일링 인프라.
 //!
 //! 파이프라인 단계별 (scan / parse / semantic / transform / codegen / ...)
 //! 타이밍을 카테고리 토글 방식으로 수집한다. 비활성 카테고리는 `enabled()` 의
@@ -17,7 +17,7 @@
 //! ```
 //!
 //! ### 활성화 (진입점)
-//! - env: `ZTS_PROFILE=all` / `ZTS_PROFILE=parse,transform`
+//! - env: `ZNTC_PROFILE=all` / `ZNTC_PROFILE=parse,transform`
 //! - CLI (PR 2): `--profile=all --profile-level=detailed`
 //! - NAPI (PR 2): `BundleOptions.profile = [...]`
 //!
@@ -416,15 +416,15 @@ pub fn addCategories(names: []const []const u8) void {
     }
 }
 
-/// `ZTS_PROFILE` / `ZTS_PROFILE_LEVEL` env 를 읽어 활성화. 미설정 시 no-op.
+/// `ZNTC_PROFILE` / `ZNTC_PROFILE_LEVEL` env 를 읽어 활성화. 미설정 시 no-op.
 /// CLI main / NAPI entry 양쪽에서 호출 — 중복 호출 해도 idempotent.
 pub fn initFromEnv(allocator: std.mem.Allocator) void {
-    if (std.process.getEnvVarOwned(allocator, "ZTS_PROFILE")) |v| {
+    if (std.process.getEnvVarOwned(allocator, "ZNTC_PROFILE")) |v| {
         defer allocator.free(v);
         addFromCsv(v);
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "ZTS_PROFILE_LEVEL")) |v| {
+    if (std.process.getEnvVarOwned(allocator, "ZNTC_PROFILE_LEVEL")) |v| {
         defer allocator.free(v);
         if (Level.fromString(v)) |lv| setLevel(lv);
     } else |_| {}
@@ -593,7 +593,7 @@ fn isChildOf(cat: Category, parent: Category) bool {
 }
 
 fn reportTable(writer: anytype) !void {
-    try writer.writeAll("=== ZTS Profile ===\n");
+    try writer.writeAll("=== ZNTC Profile ===\n");
     try writer.writeAll("Phase                Total       Self        %      Count\n");
     try writer.writeAll("--------------------|-----------|-----------|-------|------\n");
 
@@ -628,7 +628,7 @@ fn reportTable(writer: anytype) !void {
 }
 
 fn reportTree(writer: anytype) !void {
-    try writer.writeAll("=== ZTS Profile (detailed) ===\n");
+    try writer.writeAll("=== ZNTC Profile (detailed) ===\n");
 
     const total = totalAllNs();
     if (total == 0) {
@@ -1009,7 +1009,7 @@ test "report: table format 기본 구조" {
     try report(fbs.writer(), .table);
     const output = fbs.getWritten();
 
-    try testing.expect(std.mem.indexOf(u8, output, "=== ZTS Profile ===") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "=== ZNTC Profile ===") != null);
     try testing.expect(std.mem.indexOf(u8, output, "parse") != null);
     try testing.expect(std.mem.indexOf(u8, output, "total") != null);
 }

@@ -15,7 +15,7 @@ const fallbackRequire = createRequire(import.meta.url);
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-dev-controller-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-dev-controller-'));
 });
 
 afterEach(() => {
@@ -62,9 +62,9 @@ describe('prepareAppCssPipelineRoot', () => {
     );
     expect(result).not.toBeNull();
     if (!result) return;
-    // tempRoot 안에 .module.zts.css 가 emit, 절대 path 로 반환.
-    expect(result.generatedCssAbsPaths.some((p) => p.endsWith('.module.zts.css'))).toBe(true);
-    expect(result.tempRoot).toContain('zts-postcss-dev-');
+    // tempRoot 안에 .module.zntc.css 가 emit, 절대 path 로 반환.
+    expect(result.generatedCssAbsPaths.some((p) => p.endsWith('.module.zntc.css'))).toBe(true);
+    expect(result.tempRoot).toContain('zntc-postcss-dev-');
     cleanupPostcssTempRoot(result.tempRoot);
   });
 
@@ -106,13 +106,13 @@ describe('createAppDevController', () => {
 
   test('base / outdir / root 가 정확히 노출', () => {
     const c = createAppDevController(
-      { logLevel: 'silent', base: '/app', outdir: join(dir, '.zts-dev') },
+      { logLevel: 'silent', base: '/app', outdir: join(dir, '.zntc-dev') },
       dir,
       { mode: 'development' },
       deps(),
     );
     expect(c.root).toBe(dir);
-    expect(c.outdir).toBe(join(dir, '.zts-dev'));
+    expect(c.outdir).toBe(join(dir, '.zntc-dev'));
     expect(c.base).toBe('/app/');
   });
 

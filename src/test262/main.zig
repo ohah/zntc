@@ -6,8 +6,8 @@
 //!   zig build test262-run -- expressions  # 특정 카테고리만
 
 const std = @import("std");
-const zts = @import("zts_lib");
-const runner = zts.test262.runner;
+const zntc = @import("zntc_lib");
+const runner = zntc.test262.runner;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

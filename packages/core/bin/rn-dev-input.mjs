@@ -1,16 +1,16 @@
-// `runRnDev` 의 config + opts 추출 helper. zts.mjs 에서 import + 사용.
-// 별도 module 로 분리해 단위 테스트가 zts.mjs 의 entry main() 트리거 없이
+// `runRnDev` 의 config + opts 추출 helper. zntc.mjs 에서 import + 사용.
+// 별도 module 로 분리해 단위 테스트가 zntc.mjs 의 entry main() 트리거 없이
 // helper 만 import 가능.
 
 import { resolve } from 'node:path';
 
 /**
- * config 의 미지원 필드는 stderr 에 한 번 경고 — silent drop 방지. zts 의
+ * config 의 미지원 필드는 stderr 에 한 번 경고 — silent drop 방지. zntc 의
  * RN dev server 가 아직 wire-up 안 한 영역 (graph-bundler 전용 필드 + dummy
  * placeholder) 을 사용자가 적었을 때 "왜 동작 안 함?" 디버깅 비용 절감.
  */
 const UNSUPPORTED_FIELDS = [
-  // graph-bundler (Metro 호환) 전용 — zts NAPI build 는 미수용.
+  // graph-bundler (Metro 호환) 전용 — zntc NAPI build 는 미수용.
   ['transformer', 'inlineRequires'],
   ['transformer', 'minifier'],
   ['serializer', 'bundleType'],
@@ -29,7 +29,7 @@ function warnUnsupported(config) {
   for (const [section, key] of UNSUPPORTED_FIELDS) {
     const sectionVal = config?.[section];
     if (sectionVal && Object.prototype.hasOwnProperty.call(sectionVal, key)) {
-      process.stderr.write(`[zts:rn-dev] config.${section}.${key} (zts 미지원, ignore)\n`);
+      process.stderr.write(`[zntc:rn-dev] config.${section}.${key} (zntc 미지원, ignore)\n`);
     }
   }
 }
@@ -37,7 +37,7 @@ function warnUnsupported(config) {
 /**
  * Metro-shape config (`resolver` / `serializer` / `transformer` / `server` /
  * `watchFolders` / `sourcemapSourcesRoot`) → `RnBundleInput.extra` 평탄화. dev
- * server (rn-dev-input) 와 prod bundle (zts.mjs runRnBundle) 양쪽이 공유.
+ * server (rn-dev-input) 와 prod bundle (zntc.mjs runRnBundle) 양쪽이 공유.
  *
  * `opts.rnWatchFolders` / `opts.rnSourceExts` 만 CLI flag 가 config 위에 우선 —
  * 나머지 필드는 config-only.
@@ -104,7 +104,7 @@ export function buildRnDevServerInput(opts, config) {
       // dev server 는 default __DEV__=true / sourcemap=true (bundle 의 default false 와 의도적 비대칭).
       dev: opts.devMode !== false && cfg.dev !== false,
       // dev server 는 항상 sourcemap=true — RN LogBox / DevTools 의 source link
-      // 동작에 필수. zts.mjs 의 `opts.sourcemap` default 가 false 라 `!== false`
+      // 동작에 필수. zntc.mjs 의 `opts.sourcemap` default 가 false 라 `!== false`
       // 비교는 무용 (사용자 명시 disable 구분 불가). dev server 컨텍스트에선
       // sourcemap 필수 default.
       sourcemap: true,

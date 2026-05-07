@@ -1,7 +1,7 @@
 {
-  "name": "@zts/react-native",
+  "name": "@zntc/react-native",
   "version": "0.1.0",
-  "description": "ZTS React Native platform — Metro HMR adapter + RN preset (buildRnBundleOptions) + plugin factories + RN runtime",
+  "description": "ZNTC React Native platform — Metro HMR adapter + RN preset (buildRnBundleOptions) + plugin factories + RN runtime",
   "license": "MIT",
   "files": [
     "dist/",
@@ -16,18 +16,18 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./runtime/zts-hmr-client.js": "./runtime/zts-hmr-client.js"
+    "./runtime/zntc-hmr-client.js": "./runtime/zntc-hmr-client.js"
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external @babel/core --external @react-native/babel-plugin-codegen --external @react-native/babel-preset --external metro-resolver --external react-native --external @react-native/js-polyfills",
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zntc/core --external @babel/core --external @react-native/babel-plugin-codegen --external @react-native/babel-preset --external metro-resolver --external react-native --external @react-native/js-polyfills",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test --timeout 10000"
   },
   "dependencies": {
     "@react-native-community/cli-server-api": "^15.0.0",
-    "@zts/core": "workspace:*",
-    "@zts/server": "workspace:*",
+    "@zntc/core": "workspace:*",
+    "@zntc/server": "workspace:*",
     "jsc-safe-url": "^0.2.4",
     "source-map": "^0.7.4"
   },

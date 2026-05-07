@@ -26,7 +26,7 @@ describe('handleIndexPage', () => {
     handleIndexPage({} as never, res as never, 8081);
     expect(statusCode).toBe(200);
     expect(headers!['Content-Type']).toBe('text/html; charset=utf-8');
-    expect(body).toContain('ZTS RN Dev Server');
+    expect(body).toContain('ZNTC RN Dev Server');
     expect(body).toContain('/index.bundle?platform=ios&dev=true');
     expect(body).toContain('/index.bundle?platform=android&dev=true');
     expect(body).toContain('/index.bundle.map?platform=ios');

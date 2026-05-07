@@ -2,14 +2,14 @@
 // 송출로 연결 + WS path 노출. graph 변경은 reload, module 변경은 update
 // sequence (start → update → done), build error 는 error 메시지.
 //
-// per-module sourceMappingURL 주석 — eval 된 update.code 끝에 라우트 (`/__zts_hmr_map/`)
+// per-module sourceMappingURL 주석 — eval 된 update.code 끝에 라우트 (`/__zntc_hmr_map/`)
 // 를 가리키는 주석을 붙여 DevTools 가 lazy fetch 가능 (관심사 분리: emitter
 // 가 sourceURL 주입, dev server 가 sourceMappingURL).
 
 import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 
-import type { WatchRebuildEvent } from '@zts/core';
+import type { WatchRebuildEvent } from '@zntc/core';
 
 import { createMetroHmrAdapter, type MetroHmrAdapter } from '../metro-hmr-adapter.ts';
 import { colors, formatLogBadge, logError, logInfo } from './logger.ts';
@@ -35,7 +35,7 @@ function annotateUpdates(
   platform: 'ios' | 'android',
 ): Array<{ id: string; code: string }> {
   return updates.map((u) => {
-    const sourceMappingURL = `/__zts_hmr_map/${encodeURIComponent(u.id)}?platform=${platform}`;
+    const sourceMappingURL = `/__zntc_hmr_map/${encodeURIComponent(u.id)}?platform=${platform}`;
     return { ...u, code: `${u.code}\n//# sourceMappingURL=${sourceMappingURL}\n` };
   });
 }

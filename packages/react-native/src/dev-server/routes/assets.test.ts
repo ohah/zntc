@@ -9,7 +9,7 @@ let dir: string;
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-assets-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-assets-'));
   // 기본 asset 파일들
   writeFileSync(join(dir, 'icon.png'), PNG_BYTES);
   mkdirSync(join(dir, 'img/sub'), { recursive: true });

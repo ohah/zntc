@@ -148,7 +148,7 @@ describe('manualChunks NAPI bridge', () => {
 
   test('Non-string 반환 (undefined, 0, false) 는 null 동일 취급', async () => {
     // Rollup 스펙 — null/undefined/void 모두 auto 분배. 숫자/boolean 은 spec 외.
-    // ZTS 구현은 string 만 accept, 나머지는 null 취급.
+    // ZNTC 구현은 string 만 accept, 나머지는 null 취급.
     const fixture = await createFixture({
       'entry.ts': `
         import { a } from "./mod-a";
@@ -888,7 +888,7 @@ describe('manualChunks NAPI bridge', () => {
   });
 
   test('meta.getModuleInfo: hasModuleSideEffects — npm 패키지의 sideEffects=true 가 auto-purity 무력화', async () => {
-    // ZTS 의 `findPackageDirPath` 는 `node_modules/` 안 경로만 인식 (라이브러리 메타).
+    // ZNTC 의 `findPackageDirPath` 는 `node_modules/` 안 경로만 인식 (라이브러리 메타).
     // 그래서 npm 패키지 fixture 로 user_defined 동작 검증.
     const fixture = await createFixture({
       'node_modules/sideful-lib/package.json':
@@ -900,7 +900,7 @@ describe('manualChunks NAPI bridge', () => {
 
     const seen = await collectMeta(fixture.dir, ['entry.ts'], (info) => info.hasModuleSideEffects);
     const libEntry = [...seen.entries()].find(([k]) => k.endsWith('sideful-lib/index.js'));
-    // 이 패턴은 실제 ZTS 동작 — node_modules 안의 sideEffects=true 가 lock.
+    // 이 패턴은 실제 ZNTC 동작 — node_modules 안의 sideEffects=true 가 lock.
     if (libEntry) expect(libEntry[1]).toBe(true);
   });
 
@@ -923,7 +923,7 @@ describe('manualChunks NAPI bridge', () => {
     if (cssEntry) expect(cssEntry[1]).toBe(true);
   });
 
-  test('meta.getModuleInfo: hasModuleSideEffects — 사용자 앱 코드는 package.json 영향 안 받음 (ZTS 정책)', async () => {
+  test('meta.getModuleInfo: hasModuleSideEffects — 사용자 앱 코드는 package.json 영향 안 받음 (ZNTC 정책)', async () => {
     // 프로젝트 루트의 package.json 은 node_modules 밖 모듈에 적용 안 됨.
     // 사용자 코드는 tree-shaker auto-purity 만 영향.
     // 이게 미래에 바뀌어도 lock — 변경하면 테스트로 신호.

@@ -1,4 +1,4 @@
-//! tsconfig.json compilerOptions → ZTS 트랜스파일/번들 옵션 병합 헬퍼.
+//! tsconfig.json compilerOptions → ZNTC 트랜스파일/번들 옵션 병합 헬퍼.
 //!
 //! `transpile.zig optionsFromJson`, `packages/core/src/napi_entry.zig parseBuildOptions`,
 //! `main.zig` CLI 3 경로에 산재하던 머지 규칙을 한 곳에 모은다.
@@ -51,7 +51,7 @@ pub const MergedFlags = struct {
     jsx_import_source: []const u8,
 };
 
-/// tsconfig 의 "jsx" 문자열 값을 ZTS 의 `JsxRuntime` 으로 매핑.
+/// tsconfig 의 "jsx" 문자열 값을 ZNTC 의 `JsxRuntime` 으로 매핑.
 /// "preserve" 와 인식 못 하는 값은 null — caller 가 default(`.classic`) 를 적용.
 fn mapTsConfigJsxToRuntime(tsconfig_jsx: ?[]const u8) ?codegen.JsxRuntime {
     const s = tsconfig_jsx orelse return null;

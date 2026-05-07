@@ -1,4 +1,4 @@
-//! ZTS Transformer
+//! ZNTC Transformer
 //!
 //! 원본 AST를 순회하면서 새 AST를 빌드한다 (D041).
 //! TypeScript 전용 노드를 제거하고, TS 구문을 JS로 변환한다.

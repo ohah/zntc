@@ -2,7 +2,7 @@
 /**
  * Minify size benchmark — #1608 검증 전용
  *
- * ZTS/esbuild/rolldown 모두 `--minify`로 실행해 bundle 사이즈와
+ * ZNTC/esbuild/rolldown 모두 `--minify`로 실행해 bundle 사이즈와
  * mangled name 길이 분포를 비교한다. scope_hoisting 이후 per-scope renamer
  * 도입 전/후 baseline 재사용.
  *
@@ -16,7 +16,7 @@ import { join, resolve } from 'node:path';
 import { COMMON_FIXTURES, type CommonFixture } from './_fixtures';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const ESBUILD_BIN = existsSync(join(__dirname, 'node_modules/.bin/esbuild'))
   ? join(__dirname, 'node_modules/.bin/esbuild')
   : join(ROOT, 'node_modules/.bin/esbuild');
@@ -46,7 +46,7 @@ interface ToolResult {
 
 interface BenchResult {
   name: string;
-  zts: ToolResult;
+  zntc: ToolResult;
   esbuild: ToolResult | null;
   rolldown: ToolResult | null;
 }
@@ -163,7 +163,7 @@ function runTool(
 }
 
 function benchFixture(f: Fixture): BenchResult {
-  const dir = mkdtempSync(join(tmpdir(), `zts-minify-${f.name}-`));
+  const dir = mkdtempSync(join(tmpdir(), `zntc-minify-${f.name}-`));
   // entry는 benchmark dir 안에 생성 — 여기가 npm 패키지를 resolve할 수 있는 유일한 경로
   // (tmpdir에서는 `import 'effect'` 같은 node_modules 참조가 실패). smoke.ts도 같은 이유로 동일 패턴.
   const entryFile = join(__dirname, `_minify_entry_${f.name}.ts`);
@@ -172,23 +172,23 @@ function benchFixture(f: Fixture): BenchResult {
   const format = f.format ?? 'esm';
 
   try {
-    const ztsOut = join(dir, 'zts.js');
+    const zntcOut = join(dir, 'zntc.js');
     const esOut = join(dir, 'es.js');
     const rdOut = join(dir, 'rd.js');
 
-    const zts = runTool(
-      'zts',
-      ZTS_BIN,
+    const zntc = runTool(
+      'zntc',
+      ZNTC_BIN,
       [
         '--bundle',
         entryFile,
         '-o',
-        ztsOut,
+        zntcOut,
         '--minify',
         `--platform=${platform}`,
         ...(format === 'cjs' ? ['--format=cjs'] : []),
       ],
-      ztsOut,
+      zntcOut,
     );
 
     const esb = existsSync(ESBUILD_BIN)
@@ -219,7 +219,7 @@ function benchFixture(f: Fixture): BenchResult {
         )
       : null;
 
-    return { name: f.name, zts, esbuild: esb, rolldown: rd };
+    return { name: f.name, zntc, esbuild: esb, rolldown: rd };
   } finally {
     rmSync(dir, { recursive: true, force: true });
     try {
@@ -255,7 +255,7 @@ function formatResult(res: BenchResult): string {
 
   return [
     header,
-    row('zts', res.zts),
+    row('zntc', res.zntc),
     row('esbuild', res.esbuild),
     row('rolldown', res.rolldown),
   ].join('\n');
@@ -266,8 +266,8 @@ function main() {
   console.log('`--minify` 기준 bundle 사이즈 + distinct identifier 길이 분포.');
   console.log('문자열 토큰 노이즈는 세 도구 모두에 동일하게 적용되므로 비교는 유효.\n');
 
-  if (!existsSync(ZTS_BIN)) {
-    console.error(`ZTS 바이너리 없음: ${ZTS_BIN}\n  먼저 \`zig build\`를 실행하세요.`);
+  if (!existsSync(ZNTC_BIN)) {
+    console.error(`ZNTC 바이너리 없음: ${ZNTC_BIN}\n  먼저 \`zig build\`를 실행하세요.`);
     process.exit(1);
   }
 

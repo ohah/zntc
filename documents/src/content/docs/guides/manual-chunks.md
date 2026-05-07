@@ -3,12 +3,12 @@ title: manualChunks
 description: 사용자 정의 청크 분할 — Rollup `manualChunks(id, meta)` 호환 API.
 ---
 
-ZTS 는 Rollup 의 `manualChunks(id, meta)` 시그니처를 호환합니다. 벤더/공통 코드 분리, content 기반 분류, 그래프 토폴로지 기반 분류 등 프로덕션 청크 최적화에 자주 쓰는 패턴을 모두 지원합니다.
+ZNTC 는 Rollup 의 `manualChunks(id, meta)` 시그니처를 호환합니다. 벤더/공통 코드 분리, content 기반 분류, 그래프 토폴로지 기반 분류 등 프로덕션 청크 최적화에 자주 쓰는 패턴을 모두 지원합니다.
 
 ## 기본 사용
 
 ```ts
-import { build } from "@zts/core";
+import { build } from "@zntc/core";
 
 await build({
   entryPoints: ["./src/main.ts"],
@@ -164,11 +164,11 @@ manualChunks: (id, meta) => {
 
 ## CLI
 
-`manualChunks` 는 함수라 CLI 직접 노출 X — JS API (`@zts/core`) 또는 `zts.config.{js,ts}` 사용.
+`manualChunks` 는 함수라 CLI 직접 노출 X — JS API (`@zntc/core`) 또는 `zntc.config.{js,ts}` 사용.
 
 ```ts
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   entryPoints: ["./src/main.ts"],

@@ -1,4 +1,4 @@
-//! ZTS Bundler — Tree Shaker (Phase B2, 1단계)
+//! ZNTC Bundler — Tree Shaker (Phase B2, 1단계)
 //!
 //! 미사용 export 제거: 모듈 그래프에서 실제로 import되는 export만 추적하고,
 //! 사용되는 export가 없고 side_effects도 없는 모듈을 번들에서 제거한다.

@@ -1,4 +1,4 @@
-//! ZTS Bundler — Compiled output cache
+//! ZNTC Bundler — Compiled output cache
 //!
 //! 모듈 단위 Transformer→Codegen 결과 (`CompiledModule`) 를 input hash 로 키잉하여
 //! HMR/watch rebuild 시 변경되지 않은 모듈의 emit 을 스킵한다.
@@ -13,7 +13,7 @@
 //! 현재 구성은 동일 binary 프로세스 내에서만 정확하다. 디스크 캐시/크로스프로세스
 //! 공유로 확장할 때는 아래 차원이 누락되면 stale output 이 발생한다:
 //!
-//! 1. `compiler_build_hash` — ZTS binary rebuild 시 semantic/transformer 로직이
+//! 1. `compiler_build_hash` — ZNTC binary rebuild 시 semantic/transformer 로직이
 //!    바뀌어 동일 source 여도 emit 결과 다름. in-memory 에서는 restart 로 대체
 //!    되지만 disk cache 에서는 필수. Bazel/Turborepo 의 `tool_version` 과 동일
 //!    개념 (build.zig 에서 git SHA / timestamp 주입).
@@ -376,7 +376,7 @@ pub const CompiledOutputCache = struct {
         try self.entries.put(owned_key, .{ .input_hash = input_hash, .compiled = owned });
     }
 
-    /// 디버그 로그에 hit/miss stats 출력 + 카운터 리셋. `ZTS_DEBUG=compiled_cache`
+    /// 디버그 로그에 hit/miss stats 출력 + 카운터 리셋. `ZNTC_DEBUG=compiled_cache`
     /// 비활성 시 takeStats 호출도 스킵 — counter 부작용 없음.
     /// `prefix` 는 caller 가 추가할 선행 키 (예: "first=true "). 빈 문자열이면 prefix 없음.
     pub fn logStats(self: *CompiledOutputCache, prefix: []const u8) void {

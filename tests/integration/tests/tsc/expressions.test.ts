@@ -8183,7 +8183,7 @@ f((a: any) => "")`,
       [],
     );
   });
-  // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
+  // ZNTC 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
   test('generatedContextualTyping', async () => {
     await expectPass(
       `
@@ -10596,7 +10596,7 @@ foo((y: string) => {
       [],
     );
   });
-  // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
+  // ZNTC 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
   test('contextuallyTypedIife', async () => {
     await expectPass(
       `// arrow
@@ -10634,7 +10634,7 @@ let eleven = (o => o.a(11))({ a: function(n) { return n; } });
       [],
     );
   });
-  // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
+  // ZNTC 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
   test('contextuallyTypedIifeStrict', async () => {
     await expectPass(
       `// arrow

@@ -1,4 +1,4 @@
-//! ZTS Parser
+//! ZNTC Parser
 //!
 //! 토큰 스트림을 AST로 변환한다.
 //! 2패스: parse → visit (D040).

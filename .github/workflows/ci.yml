@@ -143,13 +143,13 @@ jobs:
         run: zig build napi
 
       # JS + dts 둘 다 emit. dts 는 web/server 의 `tsc --emitDeclarationOnly`
-      # 가 `import { prepareAppDevSync } from "@zts/core"` 의 declaration 을
+      # 가 `import { prepareAppDevSync } from "@zntc/core"` 의 declaration 을
       # resolve 할 때 필요 (#2539 PR #6d 후 web 이 core 를 typed import).
       - name: Build JS wrapper + dts
         run: cd packages/core && bun run build:js && bun run build:dts
 
       - name: Copy .node to package
-        run: cp zig-out/lib/zts.node packages/core/zts.node 2>/dev/null || true
+        run: cp zig-out/lib/zntc.node packages/core/zntc.node 2>/dev/null || true
 
       - name: Run NAPI tests (Bun)
         run: cd packages/core && bun test index.test.ts
@@ -157,15 +157,15 @@ jobs:
       - name: Run NAPI tests (Node.js)
         run: node --test packages/core/napi.test.mjs
 
-      # CLI 테스트의 dev/preview/build app 시나리오는 spawn 한 zts.mjs 가
-      # `import("@zts/web")` 을 호출 → packages/web/dist/index.js 필요.
+      # CLI 테스트의 dev/preview/build app 시나리오는 spawn 한 zntc.mjs 가
+      # `import("@zntc/web")` 을 호출 → packages/web/dist/index.js 필요.
       # `bun run test` 가 packages/core/package.json 의 pretest hook 을 트리거 →
-      # @zts/server + @zts/web 빌드 → bin/zts.test.ts 실행 (arg passthrough).
-      # zts 자체 self-build (dogfooding) 도 같이 검증 (#2539).
-      - name: Run CLI tests (Bun, with @zts/server + @zts/web self-build via pretest)
-        run: cd packages/core && bun run test bin/zts.test.ts
+      # @zntc/server + @zntc/web 빌드 → bin/zntc.test.ts 실행 (arg passthrough).
+      # zntc 자체 self-build (dogfooding) 도 같이 검증 (#2539).
+      - name: Run CLI tests (Bun, with @zntc/server + @zntc/web self-build via pretest)
+        run: cd packages/core && bun run test bin/zntc.test.ts
 
-      # ZTS 코어의 ES5 다운레벨링 / chunk split runtime helper / external 처리
+      # ZNTC 코어의 ES5 다운레벨링 / chunk split runtime helper / external 처리
       # 회귀 검증 (wasm 발견 버그가 NAPI 에서도 동일 발생 확인됨). known bugs
       # 는 #1960~#1962 추적 — fix 전까지 continue-on-error 로 정보용. fix 후
       # strict 전환.

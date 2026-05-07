@@ -1,22 +1,22 @@
 ---
 title: Tree-shaking
-description: ZTS bundler tree-shaking strategy — module-level fixpoint analysis, statement-level reachability BFS, and type-only import elision.
+description: ZNTC bundler tree-shaking strategy — module-level fixpoint analysis, statement-level reachability BFS, and type-only import elision.
 ---
 
-The ZTS bundler runs tree-shaking in two passes. **Module-level** narrows the set of reachable modules and exports through fixpoint iteration. **Statement-level** then decides which top-level statements survive inside each module via symbol-graph BFS.
+The ZNTC bundler runs tree-shaking in two passes. **Module-level** narrows the set of reachable modules and exports through fixpoint iteration. **Statement-level** then decides which top-level statements survive inside each module via symbol-graph BFS.
 
-The goal is Rollup/Rolldown accuracy with esbuild-class speed. ZTS reuses the index-based AST and the semantic analyzer's scope/symbol tables to get both.
+The goal is Rollup/Rolldown accuracy with esbuild-class speed. ZNTC reuses the index-based AST and the semantic analyzer's scope/symbol tables to get both.
 
 ## At a glance
 
 ```bash
 # Tree-shaking is on by default in bundle mode — no flag needed.
-zts --bundle src/index.ts -o dist/bundle.js
+zntc --bundle src/index.ts -o dist/bundle.js
 
 # package.json sideEffects is honored automatically.
 # @__PURE__ / @__NO_SIDE_EFFECTS__ comments are recognized.
 # Add user-supplied pure hints:
-zts --bundle src/index.ts -o dist/bundle.js --pure=myUtil --pure=invariant
+zntc --bundle src/index.ts -o dist/bundle.js --pure=myUtil --pure=invariant
 ```
 
 ## Stage 1 — Module level
@@ -58,7 +58,7 @@ A module can be dropped entirely only if all of these hold:
 }
 ```
 
-When a library declares `sideEffects: false`, ZTS is free to drop unused imports. Glob patterns are also supported:
+When a library declares `sideEffects: false`, ZNTC is free to drop unused imports. Glob patterns are also supported:
 
 ```json
 {
@@ -72,7 +72,7 @@ The `sideEffects` policy is applied **monotonically** — once a file is marked 
 
 ### Auto-purity inference
 
-Even without `sideEffects` in `package.json`, ZTS infers `side_effects = false` for non-entry modules whose top-level is entirely pure.
+Even without `sideEffects` in `package.json`, ZNTC infers `side_effects = false` for non-entry modules whose top-level is entirely pure.
 
 ### Performance milestones
 
@@ -85,7 +85,7 @@ Even without `sideEffects` in `package.json`, ZTS infers `side_effects = false` 
 
 ## Stage 2 — Statement level
 
-Once a module is kept, ZTS decides which top-level statements are actually reachable. The semantic analyzer's symbol_id mapping is reused to build a per-statement symbol graph.
+Once a module is kept, ZNTC decides which top-level statements are actually reachable. The semantic analyzer's symbol_id mapping is reused to build a per-statement symbol graph.
 
 ### StmtInfo
 
@@ -100,7 +100,7 @@ pub const StmtInfo = struct {
 };
 ```
 
-From this, ZTS builds reverse indices: `symbol_to_stmt`, `sym_to_referencing_stmts`, `sym_to_writer_stmts`.
+From this, ZNTC builds reverse indices: `symbol_to_stmt`, `sym_to_referencing_stmts`, `sym_to_writer_stmts`.
 
 ### Reachability BFS
 
@@ -168,7 +168,7 @@ The following are auto-pure when bound to an unresolved global (no user redefini
 Mark functions as pure via CLI or build options:
 
 ```bash
-zts --bundle entry.ts --pure=invariant --pure=warning
+zntc --bundle entry.ts --pure=invariant --pure=warning
 ```
 
 ```ts
@@ -186,7 +186,7 @@ import type { User } from './types';        // fully removed
 import { type Config, helper } from './x';  // type Config removed, helper kept based on usage
 ```
 
-ZTS performs elision via two paths:
+ZNTC performs elision via two paths:
 
 - **Bundler path**: `binding_scanner.zig` checks the `SPEC_FLAG_TYPE_ONLY` flag and skips creating a BindingRecord altogether.
 - **Transpile fast path** (BindingLite): without running full semantic analysis, BindingLite tracks value-use of named imports and removes only the truly-unused ones.
@@ -197,12 +197,12 @@ ZTS performs elision via two paths:
 
 ### `verbatimModuleSyntax`
 
-When `tsconfig.json` has `"verbatimModuleSyntax": true`, ZTS removes only `import type` and leaves regular imports intact (matching TypeScript's standard behavior).
+When `tsconfig.json` has `"verbatimModuleSyntax": true`, ZNTC removes only `import type` and leaves regular imports intact (matching TypeScript's standard behavior).
 
 ## Limitations
 
 :::caution[CJS-wrapped asset modules]
-CJS modules wrapped via `require()` keep their `require_X()` calls, which count as side effects — even unused ones survive. esbuild's `NoSideEffects_PureData` marking is not yet applied in ZTS.
+CJS modules wrapped via `require()` keep their `require_X()` calls, which count as side effects — even unused ones survive. esbuild's `NoSideEffects_PureData` marking is not yet applied in ZNTC.
 
 JSON modules sidestep this by being converted to an ESM AST — they support per-named-export tree-shaking.
 :::
@@ -217,6 +217,6 @@ Deep DCE for runtime-time side effects (getters, Proxy, global mutation) is not 
 
 ## Further reading
 
-- Contributor implementation guide: [`docs/BUNDLER.md` § Tree-shaking 구현](https://github.com/ohah/zts/blob/main/docs/BUNDLER.md#tree-shaking-%EA%B5%AC%ED%98%84-%EB%AA%A8%EB%93%88-%EC%88%98%EC%A4%80--statement-%EC%88%98%EC%A4%80) — data structures, file:line citations, algorithm pseudocode
-- Architecture overview: [`docs/ARCHITECTURE.md` § Tree-shaking Design](https://github.com/ohah/zts/blob/main/docs/ARCHITECTURE.md)
+- Contributor implementation guide: [`docs/BUNDLER.md` § Tree-shaking 구현](https://github.com/ohah/zntc/blob/main/docs/BUNDLER.md#tree-shaking-%EA%B5%AC%ED%98%84-%EB%AA%A8%EB%93%88-%EC%88%98%EC%A4%80--statement-%EC%88%98%EC%A4%80) — data structures, file:line citations, algorithm pseudocode
+- Architecture overview: [`docs/ARCHITECTURE.md` § Tree-shaking Design](https://github.com/ohah/zntc/blob/main/docs/ARCHITECTURE.md)
 - Related PRs: #458, #460 (stage 1), #1558 (statement-level), #1791 (type-only elision), #1928 (re-export optimization)

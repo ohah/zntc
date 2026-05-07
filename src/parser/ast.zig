@@ -1,4 +1,4 @@
-//! ZTS AST Node Definitions
+//! ZNTC AST Node Definitions
 //!
 //! ECMAScript / TypeScript / JSX AST 노드를 정의한다.
 //! oxc/SWC를 참고하여 ~200개 세분화 노드 (D037).
@@ -878,7 +878,7 @@ pub const Ast = struct {
     /// ctx 를 저장하지 않음 — Ast 가 옮겨져도 stale 문제 없음).
     string_interns: StringInternMap,
 
-    /// addString intern map 의 hit/miss 통계. `ZTS_DEBUG=string_intern` 시 dump.
+    /// addString intern map 의 hit/miss 통계. `ZNTC_DEBUG=string_intern` 시 dump.
     /// transpile 경로에서 Ast 가 arena 안에 살아 `Ast.deinit` 이 호출되지 않으므로
     /// `transpile.zig` 가 arena 해제 직전 `dumpStringInternStatsIfEnabled` 를 직접 호출.
     /// 4 × u32 = 16B 추가, hot path 비용은 increment 4 회뿐.

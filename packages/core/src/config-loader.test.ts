@@ -18,7 +18,7 @@ describe('loadConfig', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-config-loader-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-config-loader-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -80,7 +80,7 @@ describe('loadConfig', () => {
   test('defineConfig 헬퍼로 정의된 객체 로드', async () => {
     const path = join(dir, 'define.config.ts');
     // packages/core/index.ts 를 file:// URL 로 참조 — 임시 디렉토리에 작성된
-    // .ts config 가 ZTS transpile 후 동적 import 될 때 절대 경로로 해석.
+    // .ts config 가 ZNTC transpile 후 동적 import 될 때 절대 경로로 해석.
     const indexUrl = new URL('../index.ts', import.meta.url).href;
     writeFileSync(
       path,
@@ -146,7 +146,7 @@ describe('findConfigPath', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-find-config-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-find-config-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -163,14 +163,14 @@ describe('findConfigPath', () => {
 
   test('.ts 단독', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.ts'), `export default {};`);
-    expect(findConfigPath(dir)).toBe(join(dir, 'zts.config.ts'));
+    writeFileSync(join(dir, 'zntc.config.ts'), `export default {};`);
+    expect(findConfigPath(dir)).toBe(join(dir, 'zntc.config.ts'));
   });
 
   test('.json 단독', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.json'), `{}`);
-    expect(findConfigPath(dir)).toBe(join(dir, 'zts.config.json'));
+    writeFileSync(join(dir, 'zntc.config.json'), `{}`);
+    expect(findConfigPath(dir)).toBe(join(dir, 'zntc.config.json'));
   });
 
   test('우선순위: .ts > .mts > .cts > .mjs > .js > .cjs > .json', () => {
@@ -178,44 +178,44 @@ describe('findConfigPath', () => {
     reset();
     // 모든 확장자 동시 존재 → .ts 선택
     for (const ext of CONFIG_EXT_PRIORITY) {
-      writeFileSync(join(dir, `zts.config${ext}`), ext === '.json' ? '{}' : `export default {};`);
+      writeFileSync(join(dir, `zntc.config${ext}`), ext === '.json' ? '{}' : `export default {};`);
     }
-    expect(findConfigPath(dir)).toBe(join(dir, 'zts.config.ts'));
+    expect(findConfigPath(dir)).toBe(join(dir, 'zntc.config.ts'));
   });
 
   test('점진적 fallback: .ts 만 제거하면 .mts', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.mts'), `export default {};`);
-    writeFileSync(join(dir, 'zts.config.json'), `{}`);
-    expect(findConfigPath(dir)).toBe(join(dir, 'zts.config.mts'));
+    writeFileSync(join(dir, 'zntc.config.mts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc.config.json'), `{}`);
+    expect(findConfigPath(dir)).toBe(join(dir, 'zntc.config.mts'));
   });
 
   test('점진적 fallback: .mjs 단독이면 .mjs', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.mjs'), `export default {};`);
-    expect(findConfigPath(dir)).toBe(join(dir, 'zts.config.mjs'));
+    writeFileSync(join(dir, 'zntc.config.mjs'), `export default {};`);
+    expect(findConfigPath(dir)).toBe(join(dir, 'zntc.config.mjs'));
   });
 
   test('점진적 fallback: .cjs 단독이면 .cjs', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.cjs'), `module.exports = {};`);
-    expect(findConfigPath(dir)).toBe(join(dir, 'zts.config.cjs'));
+    writeFileSync(join(dir, 'zntc.config.cjs'), `module.exports = {};`);
+    expect(findConfigPath(dir)).toBe(join(dir, 'zntc.config.cjs'));
   });
 
   test('findConfigPath + loadConfig 통합', async () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.ts'), `export default { format: "esm" as const };`);
+    writeFileSync(join(dir, 'zntc.config.ts'), `export default { format: "esm" as const };`);
     const path = findConfigPath(dir);
-    expect(path).toBe(join(dir, 'zts.config.ts'));
+    expect(path).toBe(join(dir, 'zntc.config.ts'));
     const config = await loadConfig(path!);
     expect(config.format).toBe('esm');
   });
 
-  test('zts.config 가 아닌 다른 이름은 무시', () => {
+  test('zntc.config 가 아닌 다른 이름은 무시', () => {
     reset();
-    writeFileSync(join(dir, 'zts.ts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc.ts'), `export default {};`);
     writeFileSync(join(dir, 'config.ts'), `export default {};`);
-    writeFileSync(join(dir, 'zts-config.ts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc-config.ts'), `export default {};`);
     expect(findConfigPath(dir)).toBeNull();
   });
 });
@@ -226,7 +226,7 @@ describe('loadConfig: 함수형 config', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-fn-config-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-fn-config-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -323,7 +323,7 @@ describe('findModeConfigPath', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-find-mode-cfg-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-find-mode-cfg-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -335,36 +335,36 @@ describe('findModeConfigPath', () => {
 
   test('mode 빈 문자열이면 null', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.ts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc.config.ts'), `export default {};`);
     expect(findModeConfigPath(dir, '')).toBeNull();
   });
 
   test('mode-specific 파일 부재 시 null', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.ts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc.config.ts'), `export default {};`);
     expect(findModeConfigPath(dir, 'production')).toBeNull();
   });
 
   test('.ts > .json 우선순위', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.production.ts'), `export default {};`);
-    writeFileSync(join(dir, 'zts.config.production.json'), `{}`);
-    expect(findModeConfigPath(dir, 'production')).toBe(join(dir, 'zts.config.production.ts'));
+    writeFileSync(join(dir, 'zntc.config.production.ts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc.config.production.json'), `{}`);
+    expect(findModeConfigPath(dir, 'production')).toBe(join(dir, 'zntc.config.production.ts'));
   });
 
   test('mode 별 분기: production / development', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.production.ts'), `export default {};`);
-    writeFileSync(join(dir, 'zts.config.development.ts'), `export default {};`);
-    expect(findModeConfigPath(dir, 'production')).toBe(join(dir, 'zts.config.production.ts'));
-    expect(findModeConfigPath(dir, 'development')).toBe(join(dir, 'zts.config.development.ts'));
+    writeFileSync(join(dir, 'zntc.config.production.ts'), `export default {};`);
+    writeFileSync(join(dir, 'zntc.config.development.ts'), `export default {};`);
+    expect(findModeConfigPath(dir, 'production')).toBe(join(dir, 'zntc.config.production.ts'));
+    expect(findModeConfigPath(dir, 'development')).toBe(join(dir, 'zntc.config.development.ts'));
     expect(findModeConfigPath(dir, 'staging')).toBeNull();
   });
 
   test('`.json` 도 자동 탐색 대상', () => {
     reset();
-    writeFileSync(join(dir, 'zts.config.production.json'), `{}`);
-    expect(findModeConfigPath(dir, 'production')).toBe(join(dir, 'zts.config.production.json'));
+    writeFileSync(join(dir, 'zntc.config.production.json'), `{}`);
+    expect(findModeConfigPath(dir, 'production')).toBe(join(dir, 'zntc.config.production.json'));
   });
 });
 
@@ -445,7 +445,7 @@ describe('loadConfig: extends 상속', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-extends-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-extends-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));

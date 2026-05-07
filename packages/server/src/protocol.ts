@@ -51,7 +51,7 @@ export type HmrMessage =
   | HmrErrorMessage
   | HmrFullReloadMessage;
 
-export const APP_DEV_HMR_CLIENT_PATH = '/__zts_app_dev_hmr__';
+export const APP_DEV_HMR_CLIENT_PATH = '/__zntc_app_dev_hmr__';
 export const APP_DEV_HMR_WS_PATH = '/__hmr';
 
 // RFC 6455 §1.3 — handshake 에 쓰이는 fixed GUID. 변경 불가.
@@ -76,7 +76,7 @@ export function normalizeHmrErrors(errors: readonly unknown[] | unknown): HmrErr
 }
 
 // ─── React Native Metro HMR protocol (#2540) ─────────────────────────────────
-// Metro 의 메시지 type literal 은 `hmr:` prefix — RN runtime (zts-hmr-client.js)
+// Metro 의 메시지 type literal 은 `hmr:` prefix — RN runtime (zntc-hmr-client.js)
 // 의 onmessage 분기 키. revisionId 기반 delta 는 caller (번개 server) 가 관리,
 // adapter 는 메시지 union 만 통과.
 

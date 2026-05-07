@@ -1,5 +1,5 @@
 const std = @import("std");
-const lib = @import("zts_lib");
+const lib = @import("zntc_lib");
 const Scanner = lib.lexer.Scanner;
 const Parser = lib.parser.Parser;
 const Diagnostic = lib.diagnostic.Diagnostic;
@@ -89,7 +89,7 @@ const CliOptions = struct {
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
     /// PATH 대신 "false"로 쓰면 빈 모듈로 대체.
     fallback_list: std.ArrayList(FallbackEntry) = .empty,
-    /// `zts.config.json` 의 `manualChunks` (record form: `[{name, patterns}]`) 매핑.
+    /// `zntc.config.json` 의 `manualChunks` (record form: `[{name, patterns}]`) 매핑.
     /// CLI flag 없음 — config.json 만. function form 은 JS-only 라 NAPI 경유.
     manual_chunks_list: std.ArrayList(ManualChunkEntry) = .empty,
     /// --block-list=PATTERN (반복). Metro resolver.blockList 호환.
@@ -117,7 +117,7 @@ const CliOptions = struct {
     /// --mangle-report=<path>: mangler property 측정 JSON 저장 (#1760).
     mangle_report_path: ?[]const u8 = null,
     analyze: bool = false,
-    legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
+    legal_comments: @import("zntc_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
     /// --run-before-main=<path>: 엔트리 모듈 직전에 실행할 모듈 (Metro runBeforeMainModule 호환).
     /// --inject와 동일한 메커니즘으로 엔트리 의존성에 추가하여 먼저 실행.
@@ -220,11 +220,11 @@ const CliOptions = struct {
     };
 
     const AliasEntry = BundleOptions.AliasEntry;
-    const FallbackEntry = @import("zts_lib").bundler.types.FallbackEntry;
-    const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
-    const ParsedLoader = @import("zts_lib").bundler.types.ParsedLoader;
-    const LegalCommentsEnum = @import("zts_lib").bundler.types.LegalComments;
-    const ManualChunkEntry = @import("zts_lib").bundler.types.ManualChunkEntry;
+    const FallbackEntry = @import("zntc_lib").bundler.types.FallbackEntry;
+    const LoaderOverride = @import("zntc_lib").bundler.types.LoaderOverride;
+    const ParsedLoader = @import("zntc_lib").bundler.types.ParsedLoader;
+    const LegalCommentsEnum = @import("zntc_lib").bundler.types.LegalComments;
+    const ManualChunkEntry = @import("zntc_lib").bundler.types.ManualChunkEntry;
 
     const LogLevel = enum {
         silent,
@@ -328,7 +328,7 @@ fn parseAppArgs(allocator: std.mem.Allocator, command: AppCommand, args: []const
             try appendCsv(&opts.env_prefixes, allocator, value);
         } else if (try appStringFlag(args, &i, "--port")) |value| {
             opts.port = std.fmt.parseInt(u16, value, 10) catch {
-                try stderr.print("zts {s}: invalid --port value: {s}\n", .{ @tagName(command), value });
+                try stderr.print("zntc {s}: invalid --port value: {s}\n", .{ @tagName(command), value });
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--host")) {
@@ -358,11 +358,11 @@ fn parseAppArgs(allocator: std.mem.Allocator, command: AppCommand, args: []const
             if (opts.root_or_outdir == null) {
                 opts.root_or_outdir = arg;
             } else {
-                try stderr.print("zts {s}: unexpected positional argument: {s}\n", .{ @tagName(command), arg });
+                try stderr.print("zntc {s}: unexpected positional argument: {s}\n", .{ @tagName(command), arg });
                 std.process.exit(1);
             }
         } else {
-            try stderr.print("zts {s}: unknown option: {s}\n", .{ @tagName(command), arg });
+            try stderr.print("zntc {s}: unknown option: {s}\n", .{ @tagName(command), arg });
             std.process.exit(1);
         }
     }
@@ -390,7 +390,7 @@ fn appendCsv(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, val
 
 fn parseAppProxy(opts: *AppCliOptions, allocator: std.mem.Allocator, value: []const u8, stderr: anytype) !void {
     const eq_pos = std.mem.indexOf(u8, value, "=") orelse {
-        try stderr.print("zts {s}: --proxy requires PATH=TARGET\n", .{@tagName(opts.command)});
+        try stderr.print("zntc {s}: --proxy requires PATH=TARGET\n", .{@tagName(opts.command)});
         std.process.exit(1);
     };
     const path_str = value[0..eq_pos];
@@ -416,7 +416,7 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
     const app_env = lib.app.env;
     const mode = opts.mode orelse if (opts.command == .build) "production" else "development";
     const root = if (opts.command == .preview) "." else opts.root_or_outdir orelse ".";
-    const env_prefixes = if (opts.env_prefixes.items.len > 0) opts.env_prefixes.items else &[_][]const u8{ "VITE_", "ZTS_" };
+    const env_prefixes = if (opts.env_prefixes.items.len > 0) opts.env_prefixes.items else &[_][]const u8{ "VITE_", "ZNTC_" };
     const base = try normalizeAppBase(allocator, opts.base);
     defer allocator.free(base);
 
@@ -437,13 +437,13 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
                 .sourcemap = opts.sourcemap,
                 .splitting = opts.splitting,
             }) catch |err| {
-                try stderr.print("zts build: app build failed: {}\n", .{err});
+                try stderr.print("zntc build: app build failed: {}\n", .{err});
                 std.process.exit(1);
             };
             try stderr.print("[build] wrote {d} files to {s}\n", .{ written, outdir });
         },
         .dev => {
-            const dev_outdir = opts.outdir orelse ".zts-dev";
+            const dev_outdir = opts.outdir orelse ".zntc-dev";
             if (opts.clean) try deleteAppOutput(allocator, root, dev_outdir);
             var prepared = app_build.prepareDev(allocator, .{
                 .root = root,
@@ -455,7 +455,7 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
                 .env_dir = opts.env_dir,
                 .env_prefixes = env_prefixes,
             }) catch |err| {
-                try stderr.print("zts dev: app prepare failed: {}\n", .{err});
+                try stderr.print("zntc dev: app prepare failed: {}\n", .{err});
                 std.process.exit(1);
             };
             defer prepared.deinit(allocator);
@@ -485,12 +485,12 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
                 .base_path = base,
                 .define = server_defines,
             }) catch |err| {
-                try stderr.print("zts dev: failed to start dev server: {}\n", .{err});
+                try stderr.print("zntc dev: failed to start dev server: {}\n", .{err});
                 std.process.exit(1);
             };
             defer dev_server.deinit();
             dev_server.start() catch |err| {
-                try stderr.print("zts dev: server failed: {}\n", .{err});
+                try stderr.print("zntc dev: server failed: {}\n", .{err});
                 std.process.exit(1);
             };
         },
@@ -507,12 +507,12 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
                 .proxy = opts.proxy_list.items,
                 .base_path = base,
             }) catch |err| {
-                try stderr.print("zts preview: failed to start server: {}\n", .{err});
+                try stderr.print("zntc preview: failed to start server: {}\n", .{err});
                 std.process.exit(1);
             };
             defer server.deinit();
             server.start() catch |err| {
-                try stderr.print("zts preview: server failed: {}\n", .{err});
+                try stderr.print("zntc preview: server failed: {}\n", .{err});
                 std.process.exit(1);
             };
         },
@@ -552,13 +552,13 @@ fn parseGlobalsArg(opts: *CliOptions, allocator: std.mem.Allocator, val: []const
     while (it.next()) |part| {
         if (part.len == 0) continue;
         const eq = std.mem.indexOfScalar(u8, part, '=') orelse {
-            try stderr.print("zts: --globals requires SPEC=GLOBAL format: '{s}' (skipped)\n", .{part});
+            try stderr.print("zntc: --globals requires SPEC=GLOBAL format: '{s}' (skipped)\n", .{part});
             continue;
         };
         const spec = part[0..eq];
         const name = part[eq + 1 ..];
         if (spec.len == 0 or name.len == 0) {
-            try stderr.print("zts: --globals empty spec or name: '{s}' (skipped)\n", .{part});
+            try stderr.print("zntc: --globals empty spec or name: '{s}' (skipped)\n", .{part});
             continue;
         }
         try opts.globals_list.append(allocator, .{ .specifier = spec, .global_name = name });
@@ -582,7 +582,7 @@ fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.
     return compat.unsupportedFeatures(targets[0..count]);
 }
 
-/// `zts.config.json`이 cwd에 있으면 파싱해 opts의 defaults를 세팅한다.
+/// `zntc.config.json`이 cwd에 있으면 파싱해 opts의 defaults를 세팅한다.
 /// CLI 인자가 뒤에서 이 값을 덮어쓴다 → "CLI > config.json".
 ///
 /// 매핑되는 필드:
@@ -593,8 +593,8 @@ fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.
 ///
 /// `intro`/`outro` 는 BundleOptions 미지원 — 별도 PR (FIXME). function-form
 /// `manualChunks` 는 JS-only 라 JSON 에서는 record form 만 받는다.
-fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
-    const f = try std.fs.cwd().openFile("zts.config.json", .{});
+fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
+    const f = try std.fs.cwd().openFile("zntc.config.json", .{});
     defer f.close();
     const content = try f.readToEndAlloc(allocator, 1 * 1024 * 1024);
     defer allocator.free(content);
@@ -696,12 +696,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     }
 
     var opts = CliOptions{};
-    // zts.config.json이 있으면 defaults를 그쪽으로 초기화. CLI 인자는 뒤에서
+    // zntc.config.json이 있으면 defaults를 그쪽으로 초기화. CLI 인자는 뒤에서
     // 파싱되며 이 값을 덮어쓴다 ("CLI > config" 우선순위).
-    applyZtsConfigJson(&opts, allocator) catch |err| switch (err) {
+    applyZntcConfigJson(&opts, allocator) catch |err| switch (err) {
         error.FileNotFound => {},
         else => {
-            try stderr.print("[zts] zts.config.json load failed: {}\n", .{err});
+            try stderr.print("[zntc] zntc.config.json load failed: {}\n", .{err});
         },
     };
 
@@ -757,7 +757,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     .value = kv[eq_pos + 1 ..],
                 });
             } else {
-                try stderr.print("zts: --define requires KEY=VALUE format: {s}\n", .{arg});
+                try stderr.print("zntc: --define requires KEY=VALUE format: {s}\n", .{arg});
                 std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--ascii-only")) {
@@ -771,7 +771,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             } else if (std.mem.eql(u8, val, "preserve")) {
                 opts.quote_style = .preserve;
             } else {
-                try stderr.print("zts: invalid --quotes value: {s} (expected: double, single, preserve)\n", .{val});
+                try stderr.print("zntc: invalid --quotes value: {s} (expected: double, single, preserve)\n", .{val});
                 std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
@@ -782,14 +782,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.sourcemap = true;
             const val = arg["--sourcemap=".len..];
             opts.sourcemap_mode = lib.codegen.sourcemap.SourceMapMode.fromString(val) orelse {
-                try stderr.print("zts: invalid --sourcemap value: {s} (expected: linked, external, inline)\n", .{val});
+                try stderr.print("zntc: invalid --sourcemap value: {s} (expected: linked, external, inline)\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.startsWith(u8, arg, "--output-exports=")) {
             // #2159 — `--output-exports=auto|named|default|none`
             const val = arg["--output-exports=".len..];
             opts.output_exports = lib.bundler.OutputExports.fromString(val) orelse {
-                try stderr.print("zts: invalid --output-exports value: {s} (expected: auto, named, default, none)\n", .{val});
+                try stderr.print("zntc: invalid --output-exports value: {s} (expected: auto, named, default, none)\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--sourcemap-debug-ids")) {
@@ -857,7 +857,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--stop-after=")) {
             const val = arg["--stop-after=".len..];
             opts.core_stop_after = lib.transpile.StopAfter.fromString(val) orelse {
-                try stderr.print("zts: invalid --stop-after='{s}' (expected scan|parse|semantic|transform|codegen)\n", .{val});
+                try stderr.print("zntc: invalid --stop-after='{s}' (expected scan|parse|semantic|transform|codegen)\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--bundle")) {
@@ -868,7 +868,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             if (i + 1 < args.len) {
                 i += 1;
                 opts.serve_port = std.fmt.parseInt(u16, args[i], 10) catch {
-                    try stderr.print("zts: invalid port number: {s}\n", .{args[i]});
+                    try stderr.print("zntc: invalid port number: {s}\n", .{args[i]});
                     std.process.exit(1);
                 };
             }
@@ -904,11 +904,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                         .target_port = target_port,
                     });
                 } else {
-                    try stderr.print("zts: --proxy requires PATH=TARGET format (e.g. /api=http://localhost:8080)\n", .{});
+                    try stderr.print("zntc: --proxy requires PATH=TARGET format (e.g. /api=http://localhost:8080)\n", .{});
                     std.process.exit(1);
                 }
             } else {
-                try stderr.print("zts: --proxy requires a PATH=TARGET argument\n", .{});
+                try stderr.print("zntc: --proxy requires a PATH=TARGET argument\n", .{});
                 std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--splitting")) {
@@ -966,7 +966,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--rn-platform=")) {
             const val = arg["--rn-platform=".len..];
             opts.rn_platform = std.meta.stringToEnum(CliOptions.RnPlatform, val) orelse {
-                try stderr.print("zts: unknown --rn-platform '{s}' (expected: ios, android)\n", .{val});
+                try stderr.print("zntc: unknown --rn-platform '{s}' (expected: ios, android)\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
@@ -999,7 +999,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             } else {
                 // 엔진 버전 파싱 (chrome80,safari14,node16)
                 opts.unsupported = parseEngineTargets(val) orelse {
-                    try stderr.print("zts: unknown target '{s}'\n", .{val});
+                    try stderr.print("zntc: unknown target '{s}'\n", .{val});
                     std.process.exit(1);
                 };
             }
@@ -1014,7 +1014,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     .to = kv[eq_pos + 1 ..],
                 });
             } else {
-                try stderr.print("zts: --alias requires FROM=TO format: {s}\n", .{arg});
+                try stderr.print("zntc: --alias requires FROM=TO format: {s}\n", .{arg});
                 std.process.exit(1);
             }
         } else if (std.mem.startsWith(u8, arg, "--block-list=")) {
@@ -1030,7 +1030,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     .to = if (std.mem.eql(u8, value, "false")) null else value,
                 });
             } else {
-                try stderr.print("zts: --fallback requires NAME=PATH or NAME=false: {s}\n", .{arg});
+                try stderr.print("zntc: --fallback requires NAME=PATH or NAME=false: {s}\n", .{arg});
                 std.process.exit(1);
             }
         } else if (std.mem.startsWith(u8, arg, "--public-path=")) {
@@ -1054,7 +1054,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--log-level=")) {
             const val = arg["--log-level=".len..];
             opts.log_level = std.meta.stringToEnum(CliOptions.LogLevel, val) orelse {
-                try stderr.print("zts: unknown log-level '{s}' (expected: silent, error, warning, info, debug, verbose)\n", .{val});
+                try stderr.print("zntc: unknown log-level '{s}' (expected: silent, error, warning, info, debug, verbose)\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--charset=utf8")) {
@@ -1091,13 +1091,13 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--log-limit=")) {
             const val = arg["--log-limit=".len..];
             opts.log_limit = std.fmt.parseInt(u32, val, 10) catch {
-                try stderr.print("zts: --log-limit requires a number: {s}\n", .{val});
+                try stderr.print("zntc: --log-limit requires a number: {s}\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.startsWith(u8, arg, "--line-limit=")) {
             const val = arg["--line-limit=".len..];
             opts.line_limit = std.fmt.parseInt(u32, val, 10) catch {
-                try stderr.print("zts: --line-limit requires a number: {s}\n", .{val});
+                try stderr.print("zntc: --line-limit requires a number: {s}\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--jsx-side-effects")) {
@@ -1124,13 +1124,13 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--watch-delay=")) {
             const val = arg["--watch-delay=".len..];
             opts.watch_delay_ms = std.fmt.parseInt(u32, val, 10) catch {
-                try stderr.print("zts: --watch-delay requires a number (ms): {s}\n", .{val});
+                try stderr.print("zntc: --watch-delay requires a number (ms): {s}\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.startsWith(u8, arg, "--watch-folder=")) {
             const raw = arg["--watch-folder=".len..];
             const abs = std.fs.cwd().realpathAlloc(allocator, raw) catch {
-                try stderr.print("zts: cannot resolve --watch-folder path: {s}\n", .{raw});
+                try stderr.print("zntc: cannot resolve --watch-folder path: {s}\n", .{raw});
                 std.process.exit(1);
             };
             try opts.watch_roots_list.append(allocator, abs);
@@ -1143,7 +1143,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--jobs=")) {
             const val = arg["--jobs=".len..];
             opts.max_threads = std.fmt.parseInt(u32, val, 10) catch {
-                try stderr.print("zts: --jobs requires a number: {s}\n", .{val});
+                try stderr.print("zntc: --jobs requires a number: {s}\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.startsWith(u8, arg, "--inject:") or
@@ -1155,7 +1155,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const option_name = arg[0 .. sep_pos + 1];
             const raw_path = arg[sep_pos + 1 ..];
             const abs = std.fs.cwd().realpathAlloc(allocator, raw_path) catch {
-                try stderr.print("zts: cannot resolve {s} path: {s}\n", .{ option_name, raw_path });
+                try stderr.print("zntc: cannot resolve {s} path: {s}\n", .{ option_name, raw_path });
                 std.process.exit(1);
             };
             const target_list = if (std.mem.startsWith(u8, arg, "--inject:"))
@@ -1173,12 +1173,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--legal-comments=")) {
             const val = arg["--legal-comments=".len..];
             opts.legal_comments = CliOptions.LegalCommentsEnum.fromString(val) orelse {
-                try stderr.print("zts: unknown legal-comments mode '{s}' (expected: none, inline, eof, linked, external)\n", .{val});
+                try stderr.print("zntc: unknown legal-comments mode '{s}' (expected: none, inline, eof, linked, external)\n", .{val});
                 std.process.exit(1);
             };
             opts.legal_comments_explicit = true;
             if (opts.legal_comments == .linked or opts.legal_comments == .external) {
-                try stderr.print("zts: --legal-comments={s} is not yet fully implemented, falling back to eof behavior\n", .{val});
+                try stderr.print("zntc: --legal-comments={s} is not yet fully implemented, falling back to eof behavior\n", .{val});
             }
         } else if (std.mem.startsWith(u8, arg, "--loader:")) {
             // --loader:.png=file (esbuild 호환)
@@ -1193,11 +1193,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                         .module_type = parsed_loader.module_type,
                     });
                 } else {
-                    try stderr.print("zts: unknown loader '{s}' (expected: file, dataurl, base64, text, binary, copy, json, css, empty, js, jsx, ts, tsx)\n", .{loader_str});
+                    try stderr.print("zntc: unknown loader '{s}' (expected: file, dataurl, base64, text, binary, copy, json, css, empty, js, jsx, ts, tsx)\n", .{loader_str});
                     std.process.exit(1);
                 }
             } else {
-                try stderr.print("zts: --loader requires .EXT=TYPE format: {s}\n", .{arg});
+                try stderr.print("zntc: --loader requires .EXT=TYPE format: {s}\n", .{arg});
                 std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -1210,7 +1210,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try opts.extra_inputs.append(allocator, arg);
             }
         } else {
-            try stderr.print("zts: unknown option: {s}\n", .{arg});
+            try stderr.print("zntc: unknown option: {s}\n", .{arg});
             std.process.exit(1);
         }
     }
@@ -1307,7 +1307,7 @@ fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanne
 }
 
 /// realpath 결과는 owned. 실패 (보통 출력 파일은 미존재) 시 caller-owned 인 raw
-/// 경로로 fallback — 분기해서 owned 만 free 한다. JS 측 (packages/core/bin/zts.mjs)
+/// 경로로 fallback — 분기해서 owned 만 free 한다. JS 측 (packages/core/bin/zntc.mjs)
 /// 도 같은 전략.
 fn checkAllowOverwrite(
     allocator: std.mem.Allocator,
@@ -1328,7 +1328,7 @@ fn checkAllowOverwrite(
 
     if (std.mem.eql(u8, in_abs, out_abs)) {
         try stderr.print(
-            "zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n",
+            "zntc: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n",
             .{out_path},
         );
         return error.TranspileFailed;
@@ -1366,7 +1366,7 @@ fn transpileFile(
     // 소스 읽기
     const source = source_override orelse blk: {
         break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
-            try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
+            try stderr.print("zntc: cannot read '{s}': {}\n", .{ file_path, err });
             return error.TranspileFailed;
         };
     };
@@ -1387,7 +1387,7 @@ fn transpileFile(
         switch (err) {
             error.ParseError, error.SemanticError => {},
             else => {
-                try stderr.print("zts: {s}: {}\n", .{ file_path, err });
+                try stderr.print("zntc: {s}: {}\n", .{ file_path, err });
             },
         }
         return error.TranspileFailed;
@@ -1402,18 +1402,18 @@ fn transpileFile(
     if (output_path) |out_path| {
         if (std.fs.path.dirname(out_path)) |dir| {
             std.fs.cwd().makePath(dir) catch |err| {
-                try stderr.print("zts: cannot create directory '{s}': {}\n", .{ dir, err });
+                try stderr.print("zntc: cannot create directory '{s}': {}\n", .{ dir, err });
                 return error.TranspileFailed;
             };
         }
         std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = result.code }) catch |err| {
-            try stderr.print("zts: cannot write '{s}': {}\n", .{ out_path, err });
+            try stderr.print("zntc: cannot write '{s}': {}\n", .{ out_path, err });
             return error.TranspileFailed;
         };
         if (result.sourcemap) |sm_json| {
             const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{out_path});
             std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
-                try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                try stderr.print("zntc: cannot write '{s}': {}\n", .{ map_path, err });
             };
         }
     } else {
@@ -1453,14 +1453,14 @@ fn walkAndTranspile(
 
     // 입력 디렉토리 열기
     var dir = std.fs.cwd().openDir(input_dir, .{ .iterate = true }) catch |err| {
-        try stderr.print("zts: cannot open directory '{s}': {}\n", .{ input_dir, err });
+        try stderr.print("zntc: cannot open directory '{s}': {}\n", .{ input_dir, err });
         return error.WalkFailed;
     };
     defer dir.close();
 
     // 재귀적으로 파일 순회
     var walker = dir.walk(allocator) catch |err| {
-        try stderr.print("zts: cannot walk directory '{s}': {}\n", .{ input_dir, err });
+        try stderr.print("zntc: cannot walk directory '{s}': {}\n", .{ input_dir, err });
         return error.WalkFailed;
     };
     defer walker.deinit();
@@ -1469,7 +1469,7 @@ fn walkAndTranspile(
     var had_errors = false;
 
     while (walker.next() catch |err| {
-        try stderr.print("zts: error walking directory: {}\n", .{err});
+        try stderr.print("zntc: error walking directory: {}\n", .{err});
         return error.WalkFailed;
     }) |entry| {
         // 디렉토리는 건너뛰되, node_modules는 순회 자체를 차단할 수 없으므로
@@ -1516,7 +1516,7 @@ fn walkAndTranspile(
     }
 
     if (file_count == 0 and !had_errors) {
-        try stderr.print("zts: no .ts/.tsx files found in '{s}'\n", .{input_dir});
+        try stderr.print("zntc: no .ts/.tsx files found in '{s}'\n", .{input_dir});
     } else {
         try stdout.print("\nDone: {d} file(s) transpiled.\n", .{file_count});
     }
@@ -1524,13 +1524,13 @@ fn walkAndTranspile(
     if (had_errors) return error.WalkFailed;
 }
 
-/// `zts bench --phase=<CATS> [options] <FILE>` 서브커맨드.
+/// `zntc bench --phase=<CATS> [options] <FILE>` 서브커맨드.
 ///
 /// 지정한 phase 를 N 회 반복 실행하며 `profile` 모듈의 수치로부터
 /// 통계 (mean/median/p95/p99/stddev/min/max) 를 출력한다. baseline save/compare
 /// 로 최적화 전후 비교 가능.
 ///
-/// CLI spec: docs/design/profile-infrastructure.md § zts bench.
+/// CLI spec: docs/design/profile-infrastructure.md § zntc bench.
 const BenchArgs = struct {
     phases_csv: ?[]const u8 = null,
     iterations: u32 = 100,
@@ -1579,19 +1579,19 @@ fn runBench(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
     const opts = parseBenchArgs(args) catch |err| {
-        try stderr.print("zts bench: argument error ({s}). See `zts bench --help`.\n", .{@errorName(err)});
+        try stderr.print("zntc bench: argument error ({s}). See `zntc bench --help`.\n", .{@errorName(err)});
         std.process.exit(1);
     };
     const phases_csv = opts.phases_csv orelse {
-        try stderr.writeAll("zts bench: --phase=<CATS> is required (e.g. --phase=parse)\n");
+        try stderr.writeAll("zntc bench: --phase=<CATS> is required (e.g. --phase=parse)\n");
         std.process.exit(1);
     };
     const input_file = opts.input_file orelse {
-        try stderr.writeAll("zts bench: missing input file\n");
+        try stderr.writeAll("zntc bench: missing input file\n");
         std.process.exit(1);
     };
     if (opts.iterations == 0) {
-        try stderr.writeAll("zts bench: --iterations must be >= 1\n");
+        try stderr.writeAll("zntc bench: --iterations must be >= 1\n");
         std.process.exit(1);
     }
 
@@ -1606,11 +1606,11 @@ fn runBench(allocator: std.mem.Allocator, args: []const []const u8) !void {
             const name = std.mem.trim(u8, raw, " \t");
             if (name.len == 0) continue;
             if (std.ascii.eqlIgnoreCase(name, "all") or std.ascii.eqlIgnoreCase(name, "none")) {
-                try stderr.print("zts bench: --phase={s} not allowed (must be specific phase names)\n", .{name});
+                try stderr.print("zntc bench: --phase={s} not allowed (must be specific phase names)\n", .{name});
                 std.process.exit(1);
             }
             const cat = lib.profile.Category.fromString(name) orelse {
-                try stderr.print("zts bench: unknown phase '{s}'\n", .{name});
+                try stderr.print("zntc bench: unknown phase '{s}'\n", .{name});
                 std.process.exit(1);
             };
             try phase_names.append(allocator, name);
@@ -1620,7 +1620,7 @@ fn runBench(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     // 소스 읽기 (한 번, iteration 간 동일한 입력 사용).
     const source = std.fs.cwd().readFileAlloc(allocator, input_file, 100 * 1024 * 1024) catch |err| {
-        try stderr.print("zts bench: cannot read '{s}': {}\n", .{ input_file, err });
+        try stderr.print("zntc bench: cannot read '{s}': {}\n", .{ input_file, err });
         std.process.exit(1);
     };
     defer allocator.free(source);
@@ -1656,12 +1656,12 @@ fn runBench(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // compare — 먼저 비교 출력, save 는 그 다음.
     if (opts.compare_path) |cmp_path| {
         const cmp_json = std.fs.cwd().readFileAlloc(allocator, cmp_path, 10 * 1024 * 1024) catch |err| {
-            try stderr.print("zts bench: cannot read baseline '{s}': {}\n", .{ cmp_path, err });
+            try stderr.print("zntc bench: cannot read baseline '{s}': {}\n", .{ cmp_path, err });
             std.process.exit(1);
         };
         defer allocator.free(cmp_json);
         var baseline = lib.bench.readBaselineJson(allocator, cmp_json) catch |err| {
-            try stderr.print("zts bench: invalid baseline format: {}\n", .{err});
+            try stderr.print("zntc bench: invalid baseline format: {}\n", .{err});
             std.process.exit(1);
         };
         defer baseline.deinit(allocator);
@@ -1682,7 +1682,7 @@ fn runBench(allocator: std.mem.Allocator, args: []const []const u8) !void {
             try bl.phases.put(name_dup, stats);
         }
         const file = std.fs.cwd().createFile(save_path, .{}) catch |err| {
-            try stderr.print("zts bench: cannot create '{s}': {}\n", .{ save_path, err });
+            try stderr.print("zntc bench: cannot create '{s}': {}\n", .{ save_path, err });
             std.process.exit(1);
         };
         defer file.close();
@@ -1713,7 +1713,7 @@ fn printBenchTable(
     iterations: u32,
     warmup: u32,
 ) !void {
-    try writer.writeAll("=== ZTS Benchmark ===\n");
+    try writer.writeAll("=== ZNTC Benchmark ===\n");
     try writer.print("iterations: {d} (warmup: {d})\n\n", .{ iterations, warmup });
     try writer.writeAll("Phase       mean       median     p95        p99        stddev     min        max\n");
     try writer.writeAll("----------|----------|----------|----------|----------|----------|----------|----------\n");
@@ -1765,7 +1765,7 @@ fn printBenchCompare(
     stats: []const lib.bench.PhaseStats,
     baseline: *const lib.bench.Baseline,
 ) !void {
-    try writer.writeAll("=== ZTS Benchmark (vs baseline) ===\n\n");
+    try writer.writeAll("=== ZNTC Benchmark (vs baseline) ===\n\n");
     try writer.writeAll("Phase       before     after      delta     %         verdict\n");
     try writer.writeAll("----------|----------|----------|---------|---------|----------\n");
     for (phase_names, stats) |name, after| {
@@ -1804,14 +1804,14 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    // Subcommand dispatch — `zts bench ...` 는 별도 경로.
+    // Subcommand dispatch — `zntc bench ...` 는 별도 경로.
     if (args.len >= 2 and std.mem.eql(u8, args[1], "bench")) {
         return runBench(allocator, args[2..]);
     }
     if (args.len >= 2) {
         if (parseAppCommandName(args[1])) |command| {
             var app_opts = parseAppArgs(allocator, command, args[2..]) catch |err| {
-                try stderr.print("zts {s}: argument error: {}\n", .{ @tagName(command), err });
+                try stderr.print("zntc {s}: argument error: {}\n", .{ @tagName(command), err });
                 std.process.exit(1);
             } orelse return;
             defer app_opts.deinit(allocator);
@@ -1828,7 +1828,7 @@ pub fn main() !void {
         if (lib.profile.Level.fromString(lvl)) |parsed| {
             lib.profile.setLevel(parsed);
         } else {
-            try stderr.print("zts: invalid --profile-level='{s}' (expected summary|detailed|per-module|per-pass)\n", .{lvl});
+            try stderr.print("zntc: invalid --profile-level='{s}' (expected summary|detailed|per-module|per-pass)\n", .{lvl});
             std.process.exit(1);
         }
     }
@@ -1836,7 +1836,7 @@ pub fn main() !void {
         if (lib.profile.Format.fromString(fmt)) |parsed| {
             break :blk parsed;
         }
-        try stderr.print("zts: invalid --profile-format='{s}' (expected table|tree|json|csv)\n", .{fmt});
+        try stderr.print("zntc: invalid --profile-format='{s}' (expected table|tree|json|csv)\n", .{fmt});
         std.process.exit(1);
     } else null;
 
@@ -1859,7 +1859,7 @@ pub fn main() !void {
     // --test262
     if (opts.is_test262) {
         const dir_path = opts.test262_dir orelse {
-            try stderr.print("zts: --test262 requires a directory path\n", .{});
+            try stderr.print("zntc: --test262 requires a directory path\n", .{});
             std.process.exit(1);
         };
         const abs_path = try std.fs.cwd().realpathAlloc(allocator, dir_path);
@@ -1891,7 +1891,7 @@ pub fn main() !void {
     // --tokenize
     if (opts.is_tokenize) {
         const file_path = opts.input_file orelse {
-            try stderr.print("zts: --tokenize requires a file path\n", .{});
+            try stderr.print("zntc: --tokenize requires a file path\n", .{});
             std.process.exit(1);
         };
         const source = try std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024);
@@ -1923,7 +1923,7 @@ pub fn main() !void {
 
         const entry: ?[]const u8 = if (opts.is_bundle) blk: {
             break :blk opts.input_file orelse {
-                try stderr.print("zts: --serve --bundle requires an entry file path\n", .{});
+                try stderr.print("zntc: --serve --bundle requires an entry file path\n", .{});
                 std.process.exit(1);
             };
         } else null;
@@ -1936,12 +1936,12 @@ pub fn main() !void {
             .entry_point = entry,
             .proxy = opts.proxy_list.items,
         }) catch |err| {
-            try stderr.print("zts: failed to start dev server: {}\n", .{err});
+            try stderr.print("zntc: failed to start dev server: {}\n", .{err});
             std.process.exit(1);
         };
         defer dev_server.deinit();
         dev_server.start() catch |err| {
-            try stderr.print("zts: dev server failed: {}\n", .{err});
+            try stderr.print("zntc: dev server failed: {}\n", .{err});
             std.process.exit(1);
         };
         return;
@@ -1967,7 +1967,7 @@ pub fn main() !void {
     var tsconfig: TsConfig = blk: {
         if (opts.tsconfig_raw) |raw| {
             break :blk TsConfig.parseFromString(allocator, raw) catch {
-                try stderr.print("zts: failed to parse --tsconfig-raw\n", .{});
+                try stderr.print("zntc: failed to parse --tsconfig-raw\n", .{});
                 std.process.exit(1);
             };
         }
@@ -2034,7 +2034,7 @@ pub fn main() !void {
         if (tsconfig_dir_for_paths) |dir_str| {
             const dir_for_join = lib.config.tsconfigDirFromPath(dir_str);
             resolved_paths = lib.config.resolveTsPaths(allocator, dir_for_join, &tsconfig) catch |err| blk: {
-                try stderr.print("zts: warning: tsconfig paths resolution failed: {}\n", .{err});
+                try stderr.print("zntc: warning: tsconfig paths resolution failed: {}\n", .{err});
                 break :blk lib.config.ResolvedPaths{ .entries = &.{}, .owned_strings = &.{} };
             };
         }
@@ -2043,24 +2043,24 @@ pub fn main() !void {
     // --bundle
     if (opts.is_bundle) {
         const entry_file = opts.input_file orelse {
-            try stderr.print("zts: --bundle requires an entry file path\n", .{});
+            try stderr.print("zntc: --bundle requires an entry file path\n", .{});
             std.process.exit(1);
         };
         const abs_entry = std.fs.cwd().realpathAlloc(allocator, entry_file) catch {
-            try stderr.print("zts: cannot resolve entry file '{s}'\n", .{entry_file});
+            try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{entry_file});
             std.process.exit(1);
         };
         defer allocator.free(abs_entry);
 
         // --splitting은 --outdir 필수
         if (opts.splitting and opts.output_dir == null) {
-            try stderr.print("zts: --splitting requires --outdir\n", .{});
+            try stderr.print("zntc: --splitting requires --outdir\n", .{});
             std.process.exit(1);
         }
 
         // --preserve-modules는 --outdir 필수
         if (opts.preserve_modules and opts.output_dir == null) {
-            try stderr.print("zts: --preserve-modules requires --outdir\n", .{});
+            try stderr.print("zntc: --preserve-modules requires --outdir\n", .{});
             std.process.exit(1);
         }
 
@@ -2069,7 +2069,7 @@ pub fn main() !void {
         defer if (resolved_pm_root) |r| allocator.free(r);
         if (opts.preserve_modules_root) |pmr| {
             resolved_pm_root = std.fs.cwd().realpathAlloc(allocator, pmr) catch {
-                try stderr.print("zts: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
+                try stderr.print("zntc: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
                 std.process.exit(1);
             };
             opts.preserve_modules_root = resolved_pm_root;
@@ -2077,19 +2077,19 @@ pub fn main() !void {
 
         // --rn-platform은 --platform=react-native와 함께 사용해야 한다
         if (opts.rn_platform != .none and opts.platform != .react_native) {
-            try stderr.print("zts: --rn-platform requires --platform=react-native\n", .{});
+            try stderr.print("zntc: --rn-platform requires --platform=react-native\n", .{});
             std.process.exit(1);
         }
 
         // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
         if (opts.platform == .react_native and opts.rn_platform == .none and opts.dev) {
-            try stderr.print("zts: warning: --platform=react-native --dev without --rn-platform may cause unresolved platform-specific modules (e.g. DevTools). Use --rn-platform=ios or --rn-platform=android.\n", .{});
+            try stderr.print("zntc: warning: --platform=react-native --dev without --rn-platform may cause unresolved platform-specific modules (e.g. DevTools). Use --rn-platform=ios or --rn-platform=android.\n", .{});
         }
         if (opts.platform == .react_native) {
             // Hermes는 ES 버전으로 표현 불가능한 부분 지원 조합이라 target 직교성이 깨진다.
             // platform=react-native면 Hermes 매트릭스가 unsupported를 강제한다.
             if (opts.target_explicit) {
-                try stderr.print("zts: warning: --target ignored when --platform=react-native (Hermes matrix applied)\n", .{});
+                try stderr.print("zntc: warning: --target ignored when --platform=react-native (Hermes matrix applied)\n", .{});
             }
             opts.unsupported = lib.transformer.TransformOptions.compat.fromHermesPreset();
             opts.es_target = null;
@@ -2180,7 +2180,7 @@ pub fn main() !void {
         }
         for (opts.extra_inputs.items) |extra| {
             const abs = std.fs.cwd().realpathAlloc(allocator, extra) catch {
-                try stderr.print("zts: cannot resolve entry file '{s}'\n", .{extra});
+                try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{extra});
                 std.process.exit(1);
             };
             try entries_extras.append(allocator, abs);
@@ -2286,7 +2286,7 @@ pub fn main() !void {
         defer bundler.deinit();
 
         const result = bundler.bundle() catch |err| {
-            try stderr.print("zts: bundle failed: {}\n", .{err});
+            try stderr.print("zntc: bundle failed: {}\n", .{err});
             std.process.exit(1);
         };
         defer result.deinit(allocator);
@@ -2372,7 +2372,7 @@ pub fn main() !void {
                 const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
                 defer allocator.free(map_path);
                 std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
-                    try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                    try stderr.print("zntc: cannot write '{s}': {}\n", .{ map_path, err });
                 };
             }
         } else {
@@ -2402,8 +2402,8 @@ pub fn main() !void {
         // --watch: 파일 변경 감지 후 재번들
         if (opts.watch) {
             // 증분 빌드용 파싱 캐시 + resolve 캐시 (watch 전체 수명동안 보존)
-            const module_store_mod = @import("zts_lib").bundler.module_store;
-            const ResolveCache = @import("zts_lib").bundler.ResolveCache;
+            const module_store_mod = @import("zntc_lib").bundler.module_store;
+            const ResolveCache = @import("zntc_lib").bundler.ResolveCache;
             var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
             defer persistent_store.deinit();
 
@@ -2557,7 +2557,7 @@ pub fn main() !void {
                         const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
                         defer allocator.free(map_path);
                         std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
-                            try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                            try stderr.print("zntc: cannot write '{s}': {}\n", .{ map_path, err });
                         };
                     }
                     if (!opts.watch_json) {
@@ -2739,13 +2739,13 @@ pub fn main() !void {
             // (일부 시스템에서 디렉토리에 statFile이 실패할 수 있음)
             var dir = std.fs.cwd().openDir(input_path_str, .{}) catch {
                 // 파일도 디렉토리도 아닌 경우
-                try stderr.print("zts: cannot access '{s}': {}\n", .{ input_path_str, err });
+                try stderr.print("zntc: cannot access '{s}': {}\n", .{ input_path_str, err });
                 std.process.exit(1);
             };
             dir.close();
             // 디렉토리 확인됨 — 아래 디렉토리 처리로 이동
             const out_dir = opts.output_dir orelse {
-                try stderr.print("zts: --outdir is required when input is a directory\n", .{});
+                try stderr.print("zntc: --outdir is required when input is a directory\n", .{});
                 std.process.exit(1);
             };
             walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
@@ -2757,7 +2757,7 @@ pub fn main() !void {
 
         if (stat.kind == .directory) {
             const out_dir = opts.output_dir orelse {
-                try stderr.print("zts: --outdir is required when input is a directory\n", .{});
+                try stderr.print("zntc: --outdir is required when input is a directory\n", .{});
                 std.process.exit(1);
             };
             walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
@@ -2773,7 +2773,7 @@ pub fn main() !void {
 
     if (is_stdin) {
         const source = std.fs.File.stdin().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
-            try stderr.print("zts: cannot read stdin: {}\n", .{err});
+            try stderr.print("zntc: cannot read stdin: {}\n", .{err});
             std.process.exit(1);
         };
         defer allocator.free(source);
@@ -2800,7 +2800,7 @@ fn watchFile(
 
     // 초기 mtime 저장
     var last_mtime = getFileMtime(file_path) catch |err| {
-        try stderr.print("zts: cannot stat '{s}': {}\n", .{ file_path, err });
+        try stderr.print("zntc: cannot stat '{s}': {}\n", .{ file_path, err });
         return error.WatchFailed;
     };
 
@@ -2815,7 +2815,7 @@ fn watchFile(
             last_mtime = current_mtime;
             try stdout.print("[watch] File changed: {s}\n", .{file_path});
             transpileFile(allocator, file_path, null, output_path, options) catch |err| {
-                try stderr.print("zts: watch re-transpile error: {}\n", .{err});
+                try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
             };
         }
     }
@@ -2891,7 +2891,7 @@ fn watchDirectory(
                 defer allocator.free(out_path);
 
                 transpileFile(allocator, path, null, out_path, options) catch |err| {
-                    try stderr.print("zts: watch re-transpile error: {}\n", .{err});
+                    try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
                 };
 
                 // mtime 맵 업데이트 - 키를 복제하여 저장
@@ -2992,7 +2992,7 @@ fn collectWatchRootMtimes(
             return true;
         }
     }.f;
-    try @import("zts_lib").server.watch_scan.scanRoot(
+    try @import("zntc_lib").server.watch_scan.scanRoot(
         allocator,
         root,
         .{ .include = include, .exclude = exclude },
@@ -3010,20 +3010,20 @@ fn collectWatchRootMtimes(
 
 fn printUsage(writer: anytype) !void {
     try writer.print(
-        \\zts v0.1.0 - Zig TypeScript Transpiler
+        \\zntc v0.1.0 - Zig Native Transpiler Compiler
         \\
         \\Usage:
-        \\  zts <file.ts>                    Transpile to stdout
-        \\  zts <file.ts> -o <out.js>        Transpile to file
-        \\  zts <dir/> --outdir <out/>       Transpile directory recursively
-        \\  zts --bundle <entry.ts>          Bundle to stdout
-        \\  zts --bundle <entry.ts> -o out   Bundle to file
-        \\  zts --bundle <entry.ts> --splitting --outdir dist  Code splitting
-        \\  zts dev [root]                  Serve an app from index.html
-        \\  zts build [root]                Build an app from index.html
-        \\  zts preview [outdir]            Serve built static files
-        \\  zts - < input.ts                 Read from stdin
-        \\  zts bench --phase=<CATS> <file>  Benchmark a specific phase (see below)
+        \\  zntc <file.ts>                    Transpile to stdout
+        \\  zntc <file.ts> -o <out.js>        Transpile to file
+        \\  zntc <dir/> --outdir <out/>       Transpile directory recursively
+        \\  zntc --bundle <entry.ts>          Bundle to stdout
+        \\  zntc --bundle <entry.ts> -o out   Bundle to file
+        \\  zntc --bundle <entry.ts> --splitting --outdir dist  Code splitting
+        \\  zntc dev [root]                  Serve an app from index.html
+        \\  zntc build [root]                Build an app from index.html
+        \\  zntc preview [outdir]            Serve built static files
+        \\  zntc - < input.ts                 Read from stdin
+        \\  zntc bench --phase=<CATS> <file>  Benchmark a specific phase (see below)
         \\
         \\Options:
         \\  -o, --out-file <path>            Output file path
@@ -3057,7 +3057,7 @@ fn printUsage(writer: anytype) !void {
         \\  --base <path>                    Base URL prefix for HTML/assets (default: /)
         \\  --mode <name>                    Env mode (dev=development, build=production)
         \\  --env-dir <dir>                  Directory for .env files (default: app root)
-        \\  --env-prefix <csv>               Exposed env prefixes (default: VITE_,ZTS_)
+        \\  --env-prefix <csv>               Exposed env prefixes (default: VITE_,ZNTC_)
         \\
         \\Bundle options:
         \\  --bundle                         Enable bundle mode
@@ -3103,16 +3103,16 @@ fn printUsage(writer: anytype) !void {
         \\                                      scan | parse | semantic | transform | codegen
         \\                                      Output is empty; useful for isolating phase cost with --profile.
         \\                                      Examples:
-        \\                                        zts input.ts --stop-after=parse --profile=parse
-        \\                                        zts input.ts --stop-after=semantic --profile=all
+        \\                                        zntc input.ts --stop-after=parse --profile=parse
+        \\                                        zntc input.ts --stop-after=semantic --profile=all
         \\
         \\  Env equivalents:
-        \\    ZTS_PROFILE=<CATS>              Same as --profile
-        \\    ZTS_PROFILE_LEVEL=<L>           Same as --profile-level
+        \\    ZNTC_PROFILE=<CATS>              Same as --profile
+        \\    ZNTC_PROFILE_LEVEL=<L>           Same as --profile-level
         \\
         \\  See `docs/design/profile-infrastructure.md` for full reference.
         \\
-        \\Benchmark subcommand (`zts bench`):
+        \\Benchmark subcommand (`zntc bench`):
         \\  Run a specific phase N times and emit statistics (mean/median/p95/p99/stddev).
         \\  Useful for optimization work: measure before, change, measure after.
         \\
@@ -3129,11 +3129,11 @@ fn printUsage(writer: anytype) !void {
         \\    --compare=<PATH>                Compare against a saved baseline.
         \\
         \\  Examples:
-        \\    zts bench --phase=parse ./src/App.tsx
-        \\    zts bench --phase=parse ./src/App.tsx --iterations=50
-        \\    zts bench --phase=parse,transform --format=json ./src/App.tsx
-        \\    zts bench --phase=parse ./src/App.tsx --save=./perf/baseline.json
-        \\    zts bench --phase=parse ./src/App.tsx --compare=./perf/baseline.json
+        \\    zntc bench --phase=parse ./src/App.tsx
+        \\    zntc bench --phase=parse ./src/App.tsx --iterations=50
+        \\    zntc bench --phase=parse,transform --format=json ./src/App.tsx
+        \\    zntc bench --phase=parse ./src/App.tsx --save=./perf/baseline.json
+        \\    zntc bench --phase=parse ./src/App.tsx --compare=./perf/baseline.json
         \\
     , .{});
 }

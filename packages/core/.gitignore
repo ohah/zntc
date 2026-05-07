@@ -1,5 +1,5 @@
 packages/core/dist/
-packages/core/zts.node
-zts.node
+packages/core/zntc.node
+zntc.node
 bundle.js
 bundle.js.map

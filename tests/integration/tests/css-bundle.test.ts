@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 
@@ -20,7 +20,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    const result = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
     expect(result.exitCode).toBe(0);
 
     // JS 출력에 CSS import가 없어야 함
@@ -43,7 +43,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // b.css가 a.css보다 먼저 나와야 함 (DFS 순서)
@@ -66,7 +66,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     const cIdx = css.indexOf('.c');
@@ -83,7 +83,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     let hasCss = true;
     try {
@@ -102,7 +102,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs, '--loader:.css=empty']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs, '--loader:.css=empty']);
 
     // empty 로더 → CSS 파일 미생성
     let hasCss = true;
@@ -123,7 +123,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.a { color: red; }');
@@ -141,7 +141,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.button { padding: 8px; }');
@@ -156,7 +156,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('header { display: flex; }');
@@ -174,7 +174,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // shared.css는 한 번만 나와야 함
@@ -192,7 +192,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('html { font-size: 16px; }');
@@ -211,7 +211,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('box-sizing: border-box');
@@ -228,7 +228,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    const result = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
     // 번들이 성공해야 함 (무한루프 X)
     expect(result.exitCode).toBe(0);
 
@@ -250,7 +250,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // print.css 내용이 인라인되어야 함
@@ -268,7 +268,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    const result = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
     // 에러가 발생하거나 경고가 있어야 함 (missing.css 없음)
     const hasError = result.exitCode !== 0 || result.stderr.includes('missing.css');
     expect(hasError).toBe(true);
@@ -282,7 +282,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // url() 참조가 그대로 유지되어야 함
@@ -298,7 +298,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     // dynamic import의 CSS도 번들에 포함될 수 있음 (단일 엔트리이므로)
     const cssExists = await readFile(join(fixture.dir, 'index.css'), 'utf-8').catch(() => null);
@@ -318,7 +318,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outDir = join(fixture.dir, 'dist');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '--splitting',
@@ -343,7 +343,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.actual { color: green; }');
@@ -362,7 +362,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // 순서: vars → reset → base → main
@@ -385,7 +385,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // @import가 selector/value 안에 있으면 추출되면 안 됨
@@ -401,7 +401,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     let hasCss = true;
     try {
@@ -420,7 +420,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.parent');
@@ -436,7 +436,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.bom');
@@ -457,7 +457,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.c0');
@@ -475,7 +475,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('.lib { padding: 10px; }');
@@ -491,7 +491,7 @@ describe('CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css.indexOf('.a')).toBeLessThan(css.indexOf('.b'));

@@ -1,4 +1,4 @@
-//! ZTS Transformer — 핵심 변환 엔진
+//! ZNTC Transformer — 핵심 변환 엔진
 //!
 //! 단일 AST를 append-only로 변환한다.
 //!
@@ -103,7 +103,7 @@ pub const BindingLite = struct {
 pub const AutoLabelMode = enum {
     /// label 적용 안 함.
     never,
-    /// 항상 label 적용 (ZTS 기본 — 기존 사용자 영향 없음).
+    /// 항상 label 적용 (ZNTC 기본 — 기존 사용자 영향 없음).
     always,
     /// `process.env.NODE_ENV` define 이 `"production"` 이면 .never, 아니면 .always.
     /// runtime conditional 이 아니라 compile-time 단정 — `--define:process.env.NODE_ENV=...`
@@ -216,7 +216,7 @@ pub const TransformOptions = struct {
     styled_components_top_level_import_paths: []const []const u8 = &.{},
     /// styled-components.cssProp 옵션 — `<div css={...}>` JSX prop 을 module-level
     /// hoisted styled component 로 추출. babel-plugin-styled-components default true 와
-    /// 동등하지만 ZTS 는 후속 PR 에서 단계별 transform 구현 — 현재는 옵션 surface 만 노출.
+    /// 동등하지만 ZNTC 는 후속 PR 에서 단계별 transform 구현 — 현재는 옵션 surface 만 노출.
     /// transform 미구현 상태에서 true 켜도 no-op (사용자 코드 안전).
     styled_components_css_prop: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
@@ -262,7 +262,7 @@ pub const TransformOptions = struct {
     /// NestJS, Angular, TypeORM 등 reflect-metadata 기반 DI에 필요.
     emit_decorator_metadata: bool = false,
     /// `import { x } from 'mod'` → `import x from 'mod/x'` cherry-pick 분해. babel-plugin-lodash
-    /// 등 라이브러리별 babel plugin 의 ZTS 동등 — 사용자가 라이브러리 매핑 제공, ZTS 가
+    /// 등 라이브러리별 babel plugin 의 ZNTC 동등 — 사용자가 라이브러리 매핑 제공, ZNTC 가
     /// generic 하게 적용. 매핑 안 된 source 는 unchanged.
     ///
     /// 변환 조건 (안전):
@@ -310,7 +310,7 @@ pub const TransformOptions = struct {
     /// 예: `globals: ['__DEV__']` → worklet 내 `__DEV__` 참조가 __closure에 포함 안 됨.
     worklet_globals: []const []const u8 = &.{},
 
-    /// worklet 함수의 `__pluginVersion` 값. null이면 기본 ZTS 상수 사용.
+    /// worklet 함수의 `__pluginVersion` 값. null이면 기본 ZNTC 상수 사용.
     /// Reanimated dev mode (`serializable.native.ts:464`)에서 `jsVersion`과 대조.
     worklet_plugin_version: ?[]const u8 = null,
 
@@ -325,7 +325,7 @@ pub const TransformOptions = struct {
     /// `--minify-whitespace` 활성화 — #1621 runtime helper 축약 이름 사용.
     /// es_helpers.makeRuntimeHelperRef 가 이 플래그를 읽어 `__extends` → `$eX`
     /// 같은 단축 이름으로 AST identifier 를 생성. bundler preamble 의 `var $eX=...`
-    /// 와 정의부가 매칭된다. dev_mode 에선 __zts_g 경로라 무관.
+    /// 와 정의부가 매칭된다. dev_mode 에선 __zntc_g 경로라 무관.
     minify_whitespace: bool = false,
 
     /// `--keep-names` 활성화 — 함수/클래스 이름을 `.name` 프로퍼티로 보존해야 하므로
@@ -333,7 +333,7 @@ pub const TransformOptions = struct {
     keep_names: bool = false,
 
     /// #1961: transform() 끝에서 set 된 RuntimeHelpers 비트마다
-    /// `import { __helper } from "\x00zts:runtime/<short>"` 노드를 program 앞에 prepend.
+    /// `import { __helper } from "\x00zntc:runtime/<short>"` 노드를 program 앞에 prepend.
     /// graph parse 단계의 transformer pre-pass 만 true 로 set — emitter 의 in-place
     /// transformer 호출은 false 유지 (grafh 통합 없이 helper specifier 가 출력에 새는
     /// 사고 방지). 자세한 매핑은 `runtime_helper_imports.zig`.

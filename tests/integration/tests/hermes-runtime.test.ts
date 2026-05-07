@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from 'bun:test';
-import { ZTS_BIN } from './helpers';
+import { ZNTC_BIN } from './helpers';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 
@@ -138,7 +138,7 @@ describe('Hermes 런타임: for-in 클로저 캡처 버그 검증', () => {
   });
 });
 
-describe('Hermes 런타임: ZTS 번들 실행 검증', () => {
+describe('Hermes 런타임: ZNTC 번들 실행 검증', () => {
   let hermes: string | null = null;
 
   beforeAll(() => {
@@ -148,9 +148,9 @@ describe('Hermes 런타임: ZTS 번들 실행 검증', () => {
   test('RN 번들 Hermes 구문 검증 (hermesc)', async () => {
     const hermesc = findHermesc();
     if (!hermesc) return; // hermesc not found (bun install 미실행)
-    const outFile = resolve(EXAMPLE_APP, 'zts-hermes.js');
-    const zts = Bun.spawnSync([
-      ZTS_BIN,
+    const outFile = resolve(EXAMPLE_APP, 'zntc-hermes.js');
+    const zntc = Bun.spawnSync([
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -159,9 +159,9 @@ describe('Hermes 런타임: ZTS 번들 실행 검증', () => {
       '-o',
       outFile,
     ]);
-    if (zts.exitCode !== 0) return; // 번들 실패 시 skip (node_modules 부재 등)
+    if (zntc.exitCode !== 0) return; // 번들 실패 시 skip (node_modules 부재 등)
 
-    const hbc = resolve(EXAMPLE_APP, 'zts-hermes.hbc');
+    const hbc = resolve(EXAMPLE_APP, 'zntc-hermes.hbc');
     const result = Bun.spawnSync([hermesc, '-emit-binary', '-out', hbc, outFile]);
     const stderr = result.stderr?.toString() ?? '';
     const errorCount = (stderr.match(/error:/g) || []).length;
@@ -171,15 +171,15 @@ describe('Hermes 런타임: ZTS 번들 실행 검증', () => {
 
   test('async method this binding via __generator(thisArg, ...) (#1909)', () => {
     if (!hermes) return;
-    // ZTS 가 emit 한 ES5 generator state machine 의 callback 안 `this` 가 enclosing
+    // ZNTC 가 emit 한 ES5 generator state machine 의 callback 안 `this` 가 enclosing
     // function 의 this 와 동일해야. 이전엔 `body.call(null, _)` 라 callback 안 `this.x`
     // 가 null → throw. fix 후 `__generator(this, ...)` signature + `body.call(thisArg, _)`.
-    const tmp = `/tmp/zts-async-this-${Date.now()}.js`;
+    const tmp = `/tmp/zntc-async-this-${Date.now()}.js`;
     const ts = `var obj = { x: 42, async f() { return this.x * 2; } };
 obj.f().then(function(v) { print("RES:" + v); }, function(e) { print("ERR:" + e.message); });`;
     require('fs').writeFileSync(tmp + '.ts', ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
-    expect(zts.exitCode).toBe(0);
+    const zntc = Bun.spawnSync([ZNTC_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
+    expect(zntc.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
     expect(result.stdout?.toString() ?? '').toContain('RES:84');
   });
@@ -187,14 +187,14 @@ obj.f().then(function(v) { print("RES:" + v); }, function(e) { print("ERR:" + e.
   test('yield* string iterable wrap via __values (#1910)', () => {
     if (!hermes) return;
     // `yield* 'abc'` 가 raw string 으로 op[5] 에 못 가도록 __values() wrap.
-    const tmp = `/tmp/zts-yield-star-${Date.now()}.js`;
+    const tmp = `/tmp/zntc-yield-star-${Date.now()}.js`;
     const ts = `function* g() { yield* "abc"; }
 var arr = [];
 for (var v of g()) arr.push(v);
 print("RES:" + arr.join(","));`;
     require('fs').writeFileSync(tmp + '.ts', ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
-    expect(zts.exitCode).toBe(0);
+    const zntc = Bun.spawnSync([ZNTC_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
+    expect(zntc.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
     expect(result.stdout?.toString() ?? '').toContain('RES:a,b,c');
   });
@@ -202,15 +202,15 @@ print("RES:" + arr.join(","));`;
   test('compound `+=` with await preserves operator (#1896)', () => {
     if (!hermes) return;
     // sum += await x() 가 sum = _state.sent() 으로 떨어지지 않아야.
-    const tmp = `/tmp/zts-compound-await-${Date.now()}.js`;
+    const tmp = `/tmp/zntc-compound-await-${Date.now()}.js`;
     const ts = `(async function() {
   var sum = 0;
   for (var i = 0; i < 3; i++) sum += await Promise.resolve(i + 1);
   return sum;
 })().then(function(v) { print("RES:" + v); });`;
     require('fs').writeFileSync(tmp + '.ts', ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
-    expect(zts.exitCode).toBe(0);
+    const zntc = Bun.spawnSync([ZNTC_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
+    expect(zntc.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
     expect(result.stdout?.toString() ?? '').toContain('RES:6');
   });
@@ -222,7 +222,7 @@ print("RES:" + arr.join(","));`;
   test('for-await-of var hoist (#1901)', () => {
     if (!hermes) return;
     // `for await (var v of arr)` 의 `var v` + helper temps 모두 함수 top hoist.
-    const tmp = `/tmp/zts-forawait-${Date.now()}.js`;
+    const tmp = `/tmp/zntc-forawait-${Date.now()}.js`;
     const ts = `${ASYNC_ITER_POLYFILL}(async function() {
   var arr = [Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)];
   var sum = 0;
@@ -230,8 +230,8 @@ print("RES:" + arr.join(","));`;
   return sum;
 })().then(function(v) { print("RES:" + v); }, function(e) { print("ERR:" + e.message); });`;
     require('fs').writeFileSync(tmp + '.ts', ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
-    expect(zts.exitCode).toBe(0);
+    const zntc = Bun.spawnSync([ZNTC_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
+    expect(zntc.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
     expect(result.stdout?.toString() ?? '').toContain('RES:6');
   });
@@ -239,7 +239,7 @@ print("RES:" + arr.join(","));`;
   test('async generator (async function*) yields via __asyncGenerator (#1911)', () => {
     if (!hermes) return;
     // for await of 가 async generator 의 Symbol.asyncIterator 사용 — Promise unwrap.
-    const tmp = `/tmp/zts-asyncgen-${Date.now()}.js`;
+    const tmp = `/tmp/zntc-asyncgen-${Date.now()}.js`;
     const ts = `${ASYNC_ITER_POLYFILL}async function* g() { yield 1; await Promise.resolve(); yield 2; yield 3; }
 (async function() {
   var arr = [];
@@ -247,8 +247,8 @@ print("RES:" + arr.join(","));`;
   print("RES:" + arr.join(","));
 })();`;
     require('fs').writeFileSync(tmp + '.ts', ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
-    expect(zts.exitCode).toBe(0);
+    const zntc = Bun.spawnSync([ZNTC_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
+    expect(zntc.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
     expect(result.stdout?.toString() ?? '').toContain('RES:1,2,3');
   });
@@ -256,12 +256,12 @@ print("RES:" + arr.join(","));`;
   test('if-await self-loop fix (#1887)', () => {
     if (!hermes) return;
     // `if (cond) { await x(); }` 가 마지막 statement 인 패턴 — 이전엔 무한 루프 → 통과 = 정상 종료.
-    const tmp = `/tmp/zts-ifawait-${Date.now()}.js`;
+    const tmp = `/tmp/zntc-ifawait-${Date.now()}.js`;
     const ts = `(async function f(x) { if (x) { await Promise.resolve(); } return "done"; })(true)
   .then(function(v) { print("RES:" + v); });`;
     require('fs').writeFileSync(tmp + '.ts', ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
-    expect(zts.exitCode).toBe(0);
+    const zntc = Bun.spawnSync([ZNTC_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
+    expect(zntc.exitCode).toBe(0);
     // 무한 루프면 timeout — 10 초 cap.
     const result = Bun.spawnSync([hermes!, tmp], { timeout: 10000 });
     expect(result.stdout?.toString() ?? '').toContain('RES:done');
@@ -269,9 +269,9 @@ print("RES:" + arr.join(","));`;
 
   test('__copyProps getOwnPropertyNames 패턴이 번들에 포함됨', async () => {
     // 이전 테스트(hermesc)에 의존하지 않고 자체 번들 생성
-    const outFile = resolve(EXAMPLE_APP, 'zts-hermes.js');
-    const zts = Bun.spawnSync([
-      ZTS_BIN,
+    const outFile = resolve(EXAMPLE_APP, 'zntc-hermes.js');
+    const zntc = Bun.spawnSync([
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -280,7 +280,7 @@ print("RES:" + arr.join(","));`;
       '-o',
       outFile,
     ]);
-    if (zts.exitCode !== 0) return; // 번들 실패 시 skip (bun install 미실행 등)
+    if (zntc.exitCode !== 0) return; // 번들 실패 시 skip (bun install 미실행 등)
     const output = await Bun.file(outFile).text();
     // getOwnPropertyNames + for 루프 방식 (Rolldown 호환)
     expect(output).toContain('getOwnPropertyNames');

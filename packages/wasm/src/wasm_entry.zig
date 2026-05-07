@@ -1,4 +1,4 @@
-//! ZTS WASM 진입점
+//! ZNTC WASM 진입점
 //!
 //! wasm32-wasi 타겟용 진입점. transpile 함수만 export하여
 //! 브라우저/Node.js에서 TypeScript → JavaScript 변환을 수행한다.
@@ -10,19 +10,19 @@
 //!   4. 결과 읽기 후 dealloc()으로 해제
 
 const std = @import("std");
-const zts_lib = @import("zts_lib");
-const transpile_mod = zts_lib.transpile;
+const zntc_lib = @import("zntc_lib");
+const transpile_mod = zntc_lib.transpile;
 const TranspileOptions = transpile_mod.TranspileOptions;
-const Scanner = zts_lib.lexer.Scanner;
-const Diagnostic = zts_lib.diagnostic.Diagnostic;
-const OwnedDiagnostic = zts_lib.diagnostic.OwnedDiagnostic;
-const rich_diagnostic = zts_lib.rich_diagnostic;
-const diagnostic_renderer = zts_lib.diagnostic_renderer;
-const compat = zts_lib.transformer.transformer.TransformOptions.compat;
+const Scanner = zntc_lib.lexer.Scanner;
+const Diagnostic = zntc_lib.diagnostic.Diagnostic;
+const OwnedDiagnostic = zntc_lib.diagnostic.OwnedDiagnostic;
+const rich_diagnostic = zntc_lib.rich_diagnostic;
+const diagnostic_renderer = zntc_lib.diagnostic_renderer;
+const compat = zntc_lib.transformer.transformer.TransformOptions.compat;
 
 /// Bun 스타일 crash report: WASM에는 signal이 없지만 panic은 여전히 터질 수 있다.
 /// 호스트 콘솔(WASI stderr)로 배너 + 이슈 URL 출력.
-pub const panic = @import("zts_lib").crash_handler.panic;
+pub const panic = @import("zntc_lib").crash_handler.panic;
 
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
 const wasm_alloc = std.heap.wasm_allocator;

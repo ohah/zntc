@@ -1,15 +1,15 @@
 {
-  "name": "@zts/core",
+  "name": "@zntc/core",
   "version": "0.1.0",
-  "description": "ZTS TypeScript transpiler — native binding",
+  "description": "ZNTC native transpiler compiler binding",
   "license": "MIT",
   "bin": {
-    "zts": "./bin/zts.mjs"
+    "zntc": "./bin/zntc.mjs"
   },
   "files": [
     "dist/",
     "bin/",
-    "zts.node"
+    "zntc.node"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -24,8 +24,8 @@
     "build:napi": "cd ../.. && zig build napi",
     "build:js": "bun build index.ts --outdir dist --format esm --target node",
     "build:dts": "bun x tsc --emitDeclarationOnly",
-    "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js && bun run build:dts",
-    "postinstall": "[ -f ../../zig-out/lib/zts.node ] && cp ../../zig-out/lib/zts.node . || true",
+    "build": "bun run build:napi && cp ../../zig-out/lib/zntc.node . && bun run build:js && bun run build:dts",
+    "postinstall": "[ -f ../../zig-out/lib/zntc.node ] && cp ../../zig-out/lib/zntc.node . || true",
     "pretest": "bun run --cwd ../server build && bun run --cwd ../web build && bun run --cwd ../react-native build",
     "test": "bun test --timeout 10000"
   },

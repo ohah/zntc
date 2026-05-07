@@ -2,7 +2,7 @@
 /**
  * Mangler property harness — Issue #1760 baseline runner.
  *
- * 각 fixture 에 대해 `zts --bundle --minify --mangle-report=<path>` 를 돌려
+ * 각 fixture 에 대해 `zntc --bundle --minify --mangle-report=<path>` 를 돌려
  * ManglerReport JSON 을 수집하고 baseline 과 비교한다.
  *
  * Unified mangler 마이그레이션(#1760) 전/후의 property 동치성 검증용.
@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { COMMON_FIXTURES, type CommonFixture } from './_fixtures';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const BASELINE_PATH = join(__dirname, 'baselines', 'mangler-property.json');
 
 const BUNDLE_SIZE_TOLERANCE = 0.01; // ±1%
@@ -89,11 +89,11 @@ function sumNested(report: ManglerReport): ManglerStats {
 }
 
 function runFixture(f: Fixture): FixtureResult {
-  const dir = mkdtempSync(join(tmpdir(), `zts-mangle-${f.name}-`));
+  const dir = mkdtempSync(join(tmpdir(), `zntc-mangle-${f.name}-`));
   const entryFile = join(__dirname, `_mangle_entry_${f.name}.ts`);
   writeFileSync(entryFile, f.entry);
   try {
-    const outFile = join(dir, 'zts.js');
+    const outFile = join(dir, 'zntc.js');
     const reportFile = join(dir, 'report.json');
     const args = [
       '--bundle',
@@ -104,9 +104,9 @@ function runFixture(f: Fixture): FixtureResult {
       `--platform=${f.platform ?? 'node'}`,
       `--mangle-report=${reportFile}`,
     ];
-    const r = spawnSync(ZTS_BIN, args, { encoding: 'utf8', timeout: 180_000 });
+    const r = spawnSync(ZNTC_BIN, args, { encoding: 'utf8', timeout: 180_000 });
     if (r.status !== 0) {
-      throw new Error(`zts failed (${r.status}): ${r.stderr}`);
+      throw new Error(`zntc failed (${r.status}): ${r.stderr}`);
     }
     const report: ManglerReport = JSON.parse(readFileSync(reportFile, 'utf8'));
     return {

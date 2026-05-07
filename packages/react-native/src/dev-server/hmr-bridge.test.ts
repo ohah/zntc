@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import type { WatchHandle, WatchRebuildEvent } from '@zts/core';
+import type { WatchHandle, WatchRebuildEvent } from '@zntc/core';
 
 import { createHmrBridge } from './hmr-bridge.ts';
 import type { PlatformState } from './platform-state.ts';
@@ -75,7 +75,7 @@ describe('createHmrBridge — onRebuild', () => {
     ]);
     const update = recorded[1] as { modules: Array<{ id: string; code: string }> };
     expect(update.modules[0]!.code).toContain(
-      '//# sourceMappingURL=/__zts_hmr_map/src%2Ffoo.ts?platform=android',
+      '//# sourceMappingURL=/__zntc_hmr_map/src%2Ffoo.ts?platform=android',
     );
   });
 
@@ -150,7 +150,7 @@ describe('createHmrBridge — acceptUpgrade', () => {
   });
 
   test('path readonly 노출', () => {
-    const bridge = createHmrBridge({ path: '/__zts_hot__' });
-    expect(bridge.path).toBe('/__zts_hot__');
+    const bridge = createHmrBridge({ path: '/__zntc_hot__' });
+    expect(bridge.path).toBe('/__zntc_hot__');
   });
 });

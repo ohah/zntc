@@ -1,4 +1,4 @@
-//! ZTS Bundler — Module mutation phase 강제 (#1779)
+//! ZNTC Bundler — Module mutation phase 강제 (#1779)
 //!
 //! Worker thread race-safety 를 type 시스템으로 강제하기 위한 accessor 계층.
 //! ModuleGraph 가 phase 별 accessor 를 발급하고, 각 accessor 는 자기 phase 가

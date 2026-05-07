@@ -8,7 +8,7 @@ import { createRequireContextPlugin } from './require-context.ts';
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-rc-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-rc-'));
 });
 
 afterEach(() => {
@@ -32,7 +32,7 @@ function captureHandler(): OnResolveContextHandler {
     onLoad() {},
     onTransform() {},
   };
-  // ZtsPlugin.setup 시그니처 호환 (Build 의 onResolveContext 만 사용).
+  // ZntcPlugin.setup 시그니처 호환 (Build 의 onResolveContext 만 사용).
   plugin.setup(fakeBuild as never);
   if (!captured) throw new Error('handler not registered');
   return captured;

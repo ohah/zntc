@@ -924,7 +924,7 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     const chain = analyzeTagChain(self, tag_idx);
     if (!chain.matches_binding) return init_idx;
     // 사용자 명시 `.withConfig(<obj>)` 가 있으면 MERGE — chain 어디에 있든 (outer 든
-    // 중간이든) 그 call 의 args object 에 ZTS 자동 displayName/componentId 를 prepend.
+    // 중간이든) 그 call 의 args object 에 ZNTC 자동 displayName/componentId 를 prepend.
     // 이미 박힌 key 는 보존, spread (`{...config}`) 는 prepend 위치라 user 의 spread 가
     // 우리 값을 자연스럽게 override (= user-intended 시맨틱).
     if (!chain.user_with_config_call.isNone()) {
@@ -948,7 +948,7 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     });
 }
 
-/// 사용자 `.withConfig(<obj>)` 의 args object 에 ZTS 자동 displayName/componentId 를
+/// 사용자 `.withConfig(<obj>)` 의 args object 에 ZNTC 자동 displayName/componentId 를
 /// **prepend** (스프레드보다 앞) — 사용자가 이미 박은 key 는 그대로 보존되고, spread 가
 /// 우리 값을 override 할 수 있어 user-intended 시맨틱 보장.
 ///
@@ -978,7 +978,7 @@ fn mergeIntoUserWithConfig(
     const need_component_id = want_component_id and !scan.has_component_id;
     if (!need_display and !need_component_id) return init_idx;
 
-    // 2. 새 args object 빌드 — ZTS props 를 PREPEND (spread 보다 앞에 위치).
+    // 2. 새 args object 빌드 — ZNTC props 를 PREPEND (spread 보다 앞에 위치).
     //    → user 의 spread 또는 explicit static key 가 자동으로 우리 값을 override.
     const old_obj = self.ast.getNode(args_obj_idx);
     const old_list = old_obj.data.list;
@@ -1417,7 +1417,7 @@ fn forwardObjectInterpolations(
 /// template_literal 의 `${expr}` interpolation 을 prop 으로 forward — 각 expression 을
 /// `p => p._cssN` arrow function 으로 교체하고, 원본 expression 을 `_cssN={expr}`
 /// jsx_attribute 로 만들어 caller 의 forwarded_attrs 에 push. babel-plugin-styled-components
-/// 의 expressions reduce 와 동등 (단, ZTS 는 binding/function 검출 없이 모든 expression
+/// 의 expressions reduce 와 동등 (단, ZNTC 는 binding/function 검출 없이 모든 expression
 /// 을 forward — closure capture 회피, 사용자가 props 기반 동적 스타일링 가능).
 ///
 /// no-interp template (data.none == 0) 은 input 그대로 반환.

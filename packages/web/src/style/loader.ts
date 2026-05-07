@@ -22,7 +22,7 @@ export function requireFromAppRoot(
 
 /**
  * App 의 `require` 로 먼저 시도, MODULE_NOT_FOUND 발생 시 fallback `require` 로
- * 재시도. zts dev/build pipeline 의 plugin / preprocessor 로딩 (postcss/sass 등)
+ * 재시도. zntc dev/build pipeline 의 plugin / preprocessor 로딩 (postcss/sass 등)
  * 에서 \"app deps 우선, CLI deps fallback\" 패턴을 명시화.
  */
 export function requireFromAppOrFallback(

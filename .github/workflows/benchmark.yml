@@ -47,7 +47,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
 
-      - name: Build ZTS (ReleaseFast)
+      - name: Build ZNTC (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
 
       - name: Install benchmark dependencies
@@ -78,7 +78,7 @@ jobs:
           bun run napi-bench.ts 2>&1 | tee -a bench-output.txt
 
       - name: Run bundle perf tool comparison
-        # 같은 CI 머신에서 ZTS / Rolldown / Rspack wall time 을 비교한다.
+        # 같은 CI 머신에서 ZNTC / Rolldown / Rspack wall time 을 비교한다.
         # 체크인된 bundle-perf baseline 은 쓰지 않고, JSON 결과는 artifact 로 트렌드 추적.
         shell: bash
         run: |
@@ -112,7 +112,7 @@ jobs:
           BODY_FILE=$(mktemp)
           echo "## Benchmark Results (CI)" >> "$BODY_FILE"
           echo "" >> "$BODY_FILE"
-          echo "> Note: bundle-perf now reports same-run CI wall-time comparisons for ZTS / Rolldown / Rspack. There is no checked-in bundle-perf baseline or PR-base delta." >> "$BODY_FILE"
+          echo "> Note: bundle-perf now reports same-run CI wall-time comparisons for ZNTC / Rolldown / Rspack. There is no checked-in bundle-perf baseline or PR-base delta." >> "$BODY_FILE"
           echo "" >> "$BODY_FILE"
           for dir in results/benchmark-*/; do
             os=$(basename "$dir" | sed 's/benchmark-//')

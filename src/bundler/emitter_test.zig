@@ -1437,12 +1437,12 @@ test "HMR runtime: RN reload goes through DevSettings wrapper before native prox
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "require(\"react-native\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "rn.DevSettings.reload(why)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "setTimeout(fn, 0)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "__zts_g.nativeModuleProxy.DevSettings.reload()") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "__zntc_g.nativeModuleProxy.DevSettings.reload()") == null);
 
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "require(\"react-native\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "rn.DevSettings.reload(why)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "setTimeout(f,0)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "__zts_g.nativeModuleProxy.DevSettings.reload()") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "__zntc_g.nativeModuleProxy.DevSettings.reload()") == null);
 }
 
 // ============================================================
@@ -1580,7 +1580,7 @@ test "globalName — dotted name warning" {
     const output = emit_result.output;
 
     // 경고 주석이 포함되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, output, "[ZTS WARNING] Dotted globalName") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "[ZNTC WARNING] Dotted globalName") != null);
     // dotted name이면 일반 IIFE로 폴백
     try std.testing.expect(std.mem.indexOf(u8, output, "(() => {\n") != null);
 }

@@ -2,7 +2,7 @@
 /**
  * #1899 — WASM bundle size 측정 + 분리 빌드 결과 보고.
  *
- * `zig-out/bin/zts.wasm` (transpile-only) 와 `zts-bundler.wasm` (bundler) 의
+ * `zig-out/bin/zntc.wasm` (transpile-only) 와 `zntc-bundler.wasm` (bundler) 의
  * raw / gzip / brotli 사이즈를 측정해서 마크다운 표로 출력. CI 또는 로컬에서
  * 사이즈 회귀 추적용.
  *
@@ -19,8 +19,8 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const targets = [
-  { name: "zts.wasm", role: "transpile-only", path: "zig-out/bin/zts.wasm" },
-  { name: "zts-bundler.wasm", role: "bundler", path: "zig-out/bin/zts-bundler.wasm" },
+  { name: "zntc.wasm", role: "transpile-only", path: "zig-out/bin/zntc.wasm" },
+  { name: "zntc-bundler.wasm", role: "bundler", path: "zig-out/bin/zntc-bundler.wasm" },
 ];
 
 const fmt = (bytes: number): string => {

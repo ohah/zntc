@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from '../helpers';
+import { createFixture, runZntc } from '../helpers';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -26,7 +26,7 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
       `,
     });
     const outFile = join(dir, 'out.js');
-    const transpile = await runZts([join(dir, 'index.ts'), '-o', outFile]);
+    const transpile = await runZntc([join(dir, 'index.ts'), '-o', outFile]);
     expect(transpile.exitCode).toBe(0);
 
     const out = readFileSync(outFile, 'utf-8');
@@ -50,7 +50,7 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
       `,
     });
     const outFile = join(dir, 'out.js');
-    const transpile = await runZts([join(dir, 'index.ts'), '-o', outFile]);
+    const transpile = await runZntc([join(dir, 'index.ts'), '-o', outFile]);
     expect(transpile.exitCode).toBe(0);
 
     const out = readFileSync(outFile, 'utf-8');
@@ -70,7 +70,7 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
       `,
     });
     const outFile = join(dir, 'out.js');
-    const transpile = await runZts([join(dir, 'index.ts'), '-o', outFile]);
+    const transpile = await runZntc([join(dir, 'index.ts'), '-o', outFile]);
     expect(transpile.exitCode).toBe(0);
 
     const out = readFileSync(outFile, 'utf-8');

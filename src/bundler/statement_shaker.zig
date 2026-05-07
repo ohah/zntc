@@ -1,11 +1,11 @@
-//! ZTS Bundler — Statement-Level Tree-Shaking
+//! ZNTC Bundler — Statement-Level Tree-Shaking
 //!
 //! 모듈 내 top-level statement 단위로 미사용 코드를 제거한다.
 //! tree_shaker가 결정한 used exports를 기반으로, 각 statement의
 //! 선언/참조 심볼을 분석하여 도달 불가능한 statement를 skip_nodes에 추가한다.
 //!
 //! esbuild의 Part 시스템, rolldown의 StmtInfo와 유사한 역할.
-//! 단, ZTS에서는 별도 모듈로 분리하여 tree_shaker(모듈 단위)와
+//! 단, ZNTC에서는 별도 모듈로 분리하여 tree_shaker(모듈 단위)와
 //! 역할을 명확히 구분한다.
 
 const std = @import("std");

@@ -1,4 +1,4 @@
-//! ZTS Bundler — Statement Info (rolldown 방식)
+//! ZNTC Bundler — Statement Info (rolldown 방식)
 //!
 //! 각 top-level statement가 선언하는 심볼과 참조하는 심볼을 추적한다.
 //! semantic analyzer의 symbol_ids (node_index → symbol_index) 매핑을 재활용.

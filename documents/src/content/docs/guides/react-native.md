@@ -1,26 +1,26 @@
 ---
 title: React Native
-description: ZTS를 React Native 프로젝트에서 사용하는 방법을 알아봅니다.
+description: ZNTC를 React Native 프로젝트에서 사용하는 방법을 알아봅니다.
 ---
 
 ## 개요
 
-ZTS는 `--platform=react-native` 프리셋으로 Metro 호환 RN 번들링을 지원합니다.
+ZNTC는 `--platform=react-native` 프리셋으로 Metro 호환 RN 번들링을 지원합니다.
 
 ## 기본 사용법
 
 ```bash
-zts --bundle index.js --platform=react-native -o bundle.js
+zntc --bundle index.js --platform=react-native -o bundle.js
 ```
 
 ## RN 서브 플랫폼
 
 ```bash
 # iOS 빌드
-zts --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
+zntc --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
 
 # Android 빌드
-zts --bundle index.js --platform=react-native --rn-platform=android -o bundle.js
+zntc --bundle index.js --platform=react-native --rn-platform=android -o bundle.js
 ```
 
 ### 확장자 해석 순서
@@ -47,10 +47,10 @@ react-native → browser → module → main
 
 ## Hermes 호환
 
-ZTS의 ES5 다운레벨링으로 Hermes 엔진과 호환되는 출력을 생성합니다.
+ZNTC의 ES5 다운레벨링으로 Hermes 엔진과 호환되는 출력을 생성합니다.
 
 ```bash
-zts --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
+zntc --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
 ```
 
 ## Watch + NDJSON
@@ -58,7 +58,7 @@ zts --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
 외부 도구 연동을 위한 NDJSON 이벤트 출력:
 
 ```bash
-zts --bundle index.js --platform=react-native -o bundle.js --watch-json
+zntc --bundle index.js --platform=react-native -o bundle.js --watch-json
 ```
 
 ```jsonl
@@ -171,17 +171,17 @@ RN 플랫폼에서 자주 쓰는 옵션 한 줄 요약. 자세한 동작은 각 
 | `strictExecutionOrder` | 함수 선언을 factory 내부 assignment 로 다운그레이드해 호이스팅 방지 (Rolldown 동등). RN 플랫폼에서 자동 활성.                     |
 | `configurableExports`  | `Object.defineProperty` 에 `configurable: true` 추가 (RN/Hermes 호환).                                                            |
 | `reactRefresh`         | React Fast Refresh 활성화.                                                                                                        |
-| `devMode`              | 모듈을 `__zts_register()` 팩토리로 래핑 + HMR 런타임 주입.                                                                        |
+| `devMode`              | 모듈을 `__zntc_register()` 팩토리로 래핑 + HMR 런타임 주입.                                                                        |
 | `rootDir`              | dev mode 모듈 ID 기준 경로.                                                                                                       |
 | `collectModuleCodes`   | dev mode per-module codes 수집 (HMR rebuild 용).                                                                                  |
 | `workletTransform`     | "worklet" 디렉티브 함수에 `__workletHash`/`__closure`/`__initData` 주입. RN 플랫폼에서 자동 활성.                                 |
 
 ## Dev server (#2605)
 
-`zts dev --platform=react-native` 으로 Metro 호환 dev server 를 띄울 수 있습니다.
+`zntc dev --platform=react-native` 으로 Metro 호환 dev server 를 띄울 수 있습니다.
 
 ```bash
-zts dev --platform=react-native --rn-platform=ios index.js \
+zntc dev --platform=react-native --rn-platform=ios index.js \
   --port=8081 --host=localhost
 ```
 
@@ -190,7 +190,7 @@ zts dev --platform=react-native --rn-platform=ios index.js \
 - `GET /status` — packager live check (`packager-status:running`).
 - `GET /index.bundle?platform=ios&dev=true` — main bundle. `multipart/mixed` accept 시 progress + bundle chunk.
 - `GET /index.map?platform=ios` — bundle source map (lazy, build 단위 cache).
-- `GET /__zts_hmr_map/<id>?platform=ios` — per-module HMR source map.
+- `GET /__zntc_hmr_map/<id>?platform=ios` — per-module HMR source map.
 - `GET /assets/*`, `/node_modules/*` — asset registry (iOS @2x/@3x scale variant + 7-strategy package resolve).
 - `WS /hot` — HMR (`hmr:update-start` → `hmr:update` → `hmr:update-done` / `hmr:reload` / `hmr:error`).
 - `POST /symbolicate` — RN runtime LogBox stack trace 역매핑.
@@ -227,7 +227,7 @@ dev server 터미널에서 (Metro 호환):
 ### Programmatic API
 
 ```ts
-import { buildRnDevServerOptions, serveRn } from "@zts/react-native";
+import { buildRnDevServerOptions, serveRn } from "@zntc/react-native";
 
 const handle = await serveRn(
   buildRnDevServerOptions({
@@ -262,12 +262,12 @@ console.log(`Listening on ${handle.url}`);
 
 ### 예제
 
-검증 매트릭스 (둘 다 \`bun run start:zts\` 로 ZTS dev server 사용):
+검증 매트릭스 (둘 다 \`bun run start:zntc\` 로 ZNTC dev server 사용):
 
-- [`examples/react-native-bare/`](https://github.com/ohah/zts/tree/main/examples/react-native-bare) — RN 0.85 bare.
-- [`examples/react-native-expo/`](https://github.com/ohah/zts/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
+- [`examples/react-native-bare/`](https://github.com/ohah/zntc/tree/main/examples/react-native-bare) — RN 0.85 bare.
+- [`examples/react-native-expo/`](https://github.com/ohah/zntc/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
 
 ### 호환성
 
-- RN `>= 0.83` peer optional. `@zts/react-native` 가 Hermes / RN runtime 의 HMRClient interface 와 sourceMappingURL 라우트 컨벤션 호환.
+- RN `>= 0.83` peer optional. `@zntc/react-native` 가 Hermes / RN runtime 의 HMRClient interface 와 sourceMappingURL 라우트 컨벤션 호환.
 - Bun + Node 22+ 에서 동작. dev server lifecycle 은 SIGINT/SIGTERM graceful shutdown 보장.

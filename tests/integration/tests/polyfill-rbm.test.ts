@@ -8,7 +8,7 @@
 import { describe, expect, test, afterAll } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createFixture, runZtsInDir } from './helpers';
+import { createFixture, runZntcInDir } from './helpers';
 
 // 테스트 fixture: 간단한 엔트리 + 폴리필 + run-before-main 모듈
 const fixtures = {
@@ -48,7 +48,7 @@ describe('--polyfill', () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `-o`,
@@ -74,7 +74,7 @@ describe('--polyfill', () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `-o`,
@@ -97,7 +97,7 @@ describe('--polyfill', () => {
   test('존재하지 않는 폴리필 경로는 에러 메시지를 출력한다', async () => {
     fixture = await createFixture(fixtures);
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `--polyfill=/nonexistent/polyfill.js`,
@@ -111,7 +111,7 @@ describe('--run-before-main', () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `-o`,
@@ -135,7 +135,7 @@ describe('--run-before-main', () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `-o`,
@@ -164,7 +164,7 @@ describe('--run-before-main', () => {
   test('존재하지 않는 run-before-main 경로는 에러 메시지를 출력한다', async () => {
     fixture = await createFixture(fixtures);
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `--run-before-main=/nonexistent/init.js`,
@@ -178,7 +178,7 @@ describe('--polyfill + --run-before-main 조합', () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `-o`,
@@ -203,7 +203,7 @@ describe('--polyfill + --run-before-main 조합', () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'entry.js',
       `-o`,

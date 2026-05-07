@@ -14,7 +14,7 @@ import type { FrameInfo } from './types.ts';
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-symbolicate-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-symbolicate-'));
 });
 
 afterEach(() => {

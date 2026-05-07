@@ -1,4 +1,4 @@
-//! ZTS Bundler FileSystem 추상화 (#1885 epic — Phase 1 PR 1).
+//! ZNTC Bundler FileSystem 추상화 (#1885 epic — Phase 1 PR 1).
 //!
 //! comptime polymorphism 으로 빌드 타겟별 fs 구현 선택. NAPI/CLI 빌드는
 //! `RealFS` (호스트 std.fs.cwd() wrapping), WASM 빌드는 `VirtualFS`
@@ -325,7 +325,7 @@ pub const RealFS = struct {
     }
 };
 
-/// WASM host import. JS 측 `zts_fs` namespace 에 fn 들 노출 — wasm_entry 가
+/// WASM host import. JS 측 `zntc_fs` namespace 에 fn 들 노출 — wasm_entry 가
 /// instantiate 시 imports 로 주입. comptime 분기로 NAPI 빌드는 link 영향 X.
 ///
 /// ABI:
@@ -339,12 +339,12 @@ pub const RealFS = struct {
 ///   JSON: `[{"name":"a","kind":0}, ...]`.
 /// - hostFreeBytes(ptr, len) — host 가 alloc 한 버퍼 해제.
 const wasm_imports = if (is_wasm_build) struct {
-    extern "zts_fs" fn readFile(path_ptr: u32, path_len: u32, max_bytes: u32) u64;
-    extern "zts_fs" fn statFile(path_ptr: u32, path_len: u32, out_size: *u64, out_kind: *u8, out_mtime_lo: *u64, out_mtime_hi: *u64) u32;
-    extern "zts_fs" fn access(path_ptr: u32, path_len: u32) u32;
-    extern "zts_fs" fn realpath(path_ptr: u32, path_len: u32) u64;
-    extern "zts_fs" fn listDir(path_ptr: u32, path_len: u32) u64;
-    extern "zts_fs" fn hostFreeBytes(ptr: u32, len: u32) void;
+    extern "zntc_fs" fn readFile(path_ptr: u32, path_len: u32, max_bytes: u32) u64;
+    extern "zntc_fs" fn statFile(path_ptr: u32, path_len: u32, out_size: *u64, out_kind: *u8, out_mtime_lo: *u64, out_mtime_hi: *u64) u32;
+    extern "zntc_fs" fn access(path_ptr: u32, path_len: u32) u32;
+    extern "zntc_fs" fn realpath(path_ptr: u32, path_len: u32) u64;
+    extern "zntc_fs" fn listDir(path_ptr: u32, path_len: u32) u64;
+    extern "zntc_fs" fn hostFreeBytes(ptr: u32, len: u32) void;
 } else struct {};
 
 /// host 반환의 packed (ptr<<32 | len) 디코드 — 0 = error sentinel.
@@ -364,7 +364,7 @@ fn readPackedBytes(allocator: std.mem.Allocator, packed_val: u64) FsError![]u8 {
     return allocator.dupe(u8, bytes_ptr[0..decoded.len]) catch FsError.OutOfMemory;
 }
 
-/// WASM 빌드의 fs 구현. host JS callback (zts_fs namespace) 위임.
+/// WASM 빌드의 fs 구현. host JS callback (zntc_fs namespace) 위임.
 /// listDir 는 후속 PR — Phase 2 의 minimal use case (단일 entry + 명시 imports) 는
 /// require.context 미사용이라 제외.
 pub const VirtualFS = struct {

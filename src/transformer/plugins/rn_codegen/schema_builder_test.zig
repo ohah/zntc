@@ -1170,7 +1170,7 @@ test "schema_builder: TS namespace CT.UnsafeMixed[] → array.mixed (rn-screens 
 // Inline / nested object literal prop type — `prop?: { ... }` 형태.
 // `@react-native/codegen` reference 가 view config 에서 단순 `prop: true` 로 emit
 // (validAttributes 는 attribute 이름만 등록 — nested shape 는 native side 책임).
-// 따라서 ZTS 도 `.mixed` 로 매핑하면 byte-diff 0. 미지원 시 fail-fast.
+// 따라서 ZNTC 도 `.mixed` 로 매핑하면 byte-diff 0. 미지원 시 fail-fast.
 //
 // 영향: react-native-screens 4.23 의 BottomTabsScreenNativeComponent (`specialEffects?: {...}`).
 // ============================================================

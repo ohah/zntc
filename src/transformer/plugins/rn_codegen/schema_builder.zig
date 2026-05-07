@@ -46,7 +46,7 @@ pub const Error = error{
     /// **Reserved for strict mode**: 인헤리턴스 지원 도입 (#2348 후속) 이후 hot path
     /// 에서는 `mapTypeReference` 가 `.mixed` 로 permissive fallback. 현재 throw 안 됨.
     /// 추후 `BUNGAE_CODEGEN_FALLBACK=strict` 같은 toggle 도입 시 재활성화 예정.
-    /// public error code (`zts1400`) 호환을 위해 enum 변형 유지.
+    /// public error code (`zntc1400`) 호환을 위해 enum 변형 유지.
     UnresolvedTypeReference,
     /// 인식 못 하는 prop type 형태.
     UnsupportedPropType,
@@ -694,7 +694,7 @@ fn mapPropTypeAt(
 
         // inline / nested object literal. `@react-native/codegen` reference 의 schema 단계는
         // `ObjectTypeAnnotation { properties }` 로 nested shape 풀지만, view config emitter
-        // (`GenerateViewConfigJs.js`) 가 attribute name 만 등록 (`prop: true`). ZTS 의 scope 가
+        // (`GenerateViewConfigJs.js`) 가 attribute name 만 등록 (`prop: true`). ZNTC 의 scope 가
         // view config emit 한정이라 `.mixed` 가 동등 결과 — schema.zig 의 `.object: ObjectProp`
         // variant 는 의도적으로 미사용. C++ component descriptor / props.h 등 native side 가
         // 필요해지면 `.object` 로 보강 필요.

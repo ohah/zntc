@@ -9,7 +9,7 @@ describe('loadEnv', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-load-env-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-load-env-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -38,12 +38,12 @@ describe('loadEnv', () => {
     reset();
     writeFileSync(
       join(dir, '.env'),
-      'VITE_API=https://api.example.com\nSECRET_KEY=hidden\nZTS_FLAG=on',
+      'VITE_API=https://api.example.com\nSECRET_KEY=hidden\nZNTC_FLAG=on',
     );
     const env = loadEnv('production', dir);
     expect(env).toEqual({
       VITE_API: 'https://api.example.com',
-      ZTS_FLAG: 'on',
+      ZNTC_FLAG: 'on',
     });
     expect(env.SECRET_KEY).toBeUndefined();
   });
@@ -166,7 +166,7 @@ describe('envToDefine', () => {
   });
 
   test('BASE_URL can be provided and full import.meta.env object is injected', () => {
-    const define = envToDefine({ ZTS_FLAG: 'on' }, 'development', '/app/');
+    const define = envToDefine({ ZNTC_FLAG: 'on' }, 'development', '/app/');
     expect(define['import.meta.env.BASE_URL']).toBe('"/app/"');
     expect(JSON.parse(define['import.meta.env'])).toEqual({
       MODE: 'development',
@@ -174,7 +174,7 @@ describe('envToDefine', () => {
       DEV: true,
       SSR: false,
       BASE_URL: '/app/',
-      ZTS_FLAG: 'on',
+      ZNTC_FLAG: 'on',
     });
   });
 

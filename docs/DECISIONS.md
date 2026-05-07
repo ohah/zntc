@@ -1,4 +1,4 @@
-# ZTS Decision Records
+# ZNTC Decision Records
 
 프로젝트 진행 중 내려야 할 의사결정 목록과 당시 상태.
 
@@ -82,7 +82,7 @@
 
 ### D014: 공개 AST API 제공 여부
 - **결정**: WASM으로 공개 (Phase 6)
-- **이유**: 브라우저 플레이그라운드, JS에서 AST 직접 조작 가능. Bun이 안 하는 것을 해서 차별화. linter/formatter/codemod가 zts 위에 올라올 수 있는 생태계 기반
+- **이유**: 브라우저 플레이그라운드, JS에서 AST 직접 조작 가능. Bun이 안 하는 것을 해서 차별화. linter/formatter/codemod가 zntc 위에 올라올 수 있는 생태계 기반
 
 ### D015: 소스 위치 저장 방식
 - **결정**: start + end byte offset (8바이트, oxc 방식). line/column은 별도 line offset 테이블에서 lazy 계산
@@ -133,7 +133,7 @@
 ### D024: Flow 타입 시스템 지원
 - **결정**: 지원 (Hermes C++ 파서를 Zig에서 C ABI로 링크)
 - **이유**: React Native 프로젝트에서 Flow를 사용. 자체 구현 대신 Hermes 파서 임베딩으로 작업량 최소화
-- **방식**: Hermes C++ 파서를 static library로 빌드 → Zig에서 @cImport로 호출 → ESTree AST 반환 → zts가 변환/코드젠
+- **방식**: Hermes C++ 파서를 static library로 빌드 → Zig에서 @cImport로 호출 → ESTree AST 반환 → zntc가 변환/코드젠
 - **참고**: hermes-parser(npm)는 이미 WASM 빌드 존재. SWC는 자체 Flow 스트리핑 구현, oxc는 미지원
 
 ### D025: `@__PURE__` / `@__NO_SIDE_EFFECTS__` 주석 추적
@@ -256,7 +256,7 @@
 ### Phase 5 (CLI) — 결정 완료
 
 ### D047: 설정 파일
-- **결정**: tsconfig.json만 지원 (별도 zts.config.json 없음)
+- **결정**: tsconfig.json만 지원 (별도 zntc.config.json 없음)
 - **이유**: 기존 TS 프로젝트와 호환성. tsconfig.json은 이미 표준. esbuild/oxc/SWC 모두 tsconfig.json 사용. 별도 설정 파일은 사용자 혼란만 야기
 - **참고**: tsconfig.json의 extends, compilerOptions만 파싱. paths/baseUrl은 Phase 6(번들러)에서 활성화 (D010)
 
@@ -270,7 +270,7 @@
 
 ### D050: stdin/stdout 프로토콜
 - **결정**: 단순 파이프 (stdin → stdout, 추후 JSON-RPC)
-- **이유**: `cat input.ts | zts > output.js` 형태의 파이프 지원이 1순위. JSON-RPC는 에디터 통합 시 추가. esbuild도 단순 stdin/stdout 먼저, serve API 나중에 추가
+- **이유**: `cat input.ts | zntc > output.js` 형태의 파이프 지원이 1순위. JSON-RPC는 에디터 통합 시 추가. esbuild도 단순 stdin/stdout 먼저, serve API 나중에 추가
 
 ### Semantic Analysis — 결정 완료
 
@@ -340,7 +340,7 @@
 ### D056: 번들러 개발 전략
 - **결정**: 품질 먼저 → 속도 추가 (방법 B)
 - **비교**: 방법 A(속도 먼저, esbuild/Bun) vs 방법 B(품질 먼저, Rollup→Rolldown)
-- **이유**: 속도 최적화된 구조에 정교한 분석을 끼워넣기 어려움 (esbuild가 tree-shaking 개선 못 하는 이유). 반대로 정확한 알고리즘을 Zig/Arena/SIMD로 빠르게 만드는 건 인프라 최적화로 가능. ZTS 파서가 이미 정확도 우선(Test262 99%+)으로 만들어졌으므로 방법 B가 자연스러움.
+- **이유**: 속도 최적화된 구조에 정교한 분석을 끼워넣기 어려움 (esbuild가 tree-shaking 개선 못 하는 이유). 반대로 정확한 알고리즘을 Zig/Arena/SIMD로 빠르게 만드는 건 인프라 최적화로 가능. ZNTC 파서가 이미 정확도 우선(Test262 99%+)으로 만들어졌으므로 방법 B가 자연스러움.
 
 ### D057: 모듈 그래프 최우선
 - **결정**: 모듈 그래프가 번들러의 최우선 구현 대상
@@ -374,7 +374,7 @@
 
 ### D062: WASM AST API 직렬화
 - **결정**: 바이너리 우선 + ESTree 변환 나중에 (둘 다 제공)
-- **이유**: 24B 고정 노드 + u32 인덱스가 WASM 메모리에서 직접 접근 가능 (직렬화 비용 0, ZTS만의 차별점). ESTree는 JS 래퍼로 바이너리 위에 변환 계층 추가. oxc는 JSON 직렬화로 병목 발생.
+- **이유**: 24B 고정 노드 + u32 인덱스가 WASM 메모리에서 직접 접근 가능 (직렬화 비용 0, ZNTC만의 차별점). ESTree는 JS 래퍼로 바이너리 위에 변환 계층 추가. oxc는 JSON 직렬화로 병목 발생.
 
 ### D063: 트리쉐이킹 수준
 - **결정**: 점진적 (보수적 → 정교)
@@ -412,7 +412,7 @@
 - **참고**: `references/rollup/src/utils/executionOrder.ts`, `references/bun/src/bundler/LinkerContext.zig`
 
 ### D066: 번들러 에러 핸들링
-- **결정**: esbuild의 suggestion + Bun의 step enum + ZTS 기존 Diagnostic 확장
+- **결정**: esbuild의 suggestion + Bun의 step enum + ZNTC 기존 Diagnostic 확장
 - **비교**: Rollup(파싱 에러 시 전체 빌드 중단) vs SWC(miette/anyhow, Rust 전용) vs webpack(구조화 안 된 문자열) vs esbuild(suggestion 포함, 파일별 독립) vs Bun(step enum, Logger.Log 중앙 수집)
 - **이유**: esbuild의 suggestion이 DX에서 압도적 — `import './foo'` 실패 시 `Did you mean './foo.js'?` 제안. Bun의 `step: Step` enum (read_file/parse/resolve)이 디버깅에 결정적.
 - **배제 이유**:
@@ -426,7 +426,7 @@
       severity: Severity,      // error, warning, info
       message: []const u8,
       file_path: []const u8,
-      span: Span,              // 기존 ZTS Span 재사용
+      span: Span,              // 기존 ZNTC Span 재사용
       step: Step,              // resolve, parse, transform, link
       suggestion: ?[]const u8, // "Did you mean './foo.js'?"
       notes: []Note,           // 보조 위치 ("opened here", "defined here")
@@ -456,7 +456,7 @@
 - **비교**: esbuild/Rolldown(`__toESM` 등 헬퍼 주입) vs Rollup(`_interopDefault` 등) vs webpack/rspack(`__webpack_require__.*` 축약 프로퍼티) vs SWC(헬퍼 없이 AST 직접 변환, 인라인)
 - **이유**: esbuild/Rolldown과 동일한 `__` 프리픽스로 사용자 친숙도 확보. 디버깅 시 `__toESM` 검색하면 esbuild 문서도 참고 가능. SWC처럼 인라인하면 파일마다 같은 코드 반복으로 번들 크기 증가. webpack의 `.n`/`.t` 축약은 가독성 희생.
 - **배제 이유**:
-  - `__zts_` 고유 프리픽스: 이름이 길고 생태계에서 낯섦. 실무에서 번들러 출력 간 충돌은 발생하지 않음
+  - `__zntc_` 고유 프리픽스: 이름이 길고 생태계에서 낯섦. 실무에서 번들러 출력 간 충돌은 발생하지 않음
   - SWC 인라인: 헬퍼 코드가 파일마다 중복. tree-shaking 불가
   - webpack `__webpack_require__.*`: 프로퍼티 기반 축약은 스코프 호이스팅과 맞지 않음 (Rollup 방식 추구)
 - **핵심 헬퍼 목록**:
@@ -484,7 +484,7 @@
 ### D070: 모듈 ID 체계
 - **결정**: u32 정수 인덱스 (`ModuleIndex = enum(u32)`)
 - **비교**: 정수 인덱스(esbuild/Bun/Rolldown/SWC) vs 파일 경로 문자열(Rollup) vs 해시(webpack 빌드 시 변환)
-- **이유**: 기존 ZTS 패턴(`NodeIndex`, `SymbolId`, `ScopeId` 전부 u32 enum)과 일관. 배열 O(1) 접근, 정수 비교 1명령어, 4바이트. 문자열 ID는 해시맵 필요 + 비교 O(n). u16은 monorepo에서 node_modules 포함 시 65,535 초과 가능성 있고, 구조체 패딩으로 절약 효과 없음.
+- **이유**: 기존 ZNTC 패턴(`NodeIndex`, `SymbolId`, `ScopeId` 전부 u32 enum)과 일관. 배열 O(1) 접근, 정수 비교 1명령어, 4바이트. 문자열 ID는 해시맵 필요 + 비교 O(n). u16은 monorepo에서 node_modules 포함 시 65,535 초과 가능성 있고, 구조체 패딩으로 절약 효과 없음.
 - **설계**:
   ```
   ModuleIndex = enum(u32) { none = maxInt(u32), _ }
@@ -496,9 +496,9 @@
 ### D071: 소스맵 체이닝
 - **결정**: 자체 파이프라인은 AST span 직접 매핑 + 플러그인은 collapse_sourcemaps() 합성
 - **비교**: esbuild(인라인 리맵핑만, 플러그인 제한적) vs Rollup(Source/Link 트리, ~270줄) vs Rolldown(lookup 테이블, ~60줄) vs Vite(`@jridgewell/remapping` JS 외부 의존)
-- **이유**: ZTS는 파이프라인 전체를 소유하므로 자체 변환은 중간 소스맵 불필요 (이미 D046에서 설계). 하지만 Rollup 호환 플러그인 시스템(D060)을 목표로 하므로, 플러그인 transform 시 소스맵 체이닝을 처음부터 설계해야 함.
+- **이유**: ZNTC는 파이프라인 전체를 소유하므로 자체 변환은 중간 소스맵 불필요 (이미 D046에서 설계). 하지만 Rollup 호환 플러그인 시스템(D060)을 목표로 하므로, 플러그인 transform 시 소스맵 체이닝을 처음부터 설계해야 함.
 - **배제 이유**:
-  - esbuild 인라인만: 플러그인이 제한적이라 가능한 것. ZTS는 Rollup 호환 플러그인을 목표로 하므로 부족
+  - esbuild 인라인만: 플러그인이 제한적이라 가능한 것. ZNTC는 Rollup 호환 플러그인을 목표로 하므로 부족
   - Rollup 트리 구조: 플러그인 체인 깊어질수록 메모리 증가. Rolldown이 lookup 테이블로 단순화한 이유 있음
   - Vite `@jridgewell/remapping`: JS 외부 의존성, Zig에서 사용 불가
 - **설계**:
@@ -567,7 +567,7 @@
 ### D075: 개발 서버
 - **결정**: 번들 개발 모드 (esbuild --serve) + SSE 라이브 리로드 → 이후 WebSocket HMR
 - **비교**: Vite(언번들 ESM→v8에서 번들로 전환 중) vs esbuild(전체 리빌드+SSE, HMR 없음) vs webpack-dev-server(Express+WebSocket+증분) vs Turbopack(증분 번들+WebSocket) vs Bun(자체 HTTP+WebSocket)
-- **이유**: Vite조차 v8에서 번들 개발 모드로 전환 중 — 언번들 ESM은 대형 프로젝트에서 네트워크 요청 폭발 (Vite 팀: 3배 빠른 시작, 10배 적은 요청). ZTS가 Zig 네이티브로 빌드 빠르면 전체 리빌드도 충분. SSE가 WebSocket보다 단순 (단방향 충분).
+- **이유**: Vite조차 v8에서 번들 개발 모드로 전환 중 — 언번들 ESM은 대형 프로젝트에서 네트워크 요청 폭발 (Vite 팀: 3배 빠른 시작, 10배 적은 요청). ZNTC가 Zig 네이티브로 빌드 빠르면 전체 리빌드도 충분. SSE가 WebSocket보다 단순 (단방향 충분).
 - **배제 이유**:
   - 언번들 ESM (Vite v7): 대형 프로젝트에서 느림 (Vite 팀 자체 인정). 모듈 그래프+on-demand transform 파이프라인이 번들러보다 복잡해짐
   - WebSocket HMR 먼저: 모듈 그래프 diff, HMR boundary 탐색, React Fast Refresh 통합 등 복잡도 높음. SSE로 시작 후 업그레이드
@@ -624,7 +624,7 @@
 ### D079: import 추출 방식
 - **결정**: 파싱 후 AST 순회 (방법 B)
 - **비교**: 파서에서 바로 수집(A, esbuild/Bun — 파서가 수집) vs 파싱 후 AST 순회(B, Rollup/Rolldown)
-- **이유**: ZTS 파서가 이미 완성됨 (Phase 2, Test262 100%). 번들러 때문에 파서를 수정하면 안정성 리스크. AST 순회는 O(N)이라 속도 영향 무시 가능. `import_declaration`, `export_named_declaration`, `import_expression` 태그만 찾으면 됨.
+- **이유**: ZNTC 파서가 이미 완성됨 (Phase 2, Test262 100%). 번들러 때문에 파서를 수정하면 안정성 리스크. AST 순회는 O(N)이라 속도 영향 무시 가능. `import_declaration`, `export_named_declaration`, `import_expression` 태그만 찾으면 됨.
 - **배제 이유**:
   - 파서에서 수집: 파서와 번들러 관심사가 섞임. 파서 수정 시 번들러 의존성 추출도 영향받음. esbuild/Bun은 파서를 번들러와 함께 만들었기 때문에 가능한 것
 - **설계**:
@@ -711,7 +711,7 @@
 ### D081: Resolver 코드 구조
 - **결정**: Rolldown 3계층 (A 방식)
 - **비교**: 3계층(A, Rolldown/oxc — resolver + cache + plugin) vs 단일 파일(B, esbuild/Bun — 한 파일에 전부) vs 기능별 분리(C, webpack — 5개+ 파일)
-- **이유**: ZTS 코드베이스가 이미 모듈별 분리 패턴. Zig에서 파일=모듈이라 분리가 자연스러움. 각 계층이 독립 테스트 가능.
+- **이유**: ZNTC 코드베이스가 이미 모듈별 분리 패턴. Zig에서 파일=모듈이라 분리가 자연스러움. 각 계층이 독립 테스트 가능.
 - **배제 이유**:
   - 단일 파일 (esbuild): Go는 패키지 내 큰 파일이 문화적으로 허용되지만, Zig에서는 파일 분리가 관용구. 3000줄 단일 파일은 가독성 나쁨
   - 기능별 5개+ (webpack): package.json exports 복잡도를 아직 모르는 상태에서 미리 나누면 오버엔지니어링
@@ -735,18 +735,18 @@
   - 가변 크기 노드 (Bun/esbuild 방식): 프로젝트 전체 재작성. WASM 직접 접근(D037 차별점) 포기.
 - **이유**: extra_data는 이미 function/class 등 복잡한 노드가 사용하는 검증된 패턴. 필요한 노드만 필요한 만큼 슬롯 추가 (메모리 효율). 새 배열 불필요. WASM 호환 유지 (extra_data 배열 하나로 통합). call_expression도 이미 args를 extra_data를 통해 접근하므로 성능 영향 미미.
 - **배제 이유**:
-  - flags 비트: 플래그 추가될 때마다 arg_count 범위 축소. 다른 번들러(esbuild/oxc/Bun)는 인자 수 제한 없음 — ZTS만 제한 생기는 건 비대칭
+  - flags 비트: 플래그 추가될 때마다 arg_count 범위 축소. 다른 번들러(esbuild/oxc/Bun)는 인자 수 제한 없음 — ZNTC만 제한 생기는 건 비대칭
   - node_flags 배열: 10만 노드 × 4B = 400KB 추가인데, 대부분의 노드는 플래그 불필요. 메모리 낭비
   - 노드 크기 확장: 모든 AST 순회 성능에 영향. 캐시 라인당 노드 수 감소 (2.6 → 2개)
   - 가변 크기: WASM 직접 접근 포기 + 프로젝트 전체 재작성 비용
-- **참고**: esbuild(`ECall.CanBeUnwrappedIfUnused: bool`), oxc(`CallExpression.pure: bool`), Bun(`E.Call.can_be_unwrapped_if_unused: CallUnwrap(u2)`) — 모두 가변 크기 노드라 필드 추가로 해결. ZTS는 24B 고정이므로 extra_data로 동등한 확장성 확보.
+- **참고**: esbuild(`ECall.CanBeUnwrappedIfUnused: bool`), oxc(`CallExpression.pure: bool`), Bun(`E.Call.can_be_unwrapped_if_unused: CallUnwrap(u2)`) — 모두 가변 크기 노드라 필드 추가로 해결. ZNTC는 24B 고정이므로 extra_data로 동등한 확장성 확보.
 - **전환 완료 노드**: call_expression, new_expression, static_member_expression, computed_member_expression, private_field_expression, unary_expression, update_expression, arrow_function_expression, tagged_template_expression
 - **inline 유지 노드**: identifier_reference, string_literal (분석 단계 플래그만 필요 → tree-shaker 자체 구조에서 관리), array/object_expression (포맷팅 힌트는 span에서 유추), binary/assignment_expression (연산자 종류만, 확장 불필요)
 - **규칙**: "파싱 시 설정되는 플래그가 있는 노드 → extra_data. 분석 시 플래그만 필요한 노드 → 해당 분석 단계의 자체 구조. 플래그 불필요/유추 가능 → inline 유지"
 
 ### D090: CJS→ESM Interop — Rolldown 방식 (2026-03-27)
 - **결정**: Rolldown의 `Interop` enum (`babel`/`node`) + `ModuleDefFormat` enum 도입
-- **이유**: esbuild의 암묵적 인자(isNodeMode 유무)보다 타입으로 의도 표현이 유지보수에 유리. ZTS가 하드코딩 `1`로 버그가 발생했던 사례.
+- **이유**: esbuild의 암묵적 인자(isNodeMode 유무)보다 타입으로 의도 표현이 유지보수에 유리. ZNTC가 하드코딩 `1`로 버그가 발생했던 사례.
 - **설계**: importer의 def_format(확장자/package.json)으로 interop 모드 결정. ESM importer → Node 모드, 기타 → Babel 모드.
 - **참고**: Rolldown `normal_module.rs:interop()`, esbuild는 `isNodeMode` 인자 생략으로 Babel 모드
 
@@ -793,7 +793,7 @@
 - **설계 원칙 (유지보수 안전장치)**:
   1. **Plugin state 접근은 자기 plugin만**. Cross-plugin 직접 접근 금지 (예: `refresh.zig`가 `plugins.worklet.*`를 읽으면 안 됨).
   2. **Core는 명명된 hook point 함수로만 plugin 상태 접근** (예: `visitBodyWorkletAware`, `dispatchFunctionPlugins`).
-- **왜 Visitor-Hook 아키텍처(Option B)로 가지 않았나**: Zig는 trait/interface가 없어 hook dispatch가 타입 안전성을 약화시킴. ZTS는 내부 플러그인만 상정(써드파티 AST 플러그인 비목표)이라 hook 인프라는 과설계. 위 규칙을 지키면 추후 B로 전환 비용이 저렴 (state는 이미 plugin별로 뭉쳐있음 → dispatch만 간접화).
+- **왜 Visitor-Hook 아키텍처(Option B)로 가지 않았나**: Zig는 trait/interface가 없어 hook dispatch가 타입 안전성을 약화시킴. ZNTC는 내부 플러그인만 상정(써드파티 AST 플러그인 비목표)이라 hook 인프라는 과설계. 위 규칙을 지키면 추후 B로 전환 비용이 저렴 (state는 이미 plugin별로 뭉쳐있음 → dispatch만 간접화).
 - **참고**: oxc의 `TransformCtx`도 동일 패턴 (내부 플러그인 state를 단일 ctx struct). oxlint만 외부 JS 플러그인을 별도 프로세스 경계로 분리.
 - **관련**: #1195, PR #1196 (Phase 1a — worklet 이사), PR #1197 (Phase 1b — refresh 이사)
 - **알려진 cross-plugin 위반**: `worklet_plugin.zig`가 `plugins.refresh.suppress_registration`을 직접 세팅. 후속 과제로 core에 중립 API(`t.suppressRefreshInScope(...)` 등) 도입하여 해소 예정.
@@ -801,16 +801,16 @@
 ### D098: TranspileOptions 전달을 단일 JSON payload로 통일 (2026-04-14)
 - **결정**: CLI/NAPI/WASM 공용 경계에서 옵션을 필드별 인자 → 단일 JSON 페이로드로 전환. `transpile.zig`의 `optionsFromJson()`이 유일한 파서.
 - **이유**: 필드별 인자는 타겟(CLI/NAPI/WASM)마다 파싱/검증을 중복 구현 → 필드 추가 시 3곳에 흩어진 변경. 실제로 `TranspileResult`의 `es_target` / `source_root` 같은 신규 필드가 일부 타겟에만 연결되어 있던 버그(2c63d360 수정) 발생.
-- **효과**: `zts.config.json` 자동 로드(D099)도 동일 파서 재사용 → 옵션이 한 곳에 정의되면 모든 경로로 자동 전파. DTO ↔ TS `TranspileOptions` 필드 sync는 `src/transpile_options_dto_test.zig`로 자동 검증.
+- **효과**: `zntc.config.json` 자동 로드(D099)도 동일 파서 재사용 → 옵션이 한 곳에 정의되면 모든 경로로 자동 전파. DTO ↔ TS `TranspileOptions` 필드 sync는 `src/transpile_options_dto_test.zig`로 자동 검증.
 - **관련 커밋**: 8047603a(migrate), 0d1efd43(DTO sync test)
 
-### D099: `zts.config.json` 자동 로드 + JSON Schema 자동 생성 (2026-04-14)
+### D099: `zntc.config.json` 자동 로드 + JSON Schema 자동 생성 (2026-04-14)
 - **결정**:
-  1. CLI가 cwd에서 `zts.config.json`을 찾으면 자동 로드하여 기본값으로 적용. CLI 인자가 이 값을 덮어쓴다 — **우선순위: CLI > config.json**.
+  1. CLI가 cwd에서 `zntc.config.json`을 찾으면 자동 로드하여 기본값으로 적용. CLI 인자가 이 값을 덮어쓴다 — **우선순위: CLI > config.json**.
   2. `zig build schema` → `transpile-options.schema.json`을 comptime reflection으로 생성 (biome 방식).
   3. config 파일에 `"$schema": "./transpile-options.schema.json"` 선언으로 VSCode/IntelliJ autocomplete.
 - **이유**: 옵션 정의를 Zig 코드(`TranspileOptions`) **한 곳**에만 두고 JSON schema / TS 타입 / CLI flag / config 로더가 모두 이를 따르도록 단일 소스 진실(single source of truth) 확립. 수동 schema 유지 부담 제거.
-- **제약**: 번들러 전용 필드(`external`, `alias`, `entryPoints` 등)는 자동 로드 대상이 아님. `zts.config.{ts,js,...}` 또는 CLI/JS API로 지정.
+- **제약**: 번들러 전용 필드(`external`, `alias`, `entryPoints` 등)는 자동 로드 대상이 아님. `zntc.config.{ts,js,...}` 또는 CLI/JS API로 지정.
 - **관련 커밋**: e9272ac1(schema gen), e8b8e9cf(config auto-load)
 
 ### D100: Rich Diagnostic 시스템 확장 (2026-04-14)
@@ -818,25 +818,25 @@
 - **구성**:
   - Primary span + 보조 `labels[]`: "previously declared here" (6개 재선언 에러), "referenced from" (3개 참조→정의 에러)
   - `help`: 수정 방향 hint
-  - `docs_url`: `ZTSxxxx` 에러 코드별 Starlight 문서 URL (`documents/` 사이트, 소문자 `zts` 세그먼트 사용)
+  - `docs_url`: `ZNTCxxxx` 에러 코드별 Starlight 문서 URL (`documents/` 사이트, 소문자 `zntc` 세그먼트 사용)
 - **노출 경로**:
   - CLI: ANSI 컬러 코드 프레임 + exit 1
-  - `@zts/core` `transpile()`: `TranspileResult.errors`에 렌더된 문자열 (tsc 호환 — 에러 있어도 `code` 반환)
-  - `@zts/core` `build()`: `{ errors, warnings }` 구조화 배열 (`{ text, location }`)
+  - `@zntc/core` `transpile()`: `TranspileResult.errors`에 렌더된 문자열 (tsc 호환 — 에러 있어도 `code` 반환)
+  - `@zntc/core` `build()`: `{ errors, warnings }` 구조화 배열 (`{ text, location }`)
 - **이유**: 참조 관계가 있는 에러(재선언, undefined reference)는 single-span으로 "어디서 문제가 시작됐는지"를 보여줄 수 없음. rust/rolldown/Bun 모두 multi-span으로 전환. docs URL은 Starlight 사이트와 연결하여 CLI → 웹 연속성 확보.
 - **관련 커밋**: 9dfea7dd, 9d9b3ab5, 75626350, 853ad5c2, fa257fed, 2698079e, abd1d11b(crash report)
 
-### D101: `@zts/plugin` subprocess 경로 제거 — NAPI 단일화 (2026-04-17)
-- **결정**: JS 플러그인 실행 경로를 **NAPI (`@zts/core`) 단일화**. 기존 subprocess IPC 기반 `@zts/plugin` 패키지와 `src/bundler/subprocess_plugin.zig`, Zig CLI의 `--plugin` / `zts.config.{ts,js}` 자동 로드 전부 제거.
+### D101: `@zntc/plugin` subprocess 경로 제거 — NAPI 단일화 (2026-04-17)
+- **결정**: JS 플러그인 실행 경로를 **NAPI (`@zntc/core`) 단일화**. 기존 subprocess IPC 기반 `@zntc/plugin` 패키지와 `src/bundler/subprocess_plugin.zig`, Zig CLI의 `--plugin` / `zntc.config.{ts,js}` 자동 로드 전부 제거.
 - **이유**:
-  1. `@zts/core` NAPI(D의 3단계) 완성 이후 subprocess 경로는 **중복**. npm CLI(`packages/core/bin/zts.mjs`)가 사실상 모든 사용자 진입점인데 내부적으로 이미 NAPI 호출.
+  1. `@zntc/core` NAPI(D의 3단계) 완성 이후 subprocess 경로는 **중복**. npm CLI(`packages/core/bin/zntc.mjs`)가 사실상 모든 사용자 진입점인데 내부적으로 이미 NAPI 호출.
   2. 매 모듈마다 JSON 왕복 IPC는 NAPI TSFN 대비 느림 + 디버깅 어려움.
   3. 유지보수 부담: 2곳(subprocess/NAPI)에 플러그인 호출 로직을 이중 관리.
 - **업계 기준**: Rolldown/Rspack 모두 NAPI 단일화. esbuild만 subprocess인데, 이는 Go가 NAPI 생태계가 약해서 취한 선택. Zig는 NAPI 네이티브 지원(`vendor/node-api-headers/`) 있어 esbuild 제약 없음.
 - **영향**:
-  - Zig 독립 바이너리(`zig-out/bin/zts`)는 JS 플러그인 미지원 (builtin만). 실사용자는 npm CLI를 쓰므로 영향 미미.
+  - Zig 독립 바이너리(`zig-out/bin/zntc`)는 JS 플러그인 미지원 (builtin만). 실사용자는 npm CLI를 쓰므로 영향 미미.
   - `packages/plugin/` (886줄), `src/bundler/subprocess_plugin.zig` (790줄), 통합 테스트 `plugin.test.ts`(700줄) + `config-options.test.ts`(246줄) 제거 — 총 ~2600줄 감소.
-  - `zts.config.json` (JSON-only) 자동 로드는 유지 (D099).
+  - `zntc.config.json` (JSON-only) 자동 로드는 유지 (D099).
 
 ### D102: Import attributes `with { type }` — loader override 미지원 (rolldown 정책) (2026-04-25)
 - **결정**: ES2024 `with { type }` 는 **pass-through 메타데이터** 로만 취급. 파싱 + AST 보존 + codegen 라운드트립까지 수행하되, **loader 선택은 오직 확장자 기반** (`ModuleType.fromExtension`). attrs 기반 loader override 는 도입하지 않음.
@@ -844,10 +844,10 @@
   - **esbuild**: attrs = loader override 도구. `.txt` + `type: "json"` → JSON 로더 강제, 알 수 없는 type (`yaml` 등) → 명시적 에러.
   - **rolldown**: attrs = 스펙 준수용 pass-through. 확장자 우선, attrs 는 출력 라운드트립만. 검증 없음.
 - **이유**:
-  1. ZTS 는 이미 확장자 기반 loader 선택으로 Node/Vite/rolldown 생태계와 호환. 추가 기능 없이도 실사용 시나리오 전부 커버.
+  1. ZNTC 는 이미 확장자 기반 loader 선택으로 Node/Vite/rolldown 생태계와 호환. 추가 기능 없이도 실사용 시나리오 전부 커버.
   2. `.txt` 파일에 `with { type: "json" }` 쓰는 실사용 사례 희박. override 는 사내 convention 등 엣지 케이스용.
   3. 검증 엄격성은 런타임 (Node ESM) 책임. 번들러가 spec-policing 할 위치 아님.
-  4. rolldown-vite 가 Vite 2 기반이라 ZTS 가 rolldown 철학과 맞추는 게 사용자 혼란 적음.
+  4. rolldown-vite 가 Vite 2 기반이라 ZNTC 가 rolldown 철학과 맞추는 게 사용자 혼란 적음.
 - **라운드트립 완성 범위 (PR #1836, #1838)**:
   - static `import x from "./y" with { ... }`
   - dynamic `import("./y", { with: {...} })`
@@ -867,15 +867,15 @@
   | **hermes-parser** | ✅ | ✅ (`param.name.name`) |
   | **esbuild** | ❌ `skipTypeScriptFnArgs` strip | ❌ |
   | **Bun** (esbuild fork) | ❌ `skipTypescriptFnArgs` strip | ❌ |
-  | **ZTS (이전)** | TS ✅ / Flow ❌ (`flow_literal_type` sentinel) | TS ❌ / Flow ❌ (둘 다 strip) |
-  | **ZTS (D103 후)** | TS ✅ / Flow ✅ | TS ✅ / Flow ✅ |
+  | **ZNTC (이전)** | TS ✅ / Flow ❌ (`flow_literal_type` sentinel) | TS ❌ / Flow ❌ (둘 다 strip) |
+  | **ZNTC (D103 후)** | TS ✅ / Flow ✅ | TS ✅ / Flow ✅ |
 - **이유**:
   1. **Codegen plugin** (`@react-native/codegen` 등가) 의 `codegenNativeCommands<T>` 처리에 `T` interface 의 method param name 이 필요 (#2462). reference 가 `param.name.name` 직접 사용.
   2. **TS 측은 이미 부분 보존** (top-level type 노드는 모두 별도 tag 로 정보 보존, type member param 만 strip) — Flow 도 같은 모델로 가야 일관성. 본 결정 전엔 TS / Flow 가 비대칭.
   3. **성능 영향 측정 noise 안** — `Pipeline Profile` Parser 시간 변동 ±35% 가 측정 noise 자체 (Debug build 5-runs avg). Release 측정도 의미적 영향 없을 것으로 추정.
   4. **메모리**: type 노드가 strip-only sentinel (8B `data: .none = 0`) 대신 정보 extras (16-32B). type-heavy 코드에서 노드 메모리 ~2-4x — 다만 transformer strip 단계에서 통째 버려져 영구 유지 X.
 - **trade-off (정직)**:
-  - ZTS 의 reference 인 Bun 이 strip-only 진영. ZTS 가 부분 이탈해서 oxc/swc/babel/hermes 진영으로 일부 이동. 기존 `flow_literal_type` 정책 (multi-purpose strip sentinel) 의 다른 사용처 (conditional / indexed access / keyof / typeof / 리터럴) 는 그대로 — TS 도 일부 strip (`ts_indexed_access_type` 는 `addEmptyExtraNode`) 하니 정책 일관성.
+  - ZNTC 의 reference 인 Bun 이 strip-only 진영. ZNTC 가 부분 이탈해서 oxc/swc/babel/hermes 진영으로 일부 이동. 기존 `flow_literal_type` 정책 (multi-purpose strip sentinel) 의 다른 사용처 (conditional / indexed access / keyof / typeof / 리터럴) 는 그대로 — TS 도 일부 strip (`ts_indexed_access_type` 는 `addEmptyExtraNode`) 하니 정책 일관성.
 - **영향 범위**:
   - `parseTypeMemberParam` 9 callers (TS interface method, function type, mapped type 등) — 빈 ts_property_signature 가정 안 하던 caller 라 변경 영향 0 (자동 동작).
   - `parseFunctionTypeParamList` 호출자 (Flow function type 4 path) — 동일.

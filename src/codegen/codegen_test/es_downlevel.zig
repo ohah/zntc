@@ -2928,7 +2928,7 @@ test "unicode_escape: es2015 no-op" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{1F600}") != null);
 }
 
-// === ES5 async transform regression suite (zts/issues 1896, 1901) ===
+// === ES5 async transform regression suite (zntc/issues 1896, 1901) ===
 
 test "ES5: compound assignment with await RHS preserves operator (#1896)" {
     // `sum += await x()` 가 `sum = _state.sent()` 으로 변환되어 += 누락 → 누적 안 됨.

@@ -15,7 +15,7 @@ import {
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-postcss-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-postcss-'));
 });
 
 afterEach(() => {
@@ -30,7 +30,7 @@ function touch(rel: string, content = ''): string {
 }
 
 describe('POSTCSS_CONFIG_NAMES', () => {
-  test('zts.mjs L892-902 와 동일 순서/내용', () => {
+  test('zntc.mjs L892-902 와 동일 순서/내용', () => {
     expect([...POSTCSS_CONFIG_NAMES]).toEqual([
       'postcss.config.mjs',
       'postcss.config.js',
@@ -80,7 +80,7 @@ describe('findPostcssConfig', () => {
     expect(findPostcssConfig(dir)).toBe(join(dir, 'postcss.config.js'));
   });
 
-  test('부모 디렉토리는 walk 안 함 (zts.mjs 동작과 일치)', () => {
+  test('부모 디렉토리는 walk 안 함 (zntc.mjs 동작과 일치)', () => {
     touch('postcss.config.cjs');
     mkdirSync(join(dir, 'sub/deep'), { recursive: true });
     // sub/deep 에서는 못 찾음 — single dir lookup.

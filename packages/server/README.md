@@ -1,8 +1,8 @@
-# @zts/server (internal)
+# @zntc/server (internal)
 
-ZTS 의 internal server layer. **private 패키지** (`"private": true`) — npm 에 publish 되지 않습니다.
+ZNTC 의 internal server layer. **private 패키지** (`"private": true`) — npm 에 publish 되지 않습니다.
 
-`@zts/web` / `@zts/react-native` 빌드 시 dist 에 자동 inline 되어, 외부에 별도 패키지로 노출되지 않습니다 (#2576 fix 후 ZTS bundler 의 workspace dep auto-inline 정상 동작).
+`@zntc/web` / `@zntc/react-native` 빌드 시 dist 에 자동 inline 되어, 외부에 별도 패키지로 노출되지 않습니다 (#2576 fix 후 ZNTC bundler 의 workspace dep auto-inline 정상 동작).
 
 ## 역할
 
@@ -12,4 +12,4 @@ ZTS 의 internal server layer. **private 패키지** (`"private": true`) — npm
 - HMR channel (broadcast)
 - 미래: BoringSSL TLS wrapper, NAPI server start/stop
 
-자세한 계획: [#2539](https://github.com/ohah/zts/issues/2539).
+자세한 계획: [#2539](https://github.com/ohah/zntc/issues/2539).

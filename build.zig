@@ -42,14 +42,14 @@ pub fn build(b: *std.Build) void {
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
     // This is what allows Zig source code to use `@import("foo")` where 'foo' is not a
     // file path. In this case, we set up `exe_mod` to import `lib_mod`.
-    exe_mod.addImport("zts_lib", lib_mod);
+    exe_mod.addImport("zntc_lib", lib_mod);
 
     // Now, we will create a static library based on the module we created above.
     // This creates a `std.Build.Step.Compile`, which is the build step responsible
     // for actually invoking the compiler.
     const lib = b.addLibrary(.{
         .linkage = .static,
-        .name = "zts",
+        .name = "zntc",
         .root_module = lib_mod,
     });
 
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
     // This creates another `std.Build.Step.Compile`, but this one builds an executable
     // rather than a static library.
     const exe = b.addExecutable(.{
-        .name = "zts",
+        .name = "zntc",
         .root_module = exe_mod,
     });
     exe.linkLibC();
@@ -151,10 +151,10 @@ pub fn build(b: *std.Build) void {
             .target = wasm_target,
             .optimize = .ReleaseSmall,
         });
-        wasm_mod.addImport("zts_lib", wasm_lib_mod);
+        wasm_mod.addImport("zntc_lib", wasm_lib_mod);
 
         const wasm_exe = b.addExecutable(.{
-            .name = "zts",
+            .name = "zntc",
             .root_module = wasm_mod,
         });
         // export fn 심볼을 동적 심볼 테이블에 노출
@@ -192,10 +192,10 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSmall,
             .single_threaded = false,
         });
-        wasm_bundler_mod.addImport("zts_lib", wasm_bundler_lib_mod);
+        wasm_bundler_mod.addImport("zntc_lib", wasm_bundler_lib_mod);
 
         const wasm_bundler_exe = b.addExecutable(.{
-            .name = "zts-bundler",
+            .name = "zntc-bundler",
             .root_module = wasm_bundler_mod,
         });
         wasm_bundler_exe.rdynamic = true;
@@ -237,12 +237,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = napi_optimize,
         });
-        napi_mod.addImport("zts_lib", napi_lib_mod);
+        napi_mod.addImport("zntc_lib", napi_lib_mod);
         napi_mod.addIncludePath(b.path("vendor/node-api-headers"));
 
         const napi_lib = b.addLibrary(.{
             .linkage = .dynamic,
-            .name = "zts-napi",
+            .name = "zntc-napi",
             .root_module = napi_mod,
         });
         napi_lib.linkLibC();
@@ -276,7 +276,7 @@ pub fn build(b: *std.Build) void {
         }
 
         const napi_install = b.addInstallArtifact(napi_lib, .{
-            .dest_sub_path = "zts.node",
+            .dest_sub_path = "zntc.node",
         });
         const napi_step = b.step("napi", "Build NAPI native module (.node)");
         napi_step.dependOn(&napi_install.step);
@@ -284,7 +284,7 @@ pub fn build(b: *std.Build) void {
 
     // ─── NAPI callback bench (#1891 PoC) ───
     // `zig build bench-callback` — 격리 마이크로 벤치 .node 빌드.
-    // ZTS 본체와 무관, throw-away. 결과 측정 종료 후 step/디렉토리 제거 가능.
+    // ZNTC 본체와 무관, throw-away. 결과 측정 종료 후 step/디렉토리 제거 가능.
     {
         const bench_mod_napi = b.createModule(.{
             .root_source_file = b.path("tools/napi-callback-bench/src/bench.zig"),
@@ -322,7 +322,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     // runner.zig가 lexer/parser를 상대 경로로 import하므로 lib_mod를 추가
-    test262_run_mod.addImport("zts_lib", lib_mod);
+    test262_run_mod.addImport("zntc_lib", lib_mod);
     const test262_exe = b.addExecutable(.{
         .name = "test262-runner",
         .root_module = test262_run_mod,
@@ -342,7 +342,7 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = .Debug,
     });
-    schema_mod.addImport("zts_lib", lib_mod);
+    schema_mod.addImport("zntc_lib", lib_mod);
     const schema_exe = b.addExecutable(.{
         .name = "emit_schema",
         .root_module = schema_mod,

@@ -1,11 +1,11 @@
 // RN codegen view config 인라인 — `@react-native/babel-plugin-codegen` 래핑.
-// ZTS 가 `@react-native/babel-preset` 을 native 처리하지만 그 내부의 codegen
+// ZNTC 가 `@react-native/babel-preset` 을 native 처리하지만 그 내부의 codegen
 // plugin 은 미구현 (#1589). RN 0.85+ Fabric 의 자동 컴포넌트 등록이 늘어나면서
 // `codegenNativeComponent<Props>('Name')` 호출의 view config 가 빠지면 런타임
 // crash (예: View config not found for component DebuggingOverlay). 이 plugin
 // 이 marker 가진 파일만 Babel 로 한번 더 돌려 view config 를 inline.
 
-import type { ZtsPlugin } from '@zts/core';
+import type { ZntcPlugin } from '@zntc/core';
 
 import {
   type BabelInstance,
@@ -50,7 +50,7 @@ export function createCodegenTransformer(
       codegenPlugin = requireFromCli(codegenPath);
     } catch (err: unknown) {
       process.stderr.write(
-        `[zts:codegen] @react-native/babel-plugin-codegen not found (${getErrorMessage(err, 80)}) — view config inlining disabled\n`,
+        `[zntc:codegen] @react-native/babel-plugin-codegen not found (${getErrorMessage(err, 80)}) — view config inlining disabled\n`,
       );
       throw err;
     }
@@ -80,13 +80,13 @@ export function createCodegenTransformer(
         parserOpts: { plugins: parserPlugins },
       });
       if (result?.code && result.code !== code) {
-        process.stderr.write(`[zts:codegen] ${filename.split('/').pop()}: view config inlined\n`);
+        process.stderr.write(`[zntc:codegen] ${filename.split('/').pop()}: view config inlined\n`);
         return result.code;
       }
       return null;
     } catch (err: unknown) {
       process.stderr.write(
-        `[zts:codegen] ${filename.split('/').pop()} failed: ${getErrorMessage(err, 120)}\n`,
+        `[zntc:codegen] ${filename.split('/').pop()} failed: ${getErrorMessage(err, 120)}\n`,
       );
       return null;
     }
@@ -98,9 +98,9 @@ export function createCodegenTransformer(
  * 로 transform 해서 view config 인라인. node_modules 포함 모든 파일 적용 (RN
  * core 의 NativeComponent.js 까지 — DebuggingOverlay 등).
  */
-export function createCodegenPlugin(config: PluginConfig): ZtsPlugin {
+export function createCodegenPlugin(config: PluginConfig): ZntcPlugin {
   return {
-    name: 'zts:react-native:codegen-view-config',
+    name: 'zntc:react-native:codegen-view-config',
     setup(build) {
       const transformer = createCodegenTransformer(config.projectRoot);
       build.onTransform({ filter: /\.(js|ts)$/ }, (args) => {

@@ -28,7 +28,7 @@ describe('findWorkspacePath', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-workspace-find-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-workspace-find-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -38,8 +38,8 @@ describe('findWorkspacePath', () => {
   });
 
   test('.ts 우선순위', () => {
-    const tsPath = join(dir, 'zts.workspace.ts');
-    const jsPath = join(dir, 'zts.workspace.js');
+    const tsPath = join(dir, 'zntc.workspace.ts');
+    const jsPath = join(dir, 'zntc.workspace.js');
     writeFileSync(tsPath, 'export default []');
     writeFileSync(jsPath, 'export default []');
     expect(findWorkspacePath(dir)).toBe(tsPath);
@@ -50,7 +50,7 @@ describe('loadWorkspace', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-workspace-load-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-workspace-load-'));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -115,9 +115,9 @@ describe('identifyWorkspaceEntries', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-workspace-identify-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-workspace-identify-'));
     // Layout:
-    //   <dir>/packages/app          — package.json name="my-app" + zts.config.json
+    //   <dir>/packages/app          — package.json name="my-app" + zntc.config.json
     //   <dir>/packages/lib-a        — package.json name="@scope/a"
     //   <dir>/packages/lib-b        — (no package.json — fallback to dirname)
     //   <dir>/packages/.hidden      — should NOT match * glob
@@ -129,7 +129,7 @@ describe('identifyWorkspaceEntries', () => {
     mkdirSync(app);
     writeFileSync(join(app, 'package.json'), JSON.stringify({ name: 'my-app' }));
     writeFileSync(
-      join(app, 'zts.config.json'),
+      join(app, 'zntc.config.json'),
       JSON.stringify({ format: 'esm', entryPoints: ['./entry.ts'] }),
     );
 
@@ -233,7 +233,7 @@ describe('identifyWorkspaceEntries', () => {
     expect(apps).toHaveLength(1);
   });
 
-  test('identify 후 loadIdentifiedConfig 로 zts.config 자동 탐색 + 로드', async () => {
+  test('identify 후 loadIdentifiedConfig 로 zntc.config 자동 탐색 + 로드', async () => {
     const ids = identifyWorkspaceEntries(['./packages/app'], dir);
     const config = await loadIdentifiedConfig(ids[0]!);
     expect(config.format).toBe('esm');
@@ -251,11 +251,11 @@ describe('loadIdentifiedConfig', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-workspace-loadid-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-workspace-loadid-'));
     const app = join(dir, 'app');
     mkdirSync(app);
     writeFileSync(
-      join(app, 'zts.config.json'),
+      join(app, 'zntc.config.json'),
       JSON.stringify({ format: 'esm', entryPoints: ['./entry.ts'] }),
     );
     const empty = join(dir, 'empty');
@@ -274,7 +274,7 @@ describe('loadIdentifiedConfig', () => {
     expect(cfg).toEqual({ format: 'cjs' });
   });
 
-  test('path 면 cwd 의 zts.config.* 로드', async () => {
+  test('path 면 cwd 의 zntc.config.* 로드', async () => {
     const cfg = await loadIdentifiedConfig({
       name: 'app',
       cwd: join(dir, 'app'),

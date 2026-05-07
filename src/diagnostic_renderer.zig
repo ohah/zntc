@@ -4,7 +4,7 @@
 //! 구조화된 진단 메시지를 출력한다.
 //!
 //! 출력 포맷 (unicode + color):
-//!   × Top-level await is not available in the configured target environment [ZTS0001]
+//!   × Top-level await is not available in the configured target environment [ZNTC0001]
 //!    ╭─[src/app.ts:5:14]
 //!  4 │ const data = fetch('/api');
 //!  5 │ const res = await data;
@@ -13,7 +13,7 @@
 //!   help: Set target to 'es2022' or higher to use top-level await
 //!
 //! 비-Unicode 폴백:
-//!   x Top-level await is not available... [ZTS0001]
+//!   x Top-level await is not available... [ZNTC0001]
 //!    +-[src/app.ts:5:14]
 //!  5 | const res = await data;
 //!    . .............^^^^^^^^^^
@@ -172,7 +172,7 @@ pub fn renderAll(
 /// 번들러 에러 등 소스를 참조할 수 없는 경우에 사용.
 ///
 /// 출력 포맷:
-///   × Could not resolve import [ZTS0100]
+///   × Could not resolve import [ZNTC0100]
 ///   ╭─ src/app.ts
 ///   help: Did you mean './utils.js'?
 pub fn renderSimple(
@@ -410,7 +410,7 @@ test "render: basic error with code frame" {
     const offsets = [_]u32{0};
     const diag = RichDiagnostic{
         .severity = .@"error",
-        .code = "ZTS0001",
+        .code = "ZNTC0001",
         .message = "Top-level await is not available in the configured target environment",
         .span = .{ .start = 10, .end = 26 },
         .file_path = "src/app.ts",
@@ -425,7 +425,7 @@ test "render: basic error with code frame" {
 
     // 헤더에 아이콘 + 메시지 + 코드
     try std.testing.expect(std.mem.indexOf(u8, out, "Top-level await") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "[ZTS0001]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[ZNTC0001]") != null);
     // 파일 참조
     try std.testing.expect(std.mem.indexOf(u8, out, "src/app.ts:1:11") != null);
     // 소스 줄
@@ -505,7 +505,7 @@ test "render: with note" {
 test "renderSimple: without source" {
     const diag = RichDiagnostic{
         .severity = .@"error",
-        .code = "ZTS0100",
+        .code = "ZNTC0100",
         .message = "Could not resolve './missing'",
         .span = .{ .start = 0, .end = 0 },
         .file_path = "src/index.ts",
@@ -518,7 +518,7 @@ test "renderSimple: without source" {
     const out = fbs.getWritten();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Could not resolve") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "[ZTS0100]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[ZNTC0100]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "src/index.ts") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "help: Did you mean") != null);
 }

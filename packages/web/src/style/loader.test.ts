@@ -8,7 +8,7 @@ import { collectAppFiles, requireFromAppOrFallback } from './loader.ts';
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-loader-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-loader-'));
 });
 
 afterEach(() => {

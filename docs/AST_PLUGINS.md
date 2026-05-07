@@ -2,7 +2,7 @@
 
 ## 개요
 
-ZTS의 AST 플러그인 시스템은 transformer 내부에서 AST 노드 방문 시 호출되는 훅을 제공한다.
+ZNTC의 AST 플러그인 시스템은 transformer 내부에서 AST 노드 방문 시 호출되는 훅을 제공한다.
 기존 string-based 플러그인(`onTransform`: 코드 문자열 → 코드 문자열)과 달리,
 AST 레벨에서 스코프 분석, closure 변수 추출, 프로퍼티 주입 등이 가능하다.
 
@@ -24,7 +24,7 @@ string-only 플러그인은 AST 훅이 null, AST-only 플러그인은 string 훅
 npm 패키지로 배포. `build.onAstFunction()`으로 등록.
 
 ```typescript
-// zts-plugin-worklet (npm 패키지)
+// zntc-plugin-worklet (npm 패키지)
 export default {
   name: 'worklet',
   setup(build) {
@@ -47,7 +47,7 @@ export default {
 **장점**: npm install → 설정에 추가 → 즉시 사용. 언어: JS/TS.
 **단점**: NAPI 오버헤드 (Zig↔JS 왕복). JSON 직렬화 비용.
 
-### 2. Zig 내장 플러그인 (ZTS 코어에 포함)
+### 2. Zig 내장 플러그인 (ZNTC 코어에 포함)
 
 `src/transformer/plugins/` 디렉토리에 구현. `builtin.zig` 프리셋에 등록.
 
@@ -69,19 +69,19 @@ if (options.worklet) {
 ```
 
 **장점**: 네이티브 속도 (오버헤드 0). AST 직접 조작.
-**단점**: ZTS 소스에 포함되어야 함. 추가 시 ZTS 재빌드 필요.
+**단점**: ZNTC 소스에 포함되어야 함. 추가 시 ZNTC 재빌드 필요.
 
 ### 3. 공유 라이브러리 (검토 완료, 미구현)
 
 `.dylib`/`.so`/`.dll`로 컴파일된 Zig 플러그인을 `dlopen`으로 런타임 로드.
 
 ```bash
-zts --bundle entry.ts --ast-plugin ./libworklet.dylib
+zntc --bundle entry.ts --ast-plugin ./libworklet.dylib
 ```
 
 **장점**: 네이티브 속도. 외부 배포 가능.
 **단점**:
-- Zig ABI 버전이 ZTS와 일치해야 함 (Zig는 stable ABI가 없음)
+- Zig ABI 버전이 ZNTC와 일치해야 함 (Zig는 stable ABI가 없음)
 - `Plugin` struct 레이아웃 변경 시 플러그인 재빌드 필요
 - OS별 바이너리 3개 필요 (macOS/Linux/Windows)
 - 보안: 샌드박스 없이 프로세스 메모리 공유
@@ -93,12 +93,12 @@ zts --bundle entry.ts --ast-plugin ./libworklet.dylib
 `.wasm`으로 컴파일된 플러그인을 WASM 런타임(wasmtime 등)에서 실행.
 
 ```bash
-zts --bundle entry.ts --ast-plugin ./worklet.wasm
+zntc --bundle entry.ts --ast-plugin ./worklet.wasm
 ```
 
 **장점**: 언어 무관 (Zig, Rust, C 등). 샌드박스 안전. ABI 안정적 (WASM 스펙).
 **단점**:
-- ZTS에 WASM 런타임 임베딩 필요 (바이너리 크기 증가)
+- ZNTC에 WASM 런타임 임베딩 필요 (바이너리 크기 증가)
 - 네이티브 대비 ~80% 성능
 - 개발 복잡도 높음
 
@@ -113,7 +113,7 @@ zts --bundle entry.ts --ast-plugin ./worklet.wasm
 | 공유 라이브러리 | ❌ 미구현 | Zig ABI 불안정으로 보류 |
 | WASM 플러그인 | ❌ 미구현 | 수요 발생 시 검토 |
 
-**전략**: 외부 개발자는 JS 플러그인 API를 사용. 성능이 중요한 플러그인은 ZTS 코어에 PR로 제출하여 내장 프리셋에 포함.
+**전략**: 외부 개발자는 JS 플러그인 API를 사용. 성능이 중요한 플러그인은 ZNTC 코어에 PR로 제출하여 내장 프리셋에 포함.
 
 ## JS AST Plugin API
 

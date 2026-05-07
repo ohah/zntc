@@ -54,9 +54,9 @@ test "validator: error code mapping — schema_builder errors" {
     );
 }
 
-test "validator: error codes resolve to ZTS1400 series" {
-    try std.testing.expectEqualStrings("ZTS1400", Code.codegen_unresolved_type_reference.format());
-    try std.testing.expectEqualStrings("ZTS1401", Code.codegen_unsupported_prop_type.format());
-    try std.testing.expectEqualStrings("ZTS1402", Code.codegen_invalid_native_props_body.format());
-    try std.testing.expectEqualStrings("ZTS1403", Code.codegen_duplicate_component.format());
+test "validator: error codes resolve to ZNTC1400 series" {
+    try std.testing.expectEqualStrings("ZNTC1400", Code.codegen_unresolved_type_reference.format());
+    try std.testing.expectEqualStrings("ZNTC1401", Code.codegen_unsupported_prop_type.format());
+    try std.testing.expectEqualStrings("ZNTC1402", Code.codegen_invalid_native_props_body.format());
+    try std.testing.expectEqualStrings("ZNTC1403", Code.codegen_duplicate_component.format());
 }

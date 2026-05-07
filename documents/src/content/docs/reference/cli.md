@@ -1,39 +1,39 @@
 ---
 title: CLI 레퍼런스
-description: ZTS CLI 옵션 전체 목록
+description: ZNTC CLI 옵션 전체 목록
 ---
 
 ## 트랜스파일
 
 ```bash
-zts <file.ts>                      # → stdout
-zts <file.ts> -o <out.js>          # → 파일
-zts <dir/> --outdir <out/>         # 디렉토리 재귀 변환
-zts - < input.ts                   # stdin 입력
+zntc <file.ts>                      # → stdout
+zntc <file.ts> -o <out.js>          # → 파일
+zntc <dir/> --outdir <out/>         # 디렉토리 재귀 변환
+zntc - < input.ts                   # stdin 입력
 ```
 
 ## 번들
 
 ```bash
-zts --bundle <entry.ts>                               # → stdout
-zts --bundle <entry.ts> -o out.js                     # → 파일
-zts --bundle <entry.ts> --splitting --outdir dist     # 코드 스플리팅
-zts --bundle <entry.ts> --preserve-modules --outdir dist  # 모듈별 출력 (라이브러리)
-zts --bundle <entry.ts> --plugin zts.config.js        # JS 플러그인
+zntc --bundle <entry.ts>                               # → stdout
+zntc --bundle <entry.ts> -o out.js                     # → 파일
+zntc --bundle <entry.ts> --splitting --outdir dist     # 코드 스플리팅
+zntc --bundle <entry.ts> --preserve-modules --outdir dist  # 모듈별 출력 (라이브러리)
+zntc --bundle <entry.ts> --plugin zntc.config.js        # JS 플러그인
 ```
 
 ## 앱 빌더
 
 ```bash
-zts dev [root]             # index.html 기반 dev server
-zts build [root]           # HTML rewrite + hashed assets → dist/
-zts preview [outdir]       # 빌드 산출물 정적 서빙
+zntc dev [root]             # index.html 기반 dev server
+zntc build [root]           # HTML rewrite + hashed assets → dist/
+zntc preview [outdir]       # 빌드 산출물 정적 서빙
 ```
 
 기본 구조는 `index.html`, `public/`, `src/main.ts(x)`, `.env*`입니다.
-`zts build`는 `<script type="module" src>`를 번들 엔트리로 사용하고, CSS `url()`,
+`zntc build`는 `<script type="module" src>`를 번들 엔트리로 사용하고, CSS `url()`,
 HTML asset URL, `%ENV%` 토큰을 rewrite하며 static split chunk는 `modulepreload`로
-주입합니다. `zts dev`는 같은 HTML/env/public prepare 단계를 사용하고 CSS 변경은 페이지
+주입합니다. `zntc dev`는 같은 HTML/env/public prepare 단계를 사용하고 CSS 변경은 페이지
 전체 reload 없이 stylesheet만 갱신합니다.
 
 | 옵션                        | 설명                                                                       |
@@ -42,12 +42,12 @@ HTML asset URL, `%ENV%` 토큰을 rewrite하며 static split chunk는 `modulepre
 | `--public-dir <dir\|false>` | public 파일 복사 디렉토리 또는 비활성화                                    |
 | `--base <path>`             | HTML/CSS asset URL prefix                                                  |
 | `--mode <name>`             | env/config mode (`dev`: `development`, `build`: `production`)              |
-| `--env-prefix <list>`       | 노출할 env prefix CSV (기본: `VITE_,ZTS_`)                                 |
+| `--env-prefix <list>`       | 노출할 env prefix CSV (기본: `VITE_,ZNTC_`)                                 |
 | `--env-dir <dir>`           | `.env*` 파일 탐색 디렉토리                                                 |
 | `--spa-fallback[=file]`     | `preview`에서 route-like 404 요청을 `index.html` 또는 지정 파일로 fallback |
 
 앱 root에 `postcss.config.{js,mjs,cjs,json}` 또는 `.postcssrc*`가 있으면 CSS에 자동
-적용됩니다. `zts dev`는 원본 CSS와 PostCSS `dependency` / `dir-dependency` 메시지를
+적용됩니다. `zntc dev`는 원본 CSS와 PostCSS `dependency` / `dir-dependency` 메시지를
 watch하고 CSS-only 변경은 stylesheet HMR로 보냅니다. Tailwind v4는
 `@tailwindcss/postcss` 설정을 지원합니다. 앱 모드는 CSS Modules(`.module.css`)를
 scoped class map으로 변환하며 default export와 가능한 named export를 제공합니다.
@@ -160,7 +160,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--asset-names=<pattern>`                | 에셋 파일명 패턴                                                                                |
 | `--loader:.ext=type`                     | 확장자별 로더 (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>`       | 빌드 메타 JSON (stdout 또는 파일)                                                               |
-| `--analyze`                              | 번들 분석 리포트 (stderr 출력). 디스크에 JSON 으로 저장하려면 `--metafile=<path>` 명시. [/analyze/](/zts/analyze/)에서 업로드 가능 |
+| `--analyze`                              | 번들 분석 리포트 (stderr 출력). 디스크에 JSON 으로 저장하려면 `--metafile=<path>` 명시. [/analyze/](/zntc/analyze/)에서 업로드 가능 |
 | `--legal-comments=<mode>`                | 라이선스 주석: `none\|inline\|eof\|linked\|external` (`linked`/`external` 은 현재 `eof` fallback) |
 | `--packages=external`                    | bare package import를 모두 external 처리                                                        |
 | `--banner:js=<text>`                     | 출력 앞 텍스트 (bare `--banner=` 은 JS wrapper 만 지원)                                         |
@@ -214,8 +214,8 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | --------------------------- | ---------------------------------------------------- |
 | `--plugin <path>`           | JS/TS 플러그인 또는 설정 파일                        |
 | `--jobs=<n>`                | 병렬 스레드 수                                       |
-| `--config <path>`           | `zts.config.*` 자동 탐색 대신 명시 config 사용       |
-| `--workspace-config <path>` | `zts.workspace.*` 자동 탐색 대신 명시 workspace 사용 |
+| `--config <path>`           | `zntc.config.*` 자동 탐색 대신 명시 config 사용       |
+| `--workspace-config <path>` | `zntc.workspace.*` 자동 탐색 대신 명시 workspace 사용 |
 | `--workspace <name>`        | workspace entry 하나만 선택                          |
 
 ## 진단 / 로깅
@@ -234,7 +234,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--allow-overwrite`          | 입력 파일과 같은 출력 경로를 명시적으로 허용합니다. 기본값은 차단입니다. |
 | `-h, --help`                 | 도움말                                                                   |
 
-## Benchmark (`zts bench`)
+## Benchmark (`zntc bench`)
 
 지정한 phase 를 N 회 반복 실행하며 mean/median/p95/p99/stddev/min/max 를 출력하는 서브커맨드. baseline save/compare 로 최적화 전후 비교에 사용.
 
@@ -249,15 +249,15 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--profile-level=<level>` | profile 상세 수준 (`summary\|detailed\|per-module\|per-pass`)                     |
 
 ```bash
-zts bench --phase=parse,transform --iterations=200 --warmup=20 src/large.ts
-zts bench --phase=parse --save=baseline.json src/main.ts
-zts bench --phase=parse --compare=baseline.json src/main.ts
+zntc bench --phase=parse,transform --iterations=200 --warmup=20 src/large.ts
+zntc bench --phase=parse --save=baseline.json src/main.ts
+zntc bench --phase=parse --compare=baseline.json src/main.ts
 ```
 
 ## 참고
 
-- JS API(`@zts/core`)는 `packages/core/index.ts`에서 동일한 옵션을 프로그램적으로 제공합니다.
-- 옵션 surface별 지원 범위는 [옵션 매트릭스](/zts/reference/options-matrix/)에서 확인하세요.
-- `--metafile` 결과는 [Metafile 분석](/zts/analyze/) 페이지에서 시각화할 수 있습니다.
-- Vite 어댑터는 `vite-plugin-zts` 또는 `vitePlugin()`으로 사용하세요.
-- 미지원 옵션 / 향후 계획은 [docs/ROADMAP.md](https://github.com/ohah/zts/blob/main/docs/ROADMAP.md) 참고.
+- JS API(`@zntc/core`)는 `packages/core/index.ts`에서 동일한 옵션을 프로그램적으로 제공합니다.
+- 옵션 surface별 지원 범위는 [옵션 매트릭스](/zntc/reference/options-matrix/)에서 확인하세요.
+- `--metafile` 결과는 [Metafile 분석](/zntc/analyze/) 페이지에서 시각화할 수 있습니다.
+- Vite 어댑터는 `vite-plugin-zntc` 또는 `vitePlugin()`으로 사용하세요.
+- 미지원 옵션 / 향후 계획은 [docs/ROADMAP.md](https://github.com/ohah/zntc/blob/main/docs/ROADMAP.md) 참고.

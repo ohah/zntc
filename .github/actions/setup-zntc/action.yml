@@ -1,0 +1,98 @@
+name: Setup ZNTC
+description: Install Zig/Bun, build ZNTC, and install dependencies
+
+inputs:
+  napi:
+    description: Build and sanity-check the NAPI wrapper.
+    required: false
+    default: "true"
+  install:
+    description: Install workspace dependencies after building ZNTC.
+    required: false
+    default: "true"
+  cpu:
+    description: Optional Zig CPU feature set for portable CI artifacts.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: "1.3.11"
+
+    - name: Build ZNTC (ReleaseFast)
+      run: |
+        build_args=(-Doptimize=ReleaseFast)
+        if [ -n "${{ inputs.cpu }}" ]; then
+          build_args+=("-Dcpu=${{ inputs.cpu }}")
+        fi
+        zig build "${build_args[@]}"
+      shell: bash
+
+    - name: Build NAPI module
+      if: ${{ inputs.napi == 'true' }}
+      run: |
+        napi_args=()
+        if [ -n "${{ inputs.cpu }}" ]; then
+          napi_args+=("-Dcpu=${{ inputs.cpu }}")
+        fi
+        zig build napi "${napi_args[@]}"
+      shell: bash
+
+    - name: Build core JS wrapper
+      if: ${{ inputs.napi == 'true' }}
+      run: bun run --cwd packages/core build:js
+      shell: bash
+
+    - name: Verify JS wrapper uses fresh NAPI
+      if: ${{ inputs.napi == 'true' }}
+      run: |
+        bun - <<'EOF'
+        import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+        import { tmpdir } from "node:os";
+        import { join } from "node:path";
+        import { buildSync, init } from "./packages/core/dist/index.js";
+
+        await init();
+        const dir = mkdtempSync(join(tmpdir(), "zntc-ci-napi-"));
+        const entry = join(dir, "index.ts");
+        const outfile = join(dir, "out.js");
+        writeFileSync(
+          entry,
+          'import styled from "styled-components"; const Button = styled.button`color:red;`; console.log(typeof Button);',
+        );
+        buildSync({
+          entryPoints: [entry],
+          bundle: true,
+          outfile,
+          external: ["styled-components"],
+          compiler: { styledComponents: { namespace: "ci" } },
+        });
+        const js = readFileSync(outfile, "utf8");
+        if (!js.includes("ci__sc-")) {
+          throw new Error("fresh NAPI sanity check failed: styledComponents.namespace was not applied");
+        }
+        EOF
+      shell: bash
+
+    - name: Cache Bun packages
+      if: ${{ inputs.install == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.bun/install/cache
+        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
+        restore-keys: |
+          ${{ runner.os }}-bun-
+
+    - name: Install dependencies
+      if: ${{ inputs.install == 'true' }}
+      run: bun install
+      shell: bash

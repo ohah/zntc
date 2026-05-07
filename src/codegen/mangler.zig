@@ -1,4 +1,4 @@
-//! ZTS Identifier Mangler — Liveness-based Slot Reuse (oxc 방식)
+//! ZNTC Identifier Mangler — Liveness-based Slot Reuse (oxc 방식)
 //!
 //! 스코프 분석 + liveness BitSet를 기반으로 로컬 변수 이름을 짧은 이름으로 교체한다.
 //! 번들 크기를 ~70% 절감하는 핵심 최적화.

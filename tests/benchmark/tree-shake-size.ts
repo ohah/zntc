@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Tree-shake size benchmark — ZTS vs esbuild / rolldown / rspack.
+ * Tree-shake size benchmark — ZNTC vs esbuild / rolldown / rspack.
  *
  * 동일 입력에 대해 각 번들러의 최종 출력 크기를 raw / gzip 기준으로 비교.
  * 각 fixture는 "전체 크기" 대비 "사용된 export만" 크기가 얼마나 줄어드는지를 측정.
@@ -24,7 +24,7 @@ import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const BENCH_BIN = join(__dirname, 'node_modules/.bin');
 
 function findBin(name: string): string | null {
@@ -129,10 +129,10 @@ type Runner = { name: string; run(dir: string, entry: string): string | null };
 
 const runners: Runner[] = [
   {
-    name: 'ZTS',
+    name: 'ZNTC',
     run(dir, entry) {
-      const out = join(dir, 'zts.js');
-      const r = spawnSync(ZTS_BIN, ['--bundle', entry, '--minify', '-o', out], {
+      const out = join(dir, 'zntc.js');
+      const r = spawnSync(ZNTC_BIN, ['--bundle', entry, '--minify', '-o', out], {
         encoding: 'utf8',
       });
       if (r.status !== 0) return null;
@@ -217,7 +217,7 @@ function pct(part: number, whole: number): string {
 }
 
 function runFixture(fx: Fixture): Row[] {
-  const dir = mkdtempSync(join(tmpdir(), `zts-ts-${fx.name}-`));
+  const dir = mkdtempSync(join(tmpdir(), `zntc-ts-${fx.name}-`));
   try {
     const entry = fx.build(dir);
     const rows: Row[] = [];
@@ -238,26 +238,26 @@ function runFixture(fx: Fixture): Row[] {
 
 function printTable(fx: Fixture, rows: Row[]) {
   console.log(`\n### ${fx.name} — ${fx.description}\n`);
-  console.log('| Bundler | Raw | Gzip | Correct | vs ZTS (raw) |');
+  console.log('| Bundler | Raw | Gzip | Correct | vs ZNTC (raw) |');
   console.log('|---|---:|---:|:---:|---:|');
-  const zts = rows.find((r) => r.bundler === 'ZTS');
+  const zntc = rows.find((r) => r.bundler === 'ZNTC');
   for (const r of rows) {
     const raw = r.raw ? `${r.raw} B` : '—';
     const gzip = r.gzip ? `${r.gzip} B` : '—';
     const ok = r.ok ? '✓' : '✗';
-    const rel = zts && zts.raw && r.raw ? pct(r.raw, zts.raw) : '-';
+    const rel = zntc && zntc.raw && r.raw ? pct(r.raw, zntc.raw) : '-';
     console.log(`| ${r.bundler} | ${raw} | ${gzip} | ${ok} | ${rel} |`);
   }
 }
 
 function main() {
-  if (!existsSync(ZTS_BIN)) {
-    console.error(`ZTS binary not found: ${ZTS_BIN}\nrun: zig build`);
+  if (!existsSync(ZNTC_BIN)) {
+    console.error(`ZNTC binary not found: ${ZNTC_BIN}\nrun: zig build`);
     process.exit(1);
   }
   console.log('# Tree-shake size benchmark\n');
   console.log(
-    `Correct = 모든 live marker 포함 + dead marker 제외.\nvs ZTS (raw) = 해당 번들러 크기 / ZTS 크기.\n`,
+    `Correct = 모든 live marker 포함 + dead marker 제외.\nvs ZNTC (raw) = 해당 번들러 크기 / ZNTC 크기.\n`,
   );
   for (const fx of fixtures) {
     const rows = runFixture(fx);

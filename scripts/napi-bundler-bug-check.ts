@@ -2,7 +2,7 @@
 /**
  * #1885 follow-up — NAPI bundler 에서 wasm 와 동일 버그 재현 확인.
  * #1960 (ES5 destructuring) / #1961 (chunk split __generator) / #1962 (external
- * require) 가 wasm 만의 문제인지 ZTS 코어 자체 문제인지 분기.
+ * require) 가 wasm 만의 문제인지 ZNTC 코어 자체 문제인지 분기.
  */
 import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -89,7 +89,7 @@ let totalFails = 0;
 
 for (const c of cases) {
   console.log(`\n${"=".repeat(80)}\n${c.label}\n${"=".repeat(80)}`);
-  const dir = mkdtempSync(join(tmpdir(), "zts-napi-bug-"));
+  const dir = mkdtempSync(join(tmpdir(), "zntc-napi-bug-"));
   for (const [name, content] of Object.entries(c.files)) {
     writeFileSync(join(dir, name), content);
   }

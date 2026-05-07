@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ROOT,
-  ZTS_BIN,
+  ZNTC_BIN,
   buildBin as buildBinShared,
   getCommit,
   parsePositiveInt,
@@ -140,7 +140,7 @@ interface FixtureResult {
 interface RunReport {
   version: 1;
   generated_at: string;
-  zts_commit: string;
+  zntc_commit: string;
   warmup: number;
   iterations: number;
   fixtures: FixtureResult[];
@@ -211,7 +211,7 @@ function runOne(entry: string, outDir: string): ProfileJson {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const result = spawnSync(
-    ZTS_BIN,
+    ZNTC_BIN,
     [
       '--bundle',
       entry,
@@ -230,7 +230,7 @@ function runOne(entry: string, outDir: string): ProfileJson {
     },
   );
   if (result.status !== 0) {
-    throw new Error(`zts failed: ${result.stderr.slice(0, 800)}`);
+    throw new Error(`zntc failed: ${result.stderr.slice(0, 800)}`);
   }
   return parseProfileJson(`${result.stdout}\n${result.stderr}`);
 }
@@ -240,7 +240,7 @@ function median(values: number[]): number {
 }
 
 function measureFixture(spec: FixtureSpec, cli: CliArgs): FixtureResult {
-  const tmp = mkdtempSync(join(tmpdir(), 'zts-tree-shake-profile-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'zntc-tree-shake-profile-'));
   try {
     const srcDir = join(tmp, 'src');
     const outDir = join(tmp, 'dist');
@@ -346,7 +346,7 @@ Options:
 async function main(cli: CliArgs): Promise<void> {
   buildBin();
   console.log(
-    `[tree-shake-profile] zts ${getCommit()} | warmup=${cli.warmup} iter=${cli.iterations}`,
+    `[tree-shake-profile] zntc ${getCommit()} | warmup=${cli.warmup} iter=${cli.iterations}`,
   );
   console.log();
 
@@ -370,7 +370,7 @@ async function main(cli: CliArgs): Promise<void> {
   const report: RunReport = {
     version: 1,
     generated_at: new Date().toISOString(),
-    zts_commit: getCommit(),
+    zntc_commit: getCommit(),
     warmup: cli.warmup,
     iterations: cli.iterations,
     fixtures: results,

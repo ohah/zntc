@@ -1,8 +1,8 @@
 {
-  "name": "@zts/server",
+  "name": "@zntc/server",
   "version": "0.1.0",
   "private": true,
-  "description": "ZTS internal server layer — HMR protocol, WS frame, watcher, TLS",
+  "description": "ZNTC internal server layer — HMR protocol, WS frame, watcher, TLS",
   "license": "MIT",
   "files": [
     "dist/",
@@ -18,13 +18,13 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core",
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zntc/core",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test --timeout 10000"
   },
   "dependencies": {
-    "@zts/core": "workspace:*"
+    "@zntc/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.5.2"

@@ -859,13 +859,13 @@ pub fn warnRscDirectiveConflict(hoisted: []const u8, where: []const u8) void {
 
     if (has_server) {
         std.debug.print(
-            "[zts] warning: RSC directive conflict — 'use client' and 'use server' coexist in the same file/chunk ({s}). React/Next.js runtime will reject this.\n",
+            "[zntc] warning: RSC directive conflict — 'use client' and 'use server' coexist in the same file/chunk ({s}). React/Next.js runtime will reject this.\n",
             .{where},
         );
     }
     if (has_cache) {
         std.debug.print(
-            "[zts] warning: RSC directive conflict — 'use client' and 'use cache' coexist in the same file/chunk ({s}). Next.js runtime will reject this.\n",
+            "[zntc] warning: RSC directive conflict — 'use client' and 'use cache' coexist in the same file/chunk ({s}). Next.js runtime will reject this.\n",
             .{where},
         );
     }
@@ -1531,7 +1531,7 @@ pub fn computeAllUsedNames(
     const helper_modules = @import("../../runtime_helper_modules.zig");
     for (sorted, 0..) |m, idx| {
         const mod_idx: u32 = m.index.toU32();
-        // #1961: ZTS runtime helper virtual module 은 모든 export 가 항상 used.
+        // #1961: ZNTC runtime helper virtual module 은 모든 export 가 항상 used.
         // tree_shaker 의 export-use 추적이 transformer 가 추가한 import_binding 을
         // 인식 못 하면 helper 정의가 statement_shaker 에 의해 dead 로 elide → 런타임
         // ReferenceError. helper module 은 작아서 over-include 안전.

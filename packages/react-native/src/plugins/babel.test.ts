@@ -6,43 +6,43 @@ import { join } from 'node:path';
 import {
   applyBabelPluginPrefix,
   detectCustomPlugins,
-  isZtsNativePlugin,
-  ZTS_NATIVE_PLUGIN_PATTERNS,
+  isZntcNativePlugin,
+  ZNTC_NATIVE_PLUGIN_PATTERNS,
 } from './babel.ts';
 
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-babel-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-babel-'));
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('isZtsNativePlugin', () => {
-  test('ZTS native list 의 plugin 모두 true', () => {
-    for (const pattern of ZTS_NATIVE_PLUGIN_PATTERNS) {
-      expect(isZtsNativePlugin(pattern)).toBe(true);
+describe('isZntcNativePlugin', () => {
+  test('ZNTC native list 의 plugin 모두 true', () => {
+    for (const pattern of ZNTC_NATIVE_PLUGIN_PATTERNS) {
+      expect(isZntcNativePlugin(pattern)).toBe(true);
     }
   });
 
   test('substring 매칭 — `transform-typescript` → true (full path 도 매치)', () => {
-    expect(isZtsNativePlugin('@babel/plugin-transform-typescript')).toBe(true);
-    expect(isZtsNativePlugin('/abs/path/to/react-native-reanimated/plugin')).toBe(true);
+    expect(isZntcNativePlugin('@babel/plugin-transform-typescript')).toBe(true);
+    expect(isZntcNativePlugin('/abs/path/to/react-native-reanimated/plugin')).toBe(true);
   });
 
   test('native list 외 — false', () => {
-    expect(isZtsNativePlugin('nativewind/babel')).toBe(false);
-    expect(isZtsNativePlugin('babel-plugin-styled-components')).toBe(false);
-    expect(isZtsNativePlugin('')).toBe(false);
+    expect(isZntcNativePlugin('nativewind/babel')).toBe(false);
+    expect(isZntcNativePlugin('babel-plugin-styled-components')).toBe(false);
+    expect(isZntcNativePlugin('')).toBe(false);
   });
 
   test('핵심 RN preset / Reanimated / Worklets / TS strip 모두 cover', () => {
-    expect(isZtsNativePlugin('@react-native/babel-preset')).toBe(true);
-    expect(isZtsNativePlugin('react-native-reanimated/plugin')).toBe(true);
-    expect(isZtsNativePlugin('react-native-worklets')).toBe(true);
-    expect(isZtsNativePlugin('transform-flow-strip-types')).toBe(true);
+    expect(isZntcNativePlugin('@react-native/babel-preset')).toBe(true);
+    expect(isZntcNativePlugin('react-native-reanimated/plugin')).toBe(true);
+    expect(isZntcNativePlugin('react-native-worklets')).toBe(true);
+    expect(isZntcNativePlugin('transform-flow-strip-types')).toBe(true);
   });
 });
 
@@ -56,7 +56,7 @@ describe('detectCustomPlugins', () => {
     expect(detectCustomPlugins(dir)).toBe(false);
   });
 
-  test('babel.config.js 존재 + plugins 가 ZTS native 만 — false', () => {
+  test('babel.config.js 존재 + plugins 가 ZNTC native 만 — false', () => {
     writeFileSync(
       join(dir, 'babel.config.js'),
       `module.exports = { plugins: ['react-native-reanimated/plugin', '@react-native/babel-preset'] };`,
@@ -116,7 +116,7 @@ describe('detectCustomPlugins — project-기준 require (#2605 audit)', () => {
       join(dir, 'babel.config.js'),
       `module.exports = { plugins: ['my-fake-plugin'] };`,
     );
-    // detectCustomPlugins 가 project 의 node_modules 에서 require 성공 → ZTS
+    // detectCustomPlugins 가 project 의 node_modules 에서 require 성공 → ZNTC
     // native 외 plugin 으로 인식.
     expect(detectCustomPlugins(dir)).toBe(true);
   });
@@ -139,7 +139,7 @@ describe('detectCustomPlugins — inline config (#2605 transformer.babel)', () =
     expect(detectCustomPlugins(dir, { plugins: ['nativewind/babel'] })).toBe(true);
   });
 
-  test('inline.plugins 가 ZTS native 만 — false (babel.config.js 도 없음)', () => {
+  test('inline.plugins 가 ZNTC native 만 — false (babel.config.js 도 없음)', () => {
     expect(detectCustomPlugins(dir, { plugins: ['react-native-reanimated/plugin'] })).toBe(false);
   });
 
@@ -149,7 +149,7 @@ describe('detectCustomPlugins — inline config (#2605 transformer.babel)', () =
     );
   });
 
-  test('inline.presets 가 ZTS native (`@react-native/babel-preset`) 만 — false (silent drop 방지)', () => {
+  test('inline.presets 가 ZNTC native (`@react-native/babel-preset`) 만 — false (silent drop 방지)', () => {
     expect(detectCustomPlugins(dir, { presets: ['@react-native/babel-preset'] })).toBe(false);
   });
 
@@ -177,14 +177,14 @@ describe('detectCustomPlugins — inline config (#2605 transformer.babel)', () =
   });
 });
 
-describe('ZTS_NATIVE_PLUGIN_PATTERNS', () => {
+describe('ZNTC_NATIVE_PLUGIN_PATTERNS', () => {
   test('count >= 15 (sanity)', () => {
-    expect(ZTS_NATIVE_PLUGIN_PATTERNS.length).toBeGreaterThanOrEqual(15);
+    expect(ZNTC_NATIVE_PLUGIN_PATTERNS.length).toBeGreaterThanOrEqual(15);
   });
 
   test('중복 없음', () => {
-    const set = new Set(ZTS_NATIVE_PLUGIN_PATTERNS);
-    expect(set.size).toBe(ZTS_NATIVE_PLUGIN_PATTERNS.length);
+    const set = new Set(ZNTC_NATIVE_PLUGIN_PATTERNS);
+    expect(set.size).toBe(ZNTC_NATIVE_PLUGIN_PATTERNS.length);
   });
 });
 

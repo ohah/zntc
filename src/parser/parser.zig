@@ -1,4 +1,4 @@
-//! ZTS Parser
+//! ZNTC Parser
 //!
 //! 토큰 스트림을 AST로 변환하는 재귀 하강(recursive descent) 파서.
 //! 2패스 설계: parse → visit (D040).

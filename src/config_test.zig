@@ -75,7 +75,7 @@ test "stripJsonComments - trailing comma" {
 test "TsConfig.load - missing file returns defaults" {
     const allocator = std.testing.allocator;
     // 존재하지 않는 디렉토리를 지정하면 기본값이 반환된다
-    var config = try TsConfig.load(allocator, "/tmp/zts_test_nonexistent_dir_12345");
+    var config = try TsConfig.load(allocator, "/tmp/zntc_test_nonexistent_dir_12345");
     defer config.deinit();
 
     try std.testing.expect(config.target == null);
@@ -97,7 +97,7 @@ test "TsConfig.load - parse compilerOptions" {
     const allocator = std.testing.allocator;
 
     // 임시 디렉토리에 테스트용 tsconfig.json 생성
-    const tmp_dir = "/tmp/zts_test_config_parse";
+    const tmp_dir = "/tmp/zntc_test_config_parse";
     std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
     defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
@@ -146,7 +146,7 @@ test "TsConfig.load - parse compilerOptions" {
 test "TsConfig.load - JSONC with comments" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = "/tmp/zts_test_config_jsonc";
+    const tmp_dir = "/tmp/zntc_test_config_jsonc";
     std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
     defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
@@ -177,7 +177,7 @@ test "TsConfig.load - JSONC with comments" {
 test "TsConfig.load - extends inheritance" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = "/tmp/zts_test_config_extends";
+    const tmp_dir = "/tmp/zntc_test_config_extends";
     std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
     defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
@@ -227,7 +227,7 @@ test "TsConfig.load - extends inheritance" {
 test "TsConfig.load - partial compilerOptions" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = "/tmp/zts_test_config_partial";
+    const tmp_dir = "/tmp/zntc_test_config_partial";
     std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
     defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 

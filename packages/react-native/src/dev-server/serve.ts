@@ -4,7 +4,7 @@
 
 import { createDevHttpServer, type DevHttpServerHandle } from './http-server.ts';
 import { createHmrBridge, type HmrBridge } from './hmr-bridge.ts';
-import { logBundle, logInfo, printZtsRnBanner } from './logger.ts';
+import { logBundle, logInfo, printZntcRnBanner } from './logger.ts';
 import { loadCliServerApi } from './middleware/cli-server-api.ts';
 import { loadDevMiddleware } from './middleware/dev-middleware.ts';
 import type { RnDevServerOptions } from './options.ts';
@@ -37,7 +37,7 @@ function makeNoopBroadcast(): Broadcast {
     if (!warned) {
       warned = true;
       process.stderr.write(
-        `[zts:rn-dev] broadcast('${method}') skipped — '@react-native-community/cli-server-api' 미설치 또는 load 실패. ` +
+        `[zntc:rn-dev] broadcast('${method}') skipped — '@react-native-community/cli-server-api' 미설치 또는 load 실패. ` +
           `RN runtime 의 reload/devMenu 메시지 안 감. peer dependency 설치 필요.\n`,
       );
     }
@@ -60,7 +60,7 @@ export async function serveRn(
   options: RnDevServerOptions,
   extras: ServeRnExtras = {},
 ): Promise<RnDevServerHandle> {
-  if (!extras.silent) printZtsRnBanner(extras.version);
+  if (!extras.silent) printZntcRnBanner(extras.version);
 
   // 두 lazy load 는 독립 — 병렬로 dynamic import resolve.
   const [cliServerApi, devMiddleware] = await Promise.all([
@@ -73,12 +73,12 @@ export async function serveRn(
   ]);
 
   const broadcast: Broadcast = cliServerApi?.broadcast ?? makeNoopBroadcast();
-  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+  if (process.env.ZNTC_DEBUG_TERMINAL === '1') {
     process.stderr.write(
-      `[zts:rn-dev:debug] cli-server-api: ${cliServerApi ? 'loaded' : 'null (peer 미설치 또는 load 실패)'}\n`,
+      `[zntc:rn-dev:debug] cli-server-api: ${cliServerApi ? 'loaded' : 'null (peer 미설치 또는 load 실패)'}\n`,
     );
     process.stderr.write(
-      `[zts:rn-dev:debug] dev-middleware: ${devMiddleware ? 'loaded' : 'null (peer 미설치)'}\n`,
+      `[zntc:rn-dev:debug] dev-middleware: ${devMiddleware ? 'loaded' : 'null (peer 미설치)'}\n`,
     );
   }
 

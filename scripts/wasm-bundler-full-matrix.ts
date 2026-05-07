@@ -18,7 +18,7 @@ import {
 } from "../packages/wasm/index";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const wasmBytes = readFileSync(join(repoRoot, "zig-out/bin/zts-bundler.wasm"));
+const wasmBytes = readFileSync(join(repoRoot, "zig-out/bin/zntc-bundler.wasm"));
 
 // 다운레벨링 / 변환 검증용 fixture — 각 ES feature + JSX + Flow + decorator.
 const FILES: Record<string, string> = {

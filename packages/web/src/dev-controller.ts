@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
-import { prepareAppDevSync } from '@zts/core';
+import { prepareAppDevSync } from '@zntc/core';
 
 import {
   type BundleResult,
@@ -69,7 +69,7 @@ export interface AppDevControllerOptions {
 export interface AppDevControllerDeps {
   /** dev/build 의 NAPI sync wrapper — core 가 이미 세션에서 init 됐다고 가정. */
   fallbackRequire: NodeRequire;
-  /** zts CLI 의 node_modules — app 에 node_modules 가 없으면 symlink 대상. */
+  /** zntc CLI 의 node_modules — app 에 node_modules 가 없으면 symlink 대상. */
   cliNodeModules: string;
 }
 
@@ -193,7 +193,7 @@ function copyAppRootForPostcss(
   phase: string,
   cliNodeModules: string,
 ): string {
-  const tempRoot = mkdtempSync(join(tmpdir(), `zts-postcss-${phase}-`));
+  const tempRoot = mkdtempSync(join(tmpdir(), `zntc-postcss-${phase}-`));
   registerPostcssTempRoot(tempRoot);
   const skip = new Set([
     resolve(outdir),
@@ -201,7 +201,7 @@ function copyAppRootForPostcss(
     resolve(join(root, 'node_modules')),
     resolve(join(root, '.git')),
     resolve(join(root, 'dist')),
-    resolve(join(root, '.zts-dev')),
+    resolve(join(root, '.zntc-dev')),
   ]);
   cpSync(root, tempRoot, {
     recursive: true,
@@ -225,7 +225,7 @@ function copyAppRootForPostcss(
 
 /**
  * postcss config + sass / css-modules 처리를 위한 temp root 준비. 입력 source 는
- * tempRoot 로 cp 되어 mutable, 출력 (`.css` / `.module.zts.css` / `.css.js` proxy)
+ * tempRoot 로 cp 되어 mutable, 출력 (`.css` / `.module.zntc.css` / `.css.js` proxy)
  * 도 같은 tempRoot 에 emit. 호출자가 generatedCssAbsPaths 를 받아 outdir mirror.
  *
  * Incremental — existingTempRoot + dirtyPaths 가 있으면 그 파일만 cp / 삭제 처리,
@@ -330,7 +330,7 @@ export async function prepareAppCssPipelineRoot(
   // bundler 가 entry 의 `import "./generated.css"` 를 따라 CSS chunk 를 emit 하므로
   // 별도로 mirror 할 필요 없음 (소비자가 결정).
   // `.module.scss` 의 sass 산출물 (`*.module.css`) 은 그 자체가 CSS Modules 입력으로
-  // 다시 들어가 결국 `*.module.zts.css` 로 emit 되므로 mirror 대상에서 제외.
+  // 다시 들어가 결국 `*.module.zntc.css` 로 emit 되므로 mirror 대상에서 제외.
   const moduleInputCssPaths = new Set(
     generatedModuleFiles.map((p) => join(tempRoot, relative(root, p))),
   );
@@ -380,7 +380,7 @@ export function createAppDevController(
   deps: AppDevControllerDeps,
 ): AppDevController {
   const { fallbackRequire } = deps;
-  const outdir = resolve(opts.outdir || join(root, '.zts-dev'));
+  const outdir = resolve(opts.outdir || join(root, '.zntc-dev'));
   const base = normalizeBase(opts.base ?? opts.publicPath ?? '/');
   let cssDeps = new Set<string>();
   let cssDirDeps = new Set<string>();

@@ -1,4 +1,4 @@
-//! ZTS Semantic — 스코프 정의
+//! ZNTC Semantic — 스코프 정의
 //!
 //! 플랫 배열 + 부모 인덱스 방식 (D052, oxc 방식).
 //! AST NodeIndex와 동일한 패턴 — u32 인덱스로 참조 (D004).

@@ -19,7 +19,7 @@
 //!
 //! 알려진 한계:
 //!
-//!   - **`export type Foo = ...` 는 인덱싱 안 됨.** ZTS 파서 (`module.zig:885`) 가
+//!   - **`export type Foo = ...` 는 인덱싱 안 됨.** ZNTC 파서 (`module.zig:885`) 가
 //!     type-only declaration 의 export wrapper 를 parse 시점에 program 에서
 //!     제거하기 때문. 해당 type alias 노드 자체는 `ast.nodes` 에 orphan 으로
 //!     남지만 program 에서 도달 불가. NativeComponent spec 파일에서 NativeProps
@@ -40,7 +40,7 @@ const NodeIndex = ast_mod.NodeIndex;
 /// 같은 파일 내 type alias / interface 선언의 이름 → NodeIndex 맵.
 ///
 /// 반환된 NodeIndex 는 항상 type-only declaration 태그 중 하나를 가리킨다.
-/// `export <decl>` 같은 wrapper 노드는 ZTS 파서가 parse 시점에 program 에서
+/// `export <decl>` 같은 wrapper 노드는 ZNTC 파서가 parse 시점에 program 에서
 /// 제거하므로 (`module.zig:885`) 이 인덱스에 들어오지 않는다.
 ///
 /// **Lifetime 주의**: 키 (이름) 는 `Ast.string_table` 또는 source buffer 의

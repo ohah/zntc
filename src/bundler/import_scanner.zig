@@ -1,4 +1,4 @@
-//! ZTS Bundler — Import Scanner
+//! ZNTC Bundler — Import Scanner
 //!
 //! 파싱된 AST를 순회하여 모든 import/export 소스 경로를 추출한다 (D079).
 //! 파서를 수정하지 않고 AST 노드의 태그만 검사하여 ImportRecord 배열을 생성.

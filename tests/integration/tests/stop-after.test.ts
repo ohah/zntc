@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach, beforeAll, afterAll } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { init, close } from '../../../packages/core/index';
 
 // PR 4: --stop-after=<phase> — 파이프라인 조기 종료. debug/profile 용.
@@ -31,7 +31,7 @@ describe('--stop-after', () => {
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       `--stop-after=${stopAfter}`,
       '-o',
@@ -82,7 +82,7 @@ describe('--stop-after', () => {
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const result = await runZts([join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const result = await runZntc([join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(result.exitCode).toBe(0);
     const output = readFileSync(outFile, 'utf-8');
     expect(output).toContain('x = 1');
@@ -94,7 +94,7 @@ describe('--stop-after', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--stop-after=bogus',
       '-o',
@@ -111,7 +111,7 @@ describe('--stop-after', () => {
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       join(fixture.dir, 'index.ts'),
       '--stop-after=parse',
       '--profile=parse',
@@ -131,7 +131,7 @@ describe('--stop-after', () => {
   });
 
   test('--help 에 --stop-after 섹션 포함', async () => {
-    const result = await runZts(['--help']);
+    const result = await runZntc(['--help']);
     expect(result.stdout).toContain('--stop-after=');
     expect(result.stdout).toContain('scan | parse | semantic | transform | codegen');
   });

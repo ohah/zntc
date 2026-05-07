@@ -1,4 +1,4 @@
-//! ZTS AST Constant Folding & Dead Branch Elimination
+//! ZNTC AST Constant Folding & Dead Branch Elimination
 //!
 //! transformer 완료 후 ast를 in-place 수정. bundler/emitter가 항상 호출(#1552).
 //! `--define`으로 주입된 상수 비교/리터럴 분기 정리가 `--minify` 없이도 동작해야

@@ -1,11 +1,11 @@
 ---
 title: 설치
-description: ZTS를 설치하는 방법을 알아봅니다.
+description: ZNTC를 설치하는 방법을 알아봅니다.
 ---
 
 ## 빌드 (소스)
 
-ZTS는 현재 소스에서 빌드해야 합니다.
+ZNTC는 현재 소스에서 빌드해야 합니다.
 
 ### 사전 요구사항
 
@@ -15,28 +15,28 @@ ZTS는 현재 소스에서 빌드해야 합니다.
 ### 빌드
 
 ```bash
-git clone https://github.com/ohah/zts.git
-cd zts
+git clone https://github.com/ohah/zntc.git
+cd zntc
 zig build -Doptimize=ReleaseFast
 ```
 
-빌드된 바이너리는 `zig-out/bin/zts`에 생성됩니다.
+빌드된 바이너리는 `zig-out/bin/zntc`에 생성됩니다.
 
 ### PATH에 추가
 
 ```bash
 # ~/.zshrc 또는 ~/.bashrc
-export PATH="$PATH:/path/to/zts/zig-out/bin"
+export PATH="$PATH:/path/to/zntc/zig-out/bin"
 ```
 
 ## WASM (브라우저/Node.js)
 
 ```bash
-bun add @zts/wasm
+bun add @zntc/wasm
 ```
 
 ```typescript
-import { init, transpile } from "@zts/wasm";
+import { init, transpile } from "@zntc/wasm";
 
 await init();
 const result = transpile("const x: number = 1;");
@@ -46,11 +46,11 @@ console.log(result.code); // "const x = 1;"
 ## NAPI (Node.js/Bun — 권장)
 
 ```bash
-bun add @zts/core
+bun add @zntc/core
 ```
 
 ```typescript
-import { init, transpile, build, buildSync, vitePlugin } from "@zts/core";
+import { init, transpile, build, buildSync, vitePlugin } from "@zntc/core";
 
 init();
 
@@ -94,10 +94,10 @@ const result3 = await build({
 
 ## JS Build API (NAPI, in-process)
 
-`@zts/core`의 `build()` / `buildSync()` / `watch()` 를 사용해 Node.js/Bun 안에서 직접 번들링:
+`@zntc/core`의 `build()` / `buildSync()` / `watch()` 를 사용해 Node.js/Bun 안에서 직접 번들링:
 
 ```typescript
-import { init, build } from "@zts/core";
+import { init, build } from "@zntc/core";
 init();
 
 const result = await build({

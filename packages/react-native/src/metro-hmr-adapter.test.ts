@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { type BunHmrClient, HMR_RN_MSG } from '@zts/server';
+import { type BunHmrClient, HMR_RN_MSG } from '@zntc/server';
 
 import { createMetroHmrAdapter, formatBuildError } from './metro-hmr-adapter.ts';
 
@@ -246,7 +246,7 @@ describe('formatBuildError — Metro 호환 BuildError body 변환 (#2605 audit)
   });
 
   test('초기 connect 시 channel 의 자동 greeting (web HmrMessage.Connected) 은 RN adapter 와 무관하게 송출', () => {
-    // RN runtime 의 zts-hmr-client.js 는 onmessage 분기에서 'connected' type 을
+    // RN runtime 의 zntc-hmr-client.js 는 onmessage 분기에서 'connected' type 을
     // case 안에 두지 않아 default 로 빠짐 (silent ignore). adapter 는 추가
     // greeting (sendInitialGreeting) 을 caller 가 명시 호출.
     const adapter = createMetroHmrAdapter();

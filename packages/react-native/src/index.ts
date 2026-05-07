@@ -1,8 +1,8 @@
-// @zts/react-native — RN platform layer (#2540).
+// @zntc/react-native — RN platform layer (#2540).
 // preset (buildRnBundleOptions / bundleRn / watchRn) + Metro HMR adapter + RN
-// runtime (zts-hmr-client.js) + plugin factories (asset/babel/codegen/...).
+// runtime (zntc-hmr-client.js) + plugin factories (asset/babel/codegen/...).
 
-// `@zts/server` 의 RN 측 표면을 단일 entry 로 재수출. server 는 private 이라
+// `@zntc/server` 의 RN 측 표면을 단일 entry 로 재수출. server 는 private 이라
 // react-native 의 dist 에 inline (npm install 시 별도 의존 불필요).
 export {
   HMR_RN_MSG,
@@ -15,7 +15,7 @@ export {
   type HmrRnUpdateMessage,
   type HmrRnUpdateModule,
   type HmrRnUpdateStartMessage,
-} from '@zts/server';
+} from '@zntc/server';
 
 export {
   type AssetResolverOptions,
@@ -74,7 +74,7 @@ export {
   applyMapPathOptions,
   postProcessSourceMap,
   type SourcemapPathOptions,
-  printZtsRnBanner,
+  printZntcRnBanner,
   resolveAssetPath,
   type ServeRnExtras,
   serveRn,
@@ -98,8 +98,8 @@ export {
   createBabelPlugin,
   createBabelTransformer,
   detectCustomPlugins,
-  isZtsNativePlugin,
-  ZTS_NATIVE_PLUGIN_PATTERNS,
+  isZntcNativePlugin,
+  ZNTC_NATIVE_PLUGIN_PATTERNS,
 } from './plugins/babel.ts';
 export {
   CODEGEN_NATIVE_COMPONENT_MARKER,
@@ -122,10 +122,10 @@ export {
   watchRn,
 } from './preset.ts';
 export { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from './rn-constants.ts';
-export { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from './runtime-loader.ts';
+export { HMR_CLIENT_SUFFIX, ZNTC_HMR_CLIENT_CODE } from './runtime-loader.ts';
 export {
   detectExpo,
   WINTER_POLYFILL_WARNING_PATTERN,
   withExpo,
-  type ZtsRnExpoConfig,
+  type ZntcRnExpoConfig,
 } from './withExpo.ts';

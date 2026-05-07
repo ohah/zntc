@@ -6,14 +6,14 @@
 // 처리되는지 출력 문자열로 확인. parser/layout 재정비 시 silent behavior
 // change 가 일어나면 snapshot diff 로 즉시 실패.
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from '../helpers';
+import { createFixture, runZntc } from '../helpers';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 async function transpile(code: string, extraArgs: string[] = []): Promise<string> {
   const { dir, cleanup } = await createFixture({ 'index.ts': code });
   const outFile = join(dir, 'out.js');
-  const res = await runZts([join(dir, 'index.ts'), '-o', outFile, ...extraArgs]);
+  const res = await runZntc([join(dir, 'index.ts'), '-o', outFile, ...extraArgs]);
   expect(res.exitCode).toBe(0);
   const out = readFileSync(outFile, 'utf-8');
   await cleanup();
@@ -129,7 +129,7 @@ describe('AST layout snapshot — #1802 변경 대상 tag', () => {
       `,
     });
     const outFile = join(dir, 'out.js');
-    const res = await runZts([join(dir, 'index.ts'), '-o', outFile, '--format=esm']);
+    const res = await runZntc([join(dir, 'index.ts'), '-o', outFile, '--format=esm']);
     expect(res.exitCode).toBe(0);
     const out = readFileSync(outFile, 'utf-8');
     // attr 문법 이 emit 에 보존 (key=type, value="json")
@@ -236,7 +236,7 @@ describe('AST layout snapshot — #1802 변경 대상 tag', () => {
       `,
     });
     const outFile = join(dir, 'out.js');
-    const res = await runZts([join(dir, 'index.ts'), '-o', outFile, '--format=esm']);
+    const res = await runZntc([join(dir, 'index.ts'), '-o', outFile, '--format=esm']);
     expect(res.exitCode).toBe(0);
     const out = readFileSync(outFile, 'utf-8');
     expect(out).toMatch(/with\s*\{[^}]*type:\s*['"]json['"][^}]*\}/);
@@ -260,7 +260,7 @@ console.log(classify(0), classify(2), classify(100));
 `,
     });
     const outFile = join(dir, 'out.js');
-    const res = await runZts([join(dir, 'index.js'), '-o', outFile, '--flow']);
+    const res = await runZntc([join(dir, 'index.js'), '-o', outFile, '--flow']);
     // Flow match 는 현재 완전 runtime emit 지원 미구현이나, 최소한 parser 가
     // 에러 없이 처리해야 한다. exitCode 0 또는 parse error 없는 것만 체크.
     if (res.exitCode === 0) {

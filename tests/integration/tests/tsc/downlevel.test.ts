@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from '../helpers';
+import { createFixture, runZntc } from '../helpers';
 
 async function expectPass(code: string, flags: string[] = []) {
   const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts([...flags, `${fixture.dir}/input.ts`]);
+    const result = await runZntc([...flags, `${fixture.dir}/input.ts`]);
     expect(result.exitCode).toBe(0);
     expect(result.stderr).not.toContain('error:');
   } finally {
@@ -15,7 +15,7 @@ async function expectPass(code: string, flags: string[] = []) {
 async function expectError(code: string, flags: string[] = []) {
   const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts([...flags, `${fixture.dir}/input.ts`]);
+    const result = await runZntc([...flags, `${fixture.dir}/input.ts`]);
     const hasError = result.exitCode !== 0 || result.stderr.includes('error');
     expect(hasError).toBe(true);
   } finally {
@@ -318,7 +318,7 @@ var arr = [
     });
     test('globalThisAmbientModules', async () => {
       // tsc는 typeof globalThis에서 ambient module 참조를 타입 에러로 잡지만,
-      // ZTS는 타입 체킹을 하지 않으므로 트랜스파일은 성공해야 함.
+      // ZNTC는 타입 체킹을 하지 않으므로 트랜스파일은 성공해야 함.
       // (이전에는 declare module body 내 export 파서 에러로 우연히 실패했음)
       await expectPass(
         `declare module "ambientModule" {

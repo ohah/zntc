@@ -14,20 +14,20 @@ import { join, resolve } from 'node:path';
 // 여기서 포착.
 
 const ROOT = resolve(__dirname, '../../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const BENCHMARK_DIR = join(ROOT, 'tests/benchmark');
 
 function bundleIn(benchmarkDir: string, entryContent: string, name: string): string {
   const entryFile = join(benchmarkDir, `_tsprec_${name}.ts`);
-  const outFile = join(mkdtempSync(join(tmpdir(), 'zts-tsprec-')), 'out.js');
+  const outFile = join(mkdtempSync(join(tmpdir(), 'zntc-tsprec-')), 'out.js');
   writeFileSync(entryFile, entryContent);
   try {
-    const r = spawnSync(ZTS_BIN, ['--bundle', entryFile, '-o', outFile, '--platform=node'], {
+    const r = spawnSync(ZNTC_BIN, ['--bundle', entryFile, '-o', outFile, '--platform=node'], {
       stdio: 'pipe',
       timeout: 30000,
     });
     if (r.status !== 0) {
-      throw new Error(`ZTS bundle failed (${name}): ${r.stderr?.toString().slice(0, 400)}`);
+      throw new Error(`ZNTC bundle failed (${name}): ${r.stderr?.toString().slice(0, 400)}`);
     }
     return readFileSync(outFile, 'utf-8');
   } finally {
@@ -38,18 +38,22 @@ function bundleIn(benchmarkDir: string, entryContent: string, name: string): str
 }
 
 function bundleFiles(files: Record<string, string>, entry: string, name: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `zts-tsprec-${name}-`));
+  const dir = mkdtempSync(join(tmpdir(), `zntc-tsprec-${name}-`));
   const outFile = join(dir, 'out.js');
   for (const [file, content] of Object.entries(files)) {
     writeFileSync(join(dir, file), content);
   }
   try {
-    const r = spawnSync(ZTS_BIN, ['--bundle', join(dir, entry), '-o', outFile, '--platform=node'], {
-      stdio: 'pipe',
-      timeout: 30000,
-    });
+    const r = spawnSync(
+      ZNTC_BIN,
+      ['--bundle', join(dir, entry), '-o', outFile, '--platform=node'],
+      {
+        stdio: 'pipe',
+        timeout: 30000,
+      },
+    );
     if (r.status !== 0) {
-      throw new Error(`ZTS bundle failed (${name}): ${r.stderr?.toString().slice(0, 400)}`);
+      throw new Error(`ZNTC bundle failed (${name}): ${r.stderr?.toString().slice(0, 400)}`);
     }
     return readFileSync(outFile, 'utf-8');
   } finally {
