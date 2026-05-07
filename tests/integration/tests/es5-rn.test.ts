@@ -239,10 +239,15 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
       `Metro bytes: ${metroOutput.length}, ZTS bytes: ${(await Bun.file(resolve(EXAMPLE_APP, 'zts-out.js')).text()).length}`,
     );
 
-    // ZTS가 Metro 이상의 모듈을 resolve해야 함
+    // ZTS 의 module graph 가 Metro 와 동등 수준이어야 한다. Metro 보다 적은 경우 =
+    // 더 정밀한 tree-shake (#2679: __DEV__=false ternary dead branch 안의 require 를
+    // strip — Metro 는 이 모듈을 graph 에 그대로 둠). 너무 적으면 resolve 누락,
+    // 너무 많으면 dead-strip 회귀. 양쪽 ±10% 가드.
+    const METRO_PARITY_TOLERANCE = 0.1;
     const ratio = ztsModules / metroModules;
     console.log(`Module resolve ratio: ${(ratio * 100).toFixed(1)}%`);
-    expect(ratio).toBeGreaterThanOrEqual(1.0);
+    expect(ratio).toBeGreaterThanOrEqual(1 - METRO_PARITY_TOLERANCE);
+    expect(ratio).toBeLessThanOrEqual(1 + METRO_PARITY_TOLERANCE);
   }, 60_000); // Metro 번들은 ~20초 소요
 
   test('Hermes 구문 검증 (hermesc)', async () => {

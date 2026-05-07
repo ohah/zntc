@@ -226,12 +226,21 @@ pub fn evalToBoolean(ast: *const Ast, idx: NodeIndex, defines: []const DefineEnt
     return evalToBooleanDepth(ast, idx, defines, 0);
 }
 
+/// "true"/"false" 텍스트를 boolean 으로 변환. Transformer 가 define 을 inline
+/// 한 후 identifier_reference 의 text 만 치환되고 노드 tag 는 그대로 남는 경우
+/// (#2679) 까지 cover.
+fn boolLiteralFromText(text: []const u8) ?bool {
+    if (std.mem.eql(u8, text, "true")) return true;
+    if (std.mem.eql(u8, text, "false")) return false;
+    return null;
+}
+
 fn evalToBooleanDepth(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry, depth: u8) ?bool {
     if (depth >= 8 or idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
     const node = ast.getNode(idx);
     return switch (node.tag) {
-        .boolean_literal => std.mem.eql(u8, ast.getText(node.span), "true"),
-        .identifier_reference, .static_member_expression => evalDefinedBoolean(ast.getText(node.span), defines),
+        .boolean_literal => boolLiteralFromText(ast.getText(node.span)),
+        .identifier_reference, .static_member_expression => boolLiteralFromText(ast.getText(node.span)) orelse evalDefinedBoolean(ast.getText(node.span), defines),
         .unary_expression => blk: {
             const e = node.data.extra;
             if (e + 1 >= ast.extra_data.items.len) break :blk null;
