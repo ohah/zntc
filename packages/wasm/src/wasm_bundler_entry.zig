@@ -25,7 +25,8 @@ pub fn main() void {}
 
 /// Bundler ABI version. host 가 호환성 체크용.
 /// v6 — last_error_message_get 출력이 ZNTC 표준 진단 형식 (`× <message> [ZNTC####]
-/// + hint`). 새 ZNTC 에러 코드: splitting_requires_esm_format, invalid_entry_path.
+/// + hint`). 새 ZNTC 에러 코드: splitting_requires_esm_format,
+/// preserve_modules_requires_esm_format, invalid_entry_path.
 export fn bundler_version() u32 {
     return 6;
 }
@@ -90,8 +91,10 @@ const ErrorCode = error_codes.Code;
 /// 노출. unknown 은 Zig error name fallback.
 fn setLastErrorFromZigError(err: anyerror) void {
     const name = @errorName(err);
-    const mapped: ?ErrorCode = if (std.mem.eql(u8, name, "CodeSplittingRequiresESM") or std.mem.eql(u8, name, "PreserveModulesRequiresESM"))
+    const mapped: ?ErrorCode = if (std.mem.eql(u8, name, "CodeSplittingRequiresESM"))
         .splitting_requires_esm_format
+    else if (std.mem.eql(u8, name, "PreserveModulesRequiresESM"))
+        .preserve_modules_requires_esm_format
     else if (std.mem.eql(u8, name, "InvalidEntryModule") or std.mem.eql(u8, name, "InvalidPath"))
         .invalid_entry_path
     else if (std.mem.eql(u8, name, "ModuleNotFound"))
