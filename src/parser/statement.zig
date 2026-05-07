@@ -639,10 +639,7 @@ fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
     try self.expect(.r_paren);
-    const known_scan_condition = if (self.enable_scan and self.scan_defines.len > 0)
-        import_scanner.evalToBoolean(&self.ast, test_expr, self.scan_defines)
-    else
-        null;
+    const known_scan_condition = self.evalScanCondition(test_expr);
     // ECMAScript 13.6.1: IsLabelledFunction(Statement) → SyntaxError
     const saved_labelled = self.in_labelled_fn_check;
     self.in_labelled_fn_check = true;

@@ -487,6 +487,13 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
 
     if (try self.eat(.question)) {
         const expr_start = self.ast.getNode(expr).span.start;
+        // `__DEV__ ? requireA : requireB` 처럼 define 으로 평가되는 ternary 의
+        // dead branch 안에서는 inline scan 의 require/import 등록을 차단해야
+        // 한다. parseIfStatement 와 동일 패턴. 누락 시 collectDeadIfRanges 가
+        // 후처리로 잡아도 graph 는 inline scan 결과를 우선 사용하므로 dead
+        // require 가 graph 에 진입한다.
+        const known_scan_condition = self.evalScanCondition(expr);
+
         // ECMAScript: ConditionalExpression[In] →
         //   ... ? AssignmentExpression[+In] : AssignmentExpression[?In]
         // consequent는 항상 `in` 허용, alternate는 외부 context 유지
@@ -496,7 +503,9 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
         // 대신 아래 tryReinterpretAsTypedArrow에서 speculative하게 시도한다.
         const saved_in_ternary = self.in_ternary_consequent;
         self.in_ternary_consequent = true;
+        if (known_scan_condition == false) self.scan_dead_depth += 1;
         var consequent = try parseAssignmentExpression(self);
+        if (known_scan_condition == false) self.scan_dead_depth -= 1;
         self.in_ternary_consequent = saved_in_ternary;
         self.restoreContext(cond_saved); // alternate는 원래 context로 복원
 
@@ -516,7 +525,9 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
         }
 
         try self.expect(.colon);
+        if (known_scan_condition == true) self.scan_dead_depth += 1;
         const alternate = try parseAssignmentExpression(self);
+        if (known_scan_condition == true) self.scan_dead_depth -= 1;
         return try self.ast.addNode(.{
             .tag = .conditional_expression,
             .span = .{ .start = expr_start, .end = self.currentSpan().start },

@@ -27,6 +27,7 @@ const flow = @import("flow.zig");
 const diagnostic = @import("../diagnostic.zig");
 pub const Diagnostic = diagnostic.Diagnostic;
 const scan_results_mod = @import("scan_results.zig");
+const import_scanner = @import("../bundler/import_scanner.zig");
 pub const scan_results = scan_results_mod;
 
 /// 재귀 함수용 명시적 에러 타입.
@@ -367,6 +368,14 @@ pub const Parser = struct {
         if (self.scanner.has_flow_pragma) {
             self.is_flow = true;
         }
+    }
+
+    /// inline scan 중 cond expression 을 build-time 평가. enable_scan + scan_defines
+    /// 가드를 한 곳에 묶어 parseIfStatement / parseConditionalExpression 가 공유.
+    /// `__DEV__ ? require : require` 같은 dead branch 의 inline require 등록 차단에 사용.
+    pub inline fn evalScanCondition(self: *Parser, expr: NodeIndex) ?bool {
+        if (!self.enable_scan or self.scan_defines.len == 0) return null;
+        return import_scanner.evalToBoolean(&self.ast, expr, self.scan_defines);
     }
 
     pub fn deinit(self: *Parser) void {

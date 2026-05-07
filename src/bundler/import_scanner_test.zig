@@ -76,6 +76,14 @@ fn parseAndExtractFullWithDefines(
 }
 
 fn parseInlineScanRecords(allocator: std.mem.Allocator, source: []const u8) ![]ScanImportRecord {
+    return parseInlineScanRecordsWithDefines(allocator, source, &.{});
+}
+
+fn parseInlineScanRecordsWithDefines(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    defines: []const DefineEntry,
+) ![]ScanImportRecord {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -85,6 +93,7 @@ fn parseInlineScanRecords(allocator: std.mem.Allocator, source: []const u8) ![]S
     parser.is_module = true;
     scanner.is_module = true;
     parser.enable_scan = true;
+    parser.scan_defines = defines;
     _ = try parser.parse();
 
     const records = try allocator.alloc(ScanImportRecord, parser.scan_import_records.items.len);
@@ -520,6 +529,43 @@ test "CJS: define boolean으로 죽은 ternary 분기의 require는 스캔하지
 
     try std.testing.expectEqual(@as(usize, 1), result.records.len);
     try std.testing.expectEqualStrings("./prod-only", result.records[0].specifier);
+}
+
+test "inline scan: define boolean으로 죽은 ternary 분기의 require는 등록하지 않음 (#2679)" {
+    // graph 가 우선 사용하는 inline scan path (parser.scan_import_records) 도
+    // ternary dead branch 의 require 를 등록하면 안 된다. parseConditionalExpression
+    // 의 scan_dead_depth 누락이 root cause — extractImports 의 collectDeadIfRanges
+    // 와 별개로 동작하므로 두 path 모두 cover.
+    const alloc = std.testing.allocator;
+    const records = try parseInlineScanRecordsWithDefines(
+        alloc,
+        \\const X = __DEV__
+        \\  ? require('./dev-only').default
+        \\  : require('./prod-only').default;
+    ,
+        &.{.{ .key = "__DEV__", .value = "false" }},
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("./prod-only", records[0].specifier);
+}
+
+test "inline scan: define boolean으로 죽은 ternary alternate 의 require 는 등록하지 않음" {
+    // 반대 분기 (consequent live, alternate dead) 도 처리하는지.
+    const alloc = std.testing.allocator;
+    const records = try parseInlineScanRecordsWithDefines(
+        alloc,
+        \\const X = __DEV__
+        \\  ? require('./dev-only').default
+        \\  : require('./prod-only').default;
+    ,
+        &.{.{ .key = "__DEV__", .value = "true" }},
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("./dev-only", records[0].specifier);
 }
 
 test "CJS: require with non-string argument ignored" {
