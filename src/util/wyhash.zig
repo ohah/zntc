@@ -24,6 +24,10 @@ pub fn hashHex8(data: []const u8) [8]u8 {
 /// `max_bytes` 초과 시 size+mtime 기반 pseudo-hash로 폴백 (RN 등 vendor 번들/locale JSON 대응 — #1233).
 /// 열기/stat/읽기 실패 시 null.
 pub fn hashFileStreaming(path: []const u8, max_bytes: usize) ?u64 {
+    // Zig std `toPosixPath` 는 NUL byte 포함 path 를 runtime_safety assertion 으로 panic.
+    // ZNTC virtual module id (`\x00zntc:runtime/...` 등) 가 watch 등록 시 hash 시도되어
+    // panic 으로 빠지는 회귀 방지 — contract "실패 시 null" 을 모든 경로에서 보장.
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
     const file = std.fs.cwd().openFile(path, .{}) catch return null;
     defer file.close();
     const stat = file.stat() catch return null;
@@ -90,4 +94,11 @@ test "hashFileStreaming over-limit falls back to size+mtime pseudo-hash" {
 
 test "hashFileStreaming missing file returns null" {
     try std.testing.expect(hashFileStreaming("/nonexistent/zntc_wyhash_test.txt", 1024) == null);
+}
+
+test "hashFileStreaming NUL byte path returns null (no panic)" {
+    // ZNTC virtual module id (`\x00zntc:runtime/...`) 가 file watch 등록 시 hash 시도됐을 때
+    // Zig std `toPosixPath` 의 NUL byte assertion panic 회귀 방지.
+    try std.testing.expect(hashFileStreaming("\x00zntc:runtime/extends", 1024) == null);
+    try std.testing.expect(hashFileStreaming("foo\x00bar", 1024) == null);
 }
