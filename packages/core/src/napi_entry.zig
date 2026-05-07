@@ -2880,6 +2880,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     }
     if (result.module_paths) |paths| {
         for (paths) |p| {
+            // ZTS runtime helper 등 virtual module (`\x00zts:runtime/...` prefix) 은
+            // file system 에 없어 openFile 이 invalid path 로 panic. watch 대상 아니므로 skip.
+            if (zts_lib.runtime_helper_modules.isVirtualId(p)) continue;
             if (tracked.addPath(p, true)) initial_watch_count += 1;
         }
     }
@@ -3232,6 +3235,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         var dit = desired.keyIterator();
         while (dit.next()) |pkey| {
             if (tracked.contains(pkey.*)) continue;
+            // virtual module (zts:runtime/...) 은 file system 에 없어 openFile panic. skip.
+            if (zts_lib.runtime_helper_modules.isVirtualId(pkey.*)) continue;
             _ = tracked.addPath(pkey.*, false);
         }
     }
