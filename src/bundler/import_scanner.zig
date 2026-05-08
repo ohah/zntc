@@ -117,10 +117,7 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                 }
             },
             .call_expression => {
-                const e = node.data.extra;
-                if (!ast.hasExtra(e, 0)) continue;
-
-                const callee_idx = ast.readExtraNode(e, 0);
+                const callee_idx = ast.readExtraNode(node.data.extra, 0);
                 if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) continue;
                 const callee = ast.getNode(callee_idx);
 
