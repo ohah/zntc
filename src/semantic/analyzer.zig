@@ -3446,7 +3446,7 @@ pub const SemanticAnalyzer = struct {
             .function_declaration => {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
-                if (extra_start >= extras.len) return;
+                if (extra_start + ast_mod.FunctionExtra.flags >= extras.len) return;
                 const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
                 if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
@@ -3455,7 +3455,11 @@ pub const SemanticAnalyzer = struct {
                     if (self.findSymbolInScope(var_scope, name_text)) |existing| {
                         if (existing.kind.isBlockScoped()) return;
                     }
-                    try self.declareSymbolWithNode(name_node.span, .function_decl, name_node.span, null);
+                    // generator / async / async-generator 는 block-scoped function-like 이므로
+                    // 1st pass 부터 정확한 SymbolKind 로 등록해야 후속 같은-이름 function-like
+                    // declaration 의 redecl early error (Block LexicallyDeclaredNames duplicate)
+                    // 가 detect 된다.
+                    try self.declareSymbolWithNode(name_node.span, functionSymbolKind(extras[extra_start + ast_mod.FunctionExtra.flags]), name_node.span, null);
                 }
             },
             // 재귀 대상: block/if/for/while/switch/try/labeled 등

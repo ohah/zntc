@@ -898,21 +898,30 @@ const AnalyzeResult = struct {
     }
 };
 
-fn analyzeModule(source: []const u8) !AnalyzeResult {
+const AnalyzeOpts = struct { module: bool = true, ts: bool = true };
+
+fn analyzeWith(source: []const u8, opts: AnalyzeOpts) !AnalyzeResult {
     var scanner = try Scanner.init(std.testing.allocator, source);
     errdefer scanner.deinit();
-    scanner.is_module = true;
+    scanner.is_module = opts.module;
     var parser = Parser.init(std.testing.allocator, &scanner);
     errdefer parser.deinit();
-    parser.source_mode = .ts;
-    parser.is_module = true;
+    if (opts.ts) parser.source_mode = .ts;
+    parser.is_module = opts.module;
     _ = try parser.parse();
-
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    ana.is_module = true;
+    ana.is_module = opts.module;
     errdefer ana.deinit();
     try ana.analyze();
     return .{ .scanner = scanner, .parser = parser, .analyzer = ana };
+}
+
+fn analyzeModule(source: []const u8) !AnalyzeResult {
+    return analyzeWith(source, .{});
+}
+
+fn analyzeScript(source: []const u8) !AnalyzeResult {
+    return analyzeWith(source, .{ .module = false, .ts = false });
 }
 
 fn analyzeNoErrors(source: []const u8) !void {
@@ -922,13 +931,23 @@ fn analyzeNoErrors(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
 }
 
-fn analyzeHasError(source: []const u8, needle: []const u8) !void {
-    var r = try analyzeModule(source);
-    defer r.deinit();
+fn expectAnalyzeError(r: *AnalyzeResult, needle: []const u8) !void {
     for (r.analyzer.errors.items) |err| {
         if (std.mem.indexOf(u8, err.message, needle) != null) return;
     }
     return error.TestUnexpectedResult;
+}
+
+fn analyzeHasError(source: []const u8, needle: []const u8) !void {
+    var r = try analyzeModule(source);
+    defer r.deinit();
+    try expectAnalyzeError(&r, needle);
+}
+
+fn analyzeScriptHasError(source: []const u8, needle: []const u8) !void {
+    var r = try analyzeScript(source);
+    defer r.deinit();
+    try expectAnalyzeError(&r, needle);
 }
 
 test "Enum: re-export via export specifier" {
@@ -1807,6 +1826,21 @@ test "Redecl: block generator vs function declaration" {
 
 test "Redecl: block class vs function declaration" {
     try analyzeHasError("{ class f {} function f() {} }", "already been declared");
+}
+
+// sloppy (script) 모드에서도 test262 block-scope 같은-이름 function-like redecl
+// 케이스가 검출되어야 한다. predeclareVarDeclsRecursive 가 generator/async 를
+// `.function_decl` 로 잘못 등록하던 회귀 (#2714) 방어용.
+test "Redecl(script): block generator vs function declaration" {
+    try analyzeScriptHasError("{ function* f() {} function f() {} }", "already been declared");
+}
+
+test "Redecl(script): block async generator vs function declaration" {
+    try analyzeScriptHasError("{ async function* f() {} function f() {} }", "already been declared");
+}
+
+test "Redecl(script): block async function vs function declaration" {
+    try analyzeScriptHasError("{ async function f() {} function f() {} }", "already been declared");
 }
 
 test "Redecl: nested block var vs outer function" {
