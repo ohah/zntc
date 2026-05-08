@@ -64,7 +64,7 @@ export function logBundle(
   console.log(`${badge} ${colors.dim}[${platform}]${colors.reset} ${subject}${tail}`);
 }
 
-const BANNER_WIDTH = 53;
+const BANNER_WIDTH = 59;
 
 function bannerLine(content: string): string {
   // ANSI escape 제거 후 visible length 측정.
@@ -73,20 +73,43 @@ function bannerLine(content: string): string {
   const padding = Math.max(0, BANNER_WIDTH - visibleLen);
   const left = Math.floor(padding / 2);
   const right = padding - left;
-  return `${colors.cyan}║${colors.reset}${' '.repeat(left)}${content}${' '.repeat(right)}${colors.cyan}║${colors.reset}`;
+  return `${colors.cyan}    ║${colors.reset}${' '.repeat(left)}${content}${' '.repeat(right)}${colors.cyan}║${colors.reset}`;
 }
 
-/** ZNTC RN dev server 시작 banner. */
+const ZNTC_ASCII = [
+  '███████╗███╗   ██╗████████╗ ██████╗',
+  '╚══███╔╝████╗  ██║╚══██╔══╝██╔════╝',
+  '  ███╔╝ ██╔██╗ ██║   ██║   ██║     ',
+  ' ███╔╝  ██║╚██╗██║   ██║   ██║     ',
+  '███████╗██║ ╚████║   ██║   ╚██████╗',
+  '╚══════╝╚═╝  ╚═══╝   ╚═╝    ╚═════╝',
+] as const;
+
+const ZNTC_GRADIENT = [
+  colors.yellow,
+  colors.yellow,
+  colors.blue,
+  colors.blue,
+  colors.magenta,
+  colors.magenta,
+] as const;
+
+/** ZNTC RN dev server 시작 banner — 6줄 ASCII 로고 + 그라디언트 + 박스. */
 export function printZntcRnBanner(version?: string): void {
-  const versionText = version ? ` v${version}` : '';
+  const versionText = version ? `v${version}` : '';
+  const logoLines = ZNTC_ASCII.map((line, i) =>
+    bannerLine(`${colors.bold}${ZNTC_GRADIENT[i]}${line}${colors.reset}`),
+  );
   const lines = [
     '',
-    `${colors.cyan}╔${'═'.repeat(BANNER_WIDTH)}╗${colors.reset}`,
+    `${colors.cyan}    ╔${'═'.repeat(BANNER_WIDTH)}╗${colors.reset}`,
     bannerLine(''),
-    bannerLine(`${colors.bold}${colors.cyan}@zntc/react-native${colors.reset}${versionText}`),
-    bannerLine(`${colors.gray}Metro-compatible RN dev server${colors.reset}`),
+    ...logoLines,
     bannerLine(''),
-    `${colors.cyan}╚${'═'.repeat(BANNER_WIDTH)}╝${colors.reset}`,
+    bannerLine(`${colors.cyan}Lightning Fast React Native Bundler${colors.reset}`),
+    bannerLine(`${colors.gray}${versionText}${colors.reset}`),
+    bannerLine(''),
+    `${colors.cyan}    ╚${'═'.repeat(BANNER_WIDTH)}╝${colors.reset}`,
     '',
   ];
   console.log(lines.join('\n'));

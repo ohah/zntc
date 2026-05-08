@@ -139,32 +139,40 @@ var HMRClient = {
             }
             break;
           case 'hmr:update':
-            console.log(
-              '[ZNTC HMR] update received, modules:',
-              msg.modules ? msg.modules.length : 0,
-            );
-            console.log('[ZNTC HMR] __zntc_apply_update:', typeof __zntc_apply_update);
-            console.log(
-              '[ZNTC HMR] global.__zntc_apply_update:',
-              typeof global.__zntc_apply_update,
-            );
+            // hmr-client debug — __ZNTC_HMR_DEBUG__ true 시에만 update 도착/주입
+            // 진행 로그 출력. default false — forwardClientLogs 로 터미널 forwarding
+            // 시 사용자 앱 console.log 가 시스템 노이즈에 묻히지 않게.
+            var hmrDebug = typeof __ZNTC_HMR_DEBUG__ !== 'undefined' ? __ZNTC_HMR_DEBUG__ : false;
+            if (hmrDebug) {
+              console.log(
+                '[ZNTC HMR] update received, modules:',
+                msg.modules ? msg.modules.length : 0,
+              );
+            }
             var applyFn =
               typeof __zntc_apply_update === 'function'
                 ? __zntc_apply_update
                 : global.__zntc_apply_update;
             if (typeof applyFn === 'function' && msg.modules && msg.modules.length > 0) {
-              console.log(
-                '[ZNTC HMR] calling __zntc_apply_update with',
-                msg.modules.length,
-                'modules',
-              );
+              if (hmrDebug) {
+                console.log(
+                  '[ZNTC HMR] applying',
+                  msg.modules.length,
+                  typeof __zntc_apply_update === 'function'
+                    ? 'modules (local)'
+                    : 'modules (global)',
+                );
+              }
               try {
                 applyFn(msg.modules);
-                console.log('[ZNTC HMR] __zntc_apply_update completed successfully');
+                if (hmrDebug) console.log('[ZNTC HMR] apply OK');
               } catch (e) {
+                // 항상 출력 — apply 실패는 silent 면 안 됨. 사용자 진단 정보.
                 console.error('[ZNTC HMR] __zntc_apply_update threw:', e);
               }
-            } else {
+            } else if (hmrDebug || (msg.modules && msg.modules.length > 0)) {
+              // modules 가 있는데 applyFn 없으면 항상 warn (런타임 주입 누락 진단).
+              // modules 비었고 debug off 면 silent (normal idle).
               console.warn('[ZNTC HMR] __zntc_apply_update not available or no modules');
             }
             break;

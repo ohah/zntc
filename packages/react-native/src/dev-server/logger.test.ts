@@ -100,15 +100,16 @@ describe('printZntcRnBanner', () => {
   test('version 지정 시 banner 에 포함', () => {
     printZntcRnBanner('0.1.0');
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    expect(out).toContain('@zntc/react-native');
+    // ZNTC ASCII 로고 (Z 글리프 첫 줄) + 슬로건 + version.
+    expect(out).toContain('███████╗███╗');
+    expect(out).toContain('Lightning Fast React Native Bundler');
     expect(out).toContain('v0.1.0');
-    expect(out).toContain('Metro-compatible RN dev server');
   });
 
   test('version 없음 → version 영역 비움', () => {
     printZntcRnBanner();
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    expect(out).toContain('@zntc/react-native');
+    expect(out).toContain('███████╗███╗');
     expect(out).not.toMatch(/v\d/);
   });
 
