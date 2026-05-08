@@ -61,6 +61,48 @@ test "checker: single constructor is valid" {
     try std.testing.expect(errs.items.len == 0);
 }
 
+test "checker: computed constructor method is not a class constructor" {
+    var scanner = try Scanner.init(std.testing.allocator, "class C { constructor() {} ['constructor']() {} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var errs: std.ArrayList(Diagnostic) = .empty;
+    defer errs.deinit(std.testing.allocator);
+
+    const ast = &parser.ast;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .class_body) {
+            try checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
+            break;
+        }
+    }
+
+    try std.testing.expect(errs.items.len == 0);
+}
+
+test "checker: string literal constructor counts as class constructor" {
+    var scanner = try Scanner.init(std.testing.allocator, "class C { 'constructor'() {} constructor() {} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var errs: std.ArrayList(Diagnostic) = .empty;
+    defer deinitErrors(&errs, std.testing.allocator);
+
+    const ast = &parser.ast;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .class_body) {
+            try checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
+            break;
+        }
+    }
+
+    try std.testing.expect(errs.items.len > 0);
+}
+
 test "checker: static/instance private name conflict is error" {
     var scanner = try Scanner.init(std.testing.allocator, "class C { set #f(v) {} static get #f() {} }");
     defer scanner.deinit();

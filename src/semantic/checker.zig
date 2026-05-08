@@ -81,8 +81,10 @@ pub fn checkDuplicateConstructors(
         // getter/setter/async/generator는 이미 파서에서 에러 처리
         if ((flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER | METHOD_FLAG_ASYNC | METHOD_FLAG_GENERATOR)) != 0) continue;
 
-        // key가 "constructor" 문자열인지 확인
-        if (!try matchKeyName(allocator, ast, key_idx, "constructor")) continue;
+        // key가 non-computed "constructor" 문자열인지 확인.
+        // ComputedPropertyName 은 PropName empty 이므로 ['constructor']() 는
+        // 실제 constructor가 아니라 일반 prototype method 이다.
+        if (!try matchDirectKeyName(allocator, ast, key_idx, "constructor")) continue;
 
         // TypeScript constructor overloads: body가 없는 시그니처는 허용.
         // body(extra[2])가 .none이면 overload 시그니처이므로 스킵.
@@ -113,6 +115,18 @@ fn matchKeyName(
     target: []const u8,
 ) std.mem.Allocator.Error!bool {
     const name = (try ast.staticKeyName(allocator, key_idx)) orelse return false;
+    defer allocator.free(name);
+    return std.mem.eql(u8, name, target);
+}
+
+/// key 노드의 non-computed 이름이 target과 일치하는지 확인한다.
+fn matchDirectKeyName(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    key_idx: NodeIndex,
+    target: []const u8,
+) std.mem.Allocator.Error!bool {
+    const name = (try ast.directStaticKeyName(allocator, key_idx)) orelse return false;
     defer allocator.free(name);
     return std.mem.eql(u8, name, target);
 }
