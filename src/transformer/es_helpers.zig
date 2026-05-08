@@ -54,9 +54,16 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 /// ComputedPropertyName `['constructor']` 는 일반 prototype method 이다.
 pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
     if (key_idx.isNone()) return false;
-    const name = (self.ast.directStaticKeyName(self.allocator, key_idx) catch return false) orelse return false;
-    defer self.allocator.free(name);
-    return std.mem.eql(u8, name, "constructor");
+    const key = self.ast.getNode(key_idx);
+    return switch (key.tag) {
+        .identifier_reference, .binding_identifier => std.mem.eql(u8, self.ast.getText(key.data.string_ref), "constructor"),
+        .string_literal => blk: {
+            const name = (self.ast.directStaticKeyName(self.allocator, key_idx) catch break :blk false) orelse break :blk false;
+            defer self.allocator.free(name);
+            break :blk std.mem.eql(u8, name, "constructor");
+        },
+        else => false,
+    };
 }
 
 /// 인덱스로부터 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
