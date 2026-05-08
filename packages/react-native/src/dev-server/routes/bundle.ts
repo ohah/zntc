@@ -46,6 +46,9 @@ export async function handleBundleRequest(
   if (state.bundle === null && state.buildError === null) {
     await waitForBuild(state);
   }
+  if (state.bundleStale && state.buildError === null) {
+    await state.refreshBundle();
+  }
 
   if (state.buildError) {
     sendText(

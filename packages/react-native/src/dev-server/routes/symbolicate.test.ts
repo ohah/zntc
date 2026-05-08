@@ -42,6 +42,8 @@ function makeState(bundleMap: string | null = null): PlatformState {
       getHmrSourceMap: () => null,
     } as unknown as WatchHandle,
     bundle: null,
+    bundleStale: false,
+    refreshBundle: async () => {},
     sourceMapCache: null,
     buildError: null,
     fileCount: 1,

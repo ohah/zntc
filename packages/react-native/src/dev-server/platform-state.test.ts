@@ -39,6 +39,8 @@ function fakeState(overrides: Partial<PlatformState> = {}): PlatformState {
     outputPath: '/tmp/x/bundle.js',
     handle,
     bundle: null,
+    bundleStale: false,
+    refreshBundle: async () => {},
     sourceMapCache: null,
     buildError: null,
     fileCount: 1,
@@ -60,6 +62,8 @@ describe('getCachedSourceMap', () => {
       outputPath: '/tmp/b.js',
       handle,
       bundle: null,
+      bundleStale: false,
+      refreshBundle: async () => {},
       sourceMapCache: null,
       buildError: null,
       fileCount: 1,
@@ -84,6 +88,8 @@ describe('getCachedSourceMap', () => {
       outputPath: '/tmp/b.js',
       handle,
       bundle: null,
+      bundleStale: false,
+      refreshBundle: async () => {},
       sourceMapCache: null,
       buildError: null,
       fileCount: 1,
@@ -108,6 +114,8 @@ describe('getCachedSourceMap', () => {
       outputPath: '/tmp/b.js',
       handle,
       bundle: null,
+      bundleStale: false,
+      refreshBundle: async () => {},
       sourceMapCache: '{"v":3}',
       buildError: null,
       fileCount: 1,
@@ -213,6 +221,79 @@ describe('createPlatformStateRegistry — 캐싱', () => {
 });
 
 describe('createPlatformState — onReady/onRebuild 콜백 (Finding #7)', () => {
+  test('dev HMR rebuild 는 풀 bundle state 를 stale 로 표시하고 필요 시 재생성', async () => {
+    const opts = buildRnDevServerOptions({
+      bundle: { entry: entryPath, projectRoot: dir, rnPlatform: 'ios', dev: true },
+    });
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      state: PlatformState;
+      event: { updates?: Array<{ id: string; code: string }>; graphChanged?: boolean };
+    }>();
+    const registry = createPlatformStateRegistry(opts, {
+      onRebuild(state, event) {
+        if (event.updates && event.updates.length > 0) {
+          rebuildDone({ state, event });
+        }
+      },
+    });
+    try {
+      const ios = registry.getOrCreate('ios');
+      await waitForBuild(ios);
+      const initial = ios.bundle;
+      expect(initial).toContain('hi');
+
+      await new Promise((r) => setTimeout(r, 100));
+      writeFileSync(entryPath, 'console.log("second");\n');
+
+      const { state, event } = await rebuildP;
+      expect(event.graphChanged).toBeFalsy();
+      expect(state.bundleStale).toBe(true);
+      expect(state.bundle).toBe(initial);
+
+      await state.refreshBundle();
+      expect(state.bundleStale).toBe(false);
+      expect(state.bundle).toContain('second');
+    } finally {
+      await registry.stopAll();
+    }
+  }, 10000);
+
+  test('dev graphChanged 는 reload callback 전 풀 bundle 을 갱신', async () => {
+    const opts = buildRnDevServerOptions({
+      bundle: { entry: entryPath, projectRoot: dir, rnPlatform: 'ios', dev: true },
+    });
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      state: PlatformState;
+      event: { success: boolean; graphChanged?: boolean };
+    }>();
+    const registry = createPlatformStateRegistry(opts, {
+      onRebuild(state, event) {
+        if (event.graphChanged || !event.success) {
+          rebuildDone({ state, event });
+        }
+      },
+    });
+    try {
+      const ios = registry.getOrCreate('ios');
+      await waitForBuild(ios);
+
+      writeFileSync(join(dir, 'src/util.ts'), 'export const value = "graph-second";\n');
+      await new Promise((r) => setTimeout(r, 100));
+      writeFileSync(
+        entryPath,
+        'import { value } from "./util";\nconsole.log(value);\n',
+      );
+
+      const { state, event } = await rebuildP;
+      expect(event.success).toBe(true);
+      expect(event.graphChanged).toBe(true);
+      expect(state.bundleStale).toBe(false);
+      expect(state.bundle).toContain('graph-second');
+    } finally {
+      await registry.stopAll();
+    }
+  }, 10000);
+
   test('stopAll 시 watch handle 의 stop 이 throw 해도 silent', async () => {
     // platform-state.ts 의 stopAll try/catch 분기 검증. handle.stop 이 throw 하면
     // 다른 platform 의 cleanup 이 영향 받지 않아야 함.

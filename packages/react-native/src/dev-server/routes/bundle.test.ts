@@ -66,6 +66,8 @@ function makeState(overrides: Partial<PlatformState> = {}): PlatformState {
     outputPath: '/tmp/b.js',
     handle: fakeHandle(),
     bundle: null,
+    bundleStale: false,
+    refreshBundle: async () => {},
     sourceMapCache: null,
     buildError: null,
     fileCount: 1,
@@ -162,6 +164,33 @@ describe('handleBundleRequest', () => {
     expect(body).toContain('console.log(1);');
     expect(body).toContain('//# sourceMappingURL=http://x:8081/index.map?platform=ios&dev=true');
     expect(body).toContain('//# sourceURL=');
+  });
+
+  test('stale bundle 이면 refreshBundle 후 응답', async () => {
+    let refreshed = 0;
+    const state = makeState({
+      bundle: 'old;',
+      bundleStale: true,
+      refreshBundle: async () => {
+        refreshed++;
+        state.bundle = 'new;';
+        state.bundleStale = false;
+      },
+    });
+    const registry = fixedRegistry(state);
+    const res = makeRes();
+    await handleBundleRequest(
+      makeReq('x:8081') as never,
+      res as unknown as ServerResponse,
+      new URL('http://x:8081/index.bundle?platform=ios&dev=true'),
+      registry,
+      'ios',
+      '/proj',
+      8081,
+    );
+    expect(refreshed).toBe(1);
+    expect(res.statusCode).toBe(200);
+    expect(res.chunks.join('')).toContain('new;');
   });
 
   test('multipart/mixed accept → progress + bundle chunks', async () => {

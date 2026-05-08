@@ -5,18 +5,99 @@
  */
 'use strict';
 
-// Metro HMRClient 와 동일한 'Refreshing...' 배너 동작을 위해 NativeModules.DevLoadingView 접근.
-// RN global 이 채워지기 전/환경 부재 상황 (web, 테스트) 에선 조용히 no-op.
-function getDevLoadingView() {
+var REFRESH_TEXT_COLOR = -1; // #ffffff
+var REFRESH_BACKGROUND_COLOR = -14318360; // #2584e8
+
+function getRoot() {
+  return (
+    (typeof global !== 'undefined' && global) ||
+    (typeof globalThis !== 'undefined' && globalThis) ||
+    (typeof window !== 'undefined' && window) ||
+    null
+  );
+}
+
+function getDirectNativeDevLoadingView() {
   try {
-    var nm =
-      (typeof global !== 'undefined' && global.NativeModules) ||
-      (typeof window !== 'undefined' && window.NativeModules) ||
-      null;
-    return nm && nm.DevLoadingView ? nm.DevLoadingView : null;
+    var root = getRoot();
+    if (root) {
+      if (root.nativeModuleProxy && root.nativeModuleProxy.DevLoadingView) {
+        return root.nativeModuleProxy.DevLoadingView;
+      }
+      if (typeof root.__turboModuleProxy === 'function') {
+        var turboModule = root.__turboModuleProxy('DevLoadingView');
+        if (turboModule) return turboModule;
+      }
+      if (root.NativeModules && root.NativeModules.DevLoadingView) {
+        return root.NativeModules.DevLoadingView;
+      }
+    }
   } catch (_e) {
-    return null;
+    // fallback 으로 내려간다.
   }
+
+  try {
+    if (typeof require === 'function') {
+      var nativeModules = require('../BatchedBridge/NativeModules');
+      nativeModules = nativeModules && (nativeModules.default || nativeModules);
+      if (nativeModules && nativeModules.DevLoadingView) {
+        return nativeModules.DevLoadingView;
+      }
+    }
+  } catch (_e) {
+    // fallback 으로 내려간다.
+  }
+
+  try {
+    if (typeof require === 'function') {
+      var rn = require('react-native');
+      var rnNativeModules = rn && rn.NativeModules;
+      if (rnNativeModules && rnNativeModules.DevLoadingView) {
+        return rnNativeModules.DevLoadingView;
+      }
+    }
+  } catch (_e) {
+    // fallback 으로 내려간다.
+  }
+
+  return null;
+}
+
+function wrapNativeDevLoadingView(nativeDevLoadingView) {
+  return {
+    showMessage: function (message, _type, options) {
+      nativeDevLoadingView.showMessage(
+        message,
+        REFRESH_TEXT_COLOR,
+        REFRESH_BACKGROUND_COLOR,
+        !!(options && options.dismissButton),
+      );
+    },
+    hide: function () {
+      nativeDevLoadingView.hide();
+    },
+  };
+}
+
+// Metro HMRClient 는 RN DevLoadingView wrapper 를 require 한다. zntc 번들에서는
+// wrapper 내부 NativeDevLoadingView 값이 초기화 시점에 null 로 굳을 수 있어,
+// 호출 시점 native module 재조회 경로를 먼저 사용한다.
+function getDevLoadingView() {
+  var nativeDevLoadingView = getDirectNativeDevLoadingView();
+  if (nativeDevLoadingView && typeof nativeDevLoadingView.showMessage === 'function') {
+    return wrapNativeDevLoadingView(nativeDevLoadingView);
+  }
+
+  try {
+    if (typeof require === 'function') {
+      var mod = require('./DevLoadingView');
+      return mod && (mod.default || mod) ? mod.default || mod : null;
+    }
+  } catch (_e) {
+    // RN module resolution 실패 시 fallback 으로 내려간다.
+  }
+
+  return null;
 }
 
 var HMRClient = {
@@ -25,6 +106,28 @@ var HMRClient = {
   _originalConsole: null,
   // Metro 처럼 중첩 update 를 카운트 — 마지막 update-done 에서만 배너 hide.
   _pendingUpdates: 0,
+
+  _showRefreshing: function () {
+    var dlvStart = getDevLoadingView();
+    if (dlvStart && typeof dlvStart.showMessage === 'function') {
+      try {
+        dlvStart.showMessage('Refreshing...', 'refresh');
+      } catch (_e) {
+        // DevLoadingView 호출 실패는 HMR 동작과 무관 — 무시
+      }
+    }
+  },
+
+  _hideRefreshing: function () {
+    var dlvDone = getDevLoadingView();
+    if (dlvDone && typeof dlvDone.hide === 'function') {
+      try {
+        dlvDone.hide();
+      } catch (_e) {
+        // 무시
+      }
+    }
+  },
 
   enable: function () {
     this._enabled = true;
@@ -128,14 +231,7 @@ var HMRClient = {
             // 실제 코드 변경이 아니므로 "Refreshing..." 배너 노출 skip.
             // Metro HMRClient 동일 동작 (isInitialUpdate flag 검사).
             if (self._enabled && !msg.isInitialUpdate) {
-              var dlvStart = getDevLoadingView();
-              if (dlvStart && typeof dlvStart.showMessage === 'function') {
-                try {
-                  dlvStart.showMessage('Refreshing...', 'refresh');
-                } catch (_e) {
-                  // DevLoadingView 호출 실패는 HMR 동작과 무관 — 무시
-                }
-              }
+              self._showRefreshing();
             }
             break;
           case 'hmr:update':
@@ -179,14 +275,7 @@ var HMRClient = {
           case 'hmr:update-done':
             if (self._pendingUpdates > 0) self._pendingUpdates--;
             if (self._pendingUpdates === 0) {
-              var dlvDone = getDevLoadingView();
-              if (dlvDone && typeof dlvDone.hide === 'function') {
-                try {
-                  dlvDone.hide();
-                } catch (_e) {
-                  // 무시
-                }
-              }
+              self._hideRefreshing();
             }
             break;
           case 'hmr:reload':
