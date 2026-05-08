@@ -1797,6 +1797,18 @@ test "Redecl: block var vs function" {
     try analyzeHasError("{ var f; function f() {} }", "already been declared");
 }
 
+test "Redecl: block function vs lexical declaration" {
+    try analyzeHasError("{ function f() {} let f; }", "already been declared");
+}
+
+test "Redecl: block generator vs function declaration" {
+    try analyzeHasError("{ function* f() {} function f() {} }", "already been declared");
+}
+
+test "Redecl: block class vs function declaration" {
+    try analyzeHasError("{ class f {} function f() {} }", "already been declared");
+}
+
 test "Redecl: nested block var vs outer function" {
     try analyzeHasError("{ { var f; } function f() {} }", "already been declared");
 }
