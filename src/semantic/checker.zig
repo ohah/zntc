@@ -106,19 +106,6 @@ pub fn checkDuplicateConstructors(
 // 공통 헬퍼
 // ====================================================================
 
-/// key 노드의 이름이 target과 일치하는지 확인한다.
-/// identifier 계열 / string_literal (escape 디코드) / numeric / computed-literal 모두 처리.
-fn matchKeyName(
-    allocator: std.mem.Allocator,
-    ast: *const Ast,
-    key_idx: NodeIndex,
-    target: []const u8,
-) std.mem.Allocator.Error!bool {
-    const name = (try ast.staticKeyName(allocator, key_idx)) orelse return false;
-    defer allocator.free(name);
-    return std.mem.eql(u8, name, target);
-}
-
 /// key 노드의 non-computed 이름이 target과 일치하는지 확인한다.
 fn matchDirectKeyName(
     allocator: std.mem.Allocator,
