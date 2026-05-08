@@ -77,6 +77,15 @@ fn throwError(env: c.napi_env, msg: [*:0]const u8) c.napi_value {
     return null;
 }
 
+/// JS object 의 native pointer (napi_wrap 결과) 를 안전하게 추출.
+/// `napi_unwrap` 실패 / null pointer 시 null — caller 가 throw / fallback 결정.
+inline fn unwrapNapi(comptime T: type, env: c.napi_env, value: c.napi_value) ?*T {
+    var ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, value, &ptr) != c.napi_ok) return null;
+    const p = ptr orelse return null;
+    return @ptrCast(@alignCast(p));
+}
+
 /// JS string 인자를 Zig 슬라이스로 추출. 빈 문자열이면 null 반환.
 fn getStringArg(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) ?[]const u8 {
     var len: usize = 0;
@@ -108,11 +117,7 @@ fn napiTsconfigCacheClear(env: c.napi_env, info: c.napi_callback_info) callconv(
     if (c.napi_get_cb_info(env, info, &argc, null, &this, null) != c.napi_ok) {
         return throwError(env, "failed to get this");
     }
-    var ptr: ?*anyopaque = null;
-    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
-        return throwError(env, "TsconfigCache: unwrap failed");
-    }
-    const cache: *TsconfigCache = @ptrCast(@alignCast(ptr.?));
+    const cache = unwrapNapi(TsconfigCache, env, this) orelse return throwError(env, "TsconfigCache: unwrap failed");
     cache.clear();
     var js_undef: c.napi_value = undefined;
     _ = c.napi_get_undefined(env, &js_undef);
@@ -126,11 +131,7 @@ fn napiTsconfigCacheSize(env: c.napi_env, info: c.napi_callback_info) callconv(.
     if (c.napi_get_cb_info(env, info, &argc, null, &this, null) != c.napi_ok) {
         return throwError(env, "failed to get this");
     }
-    var ptr: ?*anyopaque = null;
-    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
-        return throwError(env, "TsconfigCache: unwrap failed");
-    }
-    const cache: *TsconfigCache = @ptrCast(@alignCast(ptr.?));
+    const cache = unwrapNapi(TsconfigCache, env, this) orelse return throwError(env, "TsconfigCache: unwrap failed");
     var js_n: c.napi_value = undefined;
     _ = c.napi_create_uint32(env, @intCast(cache.size()), &js_n);
     return js_n;
@@ -175,9 +176,7 @@ fn unwrapTsconfigCache(env: c.napi_env, value: c.napi_value) ?*TsconfigCache {
     var value_type: c.napi_valuetype = undefined;
     if (c.napi_typeof(env, value, &value_type) != c.napi_ok) return null;
     if (value_type != c.napi_object) return null;
-    var ptr: ?*anyopaque = null;
-    if (c.napi_unwrap(env, value, &ptr) != c.napi_ok or ptr == null) return null;
-    return @ptrCast(@alignCast(ptr.?));
+    return unwrapNapi(TsconfigCache, env, value);
 }
 
 // ─── transpile 함수 ───
@@ -3262,13 +3261,11 @@ fn napiWatchGetBundleSourceMap(env: c.napi_env, info: c.napi_callback_info) call
         return throwError(env, "failed to get this");
     }
 
-    var ptr: ?*anyopaque = null;
-    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
+    const async_data = unwrapNapi(WatchAsyncData, env, this) orelse {
         var js_null: c.napi_value = undefined;
         _ = c.napi_get_null(env, &js_null);
         return js_null;
-    }
-    const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr.?));
+    };
 
     async_data.sm_cache.mutex.lock();
     defer async_data.sm_cache.mutex.unlock();
@@ -3302,13 +3299,11 @@ fn napiWatchGetHmrSourceMap(env: c.napi_env, info: c.napi_callback_info) callcon
     }
     if (argc < 1) return throwError(env, "getHmrSourceMap requires moduleId argument");
 
-    var ptr: ?*anyopaque = null;
-    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
+    const async_data = unwrapNapi(WatchAsyncData, env, this) orelse {
         var js_null: c.napi_value = undefined;
         _ = c.napi_get_null(env, &js_null);
         return js_null;
-    }
-    const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr.?));
+    };
 
     const module_id = getStringArg(env, argv[0], native_alloc) orelse return throwError(env, "moduleId is empty");
     defer native_alloc.free(module_id);
