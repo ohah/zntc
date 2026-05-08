@@ -4553,11 +4553,8 @@ pub const Transformer = struct {
         self.needs_arguments_var = false;
         self.super_call_this_alias = false;
 
-        const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and blk: {
-            const key_node = self.ast.getNode(self.readNodeIdx(e, 0));
-            if (key_node.tag != .identifier_reference) break :blk false;
-            break :blk std.mem.eql(u8, self.ast.getText(key_node.span), "constructor");
-        };
+        const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and
+            es_helpers.isConstructorKey(self, self.readNodeIdx(e, ast_mod.MethodExtra.key));
 
         // ES2015 new.target: method → constructor 또는 void 0
         const saved_new_target_ctx = self.new_target_ctx;
