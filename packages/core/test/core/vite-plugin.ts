@@ -17,6 +17,7 @@ import {
   lineOffsetMappings,
   expectMarkerMappedToSourceLine,
 } from './helpers';
+import type { RollupPlugin, ZntcPlugin } from './helpers';
 
 describe('vitePlugin 어댑터', () => {
   let dir: string;

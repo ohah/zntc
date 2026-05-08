@@ -20,6 +20,7 @@ import {
   diagText,
   expectPluginDiagnostic,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core build + plugins', () => {
   let dir: string;

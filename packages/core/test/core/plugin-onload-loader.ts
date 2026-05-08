@@ -12,6 +12,7 @@ import {
   tmpdir,
   runBundleStdout,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core plugin onLoad loader', () => {
   test("loader='text': string default export + Node 실행 결과 일치", async () => {

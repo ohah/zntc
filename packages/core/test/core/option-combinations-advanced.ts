@@ -12,6 +12,7 @@ import {
   join,
   tmpdir,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core 옵션 조합 심화', () => {
   test('hashbang + minify', () => {

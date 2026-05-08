@@ -12,6 +12,7 @@ import {
   join,
   tmpdir,
 } from './helpers';
+import type { RollupPlugin, ZntcPlugin } from './helpers';
 
 describe('watch()', () => {
   test('초기 빌드 후 onReady 콜백 호출', async () => {

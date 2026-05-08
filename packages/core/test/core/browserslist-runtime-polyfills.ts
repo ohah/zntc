@@ -12,6 +12,7 @@ import {
   join,
   tmpdir,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core browserslist', () => {
   test('browserslist: 모던 브라우저 쿼리는 변환 안 함', () => {
