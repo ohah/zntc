@@ -35,6 +35,7 @@ pub fn main() !void {
 
     if (args.len > 1) {
         // 특정 카테고리 실행
+        var had_failures = false;
         for (args[1..]) |cat_name| {
             const cat_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_path, cat_name });
             defer allocator.free(cat_path);
@@ -42,10 +43,13 @@ pub fn main() !void {
             try stdout.print("\n=== {s} ===\n", .{cat_name});
             const summary = runner.runDirectory(allocator, cat_path, true) catch |err| {
                 try stdout.print("Error: {}\n", .{err});
+                had_failures = true;
                 continue;
             };
             try summary.print(stdout);
+            if (summary.failed > 0) had_failures = true;
         }
+        if (had_failures) std.process.exit(1);
     } else {
         // 전체 카테고리별 실행
         try stdout.print("Running Test262 parser tests...\n", .{});
@@ -83,5 +87,6 @@ pub fn main() !void {
         try stdout.print("{s:<30} {d:>6} {d:>6} {d:>6} {d:>6} {d:>7.1}%\n", .{
             "TOTAL", total.total, total.passed, total.failed, total.skipped, total.passRate(),
         });
+        if (total.failed > 0) std.process.exit(1);
     }
 }

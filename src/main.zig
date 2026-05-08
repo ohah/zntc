@@ -1885,6 +1885,7 @@ pub fn main() !void {
         try stdout.print("Running Test262: {s}\n", .{walk_path});
         const summary = try runner.runDirectory(allocator, walk_path, false);
         try summary.print(stdout);
+        if (summary.failed > 0) std.process.exit(1);
         return;
     }
 
