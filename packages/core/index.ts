@@ -1277,22 +1277,6 @@ function serializePluginSourceMap(map: unknown): string | null {
   }
 }
 
-async function runFireAndForget<T>(
-  callbacks: Array<{ pluginName: string; callback: (arg: T) => void | Promise<void> }>,
-  hookName: string,
-  arg: T,
-): Promise<PluginFailureResult | null> {
-  let firstFailure: PluginFailureResult | null = null;
-  for (const { pluginName, callback } of callbacks) {
-    try {
-      await callback(arg);
-    } catch (err) {
-      firstFailure ??= normalizePluginFailure(pluginName, hookName, err);
-    }
-  }
-  return firstFailure;
-}
-
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return (
     value != null &&
@@ -1320,29 +1304,31 @@ function syncPluginPromiseFailure(
   );
 }
 
+function isPluginFailureResult(value: unknown): value is PluginFailureResult {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as { __zntcPluginFailure?: unknown }).__zntcPluginFailure === true,
+  );
+}
+
+/**
+ * `serializePluginSourceMap` 의 throw (invalid map JSON) 를 결과 객체로 wrap.
+ * generator 본체는 runner 의 try/catch 밖에서 실행되므로 직접 normalize 가 필요하다.
+ */
+function safeSerializeSourceMap(
+  map: unknown,
+): { ok: true; map: string | null } | { ok: false; err: unknown } {
+  try {
+    return { ok: true, map: serializePluginSourceMap(map) };
+  } catch (err) {
+    return { ok: false, err };
+  }
+}
+
 function mapMaybePromise<T, U>(value: T | PromiseLike<T>, mapper: (value: T) => U): U | Promise<U> {
   if (isPromiseLike(value)) return Promise.resolve(value).then(mapper);
   return mapper(value);
-}
-
-function runFireAndForgetSync<T>(
-  callbacks: Array<{ pluginName: string; callback: (arg: T) => void | Promise<void> }>,
-  hookName: string,
-  arg: T,
-): PluginFailureResult | null {
-  let firstFailure: PluginFailureResult | null = null;
-  for (const { pluginName, callback } of callbacks) {
-    try {
-      const result = callback(arg);
-      if (isPromiseLike(result)) {
-        silenceUnsupportedSyncPromise(result);
-        firstFailure ??= syncPluginPromiseFailure(pluginName, hookName);
-      }
-    } catch (err) {
-      firstFailure ??= normalizePluginFailure(pluginName, hookName, err);
-    }
-  }
-  return firstFailure;
 }
 
 type HookEntry = { pluginName: string; filter: RegExp; callback: (...args: any[]) => any };
@@ -1459,322 +1445,277 @@ const pluginArgBuilders: Record<string, (arg1: string, arg2: string | null) => [
   };
 
 /**
+ * Dispatcher 가 한 번에 실행하고 싶은 plugin hook 호출 단위. generator 가 yield 하면
+ * runner (async/sync) 가 callback 을 실제 실행하고 결과 (또는 실패) 를 다시 보낸다.
+ */
+type HookCall = {
+  callback: () => unknown;
+  pluginName: string;
+  hookName: string;
+  fallbackFile?: string | null;
+};
+
+/** runner 가 generator 로 돌려보내는 값: 정상 결과 또는 normalize 된 실패. */
+type DispatchedHookResult = unknown | PluginFailureResult;
+
+/**
+ * lifecycle hook (generateBundle / buildStart / buildEnd / closeBundle) 의 callback 배열,
+ * arg, 실패를 lifecycleFailures 로 surfacing 할지 여부를 묶어서 반환. 매칭 안 되면 null.
+ */
+function lifecycleHookSpec(
+  reg: PluginRegistry,
+  hookName: string,
+  arg1: unknown,
+): {
+  callbacks: Array<{ pluginName: string; callback: (arg: any) => unknown }>;
+  arg: unknown;
+  surfaceFailures: boolean;
+} | null {
+  switch (hookName) {
+    case 'generateBundle':
+      return {
+        callbacks: reg.generateBundleCallbacks,
+        arg: arg1 as OutputFile[],
+        surfaceFailures: false,
+      };
+    case 'buildStart':
+      return { callbacks: reg.buildStartCallbacks, arg: undefined, surfaceFailures: false };
+    case 'buildEnd': {
+      const msg = arg1 as string;
+      return {
+        callbacks: reg.buildEndCallbacks,
+        arg: msg && msg.length > 0 ? new Error(msg) : undefined,
+        surfaceFailures: true,
+      };
+    }
+    case 'closeBundle':
+      return { callbacks: reg.closeBundleCallbacks, arg: undefined, surfaceFailures: true };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Dispatcher 본체를 generator 로 작성해서 async/sync runner 가 동일 body 를 driving 한다.
+ * 분기별 (astFunction / resolveContext / lifecycle / transform-chain / first-match) 결정은
+ * 여기서 한 번만 정의되고 callback 실행 / Promise 처리만 runner 로 위임된다.
+ */
+function* dispatchHook(
+  reg: PluginRegistry,
+  hookName: string,
+  arg1: unknown,
+  arg2: string | null,
+): Generator<HookCall, unknown, DispatchedHookResult> {
+  // astFunction: arg1 이 JSON 직렬화된 FunctionInfo. 첫 매칭 plugin 의 non-null 반환을 채택.
+  if (hookName === 'astFunction') {
+    if (reg.astFunctionHooks.length === 0) return null;
+    let info: AstFunctionInfo;
+    try {
+      info = JSON.parse(arg1 as string) as AstFunctionInfo;
+    } catch {
+      return null;
+    }
+    for (const h of reg.astFunctionHooks) {
+      if (!h.filter.test(info.sourcePath)) continue;
+      const result = yield {
+        callback: () => h.callback(info),
+        pluginName: h.pluginName,
+        hookName: 'astFunction',
+        fallbackFile: info.sourcePath,
+      };
+      if (isPluginFailureResult(result)) return result;
+      if (result != null) return result;
+    }
+    return null;
+  }
+
+  // resolveContext: arg1 = JSON({ dir, recursive, filter, flags, importer }), arg2 = null. (#1579 Phase 2.5)
+  // 결과 형식: { context: string[] } — 매칭 파일 경로 배열. null/undefined 반환 시 graph 가
+  // require_context_no_handler diagnostic emit.
+  if (hookName === 'resolveContext') {
+    if (reg.hooks.resolveContext.length === 0) return null;
+    let args: {
+      dir: string;
+      recursive: boolean;
+      filter?: string;
+      flags?: string;
+      importer: string;
+    };
+    try {
+      args = JSON.parse(arg1 as string);
+    } catch {
+      return null;
+    }
+    for (const h of reg.hooks.resolveContext) {
+      if (!h.filter.test(args.dir)) continue;
+      const result = yield {
+        callback: () => h.callback(args),
+        pluginName: h.pluginName,
+        hookName: 'resolveContext',
+        fallbackFile: args.importer,
+      };
+      if (isPluginFailureResult(result)) return result;
+      if (result != null) return result;
+    }
+    return null;
+  }
+
+  // generateBundle / buildStart / buildEnd / closeBundle: filter 없이 sequential 실행.
+  // 한 plugin 실패가 다른 plugin 차단 안 되도록 첫 실패만 capture 후 나머지 계속 (#1902).
+  // buildEnd / closeBundle 실패는 lifecycleFailures 로만 surfacing — return value 는 항상 null
+  // (native bundler 가 lifecycle hook 의 PluginFailed 를 swallow 하므로 dual channel 의미 없음).
+  {
+    const spec = lifecycleHookSpec(reg, hookName, arg1);
+    if (spec) {
+      let firstFailure: PluginFailureResult | null = null;
+      for (const { pluginName, callback } of spec.callbacks) {
+        const result = yield {
+          callback: () => callback(spec.arg),
+          pluginName,
+          hookName,
+        };
+        if (isPluginFailureResult(result) && firstFailure == null) firstFailure = result;
+      }
+      if (spec.surfaceFailures) {
+        if (firstFailure) reg.lifecycleFailures.push(firstFailure);
+        return null;
+      }
+      return firstFailure;
+    }
+  }
+
+  // transform/renderChunk: 체이닝 (이전 결과의 code가 다음 입력). transform 만 source map 누적.
+  if (hookName === 'transform' || hookName === 'renderChunk') {
+    const hookList = reg.hooks[hookName];
+    if (!hookList) return null;
+    let currentCode = arg1 as string;
+    let changed = false;
+    const sourceMaps: string[] = [];
+    for (const h of hookList) {
+      if (!h.filter.test(arg2 ?? '')) continue;
+      const cbArgs =
+        hookName === 'transform'
+          ? { code: currentCode, path: arg2 }
+          : { code: currentCode, chunk: arg2 };
+      const result = yield {
+        callback: () => h.callback(cbArgs),
+        pluginName: h.pluginName,
+        hookName,
+        fallbackFile: arg2,
+      };
+      if (isPluginFailureResult(result)) return result;
+      if (result != null) {
+        const obj = result as { code?: unknown; map?: unknown };
+        const newCode = typeof result === 'string' ? result : obj.code;
+        if (typeof newCode === 'string') {
+          currentCode = newCode;
+          changed = true;
+        }
+        if (hookName === 'transform' && typeof result === 'object' && 'map' in obj) {
+          const r = safeSerializeSourceMap(obj.map);
+          if (!r.ok) return normalizePluginFailure(h.pluginName, hookName, r.err, arg2);
+          if (r.map != null) sourceMaps.push(r.map);
+        }
+      }
+    }
+    return changed
+      ? { code: currentCode, ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}) }
+      : null;
+  }
+
+  // resolveId/load: 첫 번째 매칭 plugin 의 non-null 반환을 채택.
+  const hookList = reg.hooks[hookName];
+  if (!hookList) return null;
+  const buildArgs = pluginArgBuilders[hookName];
+  if (!buildArgs) return null;
+  const [filterTarget, cbArgs] = buildArgs(arg1 as string, arg2);
+  for (const h of hookList) {
+    if (!h.filter.test(filterTarget)) continue;
+    const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
+    const result = yield {
+      callback: () => h.callback(cbArgs),
+      pluginName: h.pluginName,
+      hookName,
+      fallbackFile,
+    };
+    if (isPluginFailureResult(result)) return result;
+    if (result != null) {
+      if (hookName === 'load' && typeof result === 'object' && 'map' in (result as object)) {
+        const r = safeSerializeSourceMap((result as { map?: unknown }).map);
+        if (!r.ok) return normalizePluginFailure(h.pluginName, hookName, r.err, fallbackFile);
+        return { ...(result as object), ...(r.map != null ? { map: r.map } : { map: undefined }) };
+      }
+      return result;
+    }
+  }
+  return null;
+}
+
+/** async runner — callback 을 await 하고 throw 는 normalize 한다. */
+async function driveDispatchAsync(
+  gen: Generator<HookCall, unknown, DispatchedHookResult>,
+): Promise<unknown> {
+  let r = gen.next();
+  while (!r.done) {
+    const call = r.value;
+    let value: DispatchedHookResult;
+    try {
+      value = await call.callback();
+    } catch (err) {
+      value = normalizePluginFailure(call.pluginName, call.hookName, err, call.fallbackFile);
+    }
+    r = gen.next(value);
+  }
+  return r.value;
+}
+
+/** sync runner — Promise/thenable 반환은 plugin_error 로 즉시 변환. */
+function driveDispatchSync(gen: Generator<HookCall, unknown, DispatchedHookResult>): unknown {
+  let r = gen.next();
+  while (!r.done) {
+    const call = r.value;
+    let value: DispatchedHookResult;
+    try {
+      const raw = call.callback();
+      if (isPromiseLike(raw)) {
+        silenceUnsupportedSyncPromise(raw);
+        value = syncPluginPromiseFailure(call.pluginName, call.hookName, call.fallbackFile);
+      } else {
+        value = raw;
+      }
+    } catch (err) {
+      value = normalizePluginFailure(call.pluginName, call.hookName, err, call.fallbackFile);
+    }
+    r = gen.next(value);
+  }
+  return r.value;
+}
+
+/**
  * plugins 배열을 처리하여 단일 dispatcher 함수를 생성한다.
  * dispatcher(hookName, arg1, arg2) → result | null
  */
-function createPluginDispatcher(plugins: ZntcPlugin[]) {
-  const {
-    hooks,
-    generateBundleCallbacks,
-    buildStartCallbacks,
-    buildEndCallbacks,
-    closeBundleCallbacks,
-    astFunctionHooks,
-    lifecycleFailures,
-  } = collectPluginRegistry(plugins);
-
-  const dispatcher = async function dispatcher(
-    hookName: string,
-    arg1: unknown,
-    arg2: string | null,
-  ) {
-    // astFunction: arg1이 JSON 직렬화된 FunctionInfo
-    if (hookName === 'astFunction') {
-      if (astFunctionHooks.length === 0) return null;
-      try {
-        const info = JSON.parse(arg1 as string) as AstFunctionInfo;
-        for (const h of astFunctionHooks) {
-          if (h.filter.test(info.sourcePath)) {
-            try {
-              const result = await h.callback(info);
-              if (result != null) return result;
-            } catch (err) {
-              return normalizePluginFailure(h.pluginName, 'astFunction', err, info.sourcePath);
-            }
-          }
-        }
-      } catch {
-        // JSON 파싱 실패
-      }
-      return null;
-    }
-
-    // resolveContext: arg1 = JSON({ dir, recursive, filter, flags, importer }), arg2 = null. (#1579 Phase 2.5)
-    // 결과 형식: { context: string[] } — 매칭 파일 경로 배열. null/undefined 반환 시 graph 가
-    // require_context_no_handler diagnostic emit.
-    if (hookName === 'resolveContext') {
-      if (hooks.resolveContext.length === 0) return null;
-      try {
-        const args = JSON.parse(arg1 as string) as {
-          dir: string;
-          recursive: boolean;
-          filter?: string;
-          flags?: string;
-          importer: string;
-        };
-        for (const h of hooks.resolveContext) {
-          if (h.filter.test(args.dir)) {
-            try {
-              const result = await h.callback(args);
-              if (result != null) return result;
-            } catch (err) {
-              return normalizePluginFailure(h.pluginName, 'resolveContext', err, args.importer);
-            }
-          }
-        }
-      } catch {
-        // JSON 파싱 실패
-      }
-      return null;
-    }
-
-    // filter 없이 모든 callback 순차 호출 (Rollup sequential 명세). 한 plugin 실패가
-    // 다른 plugin 을 차단하지 않도록 첫 실패만 capture 후 나머지는 계속 실행 (#1902).
-    if (hookName === 'generateBundle') {
-      return await runFireAndForget(
-        generateBundleCallbacks,
-        'generateBundle',
-        arg1 as OutputFile[],
-      );
-    }
-    if (hookName === 'buildStart') {
-      return await runFireAndForget(buildStartCallbacks, 'buildStart', undefined);
-    }
-    if (hookName === 'buildEnd') {
-      // native 측이 fatal diagnostic message 를 string 으로 forward — 빈 문자열은 정상 build.
-      const msg = arg1 as string;
-      const err = msg && msg.length > 0 ? new Error(msg) : undefined;
-      const failure = await runFireAndForget(buildEndCallbacks, 'buildEnd', err);
-      if (failure) lifecycleFailures.push(failure);
-      return failure;
-    }
-    if (hookName === 'closeBundle') {
-      const failure = await runFireAndForget(closeBundleCallbacks, 'closeBundle', undefined);
-      if (failure) lifecycleFailures.push(failure);
-      return failure;
-    }
-
-    const hookList = hooks[hookName];
-    if (!hookList) return null;
-
-    // transform/renderChunk: 체이닝 (이전 결과의 code가 다음 입력)
-    if (hookName === 'transform' || hookName === 'renderChunk') {
-      let currentCode = arg1 as string;
-      let changed = false;
-      const sourceMaps: string[] = [];
-      for (const h of hookList) {
-        if (h.filter.test(arg2 ?? '')) {
-          try {
-            const cbArgs =
-              hookName === 'transform'
-                ? { code: currentCode, path: arg2 }
-                : { code: currentCode, chunk: arg2 };
-            const result = await h.callback(cbArgs);
-            if (result != null) {
-              const newCode = typeof result === 'string' ? result : result.code;
-              if (newCode != null) {
-                currentCode = newCode;
-                changed = true;
-              }
-              if (hookName === 'transform' && typeof result === 'object' && 'map' in result) {
-                const map = serializePluginSourceMap(result.map);
-                if (map != null) sourceMaps.push(map);
-              }
-            }
-          } catch (err) {
-            return normalizePluginFailure(h.pluginName, hookName, err, arg2);
-          }
-        }
-      }
-      return changed
-        ? { code: currentCode, ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}) }
-        : null;
-    }
-
-    // resolveId/load: 첫 번째 매칭 반환 (first 모드)
-    const buildArgs = pluginArgBuilders[hookName];
-    if (!buildArgs) return null;
-    const [filterTarget, cbArgs] = buildArgs(arg1 as string, arg2);
-    for (const h of hookList) {
-      if (h.filter.test(filterTarget)) {
-        try {
-          const result = await h.callback(cbArgs);
-          if (result != null) {
-            if (hookName === 'load' && typeof result === 'object' && 'map' in result) {
-              const map = serializePluginSourceMap(result.map);
-              return { ...result, ...(map != null ? { map } : { map: undefined }) };
-            }
-            return result;
-          }
-        } catch (err) {
-          const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
-          return normalizePluginFailure(h.pluginName, hookName, err, fallbackFile);
-        }
-      }
-    }
-    return null;
+function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
+  const reg = collectPluginRegistry(plugins);
+  // 외부 async wrap 제거 — driveDispatchAsync 가 이미 Promise 반환. async 한 겹 더 씌우면
+  // 매 호출마다 Promise 가 한 번 더 할당된다.
+  const dispatcher = function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
+    return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2));
   } as PluginDispatcher;
-  dispatcher.takeLifecycleFailures = () => lifecycleFailures.splice(0);
+  dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   return dispatcher;
 }
 
 /**
- * buildSync() 전용 dispatcher. Sync hook은 기존 build()와 같은 contract로 실행하되,
- * Promise/thenable 반환은 즉시 plugin_error payload로 바꾼다.
+ * buildSync() 전용 dispatcher. dispatchHook generator 를 sync runner 로 driving —
+ * Promise/thenable 반환은 즉시 plugin_error payload 로 변환된다.
  */
-function createSyncPluginDispatcher(plugins: ZntcPlugin[]) {
-  const {
-    hooks,
-    generateBundleCallbacks,
-    buildStartCallbacks,
-    buildEndCallbacks,
-    closeBundleCallbacks,
-    astFunctionHooks,
-    lifecycleFailures,
-  } = collectPluginRegistry(plugins);
-
+function createSyncPluginDispatcher(plugins: ZntcPlugin[]): SyncPluginDispatcher {
+  const reg = collectPluginRegistry(plugins);
   const dispatcher = function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
-    if (hookName === 'astFunction') {
-      if (astFunctionHooks.length === 0) return null;
-      try {
-        const info = JSON.parse(arg1 as string) as AstFunctionInfo;
-        for (const h of astFunctionHooks) {
-          if (h.filter.test(info.sourcePath)) {
-            try {
-              const result = h.callback(info);
-              if (isPromiseLike(result)) {
-                silenceUnsupportedSyncPromise(result);
-                return syncPluginPromiseFailure(h.pluginName, 'astFunction', info.sourcePath);
-              }
-              if (result != null) return result;
-            } catch (err) {
-              return normalizePluginFailure(h.pluginName, 'astFunction', err, info.sourcePath);
-            }
-          }
-        }
-      } catch {
-        // JSON 파싱 실패
-      }
-      return null;
-    }
-
-    if (hookName === 'resolveContext') {
-      if (hooks.resolveContext.length === 0) return null;
-      try {
-        const args = JSON.parse(arg1 as string) as {
-          dir: string;
-          recursive: boolean;
-          filter?: string;
-          flags?: string;
-          importer: string;
-        };
-        for (const h of hooks.resolveContext) {
-          if (h.filter.test(args.dir)) {
-            try {
-              const result = h.callback(args);
-              if (isPromiseLike(result)) {
-                silenceUnsupportedSyncPromise(result);
-                return syncPluginPromiseFailure(h.pluginName, 'resolveContext', args.importer);
-              }
-              if (result != null) return result;
-            } catch (err) {
-              return normalizePluginFailure(h.pluginName, 'resolveContext', err, args.importer);
-            }
-          }
-        }
-      } catch {
-        // JSON 파싱 실패
-      }
-      return null;
-    }
-
-    if (hookName === 'generateBundle') {
-      return runFireAndForgetSync(generateBundleCallbacks, 'generateBundle', arg1 as OutputFile[]);
-    }
-    if (hookName === 'buildStart') {
-      return runFireAndForgetSync(buildStartCallbacks, 'buildStart', undefined);
-    }
-    if (hookName === 'buildEnd') {
-      const msg = arg1 as string;
-      const err = msg && msg.length > 0 ? new Error(msg) : undefined;
-      const failure = runFireAndForgetSync(buildEndCallbacks, 'buildEnd', err);
-      if (failure) lifecycleFailures.push(failure);
-      return failure;
-    }
-    if (hookName === 'closeBundle') {
-      const failure = runFireAndForgetSync(closeBundleCallbacks, 'closeBundle', undefined);
-      if (failure) lifecycleFailures.push(failure);
-      return failure;
-    }
-
-    const hookList = hooks[hookName];
-    if (!hookList) return null;
-
-    if (hookName === 'transform' || hookName === 'renderChunk') {
-      let currentCode = arg1 as string;
-      let changed = false;
-      const sourceMaps: string[] = [];
-      for (const h of hookList) {
-        if (h.filter.test(arg2 ?? '')) {
-          try {
-            const cbArgs =
-              hookName === 'transform'
-                ? { code: currentCode, path: arg2 }
-                : { code: currentCode, chunk: arg2 };
-            const result = h.callback(cbArgs);
-            if (isPromiseLike(result)) {
-              silenceUnsupportedSyncPromise(result);
-              return syncPluginPromiseFailure(h.pluginName, hookName, arg2);
-            }
-            if (result != null) {
-              const newCode = typeof result === 'string' ? result : result.code;
-              if (newCode != null) {
-                currentCode = newCode;
-                changed = true;
-              }
-              if (hookName === 'transform' && typeof result === 'object' && 'map' in result) {
-                const map = serializePluginSourceMap(result.map);
-                if (map != null) sourceMaps.push(map);
-              }
-            }
-          } catch (err) {
-            return normalizePluginFailure(h.pluginName, hookName, err, arg2);
-          }
-        }
-      }
-      return changed
-        ? { code: currentCode, ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}) }
-        : null;
-    }
-
-    const buildArgs = pluginArgBuilders[hookName];
-    if (!buildArgs) return null;
-    const [filterTarget, cbArgs] = buildArgs(arg1 as string, arg2);
-    for (const h of hookList) {
-      if (h.filter.test(filterTarget)) {
-        try {
-          const result = h.callback(cbArgs);
-          if (isPromiseLike(result)) {
-            silenceUnsupportedSyncPromise(result);
-            const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
-            return syncPluginPromiseFailure(h.pluginName, hookName, fallbackFile);
-          }
-          if (result != null) {
-            if (hookName === 'load' && typeof result === 'object' && 'map' in result) {
-              const map = serializePluginSourceMap(result.map);
-              return { ...result, ...(map != null ? { map } : { map: undefined }) };
-            }
-            return result;
-          }
-        } catch (err) {
-          const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
-          return normalizePluginFailure(h.pluginName, hookName, err, fallbackFile);
-        }
-      }
-    }
-    return null;
+    return driveDispatchSync(dispatchHook(reg, hookName, arg1, arg2));
   } as SyncPluginDispatcher;
-  dispatcher.takeLifecycleFailures = () => lifecycleFailures.splice(0);
+  dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   return dispatcher;
 }
 
