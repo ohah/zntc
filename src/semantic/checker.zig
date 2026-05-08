@@ -270,9 +270,11 @@ pub fn checkObjectDuplicateProto(
         // shorthand는 right가 none이고 flags가 0인 경우.
         if (node.data.binary.right.isNone() and node.data.binary.flags == 0) continue;
 
-        // key가 "__proto__" 인지 확인
+        // key가 non-computed "__proto__" 인지 확인.
+        // ComputedPropertyName 의 PropName 은 empty 이므로 ['__proto__'] 는
+        // Annex B duplicate __proto__ early error 대상이 아니다.
         const key_idx = node.data.binary.left;
-        if (!try matchKeyName(allocator, ast, key_idx, "__proto__")) continue;
+        if (!try matchDirectKeyName(allocator, ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
             try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}), .proto_duplicate);
