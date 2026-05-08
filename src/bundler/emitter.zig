@@ -751,20 +751,20 @@ pub fn emitWithTreeShaking(
             if (results[i].mappings) |maps| {
                 const region_lines: u32 = if (options.minify_whitespace) 0 else 1;
                 const endregion_lines: u32 = if (options.minify_whitespace) 0 else 1;
-                try addModuleMappings(
-                    sm,
-                    sourcemapSourcePath(m.path, options),
-                    m.source,
-                    maps,
-                    module_line - region_lines,
-                    results[i].preamble_lines,
-                    options.sourcemap.sources_content,
-                    false,
-                    region_lines,
-                    @intCast(std.mem.count(u8, code, "\n")),
-                    endregion_lines,
-                    m.plugin_source_maps,
-                );
+                try addModuleMappings(.{
+                    .sm = sm,
+                    .module_id = sourcemapSourcePath(m.path, options),
+                    .source = m.source,
+                    .maps = maps,
+                    .base_line = module_line - region_lines,
+                    .preamble_lines = results[i].preamble_lines,
+                    .sources_content = options.sourcemap.sources_content,
+                    .indent_offset = false,
+                    .pre_lines = region_lines,
+                    .total_code_lines = @intCast(std.mem.count(u8, code, "\n")),
+                    .post_lines = endregion_lines,
+                    .plugin_source_maps = m.plugin_source_maps,
+                });
                 // function map: source 추가 순서와 동기화
                 if (options.sourcemap.function_map) {
                     try per_source_fn_maps.append(allocator, results[i].fn_map_json);
@@ -839,20 +839,20 @@ pub fn emitWithTreeShaking(
                     var mod_sm_moved = false;
                     defer if (!mod_sm_moved) mod_sm.deinit();
                     mod_sm.sources_content = options.sourcemap.sources_content;
-                    try addModuleMappings(
-                        &mod_sm,
-                        sourcemapSourcePath(m.path, options),
-                        m.source,
-                        maps,
-                        HMR_PREAMBLE_LINES,
-                        results[i].preamble_lines,
-                        options.sourcemap.sources_content,
-                        false,
-                        0, // HMR preamble path 는 region marker 없음
-                        @intCast(std.mem.count(u8, code, "\n")),
-                        0, // endregion 도 없음
-                        m.plugin_source_maps,
-                    );
+                    try addModuleMappings(.{
+                        .sm = &mod_sm,
+                        .module_id = sourcemapSourcePath(m.path, options),
+                        .source = m.source,
+                        .maps = maps,
+                        .base_line = HMR_PREAMBLE_LINES,
+                        .preamble_lines = results[i].preamble_lines,
+                        .sources_content = options.sourcemap.sources_content,
+                        .indent_offset = false,
+                        .pre_lines = 0, // HMR preamble path 는 region marker 없음
+                        .total_code_lines = @intCast(std.mem.count(u8, code, "\n")),
+                        .post_lines = 0, // endregion 도 없음
+                        .plugin_source_maps = m.plugin_source_maps,
+                    });
                     if (options.sourcemap.lazy) {
                         module_sm_builder = try mod_sm.moveToHeap(allocator);
                         mod_sm_moved = true;

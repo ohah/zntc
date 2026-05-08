@@ -407,20 +407,20 @@ pub fn emitChunks(
             if (chunk_sm) |*sm| if (module_mappings) |maps| {
                 const region_lines: u32 = if (options.minify_whitespace) 0 else 1;
                 const endregion_lines: u32 = if (options.minify_whitespace) 0 else 1;
-                try parent.addModuleMappings(
-                    sm,
-                    parent.sourcemapSourcePath(m.path, options),
-                    m.source,
-                    maps,
-                    module_line.? - region_lines,
-                    module_preamble_lines,
-                    options.sourcemap.sources_content,
-                    false,
-                    region_lines,
-                    stripped_lines,
-                    endregion_lines,
-                    m.plugin_source_maps,
-                );
+                try parent.addModuleMappings(.{
+                    .sm = sm,
+                    .module_id = parent.sourcemapSourcePath(m.path, options),
+                    .source = m.source,
+                    .maps = maps,
+                    .base_line = module_line.? - region_lines,
+                    .preamble_lines = module_preamble_lines,
+                    .sources_content = options.sourcemap.sources_content,
+                    .indent_offset = false,
+                    .pre_lines = region_lines,
+                    .total_code_lines = stripped_lines,
+                    .post_lines = endregion_lines,
+                    .plugin_source_maps = m.plugin_source_maps,
+                });
             };
 
             try chunk_output.appendSlice(allocator, stripped);
