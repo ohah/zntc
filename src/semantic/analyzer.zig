@@ -2185,7 +2185,11 @@ pub const SemanticAnalyzer = struct {
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
         if (!name_idx.isNone()) {
             const fn_predeclared = if (self.isInPredeclaredScope()) true else blk: {
-                // 함수 body 내 predeclare 로 이미 등록된 **같은 이름의 function-like** 심볼인지 확인.
+                // 함수 body 내 predeclare 로 이미 등록된 **같은 위치의 function-like** 심볼인지 확인.
+                // `predeclareVarDeclsRecursive` 는 nested block 의 FunctionDeclaration 도 var scope 에
+                // 선등록하지만, 실제 방문 시에는 block lexical 선언으로 다시 등록되어야
+                // `function f() {} let f` 같은 Block early error 를 잡을 수 있다.
+                // 따라서 origin_scope 가 현재 스코프인 direct predeclare 만 재사용한다.
                 // var f 가 먼저 등록되어 있는 상황 ({ var f; function f() {} }) 에서는
                 // predeclare 재사용이 아니라 declareSymbol 로 보내 재선언 충돌 검사를 수행해야 한다.
                 const name_node = self.ast.getNode(name_idx);
@@ -2193,7 +2197,8 @@ pub const SemanticAnalyzer = struct {
                 const var_scope = self.findVarScope();
                 if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
                     if (self.scope_maps.items[var_scope.toIndex()].get(fname)) |sym_idx| {
-                        break :blk self.symbols.items[sym_idx].kind.isFunctionLike();
+                        const sym = self.symbols.items[sym_idx];
+                        break :blk sym.kind.isFunctionLike() and sym.origin_scope == self.current_scope;
                     }
                 }
                 break :blk false;
