@@ -1527,13 +1527,8 @@ pub const Ast = struct {
         key_idx: NodeIndex,
     ) std.mem.Allocator.Error!?[]u8 {
         if (key_idx.isNone() or @intFromEnum(key_idx) >= self.nodes.items.len) return null;
-        const n = self.getNode(key_idx);
-        return switch (n.tag) {
-            .identifier_reference, .binding_identifier, .private_identifier => try alloc.dupe(u8, self.getText(n.data.string_ref)),
-            .numeric_literal => try alloc.dupe(u8, self.getText(n.span)),
-            .string_literal => try decodeStringLiteralKey(self, alloc, key_idx),
-            else => null,
-        };
+        if (self.getNode(key_idx).tag == .computed_property_key) return null;
+        return self.staticKeyName(alloc, key_idx);
     }
 };
 
