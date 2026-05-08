@@ -10,6 +10,7 @@ import {
   join,
   tmpdir,
 } from './helpers';
+import type { RollupPlugin, ZntcPlugin } from './helpers';
 
 describe('@zntc/core plugin lifecycle', () => {
   test('buildStart / buildEnd / closeBundle 정상 build 시 호출 + 호출 순서', async () => {

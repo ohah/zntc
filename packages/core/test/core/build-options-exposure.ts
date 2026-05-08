@@ -15,6 +15,7 @@ import {
   tmpdir,
   runBundleStdout,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('BuildOptions: 누락 옵션 노출 (#1005)', () => {
   let dir: string;

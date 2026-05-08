@@ -13,6 +13,7 @@ import {
   join,
   tmpdir,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core edge cases', () => {
   // transpile 엣지케이스

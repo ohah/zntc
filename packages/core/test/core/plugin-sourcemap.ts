@@ -15,6 +15,7 @@ import {
   parseBundleMap,
   expectMarkerMappedToSourceLine,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core plugin transform sourcemap chain', () => {
   test('onLoad map을 최종 sourcemap에 합성', async () => {

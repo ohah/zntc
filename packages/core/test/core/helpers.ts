@@ -1,5 +1,6 @@
 import { afterAll as setupAfterAll, beforeAll as setupBeforeAll, expect } from 'bun:test';
 import { close, init } from '../../index';
+import type { OutputFile } from '../../index';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';

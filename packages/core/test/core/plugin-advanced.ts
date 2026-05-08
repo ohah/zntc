@@ -11,6 +11,7 @@ import {
   tmpdir,
   expectPluginDiagnostic,
 } from './helpers';
+import type { ZntcPlugin } from './helpers';
 
 describe('@zntc/core 플러그인 심화', () => {
   test('plugin_error: thrown string과 hook 이름을 보존', async () => {
