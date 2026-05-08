@@ -1179,8 +1179,8 @@ export interface AppDevPrepareResult {
 }
 
 /**
- * filter 없는 lifecycle/generate hook 의 callback 들을 sequential 로 실행하고 swallow.
- * Rollup 명세 — 한 plugin 의 실패가 다른 plugin 을 차단하지 않는다.
+ * thrown 값을 PluginFailureResult 로 정규화한다. Error / RollupError-like / 문자열 / 기타를
+ * 한 가지 모양으로 묶어 NAPI 경계 너머로 전달 가능하게 한다 (#1902).
  */
 function normalizePluginFailure(
   pluginName: string,
@@ -1255,14 +1255,6 @@ function pluginFailureToDiagnostic(failure: PluginFailureResult): Diagnostic {
       ? { location: { file: failure.file, line: failure.line, column: failure.column } }
       : {}),
   };
-}
-
-function isPluginFailureResult(value: unknown): value is PluginFailureResult {
-  return Boolean(
-    value &&
-    typeof value === 'object' &&
-    (value as { __zntcPluginFailure?: unknown }).__zntcPluginFailure === true,
-  );
 }
 
 async function runFireAndForget<T>(
@@ -1415,7 +1407,7 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     }
 
     // filter 없이 모든 callback 순차 호출 (Rollup sequential 명세). 한 plugin 실패가
-    // 다른 plugin 차단 안 되도록 try/catch swallow.
+    // 다른 plugin 을 차단하지 않도록 첫 실패만 capture 후 나머지는 계속 실행 (#1902).
     if (hookName === 'generateBundle') {
       return await runFireAndForget(
         generateBundleCallbacks,
@@ -1810,12 +1802,9 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     writeOutputFiles(result, options);
 
     if (dispatcher) {
-      const closeResult = await dispatcher('closeBundle', undefined, null);
-      const failures = dispatcher.takeLifecycleFailures();
-      if (failures.length > 0) {
-        for (const failure of failures) result.errors.push(pluginFailureToDiagnostic(failure));
-      } else if (isPluginFailureResult(closeResult)) {
-        result.errors.push(pluginFailureToDiagnostic(closeResult));
+      await dispatcher('closeBundle', undefined, null);
+      for (const failure of dispatcher.takeLifecycleFailures()) {
+        result.errors.push(pluginFailureToDiagnostic(failure));
       }
     }
     return result;

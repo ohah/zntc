@@ -4012,35 +4012,34 @@ pub const ModuleGraph = struct {
         span: Span,
         step: BundlerDiagnostic.Step,
     ) void {
-        const f = failure orelse {
+        if (failure) |f| {
+            defer f.deinit();
+            self.tryAddPluginFailureDiag(f, fallback_file, span, step) catch {
+                self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
+            };
+        } else {
             self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
-            return;
-        };
-        defer f.deinit();
+        }
+    }
 
-        const message = f.formatMessage(self.allocator) catch {
-            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
-            return;
-        };
+    fn tryAddPluginFailureDiag(
+        self: *ModuleGraph,
+        f: plugin_mod.PluginFailure,
+        fallback_file: []const u8,
+        span: Span,
+        step: BundlerDiagnostic.Step,
+    ) !void {
+        const message = try f.formatMessage(self.allocator);
+        errdefer self.allocator.free(message);
+
         const file_src = if (f.file_path.len > 0) f.file_path else fallback_file;
-        const file_path = self.allocator.dupe(u8, file_src) catch {
-            self.allocator.free(message);
-            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
-            return;
-        };
-        self.owned_diagnostic_strings.append(self.allocator, message) catch {
-            self.allocator.free(message);
-            self.allocator.free(file_path);
-            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
-            return;
-        };
-        self.owned_diagnostic_strings.append(self.allocator, file_path) catch {
-            _ = self.owned_diagnostic_strings.pop();
-            self.allocator.free(message);
-            self.allocator.free(file_path);
-            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
-            return;
-        };
+        const file_path = try self.allocator.dupe(u8, file_src);
+        errdefer self.allocator.free(file_path);
+
+        try self.owned_diagnostic_strings.ensureUnusedCapacity(self.allocator, 2);
+        self.owned_diagnostic_strings.appendAssumeCapacity(message);
+        self.owned_diagnostic_strings.appendAssumeCapacity(file_path);
+
         self.addDiag(.plugin_error, .@"error", file_path, span, step, message, null);
     }
 };
