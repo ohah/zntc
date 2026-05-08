@@ -279,10 +279,7 @@ describe('createPlatformState — onReady/onRebuild 콜백 (Finding #7)', () => 
 
       writeFileSync(join(dir, 'src/util.ts'), 'export const value = "graph-second";\n');
       await new Promise((r) => setTimeout(r, 100));
-      writeFileSync(
-        entryPath,
-        'import { value } from "./util";\nconsole.log(value);\n',
-      );
+      writeFileSync(entryPath, 'import { value } from "./util";\nconsole.log(value);\n');
 
       const { state, event } = await rebuildP;
       expect(event.success).toBe(true);
