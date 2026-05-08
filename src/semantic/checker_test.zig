@@ -187,6 +187,27 @@ test "checker: single __proto__ is valid" {
     try std.testing.expect(errs.items.len == 0);
 }
 
+test "checker: computed __proto__ does not count as duplicate proto initializer" {
+    var scanner = try Scanner.init(std.testing.allocator, "var o = { __proto__: null, ['__proto__']: null, ['__proto__']: 1 };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var errs: std.ArrayList(Diagnostic) = .empty;
+    defer errs.deinit(std.testing.allocator);
+
+    const ast = &parser.ast;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .object_expression) {
+            try checkObjectDuplicateProto(ast, node.data.list, &errs, std.testing.allocator);
+            break;
+        }
+    }
+
+    try std.testing.expect(errs.items.len == 0);
+}
+
 test "checker: duplicate arrow params is error" {
     var scanner = try Scanner.init(std.testing.allocator, "var f = (x, x) => x;");
     defer scanner.deinit();
