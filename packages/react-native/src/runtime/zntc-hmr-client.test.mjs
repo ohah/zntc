@@ -285,10 +285,7 @@ describe('onmessage — Metro 메시지 분기', () => {
   test("hmr:update-start (incremental) — DevLoadingView.showMessage('Refreshing...', 'refresh')", () => {
     const ws = setupConnected();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
-    expect(mockDevLoadingView.showMessage).toHaveBeenCalledWith(
-      'Refreshing...',
-      'refresh',
-    );
+    expect(mockDevLoadingView.showMessage).toHaveBeenCalledWith('Refreshing...', 'refresh');
   });
 
   test('hmr:update — __zntc_apply_update 호출 with modules', () => {

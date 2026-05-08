@@ -49,7 +49,8 @@ export interface PlatformStateCallbacks {
 }
 
 function getBundleText(result: Awaited<ReturnType<typeof bundleRn>>): string {
-  const jsFile = result.outputFiles.find((file) => file.path.endsWith('.js')) ?? result.outputFiles[0];
+  const jsFile =
+    result.outputFiles.find((file) => file.path.endsWith('.js')) ?? result.outputFiles[0];
   if (!jsFile) throw new Error('Build produced no output');
   return jsFile.text.replace(SOURCE_MAPPING_URL_RE, '');
 }
