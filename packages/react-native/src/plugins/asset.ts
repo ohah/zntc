@@ -11,12 +11,7 @@ import type { ZntcPlugin } from '@zntc/core';
 
 import { HMR_CLIENT_SUFFIX, ZNTC_HMR_CLIENT_CODE } from '../runtime-loader.ts';
 import { escapeRegex } from './escape-regex.ts';
-import {
-  type BabelInstance,
-  getErrorMessage,
-  normalizeExt,
-  requireFromCli,
-} from './internal.ts';
+import { type BabelInstance, getErrorMessage, normalizeExt, requireFromCli } from './internal.ts';
 import type { PluginConfig } from './types.ts';
 
 interface MetroTransformerResult {
@@ -82,9 +77,7 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
         ),
       }));
 
-      const hasSvgSource = config.sourceExts.some(
-        (e) => normalizeExt(e).toLowerCase() === '.svg',
-      );
+      const hasSvgSource = config.sourceExts.some((e) => normalizeExt(e).toLowerCase() === '.svg');
       if (!config.babelTransformerPath && hasSvgSource) {
         build.onLoad({ filter: /\.svg$/i }, (args) => ({
           contents: createSvgComponentModule(readFileSync(args.path, 'utf8'), args.path),
