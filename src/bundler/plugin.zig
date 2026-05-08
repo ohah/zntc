@@ -35,6 +35,85 @@ pub const PluginError = error{
     OutOfMemory,
 };
 
+pub const PluginFailure = struct {
+    allocator: std.mem.Allocator,
+    plugin_name: []const u8,
+    hook_name: []const u8,
+    message: []const u8,
+    file_path: []const u8,
+    line: u32 = 0,
+    column: u32 = 0,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        plugin_name: []const u8,
+        hook_name: []const u8,
+        message: []const u8,
+        file_path: []const u8,
+        line: u32,
+        column: u32,
+    ) !PluginFailure {
+        const plugin_name_copy = try allocator.dupe(u8, plugin_name);
+        errdefer allocator.free(plugin_name_copy);
+        const hook_name_copy = try allocator.dupe(u8, hook_name);
+        errdefer allocator.free(hook_name_copy);
+        const message_copy = try allocator.dupe(u8, message);
+        errdefer allocator.free(message_copy);
+        const file_path_copy = try allocator.dupe(u8, file_path);
+        return .{
+            .allocator = allocator,
+            .plugin_name = plugin_name_copy,
+            .hook_name = hook_name_copy,
+            .message = message_copy,
+            .file_path = file_path_copy,
+            .line = line,
+            .column = column,
+        };
+    }
+
+    pub fn deinit(self: PluginFailure) void {
+        self.allocator.free(self.plugin_name);
+        self.allocator.free(self.hook_name);
+        self.allocator.free(self.message);
+        self.allocator.free(self.file_path);
+    }
+
+    pub fn formatMessage(self: PluginFailure, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.file_path.len > 0 and self.line > 0) {
+            return std.fmt.allocPrint(
+                allocator,
+                "Plugin \"{s}\" failed in {s}: {s} ({s}:{d}:{d})",
+                .{ self.plugin_name, self.hook_name, self.message, self.file_path, self.line, self.column },
+            );
+        }
+        if (self.file_path.len > 0) {
+            return std.fmt.allocPrint(
+                allocator,
+                "Plugin \"{s}\" failed in {s}: {s} ({s})",
+                .{ self.plugin_name, self.hook_name, self.message, self.file_path },
+            );
+        }
+        return std.fmt.allocPrint(
+            allocator,
+            "Plugin \"{s}\" failed in {s}: {s}",
+            .{ self.plugin_name, self.hook_name, self.message },
+        );
+    }
+};
+
+threadlocal var last_plugin_failure: ?PluginFailure = null;
+
+pub fn setLastPluginFailure(failure: PluginFailure) void {
+    if (last_plugin_failure) |old| old.deinit();
+    last_plugin_failure = failure;
+}
+
+pub fn takeLastPluginFailure() ?PluginFailure {
+    const failure = last_plugin_failure;
+    last_plugin_failure = null;
+    return failure;
+}
+
 /// Plugin resolveId 응답의 통합 모델 (#1885).
 ///
 /// origin 별 type-safe 분기 — esbuild 의 string namespace 보다 컴파일 타임 안전.
