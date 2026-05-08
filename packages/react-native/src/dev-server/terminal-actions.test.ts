@@ -34,12 +34,16 @@ function makeCallbacks(): TerminalActionsCallbacks & {
   devMenuCount: number;
   devToolsCount: number;
   clearCount: number;
+  toggleCount: number;
+  logsEnabled: boolean;
 } {
   const cb = {
     reloadCount: 0,
     devMenuCount: 0,
     devToolsCount: 0,
     clearCount: 0,
+    toggleCount: 0,
+    logsEnabled: true,
     onReload() {
       cb.reloadCount++;
     },
@@ -51,6 +55,11 @@ function makeCallbacks(): TerminalActionsCallbacks & {
     },
     onClearCache() {
       cb.clearCount++;
+    },
+    onToggleLogs() {
+      cb.toggleCount++;
+      cb.logsEnabled = !cb.logsEnabled;
+      return cb.logsEnabled;
     },
   };
   return cb;
@@ -178,6 +187,20 @@ describe('setupTerminalActions — keypress 라우팅', () => {
     stdin.emitKey('j');
     stdin.emitKey('c');
     expect([cb.devMenuCount, cb.devToolsCount, cb.clearCount]).toEqual([1, 1, 1]);
+    cleanup();
+  });
+
+  test('v → onToggleLogs (한 번 누름 → ON→OFF)', () => {
+    const cb = makeCallbacks();
+    const stdin = makeStdin();
+    const cleanup = setupTerminalActions(cb, { enabled: true, stdin });
+    expect(cb.logsEnabled).toBe(true);
+    stdin.emitKey('v');
+    expect(cb.toggleCount).toBe(1);
+    expect(cb.logsEnabled).toBe(false);
+    stdin.emitKey('v');
+    expect(cb.toggleCount).toBe(2);
+    expect(cb.logsEnabled).toBe(true);
     cleanup();
   });
 

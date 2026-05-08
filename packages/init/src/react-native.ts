@@ -159,7 +159,7 @@ export default {
     port: 8081,
     host: "localhost",
     useGlobalHotkey: true,
-    forwardClientLogs: false,
+    forwardClientLogs: true,
   },
 };
 `;

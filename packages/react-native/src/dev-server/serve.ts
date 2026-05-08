@@ -4,7 +4,7 @@
 
 import { createDevHttpServer, type DevHttpServerHandle } from './http-server.ts';
 import { createHmrBridge, type HmrBridge } from './hmr-bridge.ts';
-import { logBundle, logInfo, printZntcRnBanner } from './logger.ts';
+import { logBundle, logError, logInfo, printZntcRnBanner } from './logger.ts';
 import { loadCliServerApi } from './middleware/cli-server-api.ts';
 import { loadDevMiddleware } from './middleware/dev-middleware.ts';
 import type { RnDevServerOptions } from './options.ts';
@@ -13,7 +13,7 @@ import {
   type PlatformStateRegistry,
   waitForBuild,
 } from './platform-state.ts';
-import { setupTerminalActions } from './terminal-actions.ts';
+import { printDefaultShortcuts, setupTerminalActions } from './terminal-actions.ts';
 import type { Broadcast } from './types.ts';
 
 export interface RnDevServerHandle {
@@ -54,6 +54,11 @@ export interface ServeRnExtras {
   version?: string;
   /** banner / startup log 출력 안 함 (test 환경 등). default false. */
   silent?: boolean;
+  /**
+   * SIGINT/SIGTERM listener 등록 + shutdown 메시지. CLI 사용 시 default true,
+   * embed 사용 시 caller 가 직접 lifecycle 관리하면 false. default true.
+   */
+  installSignalHandlers?: boolean;
 }
 
 export async function serveRn(
@@ -120,8 +125,16 @@ export async function serveRn(
       onReload: () => broadcast('reload'),
       onDevMenu: () => broadcast('devMenu'),
       onOpenDevTools: () => {
-        // dev-middleware 가 /open-debugger POST 를 처리. 미설치 시 silent skip.
-        fetch(`${httpHandle.url}/open-debugger`, { method: 'POST' }).catch(() => {});
+        // 5s timeout — dev-middleware 미설치/hang 시 무한 대기 회피.
+        fetch(`${httpHandle.url}/open-debugger`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(5000),
+        }).catch((err) => {
+          logError(
+            `Failed to open DevTools: ${(err as Error).message ?? err}. ` +
+              `'@react-native/dev-middleware' peer dependency 설치 확인.`,
+          );
+        });
       },
       onClearCache: () => {
         for (const state of platforms.platforms.values()) {
@@ -130,14 +143,43 @@ export async function serveRn(
           state.sourceMapCache = null;
         }
       },
+      onToggleLogs: () => hmrBridge?.toggleLogs() ?? true,
     },
     { enabled: options.terminalActions },
   );
-  if (!extras.silent && options.terminalActions) {
-    logInfo('Press ? to show keyboard shortcuts (r/d/j/i/a/c)');
-  }
   if (!extras.silent) {
     logInfo(`Dev server listening on ${httpHandle.url} (platform=${options.bundle.rnPlatform})`);
+    if (options.terminalActions) printDefaultShortcuts();
+  }
+
+  // shuttingDown — SIGINT 두 번/SIGINT+SIGTERM 동시 도착 재진입 차단. handle.stop()
+  // 에서 listener 제거해 다중 serveRn() 호출 시 핸들러 누적 방지.
+  let signalCleanup: (() => void) | null = null;
+  if (extras.installSignalHandlers !== false) {
+    let shuttingDown = false;
+    const handleSignal = (signal: NodeJS.Signals): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      if (!extras.silent) logInfo(`${signal} received, shutting down...`);
+      void (async () => {
+        try {
+          terminalCleanup();
+          await httpHandle.stop();
+          await platforms.stopAll();
+        } catch (err) {
+          logError(`Shutdown error: ${(err as Error).message ?? err}`);
+          process.exit(1);
+        }
+        if (!extras.silent) logInfo('Server stopped');
+        process.exit(0);
+      })();
+    };
+    process.on('SIGINT', handleSignal);
+    process.on('SIGTERM', handleSignal);
+    signalCleanup = () => {
+      process.off('SIGINT', handleSignal);
+      process.off('SIGTERM', handleSignal);
+    };
   }
 
   return {
@@ -146,6 +188,7 @@ export async function serveRn(
     hmrBridge,
     platforms,
     async stop() {
+      signalCleanup?.();
       terminalCleanup();
       await httpHandle.stop();
       await platforms.stopAll();

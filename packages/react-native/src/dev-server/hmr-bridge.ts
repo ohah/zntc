@@ -28,6 +28,11 @@ export interface HmrBridge {
   readonly path: string;
   /** http upgrade chain 안에서 호출 — channel.accept + initial greeting. */
   acceptUpgrade(req: IncomingMessage, socket: Socket): void;
+  /**
+   * RN runtime console.log forwarding 출력 표시 toggle. 새 상태 반환. server-side
+   * mute 라 클라이언트는 계속 보냄 — 트래픽 절약하려면 forwardClientLogs OFF 로 build.
+   */
+  toggleLogs(): boolean;
 }
 
 function annotateUpdates(
@@ -83,10 +88,10 @@ function buildOnRebuild(adapter: MetroHmrAdapter, opts: { silent?: boolean } = {
 }
 
 /**
- * RN client 가 보내는 메시지 처리 — `register-entrypoints` ACK + `log` forwarding
- * (RN runtime 의 console.log → dev server 터미널).
+ * RN client 메시지 처리 — `register-entrypoints` ACK + `log` forwarding (RN runtime
+ * 의 console.log → dev server 터미널). `getLogsEnabled` false 시 출력 skip.
  */
-function buildIncomingHandler(adapter: MetroHmrAdapter) {
+function buildIncomingHandler(adapter: MetroHmrAdapter, getLogsEnabled: () => boolean) {
   return (text: string, socket: import('node:net').Socket): void => {
     let msg: { type?: string; level?: string; data?: unknown } | null = null;
     try {
@@ -102,6 +107,7 @@ function buildIncomingHandler(adapter: MetroHmrAdapter) {
       return;
     }
     if (msg.type === 'log') {
+      if (!getLogsEnabled()) return;
       const level = typeof msg.level === 'string' ? msg.level : 'log';
       const data = Array.isArray(msg.data) ? msg.data : [msg.data];
       const formatted = data
@@ -133,7 +139,8 @@ function buildAckFrame(): Buffer {
 export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
   const adapter = createMetroHmrAdapter();
   const onRebuild = buildOnRebuild(adapter, { silent: options.silent });
-  adapter.channel.onIncoming(buildIncomingHandler(adapter));
+  let logsEnabled = true;
+  adapter.channel.onIncoming(buildIncomingHandler(adapter, () => logsEnabled));
 
   return {
     adapter,
@@ -142,6 +149,10 @@ export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
     acceptUpgrade(req, socket) {
       adapter.channel.accept(req, socket);
       adapter.sendInitialGreeting();
+    },
+    toggleLogs() {
+      logsEnabled = !logsEnabled;
+      return logsEnabled;
     },
   };
 }

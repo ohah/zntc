@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { colors, logInfo, logWarn } from './logger.ts';
+
 export interface TerminalActionsCallbacks {
   /** `r` — RN runtime reload broadcast. */
   onReload(): void;
@@ -14,6 +16,11 @@ export interface TerminalActionsCallbacks {
   onOpenDevTools(): void;
   /** `c` — clear cache (per-platform state.bundle null 처리 등). */
   onClearCache(): void;
+  /**
+   * `v` — RN runtime 의 console.log forwarding mute/unmute. 새 상태 반환 (true=ON,
+   * false=OFF) — INFO 피드백 메시지에 사용.
+   */
+  onToggleLogs(): boolean;
 }
 
 export interface TerminalActionsOptions {
@@ -21,23 +28,36 @@ export interface TerminalActionsOptions {
   enabled: boolean;
   /** TTY 가 아니면 listener 등록 skip — CI / pipe 환경 호환. */
   stdin?: NodeJS.ReadStream;
-  /** 단축키 list 출력 callback (`?`). 미지정 시 console.log default. */
+  /** 단축키 list 출력 callback (`?`). 미지정 시 INFO badge default. */
   printShortcuts?(): void;
 }
 
-const DEFAULT_SHORTCUTS_HELP = [
-  'Available shortcuts:',
-  '  r - Reload    d - Dev Menu    j - DevTools',
-  '  i - iOS Sim   a - Android     c - Clear cache',
-];
-
-function defaultPrintShortcuts(): void {
-  for (const line of DEFAULT_SHORTCUTS_HELP) console.log(line);
+/** `?` 응답 — INFO badge + 5칸 들여쓰기 + 앞뒤 빈 줄. */
+export function printDefaultShortcuts(): void {
+  console.log('');
+  logInfo('Available shortcuts:');
+  console.log(
+    `     ${colors.bold}r${colors.reset} - Reload    ${colors.bold}d${colors.reset} - Dev Menu    ${colors.bold}j${colors.reset} - DevTools`,
+  );
+  console.log(
+    `     ${colors.bold}i${colors.reset} - iOS Sim   ${colors.bold}a${colors.reset} - Android     ${colors.bold}c${colors.reset} - Clear cache`,
+  );
+  console.log(
+    `     ${colors.bold}v${colors.reset} - Toggle console logs           ${colors.bold}?${colors.reset} - Show this help`,
+  );
+  console.log('');
 }
 
-function openIOSSimulator(): boolean {
-  if (process.platform !== 'darwin') return false;
-  if (!existsSync('/usr/bin/xcrun')) return false;
+function openIOSSimulator(): void {
+  if (process.platform !== 'darwin') {
+    logWarn('iOS Simulator is only available on macOS');
+    return;
+  }
+  if (!existsSync('/usr/bin/xcrun')) {
+    logWarn('xcrun not found. Install Xcode Command Line Tools.');
+    return;
+  }
+  logInfo('Opening iOS Simulator...');
   const child = spawn('open', ['-a', 'Simulator'], {
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore'],
@@ -46,18 +66,23 @@ function openIOSSimulator(): boolean {
     /* spawn ENOENT/EACCES — silent skip */
   });
   child.unref();
-  return true;
 }
 
 // Defense-in-depth: emulator `-list-avds` 는 신뢰할만한 출력이지만 path injection
 // 회피용으로 valid AVD name pattern 만 허용.
 const AVD_NAME_RE = /^[a-zA-Z0-9._-]+$/;
 
-function openAndroidEmulator(): boolean {
+function openAndroidEmulator(): void {
   const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-  if (!androidHome) return false;
+  if (!androidHome) {
+    logWarn('ANDROID_HOME or ANDROID_SDK_ROOT not set');
+    return;
+  }
   const emulatorPath = join(androidHome, 'emulator', 'emulator');
-  if (!existsSync(emulatorPath)) return false;
+  if (!existsSync(emulatorPath)) {
+    logWarn('Android emulator not found. Check your Android SDK installation.');
+    return;
+  }
 
   const list = spawn(emulatorPath, ['-list-avds'], { stdio: ['ignore', 'pipe', 'ignore'] });
   list.on('error', () => {
@@ -69,9 +94,16 @@ function openAndroidEmulator(): boolean {
   });
   list.on('close', () => {
     const first = buf.split('\n').find((line) => line.trim().length > 0);
-    if (!first) return;
+    if (!first) {
+      logWarn('No Android AVDs found. Create an AVD first.');
+      return;
+    }
     const avdName = first.trim();
-    if (!AVD_NAME_RE.test(avdName)) return;
+    if (!AVD_NAME_RE.test(avdName)) {
+      logWarn('Invalid AVD name');
+      return;
+    }
+    logInfo(`Opening Android Emulator: ${avdName}`);
     const child = spawn(emulatorPath, ['@' + avdName], {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
@@ -81,7 +113,6 @@ function openAndroidEmulator(): boolean {
     });
     child.unref();
   });
-  return true;
 }
 
 /**
@@ -129,7 +160,7 @@ export function setupTerminalActions(
   stdin.resume();
   stdin.setEncoding('utf8');
 
-  const printShortcuts = options.printShortcuts ?? defaultPrintShortcuts;
+  const printShortcuts = options.printShortcuts ?? printDefaultShortcuts;
 
   // Bun runtime 의 stdin 은 setEncoding('utf8') 호출해도 'data' event 가 Buffer 로
   // emit 될 수 있다 (Node 와 다른 동작). bungae graph-bundler/terminal-actions.ts
@@ -166,12 +197,15 @@ export function setupTerminalActions(
     }
     switch (key.toLowerCase()) {
       case 'r':
+        logInfo('Reloading app...');
         callbacks.onReload();
         break;
       case 'd':
+        logInfo('Opening Dev Menu...');
         callbacks.onDevMenu();
         break;
       case 'j':
+        logInfo('Opening DevTools...');
         callbacks.onOpenDevTools();
         break;
       case 'i':
@@ -182,7 +216,13 @@ export function setupTerminalActions(
         break;
       case 'c':
         callbacks.onClearCache();
+        logInfo('Cache cleared');
         break;
+      case 'v': {
+        const enabled = callbacks.onToggleLogs();
+        logInfo(`Console logs: ${enabled ? 'ON' : 'OFF'}`);
+        break;
+      }
       case '?':
         printShortcuts();
         break;
