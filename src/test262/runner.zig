@@ -181,6 +181,14 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     var parser = Parser.init(arena_alloc, &scanner);
 
     // module 모드 설정 — module은 항상 strict mode (D054)
+    // [DEBUG #2719] OS 차이 추적: await-expr-regexp.js 케이스만 디버그 출력
+    const is_target_case = mem.indexOf(u8, source, "await / x.y / g") != null;
+    if (is_target_case) {
+        const stderr = std.fs.File.stderr().deprecatedWriter();
+        stderr.print("[DBG-OS] await-expr-regexp meta: is_module={} is_negative={} is_only_strict={} is_no_strict={}\n", .{
+            meta.is_module, meta.is_negative_parse, meta.is_only_strict, meta.is_no_strict,
+        }) catch {};
+    }
     if (meta.is_module) {
         parser.is_module = true;
         scanner.is_module = true;
@@ -214,6 +222,22 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
 
     // 렉서 에러 + 파서 에러 + semantic 에러 모두 체크
     const had_error = scanner.token.kind == .syntax_error or parser.errors.items.len > 0 or semantic_error_count > 0;
+
+    // [DEBUG #2719] OS 차이 추적
+    if (is_target_case) {
+        const stderr = std.fs.File.stderr().deprecatedWriter();
+        stderr.print("[DBG-OS] await-expr-regexp had_error={} scanner.token.kind={s} parser.errors={d} semantic={d}\n", .{
+            had_error,
+            @tagName(scanner.token.kind),
+            parser.errors.items.len,
+            semantic_error_count,
+        }) catch {};
+        if (parser.errors.items.len > 0) {
+            for (parser.errors.items, 0..) |err, i| {
+                stderr.print("[DBG-OS]   err[{d}]@{d}: {s}\n", .{ i, err.span.start, err.message }) catch {};
+            }
+        }
+    }
 
     const result: TestResult = if (meta.is_negative_parse)
         (if (had_error) .pass else .fail)
