@@ -763,6 +763,7 @@ pub fn emitWithTreeShaking(
                     region_lines,
                     @intCast(std.mem.count(u8, code, "\n")),
                     endregion_lines,
+                    m.plugin_source_maps,
                 );
                 // function map: source 추가 순서와 동기화
                 if (options.sourcemap.function_map) {
@@ -850,6 +851,7 @@ pub fn emitWithTreeShaking(
                         0, // HMR preamble path 는 region marker 없음
                         @intCast(std.mem.count(u8, code, "\n")),
                         0, // endregion 도 없음
+                        m.plugin_source_maps,
                     );
                     if (options.sourcemap.lazy) {
                         module_sm_builder = try mod_sm.moveToHeap(allocator);

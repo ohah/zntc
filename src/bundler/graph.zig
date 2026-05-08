@@ -51,6 +51,7 @@ const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
 const plugin_mod = @import("plugin.zig");
+const source_map_trace = @import("../codegen/source_map_trace.zig");
 const MpscChannel = @import("mpsc_channel.zig").MpscChannel;
 const transformer_mod = @import("../transformer/transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -1900,6 +1901,7 @@ pub const ModuleGraph = struct {
                 };
                 if (load_result) |plugin_result| {
                     plugin_load_applied = true;
+                    const load_source_maps = plugin_mod.takeLastTransformSourceMaps() orelse &.{};
                     // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
                     // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
                     // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
@@ -1908,6 +1910,15 @@ pub const ModuleGraph = struct {
                     // import binding 이 깨진다.
                     module.parse_arena = tmp_arena;
                     const arena_alloc = tmp_arena.allocator();
+                    if (load_source_maps.len > 0) {
+                        if (!self.validatePluginSourceMaps(load_source_maps, module.path, Span.EMPTY, .transform, "load")) {
+                            module_mod.destroyParseArena(self.allocator, tmp_arena);
+                            module.parse_arena = null;
+                            module.state = .ready;
+                            return;
+                        }
+                        module.plugin_source_maps = load_source_maps;
+                    }
                     if (plugin_result.loader) |loader_override| {
                         module.loader = loader_override;
                         module.module_type = plugin_result.module_type orelse
@@ -2106,6 +2117,23 @@ pub const ModuleGraph = struct {
                     },
                 };
                 if (transform_result) |result| {
+                    if (plugin_mod.takeLastTransformSourceMaps()) |maps| {
+                        if (!self.validatePluginSourceMaps(maps, module.path, Span.EMPTY, .transform, "transform")) {
+                            module.state = .ready;
+                            return;
+                        }
+                        if (module.plugin_source_maps.len > 0) {
+                            module.plugin_source_maps = std.mem.concat(arena_alloc, []const u8, &.{
+                                module.plugin_source_maps,
+                                maps,
+                            }) catch {
+                                module.state = .ready;
+                                return;
+                            };
+                        } else {
+                            module.plugin_source_maps = maps;
+                        }
+                    }
                     module.source = result;
                     plugin_transform_applied = true;
                 }
@@ -4020,6 +4048,33 @@ pub const ModuleGraph = struct {
         } else {
             self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
         }
+    }
+
+    fn validatePluginSourceMaps(
+        self: *ModuleGraph,
+        source_maps: []const []const u8,
+        fallback_file: []const u8,
+        span: Span,
+        step: BundlerDiagnostic.Step,
+        hook_name: []const u8,
+    ) bool {
+        for (source_maps) |source_map_json| {
+            var parsed = source_map_trace.parse(self.allocator, source_map_json) catch {
+                const failure = plugin_mod.PluginFailure.init(
+                    self.allocator,
+                    "zntc:source-map",
+                    hook_name,
+                    "Invalid sourcemap returned by plugin",
+                    fallback_file,
+                    0,
+                    0,
+                ) catch null;
+                self.addPluginFailureDiag(failure, fallback_file, span, step);
+                return false;
+            };
+            parsed.deinit();
+        }
+        return true;
     }
 
     fn tryAddPluginFailureDiag(

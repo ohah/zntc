@@ -419,6 +419,7 @@ pub fn emitChunks(
                     region_lines,
                     stripped_lines,
                     endregion_lines,
+                    m.plugin_source_maps,
                 );
             };
 

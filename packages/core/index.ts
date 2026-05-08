@@ -1030,11 +1030,11 @@ export interface PluginBuild {
     options: { filter: RegExp },
     callback: (args: {
       path: string;
-    }) => HookResult<{ contents: string | Uint8Array; loader?: string }>,
+    }) => HookResult<{ contents: string | Uint8Array; loader?: string; map?: unknown }>,
   ): void;
   onTransform(
     options: { filter: RegExp },
-    callback: (args: { code: string; path: string }) => HookResult<{ code: string }>,
+    callback: (args: { code: string; path: string }) => HookResult<{ code: string; map?: unknown }>,
   ): void;
   onRenderChunk(
     options: { filter: RegExp },
@@ -1257,6 +1257,33 @@ function pluginFailureToDiagnostic(failure: PluginFailureResult): Diagnostic {
   };
 }
 
+function serializePluginSourceMap(map: unknown): string | null {
+  if (map == null) return null;
+  if (typeof map === 'string') {
+    try {
+      JSON.parse(map);
+    } catch (err) {
+      throw new Error(`Invalid sourcemap: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return map;
+  }
+  if (typeof map !== 'object') {
+    throw new Error(`Invalid sourcemap: expected object, string, null, or undefined`);
+  }
+  let json: string;
+  try {
+    json = JSON.stringify(map);
+  } catch (err) {
+    throw new Error(`Invalid sourcemap: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    JSON.parse(json);
+  } catch (err) {
+    throw new Error(`Invalid sourcemap: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return json;
+}
+
 async function runFireAndForget<T>(
   callbacks: Array<{ pluginName: string; callback: (arg: T) => void | Promise<void> }>,
   hookName: string,
@@ -1439,6 +1466,7 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     if (hookName === 'transform' || hookName === 'renderChunk') {
       let currentCode = arg1 as string;
       let changed = false;
+      const sourceMaps: string[] = [];
       for (const h of hookList) {
         if (h.filter.test(arg2 ?? '')) {
           try {
@@ -1453,13 +1481,19 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
                 currentCode = newCode;
                 changed = true;
               }
+              if (hookName === 'transform' && typeof result === 'object' && 'map' in result) {
+                const map = serializePluginSourceMap(result.map);
+                if (map != null) sourceMaps.push(map);
+              }
             }
           } catch (err) {
             return normalizePluginFailure(h.pluginName, hookName, err, arg2);
           }
         }
       }
-      return changed ? { code: currentCode } : null;
+      return changed
+        ? { code: currentCode, ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}) }
+        : null;
     }
 
     // resolveId/load: 첫 번째 매칭 반환 (first 모드)
@@ -1470,7 +1504,13 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
       if (h.filter.test(filterTarget)) {
         try {
           const result = await h.callback(cbArgs);
-          if (result != null) return result;
+          if (result != null) {
+            if (hookName === 'load' && typeof result === 'object' && 'map' in result) {
+              const map = serializePluginSourceMap(result.map);
+              return { ...result, ...(map != null ? { map } : { map: undefined }) };
+            }
+            return result;
+          }
         } catch (err) {
           const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
           return normalizePluginFailure(h.pluginName, hookName, err, fallbackFile);
@@ -2098,7 +2138,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
           if (result == null) return null;
           if (typeof result === 'string') return { contents: result };
           if (typeof result === 'object' && 'code' in result) {
-            return { contents: result.code };
+            return { contents: result.code, map: result.map };
           }
           return null;
         });
@@ -2111,7 +2151,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
           if (result == null) return null;
           if (typeof result === 'string') return { code: result };
           if (typeof result === 'object' && 'code' in result) {
-            return { code: result.code };
+            return { code: result.code, map: result.map };
           }
           return null;
         });

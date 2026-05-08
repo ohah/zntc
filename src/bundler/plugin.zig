@@ -102,6 +102,7 @@ pub const PluginFailure = struct {
 };
 
 threadlocal var last_plugin_failure: ?PluginFailure = null;
+threadlocal var last_transform_source_maps: ?[]const []const u8 = null;
 
 pub fn setLastPluginFailure(failure: PluginFailure) void {
     if (last_plugin_failure) |old| old.deinit();
@@ -112,6 +113,16 @@ pub fn takeLastPluginFailure() ?PluginFailure {
     const failure = last_plugin_failure;
     last_plugin_failure = null;
     return failure;
+}
+
+pub fn setLastTransformSourceMaps(source_maps: []const []const u8) void {
+    last_transform_source_maps = source_maps;
+}
+
+pub fn takeLastTransformSourceMaps() ?[]const []const u8 {
+    const source_maps = last_transform_source_maps;
+    last_transform_source_maps = null;
+    return source_maps;
 }
 
 /// Plugin resolveId 응답의 통합 모델 (#1885).
@@ -343,6 +354,7 @@ pub const PluginRunner = struct {
         path: []const u8,
         allocator: std.mem.Allocator,
     ) PluginError!?LoadResult {
+        last_transform_source_maps = null;
         for (self.plugins) |p| {
             if (p.load) |hook| {
                 if (try hook(p.context, path, allocator)) |result| {
@@ -362,16 +374,26 @@ pub const PluginRunner = struct {
         id: []const u8,
         allocator: std.mem.Allocator,
     ) PluginError!?[]const u8 {
+        last_transform_source_maps = null;
+        var source_maps: std.ArrayList([]const u8) = .empty;
+        defer source_maps.deinit(allocator);
+
         var current: ?[]const u8 = null;
         for (self.plugins) |p| {
             if (p.transform) |hook| {
                 const input = current orelse code;
                 if (try hook(p.context, input, id, allocator)) |result| {
+                    if (takeLastTransformSourceMaps()) |maps| {
+                        try source_maps.appendSlice(allocator, maps);
+                    }
                     // 이전 체이닝 결과가 있으면 해제 (원본 code는 caller 소유이므로 건드리지 않음)
                     if (current) |prev| allocator.free(prev);
                     current = result;
                 }
             }
+        }
+        if (source_maps.items.len > 0) {
+            setLastTransformSourceMaps(try source_maps.toOwnedSlice(allocator));
         }
         return current;
     }

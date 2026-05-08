@@ -124,6 +124,9 @@ pub const Module = struct {
     dev_id: []const u8 = "",
     /// 소스 코드. parse_arena에서 할당 (Module.arena가 소유).
     source: []const u8,
+    /// JS plugin load/transform 이 반환한 Source Map V3 JSON chain.
+    /// 순서는 transform 실행 순서이며 parse_arena 가 backing 을 소유한다.
+    plugin_source_maps: []const []const u8 = &.{},
     /// 파싱된 AST. nodes/extra_data/string_table 의 backing 은 `parse_arena` 가 소유.
     ///
     /// ### Ownership 규약 (D1 디버그 인프라 — RFC #1672)

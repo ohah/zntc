@@ -1283,6 +1283,9 @@ const NapiPlugin = struct {
         /// ParsedLoader.fromString 으로 변환된 결과. null = override 안 함.
         loader_override: ?bundler_mod.types.Loader = null,
         loader_module_type: ?bundler_mod.types.ModuleType = null,
+        /// onLoad/onTransform callback 의 source map JSON chain. JS dispatcher 가 object map 을
+        /// JSON string 으로 정규화해서 전달한다 (#1902 PR 2).
+        source_maps: ?[]const []const u8 = null,
         is_failure: bool = false,
         failure_plugin_name: ?[]const u8 = null,
         failure_hook_name: ?[]const u8 = null,
@@ -1339,6 +1342,16 @@ const NapiPlugin = struct {
                 resp.code = code;
             }
         }
+        if (getObjectString(env, js_result, "map", native_alloc)) |map_json| {
+            const maps = native_alloc.alloc([]const u8, 1) catch {
+                native_alloc.free(map_json);
+                return resp;
+            };
+            maps[0] = map_json;
+            resp.source_maps = maps;
+        } else if (getNamedProperty(env, js_result, "maps")) |maps_val| {
+            resp.source_maps = parseStringArray(env, maps_val, native_alloc);
+        }
         // AST plugin 응답 파싱
         if (getObjectString(env, js_result, "stripDirective", native_alloc)) |sd| {
             resp.strip_directive = sd;
@@ -1369,6 +1382,27 @@ const NapiPlugin = struct {
         if (resp.failure_hook_name) |s| native_alloc.free(s);
         if (resp.failure_message) |s| native_alloc.free(s);
         if (resp.failure_file) |s| native_alloc.free(s);
+    }
+
+    fn freeSourceMaps(resp: PluginResponse) void {
+        if (resp.source_maps) |maps| {
+            for (maps) |m| native_alloc.free(m);
+            native_alloc.free(maps);
+        }
+    }
+
+    fn setResponseSourceMaps(resp: PluginResponse, alloc: std.mem.Allocator) PluginError!void {
+        const maps = resp.source_maps orelse return;
+        if (maps.len == 0) return;
+        const copied = alloc.alloc([]const u8, maps.len) catch return error.OutOfMemory;
+        errdefer alloc.free(copied);
+        var filled: usize = 0;
+        errdefer for (copied[0..filled]) |m| alloc.free(m);
+        for (maps, 0..) |map_json, i| {
+            copied[i] = alloc.dupe(u8, map_json) catch return error.OutOfMemory;
+            filled = i + 1;
+        }
+        plugin_mod.setLastTransformSourceMaps(copied);
     }
 
     fn failWithResponse(self: *NapiPlugin, resp: PluginResponse, alloc: std.mem.Allocator) PluginError {
@@ -1543,11 +1577,14 @@ const NapiPlugin = struct {
         const resp = self.callHook(hook, arg1, arg2) orelse return null;
         defer {
             if (resp.resolved_path) |p| native_alloc.free(p);
+            freeSourceMaps(resp);
             freeFailureFields(resp);
         }
         if (resp.is_failure) return self.failWithResponse(resp, alloc);
         if (resp.code) |result_code| {
             const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+            errdefer alloc.free(result);
+            try setResponseSourceMaps(resp, alloc);
             native_alloc.free(result_code);
             return result;
         }
@@ -1560,6 +1597,7 @@ const NapiPlugin = struct {
         defer {
             if (resp.resolved_path) |p| native_alloc.free(p);
             if (resp.code) |co| native_alloc.free(co);
+            freeSourceMaps(resp);
             freeFailureFields(resp);
         }
         if (resp.is_failure) return self.failWithResponse(resp, alloc);
@@ -1588,6 +1626,7 @@ const NapiPlugin = struct {
         const resp = self.callHook(.load, path, null) orelse return null;
         defer {
             if (resp.resolved_path) |p| native_alloc.free(p);
+            freeSourceMaps(resp);
             freeFailureFields(resp);
         }
         if (resp.is_failure) return self.failWithResponse(resp, alloc);
@@ -1596,6 +1635,8 @@ const NapiPlugin = struct {
             native_alloc.free(result_code);
             return error.OutOfMemory;
         };
+        errdefer alloc.free(contents);
+        try setResponseSourceMaps(resp, alloc);
         native_alloc.free(result_code);
         return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
     }
@@ -1612,13 +1653,19 @@ const NapiPlugin = struct {
 
     fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        _ = self.callHookFull(.generateBundle, "", null, output_files);
+        if (self.callHookFull(.generateBundle, "", null, output_files)) |resp| {
+            freeSourceMaps(resp);
+            freeFailureFields(resp);
+        }
     }
 
     fn pluginBuildStart(ctx: ?*anyopaque) PluginError!void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
         const resp = self.callHook(.buildStart, "", null) orelse return;
-        defer freeFailureFields(resp);
+        defer {
+            freeSourceMaps(resp);
+            freeFailureFields(resp);
+        }
         if (resp.is_failure) return error.PluginFailed;
     }
 
@@ -1629,14 +1676,20 @@ const NapiPlugin = struct {
         // 객체 (`{ code, message, file, line }`) 직렬화 검토 (#2156 follow-up).
         const msg = if (build_error) |d| d.message else "";
         const resp = self.callHook(.buildEnd, msg, null) orelse return;
-        defer freeFailureFields(resp);
+        defer {
+            freeSourceMaps(resp);
+            freeFailureFields(resp);
+        }
         if (resp.is_failure) return error.PluginFailed;
     }
 
     fn pluginCloseBundle(ctx: ?*anyopaque) PluginError!void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
         const resp = self.callHook(.closeBundle, "", null) orelse return;
-        defer freeFailureFields(resp);
+        defer {
+            freeSourceMaps(resp);
+            freeFailureFields(resp);
+        }
         if (resp.is_failure) return error.PluginFailed;
     }
 
@@ -1697,6 +1750,7 @@ const NapiPlugin = struct {
         const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
         defer {
             if (resp.context_matches) |m| native_alloc.free(m);
+            freeSourceMaps(resp);
             freeFailureFields(resp);
         }
         if (resp.is_failure) return self.failWithResponse(resp, alloc);
@@ -1764,6 +1818,7 @@ const NapiPlugin = struct {
             }
             if (resp.resolved_path) |p| native_alloc.free(p);
             if (resp.code) |co| native_alloc.free(co);
+            freeSourceMaps(resp);
             freeFailureFields(resp);
         }
         if (resp.is_failure) return error.PluginFailed;
