@@ -600,6 +600,31 @@ pub const SemanticAnalyzer = struct {
             if (try self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
         }
 
+        // nested-block FunctionDeclaration: var_scope 에 같은 이름 function-like predeclare 가
+        // 있으면 block-scope shadow 를 새로 만들지 않고 var_scope 의 X 를 block_scope.map 에
+        // alias 로 등록한다. 새 심볼을 만들면 name node 가 shadow 를 가리키게 되어 var_scope X
+        // 기준의 linker rename / reference 와 어긋난다 (#2714 LogBox 회귀).
+        // alias 후 같은 block 의 후속 lexical/function 선언은 block_scope.map 에서 X 를 발견
+        // 해 canRedeclare 체크가 정상 작동한다.
+        if (!is_annex_b_fn and kind.isFunctionLike() and !target_scope.isNone() and
+            !self.scopes.items[target_scope.toIndex()].kind.isVarScope())
+        {
+            const var_scope_for_alias = self.findVarScope();
+            if (!var_scope_for_alias.isNone() and var_scope_for_alias.toIndex() < self.scope_maps.items.len) {
+                if (self.scope_maps.items[var_scope_for_alias.toIndex()].get(name_text)) |x_idx| {
+                    if (self.symbols.items[x_idx].kind.isFunctionLike()) {
+                        try self.scope_maps.items[target_scope.toIndex()].put(name_text, x_idx);
+                        if (node_idx) |ni| {
+                            if (ni < self.symbol_ids.items.len) {
+                                self.symbol_ids.items[ni] = @intCast(x_idx);
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
         const sym_index = self.symbols.items.len;
         var decl_flags = kind.declFlags();
         if (is_annex_b_fn) decl_flags.is_annex_b_function = true;
