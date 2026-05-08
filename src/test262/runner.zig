@@ -181,13 +181,21 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     var parser = Parser.init(arena_alloc, &scanner);
 
     // module 모드 설정 — module은 항상 strict mode (D054)
-    // [DEBUG #2719] OS 차이 추적: await-expr-regexp.js 케이스만 디버그 출력
-    const is_target_case = mem.indexOf(u8, source, "await / x.y / g") != null;
+    // [DEBUG #2719] OS 차이 추적: top-level-await regex 케이스 (다양한 패턴으로 매칭)
+    const is_target_case =
+        mem.indexOf(u8, source, "RegularExpressionLiteral following an AwaitExpression") != null;
     if (is_target_case) {
         const stdout = std.fs.File.stdout().deprecatedWriter();
-        stdout.print("[DBG-OS] await-expr-regexp meta: is_module={} is_negative={} is_only_strict={} is_no_strict={}\n", .{
+        const tail_start: usize = if (source.len > 80) source.len - 80 else 0;
+        stdout.print("[DBG-OS] target case detected len={d}\n", .{source.len}) catch {};
+        stdout.print("[DBG-OS] meta: is_module={} is_negative={} is_only_strict={} is_no_strict={}\n", .{
             meta.is_module, meta.is_negative_parse, meta.is_only_strict, meta.is_no_strict,
         }) catch {};
+        stdout.print("[DBG-OS] source tail bytes: ", .{}) catch {};
+        for (source[tail_start..]) |b| {
+            if (b >= 0x20 and b < 0x7f) stdout.print("{c}", .{b}) catch {} else stdout.print("\\x{x:0>2}", .{b}) catch {};
+        }
+        stdout.print("\n", .{}) catch {};
     }
     if (meta.is_module) {
         parser.is_module = true;
