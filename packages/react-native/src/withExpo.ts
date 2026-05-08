@@ -23,6 +23,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { normalizeExt } from './plugins/internal.ts';
 import { tryResolve } from './rn-constants.ts';
 
 /**
@@ -49,11 +50,6 @@ export function detectExpo(
 }
 
 const EXPO_ASSET_EXTS = ['.heic', '.avif', '.db'] as const;
-
-/** Normalize "ext" / ".ext" → ".ext" for dedup comparisons. */
-function normalizeExt(ext: string): string {
-  return ext.startsWith('.') ? ext : `.${ext}`;
-}
 
 const EXPO_BLOCK_LIST: RegExp[] = [/\.expo[\\/]types/];
 

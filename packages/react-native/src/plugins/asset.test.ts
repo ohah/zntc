@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { ZNTC_HMR_CLIENT_CODE } from '../runtime-loader.ts';
-import { createAssetPlugin } from './asset.ts';
+import { createAssetPlugin, createSvgComponentModule } from './asset.ts';
 import type { PluginConfig } from './types.ts';
 
 interface OnLoadHandler {
@@ -59,6 +62,48 @@ describe('createAssetPlugin', () => {
   test('babelTransformerPath 미지정 — HMRClient.js handler 만 등록 (custom transformer 없음)', () => {
     const handlers = captureHandlers(baseConfig);
     expect(handlers.length).toBe(1);
+  });
+
+  test('내장 SVG component transformer — sourceExts 에 .svg 지정 시 등록', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-rn-svg-'));
+    try {
+      const svgPath = join(dir, 'check-icon.svg');
+      writeFileSync(svgPath, '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>');
+      const handlers = captureHandlers({
+        ...baseConfig,
+        sourceExts: ['ts', 'tsx', 'js', 'jsx', 'svg'],
+      });
+      expect(handlers.length).toBe(2);
+      const svgHandler = handlers[1]!;
+      expect(svgHandler.filter.test(svgPath)).toBe(true);
+      const result = await svgHandler.handler({ path: svgPath });
+      expect(result?.contents).toContain(`import { SvgXml } from 'react-native-svg';`);
+      expect(result?.contents).toContain('function SvgCheckIcon(props)');
+      expect(result?.contents).toContain('React.createElement(SvgXml');
+      expect(result?.contents).toContain('Object.assign({ xml }, props)');
+      expect(result?.contents).toContain('export default SvgCheckIcon');
+      expect(result?.contents).toContain(
+        JSON.stringify('<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>'),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('내장 SVG component transformer — 사용자 babelTransformerPath 가 있으면 등록하지 않음', () => {
+    const handlers = captureHandlers({
+      ...baseConfig,
+      sourceExts: ['.ts', '.tsx', '.js', '.jsx', '.svg'],
+      babelTransformerPath: 'react-native-svg-transformer',
+    });
+    expect(handlers.length).toBe(2);
+    expect(handlers[1]!.filter.test('/abs/icon.svg')).toBe(true);
+  });
+
+  test('createSvgComponentModule — JS identifier 로 안전한 component name 생성', () => {
+    const code = createSvgComponentModule('<svg/>', '/tmp/24-check.icon.svg');
+    expect(code).toContain('function Svg24CheckIcon(props)');
+    expect(code).toContain('Svg24CheckIcon.displayName = "Svg24CheckIcon"');
   });
 
   test('babelTransformerPath 지정 + customExts 0 — HMRClient.js handler 만', () => {

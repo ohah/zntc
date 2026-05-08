@@ -31,7 +31,7 @@ import {
 import type { CustomResolver, MetroPlatform } from './metro-resolver-types.ts';
 import { createAssetPlugin } from './plugins/asset.ts';
 import { createBabelPlugin, detectCustomPlugins } from './plugins/babel.ts';
-import { requireFromCli } from './plugins/internal.ts';
+import { normalizeExt, requireFromCli } from './plugins/internal.ts';
 import {
   createMetroResolveRequestPlugin,
   type MetroResolveRequestOptions,
@@ -202,7 +202,7 @@ function buildResolveExtensions(rnPlatform: 'ios' | 'android'): string[] {
 function buildAssetLoaders(assetExts: readonly string[]): Record<string, string> {
   const loaders: Record<string, string> = {};
   for (const ext of assetExts) {
-    loaders[ext.startsWith('.') ? ext : `.${ext}`] = 'file';
+    loaders[normalizeExt(ext)] = 'file';
   }
   return loaders;
 }

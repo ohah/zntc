@@ -14,7 +14,12 @@ const defaultConfig = getDefaultConfig(__dirname);
  */
 const config = {
   watchFolders: [monorepoRoot],
+  transformer: {
+    babelTransformerPath: require.resolve('react-native-svg-transformer/react-native'),
+  },
   resolver: {
+    assetExts: defaultConfig.resolver.assetExts.filter((ext) => ext !== 'svg'),
+    sourceExts: [...defaultConfig.resolver.sourceExts, 'svg'],
     nodeModulesPaths: [
       path.resolve(__dirname, 'node_modules'),
       path.resolve(monorepoRoot, 'node_modules'),

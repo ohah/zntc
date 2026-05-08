@@ -1,8 +1,9 @@
 // Babel 패스: 사용자 babel.config.js 의 custom plugin (Reanimated / NativeWind /
 // 사용자 worklet) 만 — ZNTC 가 native 처리하는 plugin (TS strip / RN preset /
 // JSX / class fields / worklets / flow / arrow / block-scoping 등) 은 zero-cost
-// pass. Babel/lazy-load — 첫 transform 호출 시점에 require, custom plugin 0 면
-// plugin 자체 등록 skip (createBabelPlugin 의 detectCustomPlugins false 분기).
+// pass. caller (preset.ts) 가 detectCustomPlugins 게이트로 등록 여부 결정 —
+// custom plugin 0 면 plugin 자체 미등록. Babel/lazy-load 는 첫 transform 호출
+// 시점에 require (`createBabelTransformer` 의 `ensureBabel`).
 
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -14,6 +15,7 @@ import {
   type BabelInstance,
   type BabelTransformOptions,
   getErrorMessage,
+  normalizeExt,
   requireFromCli,
 } from './internal.ts';
 import type { InlineBabelConfig, PluginConfig } from './types.ts';
@@ -267,18 +269,16 @@ export function createBabelTransformer(
 
 /**
  * Babel transform plugin — 사용자 babel.config.js 의 custom plugin (Reanimated
- * / NativeWind / 사용자 worklet) 을 source file 마다 적용. detectCustomPlugins
- * false 면 plugin 자체 등록 skip (NAPI build 의 startup latency 0).
+ * / NativeWind / 사용자 worklet) 을 source file 마다 적용. caller (preset.ts)
+ * 가 `detectCustomPlugins` 으로 게이트하므로 setup 시점엔 custom plugin 보장.
  */
 export function createBabelPlugin(config: PluginConfig): ZntcPlugin {
   return {
     name: 'zntc:react-native:babel-transform',
     setup(build) {
-      if (!detectCustomPlugins(config.projectRoot, config.inlineBabel)) return;
-
       const transformer = createBabelTransformer(config.projectRoot, config.inlineBabel);
 
-      const extPatterns = config.sourceExts.map((e) => e.replace(/^\./, '')).join('|');
+      const extPatterns = config.sourceExts.map((e) => normalizeExt(e).slice(1)).join('|');
       const sourcePattern = new RegExp(`\\.(${extPatterns})$`);
 
       build.onTransform({ filter: sourcePattern }, (args) => {
