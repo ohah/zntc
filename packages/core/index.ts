@@ -597,7 +597,7 @@ interface BuildOptionsCommon {
    *
    * 일반 해석 **전에 무조건** 치환됨 — 설치된 실제 패키지가 있어도 무시.
    * Optional shim 용도로는 `fallback`을 쓸 것 (실패 시에만 적용).
-   * Array 형태는 build() 만 지원 (host RegExp 위임 — buildSync 미지원). */
+   * Array 형태는 sync hook만 쓰는 buildSync()에서도 지원. */
   alias?: Record<string, string> | Array<{ find: string | RegExp; replacement: string }>;
   /** Fallback resolution — 일반 해석이 **실패했을 때만** 적용됨 (webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환).
    * 값이 문자열이면 해당 specifier로 재해석, `false`면 빈 모듈로 대체.
@@ -1293,83 +1293,185 @@ async function runFireAndForget<T>(
   return firstFailure;
 }
 
-/**
- * plugins 배열을 처리하여 단일 dispatcher 함수를 생성한다.
- * dispatcher(hookName, arg1, arg2) → result | null
- */
-function createPluginDispatcher(plugins: ZntcPlugin[]) {
-  type HookEntry = { pluginName: string; filter: RegExp; callback: (...args: any[]) => any };
-  type PluginDispatcher = ((
-    hookName: string,
-    arg1: unknown,
-    arg2: string | null,
-  ) => Promise<unknown>) & {
-    takeLifecycleFailures(): PluginFailureResult[];
-  };
-  const hooks: Record<string, HookEntry[]> = {
-    resolveId: [],
-    load: [],
-    transform: [],
-    renderChunk: [],
-    resolveContext: [],
-  };
-  const generateBundleCallbacks: Array<{
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value != null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+function silenceUnsupportedSyncPromise(value: PromiseLike<unknown>): void {
+  Promise.resolve(value).catch(() => {});
+}
+
+function syncPluginPromiseFailure(
+  pluginName: string,
+  hookName: string,
+  file?: string | null,
+): PluginFailureResult {
+  return normalizePluginFailure(
+    pluginName,
+    hookName,
+    new Error(
+      'buildSync() does not support async plugin hooks. Return a synchronous value or use build() instead.',
+    ),
+    file,
+  );
+}
+
+function mapMaybePromise<T, U>(value: T | PromiseLike<T>, mapper: (value: T) => U): U | Promise<U> {
+  if (isPromiseLike(value)) return Promise.resolve(value).then(mapper);
+  return mapper(value);
+}
+
+function runFireAndForgetSync<T>(
+  callbacks: Array<{ pluginName: string; callback: (arg: T) => void | Promise<void> }>,
+  hookName: string,
+  arg: T,
+): PluginFailureResult | null {
+  let firstFailure: PluginFailureResult | null = null;
+  for (const { pluginName, callback } of callbacks) {
+    try {
+      const result = callback(arg);
+      if (isPromiseLike(result)) {
+        silenceUnsupportedSyncPromise(result);
+        firstFailure ??= syncPluginPromiseFailure(pluginName, hookName);
+      }
+    } catch (err) {
+      firstFailure ??= normalizePluginFailure(pluginName, hookName, err);
+    }
+  }
+  return firstFailure;
+}
+
+type HookEntry = { pluginName: string; filter: RegExp; callback: (...args: any[]) => any };
+type PluginDispatcherLifecycle = {
+  takeLifecycleFailures(): PluginFailureResult[];
+};
+type PluginDispatcher = ((
+  hookName: string,
+  arg1: unknown,
+  arg2: string | null,
+) => Promise<unknown>) &
+  PluginDispatcherLifecycle;
+type SyncPluginDispatcher = ((hookName: string, arg1: unknown, arg2: string | null) => unknown) &
+  PluginDispatcherLifecycle;
+
+type PluginRegistry = {
+  hooks: Record<string, HookEntry[]>;
+  generateBundleCallbacks: Array<{
     pluginName: string;
     callback: (outputs: OutputFile[]) => void | Promise<void>;
-  }> = [];
-  const buildStartCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }> =
-    [];
-  const buildEndCallbacks: Array<{
+  }>;
+  buildStartCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }>;
+  buildEndCallbacks: Array<{
     pluginName: string;
     callback: (error?: Error) => void | Promise<void>;
-  }> = [];
-  const closeBundleCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }> =
-    [];
-  const astFunctionHooks: HookEntry[] = [];
-  const lifecycleFailures: PluginFailureResult[] = [];
+  }>;
+  closeBundleCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }>;
+  astFunctionHooks: HookEntry[];
+  lifecycleFailures: PluginFailureResult[];
+};
+
+function collectPluginRegistry(plugins: ZntcPlugin[]): PluginRegistry {
+  const registry: PluginRegistry = {
+    hooks: {
+      resolveId: [],
+      load: [],
+      transform: [],
+      renderChunk: [],
+      resolveContext: [],
+    },
+    generateBundleCallbacks: [],
+    buildStartCallbacks: [],
+    buildEndCallbacks: [],
+    closeBundleCallbacks: [],
+    astFunctionHooks: [],
+    lifecycleFailures: [],
+  };
 
   for (const plugin of plugins) {
     const build: PluginBuild = {
       onResolve(opts, cb) {
-        hooks.resolveId.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.hooks.resolveId.push({
+          pluginName: plugin.name,
+          filter: opts.filter,
+          callback: cb,
+        });
       },
       onLoad(opts, cb) {
-        hooks.load.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.hooks.load.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
       onTransform(opts, cb) {
-        hooks.transform.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.hooks.transform.push({
+          pluginName: plugin.name,
+          filter: opts.filter,
+          callback: cb,
+        });
       },
       onRenderChunk(opts, cb) {
-        hooks.renderChunk.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.hooks.renderChunk.push({
+          pluginName: plugin.name,
+          filter: opts.filter,
+          callback: cb,
+        });
       },
       onGenerateBundle(cb) {
-        generateBundleCallbacks.push({ pluginName: plugin.name, callback: cb });
+        registry.generateBundleCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onBuildStart(cb) {
-        buildStartCallbacks.push({ pluginName: plugin.name, callback: cb });
+        registry.buildStartCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onBuildEnd(cb) {
-        buildEndCallbacks.push({ pluginName: plugin.name, callback: cb });
+        registry.buildEndCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onCloseBundle(cb) {
-        closeBundleCallbacks.push({ pluginName: plugin.name, callback: cb });
+        registry.closeBundleCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onAstFunction(opts, cb) {
-        astFunctionHooks.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.astFunctionHooks.push({
+          pluginName: plugin.name,
+          filter: opts.filter,
+          callback: cb,
+        });
       },
       onResolveContext(opts, cb) {
-        hooks.resolveContext.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.hooks.resolveContext.push({
+          pluginName: plugin.name,
+          filter: opts.filter,
+          callback: cb,
+        });
       },
     };
     plugin.setup(build);
   }
 
-  // hookName → { filter 대상, 콜백 인자 } 매핑
-  const argBuilders: Record<string, (arg1: string, arg2: string | null) => [string, unknown]> = {
+  return registry;
+}
+
+// hookName → { filter 대상, 콜백 인자 } 매핑
+const pluginArgBuilders: Record<string, (arg1: string, arg2: string | null) => [string, unknown]> =
+  {
     resolveId: (arg1, arg2) => [arg1, { path: arg1, importer: arg2 }],
     load: (arg1, _) => [arg1, { path: arg1 }],
     renderChunk: (arg1, arg2) => [arg2 ?? '', { code: arg1, chunk: arg2 }],
   };
+
+/**
+ * plugins 배열을 처리하여 단일 dispatcher 함수를 생성한다.
+ * dispatcher(hookName, arg1, arg2) → result | null
+ */
+function createPluginDispatcher(plugins: ZntcPlugin[]) {
+  const {
+    hooks,
+    generateBundleCallbacks,
+    buildStartCallbacks,
+    buildEndCallbacks,
+    closeBundleCallbacks,
+    astFunctionHooks,
+    lifecycleFailures,
+  } = collectPluginRegistry(plugins);
 
   const dispatcher = async function dispatcher(
     hookName: string,
@@ -1490,7 +1592,7 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     }
 
     // resolveId/load: 첫 번째 매칭 반환 (first 모드)
-    const buildArgs = argBuilders[hookName];
+    const buildArgs = pluginArgBuilders[hookName];
     if (!buildArgs) return null;
     const [filterTarget, cbArgs] = buildArgs(arg1 as string, arg2);
     for (const h of hookList) {
@@ -1512,6 +1614,166 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     }
     return null;
   } as PluginDispatcher;
+  dispatcher.takeLifecycleFailures = () => lifecycleFailures.splice(0);
+  return dispatcher;
+}
+
+/**
+ * buildSync() 전용 dispatcher. Sync hook은 기존 build()와 같은 contract로 실행하되,
+ * Promise/thenable 반환은 즉시 plugin_error payload로 바꾼다.
+ */
+function createSyncPluginDispatcher(plugins: ZntcPlugin[]) {
+  const {
+    hooks,
+    generateBundleCallbacks,
+    buildStartCallbacks,
+    buildEndCallbacks,
+    closeBundleCallbacks,
+    astFunctionHooks,
+    lifecycleFailures,
+  } = collectPluginRegistry(plugins);
+
+  const dispatcher = function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
+    if (hookName === 'astFunction') {
+      if (astFunctionHooks.length === 0) return null;
+      try {
+        const info = JSON.parse(arg1 as string) as AstFunctionInfo;
+        for (const h of astFunctionHooks) {
+          if (h.filter.test(info.sourcePath)) {
+            try {
+              const result = h.callback(info);
+              if (isPromiseLike(result)) {
+                silenceUnsupportedSyncPromise(result);
+                return syncPluginPromiseFailure(h.pluginName, 'astFunction', info.sourcePath);
+              }
+              if (result != null) return result;
+            } catch (err) {
+              return normalizePluginFailure(h.pluginName, 'astFunction', err, info.sourcePath);
+            }
+          }
+        }
+      } catch {
+        // JSON 파싱 실패
+      }
+      return null;
+    }
+
+    if (hookName === 'resolveContext') {
+      if (hooks.resolveContext.length === 0) return null;
+      try {
+        const args = JSON.parse(arg1 as string) as {
+          dir: string;
+          recursive: boolean;
+          filter?: string;
+          flags?: string;
+          importer: string;
+        };
+        for (const h of hooks.resolveContext) {
+          if (h.filter.test(args.dir)) {
+            try {
+              const result = h.callback(args);
+              if (isPromiseLike(result)) {
+                silenceUnsupportedSyncPromise(result);
+                return syncPluginPromiseFailure(h.pluginName, 'resolveContext', args.importer);
+              }
+              if (result != null) return result;
+            } catch (err) {
+              return normalizePluginFailure(h.pluginName, 'resolveContext', err, args.importer);
+            }
+          }
+        }
+      } catch {
+        // JSON 파싱 실패
+      }
+      return null;
+    }
+
+    if (hookName === 'generateBundle') {
+      return runFireAndForgetSync(generateBundleCallbacks, 'generateBundle', arg1 as OutputFile[]);
+    }
+    if (hookName === 'buildStart') {
+      return runFireAndForgetSync(buildStartCallbacks, 'buildStart', undefined);
+    }
+    if (hookName === 'buildEnd') {
+      const msg = arg1 as string;
+      const err = msg && msg.length > 0 ? new Error(msg) : undefined;
+      const failure = runFireAndForgetSync(buildEndCallbacks, 'buildEnd', err);
+      if (failure) lifecycleFailures.push(failure);
+      return failure;
+    }
+    if (hookName === 'closeBundle') {
+      const failure = runFireAndForgetSync(closeBundleCallbacks, 'closeBundle', undefined);
+      if (failure) lifecycleFailures.push(failure);
+      return failure;
+    }
+
+    const hookList = hooks[hookName];
+    if (!hookList) return null;
+
+    if (hookName === 'transform' || hookName === 'renderChunk') {
+      let currentCode = arg1 as string;
+      let changed = false;
+      const sourceMaps: string[] = [];
+      for (const h of hookList) {
+        if (h.filter.test(arg2 ?? '')) {
+          try {
+            const cbArgs =
+              hookName === 'transform'
+                ? { code: currentCode, path: arg2 }
+                : { code: currentCode, chunk: arg2 };
+            const result = h.callback(cbArgs);
+            if (isPromiseLike(result)) {
+              silenceUnsupportedSyncPromise(result);
+              return syncPluginPromiseFailure(h.pluginName, hookName, arg2);
+            }
+            if (result != null) {
+              const newCode = typeof result === 'string' ? result : result.code;
+              if (newCode != null) {
+                currentCode = newCode;
+                changed = true;
+              }
+              if (hookName === 'transform' && typeof result === 'object' && 'map' in result) {
+                const map = serializePluginSourceMap(result.map);
+                if (map != null) sourceMaps.push(map);
+              }
+            }
+          } catch (err) {
+            return normalizePluginFailure(h.pluginName, hookName, err, arg2);
+          }
+        }
+      }
+      return changed
+        ? { code: currentCode, ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}) }
+        : null;
+    }
+
+    const buildArgs = pluginArgBuilders[hookName];
+    if (!buildArgs) return null;
+    const [filterTarget, cbArgs] = buildArgs(arg1 as string, arg2);
+    for (const h of hookList) {
+      if (h.filter.test(filterTarget)) {
+        try {
+          const result = h.callback(cbArgs);
+          if (isPromiseLike(result)) {
+            silenceUnsupportedSyncPromise(result);
+            const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
+            return syncPluginPromiseFailure(h.pluginName, hookName, fallbackFile);
+          }
+          if (result != null) {
+            if (hookName === 'load' && typeof result === 'object' && 'map' in result) {
+              const map = serializePluginSourceMap(result.map);
+              return { ...result, ...(map != null ? { map } : { map: undefined }) };
+            }
+            return result;
+          }
+        } catch (err) {
+          const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
+          return normalizePluginFailure(h.pluginName, hookName, err, fallbackFile);
+        }
+      }
+    }
+    return null;
+  } as SyncPluginDispatcher;
   dispatcher.takeLifecycleFailures = () => lifecycleFailures.splice(0);
   return dispatcher;
 }
@@ -1556,11 +1818,16 @@ function arrayAliasToPlugin(
 
 // Array 형태 alias (#2153) 는 onResolve plugin 으로 변환해 user plugins 앞에 prepend —
 // 다른 plugin 보다 먼저 매칭돼 alias 치환이 우선 적용된다 (Vite 동작).
-function resolveDispatcher(options: BuildOptions) {
+function resolveDispatcher(options: BuildOptions, mode: 'sync'): SyncPluginDispatcher | null;
+function resolveDispatcher(options: BuildOptions, mode?: 'async'): PluginDispatcher | null;
+function resolveDispatcher(options: BuildOptions, mode: 'async' | 'sync' = 'async') {
   const arrayAlias = Array.isArray(options.alias) ? options.alias : null;
   const userPlugins = options.plugins ?? [];
   const allPlugins = arrayAlias ? [arrayAliasToPlugin(arrayAlias), ...userPlugins] : userPlugins;
-  return allPlugins.length ? createPluginDispatcher(allPlugins) : null;
+  if (allPlugins.length === 0) return null;
+  return mode === 'sync'
+    ? createSyncPluginDispatcher(allPlugins)
+    : createPluginDispatcher(allPlugins);
 }
 
 function isBrowserLikeBuildPlatform(platform: BuildOptions['platform'] | undefined): boolean {
@@ -1601,7 +1868,7 @@ function prepareNapiOptions(options: BuildOptions): {
   delete napiOptions.outdir;
   delete napiOptions.plugins;
   delete napiOptions.allowOverwrite;
-  // Array 형태 alias 는 plugin 으로 위임 (build() 에서 처리). NAPI 로 전달하면 Zig 가
+  // Array 형태 alias 는 plugin 으로 위임. NAPI 로 전달하면 Zig 가
   // Record 형태만 받으므로 type mismatch — 명시 삭제.
   if (Array.isArray(napiOptions.alias)) delete napiOptions.alias;
   // manualChunks 는 `_manualChunks` 전용 슬롯으로 재전달 (plugin dispatcher 패턴).
@@ -1804,7 +2071,7 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
 
 /**
  * 번들링을 비동기적으로 실행한다. 이벤트 루프를 블로킹하지 않음.
- * JS 플러그인은 이 함수에서만 지원됨.
+ * JS 플러그인의 Promise/async hook 은 이 함수에서 지원됨.
  *
  * Plugin lifecycle 호출 순서: buildStart → (NAPI build) → buildEnd → write → closeBundle.
  * `buildEnd` 는 NAPI 실패 시에도 호출되며 error 인자가 전달된다 (Rollup 동일).
@@ -1848,29 +2115,31 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
 /**
  * 번들링을 동기적으로 실행한다.
- * 주의: JS 플러그인은 build() (async) / watch()에서만 지원됨.
+ * JS 플러그인은 sync hook만 지원한다. Promise/async hook은 plugin_error로 실패한다.
  */
 export function buildSync(options: BuildOptions): BuildResult {
   if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
-  if (options.plugins?.length) {
-    throw new Error(
-      '@zntc/core: plugins are only supported with build() (async). Use build() instead of buildSync().',
-    );
-  }
-  // Array 형태 alias 는 host RegExp 위임이 plugin hook 기반이라 buildSync 미지원.
-  if (Array.isArray(options.alias)) {
-    throw new Error(
-      '@zntc/core: array-form alias (with RegExp / Vite-style) requires async build(). Use Record<string, string> form for buildSync, or call build() instead.',
-    );
-  }
 
   const { napiOptions, cleanup } = prepareNapiOptions(options);
+  const dispatcher = resolveDispatcher(options, 'sync');
+  if (dispatcher) napiOptions._pluginDispatcherSync = dispatcher;
   try {
     const result: BuildResult = native.buildSync(napiOptions);
+    if (dispatcher) {
+      for (const failure of dispatcher.takeLifecycleFailures()) {
+        result.errors.push(pluginFailureToDiagnostic(failure));
+      }
+    }
     postProcessCssOutputs(result, options);
     writeOutputFiles(result, options);
+    if (dispatcher) {
+      dispatcher('closeBundle', undefined, null);
+      for (const failure of dispatcher.takeLifecycleFailures()) {
+        result.errors.push(pluginFailureToDiagnostic(failure));
+      }
+    }
     return result;
   } finally {
     cleanup();
@@ -2113,82 +2382,82 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
       const context = createRollupPluginContext();
       if (rollupPlugin.resolveId) {
         const hook = rollupPlugin.resolveId;
-        build.onResolve({ filter: /.*/ }, async (args) => {
-          const result = await hook.call(context, args.path, args.importer);
-          if (result == null) return null;
-          if (typeof result === 'string') return { path: result };
-          if (typeof result === 'object' && 'id' in result) {
-            return { path: result.id, external: result.external };
-          }
-          return null;
+        build.onResolve({ filter: /.*/ }, (args) => {
+          const result = hook.call(context, args.path, args.importer);
+          return mapMaybePromise(result, (result) => {
+            if (result == null) return null;
+            if (typeof result === 'string') return { path: result };
+            if (typeof result === 'object' && 'id' in result) {
+              return { path: result.id, external: result.external };
+            }
+            return null;
+          });
         });
       }
 
       if (rollupPlugin.load) {
         const hook = rollupPlugin.load;
-        build.onLoad({ filter: /.*/ }, async (args) => {
-          const result = await hook.call(context, args.path);
-          if (result == null) return null;
-          if (typeof result === 'string') return { contents: result };
-          if (typeof result === 'object' && 'code' in result) {
-            return { contents: result.code, map: result.map };
-          }
-          return null;
+        build.onLoad({ filter: /.*/ }, (args) => {
+          const result = hook.call(context, args.path);
+          return mapMaybePromise(result, (result) => {
+            if (result == null) return null;
+            if (typeof result === 'string') return { contents: result };
+            if (typeof result === 'object' && 'code' in result) {
+              return { contents: result.code, map: result.map };
+            }
+            return null;
+          });
         });
       }
 
       if (rollupPlugin.transform) {
         const hook = rollupPlugin.transform;
-        build.onTransform({ filter: /.*/ }, async (args) => {
-          const result = await hook.call(context, args.code, args.path);
-          if (result == null) return null;
-          if (typeof result === 'string') return { code: result };
-          if (typeof result === 'object' && 'code' in result) {
-            return { code: result.code, map: result.map };
-          }
-          return null;
+        build.onTransform({ filter: /.*/ }, (args) => {
+          const result = hook.call(context, args.code, args.path);
+          return mapMaybePromise(result, (result) => {
+            if (result == null) return null;
+            if (typeof result === 'string') return { code: result };
+            if (typeof result === 'object' && 'code' in result) {
+              return { code: result.code, map: result.map };
+            }
+            return null;
+          });
         });
       }
 
       if (rollupPlugin.renderChunk) {
         const hook = rollupPlugin.renderChunk;
-        build.onRenderChunk({ filter: /.*/ }, async (args) => {
-          const result = await hook.call(context, args.code, args.chunk);
-          if (result == null) return null;
-          if (typeof result === 'string') return { code: result };
-          if (typeof result === 'object' && 'code' in result) {
-            return { code: result.code };
-          }
-          return null;
+        build.onRenderChunk({ filter: /.*/ }, (args) => {
+          const result = hook.call(context, args.code, args.chunk);
+          return mapMaybePromise(result, (result) => {
+            if (result == null) return null;
+            if (typeof result === 'string') return { code: result };
+            if (typeof result === 'object' && 'code' in result) {
+              return { code: result.code };
+            }
+            return null;
+          });
         });
       }
 
       if (rollupPlugin.generateBundle) {
         const hook = rollupPlugin.generateBundle;
-        build.onGenerateBundle(async (outputs) => {
-          await hook.call(context, outputs);
-        });
+        build.onGenerateBundle((outputs) => hook.call(context, outputs));
       }
 
       if (rollupPlugin.buildStart) {
         const hook = rollupPlugin.buildStart;
-        build.onBuildStart(async () => {
-          await hook.call(context);
-        });
+        build.onBuildStart(() => hook.call(context));
       }
 
       if (rollupPlugin.buildEnd) {
         const hook = rollupPlugin.buildEnd;
-        build.onBuildEnd(async (err) => {
-          await hook.call(context, err);
-        });
+        build.onBuildEnd((err) => hook.call(context, err));
       }
 
       if (rollupPlugin.closeBundle) {
         const hook = rollupPlugin.closeBundle;
-        build.onCloseBundle(async () => {
-          await hook.call(context);
-        });
+        build.onCloseBundle(() => hook.call(context));
       }
     },
   };

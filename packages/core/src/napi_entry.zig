@@ -849,10 +849,33 @@ fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         owned_string_arrays.deinit(native_alloc);
     }
 
-    const bundle_opts = parseBuildOptions(env, argv[0], &owned_strings, &owned_string_arrays) orelse {
+    var bundle_opts = parseBuildOptions(env, argv[0], &owned_strings, &owned_string_arrays) orelse {
         return throwError(env, "invalid build options (entryPoints required)");
     };
     defer freeOptionsTypedSlices(&bundle_opts);
+
+    var sync_plugin: ?*NapiSyncPlugin = null;
+    defer if (sync_plugin) |sp| sp.deinit();
+    var sync_plugin_storage: [1]Plugin = undefined;
+    if (getNamedProperty(env, argv[0], "_pluginDispatcherSync")) |dispatcher_fn| {
+        const sp = native_alloc.create(NapiSyncPlugin) catch return throwError(env, "OutOfMemory");
+        sp.* = .{
+            .name = native_alloc.dupe(u8, "js-plugin") catch {
+                native_alloc.destroy(sp);
+                return throwError(env, "OutOfMemory");
+            },
+            .env = env,
+            .callback_ref = undefined,
+        };
+        if (c.napi_create_reference(env, dispatcher_fn, 1, &sp.callback_ref) != c.napi_ok) {
+            native_alloc.free(sp.name);
+            native_alloc.destroy(sp);
+            return throwError(env, "failed to create plugin reference");
+        }
+        sync_plugin = sp;
+        sync_plugin_storage[0] = sp.toPlugin();
+        bundle_opts.plugins = sync_plugin_storage[0..1];
+    }
 
     var bundler = Bundler.init(native_alloc, bundle_opts);
     var result = bundler.bundle() catch |err| {
@@ -1802,6 +1825,306 @@ const NapiPlugin = struct {
 
     fn deinit(self: *NapiPlugin) void {
         _ = c.napi_release_threadsafe_function(self.tsfn, c.napi_tsfn_release);
+        native_alloc.free(self.name);
+        native_alloc.destroy(self);
+    }
+};
+
+// ─── NapiSyncPlugin: buildSync() sync-only JS plugin bridge ───
+// buildSync() 은 NAPI main thread 를 블로킹하므로 TSFN으로 main thread 에 재진입할 수 없다.
+// sync dispatcher 를 직접 호출하고 Promise/thenable 은 plugin_error 로 즉시 실패시킨다.
+
+const NapiSyncPlugin = struct {
+    name: []const u8,
+    env: c.napi_env,
+    callback_ref: c.napi_ref,
+
+    fn makeFailure(
+        plugin_name: []const u8,
+        hook_name: []const u8,
+        message: []const u8,
+        file_path: ?[]const u8,
+    ) NapiPlugin.PluginResponse {
+        return .{
+            .is_failure = true,
+            .failure_plugin_name = native_alloc.dupe(u8, plugin_name) catch null,
+            .failure_hook_name = native_alloc.dupe(u8, hook_name) catch null,
+            .failure_message = native_alloc.dupe(u8, message) catch null,
+            .failure_file = if (file_path) |fp| native_alloc.dupe(u8, fp) catch null else null,
+        };
+    }
+
+    fn clearPendingException(env: c.napi_env) void {
+        var pending: bool = false;
+        if (c.napi_is_exception_pending(env, &pending) == c.napi_ok and pending) {
+            var exception: c.napi_value = undefined;
+            _ = c.napi_get_and_clear_last_exception(env, &exception);
+        }
+    }
+
+    fn hookName(hook: NapiPlugin.HookType) []const u8 {
+        return switch (hook) {
+            .resolveId => "resolveId",
+            .load => "load",
+            .transform => "transform",
+            .renderChunk => "renderChunk",
+            .generateBundle => "generateBundle",
+            .astFunction => "astFunction",
+            .resolveContext => "resolveContext",
+            .buildStart => "buildStart",
+            .buildEnd => "buildEnd",
+            .closeBundle => "closeBundle",
+        };
+    }
+
+    fn callHookFull(
+        self: *NapiSyncPlugin,
+        hook: NapiPlugin.HookType,
+        arg1: []const u8,
+        arg2: ?[]const u8,
+        files: ?[]const bundler_mod.emitter.OutputFile,
+    ) ?NapiPlugin.PluginResponse {
+        var js_callback: c.napi_value = undefined;
+        if (c.napi_get_reference_value(self.env, self.callback_ref, &js_callback) != c.napi_ok) {
+            return null;
+        }
+
+        const hook_name = hookName(hook);
+        var hook_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(self.env, hook_name.ptr, hook_name.len, &hook_str);
+
+        var js_arg1: c.napi_value = undefined;
+        if (files) |output_files| {
+            _ = c.napi_create_array_with_length(self.env, output_files.len, &js_arg1);
+            for (output_files, 0..) |file, i| {
+                var js_file: c.napi_value = undefined;
+                _ = c.napi_create_object(self.env, &js_file);
+                var js_path: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(self.env, file.path.ptr, file.path.len, &js_path);
+                _ = c.napi_set_named_property(self.env, js_file, "path", js_path);
+                var js_text: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(self.env, file.contents.ptr, file.contents.len, &js_text);
+                _ = c.napi_set_named_property(self.env, js_file, "text", js_text);
+                _ = c.napi_set_element(self.env, js_arg1, @intCast(i), js_file);
+            }
+        } else {
+            _ = c.napi_create_string_utf8(self.env, arg1.ptr, arg1.len, &js_arg1);
+        }
+
+        var js_arg2: c.napi_value = undefined;
+        if (arg2) |a2| {
+            _ = c.napi_create_string_utf8(self.env, a2.ptr, a2.len, &js_arg2);
+        } else {
+            _ = c.napi_get_null(self.env, &js_arg2);
+        }
+
+        var js_result: c.napi_value = undefined;
+        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2 };
+        var js_undefined: c.napi_value = undefined;
+        _ = c.napi_get_undefined(self.env, &js_undefined);
+        if (c.napi_call_function(self.env, js_undefined, js_callback, 3, &args, &js_result) != c.napi_ok) {
+            clearPendingException(self.env);
+            return makeFailure(self.name, hook_name, "Plugin hook failed", arg2);
+        }
+
+        var is_promise: bool = false;
+        _ = c.napi_is_promise(self.env, js_result, &is_promise);
+        if (is_promise) {
+            return makeFailure(
+                self.name,
+                hook_name,
+                "buildSync() does not support async plugin hooks. Return a synchronous value or use build() instead.",
+                arg2,
+            );
+        }
+
+        return NapiPlugin.parseJsResult(self.env, js_result);
+    }
+
+    fn callHook(self: *NapiSyncPlugin, hook: NapiPlugin.HookType, arg1: []const u8, arg2: ?[]const u8) ?NapiPlugin.PluginResponse {
+        return self.callHookFull(hook, arg1, arg2, null);
+    }
+
+    fn failWithResponse(self: *NapiSyncPlugin, resp: NapiPlugin.PluginResponse, alloc: std.mem.Allocator) PluginError {
+        const failure = plugin_mod.PluginFailure.init(
+            alloc,
+            resp.failure_plugin_name orelse self.name,
+            resp.failure_hook_name orelse "plugin",
+            resp.failure_message orelse "Plugin hook failed",
+            resp.failure_file orelse "",
+            resp.failure_line,
+            resp.failure_column,
+        ) catch return error.OutOfMemory;
+        plugin_mod.setLastPluginFailure(failure);
+        return error.PluginFailed;
+    }
+
+    fn callCodeHook(self: *NapiSyncPlugin, hook: NapiPlugin.HookType, arg1: []const u8, arg2: ?[]const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const resp = self.callHook(hook, arg1, arg2) orelse return null;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
+        if (resp.code) |result_code| {
+            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+            try NapiPlugin.setResponseSourceMaps(resp, alloc);
+            return result;
+        }
+        return null;
+    }
+
+    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?plugin_mod.ResolvedModule {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
+
+        if (resp.is_disabled) {
+            const id_path = resp.resolved_path orelse specifier;
+            return .{ .disabled = .{
+                .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
+                .module_type = .js,
+            } };
+        }
+
+        if (resp.resolved_path) |path| {
+            return .{ .file = .{
+                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                .module_type = .js,
+            } };
+        }
+        return null;
+    }
+
+    fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator) PluginError!?plugin_mod.LoadResult {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.load, path, null) orelse return null;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
+        const result_code = resp.code orelse return null;
+        const contents = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+        try NapiPlugin.setResponseSourceMaps(resp, alloc);
+        return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
+    }
+
+    fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        return self.callCodeHook(.transform, code, id, alloc);
+    }
+
+    fn pluginRenderChunk(ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        return self.callCodeHook(.renderChunk, code, chunk_name, alloc);
+    }
+
+    fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        if (self.callHookFull(.generateBundle, "", null, output_files)) |resp| {
+            NapiPlugin.freeResponseFields(resp);
+        }
+    }
+
+    fn pluginBuildStart(ctx: ?*anyopaque) PluginError!void {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.buildStart, "", null) orelse return;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, native_alloc);
+    }
+
+    fn pluginBuildEnd(ctx: ?*anyopaque, build_error: ?*const bundler_mod.types.BundlerDiagnostic) PluginError!void {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+        const msg = if (build_error) |d| d.message else "";
+        const resp = self.callHook(.buildEnd, msg, null) orelse return;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, native_alloc);
+    }
+
+    fn pluginResolveContext(
+        ctx: ?*anyopaque,
+        dir: []const u8,
+        recursive: bool,
+        filter_pattern: ?[]const u8,
+        filter_flags: ?[]const u8,
+        importer: []const u8,
+        alloc: std.mem.Allocator,
+    ) PluginError!?[]const []const u8 {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+
+        var json_buf: std.ArrayList(u8) = .empty;
+        defer json_buf.deinit(native_alloc);
+        json_buf.append(native_alloc, '{') catch return null;
+        json_buf.appendSlice(native_alloc, "\"dir\":") catch return null;
+        NapiPlugin.appendJsonString(&json_buf, native_alloc, dir) catch return null;
+        json_buf.appendSlice(native_alloc, ",\"recursive\":") catch return null;
+        json_buf.appendSlice(native_alloc, if (recursive) "true" else "false") catch return null;
+        if (filter_pattern) |fp| {
+            json_buf.appendSlice(native_alloc, ",\"filter\":") catch return null;
+            NapiPlugin.appendJsonString(&json_buf, native_alloc, fp) catch return null;
+        }
+        if (filter_flags) |ff| {
+            json_buf.appendSlice(native_alloc, ",\"flags\":") catch return null;
+            NapiPlugin.appendJsonString(&json_buf, native_alloc, ff) catch return null;
+        }
+        json_buf.appendSlice(native_alloc, ",\"importer\":") catch return null;
+        NapiPlugin.appendJsonString(&json_buf, native_alloc, importer) catch return null;
+        json_buf.append(native_alloc, '}') catch return null;
+
+        const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
+
+        const matches = resp.context_matches orelse return null;
+        const out = alloc.alloc([]const u8, matches.len) catch return null;
+        for (matches, 0..) |s, i| {
+            out[i] = alloc.dupe(u8, s) catch {
+                for (out[0..i]) |prev| alloc.free(prev);
+                alloc.free(out);
+                return null;
+            };
+        }
+        return out;
+    }
+
+    fn pluginAstFunction(ctx: ?*anyopaque, api: *NapiPlugin.AstTransformCtx, func: NapiPlugin.FunctionInfo) PluginError!void {
+        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
+
+        const json = serializeFunctionInfo(api, func) catch return;
+        defer native_alloc.free(json);
+
+        const resp = self.callHook(.astFunction, json, null) orelse return;
+        defer NapiPlugin.freeResponseFields(resp);
+        if (resp.is_failure) return self.failWithResponse(resp, native_alloc);
+
+        if (resp.strip_directive != null) {
+            _ = api.stripDirective(func.body_idx) catch return;
+        }
+        if (resp.trailing_code) |codes| {
+            for (codes) |code_str| {
+                const stmts = api.parseAndInjectStatements(code_str) catch continue;
+                for (stmts) |stmt| {
+                    api.addTrailingStatement(stmt) catch continue;
+                }
+            }
+        }
+    }
+
+    fn toPlugin(self: *NapiSyncPlugin) Plugin {
+        return .{
+            .name = self.name,
+            .context = @ptrCast(self),
+            .resolveId = pluginResolveId,
+            .load = pluginLoad,
+            .transform = pluginTransform,
+            .renderChunk = pluginRenderChunk,
+            .generateBundle = pluginGenerateBundle,
+            .onFunction = pluginAstFunction,
+            .resolveContext = pluginResolveContext,
+            .buildStart = pluginBuildStart,
+            .buildEnd = pluginBuildEnd,
+            .closeBundle = null,
+        };
+    }
+
+    fn deinit(self: *NapiSyncPlugin) void {
+        _ = c.napi_delete_reference(self.env, self.callback_ref);
         native_alloc.free(self.name);
         native_alloc.destroy(self);
     }
