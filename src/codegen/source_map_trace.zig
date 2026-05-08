@@ -6,24 +6,15 @@
 //! plugin chain in reverse order before being inserted into the bundle map.
 
 const std = @import("std");
+const sourcemap = @import("sourcemap.zig");
 
 pub const ParseError = error{
     InvalidSourceMap,
     OutOfMemory,
 };
 
-pub const TraceMapping = struct {
-    generated_line: u32,
-    generated_column: u32,
-    source_index: u32,
-    original_line: u32,
-    original_column: u32,
-
-    fn lessThan(_: void, a: TraceMapping, b: TraceMapping) bool {
-        if (a.generated_line != b.generated_line) return a.generated_line < b.generated_line;
-        return a.generated_column < b.generated_column;
-    }
-};
+/// 빌드된 sourcemap 의 단일 segment — codegen `SourceMap.Mapping` 과 layout 동일.
+pub const TraceMapping = sourcemap.Mapping;
 
 pub const TraceResult = struct {
     source: []const u8,

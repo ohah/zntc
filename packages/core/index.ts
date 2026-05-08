@@ -1270,18 +1270,11 @@ function serializePluginSourceMap(map: unknown): string | null {
   if (typeof map !== 'object') {
     throw new Error(`Invalid sourcemap: expected object, string, null, or undefined`);
   }
-  let json: string;
   try {
-    json = JSON.stringify(map);
+    return JSON.stringify(map);
   } catch (err) {
     throw new Error(`Invalid sourcemap: ${err instanceof Error ? err.message : String(err)}`);
   }
-  try {
-    JSON.parse(json);
-  } catch (err) {
-    throw new Error(`Invalid sourcemap: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return json;
 }
 
 async function runFireAndForget<T>(
