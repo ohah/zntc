@@ -262,6 +262,10 @@ interface BundleOpts {
   sourcemap: boolean;
 }
 
+/// ESM 출력 외에 실행 의미가 없는 옵션 — 토글 시 format 을 esm 으로 강제하고,
+/// format 을 esm 외로 바꿀 때 일괄 off. 향후 옵션 추가 시 set 에 키만 더하면 됨.
+const ESM_ONLY_KEYS: ReadonlySet<keyof BundleOpts> = new Set(["codeSplitting", "preserveModules"]);
+
 const DEFAULT_OPTS: BundleOpts = {
   format: "esm",
   platform: "browser",
@@ -530,12 +534,11 @@ export default function PlaygroundBundler() {
       // 네이티브 dynamic import 가 없어 빌드가 실패한다. 토글 시 ESM 으로 강제하고,
       // format 을 ESM 외로 바꿀 때는 두 옵션을 자동 off — build-time error 노출 전에
       // playground 가 일관된 조합으로 자동 보정.
-      if ((key === "codeSplitting" || key === "preserveModules") && value === true && next.format !== "esm") {
+      if (ESM_ONLY_KEYS.has(key) && value === true && next.format !== "esm") {
         next.format = "esm";
       }
       if (key === "format" && value !== "esm") {
-        next.codeSplitting = false;
-        next.preserveModules = false;
+        for (const k of ESM_ONLY_KEYS) (next as Record<string, unknown>)[k] = false;
       }
       runBundle(files, entryPath, next);
       return next;
