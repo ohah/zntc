@@ -117,19 +117,32 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                 }
             },
             .call_expression => {
-                // Order: require.context (specific, callee=member) → require (callee=ident) → glob (callee=meta).
-                // 더 specific 한 패턴 먼저 시도해야 일반 require 가 require.context 를 가리지 않는다.
-                if (tryExtractRequireContextWithDefines(ast, node, defines)) |record| {
-                    has_cjs_require = true;
-                    try records.append(allocator, record);
-                } else if (tryExtractRequire(ast, node)) |record| {
-                    has_cjs_require = true;
-                    try records.append(allocator, record);
-                } else if (tryExtractGlob(ast, node)) |record| {
-                    try records.append(allocator, record);
-                } else if (classifyObjectDefinePropertyExports(ast, node)) |kind| {
-                    has_exports_dot = true;
-                    if (kind == .esmodule_marker) has_esmodule_marker = true;
+                const e = node.data.extra;
+                if (!ast.hasExtra(e, 0)) continue;
+
+                const callee_idx = ast.readExtraNode(e, 0);
+                if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) continue;
+                const callee = ast.getNode(callee_idx);
+
+                switch (callee.tag) {
+                    .identifier_reference => {
+                        if (tryExtractRequire(ast, node)) |record| {
+                            has_cjs_require = true;
+                            try records.append(allocator, record);
+                        }
+                    },
+                    .static_member_expression => {
+                        if (tryExtractRequireContextWithDefines(ast, node, defines)) |record| {
+                            has_cjs_require = true;
+                            try records.append(allocator, record);
+                        } else if (tryExtractGlob(ast, node)) |record| {
+                            try records.append(allocator, record);
+                        } else if (classifyObjectDefinePropertyExports(ast, node)) |kind| {
+                            has_exports_dot = true;
+                            if (kind == .esmodule_marker) has_esmodule_marker = true;
+                        }
+                    },
+                    else => {},
                 }
             },
             .new_expression => {
