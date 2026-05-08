@@ -65,6 +65,7 @@ fn onTransform(
     code: []const u8,
     id: []const u8,
     alloc: std.mem.Allocator,
+    _: *@import("../../bundler/plugin.zig").HookContext,
 ) PluginError!?[]const u8 {
     _ = ctx;
 

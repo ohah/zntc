@@ -765,7 +765,9 @@ pub const Bundler = struct {
             lifecycle_runner.runBuildEnd(null);
             lifecycle_runner.runCloseBundle();
         }
-        try lifecycle_runner.runBuildStart();
+        var build_start_ctx: plugin_mod.HookContext = .{};
+        defer build_start_ctx.deinit();
+        try lifecycle_runner.runBuildStart(&build_start_ctx);
 
         // 타이머는 항상 동작 (watch 관측성용 — HMR phaseDurations 에 노출).
         // 추가로 `profile` 모듈 activation 시 같은 구간에 .graph/.link/.shake/.emit scope 가 기록된다.

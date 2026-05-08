@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const codegen_plugin = @import("../rn_codegen_plugin.zig");
+const plugin_mod = @import("../../../bundler/plugin.zig");
 
 const SNAPSHOTS_ROOT = "tests/codegen-snapshots";
 
@@ -426,7 +427,8 @@ fn compareCase(suite: []const u8, fixture_name: []const u8, golden_name: []const
     defer alloc.free(golden);
 
     const plugin = codegen_plugin.plugin();
-    const zntc_out = (try plugin.transform.?(plugin.context, fixture, fixture_name, alloc)) orelse {
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const zntc_out = (try plugin.transform.?(plugin.context, fixture, fixture_name, alloc, &hook_ctx)) orelse {
         std.debug.print("[{s}] ZNTC plugin returned null — fixture not transformed\n", .{fixture_name});
         return error.TestUnexpectedNull;
     };

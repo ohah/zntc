@@ -954,6 +954,7 @@ fn rcMatchAB(
     _: ?[]const u8,
     _: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     // Plugin contract: outer + inner 모두 allocator 소유 (graph 가 free).
     const result = try allocator.alloc([]const u8, 2);
@@ -971,6 +972,7 @@ fn rcScanDir(
     _: ?[]const u8,
     importer: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     const importer_dir = std.fs.path.dirname(importer) orelse return null;
     const abs_dir = std.fs.path.resolve(allocator, &.{ importer_dir, dir }) catch return null;
@@ -1001,6 +1003,7 @@ fn rcRecursiveScan(
     _: ?[]const u8,
     importer: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     const importer_dir = std.fs.path.dirname(importer) orelse return null;
     const abs_dir = std.fs.path.resolve(allocator, &.{ importer_dir, dir }) catch return null;
@@ -1031,6 +1034,7 @@ fn rcMatchEmpty(
     _: ?[]const u8,
     _: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     return try allocator.alloc([]const u8, 0);
 }
@@ -1044,6 +1048,7 @@ fn rcMatchSpecialChars(
     _: ?[]const u8,
     _: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     const result = try allocator.alloc([]const u8, 1);
     result[0] = try allocator.dupe(u8, "./weird\"name\\x.tsx");
@@ -1058,6 +1063,7 @@ fn rcMatchNoDotSlash(
     _: ?[]const u8,
     _: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     // dot-slash prefix 없는 경로도 emitJoinedPath 가 정규화하는지 확인.
     const result = try allocator.alloc([]const u8, 1);
@@ -1211,6 +1217,7 @@ fn rcDispatchByCallCount(
     _: ?[]const u8,
     _: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     const S = struct {
         var count: u32 = 0;
