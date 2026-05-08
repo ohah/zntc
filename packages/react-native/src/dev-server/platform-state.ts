@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 import type { WatchHandle, WatchReadyEvent, WatchRebuildEvent } from '@zntc/core';
 
-import { watchRn } from '../preset.ts';
+import { bundleRn, watchRn } from '../preset.ts';
 import type { RnDevServerOptions } from './options.ts';
 import { postProcessSourceMap } from './sourcemap.ts';
 
@@ -20,6 +20,8 @@ export interface PlatformState {
   readonly outputPath: string;
   handle: WatchHandle;
   bundle: string | null;
+  bundleStale: boolean;
+  refreshBundle: () => Promise<void>;
   /** rebuild 마다 invalidate. 같은 build 안에서 여러 sourcemap 요청 시 재사용. */
   sourceMapCache: string | null;
   buildError: string | null;
@@ -46,6 +48,12 @@ export interface PlatformStateCallbacks {
   onRebuild?: (state: PlatformState, event: WatchRebuildEvent) => void;
 }
 
+function getBundleText(result: Awaited<ReturnType<typeof bundleRn>>): string {
+  const jsFile = result.outputFiles.find((file) => file.path.endsWith('.js')) ?? result.outputFiles[0];
+  if (!jsFile) throw new Error('Build produced no output');
+  return jsFile.text.replace(SOURCE_MAPPING_URL_RE, '');
+}
+
 /**
  * platform 별 watch + state 생성. 첫 build 는 비동기 — caller 가
  * `waitForBuild(state)` 로 대기. RN runtime 이 ios+android 동시 요청 시
@@ -61,6 +69,7 @@ export function createPlatformState(
 
   // bundle 의 RnBundleInput 의 rnPlatform 만 override — 다른 필드 그대로 유지.
   const platformBundle = { ...options.bundle, rnPlatform: platform };
+  let refreshPromise: Promise<void> | null = null;
 
   const state: PlatformState = {
     platform,
@@ -71,11 +80,33 @@ export function createPlatformState(
     // 만들지 않으므로 초기 undefined window 누수 없음.
     handle: undefined as unknown as WatchHandle,
     bundle: null,
+    bundleStale: false,
+    refreshBundle: () => refreshPlatformBundle(),
     sourceMapCache: null,
     buildError: null,
     fileCount: 1,
     lastRebuildTime: Date.now(),
   };
+
+  function refreshPlatformBundle(): Promise<void> {
+    if (!state.bundleStale && state.bundle !== null) return Promise.resolve();
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = bundleRn(platformBundle)
+      .then((result) => {
+        state.bundle = getBundleText(result);
+        state.buildError = null;
+        state.bundleStale = false;
+      })
+      .catch((err) => {
+        state.bundle = null;
+        state.buildError = err instanceof Error ? err.message : String(err);
+        state.bundleStale = false;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+    return refreshPromise;
+  }
 
   if (process.env.ZNTC_DEBUG_TERMINAL === '1') {
     process.stderr.write(
@@ -89,6 +120,7 @@ export function createPlatformState(
       if (event.files) state.fileCount = event.files;
       if (existsSync(outputPath)) {
         state.bundle = readFileSync(outputPath, 'utf-8').replace(SOURCE_MAPPING_URL_RE, '');
+        state.bundleStale = false;
       } else {
         state.buildError = 'Build produced no output';
       }
@@ -104,8 +136,30 @@ export function createPlatformState(
       state.buildError = null;
       // rebuild 마다 cache invalidate — 다음 요청 시 lazy getter 가 swap fetch.
       state.sourceMapCache = null;
+      if (platformBundle.dev) {
+        if (event.graphChanged) {
+          state.bundleStale = true;
+          return state.refreshBundle().then(() => {
+            if (state.buildError) {
+              callbacks?.onRebuild?.(state, {
+                ...event,
+                success: false,
+                error: state.buildError,
+              });
+              return;
+            }
+            callbacks?.onRebuild?.(state, event);
+          });
+        }
+        if (event.updates && event.updates.length > 0) {
+          state.bundleStale = true;
+        }
+        callbacks?.onRebuild?.(state, event);
+        return;
+      }
       if (existsSync(outputPath)) {
         state.bundle = readFileSync(outputPath, 'utf-8').replace(SOURCE_MAPPING_URL_RE, '');
+        state.bundleStale = false;
       }
       callbacks?.onRebuild?.(state, event);
     },

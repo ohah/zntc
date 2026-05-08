@@ -20,6 +20,7 @@ function loadHmrClient(globalEnv) {
     var location = arguments[6];
     var window = arguments[7];
     var __ZNTC_FORWARD_CLIENT_LOGS__ = arguments[8];
+    var require = arguments[9];
     ${HMR_CLIENT_SOURCE}
     return module.exports;
   `;
@@ -34,6 +35,7 @@ function loadHmrClient(globalEnv) {
     globalEnv.location,
     globalEnv.window,
     globalEnv.forwardClientLogs,
+    globalEnv.require,
   );
 }
 
@@ -66,16 +68,18 @@ MockWebSocket.instances = [];
 let HMRClient;
 let mockGlobal;
 let mockConsole;
+let mockDevLoadingView;
 // wrap 전 console.X 의 mock 보존 — onopen 에서 console.X 가 wrappedFn 으로
 // 교체되므로 toHaveBeenCalledWith 검증 시 wrap 전 ref 사용 필요.
 let originalConsole;
 
 beforeEach(() => {
   MockWebSocket.reset();
+  mockDevLoadingView = {
+    showMessage: mock(() => {}),
+    hide: mock(() => {}),
+  };
   mockGlobal = {
-    NativeModules: {
-      DevLoadingView: { showMessage: mock(() => {}), hide: mock(() => {}) },
-    },
     WebSocket: MockWebSocket,
     __zntc_apply_update: mock(() => {}),
     __zntc_reload: mock(() => {}),
@@ -97,6 +101,10 @@ beforeEach(() => {
     location: { reload: mock(() => {}) },
     window: undefined,
     forwardClientLogs: true,
+    require: (specifier) => {
+      if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
+      throw new Error(`Unexpected require: ${specifier}`);
+    },
   });
 });
 
@@ -176,6 +184,45 @@ describe('onopen — hmr:connected + console wrap', () => {
     expect(log.data).toEqual(['hello']);
   });
 
+  test('nativeModuleProxy.DevLoadingView 가 있으면 호출 시점 native module 을 직접 사용', () => {
+    const nativeDevLoadingView = {
+      showMessage: mock(() => {}),
+      hide: mock(() => {}),
+    };
+    HMRClient = loadHmrClient({
+      global: {
+        ...mockGlobal,
+        nativeModuleProxy: { DevLoadingView: nativeDevLoadingView },
+      },
+      WebSocket: MockWebSocket,
+      console: mockConsole,
+      __zntc_apply_update: mockGlobal.__zntc_apply_update,
+      __zntc_reload: mockGlobal.__zntc_reload,
+      location: { reload: mock(() => {}) },
+      window: undefined,
+      forwardClientLogs: true,
+      require: (specifier) => {
+        if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
+        throw new Error(`Unexpected require: ${specifier}`);
+      },
+    });
+    HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
+    const ws = MockWebSocket.instances[0];
+    ws.onopen();
+
+    ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
+    ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-done' }) });
+
+    expect(nativeDevLoadingView.showMessage).toHaveBeenCalledWith(
+      'Refreshing...',
+      -1,
+      -14318360,
+      false,
+    );
+    expect(nativeDevLoadingView.hide).toHaveBeenCalled();
+    expect(mockDevLoadingView.showMessage).not.toHaveBeenCalled();
+  });
+
   test('forwardClientLogs=false — console wrap 하지 않음', () => {
     HMRClient = loadHmrClient({
       global: mockGlobal,
@@ -186,6 +233,10 @@ describe('onopen — hmr:connected + console wrap', () => {
       location: { reload: mock(() => {}) },
       window: undefined,
       forwardClientLogs: false,
+      require: (specifier) => {
+        if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
+        throw new Error(`Unexpected require: ${specifier}`);
+      },
     });
     HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
     const ws = MockWebSocket.instances[0];
@@ -228,13 +279,13 @@ describe('onmessage — Metro 메시지 분기', () => {
   test('hmr:update-start (isInitial=true) — DevLoadingView.showMessage 호출 안 함', () => {
     const ws = setupConnected();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start', isInitialUpdate: true }) });
-    expect(mockGlobal.NativeModules.DevLoadingView.showMessage).not.toHaveBeenCalled();
+    expect(mockDevLoadingView.showMessage).not.toHaveBeenCalled();
   });
 
   test("hmr:update-start (incremental) — DevLoadingView.showMessage('Refreshing...', 'refresh')", () => {
     const ws = setupConnected();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
-    expect(mockGlobal.NativeModules.DevLoadingView.showMessage).toHaveBeenCalledWith(
+    expect(mockDevLoadingView.showMessage).toHaveBeenCalledWith(
       'Refreshing...',
       'refresh',
     );
@@ -257,7 +308,7 @@ describe('onmessage — Metro 메시지 분기', () => {
     const ws = setupConnected();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-done' }) });
-    expect(mockGlobal.NativeModules.DevLoadingView.hide).toHaveBeenCalled();
+    expect(mockDevLoadingView.hide).toHaveBeenCalled();
   });
 
   test('hmr:update-done 중첩 — 마지막 update-done 에서만 hide', () => {
@@ -265,15 +316,38 @@ describe('onmessage — Metro 메시지 분기', () => {
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-done' }) });
-    expect(mockGlobal.NativeModules.DevLoadingView.hide).not.toHaveBeenCalled();
+    expect(mockDevLoadingView.hide).not.toHaveBeenCalled();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-done' }) });
-    expect(mockGlobal.NativeModules.DevLoadingView.hide).toHaveBeenCalledTimes(1);
+    expect(mockDevLoadingView.hide).toHaveBeenCalledTimes(1);
   });
 
   test('hmr:reload — __zntc_reload 호출', () => {
     const ws = setupConnected();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:reload' }) });
     expect(mockGlobal.__zntc_reload).toHaveBeenCalled();
+  });
+
+  test('hmr:reload — __zntc_reload 없으면 location.reload fallback', () => {
+    const reload = mock(() => {});
+    HMRClient = loadHmrClient({
+      global: mockGlobal,
+      WebSocket: MockWebSocket,
+      console: mockConsole,
+      __zntc_apply_update: mockGlobal.__zntc_apply_update,
+      __zntc_reload: undefined,
+      location: { reload },
+      window: undefined,
+      forwardClientLogs: true,
+      require: (specifier) => {
+        if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
+        throw new Error(`Unexpected require: ${specifier}`);
+      },
+    });
+    const ws = setupConnected();
+
+    ws.onmessage({ data: JSON.stringify({ type: 'hmr:reload' }) });
+
+    expect(reload).toHaveBeenCalled();
   });
 
   test('hmr:error — console.error (backward-compat: body 없음)', () => {
@@ -342,7 +416,7 @@ describe('onmessage — Metro 메시지 분기', () => {
     const ws = setupConnected();
     HMRClient.disable();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:update-start' }) });
-    expect(mockGlobal.NativeModules.DevLoadingView.showMessage).not.toHaveBeenCalled();
+    expect(mockDevLoadingView.showMessage).not.toHaveBeenCalled();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:error', message: 'x' }) });
     expect(originalConsole.error).toHaveBeenCalledWith('[ZNTC HMR]', 'x');
   });

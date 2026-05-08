@@ -476,7 +476,7 @@ export async function bundleRn(input: RnBundleInput): Promise<BuildResult> {
 export interface RnWatchInput extends RnBundleInput {
   outfile: string;
   onReady?: (event: WatchReadyEvent) => void;
-  onRebuild?: (event: WatchRebuildEvent) => void;
+  onRebuild?: (event: WatchRebuildEvent) => void | Promise<void>;
 }
 
 /**

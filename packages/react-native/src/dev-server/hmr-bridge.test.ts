@@ -16,6 +16,8 @@ function fakeState(platform: 'ios' | 'android' = 'ios'): PlatformState {
       getHmrSourceMap: () => null,
     } as unknown as WatchHandle,
     bundle: null,
+    bundleStale: false,
+    refreshBundle: async () => {},
     sourceMapCache: null,
     buildError: null,
     fileCount: 1,
