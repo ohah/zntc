@@ -1437,20 +1437,6 @@ const NapiPlugin = struct {
         hook_ctx.source_maps = copied;
     }
 
-    fn failWithResponse(self: *NapiPlugin, resp: PluginResponse, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError {
-        const failure = plugin_mod.PluginFailure.init(
-            alloc,
-            resp.failure_plugin_name orelse self.name,
-            resp.failure_hook_name orelse "plugin",
-            resp.failure_message orelse "Plugin hook failed",
-            resp.failure_file orelse "",
-            resp.failure_line,
-            resp.failure_column,
-        ) catch return error.OutOfMemory;
-        hook_ctx.failure = failure;
-        return error.PluginFailed;
-    }
-
     /// CallContext에 응답을 기록하고 워커 스레드에 시그널을 보낸다.
     fn signalResponse(ctx: *CallContext, resp: PluginResponse) void {
         ctx.mutex.lock();
@@ -1592,99 +1578,6 @@ const NapiPlugin = struct {
         return self.callHookFull(hook, arg1, arg2, null);
     }
 
-    // ─── Plugin 인터페이스 구현 ───
-
-    /// code를 반환하는 훅 공통 구현 (transform, renderChunk, load)
-    fn callCodeHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?[]const u8 {
-        const resp = self.callHook(hook, arg1, arg2) orelse return null;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-        if (resp.code) |result_code| {
-            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
-            try setResponseSourceMaps(resp, alloc, hook_ctx);
-            return result;
-        }
-        return null;
-    }
-
-    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?plugin_mod.ResolvedModule {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-
-        // disabled: 빈 모듈로 처리. path는 식별용 — resolved_path 또는 specifier 그대로.
-        // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
-        if (resp.is_disabled) {
-            const id_path = resp.resolved_path orelse specifier;
-            return .{ .disabled = .{
-                .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
-                .module_type = .js,
-            } };
-        }
-
-        if (resp.resolved_path) |path| {
-            return .{ .file = .{
-                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
-                .module_type = .js,
-            } };
-        }
-        return null;
-    }
-
-    fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?plugin_mod.LoadResult {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.load, path, null) orelse return null;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-        const result_code = resp.code orelse return null;
-        const contents = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
-        try setResponseSourceMaps(resp, alloc, hook_ctx);
-        return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
-    }
-
-    fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?[]const u8 {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        return self.callCodeHook(.transform, code, id, alloc, hook_ctx);
-    }
-
-    fn pluginRenderChunk(ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?[]const u8 {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        return self.callCodeHook(.renderChunk, code, chunk_name, alloc, hook_ctx);
-    }
-
-    fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        if (self.callHookFull(.generateBundle, "", null, output_files)) |resp| {
-            freeResponseFields(resp);
-        }
-    }
-
-    fn pluginBuildStart(ctx: ?*anyopaque, hook_ctx: *plugin_mod.HookContext) PluginError!void {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.buildStart, "", null) orelse return;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, native_alloc, hook_ctx);
-    }
-
-    fn pluginBuildEnd(ctx: ?*anyopaque, build_error: ?*const bundler_mod.types.BundlerDiagnostic, hook_ctx: *plugin_mod.HookContext) PluginError!void {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        // Phase 1 minimal forward — message string 만 JS Error 로 wrap.
-        // code/severity/file_path/span/step/suggestion 손실은 follow-up 으로 RollupError 호환
-        // 객체 (`{ code, message, file, line }`) 직렬화 검토 (#2156 follow-up).
-        const msg = if (build_error) |d| d.message else "";
-        const resp = self.callHook(.buildEnd, msg, null) orelse return;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, native_alloc, hook_ctx);
-    }
-
-    fn pluginCloseBundle(ctx: ?*anyopaque, hook_ctx: *plugin_mod.HookContext) PluginError!void {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.closeBundle, "", null) orelse return;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, native_alloc, hook_ctx);
-    }
-
     /// JSON string field 인코딩 — `"` `\` 와 control char escape.
     fn appendJsonString(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
         try buf.append(alloc, '"');
@@ -1705,113 +1598,12 @@ const NapiPlugin = struct {
         try buf.append(alloc, '"');
     }
 
-    /// `Plugin.resolveContext` wrapper — JS dispatcher 의 onResolveContext 호출. (#1579 Phase 2.5)
-    /// 5개 인자 (dir, recursive, filter, flags, importer) 를 JSON 으로 직렬화해 arg1 에 전달.
-    /// JS 결과 `{ context: string[] }` 를 PluginResponse.context_matches 로 받음.
-    fn pluginResolveContext(
-        ctx: ?*anyopaque,
-        dir: []const u8,
-        recursive: bool,
-        filter_pattern: ?[]const u8,
-        filter_flags: ?[]const u8,
-        importer: []const u8,
-        alloc: std.mem.Allocator,
-        hook_ctx: *plugin_mod.HookContext,
-    ) PluginError!?[]const []const u8 {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-
-        // JSON 직렬화: { dir, recursive, filter?, flags?, importer }
-        var json_buf: std.ArrayList(u8) = .empty;
-        defer json_buf.deinit(native_alloc);
-        json_buf.append(native_alloc, '{') catch return null;
-        json_buf.appendSlice(native_alloc, "\"dir\":") catch return null;
-        appendJsonString(&json_buf, native_alloc, dir) catch return null;
-        json_buf.appendSlice(native_alloc, ",\"recursive\":") catch return null;
-        json_buf.appendSlice(native_alloc, if (recursive) "true" else "false") catch return null;
-        if (filter_pattern) |fp| {
-            json_buf.appendSlice(native_alloc, ",\"filter\":") catch return null;
-            appendJsonString(&json_buf, native_alloc, fp) catch return null;
-        }
-        if (filter_flags) |ff| {
-            json_buf.appendSlice(native_alloc, ",\"flags\":") catch return null;
-            appendJsonString(&json_buf, native_alloc, ff) catch return null;
-        }
-        json_buf.appendSlice(native_alloc, ",\"importer\":") catch return null;
-        appendJsonString(&json_buf, native_alloc, importer) catch return null;
-        json_buf.append(native_alloc, '}') catch return null;
-
-        const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-
-        const matches = resp.context_matches orelse return null;
-
-        // caller (graph) allocator 로 dupe — outer slice + inner strings.
-        // ImportRecord.context_matches 의 contract 에 맞춰: outer 는 graph 가 free,
-        // inner 는 plugin 책임 (여기선 NapiPlugin 이 alloc 했으므로 함께 graph alloc 으로).
-        const out = alloc.alloc([]const u8, matches.len) catch return null;
-        for (matches, 0..) |s, i| {
-            out[i] = alloc.dupe(u8, s) catch {
-                // 부분 실패: 이미 할당한 것들 free 후 null 반환
-                for (out[0..i]) |prev| alloc.free(prev);
-                alloc.free(out);
-                return null;
-            };
-        }
-        return out;
-    }
-
-    fn toPlugin(self: *NapiPlugin) Plugin {
-        return .{
-            .name = self.name,
-            .context = @ptrCast(self),
-            .resolveId = pluginResolveId,
-            .load = pluginLoad,
-            .transform = pluginTransform,
-            .renderChunk = pluginRenderChunk,
-            .generateBundle = pluginGenerateBundle,
-            .onFunction = pluginAstFunction,
-            .resolveContext = pluginResolveContext,
-            .buildStart = pluginBuildStart,
-            .buildEnd = pluginBuildEnd,
-            // closeBundle 은 native 측에서 호출 안 함 — Rollup 의미 보존을 위해 JS layer
-            // (writeOutputFiles 후) 가 dispatcher 통해 직접 호출. native bundle() 끝 시점은
-            // contents 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
-            .closeBundle = null,
-        };
-    }
-
-    // ─── AST 훅 구현 ───
-
+    // ─── AST 훅 타입 alias (NapiPluginAdapter 가 NapiPlugin.AstTransformCtx / FunctionInfo 로 참조) ───
     const AstTransformCtx = zntc_lib.transformer.ast_plugin_mod.AstTransformCtx;
     const FunctionInfo = zntc_lib.transformer.ast_plugin_mod.FunctionInfo;
 
-    fn pluginAstFunction(ctx: ?*anyopaque, api: *AstTransformCtx, func: FunctionInfo) PluginError!void {
-        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-
-        // FunctionInfo를 JSON 문자열로 직렬화
-        const json = serializeFunctionInfo(api, func) catch return;
-        defer native_alloc.free(json);
-
-        // JS 호출
-        const resp = self.callHook(.astFunction, json, null) orelse return;
-        defer freeResponseFields(resp);
-        if (resp.is_failure) return error.PluginFailed;
-
-        if (resp.strip_directive != null) {
-            _ = api.stripDirective(func.body_idx) catch return;
-        }
-
-        // 응답 처리: trailingCode → 파싱하여 trailing statements에 추가
-        if (resp.trailing_code) |codes| {
-            for (codes) |code_str| {
-                // 코드 문자열을 파싱하여 AST 노드로 변환
-                const stmts = api.parseAndInjectStatements(code_str) catch continue;
-                for (stmts) |stmt| {
-                    api.addTrailingStatement(stmt) catch continue;
-                }
-            }
-        }
+    fn toPlugin(self: *NapiPlugin) Plugin {
+        return NapiPluginAdapter(NapiPlugin).buildPlugin(self);
     }
 
     fn deinit(self: *NapiPlugin) void {
@@ -1820,6 +1612,255 @@ const NapiPlugin = struct {
         native_alloc.destroy(self);
     }
 };
+
+// ─── NapiPluginAdapter: NapiPlugin / NapiSyncPlugin 의 공유 per-hook adapter ───
+// 두 bridge 가 transport (TSFN vs 메인-스레드 직접 호출) 만 다르고 hook adapter 본체는 동일했다.
+// `Self` 가 아래 method/필드를 갖춘 struct 라면 모두 사용 가능:
+//   - `name: []const u8`
+//   - `callHook(self, hook, arg1, arg2) ?NapiPlugin.PluginResponse`
+//   - `callHookFull(self, hook, arg1, arg2, files) ?NapiPlugin.PluginResponse`
+fn NapiPluginAdapter(comptime Self: type) type {
+    const HookType = NapiPlugin.HookType;
+    const PluginResponse = NapiPlugin.PluginResponse;
+
+    return struct {
+        fn failWithResponse(
+            self: *Self,
+            resp: PluginResponse,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError {
+            const failure = plugin_mod.PluginFailure.init(
+                alloc,
+                resp.failure_plugin_name orelse self.name,
+                resp.failure_hook_name orelse "plugin",
+                resp.failure_message orelse "Plugin hook failed",
+                resp.failure_file orelse "",
+                resp.failure_line,
+                resp.failure_column,
+            ) catch return error.OutOfMemory;
+            hook_ctx.failure = failure;
+            return error.PluginFailed;
+        }
+
+        fn callCodeHook(
+            self: *Self,
+            hook: HookType,
+            arg1: []const u8,
+            arg2: ?[]const u8,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!?[]const u8 {
+            const resp = self.callHook(hook, arg1, arg2) orelse return null;
+            defer NapiPlugin.freeResponseFields(resp);
+            if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
+            if (resp.code) |result_code| {
+                const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+                try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);
+                return result;
+            }
+            return null;
+        }
+
+        fn pluginResolveId(
+            ctx: ?*anyopaque,
+            specifier: []const u8,
+            importer: ?[]const u8,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!?plugin_mod.ResolvedModule {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
+            defer NapiPlugin.freeResponseFields(resp);
+            if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
+
+            // disabled: 빈 모듈로 처리. path는 식별용 — resolved_path 또는 specifier 그대로.
+            // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
+            if (resp.is_disabled) {
+                const id_path = resp.resolved_path orelse specifier;
+                return .{ .disabled = .{
+                    .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
+                    .module_type = .js,
+                } };
+            }
+
+            if (resp.resolved_path) |path| {
+                return .{ .file = .{
+                    .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                    .module_type = .js,
+                } };
+            }
+            return null;
+        }
+
+        fn pluginLoad(
+            ctx: ?*anyopaque,
+            path: []const u8,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!?plugin_mod.LoadResult {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            const resp = self.callHook(.load, path, null) orelse return null;
+            defer NapiPlugin.freeResponseFields(resp);
+            if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
+            const result_code = resp.code orelse return null;
+            const contents = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+            try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);
+            return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
+        }
+
+        fn pluginTransform(
+            ctx: ?*anyopaque,
+            code: []const u8,
+            id: []const u8,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!?[]const u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            return callCodeHook(self, .transform, code, id, alloc, hook_ctx);
+        }
+
+        fn pluginRenderChunk(
+            ctx: ?*anyopaque,
+            code: []const u8,
+            chunk_name: []const u8,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!?[]const u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            return callCodeHook(self, .renderChunk, code, chunk_name, alloc, hook_ctx);
+        }
+
+        fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            if (self.callHookFull(.generateBundle, "", null, output_files)) |resp| {
+                NapiPlugin.freeResponseFields(resp);
+            }
+        }
+
+        fn pluginBuildStart(ctx: ?*anyopaque, hook_ctx: *plugin_mod.HookContext) PluginError!void {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            const resp = self.callHook(.buildStart, "", null) orelse return;
+            defer NapiPlugin.freeResponseFields(resp);
+            if (resp.is_failure) return failWithResponse(self, resp, native_alloc, hook_ctx);
+        }
+
+        fn pluginBuildEnd(
+            ctx: ?*anyopaque,
+            build_error: ?*const bundler_mod.types.BundlerDiagnostic,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!void {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            // Phase 1 minimal forward — message string 만 JS Error 로 wrap.
+            // code/severity/file_path/span/step/suggestion 손실은 follow-up 으로 RollupError 호환
+            // 객체 (`{ code, message, file, line }`) 직렬화 검토 (#2156 follow-up).
+            const msg = if (build_error) |d| d.message else "";
+            const resp = self.callHook(.buildEnd, msg, null) orelse return;
+            defer NapiPlugin.freeResponseFields(resp);
+            if (resp.is_failure) return failWithResponse(self, resp, native_alloc, hook_ctx);
+        }
+
+        fn pluginResolveContext(
+            ctx: ?*anyopaque,
+            dir: []const u8,
+            recursive: bool,
+            filter_pattern: ?[]const u8,
+            filter_flags: ?[]const u8,
+            importer: []const u8,
+            alloc: std.mem.Allocator,
+            hook_ctx: *plugin_mod.HookContext,
+        ) PluginError!?[]const []const u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+
+            // JSON 직렬화: { dir, recursive, filter?, flags?, importer }
+            var json_buf: std.ArrayList(u8) = .empty;
+            defer json_buf.deinit(native_alloc);
+            json_buf.append(native_alloc, '{') catch return null;
+            json_buf.appendSlice(native_alloc, "\"dir\":") catch return null;
+            NapiPlugin.appendJsonString(&json_buf, native_alloc, dir) catch return null;
+            json_buf.appendSlice(native_alloc, ",\"recursive\":") catch return null;
+            json_buf.appendSlice(native_alloc, if (recursive) "true" else "false") catch return null;
+            if (filter_pattern) |fp| {
+                json_buf.appendSlice(native_alloc, ",\"filter\":") catch return null;
+                NapiPlugin.appendJsonString(&json_buf, native_alloc, fp) catch return null;
+            }
+            if (filter_flags) |ff| {
+                json_buf.appendSlice(native_alloc, ",\"flags\":") catch return null;
+                NapiPlugin.appendJsonString(&json_buf, native_alloc, ff) catch return null;
+            }
+            json_buf.appendSlice(native_alloc, ",\"importer\":") catch return null;
+            NapiPlugin.appendJsonString(&json_buf, native_alloc, importer) catch return null;
+            json_buf.append(native_alloc, '}') catch return null;
+
+            const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
+            defer NapiPlugin.freeResponseFields(resp);
+            if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
+
+            const matches = resp.context_matches orelse return null;
+
+            // caller (graph) allocator 로 dupe — outer slice + inner strings.
+            // ImportRecord.context_matches contract: outer/inner 모두 graph 가 free.
+            const out = alloc.alloc([]const u8, matches.len) catch return null;
+            for (matches, 0..) |s, i| {
+                out[i] = alloc.dupe(u8, s) catch {
+                    // 부분 실패: 이미 할당한 것들 free 후 null 반환
+                    for (out[0..i]) |prev| alloc.free(prev);
+                    alloc.free(out);
+                    return null;
+                };
+            }
+            return out;
+        }
+
+        fn pluginAstFunction(
+            ctx: ?*anyopaque,
+            api: *NapiPlugin.AstTransformCtx,
+            func: NapiPlugin.FunctionInfo,
+        ) PluginError!void {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+
+            const json = serializeFunctionInfo(api, func) catch return;
+            defer native_alloc.free(json);
+
+            const resp = self.callHook(.astFunction, json, null) orelse return;
+            defer NapiPlugin.freeResponseFields(resp);
+            // onFunction 은 transformer 가 PluginFailed 를 swallow 하므로 metadata 는 미전달.
+            if (resp.is_failure) return error.PluginFailed;
+
+            if (resp.strip_directive != null) {
+                _ = api.stripDirective(func.body_idx) catch return;
+            }
+            if (resp.trailing_code) |codes| {
+                for (codes) |code_str| {
+                    const stmts = api.parseAndInjectStatements(code_str) catch continue;
+                    for (stmts) |stmt| {
+                        api.addTrailingStatement(stmt) catch continue;
+                    }
+                }
+            }
+        }
+
+        /// `Plugin` vtable 빌더. `closeBundle` 은 native 에서 호출 안 함 — Rollup 의미 보존을
+        /// 위해 JS layer (writeOutputFiles 후) 가 dispatcher 로 직접 호출. native bundle() 끝
+        /// 시점은 contents 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
+        fn buildPlugin(self: *Self) Plugin {
+            return .{
+                .name = self.name,
+                .context = @ptrCast(self),
+                .resolveId = pluginResolveId,
+                .load = pluginLoad,
+                .transform = pluginTransform,
+                .renderChunk = pluginRenderChunk,
+                .generateBundle = pluginGenerateBundle,
+                .onFunction = pluginAstFunction,
+                .resolveContext = pluginResolveContext,
+                .buildStart = pluginBuildStart,
+                .buildEnd = pluginBuildEnd,
+                .closeBundle = null,
+            };
+        }
+    };
+}
 
 // ─── NapiSyncPlugin: buildSync() sync-only JS plugin bridge ───
 // buildSync() 은 NAPI main thread 를 블로킹하므로 TSFN으로 main thread 에 재진입할 수 없다.
@@ -1921,189 +1962,8 @@ const NapiSyncPlugin = struct {
         return self.callHookFull(hook, arg1, arg2, null);
     }
 
-    fn failWithResponse(self: *NapiSyncPlugin, resp: NapiPlugin.PluginResponse, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError {
-        const failure = plugin_mod.PluginFailure.init(
-            alloc,
-            resp.failure_plugin_name orelse self.name,
-            resp.failure_hook_name orelse "plugin",
-            resp.failure_message orelse "Plugin hook failed",
-            resp.failure_file orelse "",
-            resp.failure_line,
-            resp.failure_column,
-        ) catch return error.OutOfMemory;
-        hook_ctx.failure = failure;
-        return error.PluginFailed;
-    }
-
-    fn callCodeHook(self: *NapiSyncPlugin, hook: NapiPlugin.HookType, arg1: []const u8, arg2: ?[]const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?[]const u8 {
-        const resp = self.callHook(hook, arg1, arg2) orelse return null;
-        defer NapiPlugin.freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-        if (resp.code) |result_code| {
-            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
-            try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);
-            return result;
-        }
-        return null;
-    }
-
-    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?plugin_mod.ResolvedModule {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
-        defer NapiPlugin.freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-
-        if (resp.is_disabled) {
-            const id_path = resp.resolved_path orelse specifier;
-            return .{ .disabled = .{
-                .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
-                .module_type = .js,
-            } };
-        }
-
-        if (resp.resolved_path) |path| {
-            return .{ .file = .{
-                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
-                .module_type = .js,
-            } };
-        }
-        return null;
-    }
-
-    fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?plugin_mod.LoadResult {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.load, path, null) orelse return null;
-        defer NapiPlugin.freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-        const result_code = resp.code orelse return null;
-        const contents = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
-        try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);
-        return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
-    }
-
-    fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?[]const u8 {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        return self.callCodeHook(.transform, code, id, alloc, hook_ctx);
-    }
-
-    fn pluginRenderChunk(ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!?[]const u8 {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        return self.callCodeHook(.renderChunk, code, chunk_name, alloc, hook_ctx);
-    }
-
-    fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        if (self.callHookFull(.generateBundle, "", null, output_files)) |resp| {
-            NapiPlugin.freeResponseFields(resp);
-        }
-    }
-
-    fn pluginBuildStart(ctx: ?*anyopaque, hook_ctx: *plugin_mod.HookContext) PluginError!void {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.buildStart, "", null) orelse return;
-        defer NapiPlugin.freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, native_alloc, hook_ctx);
-    }
-
-    fn pluginBuildEnd(ctx: ?*anyopaque, build_error: ?*const bundler_mod.types.BundlerDiagnostic, hook_ctx: *plugin_mod.HookContext) PluginError!void {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-        const msg = if (build_error) |d| d.message else "";
-        const resp = self.callHook(.buildEnd, msg, null) orelse return;
-        defer NapiPlugin.freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, native_alloc, hook_ctx);
-    }
-
-    fn pluginResolveContext(
-        ctx: ?*anyopaque,
-        dir: []const u8,
-        recursive: bool,
-        filter_pattern: ?[]const u8,
-        filter_flags: ?[]const u8,
-        importer: []const u8,
-        alloc: std.mem.Allocator,
-        hook_ctx: *plugin_mod.HookContext,
-    ) PluginError!?[]const []const u8 {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-
-        var json_buf: std.ArrayList(u8) = .empty;
-        defer json_buf.deinit(native_alloc);
-        json_buf.append(native_alloc, '{') catch return null;
-        json_buf.appendSlice(native_alloc, "\"dir\":") catch return null;
-        NapiPlugin.appendJsonString(&json_buf, native_alloc, dir) catch return null;
-        json_buf.appendSlice(native_alloc, ",\"recursive\":") catch return null;
-        json_buf.appendSlice(native_alloc, if (recursive) "true" else "false") catch return null;
-        if (filter_pattern) |fp| {
-            json_buf.appendSlice(native_alloc, ",\"filter\":") catch return null;
-            NapiPlugin.appendJsonString(&json_buf, native_alloc, fp) catch return null;
-        }
-        if (filter_flags) |ff| {
-            json_buf.appendSlice(native_alloc, ",\"flags\":") catch return null;
-            NapiPlugin.appendJsonString(&json_buf, native_alloc, ff) catch return null;
-        }
-        json_buf.appendSlice(native_alloc, ",\"importer\":") catch return null;
-        NapiPlugin.appendJsonString(&json_buf, native_alloc, importer) catch return null;
-        json_buf.append(native_alloc, '}') catch return null;
-
-        const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
-        defer NapiPlugin.freeResponseFields(resp);
-        if (resp.is_failure) return self.failWithResponse(resp, alloc, hook_ctx);
-
-        const matches = resp.context_matches orelse return null;
-        const out = alloc.alloc([]const u8, matches.len) catch return null;
-        for (matches, 0..) |s, i| {
-            out[i] = alloc.dupe(u8, s) catch {
-                for (out[0..i]) |prev| alloc.free(prev);
-                alloc.free(out);
-                return null;
-            };
-        }
-        return out;
-    }
-
-    fn pluginAstFunction(ctx: ?*anyopaque, api: *NapiPlugin.AstTransformCtx, func: NapiPlugin.FunctionInfo) PluginError!void {
-        const self: *NapiSyncPlugin = @ptrCast(@alignCast(ctx.?));
-
-        const json = serializeFunctionInfo(api, func) catch return;
-        defer native_alloc.free(json);
-
-        const resp = self.callHook(.astFunction, json, null) orelse return;
-        defer NapiPlugin.freeResponseFields(resp);
-        // onFunction 은 transformer 가 PluginFailed 를 swallow 하므로 metadata 미사용 — local ctx
-        // 로 받아 deinit.
-        if (resp.is_failure) {
-            var local_ctx: plugin_mod.HookContext = .{};
-            defer local_ctx.deinit();
-            return self.failWithResponse(resp, native_alloc, &local_ctx);
-        }
-
-        if (resp.strip_directive != null) {
-            _ = api.stripDirective(func.body_idx) catch return;
-        }
-        if (resp.trailing_code) |codes| {
-            for (codes) |code_str| {
-                const stmts = api.parseAndInjectStatements(code_str) catch continue;
-                for (stmts) |stmt| {
-                    api.addTrailingStatement(stmt) catch continue;
-                }
-            }
-        }
-    }
-
     fn toPlugin(self: *NapiSyncPlugin) Plugin {
-        return .{
-            .name = self.name,
-            .context = @ptrCast(self),
-            .resolveId = pluginResolveId,
-            .load = pluginLoad,
-            .transform = pluginTransform,
-            .renderChunk = pluginRenderChunk,
-            .generateBundle = pluginGenerateBundle,
-            .onFunction = pluginAstFunction,
-            .resolveContext = pluginResolveContext,
-            .buildStart = pluginBuildStart,
-            .buildEnd = pluginBuildEnd,
-            .closeBundle = null,
-        };
+        return NapiPluginAdapter(NapiSyncPlugin).buildPlugin(self);
     }
 
     fn deinit(self: *NapiSyncPlugin) void {
