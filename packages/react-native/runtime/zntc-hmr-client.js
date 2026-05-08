@@ -79,9 +79,8 @@ function wrapNativeDevLoadingView(nativeDevLoadingView) {
   };
 }
 
-// Metro HMRClient 는 RN DevLoadingView wrapper 를 require 한다. zntc 번들에서는
 // wrapper 내부 NativeDevLoadingView 값이 초기화 시점에 null 로 굳을 수 있어,
-// 호출 시점 native module 재조회 경로를 먼저 사용한다.
+// 호출 시점 native module 재조회 경로를 먼저 시도한 뒤 require 로 폴백.
 function getDevLoadingView() {
   var nativeDevLoadingView = getDirectNativeDevLoadingView();
   if (nativeDevLoadingView && typeof nativeDevLoadingView.showMessage === 'function') {
@@ -104,29 +103,30 @@ var HMRClient = {
   _socket: null,
   _enabled: true,
   _originalConsole: null,
-  // Metro 처럼 중첩 update 를 카운트 — 마지막 update-done 에서만 배너 hide.
+  // 중첩 update 카운트 — 마지막 update-done 에서만 배너 hide.
   _pendingUpdates: 0,
+  // lazy cache — 첫 호출 때 1회 lookup (native module 가 setup 시점엔 아직 미로드).
+  // socket.onclose 에서 invalidate — reconnect 시 module 상태 재조회.
+  _devLoadingView: null,
 
-  _showRefreshing: function () {
-    var dlvStart = getDevLoadingView();
-    if (dlvStart && typeof dlvStart.showMessage === 'function') {
+  _safeCallDlv: function (method, args) {
+    if (this._devLoadingView == null) this._devLoadingView = getDevLoadingView();
+    var dlv = this._devLoadingView;
+    if (dlv && typeof dlv[method] === 'function') {
       try {
-        dlvStart.showMessage('Refreshing...', 'refresh');
+        dlv[method].apply(dlv, args);
       } catch (_e) {
         // DevLoadingView 호출 실패는 HMR 동작과 무관 — 무시
       }
     }
   },
 
+  _showRefreshing: function () {
+    this._safeCallDlv('showMessage', ['Refreshing...', 'refresh']);
+  },
+
   _hideRefreshing: function () {
-    var dlvDone = getDevLoadingView();
-    if (dlvDone && typeof dlvDone.hide === 'function') {
-      try {
-        dlvDone.hide();
-      } catch (_e) {
-        // 무시
-      }
-    }
+    this._safeCallDlv('hide', []);
   },
 
   enable: function () {
@@ -227,9 +227,8 @@ var HMRClient = {
         switch (msg.type) {
           case 'hmr:update-start':
             self._pendingUpdates++;
-            // Initial update sequence (서버가 connect 시 전송해 로딩바 dismiss 용) 는
-            // 실제 코드 변경이 아니므로 "Refreshing..." 배너 노출 skip.
-            // Metro HMRClient 동일 동작 (isInitialUpdate flag 검사).
+            // initial sequence (connect 시 로딩바 dismiss 용) 는 실제 코드 변경이
+            // 아니므로 "Refreshing..." 배너 노출 skip.
             if (self._enabled && !msg.isInitialUpdate) {
               self._showRefreshing();
             }
@@ -318,6 +317,22 @@ var HMRClient = {
     };
 
     socket.onclose = function () {
+      // console intercept 복원 — reconnect 시 stale closure / 중복 wrap 방지.
+      if (self._originalConsole) {
+        for (var level in self._originalConsole) {
+          if (Object.prototype.hasOwnProperty.call(self._originalConsole, level)) {
+            console[level] = self._originalConsole[level];
+          }
+        }
+        self._originalConsole = null;
+      }
+      // 중첩 update 도중 socket drop 시 stuck banner 방지.
+      if (self._pendingUpdates > 0) {
+        self._pendingUpdates = 0;
+        self._hideRefreshing();
+      }
+      // DevLoadingView cache 무효화 — reconnect 시 module 상태 변경 가능.
+      self._devLoadingView = null;
       self._socket = null;
     };
   },
