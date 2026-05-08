@@ -531,12 +531,9 @@ export default function PlaygroundBundler() {
         next.minifySyntax = b;
       }
       // codeSplitting / preserveModules 는 ESM 출력만 지원 — cjs/iife/umd/amd 에는
-      // 네이티브 dynamic import 가 없어 빌드가 실패한다. 토글 시 ESM 으로 강제하고,
-      // format 을 ESM 외로 바꿀 때는 두 옵션을 자동 off — build-time error 노출 전에
-      // playground 가 일관된 조합으로 자동 보정.
-      if (ESM_ONLY_KEYS.has(key) && value === true && next.format !== "esm") {
-        next.format = "esm";
-      }
+      // 네이티브 dynamic import 가 없어 빌드가 실패한다. format 을 ESM 외로 바꾸면
+      // 두 옵션은 자동 off (잘못된 조합으로 stale state 방지). 토글 자체는 UI 단에서
+      // disabled 처리하므로, ESM 외 상태에서 사용자가 토글을 활성화 시도할 수 없다.
       if (key === "format" && value !== "esm") {
         for (const k of ESM_ONLY_KEYS) (next as Record<string, unknown>)[k] = false;
       }
@@ -730,13 +727,16 @@ export default function PlaygroundBundler() {
                   label="Code splitting"
                   checked={opts.codeSplitting}
                   onChange={(v) => updateOpt("codeSplitting", v)}
+                  disabled={opts.format !== "esm"}
+                  title={opts.format !== "esm" ? "ESM 출력 format 에서만 지원됩니다" : undefined}
                 />
                 <Chk
                   label="Preserve modules"
                   checked={opts.preserveModules}
                   onChange={(v) => updateOpt("preserveModules", v)}
+                  disabled={opts.format !== "esm"}
+                  title={opts.format !== "esm" ? "ESM 출력 format 에서만 지원됩니다" : undefined}
                 />
-                <p className="mt-1 text-[10px] text-neutral-500">ESM 출력만 지원 — 켜면 format 자동 ESM</p>
               </Section>
               <Section title="External">
                 <textarea

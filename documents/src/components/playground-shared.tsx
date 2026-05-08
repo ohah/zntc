@@ -75,14 +75,26 @@ export function Chk({
   label,
   checked,
   onChange,
+  disabled,
+  title,
 }: {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
+  title?: string;
 }) {
+  const base = "flex items-center gap-1.5 text-[13px]";
+  const enabled = "cursor-pointer text-neutral-300";
+  const dim = "cursor-not-allowed text-neutral-500";
   return (
-    <label className="flex cursor-pointer items-center gap-1.5 text-[13px] text-neutral-300">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label className={`${base} ${disabled ? dim : enabled}`} title={title}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
+      />
       {label}
     </label>
   );
