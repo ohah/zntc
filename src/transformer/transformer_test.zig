@@ -358,6 +358,21 @@ test "useDefineForClassFields=false: with existing constructor" {
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
 
+test "ES2015 class: string literal constructor lowers as constructor" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class A { 'constructor'() { return {}; } }",
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer r.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "function A()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "return {};") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Object.defineProperty(A.prototype, \"constructor\"") == null);
+}
+
 test "useDefineForClassFields=false: with super class" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,

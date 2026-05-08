@@ -1516,6 +1516,25 @@ pub const Ast = struct {
             else => null,
         };
     }
+
+    /// object/method/class key 노드에서 non-computed 정적 이름만 추출한다.
+    /// `staticKeyName` 은 codegen/contextual-name 용도로 computed literal 도 해석하지만,
+    /// class constructor / object `__proto__` early error 의 PropName 규칙에서는
+    /// ComputedPropertyName 이 empty 로 취급되어야 한다.
+    pub fn directStaticKeyName(
+        self: *const Ast,
+        alloc: std.mem.Allocator,
+        key_idx: NodeIndex,
+    ) std.mem.Allocator.Error!?[]u8 {
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.nodes.items.len) return null;
+        const n = self.getNode(key_idx);
+        return switch (n.tag) {
+            .identifier_reference, .binding_identifier, .private_identifier => try alloc.dupe(u8, self.getText(n.data.string_ref)),
+            .numeric_literal => try alloc.dupe(u8, self.getText(n.span)),
+            .string_literal => try decodeStringLiteralKey(self, alloc, key_idx),
+            else => null,
+        };
+    }
 };
 
 fn decodeStringLiteralKey(
