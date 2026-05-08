@@ -5,6 +5,7 @@
 const std = @import("std");
 const Module = @import("../module.zig").Module;
 const SourceMap = @import("../../codegen/sourcemap.zig");
+const source_map_trace = @import("../../codegen/source_map_trace.zig");
 
 /// 모듈의 소스맵 매핑을 번들 레벨 SourceMapBuilder에 추가한다.
 /// sourcesContent 등록 + preamble/wrapper 오프셋 반영 + module 영역 안의
@@ -47,12 +48,31 @@ pub fn addModuleMappings(
     total_code_lines: u32,
     /// module wrapper 후 boilerplate line 수 (e.g. //#endregion, default 0)
     post_lines: u32,
+    /// plugin load/transform 이 반환한 Source Map V3 JSON chain. 비어 있으면 identity.
+    plugin_source_maps: []const []const u8,
 ) !void {
+    if (maps.len == 0) return;
+    if (plugin_source_maps.len > 0) {
+        return addTracedModuleMappings(
+            sm,
+            module_id,
+            source,
+            maps,
+            base_line,
+            preamble_lines,
+            sources_content,
+            indent_offset,
+            pre_lines,
+            total_code_lines,
+            post_lines,
+            plugin_source_maps,
+        );
+    }
+
     const source_idx = try sm.addSource(module_id);
     if (sources_content and source.len > 0) {
         try sm.addSourceContent(source);
     }
-    if (maps.len == 0) return;
 
     // maps 가 generated_line 순 정렬 가정 — codegen / esm_wrap merge 가 보장.
     // 첫/마지막 mapping 의 original_line 으로 boilerplate 영역 (region marker,
@@ -137,6 +157,178 @@ pub fn addModuleMappings(
     }
 }
 
+const ResolvedTrace = struct {
+    source_name: []const u8,
+    source_content: ?[]const u8,
+    original_line: u32,
+    original_column: u32,
+};
+
+fn resolveTrace(
+    parsed_maps: []const source_map_trace.ParsedMap,
+    module_id: []const u8,
+    fallback_source: []const u8,
+    mapping: SourceMap.Mapping,
+) ResolvedTrace {
+    if (source_map_trace.trace(parsed_maps, mapping.original_line, mapping.original_column)) |hit| {
+        return .{
+            .source_name = hit.source,
+            .source_content = hit.source_content,
+            .original_line = hit.line,
+            .original_column = hit.column,
+        };
+    }
+    return .{
+        .source_name = module_id,
+        .source_content = fallback_source,
+        .original_line = mapping.original_line,
+        .original_column = mapping.original_column,
+    };
+}
+
+fn ensureTraceSource(
+    sm: *SourceMap.SourceMapBuilder,
+    cache: *std.StringHashMap(u32),
+    source_name: []const u8,
+    source_content: ?[]const u8,
+    include_content: bool,
+) !u32 {
+    if (cache.get(source_name)) |idx| return idx;
+    const idx = try sm.addSource(source_name);
+    if (include_content) {
+        try sm.addSourceContent(source_content orelse "");
+    }
+    try cache.put(source_name, idx);
+    return idx;
+}
+
+fn addTracedModuleMappings(
+    sm: *SourceMap.SourceMapBuilder,
+    module_id: []const u8,
+    source: []const u8,
+    maps: []const SourceMap.Mapping,
+    base_line: u32,
+    preamble_lines: u32,
+    sources_content: bool,
+    indent_offset: bool,
+    pre_lines: u32,
+    total_code_lines: u32,
+    post_lines: u32,
+    plugin_source_maps: []const []const u8,
+) !void {
+    var parsed_maps: std.ArrayList(source_map_trace.ParsedMap) = .empty;
+    defer {
+        for (parsed_maps.items) |*parsed| parsed.deinit();
+        parsed_maps.deinit(sm.allocator);
+    }
+    for (plugin_source_maps) |source_map_json| {
+        try parsed_maps.append(sm.allocator, try source_map_trace.parse(sm.allocator, source_map_json));
+    }
+
+    var source_cache = std.StringHashMap(u32).init(sm.allocator);
+    defer source_cache.deinit();
+
+    const first_trace = resolveTrace(parsed_maps.items, module_id, source, maps[0]);
+    const first_source_idx = try ensureTraceSource(
+        sm,
+        &source_cache,
+        first_trace.source_name,
+        first_trace.source_content,
+        sources_content,
+    );
+
+    var i: u32 = 0;
+    while (i < pre_lines) : (i += 1) {
+        try sm.addMapping(.{
+            .generated_line = base_line + i,
+            .generated_column = 0,
+            .source_index = first_source_idx,
+            .original_line = first_trace.original_line,
+            .original_column = 0,
+        });
+    }
+
+    var prev_source_idx: u32 = first_source_idx;
+    var prev_orig: u32 = first_trace.original_line;
+    var last_source_idx: u32 = first_source_idx;
+    var last_orig: u32 = first_trace.original_line;
+    var maps_idx: usize = 0;
+    var line: u32 = 0;
+    while (line < total_code_lines) : (line += 1) {
+        var line_had_mapping = false;
+        while (maps_idx < maps.len and maps[maps_idx].generated_line == line) : (maps_idx += 1) {
+            const m = maps[maps_idx];
+            const traced = resolveTrace(parsed_maps.items, module_id, source, m);
+            const traced_source_idx = try ensureTraceSource(
+                sm,
+                &source_cache,
+                traced.source_name,
+                traced.source_content,
+                sources_content,
+            );
+            try sm.addMapping(.{
+                .generated_line = base_line + pre_lines + preamble_lines + m.generated_line,
+                .generated_column = if (indent_offset and m.generated_line != 0)
+                    m.generated_column + 1
+                else
+                    m.generated_column,
+                .source_index = traced_source_idx,
+                .original_line = traced.original_line,
+                .original_column = traced.original_column,
+            });
+            prev_source_idx = traced_source_idx;
+            prev_orig = traced.original_line;
+            last_source_idx = traced_source_idx;
+            last_orig = traced.original_line;
+            line_had_mapping = true;
+        }
+        if (!line_had_mapping) {
+            try sm.addMapping(.{
+                .generated_line = base_line + pre_lines + preamble_lines + line,
+                .generated_column = 0,
+                .source_index = prev_source_idx,
+                .original_line = prev_orig,
+                .original_column = 0,
+            });
+        }
+    }
+
+    while (maps_idx < maps.len) : (maps_idx += 1) {
+        const m = maps[maps_idx];
+        const traced = resolveTrace(parsed_maps.items, module_id, source, m);
+        const traced_source_idx = try ensureTraceSource(
+            sm,
+            &source_cache,
+            traced.source_name,
+            traced.source_content,
+            sources_content,
+        );
+        try sm.addMapping(.{
+            .generated_line = base_line + pre_lines + preamble_lines + m.generated_line,
+            .generated_column = if (indent_offset and m.generated_line != 0)
+                m.generated_column + 1
+            else
+                m.generated_column,
+            .source_index = traced_source_idx,
+            .original_line = traced.original_line,
+            .original_column = traced.original_column,
+        });
+        last_source_idx = traced_source_idx;
+        last_orig = traced.original_line;
+    }
+
+    i = 0;
+    while (i < post_lines) : (i += 1) {
+        try sm.addMapping(.{
+            .generated_line = base_line + pre_lines + preamble_lines + total_code_lines + i,
+            .generated_column = 0,
+            .source_index = last_source_idx,
+            .original_line = last_orig,
+            .original_column = 0,
+        });
+    }
+}
+
 /// 모듈 경로를 dev bundle용 ID로 변환.
 /// root_dir이 있으면 상대 경로, 없으면 절대 경로 그대로 사용.
 pub fn makeModuleId(path: []const u8, root_dir: ?[]const u8) []const u8 {
@@ -190,6 +382,7 @@ test "addModuleMappings: codegen body 의 내부 빈 줄 (gap) 도 직전 orig �
         0, // pre_lines
         6, // total_code_lines
         0, // post_lines
+        &.{},
     );
 
     // generated_line 100~105 (base + 0~5) 모두 mapping 존재해야 함.
@@ -228,6 +421,7 @@ test "addModuleMappings: 첫 매핑 이전의 wrap header 줄들도 first_orig �
         0,
         4, // total_code_lines (wrap header 2 + body 2)
         0,
+        &.{},
     );
 
     var has_line = std.AutoHashMap(u32, u32).init(testing.allocator);
@@ -262,6 +456,7 @@ test "addModuleMappings: tail (마지막 mapping 이후 wrap closing brace) 영�
         0,
         4, // total_code_lines
         0,
+        &.{},
     );
 
     var has_line = std.AutoHashMap(u32, u32).init(testing.allocator);
@@ -300,6 +495,7 @@ test "addModuleMappings: pre/post (region/endregion marker) + 내부 gap 동시 
         1, // pre_lines (region marker)
         3, // total_code_lines (body)
         1, // post_lines (endregion marker)
+        &.{},
     );
 
     var has_line = std.AutoHashMap(u32, u32).init(testing.allocator);
@@ -335,8 +531,9 @@ test "addModuleMappings: maps 가 비어있으면 아무 mapping 도 추가 안 
         1,
         5,
         1,
+        &.{},
     );
 
-    // source 는 등록되지만 mapping 은 0 개.
+    // empty mapping 입력은 source 등록도 하지 않고 빠져나간다.
     try testing.expectEqual(@as(usize, 0), sm.mappings.items.len);
 }
