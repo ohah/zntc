@@ -526,6 +526,17 @@ export default function PlaygroundBundler() {
         next.minifyIdentifiers = b;
         next.minifySyntax = b;
       }
+      // codeSplitting / preserveModules 는 ESM 출력만 지원 — cjs/iife/umd/amd 에는
+      // 네이티브 dynamic import 가 없어 빌드가 실패한다. 토글 시 ESM 으로 강제하고,
+      // format 을 ESM 외로 바꿀 때는 두 옵션을 자동 off — build-time error 노출 전에
+      // playground 가 일관된 조합으로 자동 보정.
+      if ((key === "codeSplitting" || key === "preserveModules") && value === true && next.format !== "esm") {
+        next.format = "esm";
+      }
+      if (key === "format" && value !== "esm") {
+        next.codeSplitting = false;
+        next.preserveModules = false;
+      }
       runBundle(files, entryPath, next);
       return next;
     });
@@ -722,6 +733,7 @@ export default function PlaygroundBundler() {
                   checked={opts.preserveModules}
                   onChange={(v) => updateOpt("preserveModules", v)}
                 />
+                <p className="mt-1 text-[10px] text-neutral-500">ESM 출력만 지원 — 켜면 format 자동 ESM</p>
               </Section>
               <Section title="External">
                 <textarea
