@@ -184,8 +184,8 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     // [DEBUG #2719] OS 차이 추적: await-expr-regexp.js 케이스만 디버그 출력
     const is_target_case = mem.indexOf(u8, source, "await / x.y / g") != null;
     if (is_target_case) {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
-        stderr.print("[DBG-OS] await-expr-regexp meta: is_module={} is_negative={} is_only_strict={} is_no_strict={}\n", .{
+        const stdout = std.fs.File.stdout().deprecatedWriter();
+        stdout.print("[DBG-OS] await-expr-regexp meta: is_module={} is_negative={} is_only_strict={} is_no_strict={}\n", .{
             meta.is_module, meta.is_negative_parse, meta.is_only_strict, meta.is_no_strict,
         }) catch {};
     }
@@ -225,8 +225,8 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
 
     // [DEBUG #2719] OS 차이 추적
     if (is_target_case) {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
-        stderr.print("[DBG-OS] await-expr-regexp had_error={} scanner.token.kind={s} parser.errors={d} semantic={d}\n", .{
+        const stdout = std.fs.File.stdout().deprecatedWriter();
+        stdout.print("[DBG-OS] await-expr-regexp had_error={} scanner.token.kind={s} parser.errors={d} semantic={d}\n", .{
             had_error,
             @tagName(scanner.token.kind),
             parser.errors.items.len,
@@ -234,7 +234,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
         }) catch {};
         if (parser.errors.items.len > 0) {
             for (parser.errors.items, 0..) |err, i| {
-                stderr.print("[DBG-OS]   err[{d}]@{d}: {s}\n", .{ i, err.span.start, err.message }) catch {};
+                stdout.print("[DBG-OS]   err[{d}]@{d}: {s}\n", .{ i, err.span.start, err.message }) catch {};
             }
         }
     }
