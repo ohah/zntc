@@ -5,12 +5,18 @@
 // 책임 아님.
 
 import { readFileSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 
 import type { ZntcPlugin } from '@zntc/core';
 
 import { HMR_CLIENT_SUFFIX, ZNTC_HMR_CLIENT_CODE } from '../runtime-loader.ts';
 import { escapeRegex } from './escape-regex.ts';
-import { type BabelInstance, getErrorMessage, requireFromCli } from './internal.ts';
+import {
+  type BabelInstance,
+  getErrorMessage,
+  normalizeExt,
+  requireFromCli,
+} from './internal.ts';
 import type { PluginConfig } from './types.ts';
 
 interface MetroTransformerResult {
@@ -24,6 +30,36 @@ interface MetroTransformer {
     filename: string;
     options: { platform: 'ios' | 'android'; dev: boolean };
   }): Promise<MetroTransformerResult> | MetroTransformerResult;
+}
+
+// SVGR/react-native-svg-transformer 와 동일하게 `Svg{Pascal}` 형태 — 사용자가
+// 두 transformer 사이를 옮길 때 컴포넌트 이름 변하지 않도록.
+function svgComponentName(filePath: string): string {
+  const pascal = basename(filePath, extname(filePath))
+    .split(/[^A-Za-z0-9_$]+/)
+    .filter(Boolean)
+    .map((part) => part[0]!.toUpperCase() + part.slice(1))
+    .join('');
+  return pascal ? `Svg${pascal}` : 'SvgComponent';
+}
+
+export function createSvgComponentModule(svg: string, filePath: string): string {
+  const componentName = svgComponentName(filePath);
+  return [
+    `import * as React from 'react';`,
+    `import { SvgXml } from 'react-native-svg';`,
+    ``,
+    `const xml = ${JSON.stringify(svg)};`,
+    ``,
+    `function ${componentName}(props) {`,
+    `  return React.createElement(SvgXml, Object.assign({ xml }, props));`,
+    `}`,
+    ``,
+    `${componentName}.displayName = ${JSON.stringify(componentName)};`,
+    ``,
+    `export default ${componentName};`,
+    ``,
+  ].join('\n');
 }
 
 /**
@@ -46,6 +82,15 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
         ),
       }));
 
+      const hasSvgSource = config.sourceExts.some(
+        (e) => normalizeExt(e).toLowerCase() === '.svg',
+      );
+      if (!config.babelTransformerPath && hasSvgSource) {
+        build.onLoad({ filter: /\.svg$/i }, (args) => ({
+          contents: createSvgComponentModule(readFileSync(args.path, 'utf8'), args.path),
+        }));
+      }
+
       if (config.babelTransformerPath) {
         let customTransformer: MetroTransformer | null = null;
         let babel: BabelInstance | null = null;
@@ -54,8 +99,8 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
         // 사용자 transformer 적용 대상 — sourceExts 중 ts/tsx/js/jsx/mjs/cjs/json
         // 외 (RN-specific 확장자, 예: .svg). 표준 JS/TS 는 ZNTC 가 처리하므로 제외.
         const customExts = config.sourceExts
-          .filter((e) => !/^\.(tsx?|jsx?|mjs|cjs|json)$/.test(e))
-          .map((e) => e.replace(/^\./, ''))
+          .map((e) => normalizeExt(e).slice(1))
+          .filter((e) => !/^(tsx?|jsx?|mjs|cjs|json)$/.test(e))
           .join('|');
 
         if (customExts) {

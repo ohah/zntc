@@ -40,7 +40,7 @@ import Animated, {
   Extrapolation,
 } from 'react-native-reanimated';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Polyline, type SvgProps } from 'react-native-svg';
+import CheckIcon from '~/assets/check.svg';
 import { getGreeting, getVersion } from '~/utils/greeting';
 
 // ES5 다운레벨 스트레스 테스트 — 번들 출력 검증용. 런타임엔 호출 안 해도 됨.
@@ -60,26 +60,6 @@ interface TestResult {
   status: TestStatus;
   message: string;
   duration?: number;
-}
-
-function CheckIcon({
-  stroke = 'currentColor',
-  strokeWidth = 2,
-  strokeLinecap = 'round',
-  strokeLinejoin = 'round',
-  ...svgProps
-}: SvgProps) {
-  return (
-    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" {...svgProps}>
-      <Polyline
-        points="20 6 9 17 4 12"
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-        strokeLinecap={strokeLinecap}
-        strokeLinejoin={strokeLinejoin}
-      />
-    </Svg>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -391,8 +371,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
       {/* Test cards */}
       <View style={styles.section}>
         <TestCard
-          title="GET Request"
-          desc="jsonplaceholder /posts/1"
+          title='GET Request'
+          desc='jsonplaceholder /posts/1'
           result={fetchGet}
           onRun={runFetchGet}
           cardBg={cardBg}
@@ -400,8 +380,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="POST Request"
-          desc="jsonplaceholder /posts"
+          title='POST Request'
+          desc='jsonplaceholder /posts'
           result={fetchPost}
           onRun={runFetchPost}
           cardBg={cardBg}
@@ -409,8 +389,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="Error Handling"
-          desc="httpstat.us/404"
+          title='Error Handling'
+          desc='httpstat.us/404'
           result={fetchError}
           onRun={runFetchError}
           cardBg={cardBg}
@@ -418,8 +398,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="WebSocket Echo"
-          desc="echo.websocket.org"
+          title='WebSocket Echo'
+          desc='echo.websocket.org'
           result={wsTest}
           onRun={runWsTest}
           cardBg={cardBg}
@@ -427,8 +407,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="Abort Timeout"
-          desc="3s timeout on 10s delay"
+          title='Abort Timeout'
+          desc='3s timeout on 10s delay'
           result={timeoutTest}
           onRun={runTimeoutTest}
           cardBg={cardBg}
@@ -436,8 +416,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="Parallel Fetch"
-          desc="5 concurrent GET requests"
+          title='Parallel Fetch'
+          desc='5 concurrent GET requests'
           result={multiTest}
           onRun={runMultiTest}
           cardBg={cardBg}
@@ -445,8 +425,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="Error / SourceMap"
-          desc="Throw error — check Red Screen + stack trace"
+          title='Error / SourceMap'
+          desc='Throw error — check Red Screen + stack trace'
           result={errorTest}
           onRun={runErrorTest}
           cardBg={cardBg}
@@ -454,8 +434,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
         <TestCard
-          title="Console Levels"
-          desc="log, info, warn, error, debug — check terminal"
+          title='Console Levels'
+          desc='log, info, warn, error, debug — check terminal'
           result={consoleTest}
           onRun={runConsoleTest}
           cardBg={cardBg}
@@ -472,18 +452,14 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           <View style={{ marginTop: 8, gap: 4 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
               <View style={{ backgroundColor: '#E8F5E9', borderRadius: 8, padding: 8 }}>
-                <CheckIcon width={32} height={32} stroke="#4CAF50" strokeWidth={3} />
+                <CheckIcon width={32} height={32} stroke='#4CAF50' strokeWidth={3} />
               </View>
               <Text style={{ color: textColor, fontSize: 14, fontWeight: '600' }}>
                 SVG component loaded
               </Text>
             </View>
-            <Text style={{ color: textColor, fontSize: 13 }}>
-              greeting: {getGreeting('dev')}
-            </Text>
-            <Text style={{ color: textColor, fontSize: 13 }}>
-              version: {getVersion()}
-            </Text>
+            <Text style={{ color: textColor, fontSize: 13 }}>greeting: {getGreeting('dev')}</Text>
+            <Text style={{ color: textColor, fontSize: 13 }}>version: {getVersion()}</Text>
           </View>
         </View>
       </View>
@@ -787,10 +763,7 @@ function PinchRotateDemo({
   const composed = Gesture.Simultaneous(pinch, rotate);
 
   const boxStyle = useAnimatedStyle(() => ({
-    transform: [
-      { scale: scale.value },
-      { rotateZ: `${(angle.value * 180) / Math.PI}deg` },
-    ],
+    transform: [{ scale: scale.value }, { rotateZ: `${(angle.value * 180) / Math.PI}deg` }],
   }));
 
   const reset = () => {
@@ -1022,12 +995,7 @@ function SharedMorphDemo({
         </TouchableOpacity>
       </View>
       <View style={{ alignItems: 'center', paddingVertical: 20 }}>
-        <Animated.View
-          style={[
-            { justifyContent: 'center', alignItems: 'center' },
-            morphStyle,
-          ]}
-        >
+        <Animated.View style={[{ justifyContent: 'center', alignItems: 'center' }, morphStyle]}>
           <Animated.Text style={[{ color: '#fff', fontWeight: '700' }, labelStyle]}>
             expanded
           </Animated.Text>
@@ -1137,7 +1105,7 @@ function TestCard({
           disabled={result.status === 'running'}
         >
           {result.status === 'running' ? (
-            <ActivityIndicator size="small" color="#fff" />
+            <ActivityIndicator size='small' color='#fff' />
           ) : (
             <Text style={styles.runBtnText}>Run</Text>
           )}

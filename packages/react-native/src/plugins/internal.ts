@@ -38,3 +38,8 @@ export function getErrorMessage(err: unknown, max = 100): string {
   if (typeof e?.message === 'string') return e.message.slice(0, max);
   return String(err).slice(0, max);
 }
+
+/** `"ext"` / `".ext"` → `".ext"`. sourceExts/assetExts 정규화 공용. */
+export function normalizeExt(ext: string): string {
+  return ext.startsWith('.') ? ext : `.${ext}`;
+}
