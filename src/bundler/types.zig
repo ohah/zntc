@@ -686,6 +686,8 @@ pub const BundlerDiagnostic = struct {
         require_context_invalid,
         /// require.context 매칭 핸들러 미구현 (host plugin resolveContext hook 없음). #1579 / #1771
         require_context_no_handler,
+        /// JS/native plugin hook throw/reject 실패. #1902
+        plugin_error,
         /// `output.exports = "default"` 모드 + named export 섞임. Rollup 도 동일 케이스 throw. #2159
         output_exports_conflict,
     };

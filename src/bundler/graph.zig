@@ -78,6 +78,7 @@ pub const ModuleGraph = struct {
     requested_exports: std.AutoHashMapUnmanaged(u32, RequestedExports) = .{},
     requested_exports_mutex: std.Thread.Mutex = .{},
     diagnostics: std.ArrayList(BundlerDiagnostic),
+    owned_diagnostic_strings: std.ArrayList([]const u8) = .empty,
     resolve_cache: *ResolveCache,
     source_read_cache: fs.ReadFileCache = .{},
     /// 병렬 워커에서 diagnostics 접근 보호용 mutex
@@ -273,6 +274,8 @@ pub const ModuleGraph = struct {
         while (pi_it.next()) |info| info.side_effects.deinit(self.allocator);
         self.pkg_info_cache.deinit(self.allocator);
         self.source_read_cache.deinit(self.allocator);
+        for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
+        self.owned_diagnostic_strings.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
         for (self.worker_entries.items) |we| {
             self.allocator.free(we.resolved_path);
@@ -1821,7 +1824,11 @@ pub const ModuleGraph = struct {
                 if (plugin_runner) |runner| {
                     if (self.shouldRunResolveId(record.specifier)) {
                         const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
-                            error.PluginFailed => null,
+                            error.PluginFailed => {
+                                self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module_path, record.span, .resolve);
+                                results[rec_i] = .{ .is_error = true, .skipped = !should_link };
+                                continue;
+                            },
                             error.OutOfMemory => {
                                 self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
                                 continue;
@@ -1879,7 +1886,12 @@ pub const ModuleGraph = struct {
                     return;
                 };
                 const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
-                    error.PluginFailed => null,
+                    error.PluginFailed => {
+                        self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module.path, Span.EMPTY, .resolve);
+                        module_mod.destroyParseArena(self.allocator, tmp_arena);
+                        module.state = .ready;
+                        return;
+                    },
                     error.OutOfMemory => {
                         module_mod.destroyParseArena(self.allocator, tmp_arena);
                         module.state = .ready;
@@ -2083,7 +2095,11 @@ pub const ModuleGraph = struct {
         if (plugin_runner) |runner| {
             if (self.has_transform_plugins) {
                 const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
-                    error.PluginFailed => null,
+                    error.PluginFailed => {
+                        self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module.path, Span.EMPTY, .transform);
+                        module.state = .ready;
+                        return;
+                    },
                     error.OutOfMemory => {
                         module.state = .ready;
                         return;
@@ -3158,7 +3174,10 @@ pub const ModuleGraph = struct {
             if (plugin_runner) |runner| {
                 if (self.shouldRunResolveId(record.specifier)) {
                     const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
-                        error.PluginFailed => null,
+                        error.PluginFailed => {
+                            self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module_path, record.span, .resolve);
+                            return;
+                        },
                         error.OutOfMemory => return error.OutOfMemory,
                     };
                     // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
@@ -3984,6 +4003,45 @@ pub const ModuleGraph = struct {
             .step = step,
             .suggestion = suggestion,
         }) catch {};
+    }
+
+    fn addPluginFailureDiag(
+        self: *ModuleGraph,
+        failure: ?plugin_mod.PluginFailure,
+        fallback_file: []const u8,
+        span: Span,
+        step: BundlerDiagnostic.Step,
+    ) void {
+        const f = failure orelse {
+            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
+            return;
+        };
+        defer f.deinit();
+
+        const message = f.formatMessage(self.allocator) catch {
+            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
+            return;
+        };
+        const file_src = if (f.file_path.len > 0) f.file_path else fallback_file;
+        const file_path = self.allocator.dupe(u8, file_src) catch {
+            self.allocator.free(message);
+            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
+            return;
+        };
+        self.owned_diagnostic_strings.append(self.allocator, message) catch {
+            self.allocator.free(message);
+            self.allocator.free(file_path);
+            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
+            return;
+        };
+        self.owned_diagnostic_strings.append(self.allocator, file_path) catch {
+            _ = self.owned_diagnostic_strings.pop();
+            self.allocator.free(message);
+            self.allocator.free(file_path);
+            self.addDiag(.plugin_error, .@"error", fallback_file, span, step, "Plugin hook failed", null);
+            return;
+        };
+        self.addDiag(.plugin_error, .@"error", file_path, span, step, message, null);
     }
 };
 

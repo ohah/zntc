@@ -33,6 +33,45 @@ afterAll(() => {
   close();
 });
 
+function diagText(diag: unknown): string {
+  if (diag && typeof diag === 'object') {
+    const d = diag as { text?: unknown; message?: unknown };
+    if (typeof d.text === 'string') return d.text;
+    if (typeof d.message === 'string') return d.message;
+  }
+  return String(diag);
+}
+
+function expectPluginDiagnostic(
+  result: { errors: unknown[] },
+  expected: {
+    plugin: string;
+    hook: string;
+    message: string;
+    fileIncludes?: string;
+    textIncludes?: string;
+  },
+) {
+  const diag = result.errors.find((entry) => {
+    const d = entry as { code?: string };
+    const text = diagText(entry);
+    return (
+      d.code === 'plugin_error' &&
+      text.includes(expected.plugin) &&
+      text.includes(expected.hook) &&
+      text.includes(expected.message)
+    );
+  }) as ({ location?: { file?: string }; code?: string } & Record<string, unknown>) | undefined;
+
+  expect(diag, `missing plugin_error diagnostic in ${JSON.stringify(result.errors)}`).toBeDefined();
+  if (expected.fileIncludes) {
+    expect(diag?.location?.file ?? '').toContain(expected.fileIncludes);
+  }
+  if (expected.textIncludes) {
+    expect(diagText(diag)).toContain(expected.textIncludes);
+  }
+}
+
 describe('@zntc/core', () => {
   test('기본 standalone transpile은 JS로 파싱해 TypeScript syntax를 거부', () => {
     expect(() => transpile('const x: number = 1;')).toThrow('ParseError');
@@ -1035,23 +1074,51 @@ describe('@zntc/core build + plugins', () => {
     ).toThrow('plugins are only supported with build()');
   });
 
-  test('플러그인 콜백이 throw해도 빌드가 중단되지 않음', async () => {
+  test('plugin_error: onLoad sync throw가 diagnostic으로 노출됨', async () => {
     const throwPlugin: ZntcPlugin = {
       name: 'throw-plugin',
       setup(build) {
-        build.onLoad({ filter: /never-match-anything/ }, () => {
+        build.onResolve({ filter: /\.boom$/ }, (args) => ({ path: resolve(dir, args.path) }));
+        build.onLoad({ filter: /\.boom$/ }, () => {
           throw new Error('plugin error!');
         });
       },
     };
+    writeFileSync(join(dir, 'entry-load-error.ts'), 'import "./style.boom";');
 
-    // filter가 매치하지 않으므로 throw에 도달하지 않음 — 정상 완료
     const result = await build({
-      entryPoints: [join(dir, 'entry.ts')],
+      entryPoints: [join(dir, 'entry-load-error.ts')],
       plugins: [throwPlugin],
     });
-    // css import가 resolve 안 되므로 에러, 하지만 빌드 자체는 크래시하지 않음
-    expect(result.outputFiles.length).toBeGreaterThan(0);
+    expectPluginDiagnostic(result, {
+      plugin: 'throw-plugin',
+      hook: 'load',
+      message: 'plugin error!',
+      fileIncludes: 'style.boom',
+    });
+  });
+
+  test('plugin_error: onTransform async reject가 diagnostic으로 노출됨', async () => {
+    const rejectPlugin: ZntcPlugin = {
+      name: 'reject-transform',
+      setup(build) {
+        build.onTransform({ filter: /transform-reject\.ts$/ }, async () => {
+          throw new Error('async transform rejected');
+        });
+      },
+    };
+    writeFileSync(join(dir, 'transform-reject.ts'), 'console.log("transform");');
+
+    const result = await build({
+      entryPoints: [join(dir, 'transform-reject.ts')],
+      plugins: [rejectPlugin],
+    });
+    expectPluginDiagnostic(result, {
+      plugin: 'reject-transform',
+      hook: 'transform',
+      message: 'async transform rejected',
+      fileIncludes: 'transform-reject.ts',
+    });
   });
 
   test('lifecycle hooks (#2156): buildStart → buildEnd → closeBundle 순서 + 1회씩', async () => {
@@ -1091,7 +1158,6 @@ describe('@zntc/core build + plugins', () => {
         const boom = () => {
           throw new Error('intentional');
         };
-        build.onBuildStart(boom);
         build.onBuildEnd(boom);
         build.onCloseBundle(boom);
       },
@@ -1109,8 +1175,54 @@ describe('@zntc/core build + plugins', () => {
       entryPoints: [join(dir, 'lifecycle-entry.ts')],
       plugins: [throwingPlugin, trackingPlugin],
     });
-    expect(result.errors.length).toBe(0);
+    expectPluginDiagnostic(result, {
+      plugin: 'thrower',
+      hook: 'buildEnd',
+      message: 'intentional',
+    });
+    expectPluginDiagnostic(result, {
+      plugin: 'thrower',
+      hook: 'closeBundle',
+      message: 'intentional',
+    });
     expect(events).toEqual(['start', 'end', 'close']);
+  });
+
+  test('plugin_error: buildEnd/closeBundle 실패는 기존 build error를 덮지 않고 secondary diagnostic으로 기록', async () => {
+    const events: string[] = [];
+    writeFileSync(join(dir, 'entry-unresolved.ts'), 'import "missing-package-1902";');
+    const lifecyclePlugin: ZntcPlugin = {
+      name: 'lifecycle-failures',
+      setup(build) {
+        build.onBuildEnd(() => {
+          events.push('buildEnd');
+          throw new Error('buildEnd cleanup failed');
+        });
+        build.onCloseBundle(() => {
+          events.push('closeBundle');
+          throw new Error('closeBundle cleanup failed');
+        });
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, 'entry-unresolved.ts')],
+      plugins: [lifecyclePlugin],
+    });
+    expect(result.errors.some((diag) => diagText(diag).includes('Cannot resolve module'))).toBe(
+      true,
+    );
+    expectPluginDiagnostic(result, {
+      plugin: 'lifecycle-failures',
+      hook: 'buildEnd',
+      message: 'buildEnd cleanup failed',
+    });
+    expectPluginDiagnostic(result, {
+      plugin: 'lifecycle-failures',
+      hook: 'closeBundle',
+      message: 'closeBundle cleanup failed',
+    });
+    expect(events).toEqual(['buildEnd', 'closeBundle']);
   });
 
   test('lifecycle hooks (#2156): vitePlugin 어댑터가 buildStart/buildEnd/closeBundle 을 forward', async () => {
@@ -1374,7 +1486,7 @@ describe('@zntc/core edge cases', () => {
 // ─── 추가 커버리지 테스트 ───
 
 describe('@zntc/core 플러그인 심화', () => {
-  test('플러그인 콜백이 매치 후 throw — 에러로 전파', async () => {
+  test('plugin_error: thrown string과 hook 이름을 보존', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-throw-'));
     writeFileSync(join(dir, 'index.ts'), 'import "./data.json";');
 
@@ -1385,18 +1497,21 @@ describe('@zntc/core 플러그인 심화', () => {
           path: resolve(dir, args.path),
         }));
         build.onLoad({ filter: /\.json$/ }, () => {
-          throw new Error('intentional plugin error');
+          throw 'plain string failure';
         });
       },
     };
 
-    // 플러그인이 throw하면 load 결과가 null → 번들러가 파일 읽기로 폴백
-    // .json 파일이 없으므로 에러 발생
     const result = await build({
       entryPoints: [join(dir, 'index.ts')],
       plugins: [throwPlugin],
     });
-    expect(result.errors.length).toBeGreaterThan(0);
+    expectPluginDiagnostic(result, {
+      plugin: 'throw-on-load',
+      hook: 'load',
+      message: 'plain string failure',
+      fileIncludes: 'data.json',
+    });
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2621,6 +2736,89 @@ describe('vitePlugin 어댑터', () => {
     expect(result.errors.length).toBe(0);
     // importer는 entry.ts의 절대 경로여야 함
     expect(receivedImporter).toContain('entry.ts');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('plugin_error: vitePlugin.resolveId sync throw가 diagnostic으로 노출됨', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-vite-resolve-error-'));
+    writeFileSync(join(dir, 'entry.ts'), 'import "virtual:boom";');
+
+    const result = await build({
+      entryPoints: [join(dir, 'entry.ts')],
+      plugins: [
+        vitePlugin({
+          name: 'vite-resolve-fail',
+          resolveId(source) {
+            if (source === 'virtual:boom') throw new Error('resolve exploded');
+          },
+        }),
+      ],
+    });
+    expectPluginDiagnostic(result, {
+      plugin: 'vite-resolve-fail',
+      hook: 'resolveId',
+      message: 'resolve exploded',
+      fileIncludes: 'entry.ts',
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('plugin_error: vitePlugin.load의 this.error가 RollupError-like location을 보존', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-vite-this-error-'));
+    const virtualId = join(dir, 'virtual.ts');
+    writeFileSync(join(dir, 'entry.ts'), 'import "./virtual";');
+
+    const result = await build({
+      entryPoints: [join(dir, 'entry.ts')],
+      plugins: [
+        vitePlugin({
+          name: 'vite-this-error',
+          resolveId(source) {
+            if (source === './virtual') return virtualId;
+          },
+          load(id) {
+            if (id === virtualId) {
+              this.error({
+                message: 'rollup context failed',
+                id,
+                loc: { file: id, line: 7, column: 3 },
+              });
+            }
+          },
+        } as RollupPlugin),
+      ],
+    });
+    expectPluginDiagnostic(result, {
+      plugin: 'vite-this-error',
+      hook: 'load',
+      message: 'rollup context failed',
+      fileIncludes: 'virtual.ts',
+      textIncludes: '7:3',
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('plugin_error: vitePlugin.transform async reject가 diagnostic으로 노출됨', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-vite-transform-error-'));
+    writeFileSync(join(dir, 'entry.ts'), 'console.log("vite transform");');
+
+    const result = await build({
+      entryPoints: [join(dir, 'entry.ts')],
+      plugins: [
+        vitePlugin({
+          name: 'vite-transform-fail',
+          async transform() {
+            throw new Error('vite transform rejected');
+          },
+        }),
+      ],
+    });
+    expectPluginDiagnostic(result, {
+      plugin: 'vite-transform-fail',
+      hook: 'transform',
+      message: 'vite transform rejected',
+      fileIncludes: 'entry.ts',
+    });
     rmSync(dir, { recursive: true, force: true });
   });
 

@@ -1181,6 +1181,11 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult, log
         _ = c.napi_create_string_utf8(env, d.message.ptr, d.message.len, &js_msg);
         _ = c.napi_set_named_property(env, js_diag, "text", js_msg);
 
+        const code_name = @tagName(d.code);
+        var js_code: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, code_name.ptr, code_name.len, &js_code);
+        _ = c.napi_set_named_property(env, js_diag, "code", js_code);
+
         if (d.file_path.len > 0) {
             var js_loc: c.napi_value = undefined;
             _ = c.napi_create_object(env, &js_loc);
@@ -1278,6 +1283,13 @@ const NapiPlugin = struct {
         /// ParsedLoader.fromString 으로 변환된 결과. null = override 안 함.
         loader_override: ?bundler_mod.types.Loader = null,
         loader_module_type: ?bundler_mod.types.ModuleType = null,
+        is_failure: bool = false,
+        failure_plugin_name: ?[]const u8 = null,
+        failure_hook_name: ?[]const u8 = null,
+        failure_message: ?[]const u8 = null,
+        failure_file: ?[]const u8 = null,
+        failure_line: u32 = 0,
+        failure_column: u32 = 0,
     };
 
     /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
@@ -1302,6 +1314,16 @@ const NapiPlugin = struct {
         }
 
         var resp = PluginResponse{};
+        if (getObjectBool(env, js_result, "__zntcPluginFailure", false)) {
+            resp.is_failure = true;
+            resp.failure_plugin_name = getObjectString(env, js_result, "pluginName", native_alloc);
+            resp.failure_hook_name = getObjectString(env, js_result, "hookName", native_alloc);
+            resp.failure_message = getObjectString(env, js_result, "message", native_alloc);
+            resp.failure_file = getObjectString(env, js_result, "file", native_alloc);
+            resp.failure_line = getObjectUint32(env, js_result, "line", 0);
+            resp.failure_column = getObjectUint32(env, js_result, "column", 0);
+            return resp;
+        }
         if (getObjectString(env, js_result, "path", native_alloc)) |path| {
             resp.resolved_path = path;
         }
@@ -1342,6 +1364,27 @@ const NapiPlugin = struct {
         return resp;
     }
 
+    fn freeFailureFields(resp: PluginResponse) void {
+        if (resp.failure_plugin_name) |s| native_alloc.free(s);
+        if (resp.failure_hook_name) |s| native_alloc.free(s);
+        if (resp.failure_message) |s| native_alloc.free(s);
+        if (resp.failure_file) |s| native_alloc.free(s);
+    }
+
+    fn failWithResponse(self: *NapiPlugin, resp: PluginResponse, alloc: std.mem.Allocator) PluginError {
+        const failure = plugin_mod.PluginFailure.init(
+            alloc,
+            resp.failure_plugin_name orelse self.name,
+            resp.failure_hook_name orelse "plugin",
+            resp.failure_message orelse "Plugin hook failed",
+            resp.failure_file orelse "",
+            resp.failure_line,
+            resp.failure_column,
+        ) catch return error.OutOfMemory;
+        plugin_mod.setLastPluginFailure(failure);
+        return error.PluginFailed;
+    }
+
     /// CallContext에 응답을 기록하고 워커 스레드에 시그널을 보낸다.
     fn signalResponse(ctx: *CallContext, resp: PluginResponse) void {
         ctx.mutex.lock();
@@ -1366,10 +1409,12 @@ const NapiPlugin = struct {
 
     /// Promise의 .catch() 콜백 — reject 시 빈 응답으로 워커 스레드에 전달
     fn promiseCatchCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var argc: usize = 1;
+        var argv: [1]c.napi_value = undefined;
         var cb_data: ?*anyopaque = null;
-        _ = c.napi_get_cb_info(env, info, null, null, null, &cb_data);
+        _ = c.napi_get_cb_info(env, info, &argc, &argv, null, &cb_data);
         const ctx: *CallContext = @ptrCast(@alignCast(cb_data.?));
-        signalResponse(ctx, .{});
+        signalResponse(ctx, if (argc > 0) parseJsResult(env, argv[0]) else .{});
         var undef: c.napi_value = undefined;
         _ = c.napi_get_undefined(env, &undef);
         return undef;
@@ -1496,7 +1541,11 @@ const NapiPlugin = struct {
     /// code를 반환하는 훅 공통 구현 (transform, renderChunk, load)
     fn callCodeHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
         const resp = self.callHook(hook, arg1, arg2) orelse return null;
-        defer if (resp.resolved_path) |p| native_alloc.free(p);
+        defer {
+            if (resp.resolved_path) |p| native_alloc.free(p);
+            freeFailureFields(resp);
+        }
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
         if (resp.code) |result_code| {
             const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
             native_alloc.free(result_code);
@@ -1511,7 +1560,9 @@ const NapiPlugin = struct {
         defer {
             if (resp.resolved_path) |p| native_alloc.free(p);
             if (resp.code) |co| native_alloc.free(co);
+            freeFailureFields(resp);
         }
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
 
         // disabled: 빈 모듈로 처리. path는 식별용 — resolved_path 또는 specifier 그대로.
         // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
@@ -1535,7 +1586,11 @@ const NapiPlugin = struct {
     fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator) PluginError!?plugin_mod.LoadResult {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
         const resp = self.callHook(.load, path, null) orelse return null;
-        defer if (resp.resolved_path) |p| native_alloc.free(p);
+        defer {
+            if (resp.resolved_path) |p| native_alloc.free(p);
+            freeFailureFields(resp);
+        }
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
         const result_code = resp.code orelse return null;
         const contents = alloc.dupe(u8, result_code) catch {
             native_alloc.free(result_code);
@@ -1562,7 +1617,9 @@ const NapiPlugin = struct {
 
     fn pluginBuildStart(ctx: ?*anyopaque) PluginError!void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        _ = self.callHook(.buildStart, "", null);
+        const resp = self.callHook(.buildStart, "", null) orelse return;
+        defer freeFailureFields(resp);
+        if (resp.is_failure) return error.PluginFailed;
     }
 
     fn pluginBuildEnd(ctx: ?*anyopaque, build_error: ?*const bundler_mod.types.BundlerDiagnostic) PluginError!void {
@@ -1571,12 +1628,16 @@ const NapiPlugin = struct {
         // code/severity/file_path/span/step/suggestion 손실은 follow-up 으로 RollupError 호환
         // 객체 (`{ code, message, file, line }`) 직렬화 검토 (#2156 follow-up).
         const msg = if (build_error) |d| d.message else "";
-        _ = self.callHook(.buildEnd, msg, null);
+        const resp = self.callHook(.buildEnd, msg, null) orelse return;
+        defer freeFailureFields(resp);
+        if (resp.is_failure) return error.PluginFailed;
     }
 
     fn pluginCloseBundle(ctx: ?*anyopaque) PluginError!void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        _ = self.callHook(.closeBundle, "", null);
+        const resp = self.callHook(.closeBundle, "", null) orelse return;
+        defer freeFailureFields(resp);
+        if (resp.is_failure) return error.PluginFailed;
     }
 
     /// JSON string field 인코딩 — `"` `\` 와 control char escape.
@@ -1634,7 +1695,11 @@ const NapiPlugin = struct {
         json_buf.append(native_alloc, '}') catch return null;
 
         const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
-        defer if (resp.context_matches) |m| native_alloc.free(m);
+        defer {
+            if (resp.context_matches) |m| native_alloc.free(m);
+            freeFailureFields(resp);
+        }
+        if (resp.is_failure) return self.failWithResponse(resp, alloc);
         // inner string 들도 native_alloc 소유 (parseStringArray 가 dupe 함). 함께 free.
         defer if (resp.context_matches) |m| {
             for (m) |s| native_alloc.free(s);
@@ -1699,7 +1764,9 @@ const NapiPlugin = struct {
             }
             if (resp.resolved_path) |p| native_alloc.free(p);
             if (resp.code) |co| native_alloc.free(co);
+            freeFailureFields(resp);
         }
+        if (resp.is_failure) return error.PluginFailed;
 
         if (resp.strip_directive != null) {
             _ = api.stripDirective(func.body_idx) catch return;

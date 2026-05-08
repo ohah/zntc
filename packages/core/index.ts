@@ -54,7 +54,8 @@ interface OutputFile {
 
 interface Diagnostic {
   text: string;
-  location?: { file: string };
+  code?: string;
+  location?: { file: string; line?: number; column?: number };
 }
 
 interface NativeBuildResult {
@@ -1002,6 +1003,15 @@ export interface ZntcPlugin {
 
 /** 플러그인 훅 반환값: 동기/비동기 모두 허용. null/undefined로 패스스루. */
 type HookResult<T> = T | null | undefined | Promise<T | null | undefined>;
+type PluginFailureResult = {
+  __zntcPluginFailure: true;
+  pluginName: string;
+  hookName: string;
+  message: string;
+  file?: string;
+  line?: number;
+  column?: number;
+};
 
 export interface PluginBuild {
   onResolve(
@@ -1172,17 +1182,103 @@ export interface AppDevPrepareResult {
  * filter 없는 lifecycle/generate hook 의 callback 들을 sequential 로 실행하고 swallow.
  * Rollup 명세 — 한 plugin 의 실패가 다른 plugin 을 차단하지 않는다.
  */
+function normalizePluginFailure(
+  pluginName: string,
+  hookName: string,
+  thrown: unknown,
+  fallbackFile?: string | null,
+): PluginFailureResult {
+  let message = 'Plugin hook failed';
+  let file = fallbackFile ?? undefined;
+  let line: number | undefined;
+  let column: number | undefined;
+
+  if (typeof thrown === 'string') {
+    message = thrown;
+  } else if (thrown && typeof thrown === 'object') {
+    const err = thrown as {
+      message?: unknown;
+      text?: unknown;
+      id?: unknown;
+      file?: unknown;
+      fileName?: unknown;
+      line?: unknown;
+      lineNumber?: unknown;
+      column?: unknown;
+      columnNumber?: unknown;
+      loc?: { file?: unknown; line?: unknown; column?: unknown };
+    };
+    if (typeof err.message === 'string') message = err.message;
+    else if (typeof err.text === 'string') message = err.text;
+    else message = String(thrown);
+
+    const loc = err.loc;
+    const fileCandidate = loc?.file ?? err.id ?? err.file ?? err.fileName;
+    if (typeof fileCandidate === 'string' && fileCandidate.length > 0) file = fileCandidate;
+
+    const lineCandidate = loc?.line ?? err.line ?? err.lineNumber;
+    const columnCandidate = loc?.column ?? err.column ?? err.columnNumber;
+    if (typeof lineCandidate === 'number' && Number.isFinite(lineCandidate)) line = lineCandidate;
+    if (typeof columnCandidate === 'number' && Number.isFinite(columnCandidate)) {
+      column = columnCandidate;
+    }
+  } else if (thrown != null) {
+    message = String(thrown);
+  }
+
+  return {
+    __zntcPluginFailure: true,
+    pluginName,
+    hookName,
+    message,
+    ...(file ? { file } : {}),
+    ...(line !== undefined ? { line } : {}),
+    ...(column !== undefined ? { column } : {}),
+  };
+}
+
+function pluginFailureText(failure: PluginFailureResult): string {
+  const location =
+    failure.file && failure.line !== undefined
+      ? ` (${failure.file}:${failure.line}:${failure.column ?? 0})`
+      : failure.file
+        ? ` (${failure.file})`
+        : '';
+  return `Plugin "${failure.pluginName}" failed in ${failure.hookName}: ${failure.message}${location}`;
+}
+
+function pluginFailureToDiagnostic(failure: PluginFailureResult): Diagnostic {
+  return {
+    code: 'plugin_error',
+    text: pluginFailureText(failure),
+    ...(failure.file
+      ? { location: { file: failure.file, line: failure.line, column: failure.column } }
+      : {}),
+  };
+}
+
+function isPluginFailureResult(value: unknown): value is PluginFailureResult {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as { __zntcPluginFailure?: unknown }).__zntcPluginFailure === true,
+  );
+}
+
 async function runFireAndForget<T>(
-  callbacks: Array<(arg: T) => void | Promise<void>>,
+  callbacks: Array<{ pluginName: string; callback: (arg: T) => void | Promise<void> }>,
+  hookName: string,
   arg: T,
-): Promise<void> {
-  for (const cb of callbacks) {
+): Promise<PluginFailureResult | null> {
+  let firstFailure: PluginFailureResult | null = null;
+  for (const { pluginName, callback } of callbacks) {
     try {
-      await cb(arg);
-    } catch {
-      // pass
+      await callback(arg);
+    } catch (err) {
+      firstFailure ??= normalizePluginFailure(pluginName, hookName, err);
     }
   }
+  return firstFailure;
 }
 
 /**
@@ -1190,7 +1286,14 @@ async function runFireAndForget<T>(
  * dispatcher(hookName, arg1, arg2) → result | null
  */
 function createPluginDispatcher(plugins: ZntcPlugin[]) {
-  type HookEntry = { filter: RegExp; callback: (...args: any[]) => any };
+  type HookEntry = { pluginName: string; filter: RegExp; callback: (...args: any[]) => any };
+  type PluginDispatcher = ((
+    hookName: string,
+    arg1: unknown,
+    arg2: string | null,
+  ) => Promise<unknown>) & {
+    takeLifecycleFailures(): PluginFailureResult[];
+  };
   const hooks: Record<string, HookEntry[]> = {
     resolveId: [],
     load: [],
@@ -1198,43 +1301,52 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     renderChunk: [],
     resolveContext: [],
   };
-  const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void | Promise<void>> = [];
-  const buildStartCallbacks: Array<() => void | Promise<void>> = [];
-  const buildEndCallbacks: Array<(error?: Error) => void | Promise<void>> = [];
-  const closeBundleCallbacks: Array<() => void | Promise<void>> = [];
+  const generateBundleCallbacks: Array<{
+    pluginName: string;
+    callback: (outputs: OutputFile[]) => void | Promise<void>;
+  }> = [];
+  const buildStartCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }> =
+    [];
+  const buildEndCallbacks: Array<{
+    pluginName: string;
+    callback: (error?: Error) => void | Promise<void>;
+  }> = [];
+  const closeBundleCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }> =
+    [];
   const astFunctionHooks: HookEntry[] = [];
+  const lifecycleFailures: PluginFailureResult[] = [];
 
   for (const plugin of plugins) {
     const build: PluginBuild = {
       onResolve(opts, cb) {
-        hooks.resolveId.push({ filter: opts.filter, callback: cb });
+        hooks.resolveId.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
       onLoad(opts, cb) {
-        hooks.load.push({ filter: opts.filter, callback: cb });
+        hooks.load.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
       onTransform(opts, cb) {
-        hooks.transform.push({ filter: opts.filter, callback: cb });
+        hooks.transform.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
       onRenderChunk(opts, cb) {
-        hooks.renderChunk.push({ filter: opts.filter, callback: cb });
+        hooks.renderChunk.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
       onGenerateBundle(cb) {
-        generateBundleCallbacks.push(cb);
+        generateBundleCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onBuildStart(cb) {
-        buildStartCallbacks.push(cb);
+        buildStartCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onBuildEnd(cb) {
-        buildEndCallbacks.push(cb);
+        buildEndCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onCloseBundle(cb) {
-        closeBundleCallbacks.push(cb);
+        closeBundleCallbacks.push({ pluginName: plugin.name, callback: cb });
       },
       onAstFunction(opts, cb) {
-        astFunctionHooks.push({ filter: opts.filter, callback: cb });
+        astFunctionHooks.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
       onResolveContext(opts, cb) {
-        hooks.resolveContext.push({ filter: opts.filter, callback: cb });
+        hooks.resolveContext.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
       },
     };
     plugin.setup(build);
@@ -1247,7 +1359,11 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     renderChunk: (arg1, arg2) => [arg2 ?? '', { code: arg1, chunk: arg2 }],
   };
 
-  return async function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
+  const dispatcher = async function dispatcher(
+    hookName: string,
+    arg1: unknown,
+    arg2: string | null,
+  ) {
     // astFunction: arg1이 JSON 직렬화된 FunctionInfo
     if (hookName === 'astFunction') {
       if (astFunctionHooks.length === 0) return null;
@@ -1258,8 +1374,8 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
             try {
               const result = await h.callback(info);
               if (result != null) return result;
-            } catch {
-              // 에러 시 해당 플러그인 건너뛰기
+            } catch (err) {
+              return normalizePluginFailure(h.pluginName, 'astFunction', err, info.sourcePath);
             }
           }
         }
@@ -1287,8 +1403,8 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
             try {
               const result = await h.callback(args);
               if (result != null) return result;
-            } catch {
-              // 에러 시 다음 plugin 시도
+            } catch (err) {
+              return normalizePluginFailure(h.pluginName, 'resolveContext', err, args.importer);
             }
           }
         }
@@ -1301,23 +1417,27 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
     // filter 없이 모든 callback 순차 호출 (Rollup sequential 명세). 한 plugin 실패가
     // 다른 plugin 차단 안 되도록 try/catch swallow.
     if (hookName === 'generateBundle') {
-      await runFireAndForget(generateBundleCallbacks, arg1 as OutputFile[]);
-      return null;
+      return await runFireAndForget(
+        generateBundleCallbacks,
+        'generateBundle',
+        arg1 as OutputFile[],
+      );
     }
     if (hookName === 'buildStart') {
-      await runFireAndForget(buildStartCallbacks, undefined);
-      return null;
+      return await runFireAndForget(buildStartCallbacks, 'buildStart', undefined);
     }
     if (hookName === 'buildEnd') {
       // native 측이 fatal diagnostic message 를 string 으로 forward — 빈 문자열은 정상 build.
       const msg = arg1 as string;
       const err = msg && msg.length > 0 ? new Error(msg) : undefined;
-      await runFireAndForget(buildEndCallbacks, err);
-      return null;
+      const failure = await runFireAndForget(buildEndCallbacks, 'buildEnd', err);
+      if (failure) lifecycleFailures.push(failure);
+      return failure;
     }
     if (hookName === 'closeBundle') {
-      await runFireAndForget(closeBundleCallbacks, undefined);
-      return null;
+      const failure = await runFireAndForget(closeBundleCallbacks, 'closeBundle', undefined);
+      if (failure) lifecycleFailures.push(failure);
+      return failure;
     }
 
     const hookList = hooks[hookName];
@@ -1342,8 +1462,8 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
                 changed = true;
               }
             }
-          } catch {
-            // 에러 시 해당 플러그인 건너뛰고 다음으로
+          } catch (err) {
+            return normalizePluginFailure(h.pluginName, hookName, err, arg2);
           }
         }
       }
@@ -1359,13 +1479,16 @@ function createPluginDispatcher(plugins: ZntcPlugin[]) {
         try {
           const result = await h.callback(cbArgs);
           if (result != null) return result;
-        } catch {
-          return null;
+        } catch (err) {
+          const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
+          return normalizePluginFailure(h.pluginName, hookName, err, fallbackFile);
         }
       }
     }
     return null;
-  };
+  } as PluginDispatcher;
+  dispatcher.takeLifecycleFailures = () => lifecycleFailures.splice(0);
+  return dispatcher;
 }
 
 /**
@@ -1677,11 +1800,24 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
   try {
     const result: BuildResult = await native.build(napiOptions);
+    if (dispatcher) {
+      for (const failure of dispatcher.takeLifecycleFailures()) {
+        result.errors.push(pluginFailureToDiagnostic(failure));
+      }
+    }
 
     postProcessCssOutputs(result, options);
     writeOutputFiles(result, options);
 
-    if (dispatcher) await dispatcher('closeBundle', undefined, null);
+    if (dispatcher) {
+      const closeResult = await dispatcher('closeBundle', undefined, null);
+      const failures = dispatcher.takeLifecycleFailures();
+      if (failures.length > 0) {
+        for (const failure of failures) result.errors.push(pluginFailureToDiagnostic(failure));
+      } else if (isPluginFailureResult(closeResult)) {
+        result.errors.push(pluginFailureToDiagnostic(closeResult));
+      }
+    }
     return result;
   } finally {
     cleanup();
@@ -1904,42 +2040,59 @@ export function benchmark(options: BenchmarkOptions): BenchmarkResult {
 
 type MaybePromise<T> = T | Promise<T>;
 
+export interface RollupPluginContext {
+  error(error: unknown): never;
+}
+
 export interface RollupPlugin {
   name: string;
   resolveId?(
+    this: RollupPluginContext,
     source: string,
     importer?: string | null,
   ): MaybePromise<string | null | undefined | void | { id: string; external?: boolean }>;
   load?(
+    this: RollupPluginContext,
     id: string,
   ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
   transform?(
+    this: RollupPluginContext,
     code: string,
     id: string,
   ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
   renderChunk?(
+    this: RollupPluginContext,
     code: string,
     chunk: string,
   ): MaybePromise<string | null | undefined | void | { code: string }>;
-  generateBundle?(outputs: OutputFile[]): MaybePromise<void>;
+  generateBundle?(this: RollupPluginContext, outputs: OutputFile[]): MaybePromise<void>;
   /** Bundle 시작 시 1회. esbuild `onStart` / Rollup `buildStart` 호환 (#2156).
    *  ZNTC 는 인자 없이 호출 (esbuild 스타일) — Rollup plugin 이 `options` 인자를 기대하면
-   *  plugin 자체 closure 로 받아둘 것. `this` context 는 미지원. */
-  buildStart?(): MaybePromise<void>;
+   *  plugin 자체 closure 로 받아둘 것. */
+  buildStart?(this: RollupPluginContext): MaybePromise<void>;
   /** Bundle 종료 시 1회. Rollup `buildEnd` 호환 — error 가 있으면 빌드 실패. */
-  buildEnd?(error?: Error): MaybePromise<void>;
+  buildEnd?(this: RollupPluginContext, error?: Error): MaybePromise<void>;
   /** Output 파일 write 완료 후. Rollup `closeBundle` 호환. */
-  closeBundle?(): MaybePromise<void>;
+  closeBundle?(this: RollupPluginContext): MaybePromise<void>;
+}
+
+function createRollupPluginContext(): RollupPluginContext {
+  return {
+    error(error: unknown): never {
+      throw error;
+    },
+  };
 }
 
 export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
   return {
     name: rollupPlugin.name,
     setup(build) {
+      const context = createRollupPluginContext();
       if (rollupPlugin.resolveId) {
         const hook = rollupPlugin.resolveId;
         build.onResolve({ filter: /.*/ }, async (args) => {
-          const result = await hook(args.path, args.importer);
+          const result = await hook.call(context, args.path, args.importer);
           if (result == null) return null;
           if (typeof result === 'string') return { path: result };
           if (typeof result === 'object' && 'id' in result) {
@@ -1952,7 +2105,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
       if (rollupPlugin.load) {
         const hook = rollupPlugin.load;
         build.onLoad({ filter: /.*/ }, async (args) => {
-          const result = await hook(args.path);
+          const result = await hook.call(context, args.path);
           if (result == null) return null;
           if (typeof result === 'string') return { contents: result };
           if (typeof result === 'object' && 'code' in result) {
@@ -1965,7 +2118,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
       if (rollupPlugin.transform) {
         const hook = rollupPlugin.transform;
         build.onTransform({ filter: /.*/ }, async (args) => {
-          const result = await hook(args.code, args.path);
+          const result = await hook.call(context, args.code, args.path);
           if (result == null) return null;
           if (typeof result === 'string') return { code: result };
           if (typeof result === 'object' && 'code' in result) {
@@ -1978,7 +2131,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
       if (rollupPlugin.renderChunk) {
         const hook = rollupPlugin.renderChunk;
         build.onRenderChunk({ filter: /.*/ }, async (args) => {
-          const result = await hook(args.code, args.chunk);
+          const result = await hook.call(context, args.code, args.chunk);
           if (result == null) return null;
           if (typeof result === 'string') return { code: result };
           if (typeof result === 'object' && 'code' in result) {
@@ -1991,28 +2144,28 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
       if (rollupPlugin.generateBundle) {
         const hook = rollupPlugin.generateBundle;
         build.onGenerateBundle(async (outputs) => {
-          await hook(outputs);
+          await hook.call(context, outputs);
         });
       }
 
       if (rollupPlugin.buildStart) {
         const hook = rollupPlugin.buildStart;
         build.onBuildStart(async () => {
-          await hook();
+          await hook.call(context);
         });
       }
 
       if (rollupPlugin.buildEnd) {
         const hook = rollupPlugin.buildEnd;
         build.onBuildEnd(async (err) => {
-          await hook(err);
+          await hook.call(context, err);
         });
       }
 
       if (rollupPlugin.closeBundle) {
         const hook = rollupPlugin.closeBundle;
         build.onCloseBundle(async () => {
-          await hook();
+          await hook.call(context);
         });
       }
     },
