@@ -1492,19 +1492,9 @@ const NapiPlugin = struct {
         const ctx: *CallContext = @ptrCast(@alignCast(data.?));
 
         // JS dispatcher 호출: dispatcher(hookName, arg1, arg2)
+        // HookType tag 이름이 dispatcher 가 기대하는 string 과 동일.
+        const hook_name: []const u8 = @tagName(ctx.hook);
         var hook_str: c.napi_value = undefined;
-        const hook_name: []const u8 = switch (ctx.hook) {
-            .resolveId => "resolveId",
-            .load => "load",
-            .transform => "transform",
-            .renderChunk => "renderChunk",
-            .generateBundle => "generateBundle",
-            .astFunction => "astFunction",
-            .resolveContext => "resolveContext",
-            .buildStart => "buildStart",
-            .buildEnd => "buildEnd",
-            .closeBundle => "closeBundle",
-        };
         _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
 
         var js_arg1: c.napi_value = undefined;
@@ -1862,21 +1852,6 @@ const NapiSyncPlugin = struct {
         }
     }
 
-    fn hookName(hook: NapiPlugin.HookType) []const u8 {
-        return switch (hook) {
-            .resolveId => "resolveId",
-            .load => "load",
-            .transform => "transform",
-            .renderChunk => "renderChunk",
-            .generateBundle => "generateBundle",
-            .astFunction => "astFunction",
-            .resolveContext => "resolveContext",
-            .buildStart => "buildStart",
-            .buildEnd => "buildEnd",
-            .closeBundle => "closeBundle",
-        };
-    }
-
     fn callHookFull(
         self: *NapiSyncPlugin,
         hook: NapiPlugin.HookType,
@@ -1889,7 +1864,7 @@ const NapiSyncPlugin = struct {
             return null;
         }
 
-        const hook_name = hookName(hook);
+        const hook_name = @tagName(hook);
         var hook_str: c.napi_value = undefined;
         _ = c.napi_create_string_utf8(self.env, hook_name.ptr, hook_name.len, &hook_str);
 
