@@ -22,17 +22,18 @@ const absPath = test_helpers.absPath;
 test "PluginRunner: empty plugins is no-op" {
     const runner = PluginRunner.init(&.{});
     try std.testing.expect(runner.isEmpty());
+    var hook_ctx: plugin_mod.HookContext = .{};
 
-    const resolve_result = try runner.runResolveId("foo", null, std.testing.allocator);
+    const resolve_result = try runner.runResolveId("foo", null, std.testing.allocator, &hook_ctx);
     try std.testing.expect(resolve_result == null);
 
-    const load_result = try runner.runLoad("foo.ts", std.testing.allocator);
+    const load_result = try runner.runLoad("foo.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(load_result == null);
 
-    const transform_result = try runner.runTransform("code", "id", std.testing.allocator);
+    const transform_result = try runner.runTransform("code", "id", std.testing.allocator, &hook_ctx);
     try std.testing.expect(transform_result == null);
 
-    const render_result = try runner.runRenderChunk("code", "chunk", std.testing.allocator);
+    const render_result = try runner.runRenderChunk("code", "chunk", std.testing.allocator, &hook_ctx);
     try std.testing.expect(render_result == null);
 
     runner.runGenerateBundle(&.{});
@@ -40,7 +41,7 @@ test "PluginRunner: empty plugins is no-op" {
 
 // --- resolveId 훅 테스트 ---
 
-fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
+fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     if (std.mem.eql(u8, specifier, "virtual:config")) {
         return .{ .file = .{
             .path = try allocator.dupe(u8, "/virtual/config.js"),
@@ -55,9 +56,10 @@ test "PluginRunner: resolveId first mode" {
         .{ .name = "test-resolve", .resolveId = testResolveIdHook },
     };
     const runner = PluginRunner.init(&plugins);
+    var hook_ctx: plugin_mod.HookContext = .{};
 
     // 매칭되는 specifier → non-null
-    const result = try runner.runResolveId("virtual:config", null, std.testing.allocator);
+    const result = try runner.runResolveId("virtual:config", null, std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     const path = switch (result.?) {
         .file => |f| f.path,
@@ -67,13 +69,13 @@ test "PluginRunner: resolveId first mode" {
     std.testing.allocator.free(path);
 
     // 매칭 안 되는 specifier → null (기본 resolver 사용)
-    const result2 = try runner.runResolveId("./normal", null, std.testing.allocator);
+    const result2 = try runner.runResolveId("./normal", null, std.testing.allocator, &hook_ctx);
     try std.testing.expect(result2 == null);
 }
 
 // --- load 훅 테스트 ---
 
-fn testLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.LoadResult {
+fn testLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (std.mem.endsWith(u8, path, ".custom")) {
         const contents = try allocator.dupe(u8, "export default 'custom-loaded';");
         return .{ .contents = contents };
@@ -86,24 +88,25 @@ test "PluginRunner: load first mode" {
         .{ .name = "test-load", .load = testLoadHook },
     };
     const runner = PluginRunner.init(&plugins);
+    var hook_ctx: plugin_mod.HookContext = .{};
 
-    const result = try runner.runLoad("module.custom", std.testing.allocator);
+    const result = try runner.runLoad("module.custom", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("export default 'custom-loaded';", result.?.contents);
     std.testing.allocator.free(result.?.contents);
 
     // 매칭 안 되는 확장자 → null (파일 시스템에서 읽기)
-    const result2 = try runner.runLoad("module.ts", std.testing.allocator);
+    const result2 = try runner.runLoad("module.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result2 == null);
 }
 
 // --- transform 훅 테스트 (체이닝) ---
 
-fn testTransformHookA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testTransformHookA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* A */", code }) catch return error.OutOfMemory;
 }
 
-fn testTransformHookB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testTransformHookB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* B */", code }) catch return error.OutOfMemory;
 }
 
@@ -114,7 +117,8 @@ test "PluginRunner: transform chaining" {
     };
     const runner = PluginRunner.init(&plugins);
 
-    const result = try runner.runTransform("original", "test.js", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runTransform("original", "test.js", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     // B가 A의 결과를 받으므로: "/* B *//* A */original"
     try std.testing.expectEqualStrings("/* B *//* A */original", result.?);
@@ -123,7 +127,7 @@ test "PluginRunner: transform chaining" {
 
 // --- renderChunk 훅 테스트 ---
 
-fn testRenderChunkHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testRenderChunkHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* rendered */\n", code }) catch return error.OutOfMemory;
 }
 
@@ -133,7 +137,8 @@ test "PluginRunner: renderChunk chaining" {
     };
     const runner = PluginRunner.init(&plugins);
 
-    const result = try runner.runRenderChunk("chunk code", "main", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runRenderChunk("chunk code", "main", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     try std.testing.expect(std.mem.startsWith(u8, result.?, "/* rendered */\n"));
     std.testing.allocator.free(result.?);
@@ -164,7 +169,7 @@ test "PluginRunner: generateBundle all executed" {
 
 // --- transform 훅 통합 테스트 ---
 
-fn integrationTransformHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn integrationTransformHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     // 파싱 전에 호출되므로 실행 가능한 문을 삽입 (주석은 파서가 제거)
     return std.mem.concat(allocator, u8, &.{ "var __PLUGIN_TRANSFORM__ = true;\n", code }) catch return error.OutOfMemory;
 }
@@ -195,7 +200,7 @@ test "Plugin integration: transform hook modifies output" {
     try std.testing.expect(!result.hasErrors());
 }
 
-fn transformAddsImportHook(_: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn transformAddsImportHook(_: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     if (!std.mem.endsWith(u8, id, "index.ts")) return null;
     return std.mem.concat(allocator, u8, &.{ "import './side';\n", code }) catch return error.OutOfMemory;
 }
@@ -227,7 +232,7 @@ test "Plugin integration: transform-added imports are scanned from final source 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "entry-2038") != null);
 }
 
-fn transformAddsPurePackageImportHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn transformAddsPurePackageImportHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     if (!std.mem.endsWith(u8, id, "index.ts")) return null;
     return allocator.dupe(u8,
         \\import { used } from "pure-lib-2038";
@@ -274,7 +279,7 @@ test "Plugin integration: transform-added package import feeds tree-shaking (#20
 
 var compiled_cache_transform_marker: []const u8 = "A";
 
-fn cacheSensitiveTransformHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn cacheSensitiveTransformHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     if (!std.mem.endsWith(u8, id, "index.ts")) return null;
     return std.fmt.allocPrint(
         allocator,
@@ -353,7 +358,7 @@ test "Plugin integration: transform output invalidates compiled cache (#2038)" {
 
 var compiled_cache_load_marker: []const u8 = "A";
 
-fn cacheSensitiveLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.LoadResult {
+fn cacheSensitiveLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (!std.mem.endsWith(u8, path, "index.ts")) return null;
     const contents = std.fmt.allocPrint(
         allocator,
@@ -475,11 +480,11 @@ test "Plugin integration: no plugins preserves existing behavior" {
 
 // --- 다중 플러그인 체이닝 통합 테스트 ---
 
-fn chainTransformA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn chainTransformA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "var CHAIN_A = true;\n", code }) catch return error.OutOfMemory;
 }
 
-fn chainTransformB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn chainTransformB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "var CHAIN_B = true;\n", code }) catch return error.OutOfMemory;
 }
 
@@ -513,7 +518,7 @@ test "Plugin integration: multiple plugins chain transforms" {
 
 // --- resolveId가 null 반환 시 기본 resolver fall through ---
 
-fn nullResolveHook(_: ?*anyopaque, _: []const u8, _: ?[]const u8, _: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
+fn nullResolveHook(_: ?*anyopaque, _: []const u8, _: ?[]const u8, _: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     return null;
 }
 
@@ -546,7 +551,7 @@ test "Plugin integration: resolveId null falls through to default resolver" {
 
 // --- load 훅이 null 반환 시 파일 시스템 폴백 ---
 
-fn nullLoadHook(_: ?*anyopaque, _: []const u8, _: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.LoadResult {
+fn nullLoadHook(_: ?*anyopaque, _: []const u8, _: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.LoadResult {
     return null;
 }
 
@@ -580,7 +585,7 @@ test "Plugin integration: load null falls through to filesystem" {
 var transform_all_call_count: usize = 0;
 var transform_all_user_file_seen: bool = false;
 
-fn countingTransformHook(_: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn countingTransformHook(_: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?[]const u8 {
     transform_all_call_count += 1;
     if (std.mem.indexOf(u8, id, "node_modules") == null) {
         transform_all_user_file_seen = true;
@@ -710,18 +715,18 @@ const LifecycleLog = struct {
     }
 };
 
-fn lifecycleBuildStart(_: ?*anyopaque) plugin_mod.PluginError!void {
+fn lifecycleBuildStart(_: ?*anyopaque, _: *plugin_mod.HookContext) plugin_mod.PluginError!void {
     LifecycleLog.build_start_count += 1;
     if (LifecycleLog.build_start_should_fail) return error.PluginFailed;
 }
 
-fn lifecycleBuildEnd(_: ?*anyopaque, build_error: ?*const types.BundlerDiagnostic) plugin_mod.PluginError!void {
+fn lifecycleBuildEnd(_: ?*anyopaque, build_error: ?*const types.BundlerDiagnostic, _: *plugin_mod.HookContext) plugin_mod.PluginError!void {
     LifecycleLog.build_end_count += 1;
     LifecycleLog.build_end_error_was_null = build_error == null;
     if (build_error) |d| LifecycleLog.build_end_error_code = d.code;
 }
 
-fn lifecycleCloseBundle(_: ?*anyopaque) plugin_mod.PluginError!void {
+fn lifecycleCloseBundle(_: ?*anyopaque, _: *plugin_mod.HookContext) plugin_mod.PluginError!void {
     LifecycleLog.close_bundle_count += 1;
 }
 
@@ -732,7 +737,8 @@ test "PluginRunner: buildStart 모든 plugin 순차 실행" {
         .{ .name = "p2", .buildStart = lifecycleBuildStart },
     };
     const runner = PluginRunner.init(&plugins);
-    try runner.runBuildStart();
+    var hook_ctx: plugin_mod.HookContext = .{};
+    try runner.runBuildStart(&hook_ctx);
     try std.testing.expectEqual(@as(u32, 2), LifecycleLog.build_start_count);
 }
 
@@ -744,7 +750,9 @@ test "PluginRunner: buildStart 한 plugin 실패 시 즉시 stop + 에러 전파
         .{ .name = "never", .buildStart = lifecycleBuildStart },
     };
     const runner = PluginRunner.init(&plugins);
-    try std.testing.expectError(error.PluginFailed, runner.runBuildStart());
+    var hook_ctx: plugin_mod.HookContext = .{};
+    defer hook_ctx.deinit();
+    try std.testing.expectError(error.PluginFailed, runner.runBuildStart(&hook_ctx));
     try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_start_count); // 두 번째 plugin 미호출
 }
 
@@ -768,11 +776,11 @@ test "PluginRunner: buildEnd error 인자 전달" {
     try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.unresolved_import, LifecycleLog.build_end_error_code.?);
 }
 
-fn lifecycleAlwaysFails(_: ?*anyopaque, _: ?*const types.BundlerDiagnostic) plugin_mod.PluginError!void {
+fn lifecycleAlwaysFails(_: ?*anyopaque, _: ?*const types.BundlerDiagnostic, _: *plugin_mod.HookContext) plugin_mod.PluginError!void {
     return error.PluginFailed;
 }
 
-fn lifecycleCloseBundleAlwaysFails(_: ?*anyopaque) plugin_mod.PluginError!void {
+fn lifecycleCloseBundleAlwaysFails(_: ?*anyopaque, _: *plugin_mod.HookContext) plugin_mod.PluginError!void {
     return error.PluginFailed;
 }
 

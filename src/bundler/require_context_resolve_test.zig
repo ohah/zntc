@@ -61,6 +61,7 @@ fn captureCallback(
     filter_flags: ?[]const u8,
     importer: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     RecordedCall.call_count += 1;
     RecordedCall.dir_len = @min(dir.len, RecordedCall.dir_buf.len);
@@ -82,6 +83,7 @@ fn matchingCallback(
     _: ?[]const u8,
     _: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     // contract: outer slice + inner string 모두 allocator 소유 (graph 가 free)
     const result = try allocator.alloc([]const u8, 3);
@@ -99,6 +101,7 @@ fn nullCallback(
     _: ?[]const u8,
     _: []const u8,
     _: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     return null;
 }
@@ -111,6 +114,7 @@ fn errorCallback(
     _: ?[]const u8,
     _: []const u8,
     _: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) PluginError!?[]const []const u8 {
     return error.PluginFailed;
 }
@@ -123,14 +127,16 @@ fn freeMatches(alloc: std.mem.Allocator, matches: []const []const u8) void {
 
 test "runResolveContext: empty plugins → null" {
     const runner = PluginRunner.init(&.{});
-    const result = try runner.runResolveContext("./pages", true, null, null, "/tmp/foo.ts", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runResolveContext("./pages", true, null, null, "/tmp/foo.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result == null);
 }
 
 test "runResolveContext: plugin without hook → null" {
     const plugins = [_]Plugin{.{ .name = "noop" }};
     const runner = PluginRunner.init(&plugins);
-    const result = try runner.runResolveContext("./pages", true, null, null, "/tmp/foo.ts", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runResolveContext("./pages", true, null, null, "/tmp/foo.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result == null);
 }
 
@@ -138,7 +144,8 @@ test "runResolveContext: hook called with all args propagated" {
     RecordedCall.reset();
     const plugins = [_]Plugin{.{ .name = "capture", .resolveContext = captureCallback }};
     const runner = PluginRunner.init(&plugins);
-    const result = try runner.runResolveContext("./app", true, "\\.tsx?$", "i", "/proj/index.ts", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runResolveContext("./app", true, "\\.tsx?$", "i", "/proj/index.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     defer freeMatches(std.testing.allocator, result.?);
 
@@ -157,7 +164,8 @@ test "runResolveContext: first non-null wins (multiple plugins)" {
         .{ .name = "should-not-call", .resolveContext = matchingCallback },
     };
     const runner = PluginRunner.init(&plugins);
-    const result = try runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     defer freeMatches(std.testing.allocator, result.?);
     try std.testing.expectEqual(@as(usize, 3), result.?.len);
@@ -169,7 +177,8 @@ test "runResolveContext: all plugins null → null" {
         .{ .name = "null2", .resolveContext = nullCallback },
     };
     const runner = PluginRunner.init(&plugins);
-    const result = try runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result == null);
 }
 
@@ -177,7 +186,8 @@ test "runResolveContext: plugin returns empty slice (matched 0 files) — valid"
     RecordedCall.reset();
     const plugins = [_]Plugin{.{ .name = "empty", .resolveContext = captureCallback }};
     const runner = PluginRunner.init(&plugins);
-    const result = try runner.runResolveContext("./empty-dir", true, null, null, "/proj/index.ts", std.testing.allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try runner.runResolveContext("./empty-dir", true, null, null, "/proj/index.ts", std.testing.allocator, &hook_ctx);
     try std.testing.expect(result != null);
     defer freeMatches(std.testing.allocator, result.?);
     try std.testing.expectEqual(@as(usize, 0), result.?.len);
@@ -186,9 +196,10 @@ test "runResolveContext: plugin returns empty slice (matched 0 files) — valid"
 test "runResolveContext: plugin error propagated" {
     const plugins = [_]Plugin{.{ .name = "err", .resolveContext = errorCallback }};
     const runner = PluginRunner.init(&plugins);
+    var hook_ctx: plugin_mod.HookContext = .{};
     try std.testing.expectError(
         error.PluginFailed,
-        runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator),
+        runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator, &hook_ctx),
     );
 }
 

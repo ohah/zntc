@@ -882,6 +882,7 @@ fn countedResolveHook(
     specifier: []const u8,
     _: ?[]const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     const counter: *ResolveCounter = @ptrCast(@alignCast(ctx.?));
     counter.count += 1;

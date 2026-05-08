@@ -4,10 +4,12 @@
 
 const std = @import("std");
 const codegen_plugin = @import("rn_codegen_plugin.zig");
+const plugin_mod = @import("../../bundler/plugin.zig");
 
 fn callTransform(alloc: std.mem.Allocator, code: []const u8, id: []const u8) !?[]const u8 {
     const plugin = codegen_plugin.plugin();
-    return plugin.transform.?(plugin.context, code, id, alloc);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    return plugin.transform.?(plugin.context, code, id, alloc, &hook_ctx);
 }
 
 fn expectContains(haystack: []const u8, needle: []const u8) !void {

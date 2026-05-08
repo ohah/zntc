@@ -1824,9 +1824,10 @@ pub const ModuleGraph = struct {
 
                 if (plugin_runner) |runner| {
                     if (self.shouldRunResolveId(record.specifier)) {
-                        const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
+                        var hook_ctx: plugin_mod.HookContext = .{};
+                        const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator, &hook_ctx) catch |err| switch (err) {
                             error.PluginFailed => {
-                                self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module_path, record.span, .resolve);
+                                self.addPluginFailureDiag(hook_ctx.failure, module_path, record.span, .resolve);
                                 results[rec_i] = .{ .is_error = true, .skipped = !should_link };
                                 continue;
                             },
@@ -1886,9 +1887,10 @@ pub const ModuleGraph = struct {
                     module.state = .ready;
                     return;
                 };
-                const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
+                var hook_ctx: plugin_mod.HookContext = .{};
+                const load_result = runner.runLoad(module.path, tmp_arena.allocator(), &hook_ctx) catch |err| switch (err) {
                     error.PluginFailed => {
-                        self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module.path, Span.EMPTY, .resolve);
+                        self.addPluginFailureDiag(hook_ctx.failure, module.path, Span.EMPTY, .resolve);
                         module_mod.destroyParseArena(self.allocator, tmp_arena);
                         module.state = .ready;
                         return;
@@ -1901,7 +1903,7 @@ pub const ModuleGraph = struct {
                 };
                 if (load_result) |plugin_result| {
                     plugin_load_applied = true;
-                    const load_source_maps = plugin_mod.takeLastTransformSourceMaps() orelse &.{};
+                    const load_source_maps = hook_ctx.source_maps orelse &.{};
                     // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
                     // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
                     // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
@@ -2105,9 +2107,10 @@ pub const ModuleGraph = struct {
         var plugin_transform_applied = false;
         if (plugin_runner) |runner| {
             if (self.has_transform_plugins) {
-                const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
+                var hook_ctx: plugin_mod.HookContext = .{};
+                const transform_result = runner.runTransform(module.source, module.path, arena_alloc, &hook_ctx) catch |err| switch (err) {
                     error.PluginFailed => {
-                        self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module.path, Span.EMPTY, .transform);
+                        self.addPluginFailureDiag(hook_ctx.failure, module.path, Span.EMPTY, .transform);
                         module.state = .ready;
                         return;
                     },
@@ -2117,7 +2120,7 @@ pub const ModuleGraph = struct {
                     },
                 };
                 if (transform_result) |result| {
-                    if (plugin_mod.takeLastTransformSourceMaps()) |maps| {
+                    if (hook_ctx.source_maps) |maps| {
                         if (!self.validatePluginSourceMaps(maps, module.path, Span.EMPTY, .transform, "transform")) {
                             module.state = .ready;
                             return;
@@ -3201,9 +3204,10 @@ pub const ModuleGraph = struct {
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
             if (plugin_runner) |runner| {
                 if (self.shouldRunResolveId(record.specifier)) {
-                    const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
+                    var hook_ctx: plugin_mod.HookContext = .{};
+                    const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator, &hook_ctx) catch |err| switch (err) {
                         error.PluginFailed => {
-                            self.addPluginFailureDiag(plugin_mod.takeLastPluginFailure(), module_path, record.span, .resolve);
+                            self.addPluginFailureDiag(hook_ctx.failure, module_path, record.span, .resolve);
                             return;
                         },
                         error.OutOfMemory => return error.OutOfMemory,
@@ -4618,6 +4622,8 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
 
         // Plugin 호출
         if (plugin_runner) |runner| {
+            var hook_ctx: plugin_mod.HookContext = .{};
+            defer hook_ctx.deinit();
             const matches = runner.runResolveContext(
                 record.specifier,
                 record.context_recursive,
@@ -4625,6 +4631,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
                 record.context_filter_flags,
                 module_path,
                 self.allocator,
+                &hook_ctx,
             ) catch null;
             if (matches) |m| {
                 record.context_matches = m;

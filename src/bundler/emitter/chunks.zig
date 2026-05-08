@@ -529,7 +529,9 @@ pub fn emitChunks(
             const runner = plugin_mod.PluginRunner.init(options.plugins);
             var rc_stem_buf: [128]u8 = undefined;
             const rc_chunk_name = chunkPlaceholderStem(chunk, &rc_stem_buf, options);
-            const chunk_rc_result = runner.runRenderChunk(chunk_output.items, rc_chunk_name, allocator) catch |err| switch (err) {
+            var hook_ctx: plugin_mod.HookContext = .{};
+            defer hook_ctx.deinit();
+            const chunk_rc_result = runner.runRenderChunk(chunk_output.items, rc_chunk_name, allocator, &hook_ctx) catch |err| switch (err) {
                 error.PluginFailed => null,
                 error.OutOfMemory => return error.OutOfMemory,
             };

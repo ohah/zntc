@@ -384,6 +384,7 @@ fn resolveIdHook(
     specifier: []const u8,
     _: ?[]const u8,
     _: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     if (!isVirtualId(specifier)) return null;
     const short = specifier[ID_PREFIX.len..];
@@ -395,6 +396,7 @@ fn loadHook(
     ctx: ?*anyopaque,
     path: []const u8,
     allocator: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
 ) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (!isVirtualId(path)) return null;
     const short = path[ID_PREFIX.len..];
@@ -608,21 +610,24 @@ test "smoke: 모든 MODULES 의 helper 가 source 에 export 됨" {
 test "loadHook: virtual ID → source 반환" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
-    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/generator", allocator)).?;
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/generator", allocator, &hook_ctx)).?;
     defer allocator.free(result.contents);
     try std.testing.expect(std.mem.indexOf(u8, result.contents, "__generator") != null);
 }
 
 test "loadHook: 비 virtual ID 는 null" {
     const allocator = std.testing.allocator;
-    const result = try loadHook(null, "/some/path.ts", allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try loadHook(null, "/some/path.ts", allocator, &hook_ctx);
     try std.testing.expect(result == null);
 }
 
 test "loadHook: 미등록 short 는 null" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
-    const result = try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/no-such-helper", allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/no-such-helper", allocator, &hook_ctx);
     try std.testing.expect(result == null);
 }
 
@@ -630,21 +635,23 @@ test "loadHook: ctx 의 minify 옵션이 source 에 반영 (alias export)" {
     // ctx 캐스트 회귀 방지 — ctx 가 무시되면 default_opts 사용해서 alias 가 없을 것.
     const allocator = std.testing.allocator;
     const opts = SourceOptions{ .minify = true };
-    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/generator", allocator)).?;
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/generator", allocator, &hook_ctx)).?;
     defer allocator.free(result.contents);
     try std.testing.expect(std.mem.indexOf(u8, result.contents, "$gn as __generator") != null);
 }
 
 test "resolveIdHook: virtual specifier 만 가로챔" {
     const allocator = std.testing.allocator;
-    const r1 = try resolveIdHook(null, "\x00zntc:runtime/generator", null, allocator);
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const r1 = try resolveIdHook(null, "\x00zntc:runtime/generator", null, allocator, &hook_ctx);
     try std.testing.expect(r1 != null);
     try std.testing.expect(r1.? == .virtual);
 
-    const r2 = try resolveIdHook(null, "./local.ts", null, allocator);
+    const r2 = try resolveIdHook(null, "./local.ts", null, allocator, &hook_ctx);
     try std.testing.expect(r2 == null);
 
-    const r3 = try resolveIdHook(null, "\x00zntc:runtime/no-such-helper", null, allocator);
+    const r3 = try resolveIdHook(null, "\x00zntc:runtime/no-such-helper", null, allocator, &hook_ctx);
     try std.testing.expect(r3 == null);
 }
 
@@ -655,10 +662,11 @@ test "makePlugin: hook 호출이 ctx 통해 동작" {
     const p = makePlugin(&opts);
     try std.testing.expectEqualStrings("zntc:runtime-helpers", p.name);
 
-    const resolved = (try p.resolveId.?(p.context, "\x00zntc:runtime/generator", null, allocator)).?;
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const resolved = (try p.resolveId.?(p.context, "\x00zntc:runtime/generator", null, allocator, &hook_ctx)).?;
     try std.testing.expect(resolved == .virtual);
 
-    const loaded = (try p.load.?(p.context, "\x00zntc:runtime/generator", allocator)).?;
+    const loaded = (try p.load.?(p.context, "\x00zntc:runtime/generator", allocator, &hook_ctx)).?;
     defer allocator.free(loaded.contents);
     try std.testing.expect(std.mem.indexOf(u8, loaded.contents, "__generator") != null);
 }

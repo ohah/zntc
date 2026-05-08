@@ -101,29 +101,28 @@ pub const PluginFailure = struct {
     }
 };
 
-threadlocal var last_plugin_failure: ?PluginFailure = null;
-threadlocal var last_transform_source_maps: ?[]const []const u8 = null;
+/// fallible plugin hook 의 out-param. 호출자가 stack 에 만들어 hook 으로 전달하면
+/// hook 이 실패 metadata 와 (load/transform 의 경우) source map chain 을 채운다.
+/// 이전에는 threadlocal 두 개로 같은 데이터를 흘렸지만 thread-safety/생명주기/계약
+/// 추적 모두 명시 out-param 이 깔끔.
+pub const HookContext = struct {
+    /// hook 이 `error.PluginFailed` 를 반환할 때 metadata 가 들어간다.
+    /// 성공 path 에서는 null. caller 가 consume (addPluginFailureDiag) 또는
+    /// `deinit()` 으로 해제 책임.
+    failure: ?PluginFailure = null,
+    /// `load` / `transform` 이 반환한 source map JSON chain.
+    /// 다른 hook 은 사용 안 함. caller 가 free 책임.
+    source_maps: ?[]const []const u8 = null,
 
-pub fn setLastPluginFailure(failure: PluginFailure) void {
-    if (last_plugin_failure) |old| old.deinit();
-    last_plugin_failure = failure;
-}
-
-pub fn takeLastPluginFailure() ?PluginFailure {
-    const failure = last_plugin_failure;
-    last_plugin_failure = null;
-    return failure;
-}
-
-pub fn setLastTransformSourceMaps(source_maps: []const []const u8) void {
-    last_transform_source_maps = source_maps;
-}
-
-pub fn takeLastTransformSourceMaps() ?[]const []const u8 {
-    const source_maps = last_transform_source_maps;
-    last_transform_source_maps = null;
-    return source_maps;
-}
+    /// 사용 안 하는 failure metadata 를 일괄 정리. 이미 consume 된 경우 no-op.
+    /// swallow 경로 (lifecycle hook, fallback null path 등) 에서 `defer ctx.deinit()` 으로 사용.
+    pub fn deinit(self: *HookContext) void {
+        if (self.failure) |f| {
+            f.deinit();
+            self.failure = null;
+        }
+    }
+};
 
 /// Plugin resolveId 응답의 통합 모델 (#1885).
 ///
@@ -173,6 +172,7 @@ pub const ResolveContextFn = ?*const fn (
     filter_flags: ?[]const u8,
     importer: []const u8,
     allocator: std.mem.Allocator,
+    hook_ctx: *HookContext,
 ) PluginError!?[]const []const u8;
 
 /// Rollup 호환 플러그인 인터페이스. 각 훅은 optional 함수 포인터 — null이면 해당 훅을 구현하지 않음.
@@ -184,37 +184,40 @@ pub const Plugin = struct {
 
     /// 모듈 경로 해석 커스텀 (alias, virtual module).
     /// non-null 반환 시 기본 resolver를 건너뜀.
-    resolveId: ?*const fn (ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolvedModule = null,
+    /// 실패 시 `hook_ctx.failure` 채우고 `error.PluginFailed`.
+    resolveId: ?*const fn (ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?ResolvedModule = null,
 
     /// 모듈 내용 로딩 (virtual module, 커스텀 로더).
     /// non-null 반환 시 파일 시스템 읽기를 건너뜀.
     /// `LoadResult.loader` 를 non-null 로 반환하면 graph 가 module loader 를 그 값으로 override
     /// (확장자 기반 추론 무시) — esbuild `onLoad` callback 의 `loader: 'text' | 'binary' | ...`
     /// 와 동일 의미. (#2157)
-    load: ?*const fn (ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) PluginError!?LoadResult = null,
+    /// `hook_ctx.source_maps` 를 채워 source map chain 전달 가능 (#1902).
+    load: ?*const fn (ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?LoadResult = null,
 
     /// 코드 변환 (codegen 직후, CJS 래핑 전).
     /// non-null 반환 시 원본 코드를 반환값으로 교체.
-    transform: ?*const fn (ctx: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
+    /// `hook_ctx.source_maps` 를 채워 source map chain 전달 가능 (#1902).
+    transform: ?*const fn (ctx: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?[]const u8 = null,
 
     /// 청크 코드 후처리 (청크 완성 후, footer 전).
     /// non-null 반환 시 청크 코드를 반환값으로 교체.
-    renderChunk: ?*const fn (ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
+    renderChunk: ?*const fn (ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?[]const u8 = null,
 
     /// 번들 생성 완료 알림. 모든 플러그인에 호출됨.
     generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile) void = null,
 
     /// bundle 시작 시 1회 호출. esbuild `onStart`, Rollup/Vite/rolldown `buildStart` 동일.
     /// 옵션 인자는 Zig 측에서 안 넘김 — JS 어댑터가 자체 context 로 forward.
-    buildStart: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
+    buildStart: ?*const fn (ctx: ?*anyopaque, hook_ctx: *HookContext) PluginError!void = null,
 
     /// bundle 종료 시 1회 호출. 성공/실패 모두 dispatch. 실패 시 fatal diagnostic 첫 항목 전달.
     /// esbuild `onEnd`, Rollup/Vite/rolldown `buildEnd` 동일.
-    buildEnd: ?*const fn (ctx: ?*anyopaque, build_error: ?*const types.BundlerDiagnostic) PluginError!void = null,
+    buildEnd: ?*const fn (ctx: ?*anyopaque, build_error: ?*const types.BundlerDiagnostic, hook_ctx: *HookContext) PluginError!void = null,
 
     /// write 완료 후 1회 호출. watch 모드면 매 rebuild 마다 재호출.
     /// Rollup/Vite/rolldown `closeBundle` 동일. esbuild 는 `onDispose` 라 명명 다름.
-    closeBundle: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
+    closeBundle: ?*const fn (ctx: ?*anyopaque, hook_ctx: *HookContext) PluginError!void = null,
 
     /// `require.context(dir, recursive, filter)` 매칭 결과 주입 (#1579 Phase 2).
     /// ZNTC 자체 regex executor 가 없어서 (#1771) host runtime 의 RegExp 에 위임.
@@ -310,15 +313,17 @@ pub const PluginRunner = struct {
 
     /// resolveId: first 모드 — 첫 번째 non-null 반환값 사용.
     /// 모든 플러그인이 null을 반환하면 null (기본 resolver 사용).
+    /// 실패 시 hook 이 `hook_ctx.failure` 를 채우고 `error.PluginFailed`.
     pub fn runResolveId(
         self: *const PluginRunner,
         specifier: []const u8,
         importer: ?[]const u8,
         allocator: std.mem.Allocator,
+        hook_ctx: *HookContext,
     ) PluginError!?ResolvedModule {
         for (self.plugins) |p| {
             if (p.resolveId) |hook| {
-                if (try hook(p.context, specifier, importer, allocator)) |result| {
+                if (try hook(p.context, specifier, importer, allocator, hook_ctx)) |result| {
                     return result;
                 }
             }
@@ -336,10 +341,11 @@ pub const PluginRunner = struct {
         filter_flags: ?[]const u8,
         importer: []const u8,
         allocator: std.mem.Allocator,
+        hook_ctx: *HookContext,
     ) PluginError!?[]const []const u8 {
         for (self.plugins) |p| {
             if (p.resolveContext) |hook| {
-                if (try hook(p.context, dir, recursive, filter_pattern, filter_flags, importer, allocator)) |result| {
+                if (try hook(p.context, dir, recursive, filter_pattern, filter_flags, importer, allocator, hook_ctx)) |result| {
                     return result;
                 }
             }
@@ -349,15 +355,16 @@ pub const PluginRunner = struct {
 
     /// load: first 모드 — 첫 번째 non-null 반환값 사용.
     /// 모든 플러그인이 null을 반환하면 null (파일 시스템에서 읽기).
+    /// 성공 시 `hook_ctx.source_maps` 에 plugin 이 채운 source map chain 이 들어 있다.
     pub fn runLoad(
         self: *const PluginRunner,
         path: []const u8,
         allocator: std.mem.Allocator,
+        hook_ctx: *HookContext,
     ) PluginError!?LoadResult {
-        last_transform_source_maps = null;
         for (self.plugins) |p| {
             if (p.load) |hook| {
-                if (try hook(p.context, path, allocator)) |result| {
+                if (try hook(p.context, path, allocator, hook_ctx)) |result| {
                     return result;
                 }
             }
@@ -368,13 +375,14 @@ pub const PluginRunner = struct {
     /// transform: 순차 체이닝 — 이전 플러그인 출력이 다음 플러그인 입력.
     /// 체이닝 중간 결과는 free. 최종 결과는 allocator 소유.
     /// 아무 플러그인도 변환하지 않으면 null 반환.
+    /// 체인 안에서 각 plugin 이 채운 source maps 를 모아 `hook_ctx.source_maps` 에 합친다.
     pub fn runTransform(
         self: *const PluginRunner,
         code: []const u8,
         id: []const u8,
         allocator: std.mem.Allocator,
+        hook_ctx: *HookContext,
     ) PluginError!?[]const u8 {
-        last_transform_source_maps = null;
         var source_maps: std.ArrayList([]const u8) = .empty;
         defer source_maps.deinit(allocator);
 
@@ -382,18 +390,26 @@ pub const PluginRunner = struct {
         for (self.plugins) |p| {
             if (p.transform) |hook| {
                 const input = current orelse code;
-                if (try hook(p.context, input, id, allocator)) |result| {
-                    if (takeLastTransformSourceMaps()) |maps| {
+                // 각 plugin 별 fresh inner_ctx — source_maps 는 chain 에서 누적, failure 는
+                // 첫 실패 시 outer 로 옮긴다. plugin hook 이 failure 를 read 하는 contract 는
+                // 없으므로 hook_ctx.failure 시드 불필요.
+                var inner_ctx: HookContext = .{};
+                const result = hook(p.context, input, id, allocator, &inner_ctx) catch |err| {
+                    hook_ctx.failure = inner_ctx.failure;
+                    return err;
+                };
+                if (result) |r| {
+                    if (inner_ctx.source_maps) |maps| {
                         try source_maps.appendSlice(allocator, maps);
                     }
                     // 이전 체이닝 결과가 있으면 해제 (원본 code는 caller 소유이므로 건드리지 않음)
                     if (current) |prev| allocator.free(prev);
-                    current = result;
+                    current = r;
                 }
             }
         }
         if (source_maps.items.len > 0) {
-            setLastTransformSourceMaps(try source_maps.toOwnedSlice(allocator));
+            hook_ctx.source_maps = try source_maps.toOwnedSlice(allocator);
         }
         return current;
     }
@@ -405,12 +421,13 @@ pub const PluginRunner = struct {
         code: []const u8,
         chunk_name: []const u8,
         allocator: std.mem.Allocator,
+        hook_ctx: *HookContext,
     ) PluginError!?[]const u8 {
         var current: ?[]const u8 = null;
         for (self.plugins) |p| {
             if (p.renderChunk) |hook| {
                 const input = current orelse code;
-                if (try hook(p.context, input, chunk_name, allocator)) |result| {
+                if (try hook(p.context, input, chunk_name, allocator, hook_ctx)) |result| {
                     if (current) |prev| allocator.free(prev);
                     current = result;
                 }
@@ -433,9 +450,9 @@ pub const PluginRunner = struct {
 
     /// buildStart: 모든 플러그인 실행. 한 plugin 이 실패하면 즉시 stop + 에러 전파.
     /// bundle 시작 직후 1회만 호출.
-    pub fn runBuildStart(self: *const PluginRunner) PluginError!void {
+    pub fn runBuildStart(self: *const PluginRunner, hook_ctx: *HookContext) PluginError!void {
         for (self.plugins) |p| {
-            if (p.buildStart) |hook| try hook(p.context);
+            if (p.buildStart) |hook| try hook(p.context, hook_ctx);
         }
     }
 
@@ -447,7 +464,9 @@ pub const PluginRunner = struct {
     ) void {
         for (self.plugins) |p| {
             if (p.buildEnd) |hook| {
-                hook(p.context, build_error) catch {};
+                var hook_ctx: HookContext = .{};
+                defer hook_ctx.deinit();
+                hook(p.context, build_error, &hook_ctx) catch {};
             }
         }
     }
@@ -457,7 +476,9 @@ pub const PluginRunner = struct {
     pub fn runCloseBundle(self: *const PluginRunner) void {
         for (self.plugins) |p| {
             if (p.closeBundle) |hook| {
-                hook(p.context) catch {};
+                var hook_ctx: HookContext = .{};
+                defer hook_ctx.deinit();
+                hook(p.context, &hook_ctx) catch {};
             }
         }
     }

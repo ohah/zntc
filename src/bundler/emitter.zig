@@ -898,7 +898,9 @@ pub fn emitWithTreeShaking(
     // Plugin: renderChunk 훅 — 단일 파일 모드에서도 적용
     if (options.plugins.len > 0) {
         const runner = plugin_mod.PluginRunner.init(options.plugins);
-        const rc_result = runner.runRenderChunk(output.items, "bundle", allocator) catch |err| switch (err) {
+        var hook_ctx: plugin_mod.HookContext = .{};
+        defer hook_ctx.deinit();
+        const rc_result = runner.runRenderChunk(output.items, "bundle", allocator, &hook_ctx) catch |err| switch (err) {
             error.PluginFailed => null,
             error.OutOfMemory => return error.OutOfMemory,
         };
