@@ -13,8 +13,8 @@
   "types": "dist/wasm/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/wasm/index.d.ts"
+      "types": "./dist/wasm/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./zntc.wasm": "./zntc.wasm",
     "./zntc-bundler.wasm": "./zntc-bundler.wasm"
