@@ -9,7 +9,13 @@
 //! - 소스맵 V3: VLQ 인코딩 + JSON 출력 (D046)
 
 pub const codegen = @import("codegen.zig");
+pub const options = @import("options.zig");
 pub const Codegen = codegen.Codegen;
+pub const CodegenOptions = options.CodegenOptions;
+pub const IndentChar = options.IndentChar;
+pub const JsxRuntime = options.JsxRuntime;
+pub const ModuleFormat = options.ModuleFormat;
+pub const Platform = options.Platform;
 pub const QuoteStyle = codegen.QuoteStyle;
 pub const sourcemap = @import("sourcemap.zig");
 pub const SourceMapBuilder = sourcemap.SourceMapBuilder;
@@ -20,6 +26,7 @@ pub const unified_mangler = @import("unified_mangler.zig");
 
 test {
     _ = codegen;
+    _ = options;
     _ = sourcemap;
     _ = function_map;
     _ = mangler;
