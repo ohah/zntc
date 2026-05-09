@@ -22,7 +22,7 @@
   },
   "scripts": {
     "build:js": "bun build src/index.ts src/cli.ts --outdir dist --format esm --target node",
-    "build:dts": "bun x tsc --emitDeclarationOnly",
+    "build:dts": "bun x tsc -b",
     "build": "bun run build:js && bun run build:dts",
     "test": "bun test --timeout 10000"
   },
