@@ -63,6 +63,22 @@ VSCode 의 `typescript.tsserver.experimental.useTsgo: true` 옵션은 Go 로 재
 
 incremental cache (`<pkg>/.tsbuildinfo`) 가 활성화되어 있어 두 번째 호출부터 ~50ms.
 
+## Contributor 주의: `isolatedDeclarations`
+
+PR #2819 부터 `tsconfig.base.json` 에 `isolatedDeclarations: true` 활성화. **새로 추가하는 export 는 명시 타입 필수**:
+
+```ts
+// ❌ 빌드 깨짐 (TS9008/TS9010/TS9017)
+export function helper() { return 42; }
+export const opts = { foo: 'bar' };
+
+// ✅ 명시 타입
+export function helper(): number { return 42; }
+export const opts: { foo: string } = { foo: 'bar' };
+```
+
+이유: `isolatedDeclarations` 가 켜지면 외부 transformer (oxc/swc/bun) 가 TS inference 없이 dts 단독 emit 가능 → emit 가속 + future migration 옵션. 단 export 의 모든 타입을 source 가 직접 명시해야 함.
+
 ## 관련 PR
 
 - TS Project References Phase 1 (#2805): server/core composite

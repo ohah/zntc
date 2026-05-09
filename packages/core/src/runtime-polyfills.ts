@@ -110,7 +110,7 @@ export const __runtimePolyfillTestHooks = {
 
 /** @internal — Zig 매핑 테이블과의 sync 검증용. 외부 사용자는 사용 금지. */
 export const __runtimePolyfillTestInternals = {
-  get featureModules(): typeof RUNTIME_POLYFILL_FEATURE_MODULES {
+  get featureModules(): Readonly<typeof RUNTIME_POLYFILL_FEATURE_MODULES> {
     return RUNTIME_POLYFILL_FEATURE_MODULES;
   },
 };
