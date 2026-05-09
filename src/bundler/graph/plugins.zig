@@ -1,5 +1,28 @@
+const std = @import("std");
+const types = @import("../types.zig");
+const ModuleType = types.ModuleType;
+const module_mod = @import("../module.zig");
+const Module = module_mod.Module;
+const Span = @import("../../lexer/token.zig").Span;
 const plugin_mod = @import("../plugin.zig");
 const runtime_helper_modules = @import("../../runtime_helper_modules.zig");
+const graph_assets = @import("assets.zig");
+const graph_diagnostics = @import("diagnostics.zig");
+const graph_parse_helpers = @import("parse_helpers.zig");
+const assetSourceFromBytes = graph_assets.sourceFromBytes;
+const moduleTypeForLoader = graph_parse_helpers.moduleTypeForLoader;
+
+pub const LoadHookResult = enum {
+    skipped,
+    applied,
+    done,
+};
+
+pub const TransformHookResult = enum {
+    skipped,
+    applied,
+    done,
+};
 
 /// `plugins_with_helpers` lazy init: prepend ZNTC builtin plugins such as runtime
 /// helper modules and RN codegen before user plugins.
@@ -51,4 +74,114 @@ pub fn shouldRunResolveId(self: anytype, specifier: []const u8) bool {
 
 pub fn shouldRunLoad(self: anytype, path: []const u8) bool {
     return self.has_user_load_plugins or runtime_helper_modules.isVirtualId(path);
+}
+
+pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.PluginRunner) LoadHookResult {
+    const plugin_runner = runner orelse return .skipped;
+    if (!shouldRunLoad(self, module.path)) return .skipped;
+
+    // load 결과를 실제 모듈 소스로 채택하기 전까지는 임시 arena가 소유한다.
+    const tmp_arena = module_mod.createParseArena(self.allocator) orelse {
+        module.state = .ready;
+        return .done;
+    };
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const load_result = plugin_runner.runLoad(module.path, tmp_arena.allocator(), &hook_ctx) catch |err| switch (err) {
+        error.PluginFailed => {
+            graph_diagnostics.addPluginFailureDiag(self, hook_ctx.failure, module.path, Span.EMPTY, .resolve);
+            module_mod.destroyParseArena(self.allocator, tmp_arena);
+            module.state = .ready;
+            return .done;
+        },
+        error.OutOfMemory => {
+            module_mod.destroyParseArena(self.allocator, tmp_arena);
+            module.state = .ready;
+            return .done;
+        },
+    };
+
+    if (load_result) |plugin_result| {
+        module.parse_arena = tmp_arena;
+        const arena_alloc = tmp_arena.allocator();
+        const load_source_maps = hook_ctx.source_maps orelse &.{};
+        if (load_source_maps.len > 0) {
+            if (!graph_diagnostics.validatePluginSourceMaps(self, load_source_maps, module.path, Span.EMPTY, .transform, "load")) {
+                module_mod.destroyParseArena(self.allocator, tmp_arena);
+                module.parse_arena = null;
+                module.state = .ready;
+                return .done;
+            }
+            module.plugin_source_maps = load_source_maps;
+        }
+
+        if (plugin_result.loader) |loader_override| {
+            module.loader = loader_override;
+            module.module_type = plugin_result.module_type orelse
+                moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
+            if (assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path, self.transform_options_base.minify_whitespace)) |expr| {
+                module.source = expr;
+                module.module_type = .js;
+                module.exports_kind = .commonjs;
+                module.wrap_kind = .cjs;
+                module.side_effects = false;
+                module.state = .ready;
+                return .done;
+            }
+            // 여기서 값 표현식으로 낮출 수 없는 loader는 JS 파이프라인으로 계속 진행한다.
+            module.source = plugin_result.contents;
+        } else {
+            module.loader = .javascript;
+            module.module_type = .js;
+            module.source = plugin_result.contents;
+        }
+        return .applied;
+    }
+
+    module_mod.destroyParseArena(self.allocator, tmp_arena);
+    return .skipped;
+}
+
+pub fn runTransformForModule(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    runner: ?plugin_mod.PluginRunner,
+) TransformHookResult {
+    const plugin_runner = runner orelse return .skipped;
+    if (!self.has_transform_plugins) return .skipped;
+
+    var hook_ctx: plugin_mod.HookContext = .{};
+    const transform_result = plugin_runner.runTransform(module.source, module.path, arena_alloc, &hook_ctx) catch |err| switch (err) {
+        error.PluginFailed => {
+            graph_diagnostics.addPluginFailureDiag(self, hook_ctx.failure, module.path, Span.EMPTY, .transform);
+            module.state = .ready;
+            return .done;
+        },
+        error.OutOfMemory => {
+            module.state = .ready;
+            return .done;
+        },
+    };
+    if (transform_result) |result| {
+        if (hook_ctx.source_maps) |maps| {
+            if (!graph_diagnostics.validatePluginSourceMaps(self, maps, module.path, Span.EMPTY, .transform, "transform")) {
+                module.state = .ready;
+                return .done;
+            }
+            if (module.plugin_source_maps.len > 0) {
+                module.plugin_source_maps = std.mem.concat(arena_alloc, []const u8, &.{
+                    module.plugin_source_maps,
+                    maps,
+                }) catch {
+                    module.state = .ready;
+                    return .done;
+                };
+            } else {
+                module.plugin_source_maps = maps;
+            }
+        }
+        module.source = result;
+        return .applied;
+    }
+    return .skipped;
 }

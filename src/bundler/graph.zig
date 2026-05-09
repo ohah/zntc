@@ -59,7 +59,6 @@ pub const ParseAccessor = phase_mod.ParseAccessor;
 pub const ResolveAccessor = phase_mod.ResolveAccessor;
 pub const LinkAccessor = phase_mod.LinkAccessor;
 const graph_assets = @import("graph/assets.zig");
-const assetSourceFromBytes = graph_assets.sourceFromBytes;
 const moduleReadsSourceForAsset = graph_assets.loaderReadsSource;
 const graph_transform_prepass = @import("graph/transform_prepass.zig");
 const graph_synthetic_imports = @import("graph/synthetic_imports.zig");
@@ -305,7 +304,8 @@ pub const ModuleGraph = struct {
     const ensureBuiltinPlugins = graph_plugins.ensureBuiltinPlugins;
     const pluginRunnerWithBuiltins = graph_plugins.pluginRunnerWithBuiltins;
     const shouldRunResolveId = graph_plugins.shouldRunResolveId;
-    const shouldRunLoad = graph_plugins.shouldRunLoad;
+    const runPluginLoadForModule = graph_plugins.runLoadForModule;
+    const runPluginTransformForModule = graph_plugins.runTransformForModule;
 
     // ============================================================
     // Module accessor API (#1779 PR #1a + PR #3)
@@ -1577,75 +1577,9 @@ pub const ModuleGraph = struct {
 
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
-        var plugin_load_applied = false;
-        if (plugin_runner) |runner| {
-            if (self.shouldRunLoad(module.path)) {
-                // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
-                const tmp_arena = module_mod.createParseArena(self.allocator) orelse {
-                    module.state = .ready;
-                    return;
-                };
-                var hook_ctx: plugin_mod.HookContext = .{};
-                const load_result = runner.runLoad(module.path, tmp_arena.allocator(), &hook_ctx) catch |err| switch (err) {
-                    error.PluginFailed => {
-                        self.addPluginFailureDiag(hook_ctx.failure, module.path, Span.EMPTY, .resolve);
-                        module_mod.destroyParseArena(self.allocator, tmp_arena);
-                        module.state = .ready;
-                        return;
-                    },
-                    error.OutOfMemory => {
-                        module_mod.destroyParseArena(self.allocator, tmp_arena);
-                        module.state = .ready;
-                        return;
-                    },
-                };
-                if (load_result) |plugin_result| {
-                    plugin_load_applied = true;
-                    const load_source_maps = hook_ctx.source_maps orelse &.{};
-                    // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
-                    // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
-                    // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
-                    // emitAssetModule 가 `module.exports = <source>` 로 wrap. JS 파이프라인 진입 시
-                    // source 가 단순 표현식 ("text") 이라 default export 없는 빈 모듈로 emit 되어
-                    // import binding 이 깨진다.
-                    module.parse_arena = tmp_arena;
-                    const arena_alloc = tmp_arena.allocator();
-                    if (load_source_maps.len > 0) {
-                        if (!self.validatePluginSourceMaps(load_source_maps, module.path, Span.EMPTY, .transform, "load")) {
-                            module_mod.destroyParseArena(self.allocator, tmp_arena);
-                            module.parse_arena = null;
-                            module.state = .ready;
-                            return;
-                        }
-                        module.plugin_source_maps = load_source_maps;
-                    }
-                    if (plugin_result.loader) |loader_override| {
-                        module.loader = loader_override;
-                        module.module_type = plugin_result.module_type orelse
-                            moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
-                        if (assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path, self.transform_options_base.minify_whitespace)) |expr| {
-                            module.source = expr;
-                            module.module_type = .js;
-                            module.exports_kind = .commonjs;
-                            module.wrap_kind = .cjs;
-                            module.side_effects = false;
-                            module.state = .ready;
-                            return;
-                        }
-                        // asset 변환 미지원 loader (file/copy/javascript/json/css/none): raw 그대로 JS 파이프라인.
-                        module.source = plugin_result.contents;
-                    } else {
-                        module.loader = .javascript;
-                        module.module_type = .js;
-                        module.source = plugin_result.contents;
-                    }
-                    // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
-                    // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
-                } else {
-                    module_mod.destroyParseArena(self.allocator, tmp_arena);
-                }
-            }
-        }
+        const plugin_load_result = self.runPluginLoadForModule(module, plugin_runner);
+        if (plugin_load_result == .done) return;
+        const plugin_load_applied = plugin_load_result == .applied;
 
         // compiled_cache key 는 mtime 을 요구한다. 디스크 source 를 읽는 경로는
         // readModuleSourceWithMtime 가 같은 file handle 에서 source+mtime 을 채운다.
@@ -1717,44 +1651,9 @@ pub const ModuleGraph = struct {
         // Plugin: transform 훅 — 소스 읽기 후, 파싱 전에 호출 (Rolldown 호환).
         // 플러그인이 코드를 변환하면 변환된 소스로 파싱한다.
         // Babel 플러그인(예: react-native-reanimated/plugin)이 유저 코드를 변환할 수 있다.
-        var plugin_transform_applied = false;
-        if (plugin_runner) |runner| {
-            if (self.has_transform_plugins) {
-                var hook_ctx: plugin_mod.HookContext = .{};
-                const transform_result = runner.runTransform(module.source, module.path, arena_alloc, &hook_ctx) catch |err| switch (err) {
-                    error.PluginFailed => {
-                        self.addPluginFailureDiag(hook_ctx.failure, module.path, Span.EMPTY, .transform);
-                        module.state = .ready;
-                        return;
-                    },
-                    error.OutOfMemory => {
-                        module.state = .ready;
-                        return;
-                    },
-                };
-                if (transform_result) |result| {
-                    if (hook_ctx.source_maps) |maps| {
-                        if (!self.validatePluginSourceMaps(maps, module.path, Span.EMPTY, .transform, "transform")) {
-                            module.state = .ready;
-                            return;
-                        }
-                        if (module.plugin_source_maps.len > 0) {
-                            module.plugin_source_maps = std.mem.concat(arena_alloc, []const u8, &.{
-                                module.plugin_source_maps,
-                                maps,
-                            }) catch {
-                                module.state = .ready;
-                                return;
-                            };
-                        } else {
-                            module.plugin_source_maps = maps;
-                        }
-                    }
-                    module.source = result;
-                    plugin_transform_applied = true;
-                }
-            }
-        }
+        const plugin_transform_result = self.runPluginTransformForModule(module, arena_alloc, plugin_runner);
+        if (plugin_transform_result == .done) return;
+        const plugin_transform_applied = plugin_transform_result == .applied;
 
         // Scanner + Parser (arena 할당)
         var scanner: Scanner = undefined;
