@@ -294,7 +294,9 @@ pub const Parser = struct {
     /// oxc 방식 Unambiguous 모드:
     /// - .mts/.mjs → 확정적 Module (is_module=true)
     /// - .ts/.tsx → Unambiguous (is_module=true 낙관적 파싱 + 에러 지연)
-    /// - .js/.jsx/.cts/.cjs → Script (is_module=false)
+    /// - .js/.jsx → Unambiguous (is_module=true 낙관적 파싱 — esbuild/swc/rollup 와
+    ///                            동일하게 ESM 코드도 받음. 순수 script 코드도 호환)
+    /// - .cts/.cjs → Script (is_module=false, Node CommonJS 컨벤션)
     /// CLI용: .ts/.tsx는 Unambiguous 모드 (import/export 유무로 module/script 파싱 후 확정)
     pub fn configureFromExtension(self: *Parser, ext: []const u8) void {
         self.applyExtension(ext, true);
@@ -324,7 +326,12 @@ pub const Parser = struct {
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
             self.is_module = true;
             self.scanner.is_module = true;
-        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx")) {
+        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx"))
+        {
+            // Unambiguous: 낙관적 module 파싱 + 에러 지연. import/export 가 없으면
+            // script 코드도 그대로 받음 — esbuild/swc/rollup 와 동일 정책.
+            // .cjs / .cts 는 위 분기를 안 타고 script 모드 유지 (Node CommonJS 컨벤션).
             self.is_module = true;
             self.scanner.is_module = true;
             self.is_unambiguous = ts_unambiguous;

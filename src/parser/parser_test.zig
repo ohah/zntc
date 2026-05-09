@@ -2712,6 +2712,54 @@ test "declare module: export inside ambient module body" {
     , ".ts");
 }
 
+// ============================================================
+// `.js`/`.jsx` 가 ESM (import/export) 을 받도록 — esbuild/swc/rollup 와 정렬.
+// date-fns 4.x 같은 ESM-only `.js` 패키지 통과 회귀 보호.
+// ============================================================
+
+test ".js: top-level export const → module 로 파싱" {
+    try expectNoParseErrorWithExt(
+        \\export const x = 1;
+    , ".js");
+}
+
+test ".js: top-level import → module 로 파싱" {
+    try expectNoParseErrorWithExt(
+        \\import { format } from "date-fns";
+        \\console.log(format);
+    , ".js");
+}
+
+test ".js: export function 도 module 로 파싱" {
+    try expectNoParseErrorWithExt(
+        \\export function add(a, b) { return a + b; }
+    , ".js");
+}
+
+test ".js: 순수 script (module.exports) 도 그대로 동작" {
+    try expectNoParseErrorWithExt(
+        \\module.exports = { x: 1 };
+    , ".js");
+}
+
+test ".jsx: top-level export default JSX 도 module 로 파싱" {
+    try expectNoParseErrorWithExt(
+        \\export default function App() { return null; }
+    , ".jsx");
+}
+
+test ".cjs: ESM export 는 여전히 거부 (Node CJS 컨벤션 유지)" {
+    try expectParseErrorWithExt(
+        \\export const x = 1;
+    , ".cjs", .{ .message_contains = "module code" });
+}
+
+test ".cts: ESM export 도 거부 (TS CommonJS 컨벤션 유지)" {
+    try expectParseErrorWithExt(
+        \\export const x: number = 1;
+    , ".cts", .{ .message_contains = "module code" });
+}
+
 test "declare module: multiple statements in ambient body" {
     try expectNoParseErrorWithExt(
         \\declare module "*.svg" { const src: string; export default src; }
