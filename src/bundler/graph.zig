@@ -85,6 +85,8 @@ const graph_glob = @import("graph/glob.zig");
 const expandGlobRecords = graph_glob.expandGlobRecords;
 const graph_package_side_effects = @import("graph/package_side_effects.zig");
 const graph_parse_helpers = @import("graph/parse_helpers.zig");
+const graph_plugins = @import("graph/plugins.zig");
+const graph_state = @import("graph/state.zig");
 
 pub const ModuleGraph = struct {
     pub const matchSideEffectsPatterns = graph_package_side_effects.matchPatterns;
@@ -248,28 +250,9 @@ pub const ModuleGraph = struct {
     /// transform 은 user plugin 또는 builtin RN codegen 이 활성이면 실행 — 둘을 합친 게이트.
     has_transform_plugins: bool = false,
 
-    pub const PkgInfo = struct {
-        is_module: bool,
-        side_effects: pkg_json.PackageJson.SideEffects,
-    };
-
-    pub const WorkerEntry = struct {
-        /// resolve된 worker 파일 절대 경로
-        resolved_path: []const u8,
-        /// worker를 참조하는 모듈 인덱스
-        source_module: ModuleIndex,
-        /// 해당 모듈의 import_records 내 인덱스
-        record_index: u32,
-    };
-
-    const RequestedExports = struct {
-        all: bool = false,
-        names: std.StringHashMapUnmanaged(void) = .{},
-
-        fn deinit(self: *RequestedExports, allocator: std.mem.Allocator) void {
-            self.names.deinit(allocator);
-        }
-    };
+    pub const PkgInfo = graph_state.PkgInfo;
+    pub const WorkerEntry = graph_state.WorkerEntry;
+    const RequestedExports = graph_state.RequestedExports;
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -313,64 +296,10 @@ pub const ModuleGraph = struct {
         self.runtime_polyfill_roots.deinit(self.allocator);
     }
 
-    /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZNTC builtin plugin 들 (runtime
-    /// helper, RN codegen 등) 을 prepend 한 slice 를 graph allocator 로 만든다 (#1961, #2348).
-    /// 빌드 옵션 (minify_whitespace 등) 은 이미 graph 에 set 됐다는 전제. `helper_plugin_opts`
-    /// 도 같이 hydrate. 단일 thread 진입점 (`build` 등) 에서만 호출.
-    fn ensureBuiltinPlugins(self: *ModuleGraph) void {
-        if (self.plugins_with_helpers != null) return;
-        self.has_user_resolve_id_plugins = false;
-        self.has_user_load_plugins = false;
-        self.has_transform_plugins = self.codegen_transform;
-        for (self.plugins) |p| {
-            if (p.resolveId != null) self.has_user_resolve_id_plugins = true;
-            if (p.load != null) self.has_user_load_plugins = true;
-            if (p.transform != null) self.has_transform_plugins = true;
-        }
-
-        // SourceOptions 는 빌드 옵션 기반으로 1회 결정.
-        const u = self.transform_options_base.unsupported;
-        self.helper_plugin_opts = .{
-            .minify = self.transform_options_base.minify_whitespace,
-            .es5 = u.async_await or u.arrow,
-            // configurable_exports 는 RN 같은 환경 — 현재 graph 에 직접 필드 없으므로 false.
-            // 후속 PR 에서 BundleOptions.configurable_exports 또는 platform=react-native 기반 결정.
-            .configurable_exports = false,
-        };
-        const helper = runtime_helper_modules.makePlugin(&self.helper_plugin_opts);
-
-        var builtin_count: usize = 1; // helper 항상 포함
-        if (self.codegen_transform) builtin_count += 1;
-
-        const merged = self.allocator.alloc(plugin_mod.Plugin, self.plugins.len + builtin_count) catch return;
-        var i: usize = 0;
-        merged[i] = helper;
-        i += 1;
-        if (self.codegen_transform) {
-            const codegen_plugin = @import("../transformer/plugins/rn_codegen_plugin.zig");
-            merged[i] = codegen_plugin.plugin();
-            i += 1;
-        }
-        @memcpy(merged[i..], self.plugins);
-        self.plugins_with_helpers = merged;
-    }
-
-    /// 모든 PluginRunner 호출 site 가 사용하는 통합 진입점. `ensureBuiltinPlugins` 가
-    /// `plugins_with_helpers` 를 하이드레이트한 후 그걸로 runner 만든다. fallback 으로
-    /// `self.plugins` 사용 (alloc 실패 시).
-    fn pluginRunnerWithBuiltins(self: *ModuleGraph) ?plugin_mod.PluginRunner {
-        const list = self.plugins_with_helpers orelse self.plugins;
-        if (list.len == 0) return null;
-        return plugin_mod.PluginRunner.init(list);
-    }
-
-    fn shouldRunResolveId(self: *const ModuleGraph, specifier: []const u8) bool {
-        return self.has_user_resolve_id_plugins or runtime_helper_modules.isVirtualId(specifier);
-    }
-
-    fn shouldRunLoad(self: *const ModuleGraph, path: []const u8) bool {
-        return self.has_user_load_plugins or runtime_helper_modules.isVirtualId(path);
-    }
+    const ensureBuiltinPlugins = graph_plugins.ensureBuiltinPlugins;
+    const pluginRunnerWithBuiltins = graph_plugins.pluginRunnerWithBuiltins;
+    const shouldRunResolveId = graph_plugins.shouldRunResolveId;
+    const shouldRunLoad = graph_plugins.shouldRunLoad;
 
     // ============================================================
     // Module accessor API (#1779 PR #1a + PR #3)
@@ -447,8 +376,8 @@ pub const ModuleGraph = struct {
     /// shelf pointer 배열도 고정 크기라 append 가 절대 pointer 무효화 안 함 (#1779).
     /// `std.SegmentedList` 는 `dynamic_segments` (ArrayListUnmanaged) 가 grow 시 realloc →
     /// worker 가 shelf pointer 읽는 중이면 stale (CI Stress test 에서 재현된 race).
-    pub const ModuleList = @import("module_list.zig").StableSegmentedList(Module);
-    pub const ModulesIterator = ModuleList.ConstIterator;
+    pub const ModuleList = graph_state.ModuleList;
+    pub const ModulesIterator = graph_state.ModulesIterator;
 
     /// 확장자에 대한 로더를 결정한다.
     /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
