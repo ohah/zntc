@@ -1,0 +1,49 @@
+{
+  "name": "@zntc/rspack-loader",
+  "version": "0.1.0",
+  "description": "Use ZNTC as the TypeScript/JSX/Flow transformer in Rspack and Webpack (drop-in alternative to swc-loader / esbuild-loader / babel-loader)",
+  "license": "MIT",
+  "source": "./src/index.ts",
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core && node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.cjs --format=cjs --target=node --conditions=source --external @zntc/core",
+    "build:dts": "bun x tsc -b",
+    "build": "bun run build:bundle && bun run build:dts",
+    "test": "bun test",
+    "prepublishOnly": "bun run build && bunx publint --strict --level error ."
+  },
+  "dependencies": {
+    "@zntc/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@rspack/core": "^1.0.0",
+    "@types/node": "^25.5.2",
+    "webpack": "^5.94.0"
+  },
+  "peerDependencies": {
+    "@rspack/core": ">=0.7.0",
+    "webpack": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@rspack/core": {
+      "optional": true
+    },
+    "webpack": {
+      "optional": true
+    }
+  }
+}
