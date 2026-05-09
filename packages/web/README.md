@@ -5,12 +5,12 @@ ZNTC 의 web platform layer — dev server (HTTP/HTTPS + WebSocket HMR), HMR ove
 ## 설치
 
 ```bash
-bun add -D @zntc/web @zntc/core
+bun add -D @zntc/web
 # 또는
-npm i -D @zntc/web @zntc/core
+npm i -D @zntc/web
 ```
 
-`@zntc/core` 가 함께 필요 (NAPI binary 포함).
+`@zntc/core` 가 dependency 로 자동 install 됨 (NAPI binary 포함).
 
 ### Optional (CSS pipeline)
 
@@ -35,14 +35,7 @@ bunx zntc preview   # production preview server
 
 ## 직접 import (고급)
 
-```ts
-import { prepareAppDevSync } from '@zntc/core';
-import { createDevController } from '@zntc/web';
-
-const ctx = prepareAppDevSync({ root: process.cwd() });
-const ctrl = await createDevController(ctx);
-await ctrl.start({ port: 3000 });
-```
+`createAppDevController` 가 dev controller 의 main entry. 옵션 surface 가 넓고 `@zntc/core` 의 `prepareAppDevSync` 결과를 받음 — 사용 예는 [docs/HMR.md](https://github.com/ohah/zntc/blob/main/docs/HMR.md) 참조.
 
 ## 관련 패키지
 

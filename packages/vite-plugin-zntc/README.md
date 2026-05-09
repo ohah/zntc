@@ -32,9 +32,12 @@ export default defineConfig({
 zntc({
   include: /\.(tsx?|jsx)$/, // 변환할 파일 패턴 (default)
   exclude: /node_modules/, // 제외 패턴 (default)
-  // ZNTC transpile 옵션 (target / jsx / decorators 등)
-  target: 'es2020',
-  jsx: 'automatic',
+  tsconfigCache: true, // tsconfig autodiscover 결과 캐시 (default: true)
+  transpileOptions: {
+    // ZNTC transpile 옵션 (target / jsx / decorators 등)
+    target: 'es2020',
+    jsx: 'automatic',
+  },
 });
 ```
 
