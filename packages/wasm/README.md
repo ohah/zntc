@@ -20,12 +20,14 @@ WASM binary (`zntc.wasm` ~370KB / `zntc-bundler.wasm` ~700KB) 가 함께 install
 
 ```ts
 import { init, transpile } from '@zntc/wasm';
-import wasmUrl from '@zntc/wasm/zntc.wasm?url'; // Vite 등 bundler
+import wasmUrl from '@zntc/wasm/zntc.wasm?url'; // Vite 전용 syntax
 
 await init(wasmUrl);
 const r = transpile('const x: number = 1;', { filename: 'input.ts' });
 console.log(r.code);
 ```
+
+> Vite 가 아닌 bundler 는 `fetch(new URL('@zntc/wasm/zntc.wasm', import.meta.url))` 또는 각자의 asset import 패턴 사용.
 
 ### Node.js / Bun (auto-resolve)
 
@@ -39,12 +41,15 @@ const r = transpile('const x: number = 1;', { filename: 'input.ts' });
 ### Bundler 사용
 
 ```ts
-import { init, build } from '@zntc/wasm';
+import { bundlerLastErrorMessage, build, init } from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
 await init(wasmUrl); // bundler 는 별도 wasm
 const out = build('/main.ts', { format: 'esm', target: 'es2020' });
+if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
+
+`build` 는 sync 이며 실패 시 `null` 반환 — `bundlerLastErrorMessage()` 로 마지막 에러 조회.
 
 ## NAPI 와 차이
 
