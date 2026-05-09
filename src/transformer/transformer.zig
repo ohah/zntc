@@ -2071,6 +2071,59 @@ pub const Transformer = struct {
     /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
     /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
     fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
+        if (self.options.unsupported.block_scoping) {
+            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+            var lexical_names = try BlockScoping.collectLexicalVarNames(self, node.data.ternary.a);
+            defer lexical_names.deinit(self.allocator);
+
+            if (lexical_names.items.len > 0) {
+                const orig_body_idx = node.data.ternary.c;
+                const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
+
+                var flow = BlockScoping.FlowResult{};
+                flow.labels = .empty;
+                defer flow.labels.deinit(self.allocator);
+                if (has_capture) {
+                    BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
+                }
+
+                const saved = self.in_for_in_of_header;
+                self.in_for_in_of_header = true;
+                const new_a = try self.visitNode(node.data.ternary.a);
+                self.in_for_in_of_header = saved;
+                const new_b = try self.visitNode(node.data.ternary.b);
+                const new_c = try self.visitNode(orig_body_idx);
+
+                if (has_capture) {
+                    const result = try BlockScoping.buildLoopClosureWithFlow(
+                        self,
+                        new_c,
+                        lexical_names.items,
+                        &flow,
+                        null,
+                        node.span,
+                    );
+                    const loop_node = try self.ast.addNode(.{
+                        .tag = node.tag,
+                        .span = node.span,
+                        .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = result.call_and_check } },
+                    });
+                    const stmts = try self.ast.addNodeList(&.{ result.loop_fn, loop_node });
+                    return self.ast.addNode(.{
+                        .tag = .block_statement,
+                        .span = node.span,
+                        .data = .{ .list = stmts },
+                    });
+                }
+
+                return self.ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
+                });
+            }
+        }
+
         const saved = self.in_for_in_of_header;
         self.in_for_in_of_header = true;
         const new_a = try self.visitNode(node.data.ternary.a);

@@ -1345,6 +1345,48 @@ test "#1797 negative: for-of down-level 꺼져있으면 변환 자체 비활성"
     try std.testing.expect(std.mem.indexOf(u8, code, "for (let k of") != null);
 }
 
+test "#1797 native for-of + block scoping: let 캡처 시 _loop 함수로 추출" {
+    // RN preset은 for-of 문법은 유지하지만 block_scoping으로 let/const를 var로 낮춘다.
+    // 이때 getter/closure가 loop binding을 캡처하면 native for-of 경로에서도 fresh binding
+    // 의미를 보존해야 한다.
+    const source =
+        \\for (let key of keys) {
+        \\  arr.push(() => from[key]);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (var key of") != null);
+    const push_pos = std.mem.indexOf(u8, code, "arr.push") orelse unreachable;
+    const loop_pos = std.mem.indexOf(u8, code, "_loop") orelse unreachable;
+    try std.testing.expect(push_pos > loop_pos);
+}
+
+test "#1797 native for-of + block scoping: closure 없으면 _loop 변환 안 함" {
+    const source =
+        \\for (let key of keys) {
+        \\  total += key;
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (var key of") != null);
+}
+
 test "#1797 bungae __copyProps pattern: getter 가 iteration-local key 캡처" {
     // @radix-ui/react-slot 이 esbuild 로 빌드한 `__copyProps` 의 정확한 패턴.
     // RN Hermes 에서 `React$250 = '19.2.0'` crash 를 재현한 입력.
