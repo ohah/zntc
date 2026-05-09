@@ -96,7 +96,7 @@ export function buildRnBundleOverride(config, override) {
  */
 export function buildRnDevServerInput(opts, config) {
   const cfg = config ?? {};
-  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.root ?? '.');
+  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.projectRoot ?? cfg.root ?? '.');
   const entry = opts.entryPoints?.[0] ?? cfg.entry;
   if (!entry) return null;
   const rnPlatform = opts.rnPlatform === 'android' ? 'android' : 'ios';

@@ -7,6 +7,7 @@ import {
   DEV_MIDDLEWARE_PATH_PREFIXES,
   isDevMiddlewareRoute,
   loadDevMiddleware,
+  resolveDevMiddlewarePath,
 } from './dev-middleware.ts';
 
 let dir: string;
@@ -20,6 +21,56 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
+
+function writeJson(path: string, value: unknown): void {
+  writeFileSync(path, JSON.stringify(value));
+}
+
+function installExpoDevMiddleware(main: string, source: string): string {
+  const packageRoot = join(
+    dir,
+    'node_modules/expo/node_modules/@expo/cli/node_modules/@react-native/dev-middleware',
+  );
+  mkdirSync(packageRoot, { recursive: true });
+  writeJson(join(dir, 'node_modules/expo/package.json'), { name: 'expo' });
+  writeFileSync(join(dir, 'node_modules/expo/index.js'), 'module.exports = {};');
+  writeJson(join(dir, 'node_modules/expo/node_modules/@expo/cli/package.json'), {
+    name: '@expo/cli',
+    main: 'index.js',
+  });
+  writeFileSync(
+    join(dir, 'node_modules/expo/node_modules/@expo/cli/index.js'),
+    'module.exports = {};',
+  );
+  writeJson(join(packageRoot, 'package.json'), {
+    name: '@react-native/dev-middleware',
+    main,
+  });
+  writeFileSync(join(packageRoot, main), source);
+  return join(packageRoot, main);
+}
+
+function installRnCliDevMiddleware(main: string, source: string): string {
+  const packageRoot = join(
+    dir,
+    'node_modules/react-native/node_modules/@react-native/community-cli-plugin/node_modules/@react-native/dev-middleware',
+  );
+  mkdirSync(packageRoot, { recursive: true });
+  writeJson(join(dir, 'node_modules/react-native/package.json'), { name: 'react-native' });
+  writeJson(
+    join(
+      dir,
+      'node_modules/react-native/node_modules/@react-native/community-cli-plugin/package.json',
+    ),
+    { name: '@react-native/community-cli-plugin' },
+  );
+  writeJson(join(packageRoot, 'package.json'), {
+    name: '@react-native/dev-middleware',
+    main,
+  });
+  writeFileSync(join(packageRoot, main), source);
+  return join(packageRoot, main);
+}
 
 describe('DEV_MIDDLEWARE_PATH_PREFIXES', () => {
   test('4개 prefix — RN DevTools standard endpoints', () => {
@@ -75,5 +126,49 @@ describe('loadDevMiddleware', () => {
     mkdirSync(join(dir, 'node_modules'), { recursive: true });
     const result = await loadDevMiddleware({ port: 9000, projectRoot: dir });
     expect(result).toBeNull();
+  });
+
+  test('Expo 프로젝트의 @expo/cli 기준 dev-middleware 를 CJS require 로 로드', async () => {
+    installExpoDevMiddleware(
+      'index.cjs',
+      `
+        module.exports = {
+          createDevMiddleware(input) {
+            globalThis.__zntcDevMiddlewareInput = input;
+            return {
+              middleware(_req, _res, next) {
+                next();
+              },
+              websocketEndpoints: {
+                '/expo-inspector': {
+                  handleUpgrade() {},
+                  emit() {},
+                },
+              },
+            };
+          },
+        };
+      `,
+    );
+
+    const state = globalThis as { __zntcDevMiddlewareInput?: unknown };
+    state.__zntcDevMiddlewareInput = undefined;
+    const result = await loadDevMiddleware({ port: 8123, projectRoot: dir });
+
+    expect(Object.keys(result?.websocketEndpoints ?? {})).toEqual(['/expo-inspector']);
+    expect(state.__zntcDevMiddlewareInput).toMatchObject({
+      serverBaseUrl: 'http://localhost:8123',
+      projectRoot: dir,
+    });
+    delete state.__zntcDevMiddlewareInput;
+  });
+});
+
+describe('resolveDevMiddlewarePath', () => {
+  test('Expo 프로젝트는 @expo/cli 기준 @react-native/dev-middleware 를 RN CLI chain 보다 우선 사용', () => {
+    const expoDevMiddlewarePath = installExpoDevMiddleware('expo-dev.js', 'module.exports = {};');
+    installRnCliDevMiddleware('rn-cli-dev.js', 'module.exports = {};');
+
+    expect(resolveDevMiddlewarePath(dir)).toBe(expoDevMiddlewarePath);
   });
 });
