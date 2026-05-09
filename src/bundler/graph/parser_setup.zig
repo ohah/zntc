@@ -64,14 +64,27 @@ pub fn init(
     else
         .unknown;
 
-    // .js/.jsx: package.json "type" 또는 Unambiguous 모드로 module/script 결정
-    // .mjs/.mts/.ts/.tsx: 이미 확정 module, 변경 없음
-    if (!parser.is_module) {
-        parser.is_module = true;
-        scanner.is_module = true;
-        if (module.def_format == .unknown) {
+    // def_format 기반 module/script 결정:
+    //   .esm_mjs / .esm_mts / .esm_package_json → 확정 module
+    //   .cjs → script (Node CommonJS — `import`/`export` 거부, top-level await 거부).
+    //   .cts → module 유지 (TypeScript CJS — ESM 구문을 TS 가 module.exports 로 transpile.
+    //          tsc 와 동일한 정책. configureForBundlerKind 가 이미 is_module=true 로 set).
+    //   .unknown → Unambiguous (낙관적 module + 에러 지연 → 파싱 후 resolveModuleKind 가 확정)
+    // .mjs/.mts/.ts/.tsx 는 configureForBundler 단계에서 이미 is_module=true.
+    switch (module.def_format) {
+        .cjs => {
+            parser.is_module = false;
+            scanner.is_module = false;
+        },
+        .unknown => if (!parser.is_module) {
+            parser.is_module = true;
+            scanner.is_module = true;
             parser.is_unambiguous = true;
-        }
+        },
+        else => if (!parser.is_module) {
+            parser.is_module = true;
+            scanner.is_module = true;
+        },
     }
     // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
     parser.enable_scan = true;

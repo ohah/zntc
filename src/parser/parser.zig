@@ -293,10 +293,11 @@ pub const Parser = struct {
     ///
     /// oxc 방식 Unambiguous 모드:
     /// - .mts/.mjs → 확정적 Module (is_module=true)
-    /// - .ts/.tsx → Unambiguous (is_module=true 낙관적 파싱 + 에러 지연)
+    /// - .ts/.tsx/.cts → Unambiguous (is_module=true 낙관적 파싱 + 에러 지연).
+    ///                    .cts 는 TS CommonJS 인데 tsc 정책상 ESM 구문 허용 → module.exports 로 transpile.
     /// - .js/.jsx → Unambiguous (is_module=true 낙관적 파싱 — esbuild/swc/rollup 와
     ///                            동일하게 ESM 코드도 받음. 순수 script 코드도 호환)
-    /// - .cts/.cjs → Script (is_module=false, Node CommonJS 컨벤션)
+    /// - .cjs → Script (is_module=false, Node CommonJS — `import`/`export`/top-level-await 거부)
     /// CLI용: .ts/.tsx는 Unambiguous 모드 (import/export 유무로 module/script 파싱 후 확정)
     pub fn configureFromExtension(self: *Parser, ext: []const u8) void {
         self.applyExtension(ext, true);
@@ -326,7 +327,11 @@ pub const Parser = struct {
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
             self.is_module = true;
             self.scanner.is_module = true;
-        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx")) {
+        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".cts"))
+        {
+            // .cts 는 Node 입장에선 CJS 지만 tsc 가 ESM 구문을 받아 module.exports 로
+            // transpile. parser 레벨에선 module 로 파싱.
             self.is_module = true;
             self.scanner.is_module = true;
             self.is_unambiguous = ts_unambiguous;

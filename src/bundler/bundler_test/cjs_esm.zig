@@ -1973,3 +1973,66 @@ test "ESM ns-access: opaque path (bare ref after member access) doesn't leak" {
     // 실제 검증은 GPA debug allocator 의 leak 검출에 위임 —
     // leak 발생 시 `zig build test` 가 테스트 실패 처리.
 }
+
+// ============================================================
+// `.cjs` / `.cts` 는 Node CommonJS 컨벤션상 ESM 구문 (`import`/`export`) 거부.
+// 이전엔 graph/parser_setup.zig 가 모든 모듈을 is_module=true 로 promote 해서
+// `.cjs` 도 `export const x = 1` 을 받아들여 Node 와 호환 안 됐음.
+// ============================================================
+
+test "CJS convention: `.cjs` 가 top-level `export const` 를 거부" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs",
+        \\export const x = 1;
+    );
+
+    const entry = try absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.hasErrors());
+}
+
+test "CJS convention: `.cjs` 의 `module.exports` + `with` 모두 정상 (script mode)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs",
+        \\function run(obj) {
+        \\  var x = 1;
+        \\  with (obj) { console.log(x); }
+        \\}
+        \\module.exports = { run };
+    );
+
+    const entry = try absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+}
+
+test "CJS convention: `.cts` 는 ESM 구문 허용 (TS 가 module.exports 로 transpile — tsc 정책)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './lib.cts';\nconsole.log(x);");
+    try writeFile(tmp.dir, "lib.cts", "export const x: number = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+}
