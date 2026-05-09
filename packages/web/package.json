@@ -23,11 +23,11 @@
     "test": "bun test --timeout 10000"
   },
   "dependencies": {
-    "@zntc/core": "workspace:*",
-    "@zntc/server": "workspace:*"
+    "@zntc/core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.5.2"
+    "@types/node": "^25.5.2",
+    "@zntc/server": "workspace:*"
   },
   "optionalDependencies": {
     "postcss": "^8.5.8",
