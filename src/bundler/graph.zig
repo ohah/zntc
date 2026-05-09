@@ -98,9 +98,11 @@ pub const ModuleGraph = struct {
     const moduleTypeForLoader = graph_parse_helpers.moduleTypeForLoader;
     const projectExportedNames = graph_parse_helpers.projectExportedNames;
     const suppressRuntimeHelperInternalUnresolved = graph_parse_helpers.suppressRuntimeHelperInternalUnresolved;
-    const requestedLocalExportNeedsAllRecords = graph_requested_exports.localNeedsAllRecords;
-    const requestedNameHasDirectNonStarExport = graph_requested_exports.nameHasDirectNonStarExport;
-    const reExportRecordMatchesRequest = graph_requested_exports.reExportRecordMatchesRequest;
+    const requestAllExports = graph_requested_exports.requestAll;
+    const requestNamedExport = graph_requested_exports.requestNamed;
+    const shouldLinkResolvedRecordForModule = graph_requested_exports.shouldLinkResolvedRecordForModule;
+    const hasDeferredRequestedImports = graph_requested_exports.hasDeferredRequestedImports;
+    const requestDependencyExports = graph_requested_exports.requestDependencyExports;
 
     allocator: std.mem.Allocator,
     /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
@@ -634,71 +636,6 @@ pub const ModuleGraph = struct {
         try self.linkDependency(from, to);
     }
 
-    fn requestAllExports(self: *ModuleGraph, idx: ModuleIndex) !bool {
-        if (idx.isNone()) return false;
-        const key: u32 = @intFromEnum(idx);
-        self.requested_exports_mutex.lock();
-        defer self.requested_exports_mutex.unlock();
-
-        const gop = try self.requested_exports.getOrPut(self.allocator, key);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = .{};
-        }
-        if (gop.value_ptr.all) return false;
-        gop.value_ptr.names.deinit(self.allocator);
-        gop.value_ptr.names = .{};
-        gop.value_ptr.all = true;
-        return true;
-    }
-
-    fn requestNamedExport(self: *ModuleGraph, idx: ModuleIndex, name: []const u8) !bool {
-        if (idx.isNone()) return false;
-        const key: u32 = @intFromEnum(idx);
-        self.requested_exports_mutex.lock();
-        defer self.requested_exports_mutex.unlock();
-
-        const gop = try self.requested_exports.getOrPut(self.allocator, key);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = .{};
-        }
-        if (gop.value_ptr.all) return false;
-        if (gop.value_ptr.names.contains(name)) return false;
-        try gop.value_ptr.names.put(self.allocator, name, {});
-        return true;
-    }
-
-    fn isLazyBarrelCandidate(self: *const ModuleGraph, m: *const Module) bool {
-        if (self.dev_mode or self.preserve_modules) return false;
-        return m.side_effects_user_defined and
-            !m.side_effects and
-            m.exports_kind.isEsm() and
-            m.import_records.len > 0 and
-            m.export_bindings.len > 0;
-    }
-
-    fn shouldLinkResolvedRecordForModule(self: *ModuleGraph, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
-        const m = self.modules.at(mod_idx);
-        switch (record.kind) {
-            .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => return true,
-            .static_import, .re_export => {},
-        }
-
-        if (!self.isLazyBarrelCandidate(m)) return true;
-
-        const key: u32 = @intCast(mod_idx);
-        self.requested_exports_mutex.lock();
-        defer self.requested_exports_mutex.unlock();
-        const req = self.requested_exports.get(key) orelse return true;
-        if (req.all) return true;
-        if (requestedLocalExportNeedsAllRecords(m, &req)) return true;
-        return reExportRecordMatchesRequest(m, rec_i, &req);
-    }
-
-    fn shouldResolveRecordForModule(self: *ModuleGraph, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
-        if (record.resolved != .none or record.is_external) return false;
-        return self.shouldLinkResolvedRecordForModule(mod_idx, rec_i, record);
-    }
-
     fn discardResolvedModule(self: *ModuleGraph, resolved: plugin_mod.ResolvedModule) void {
         switch (resolved) {
             .file => |f| self.allocator.free(f.path),
@@ -714,107 +651,12 @@ pub const ModuleGraph = struct {
         m.import_records[rec_i].is_lazy_resolved = true;
     }
 
-    fn hasDeferredRequestedImports(self: *ModuleGraph, mod_idx: usize) bool {
-        if (mod_idx >= self.modules.count()) return false;
-        const m = self.modules.at(mod_idx);
-        for (m.import_records, 0..) |record, rec_i| {
-            if (self.shouldResolveRecordForModule(mod_idx, rec_i, record)) return true;
-        }
-        return false;
-    }
-
     fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, idx: ModuleIndex) anyerror!void {
         const mod_idx = self.validModuleSlot(idx) orelse return;
         const m = self.modules.at(mod_idx);
         if (m.state != .ready or m.is_external or m.is_disabled) return;
         if (!self.hasDeferredRequestedImports(mod_idx)) return;
         try self.resolveModuleImports(idx);
-    }
-
-    fn requestedExportsForReExportRecord(
-        self: *ModuleGraph,
-        importer: *const Module,
-        rec_i: usize,
-        dep_idx: ModuleIndex,
-    ) !bool {
-        const importer_key: u32 = @intFromEnum(importer.index);
-        var changed = false;
-
-        var requested_names: std.ArrayList([]const u8) = .empty;
-        defer requested_names.deinit(self.allocator);
-
-        self.requested_exports_mutex.lock();
-        const maybe_req = self.requested_exports.get(importer_key);
-        const request_all = if (maybe_req) |req| req.all else true;
-        if (!request_all) {
-            if (maybe_req) |req| {
-                var it = req.names.keyIterator();
-                while (it.next()) |name| {
-                    requested_names.append(self.allocator, name.*) catch {
-                        self.requested_exports_mutex.unlock();
-                        return error.OutOfMemory;
-                    };
-                }
-            }
-        }
-        self.requested_exports_mutex.unlock();
-        if (request_all) return self.requestAllExports(dep_idx);
-
-        for (requested_names.items) |requested_name| {
-            for (importer.export_bindings) |eb| {
-                const eb_rec = eb.import_record_index orelse continue;
-                if (eb_rec != rec_i) continue;
-                switch (eb.kind) {
-                    .re_export => {
-                        if (std.mem.eql(u8, eb.exported_name, requested_name)) {
-                            changed = (try self.requestNamedExport(dep_idx, eb.local_name)) or changed;
-                        }
-                    },
-                    .re_export_namespace => {
-                        if (std.mem.eql(u8, eb.exported_name, requested_name)) {
-                            changed = (try self.requestAllExports(dep_idx)) or changed;
-                        }
-                    },
-                    .re_export_star => {
-                        if (!requestedNameHasDirectNonStarExport(importer, requested_name)) {
-                            changed = (try self.requestNamedExport(dep_idx, requested_name)) or changed;
-                        }
-                    },
-                    .local => {},
-                }
-            }
-        }
-        return changed;
-    }
-
-    fn requestDependencyExports(
-        self: *ModuleGraph,
-        importer_idx: usize,
-        rec_i: usize,
-        record: ImportRecord,
-        dep_idx: ModuleIndex,
-    ) !bool {
-        const importer = self.modules.at(importer_idx);
-        switch (record.kind) {
-            .static_import => {
-                var changed = false;
-                var found_binding = false;
-                for (importer.import_bindings) |ib| {
-                    if (ib.import_record_index != rec_i) continue;
-                    found_binding = true;
-                    switch (ib.kind) {
-                        .namespace => changed = (try self.requestAllExports(dep_idx)) or changed,
-                        .default, .named => changed = (try self.requestNamedExport(dep_idx, ib.imported_name)) or changed,
-                    }
-                }
-                if (!found_binding) {
-                    changed = (try self.requestAllExports(dep_idx)) or changed;
-                }
-                return changed;
-            },
-            .re_export => return self.requestedExportsForReExportRecord(importer, rec_i, dep_idx),
-            .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => return self.requestAllExports(dep_idx),
-        }
     }
 
     /// Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파.
