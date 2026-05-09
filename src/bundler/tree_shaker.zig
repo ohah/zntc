@@ -30,13 +30,13 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const ast_walk = @import("../parser/ast_walk.zig");
 const Span = @import("../lexer/token.zig").Span;
-const purity = @import("purity.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const constant_facts = @import("constant_facts.zig");
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 const cjs_patterns = @import("tree_shaker/cjs_patterns.zig");
+const module_effects = @import("tree_shaker/module_effects.zig");
 const profile = @import("../profile.zig");
 
 /// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
@@ -49,20 +49,6 @@ fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bo
     const ast = &(m.ast orelse return false);
     const ni: usize = infos.stmts[stmt_idx].node_idx;
     return ni < ast.nodes.items.len and ast.nodes.items[ni].tag == .import_declaration;
-}
-
-/// 모듈을 evaluation 의존으로 끌어와야 하는 부수효과가 있는지.
-/// `.cjs` wrap 은 정적 분석 불가 — 항상 evaluation 의존. `.esm` wrap 은 _emit shape_
-/// (lazy init / circular dep) 일 뿐 semantic side-effect 가 아니지만, 기존 RN/Metro
-/// 호환 동작은 `.esm` 을 보수 처리해 왔다 (#2398). 본 함수는 _user 가 명시적으로_
-/// `sideEffects: false` 를 선언한 모듈에만 그 신호를 신뢰 — 나머지는 conservative
-/// 유지로 RN core 같은 미선언 케이스의 회귀 방지.
-inline fn moduleHasEvaluationEffect(mod: *const Module) bool {
-    if (mod.side_effects) return true;
-    if (mod.wrap_kind == .cjs) return true;
-    if (mod.exports_kind == .esm_with_dynamic_fallback) return true;
-    if (mod.wrap_kind == .esm and !mod.side_effects_user_defined) return true;
-    return false;
 }
 
 fn constValuesContainNumber(const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue)) bool {
@@ -980,7 +966,7 @@ pub const TreeShaker = struct {
                 if (m.is_context_dep) continue;
                 if (m.ast) |ast| {
                     const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
-                    if (isModulePure(&ast, unresolved)) {
+                    if (module_effects.isModulePure(&ast, unresolved)) {
                         m.side_effects = false;
                     }
                 }
@@ -998,7 +984,7 @@ pub const TreeShaker = struct {
                 if (!is_entry) continue;
                 for (m.dependencies.items) |dep_idx| {
                     const dep = self.graph.getModule(dep_idx) orelse continue;
-                    if (moduleHasEvaluationEffect(dep)) {
+                    if (module_effects.hasEvaluationEffect(dep)) {
                         self.included.set(@intFromEnum(dep_idx));
                     }
                 }
@@ -1154,7 +1140,7 @@ pub const TreeShaker = struct {
                         const preserve = try self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
                         const must_include = rec.kind == .require or
                             ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
-                            (moduleHasEvaluationEffect(tmod) and preserve);
+                            (module_effects.hasEvaluationEffect(tmod) and preserve);
                         if (!must_include) continue;
                         if (!self.included.isSet(target)) {
                             self.included.set(target);
@@ -1184,7 +1170,7 @@ pub const TreeShaker = struct {
             for (0..mod_count) |i| {
                 if (!self.included.isSet(i)) continue;
                 const m = self.getModule(@intCast(i)) orelse continue;
-                if (self.entry_set.isSet(i) or moduleHasEvaluationEffect(m)) continue;
+                if (self.entry_set.isSet(i) or module_effects.hasEvaluationEffect(m)) continue;
                 if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
                 if (m.is_context_dep) continue; // require.context match 는 runtime require 대상
                 if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
@@ -1293,76 +1279,6 @@ pub const TreeShaker = struct {
             return true;
         }
         return false;
-    }
-
-    /// 모듈의 top-level 문장이 모두 순수한지 판별.
-    /// 순수: import/export 선언, 함수/클래스 선언, 변수 선언(초기값이 순수), @__PURE__ call.
-    /// 불순: 일반 call expression, assignment to global, etc.
-    fn isModulePure(ast: *const Ast, unresolved_globals: ?*const purity.GlobalRefSet) bool {
-        if (ast.nodes.items.len == 0) return false;
-        // program 노드는 파서가 마지막에 추가 — 마지막 노드
-        const root = ast.nodes.items[ast.nodes.items.len - 1];
-        if (root.tag != .program) return false;
-        const stmts = root.data.list;
-        if (stmts.len == 0) return false; // 빈 모듈은 기본값 유지
-        if (stmts.start + stmts.len > ast.extra_data.items.len) return false;
-
-        const stmt_indices = ast.extra_data.items[stmts.start .. stmts.start + stmts.len];
-        for (stmt_indices) |raw| {
-            const idx: NodeIndex = @enumFromInt(raw);
-            if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-            const stmt = ast.nodes.items[@intFromEnum(idx)];
-            if (!isStatementPure(ast, stmt, unresolved_globals)) return false;
-        }
-        return true;
-    }
-
-    fn isStatementPure(ast: *const Ast, stmt: Node, unresolved_globals: ?*const purity.GlobalRefSet) bool {
-        return switch (stmt.tag) {
-            .import_declaration,
-            .export_all_declaration,
-            => true,
-
-            .export_named_declaration => {
-                if (!ast.hasExtra(stmt.data.extra, 0)) return true;
-                const decl_idx = ast.readExtraNode(stmt.data.extra, 0);
-                if (decl_idx.isNone()) return true;
-                if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return true;
-                const decl = ast.nodes.items[@intFromEnum(decl_idx)];
-                return isStatementPure(ast, decl, unresolved_globals);
-            },
-
-            .export_default_declaration => {
-                const inner_idx = stmt.data.unary.operand;
-                if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return false;
-                const inner = ast.nodes.items[@intFromEnum(inner_idx)];
-                return switch (inner.tag) {
-                    .function_declaration => true,
-                    .class_declaration => !purity.classHasSideEffects(ast, inner, unresolved_globals),
-                    else => purity.isExprPure(ast, inner_idx, unresolved_globals),
-                };
-            },
-
-            .function_declaration => true,
-            .class_declaration => !purity.classHasSideEffects(ast, stmt, unresolved_globals),
-
-            .ts_interface_declaration,
-            .ts_type_alias_declaration,
-            => true,
-
-            .ts_enum_declaration,
-            .ts_module_declaration,
-            => false,
-
-            .variable_declaration => purity.isVarDeclPure(ast, stmt, unresolved_globals),
-            .expression_statement,
-            .if_statement,
-            => !purity.stmtHasSideEffects(ast, stmt, unresolved_globals),
-
-            .empty_statement => true,
-
-            else => false,
-        };
     }
 
     // ============================================================
@@ -2387,7 +2303,7 @@ pub const TreeShaker = struct {
                 // 평가 부수효과가 없는 source 는 사용된 export 가 있을 때만 끌어옴.
                 // `export *` 의 named import 는 seedExport 가 canonical source 로 직접 시드하므로,
                 // 전체 namespace 가 사용되지 않는 한 unrelated star source 까지 fan out 하지 않는다.
-                if (check_used and !moduleHasEvaluationEffect(src_module)) {
+                if (check_used and !module_effects.hasEvaluationEffect(src_module)) {
                     const probe_name = if (eb.kind == .re_export_star) ALL_EXPORTS_SENTINEL else eb.exported_name;
                     if (!self.isExportUsed(@intCast(i), probe_name)) continue;
                 }
@@ -2432,7 +2348,7 @@ pub const TreeShaker = struct {
         if (rec_idx >= m.import_records.len) return false;
         if (m.import_records[rec_idx].kind == .re_export) {
             if (self.graph.getModule(m.import_records[rec_idx].resolved)) |target| {
-                if (moduleHasEvaluationEffect(target)) return true;
+                if (module_effects.hasEvaluationEffect(target)) return true;
             }
             return try self.importRecordHasReachableStmt(mod_idx, rec_idx);
         }
