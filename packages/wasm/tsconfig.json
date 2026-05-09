@@ -1,14 +1,12 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "declaration": true,
+    "lib": ["ES2022", "WebWorker"],
     "declarationDir": "dist",
     "outDir": "dist",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true
+    // index.ts 가 ../shared/index 를 import 하므로 source root 가 packages/ 까지
+    // 확장된다. emit layout 은 dist/wasm/index.d.ts + dist/shared/*.d.ts.
+    "rootDir": ".."
   },
   "include": ["index.ts"]
 }

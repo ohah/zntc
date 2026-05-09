@@ -11,7 +11,7 @@
  */
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from '../shared/index';
-import type { TranspileOptions, TranspileResult } from '../shared/index';
+import type { Target, TranspileOptions, TranspileResult } from '../shared/index';
 import { buildOptionsJson, targetToUnsupported } from '../shared/index';
 
 // ─── WASM Instance ───
@@ -218,7 +218,7 @@ export function initSync(input: WebAssembly.Module | BufferSource): void {
     input instanceof WebAssembly.Module
       ? input
       : new WebAssembly.Module(
-          input instanceof ArrayBuffer ? input : (input as ArrayBufferView).buffer,
+          input instanceof ArrayBuffer ? input : ((input as ArrayBufferView).buffer as ArrayBuffer),
         );
 
   const instance = new WebAssembly.Instance(mod, imports);

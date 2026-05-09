@@ -248,6 +248,9 @@
     "packages/wasm": {
       "name": "@zntc/wasm",
       "version": "0.1.0",
+      "devDependencies": {
+        "@types/node": "^25.5.2",
+      },
     },
     "packages/web": {
       "name": "@zntc/web",
