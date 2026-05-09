@@ -1,7 +1,7 @@
 {
   "name": "@zntc/core",
   "version": "0.1.0",
-  "description": "ZNTC native transpiler compiler binding",
+  "description": "ZNTC native transpiler & compiler binding",
   "license": "MIT",
   "bin": {
     "zntc": "./bin/zntc.mjs"

@@ -1,4 +1,4 @@
-# ZNTC - Zig Native Transpiler Compiler
+# ZNTC - Zig Native Transpiler & Compiler
 
 Zig로 작성하는 JS/TS/Flow 트랜스파일러 + 번들러 (SWC/oxc 수준 목표).
 C NAPI 바인딩으로 Node.js/Bun에서 in-process 사용, Vite/Rollup 플러그인 어댑터 지원.

@@ -1,6 +1,6 @@
 # @zntc/core
 
-ZNTC (Zig Native Transpiler Compiler) 의 코어 — Zig 로 작성된 JS/TS/Flow 트랜스파일러 + 번들러의 Node.js NAPI 바인딩 + JS API + CLI.
+ZNTC (Zig Native Transpiler & Compiler) 의 코어 — Zig 로 작성된 JS/TS/Flow 트랜스파일러 + 번들러의 Node.js NAPI 바인딩 + JS API + CLI.
 
 SWC / oxc 와 동급 성능을 목표로, in-process 호출 (NAPI) + Vite/Rollup 어댑터 / 단독 CLI 모두 제공.
 
