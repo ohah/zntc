@@ -895,7 +895,12 @@ pub const Linker = struct {
 
     /// import binding의 canonical name이 importer 모듈의 중첩 스코프에 같은 이름이
     /// 있으면, target module의 이름을 한 단계 더 rename하여 shadowing 충돌 방지.
+    /// 단 ZNTC runtime helper module 은 cross-module 공유 symbol 이라 consumer 별로
+    /// rename 하면 매 호출이 canonical_name 을 덮어써 최종 하나만 유효, 나머지
+    /// `__extends$1`, `$2` ... 호출은 ReferenceError (미선언). helper module 은 rename
+    /// 대상에서 제외 — 충돌은 consumer 측 nested binding 을 mangling 단계가 처리한다.
     fn resolveNestedShadowConflicts(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
+        const helper_modules = @import("../runtime_helper_modules.zig");
         for (0..self.graph.moduleCount()) |mod_i| {
             const m = self.getModule(@intCast(mod_i)) orelse continue;
             for (m.import_bindings) |ib| {
@@ -909,6 +914,8 @@ pub const Linker = struct {
                 {
                     // target module의 canonical name을 한 단계 더 rename
                     const cmod: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
+                    const target_module = self.getModule(cmod) orelse continue;
+                    if (helper_modules.isVirtualId(target_module.path)) continue;
                     const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
 
                     // 새 이름: target_name$N (기존 이름 충돌 없는 것)
