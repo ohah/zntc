@@ -326,15 +326,20 @@ pub const Parser = struct {
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
             self.is_module = true;
             self.scanner.is_module = true;
-        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx"))
-        {
-            // Unambiguous: 낙관적 module 파싱 + 에러 지연. import/export 가 없으면
-            // script 코드도 그대로 받음 — esbuild/swc/rollup 와 동일 정책.
-            // .cjs / .cts 는 위 분기를 안 타고 script 모드 유지 (Node CommonJS 컨벤션).
+        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx")) {
             self.is_module = true;
             self.scanner.is_module = true;
             self.is_unambiguous = ts_unambiguous;
+        } else if (ts_unambiguous and
+            (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx")))
+        {
+            // CLI/transpile 모드 전용. 번들러 (ts_unambiguous=false) 는 `graph.zig`
+            // 의 `def_format` 분류 (package.json#type 인식 포함) 로 module/script
+            // 를 결정 — 거기서 unambiguous 도 같이 set 한다. 여기서 비-bundler
+            // 경로만 esbuild/swc/rollup 와 동일하게 `.js` 를 낙관적 module 로 받음.
+            self.is_module = true;
+            self.scanner.is_module = true;
+            self.is_unambiguous = true;
         }
         if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
             std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
