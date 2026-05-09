@@ -17,13 +17,12 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
-const module_parser = @import("../parser/module.zig");
 const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
 const Kind = @import("../lexer/token.zig").Kind;
 const Comment = @import("../lexer/scanner.zig").Comment;
 const rt = @import("../bundler/runtime_helpers.zig");
 const options_mod = @import("options.zig");
-const linker_mod = @import("../bundler/linker.zig");
+const module_emit = @import("modules.zig");
 
 pub const ModuleFormat = options_mod.ModuleFormat;
 pub const Platform = options_mod.Platform;
@@ -46,6 +45,12 @@ const FunctionMapBuilder = @import("function_map.zig").FunctionMapBuilder;
 const RangeMapping = @import("function_map.zig").RangeMapping;
 
 pub const Codegen = struct {
+    const emitImport = module_emit.emitImport;
+    const emitExportNamed = module_emit.emitExportNamed;
+    const emitExportSpecifier = module_emit.emitExportSpecifier;
+    const emitExportDefault = module_emit.emitExportDefault;
+    const emitExportAll = module_emit.emitExportAll;
+
     ast: *const Ast,
     allocator: std.mem.Allocator,
     buf: std.ArrayList(u8),
@@ -307,11 +312,11 @@ pub const Codegen = struct {
 
     /// 리스트 구분자: minify_whitespace=true면 "," 아니면 ", ".
     /// formal_parameters, arguments, array literal 등에서 공용.
-    inline fn listSep(self: *const Codegen) []const u8 {
+    pub inline fn listSep(self: *const Codegen) []const u8 {
         return if (self.options.minify_whitespace) "," else ", ";
     }
 
-    fn write(self: *Codegen, s: []const u8) !void {
+    pub fn write(self: *Codegen, s: []const u8) !void {
         try self.buf.appendSlice(self.allocator, s);
         // 줄/열 추적
         for (s) |c| {
@@ -324,7 +329,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn writeByte(self: *Codegen, b: u8) !void {
+    pub fn writeByte(self: *Codegen, b: u8) !void {
         try self.buf.append(self.allocator, b);
         if (b == '\n') {
             self.gen_line += 1;
@@ -377,7 +382,7 @@ pub const Codegen = struct {
     }
 
     /// 노드가 function/arrow/class 인지 확인.
-    fn isFunctionLike(self: *const Codegen, idx: NodeIndex) bool {
+    pub fn isFunctionLike(self: *const Codegen, idx: NodeIndex) bool {
         if (idx.isNone()) return false;
         return switch (self.ast.getNode(idx).tag) {
             .function_declaration, .function_expression, .function, .arrow_function_expression, .class_declaration, .class_expression => true,
@@ -461,7 +466,7 @@ pub const Codegen = struct {
 
     /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
     /// string_table span (bit 31 설정)은 합성 노드이므로 매핑 스킵.
-    fn addSourceMapping(self: *Codegen, span: Span) !void {
+    pub fn addSourceMapping(self: *Codegen, span: Span) !void {
         if (self.sm_builder) |*sm| {
             // 합성 노드(string_table) 또는 빈 span → 소스맵 매핑 스킵
             if (span.start & Ast.STRING_TABLE_BIT != 0 or (span.start == 0 and span.end == 0)) return;
@@ -521,7 +526,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn writeSpan(self: *Codegen, span: Span) !void {
+    pub fn writeSpan(self: *Codegen, span: Span) !void {
         const text = self.ast.getText(span);
         if (self.options.ascii_only) {
             try self.writeAsciiOnly(text);
@@ -577,7 +582,7 @@ pub const Codegen = struct {
     }
 
     /// 노드의 소스 텍스트를 출력.
-    fn writeNodeSpan(self: *Codegen, node: Node) !void {
+    pub fn writeNodeSpan(self: *Codegen, node: Node) !void {
         try self.writeSpan(node.span);
     }
 
@@ -679,7 +684,7 @@ pub const Codegen = struct {
 
     pub const Error = std.mem.Allocator.Error;
 
-    fn emitNode(self: *Codegen, idx: NodeIndex) Error!void {
+    pub fn emitNode(self: *Codegen, idx: NodeIndex) Error!void {
         if (idx.isNone()) return;
 
         // 번들 모드: skip_nodes에 있으면 출력하지 않음 (import/export 제거)
@@ -1671,7 +1676,7 @@ pub const Codegen = struct {
 
     /// identifier 노드의 symbol_id를 해결.
     /// symbol_ids[node_i]에서 직접 조회 (트랜스포머의 propagateSymbolId로 전파된 값).
-    fn resolveSymbolId(_: *Codegen, idx: NodeIndex, meta: *const LinkingMetadata) ?u32 {
+    pub fn resolveSymbolId(_: *Codegen, idx: NodeIndex, meta: *const LinkingMetadata) ?u32 {
         const node_i = @intFromEnum(idx);
         if (node_i < meta.symbol_ids.len) {
             return meta.symbol_ids[node_i];
@@ -1681,7 +1686,7 @@ pub const Codegen = struct {
 
     /// export default X에서 X의 (rename된) 이름이 def_name과 같은지 확인.
     /// 같으면 할당문(def_name = X)이 불필요한 self-reference.
-    fn isExportDefaultSelfRef(self: *Codegen, inner: NodeIndex, def_name: []const u8) bool {
+    pub fn isExportDefaultSelfRef(self: *Codegen, inner: NodeIndex, def_name: []const u8) bool {
         const inner_node = self.ast.getNode(inner);
         if (inner_node.tag != .identifier_reference) return false;
         if (self.options.linking_metadata) |md| {
@@ -2054,7 +2059,7 @@ pub const Codegen = struct {
     }
 
     /// require_xxx() 또는 (init_xxx(), __toCommonJS(...))를 출력. 성공 시 true.
-    fn emitRequireRewriteOrCall(self: *Codegen, source: ast_mod.NodeIndex) !bool {
+    pub fn emitRequireRewriteOrCall(self: *Codegen, source: ast_mod.NodeIndex) !bool {
         if (self.resolveRequireRewrite(source)) |req_var| {
             try self.emitRewriteValue(req_var);
             return true;
@@ -2760,607 +2765,6 @@ pub const Codegen = struct {
         }
     }
 
-    // ================================================================
-    // Import/Export 출력
-    // ================================================================
-
-    fn emitImport(self: *Codegen, node: Node) !void {
-        const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
-
-        if (self.options.module_format == .cjs) {
-            return self.emitImportCJS(x.source, x.specs_start, x.specs_len);
-        }
-
-        try self.write("import ");
-        switch (x.phase) {
-            .defer_ => try self.write("defer "),
-            .source => try self.write("source "),
-            .none => {},
-        }
-        if (x.specs_len > 0) {
-            try self.emitImportSpecifiers(x.specs_start, x.specs_len);
-            try self.write(" from ");
-        }
-        try self.emitNode(x.source);
-        if (x.attrs_len > 0) {
-            try self.write(" with ");
-            try self.emitImportAttributes(x.attrs_start, x.attrs_len);
-        }
-        try self.writeByte(';');
-    }
-
-    fn emitImportAttributes(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
-        try self.writeByte('{');
-        const indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
-        for (indices, 0..) |raw_idx, i| {
-            if (i > 0) try self.write(", ");
-            const attr_node = self.ast.getNode(@enumFromInt(raw_idx));
-            // 키는 identifier 또는 string literal — string_literal emit의 quote-strip을 피해 raw span 사용.
-            const key_node = self.ast.getNode(attr_node.data.binary.left);
-            try self.writeNodeSpan(key_node);
-            try self.write(": ");
-            const value = attr_node.data.binary.right;
-            if (!value.isNone()) try self.emitNode(value);
-        }
-        try self.writeByte('}');
-    }
-
-    /// import specifiers를 타입별로 출력한다.
-    /// default → 이름만, namespace → * as 이름, named → { a, b }
-    fn emitImportSpecifiers(self: *Codegen, specs_start: u32, specs_len: u32) !void {
-        const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
-        var first = true;
-        var has_named = false;
-
-        // 1단계: default, namespace 출력
-        for (spec_indices) |raw_idx| {
-            const spec: NodeIndex = @enumFromInt(raw_idx);
-            if (spec.isNone()) continue;
-            const spec_node = self.ast.getNode(spec);
-            switch (spec_node.tag) {
-                .import_default_specifier => {
-                    if (!first) try self.write(",");
-                    try self.addSourceMapping(spec_node.span);
-                    try self.writeNodeSpan(spec_node);
-                    first = false;
-                },
-                .import_namespace_specifier => {
-                    if (!first) try self.write(",");
-                    try self.write("* as ");
-                    try self.addSourceMapping(spec_node.span);
-                    try self.writeNodeSpan(spec_node);
-                    first = false;
-                },
-                .import_specifier => {
-                    has_named = true;
-                },
-                else => {},
-            }
-        }
-
-        // 2단계: named specifiers를 { } 감싸서 출력
-        if (has_named) {
-            if (!first) try self.write(", ");
-            try self.writeByte('{');
-            if (!self.options.minify_whitespace) try self.writeByte(' ');
-            const sep: []const u8 = self.listSep();
-            var named_first = true;
-            for (spec_indices) |raw_idx| {
-                const spec: NodeIndex = @enumFromInt(raw_idx);
-                if (spec.isNone()) continue;
-                const spec_node = self.ast.getNode(spec);
-                if (spec_node.tag == .import_specifier) {
-                    if (!named_first) try self.write(sep);
-                    try self.emitImportSpecifierRename(spec_node, " as ");
-                    named_first = false;
-                }
-            }
-            if (!self.options.minify_whitespace) try self.writeByte(' ');
-            try self.writeByte('}');
-        }
-    }
-
-    /// CJS: import { foo } from './bar' → const {foo}=require('./bar');
-    /// CJS: import bar from './bar' → const bar=require('./bar').default;
-    /// CJS: import * as bar from './bar' → const bar=require('./bar');
-    /// __esm 래핑 모듈: const → var (호이스팅 지원)
-    fn emitImportCJS(self: *Codegen, source: NodeIndex, specs_start: u32, specs_len: u32) !void {
-        if (specs_len == 0) {
-            _ = try self.emitRequireRewriteOrCall(source);
-            try self.writeByte(';');
-            return;
-        }
-
-        // specifier 유형 분석 (키워드 생략 판단에 필요)
-        const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
-        var has_default = false;
-        var has_namespace = false;
-        var named_count: u32 = 0;
-
-        for (spec_indices) |raw_idx| {
-            const spec = self.ast.getNode(@enumFromInt(raw_idx));
-            switch (spec.tag) {
-                .import_default_specifier => has_default = true,
-                .import_namespace_specifier => has_namespace = true,
-                .import_specifier => named_count += 1,
-                else => {},
-            }
-        }
-
-        // named import만 있고 모든 named binding이 expression rename이면
-        // import 선언을 skip한다. CJS named import는 `require_xxx().prop`
-        // 직접 참조로 치환되므로 body의 destructuring assignment가 불필요하다.
-        if (named_count > 0 and !has_default and !has_namespace and self.options.linking_metadata != null) {
-            const meta = self.options.linking_metadata.?;
-            var all_expr_renamed = true;
-            for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                if (spec.tag != .import_specifier) continue;
-                const local_idx = spec.data.binary.right;
-                if (!local_idx.isNone()) {
-                    if (self.resolveSymbolId(local_idx, meta)) |sid| {
-                        if (meta.renames.get(sid)) |rename| {
-                            if (!linker_mod.isImportExpressionRename(rename)) {
-                                all_expr_renamed = false;
-                                break;
-                            }
-                        } else {
-                            all_expr_renamed = false;
-                            break;
-                        }
-                    } else {
-                        all_expr_renamed = false;
-                        break;
-                    }
-                }
-            }
-            if (all_expr_renamed) return;
-        }
-
-        // __esm 호이스팅: var 선언이 래퍼 밖에 있으므로 body에서는 할당만.
-        // named import ({a, b})는 destructuring assignment — var 생략 시 ({a,b}=expr) 괄호 필요.
-        const skip_keyword = self.options.esm_var_assign_only;
-        if (!skip_keyword)
-            try self.write(if (self.options.use_var_for_imports) "var " else "const ");
-
-        // named destructuring assignment: ({a,b}=expr); — 괄호 없으면 block으로 파싱됨
-        // default+named 동시 (import Foo, {Bar}) 도 named 경로로 들어가므로 괄호 필요
-        const needs_paren = skip_keyword and named_count > 0 and !has_namespace;
-        if (needs_paren) try self.writeByte('(');
-
-        if (has_namespace) {
-            // import * as bar from './bar' → [var] bar=require('./bar');
-            for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                if (spec.tag == .import_namespace_specifier) {
-                    try self.emitSpecifierWithRename(@enumFromInt(raw_idx), spec);
-                    break;
-                }
-            }
-        } else if (has_default and named_count == 0) {
-            // import bar from './bar' → [var] bar=require('./bar').default;
-            for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                if (spec.tag == .import_default_specifier) {
-                    try self.emitSpecifierWithRename(@enumFromInt(raw_idx), spec);
-                    break;
-                }
-            }
-        } else if (named_count > 0) {
-            // import { foo, bar as baz } from './bar' → const {foo,bar:baz}=require('./bar');
-            // import Foo, { bar } from './bar' → const {"default":Foo,bar}=require('./bar');
-            try self.writeByte('{');
-            var first = true;
-            if (has_default) {
-                for (spec_indices) |raw_idx| {
-                    const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (spec.tag == .import_default_specifier) {
-                        try self.write("\"default\":");
-                        try self.emitSpecifierWithRename(@enumFromInt(raw_idx), spec);
-                        first = false;
-                        break;
-                    }
-                }
-            }
-            for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                if (spec.tag == .import_specifier) {
-                    if (!first) try self.writeByte(',');
-                    try self.emitImportSpecifierRename(spec, ":");
-                    first = false;
-                }
-            }
-            try self.writeByte('}');
-        }
-
-        try self.writeByte('=');
-
-        // __esm body에서 default/namespace import: __toESM(require_xxx()) 래핑 필요.
-        // CJS module.exports = fn 패턴에서 .default 프로퍼티가 없으므로 __toESM이
-        // 모듈 전체를 default로 설정해준다. default+named 혼합 시에도 적용 —
-        // __toESM이 __esModule 체크 후 프로퍼티를 복사하므로 named 접근도 정상 동작.
-        const wrap_toesm = self.options.esm_var_assign_only and (has_default or has_namespace);
-        if (wrap_toesm) {
-            // #1621: minify 시 __toESM → $tE 축약.
-            try self.write(if (self.options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM");
-            try self.writeByte('(');
-        }
-        _ = try self.emitRequireRewriteOrCall(source);
-        if (wrap_toesm) try self.writeByte(')');
-
-        if (has_default and !has_namespace and named_count == 0) {
-            try self.write(".default");
-        }
-
-        if (needs_paren) try self.writeByte(')');
-        try self.writeByte(';');
-    }
-
-    /// import_default_specifier / import_namespace_specifier의 이름을 renames 적용하여 출력.
-    /// 이 노드들은 identifier_reference가 아니라 별도 태그이므로 emitNode에서 renames를 거치지 않음.
-    fn emitSpecifierWithRename(self: *Codegen, idx: NodeIndex, spec: Node) !void {
-        try self.addSourceMapping(spec.span);
-        if (self.options.linking_metadata) |meta| {
-            const ni = @intFromEnum(idx);
-            if (ni < meta.symbol_ids.len) {
-                if (meta.symbol_ids[ni]) |sid| {
-                    if (meta.renames.get(sid)) |renamed| {
-                        try self.write(renamed);
-                        return;
-                    }
-                }
-            }
-        }
-        try self.writeSpan(spec.data.string_ref);
-    }
-
-    /// import specifier의 imported + rename separator + local 출력.
-    /// ESM은 " as ", CJS는 ":" 를 separator로 사용한다.
-    /// imported 쪽은 항상 원본 이름을 사용 (exports 객체의 프로퍼티 키).
-    /// local 쪽은 rename 적용 (로컬 변수명).
-    fn emitImportSpecifierRename(self: *Codegen, spec_node: Node, sep: []const u8) !void {
-        const imported = spec_node.data.binary.left;
-        const local = spec_node.data.binary.right;
-        // imported: 항상 원본 이름 (exports 객체 키 = rename 전 이름)
-        const imported_node = self.ast.getNode(imported);
-        try self.addSourceMapping(imported_node.span);
-        try self.writeSpan(imported_node.span);
-        // local이 rename 되었거나 원본 imported와 다른 경우 → separator + local 출력
-        const needs_rename = blk: {
-            if (local.isNone() or @intFromEnum(local) == @intFromEnum(imported)) break :blk false;
-            // 원본 텍스트가 다르면 항상 rename 필요 (import { foo as bar })
-            const imp_text = self.ast.getText(self.ast.getNode(imported).span);
-            const loc_text = self.ast.getText(self.ast.getNode(local).span);
-            if (!std.mem.eql(u8, imp_text, loc_text)) break :blk true;
-            // 원본 텍스트가 같아도 linker가 rename했으면 separator 필요
-            // (e.g., import { Foo } → {Foo: Foo$1})
-            if (self.options.linking_metadata) |meta| {
-                if (self.resolveSymbolId(local, meta)) |sid| {
-                    if (meta.renames.get(sid)) |_| break :blk true;
-                }
-            }
-            break :blk false;
-        };
-        if (needs_rename) {
-            try self.write(sep);
-            try self.emitNode(local);
-        }
-    }
-
-    fn emitExportNamed(self: *Codegen, node: Node) !void {
-        const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
-
-        if (self.options.module_format == .cjs) {
-            return self.emitExportNamedCJS(x.decl, x.specs_start, x.specs_len, x.source);
-        }
-
-        // 번들 모드: export 키워드 생략, declaration만 출력.
-        // 단일 파일 transpile 은 rename map 전달용으로만 linking_metadata 를 쓰므로 분기 제외.
-        if (self.options.linking_metadata) |lm| {
-            if (lm.is_bundle_context and !x.decl.isNone()) {
-                try self.emitNode(x.decl);
-                return;
-            }
-        }
-
-        try self.write("export ");
-        if (!x.decl.isNone()) {
-            try self.emitNode(x.decl);
-        } else {
-            try self.writeByte('{');
-            if (self.options.minify_whitespace) {
-                try self.emitNodeList(x.specs_start, x.specs_len, ",");
-            } else {
-                try self.writeByte(' ');
-                try self.emitNodeList(x.specs_start, x.specs_len, ", ");
-                try self.writeByte(' ');
-            }
-            try self.writeByte('}');
-            if (!x.source.isNone()) {
-                try self.write(" from ");
-                try self.emitNode(x.source);
-                if (x.attrs_len > 0) {
-                    try self.write(" with ");
-                    try self.emitImportAttributes(x.attrs_start, x.attrs_len);
-                }
-            }
-            try self.writeByte(';');
-        }
-    }
-
-    /// ESM export specifier: `foo` 또는 `foo as bar`
-    /// writeNodeSpan 대신 사용 — 원본 span에 공백이 포함될 수 있으므로 구조적으로 출력.
-    fn emitExportSpecifier(self: *Codegen, node: Node) !void {
-        const local_idx = node.data.binary.left;
-        const exported_idx = node.data.binary.right;
-        const local_node = self.ast.getNode(local_idx);
-        const exported_node = self.ast.getNode(exported_idx);
-        const local_text = self.ast.getText(local_node.span);
-        const exported_text = self.ast.getText(exported_node.span);
-        try self.addSourceMapping(local_node.span);
-        try self.write(local_text);
-        if (!std.mem.eql(u8, local_text, exported_text)) {
-            try self.write(" as ");
-            try self.addSourceMapping(exported_node.span);
-            try self.write(exported_text);
-        }
-    }
-
-    /// CJS: export const x = 1 → const x=1;exports.x=x;
-    /// CJS: export { foo } → exports.foo=foo;
-    /// CJS: export { foo, default as Bar } from './bar' → exports.foo=require("./bar").foo;exports.Bar=require("./bar").default;
-    fn emitExportNamedCJS(self: *Codegen, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
-        if (self.options.skip_cjs_named_export_decls) return;
-
-        if (!decl.isNone() and @intFromEnum(decl) < self.ast.nodes.items.len) {
-            // export const x = 1 → const x=1; (+ exports.x=x; unless __esm)
-            try self.emitNode(decl);
-            if (!self.options.skip_cjs_exports)
-                try self.emitCJSExportBinding(decl);
-            return;
-        } else if (self.options.skip_cjs_exports) {
-            // __esm 모듈: export { } 구문은 __export()가 처리하므로 생략
-            return;
-        } else {
-            const has_source = !source.isNone() and @intFromEnum(source) < self.ast.nodes.items.len;
-            const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
-            for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                if (spec.tag != .export_specifier) continue;
-
-                // export_specifier: { left=local/imported, right=exported }
-                // alias 없으면 exported == local (파서가 동일 인덱스 할당)
-                const local_idx = spec.data.binary.left;
-                const exported_idx = spec.data.binary.right;
-                const exported_text = self.ast.getText(self.ast.getNode(exported_idx).span);
-                const local_text = self.ast.getText(self.ast.getNode(local_idx).span);
-
-                try self.write("exports.");
-                try self.write(exported_text);
-                try self.writeByte('=');
-                if (has_source) {
-                    try self.write("require(");
-                    try self.emitNode(source);
-                    try self.write(").");
-                }
-                try self.write(local_text);
-                try self.writeByte(';');
-            }
-        }
-    }
-
-    /// 변수/함수/클래스 선언에서 이름을 추출하여 exports.name=name; 출력.
-    /// variable_declarator의 이름은 span 텍스트에서 직접 추출 (extra 경유 불필요).
-    fn emitCJSExportBinding(self: *Codegen, decl_idx: NodeIndex) !void {
-        const decl = self.ast.getNode(decl_idx);
-        switch (decl.tag) {
-            .variable_declaration => {
-                const e = decl.data.extra;
-                const list_start = self.ast.extra_data.items[e + 1];
-                const list_len = self.ast.extra_data.items[e + 2];
-                const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
-                for (declarators) |raw_idx| {
-                    const declarator = self.ast.getNode(@enumFromInt(raw_idx));
-                    const de = declarator.data.extra;
-                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
-                    if (!name_idx.isNone()) {
-                        const name_node = self.ast.getNode(name_idx);
-                        const name = self.ast.getText(name_node.data.string_ref);
-                        // linker가 rename한 경우 변수 참조는 rename된 이름을 사용해야 함
-                        // (예: JSON named export에서 $id → $id$1로 충돌 회피 시)
-                        const ref_name = if (self.options.linking_metadata) |meta|
-                            if (self.resolveSymbolId(name_idx, meta)) |sid|
-                                (meta.renames.get(sid) orelse name)
-                            else
-                                name
-                        else
-                            name;
-                        try self.write("exports.");
-                        try self.write(name);
-                        try self.writeByte('=');
-                        try self.write(ref_name);
-                        try self.writeByte(';');
-                    }
-                }
-            },
-            .function_declaration, .class_declaration => {
-                const e = decl.data.extra;
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-                if (!name_idx.isNone()) {
-                    const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.getText(name_node.data.string_ref);
-                    const ref_name = if (self.options.linking_metadata) |meta|
-                        if (self.resolveSymbolId(name_idx, meta)) |sid|
-                            (meta.renames.get(sid) orelse name)
-                        else
-                            name
-                    else
-                        name;
-                    try self.write("exports.");
-                    try self.write(name);
-                    try self.writeByte('=');
-                    try self.write(ref_name);
-                    try self.writeByte(';');
-                }
-            },
-            else => {},
-        }
-    }
-
-    fn emitExportDefault(self: *Codegen, node: Node) !void {
-        if (self.options.module_format == .cjs) {
-            if (self.options.skip_cjs_exports) {
-                // __esm 모듈: export는 __export()가 처리.
-                // named decl (export default function foo) → 선언만 출력
-                // named ref (export default NativeModules) → 이미 선언됨, 무시
-                // anonymous expr (export default {...}) → var _default = expr;
-                const inner = node.data.unary.operand;
-                if (!inner.isNone()) {
-                    const inner_node = self.ast.getNode(inner);
-                    const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
-                        !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
-                    if (is_named_decl) {
-                        // export default function foo() {} → 선언만 출력
-                        try self.emitNode(inner);
-                    } else {
-                        const def_name = if (self.options.linking_metadata) |md| md.default_export_name else "_default";
-                        if (std.mem.startsWith(u8, def_name, "_default")) {
-                            // 합성 변수 (_default, _default$1 등): var 선언 + 할당 필요.
-                            if (!self.options.esm_var_assign_only) try self.write("var ");
-                            try self.write(def_name);
-                            try self.writeByte('=');
-                            try self.emitNode(inner);
-                            try self.writeByte(';');
-                        } else if (!self.isExportDefaultSelfRef(inner, def_name)) {
-                            // namespace import이면 ns var name을 직접 사용 (rename과 다름).
-                            if (!(try self.tryEmitNsVarAssignment(def_name, inner))) {
-                                // mangling으로 이름이 바뀐 경우 (View → View$44) 할당 필요.
-                                try self.write(def_name);
-                                try self.writeByte('=');
-                                try self.emitNode(inner);
-                                try self.writeByte(';');
-                            }
-                        }
-                    }
-                }
-                return;
-            }
-            try self.write("module.exports=");
-            try self.emitNode(node.data.unary.operand);
-            try self.writeByte(';');
-            return;
-        }
-        // 번들 모드: export default 키워드 생략, 내부 선언만 출력.
-        if (self.options.linking_metadata) |lm| {
-            if (lm.is_bundle_context) {
-                const inner = node.data.unary.operand;
-                if (!inner.isNone()) {
-                    const inner_node = self.ast.getNode(inner);
-                    // 이름이 있는 function/class → 그대로 출력
-                    const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
-                        !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
-                    if (is_named_decl) {
-                        try self.emitNode(inner);
-                    } else {
-                        const def_name = lm.default_export_name;
-                        if (!self.isExportDefaultSelfRef(inner, def_name)) {
-                            // namespace import는 실제 값이 `X_ns` 변수에 저장되므로
-                            // `def_name = X_ns;` 로 할당. 일반 케이스는 inner 표현식 직접 대입.
-                            if (!(try self.tryEmitNsVarAssignment(def_name, inner))) {
-                                try self.emitDefaultVarAssignment(def_name, inner);
-                            }
-                        }
-                    }
-                }
-                return;
-            }
-        }
-        try self.write("export default ");
-        const inner_idx = node.data.unary.operand;
-        // contextual name: 익명 function/arrow/class → "default"
-        if (self.fn_map_builder != null and self.isFunctionLike(inner_idx)) {
-            const saved = self.pending_fn_name;
-            self.pending_fn_name = try self.allocator.dupe(u8, "default");
-            defer {
-                if (self.pending_fn_name) |s| self.allocator.free(s);
-                self.pending_fn_name = saved;
-            }
-            try self.emitNode(inner_idx);
-        } else {
-            try self.emitNode(inner_idx);
-        }
-        // class/function 선언 뒤에는 세미콜론 불필요
-        if (!inner_idx.isNone()) {
-            const inner_tag = self.ast.getNode(inner_idx).tag;
-            if (inner_tag != .class_declaration and inner_tag != .function_declaration) {
-                try self.writeByte(';');
-            }
-        }
-    }
-
-    /// inner가 namespace import (`import * as X`) 를 참조하면 `<def_name> = <X_ns>;` 할당을 emit.
-    /// 성공 시 true, namespace import가 아니면 false (caller가 기본 emit 수행).
-    /// `var Animated$6;` 선언과 `Animated_ns = {...}` 객체 사이 연결을 복원해 default getter가
-    /// 올바른 namespace 객체를 반환하도록 한다 (#1208).
-    fn tryEmitNsVarAssignment(self: *Codegen, def_name: []const u8, inner: NodeIndex) !bool {
-        const md = self.options.linking_metadata orelse return false;
-        const inner_node = self.ast.getNode(inner);
-        if (inner_node.tag != .identifier_reference) return false;
-        const sid = self.resolveSymbolId(inner, md) orelse return false;
-        const entry = md.ns_inline_objects.get(sid) orelse return false;
-
-        if (!self.options.esm_var_assign_only) try self.write("var ");
-        try self.write(def_name);
-        if (self.options.minify_whitespace) {
-            try self.writeByte('=');
-        } else {
-            try self.write(" = ");
-        }
-        try self.write(entry.var_name);
-        try self.writeByte(';');
-        return true;
-    }
-
-    /// `var <name> = <inner>;` 출력 (export default 변환용).
-    fn emitDefaultVarAssignment(self: *Codegen, name: []const u8, inner: NodeIndex) !void {
-        if (self.options.minify_whitespace) {
-            try self.write("var ");
-            try self.write(name);
-            try self.writeByte('=');
-        } else {
-            try self.write("var ");
-            try self.write(name);
-            try self.write(" = ");
-        }
-        try self.emitNode(inner);
-        try self.writeByte(';');
-    }
-
-    fn emitExportAll(self: *Codegen, node: Node) !void {
-        const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
-        if (self.options.module_format == .cjs) {
-            // export * from './bar' → Object.assign(exports,require('./bar'));
-            try self.write("Object.assign(exports,require(");
-            try self.emitNode(x.source);
-            try self.write("));");
-            return;
-        }
-        // export * as ns from './foo' / export * from './foo'
-        if (!x.exported_name.isNone()) {
-            try self.write("export * as ");
-            try self.emitNode(x.exported_name);
-            try self.write(" from ");
-        } else {
-            try self.write("export * from ");
-        }
-        try self.emitNode(x.source);
-        if (x.attrs_len > 0) {
-            try self.write(" with ");
-            try self.emitImportAttributes(x.attrs_start, x.attrs_len);
-        }
-        try self.writeByte(';');
-    }
-
     // JSX 출력 함수 제거: Transformer의 jsx_lowering이 JSX → call_expression 변환을 담당.
     // emitJSXElement, emitJSXFragment, emitJSXTagName, emitJSXAttrsClassic,
     // emitJSXPropsAutomatic, emitJSXChildrenClassic, emitJSXChildrenAutomatic,
@@ -4049,7 +3453,7 @@ pub const Codegen = struct {
         try self.emitNodeList(list.start, list.len, sep);
     }
 
-    fn emitNodeList(self: *Codegen, start: u32, len: u32, sep: []const u8) !void {
+    pub fn emitNodeList(self: *Codegen, start: u32, len: u32, sep: []const u8) !void {
         if (len == 0) return;
         const indices = self.ast.extra_data.items[start .. start + len];
         var first = true;
