@@ -83,11 +83,9 @@ fn onTransform(
     defer parser.deinit();
     parser.configureFromExtension(std.fs.path.extension(id));
     if (std.mem.endsWith(u8, id, ".js")) {
+        // RN spec 파일은 Flow + import/export 사용. `configureFromExtension(".js")`
+        // 가 이미 module 모드를 set 하므로 (esbuild/swc/rollup 정렬) Flow 만 toggle.
         parser.is_flow = true;
-        // RN spec 파일은 import/export 사용 — Flow `.js` 도 모듈 모드 필요. configureFromExtension
-        // 이 .js 를 Script 로 두므로 명시적 module 모드 토글.
-        parser.is_module = true;
-        parser.scanner.is_module = true;
     }
 
     const program = parser.parse() catch return null;
