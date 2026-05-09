@@ -684,7 +684,7 @@ function warnRnBundleUnsupported(opts) {
 async function runRnBundle(opts, config) {
   const rn = await loadRnModule();
   const cfg = config ?? {};
-  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.root ?? '.');
+  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.projectRoot ?? cfg.root ?? '.');
   const entry = opts.entryPoints?.[0];
   if (!entry) {
     console.error(

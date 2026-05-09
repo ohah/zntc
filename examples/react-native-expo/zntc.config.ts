@@ -3,13 +3,27 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { withRozenite } from "@rozenite/metro";
 import { withExpo } from "@zntc/react-native";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export default withExpo({
+const rozenitePlugins = [
+  "@rozenite/controls-plugin",
+  "@rozenite/expo-atlas-plugin",
+  "@rozenite/network-activity-plugin",
+  "@rozenite/react-navigation-plugin",
+  "@rozenite/redux-devtools-plugin",
+  "@rozenite/require-profiler-plugin",
+  "@rozenite/sqlite-plugin",
+  "@rozenite/storage-plugin",
+  "@rozenite/tanstack-query-plugin",
+] as const;
+
+const config = withExpo({
   root: __dirname,
+  projectRoot: __dirname,
   entry: "index.js",
   dev: true,
   minify: false,
@@ -49,4 +63,11 @@ export default withExpo({
     forwardClientLogs: true,
     verifyConnections: false,
   },
+});
+
+// Rozenite DevTools middleware (Metro-compatible).
+export default withRozenite(config as any, {
+  enabled: true,
+  include: [...rozenitePlugins],
+  projectType: "expo",
 });

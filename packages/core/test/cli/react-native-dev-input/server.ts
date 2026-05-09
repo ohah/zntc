@@ -12,6 +12,15 @@ describe('buildRnDevServerInput — server config 추출 (#2605)', () => {
     expect(input?.host).toBe('0.0.0.0');
   });
 
+  test('config.projectRoot > config.root → bundle.projectRoot 매핑', async () => {
+    const buildRnDevServerInput = await loadBuildRnDevServerInput();
+    const input = buildRnDevServerInput(
+      { entryPoints: ['i.js'] },
+      { root: '/root-from-zntc', projectRoot: '/metro-project-root' },
+    );
+    expect(input?.bundle.projectRoot).toBe('/metro-project-root');
+  });
+
   test('CLI port/host > config.server', async () => {
     const buildRnDevServerInput = await loadBuildRnDevServerInput();
     const input = buildRnDevServerInput(

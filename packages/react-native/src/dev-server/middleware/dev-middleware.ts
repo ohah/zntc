@@ -7,6 +7,7 @@
 
 import { createRequire } from 'node:module';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { resolve } from 'node:path';
 import type { Duplex } from 'node:stream';
 
 export interface DevMiddleware {
@@ -26,12 +27,22 @@ export interface DevMiddleware {
 }
 
 /**
- * project → react-native → @react-native/community-cli-plugin →
- * @react-native/dev-middleware 체인. fallback 으로 project 직접 / zntc 자기.
+ * Expo 프로젝트는 Rozenite가 @expo/cli 기준의 @react-native/dev-middleware
+ * instance를 monkey-patch한다. 같은 module instance를 로드해야 RN DevTools
+ * frontend URL 패치가 적용되므로 expo → @expo/cli → react-native CLI chain
+ * 순서로 resolve. fallback 으로 project 직접 / zntc 자기.
  */
-function resolveDevMiddlewarePath(projectRoot: string): string | null {
-  const projectRequire = createRequire(`${projectRoot}/package.json`);
+export function resolveDevMiddlewarePath(projectRoot: string): string | null {
+  const root = resolve(projectRoot);
+  const projectRequire = createRequire(`${root}/package.json`);
   const candidates: Array<() => string> = [
+    () => {
+      const expoPath = projectRequire.resolve('expo');
+      const expoRequire = createRequire(expoPath);
+      const expoCliPath = expoRequire.resolve('@expo/cli');
+      const expoCliRequire = createRequire(expoCliPath);
+      return expoCliRequire.resolve('@react-native/dev-middleware');
+    },
     () => {
       const reactNativePath = projectRequire.resolve('react-native/package.json');
       const rnRequire = createRequire(reactNativePath);
@@ -68,7 +79,9 @@ export async function loadDevMiddleware(
   const path = resolveDevMiddlewarePath(options.projectRoot);
   if (!path) return null;
   try {
-    const mod = (await import(path)) as {
+    const root = resolve(options.projectRoot);
+    const requireFromProject = createRequire(`${root}/package.json`);
+    const mod = requireFromProject(path) as {
       createDevMiddleware: (input: {
         serverBaseUrl: string;
         projectRoot?: string;

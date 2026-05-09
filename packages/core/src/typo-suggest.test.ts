@@ -197,6 +197,7 @@ describe('KNOWN_CONFIG_KEYS — React Native config keys (#2605)', () => {
   // 번개 BungaeConfig 영역 — runRnDev 가 zntc.config.ts 에서 인식.
   const rnConfigKeys = [
     'root',
+    'projectRoot',
     'entry',
     'dev',
     'outDir',
