@@ -6,7 +6,12 @@
     "outDir": "dist",
     // index.ts 가 ../shared/index 를 import 하므로 source root 가 packages/ 까지
     // 확장된다. emit layout 은 dist/wasm/index.d.ts + dist/shared/*.d.ts.
-    "rootDir": ".."
+    "rootDir": "..",
+    // composite: TS Project Reference 의 referenced project 노출. tsconfig.base.json
+    // 에는 없으므로 명시 추가. include 가 reachable file 모두 명시 (TS6307 회피).
+    "composite": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
   },
-  "include": ["index.ts"]
+  "include": ["index.ts", "../shared/**/*"],
+  "exclude": ["../shared/**/*.test.ts"]
 }
