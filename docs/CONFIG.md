@@ -71,7 +71,7 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `metafile`                                   |            `--metafile`            |               ✅               |            ❌             | esbuild 호환                                                       |
 | `resolveExtensions`                          |      `--resolve-extensions=`       |               ✅               |          (간접)           | tsconfig 의 paths 와 별개                                          |
 | `mainFields`                                 |          `--main-fields=`          |               ✅               |            ❌             | package.json field 우선순위                                        |
-| `conditions`                                 |          `--conditions=`           |               ✅               |            ❌             | package exports 사용자 조건. monorepo internal src 직접 inline 은 §Monorepo (`source` condition) 참조 |
+| `conditions`                                 |          `--conditions=`           |               ✅               |            ❌             | package exports 사용자 조건. monorepo internal src 직접 inline 은 [Monorepo](#monorepo--source-exports-condition) 참조 |
 | `nodePaths`                                  |          `--node-paths=`           |               ✅               |            ❌             | bare specifier 추가 탐색 경로                                      |
 | `profile` / `profileLevel` / `profileFormat` |            `--profile*`            |               ✅               |            ❌             | 디버그/성능 측정                                                   |
 | `ignoreAnnotations`                          |       `--ignore-annotations`       |               ✅               |            ❌             | pure/sideEffects annotation 무시                                   |
@@ -326,6 +326,8 @@ consumer 의 빌드 명령에 `--conditions=source` 추가:
 → ZNTC 가 `import '@zntc/server'` 만나면 `./src/index.ts` 직접 따라가서 inline. server 의 dist 가 stale 이거나 없어도 무관.
 
 외부 npm 사용자에겐 `source` condition 이 켜지지 않으니 그대로 dist 사용 — monorepo 내부에서만 전환된다.
+
+> 최상위 `"source": "./src/index.ts"` 필드는 ZNTC bundler 가 직접 읽지 않는다 (`exports.source` 만 사용). parcel / microbundle 등 외부 도구 호환을 위해 함께 두는 관행.
 
 ### resolver 우선순위
 
