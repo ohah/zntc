@@ -9,19 +9,25 @@
     "README.md"
   ],
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
       "source": "./src/index.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "scripts": {
     "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core && node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.cjs --format=cjs --target=node --conditions=source --external @zntc/core",
-    "build:dts": "bun x tsc -b",
+    "build:dts": "bun x tsc -b && cp dist/index.d.ts dist/index.d.cts",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test",
     "prepublishOnly": "bun run build && bunx publint --strict --level error ."
