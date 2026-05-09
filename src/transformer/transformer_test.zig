@@ -1691,6 +1691,121 @@ test "#1797 ES5 down-level for-of + block scoping: body await → async _loop" {
     try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") != null);
 }
 
+test "#1797 native for-of + block scoping: try/catch body await → async _loop" {
+    const source =
+        \\async function f(items) {
+        \\  for (let key of items) {
+        \\    handlers.push(() => from[key]);
+        \\    try { await use(key); } catch (e) { log(e); }
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "async function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "try {") != null);
+}
+
+test "#1797 native for-of + block scoping: Promise.then (no await) → sync _loop" {
+    const source =
+        \\function f(items) {
+        \\  for (let key of items) {
+        \\    handlers.push(() => from[key]);
+        \\    use(key).then(() => log(key));
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // body 에 await 없음 — sync _loop, await wrap 없음
+    try std.testing.expect(std.mem.indexOf(u8, code, "async function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") == null);
+}
+
+test "#1797 classic for-loop + multiple lexical bindings (i, j) capture" {
+    const source =
+        \\function f() {
+        \\  for (let i = 0, j = 100; i < n; i++, j--) {
+        \\    fns.push(() => i + j);
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // 두 binding 모두 _loop param 으로 (순서 결정적)
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop(i, j)") != null);
+}
+
+test "#1797 native for-of + block scoping: async closure body 안의 await 는 무시 (negative 강화)" {
+    const source =
+        \\function f(items) {
+        \\  for (let key of items) {
+        \\    handlers.push(async function () {
+        \\      await use(key);
+        \\      return from[key];
+        \\    });
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // function expression closure 안 await — _loop 자체는 sync (그 closure 책임)
+    try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") == null);
+}
+
+test "#1797 native for-of + block scoping: async iife body await → async _loop" {
+    // 흔치 않지만 실제 RN/web 코드에서 본 패턴 — async function 안 for-of 가 await 사용
+    const source =
+        \\const result = (async () => {
+        \\  for (let item of stream) {
+        \\    queue.push(() => item);
+        \\    const v = await fetch(item);
+        \\    queue.push(v);
+        \\  }
+        \\})();
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "async function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") != null);
+}
+
 test "#1797 bungae __copyProps pattern: getter 가 iteration-local key 캡처" {
     // @radix-ui/react-slot 이 esbuild 로 빌드한 `__copyProps` 의 정확한 패턴.
     // RN Hermes 에서 `React$250 = '19.2.0'` crash 를 재현한 입력.
