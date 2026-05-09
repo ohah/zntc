@@ -102,68 +102,26 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
         }
 
-        /// loop body 내부를 반복적(iterative)으로 스캔하여
-        /// 클로저(arrow/function)가 lexical 변수를 캡처하는지 검사한다.
-        /// 명시적 스택 사용 — stack overflow 불가능.
-        pub fn hasCapturedClosure(
+        /// AST subtree 를 명시적 stack DFS 로 순회 (stack overflow 불가능).
+        /// closure (function/arrow) 경계는 `in_closure=true` 로 표시되어 callback 에
+        /// 전달된다 — callback 이 그 정보로 자기 의미의 가드를 적용 (capture 검사,
+        /// await/yield 검사 등). callback 이 true 반환 시 즉시 early-return true.
+        ///
+        /// `parser_node_count` 가드로 transformer 가 새로 추가한 노드는 방문 안 함.
+        /// OOM 시 보수적으로 true 반환 (호출부가 안전한 fallback 으로 처리).
+        fn anyMatchInsideClosure(
             self: *Transformer,
             body_idx: NodeIndex,
-            lexical_names: []const []const u8,
+            ctx: anytype,
+            comptime visit: fn (@TypeOf(ctx), Node, bool) bool,
         ) bool {
-            if (body_idx.isNone() or lexical_names.len == 0) return false;
-            // 원본 AST 범위. 원본 파서 노드만 방문 (transformer가 추가한 노드는 무시).
-            const max_node = self.parser_node_count;
-
-            const ScanEntry = struct { idx: NodeIndex, fn_depth: u32 };
-            var stack: std.ArrayList(ScanEntry) = .empty;
-            defer stack.deinit(self.allocator);
-            stack.append(self.allocator, .{ .idx = body_idx, .fn_depth = 0 }) catch return false;
-
-            while (stack.items.len > 0) {
-                const entry = stack.pop() orelse break;
-                if (entry.idx.isNone()) continue;
-                if (@intFromEnum(entry.idx) >= max_node) continue;
-                const node = self.ast.getNode(entry.idx);
-
-                // 클로저 경계: fn_depth 증가
-                const fn_depth = if (isFunctionBoundary(node.tag))
-                    entry.fn_depth + 1
-                else
-                    entry.fn_depth;
-
-                // identifier_reference: fn_depth > 0이면 캡처 검사
-                if (node.tag == .identifier_reference and fn_depth > 0) {
-                    const name = self.ast.getText(node.span);
-                    for (lexical_names) |ln| {
-                        if (std.mem.eql(u8, name, ln)) return true;
-                    }
-                }
-
-                // 자식 노드를 스택에 push (OOM 시 보수적으로 캡처 가정)
-                var children: std.ArrayList(NodeIndex) = .empty;
-                defer children.deinit(self.allocator);
-                collectChildIndices(self, node, &children) catch return true;
-                for (children.items) |child_idx| {
-                    stack.append(self.allocator, .{ .idx = child_idx, .fn_depth = fn_depth }) catch return true;
-                }
-            }
-            return false;
-        }
-
-        /// loop body 직속 (closure 경계 안 넘는) `await` expression 이 있는지 검사.
-        /// 있으면 합성된 `_loop` 함수도 async 로 emit + 호출부 `await _loop(x)` wrap
-        /// 필요 — `_loop` 가 새 function scope 라 enclosing async-ness 가 끊기기 때문.
-        ///
-        /// 명시적 스택 사용 — stack overflow 불가능. closure (function/arrow) 안의
-        /// `await` 는 그 closure 의 async-ness 가 결정하므로 무시한다.
-        pub fn hasAwaitExpression(self: *Transformer, body_idx: NodeIndex) bool {
             if (body_idx.isNone()) return false;
             const max_node = self.parser_node_count;
 
             const ScanEntry = struct { idx: NodeIndex, in_closure: bool };
             var stack: std.ArrayList(ScanEntry) = .empty;
             defer stack.deinit(self.allocator);
-            stack.append(self.allocator, .{ .idx = body_idx, .in_closure = false }) catch return false;
+            stack.append(self.allocator, .{ .idx = body_idx, .in_closure = false }) catch return true;
 
             while (stack.items.len > 0) {
                 const entry = stack.pop() orelse break;
@@ -173,7 +131,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
                 const in_closure = entry.in_closure or isFunctionBoundary(node.tag);
 
-                if (!in_closure and node.tag == .await_expression) return true;
+                if (visit(ctx, node, in_closure)) return true;
 
                 var children: std.ArrayList(NodeIndex) = .empty;
                 defer children.deinit(self.allocator);
@@ -183,6 +141,43 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 }
             }
             return false;
+        }
+
+        /// loop body 안에서 closure (arrow/function) 가 lexical 변수를 캡처하는지 검사.
+        /// closure 안의 identifier_reference 만 본다 — top-level (in_closure=false) reference
+        /// 는 그냥 같은 scope 의 var 사용이라 capture 가 아니다.
+        pub fn hasCapturedClosure(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            lexical_names: []const []const u8,
+        ) bool {
+            if (lexical_names.len == 0) return false;
+            const Ctx = struct {
+                self: *Transformer,
+                names: []const []const u8,
+            };
+            const ctx = Ctx{ .self = self, .names = lexical_names };
+            return anyMatchInsideClosure(self, body_idx, ctx, struct {
+                fn visit(c: Ctx, node: Node, in_closure: bool) bool {
+                    if (!in_closure or node.tag != .identifier_reference) return false;
+                    const name = c.self.ast.getText(node.span);
+                    for (c.names) |ln| {
+                        if (std.mem.eql(u8, name, ln)) return true;
+                    }
+                    return false;
+                }
+            }.visit);
+        }
+
+        /// loop body 직속 (closure 경계 안 넘는) `await` expression 이 있는지 검사.
+        /// 있으면 합성된 `_loop` 함수도 async 로 emit + 호출부 `await _loop(x)` wrap
+        /// 필요 — `_loop` 가 새 function scope 라 enclosing async-ness 가 끊기기 때문.
+        pub fn hasAwaitExpression(self: *Transformer, body_idx: NodeIndex) bool {
+            return anyMatchInsideClosure(self, body_idx, {}, struct {
+                fn visit(_: void, node: Node, in_closure: bool) bool {
+                    return !in_closure and node.tag == .await_expression;
+                }
+            }.visit);
         }
 
         /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
