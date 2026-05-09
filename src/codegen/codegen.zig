@@ -23,6 +23,7 @@ const rt = @import("../bundler/runtime_helpers.zig");
 const options_mod = @import("options.zig");
 const module_emit = @import("modules.zig");
 const type_runtime_emit = @import("type_runtime.zig");
+const writer_emit = @import("writer.zig");
 
 pub const ModuleFormat = options_mod.ModuleFormat;
 pub const Platform = options_mod.Platform;
@@ -314,37 +315,17 @@ pub const Codegen = struct {
         return if (self.options.minify_whitespace) "," else ", ";
     }
 
-    pub fn write(self: *Codegen, s: []const u8) !void {
-        try self.buf.appendSlice(self.allocator, s);
-        // 줄/열 추적
-        for (s) |c| {
-            if (c == '\n') {
-                self.gen_line += 1;
-                self.gen_col = 0;
-            } else {
-                self.gen_col += 1;
-            }
-        }
-    }
-
-    pub fn writeByte(self: *Codegen, b: u8) !void {
-        try self.buf.append(self.allocator, b);
-        if (b == '\n') {
-            self.gen_line += 1;
-            self.gen_col = 0;
-        } else {
-            self.gen_col += 1;
-        }
-    }
-
-    fn trimTrailingSemicolonBeforeMinifyBoundary(self: *Codegen) void {
-        if (!self.options.minify_whitespace) return;
-        if (!self.options.minify_syntax) return;
-        if (self.buf.items.len == 0) return;
-        if (self.buf.items[self.buf.items.len - 1] != ';') return;
-        _ = self.buf.pop();
-        if (self.gen_col > 0) self.gen_col -= 1;
-    }
+    pub const write = writer_emit.write;
+    pub const writeByte = writer_emit.writeByte;
+    pub const trimTrailingSemicolonBeforeMinifyBoundary = writer_emit.trimTrailingSemicolonBeforeMinifyBoundary;
+    pub const writeNewline = writer_emit.writeNewline;
+    pub const writeIndent = writer_emit.writeIndent;
+    pub const writeSpace = writer_emit.writeSpace;
+    pub const writeConstValue = writer_emit.writeConstValue;
+    pub const writeSpan = writer_emit.writeSpan;
+    pub const writeAsciiOnly = writer_emit.writeAsciiOnly;
+    pub const writeNodeSpan = writer_emit.writeNodeSpan;
+    pub const writeStringLiteral = writer_emit.writeStringLiteral;
 
     // ================================================================
     // Function Map 도우미
@@ -478,176 +459,6 @@ pub const Codegen = struct {
                 .original_column = lc.column,
             });
         }
-    }
-
-    /// 줄바꿈 출력. minify 모드에서는 아무것도 출력하지 않음.
-    fn writeNewline(self: *Codegen) !void {
-        if (self.options.minify_whitespace) return;
-        try self.write(self.options.newline);
-    }
-
-    /// 현재 들여쓰기 레벨만큼 들여쓰기 출력.
-    fn writeIndent(self: *Codegen) !void {
-        if (self.options.minify_whitespace) return;
-        var i: u32 = 0;
-        while (i < self.indent_level) : (i += 1) {
-            switch (self.options.indent_char) {
-                .tab => try self.writeByte('\t'),
-                .space => {
-                    var j: u8 = 0;
-                    while (j < self.options.indent_width) : (j += 1) {
-                        try self.writeByte(' ');
-                    }
-                },
-            }
-        }
-    }
-
-    /// 공백 출력. minify에서는 생략.
-    fn writeSpace(self: *Codegen) !void {
-        if (!self.options.minify_whitespace) try self.writeByte(' ');
-    }
-
-    /// span 범위의 텍스트를 출력한다.
-    /// source 또는 string_table에서 투명하게 읽는다 (getText 사용).
-    const ConstValue = @import("../semantic/symbol.zig").ConstValue;
-
-    /// ConstValue를 리터럴 문자열로 출력한다.
-    fn writeConstValue(self: *Codegen, cv: ConstValue) !void {
-        switch (cv.kind) {
-            .true_ => try self.write("true"),
-            .false_ => try self.write("false"),
-            .null_ => try self.write("null"),
-            .undefined_ => try self.write("void 0"),
-            .number => try self.write(cv.number_text),
-            .none => {},
-        }
-    }
-
-    pub fn writeSpan(self: *Codegen, span: Span) !void {
-        const text = self.ast.getText(span);
-        if (self.options.ascii_only) {
-            try self.writeAsciiOnly(text);
-        } else {
-            try self.write(text);
-        }
-    }
-
-    /// non-ASCII 문자를 \uXXXX로 이스케이프하여 출력.
-    fn writeAsciiOnly(self: *Codegen, text: []const u8) !void {
-        var i: usize = 0;
-        while (i < text.len) {
-            const b = text[i];
-            if (b < 0x80) {
-                // ASCII
-                try self.writeByte(b);
-                i += 1;
-            } else {
-                // UTF-8 → codepoint → \uXXXX
-                const cp_len = std.unicode.utf8ByteSequenceLength(b) catch 1;
-                if (i + cp_len <= text.len) {
-                    const cp = std.unicode.utf8Decode(text[i..][0..cp_len]) catch {
-                        try self.writeByte(b);
-                        i += 1;
-                        continue;
-                    };
-                    if (cp <= 0xFFFF) {
-                        var hex_buf: [6]u8 = undefined;
-                        _ = std.fmt.bufPrint(&hex_buf, "\\u{x:0>4}", .{cp}) catch unreachable;
-                        try self.buf.appendSlice(self.allocator, &hex_buf);
-                    } else {
-                        // 서로게이트 페어
-                        const adjusted = cp - 0x10000;
-                        const high: u16 = @intCast((adjusted >> 10) + 0xD800);
-                        const low: u16 = @intCast((adjusted & 0x3FF) + 0xDC00);
-                        var hex_buf: [12]u8 = undefined;
-                        _ = std.fmt.bufPrint(&hex_buf, "\\u{x:0>4}\\u{x:0>4}", .{ high, low }) catch unreachable;
-                        try self.buf.appendSlice(self.allocator, &hex_buf);
-                    }
-                    // 줄/열 추적
-                    if (cp <= 0xFFFF) {
-                        self.gen_col += 6;
-                    } else {
-                        self.gen_col += 12;
-                    }
-                    i += cp_len;
-                } else {
-                    try self.writeByte(b);
-                    i += 1;
-                }
-            }
-        }
-    }
-
-    /// 노드의 소스 텍스트를 출력.
-    pub fn writeNodeSpan(self: *Codegen, node: Node) !void {
-        try self.writeSpan(node.span);
-    }
-
-    /// 문자열 리터럴 출력. quote_style에 따라 따옴표를 변환하고
-    /// 내부 이스케이프를 재조정한다 (\' ↔ \").
-    fn writeStringLiteral(self: *Codegen, span: Span) !void {
-        const text = self.ast.getText(span);
-        if (text.len < 2) {
-            try self.write(text);
-            return;
-        }
-
-        const src_quote = text[0];
-        const target_quote: u8 = switch (self.options.quote_style) {
-            .double => '"',
-            .single => '\'',
-            .preserve => src_quote,
-        };
-
-        // 따옴표가 같으면 writeSpan에 위임 (ascii_only 포함)
-        if (src_quote == target_quote) {
-            try self.writeSpan(span);
-            return;
-        }
-
-        // 따옴표 변환: batch write로 연속 구간을 한 번에 출력
-        try self.writeByte(target_quote);
-        const content = text[1 .. text.len - 1];
-        var flush_start: usize = 0;
-        var i: usize = 0;
-        while (i < content.len) {
-            const c = content[i];
-            if (c == '\\' and i + 1 < content.len) {
-                if (content[i + 1] == src_quote) {
-                    // \' → ' (double 변환 시): 원본 따옴표 이스케이프 제거
-                    try self.write(content[flush_start..i]);
-                    try self.writeByte(src_quote);
-                    i += 2;
-                    flush_start = i;
-                } else if (content[i + 1] == target_quote) {
-                    // \" 이미 이스케이프됨 → 그대로 유지
-                    i += 2;
-                } else {
-                    // 다른 이스케이프 시퀀스 → 통째로 유지
-                    i += 2;
-                }
-            } else if (c == target_quote) {
-                // target 따옴표가 내용에 있으면 이스케이프 추가
-                try self.write(content[flush_start..i]);
-                try self.writeByte('\\');
-                try self.writeByte(c);
-                i += 1;
-                flush_start = i;
-            } else if (c >= 0x80 and self.options.ascii_only) {
-                try self.write(content[flush_start..i]);
-                const cp_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
-                const end = @min(i + cp_len, content.len);
-                try self.writeAsciiOnly(content[i..end]);
-                i = end;
-                flush_start = i;
-            } else {
-                i += 1;
-            }
-        }
-        // 남은 구간 flush
-        try self.write(content[flush_start..content.len]);
-        try self.writeByte(target_quote);
     }
 
     // ================================================================

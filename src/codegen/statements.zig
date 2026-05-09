@@ -5,6 +5,12 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
+const writer = @import("writer.zig");
+
+const writeNewline = writer.writeNewline;
+const writeIndent = writer.writeIndent;
+const writeSpace = writer.writeSpace;
+const trimTrailingSemicolonBeforeMinifyBoundary = writer.trimTrailingSemicolonBeforeMinifyBoundary;
 
 /// 주석 출력. pos가 null이면 남은 모든 주석 출력 (trailing).
 /// minify 모드에서는 legal comment (@license, @preserve, /*!)만 보존 (D022).
@@ -495,37 +501,4 @@ pub fn emitWith(self: anytype, node: Node) !void {
     try self.emitNode(node.data.binary.left);
     try self.writeByte(')');
     try self.emitNode(node.data.binary.right);
-}
-fn writeNewline(self: anytype) !void {
-    if (self.options.minify_whitespace) return;
-    try self.write(self.options.newline);
-}
-
-fn writeIndent(self: anytype) !void {
-    if (self.options.minify_whitespace) return;
-    var i: u32 = 0;
-    while (i < self.indent_level) : (i += 1) {
-        switch (self.options.indent_char) {
-            .tab => try self.writeByte('\t'),
-            .space => {
-                var j: u8 = 0;
-                while (j < self.options.indent_width) : (j += 1) {
-                    try self.writeByte(' ');
-                }
-            },
-        }
-    }
-}
-
-fn writeSpace(self: anytype) !void {
-    if (!self.options.minify_whitespace) try self.writeByte(' ');
-}
-
-fn trimTrailingSemicolonBeforeMinifyBoundary(self: anytype) void {
-    if (!self.options.minify_whitespace) return;
-    if (!self.options.minify_syntax) return;
-    if (self.buf.items.len == 0) return;
-    if (self.buf.items[self.buf.items.len - 1] != ';') return;
-    _ = self.buf.pop();
-    if (self.gen_col > 0) self.gen_col -= 1;
 }
