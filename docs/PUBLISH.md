@@ -36,33 +36,39 @@ bun run pre-release-check
 
 이 hook 은 **publish 명령을 명시 호출했을 때만** 실행 — `bun install` / `bun run dev` 등에는 영향 0.
 
-## 권장 publish 절차
+## 권장 publish 절차 — `bun run release`
 
-ZNTC 는 monorepo 라 패키지 간 dependency 가 있어 순서가 중요:
+`scripts/release.ts` 가 토폴로지 순서로 publish + 안전 가드를 모두 처리:
 
 ```bash
-# 1. 모든 검증
-bun run pre-release-check
+# 1. dry-run (실제 publish 안 함 — 변경 없음)
+bun run release:dry-run
+# → pre-release-check 실행 + 패키지 목록 + npm registry 가용성 표시
 
-# 2. core 부터 (다른 패키지의 dependency)
-cd packages/core
-bun publish      # prepublishOnly 가 자동 build + publint 한 번 더 검증
-
-# 3. server 는 private 이라 publish 안 됨 (skip)
-
-# 4. core 를 의존하는 패키지 — 순서 무관
-cd ../web && bun publish
-cd ../react-native && bun publish
-cd ../vite-plugin-zntc && bun publish
-cd ../wasm && bun publish
-cd ../init && bun publish
+# 2. 실제 publish — confirm prompt 거쳐서만 진행
+bun run release:publish
+# → 위 1번 + "yes" 입력 후에만 sequential publish
+# → 이미 registry 에 같은 version 이 있으면 그 패키지는 자동 skip (idempotent)
 ```
 
-**주의**: 첫 publish 전 npm registry 의 패키지명 가용성 확인 (`npm view @zntc/core` 가 `404` 면 OK).
+옵션:
+- `--tag <name>`: dist-tag (예: `next` / `beta`) 명시
+- `--access public`: 자동 (scoped package 의 default)
+
+순서: `core → web / react-native / vite-plugin-zntc / wasm / init` (server 는 private skip).
+
+## 수동 publish (필요 시)
+
+```bash
+cd packages/core
+bun publish      # prepublishOnly 가 자동 build + publint 검증
+```
+
+스크립트 우회. 단일 패키지 hotfix 등에 유용.
 
 ## 후속 release 자동화
 
-`changesets` (https://github.com/changesets/changesets) 도입 시 version bump + changelog + sequential publish 가 한 번에. 현재는 manual 절차.
+`changesets` (https://github.com/changesets/changesets) 도입 시 version bump + changelog + sequential publish 가 한 번에. 현재는 release.ts 가 sequential publish + version bump 는 수동.
 
 ## 관련 PR
 
