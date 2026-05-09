@@ -44,11 +44,16 @@ pub inline fn lowerKind(_: VariableDeclarationKind) VariableDeclarationKind {
 
 /// closure 경계 — 안의 capture / await / yield 등은 우리 책임이 아니라 해당 함수 책임.
 /// hasCapturedClosure / hasAwaitExpression 양쪽이 동일 set 사용 → 단일 정의로 drift 차단.
+///
+/// `method_definition` 도 포함 — class/object literal 의 method body 는 자체 함수 scope.
+/// 누락 시 `for (let i ...) { class C { m() { return i; } } }` 같은 패턴에서 m() 안의
+/// `i` 를 capture 가 아닌 직접 reference 로 오인 → per-iteration fresh binding 변환 누락.
 inline fn isFunctionBoundary(tag: Tag) bool {
     return tag == .function_expression or
         tag == .function_declaration or
         tag == .arrow_function_expression or
-        tag == .function;
+        tag == .function or
+        tag == .method_definition;
 }
 
 pub fn ES2015BlockScoping(comptime Transformer: type) type {
