@@ -1,0 +1,18 @@
+// Solution-style root tsconfig — 자기 type-check 안 하고 (`files: []`)
+// referenced project 들만 노출. IDE 가 이 파일을 자동 발견해 모든 패키지를
+// 단일 program 으로 인식 (cross-package go-to-def, no-symlink-required type
+// resolution). `tsc -b` 를 root 에서 호출하면 전체 monorepo dts 가 토폴로지
+// incremental 빌드.
+//
+// composite 가 활성화된 패키지만 references 에 등록. init / wasm 는 향후
+// composite 전환 시 추가 (별도 PR).
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/server" },
+    { "path": "./packages/web" },
+    { "path": "./packages/react-native" },
+    { "path": "./packages/vite-plugin-zntc" }
+  ]
+}
