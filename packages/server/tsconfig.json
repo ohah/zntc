@@ -3,7 +3,13 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "declarationDir": "dist"
+    "declarationDir": "dist",
+    // composite: 이 패키지를 TS Project Reference 의 referenced project 로
+    // 노출. consumer 의 tsconfig 가 references 배열로 명시하면 tsc -b 가
+    // 토폴로지 빌드 + incremental .tsbuildinfo. emitDeclarationOnly 와 호환 —
+    // tsc 는 .d.ts 만 생성, .js 는 zntc/bun build 가 emit.
+    "composite": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
   },
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts"]

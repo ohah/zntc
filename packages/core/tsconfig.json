@@ -6,7 +6,13 @@
     // index.ts 가 ../shared/index 를 import 하므로 source root 가 packages/ 까지
     // 확장된다. TS 6 의 TS5011 (inferred rootDir 거부) 회피 + 기존 emit layout
     // (`dist/core/index.d.ts` + `dist/shared/*.d.ts`, package.json `types` 와 일치) 보존.
-    "rootDir": ".."
+    "rootDir": "..",
+    // composite: TS Project Reference 의 referenced project 노출. consumer 가
+    // references 로 명시하면 `tsc -b` 가 토폴로지 빌드 + incremental
+    // .tsbuildinfo. emitDeclarationOnly 와 호환.
+    "composite": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
   },
-  "include": ["index.ts"]
+  "include": ["index.ts", "src/**/*", "../shared/**/*"],
+  "exclude": ["src/**/*.test.ts", "../shared/**/*.test.ts"]
 }
