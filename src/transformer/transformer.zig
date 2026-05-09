@@ -16,10 +16,7 @@
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
-const Tag = Node.Tag;
-const Data = Node.Data;
 const NodeIndex = ast_mod.NodeIndex;
-const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const module_parser = @import("../parser/module.zig");
@@ -53,7 +50,6 @@ const es2022_tla = @import("es2022_tla.zig");
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
-const worklet_mod = @import("transformer/worklet.zig");
 const styled_components_mod = @import("transformer/styled_components.zig");
 const emotion_mod = @import("transformer/emotion.zig");
 const tagged_template_mod = @import("transformer/tagged_template.zig");
@@ -1273,34 +1269,8 @@ pub const Transformer = struct {
     // TS expression 변환 — 타입 부분 제거, 값만 보존
     // ================================================================
 
-    /// TS expression (as/satisfies/!/type assertion/instantiation)에서
-    /// 값 부분만 추출한다.
-    ///
-    /// 예: `x as number` → `x` (operand만 반환)
-    /// 예: `x!` → `x` (non-null assertion 제거)
-    /// 예: `<number>x` → `x` (type assertion 제거)
-    fn visitTsExpression(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
-        const node = self.ast.getNode(idx);
-        if (!self.options.strip_types) {
-            return self.copyNodeDirect(idx);
-        }
-        const operand = node.data.unary.operand;
-        // ts_type_assertion: <T>(expr) → expr (괄호 불필요)
-        // angle-bracket 타입 어설션에서 operand가 parenthesized_expression이면
-        // 괄호를 벗겨서 내부 expression만 반환한다.
-        // 단, comma sequence는 괄호가 필요하므로 유지한다.
-        if (node.tag == .ts_type_assertion and !operand.isNone()) {
-            const op_node = self.ast.getNode(operand);
-            if (op_node.tag == .parenthesized_expression and !op_node.data.unary.operand.isNone()) {
-                const inner = self.ast.getNode(op_node.data.unary.operand);
-                if (inner.tag != .sequence_expression) {
-                    return self.visitNode(op_node.data.unary.operand);
-                }
-            }
-        }
-        // 모든 TS expression은 unary로, operand가 값 부분
-        return self.visitNode(operand);
-    }
+    const type_expression_mod = @import("transformer/type_expression.zig");
+    const visitTsExpression = type_expression_mod.visitTsExpression;
 
     // ================================================================
     // Extra 기반 노드 변환
@@ -1317,28 +1287,9 @@ pub const Transformer = struct {
     // define 글로벌 치환
     // ================================================================
 
-    /// 함수 body가 worklet이 될 예정이면 `plugins.worklet.body_depth`를 올린 상태로 body를 방문한다.
-    /// 반환된 body 내부에서는 `--define` 치환이 억제되어 UI 런타임에서도 심볼이 안전하게 유지된다.
-    pub fn visitBodyWorkletAware(self: *Transformer, body_idx: NodeIndex) Error!NodeIndex {
-        const is_worklet = self.plugins.worklet.auto_next or
-            worklet_mod.isWorkletDirectiveGeneric(self, body_idx, "worklet");
-        if (is_worklet) self.plugins.worklet.body_depth += 1;
-        defer if (is_worklet) {
-            self.plugins.worklet.body_depth -= 1;
-        };
-        return self.visitNode(body_idx);
-    }
-
-    /// Fast Refresh 등록이 억제된 scope 안에서 node를 visit한다.
-    /// IIFE 내부 factory처럼 최상위 바인딩이 아닌 함수 선언에 대해
-    /// `_cN = <name>` 참조 시 ReferenceError를 유발하지 않도록 refresh 등록을 건너뛴다.
-    /// 호출 scope 바깥의 suppress 상태는 save/restore된다.
-    pub fn visitWithRefreshSuppressed(self: *Transformer, node_idx: NodeIndex) Error!NodeIndex {
-        const saved = self.plugins.refresh.suppress_registration;
-        self.plugins.refresh.suppress_registration = true;
-        defer self.plugins.refresh.suppress_registration = saved;
-        return self.visitNode(node_idx);
-    }
+    const function_visit_mod = @import("transformer/functions.zig");
+    pub const visitBodyWorkletAware = function_visit_mod.visitBodyWorkletAware;
+    pub const visitWithRefreshSuppressed = function_visit_mod.visitWithRefreshSuppressed;
 
     pub const tryDefineReplace = define_mod.tryDefineReplace;
 
@@ -1361,45 +1312,9 @@ pub const Transformer = struct {
     // JSX 노드 변환
     // ================================================================
 
-    /// jsx_element: extra = [tag_name, attrs_start, attrs_len, children_start, children_len]
-    /// 항상 5 fields. self-closing은 children_len=0.
-    fn visitJSXElement(self: *Transformer, node: Node) Error!NodeIndex {
-        // cssProp pre-processing — `<X css={...}>` 를 styled component 로 추출 (jsx_transform=false
-        // 경로 — jsx 가 그대로 출력되는 케이스).
-        const working_node = (try styled_components_mod.maybeExtractCssProp(self, node)) orelse node;
-        const e = working_node.data.extra;
-        const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_attrs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
-        const children_len = self.readU32(e, 4);
-        const new_children = if (children_len > 0)
-            try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = children_len })
-        else
-            NodeList{ .start = 0, .len = 0 };
-        return self.addExtraNode(.jsx_element, working_node.span, &.{
-            @intFromEnum(new_tag),
-            new_attrs.start,
-            new_attrs.len,
-            new_children.start,
-            new_children.len,
-        });
-    }
-
-    /// jsx_opening_element: extra = [tag_name, attrs_start, attrs_len]
-    fn visitJSXOpeningElement(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitJSXExtraNode(.jsx_opening_element, node);
-    }
-
-    /// JSX extra 노드 공통: tag + attrs만 복사 (opening element 등)
-    fn visitJSXExtraNode(self: *Transformer, tag: Tag, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_attrs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
-        return self.addExtraNode(tag, node.span, &.{
-            @intFromEnum(new_tag),
-            new_attrs.start,
-            new_attrs.len,
-        });
-    }
+    const jsx_visit_mod = @import("transformer/jsx.zig");
+    const visitJSXElement = jsx_visit_mod.visitJSXElement;
+    const visitJSXOpeningElement = jsx_visit_mod.visitJSXOpeningElement;
 
     // ================================================================
     // Extra 기반 노드 변환
@@ -1421,52 +1336,7 @@ pub const Transformer = struct {
     pub const insertStatementsAfterSuper = declarations_mod.insertStatementsAfterSuper;
     pub const prependStatementsToBody = declarations_mod.prependStatementsToBody;
 
-    /// arrow_function_expression: extra = [params_list, body, flags]
-    /// flags: 0x01 = async
-    fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
-        const params_idx = self.readNodeIdx(e, 0);
-        const body_idx = self.readNodeIdx(e, 1);
-        const flags = self.readU32(e, 2);
-        const new_params = try self.visitNode(params_idx);
-        const new_body = try self.visitBodyWorkletAware(body_idx);
-        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
-        const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
-
-        // Plugin dispatch: auto-workletization 등 AST 플러그인 적용
-        const is_auto_worklet = self.plugins.worklet.auto_next;
-        if (is_auto_worklet or self.options.plugins.len > 0) {
-            // parser가 arrow params를 항상 formal_parameters list로 정규화하므로 tag 체크 불필요.
-            const orig_params_list: NodeList = blk: {
-                if (params_idx.isNone()) break :blk .{ .start = 0, .len = 0 };
-                const n = self.ast.getNode(params_idx);
-                break :blk if (n.tag == .formal_parameters) n.data.list else .{ .start = 0, .len = 0 };
-            };
-            const new_params_list: NodeList = blk: {
-                if (new_params.isNone()) break :blk .{ .start = 0, .len = 0 };
-                const n = self.ast.getNode(new_params);
-                break :blk if (n.tag == .formal_parameters) n.data.list else .{ .start = 0, .len = 0 };
-            };
-
-            if (try self.dispatchFunctionPlugins(result, .{
-                .node_idx = result,
-                .node_tag = .arrow_function_expression,
-                .name = null,
-                .body_idx = new_body,
-                .params = new_params_list,
-                .original_params = orig_params_list,
-                .original_body_idx = body_idx,
-                .flags = flags,
-                .source_path = self.options.jsx_filename,
-                .is_auto_worklet = is_auto_worklet,
-            })) |replacement| {
-                return replacement;
-            }
-        }
-
-        return result;
-    }
+    const visitArrowFunction = function_visit_mod.visitArrowFunction;
 
     // ================================================================
     // Class + Decorator — transformer/class_decorator.zig로 위임
@@ -1536,51 +1406,8 @@ pub const Transformer = struct {
     pub const wrapInStringLiteral = class_deco.wrapInStringLiteral;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
-    /// call_expression: extra = [callee, args_start, args_len, flags]
-    pub fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        if (e + 3 >= self.ast.extra_data.items.len) return NodeIndex.none;
-        const callee_idx = self.readNodeIdx(e, 0);
-        const args_start = self.readU32(e, 1);
-        const args_len = self.readU32(e, 2);
-        const flags = self.readU32(e, 3);
-
-        // String.{replace,replaceAll} 의 replacement string 안 `$<name>` → `$N` 변환.
-        // regex_lower 가 named group 을 strip하면 인덱스 매핑이 깨져 replacement 가 매칭 실패하므로,
-        // literal regex + literal string 조합에 한해 replacement 도 함께 변환한다.
-        if (self.options.unsupported.regex_named_groups and args_len == 2) {
-            if (try self.tryRewriteReplaceNamedRefs(callee_idx, args_start)) |rewritten_args| {
-                const new_callee = try self.visitNode(callee_idx);
-                const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_callee), rewritten_args.start, rewritten_args.len, flags,
-                });
-                return self.ast.addNode(.{
-                    .tag = .call_expression,
-                    .span = node.span,
-                    .data = .{ .extra = new_extra },
-                });
-            }
-        }
-
-        const new_callee = try self.visitNode(callee_idx);
-
-        // Auto-workletization: callee 이름이 플러그인 목록에 매칭되면
-        // 해당 인자 위치의 function/arrow에 plugins.worklet.auto_next 플래그를 설정.
-        const auto_callee = self.matchAutoWorkletCallee(callee_idx);
-        const new_args = if (auto_callee != null)
-            try self.visitCallArgsWithAutoWorklet(args_start, args_len, auto_callee.?)
-        else
-            try self.visitExtraList(.{ .start = args_start, .len = args_len });
-
-        const new_extra = try self.ast.addExtras(&.{
-            @intFromEnum(new_callee), new_args.start, new_args.len, flags,
-        });
-        return self.ast.addNode(.{
-            .tag = .call_expression,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
-        });
-    }
+    const call_visit_mod = @import("transformer/calls.zig");
+    pub const visitCallExpression = call_visit_mod.visitCallExpression;
 
     // ================================================================
     // Regex replacement 변환 — transformer/regex.zig로 위임
@@ -1589,25 +1416,7 @@ pub const Transformer = struct {
     pub const tryRewriteReplaceNamedRefs = regex_mod.tryRewriteReplaceNamedRefs;
     pub const collectConstRegexDeclarators = regex_mod.collectConstRegexDeclarators;
 
-    /// new_expression: extra = [callee, args_start, args_len, flags]
-    fn visitNewExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        if (e + 3 >= self.ast.extra_data.items.len) return NodeIndex.none;
-        const callee_idx = self.readNodeIdx(e, 0);
-        const args_start = self.readU32(e, 1);
-        const args_len = self.readU32(e, 2);
-        const flags = self.readU32(e, 3);
-        const new_callee = try self.visitNode(callee_idx);
-        const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
-        const new_extra = try self.ast.addExtras(&.{
-            @intFromEnum(new_callee), new_args.start, new_args.len, flags,
-        });
-        return self.ast.addNode(.{
-            .tag = .new_expression,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
-        });
-    }
+    const visitNewExpression = call_visit_mod.visitNewExpression;
 
     // ================================================================
     // Class/object member visitors — transformer/members.zig로 위임
@@ -1668,56 +1477,8 @@ pub const Transformer = struct {
     // Plugin dispatch helper
     // ================================================================
 
-    /// 함수-유사 노드의 body가 extra_data에서 차지하는 슬롯 오프셋.
-    /// parser/ast.zig의 노드 extra 레이아웃 정의와 일치해야 한다.
-    fn functionBodyOffset(tag: @import("../parser/ast.zig").Node.Tag) u32 {
-        return switch (tag) {
-            // arrow: [params(0), body(1), flags]
-            .arrow_function_expression => 1,
-            // function_declaration/expression/method_definition: [name/key(0), params(1), body(2), flags(3), ...]
-            else => 2,
-        };
-    }
-
-    /// Plugin visitor 훅 dispatch — 지정된 tag에 등록된 훅을 순회하며 first-wins로 호출.
-    /// 모든 훅이 null 반환이면 null → caller가 default 방문 진행.
-    pub const VisitorHookKind = enum { on_program, on_object_expression, on_call_expression, on_class_declaration, on_class_expression };
-    pub fn dispatchVisitor(self: *Transformer, comptime kind: VisitorHookKind, node_idx: NodeIndex) Error!?NodeIndex {
-        if (self.options.plugins.len == 0) return null;
-        var api = AstTransformCtx{ .transformer = self };
-        for (self.options.plugins) |p| {
-            const v = p.visitor orelse continue;
-            // enum → struct field: @tagName이 런타임 오버헤드 없이 comptime 매핑.
-            // 새 훅 추가 시 enum + Visitor struct만 수정하면 됨 (switch 분기 불필요).
-            const hook = @field(v, @tagName(kind)) orelse continue;
-            const result = hook(p.context, &api, node_idx) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                error.PluginFailed => continue,
-            };
-            if (result) |r| return r;
-        }
-        return null;
-    }
-
-    /// onFunction 플러그인 훅을 실행한다.
-    /// 플러그인이 함수를 교체하면 새 NodeIndex를 반환, 아니면 null.
-    /// body 수정 시 result 노드의 extra_data를 직접 패치한다.
-    pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info: FunctionInfo) Error!?NodeIndex {
-        if (self.options.plugins.len == 0) return null;
-        var api = AstTransformCtx{ .transformer = self, .modified_body = null };
-        defer api.deinitClosureCache();
-        for (self.options.plugins) |p| {
-            if (p.onFunction) |hook| {
-                hook(p.context, &api, func_info) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.PluginFailed => {},
-                };
-            }
-        }
-        if (api.modified_body) |new_body_idx| {
-            const result_extra = self.ast.getNode(result).data.extra;
-            self.ast.extra_data.items[result_extra + functionBodyOffset(func_info.node_tag)] = @intFromEnum(new_body_idx);
-        }
-        return api.replaced_node;
-    }
+    const plugin_dispatch_mod = @import("transformer/plugins.zig");
+    pub const VisitorHookKind = plugin_dispatch_mod.VisitorHookKind;
+    pub const dispatchVisitor = plugin_dispatch_mod.dispatchVisitor;
+    pub const dispatchFunctionPlugins = plugin_dispatch_mod.dispatchFunctionPlugins;
 };
