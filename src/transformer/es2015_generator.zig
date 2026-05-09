@@ -1592,64 +1592,83 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// AST 서브트리에 return_statement가 있는지 체크.
         /// generator 내 if body에서 return이 있으면 collectOperations로 처리해야
         /// return [2]로 변환됨.
-        fn containsReturn(self: *const Transformer, idx: NodeIndex) bool {
-            if (idx.isNone()) return false;
-            const node = self.ast.getNode(idx);
-            if (node.tag == .return_statement) return true;
-            // function/arrow 경계 중단
-            if (node.tag == .function_declaration or node.tag == .function_expression or
-                node.tag == .arrow_function_expression) return false;
+        ///
+        /// 명시 stack DFS — recursive 였을 때 deep AST 에서 stack overflow 위험.
+        /// containsYield (#2803) 와 동일 변환 패턴. behavior 100% 보존.
+        fn containsReturn(self: *const Transformer, root_idx: NodeIndex) bool {
+            if (root_idx.isNone()) return false;
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, root_idx) catch return true;
 
-            return switch (node.tag) {
-                .block_statement, .function_body => {
-                    const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                    for (members) |raw_idx| {
-                        if (containsReturn(self, @enumFromInt(raw_idx))) return true;
+            while (stack.items.len > 0) {
+                const idx = stack.pop() orelse break;
+                if (idx.isNone()) continue;
+                const node = self.ast.getNode(idx);
+
+                if (node.tag == .return_statement) return true;
+                // function/arrow 경계: nested 함수의 return 은 다른 스코프
+                if (node.tag == .function_declaration or node.tag == .function_expression or
+                    node.tag == .arrow_function_expression) continue;
+
+                const push = struct {
+                    fn one(self_: *const Transformer, st: *std.ArrayList(NodeIndex), child: NodeIndex) bool {
+                        st.append(self_.allocator, child) catch return false;
+                        return true;
                     }
-                    return false;
-                },
-                .if_statement, .for_in_statement, .for_of_statement => {
-                    return containsReturn(self, node.data.ternary.b) or containsReturn(self, node.data.ternary.c);
-                },
-                .while_statement, .do_while_statement, .labeled_statement => containsReturn(self, node.data.binary.right),
-                .for_statement => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 3 >= extras.len) return false;
-                    return containsReturn(self, @enumFromInt(extras[e + 3]));
-                },
-                .switch_statement => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    const cases_start = extras[e + 1];
-                    const cases_len = extras[e + 2];
-                    const cases = extras[cases_start .. cases_start + cases_len];
-                    for (cases) |raw_idx| {
-                        if (containsReturn(self, @enumFromInt(raw_idx))) return true;
-                    }
-                    return false;
-                },
-                .switch_case => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    const stmts_start = extras[e + 1];
-                    const stmts_len = extras[e + 2];
-                    const stmts = extras[stmts_start .. stmts_start + stmts_len];
-                    for (stmts) |raw_idx| {
-                        if (containsReturn(self, @enumFromInt(raw_idx))) return true;
-                    }
-                    return false;
-                },
-                .try_statement => {
-                    // try: ternary { a=block, b=catch, c=finally }
-                    return containsReturn(self, node.data.ternary.a) or
-                        containsReturn(self, node.data.ternary.b) or
-                        containsReturn(self, node.data.ternary.c);
-                },
-                else => false,
-            };
+                };
+
+                switch (node.tag) {
+                    .block_statement, .function_body => {
+                        const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                        for (members) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .if_statement, .for_in_statement, .for_of_statement => {
+                        if (!push.one(self, &stack, node.data.ternary.b)) return true;
+                        if (!push.one(self, &stack, node.data.ternary.c)) return true;
+                    },
+                    .while_statement, .do_while_statement, .labeled_statement => {
+                        if (!push.one(self, &stack, node.data.binary.right)) return true;
+                    },
+                    .for_statement => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 3 >= extras.len) continue;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e + 3]))) return true;
+                    },
+                    .switch_statement => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 2 >= extras.len) continue;
+                        const cases_start = extras[e + 1];
+                        const cases_len = extras[e + 2];
+                        const cases = extras[cases_start .. cases_start + cases_len];
+                        for (cases) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .switch_case => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 2 >= extras.len) continue;
+                        const stmts_start = extras[e + 1];
+                        const stmts_len = extras[e + 2];
+                        const stmts = extras[stmts_start .. stmts_start + stmts_len];
+                        for (stmts) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .try_statement => {
+                        if (!push.one(self, &stack, node.data.ternary.a)) return true;
+                        if (!push.one(self, &stack, node.data.ternary.b)) return true;
+                        if (!push.one(self, &stack, node.data.ternary.c)) return true;
+                    },
+                    else => {},
+                }
+            }
+            return false;
         }
 
         /// expression body (arrow function 등)를 state machine으로 변환.
