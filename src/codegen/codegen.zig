@@ -24,6 +24,7 @@ const options_mod = @import("options.zig");
 const module_emit = @import("modules.zig");
 const type_runtime_emit = @import("type_runtime.zig");
 const writer_emit = @import("writer.zig");
+const debug_metadata = @import("debug_metadata.zig");
 
 pub const ModuleFormat = options_mod.ModuleFormat;
 pub const Platform = options_mod.Platform;
@@ -255,55 +256,15 @@ pub const Codegen = struct {
         }
     }
 
-    /// byte offset → 소스 줄/열 변환 (이진 탐색).
-    fn getOriginalLineColumn(self: *const Codegen, offset: u32) struct { line: u32, column: u32 } {
-        const offsets = self.line_offsets;
-        if (offsets.len == 0) return .{ .line = 0, .column = offset };
-        var lo: u32 = 0;
-        var hi: u32 = @intCast(offsets.len);
-        while (lo < hi) {
-            const mid = lo + (hi - lo) / 2;
-            if (offsets[mid] <= offset) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        const line_idx = if (lo > 0) lo - 1 else 0;
-        return .{
-            .line = line_idx,
-            .column = offset - offsets[line_idx],
-        };
-    }
-
-    /// 소스맵에 소스 파일을 등록한다. generate() 전에 호출.
-    pub fn addSourceFile(self: *Codegen, source_name: []const u8) !void {
-        if (self.sm_builder) |*sm| {
-            _ = try sm.addSource(source_name);
-            // sourcesContent 옵션이 켜져 있으면 소스 내용도 추가
-            if (self.options.sources_content) {
-                try sm.addSourceContent(self.ast.source);
-            }
-        }
-    }
-
-    /// 소스맵 JSON을 생성한다. generate() 후에 호출.
-    pub fn generateSourceMap(self: *Codegen, output_file: []const u8) !?[]const u8 {
-        if (self.sm_builder) |*sm| {
-            return try sm.generateJSON(output_file);
-        }
-        return null;
-    }
-
-    /// 소스맵 JSON + x_facebook_sources를 함께 생성한다. generate() 후에 호출.
-    /// fn_map_builder가 없으면 generateSourceMap과 동일.
-    pub fn generateSourceMapWithFunctionMap(self: *Codegen, output_file: []const u8) !?[]const u8 {
-        const sm = &(self.sm_builder orelse return null);
-        if (self.fn_map_builder) |*fm| {
-            return try sm.generateJSONWithFunctionMap(self.allocator, output_file, fm);
-        }
-        return try sm.generateJSON(output_file);
-    }
+    pub const addSourceFile = debug_metadata.addSourceFile;
+    pub const generateSourceMap = debug_metadata.generateSourceMap;
+    pub const generateSourceMapWithFunctionMap = debug_metadata.generateSourceMapWithFunctionMap;
+    pub const addSourceMapping = debug_metadata.addSourceMapping;
+    const fnMapEnter = debug_metadata.fnMapEnter;
+    const fnMapExit = debug_metadata.fnMapExit;
+    pub const isFunctionLike = debug_metadata.isFunctionLike;
+    const resolveMemberLeafName = debug_metadata.resolveMemberLeafName;
+    const resolveMethodName = debug_metadata.resolveMethodName;
 
     // ================================================================
     // 출력 헬퍼
@@ -326,140 +287,6 @@ pub const Codegen = struct {
     pub const writeAsciiOnly = writer_emit.writeAsciiOnly;
     pub const writeNodeSpan = writer_emit.writeNodeSpan;
     pub const writeStringLiteral = writer_emit.writeStringLiteral;
-
-    // ================================================================
-    // Function Map 도우미
-    // ================================================================
-
-    /// 현재 generated position으로 새 이름 frame에 진입. builder 에 intern 된 owned
-    /// slice 를 fn_name_stack 에 borrow push.
-    /// 이름이 바뀔 때만 FunctionMapBuilder.push 호출 (중복 제거는 FunctionMapBuilder가 담당).
-    fn fnMapEnter(self: *Codegen, name: []const u8) !void {
-        if (self.fn_map_builder == null) return;
-        const interned = try self.fn_map_builder.?.internedName(name);
-        try self.fn_name_stack.append(self.allocator, interned);
-        errdefer _ = self.fn_name_stack.pop();
-        try self.fn_map_builder.?.push(.{
-            .name = interned,
-            .line = self.gen_line + 1, // FunctionMapBuilder는 1-based
-            .column = self.gen_col,
-        });
-    }
-
-    /// 현재 generated position으로 frame 종료. fn_name_stack pop (entry 는 builder 가 소유 — free 안 함).
-    fn fnMapExit(self: *Codegen) !void {
-        if (self.fn_map_builder == null) return;
-        if (self.fn_name_stack.items.len == 0) return;
-        _ = self.fn_name_stack.pop();
-        if (self.fn_name_stack.items.len == 0) return;
-        const parent = self.fn_name_stack.items[self.fn_name_stack.items.len - 1];
-        try self.fn_map_builder.?.push(.{
-            .name = parent,
-            .line = self.gen_line + 1,
-            .column = self.gen_col,
-        });
-    }
-
-    /// 노드가 function/arrow/class 인지 확인.
-    pub fn isFunctionLike(self: *const Codegen, idx: NodeIndex) bool {
-        if (idx.isNone()) return false;
-        return switch (self.ast.getNode(idx).tag) {
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .class_declaration, .class_expression => true,
-            else => false,
-        };
-    }
-
-    /// MemberExpression/identifier의 leaf 이름 추출 (assignment left 용). 항상 owned UTF-8
-    /// 반환, caller 가 free.
-    /// `a.b.c` → "c", `a["str"]` → "str", `a[expr]` → null
-    fn resolveMemberLeafName(self: *const Codegen, idx: NodeIndex) !?[]u8 {
-        if (idx.isNone()) return null;
-        const n = self.ast.getNode(idx);
-        return switch (n.tag) {
-            .identifier_reference, .assignment_target_identifier, .binding_identifier => try self.allocator.dupe(u8, self.ast.getText(n.data.string_ref)),
-            .static_member_expression => blk: {
-                const e = n.data.extra;
-                if (!self.ast.hasExtra(e, 2)) break :blk null;
-                const property = self.ast.readExtraNode(e, 1);
-                break :blk try self.ast.staticKeyName(self.allocator, property);
-            },
-            .computed_member_expression => blk: {
-                const e = n.data.extra;
-                if (!self.ast.hasExtra(e, 2)) break :blk null;
-                const property = self.ast.readExtraNode(e, 1);
-                break :blk try self.ast.staticKeyName(self.allocator, property);
-            },
-            else => null,
-        };
-    }
-
-    /// fn_name_stack top (현재 class 이름). <global>/<anonymous> 이면 null.
-    fn resolveParentClassName(self: *const Codegen) ?[]const u8 {
-        const stack = self.fn_name_stack.items;
-        if (stack.len == 0) return null;
-        const top = stack[stack.len - 1];
-        if (std.mem.eql(u8, top, "<global>") or std.mem.eql(u8, top, "<anonymous>")) return null;
-        return top;
-    }
-
-    /// method_definition 키 + flags → Metro 스타일 이름 생성. 항상 owned UTF-8 반환,
-    /// caller 가 free.
-    /// getter → "get__name", setter → "set__name", constructor → class 이름.
-    /// 부모 class 이름이 있으면 "ClassName#method" / "ClassName.method" 형태.
-    fn resolveMethodName(self: *Codegen, key: NodeIndex, flags: u32) ![]u8 {
-        const is_getter = flags & ast_mod.MethodFlags.is_getter != 0;
-        const is_setter = flags & ast_mod.MethodFlags.is_setter != 0;
-        const is_static = flags & ast_mod.MethodFlags.is_static != 0;
-        const sep: []const u8 = if (is_static) "." else "#";
-
-        const raw_owned: []u8 = (try self.ast.staticKeyName(self.allocator, key)) orelse
-            try self.allocator.dupe(u8, "<anonymous>");
-        defer self.allocator.free(raw_owned);
-        const raw: []const u8 = raw_owned;
-
-        // constructor → 부모 class 이름
-        if (std.mem.eql(u8, raw, "constructor")) {
-            const parent = self.resolveParentClassName();
-            return try self.allocator.dupe(u8, parent orelse "constructor");
-        }
-
-        const class_name = self.resolveParentClassName();
-
-        if (is_getter) {
-            return if (class_name) |cn|
-                std.fmt.allocPrint(self.allocator, "{s}{s}get__{s}", .{ cn, sep, raw })
-            else
-                std.fmt.allocPrint(self.allocator, "get__{s}", .{raw});
-        }
-        if (is_setter) {
-            return if (class_name) |cn|
-                std.fmt.allocPrint(self.allocator, "{s}{s}set__{s}", .{ cn, sep, raw })
-            else
-                std.fmt.allocPrint(self.allocator, "set__{s}", .{raw});
-        }
-        return if (class_name) |cn|
-            std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ cn, sep, raw })
-        else
-            try self.allocator.dupe(u8, raw);
-    }
-
-    /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
-    /// string_table span (bit 31 설정)은 합성 노드이므로 매핑 스킵.
-    pub fn addSourceMapping(self: *Codegen, span: Span) !void {
-        if (self.sm_builder) |*sm| {
-            // 합성 노드(string_table) 또는 빈 span → 소스맵 매핑 스킵
-            if (span.start & Ast.STRING_TABLE_BIT != 0 or (span.start == 0 and span.end == 0)) return;
-            // byte offset → 줄/열 변환 (Scanner의 line_offsets 사용)
-            const lc = self.getOriginalLineColumn(span.start);
-            try sm.addMapping(.{
-                .generated_line = self.gen_line,
-                .generated_column = self.gen_col,
-                .source_index = 0,
-                .original_line = lc.line,
-                .original_column = lc.column,
-            });
-        }
-    }
 
     // ================================================================
     // Statement/comment emission — codegen/statements.zig로 위임
