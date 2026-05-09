@@ -117,6 +117,14 @@ pub const Transformer = struct {
     /// 빈 슬라이스이면 symbol 전파 비활성.
     symbol_ids: std.ArrayList(?u32) = .empty,
 
+    /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스.
+    /// resync 의 SemanticAnalyzer 가 이 marker 를 보고 user scope 와 격리된 별도
+    /// `helper_scope_map` 으로 binding → user 의 동일 이름 local 선언이 helper call
+    /// 을 shadow 하지 못한다. esbuild/swc 의 symbol-bound runtime helper 모델.
+    /// invariant: `markRuntimeHelperRef` 호출처는 매번 새로 만든 NodeIndex 만 넣으므로
+    /// 중복 entry 가 발생하지 않음 — dedupe 불필요.
+    helper_ref_nodes: std.ArrayListUnmanaged(u32) = .empty,
+
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).
     /// 비어 있으면 unused import 제거 비활성.
     symbols: []const Symbol = &.{},
@@ -359,6 +367,7 @@ pub const Transformer = struct {
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
+        self.helper_ref_nodes.deinit(self.allocator);
         self.plugins.refresh.registrations.deinit(self.allocator);
         for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
         self.plugins.refresh.signatures.deinit(self.allocator);
@@ -396,6 +405,21 @@ pub const Transformer = struct {
     /// 파서 노드 영역(0..parser_node_count-1)에 symbol_id를 채운다.
     pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Error!void {
         try self.symbol_ids.appendSlice(self.allocator, analyzer_symbol_ids);
+    }
+
+    /// #2869 helper marker 등록. caller 는 새로 만든 NodeIndex 를 넘긴다.
+    pub fn markRuntimeHelperRef(self: *Transformer, idx: NodeIndex) Error!void {
+        try self.helper_ref_nodes.append(self.allocator, @intFromEnum(idx));
+    }
+
+    /// #2869 marker 를 caller 소유 sorted slice 로 transfer. resync analyzer 가
+    /// binary search 로 사용. `alloc` 은 cache lifetime (parse_arena) 의 allocator.
+    pub fn ownedHelperRefNodes(self: *Transformer, alloc: std.mem.Allocator) Error![]u32 {
+        const items = self.helper_ref_nodes.items;
+        if (items.len == 0) return &.{};
+        const out = try alloc.dupe(u32, items);
+        std.mem.sort(u32, out, {}, std.sort.asc(u32));
+        return out;
     }
 
     // ================================================================

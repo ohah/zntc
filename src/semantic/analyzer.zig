@@ -138,6 +138,18 @@ pub const SemanticAnalyzer = struct {
     /// resolveIdentifier/declareSymbol에서 채워진다.
     symbol_ids: std.ArrayList(?u32),
 
+    /// #2869 transformer pre-pass 가 emit 한 runtime helper identifier_reference 노드
+    /// 인덱스 (sorted, ascending). caller (transform_prepass) 가 hydrate. 비어있으면
+    /// helper-aware path 비활성 — 단일 파일 transpile 등에서는 helper marker 자체가
+    /// 없으므로 기존 scope-walk 동작.
+    helper_ref_nodes: []const u32 = &.{},
+
+    /// #2869 helper import_specifier 의 import_binding symbol 을 user scope_maps[0]
+    /// 와 격리하는 별도 풀. key = helper local name (e.g. `__extends`, `$eX`), value
+    /// = symbols 배열의 인덱스. resolveIdentifier 가 helper marker 노드를 처리할 때
+    /// scope_maps 가 아닌 이 풀에서만 lookup.
+    helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
+
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
@@ -246,6 +258,7 @@ pub const SemanticAnalyzer = struct {
         self.resolved_names.deinit(self.allocator);
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
+        self.helper_scope_map.deinit(self.allocator);
         self.references.deinit(self.allocator);
         self.numeric_const_texts.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
@@ -851,14 +864,44 @@ pub const SemanticAnalyzer = struct {
     /// 글로벌 스코프까지 올라가도 못 찾으면 외부 참조(미선언 변수)로 무시한다.
     ///
     fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex, flags: symbol_mod.ReferenceFlags) void {
-        var scope_id = self.current_scope;
-
         // #1791 caller 의 flags 에 현재 type-context 상태를 얹어 per-reference 기록.
         // mangler 용 reference_count / write_count 는 영향 받지 않음 (bit 만 추가).
         var effective = flags;
         if (self.type_context_depth > 0) effective.type_context = true;
         if (self.value_as_type_depth > 0) effective.value_as_type = true;
 
+        // #2869 transformer 가 emit 한 runtime helper 식별자는 user scope chain 이 아닌
+        // helper_scope_map 에서만 lookup. 사용자가 helper 와 동일 이름 local 을 선언해도
+        // helper call site 가 user binding 으로 잘못 resolve 되지 않는다.
+        if (self.isHelperRefNode(node_idx)) {
+            if (self.helper_scope_map.get(name)) |sym_idx| {
+                const is_type_only_use = effective.type_context or effective.value_as_type;
+                if (!is_type_only_use) {
+                    self.symbols.items[sym_idx].reference_count += 1;
+                    if (flags.write) self.symbols.items[sym_idx].write_count += 1;
+                }
+                const ni: u32 = @intFromEnum(node_idx);
+                if (ni < self.symbol_ids.items.len) {
+                    self.symbol_ids.items[ni] = @intCast(sym_idx);
+                }
+                self.references.append(self.allocator, .{
+                    .node_index = node_idx,
+                    .scope_id = self.current_scope,
+                    .symbol_id = @enumFromInt(sym_idx),
+                    .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
+                    .scope_stmt_idx = self.current_stmt_idx,
+                    .flags = effective,
+                }) catch {};
+                return;
+            }
+            // helper sym 미등록 = helper import 가 prepend 되지 않은 경로 (예: graph
+            // pre-pass 미사용). 이 경로에선 helper 가 inline preamble 로 같은 파일에
+            // 정의되거나 (legacy 모드) helper 자체가 사용되지 않는 식이라 fallthrough
+            // scope-walk 가 합리적 fallback. graph 모드 (#2869 회귀의 실 무대) 는 항상
+            // helper import 가 prepend 되어 helper_scope_map 이 populated.
+        }
+
+        var scope_id = self.current_scope;
         // 스코프 체인을 따라 올라가며 심볼 검색
         while (!scope_id.isNone()) {
             const idx = scope_id.toIndex();
@@ -2961,12 +3004,87 @@ pub const SemanticAnalyzer = struct {
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         try self.checkStrictBindingName(local_node.span);
-                        try self.declareSymbolWithNode(local_node.span, .import_binding, spec_node.span, @intFromEnum(local_idx));
+                        // #2869 transformer 가 marker 에 등록한 specifier 면 user scope 와
+                        // 격리된 helper_scope_map 으로 등록. marker 는 transformer 의 의도
+                        // 를 직접 표현하므로 source string 패턴 매칭보다 권위적 — `\x00zntc:`
+                        // 가상 모듈 표기가 미래에 바뀌어도 marker 만 따라가면 정확.
+                        if (self.isHelperRefNode(local_idx)) {
+                            try self.declareHelperImportSpec(local_node.span, spec_node.span, @intFromEnum(local_idx));
+                        } else {
+                            try self.declareSymbolWithNode(local_node.span, .import_binding, spec_node.span, @intFromEnum(local_idx));
+                        }
                     }
                 },
                 else => {},
             }
         }
+    }
+
+    /// #2869 sorted u32 slice (transformer pre-pass marker) 에 대해 binary search.
+    /// 비어있으면 false (helper-aware path 비활성). hot path — 모든 식별자 resolve
+    /// 가 통과하므로 빈 slice 의 fast-path 가 중요.
+    inline fn isHelperRefNode(self: *const SemanticAnalyzer, node_idx: NodeIndex) bool {
+        const sorted = self.helper_ref_nodes;
+        if (sorted.len == 0) return false;
+        const key: u32 = @intFromEnum(node_idx);
+        const Ctx = struct {
+            fn order(ctx: u32, item: u32) std.math.Order {
+                return std.math.order(ctx, item);
+            }
+        };
+        return std.sort.binarySearch(u32, sorted, key, Ctx.order) != null;
+    }
+
+    /// #2869 runtime helper import_specifier 의 local binding 을 user scope 와 격리한다.
+    ///
+    /// 의도적으로 `declareSymbolWithNode` 의 redeclaration / hoisting conflict 검증을
+    /// 우회한다 — user 의 동일 이름 local 과 충돌하면 검증이 helper 의 등록을 막아
+    /// `__extends call → user binding` shadow 회귀가 발생하기 때문. `facade` 우회
+    /// (export default `_default`) 와 같은 코드베이스 관례.
+    ///
+    /// 등록되는 두 풀의 invariant: `helper_scope_map` 과 `scope_maps[var_scope]` 양쪽이
+    /// 동일한 `sym_index` (즉 같은 `symbols.items[idx]`) 를 가리키므로 reference_count
+    /// 등 카운터 갱신은 한 번만 하면 된다 (둘이 stale 될 일 없음).
+    fn declareHelperImportSpec(
+        self: *SemanticAnalyzer,
+        name_span: Span,
+        decl_span: Span,
+        node_idx: u32,
+    ) AllocError!void {
+        const name_text = self.ast.getText(name_span);
+        const target_scope = self.findVarScope();
+
+        const sym_index = self.symbols.items.len;
+        try self.symbols.append(self.allocator, .{
+            .name = name_span,
+            .scope_id = target_scope,
+            .kind = .import_binding,
+            .decl_flags = SymbolKind.import_binding.declFlags(),
+            .declaration_span = decl_span,
+            .origin_scope = self.current_scope,
+            .synthetic_name = if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0) name_text else "",
+        });
+
+        if (node_idx < self.symbol_ids.items.len) {
+            self.symbol_ids.items[node_idx] = @intCast(sym_index);
+        }
+
+        try self.helper_scope_map.put(self.allocator, name_text, sym_index);
+
+        // user 가 같은 이름을 점유하지 않은 경우에만 scope_maps 에도 등록. 점유 중이면
+        // helper 는 helper_scope_map 에만 살아있고, linker 가 import_binding cross-module
+        // resolve + collision rename 을 처리한다 (#2866 helper canonical_name 보존 경로).
+        if (!target_scope.isNone() and target_scope.toIndex() < self.scope_maps.items.len) {
+            const map = &self.scope_maps.items[target_scope.toIndex()];
+            if (map.get(name_text) == null) {
+                self.scopes.items[target_scope.toIndex()].symbol_count += 1;
+                try map.put(name_text, sym_index);
+            }
+        }
+
+        // facade 우회 경로 (export default _default) 와 동일하게 stmt_info 분배에 declare
+        // ref 를 기록 — 누락 시 mangler liveness 가 어긋날 수 있다.
+        self.recordDeclareRef(@intCast(sym_index), target_scope);
     }
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용할 수 없다.

@@ -254,7 +254,12 @@ pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
 pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     const names = @import("../runtime_helper_names.zig");
     const resolved = names.helperName(base_name, self.options.minify_whitespace);
-    return makeIdentifierRef(self, resolved);
+    const idx = try makeIdentifierRef(self, resolved);
+    // #2869 helper call site 를 marker 에 등록 → resync analyzer 가 user scope 가 아니라
+    // helper_scope_map 으로 격리해 binding. user 가 동일 이름 local 을 선언해도 helper
+    // 호출이 user binding 으로 잘못 resolve 되지 않는다.
+    try self.markRuntimeHelperRef(idx);
+    return idx;
 }
 
 /// default initializer가 함수 body로 내려간 뒤에도 parameter/destructuring

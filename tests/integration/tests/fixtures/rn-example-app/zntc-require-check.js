@@ -4284,10 +4284,15 @@ var init_react_native_Libraries_ReactNative_FabricUIManager = __esm({
 	};
 	createProxyWithCachedProperties = function(implementation,propertiesToCache) {
 		var proxy = Object.create(implementation);
-		for (var propertyName of propertiesToCache) {
-			defineLazyObjectProperty(proxy, propertyName, { get: function() {
-				return implementation[propertyName];
-			} });
+		{
+			var _loop = function(propertyName) {
+				defineLazyObjectProperty(proxy, propertyName, { get: function() {
+					return implementation[propertyName];
+				} });
+			};
+			for (var propertyName of propertiesToCache) {
+				_loop(propertyName);
+			}
 		}
 		return proxy;
 	};
@@ -41093,7 +41098,7 @@ var init_react_native_Libraries_Image_AssetRegistry = __esm({
 //#region react-dark.png
 var require__react_native_new_app_screen_src_assets_react_dark = __commonJS({
 	"react-dark.png"(exports, module) {
-module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJS(exports_react_native_Libraries_Image_AssetRegistry)).registerAsset({ "__packager_asset": true, "httpServerLocation": "/assets/node_modules/@react-native/new-app-screen/src/assets", "width": 600, "height": 600, "scales": [1], "hash": "0ef16cc369ea357e5984182b0a594063", "name": "react-dark", "type": "png", "fileSystemLocation": "/Users/yoonhb/Documents/workspace/zntc/tests/integration/tests/fixtures/rn-example-app/node_modules/@react-native/new-app-screen/src/assets" });
+module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJS(exports_react_native_Libraries_Image_AssetRegistry)).registerAsset({ "__packager_asset": true, "httpServerLocation": "/assets/node_modules/@react-native/new-app-screen/src/assets", "width": 600, "height": 600, "scales": [1], "hash": "0ef16cc369ea357e5984182b0a594063", "name": "react-dark", "type": "png", "fileSystemLocation": "/Users/yoonhb/Documents/workspace/zts/tests/integration/tests/fixtures/rn-example-app/node_modules/@react-native/new-app-screen/src/assets" });
 	
 	}
 });
@@ -41101,7 +41106,7 @@ module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJ
 //#region react-light.png
 var require__react_native_new_app_screen_src_assets_react_light = __commonJS({
 	"react-light.png"(exports, module) {
-module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJS(exports_react_native_Libraries_Image_AssetRegistry)).registerAsset({ "__packager_asset": true, "httpServerLocation": "/assets/node_modules/@react-native/new-app-screen/src/assets", "width": 600, "height": 600, "scales": [1], "hash": "8da88b43e2d0d034dadb964f31f3b1bf", "name": "react-light", "type": "png", "fileSystemLocation": "/Users/yoonhb/Documents/workspace/zntc/tests/integration/tests/fixtures/rn-example-app/node_modules/@react-native/new-app-screen/src/assets" });
+module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJS(exports_react_native_Libraries_Image_AssetRegistry)).registerAsset({ "__packager_asset": true, "httpServerLocation": "/assets/node_modules/@react-native/new-app-screen/src/assets", "width": 600, "height": 600, "scales": [1], "hash": "8da88b43e2d0d034dadb964f31f3b1bf", "name": "react-light", "type": "png", "fileSystemLocation": "/Users/yoonhb/Documents/workspace/zts/tests/integration/tests/fixtures/rn-example-app/node_modules/@react-native/new-app-screen/src/assets" });
 	
 	}
 });
@@ -41163,7 +41168,7 @@ var init__react_native_new_app_screen_src_index = __esm({
 //#region test-icon.png
 var require_test_icon = __commonJS({
 	"test-icon.png"(exports, module) {
-module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJS(exports_react_native_Libraries_Image_AssetRegistry)).registerAsset({ "__packager_asset": true, "httpServerLocation": "/assets/src/assets", "width": 24, "height": 24, "scales": [1], "hash": "b5930b48bfd1caeaaf35d839acb90140", "name": "test-icon", "type": "png", "fileSystemLocation": "/Users/yoonhb/Documents/workspace/zntc/tests/integration/tests/fixtures/rn-example-app/src/assets" });
+module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJS(exports_react_native_Libraries_Image_AssetRegistry)).registerAsset({ "__packager_asset": true, "httpServerLocation": "/assets/src/assets", "width": 24, "height": 24, "scales": [1], "hash": "b5930b48bfd1caeaaf35d839acb90140", "name": "test-icon", "type": "png", "fileSystemLocation": "/Users/yoonhb/Documents/workspace/zts/tests/integration/tests/fixtures/rn-example-app/src/assets" });
 	
 	}
 });

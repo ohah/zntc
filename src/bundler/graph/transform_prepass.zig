@@ -145,9 +145,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     module.ast = transformer.ast.*;
 
     const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
+    // #2869 helper marker sidecar — sorted u32 slice. resync analyzer 가 binary search.
+    const owned_helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch &[_]u32{};
     module.transform_cache = .{
         .runtime_helpers = transformer.runtime_helpers,
         .symbol_ids = owned_symbol_ids,
+        .helper_ref_nodes = owned_helper_ref_nodes,
     };
 
     _ = parser_node_count;
@@ -233,6 +236,12 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         analyzer.is_ts = module.module_type.isTypeScript();
         analyzer.is_flow = self.flow or isFlowPath(module.path);
         analyzer.enable_stmt_info = true;
+        // #2869 transformer pre-pass 가 표시한 runtime helper marker. analyzer 는
+        // 이 marker 를 보고 helper import_specifier 와 helper call site 를 user scope
+        // 가 아닌 helper_scope_map 으로 격리한다.
+        if (module.transform_cache) |cache| {
+            analyzer.helper_ref_nodes = cache.helper_ref_nodes;
+        }
         try analyzer.analyze();
 
         module.semantic = .{
