@@ -4,6 +4,9 @@ const std = @import("std");
 const wyhash = @import("../../util/wyhash.zig");
 const fs = @import("../fs.zig");
 const Module = @import("../module.zig").Module;
+const types = @import("../types.zig");
+const runtime_helpers = @import("../runtime_helpers.zig");
+const mime = @import("../../server/mime.zig");
 const asset_meta = @import("../asset_meta.zig");
 
 /// JS 문자열 리터럴용 이스케이프. \ " \n \r \0 \u2028 \u2029 를 처리한다.
@@ -65,6 +68,52 @@ pub fn base64Encode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 
     const buf = try allocator.alloc(u8, encoded_len);
     _ = encoder.encode(buf, data);
     return buf;
+}
+
+/// raw bytes 를 asset loader 의 값 표현식으로 변환한다.
+/// `file` / `copy` 는 asset_outputs 라이프사이클이 별개라 제외 — caller 가 별도 처리.
+/// `javascript` / `json` / `css` / `none` 은 변환 없이 raw contents 가 source — null 반환.
+/// (#2157)
+pub fn sourceFromBytes(
+    alloc: std.mem.Allocator,
+    loader: types.Loader,
+    raw: []const u8,
+    module_path: []const u8,
+    minify_whitespace: bool,
+) ?[]const u8 {
+    return switch (loader) {
+        .text => blk: {
+            const escaped = escapeJsString(alloc, raw) catch break :blk null;
+            break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{escaped}) catch null;
+        },
+        .dataurl => blk: {
+            const encoded = base64Encode(alloc, raw) catch break :blk null;
+            const full_mime = mime.fromExtension(module_path);
+            const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
+                full_mime[0..semi]
+            else
+                full_mime;
+            break :blk std.fmt.allocPrint(alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch null;
+        },
+        .base64 => blk: {
+            const encoded = base64Encode(alloc, raw) catch break :blk null;
+            break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{encoded}) catch null;
+        },
+        .binary => blk: {
+            const encoded = base64Encode(alloc, raw) catch break :blk null;
+            const to_bin_name = runtime_helpers.helperName("__toBinary", minify_whitespace);
+            break :blk std.fmt.allocPrint(alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch null;
+        },
+        .empty => "undefined",
+        .file, .copy, .javascript, .json, .css, .none => null,
+    };
+}
+
+pub fn loaderReadsSource(loader: types.Loader) bool {
+    return switch (loader) {
+        .text, .dataurl, .base64, .binary, .file, .copy => true,
+        else => false,
+    };
 }
 
 pub const contentHash = wyhash.hashHex8;
