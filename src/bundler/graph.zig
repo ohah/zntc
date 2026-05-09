@@ -84,9 +84,17 @@ const findProjectRoot = graph_project_root.findProjectRoot;
 const graph_glob = @import("graph/glob.zig");
 const expandGlobRecords = graph_glob.expandGlobRecords;
 const graph_package_side_effects = @import("graph/package_side_effects.zig");
+const graph_parse_helpers = @import("graph/parse_helpers.zig");
 
 pub const ModuleGraph = struct {
     pub const matchSideEffectsPatterns = graph_package_side_effects.matchPatterns;
+    const configureParserForModule = graph_parse_helpers.configureParserForModule;
+    const isFlowPath = graph_parse_helpers.isFlowPath;
+    const mergeImportBindings = graph_parse_helpers.mergeImportBindings;
+    const mergeImportRecords = graph_parse_helpers.mergeImportRecords;
+    const moduleTypeForLoader = graph_parse_helpers.moduleTypeForLoader;
+    const projectExportedNames = graph_parse_helpers.projectExportedNames;
+    const suppressRuntimeHelperInternalUnresolved = graph_parse_helpers.suppressRuntimeHelperInternalUnresolved;
 
     allocator: std.mem.Allocator,
     /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
@@ -2940,12 +2948,6 @@ pub const ModuleGraph = struct {
         try self.refreshStableBindingRefsAfterSemanticResync(module, arena_alloc, .graph_resync_alias);
     }
 
-    fn suppressRuntimeHelperInternalUnresolved(module: *Module) void {
-        if (!runtime_helper_modules.isVirtualId(module.path)) return;
-        var semantic = &(module.semantic orelse return);
-        runtime_helper_modules.removeRegisteredHelperBaseNames(&semantic.unresolved_references);
-    }
-
     fn injectJsxSyntheticImportsForModule(
         self: *ModuleGraph,
         module: *Module,
@@ -2986,92 +2988,6 @@ pub const ModuleGraph = struct {
             base_record_count,
             if (react_injected) base_record_count + 1 else null,
         );
-    }
-
-    fn configureParserForModule(parser: *Parser, module: *const Module, ext: []const u8) void {
-        parser.configureForBundler(ext);
-        if (module.module_type.isJavaScriptLike()) {
-            const flags = module.module_type.toParserFlags();
-            parser.configureForBundlerKind(flags.is_ts, flags.is_jsx);
-        }
-    }
-
-    fn moduleTypeForLoader(default_type: ModuleType, loader: types.Loader) ModuleType {
-        return switch (loader) {
-            .javascript => if (default_type.isJavaScriptLike()) default_type else .js,
-            .json => .json,
-            .css => .css,
-            .none => default_type,
-            else => if (loader.isAsset()) .asset else default_type,
-        };
-    }
-
-    fn isFlowPath(path: []const u8) bool {
-        return std.mem.endsWith(u8, path, ".js.flow") or std.mem.endsWith(u8, path, ".jsx.flow");
-    }
-
-    fn mergeImportRecords(
-        arena_alloc: std.mem.Allocator,
-        previous: []const ImportRecord,
-        transformed: []const ImportRecord,
-    ) ![]ImportRecord {
-        var records: std.ArrayList(ImportRecord) = .empty;
-        errdefer records.deinit(arena_alloc);
-        try records.appendSlice(arena_alloc, previous);
-        for (transformed) |rec| {
-            if (hasImportRecord(records.items, rec)) continue;
-            try records.append(arena_alloc, rec);
-        }
-        return records.toOwnedSlice(arena_alloc);
-    }
-
-    fn hasImportRecord(records: []const ImportRecord, needle: ImportRecord) bool {
-        for (records) |rec| {
-            if (rec.kind == needle.kind and
-                rec.span.start == needle.span.start and
-                rec.span.end == needle.span.end and
-                std.mem.eql(u8, rec.specifier, needle.specifier))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// post-transform AST 의 binding 을 source of truth 로 삼고, `previous` 에서 transformer
-    /// 가 직접 추가한 synthetic binding (JSX runtime 등 — span sentinel 로 식별) 만 보존한다.
-    /// 단순 append 로 합치면 Phase D 가 elide 한 import specifier 에 대응하는 stale binding
-    /// 이 살아남아 linker preamble 이 `var err = require_xxx().err` 같은 죽은 코드를 emit
-    /// 하거나 `non-synthetic import binding 'err' has no semantic local symbol` panic 을 낸다.
-    fn mergeImportBindings(
-        arena_alloc: std.mem.Allocator,
-        previous: []const binding_scanner_mod.ImportBinding,
-        transformed: []const binding_scanner_mod.ImportBinding,
-    ) ![]binding_scanner_mod.ImportBinding {
-        var bindings: std.ArrayList(binding_scanner_mod.ImportBinding) = .empty;
-        errdefer bindings.deinit(arena_alloc);
-        try bindings.appendSlice(arena_alloc, transformed);
-        for (previous) |binding| {
-            if (!binding.isSynthetic()) continue;
-            if (hasImportBinding(bindings.items, binding)) continue;
-            try bindings.append(arena_alloc, binding);
-        }
-        return bindings.toOwnedSlice(arena_alloc);
-    }
-
-    fn hasImportBinding(bindings: []const binding_scanner_mod.ImportBinding, needle: binding_scanner_mod.ImportBinding) bool {
-        for (bindings) |binding| {
-            if (binding.kind == needle.kind and
-                binding.import_record_index == needle.import_record_index and
-                binding.local_span.start == needle.local_span.start and
-                binding.local_span.end == needle.local_span.end and
-                std.mem.eql(u8, binding.local_name, needle.local_name) and
-                std.mem.eql(u8, binding.imported_name, needle.imported_name))
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
@@ -3119,16 +3035,6 @@ pub const ModuleGraph = struct {
         const pkg_dir_path = findPackageDirPath(module.path) orelse return;
         const info = self.lookupPkgInfo(pkg_dir_path);
         graph_package_side_effects.applyCached(module, pkg_dir_path, info.side_effects);
-    }
-
-    /// `ExportBinding[]` → `[]const []const u8` 평탄 이름 슬라이스 (#1883).
-    /// `ModuleInfo` 가 binding_scanner internal struct 를 노출 안 하도록 사전 투영.
-    /// 실패 시 빈 슬라이스 — caller 가 fallback 가능하게.
-    fn projectExportedNames(allocator: std.mem.Allocator, bindings: []const binding_scanner_mod.ExportBinding) []const []const u8 {
-        if (bindings.len == 0) return &.{};
-        const out = allocator.alloc([]const u8, bindings.len) catch return &.{};
-        for (bindings, 0..) |b, i| out[i] = b.exported_name;
-        return out;
     }
 
     /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.
