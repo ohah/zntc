@@ -4,7 +4,7 @@ ZNTC monorepo 를 IDE 에서 효과적으로 다루기 위한 권장 설정.
 
 ## TypeScript Project References (root `tsconfig.json`)
 
-PR #2805 ~ #2808 에서 도입. 7 publishable workspace package 를 단일 TS program 으로 묶음:
+PR #2805 ~ #2808 에서 도입. 7 workspace package (publishable 6 + private `@zntc/server`) 를 단일 TS program 으로 묶음:
 
 - `packages/{core,server,web,react-native,vite-plugin-zntc,init,wasm}/tsconfig.json` 가 `composite: true`
 - root `/tsconfig.json` (solution-style) 이 모두 `references` 로 묶음
