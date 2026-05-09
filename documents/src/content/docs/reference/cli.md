@@ -297,4 +297,5 @@ zntc bench --phase=parse --compare=baseline.json src/main.ts
 - 옵션 surface별 지원 범위는 [옵션 매트릭스](/zntc/reference/options-matrix/)에서 확인하세요.
 - `--metafile` 결과는 [Metafile 분석](/zntc/analyze/) 페이지에서 시각화할 수 있습니다.
 - Vite 어댑터는 `vite-plugin-zntc` 또는 `vitePlugin()`으로 사용하세요.
+- Rspack / Webpack 5 어댑터는 `@zntc/rspack-loader` 를 사용하세요. ([가이드](/zntc/guides/rspack-loader/))
 - 미지원 옵션 / 향후 계획은 [docs/ROADMAP.md](https://github.com/ohah/zntc/blob/main/docs/ROADMAP.md) 참고.

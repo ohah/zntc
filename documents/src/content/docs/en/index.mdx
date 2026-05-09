@@ -137,6 +137,26 @@ const { code } = await transpile({
       });
       ```
     </TabItem>
+
+    <TabItem label="Rspack / Webpack">
+      ```js
+      // rspack.config.mjs
+      export default {
+        module: {
+          rules: [
+            {
+              test: /\.(?:tsx?|jsx?)$/,
+              exclude: /node_modules/,
+              loader: "@zntc/rspack-loader",
+              options: {
+                transpileOptions: { target: "es2020", jsx: "automatic" },
+              },
+            },
+          ],
+        },
+      };
+      ```
+    </TabItem>
   </Tabs>
 </Section>
 

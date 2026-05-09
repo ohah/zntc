@@ -30,12 +30,12 @@
     "@zntc/core": "workspace:*"
   },
   "devDependencies": {
-    "@rspack/core": "^1.0.0",
+    "@rspack/core": "^2.0.1",
     "@types/node": "^25.5.2",
     "webpack": "^5.94.0"
   },
   "peerDependencies": {
-    "@rspack/core": ">=0.7.0",
+    "@rspack/core": ">=1.0.0",
     "webpack": ">=5.0.0"
   },
   "peerDependenciesMeta": {

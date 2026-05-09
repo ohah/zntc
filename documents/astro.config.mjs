@@ -100,6 +100,11 @@ export default defineConfig({
           items: [
             { label: "플러그인", slug: "guides/plugins", translations: { en: "Plugins" } },
             { label: "플러그인 레시피", slug: "guides/plugin-recipes", translations: { en: "Plugin Recipes" } },
+            {
+              label: "Rspack / Webpack 통합",
+              slug: "guides/rspack-loader",
+              translations: { en: "Rspack / Webpack" },
+            },
           ],
         },
         {
