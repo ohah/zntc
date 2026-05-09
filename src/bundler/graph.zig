@@ -83,8 +83,11 @@ const graph_project_root = @import("graph/project_root.zig");
 const findProjectRoot = graph_project_root.findProjectRoot;
 const graph_glob = @import("graph/glob.zig");
 const expandGlobRecords = graph_glob.expandGlobRecords;
+const graph_package_side_effects = @import("graph/package_side_effects.zig");
 
 pub const ModuleGraph = struct {
+    pub const matchSideEffectsPatterns = graph_package_side_effects.matchPatterns;
+
     allocator: std.mem.Allocator,
     /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
     /// 않아서 worker race-safety 를 보장한다 (#1779 PR #3). prealloc=0 은 전량
@@ -3115,24 +3118,7 @@ pub const ModuleGraph = struct {
         if (self.ignore_annotations) return;
         const pkg_dir_path = findPackageDirPath(module.path) orelse return;
         const info = self.lookupPkgInfo(pkg_dir_path);
-        applyCachedSideEffects(module, pkg_dir_path, info.side_effects);
-    }
-
-    /// package.json sideEffects 값을 모듈에 적용.
-    /// `.all`/`.patterns` 케이스는 tree-shaker가 auto-purity로 덮어쓰지 못하도록 user_defined lock 설정.
-    /// `.unknown` (필드 없음)은 기본 동작(conservative: side_effects=true 유지) 그대로.
-    fn applyCachedSideEffects(module: *Module, pkg_dir_path: []const u8, se: pkg_json.PackageJson.SideEffects) void {
-        switch (se) {
-            .all => |val| {
-                module.side_effects = val;
-                module.side_effects_user_defined = true;
-            },
-            .patterns => |patterns| {
-                module.side_effects = matchSideEffectsPatterns(module.path, pkg_dir_path, patterns);
-                module.side_effects_user_defined = true;
-            },
-            .unknown => {},
-        }
+        graph_package_side_effects.applyCached(module, pkg_dir_path, info.side_effects);
     }
 
     /// `ExportBinding[]` → `[]const []const u8` 평탄 이름 슬라이스 (#1883).
@@ -3143,52 +3129,6 @@ pub const ModuleGraph = struct {
         const out = allocator.alloc([]const u8, bindings.len) catch return &.{};
         for (bindings, 0..) |b, i| out[i] = b.exported_name;
         return out;
-    }
-
-    /// sideEffects 글롭 패턴 매칭.
-    /// 모듈의 패키지 내 상대 경로를 각 패턴과 비교하여,
-    /// 하나라도 매칭되면 side_effects=true (해당 파일은 제거하면 안 됨).
-    /// 아무 패턴도 매칭되지 않으면 side_effects=false (순수 모듈, 제거 가능).
-    pub fn matchSideEffectsPatterns(module_path: []const u8, pkg_dir_path: []const u8, patterns: []const []const u8) bool {
-        const matchGlob = @import("resolve_cache.zig").matchGlob;
-
-        // 패키지 디렉토리 기준 상대 경로 추출: /abs/node_modules/pkg/src/foo.js → src/foo.js
-        const relative = if (module_path.len > pkg_dir_path.len + 1)
-            module_path[pkg_dir_path.len + 1 ..] // +1 for separator
-        else
-            module_path;
-
-        // Windows 경로 정규화: \ → / (패턴은 항상 / 사용)
-        var rel_buf: [4096]u8 = undefined;
-        const rel_normalized = normalizeSep(relative, &rel_buf);
-        const base = std.fs.path.basename(rel_normalized);
-
-        for (patterns) |pattern| {
-            // "./" 접두사 제거: "./src/polyfill.js" → "src/polyfill.js"
-            const normalized = if (std.mem.startsWith(u8, pattern, "./"))
-                pattern[2..]
-            else
-                pattern;
-
-            if (matchGlob(normalized, rel_normalized)) return true;
-            // basename 폴백: "*.css"는 "src/style.css"도 매칭해야 함
-            if (base.len != rel_normalized.len) {
-                if (matchGlob(normalized, base)) return true;
-            }
-        }
-        return false;
-    }
-
-    /// 경로의 \ 구분자를 /로 정규화 (Windows 호환).
-    fn normalizeSep(path: []const u8, buf: *[4096]u8) []const u8 {
-        if (comptime @import("builtin").os.tag == .windows) {
-            const len = @min(path.len, buf.len);
-            for (path[0..len], 0..) |c, i| {
-                buf[i] = if (c == '\\') '/' else c;
-            }
-            return buf[0..len];
-        }
-        return path;
     }
 
     /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.
