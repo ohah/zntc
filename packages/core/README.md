@@ -31,14 +31,11 @@ bunx zntc src/index.ts --outfile out.js
 
 # bundle (multi-entry)
 bunx zntc --bundle src/index.ts --outfile dist/bundle.js --format=esm --target=node
-
-# app mode (zntc.config 자동 탐색)
-bunx zntc dev    # dev server + HMR
-bunx zntc build  # production
-bunx zntc preview
 ```
 
 전체 옵션: `bunx zntc --help`
+
+App-mode (`bunx zntc dev / build / preview`) 는 `@zntc/web` 또는 `@zntc/react-native` 가 함께 install 되어야 동작 — 각 패키지 README 참조.
 
 ## JS API
 
@@ -60,7 +57,7 @@ const out = await build({
 });
 ```
 
-자세한 옵션: [docs/CONFIG.md](https://github.com/ohah/zntc/blob/main/docs/CONFIG.md) · [docs/USAGE.md](https://github.com/ohah/zntc/blob/main/docs/USAGE.md)
+자세한 옵션: [docs/CONFIG.md](https://github.com/ohah/zts/blob/main/docs/CONFIG.md) · [docs/USAGE.md](https://github.com/ohah/zts/blob/main/docs/USAGE.md)
 
 ## 관련 패키지
 

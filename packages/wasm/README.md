@@ -12,7 +12,7 @@ bun add -D @zntc/wasm
 npm i -D @zntc/wasm
 ```
 
-WASM binary (`zntc.wasm` ~370KB / `zntc-bundler.wasm` ~700KB) 가 함께 install 됨.
+WASM binary (`zntc.wasm` ~1.1MB / `zntc-bundler.wasm` ~2.0MB, gzipped 시 388KB / 675KB) 가 함께 install 됨.
 
 ## 사용 예
 
@@ -41,10 +41,10 @@ const r = transpile('const x: number = 1;', { filename: 'input.ts' });
 ### Bundler 사용
 
 ```ts
-import { bundlerLastErrorMessage, build, init } from '@zntc/wasm';
+import { bundlerLastErrorMessage, build, initBundler } from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
-await init(wasmUrl); // bundler 는 별도 wasm
+await initBundler(wasmUrl); // transpile 용 init() 와 별도
 const out = build('/main.ts', { format: 'esm', target: 'es2020' });
 if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
@@ -53,19 +53,19 @@ if (out === null) throw new Error(bundlerLastErrorMessage());
 
 ## NAPI 와 차이
 
-| 항목        | @zntc/core (NAPI) | @zntc/wasm                 |
-| ----------- | ----------------- | -------------------------- |
-| 환경        | Node.js / Bun     | + Browser / Edge / Workers |
-| 속도        | 빠름 (~native)    | 50~70% (WASM 오버헤드)     |
-| binary 크기 | ~4MB (.node)      | ~370KB + 700KB (.wasm)     |
-| install     | 플랫폼별 prebuilt | 단일 wasm (universal)      |
+| 항목        | @zntc/core (NAPI) | @zntc/wasm                            |
+| ----------- | ----------------- | ------------------------------------- |
+| 환경        | Node.js / Bun     | + Browser / Edge / Workers            |
+| 속도        | 빠름 (~native)    | 50~70% (WASM 오버헤드)                |
+| binary 크기 | ~4MB (.node)      | 1.1MB + 2.0MB (gzipped 388KB + 675KB) |
+| install     | 플랫폼별 prebuilt | 단일 wasm (universal)                 |
 
 대부분의 server-side 빌드 사용 사례는 `@zntc/core` 권장. `@zntc/wasm` 은 환경 제약 시.
 
 ## 관련
 
 - [@zntc/core](https://npmjs.com/package/@zntc/core) — Native (NAPI) 빌드
-- [docs/USAGE.md](https://github.com/ohah/zntc/blob/main/docs/USAGE.md)
+- [docs/USAGE.md](https://github.com/ohah/zts/blob/main/docs/USAGE.md)
 
 ## 라이센스
 
