@@ -119,6 +119,7 @@ test {
     _ = @import("chunk_test.zig");
     _ = @import("statement_shaker_test.zig");
     _ = @import("graph_test.zig");
+    _ = @import("graph/project_root.zig");
     _ = @import("resolver_test.zig");
     _ = @import("package_json_test.zig");
     _ = @import("binding_scanner_test.zig");
