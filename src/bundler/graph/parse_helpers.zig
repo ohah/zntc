@@ -6,6 +6,7 @@ const Module = @import("../module.zig").Module;
 const ModuleType = types.ModuleType;
 const Parser = @import("../../parser/parser.zig").Parser;
 const ImportRecord = types.ImportRecord;
+const import_scanner = @import("../import_scanner.zig");
 const binding_scanner = @import("../binding_scanner.zig");
 const runtime_helper_modules = @import("../../runtime_helper_modules.zig");
 
@@ -109,4 +110,33 @@ pub fn projectExportedNames(allocator: std.mem.Allocator, bindings: []const bind
     const out = allocator.alloc([]const u8, bindings.len) catch return &.{};
     for (bindings, 0..) |b, i| out[i] = b.exported_name;
     return out;
+}
+
+/// 스캔 결과와 파일 확장자로 모듈의 export 방식을 결정한다.
+/// 우선순위: 1) ESM+CJS 혼용 → esm_with_dynamic_fallback
+///          2) ESM만 → esm
+///          3) CJS 신호 → commonjs
+///          4) 확장자 (.cjs/.mjs 등) → commonjs/esm
+///          5) 판별 불가 → none
+pub fn determineExportsKind(
+    scan: import_scanner.ScanResult,
+    path: []const u8,
+) types.ExportsKind {
+    const has_cjs = scan.has_cjs_require or scan.has_module_exports or scan.has_exports_dot;
+
+    // ESM + CJS 혼용
+    if (scan.has_esm_syntax and has_cjs) return .esm_with_dynamic_fallback;
+
+    // ESM만
+    if (scan.has_esm_syntax) return .esm;
+
+    // CJS 신호
+    if (has_cjs) return .commonjs;
+
+    // 확장자로 판별
+    const ext = std.fs.path.extension(path);
+    if (std.mem.eql(u8, ext, ".cjs") or std.mem.eql(u8, ext, ".cts")) return .commonjs;
+    if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return .esm;
+
+    return .none;
 }
