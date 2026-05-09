@@ -1602,6 +1602,55 @@ test "#1797 native for-of + block scoping: body 에 await 없으면 sync _loop" 
     try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") == null);
 }
 
+test "#1797 native for-of + block scoping: class method capture → _loop 변환" {
+    // method_definition 도 closure boundary. body 안의 lexical reference 는
+    // capture 로 인식되어야 — per-iteration fresh binding 보존.
+    const source =
+        \\for (let i = 0; i < n; i++) {
+        \\  class C {
+        \\    m() { return i; }
+        \\  }
+        \\  arr.push(C);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // class method m() 안의 i 가 capture 로 인식되어 _loop wrap
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+}
+
+test "#1797 native for-of + block scoping: class method 안 await → sync _loop (method 책임)" {
+    // class method 도 closure boundary — 안의 await 는 method 의 async-ness
+    // 책임. enclosing for-of 의 _loop 는 sync 여야 함.
+    const source =
+        \\function f(items) {
+        \\  for (let key of items) {
+        \\    class C {
+        \\      async m() { await use(key); }
+        \\    }
+        \\    arr.push(C);
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // class method 안의 await — _loop 는 sync 여야
+    try std.testing.expect(std.mem.indexOf(u8, code, "await _loop") == null);
+}
+
 test "#1797 native for-of + block scoping: closure 안 await 는 무시 (그 closure 책임)" {
     const source =
         \\async function f(items) {
