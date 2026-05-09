@@ -47,8 +47,6 @@ const transformer_mod = @import("../transformer/transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
 const TransformCache = @import("module.zig").TransformCache;
-const NodeIndex = @import("../parser/ast.zig").NodeIndex;
-const module_parser = @import("../parser/module.zig");
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 pub const module_store = @import("module_store.zig");
 const phase_mod = @import("phase.zig");
@@ -72,6 +70,8 @@ const graph_requested_exports = @import("graph/requested_exports.zig");
 const graph_runtime_polyfills = @import("graph/runtime_polyfills.zig");
 const graph_state = @import("graph/state.zig");
 const graph_parser_metadata = @import("graph/parser_metadata.zig");
+const graph_import_usage = @import("graph/import_usage.zig");
+const graph_accessors = @import("graph/accessors.zig");
 
 pub const determineExportsKind = graph_parse_helpers.determineExportsKind;
 
@@ -88,6 +88,13 @@ pub const ModuleGraph = struct {
     const shouldLinkResolvedRecordForModule = graph_requested_exports.shouldLinkResolvedRecordForModule;
     const hasDeferredRequestedImports = graph_requested_exports.hasDeferredRequestedImports;
     const requestDependencyExports = graph_requested_exports.requestDependencyExports;
+    const isImportAllBindingsUnused = graph_import_usage.isImportAllBindingsUnused;
+    const validModuleSlot = graph_accessors.validModuleSlot;
+    pub const getModule = graph_accessors.getModule;
+    pub const moduleCount = graph_accessors.moduleCount;
+    pub const findModuleByPath = graph_accessors.findModuleByPath;
+    pub const moduleAtMut = graph_accessors.moduleAtMut;
+    pub const modulesIterator = graph_accessors.modulesIterator;
     const shouldRunTransformerPrePass = graph_transform_prepass.shouldRun;
     const runTransformerPrePass = graph_transform_prepass.run;
     pub const resyncModuleMetadataAfterConstMaterialization = graph_transform_prepass.resyncAfterConstMaterialization;
@@ -315,42 +322,6 @@ pub const ModuleGraph = struct {
     // - `moduleAtMut` 는 accessor 내부 전용. 다른 호출자는 phase accessor 를 쓸 것.
     // ============================================================
 
-    /// idx 검증 → modules storage 의 in-range index 반환. read/mut 양쪽 진입점에서 공유.
-    inline fn validModuleSlot(self: *const ModuleGraph, idx: ModuleIndex) ?usize {
-        if (idx.isNone()) return null;
-        const i = idx.toUsize();
-        if (i >= self.modules.count()) return null;
-        return i;
-    }
-
-    /// idx 에 해당하는 module 의 read-only 포인터. 범위 밖이면 null.
-    pub inline fn getModule(self: *const ModuleGraph, idx: ModuleIndex) ?*const Module {
-        const i = self.validModuleSlot(idx) orelse return null;
-        return self.modules.at(i);
-    }
-
-    /// 등록된 module 개수. storage 내부 구조 캡슐화 진입점.
-    pub inline fn moduleCount(self: *const ModuleGraph) usize {
-        return self.modules.count();
-    }
-
-    /// path 와 정확히 일치하는 module 의 read-only 포인터. SegmentedList 선형 스캔이라
-    /// O(N) — entry/RBM 주입처럼 build 당 호출 횟수가 작은 경로에서만 사용한다.
-    pub fn findModuleByPath(self: *const ModuleGraph, path: []const u8) ?*const Module {
-        var it = self.modulesIterator();
-        while (it.next()) |m| {
-            if (std.mem.eql(u8, m.path, path)) return m;
-        }
-        return null;
-    }
-
-    /// **Accessor 전용**. 직접 호출 금지 — `parseAccessor()` 등 phase accessor 의
-    /// setter 메서드를 사용하라. 외부 mutable pointer 노출은 worker race 의 root.
-    pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module {
-        const i = self.validModuleSlot(idx) orelse return null;
-        return self.modules.at(i);
-    }
-
     /// Parse phase mutation accessor 발급. parser/scanner worker 가 자기 module 의
     /// AST/semantic/source 등을 write 할 때 사용. 정의는 phase.zig.
     pub inline fn parseAccessor(self: *ModuleGraph) phase_mod.ParseAccessor {
@@ -365,12 +336,6 @@ pub const ModuleGraph = struct {
     /// Link phase mutation accessor 발급. DFS exec_index/cycle_group 부여용.
     pub inline fn linkAccessor(self: *ModuleGraph) phase_mod.LinkAccessor {
         return .{ .graph = self };
-    }
-
-    /// 모든 module 을 순회하는 read-only iterator. SegmentedList 의 chunk 경계를
-    /// 투명하게 처리하는 ConstIterator 를 그대로 노출.
-    pub inline fn modulesIterator(self: *const ModuleGraph) ModulesIterator {
-        return self.modules.constIterator(0);
     }
 
     /// modules storage. `std.SegmentedList` 대신 `StableSegmentedList` 사용 — 후자가
@@ -1154,87 +1119,6 @@ pub const ModuleGraph = struct {
         } else {
             try self.linkDependency(mod_index, dep_idx);
         }
-    }
-
-    /// import_records[rec_i] 가 가리키는 source 의 import_declaration 노드를 source span
-    /// 일치로 찾고, 그 안의 모든 named binding 이름이 AST 어디에서도 `identifier_reference`
-    /// 로 등장하지 않으면 true (자기 참조 제외).
-    ///
-    /// implicit type-only — TS type annotation 안에서만 쓰이는 binding — 은 parser 가 type
-    /// 노드를 폐기하거나 child_offsets 가 비어있어서 value position 의 identifier_reference
-    /// 가 AST 어디에도 안 나타남. babel typescript preset 의 statement elision 과 동등.
-    ///
-    /// 텍스트 매칭이라 semantic analyzer 의 type-position 추적 한계와 무관. 보수적 — default
-    /// / namespace specifier 가 하나라도 있으면 false, 동명 binding 이 다른 import 에서 value
-    /// 로 쓰여도 false.
-    ///
-    /// allocation 실패 시 false (= keep) — resolver 는 기존 hard error 경로 유지.
-    fn isImportAllBindingsUnused(self: *ModuleGraph, module: *const Module, record: types.ImportRecord) bool {
-        const ast_ptr = if (module.ast) |*a| a else return false;
-
-        var binding_names: std.ArrayList([]const u8) = .empty;
-        defer binding_names.deinit(self.allocator);
-        // import_specifier 가 자체적으로 imported/local 식별자를 `identifier_reference` 로
-        // 보유 (parseIdentifierName) — 이들 NodeIndex 를 따로 수집해서 self-reference 제외.
-        var spec_self_nodes: std.ArrayList(NodeIndex) = .empty;
-        defer spec_self_nodes.deinit(self.allocator);
-
-        var found_decl = false;
-        for (ast_ptr.nodes.items) |n| {
-            if (n.tag != .import_declaration) continue;
-            const e = n.data.extra;
-            if (e + 2 >= ast_ptr.extra_data.items.len) continue;
-            const x = module_parser.readImportDeclExtras(ast_ptr, e);
-            if (x.source.isNone()) continue;
-            const source_node = ast_ptr.getNode(x.source);
-            // record.span 이 정확히 source string literal span 이라 start 비교로 unique
-            // (`import_scanner.tryExtractImportDecl` 가 동일 span 사용).
-            if (source_node.span.start != record.span.start) continue;
-            found_decl = true;
-
-            if (x.specs_len == 0) return false; // side-effect import
-            if (x.specs_start + x.specs_len > ast_ptr.extra_data.items.len) return false;
-            const spec_indices = ast_ptr.extra_data.items[x.specs_start .. x.specs_start + x.specs_len];
-            for (spec_indices) |raw_idx| {
-                const spec_idx: NodeIndex = @enumFromInt(raw_idx);
-                if (spec_idx.isNone()) return false;
-                const spec_node = ast_ptr.getNode(spec_idx);
-                // default / namespace 는 보수적으로 keep — JSX pragma 등 implicit value use.
-                if (spec_node.tag != .import_specifier) return false;
-                const left_idx = spec_node.data.binary.left;
-                const local_idx = spec_node.data.binary.right;
-                const local_node = if (!local_idx.isNone()) ast_ptr.getNode(local_idx) else spec_node;
-                binding_names.append(self.allocator, ast_ptr.getText(local_node.span)) catch return false;
-
-                // `import { A as B }` 면 left/right 둘 다 다른 NodeIndex — 모두 self.
-                if (!left_idx.isNone()) {
-                    spec_self_nodes.append(self.allocator, left_idx) catch return false;
-                }
-                if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(left_idx)) {
-                    spec_self_nodes.append(self.allocator, local_idx) catch return false;
-                }
-            }
-            break;
-        }
-        if (!found_decl or binding_names.items.len == 0) return false;
-
-        for (ast_ptr.nodes.items, 0..) |n, ni| {
-            if (n.tag != .identifier_reference) continue;
-            const this_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(ni)));
-            var is_spec_self = false;
-            for (spec_self_nodes.items) |s| {
-                if (@intFromEnum(this_idx) == @intFromEnum(s)) {
-                    is_spec_self = true;
-                    break;
-                }
-            }
-            if (is_spec_self) continue;
-            const text = ast_ptr.getText(n.span);
-            for (binding_names.items) |name| {
-                if (std.mem.eql(u8, text, name)) return false;
-            }
-        }
-        return true;
     }
 
     fn applyResolveResult(
