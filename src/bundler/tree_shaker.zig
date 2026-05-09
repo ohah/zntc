@@ -19,7 +19,6 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const module_mod = @import("module.zig");
 const Module = module_mod.Module;
-const ModuleSemanticData = module_mod.ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
@@ -28,14 +27,12 @@ const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
-const ast_walk = @import("../parser/ast_walk.zig");
 const Span = @import("../lexer/token.zig").Span;
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
-const constant_facts = @import("constant_facts.zig");
-const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 const cjs_patterns = @import("tree_shaker/cjs_patterns.zig");
+const const_materialize = @import("tree_shaker/const_materialize.zig");
 const module_effects = @import("tree_shaker/module_effects.zig");
 const profile = @import("../profile.zig");
 
@@ -50,57 +47,6 @@ fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bo
     const ni: usize = infos.stmts[stmt_idx].node_idx;
     return ni < ast.nodes.items.len and ast.nodes.items[ni].tag == .import_declaration;
 }
-
-fn constValuesContainNumber(const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue)) bool {
-    var it = const_values.valueIterator();
-    while (it.next()) |cv| {
-        if (cv.kind == .number) return true;
-    }
-    return false;
-}
-
-const ConstMaterializeFilter = enum {
-    all,
-    numeric,
-    numeric_export_chain,
-};
-
-/// const-materialize 호출이 어느 단계에서 수행되는지 — 이 enum 하나가
-/// 두 가지 동작 차이를 결정해 호출부의 짝지은 boolean 두 개를 대체한다:
-///   1) `materialized.needs_minify == false` 일 때 minify 자체를 스킵해도 안전한가
-///      (postpass 만 in-place 치환이라 안전)
-///   2) resync 가 일반 AST mutation 경로 vs const-materialize 전용 경로 중 어느 쪽인가
-///      (postpass 는 import/export syntax 보존을 caller 가 보장)
-const ConstPassPolicy = enum {
-    /// 일반 const fact materialization. AST 가 어떤 식으로든 변할 수 있어
-    /// import_scan 까지 다시 도는 full resync 가 필요하다.
-    pre_pass,
-    /// numeric leaf 치환 한정. import/export syntax 가 보존된다는 caller invariant 위에
-    /// 동작하므로 graph_resync_const 만 돌리고 minify 도 스킵 가능.
-    numeric_post_pass,
-
-    fn skipMinifyIfSafe(self: ConstPassPolicy) bool {
-        return self == .numeric_post_pass;
-    }
-
-    fn stableImportExportSyntax(self: ConstPassPolicy) bool {
-        return self == .numeric_post_pass;
-    }
-};
-
-const ConstMaterializeProfile = struct {
-    policy: ConstPassPolicy,
-    build_facts: ?profile.Category = null,
-    build_facts_resolve: ?profile.Category = null,
-    build_facts_lookup: ?profile.Category = null,
-    candidate_gate: ?profile.Category = null,
-    materialize: ?profile.Category = null,
-    minify_resync: ?profile.Category = null,
-    minify: ?profile.Category = null,
-    resync: ?profile.Category = null,
-    minify_skip: ?profile.Category = null,
-    inner: constant_facts.MaterializeProfile = .{},
-};
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
@@ -156,7 +102,7 @@ pub const TreeShaker = struct {
     /// constant_facts.materialize 의 per-module forbidden/reachable 캐시. lazy-init —
     /// numeric pre-shake / post-pass worklist 가 같은 모듈을 다시 방문하면 매번 bitset +
     /// reachable 빌드를 재사용. AST mutation 시 해당 모듈만 invalidate.
-    materialize_scratch: ?constant_facts.Scratch = null,
+    materialize_scratch: ?const_materialize.Scratch = null,
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -307,225 +253,11 @@ pub const TreeShaker = struct {
         return self.graph.moduleAtMut(ModuleIndex.fromUsize(idx));
     }
 
-    /// `root` 에서 도달 가능한 노드를 DFS 로 순회하며 `visit_fn` 을 호출한다.
-    /// `visit_fn` 이 true 를 반환하면 즉시 short-circuit. scratch stack 은 TreeShaker
-    /// 가 보유한 것을 재사용 — 중첩 호출 금지.
-    fn anyReachableNode(
-        self: *TreeShaker,
-        ast: *const Ast,
-        root: NodeIndex,
-        ctx: anytype,
-        comptime visit_fn: fn (ctx: @TypeOf(ctx), ast: *const Ast, raw: u32, node: Node) bool,
-    ) bool {
-        if (root.isNone()) return false;
-        self.numeric_dfs_stack.clearRetainingCapacity();
-        self.numeric_dfs_stack.append(self.allocator, root) catch return false;
-        while (self.numeric_dfs_stack.pop()) |idx| {
-            if (idx.isNone()) continue;
-            const raw: u32 = @intFromEnum(idx);
-            if (raw >= ast.nodes.items.len) continue;
-            const node = ast.nodes.items[raw];
-            if (visit_fn(ctx, ast, raw, node)) return true;
-            var it = ast_walk.children(ast, node);
-            while (it.next()) |child| {
-                if (!child.isNone()) self.numeric_dfs_stack.append(self.allocator, child) catch return false;
-            }
-        }
-        return false;
-    }
-
-    /// top-level `export const` 의 initializer 노드 인덱스를 순회한다 (write_count == 0).
-    /// `visit_fn` 이 true 를 반환하면 즉시 short-circuit.
-    fn anyExportedConstInit(
-        self: *TreeShaker,
-        ast: *const Ast,
-        sem: ModuleSemanticData,
-        ctx: anytype,
-        comptime visit_fn: fn (self: *TreeShaker, ctx: @TypeOf(ctx), ast: *const Ast, init_idx: NodeIndex) bool,
-    ) bool {
-        for (ast.nodes.items) |node| {
-            if (node.tag != .variable_declarator) continue;
-            const extra = node.data.extra;
-            if (extra + 2 >= ast.extra_data.items.len) continue;
-            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-            const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
-            if (name_idx.isNone() or init_idx.isNone()) continue;
-            const name_raw: u32 = @intFromEnum(name_idx);
-            if (name_raw >= sem.symbol_ids.len) continue;
-            const sym_id = sem.symbol_ids[name_raw] orelse continue;
-            if (sym_id >= sem.symbols.items.len) continue;
-            const sym = sem.symbols.items[sym_id];
-            if (!sym.isExported()) continue;
-            if (sym.write_count != 0) continue;
-            if (visit_fn(self, ctx, ast, init_idx)) return true;
-        }
-        return false;
-    }
-
-    /// DFS hot path 의 `const_values.get(sid)` HashMap lookup 을 피하려고 caller 가 미리
-    /// 빌드한 numeric-symbol bitset 을 쓴다 (#2505 sub-item #2). bitset 은
-    /// `moduleHasNumericExportConstChain` 가 한 번만 build → 같은 모듈 내 여러 init 을
-    /// 도는 동안 재사용.
-    const NumericConstRefCtx = struct {
-        symbol_ids: []const ?u32,
-        numeric_bitset: *const std.DynamicBitSet,
-    };
-
-    fn visitNumericConstRef(ctx: NumericConstRefCtx, _: *const Ast, raw: u32, node: Node) bool {
-        if (node.tag != .identifier_reference or raw >= ctx.symbol_ids.len) return false;
-        const sid = ctx.symbol_ids[raw] orelse return false;
-        if (sid >= ctx.numeric_bitset.capacity()) return false;
-        return ctx.numeric_bitset.isSet(sid);
-    }
-
-    fn nodeContainsNumericConstRef(
-        self: *TreeShaker,
-        ast: *const Ast,
-        symbol_ids: []const ?u32,
-        root: NodeIndex,
-        numeric_bitset: *const std.DynamicBitSet,
-    ) bool {
-        return self.anyReachableNode(ast, root, NumericConstRefCtx{
-            .symbol_ids = symbol_ids,
-            .numeric_bitset = numeric_bitset,
-        }, visitNumericConstRef);
-    }
-
-    fn visitChainExportInit(self: *TreeShaker, ctx: NumericConstRefCtx, ast: *const Ast, init_idx: NodeIndex) bool {
-        return self.nodeContainsNumericConstRef(ast, ctx.symbol_ids, init_idx, ctx.numeric_bitset);
-    }
-
-    fn moduleHasNumericExportConstChain(
-        self: *TreeShaker,
-        ast: *const Ast,
-        sem: ModuleSemanticData,
-        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
-    ) bool {
-        if (!constValuesContainNumber(const_values)) return false;
-        // numeric symbol_id 만 미리 bitset 으로 — DFS 안에서 매 identifier_reference 마다
-        // HashMap.get 하지 않도록 (#2505 sub-item #2). 모듈 안 export const 가 여러 개라도
-        // 같은 bitset 을 재사용. alloc 실패면 보수적으로 false (이번 모듈 chain 후보 없다고 처리).
-        var numeric_bitset = std.DynamicBitSet.initEmpty(self.allocator, sem.symbols.items.len) catch return false;
-        defer numeric_bitset.deinit();
-        var it = const_values.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.kind != .number) continue;
-            const sid = entry.key_ptr.*;
-            if (sid >= sem.symbols.items.len) continue;
-            numeric_bitset.set(sid);
-        }
-        return self.anyExportedConstInit(ast, sem, NumericConstRefCtx{
-            .symbol_ids = sem.symbol_ids,
-            .numeric_bitset = &numeric_bitset,
-        }, visitChainExportInit);
-    }
-
-    fn foldNumericExportSeeds(_: *TreeShaker, m: *Module, ast: *Ast) !bool {
-        const minify_mod = @import("../transformer/minify.zig");
-        const sem = if (m.semantic) |*sem| sem else return false;
-        const arena_alloc = if (m.parse_arena) |arena| arena.allocator() else return false;
-        var has_exported_number = false;
-
-        for (ast.nodes.items) |node| {
-            if (node.tag != .variable_declarator) continue;
-            const extra = node.data.extra;
-            if (extra + 2 >= ast.extra_data.items.len) continue;
-            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-            const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
-            if (name_idx.isNone() or init_idx.isNone()) continue;
-            const name_raw: u32 = @intFromEnum(name_idx);
-            if (name_raw >= sem.symbol_ids.len) continue;
-            const sym_id = sem.symbol_ids[name_raw] orelse continue;
-            if (sym_id >= sem.symbols.items.len) continue;
-            const sym = sem.symbols.items[sym_id];
-            if (!sym.isExported()) continue;
-            if (sym.write_count != 0) continue;
-
-            if (sym.const_kind == .number and sem.numericConstText(@intCast(sym_id)).len > 0) {
-                has_exported_number = true;
-                continue;
-            }
-
-            const folded_span = minify_mod.foldNumericLiteralExpression(ast, init_idx) orelse continue;
-            const number_text = try arena_alloc.dupe(u8, ast.getText(folded_span));
-            try sem.numeric_const_texts.put(arena_alloc, @intCast(sym_id), number_text);
-            sem.symbols.items[sym_id].const_kind = .number;
-            has_exported_number = true;
-        }
-
-        // `foldNumericLiteralExpression` 은 init 노드를 in-place 로 numeric_literal 로
-        // 교체할 뿐 ast.nodes 길이/순서 / parent context 는 그대로다. forbidden/reachable
-        // 비트셋의 의미가 보존되므로 materialize_scratch 무효화 불필요.
-        return has_exported_number;
-    }
-
-    fn moduleHasExportedNumberConstValue(_: *TreeShaker, sem: ModuleSemanticData) bool {
-        for (sem.symbols.items) |sym| {
-            if (!sym.isExported()) continue;
-            if (sym.write_count != 0) continue;
-            if (sym.const_kind == .number) return true;
-        }
-        return false;
-    }
-
-    fn anyModuleHasExportedNumberConst(self: *TreeShaker, mod_count: usize) bool {
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            const sem = m.semantic orelse continue;
-            if (self.moduleHasExportedNumberConstValue(sem)) return true;
-        }
-        return false;
-    }
-
-    /// numeric chain fold 를 reachability 확정 후 post-pass 에서 돌릴지.
-    /// `minify_syntax` 모드는 pre-shake 의 `.all` materialize 가 이미 처리. 그 외 두 경로는
-    /// pre-shake 만으로 부족: preserve_modules 는 pre-shake 자체를 건너뛰고, non-minify 는
-    /// `propagateNumericExportConstFacts` 가 import edge 까지만 정리해 chain fold 는 후처리.
-    fn shouldRunNumericPostPass(self: *const TreeShaker) bool {
-        return self.graph.preserve_modules or !self.graph.transform_options_base.minify_syntax;
-    }
-
-    fn minifyAndResyncModule(
-        self: *TreeShaker,
-        m: *Module,
-        sem: ModuleSemanticData,
-        ast: *Ast,
-        const_profile: ConstMaterializeProfile,
-        skip_minify: bool,
-    ) void {
-        var scope = profile.beginMaybe(const_profile.minify_resync);
-        defer scope.end();
-
-        if (skip_minify) {
-            var skip_scope = profile.beginMaybe(const_profile.minify_skip);
-            defer skip_scope.end();
-        } else {
-            var minify_scope = profile.beginMaybe(const_profile.minify);
-            defer minify_scope.end();
-
-            const minify_mod = @import("../transformer/minify.zig");
-            const root = ast.transformed_root orelse NodeIndex.none;
-            const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
-            minify_mod.minify(ast, ctx, self.allocator, root);
-        }
-
-        {
-            var resync_scope = profile.beginMaybe(const_profile.resync);
-            defer resync_scope.end();
-
-            if (const_profile.policy.stableImportExportSyntax()) {
-                self.markConstMaterializedAndResync(m);
-            } else {
-                self.markAstMutatedAndResync(m);
-            }
-        }
-    }
-
     /// AST mutation 후 모듈 metadata 재동기화 + linker rename/mangling 재계산 신호 set.
     /// `resyncModuleMetadataAfterAstMutation` 만 호출하고 `ast_mutated_after_link` 를
     /// 빠뜨리면 `bundler.zig` 의 post-shake finalize gate 가 발화 안 해 stale rename
     /// 으로 emit 되는 회귀가 난다 — 두 동작은 항상 짝.
-    fn markAstMutatedAndResync(self: *TreeShaker, m: *Module) void {
+    pub fn markAstMutatedAndResync(self: *TreeShaker, m: *Module) void {
         // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
         // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
         std.debug.assert(m.parse_arena != null);
@@ -535,18 +267,6 @@ pub const TreeShaker = struct {
         self.ast_mutated_after_link = true;
         self.invalidateImportRecordStmtIndices(@intFromEnum(m.index));
         if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
-    }
-
-    fn markConstMaterializedAndResync(self: *TreeShaker, m: *Module) void {
-        std.debug.assert(m.parse_arena != null);
-        self.graph.resyncModuleMetadataAfterConstMaterialization(m, m.parse_arena.?.allocator()) catch {
-            m.prebuilt_stmt_info = null;
-        };
-        self.ast_mutated_after_link = true;
-        // const-materialize 는 leaf identifier_reference 를 leaf literal 로 in-place 치환만 한다.
-        // ast.nodes 길이/순서, top-level 통계, import_records.span 모두 보존되므로
-        // import_record_stmt_indices / materialize_scratch (forbidden/reachable) 캐시는
-        // 그대로 유효 — 무효화 시 다음 호출에서 같은 결과를 재계산할 뿐.
     }
 
     fn invalidateImportRecordStmtIndices(self: *TreeShaker, idx: usize) void {
@@ -565,261 +285,6 @@ pub const TreeShaker = struct {
         if (!self.ast_mutated_after_link) return;
         if (self.graph.code_splitting) return;
         self.linker.refreshAfterAstMutation();
-    }
-
-    fn shouldMaterializeConstFacts(
-        self: *TreeShaker,
-        ast: *const Ast,
-        sem: ModuleSemanticData,
-        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
-        filter: ConstMaterializeFilter,
-    ) bool {
-        return switch (filter) {
-            .all => const_values.count() > 0,
-            .numeric => constValuesContainNumber(const_values),
-            .numeric_export_chain => self.moduleHasNumericExportConstChain(ast, sem, const_values),
-        };
-    }
-
-    fn materializeCrossModuleConstFactsForIndex(
-        self: *TreeShaker,
-        module_index: usize,
-        filter: ConstMaterializeFilter,
-        const_profile: ConstMaterializeProfile,
-    ) !bool {
-        const m = self.moduleAtMut(@intCast(module_index)) orelse return false;
-        if (m.import_bindings.len == 0) return false;
-        const sem = m.semantic orelse return false;
-        const ast = &(m.ast orelse return false);
-        var const_values = blk: {
-            var build_scope = profile.beginMaybe(const_profile.build_facts);
-            defer build_scope.end();
-            const build_profile = if (const_profile.build_facts != null)
-                Linker.ConstValuesProfile{
-                    .resolve = const_profile.build_facts_resolve,
-                    .lookup = const_profile.build_facts_lookup,
-                }
-            else
-                Linker.ConstValuesProfile{};
-            break :blk try self.linker.buildCrossModuleConstValuesProfiled(m, sem, build_profile);
-        };
-        const should_materialize = blk: {
-            var gate_scope = profile.beginMaybe(const_profile.candidate_gate);
-            defer gate_scope.end();
-            break :blk self.shouldMaterializeConstFacts(ast, sem, &const_values, filter);
-        };
-        if (!should_materialize) {
-            const_values.deinit(self.allocator);
-            return false;
-        }
-
-        if (self.materialize_scratch == null) {
-            self.materialize_scratch = constant_facts.Scratch.init(self.allocator, self.graph.moduleCount()) catch null;
-        }
-        const scratch_ptr: ?*constant_facts.Scratch = if (self.materialize_scratch) |*s| s else null;
-        const materialized = blk: {
-            var materialize_scope = profile.beginMaybe(const_profile.materialize);
-            defer materialize_scope.end();
-            break :blk constant_facts.materializeWithScratchDetailed(
-                self.allocator,
-                ast,
-                sem.symbol_ids,
-                &const_values,
-                scratch_ptr,
-                module_index,
-                const_profile.inner,
-                const_profile.policy.skipMinifyIfSafe(),
-            );
-        };
-        const_values.deinit(self.allocator);
-        if (!materialized.changed) return false;
-
-        const skip_minify = const_profile.policy.skipMinifyIfSafe() and !materialized.needs_minify;
-        self.minifyAndResyncModule(m, sem, ast, const_profile, skip_minify);
-        return true;
-    }
-
-    fn materializeCrossModuleConstFacts(
-        self: *TreeShaker,
-        mod_count: usize,
-        filter: ConstMaterializeFilter,
-        reverse: bool,
-        const_profile: ConstMaterializeProfile,
-    ) !bool {
-        var any_changed = false;
-        if (reverse) {
-            var i = mod_count;
-            while (i > 0) {
-                i -= 1;
-                if (try self.materializeCrossModuleConstFactsForIndex(i, filter, const_profile)) any_changed = true;
-            }
-        } else {
-            for (0..mod_count) |i| {
-                if (try self.materializeCrossModuleConstFactsForIndex(i, filter, const_profile)) any_changed = true;
-            }
-        }
-        return any_changed;
-    }
-
-    fn shouldVisitNumericPostPassModule(self: *const TreeShaker, idx: u32) bool {
-        if (self.graph.preserve_modules) return true;
-        if (idx >= self.included.capacity()) return false;
-        return self.included.isSet(idx);
-    }
-
-    fn enqueueNumericPostPassModule(
-        self: *TreeShaker,
-        queue: *std.ArrayList(u32),
-        queued: *std.DynamicBitSet,
-        idx: u32,
-        mod_count: usize,
-    ) !void {
-        if (idx >= mod_count) return;
-        if (!self.shouldVisitNumericPostPassModule(idx)) return;
-        const m = self.getModule(idx) orelse return;
-        if (m.import_bindings.len == 0) return;
-        if (queued.isSet(idx)) return;
-        try queue.append(self.allocator, idx);
-        queued.set(idx);
-    }
-
-    /// `enqueueStaticImporters` 의 postpass 변형 — importer 를
-    /// `enqueueNumericPostPassModule` 가드(included/import_bindings)에 넣어 worklist
-    /// pop 시점에 같은 검사를 다시 할 필요 없게 한다.
-    fn enqueueNumericPostPassImporters(
-        self: *TreeShaker,
-        queue: *std.ArrayList(u32),
-        queued: *std.DynamicBitSet,
-        idx: u32,
-        mod_count: usize,
-    ) !void {
-        const m = self.getModule(idx) orelse return;
-        for (m.importers.items) |imp| {
-            try self.enqueueNumericPostPassModule(queue, queued, @intCast(@intFromEnum(imp)), mod_count);
-        }
-    }
-
-    fn materializeNumericConstFactsWorklist(self: *TreeShaker, mod_count: usize) !void {
-        var queue: std.ArrayList(u32) = .empty;
-        defer queue.deinit(self.allocator);
-        var queued = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
-        defer queued.deinit();
-
-        const postpass_profile = ConstMaterializeProfile{
-            .policy = .numeric_post_pass,
-            .build_facts = .shake_numeric_postpass_build_facts,
-            .build_facts_resolve = .shake_numeric_postpass_build_facts_resolve,
-            .build_facts_lookup = .shake_numeric_postpass_build_facts_lookup,
-            .candidate_gate = .shake_numeric_postpass_candidate_gate,
-            .materialize = .shake_numeric_postpass_materialize,
-            .minify_resync = .shake_numeric_postpass_minify_resync,
-            .minify = .shake_numeric_postpass_minify,
-            .resync = .shake_numeric_postpass_resync,
-            .minify_skip = .shake_numeric_postpass_minify_skip,
-            .inner = .{
-                .forbidden = .shake_numeric_postpass_forbidden,
-                .reachable = .shake_numeric_postpass_reachable,
-                .replace = .shake_numeric_postpass_replace,
-            },
-        };
-
-        {
-            var seed_scope = profile.begin(.shake_numeric_postpass_queue_seed);
-            defer seed_scope.end();
-
-            for (0..mod_count) |i| {
-                try self.enqueueNumericPostPassModule(&queue, &queued, @intCast(i), mod_count);
-            }
-        }
-
-        {
-            var queue_scope = profile.begin(.shake_numeric_postpass_queue);
-            defer queue_scope.end();
-
-            while (queue.pop()) |idx| {
-                if (idx >= mod_count) continue;
-                queued.unset(idx);
-                if (!try self.materializeCrossModuleConstFactsForIndex(idx, .numeric, postpass_profile)) continue;
-                try self.enqueueNumericPostPassImporters(&queue, &queued, idx, mod_count);
-            }
-        }
-    }
-
-    /// `Module.importers` (graph.linkDependency 가 채우는 양방향 인접 리스트) 의 항목을
-    /// numeric BFS 큐에 넣는다. dynamic_importers 는 별도 리스트라 자동 제외 — dynamic
-    /// import 는 runtime property 접근이라 numeric materialize 가 손댈 AST binding 이 없다.
-    fn enqueueStaticImporters(
-        self: *TreeShaker,
-        queue: *std.ArrayList(u32),
-        queued: *std.DynamicBitSet,
-        idx: u32,
-        mod_count: usize,
-    ) !void {
-        const m = self.getModule(idx) orelse return;
-        for (m.importers.items) |imp| {
-            const ii = @intFromEnum(imp);
-            if (ii >= mod_count) continue;
-            if (queued.isSet(ii)) continue;
-            try queue.append(self.allocator, @intCast(ii));
-            queued.set(ii);
-        }
-    }
-
-    fn propagateNumericExportConstFacts(
-        self: *TreeShaker,
-        mod_count: usize,
-        const_profile: ConstMaterializeProfile,
-    ) !void {
-        var queue: std.ArrayList(u32) = .empty;
-        defer queue.deinit(self.allocator);
-        // Same importer can be reached from many exported numeric leaves. Keep the
-        // worklist unique while pending, but allow re-enqueue after a module is
-        // popped so later AST mutations still propagate to its importers.
-        var queued = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
-        defer queued.deinit();
-        // re-export-only 모듈은 importer 가 큐를 비울 때마다 한 번만 forwarding 하면 충분 —
-        // 다시 들어오면 같은 importer 들을 무한히 enqueue 해 BFS 가 폭발한다.
-        var forwarded_re_exports = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
-        defer forwarded_re_exports.deinit();
-        {
-            var seed_scope = profile.begin(.shake_const_prepass_numeric_seed_scan);
-            defer seed_scope.end();
-
-            for (0..mod_count) |i| {
-                const m = self.moduleAtMut(@intCast(i)) orelse continue;
-                const ast = &(m.ast orelse continue);
-                if (try self.foldNumericExportSeeds(m, ast)) {
-                    try self.enqueueStaticImporters(&queue, &queued, @intCast(i), mod_count);
-                }
-            }
-        }
-
-        {
-            var queue_scope = profile.begin(.shake_const_prepass_numeric_queue);
-            defer queue_scope.end();
-
-            while (queue.pop()) |idx| {
-                if (idx < mod_count) queued.unset(idx);
-                if (idx >= mod_count) continue;
-                if (try self.materializeCrossModuleConstFactsForIndex(idx, .numeric_export_chain, const_profile)) {
-                    try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
-                    continue;
-                }
-
-                if (forwarded_re_exports.isSet(idx)) continue;
-                const m = self.getModule(idx) orelse continue;
-                var has_re_export = false;
-                for (m.export_bindings) |eb| {
-                    if (eb.kind.isAnyReExport()) {
-                        has_re_export = true;
-                        break;
-                    }
-                }
-                if (!has_re_export) continue;
-                forwarded_re_exports.set(idx);
-                try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
-            }
-        }
     }
 
     /// Tree-shaking 분석 (fixpoint 방식).
@@ -907,30 +372,15 @@ pub const TreeShaker = struct {
             var const_scope = profile.begin(.shake_const_prepass);
             defer const_scope.end();
 
-            const prepass_const_profile = ConstMaterializeProfile{
-                .policy = .pre_pass,
-                .build_facts = .shake_const_prepass_build_facts,
-                .build_facts_resolve = .shake_const_prepass_build_facts_resolve,
-                .build_facts_lookup = .shake_const_prepass_build_facts_lookup,
-                .candidate_gate = .shake_const_prepass_candidate_gate,
-                .materialize = .shake_const_prepass_materialize,
-                .minify_resync = .shake_const_prepass_minify_resync,
-                .inner = .{
-                    .forbidden = .shake_const_prepass_forbidden,
-                    .reachable = .shake_const_prepass_reachable,
-                    .replace = .shake_const_prepass_replace,
-                },
-            };
-
             if (!self.graph.preserve_modules) {
                 if (self.graph.transform_options_base.minify_syntax) {
                     var full_scope = profile.begin(.shake_const_prepass_full_materialize);
                     defer full_scope.end();
-                    _ = try self.materializeCrossModuleConstFacts(mod_count, .all, false, prepass_const_profile);
+                    _ = try const_materialize.materializeFullPrepass(self, mod_count);
                 } else {
                     var numeric_scope = profile.begin(.shake_const_prepass_numeric_propagate);
                     defer numeric_scope.end();
-                    try self.propagateNumericExportConstFacts(mod_count, prepass_const_profile);
+                    try const_materialize.propagateNumericExportConstFacts(self, mod_count);
                 }
             }
 
@@ -1186,8 +636,8 @@ pub const TreeShaker = struct {
             var numeric_scope = profile.begin(.shake_numeric_postpass);
             defer numeric_scope.end();
 
-            if (self.shouldRunNumericPostPass() and self.anyModuleHasExportedNumberConst(mod_count)) {
-                try self.materializeNumericConstFactsWorklist(mod_count);
+            if (const_materialize.shouldRunNumericPostPass(self) and const_materialize.anyModuleHasExportedNumberConst(self, mod_count)) {
+                try const_materialize.materializeNumericConstFactsWorklist(self, mod_count);
             }
         }
 
