@@ -3,6 +3,10 @@
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const writer = @import("writer.zig");
+
+const writeNewline = writer.writeNewline;
+const writeSpace = writer.writeSpace;
 
 // ================================================================
 // Pattern 출력
@@ -163,13 +167,4 @@ pub fn emitFormalParam(self: anytype, node: Node) !void {
         try self.writeByte('=');
         try self.emitNode(default_val);
     }
-}
-
-fn writeNewline(self: anytype) !void {
-    if (self.options.minify_whitespace) return;
-    try self.write(self.options.newline);
-}
-
-fn writeSpace(self: anytype) !void {
-    if (!self.options.minify_whitespace) try self.writeByte(' ');
 }
