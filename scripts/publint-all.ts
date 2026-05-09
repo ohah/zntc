@@ -13,38 +13,27 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, '..');
+import { detectWorkspacePackages, repoRoot } from './lib/workspace.ts';
 
 async function main() {
-  const root = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-  const ws = (root.workspaces as string[] | undefined) ?? [];
-  const targets = ws.map((w) => w.replace(/^\.\//, '')).filter((w) => w.startsWith('packages/'));
+  const targets = await detectWorkspacePackages();
 
   let failed = 0;
   for (const t of targets) {
-    const pkgJsonPath = resolve(repoRoot, t, 'package.json');
-    if (!existsSync(pkgJsonPath)) continue;
-    const pkg = JSON.parse(await readFile(pkgJsonPath, 'utf8'));
-    if (pkg.private) {
-      console.log(`\nskip: ${pkg.name} (private)`);
+    if (t.isPrivate) {
+      console.log(`\nskip: ${t.name} (private)`);
       continue;
     }
-    if (!existsSync(resolve(repoRoot, t, 'dist'))) {
-      console.log(`\n=== ${pkg.name} ===`);
-      console.error(`  ❌ dist/ 없음 — 빌드 선행 필요 (bun run --cwd ${t} build)`);
+    if (!t.hasDist) {
+      console.log(`\n=== ${t.name} ===`);
+      console.error(`  ❌ dist/ 없음 — 빌드 선행 필요 (bun run --cwd ${t.dir} build)`);
       failed += 1;
       continue;
     }
-    console.log(`\n=== ${pkg.name} (${t}) ===`);
+    console.log(`\n=== ${t.name} (${t.dir}) ===`);
     // --strict: warning 도 error 로 승격. RN runtime 의 .js (ESM 모드 + CJS 코드)
     // case 는 .cjs 로 rename 처리됨 (#2802). 새 warning 발생 시 case 별 audit.
-    const res = spawnSync('bunx', ['publint', '--strict', '--level', 'error', t], {
+    const res = spawnSync('bunx', ['publint', '--strict', '--level', 'error', t.dir], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: 'inherit',
