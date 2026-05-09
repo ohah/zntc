@@ -1387,6 +1387,175 @@ test "#1797 native for-of + block scoping: closure 없으면 _loop 변환 안 �
     try std.testing.expect(std.mem.indexOf(u8, code, "for (var key of") != null);
 }
 
+test "#1797 native for-of + block scoping: const 도 capture 시 _loop 변환" {
+    const source =
+        \\for (const key of keys) {
+        \\  arr.push(() => from[key]);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (var key of") != null);
+}
+
+test "#1797 native for-in + block scoping: let capture → _loop 변환" {
+    const source =
+        \\for (let key in obj) {
+        \\  arr.push(() => obj[key]);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (var key in") != null);
+}
+
+test "#1797 native for-of + block scoping: object destructuring 모든 binding 이 params" {
+    const source =
+        \\for (let { a, b } of pairs) {
+        \\  arr.push(() => a + b);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // 두 binding 모두 _loop param 으로 전달돼야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop(a, b)") != null);
+}
+
+test "#1797 native for-of + block scoping: nested loops — 외부/내부 모두 wrap" {
+    const source =
+        \\for (let x of xs) {
+        \\  for (let y of ys) {
+        \\    handlers.push(() => x + y);
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 내부 루프는 y 만 capture (x 는 외부 scope, 내부 _loop 안 들어가도 외부 _loop 으로 fresh)
+    // 외부 루프는 x 를 transitive 하게 capture (내부 closure 가 x 사용)
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, code, pos, "_loop")) |found| {
+        count += 1;
+        pos = found + 5;
+    }
+    try std.testing.expect(count >= 2); // 외부 _loop fn + 내부 _loop fn 최소 2회 등장
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (var x of") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (var y of") != null);
+}
+
+test "#1797 native for-of + block scoping: continue → return; 으로 변환" {
+    const source =
+        \\for (let key of keys) {
+        \\  if (skip(key)) continue;
+        \\  arr.push(() => from[key]);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // continue 가 return; 으로 변환되어야 — 안 그러면 SyntaxError ("Illegal continue: no surrounding iteration")
+    try std.testing.expect(std.mem.indexOf(u8, code, "continue;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "return;") != null);
+}
+
+test "#1797 native for-of + block scoping: break → outer 종료 ret 체인" {
+    const source =
+        \\for (let key of keys) {
+        \\  if (done(key)) break;
+        \\  arr.push(() => from[key]);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // break 검사용 _ret 변수가 호출부에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "_ret") != null);
+}
+
+test "#1797 native for-of + block scoping: return value 보존" {
+    const source =
+        \\function findValue(keys) {
+        \\  for (let key of keys) {
+        \\    if (matches(key)) return () => from[key];
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // return value 캡처용 { v: ... } 객체가 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "v:") != null);
+}
+
+test "#1797 native for-of + block scoping: labeled break OUTER" {
+    const source =
+        \\OUTER: for (let key of keys) {
+        \\  for (let v of values) {
+        \\    if (skip(v)) break OUTER;
+        \\    arr.push(() => from[key]);
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // labeled break 가 처리되면 _ret 체인 + label 보존
+    try std.testing.expect(std.mem.indexOf(u8, code, "_ret") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "OUTER") != null);
+}
+
 test "#1797 bungae __copyProps pattern: getter 가 iteration-local key 캡처" {
     // @radix-ui/react-slot 이 esbuild 로 빌드한 `__copyProps` 의 정확한 패턴.
     // RN Hermes 에서 `React$250 = '19.2.0'` crash 를 재현한 입력.
