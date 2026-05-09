@@ -2080,6 +2080,10 @@ pub const Transformer = struct {
                 const orig_body_idx = node.data.ternary.c;
                 // 원본 AST 에서 capture 검사 — visitNode 가 closure 경계를 변환하기 전 시점.
                 const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
+                // body 에 await 가 있으면 _loop 도 async 여야 (호출부도 await wrap).
+                // for-await-of 자체는 enclosing async function 보장이지만 body 에 await
+                // 가 없으면 sync _loop 으로 충분.
+                const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
 
                 var flow = BlockScoping.FlowResult{};
                 defer flow.labels.deinit(self.allocator);
@@ -2102,6 +2106,7 @@ pub const Transformer = struct {
                         &flow,
                         null,
                         node.span,
+                        is_async,
                     );
                     const loop_node = try self.ast.addNode(.{
                         .tag = node.tag,
@@ -3912,10 +3917,10 @@ pub const Transformer = struct {
                 // 원본 body에서 캡처/제어흐름 분석 (new AST에서는 extra 레이아웃이 변경됨)
                 const orig_body_idx = self.readNodeIdx(e, 3);
                 const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
+                const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
 
                 // 제어 흐름 분석도 원본에서 수행
                 var flow = BlockScoping.FlowResult{};
-                flow.labels = .empty;
                 defer flow.labels.deinit(self.allocator);
                 if (has_capture) {
                     BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
@@ -3934,6 +3939,7 @@ pub const Transformer = struct {
                         &flow,
                         null,
                         node.span,
+                        is_async,
                     );
 
                     // var _loop = function(...) { ... };

@@ -42,6 +42,15 @@ pub inline fn lowerKind(_: VariableDeclarationKind) VariableDeclarationKind {
     return .@"var";
 }
 
+/// closure 경계 — 안의 capture / await / yield 등은 우리 책임이 아니라 해당 함수 책임.
+/// hasCapturedClosure / hasAwaitExpression 양쪽이 동일 set 사용 → 단일 정의로 drift 차단.
+inline fn isFunctionBoundary(tag: Tag) bool {
+    return tag == .function_expression or
+        tag == .function_declaration or
+        tag == .arrow_function_expression or
+        tag == .function;
+}
+
 pub fn ES2015BlockScoping(comptime Transformer: type) type {
     return struct {
         const Self = @This();
@@ -117,10 +126,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const node = self.ast.getNode(entry.idx);
 
                 // 클로저 경계: fn_depth 증가
-                const fn_depth = if (node.tag == .function_expression or
-                    node.tag == .function_declaration or
-                    node.tag == .arrow_function_expression or
-                    node.tag == .function)
+                const fn_depth = if (isFunctionBoundary(node.tag))
                     entry.fn_depth + 1
                 else
                     entry.fn_depth;
@@ -139,6 +145,41 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 collectChildIndices(self, node, &children) catch return true;
                 for (children.items) |child_idx| {
                     stack.append(self.allocator, .{ .idx = child_idx, .fn_depth = fn_depth }) catch return true;
+                }
+            }
+            return false;
+        }
+
+        /// loop body 직속 (closure 경계 안 넘는) `await` expression 이 있는지 검사.
+        /// 있으면 합성된 `_loop` 함수도 async 로 emit + 호출부 `await _loop(x)` wrap
+        /// 필요 — `_loop` 가 새 function scope 라 enclosing async-ness 가 끊기기 때문.
+        ///
+        /// 명시적 스택 사용 — stack overflow 불가능. closure (function/arrow) 안의
+        /// `await` 는 그 closure 의 async-ness 가 결정하므로 무시한다.
+        pub fn hasAwaitExpression(self: *Transformer, body_idx: NodeIndex) bool {
+            if (body_idx.isNone()) return false;
+            const max_node = self.parser_node_count;
+
+            const ScanEntry = struct { idx: NodeIndex, in_closure: bool };
+            var stack: std.ArrayList(ScanEntry) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, .{ .idx = body_idx, .in_closure = false }) catch return false;
+
+            while (stack.items.len > 0) {
+                const entry = stack.pop() orelse break;
+                if (entry.idx.isNone()) continue;
+                if (@intFromEnum(entry.idx) >= max_node) continue;
+                const node = self.ast.getNode(entry.idx);
+
+                const in_closure = entry.in_closure or isFunctionBoundary(node.tag);
+
+                if (!in_closure and node.tag == .await_expression) return true;
+
+                var children: std.ArrayList(NodeIndex) = .empty;
+                defer children.deinit(self.allocator);
+                collectChildIndices(self, node, &children) catch return true;
+                for (children.items) |child_idx| {
+                    stack.append(self.allocator, .{ .idx = child_idx, .in_closure = in_closure }) catch return true;
                 }
             }
             return false;
@@ -196,6 +237,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             flow: *const FlowResult,
             local_label: ?[]const u8,
             span: Span,
+            is_async: bool,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
@@ -249,9 +291,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             const none = @intFromEnum(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
+            const func_flags: u32 = if (is_async) ast_mod.FunctionFlags.is_async else 0;
             const func_extra = try self.ast.addExtras(&.{
                 none,                           @intFromEnum(params_node),
-                @intFromEnum(transformed_body), 0,
+                @intFromEnum(transformed_body), func_flags,
                 none,
             });
             const func_expr = try self.ast.addNode(.{
@@ -283,15 +326,22 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .data = .{ .extra = call_extra },
             });
 
-            // --- 제어 흐름 후처리: var _ret = _loop(i); if (...) ... ---
+            // is_async — `_loop(...)` 가 Promise 반환. 호출부도 `await _loop(...)` 로
+            // wrap 해야 iteration 순서 보존 + needsRetVar 시 _ret 가 resolved value.
+            const call_expr: NodeIndex = if (is_async)
+                try es_helpers.makeAwaitExpression(self, loop_call, span)
+            else
+                loop_call;
+
+            // --- 제어 흐름 후처리: var _ret = await _loop(i); if (...) ... ---
             var final_stmt: NodeIndex = undefined;
             if (needs_ret_var) {
-                final_stmt = try buildControlFlowCheck(self, loop_call, flow, local_label, span);
+                final_stmt = try buildControlFlowCheck(self, call_expr, flow, local_label, span);
             } else {
                 final_stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
                     .span = span,
-                    .data = .{ .unary = .{ .operand = loop_call, .flags = 0 } },
+                    .data = .{ .unary = .{ .operand = call_expr, .flags = 0 } },
                 });
             }
 
