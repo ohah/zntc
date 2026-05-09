@@ -273,6 +273,61 @@ jobs:
           }
           EOF
 
+  publish-smoke:
+    name: Publish Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      # publish-smoke 의 검증 대상은 tarball 의 layout / exports / files / deps —
+      # NAPI binary (.node) 와 wasm 바이너리 자체 동작은 별도 job 책임. JS dist 만
+      # 있으면 검증 충분 (smoke test 는 파일 존재 + package.json 만 본다).
+      - name: Build NAPI module + wasm (binary 산출 — JS wrapper 가 require)
+        run: zig build napi && zig build wasm && zig build wasm-bundler
+
+      - name: Build all publishable packages
+        run: |
+          cp zig-out/lib/zntc.node packages/core/zntc.node
+          bun run --cwd packages/core build:js
+          bun run --cwd packages/core build:dts
+          cp zig-out/bin/zntc.wasm packages/wasm/
+          cp zig-out/bin/zntc-bundler.wasm packages/wasm/
+          bun run --cwd packages/wasm build:js
+          bun run --cwd packages/wasm build:dts
+          bun run --cwd packages/server build
+          bun run --cwd packages/web build
+          bun run --cwd packages/react-native build
+          bun run --cwd packages/vite-plugin-zntc build
+          bun run --cwd packages/init build
+
+      - name: Run publish smoke test
+        run: bun scripts/publish-smoke-test.ts
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest

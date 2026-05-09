@@ -22,6 +22,7 @@
     "test": "bun run test:integration",
     "test:integration": "bun test --cwd tests/integration",
     "test:runtime-polyfills:coverage": "bun run scripts/check-runtime-polyfill-coverage.mjs",
+    "test:publish-smoke": "bun scripts/publish-smoke-test.ts",
     "test:e2e": "bun run --cwd tests/e2e test",
     "test:all": "bun run test:integration && bun run test:e2e",
     "build:zntc": "zig build -Doptimize=ReleaseFast",
