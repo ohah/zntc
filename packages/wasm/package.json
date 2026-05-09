@@ -24,7 +24,8 @@
     "build:js": "bun build index.ts --outdir dist --format esm --target browser",
     "build:dts": "bun x tsc -b",
     "build": "bun run build:wasm && cp ../../zig-out/bin/zntc.wasm . && cp ../../zig-out/bin/zntc-bundler.wasm . && bun run build:js && bun run build:dts",
-    "test": "bun test --timeout 10000"
+    "test": "bun test --timeout 10000",
+    "prepublishOnly": "bun run build && bunx publint --strict --level error ."
   },
   "devDependencies": {
     "@types/node": "^25.5.2"

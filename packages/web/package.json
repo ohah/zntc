@@ -20,7 +20,8 @@
     "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core --external postcss --external postcss-load-config --external sass",
     "build:dts": "bun x tsc -b",
     "build": "bun run build:bundle && bun run build:dts",
-    "test": "bun test --timeout 10000"
+    "test": "bun test --timeout 10000",
+    "prepublishOnly": "bun run build && bunx publint --strict --level error ."
   },
   "dependencies": {
     "@zntc/core": "workspace:*"
