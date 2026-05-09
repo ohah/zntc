@@ -1526,6 +1526,10 @@ pub const Parser = struct {
         return expression.parseExpression(self);
     }
 
+    pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) ParseError2!NodeIndex {
+        return expression.parseArrowBody(self, is_async, param_idx);
+    }
+
     pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         return expression.parseAssignmentExpression(self);
     }
