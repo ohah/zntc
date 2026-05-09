@@ -706,7 +706,10 @@ pub const Linker = struct {
                         if (rec.resolved.isNone()) break :blk !rec.is_lazy_resolved;
                         const target_idx = @intFromEnum(rec.resolved);
                         if (target_idx >= self.graph.moduleCount()) break :blk m.wrap_kind == .esm;
-                        const target_wrap = self.getModule(target_idx).?.wrap_kind;
+                        const target_module = self.getModule(target_idx).?;
+                        const helper_modules = @import("../runtime_helper_modules.zig");
+                        if (helper_modules.isVirtualId(target_module.path)) break :blk false;
+                        const target_wrap = target_module.wrap_kind;
                         if (m.wrap_kind == .esm) {
                             // CJS named import는 `require_xxx().prop` 직접 참조로
                             // 치환하므로 별도 top-level var를 만들지 않는다.
