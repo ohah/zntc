@@ -5,7 +5,7 @@ description: Learn what ZNTC is and why it was built.
 
 ## What is ZNTC?
 
-ZNTC stands for **Zig Native Transpiler Compiler**. It is a native-speed transpile and bundling toolchain for JavaScript, TypeScript, and Flow, aiming for production-level quality on par with SWC and oxc.
+ZNTC stands for **Zig Native Transpiler & Compiler**. It is a native-speed transpile and bundling toolchain for JavaScript, TypeScript, and Flow, aiming for production-level quality on par with SWC and oxc.
 
 ## Key Features
 

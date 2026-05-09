@@ -1,4 +1,4 @@
-//! ZNTC — Zig Native Transpiler Compiler
+//! ZNTC — Zig Native Transpiler & Compiler
 //!
 //! 라이브러리 엔트리포인트. 모든 공개 모듈을 여기서 re-export한다.
 

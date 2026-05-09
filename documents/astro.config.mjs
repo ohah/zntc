@@ -13,7 +13,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "ZNTC",
-      description: "Zig Native Transpiler Compiler",
+      description: "Zig Native Transpiler & Compiler",
       expressiveCode: {
         themes: ["github-dark", "github-light"],
         styleOverrides: {
