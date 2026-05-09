@@ -3011,7 +3011,7 @@ fn collectWatchRootMtimes(
 
 fn printUsage(writer: anytype) !void {
     try writer.print(
-        \\zntc v0.1.0 - Zig Native Transpiler Compiler
+        \\zntc v0.1.0 - Zig Native Transpiler & Compiler
         \\
         \\Usage:
         \\  zntc <file.ts>                    Transpile to stdout

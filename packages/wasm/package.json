@@ -1,7 +1,7 @@
 {
   "name": "@zntc/wasm",
   "version": "0.1.0",
-  "description": "ZNTC native transpiler compiler — WASM build",
+  "description": "ZNTC native transpiler & compiler — WASM build",
   "license": "MIT",
   "files": [
     "dist/",

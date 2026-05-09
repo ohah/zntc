@@ -1,6 +1,6 @@
-# ZNTC - Zig Native Transpiler Compiler
+# ZNTC - Zig Native Transpiler & Compiler
 
-JavaScript / TypeScript / Flow 를 네이티브 속도로 처리하는 Zig Native Transpiler Compiler.
+JavaScript / TypeScript / Flow 를 네이티브 속도로 처리하는 Zig Native Transpiler & Compiler.
 트랜스파일과 번들링 파이프라인을 함께 제공합니다.
 
 > **Status**: Phase 1–6 전반 완료 (렉서/파서/세만틱/트랜스포머/코드젠/번들러/Dev 서버/HMR).

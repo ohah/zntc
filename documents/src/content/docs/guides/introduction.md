@@ -5,7 +5,7 @@ description: ZNTC가 무엇인지, 왜 만들었는지 알아봅니다.
 
 ## ZNTC란?
 
-ZNTC는 **Zig Native Transpiler Compiler**의 약자로, JavaScript/TypeScript/Flow를 네이티브 속도로 처리하는 트랜스파일 및 번들링 툴체인입니다. SWC, oxc 수준의 프로덕션 레벨 품질을 목표로 합니다.
+ZNTC는 **Zig Native Transpiler & Compiler**의 약자로, JavaScript/TypeScript/Flow를 네이티브 속도로 처리하는 트랜스파일 및 번들링 툴체인입니다. SWC, oxc 수준의 프로덕션 레벨 품질을 목표로 합니다.
 
 ## 주요 기능
 
