@@ -177,39 +177,41 @@ var HMRClient = {
         typeof __ZNTC_FORWARD_CLIENT_LOGS__ !== 'undefined' ? __ZNTC_FORWARD_CLIENT_LOGS__ : false;
       if (forwardClientLogs === true && self._originalConsole == null) {
         self._originalConsole = {};
-        // Intercept console methods to forward logs to dev server terminal.
+        // RN dev mode 는 idle 에도 LogBox/Animated/bridge 가 console 을 frame 단위로
+        // 호출. wrap 안에서 큰 객체를 deep-clone 하면 RN Fiber/props graph 가 매 frame
+        // 복제돼 GC 가 못 따라가고 RAM 이 grow (#2885). single-pass stringify +
+        // circular replacer + bufferedAmount 가드로 fix.
         var levels = ['log', 'info', 'warn', 'error', 'debug'];
+        // server 가 burst 를 못 따라가면 native send buffer 에 누적 — 1MB 초과 시 drop.
+        // dev 메시지 forwarding 은 best-effort.
+        var BUFFER_LIMIT = 1024 * 1024;
         for (var i = 0; i < levels.length; i++) {
           (function (level) {
             var original = console[level];
             if (typeof original === 'function') {
               self._originalConsole[level] = original;
               console[level] = function () {
-                // Call original first
                 original.apply(console, arguments);
-                // Forward to server
-                if (socket.readyState === 1) {
-                  try {
-                    var args = [];
-                    for (var j = 0; j < arguments.length; j++) {
-                      var arg = arguments[j];
-                      // Serialize safely — avoid circular references
-                      if (arg instanceof Error) {
-                        args.push(arg.message);
-                      } else if (typeof arg === 'object' && arg !== null) {
-                        try {
-                          args.push(JSON.parse(JSON.stringify(arg)));
-                        } catch (_e) {
-                          args.push(String(arg));
-                        }
-                      } else {
-                        args.push(arg);
-                      }
-                    }
-                    socket.send(JSON.stringify({ type: 'log', level: level, data: args }));
-                  } catch (_e) {
-                    // ignore serialization errors
+                if (socket.readyState !== 1) return;
+                if (socket.bufferedAmount > BUFFER_LIMIT) return;
+                var argsLen = arguments.length;
+                var args = new Array(argsLen);
+                for (var j = 0; j < argsLen; j++) args[j] = arguments[j];
+                // seen / replacer 를 호출별 local 로 — toString 등으로 인한 reentrancy
+                // (console.log 가 다른 console.log 를 trigger) 에도 안전.
+                var seen = [];
+                var replacer = function (_key, value) {
+                  if (value instanceof Error) return value.message;
+                  if (typeof value === 'object' && value !== null) {
+                    if (seen.indexOf(value) !== -1) return '[Circular]';
+                    seen.push(value);
                   }
+                  return value;
+                };
+                try {
+                  socket.send(JSON.stringify({ type: 'log', level: level, data: args }, replacer));
+                } catch (_e) {
+                  // serialization 실패 — drop
                 }
               };
             }

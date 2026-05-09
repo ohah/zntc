@@ -255,7 +255,7 @@ describe('onopen — hmr:connected + console wrap', () => {
     expect(log.data).toEqual(['boom']);
   });
 
-  test('circular reference 객체 fallback (String 변환)', () => {
+  test('circular reference — replacer 가 [Circular] 로 대체 (#2885)', () => {
     HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
     const ws = MockWebSocket.instances[0];
     ws.onopen();
@@ -263,8 +263,60 @@ describe('onopen — hmr:connected + console wrap', () => {
     obj.self = obj;
     mockConsole.log(obj);
     const log = JSON.parse(ws.sent[1]);
-    expect(typeof log.data[0]).toBe('string');
-    expect(log.data[0]).toContain('[object');
+    expect(typeof log.data[0]).toBe('object');
+    expect(log.data[0].a).toBe(1);
+    expect(log.data[0].self).toBe('[Circular]');
+  });
+
+  test('source 에 JSON.parse(JSON.stringify 패턴 없음 (#2885 deep-clone 회귀 가드)', () => {
+    expect(HMR_CLIENT_SOURCE).not.toContain('JSON.parse(JSON.stringify');
+  });
+
+  test('wrap 함수가 JSON.parse 호출 안 함 (deep-clone 부재 직접 검증) (#2885)', () => {
+    HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
+    const ws = MockWebSocket.instances[0];
+    ws.onopen();
+    const originalParse = JSON.parse;
+    let parseCalls = 0;
+    JSON.parse = function () {
+      parseCalls++;
+      return originalParse.apply(JSON, arguments);
+    };
+    try {
+      mockConsole.log({ a: 1, b: { c: 2 } });
+    } finally {
+      JSON.parse = originalParse;
+    }
+    expect(parseCalls).toBe(0);
+  });
+
+  test('bufferedAmount 1MB 초과 시 send drop (#2885 burst 누적 가드)', () => {
+    HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
+    const ws = MockWebSocket.instances[0];
+    ws.onopen();
+    const sentBefore = ws.sent.length;
+    ws.bufferedAmount = 2 * 1024 * 1024;
+    mockConsole.log('this should be dropped');
+    expect(ws.sent.length).toBe(sentBefore);
+    ws.bufferedAmount = 0;
+    mockConsole.log('this should pass');
+    expect(ws.sent.length).toBe(sentBefore + 1);
+  });
+
+  test('readyState !== OPEN 시 send drop (#2885 stale connection 가드)', () => {
+    HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
+    const ws = MockWebSocket.instances[0];
+    ws.onopen();
+    const sentBefore = ws.sent.length;
+    ws.readyState = 0; // CONNECTING
+    mockConsole.log('not yet open');
+    expect(ws.sent.length).toBe(sentBefore);
+    ws.readyState = 2; // CLOSING
+    mockConsole.log('closing');
+    expect(ws.sent.length).toBe(sentBefore);
+    ws.readyState = 3; // CLOSED
+    mockConsole.log('closed');
+    expect(ws.sent.length).toBe(sentBefore);
   });
 });
 
