@@ -25,6 +25,7 @@ const module_emit = @import("modules.zig");
 const type_runtime_emit = @import("type_runtime.zig");
 const writer_emit = @import("writer.zig");
 const debug_metadata = @import("debug_metadata.zig");
+const expression_emit = @import("expressions.zig");
 
 pub const ModuleFormat = options_mod.ModuleFormat;
 pub const Platform = options_mod.Platform;
@@ -263,7 +264,7 @@ pub const Codegen = struct {
     const fnMapEnter = debug_metadata.fnMapEnter;
     const fnMapExit = debug_metadata.fnMapExit;
     pub const isFunctionLike = debug_metadata.isFunctionLike;
-    const resolveMemberLeafName = debug_metadata.resolveMemberLeafName;
+    pub const resolveMemberLeafName = debug_metadata.resolveMemberLeafName;
     const resolveMethodName = debug_metadata.resolveMethodName;
 
     // ================================================================
@@ -294,7 +295,7 @@ pub const Codegen = struct {
     const statement_emit = @import("statements.zig");
     const emitComments = statement_emit.emitComments;
     const isSkipped = statement_emit.isSkipped;
-    const evalBooleanCondition = statement_emit.evalBooleanCondition;
+    pub const evalBooleanCondition = statement_emit.evalBooleanCondition;
     const emitProgram = statement_emit.emitProgram;
     const emitBlock = statement_emit.emitBlock;
     const emitBracedList = statement_emit.emitBracedList;
@@ -590,253 +591,22 @@ pub const Codegen = struct {
     // Expression 출력
     // ================================================================
 
-    fn emitUnary(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (e + 1 >= extras.len) return;
-        const operand: NodeIndex = @enumFromInt(extras[e]);
-        const op: Kind = @enumFromInt(@as(u8, @truncate(extras[e + 1])));
-        // !false → true, !true → false
-        if (op == .bang and self.options.linking_metadata != null) {
-            if (self.evalBooleanCondition(operand)) |v| {
-                try self.write(if (!v) "true" else "false");
-                return;
-            }
-        }
-        try self.write(op.symbol());
-        if (op == .kw_typeof or op == .kw_void or op == .kw_delete) try self.writeByte(' ');
-        try self.emitNode(operand);
-    }
-
-    fn emitUpdate(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (e + 1 >= extras.len) return;
-        const operand: NodeIndex = @enumFromInt(extras[e]);
-        const flags = extras[e + 1];
-        const is_postfix = (flags & ast_mod.UnaryFlags.postfix) != 0;
-        const op: Kind = @enumFromInt(@as(u8, @truncate(flags)));
-        if (!is_postfix) try self.write(op.symbol());
-        try self.emitNode(operand);
-        if (is_postfix) try self.write(op.symbol());
-    }
-
-    fn emitBinary(self: *Codegen, node: Node) !void {
-        const op: Kind = @enumFromInt(node.data.binary.flags);
-        // false && ... → false, true || ... → true (short-circuit 폴딩)
-        if (self.options.linking_metadata != null and node.tag == .logical_expression) {
-            if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
-                if ((op == .amp2 and !left_val) or
-                    (op == .pipe2 and left_val))
-                {
-                    try self.write(if (left_val) "true" else "false");
-                    return;
-                }
-                // true && expr → expr, false || expr → expr
-                try self.emitNode(node.data.binary.right);
-                return;
-            }
-        }
-        try self.emitNode(node.data.binary.left);
-        // 키워드 연산자(in, instanceof)와 +/- 는 minify에서도 공백 필수
-        // in/instanceof: 공백 없으면 식별자와 붙음 (xinstanceofy)
-        // +/-: 공백 없으면 ++/-- 와 혼동 (a+ +b → a++b)
-        if (op == .kw_in or op == .kw_instanceof or op == .plus or op == .minus) {
-            try self.writeByte(' ');
-        } else {
-            try self.writeSpace();
-        }
-        try self.write(op.symbol());
-        if (op == .kw_in or op == .kw_instanceof or op == .plus or op == .minus) {
-            try self.writeByte(' ');
-        } else {
-            try self.writeSpace();
-        }
-        try self.emitNode(node.data.binary.right);
-    }
-
-    fn emitAssignment(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
-        try self.writeSpace();
-        if (node.data.binary.flags != 0) {
-            const op: Kind = @enumFromInt(node.data.binary.flags);
-            try self.write(op.symbol());
-        } else {
-            try self.writeByte('=');
-        }
-        try self.writeSpace();
-        const right = node.data.binary.right;
-        // contextual name: 단순 할당(=)이고 오른쪽이 function-like → left leaf 이름 사용.
-        // flags == 0: 트랜스포머 합성 = 노드, flags == Kind.eq: 파서 생성 = 노드.
-        const is_simple_assign = node.data.binary.flags == 0 or
-            @as(Kind, @enumFromInt(node.data.binary.flags)) == .eq;
-        if (self.fn_map_builder != null and is_simple_assign and self.isFunctionLike(right)) {
-            const saved = self.pending_fn_name;
-            self.pending_fn_name = try self.resolveMemberLeafName(node.data.binary.left);
-            defer {
-                if (self.pending_fn_name) |s| self.allocator.free(s);
-                self.pending_fn_name = saved;
-            }
-            try self.emitNode(right);
-        } else {
-            try self.emitNode(right);
-        }
-    }
-
-    fn emitConditional(self: *Codegen, node: Node) !void {
-        const t = node.data.ternary;
-        // false ? x : y → y, true ? x : y → x
-        if (self.options.linking_metadata != null) {
-            if (self.evalBooleanCondition(t.a)) |cond| {
-                try self.emitNode(if (cond) t.b else t.c);
-                return;
-            }
-        }
-        try self.emitNode(t.a);
-        try self.writeSpace();
-        try self.writeByte('?');
-        try self.writeSpace();
-        try self.emitNode(t.b);
-        try self.writeSpace();
-        try self.writeByte(':');
-        try self.writeSpace();
-        try self.emitNode(t.c);
-    }
-
-    fn emitSequence(self: *Codegen, node: Node) !void {
-        try self.emitList(node, ",");
-    }
-
-    fn emitParen(self: *Codegen, node: Node) !void {
-        try self.writeByte('(');
-        try self.emitNode(node.data.unary.operand);
-        try self.writeByte(')');
-    }
-
-    fn emitSpread(self: *Codegen, node: Node) !void {
-        try self.write("...");
-        try self.emitNode(node.data.unary.operand);
-    }
-
-    fn emitAwait(self: *Codegen, node: Node) !void {
-        try self.write("await ");
-        try self.emitNode(node.data.unary.operand);
-    }
-
-    fn emitYield(self: *Codegen, node: Node) !void {
-        try self.write("yield");
-        if (node.data.unary.flags & 1 != 0) try self.writeByte('*');
-        if (!node.data.unary.operand.isNone()) {
-            try self.writeByte(' ');
-            try self.emitNode(node.data.unary.operand);
-        }
-    }
-
-    fn emitArray(self: *Codegen, node: Node) !void {
-        try self.writeByte('[');
-        try self.emitList(node, self.listSep());
-        try self.writeByte(']');
-    }
-
-    fn emitObject(self: *Codegen, node: Node) !void {
-        const list = node.data.list;
-        if (list.len == 0) {
-            try self.write("{}");
-            return;
-        }
-        if (self.options.minify_whitespace) {
-            try self.writeByte('{');
-            try self.emitList(node, ",");
-            try self.writeByte('}');
-        } else {
-            try self.write("{ ");
-            try self.emitList(node, ", ");
-            try self.write(" }");
-        }
-    }
-
-    /// object_property: binary = { left=key, right=value, flags }
-    fn emitObjectProperty(self: *Codegen, node: Node) !void {
-        const key = node.data.binary.left;
-        const value = node.data.binary.right;
-        if (key.isNone()) return;
-        if (value.isNone()) {
-            // shorthand: { x } — key만 출력.
-            // 단, scope hoisting으로 식별자가 리네임된 경우 shorthand를 풀어야 함:
-            // { x } → { x: x$1 }  (프로퍼티 이름은 원본, 값은 리네임된 이름)
-            if (self.identifierHasRename(key) or self.identifierHasConstValue(key)) {
-                const key_node = self.ast.getNode(key);
-                try self.writeSpan(key_node.data.string_ref);
-                if (self.options.minify_whitespace) {
-                    try self.writeByte(':');
-                } else {
-                    try self.write(": ");
-                }
-                try self.emitNode(key);
-            } else {
-                try self.emitNode(key);
-            }
-        } else {
-            // ES2015 shorthand 확장으로 key가 identifier_reference가 되면
-            // scope hoisting rename이 적용되므로 원본 span으로 출력하여 방지.
-            const key_node = self.ast.getNode(key);
-            if (key_node.tag == .identifier_reference) {
-                try self.writeSpan(key_node.data.string_ref);
-            } else {
-                try self.emitNode(key);
-            }
-            if (self.options.minify_whitespace) {
-                try self.writeByte(':');
-            } else {
-                try self.write(": ");
-            }
-            // contextual name: 값이 function-like → key 이름 사용
-            if (self.fn_map_builder != null and self.isFunctionLike(value)) {
-                const saved = self.pending_fn_name;
-                self.pending_fn_name = try self.ast.staticKeyName(self.allocator, key);
-                defer {
-                    if (self.pending_fn_name) |s| self.allocator.free(s);
-                    self.pending_fn_name = saved;
-                }
-                try self.emitNode(value);
-            } else {
-                try self.emitNode(value);
-            }
-        }
-    }
-
-    /// 식별자 노드가 scope hoisting에 의해 리네임되는지 확인.
-    /// linking_metadata.renames 또는 ns_prefix 치환 대상이면 true.
-    fn identifierHasRename(self: *Codegen, idx: NodeIndex) bool {
-        if (idx.isNone()) return false;
-        const key_node = self.ast.getNode(idx);
-        // linking_metadata renames 확인
-        if (self.options.linking_metadata) |meta| {
-            if (self.resolveSymbolId(idx, meta)) |sym_id| {
-                if (meta.renames.get(sym_id) != null) return true;
-            }
-        }
-        // ns_prefix 치환 확인
-        if (self.ns_prefix) |_| {
-            if (key_node.tag == .identifier_reference or key_node.tag == .assignment_target_identifier) {
-                const name = self.ast.getText(key_node.data.string_ref);
-                if (self.ns_exports) |exports| {
-                    if (exports.contains(name)) return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    fn identifierHasConstValue(self: *Codegen, idx: NodeIndex) bool {
-        if (idx.isNone()) return false;
-        if (self.options.linking_metadata) |meta| {
-            if (self.resolveSymbolId(idx, meta)) |sym_id| {
-                if (meta.const_values.get(sym_id)) |cv| return cv.isSafeToInline();
-            }
-        }
-        return false;
-    }
+    const emitUnary = expression_emit.emitUnary;
+    const emitUpdate = expression_emit.emitUpdate;
+    const emitBinary = expression_emit.emitBinary;
+    const emitAssignment = expression_emit.emitAssignment;
+    const emitConditional = expression_emit.emitConditional;
+    const emitSequence = expression_emit.emitSequence;
+    const emitParen = expression_emit.emitParen;
+    const emitSpread = expression_emit.emitSpread;
+    const emitAwait = expression_emit.emitAwait;
+    const emitYield = expression_emit.emitYield;
+    const emitArray = expression_emit.emitArray;
+    const emitObject = expression_emit.emitObject;
+    const emitObjectProperty = expression_emit.emitObjectProperty;
+    const emitComputedKey = expression_emit.emitComputedKey;
+    const emitStaticMember = expression_emit.emitStaticMember;
+    const emitComputedMember = expression_emit.emitComputedMember;
 
     /// identifier 노드의 symbol_id를 해결.
     /// symbol_ids[node_i]에서 직접 조회 (트랜스포머의 propagateSymbolId로 전파된 값).
@@ -884,110 +654,6 @@ pub const Codegen = struct {
         }) catch return;
     }
 
-    fn emitComputedKey(self: *Codegen, node: Node) !void {
-        try self.writeByte('[');
-        try self.emitNode(node.data.unary.operand);
-        try self.writeByte(']');
-    }
-
-    fn emitStaticMember(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        if (!self.ast.hasExtra(e, 2)) return;
-        const object = self.ast.readExtraNode(e, 0);
-        const property = self.ast.readExtraNode(e, 1);
-        const flags = self.ast.readExtra(e, 2);
-        const MemberFlags = ast_mod.MemberFlags;
-
-        // namespace member rewrite: ns.prop → canonical_name (esbuild 방식)
-        if (self.options.linking_metadata) |meta| {
-            if (flags & MemberFlags.optional_chain == 0) { // optional chain은 리라이트 안 함
-                const obj_node_i = @intFromEnum(object);
-                if (obj_node_i < meta.symbol_ids.len) {
-                    if (meta.symbol_ids[obj_node_i]) |obj_sym_id| {
-                        if (meta.ns_member_rewrites.get(obj_sym_id)) |inner_map| {
-                            const prop_node = self.ast.getNode(property);
-                            const prop_text = self.ast.getText(prop_node.data.string_ref);
-                            if (inner_map.get(prop_text)) |canonical_name| {
-                                // 인라인 객체({...})는 statement 위치에서 block으로
-                                // 파싱되므로 괄호로 감싸야 함: ({a: a}).prop
-                                if (canonical_name.len > 0 and canonical_name[0] == '{') {
-                                    try self.writeByte('(');
-                                    try self.write(canonical_name);
-                                    try self.writeByte(')');
-                                } else {
-                                    try self.write(canonical_name);
-                                }
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // import.meta.* 프로퍼티 감지: hot (HMR) + polyfill (CJS/non-ESM)
-        if (self.options.dev_module_id != null or self.options.module_format == .cjs or self.options.replace_import_meta) {
-            if (self.resolveImportMetaProp(object, property)) |prop_text| {
-                // import.meta.hot → __zntc_make_hot("dev_id") (dev mode HMR)
-                if (self.options.dev_module_id) |dev_id| {
-                    if (std.mem.eql(u8, prop_text, "hot")) {
-                        try self.write("__zntc_make_hot(\"");
-                        try self.write(dev_id);
-                        try self.write("\")");
-                        return;
-                    }
-                }
-                // import.meta.* polyfill (CJS/non-ESM)
-                if (self.options.module_format == .cjs or self.options.replace_import_meta) {
-                    if (std.mem.eql(u8, prop_text, "url")) {
-                        try self.writeImportMetaUrl();
-                        return;
-                    }
-                    if (self.options.platform == .node) {
-                        if (std.mem.eql(u8, prop_text, "dirname")) {
-                            try self.write("__dirname");
-                            return;
-                        } else if (std.mem.eql(u8, prop_text, "filename")) {
-                            try self.write("__filename");
-                            return;
-                        }
-                    } else {
-                        // browser/neutral: 빈 문자열
-                        if (std.mem.eql(u8, prop_text, "dirname") or std.mem.eql(u8, prop_text, "filename")) {
-                            try self.write("\"\"");
-                            return;
-                        }
-                    }
-                    // 알려지지 않은 프로퍼티 → 기본 import.meta polyfill + .prop
-                }
-            }
-        }
-
-        try self.emitNode(object);
-        if (flags & MemberFlags.optional_chain != 0) {
-            try self.write("?.");
-        } else {
-            try self.writeByte('.');
-        }
-        try self.emitNode(property);
-    }
-
-    fn emitComputedMember(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        if (!self.ast.hasExtra(e, 2)) return;
-        const object = self.ast.readExtraNode(e, 0);
-        const property = self.ast.readExtraNode(e, 1);
-        const flags = self.ast.readExtra(e, 2);
-        const MemberFlags = ast_mod.MemberFlags;
-        try self.emitNode(object);
-        if (flags & MemberFlags.optional_chain != 0) {
-            try self.write("?.");
-        }
-        try self.writeByte('[');
-        try self.emitNode(property);
-        try self.writeByte(']');
-    }
-
     // ================================================================
     // Call/new/import.meta/require emission — codegen/calls.zig로 위임
     // ================================================================
@@ -996,8 +662,8 @@ pub const Codegen = struct {
     const emitNew = call_emit.emitNew;
     const emitMetaProperty = call_emit.emitMetaProperty;
     const emitImportExpr = call_emit.emitImportExpr;
-    const resolveImportMetaProp = call_emit.resolveImportMetaProp;
-    const writeImportMetaUrl = call_emit.writeImportMetaUrl;
+    pub const resolveImportMetaProp = call_emit.resolveImportMetaProp;
+    pub const writeImportMetaUrl = call_emit.writeImportMetaUrl;
     pub const resolveRequireRewriteSpecifier = call_emit.resolveRequireRewriteSpecifier;
     pub const emitRewriteValue = call_emit.emitRewriteValue;
     pub const emitRequireRewriteOrCall = call_emit.emitRequireRewriteOrCall;
@@ -1394,7 +1060,7 @@ pub const Codegen = struct {
     // 리스트 헬퍼
     // ================================================================
 
-    fn emitList(self: *Codegen, node: Node, sep: []const u8) !void {
+    pub fn emitList(self: *Codegen, node: Node, sep: []const u8) !void {
         const list = node.data.list;
         try self.emitNodeList(list.start, list.len, sep);
     }
