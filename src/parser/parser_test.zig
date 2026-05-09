@@ -2754,10 +2754,10 @@ test ".cjs: ESM export 는 여전히 거부 (Node CJS 컨벤션 유지)" {
     , ".cjs", .{ .message_contains = "module code" });
 }
 
-test ".cts: ESM export 도 거부 (TS CommonJS 컨벤션 유지)" {
-    try expectParseErrorWithExt(
+test ".cts: ESM 구문 허용 — TS 가 module.exports 로 transpile (tsc 정책)" {
+    try expectNoParseErrorWithExt(
         \\export const x: number = 1;
-    , ".cts", .{ .message_contains = "module code" });
+    , ".cts");
 }
 
 test "declare module: multiple statements in ambient body" {
