@@ -10,11 +10,11 @@
   ],
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "dist/wasm/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/wasm/index.d.ts"
     },
     "./zntc.wasm": "./zntc.wasm",
     "./zntc-bundler.wasm": "./zntc-bundler.wasm"
@@ -22,7 +22,11 @@
   "scripts": {
     "build:wasm": "cd ../.. && zig build wasm && zig build wasm-bundler",
     "build:js": "bun build index.ts --outdir dist --format esm --target browser",
-    "build": "bun run build:wasm && cp ../../zig-out/bin/zntc.wasm . && cp ../../zig-out/bin/zntc-bundler.wasm . && bun run build:js",
+    "build:dts": "bun x tsc --emitDeclarationOnly",
+    "build": "bun run build:wasm && cp ../../zig-out/bin/zntc.wasm . && cp ../../zig-out/bin/zntc-bundler.wasm . && bun run build:js && bun run build:dts",
     "test": "bun test --timeout 10000"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
   }
 }
