@@ -306,6 +306,9 @@ jobs:
       - name: Run publish smoke test
         run: bun run test:publish-smoke
 
+      - name: Run publint (npm 표준 모범 사례 errors)
+        run: bun run test:publint
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest
