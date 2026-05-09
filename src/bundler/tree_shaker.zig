@@ -33,20 +33,15 @@ const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 const cjs_patterns = @import("tree_shaker/cjs_patterns.zig");
 const const_materialize = @import("tree_shaker/const_materialize.zig");
+const import_records = @import("tree_shaker/import_records.zig");
 const module_effects = @import("tree_shaker/module_effects.zig");
+const re_export_namespace = @import("tree_shaker/re_export_namespace.zig");
 const profile = @import("../profile.zig");
 
 /// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
 /// 일반 export 이름과 겹치지 않도록 의도적으로 JS 식별자 아닌 `"*"` 선택.
 /// (export_bindings의 `exported_name == "*"`는 wildcard re-export로 의미가 다름 — 같은 문자열, 다른 공간)
 pub const ALL_EXPORTS_SENTINEL: []const u8 = "*";
-
-fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bool {
-    if (stmt_idx >= infos.stmts.len) return false;
-    const ast = &(m.ast orelse return false);
-    const ni: usize = infos.stmts[stmt_idx].node_idx;
-    return ni < ast.nodes.items.len and ast.nodes.items[ni].tag == .import_declaration;
-}
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
@@ -124,51 +119,7 @@ pub const TreeShaker = struct {
         }
     };
 
-    const ReExportNsConsumerUsage = struct {
-        opaque_all: bool = false,
-        entries: std.StringHashMapUnmanaged(Entry) = .{},
-
-        const Entry = struct {
-            is_opaque: bool = false,
-            props: std.StringHashMapUnmanaged(void) = .{},
-        };
-
-        fn deinit(self: *ReExportNsConsumerUsage, allocator: std.mem.Allocator) void {
-            var vit = self.entries.valueIterator();
-            while (vit.next()) |entry| entry.props.deinit(allocator);
-            self.entries.deinit(allocator);
-        }
-
-        fn getOrPutEntry(
-            self: *ReExportNsConsumerUsage,
-            allocator: std.mem.Allocator,
-            name: []const u8,
-        ) std.mem.Allocator.Error!*Entry {
-            const gop = try self.entries.getOrPut(allocator, name);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            return gop.value_ptr;
-        }
-
-        fn markOpaque(
-            self: *ReExportNsConsumerUsage,
-            allocator: std.mem.Allocator,
-            name: []const u8,
-        ) std.mem.Allocator.Error!void {
-            const entry = try self.getOrPutEntry(allocator, name);
-            entry.is_opaque = true;
-        }
-
-        fn addProps(
-            self: *ReExportNsConsumerUsage,
-            allocator: std.mem.Allocator,
-            name: []const u8,
-            props: []const []const u8,
-        ) std.mem.Allocator.Error!void {
-            const entry = try self.getOrPutEntry(allocator, name);
-            if (entry.is_opaque) return;
-            for (props) |prop| try entry.props.put(allocator, prop, {});
-        }
-    };
+    const ReExportNsConsumerUsage = re_export_namespace.ConsumerUsage;
 
     pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *const Linker) !TreeShaker {
         const mod_count = graph.moduleCount();
@@ -587,7 +538,7 @@ pub const TreeShaker = struct {
                             if (!self.lazyRequireMatchedExportUsed(@intCast(i), rec.span)) continue;
                         }
 
-                        const preserve = try self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
+                        const preserve = try import_records.shouldPreserveImportRecordForEvaluation(self, m, @intCast(i), @intCast(rec_i), live_idx);
                         const must_include = rec.kind == .require or
                             ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
                             (module_effects.hasEvaluationEffect(tmod) and preserve);
@@ -725,7 +676,7 @@ pub const TreeShaker = struct {
         // 역인덱스로 이 심볼을 참조하는 statement 중 reachable한 것이 있는지 확인
         for (infos.referencingStmts(@intCast(sym_idx))) |si| {
             if (!reachable.isSet(si)) continue;
-            if (isImportDeclarationStmt(m, infos, @intCast(si))) continue;
+            if (import_records.isImportDeclarationStmt(m, infos, @intCast(si))) continue;
             return true;
         }
         return false;
@@ -873,7 +824,7 @@ pub const TreeShaker = struct {
 
                 // item 단위 invariant — referenced_symbols 루프 밖으로 한 번만 계산.
                 const owner = self.getModule(item.mod);
-                const skip_import_followup = if (owner) |o| isImportDeclarationStmt(o, infos, item.stmt) else true;
+                const skip_import_followup = if (owner) |o| import_records.isImportDeclarationStmt(o, infos, item.stmt) else true;
 
                 for (infos.stmts[item.stmt].referenced_symbols) |ref_sym| {
                     // (1) 로컬 심볼: 같은 모듈의 종속 statement
@@ -911,7 +862,7 @@ pub const TreeShaker = struct {
                         for (o.import_records, 0..) |rec, rec_i| {
                             if (rec.kind != .require) continue;
                             if (rec.resolved.isNone()) continue;
-                            if (!try self.importRecordBelongsToStmt(@intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
+                            if (!try import_records.importRecordBelongsToStmt(self, @intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
                             const target_mod_idx = @intFromEnum(rec.resolved);
                             const target_module = self.graph.getModule(rec.resolved) orelse continue;
                             if (target_module.wrap_kind != .cjs) continue;
@@ -1779,90 +1730,6 @@ pub const TreeShaker = struct {
             }
         }
         return changed;
-    }
-
-    /// included 모듈의 import_record 가 source 모듈을 evaluation 의존으로 끌어와야 하는지.
-    /// re-export 는 target 이 evaluation effect 를 갖거나 (side_effects/wrapped/dynamic-fallback),
-    /// 해당 stmt 가 reachable 일 때만 보존 — `export *` 가 unrelated source 까지 fan out 하지 않도록.
-    /// side_effect / require / worker / glob / require_context 는 항상 evaluation 의존이라 보존.
-    /// static_import 만 entry 또는 live binding 이 있을 때만 보존 — dead body 안에서만 참조되는
-    /// named import 가 source 모듈을 fan out 시키지 않도록. dynamic_import 는 별도
-    /// dyn_import_targets 경로로 처리되므로 여기선 false.
-    fn shouldPreserveImportRecordForEvaluation(
-        self: *TreeShaker,
-        m: *const Module,
-        mod_idx: u32,
-        rec_idx: u32,
-        live_mod_idx: ?u32,
-    ) !bool {
-        if (rec_idx >= m.import_records.len) return false;
-        if (m.import_records[rec_idx].kind == .re_export) {
-            if (self.graph.getModule(m.import_records[rec_idx].resolved)) |target| {
-                if (module_effects.hasEvaluationEffect(target)) return true;
-            }
-            return try self.importRecordHasReachableStmt(mod_idx, rec_idx);
-        }
-        if (live_mod_idx == null) return true;
-        return switch (m.import_records[rec_idx].kind) {
-            .dynamic_import => false,
-            .require => try self.importRecordHasReachableStmt(live_mod_idx.?, rec_idx),
-            .static_import => self.entry_set.isSet(mod_idx) or self.importRecordHasLiveBinding(m, mod_idx, rec_idx),
-            else => true,
-        };
-    }
-
-    fn importRecordHasReachableStmt(self: *TreeShaker, mod_idx: u32, rec_idx: u32) !bool {
-        if (mod_idx >= self.module_stmt_infos.len or mod_idx >= self.reachable_stmts.len) return true;
-        const infos = self.module_stmt_infos[mod_idx] orelse return true;
-        const reachable = self.reachable_stmts[mod_idx] orelse return false;
-        const stmt_indices = (try self.ensureImportRecordStmtIndices(mod_idx, infos)) orelse return false;
-        if (rec_idx >= stmt_indices.len) return false;
-        const stmt_idx = stmt_indices[rec_idx] orelse return false;
-        return reachable.isSet(stmt_idx);
-    }
-
-    fn importRecordBelongsToStmt(self: *TreeShaker, mod_idx: u32, infos: StmtInfos, stmt_idx: u32, rec_idx: u32) !bool {
-        if (stmt_idx >= infos.stmts.len) return false;
-        const stmt_indices = (try self.ensureImportRecordStmtIndices(mod_idx, infos)) orelse return false;
-        if (rec_idx >= stmt_indices.len) return false;
-        return stmt_indices[rec_idx] == stmt_idx;
-    }
-
-    fn ensureImportRecordStmtIndices(self: *TreeShaker, mod_idx: u32, infos: StmtInfos) !?[]?u32 {
-        const mod_count = self.graph.moduleCount();
-        if (mod_idx >= mod_count) return null;
-        if (self.import_record_stmt_indices.len == 0) {
-            const maps = try self.allocator.alloc(?[]?u32, mod_count);
-            for (maps) |*m| m.* = null;
-            self.import_record_stmt_indices = maps;
-        }
-        if (mod_idx >= self.import_record_stmt_indices.len) return null;
-        if (self.import_record_stmt_indices[mod_idx] == null) {
-            const m = self.getModule(mod_idx) orelse return null;
-            const map = try self.allocator.alloc(?u32, m.import_records.len);
-            errdefer self.allocator.free(map);
-            for (map) |*slot| slot.* = null;
-            for (m.import_records, 0..) |rec, rec_i| {
-                map[rec_i] = stmt_info_mod.findStmtIndexFromInfos(infos, rec.span.start);
-            }
-            self.import_record_stmt_indices[mod_idx] = map;
-        }
-        return self.import_record_stmt_indices[mod_idx].?;
-    }
-
-    /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,
-    /// 이 함수는 "stmt_info 는 빌드됐는데 reachable_stmts 가 비었다 = BFS 가 한 번도 방문 안
-    /// 한 모듈" 이라 판단해 false 로 정밀화한다. shouldPreserveImportRecordForEvaluation 의
-    /// static_import 케이스에서만 호출되며, fan-out 보수성을 의도적으로 줄인다.
-    fn importRecordHasLiveBinding(self: *const TreeShaker, m: *const Module, mod_idx: u32, rec_idx: u32) bool {
-        if (mod_idx < self.module_stmt_infos.len and self.module_stmt_infos[mod_idx] != null) {
-            if (mod_idx >= self.reachable_stmts.len or self.reachable_stmts[mod_idx] == null) return false;
-        }
-        for (m.import_bindings) |ib| {
-            if (ib.import_record_index != rec_idx) continue;
-            if (self.isImportLiveInModule(mod_idx, ib.local_name)) return true;
-        }
-        return false;
     }
 
     /// #1603 Phase 1b: `export * as X from './src'` 재export에 대해 모든 소비자의 member 접근
