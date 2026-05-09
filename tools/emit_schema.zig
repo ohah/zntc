@@ -77,9 +77,12 @@ fn writeTypeSchema(writer: anytype, comptime T: type, comptime field_name: []con
             if (info.size == .slice and info.child == u8) {
                 try writer.writeAll("\"type\": \"string\"");
             } else if (info.size == .slice) {
-                // Slice of structs (e.g., `[]const DefineEntry`) → array
+                // Slice values (e.g. `[]const DefineEntry`, `[]const []const u8`) → array.
                 try writer.writeAll("\"type\": \"array\", \"items\": ");
-                try writeStructSchema(writer, info.child);
+                switch (@typeInfo(info.child)) {
+                    .@"struct" => try writeStructSchema(writer, info.child),
+                    else => try writeTypeSchema(writer, info.child, ""),
+                }
             } else {
                 try writer.writeAll("\"type\": \"null\"");
             }
@@ -130,7 +133,7 @@ pub fn main() !void {
         \\  "$schema": "http://json-schema.org/draft-07/schema#",
         \\  "$id": "https://ohah.github.io/zntc/schemas/transpile-options.schema.json",
         \\  "title": "ZNTC Transpile Options",
-        \\  "description": "Options for the ZNTC transpiler. Generated from Zig `TranspileOptionsDto` — edit src/transpile.zig and run `zig build schema` to regenerate.",
+        \\  "description": "Options for the ZNTC transpiler. Generated from Zig `TranspileOptionsDto` — edit src/transpile/options.zig and run `zig build schema` to regenerate.",
         \\  "type": "object",
         \\  "additionalProperties": false,
         \\  "properties": {

@@ -336,7 +336,7 @@ pub fn build(b: *std.Build) void {
 
     // JSON Schema 생성기 — tools/emit_schema.zig가 TranspileOptionsDto를 comptime
     // reflection으로 읽어 schemas/transpile-options.schema.json 을 생성.
-    // 실행: `zig build schema`. DTO 수정 후 반드시 재실행할 것.
+    // 실행: `zig build schema`. src/transpile/options.zig DTO 수정 후 반드시 재실행할 것.
     const schema_mod = b.createModule(.{
         .root_source_file = b.path("tools/emit_schema.zig"),
         .target = b.graph.host,
