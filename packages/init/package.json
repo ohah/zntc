@@ -24,7 +24,8 @@
     "build:js": "bun build src/index.ts src/cli.ts --outdir dist --format esm --target node",
     "build:dts": "bun x tsc -b",
     "build": "bun run build:js && bun run build:dts",
-    "test": "bun test --timeout 10000"
+    "test": "bun test --timeout 10000",
+    "prepublishOnly": "bun run build && bunx publint --strict --level error ."
   },
   "devDependencies": {
     "@types/node": "^25.5.2"

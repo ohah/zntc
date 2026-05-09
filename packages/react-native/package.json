@@ -22,7 +22,8 @@
     "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core --external @babel/core --external @react-native/babel-plugin-codegen --external @react-native/babel-preset --external metro-resolver --external react-native --external @react-native/js-polyfills",
     "build:dts": "bun x tsc -b",
     "build": "bun run build:bundle && bun run build:dts",
-    "test": "bun test --timeout 10000"
+    "test": "bun test --timeout 10000",
+    "prepublishOnly": "bun run build && bunx publint --strict --level error ."
   },
   "dependencies": {
     "@react-native-community/cli-server-api": "^15.0.0",
