@@ -1,13 +1,55 @@
 # @zntc/web
 
-ZNTC web platform layer. dev server (HMR / HTTPS / overlay), postcss / sass / lightningcss pipeline 이 자리잡는 패키지.
+ZNTC 의 web platform layer — dev server (HTTP/HTTPS + WebSocket HMR), HMR overlay, postcss/sass/lightningcss CSS pipeline, dev controller (file watcher + module graph).
 
-> 분리 진행 중 — [#2539](https://github.com/ohah/zntc/issues/2539).
+## 설치
+
+```bash
+bun add -D @zntc/web @zntc/core
+# 또는
+npm i -D @zntc/web @zntc/core
+```
+
+`@zntc/core` 가 함께 필요 (NAPI binary 포함).
+
+### Optional (CSS pipeline)
+
+```bash
+bun add -D postcss postcss-load-config sass
+```
+
+- `postcss` / `postcss-load-config` — `postcss.config.{js,ts}` 자동 탐색 / Tailwind / PostCSS plugins
+- `sass` — `.scss` / `.sass` 파일 처리
 
 ## 사용
 
+`zntc dev`, `zntc preview`, `zntc build` (app mode) CLI 가 자동으로 `@zntc/web` 을 dynamic import 해서 사용. 사용자 코드에서 직접 import 할 일은 거의 없음.
+
 ```bash
-npm i -D @zntc/web
+bunx zntc dev       # dev server + HMR
+bunx zntc build     # production app build
+bunx zntc preview   # production preview server
 ```
 
-`@zntc/core` 가 dependencies 로 자동 따라옵니다. `zntc dev`, `zntc preview`, `zntc build` (app mode) 명령에서 사용.
+자세한 설정: [docs/CONFIG.md](https://github.com/ohah/zntc/blob/main/docs/CONFIG.md) · [docs/HMR.md](https://github.com/ohah/zntc/blob/main/docs/HMR.md)
+
+## 직접 import (고급)
+
+```ts
+import { prepareAppDevSync } from '@zntc/core';
+import { createDevController } from '@zntc/web';
+
+const ctx = prepareAppDevSync({ root: process.cwd() });
+const ctrl = await createDevController(ctx);
+await ctrl.start({ port: 3000 });
+```
+
+## 관련 패키지
+
+- [@zntc/core](https://npmjs.com/package/@zntc/core) — 트랜스파일러 / 번들러 코어
+- [@zntc/react-native](https://npmjs.com/package/@zntc/react-native) — RN platform layer
+- [vite-plugin-zntc](https://npmjs.com/package/vite-plugin-zntc) — Vite 사용 시 ZNTC transform 적용
+
+## 라이센스
+
+MIT.
