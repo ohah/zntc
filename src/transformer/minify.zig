@@ -29,6 +29,7 @@ const symbol_mod = @import("../semantic/symbol.zig");
 const scope_mod = @import("../semantic/scope.zig");
 const purity = @import("../bundler/purity.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
+const numeric = @import("minify/numeric.zig");
 
 /// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
 /// `symbols` 는 read-only 로 사용한다 — 과거엔 `reference_count` 를 직접 감산했지만,
@@ -93,24 +94,6 @@ pub const MinifyCtx = struct {
     }
 };
 
-/// f64 → i32 (ToInt32, ECMAScript 7.1.6)
-fn toI32(val: f64) i32 {
-    if (std.math.isNan(val) or std.math.isInf(val) or val == 0) return 0;
-    // 범위 외 값은 wrapping
-    const i: i64 = @intFromFloat(@mod(@trunc(val), 4294967296.0));
-    return @truncate(i);
-}
-
-fn toF64Bitwise(val: i32) f64 {
-    return @floatFromInt(val);
-}
-
-/// 숫자 리터럴의 값을 파싱한다. codegen은 span 텍스트를 직접 출력하므로
-/// number_bytes가 아닌 소스 텍스트에서 파싱해야 한다.
-fn parseNumericLiteral(ast: *const Ast, node: Node) ?f64 {
-    return ast_mod.parseNumericText(ast.getText(node.span));
-}
-
 /// 따옴표를 포함한 문자열 리터럴을 string_table에 추가한다.
 fn makeQuotedString(ast: *Ast, text: []const u8) ?Span {
     var buf: [256]u8 = undefined;
@@ -119,13 +102,6 @@ fn makeQuotedString(ast: *Ast, text: []const u8) ?Span {
     @memcpy(buf[1 .. 1 + text.len], text);
     buf[1 + text.len] = '"';
     return ast.addString(buf[0 .. text.len + 2]) catch null;
-}
-
-/// 숫자를 문자열로 포맷하여 string_table에 추가하고 span을 반환한다.
-fn formatNumber(ast: *Ast, value: f64) ?Span {
-    var buf: [32]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return null;
-    return ast.addString(text) catch null;
 }
 
 /// `(expr)` 래핑을 재귀적으로 벗겨 실제 노드를 반환.
@@ -972,8 +948,8 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
 
     // 숫자 산술
     if (left.tag == .numeric_literal and right.tag == .numeric_literal) {
-        if (foldNumericBinary(ast, left, right, op)) |result| {
-            if (formatNumber(ast, result)) |new_span| {
+        if (numeric.foldBinary(ast, left, right, op)) |result| {
+            if (numeric.formatNumber(ast, result)) |new_span| {
                 const orig_len = (node.span.end & ~ast_mod.Ast.STRING_TABLE_BIT) -| (node.span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
                 const new_len = (new_span.end & ~ast_mod.Ast.STRING_TABLE_BIT) -| (new_span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
                 if (new_len <= orig_len) {
@@ -995,78 +971,8 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     }
 }
 
-fn foldNumericBinary(ast: *const Ast, left: Node, right: Node, op: Kind) ?f64 {
-    const a = parseNumericLiteral(ast, left) orelse return null;
-    const b = parseNumericLiteral(ast, right) orelse return null;
-
-    return foldNumericValues(a, b, op);
-}
-
-fn foldNumericValues(a: f64, b: f64, op: Kind) ?f64 {
-    return switch (op) {
-        .plus => a + b,
-        .minus => a - b,
-        .star => a * b,
-        .slash => if (b != 0) a / b else null,
-        .percent => if (b != 0) @mod(a, b) else null,
-        .star2 => std.math.pow(f64, a, b),
-        .pipe => toF64Bitwise(toI32(a) | toI32(b)),
-        .amp => toF64Bitwise(toI32(a) & toI32(b)),
-        .caret => toF64Bitwise(toI32(a) ^ toI32(b)),
-        else => null,
-    };
-}
-
-fn evalNumericLiteralExpression(ast: *const Ast, root: NodeIndex, saw_binary: *bool, depth: u32) ?f64 {
-    if (root.isNone() or depth > 64) return null;
-    const raw: u32 = @intFromEnum(root);
-    if (raw >= ast.nodes.items.len) return null;
-    const node = ast.nodes.items[raw];
-    return switch (node.tag) {
-        .numeric_literal => parseNumericLiteral(ast, node),
-        .parenthesized_expression => evalNumericLiteralExpression(ast, node.data.unary.operand, saw_binary, depth + 1),
-        .binary_expression => blk: {
-            saw_binary.* = true;
-            const left = evalNumericLiteralExpression(ast, node.data.binary.left, saw_binary, depth + 1) orelse break :blk null;
-            const right = evalNumericLiteralExpression(ast, node.data.binary.right, saw_binary, depth + 1) orelse break :blk null;
-            const op: Kind = @enumFromInt(node.data.binary.flags);
-            break :blk foldNumericValues(left, right, op);
-        },
-        else => null,
-    };
-}
-
-inline fn spanByteLen(span: Span) u32 {
-    const start = span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
-    const end = span.end & ~ast_mod.Ast.STRING_TABLE_BIT;
-    return end -| start;
-}
-
-/// Fold a standalone numeric-literal expression root in place.
-///
-/// Tree-shaking uses this for exported numeric seeds where only the initializer
-/// and const metadata need to change. It intentionally mirrors `foldBinary`'s
-/// size guard so the fast path does not introduce output growth compared with
-/// the regular minify pass.
 pub fn foldNumericLiteralExpression(ast: *Ast, root: NodeIndex) ?Span {
-    if (root.isNone()) return null;
-    const raw: u32 = @intFromEnum(root);
-    if (raw >= ast.nodes.items.len) return null;
-
-    var saw_binary = false;
-    const value = evalNumericLiteralExpression(ast, root, &saw_binary, 0) orelse return null;
-    if (!saw_binary) return null;
-
-    const new_span = formatNumber(ast, value) orelse return null;
-    const old_node = ast.nodes.items[raw];
-    if (spanByteLen(new_span) > spanByteLen(old_node.span)) return null;
-
-    ast.nodes.items[raw] = .{
-        .tag = .numeric_literal,
-        .span = new_span,
-        .data = .{ .none = 0 },
-    };
-    return new_span;
+    return numeric.foldLiteralExpression(ast, root);
 }
 
 fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node, changed: *bool) void {
@@ -1274,8 +1180,8 @@ fn simplifyBooleanComparison(
 fn foldStrictEquality(ast: *const Ast, left: Node, right: Node) ?bool {
     // 숫자 === 숫자
     if (left.tag == .numeric_literal and right.tag == .numeric_literal) {
-        const a = parseNumericLiteral(ast, left) orelse return null;
-        const b = parseNumericLiteral(ast, right) orelse return null;
+        const a = numeric.parseLiteral(ast, left) orelse return null;
+        const b = numeric.parseLiteral(ast, right) orelse return null;
         if (std.math.isNan(a) or std.math.isNan(b)) return false;
         return a == b;
     }
@@ -1358,8 +1264,8 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
         .minus => {
             // -리터럴 → 음수 리터럴 (-1 → numeric_literal(-1))
             if (operand.tag == .numeric_literal) {
-                if (parseNumericLiteral(ast, operand)) |val| {
-                    if (formatNumber(ast, -val)) |span| {
+                if (numeric.parseLiteral(ast, operand)) |val| {
+                    if (numeric.formatNumber(ast, -val)) |span| {
                         replaceNode(ast, node_idx, .{
                             .tag = .numeric_literal,
                             .span = span,
@@ -1391,7 +1297,7 @@ fn evalTruthiness(ast: *const Ast, node: Node) ?bool {
     return switch (node.tag) {
         .boolean_literal => getBoolValue(ast, node),
         .numeric_literal => blk: {
-            const val = parseNumericLiteral(ast, node) orelse break :blk null;
+            const val = numeric.parseLiteral(ast, node) orelse break :blk null;
             if (std.math.isNan(val)) break :blk false;
             break :blk val != 0;
         },
