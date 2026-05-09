@@ -6,7 +6,7 @@ ZNTC 의 React Native platform layer (#2540).
 
 - **RN preset** — `buildRnBundleOptions(input)` / `bundleRn(input)` / `watchRn(input)`. RN-specific NAPI build 옵션 (target=es5, flow, jsx=automatic-dev, devMode, reactRefresh, polyfills, runBeforeMain, banner) 자동 적용.
 - **Metro HMR adapter** — `createMetroHmrAdapter()` (`@zntc/server.HmrChannel` 위 thin wrapper). RN runtime 의 HMRClient interface 호환 메시지 (`hmr:update-start` / `hmr:update` / `hmr:update-done` / `hmr:reload` / `hmr:error` / `log`) 송출.
-- **RN runtime** — `runtime/zntc-hmr-client.js` (Metro HMRClient 인터페이스 호환 RN runtime).
+- **RN runtime** — `runtime/zntc-hmr-client.cjs` (Metro HMRClient 인터페이스 호환 RN runtime).
 - **Plugin factories** — `createAssetPlugin` / `createBabelPlugin` / `createCodegenPlugin` / `createRequireContextPlugin` / `createMetroResolveRequestPlugin`.
 - **RN 상수 / helpers** — `RN_GLOBAL_IDENTIFIERS` / `tryResolve` / `resolveRnPolyfills`.
 

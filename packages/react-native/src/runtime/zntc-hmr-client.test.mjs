@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname_ = dirname(fileURLToPath(import.meta.url));
-const HMR_CLIENT_PATH = join(__dirname_, '..', '..', 'runtime', 'zntc-hmr-client.js');
+const HMR_CLIENT_PATH = join(__dirname_, '..', '..', 'runtime', 'zntc-hmr-client.cjs');
 const HMR_CLIENT_SOURCE = readFileSync(HMR_CLIENT_PATH, 'utf-8');
 
 // CommonJS 식 module.exports 패턴 — 평가 후 module.exports 회수.

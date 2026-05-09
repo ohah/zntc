@@ -42,10 +42,9 @@ async function main() {
       continue;
     }
     console.log(`\n=== ${pkg.name} (${t}) ===`);
-    // --strict 모드 (warning → error 승격) 는 보류. RN runtime 의 .js (CJS,
-    // ESM mode 패키지) 같은 의도된 케이스가 잡힘 — 별도 audit PR 에서 case-by-case
-    // 검토 후 strict 로 전환. 본 runner 는 errors 만 강제.
-    const res = spawnSync('bunx', ['publint', '--level', 'error', t], {
+    // --strict: warning 도 error 로 승격. RN runtime 의 .js (ESM 모드 + CJS 코드)
+    // case 는 .cjs 로 rename 처리됨 (#2802). 새 warning 발생 시 case 별 audit.
+    const res = spawnSync('bunx', ['publint', '--strict', '--level', 'error', t], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: 'inherit',
