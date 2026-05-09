@@ -48,7 +48,6 @@ const stmt_info_mod = @import("stmt_info.zig");
 const purity = @import("purity.zig");
 const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
-const mime = @import("../server/mime.zig");
 const plugin_mod = @import("plugin.zig");
 const source_map_trace = @import("../codegen/source_map_trace.zig");
 const MpscChannel = @import("mpsc_channel.zig").MpscChannel;
@@ -68,14 +67,14 @@ pub const ParseAccessor = phase_mod.ParseAccessor;
 pub const ResolveAccessor = phase_mod.ResolveAccessor;
 pub const LinkAccessor = phase_mod.LinkAccessor;
 const graph_assets = @import("graph/assets.zig");
-const escapeJsString = graph_assets.escapeJsString;
-const base64Encode = graph_assets.base64Encode;
 const contentHash = graph_assets.contentHash;
 const applyAssetNamingPattern = graph_assets.applyAssetNamingPattern;
 const emitAssetRegistryCall = graph_assets.emitAssetRegistryCall;
 const ScaleCollection = graph_assets.ScaleCollection;
 const collectScaleVariants = graph_assets.collectScaleVariants;
 const computeAssetDir = graph_assets.computeAssetDir;
+const assetSourceFromBytes = graph_assets.sourceFromBytes;
+const moduleReadsSourceForAsset = graph_assets.loaderReadsSource;
 const graph_synthetic_imports = @import("graph/synthetic_imports.zig");
 const injectJsxRuntimeImports = graph_synthetic_imports.injectJsxRuntimeImports;
 const injectFlowEnumRuntimeImport = graph_synthetic_imports.injectFlowEnumRuntimeImport;
@@ -1941,7 +1940,7 @@ pub const ModuleGraph = struct {
                         module.loader = loader_override;
                         module.module_type = plugin_result.module_type orelse
                             moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
-                        if (self.assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
+                        if (assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path, self.transform_options_base.minify_whitespace)) |expr| {
                             module.source = expr;
                             module.module_type = .js;
                             module.exports_kind = .commonjs;
@@ -3844,54 +3843,6 @@ pub const ModuleGraph = struct {
     ///
     /// asset_registry 모드의 .file/.copy는 loader를 .javascript로 바꿔 fall-through
     /// 신호를 보내고, 호출자가 일반 JS 파이프라인을 이어 실행한다.
-    /// raw bytes 를 asset loader 의 값 표현식으로 변환 (`text` → `"<escaped>"`,
-    /// `dataurl` → `"data:<mime>;base64,..."`, `base64` / `binary` / `empty`).
-    /// `parseAssetModule` 와 plugin onLoad loader override 두 경로 모두 사용하는 single source.
-    /// `file` / `copy` 는 asset_outputs 라이프사이클이 별개라 제외 — caller 가 별도 처리.
-    /// `javascript` / `json` / `css` / `none` 은 변환 없이 raw contents 가 source — null 반환.
-    /// (#2157)
-    fn assetSourceFromBytes(
-        self: *ModuleGraph,
-        alloc: std.mem.Allocator,
-        loader: types.Loader,
-        raw: []const u8,
-        module_path: []const u8,
-    ) ?[]const u8 {
-        return switch (loader) {
-            .text => blk: {
-                const escaped = escapeJsString(alloc, raw) catch break :blk null;
-                break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{escaped}) catch null;
-            },
-            .dataurl => blk: {
-                const encoded = base64Encode(alloc, raw) catch break :blk null;
-                const full_mime = mime.fromExtension(module_path);
-                const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
-                    full_mime[0..semi]
-                else
-                    full_mime;
-                break :blk std.fmt.allocPrint(alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch null;
-            },
-            .base64 => blk: {
-                const encoded = base64Encode(alloc, raw) catch break :blk null;
-                break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{encoded}) catch null;
-            },
-            .binary => blk: {
-                const encoded = base64Encode(alloc, raw) catch break :blk null;
-                const to_bin_name = runtime_helpers.helperName("__toBinary", self.transform_options_base.minify_whitespace);
-                break :blk std.fmt.allocPrint(alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch null;
-            },
-            .empty => "undefined",
-            .file, .copy, .javascript, .json, .css, .none => null,
-        };
-    }
-
-    fn moduleReadsSourceForAsset(loader: types.Loader) bool {
-        return switch (loader) {
-            .text, .dataurl, .base64, .binary, .file, .copy => true,
-            else => false,
-        };
-    }
-
     fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
         module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
             module.state = .ready;
@@ -3904,7 +3855,7 @@ pub const ModuleGraph = struct {
                 // text/dataurl/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
                 // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
                 const raw = self.readModuleSourceWithMtime(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-                module.source = self.assetSourceFromBytes(arena_alloc, module.loader, raw, module.path) orelse {
+                module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.path, self.transform_options_base.minify_whitespace) orelse {
                     module.state = .ready;
                     return;
                 };
