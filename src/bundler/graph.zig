@@ -80,6 +80,8 @@ const graph_synthetic_imports = @import("graph/synthetic_imports.zig");
 const injectJsxRuntimeImports = graph_synthetic_imports.injectJsxRuntimeImports;
 const injectFlowEnumRuntimeImport = graph_synthetic_imports.injectFlowEnumRuntimeImport;
 const createJsxImportBindings = graph_synthetic_imports.createJsxImportBindings;
+const graph_project_root = @import("graph/project_root.zig");
+const findProjectRoot = graph_project_root.findProjectRoot;
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -4119,26 +4121,6 @@ pub const ModuleGraph = struct {
 // Graph path utilities
 // ============================================================
 
-/// 디렉토리에서 위로 올라가며 첫 `package.json` 위치를 찾는다.
-/// Metro/RN CLI의 projectRoot 자동 감지와 동일 — 모노레포의 packages/app/처럼
-/// entry가 깊은 곳에 있어도 그 패키지의 루트를 정확히 찾아낸다. 발견 못 하면
-/// caller 입력(start_dir)을 fallback으로 반환.
-/// 반환 slice는 입력 start_dir의 prefix이므로 caller가 free하지 않는다.
-fn findProjectRoot(alloc: std.mem.Allocator, start_dir: []const u8) ![]const u8 {
-    var dir: []const u8 = start_dir;
-    while (dir.len > 0) {
-        const candidate = try std.fs.path.join(alloc, &.{ dir, "package.json" });
-        defer alloc.free(candidate);
-        if (fs.access(candidate)) |_| {
-            return dir;
-        } else |_| {}
-        const parent = std.fs.path.dirname(dir) orelse break;
-        if (parent.len == dir.len) break; // 루트 (e.g. "/")
-        dir = parent;
-    }
-    return start_dir;
-}
-
 /// 스캔 결과와 파일 확장자로 모듈의 export 방식을 결정한다.
 /// 우선순위: 1) ESM+CJS 혼용 → esm_with_dynamic_fallback
 ///          2) ESM만 → esm
@@ -4367,10 +4349,6 @@ fn joinContextPath(alloc: std.mem.Allocator, dir: []const u8, match: []const u8)
     return out;
 }
 
-// ============================================================
-// findProjectRoot: 패키지 매니저별 디렉토리 레이아웃 단위 테스트
-// ============================================================
-
 const test_helpers = @import("test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -4503,86 +4481,6 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "import styled from 'styled-components'; export const Box = styled.div``;", "styled.ts", .{ .styled_components = true });
     try expectPrePassDecision(true, "import { css } from '@emotion/react'; export const c = css``;", "emotion.ts", .{ .emotion = true });
     try expectPrePassDecision(true, "export function f() { 'worklet'; return 1; }", "worklet.ts", .{ .worklet_transform = true });
-}
-
-test "findProjectRoot: 일반 npm — src/index.ts → root는 package.json 위치" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "package.json", "{}");
-    try writeFile(tmp.dir, "src/index.ts", "");
-
-    const start = try absPath(&tmp, "src");
-    defer std.testing.allocator.free(start);
-    const expected = try absPath(&tmp, ".");
-    defer std.testing.allocator.free(expected);
-
-    const root = try findProjectRoot(std.testing.allocator, start);
-    try std.testing.expectEqualStrings(expected, root);
-}
-
-test "findProjectRoot: npm workspace — packages/app/index.ts → app의 package.json" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "package.json", "{\"workspaces\": [\"packages/*\"]}");
-    try writeFile(tmp.dir, "packages/app/package.json", "{\"name\": \"app\"}");
-    try writeFile(tmp.dir, "packages/app/index.ts", "");
-
-    const start = try absPath(&tmp, "packages/app");
-    defer std.testing.allocator.free(start);
-
-    const root = try findProjectRoot(std.testing.allocator, start);
-    try std.testing.expectEqualStrings(start, root);
-}
-
-test "findProjectRoot: pnpm workspace — packages/app/src/index.ts → app의 package.json" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n");
-    try writeFile(tmp.dir, "package.json", "{}");
-    try writeFile(tmp.dir, "packages/app/package.json", "{\"name\": \"app\"}");
-    try writeFile(tmp.dir, "packages/app/src/index.ts", "");
-
-    const start = try absPath(&tmp, "packages/app/src");
-    defer std.testing.allocator.free(start);
-    const expected = try absPath(&tmp, "packages/app");
-    defer std.testing.allocator.free(expected);
-
-    const root = try findProjectRoot(std.testing.allocator, start);
-    try std.testing.expectEqualStrings(expected, root);
-}
-
-test "findProjectRoot: bun workspace — packages/app/src/index.ts → app의 package.json" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "package.json", "{\"workspaces\": [\"packages/*\"]}");
-    try writeFile(tmp.dir, "bun.lockb", "");
-    try writeFile(tmp.dir, "packages/app/package.json", "{\"name\": \"app\"}");
-    try writeFile(tmp.dir, "packages/app/src/index.ts", "");
-
-    const start = try absPath(&tmp, "packages/app/src");
-    defer std.testing.allocator.free(start);
-    const expected = try absPath(&tmp, "packages/app");
-    defer std.testing.allocator.free(expected);
-
-    const root = try findProjectRoot(std.testing.allocator, start);
-    try std.testing.expectEqualStrings(expected, root);
-}
-
-test "findProjectRoot: yarn pnp — .pnp.cjs + package.json 단일 패키지" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "package.json", "{}");
-    try writeFile(tmp.dir, ".pnp.cjs", "");
-    try writeFile(tmp.dir, ".yarnrc.yml", "nodeLinker: pnp\n");
-    try writeFile(tmp.dir, "src/index.ts", "");
-
-    const start = try absPath(&tmp, "src");
-    defer std.testing.allocator.free(start);
-    const expected = try absPath(&tmp, ".");
-    defer std.testing.allocator.free(expected);
-
-    const root = try findProjectRoot(std.testing.allocator, start);
-    try std.testing.expectEqualStrings(expected, root);
 }
 
 // Regression: `toPosixPath` 가 Debug/ReleaseSafe 빌드에서 null byte path 를
