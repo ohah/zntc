@@ -29,6 +29,7 @@ const common = @import("napi/common.zig");
 const options_mod = @import("napi/options.zig");
 const tsconfig_cache_mod = @import("napi/tsconfig_cache.zig");
 const benchmark_mod = @import("napi/benchmark.zig");
+const profile_napi_mod = @import("napi/profile.zig");
 const c = common.c;
 
 const native_alloc = std.heap.c_allocator;
@@ -42,7 +43,6 @@ const getObjectBool = common.getObjectBool;
 const getObjectUint32 = common.getObjectUint32;
 const getObjectString = common.getObjectString;
 const getObjectStringArray = common.getObjectStringArray;
-const parseStringArray = common.parseStringArray;
 const getObjectKeyValuePairs = common.getObjectKeyValuePairs;
 const setUint32Prop = common.setUint32Prop;
 const setStringProp = common.setStringProp;
@@ -220,63 +220,6 @@ fn napiTokenize(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi
     }
 
     return js_tokens;
-}
-
-/// configureProfile(categories, level?) → void
-fn napiConfigureProfile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
-    var argc: usize = 2;
-    var argv: [2]c.napi_value = undefined;
-    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
-        return throwError(env, "failed to get arguments");
-    }
-
-    var arena = std.heap.ArenaAllocator.init(native_alloc);
-    defer arena.deinit();
-    const arena_alloc = arena.allocator();
-
-    if (argc > 0) {
-        const cats = parseStringArray(env, argv[0], arena_alloc) orelse &.{};
-        profile_mod.resetCounters();
-        profile_mod.addCategories(cats);
-    }
-    if (argc > 1) {
-        if (getStringArg(env, argv[1], arena_alloc)) |level| {
-            if (profile_mod.Level.fromString(level)) |parsed| {
-                profile_mod.setLevel(parsed);
-            }
-        }
-    }
-
-    var out: c.napi_value = undefined;
-    _ = c.napi_get_undefined(env, &out);
-    return out;
-}
-
-/// profileReport(format?) → string
-fn napiProfileReport(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
-    var argc: usize = 1;
-    var argv: [1]c.napi_value = undefined;
-    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
-        return throwError(env, "failed to get arguments");
-    }
-
-    var format: profile_mod.Format = .table;
-    if (argc > 0) {
-        if (getStringArg(env, argv[0], native_alloc)) |s| {
-            defer native_alloc.free(s);
-            format = profile_mod.Format.fromString(s) orelse .table;
-        }
-    }
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(native_alloc);
-    profile_mod.report(buf.writer(native_alloc), format) catch return throwError(env, "failed to render profile report");
-
-    var js_report: c.napi_value = undefined;
-    if (c.napi_create_string_utf8(env, buf.items.ptr, buf.items.len, &js_report) != c.napi_ok) {
-        return throwError(env, "failed to create profile report");
-    }
-    return js_report;
 }
 
 // ─── buildSync 함수 ───
@@ -968,11 +911,11 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     _ = c.napi_set_named_property(env, exports, "tokenize", tokenize_fn);
 
     var configure_profile_fn: c.napi_value = undefined;
-    _ = c.napi_create_function(env, "configureProfile", "configureProfile".len, napiConfigureProfile, null, &configure_profile_fn);
+    _ = c.napi_create_function(env, "configureProfile", "configureProfile".len, profile_napi_mod.napiConfigureProfile, null, &configure_profile_fn);
     _ = c.napi_set_named_property(env, exports, "configureProfile", configure_profile_fn);
 
     var profile_report_fn: c.napi_value = undefined;
-    _ = c.napi_create_function(env, "profileReport", "profileReport".len, napiProfileReport, null, &profile_report_fn);
+    _ = c.napi_create_function(env, "profileReport", "profileReport".len, profile_napi_mod.napiProfileReport, null, &profile_report_fn);
     _ = c.napi_set_named_property(env, exports, "profileReport", profile_report_fn);
 
     // TsconfigCache (#2367)
