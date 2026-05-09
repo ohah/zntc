@@ -7,12 +7,12 @@ const SemanticAnalyzer = lib.semantic.SemanticAnalyzer;
 const Transformer = lib.transformer.Transformer;
 const Codegen = lib.codegen.Codegen;
 const TsConfig = lib.config.TsConfig;
-const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
 const BundleOptions = lib.bundler.BundleOptions;
 const emitter = lib.bundler.emitter;
 const app_command = @import("cli/app.zig");
 const bench_command = @import("cli/bench.zig");
+const standalone_modes = @import("cli/standalone.zig");
 /// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
 /// root 선언이라야 컴파일러가 safety panic을 여기로 보낸다.
 pub const panic = lib.crash_handler.panic;
@@ -1327,94 +1327,24 @@ pub fn main() !void {
 
     // --test262
     if (opts.is_test262) {
-        const dir_path = opts.test262_dir orelse {
-            try stderr.print("zntc: --test262 requires a directory path\n", .{});
-            std.process.exit(1);
-        };
-        const abs_path = try std.fs.cwd().realpathAlloc(allocator, dir_path);
-        defer allocator.free(abs_path);
-
-        // test262 repo root 자동 감지: `test/` 와 `tools/` 가 둘 다 있으면 conformance `test/` 만 측정.
-        // tools/lint·generation 의 self-fixture (의도적으로 invalid 한 frontmatter 를 갖는 .js)
-        // 가 함께 walk 되어 fake fail 로 카운트되는 것을 막는다.
-        const test_sub = try std.fs.path.join(allocator, &.{ abs_path, "test" });
-        defer allocator.free(test_sub);
-        const tools_sub = try std.fs.path.join(allocator, &.{ abs_path, "tools" });
-        defer allocator.free(tools_sub);
-        const is_repo_root = blk: {
-            std.fs.accessAbsolute(test_sub, .{}) catch break :blk false;
-            std.fs.accessAbsolute(tools_sub, .{}) catch break :blk false;
-            break :blk true;
-        };
-
-        const walk_path = if (is_repo_root) test_sub else abs_path;
-        if (is_repo_root) {
-            try stdout.print("Detected test262 repo root — restricting walk to '{s}'\n", .{walk_path});
-        }
-        try stdout.print("Running Test262: {s}\n", .{walk_path});
-        const summary = try runner.runDirectory(allocator, walk_path, false);
-        try summary.print(stdout);
-        if (summary.failed > 0) std.process.exit(1);
-        return;
+        return standalone_modes.runTest262(allocator, opts.test262_dir);
     }
 
     // --tokenize
     if (opts.is_tokenize) {
-        const file_path = opts.input_file orelse {
-            try stderr.print("zntc: --tokenize requires a file path\n", .{});
-            std.process.exit(1);
-        };
-        const source = try std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024);
-        defer allocator.free(source);
-
-        var scanner = try Scanner.init(allocator, source);
-        defer scanner.deinit();
-
-        while (true) {
-            try scanner.next();
-            const lc = scanner.getLineColumn(scanner.token.span.start);
-            try stdout.print("{d}:{d}\t{s}\t\"{s}\"\n", .{
-                lc.line + 1,
-                lc.column + 1,
-                scanner.token.kind.symbol(),
-                scanner.tokenText(),
-            });
-            if (scanner.token.kind == .eof) break;
-        }
-        return;
+        return standalone_modes.runTokenize(allocator, opts.input_file);
     }
 
     // --serve (정적 서버 또는 --bundle과 조합하여 번들 서빙)
     if (opts.is_serve) {
-        // --serve --bundle entry.ts → entry의 디렉토리를 root로 사용
-        const serve_dir: []const u8 = if (opts.is_bundle and opts.input_file != null) blk: {
-            break :blk std.fs.path.dirname(opts.input_file.?) orelse ".";
-        } else opts.input_file orelse ".";
-
-        const entry: ?[]const u8 = if (opts.is_bundle) blk: {
-            break :blk opts.input_file orelse {
-                try stderr.print("zntc: --serve --bundle requires an entry file path\n", .{});
-                std.process.exit(1);
-            };
-        } else null;
-
-        var dev_server = lib.server.DevServer.init(allocator, .{
-            .root_dir = serve_dir,
+        return standalone_modes.runServe(allocator, .{
+            .is_bundle = opts.is_bundle,
+            .input_file = opts.input_file,
             .port = opts.serve_port,
             .host = opts.serve_host,
             .open = opts.serve_open,
-            .entry_point = entry,
             .proxy = opts.proxy_list.items,
-        }) catch |err| {
-            try stderr.print("zntc: failed to start dev server: {}\n", .{err});
-            std.process.exit(1);
-        };
-        defer dev_server.deinit();
-        dev_server.start() catch |err| {
-            try stderr.print("zntc: dev server failed: {}\n", .{err});
-            std.process.exit(1);
-        };
-        return;
+        });
     }
 
     // tsconfig 로드 + 머지 — 번들/트랜스파일 양쪽에서 사용.
