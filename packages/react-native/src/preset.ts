@@ -139,7 +139,7 @@ export interface RnBundleInput {
 const DEFAULT_SOURCE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'];
 // Metro 호환 + RN 흔한 폰트/이미지 — bungae DEFAULT_RESOLVER.assetExts 와 동일.
 // caller 가 `extra.assetExts` 로 override 하면 이 list 무시.
-export const DEFAULT_ASSET_EXTS = [
+export const DEFAULT_ASSET_EXTS: string[] = [
   // 이미지
   '.bmp',
   '.gif',
