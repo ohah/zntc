@@ -100,6 +100,10 @@ pub const TransformCache = struct {
     /// transformer 가 만든 symbol_ids slice. parser 영역 + transformer 영역 매핑 포함.
     /// emitter 의 minify/linker buildMetadataForAst override_syms 에 사용.
     symbol_ids: []const ?u32,
+    /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스
+    /// (sorted, ascending). resync 의 SemanticAnalyzer 가 binary search 로 helper-aware
+    /// binding 분기에 사용. 비어있으면 helper-aware path 비활성 (기존 동작 유지).
+    helper_ref_nodes: []const u32 = &.{},
 };
 
 /// `Module.parse_arena` 용 ArenaAllocator 를 heap 에 생성. 실패 시 null.

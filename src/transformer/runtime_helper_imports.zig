@@ -180,6 +180,13 @@ fn emitOne(
             });
         };
 
+        // #2869 import_specifier 의 local_node 를 helper marker 에 등록 → resync 의
+        // visitImportDeclaration 이 user scope 가 아닌 helper_scope_map 으로 binding.
+        // imported_node 는 export name 슬롯이라 일반 식별자 visitor 를 통과하지 않지만,
+        // 미래 visitor 가 추가될 때를 대비해 동일하게 marker 를 set (defensive).
+        try self.markRuntimeHelperRef(local_node);
+        if (local_node != imported_node) try self.markRuntimeHelperRef(imported_node);
+
         const spec = try self.ast.addNode(.{
             .tag = .import_specifier,
             .span = span,
