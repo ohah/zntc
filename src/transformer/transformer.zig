@@ -61,6 +61,7 @@ const emotion_mod = @import("transformer/emotion.zig");
 const tagged_template_mod = @import("transformer/tagged_template.zig");
 const flow_mod = @import("transformer/flow.zig");
 const define_mod = @import("transformer/define.zig");
+const namespace_mod = @import("transformer/namespace.zig");
 pub const ast_plugin_mod = @import("ast_plugin.zig");
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
@@ -2430,73 +2431,9 @@ pub const Transformer = struct {
     // ================================================================
     // TS namespace 변환
     // ================================================================
-
-    /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
-    /// flags=1: ambient module declaration (`declare module "*.css" { ... }`) → strip.
-    /// flags=0: 일반 namespace → 새 AST에 복사. codegen에서 IIFE로 출력.
-    /// import x = require('y') → const x = require('y')
-    /// import x = Namespace.Member → const x = Namespace.Member
-    fn visitImportEqualsDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        const name_idx = node.data.binary.left;
-        const value_idx = node.data.binary.right;
-        const new_name = try self.visitNode(name_idx);
-        const new_value = try self.visitNode(value_idx);
-        // variable_declarator: extra = [name, type_ann(none), init]
-        const decl_extra = try self.ast.addExtras(&.{
-            @intFromEnum(new_name),
-            @intFromEnum(NodeIndex.none), // type_ann (stripped)
-            @intFromEnum(new_value),
-        });
-        const declarator = try self.ast.addNode(.{
-            .tag = .variable_declarator,
-            .span = node.span,
-            .data = .{ .extra = decl_extra },
-        });
-        const scratch_top = self.scratch.items.len;
-        try self.scratch.append(self.allocator, declarator);
-        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-        self.scratch.shrinkRetainingCapacity(scratch_top);
-        // variable_declaration: extra = [kind_flags, list.start, list.len]
-        // kind = .const
-        const var_extra = try self.ast.addExtras(&.{ @intFromEnum(VariableDeclarationKind.@"const"), list.start, list.len });
-        return try self.ast.addNode(.{
-            .tag = .variable_declaration,
-            .span = node.span,
-            .data = .{ .extra = var_extra },
-        });
-    }
-
-    /// `export = expr;` → `module.exports = expr;` ExpressionStatement.
-    /// ESM output context 에서는 런타임에서 `module is not defined` 으로 실패하지만
-    /// (tsc TS1203 동등), rewrite 는 무조건 — #1961 의 helper-import 패턴과 동일하게
-    /// 정책 (warn/strip/error) 은 호출자/codegen 이 결정.
-    fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_expr = try self.visitNode(node.data.unary.operand);
-        if (new_expr.isNone()) return .none;
-
-        const module_id = try es_helpers.makeIdentifierRef(self, "module");
-        const exports_id = try es_helpers.makeIdentifierRef(self, "exports");
-        const member = try es_helpers.makeStaticMember(self, module_id, exports_id, node.span);
-        return es_helpers.makeAssignStmt(self, member, new_expr, node.span, 0);
-    }
-
-    fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        // declare module "*.css" { ... } 같은 ambient module은 런타임 코드 없음 → strip
-        if (node.data.binary.flags == 1) return .none;
-        const new_name = try self.visitNode(node.data.binary.left);
-        const new_body = try self.visitNode(node.data.binary.right);
-        // 타입만 있어 전부 스트리핑됐거나, 빈 블록인 namespace → strip
-        if (new_body.isNone()) return .none;
-        const body_node = self.ast.getNode(new_body);
-        if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
-            return .none;
-        }
-        return self.ast.addNode(.{
-            .tag = .ts_module_declaration,
-            .span = node.span,
-            .data = .{ .binary = .{ .left = new_name, .right = new_body, .flags = 0 } },
-        });
-    }
+    pub const visitImportEqualsDeclaration = namespace_mod.visitImportEqualsDeclaration;
+    pub const visitExportAssignment = namespace_mod.visitExportAssignment;
+    pub const visitNamespaceDeclaration = namespace_mod.visitNamespaceDeclaration;
 
     // ================================================================
     // 헬퍼
