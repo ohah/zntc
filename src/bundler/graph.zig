@@ -40,7 +40,6 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const profile = @import("../profile.zig");
-const debug_log = @import("../debug_log.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const AliasTable = @import("module.zig").AliasTable;
@@ -86,6 +85,8 @@ const expandGlobRecords = graph_glob.expandGlobRecords;
 const graph_package_side_effects = @import("graph/package_side_effects.zig");
 const graph_parse_helpers = @import("graph/parse_helpers.zig");
 const graph_plugins = @import("graph/plugins.zig");
+const graph_requested_exports = @import("graph/requested_exports.zig");
+const graph_runtime_polyfills = @import("graph/runtime_polyfills.zig");
 const graph_state = @import("graph/state.zig");
 
 pub const ModuleGraph = struct {
@@ -97,6 +98,9 @@ pub const ModuleGraph = struct {
     const moduleTypeForLoader = graph_parse_helpers.moduleTypeForLoader;
     const projectExportedNames = graph_parse_helpers.projectExportedNames;
     const suppressRuntimeHelperInternalUnresolved = graph_parse_helpers.suppressRuntimeHelperInternalUnresolved;
+    const requestedLocalExportNeedsAllRecords = graph_requested_exports.localNeedsAllRecords;
+    const requestedNameHasDirectNonStarExport = graph_requested_exports.nameHasDirectNonStarExport;
+    const reExportRecordMatchesRequest = graph_requested_exports.reExportRecordMatchesRequest;
 
     allocator: std.mem.Allocator,
     /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
@@ -522,7 +526,7 @@ pub const ModuleGraph = struct {
                 var aggregate_scope = profile.begin(.graph_runtime_polyfills_aggregate);
                 defer aggregate_scope.end();
                 for (plan.entry_modules) |module| {
-                    try self.selectRuntimePolyfillModule(&selected, &seen, plan, module, "entry");
+                    try graph_runtime_polyfills.selectModule(self.allocator, &selected, &seen, plan, module, "entry");
                 }
             },
             .usage => {
@@ -538,7 +542,7 @@ pub const ModuleGraph = struct {
                         var module_usage = try runtime_polyfills.collectModuleUsage(self.allocator, m);
                         defer module_usage.deinit(self.allocator);
                         collect_scope.end();
-                        if (!module_usage.isEmpty()) self.debugRuntimePolyfillUsage(m.path, module_usage);
+                        if (!module_usage.isEmpty()) graph_runtime_polyfills.logUsage(m.path, module_usage);
                         try used.merge(self.allocator, module_usage);
                     }
                 }
@@ -548,20 +552,16 @@ pub const ModuleGraph = struct {
                         .path = candidate.path,
                     };
                     if (used.has(candidate.feature)) {
-                        try self.selectRuntimePolyfillModule(&selected, &seen, plan, module, candidate.feature);
-                    } else if (debug_log.enabled(.runtime_polyfills)) {
-                        debug_log.print(
-                            .runtime_polyfills,
-                            "mode=usage feature={s} corejs_module={s} decision=unused\n",
-                            .{ candidate.feature, candidate.module },
-                        );
+                        try graph_runtime_polyfills.selectModule(self.allocator, &selected, &seen, plan, module, candidate.feature);
+                    } else {
+                        graph_runtime_polyfills.logUnusedCandidate(candidate);
                     }
                 }
             },
         }
 
         for (plan.include) |module| {
-            try self.selectRuntimePolyfillModule(&selected, &seen, plan, module, "include");
+            try graph_runtime_polyfills.selectModule(self.allocator, &selected, &seen, plan, module, "include");
         }
 
         if (selected.items.len == 0) return;
@@ -577,65 +577,9 @@ pub const ModuleGraph = struct {
             }
             try runtime_indices.append(self.allocator, idx);
             try self.runtime_polyfill_roots.append(self.allocator, module.path);
-            if (debug_log.enabled(.runtime_polyfills)) {
-                debug_log.print(
-                    .runtime_polyfills,
-                    "mode={s} corejs_module={s} module={s} decision=prelude\n",
-                    .{ @tagName(plan.mode), module.module, module.path },
-                );
-            }
+            graph_runtime_polyfills.logPrelude(plan, module);
         }
         try self.discoverPendingModulesSequential(discover_start);
-    }
-
-    fn selectRuntimePolyfillModule(
-        self: *ModuleGraph,
-        selected: *std.ArrayList(runtime_polyfills.ResolvedModule),
-        seen: *std.StringHashMap(void),
-        plan: runtime_polyfills.Plan,
-        module: runtime_polyfills.ResolvedModule,
-        reason: []const u8,
-    ) !void {
-        if (isRuntimePolyfillExcluded(plan, module.module)) {
-            if (debug_log.enabled(.runtime_polyfills)) {
-                debug_log.print(
-                    .runtime_polyfills,
-                    "mode={s} feature={s} corejs_module={s} decision=excluded\n",
-                    .{ @tagName(plan.mode), reason, module.module },
-                );
-            }
-            return;
-        }
-        if (seen.contains(module.module)) return;
-        try seen.put(module.module, {});
-        try selected.append(self.allocator, module);
-        if (debug_log.enabled(.runtime_polyfills)) {
-            debug_log.print(
-                .runtime_polyfills,
-                "mode={s} feature={s} corejs_module={s} module={s} decision=included\n",
-                .{ @tagName(plan.mode), reason, module.module, module.path },
-            );
-        }
-    }
-
-    fn isRuntimePolyfillExcluded(plan: runtime_polyfills.Plan, module_name: []const u8) bool {
-        for (plan.exclude) |excluded| {
-            if (std.mem.eql(u8, excluded, module_name)) return true;
-        }
-        return false;
-    }
-
-    fn debugRuntimePolyfillUsage(self: *ModuleGraph, module_path: []const u8, usage: runtime_polyfills.FeatureSet) void {
-        _ = self;
-        if (!debug_log.enabled(.runtime_polyfills)) return;
-        var it = usage.keyIterator();
-        while (it.next()) |feature| {
-            debug_log.print(
-                .runtime_polyfills,
-                "mode=usage module={s} feature={s} decision=detected\n",
-                .{ module_path, feature.* },
-            );
-        }
     }
 
     fn discoverPendingModulesSequential(self: *ModuleGraph, start_index: usize) !void {
@@ -730,49 +674,6 @@ pub const ModuleGraph = struct {
             m.exports_kind.isEsm() and
             m.import_records.len > 0 and
             m.export_bindings.len > 0;
-    }
-
-    fn requestedLocalExportNeedsAllRecords(m: *const Module, req: *const RequestedExports) bool {
-        if (req.all) return true;
-        var it = req.names.keyIterator();
-        while (it.next()) |name| {
-            for (m.export_bindings) |eb| {
-                if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, name.*)) return true;
-            }
-        }
-        return false;
-    }
-
-    fn requestedNameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {
-        for (m.export_bindings) |eb| {
-            if (eb.kind == .re_export_star) continue;
-            if (std.mem.eql(u8, eb.exported_name, name)) return true;
-        }
-        return false;
-    }
-
-    fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const RequestedExports) bool {
-        if (req.all) return true;
-        var names = req.names.keyIterator();
-        while (names.next()) |requested_name| {
-            for (m.export_bindings) |eb| {
-                const eb_rec = eb.import_record_index orelse continue;
-                if (eb_rec != rec_i) continue;
-                switch (eb.kind) {
-                    .re_export => {
-                        if (std.mem.eql(u8, eb.exported_name, requested_name.*)) return true;
-                    },
-                    .re_export_namespace => {
-                        if (std.mem.eql(u8, eb.exported_name, requested_name.*)) return true;
-                    },
-                    .re_export_star => {
-                        if (!requestedNameHasDirectNonStarExport(m, requested_name.*)) return true;
-                    },
-                    .local => {},
-                }
-            }
-        }
-        return false;
     }
 
     fn shouldLinkResolvedRecordForModule(self: *ModuleGraph, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
