@@ -312,6 +312,9 @@ jobs:
       - name: Run sherif (workspace metadata 일관성 — license/types/packageManager 등)
         run: bun run test:sherif
 
+      - name: Run publishable deps consistency (publishable 7 패키지 간 external dep version 통일)
+        run: bun run test:publishable-deps
+
       - name: Run publish install test (실제 사용자 시나리오 — npm install + import)
         run: bun run test:publish-install
 
