@@ -65,6 +65,7 @@ const drop_mod = @import("transformer/drop.zig");
 const type_only_mod = @import("transformer/type_only.zig");
 const options_mod = @import("options.zig");
 const runtime_helper_bits = @import("runtime_helper_bits.zig");
+const state_mod = @import("state.zig");
 pub const ast_plugin_mod = @import("ast_plugin.zig");
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
@@ -260,65 +261,14 @@ pub const Transformer = struct {
     /// const 바인딩만 추적 (let/var 는 재할당 가능).
     regex_var_map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
-    pub const BlockRenameEntry = struct {
-        old_name: []const u8,
-        new_name: []const u8,
-    };
-
-    pub const GeneratorLabelEntry = struct {
-        name: []const u8,
-        break_label: u32,
-        continue_label: ?u32,
-    };
-
-    pub const NewTargetCtx = union(enum) {
-        none,
-        constructor, // class constructor: new.target → this.constructor
-        method, // class method: new.target → void 0
-        function_named: Span, // function Fn: new.target → this instanceof Fn ? this.constructor : void 0
-    };
-
-    pub const ConstEnumValue = union(enum) {
-        number: f64, // ECMAScript Number — 소수/큰 정수 모두 표현 가능
-        /// quote 미포함 raw 문자열. AST 출력 시 quote 추가.
-        string: []const u8,
-    };
-
-    pub const ConstEnumMember = struct {
-        name: []const u8,
-        value: ConstEnumValue,
-    };
-
-    pub const ConstEnumDecl = struct {
-        name: []const u8,
-        members: []const ConstEnumMember,
-        /// enum binding 의 symbol_id. shadowing 검사 — identifier_reference 의 symbol_id 가
-        /// 일치할 때만 인라인 (같은 스코프의 다른 변수 잘못 변환 방지). null이면 symbol 정보 없음 → 이름으로만 매칭.
-        symbol_id: ?u32,
-    };
-
-    /// `class_name` 으로 instance/static 을 구분 — null 이면 instance (WeakMap 기반),
-    /// non-null 이면 static (descriptor 객체 + class brand check).
-    pub const PrivateFieldMapping = struct {
-        original_name: []const u8, // "#x"
-        var_name: []const u8, // "_x"
-        class_name: ?[]const u8 = null, // null → instance, non-null → static (brand check 클래스명)
-    };
-
-    /// `class_name` 으로 instance/static 을 구분 — null 이면 instance (WeakSet 기반),
-    /// non-null 이면 static (descriptor 객체 + class brand check).
-    pub const PrivateMethodMapping = struct {
-        original_name: []const u8, // "#method" (원본 소스 텍스트)
-        weakset_name: []const u8, // "_method" (WeakSet 변수명 — 같은 name 의 getter/setter 공유)
-        func_name: []const u8, // kind 에 따라 "_method_fn" / "_method_get" / "_method_set"
-        member_idx: NodeIndex = NodeIndex.none, // method_definition 노드 (ES2015 경로에서 사용)
-        // standalone function_declaration 의 span 으로 사용 — leading comment 가
-        // `function _fn()` 뒤가 아니라 함수 앞에서 flush 되도록 (#1516).
-        member_span: Span = .{ .start = 0, .end = 0 },
-        /// method / getter / setter (#1523).
-        kind: @import("es_helpers.zig").PrivateMethodKind = .method,
-        class_name: ?[]const u8 = null, // null → instance, non-null → static
-    };
+    pub const BlockRenameEntry = state_mod.BlockRenameEntry;
+    pub const GeneratorLabelEntry = state_mod.GeneratorLabelEntry;
+    pub const NewTargetCtx = state_mod.NewTargetCtx;
+    pub const ConstEnumValue = state_mod.ConstEnumValue;
+    pub const ConstEnumMember = state_mod.ConstEnumMember;
+    pub const ConstEnumDecl = state_mod.ConstEnumDecl;
+    pub const PrivateFieldMapping = state_mod.PrivateFieldMapping;
+    pub const PrivateMethodMapping = state_mod.PrivateMethodMapping;
 
     // RefreshRegistration / RefreshSignature 타입 정의는 plugin_state.zig로 이사.
     // 외부 모듈 (refresh.zig 등)에서 `Transformer.RefreshRegistration`로 접근 가능하도록 alias 제공.
@@ -369,7 +319,7 @@ pub const Transformer = struct {
         return finishInit(allocator, @constCast(ast), opts, .borrowed);
     }
 
-    const AstOwnership = enum { owned, borrowed };
+    const AstOwnership = state_mod.AstOwnership;
 
     fn finishInit(
         allocator: std.mem.Allocator,
