@@ -312,6 +312,9 @@ jobs:
       - name: Run sherif (workspace metadata 일관성 — license/types/packageManager 등)
         run: bun run test:sherif
 
+      - name: Run publish install test (실제 사용자 시나리오 — npm install + import)
+        run: bun run test:publish-install
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest

@@ -24,6 +24,7 @@
     "test:integration": "bun test --cwd tests/integration",
     "test:runtime-polyfills:coverage": "bun run scripts/check-runtime-polyfill-coverage.mjs",
     "test:publish-smoke": "bun scripts/publish-smoke-test.ts",
+    "test:publish-install": "bun scripts/publish-install-test.ts",
     "test:publint": "bun scripts/publint-all.ts",
     "test:sherif": "bunx sherif --ignore-rule multiple-dependency-versions --ignore-rule unsync-similar-dependencies",
     "build:publishable": "bun run --cwd packages/server build && bun run --cwd packages/web build && bun run --cwd packages/react-native build && bun run --cwd packages/vite-plugin-zntc build && bun run --cwd packages/init build",
