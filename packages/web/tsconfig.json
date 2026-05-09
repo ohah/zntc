@@ -3,8 +3,13 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "declarationDir": "dist"
+    "declarationDir": "dist",
+    // composite 는 core 에서 상속. tsBuildInfoFile 은 extends 가 base path
+    // 기준 resolve 라 명시 override 필수 — 안 그러면 packages/core/.tsbuildinfo
+    // 와 충돌.
+    "tsBuildInfoFile": ".tsbuildinfo"
   },
+  "references": [{ "path": "../core" }, { "path": "../server" }],
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts"]
 }
