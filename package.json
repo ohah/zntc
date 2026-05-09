@@ -33,6 +33,9 @@
     "release": "bun scripts/release.ts",
     "release:dry-run": "bun scripts/release.ts",
     "release:publish": "bun scripts/release.ts --publish",
+    "changeset": "changeset",
+    "changeset:version": "changeset version && bun install --no-frozen-lockfile",
+    "changeset:status": "changeset status --verbose",
     "build:dts:all": "bun x tsc -b",
     "type-check": "bun x tsc -b --dry",
     "test:e2e": "bun run --cwd tests/e2e test",
@@ -45,6 +48,7 @@
     "playwright:install": "cd tests/e2e && bunx playwright install --with-deps chromium"
   },
   "devDependencies": {
+    "@changesets/cli": "2.31.0",
     "@emotion/css": "^11.13.5",
     "@emotion/react": "^11.14.0",
     "@tailwindcss/postcss": "^4.2.2",

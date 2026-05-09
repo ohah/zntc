@@ -66,9 +66,54 @@ bun publish      # prepublishOnly 가 자동 build + publint 검증
 
 스크립트 우회. 단일 패키지 hotfix 등에 유용.
 
-## 후속 release 자동화
+## Changesets — version bump + changelog 자동화
 
-`changesets` (https://github.com/changesets/changesets) 도입 시 version bump + changelog + sequential publish 가 한 번에. 현재는 release.ts 가 sequential publish + version bump 는 수동.
+`@changesets/cli` 도입. PR 단위로 변경 의도를 markdown 으로 기록 → release 시 일괄 version bump + CHANGELOG.md 자동 생성.
+
+> `release.ts` 와 역할 분리: **changesets = version bump + changelog**, **release.ts = pre-release-check + sequential publish**. `changeset publish` 는 사용 안 함 (release.ts 가 더 다중 가드).
+
+### 일상 워크플로
+
+```bash
+# 1. PR 작성 중 — 변경 의도 기록
+bun run changeset
+#   → 변경된 패키지 선택 (space)
+#   → bump 종류 선택 (patch / minor / major)
+#   → 변경 사유 입력
+#   → .changeset/<random-name>.md 생성됨 → commit
+```
+
+### Release 시점
+
+```bash
+# 2. main 에 누적된 .changeset/*.md 적용 (로컬 / release PR 전용)
+bun run changeset:version
+#   → 각 패키지 package.json version bump
+#   → CHANGELOG.md 생성/업데이트
+#   → workspace internal deps 자동 sync (^X.Y.Z)
+#   → bun install 자동 실행 (--no-frozen-lockfile, lockfile 갱신)
+#   → 결과 git diff 확인 후 commit + PR
+
+# 3. version bump PR 머지 후 — 실제 publish
+bun run release:publish
+#   → release.ts 가 pre-release-check + confirm + sequential publish
+```
+
+> `changeset:version` 은 lockfile 갱신 위해 `--no-frozen-lockfile` 사용. **로컬 또는 release PR 작업 환경 전용** — CI 의 일반 install (`bun install --frozen-lockfile`) 과 충돌하지 않음 (CI 는 이 script 호출 안 함).
+
+### 빠른 확인
+
+```bash
+bun run changeset:status   # 누적된 changeset 보기 (어느 패키지가 어떤 bump)
+```
+
+### 설정
+
+- `.changeset/config.json`:
+  - `access: "public"` — scoped `@zntc/*` 와 unscoped `vite-plugin-zntc` 모두 public publish (default 가 모든 package 에 적용)
+  - `ignore: ["documents"]` — `documents` 는 publishable name 인데 publish 의도 없음. private 인 server / examples / tests 는 `private: true` 로 자동 skip
+  - `baseBranch: "main"`
+- changesets 의 bump 대상 = release.ts 의 publish 대상 = `packages/*` 중 non-private 6개 (core / web / react-native / vite-plugin-zntc / wasm / init). 불일치 시 release.ts `PUBLISH_ORDER` 도 동기화 필요
 
 ## 관련 PR
 
