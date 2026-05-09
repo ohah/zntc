@@ -1428,151 +1428,165 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         /// AST 서브트리에 yield_expression 또는 generator labeled jump가 있는지 체크.
-        fn containsYield(self: *const Transformer, idx: NodeIndex) bool {
-            if (idx.isNone()) return false;
-            const node = self.ast.getNode(idx);
-            if (node.tag == .yield_expression or node.tag == .await_expression) return true;
-            // break/continue: state machine의 label jump로 변환해야 하는 경우 true 반환.
-            // 이때 감싼 if/block 등이 statement로 통째로 묻히지 않도록 해야 한다.
-            if (node.tag == .break_statement or node.tag == .continue_statement) {
-                if (node.data.unary.operand.isNone()) {
-                    // unlabeled: 감싼 loop/switch가 state machine 안에 있으면 변환 필요.
-                    if (self.generator_label_stack.items.len > 0) return true;
-                } else if (self.generator_label_stack.items.len > 0) {
-                    // labeled: 스택에 등록된 label 참조 시만 변환.
-                    const label_node = self.ast.getNode(node.data.unary.operand);
-                    const label_text = self.ast.getText(label_node.span);
-                    for (self.generator_label_stack.items) |entry| {
-                        if (std.mem.eql(u8, entry.name, label_text)) return true;
+        ///
+        /// 명시 stack DFS — recursive 였을 때 deep AST 에서 stack overflow 위험. children
+        /// enumeration 은 기존 switch 구조 그대로 유지 (behavior 100% 보존). short-circuit
+        /// `or` 는 children 을 모두 push 한 뒤 다음 iteration 에서 자연 종료.
+        ///
+        /// OOM 시 보수적으로 true 반환 — state machine 변환을 안 하는 것보다 하는 게 안전
+        /// (호출부가 더 보수적 변환 path 선택).
+        fn containsYield(self: *const Transformer, root_idx: NodeIndex) bool {
+            if (root_idx.isNone()) return false;
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, root_idx) catch return true;
+
+            while (stack.items.len > 0) {
+                const idx = stack.pop() orelse break;
+                if (idx.isNone()) continue;
+                const node = self.ast.getNode(idx);
+
+                if (node.tag == .yield_expression or node.tag == .await_expression) return true;
+                if (node.tag == .break_statement or node.tag == .continue_statement) {
+                    if (node.data.unary.operand.isNone()) {
+                        if (self.generator_label_stack.items.len > 0) return true;
+                    } else if (self.generator_label_stack.items.len > 0) {
+                        const label_node = self.ast.getNode(node.data.unary.operand);
+                        const label_text = self.ast.getText(label_node.span);
+                        for (self.generator_label_stack.items) |entry| {
+                            if (std.mem.eql(u8, entry.name, label_text)) return true;
+                        }
                     }
                 }
-            }
-            // function/arrow 경계에서는 중단 (nested generator/arrow의 yield는 다른 스코프)
-            if (node.tag == .function_declaration or node.tag == .function_expression or
-                node.tag == .arrow_function_expression) return false;
+                // function/arrow 경계: nested generator/arrow 의 yield 는 다른 스코프
+                if (node.tag == .function_declaration or node.tag == .function_expression or
+                    node.tag == .arrow_function_expression) continue;
 
-            // 자식 순회
-            return switch (node.tag) {
-                .block_statement,
-                .function_body,
-                .array_expression,
-                .object_expression,
-                .sequence_expression,
-                .template_literal,
-                .formal_parameters,
-                .class_body,
-                => {
-                    const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                    for (members) |raw_idx| {
-                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
+                const push = struct {
+                    fn one(self_: *const Transformer, st: *std.ArrayList(NodeIndex), child: NodeIndex) bool {
+                        st.append(self_.allocator, child) catch return false;
+                        return true;
                     }
-                    return false;
-                },
-                .expression_statement,
-                .return_statement,
-                .throw_statement,
-                .spread_element,
-                .rest_element,
-                .parenthesized_expression,
-                => containsYield(self, node.data.unary.operand),
-                .unary_expression, .update_expression => {
-                    // extra = [operand, operator_and_flags]
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e >= extras.len) return false;
-                    return containsYield(self, @enumFromInt(extras[e]));
-                },
-                .assignment_expression,
-                .binary_expression,
-                .logical_expression,
-                .object_property,
-                => containsYield(self, node.data.binary.left) or containsYield(self, node.data.binary.right),
-                // extra = [child0, child1, flags] — child 2개만 재귀
-                .static_member_expression,
-                .computed_member_expression,
-                .tagged_template_expression,
-                => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    return containsYield(self, @enumFromInt(extras[e])) or containsYield(self, @enumFromInt(extras[e + 1]));
-                },
-                .conditional_expression,
-                .if_statement,
-                .for_in_statement,
-                .for_of_statement,
-                .try_statement,
-                => containsYield(self, node.data.ternary.a) or containsYield(self, node.data.ternary.b) or containsYield(self, node.data.ternary.c),
-                .catch_clause,
-                .while_statement,
-                .do_while_statement,
-                .labeled_statement,
-                => containsYield(self, node.data.binary.left) or containsYield(self, node.data.binary.right),
-                .for_statement => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 3 >= extras.len) return false;
-                    return containsYield(self, @enumFromInt(extras[e + 3])); // body
-                },
-                .switch_statement => {
-                    // switch_statement: extra = [discriminant, cases.start, cases.len]
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    const cases_start = extras[e + 1];
-                    const cases_len = extras[e + 2];
-                    const cases = extras[cases_start .. cases_start + cases_len];
-                    for (cases) |raw_idx| {
-                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
-                    }
-                    return false;
-                },
-                .switch_case => {
-                    // switch_case: extra = [test, stmts_start, stmts_len]
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    const stmts_start = extras[e + 1];
-                    const stmts_len = extras[e + 2];
-                    const stmts = extras[stmts_start .. stmts_start + stmts_len];
-                    for (stmts) |raw_idx| {
-                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
-                    }
-                    return false;
-                },
-                .call_expression, .new_expression => {
-                    // extra = [callee, args_start, args_len, flags]
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    if (containsYield(self, @enumFromInt(extras[e]))) return true; // callee
-                    const args_start = extras[e + 1];
-                    const args_len = extras[e + 2];
-                    const args = extras[args_start .. args_start + args_len];
-                    for (args) |raw_idx| {
-                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
-                    }
-                    return false;
-                },
-                .variable_declaration => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    const list_start = extras[e + 1];
-                    const list_len = extras[e + 2];
-                    const decls = extras[list_start .. list_start + list_len];
-                    for (decls) |raw_idx| {
-                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
-                    }
-                    return false;
-                },
-                .variable_declarator => {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 2 >= extras.len) return false;
-                    return containsYield(self, @enumFromInt(extras[e + 2])); // init
-                },
-                else => false,
-            };
+                };
+
+                switch (node.tag) {
+                    .block_statement,
+                    .function_body,
+                    .array_expression,
+                    .object_expression,
+                    .sequence_expression,
+                    .template_literal,
+                    .formal_parameters,
+                    .class_body,
+                    => {
+                        const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                        for (members) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .expression_statement,
+                    .return_statement,
+                    .throw_statement,
+                    .spread_element,
+                    .rest_element,
+                    .parenthesized_expression,
+                    => {
+                        if (!push.one(self, &stack, node.data.unary.operand)) return true;
+                    },
+                    .unary_expression, .update_expression => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e >= extras.len) continue;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e]))) return true;
+                    },
+                    .assignment_expression,
+                    .binary_expression,
+                    .logical_expression,
+                    .object_property,
+                    => {
+                        if (!push.one(self, &stack, node.data.binary.left)) return true;
+                        if (!push.one(self, &stack, node.data.binary.right)) return true;
+                    },
+                    .static_member_expression,
+                    .computed_member_expression,
+                    .tagged_template_expression,
+                    => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e]))) return true;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e + 1]))) return true;
+                    },
+                    .conditional_expression,
+                    .if_statement,
+                    .for_in_statement,
+                    .for_of_statement,
+                    .try_statement,
+                    => {
+                        if (!push.one(self, &stack, node.data.ternary.a)) return true;
+                        if (!push.one(self, &stack, node.data.ternary.b)) return true;
+                        if (!push.one(self, &stack, node.data.ternary.c)) return true;
+                    },
+                    .catch_clause,
+                    .while_statement,
+                    .do_while_statement,
+                    .labeled_statement,
+                    => {
+                        if (!push.one(self, &stack, node.data.binary.left)) return true;
+                        if (!push.one(self, &stack, node.data.binary.right)) return true;
+                    },
+                    .for_statement => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 3 >= extras.len) continue;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e + 3]))) return true; // body
+                    },
+                    .switch_statement, .variable_declaration => {
+                        // extra = [_, list_start, list_len]
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 2 >= extras.len) continue;
+                        const list_start = extras[e + 1];
+                        const list_len = extras[e + 2];
+                        const items = extras[list_start .. list_start + list_len];
+                        for (items) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .switch_case => {
+                        // extra = [test, stmts_start, stmts_len] — test 는 yield 안 가짐 (literal)
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 2 >= extras.len) continue;
+                        const stmts_start = extras[e + 1];
+                        const stmts_len = extras[e + 2];
+                        const stmts = extras[stmts_start .. stmts_start + stmts_len];
+                        for (stmts) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .call_expression, .new_expression => {
+                        // extra = [callee, args_start, args_len, flags]
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 2 >= extras.len) continue;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e]))) return true;
+                        const args_start = extras[e + 1];
+                        const args_len = extras[e + 2];
+                        const args = extras[args_start .. args_start + args_len];
+                        for (args) |raw_idx| {
+                            if (!push.one(self, &stack, @enumFromInt(raw_idx))) return true;
+                        }
+                    },
+                    .variable_declarator => {
+                        const extras = self.ast.extra_data.items;
+                        const e = node.data.extra;
+                        if (e + 2 >= extras.len) continue;
+                        if (!push.one(self, &stack, @enumFromInt(extras[e + 2]))) return true; // init
+                    },
+                    else => {},
+                }
+            }
+            return false;
         }
 
         /// AST 서브트리에 return_statement가 있는지 체크.
