@@ -96,12 +96,12 @@ function getRuntimeRequire(): RuntimeRequire {
 
 /** @internal */
 export const __runtimePolyfillTestHooks = {
-  reset() {
+  reset(): void {
     coreJsCompatCache = undefined;
     coreJsVersionCache = undefined;
     runtimeRequireOverride = null;
   },
-  setRuntimeRequire(runtimeRequire: RuntimeRequire | null) {
+  setRuntimeRequire(runtimeRequire: RuntimeRequire | null): void {
     coreJsCompatCache = undefined;
     coreJsVersionCache = undefined;
     runtimeRequireOverride = runtimeRequire;
@@ -110,7 +110,7 @@ export const __runtimePolyfillTestHooks = {
 
 /** @internal — Zig 매핑 테이블과의 sync 검증용. 외부 사용자는 사용 금지. */
 export const __runtimePolyfillTestInternals = {
-  get featureModules() {
+  get featureModules(): typeof RUNTIME_POLYFILL_FEATURE_MODULES {
     return RUNTIME_POLYFILL_FEATURE_MODULES;
   },
 };

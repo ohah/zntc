@@ -3,13 +3,13 @@
 // `hmr:update-start` / `hmr:update` / `hmr:update-done` / `hmr:reload` / `hmr:error` /
 // `log` 그대로 (RN 런타임의 HMRClient 가 소비). web 의 HMR_MSG 와 직교 (#2540).
 
-export const HMR_MSG = Object.freeze({
+export const HMR_MSG = {
   Connected: 'connected',
   CssUpdate: 'css-update',
   ClearError: 'clear-error',
   Error: 'error',
   FullReload: 'full-reload',
-} as const);
+} as const;
 
 export type HmrMessageType = (typeof HMR_MSG)[keyof typeof HMR_MSG];
 
@@ -80,14 +80,14 @@ export function normalizeHmrErrors(errors: readonly unknown[] | unknown): HmrErr
 // 의 onmessage 분기 키. revisionId 기반 delta 는 caller (번개 server) 가 관리,
 // adapter 는 메시지 union 만 통과.
 
-export const HMR_RN_MSG = Object.freeze({
+export const HMR_RN_MSG = {
   UpdateStart: 'hmr:update-start',
   Update: 'hmr:update',
   UpdateDone: 'hmr:update-done',
   Reload: 'hmr:reload',
   Error: 'hmr:error',
   Log: 'log',
-} as const);
+} as const;
 
 export type HmrRnMessageType = (typeof HMR_RN_MSG)[keyof typeof HMR_RN_MSG];
 

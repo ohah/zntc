@@ -11,6 +11,7 @@
     "rewriteRelativeImportExtensions": true,
     "strict": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "isolatedDeclarations": true
   }
 }

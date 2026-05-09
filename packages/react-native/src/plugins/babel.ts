@@ -34,7 +34,7 @@ type BabelEntry = string | [string, Record<string, unknown>?, string?];
  * 되면 ZNTC 가 이미 처리). 사용자 babel.config.js 의 plugin 중 *이 list 외* 만
  * Babel 로 forward.
  */
-export const ZNTC_NATIVE_PLUGIN_PATTERNS = [
+export const ZNTC_NATIVE_PLUGIN_PATTERNS: string[] = [
   'optional-chaining',
   'nullish-coalescing',
   'class-properties',

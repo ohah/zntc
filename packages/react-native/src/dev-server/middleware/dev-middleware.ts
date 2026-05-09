@@ -93,7 +93,7 @@ export async function loadDevMiddleware(
   }
 }
 
-export const DEV_MIDDLEWARE_PATH_PREFIXES = [
+export const DEV_MIDDLEWARE_PATH_PREFIXES: string[] = [
   '/json',
   '/open-debugger',
   '/debugger-frontend',
