@@ -1759,66 +1759,8 @@ pub const ModuleGraph = struct {
         // Scanner + Parser (arena 할당)
         var scanner: Scanner = undefined;
         var parser: Parser = undefined;
-        const ext = std.fs.path.extension(module.path);
-        {
-            var parser_setup_scope = profile.begin(.graph_discover_pm_setup_parser);
-            defer parser_setup_scope.end();
+        if (!self.initParserForModule(module, arena_alloc, &scanner, &parser)) return;
 
-            scanner = Scanner.init(arena_alloc, module.source) catch {
-                self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Scanner initialization failed", null);
-                module.state = .ready;
-                return;
-            };
-
-            parser = Parser.init(arena_alloc, &scanner);
-            configureParserForModule(&parser, module, ext);
-
-            // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
-            // TS 와 Flow 는 상호 배타 — TS 파일에서는 Flow 무시
-            if (parser.source_mode != .ts) {
-                if (self.flow) {
-                    parser.is_flow = true;
-                    scanner.has_flow_pragma = true; // flow comment 활성화
-                } else {
-                    parser.configureFlowFromPath(module.path);
-                }
-            }
-
-            // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
-            // .ts 파일은 이미 configureForBundler에서 JSX 설정됨 (.tsx만 true)
-            // .ts에 강제 jsx=true하면 <T> 제네릭이 JSX로 오파싱됨
-            if (self.jsx_in_js and parser.source_mode != .ts) {
-                parser.is_jsx = true;
-            }
-
-            // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
-            module.def_format = if (std.mem.eql(u8, ext, ".mjs"))
-                .esm_mjs
-            else if (std.mem.eql(u8, ext, ".mts"))
-                .esm_mts
-            else if (std.mem.eql(u8, ext, ".cjs"))
-                .cjs
-            else if (std.mem.eql(u8, ext, ".cts"))
-                .cts
-            else if (module.is_module_field or self.isPackageTypeModule(module.path))
-                .esm_package_json
-            else
-                .unknown;
-
-            // .js/.jsx: package.json "type" 또는 Unambiguous 모드로 module/script 결정
-            // .mjs/.mts/.ts/.tsx: 이미 확정 module, 변경 없음
-            if (!parser.is_module) {
-                parser.is_module = true;
-                scanner.is_module = true;
-                if (module.def_format == .unknown) {
-                    parser.is_unambiguous = true;
-                }
-            }
-            // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
-            parser.enable_scan = true;
-            // require.context 등 build-time 정적 평가용 define entries 전달 (#1579 Phase 2.6)
-            parser.scan_defines = self.defines;
-        }
         setup_scope.end();
         {
             var parse_scope = profile.begin(.graph_discover_pm_parse);
@@ -2379,6 +2321,8 @@ pub const ModuleGraph = struct {
     const readModuleSourceWithMtime = graph_loaders.readModuleSourceWithMtime;
     const graph_json_module = @import("graph/json_module.zig");
     const parseJsonModule = graph_json_module.parse;
+    const graph_parser_setup = @import("graph/parser_setup.zig");
+    const initParserForModule = graph_parser_setup.init;
 
     // Diagnostics helpers — graph/diagnostics.zig로 위임
     const graph_diagnostics = @import("graph/diagnostics.zig");
