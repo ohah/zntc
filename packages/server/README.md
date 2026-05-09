@@ -12,4 +12,4 @@ ZNTC 의 internal server layer. **private 패키지** (`"private": true`) — np
 - HMR channel (broadcast)
 - 미래: BoringSSL TLS wrapper, NAPI server start/stop
 
-자세한 계획: [#2539](https://github.com/ohah/zntc/issues/2539).
+자세한 계획: [#2539](https://github.com/ohah/zts/issues/2539).

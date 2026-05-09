@@ -31,11 +31,11 @@ bunx zntc build     # production app build
 bunx zntc preview   # production preview server
 ```
 
-자세한 설정: [docs/CONFIG.md](https://github.com/ohah/zntc/blob/main/docs/CONFIG.md) · [docs/HMR.md](https://github.com/ohah/zntc/blob/main/docs/HMR.md)
+자세한 설정: [docs/CONFIG.md](https://github.com/ohah/zts/blob/main/docs/CONFIG.md) · [docs/HMR.md](https://github.com/ohah/zts/blob/main/docs/HMR.md)
 
 ## 직접 import (고급)
 
-`createAppDevController` 가 dev controller 의 main entry. 옵션 surface 가 넓고 `@zntc/core` 의 `prepareAppDevSync` 결과를 받음 — 사용 예는 [docs/HMR.md](https://github.com/ohah/zntc/blob/main/docs/HMR.md) 참조.
+`createAppDevController` 가 dev controller 의 main entry. 옵션 surface 가 넓고 `@zntc/core` 의 `prepareAppDevSync` 결과를 받음 — 사용 예는 [docs/HMR.md](https://github.com/ohah/zts/blob/main/docs/HMR.md) 참조.
 
 ## 관련 패키지
 
