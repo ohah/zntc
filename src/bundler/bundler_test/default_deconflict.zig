@@ -8,6 +8,7 @@ const CompiledOutputCache = @import("../compiled_cache.zig").CompiledOutputCache
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
+const compat_mod = @import("../../transformer/compat.zig");
 
 // ============================================================
 // Default export advanced patterns (Rollup/Rolldown 참고)
@@ -1033,4 +1034,76 @@ test "Default: named `export default function` has no `_default` (#1598)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") == null);
     // 실행 결과 보존
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Hello") != null);
+}
+
+// ============================================================
+// Runtime helper canonical name 안정성 — `__extends`, `__classCallCheck`
+// 등 ZNTC runtime helper module symbol 은 multi-consumer 환경에서도 단일
+// canonical name 을 유지해야 함. resolveNestedShadowConflicts 가 consumer
+// 별로 helper 의 canonical_name 을 `$1`, `$2`... 로 덮어쓰면 마지막 rename 만
+// declaration 으로 emit 되고 나머지는 `__extends$N is not defined` 런타임 에러
+// (RN ExampleApp 회귀, es5-rn 통합 테스트).
+// ============================================================
+
+test "Runtime helper: 다수의 class extends consumer 가 있어도 __extends 단일 canonical 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // class extends → ES5 lower 시 IIFE 내부에 `function __()` 등 helper-name 과
+    // 충돌 가능한 nested binding 이 생긴다. resolveNestedShadowConflicts 가 매
+    // consumer 마다 helper 의 canonical_name 을 `$1`, `$2` ... 로 덮어쓰면 마지막
+    // rename 만 declaration 으로 emit 되고 나머지 consumer 의 `__extends$N(...)`
+    // 호출은 ReferenceError (RN ExampleApp 회귀, es5-rn 통합 테스트).
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { A } from './a';
+        \\import { B } from './b';
+        \\import { C } from './c';
+        \\import { D } from './d';
+        \\import { E } from './e';
+        \\console.log(A, B, C, D, E);
+    );
+    try writeFile(tmp.dir, "a.ts",
+        \\export class A extends Object {}
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\export class B extends Array {}
+    );
+    try writeFile(tmp.dir, "c.ts",
+        \\export class C extends Map {}
+    );
+    try writeFile(tmp.dir, "d.ts",
+        \\export class D extends Set {}
+    );
+    try writeFile(tmp.dir, "e.ts",
+        \\export class E extends WeakMap {}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        // es5 target → class extends 가 `__extends(...)` 호출로 lower → runtime helper
+        // import 가 매 consumer 모듈에 synthetic 으로 등록되어 회귀 재현.
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // `__extends$N` (N = 정수) suffix 형태 호출이 있으면 회귀.
+    // helper 의 canonical_name 은 `__extends` (또는 단일 일관 이름) 여야 함.
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, result.output, i, "__extends$")) |pos| {
+        const after = pos + "__extends$".len;
+        if (after < result.output.len and std.ascii.isDigit(result.output[after])) {
+            std.debug.print(
+                "Found unresolved __extends${c} at byte {d} — runtime helper canonical_name leak\n",
+                .{ result.output[after], pos },
+            );
+            return error.TestUnexpectedResult;
+        }
+        i = pos + 1;
+    }
 }
