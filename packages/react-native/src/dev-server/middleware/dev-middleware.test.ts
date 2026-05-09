@@ -22,54 +22,35 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function writeJson(path: string, value: unknown): void {
-  writeFileSync(path, JSON.stringify(value));
+function writePackage(
+  pkgDir: string,
+  manifest: { name: string; main?: string },
+  mainContent?: string,
+): string {
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify(manifest));
+  if (manifest.main && mainContent !== undefined) {
+    writeFileSync(join(pkgDir, manifest.main), mainContent);
+  }
+  return manifest.main ? join(pkgDir, manifest.main) : join(pkgDir, 'package.json');
 }
 
 function installExpoDevMiddleware(main: string, source: string): string {
-  const packageRoot = join(
-    dir,
-    'node_modules/expo/node_modules/@expo/cli/node_modules/@react-native/dev-middleware',
-  );
-  mkdirSync(packageRoot, { recursive: true });
-  writeJson(join(dir, 'node_modules/expo/package.json'), { name: 'expo' });
-  writeFileSync(join(dir, 'node_modules/expo/index.js'), 'module.exports = {};');
-  writeJson(join(dir, 'node_modules/expo/node_modules/@expo/cli/package.json'), {
-    name: '@expo/cli',
-    main: 'index.js',
-  });
-  writeFileSync(
-    join(dir, 'node_modules/expo/node_modules/@expo/cli/index.js'),
-    'module.exports = {};',
-  );
-  writeJson(join(packageRoot, 'package.json'), {
-    name: '@react-native/dev-middleware',
-    main,
-  });
-  writeFileSync(join(packageRoot, main), source);
-  return join(packageRoot, main);
+  const expoDir = join(dir, 'node_modules/expo');
+  const expoCliDir = join(expoDir, 'node_modules/@expo/cli');
+  const devMiddlewareDir = join(expoCliDir, 'node_modules/@react-native/dev-middleware');
+  writePackage(expoDir, { name: 'expo', main: 'index.js' }, 'module.exports = {};');
+  writePackage(expoCliDir, { name: '@expo/cli', main: 'index.js' }, 'module.exports = {};');
+  return writePackage(devMiddlewareDir, { name: '@react-native/dev-middleware', main }, source);
 }
 
 function installRnCliDevMiddleware(main: string, source: string): string {
-  const packageRoot = join(
-    dir,
-    'node_modules/react-native/node_modules/@react-native/community-cli-plugin/node_modules/@react-native/dev-middleware',
-  );
-  mkdirSync(packageRoot, { recursive: true });
-  writeJson(join(dir, 'node_modules/react-native/package.json'), { name: 'react-native' });
-  writeJson(
-    join(
-      dir,
-      'node_modules/react-native/node_modules/@react-native/community-cli-plugin/package.json',
-    ),
-    { name: '@react-native/community-cli-plugin' },
-  );
-  writeJson(join(packageRoot, 'package.json'), {
-    name: '@react-native/dev-middleware',
-    main,
-  });
-  writeFileSync(join(packageRoot, main), source);
-  return join(packageRoot, main);
+  const rnDir = join(dir, 'node_modules/react-native');
+  const cliPluginDir = join(rnDir, 'node_modules/@react-native/community-cli-plugin');
+  const devMiddlewareDir = join(cliPluginDir, 'node_modules/@react-native/dev-middleware');
+  writePackage(rnDir, { name: 'react-native' });
+  writePackage(cliPluginDir, { name: '@react-native/community-cli-plugin' });
+  return writePackage(devMiddlewareDir, { name: '@react-native/dev-middleware', main }, source);
 }
 
 describe('DEV_MIDDLEWARE_PATH_PREFIXES', () => {
@@ -153,14 +134,17 @@ describe('loadDevMiddleware', () => {
 
     const state = globalThis as { __zntcDevMiddlewareInput?: unknown };
     state.__zntcDevMiddlewareInput = undefined;
-    const result = await loadDevMiddleware({ port: 8123, projectRoot: dir });
+    try {
+      const result = await loadDevMiddleware({ port: 8123, projectRoot: dir });
 
-    expect(Object.keys(result?.websocketEndpoints ?? {})).toEqual(['/expo-inspector']);
-    expect(state.__zntcDevMiddlewareInput).toMatchObject({
-      serverBaseUrl: 'http://localhost:8123',
-      projectRoot: dir,
-    });
-    delete state.__zntcDevMiddlewareInput;
+      expect(Object.keys(result?.websocketEndpoints ?? {})).toEqual(['/expo-inspector']);
+      expect(state.__zntcDevMiddlewareInput).toMatchObject({
+        serverBaseUrl: 'http://localhost:8123',
+        projectRoot: dir,
+      });
+    } finally {
+      delete state.__zntcDevMiddlewareInput;
+    }
   });
 });
 
