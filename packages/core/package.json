@@ -9,7 +9,10 @@
   "source": "./index.ts",
   "files": [
     "dist/",
-    "bin/",
+    "bin/cli-flags.mjs",
+    "bin/rn-asset-copy.mjs",
+    "bin/rn-dev-input.mjs",
+    "bin/zntc.mjs",
     "zntc.node"
   ],
   "type": "module",
