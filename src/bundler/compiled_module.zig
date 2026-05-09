@@ -5,7 +5,7 @@
 //! 공용 값 타입.
 
 const std = @import("std");
-const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
+const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 const SourceMap = @import("../codegen/sourcemap.zig");
 
 /// 모듈 단위 컴파일 결과. 동일 입력 해시로 재사용 시 cache hit 로 활용된다.
