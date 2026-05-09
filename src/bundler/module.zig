@@ -26,7 +26,7 @@ pub const ExportBinding = binding_scanner.ExportBinding;
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
-const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
+const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 
 /// 증분 빌드용 path 기반 resolve cache.
 ///

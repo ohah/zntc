@@ -27,7 +27,7 @@ const Span = @import("../lexer/token.zig").Span;
 const ImportPhase = @import("../parser/module.zig").ImportPhase;
 const helper_modules = @import("../runtime_helper_modules.zig");
 const helper_names = @import("../runtime_helper_names.zig");
-const RuntimeHelpers = @import("transformer.zig").RuntimeHelpers;
+const RuntimeHelpers = @import("runtime_helper_bits.zig").RuntimeHelpers;
 
 /// RuntimeHelpers 비트 ↔ helper base list 매핑.
 /// 비트 하나 = helper module 하나. `bases` 의 첫 항목은 module short 결정용 lookup key

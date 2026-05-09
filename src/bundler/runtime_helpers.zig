@@ -6,7 +6,7 @@
 //! 각 헬퍼는 normal(포맷팅) + minified 두 벌로 제공.
 
 const std = @import("std");
-const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
+const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 
 // ============================================================
 // External runtime package specifiers

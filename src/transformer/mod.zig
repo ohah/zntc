@@ -13,8 +13,10 @@
 //! - references/esbuild/internal/js_parser/js_parser.go
 
 pub const transformer = @import("transformer.zig");
+pub const runtime_helper_bits = @import("runtime_helper_bits.zig");
 pub const Transformer = transformer.Transformer;
 pub const DefineEntry = transformer.DefineEntry;
+pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = transformer.TransformOptions;
 pub const ast_plugin_mod = @import("ast_plugin.zig");
 
@@ -33,6 +35,7 @@ pub const minify = @import("minify.zig");
 
 test {
     _ = transformer;
+    _ = runtime_helper_bits;
     _ = es2015;
     _ = es2016;
     _ = es2017;
