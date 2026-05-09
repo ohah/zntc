@@ -13,6 +13,7 @@ const emitter = lib.bundler.emitter;
 const app_command = @import("cli/app.zig");
 const bench_command = @import("cli/bench.zig");
 const standalone_modes = @import("cli/standalone.zig");
+const watch_cli = @import("cli/watch.zig");
 /// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
 /// root 선언이라야 컴파일러가 safety panic을 여기로 보낸다.
 pub const panic = lib.crash_handler.panic;
@@ -1859,16 +1860,16 @@ pub fn main() !void {
 
             // 엔트리 파일도 감시 대상에 추가
             const entry_dupe = try allocator.dupe(u8, abs_entry);
-            const entry_mtime = getFileMtime(abs_entry) catch 0;
+            const entry_mtime = watch_cli.getFileMtime(abs_entry) catch 0;
             try mtime_map.put(entry_dupe, entry_mtime);
 
             if (result.module_paths) |paths| {
-                for (paths) |p| upsertMtimePath(allocator, &mtime_map, p);
+                for (paths) |p| watch_cli.upsertMtimePath(allocator, &mtime_map, p);
             }
 
             // --watch-folder: 번들 그래프 밖 루트를 재귀 스캔해 감시 대상에 추가
             for (opts.watch_roots_list.items) |root| {
-                collectWatchRootMtimes(
+                watch_cli.collectWatchRootMtimes(
                     allocator,
                     root,
                     opts.watch_include_list.items,
@@ -1895,7 +1896,7 @@ pub fn main() !void {
 
                 var mit = mtime_map.iterator();
                 while (mit.next()) |entry| {
-                    const current_mtime = getFileMtime(entry.key_ptr.*) catch continue;
+                    const current_mtime = watch_cli.getFileMtime(entry.key_ptr.*) catch continue;
                     if (current_mtime != entry.value_ptr.*) {
                         if (!opts.watch_json) {
                             try stderr.print("[watch] Changed: {s}\n", .{entry.key_ptr.*});
@@ -1966,7 +1967,7 @@ pub fn main() !void {
                     try stdout.print("{{\"type\":\"rebuild\",\"success\":true,\"changed\":[", .{});
                     for (changed_files.items, 0..) |path, i| {
                         if (i > 0) try stdout.print(",", .{});
-                        try writeJsonString(stdout, path);
+                        try watch_cli.writeJsonString(stdout, path);
                     }
                     try stdout.print("]", .{});
 
@@ -2002,12 +2003,12 @@ pub fn main() !void {
                                         if (!first) try stdout.print(",", .{});
                                         first = false;
                                         try stdout.print("{{\"id\":", .{});
-                                        try writeJsonString(stdout, dc.id);
+                                        try watch_cli.writeJsonString(stdout, dc.id);
                                         try stdout.print(",\"code\":", .{});
-                                        try writeJsonString(stdout, dc.code);
+                                        try watch_cli.writeJsonString(stdout, dc.code);
                                         if (dc.map) |m| {
                                             try stdout.print(",\"map\":", .{});
-                                            try writeJsonString(stdout, m);
+                                            try watch_cli.writeJsonString(stdout, m);
                                         }
                                         try stdout.print("}}", .{});
                                     }
@@ -2045,7 +2046,7 @@ pub fn main() !void {
                         if (rebuild_result.module_paths) |paths| {
                             for (paths, 0..) |p, i| {
                                 if (i > 0) try stdout.print(",", .{});
-                                try writeJsonString(stdout, p);
+                                try watch_cli.writeJsonString(stdout, p);
                             }
                         }
                         try stdout.print("]", .{});
@@ -2060,9 +2061,9 @@ pub fn main() !void {
                     while (kit.next()) |k| allocator.free(k.*);
                     mtime_map.clearRetainingCapacity();
 
-                    upsertMtimePath(allocator, &mtime_map, abs_entry);
+                    watch_cli.upsertMtimePath(allocator, &mtime_map, abs_entry);
                     if (rebuild_result.module_paths) |paths| {
-                        for (paths) |p| upsertMtimePath(allocator, &mtime_map, p);
+                        for (paths) |p| watch_cli.upsertMtimePath(allocator, &mtime_map, p);
                     }
                 }
             }
@@ -2138,7 +2139,7 @@ pub fn main() !void {
             };
             walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
-                try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
+                try watch_cli.watchDirectory(transpileFile, allocator, input_path_str, out_dir, options, stderr);
             }
             return;
         };
@@ -2150,7 +2151,7 @@ pub fn main() !void {
             };
             walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
-                try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
+                try watch_cli.watchDirectory(transpileFile, allocator, input_path_str, out_dir, options, stderr);
             }
             return;
         }
@@ -2169,241 +2170,9 @@ pub fn main() !void {
     } else {
         transpileFile(allocator, file_path, null, opts.output_file, options) catch std.process.exit(1);
         if (opts.watch) {
-            watchFile(allocator, file_path, opts.output_file, options, stderr) catch std.process.exit(1);
+            watch_cli.watchFile(transpileFile, allocator, file_path, opts.output_file, options, stderr) catch std.process.exit(1);
         }
     }
-}
-
-/// 단일 파일을 폴링 방식으로 감시한다 (D048).
-/// 파일의 mtime을 500ms마다 확인하여 변경되면 재트랜스파일한다.
-/// Ctrl+C로 종료될 때까지 무한 루프를 돈다.
-fn watchFile(
-    allocator: std.mem.Allocator,
-    file_path: []const u8,
-    output_path: ?[]const u8,
-    options: TranspileOptions,
-    stderr: anytype,
-) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-
-    // 초기 mtime 저장
-    var last_mtime = getFileMtime(file_path) catch |err| {
-        try stderr.print("zntc: cannot stat '{s}': {}\n", .{ file_path, err });
-        return error.WatchFailed;
-    };
-
-    try stdout.print("[watch] Watching for file changes...\n", .{});
-
-    while (true) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
-
-        const current_mtime = getFileMtime(file_path) catch continue;
-
-        if (current_mtime != last_mtime) {
-            last_mtime = current_mtime;
-            try stdout.print("[watch] File changed: {s}\n", .{file_path});
-            transpileFile(allocator, file_path, null, output_path, options) catch |err| {
-                try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
-            };
-        }
-    }
-}
-
-/// 디렉토리를 폴링 방식으로 감시한다 (D048).
-/// 매 500ms마다 디렉토리를 재순회하여 .ts/.tsx 파일의 mtime을 확인하고,
-/// 변경된 파일만 재트랜스파일한다.
-fn watchDirectory(
-    allocator: std.mem.Allocator,
-    input_dir: []const u8,
-    output_dir: []const u8,
-    options: TranspileOptions,
-    stderr: anytype,
-) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-
-    // mtime 맵: 파일 경로(소유) -> mtime
-    var mtime_map = std.StringHashMap(i128).init(allocator);
-    defer {
-        var it = mtime_map.iterator();
-        while (it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-        }
-        mtime_map.deinit();
-    }
-
-    // 초기 mtime 수집
-    try collectMtimes(allocator, input_dir, &mtime_map);
-
-    try stdout.print("[watch] Watching for file changes...\n", .{});
-
-    while (true) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
-
-        // 현재 파일 상태 수집
-        var current_mtimes = std.StringHashMap(i128).init(allocator);
-        defer {
-            var it = current_mtimes.iterator();
-            while (it.next()) |entry| {
-                allocator.free(entry.key_ptr.*);
-            }
-            current_mtimes.deinit();
-        }
-
-        collectMtimes(allocator, input_dir, &current_mtimes) catch continue;
-
-        // 변경된 파일 찾기
-        var it = current_mtimes.iterator();
-        while (it.next()) |entry| {
-            const path = entry.key_ptr.*;
-            const current_mtime = entry.value_ptr.*;
-
-            const old_mtime = mtime_map.get(path);
-            if (old_mtime == null or old_mtime.? != current_mtime) {
-                try stdout.print("[watch] File changed: {s}\n", .{path});
-
-                // 출력 경로 계산
-                // path는 input_dir/relative 형태이므로 input_dir 접두사를 제거
-                const rel_path = if (std.mem.startsWith(u8, path, input_dir))
-                    path[input_dir.len + 1 ..] // +1 for path separator
-                else
-                    path;
-
-                const is_tsx = std.mem.endsWith(u8, rel_path, ".tsx");
-                const basename_no_ext = if (is_tsx)
-                    rel_path[0 .. rel_path.len - 4]
-                else
-                    rel_path[0 .. rel_path.len - 3];
-                const output_rel = try std.fmt.allocPrint(allocator, "{s}.js", .{basename_no_ext});
-                defer allocator.free(output_rel);
-                const out_path = try std.fs.path.join(allocator, &.{ output_dir, output_rel });
-                defer allocator.free(out_path);
-
-                transpileFile(allocator, path, null, out_path, options) catch |err| {
-                    try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
-                };
-
-                // mtime 맵 업데이트 - 키를 복제하여 저장
-                const owned_key = try allocator.dupe(u8, path);
-                if (mtime_map.fetchPut(owned_key, current_mtime) catch null) |old| {
-                    allocator.free(old.key);
-                }
-            }
-        }
-    }
-}
-
-/// JSON 문자열을 이스케이프하여 출력한다 (--watch-json용).
-fn writeJsonString(writer: anytype, s: []const u8) !void {
-    try writer.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => if (c < 0x20) {
-                // RFC 8259: 제어 문자 (0x00-0x1F)는 \u00XX로 이스케이프
-                try writer.print("\\u{x:0>4}", .{@as(u16, c)});
-            } else {
-                try writer.writeByte(c);
-            },
-        }
-    }
-    try writer.writeByte('"');
-}
-
-/// 파일의 mtime(수정 시각)을 i128 나노초 단위로 반환한다.
-fn getFileMtime(path: []const u8) !i128 {
-    const stat = try std.fs.cwd().statFile(path);
-    return stat.mtime;
-}
-
-/// path → mtime upsert. 키 충돌 시 std.HashMap.put 이 기존 키 유지 +
-/// 값만 갱신하는 동작 때문에 무조건 dupe 후 put 하면 두 번째 dupe 가 leak.
-/// getPtr 로 존재 확인 후 새 entry 일 때만 dupe.
-fn upsertMtimePath(
-    allocator: std.mem.Allocator,
-    map: *std.StringHashMap(i128),
-    path: []const u8,
-) void {
-    const mt = getFileMtime(path) catch return;
-    if (map.getPtr(path)) |existing| {
-        existing.* = mt;
-        return;
-    }
-    const duped = allocator.dupe(u8, path) catch return;
-    map.put(duped, mt) catch allocator.free(duped);
-}
-
-/// 디렉토리를 순회하며 .ts/.tsx 파일의 mtime을 수집한다.
-/// mtime_map에 파일 전체 경로(소유) -> mtime을 저장한다.
-fn collectMtimes(
-    allocator: std.mem.Allocator,
-    input_dir: []const u8,
-    mtime_map: *std.StringHashMap(i128),
-) !void {
-    var dir = try std.fs.cwd().openDir(input_dir, .{ .iterate = true });
-    defer dir.close();
-
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-
-        const path = entry.path;
-        if (std.mem.indexOf(u8, path, "node_modules") != null) continue;
-
-        const is_ts = std.mem.endsWith(u8, path, ".ts");
-        const is_tsx = std.mem.endsWith(u8, path, ".tsx");
-        if (!is_ts and !is_tsx) continue;
-        if (std.mem.endsWith(u8, path, ".d.ts")) continue;
-
-        // 전체 경로 구성
-        const full_path = try std.fs.path.join(allocator, &.{ input_dir, path });
-
-        const mtime = getFileMtime(full_path) catch {
-            allocator.free(full_path);
-            continue;
-        };
-
-        // full_path를 키로 소유권 이전
-        mtime_map.put(full_path, mtime) catch {
-            allocator.free(full_path);
-            continue;
-        };
-    }
-}
-
-/// watchFolder 루트를 재귀 스캔해 파일 mtime을 mtime_map에 등록.
-/// visitor는 true 반환으로 full_path 소유권을 map 키로 이전한다.
-fn collectWatchRootMtimes(
-    allocator: std.mem.Allocator,
-    root: []const u8,
-    include: []const []const u8,
-    exclude: []const []const u8,
-    mtime_map: *std.StringHashMap(i128),
-) !void {
-    const Ctx = struct { map: *std.StringHashMap(i128) };
-    const visit = struct {
-        fn f(ctx: Ctx, full_path: []const u8) bool {
-            const gop = ctx.map.getOrPut(full_path) catch return false;
-            if (gop.found_existing) return false;
-            gop.value_ptr.* = getFileMtime(full_path) catch {
-                _ = ctx.map.remove(full_path);
-                return false;
-            };
-            return true;
-        }
-    }.f;
-    try @import("zntc_lib").server.watch_scan.scanRoot(
-        allocator,
-        root,
-        .{ .include = include, .exclude = exclude },
-        Ctx{ .map = mtime_map },
-        visit,
-    );
 }
 
 /// 에러 코드 프레임 출력 (D012).
