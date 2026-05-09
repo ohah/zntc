@@ -309,6 +309,9 @@ jobs:
       - name: Run publint (npm 표준 모범 사례 errors)
         run: bun run test:publint
 
+      - name: Run sherif (workspace metadata 일관성 — license/types/packageManager 등)
+        run: bun run test:sherif
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest
