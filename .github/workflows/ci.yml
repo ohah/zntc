@@ -283,50 +283,28 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      # setup-zntc 가 zig + bun + ZNTC core build + NAPI module + core JS wrapper
+      # 까지 처리. publish-smoke 는 추가로 wasm binary + JS wrapper, 그리고
+      # 나머지 publishable workspace package 빌드만 하면 된다.
+      - name: Setup ZNTC (core + NAPI)
+        uses: ./.github/actions/setup-zntc
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Build wasm binaries
+        run: zig build wasm && zig build wasm-bundler
 
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install
-
-      # publish-smoke 의 검증 대상은 tarball 의 layout / exports / files / deps —
-      # NAPI binary (.node) 와 wasm 바이너리 자체 동작은 별도 job 책임. JS dist 만
-      # 있으면 검증 충분 (smoke test 는 파일 존재 + package.json 만 본다).
-      - name: Build NAPI module + wasm (binary 산출 — JS wrapper 가 require)
-        run: zig build napi && zig build wasm && zig build wasm-bundler
-
-      - name: Build all publishable packages
+      - name: Copy wasm + build wasm JS wrapper
         run: |
-          cp zig-out/lib/zntc.node packages/core/zntc.node
-          bun run --cwd packages/core build:js
-          bun run --cwd packages/core build:dts
           cp zig-out/bin/zntc.wasm packages/wasm/
           cp zig-out/bin/zntc-bundler.wasm packages/wasm/
           bun run --cwd packages/wasm build:js
           bun run --cwd packages/wasm build:dts
-          bun run --cwd packages/server build
-          bun run --cwd packages/web build
-          bun run --cwd packages/react-native build
-          bun run --cwd packages/vite-plugin-zntc build
-          bun run --cwd packages/init build
+          bun run --cwd packages/core build:dts
+
+      - name: Build remaining publishable packages
+        run: bun run build:publishable
 
       - name: Run publish smoke test
-        run: bun scripts/publish-smoke-test.ts
+        run: bun run test:publish-smoke
 
   wasm:
     name: WASM Build & Test
