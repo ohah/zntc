@@ -16,13 +16,7 @@
  *   bun scripts/publishable-deps-check.ts
  */
 
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, '..');
+import { detectWorkspacePackages } from './lib/workspace.ts';
 
 interface DepUsage {
   pkg: string;
@@ -42,19 +36,12 @@ function record(deps: Record<string, string> | undefined, pkg: string, field: st
 }
 
 async function main() {
-  const root = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-  const ws = (root.workspaces as string[] | undefined) ?? [];
-  const targets = ws
-    .map((w) => w.replace(/^\.\//, ''))
-    .filter((w) => w.startsWith('packages/'));
+  const targets = await detectWorkspacePackages();
 
   for (const t of targets) {
-    const pkgJsonPath = resolve(repoRoot, t, 'package.json');
-    if (!existsSync(pkgJsonPath)) continue;
-    const pkg = JSON.parse(await readFile(pkgJsonPath, 'utf8'));
-    record(pkg.dependencies, pkg.name, 'dependencies');
-    record(pkg.peerDependencies, pkg.name, 'peerDependencies');
-    record(pkg.optionalDependencies, pkg.name, 'optionalDependencies');
+    record(t.pkg.dependencies, t.name, 'dependencies');
+    record(t.pkg.peerDependencies, t.name, 'peerDependencies');
+    record(t.pkg.optionalDependencies, t.name, 'optionalDependencies');
   }
 
   const conflicts: string[] = [];

@@ -23,14 +23,11 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, '..');
+import { join } from 'node:path';
+import { detectWorkspacePackages, packTarball } from './lib/workspace.ts';
 
 interface Failure {
   pkg: string;
@@ -53,18 +50,6 @@ interface TargetInfo {
   workspaceDeps: string[];
 }
 
-async function packTarball(pkgDir: string, destDir: string): Promise<string | null> {
-  const res = spawnSync('bun', ['pm', 'pack', '--quiet', '--destination', destDir], {
-    cwd: pkgDir,
-    encoding: 'utf8',
-  });
-  if (res.status !== 0) return null;
-  const line = res.stdout.trim().split(/\s+/).pop();
-  if (!line) return null;
-  const tarball = isAbsolute(line) ? line : join(destDir, basename(line));
-  return existsSync(tarball) ? tarball : null;
-}
-
 function collectWorkspaceDeps(pkg: any, allNames: Set<string>): string[] {
   const result: string[] = [];
   const collectFrom = (deps: Record<string, string> | undefined) => {
@@ -81,43 +66,37 @@ function collectWorkspaceDeps(pkg: any, allNames: Set<string>): string[] {
 }
 
 async function detectTargets(tmpRoot: string): Promise<TargetInfo[]> {
-  const root = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-  const ws = (root.workspaces as string[] | undefined) ?? [];
-  const wsPaths = ws.map((w) => w.replace(/^\.\//, '')).filter((w) => w.startsWith('packages/'));
+  const all = await detectWorkspacePackages();
 
-  // 1차 pass: name + private 수집
+  // publishable 만 + dist 존재 검증
   const targets: TargetInfo[] = [];
   const allNames = new Set<string>();
-  const pkgInfos = new Map<string, any>();
-  for (const t of wsPaths) {
-    const pkgJsonPath = resolve(repoRoot, t, 'package.json');
-    if (!existsSync(pkgJsonPath)) continue;
-    const pkg = JSON.parse(await readFile(pkgJsonPath, 'utf8'));
-    if (pkg.private) {
-      console.log(`skip: ${pkg.name} (private)`);
+  const pkgInfos: { dir: string; pkg: any }[] = [];
+  for (const t of all) {
+    if (t.isPrivate) {
+      console.log(`skip: ${t.name} (private)`);
       continue;
     }
-    if (!existsSync(resolve(repoRoot, t, 'dist'))) {
-      console.log(`\n=== ${pkg.name} (${t}) ===`);
-      fail(pkg.name, `dist/ 없음 — 빌드 선행 필요 (bun run --cwd ${t} build)`);
+    if (!t.hasDist) {
+      console.log(`\n=== ${t.name} (${t.dir}) ===`);
+      fail(t.name, `dist/ 없음 — 빌드 선행 필요 (bun run --cwd ${t.dir} build)`);
       continue;
     }
-    allNames.add(pkg.name);
-    pkgInfos.set(t, pkg);
+    allNames.add(t.name);
+    pkgInfos.push({ dir: t.absDir, pkg: t.pkg });
   }
 
-  // 2차 pass: tarball 생성 + workspaceDeps 해결
+  // tarball 생성 + workspaceDeps 해결
   const tarballDir = join(tmpRoot, 'tarballs');
   await mkdir(tarballDir, { recursive: true });
-  for (const [t, pkg] of pkgInfos) {
-    const absPkg = resolve(repoRoot, t);
-    const tarball = await packTarball(absPkg, tarballDir);
+  for (const { dir, pkg } of pkgInfos) {
+    const tarball = packTarball(dir, tarballDir);
     if (!tarball) {
       fail(pkg.name, `bun pm pack 실패`);
       continue;
     }
     targets.push({
-      dir: t,
+      dir,
       name: pkg.name,
       tarballPath: tarball,
       workspaceDeps: collectWorkspaceDeps(pkg, allNames),

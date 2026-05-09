@@ -20,14 +20,11 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, '..');
+import { join } from 'node:path';
+import { detectWorkspacePackages, packTarball, type PackageInfo } from './lib/workspace.ts';
 
 const PRIVATE_PACKAGES = new Set(['@zntc/server']);
 
@@ -111,32 +108,15 @@ function collectBinPaths(binField: unknown, out: Set<string>) {
   }
 }
 
-async function smokeOne(pkgDir: string, tmpRoot: string): Promise<void> {
-  const absPkg = resolve(repoRoot, pkgDir);
-  const sourcePkgJson = JSON.parse(await readFile(join(absPkg, 'package.json'), 'utf8'));
-  const pkgName = sourcePkgJson.name as string;
-  console.log(`\n=== ${pkgName} (${pkgDir}) ===`);
+async function smokeOne(target: PackageInfo, tmpRoot: string): Promise<void> {
+  const pkgName = target.name;
+  console.log(`\n=== ${pkgName} (${target.dir}) ===`);
 
-  // bun pm pack --quiet 는 stdout 에 tarball 파일명만 출력 — fragile name 추론 회피.
   const packDest = join(tmpRoot, encodeURIComponent(pkgName));
   await mkdir(packDest, { recursive: true });
-  const packResult = spawnSync('bun', ['pm', 'pack', '--quiet', '--destination', packDest], {
-    cwd: absPkg,
-    encoding: 'utf8',
-  });
-  if (packResult.status !== 0) {
-    fail(pkgName, `bun pm pack 실패: ${packResult.stderr || packResult.stdout}`);
-    return;
-  }
-  // bun pm pack --quiet 는 절대 경로 또는 파일명을 stdout 에 출력 (버전마다 다름).
-  const stdoutLine = packResult.stdout.trim().split(/\s+/).pop();
-  if (!stdoutLine) {
-    fail(pkgName, `bun pm pack stdout 에서 tarball 이름 못 찾음`);
-    return;
-  }
-  const tarball = isAbsolute(stdoutLine) ? stdoutLine : join(packDest, basename(stdoutLine));
-  if (!existsSync(tarball)) {
-    fail(pkgName, `tarball 을 못 찾음: ${tarball}`);
+  const tarball = packTarball(target.absDir, packDest);
+  if (!tarball) {
+    fail(pkgName, `bun pm pack 실패 또는 tarball 못 찾음`);
     return;
   }
 
@@ -221,44 +201,26 @@ async function smokeOne(pkgDir: string, tmpRoot: string): Promise<void> {
   ok(`tarball 파일 ${tarballFiles.length}개`);
 }
 
-async function detectTargets(): Promise<string[]> {
-  // root package.json 의 workspaces 에서 packages/* 만 추출. examples/tests/documents
-  // 같은 비-publish 워크스페이스 제외.
-  const root = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-  const ws = root.workspaces as string[] | undefined;
-  if (!ws) throw new Error('root package.json 에 workspaces 필드 없음');
-  return ws
-    .map((w) => w.replace(/^\.\//, ''))
-    .filter((w) => w.startsWith('packages/'));
-}
-
 async function main() {
-  const targets = await detectTargets();
-  console.log(`Detected ${targets.length} workspace packages:`, targets.join(', '));
+  const targets = await detectWorkspacePackages();
+  console.log(`Detected ${targets.length} workspace packages:`, targets.map((t) => t.dir).join(', '));
 
   const tmpRoot = mkdtempSync(join(tmpdir(), 'zntc-publish-smoke-'));
   try {
     for (const t of targets) {
-      const pkgJsonPath = resolve(repoRoot, t, 'package.json');
-      if (!existsSync(pkgJsonPath)) {
-        console.warn(`skip: ${t} (package.json 없음)`);
+      if (t.isPrivate) {
+        console.log(`\nskip: ${t.name} (private)`);
         continue;
       }
-      const pkg = JSON.parse(await readFile(pkgJsonPath, 'utf8'));
-      if (pkg.private) {
-        console.log(`\nskip: ${pkg.name} (private)`);
-        continue;
-      }
-      const distDir = resolve(repoRoot, t, 'dist');
-      if (!existsSync(distDir)) {
-        console.log(`\n=== ${pkg.name} (${t}) ===`);
-        fail(pkg.name, `dist/ 없음 — 빌드 선행 필요 (bun run --cwd ${t} build)`);
+      if (!t.hasDist) {
+        console.log(`\n=== ${t.name} (${t.dir}) ===`);
+        fail(t.name, `dist/ 없음 — 빌드 선행 필요 (bun run --cwd ${t.dir} build)`);
         continue;
       }
       try {
         await smokeOne(t, tmpRoot);
       } catch (e) {
-        fail(pkg.name, `예외: ${(e as Error).message}`);
+        fail(t.name, `예외: ${(e as Error).message}`);
       }
     }
   } finally {
