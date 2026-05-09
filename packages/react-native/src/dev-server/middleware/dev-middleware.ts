@@ -26,6 +26,10 @@ export interface DevMiddleware {
   >;
 }
 
+function createProjectRequire(projectRoot: string): NodeJS.Require {
+  return createRequire(`${resolve(projectRoot)}/package.json`);
+}
+
 /**
  * Expo 프로젝트는 Rozenite가 @expo/cli 기준의 @react-native/dev-middleware
  * instance를 monkey-patch한다. 같은 module instance를 로드해야 RN DevTools
@@ -33,8 +37,7 @@ export interface DevMiddleware {
  * 순서로 resolve. fallback 으로 project 직접 / zntc 자기.
  */
 export function resolveDevMiddlewarePath(projectRoot: string): string | null {
-  const root = resolve(projectRoot);
-  const projectRequire = createRequire(`${root}/package.json`);
+  const projectRequire = createProjectRequire(projectRoot);
   const candidates: Array<() => string> = [
     () => {
       const expoPath = projectRequire.resolve('expo');
@@ -79,8 +82,7 @@ export async function loadDevMiddleware(
   const path = resolveDevMiddlewarePath(options.projectRoot);
   if (!path) return null;
   try {
-    const root = resolve(options.projectRoot);
-    const requireFromProject = createRequire(`${root}/package.json`);
+    const requireFromProject = createProjectRequire(options.projectRoot);
     const mod = requireFromProject(path) as {
       createDevMiddleware: (input: {
         serverBaseUrl: string;
