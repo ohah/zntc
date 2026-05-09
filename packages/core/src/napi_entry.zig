@@ -30,6 +30,7 @@ const options_mod = @import("napi/options.zig");
 const tsconfig_cache_mod = @import("napi/tsconfig_cache.zig");
 const benchmark_mod = @import("napi/benchmark.zig");
 const profile_napi_mod = @import("napi/profile.zig");
+const result_napi_mod = @import("napi/result.zig");
 const c = common.c;
 
 const native_alloc = std.heap.c_allocator;
@@ -52,6 +53,7 @@ const getAutoLabelMode = options_mod.getAutoLabelMode;
 const parseLogFilterOptions = options_mod.parseLogFilterOptions;
 const parseBuildOptions = options_mod.parseBuildOptions;
 const freeOptionsTypedSlices = options_mod.freeOptionsTypedSlices;
+const buildResultToJS = result_napi_mod.buildResultToJS;
 
 // ─── transpile 함수 ───
 
@@ -482,190 +484,6 @@ fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callconv(.
     var js_count: c.napi_value = undefined;
     _ = c.napi_create_uint32(env, @intCast(result.output_count), &js_count);
     _ = c.napi_set_named_property(env, js_result, "outputCount", js_count);
-    return js_result;
-}
-
-fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult, log_opts: LogFilterOptions) c.napi_value {
-    var js_result: c.napi_value = undefined;
-    if (c.napi_create_object(env, &js_result) != c.napi_ok) return null;
-
-    // outputFiles 배열
-    var js_outputs: c.napi_value = undefined;
-    _ = c.napi_create_array(env, &js_outputs);
-
-    if (result.outputs) |outputs| {
-        // code splitting: 다중 파일
-        for (outputs, 0..) |out, i| {
-            var js_file: c.napi_value = undefined;
-            _ = c.napi_create_object(env, &js_file);
-
-            var js_path: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, out.path.ptr, out.path.len, &js_path);
-            _ = c.napi_set_named_property(env, js_file, "path", js_path);
-
-            var js_text: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, out.contents.ptr, out.contents.len, &js_text);
-            _ = c.napi_set_named_property(env, js_file, "text", js_text);
-
-            // rolldown chunk.moduleIds 호환 — string[]
-            var js_ids: c.napi_value = undefined;
-            _ = c.napi_create_array(env, &js_ids);
-            for (out.module_ids, 0..) |id, k| {
-                var s: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(env, id.ptr, id.len, &s);
-                _ = c.napi_set_element(env, js_ids, @intCast(k), s);
-            }
-            _ = c.napi_set_named_property(env, js_file, "moduleIds", js_ids);
-
-            // exports 심볼 이름들 — cross-chunk 검증용
-            var js_exports: c.napi_value = undefined;
-            _ = c.napi_create_array(env, &js_exports);
-            for (out.exports, 0..) |ex, k| {
-                var s: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(env, ex.ptr, ex.len, &s);
-                _ = c.napi_set_element(env, js_exports, @intCast(k), s);
-            }
-            _ = c.napi_set_named_property(env, js_file, "exports", js_exports);
-
-            // imports — cross-chunk 로 참조하는 다른 chunk 들의 최종 filename
-            var js_imports: c.napi_value = undefined;
-            _ = c.napi_create_array(env, &js_imports);
-            for (out.imports, 0..) |im, k| {
-                var s: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(env, im.ptr, im.len, &s);
-                _ = c.napi_set_element(env, js_imports, @intCast(k), s);
-            }
-            _ = c.napi_set_named_property(env, js_file, "imports", js_imports);
-
-            _ = c.napi_set_element(env, js_outputs, @intCast(i), js_file);
-        }
-    } else {
-        // 단일 파일
-        var js_file: c.napi_value = undefined;
-        _ = c.napi_create_object(env, &js_file);
-
-        var js_path: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, "bundle.js", "bundle.js".len, &js_path);
-        _ = c.napi_set_named_property(env, js_file, "path", js_path);
-
-        var js_text: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, result.output.ptr, result.output.len, &js_text);
-        _ = c.napi_set_named_property(env, js_file, "text", js_text);
-
-        _ = c.napi_set_element(env, js_outputs, 0, js_file);
-
-        // 소스맵이 있으면 별도 파일로 추가
-        if (result.sourcemap) |sm| {
-            var js_sm_file: c.napi_value = undefined;
-            _ = c.napi_create_object(env, &js_sm_file);
-
-            var js_sm_path: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, "bundle.js.map", "bundle.js.map".len, &js_sm_path);
-            _ = c.napi_set_named_property(env, js_sm_file, "path", js_sm_path);
-
-            var js_sm_text: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, sm.ptr, sm.len, &js_sm_text);
-            _ = c.napi_set_named_property(env, js_sm_file, "text", js_sm_text);
-
-            _ = c.napi_set_element(env, js_outputs, 1, js_sm_file);
-        }
-    }
-    _ = c.napi_set_named_property(env, js_result, "outputFiles", js_outputs);
-
-    // errors/warnings 배열
-    var js_errors: c.napi_value = undefined;
-    _ = c.napi_create_array(env, &js_errors);
-    var js_warnings: c.napi_value = undefined;
-    _ = c.napi_create_array(env, &js_warnings);
-
-    // logLevel / logLimit 필터링 (#2158) — caller (sync/async) 가 opts 파싱 시점에
-    // 미리 추출한 값 사용. 함수 시그니처가 LogFilterOptions 받음.
-    const log_filter = log_opts.filter;
-    const log_limit = log_opts.limit;
-
-    var err_idx: u32 = 0;
-    var warn_idx: u32 = 0;
-    for (result.getDiagnostics()) |d| {
-        const is_err = d.severity == .@"error";
-        if (is_err and !log_filter.allow_errors) continue;
-        if (!is_err and !log_filter.allow_warnings) continue;
-        if (log_limit > 0) {
-            if (is_err and err_idx >= log_limit) continue;
-            if (!is_err and warn_idx >= log_limit) continue;
-        }
-
-        var js_diag: c.napi_value = undefined;
-        _ = c.napi_create_object(env, &js_diag);
-
-        var js_msg: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, d.message.ptr, d.message.len, &js_msg);
-        _ = c.napi_set_named_property(env, js_diag, "text", js_msg);
-
-        const code_name = @tagName(d.code);
-        var js_code: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, code_name.ptr, code_name.len, &js_code);
-        _ = c.napi_set_named_property(env, js_diag, "code", js_code);
-
-        if (d.file_path.len > 0) {
-            var js_loc: c.napi_value = undefined;
-            _ = c.napi_create_object(env, &js_loc);
-            var js_file_path: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, d.file_path.ptr, d.file_path.len, &js_file_path);
-            _ = c.napi_set_named_property(env, js_loc, "file", js_file_path);
-            _ = c.napi_set_named_property(env, js_diag, "location", js_loc);
-        }
-
-        if (is_err) {
-            _ = c.napi_set_element(env, js_errors, err_idx, js_diag);
-            err_idx += 1;
-        } else {
-            _ = c.napi_set_element(env, js_warnings, warn_idx, js_diag);
-            warn_idx += 1;
-        }
-    }
-    _ = c.napi_set_named_property(env, js_result, "errors", js_errors);
-    _ = c.napi_set_named_property(env, js_result, "warnings", js_warnings);
-
-    // metafile
-    if (result.metafile_json) |mf| {
-        var js_mf: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, mf.ptr, mf.len, &js_mf);
-        _ = c.napi_set_named_property(env, js_result, "metafile", js_mf);
-    }
-
-    // moduleCodes — HMR용 per-module 코드 (devMode + collectModuleCodes 활성 시)
-    if (result.module_dev_codes) |codes| {
-        var js_codes: c.napi_value = undefined;
-        _ = c.napi_create_array_with_length(env, codes.len, &js_codes);
-        for (codes, 0..) |mc, i| {
-            var js_mc: c.napi_value = undefined;
-            _ = c.napi_create_object(env, &js_mc);
-
-            var js_id: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, mc.id.ptr, mc.id.len, &js_id);
-            _ = c.napi_set_named_property(env, js_mc, "id", js_id);
-
-            var js_code: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, mc.code.ptr, mc.code.len, &js_code);
-            _ = c.napi_set_named_property(env, js_mc, "code", js_code);
-
-            _ = c.napi_set_element(env, js_codes, @intCast(i), js_mc);
-        }
-        _ = c.napi_set_named_property(env, js_result, "moduleCodes", js_codes);
-    }
-
-    // modulePaths — 번들에 포함된 모든 모듈 절대 경로 (watch용)
-    if (result.module_paths) |paths| {
-        var js_paths: c.napi_value = undefined;
-        _ = c.napi_create_array_with_length(env, paths.len, &js_paths);
-        for (paths, 0..) |p, i| {
-            var js_p: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, p.ptr, p.len, &js_p);
-            _ = c.napi_set_element(env, js_paths, @intCast(i), js_p);
-        }
-        _ = c.napi_set_named_property(env, js_result, "modulePaths", js_paths);
-    }
-
     return js_result;
 }
 
