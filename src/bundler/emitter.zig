@@ -55,6 +55,7 @@ const line_wrap = @import("emitter/line_wrap.zig");
 const dead_store = @import("emitter/dead_store.zig");
 const entry_exports = @import("emitter/entry_exports.zig");
 const format_wrapper = @import("emitter/format_wrapper.zig");
+const emitter_runtime = @import("emitter/runtime_helpers.zig");
 const purity = @import("purity.zig");
 
 pub const EmitOptions = struct {
@@ -480,7 +481,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 런타임 헬퍼 주입
-    try emitBundleRuntimeHelpers(&output, allocator, sorted.items, graph, linker, options);
+    try emitter_runtime.emitBundleRuntimeHelpers(&output, allocator, sorted.items, graph, linker, options);
 
     // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
     // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE/UMD/AMD 포맷에서는 동작하지 않는다.
@@ -1921,116 +1922,6 @@ fn propagateCrossModulePurity(
 /// 런타임 헬퍼 문자열을 ArrayList에 주입한다 (re-export for backward compat).
 pub const appendRuntimeHelpers = rt.appendRuntimeHelpers;
 
-/// 번들 레벨 런타임 헬퍼 주입 (CJS interop + decorator + async).
-/// emitWithTreeShaking에서 사용.
-fn emitBundleRuntimeHelpers(
-    output: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    sorted_modules: []const *const Module,
-    graph: *const ModuleGraph,
-    linker: ?*const Linker,
-    options: *const EmitOptions,
-) !void {
-    // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
-    var needs_cjs_runtime = false;
-    var needs_esm_wrap_runtime = false;
-    var needs_to_esm_runtime = false;
-    var needs_to_binary = false;
-    for (sorted_modules) |m| {
-        if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
-        if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
-        if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
-        if (m.loader == .binary) needs_to_binary = true;
-        if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
-    }
-    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
-        // Node ESM 출력에 CJS wrapper가 섞이면 wrapper 내부 `require()`가 런타임에 미정의.
-        // createRequire shim은 runtime helper 정의보다 먼저 와야 `__commonJS` 래퍼가 참조 가능 (#1456).
-        if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
-            try rt.appendRequireShim(output, allocator, options.minify_whitespace);
-        }
-        if (needs_cjs_runtime) {
-            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
-        }
-        // __toCommonJS는 __copyProps/__defProp 에 의존 → ESM wrap 런타임을 emit 하면
-        // 어떤 import site 도 __toESM 을 부르지 않더라도 __toESM 클러스터가 필요.
-        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
-            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
-        }
-    }
-    if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
-    }
-    if (options.experimental_decorators) {
-        try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
-    }
-    // __async는 이후 appendRuntimeHelpers(collected_helpers)에서 실제 사용 여부 기반으로
-    // 주입됨 — 여기서 target 기반으로 또 주입하면 중복 emit 된다.
-    // dev mode: HMR 런타임 주입 (__zntc_modules, __zntc_require, __zntc_apply_update 등).
-    // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
-    if (options.dev_mode) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME);
-    } else if (options.react_refresh) {
-        // 비-dev 모드에서 react_refresh만 활성화된 경우 스텁 주입
-        try output.appendSlice(allocator, rt.REFRESH_STUB);
-    }
-    // entry_error_guard: Metro `guardedLoadModule` 동등 mechanism 의 helper 주입.
-    // 실제 wrap 은 emit 단계에서 module init 호출 site 별로 `__zntc_guarded(fn)` 으로 emit.
-    if (options.entry_error_guard) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARDED_RUNTIME_MIN else rt.GUARDED_RUNTIME);
-    }
-    // silent_console_error_patterns: 패턴 비어있으면 emit X — vanilla RN 등 trigger 없는
-    // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
-    try rt.emitConsoleErrorInterceptInto(output, allocator, options.silent_console_error_patterns, options.minify_whitespace);
-    try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
-}
-
-/// 한 모듈이 어떤 식으로든 CJS 모듈의 default/namespace 를 가져오면 __toESM 래핑이 필요.
-/// `linker.cjsImportNeedsToEsmInterop` 가 leaf predicate (linker 의 emit 분기와 공유).
-///
-/// linker 가 있으면 `getResolvedBinding` 의 chain 끝까지 따라가 ESM re-export
-/// (`export { default } from "./cjs"`) 와 다단계 re-export 도 캐치. linker 가 없으면
-/// (linker_test 단독 등) importer 의 직접 target 만 검사하는 보수적 fallback.
-fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, linker: ?*const Linker) bool {
-    for (module.import_bindings) |ib| {
-        if (ib.import_record_index >= module.import_records.len) continue;
-
-        // namespace import: chain follow 가 아니라 importer 의 직접 target 만 확인.
-        // (`import * as ns from "./cjs"` 면 항상 __toESM(req()) 로 emit.)
-        if (ib.kind == .namespace) {
-            const record = module.import_records[ib.import_record_index];
-            if (record.resolved.isNone()) continue;
-            const target = graph.getModule(record.resolved) orelse continue;
-            if (target.wrap_kind == .cjs) return true;
-            continue;
-        }
-
-        // default / named import: linker 가 있으면 re-export chain 끝까지 따라가
-        // canonical 이 CJS 의 "default" 면 emit 시 `__toESM(req()).default` 가 나온다.
-        // named (non-default) 는 chain 끝도 named 라 `req().name` 직접 접근 → __toESM 불필요.
-        if (linker) |l| {
-            if (l.getResolvedBinding(module.index.toU32(), ib.local_span)) |rb| {
-                const canonical_mod = graph.getModule(rb.canonical.module_index) orelse continue;
-                if (canonical_mod.wrap_kind == .cjs and
-                    linker_mod.cjsImportNeedsToEsmInterop(false, rb.canonical.export_name) and
-                    !module.canUseDirectCjsDefaultImport(canonical_mod))
-                {
-                    return true;
-                }
-                continue;
-            }
-        }
-
-        // Fallback: linker 없거나 binding 미해결. importer 의 직접 target 검사.
-        if (!ib.importsDefault()) continue;
-        const record = module.import_records[ib.import_record_index];
-        if (record.resolved.isNone()) continue;
-        const target = graph.getModule(record.resolved) orelse continue;
-        if (target.wrap_kind == .cjs and !module.canUseDirectCjsDefaultImport(target)) return true;
-    }
-    return false;
-}
-
 /// `module.exports = { used, unused }` object-shape 의 unused property 노드를
 /// transformer AST 쪽 인덱스로 변환해 `skip_nodes` 에 마킹.
 /// span -> new_ni map 을 1회 구축해 fact 마다 nodes 전체를 재스캔하던 O(F×N) 회피.
@@ -2076,69 +1967,7 @@ fn markUnusedCjsObjectProperties(
     }
 }
 
-/// transformer 비트맵 외 경로의 helper (asset binary loader / `--keep-names` 옵션)
-/// preamble. emitBundleRuntimeHelpers / emitChunkRuntimeHelpers 양쪽 공용 (#1961 PR 1h).
-fn emitOptionPathHelpers(
-    output: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    needs_to_binary: bool,
-    options: *const EmitOptions,
-) !void {
-    if (needs_to_binary) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
-    }
-    if (options.keep_names) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.KEEP_NAMES_RUNTIME_MIN else rt.KEEP_NAMES_RUNTIME);
-    }
-}
-
-/// 청크별 런타임 헬퍼 주입.
-/// emitChunks에서 사용.
-pub fn emitChunkRuntimeHelpers(
-    output: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    chunk: *const Chunk,
-    graph: *const ModuleGraph,
-    linker: ?*const Linker,
-    options: *const EmitOptions,
-    collected_helpers: ?RuntimeHelpers,
-) !void {
-    var needs_cjs_runtime = false;
-    var needs_esm_wrap_runtime = false;
-    var needs_to_esm_runtime = false;
-    var needs_to_binary = false;
-    for (chunk.modules.items) |mod_idx| {
-        const m = graph.getModule(mod_idx) orelse continue;
-        if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
-        if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
-        if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
-        if (m.loader == .binary) needs_to_binary = true;
-        if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
-    }
-    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
-        // 단일 번들 경로와 동일: Node ESM + CJS wrap이면 createRequire shim 필요 (#1456)
-        if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
-            try rt.appendRequireShim(output, allocator, options.minify_whitespace);
-        }
-        if (needs_cjs_runtime) {
-            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
-        }
-        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
-            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
-        }
-    }
-    if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
-    }
-    if (options.experimental_decorators) {
-        try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
-    }
-    // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator
-    // 등) 는 transformer 가 graph parse 단계에서 named import 으로 emit → graph 가 chunk
-    // 분배. chunk-level prepend 는 중복 정의를 만들기 때문에 제거.
-    _ = collected_helpers;
-    try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
-}
+pub const emitChunkRuntimeHelpers = emitter_runtime.emitChunkRuntimeHelpers;
 
 /// default → 실제 모드로 해석. default는 minify 시 eof, 아니면 inline.
 fn resolveDefaultLegalComments(mode: types.LegalComments, minify: bool) types.LegalComments {
