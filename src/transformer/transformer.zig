@@ -2078,10 +2078,10 @@ pub const Transformer = struct {
 
             if (lexical_names.items.len > 0) {
                 const orig_body_idx = node.data.ternary.c;
+                // 원본 AST 에서 capture 검사 — visitNode 가 closure 경계를 변환하기 전 시점.
                 const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
 
                 var flow = BlockScoping.FlowResult{};
-                flow.labels = .empty;
                 defer flow.labels.deinit(self.allocator);
                 if (has_capture) {
                     BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
