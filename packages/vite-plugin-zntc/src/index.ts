@@ -14,8 +14,8 @@
  */
 
 import type { Plugin } from 'vite';
-import { TsconfigCache, init, transpile } from '../../core/index';
-import type { TranspileOptions } from '../../core/index';
+import { TsconfigCache, init, transpile } from '@zntc/core';
+import type { TranspileOptions } from '@zntc/core';
 
 export interface ZntcPluginOptions {
   /**

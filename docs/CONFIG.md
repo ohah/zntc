@@ -71,7 +71,7 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `metafile`                                   |            `--metafile`            |               ✅               |            ❌             | esbuild 호환                                                       |
 | `resolveExtensions`                          |      `--resolve-extensions=`       |               ✅               |          (간접)           | tsconfig 의 paths 와 별개                                          |
 | `mainFields`                                 |          `--main-fields=`          |               ✅               |            ❌             | package.json field 우선순위                                        |
-| `conditions`                                 |          `--conditions=`           |               ✅               |            ❌             | package exports 사용자 조건                                        |
+| `conditions`                                 |          `--conditions=`           |               ✅               |            ❌             | package exports 사용자 조건. monorepo internal src 직접 inline 은 §Monorepo (`source` condition) 참조 |
 | `nodePaths`                                  |          `--node-paths=`           |               ✅               |            ❌             | bare specifier 추가 탐색 경로                                      |
 | `profile` / `profileLevel` / `profileFormat` |            `--profile*`            |               ✅               |            ❌             | 디버그/성능 측정                                                   |
 | `ignoreAnnotations`                          |       `--ignore-annotations`       |               ✅               |            ❌             | pure/sideEffects annotation 무시                                   |
@@ -290,6 +290,68 @@ Array 형태는 host runtime 의 RegExp 매칭에 위임하므로 sync 경로(`b
 | `fallback` | resolve **실패 시**| exact only   | ✅ — 실패 시에만  | ✅ (`=false`)             |
 
 자동 polyfill 한 줄 매핑 (`node-polyfill-webpack-plugin` 류) 은 ZNTC 가 제공하지 않는다 — esbuild 정책과 동일하게 사용자가 명시 매핑하거나 plugin 으로 처리.
+
+## Monorepo — `source` exports condition
+
+monorepo 안에서 internal package 끼리 import 할 때, 기본 동작은 **package.json `main` / `exports.import` 따라 dist 를 inline bundle**. 즉 의존 package 의 `dist/` 를 먼저 빌드해야 하고, dist 가 stale 이면 옛 코드가 박혀버린다 (build order + stale 위험).
+
+ZNTC 는 producer 의 src 를 직접 inline 하기 위해 **`source` exports condition** 을 지원한다 (parcel / microbundle / preconstruct 와 동일 패턴).
+
+### 설정
+
+producer package 가 자기 src 위치를 선언:
+
+```jsonc
+// packages/server/package.json
+{
+  "source": "./src/index.ts",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  }
+}
+```
+
+consumer 의 빌드 명령에 `--conditions=source` 추가:
+
+```jsonc
+// packages/web/package.json
+"build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --conditions=source --external @zntc/core ..."
+```
+
+→ ZNTC 가 `import '@zntc/server'` 만나면 `./src/index.ts` 직접 따라가서 inline. server 의 dist 가 stale 이거나 없어도 무관.
+
+외부 npm 사용자에겐 `source` condition 이 켜지지 않으니 그대로 dist 사용 — monorepo 내부에서만 전환된다.
+
+### resolver 우선순위
+
+```
+1. alias (--alias / build({ alias })) — 명시 override, 항상 우선
+2. tsconfig paths
+3. package.json exports (--conditions=source 면 source 먼저 매치)
+4. exports.import / main (default)
+```
+
+esbuild / Vite / Rollup 과 동일 순서. `alias` 는 fork / vendor escape hatch 로만 권장.
+
+### IDE / TS 체커는 여전히 dist 를 본다
+
+bundler 가 src 를 inline 해도 TS `tsc` 와 IDE 는 producer 의 `dist/*.d.ts` 를 따라간다. server src 만 고치고 dist rebuild 를 안 한 상태에서 web/RN 빌드는 새 코드를 inline 하지만, IDE/TS 체커는 옛 타입을 표시한다. 이를 해소하려면 TypeScript Project References (`composite: true` + `references`) 로 cross-package 타입 체크를 묶는 별도 작업이 필요하다 (이번 변경 scope 외).
+
+### 다른 번들러 비교
+
+| 번들러   | 방식                          | 빌드 순서 필요? | stale 위험      |
+| -------- | ----------------------------- | --------------- | --------------- |
+| esbuild  | dist (또는 monorepo 미사용)   | yes             | 있음            |
+| swc/oxc  | turbo + dist                  | yes             | turbo cache 완화|
+| Rollup   | `@rollup/plugin-alias` → src  | no              | 없음            |
+| Vite     | `resolve.alias` → src         | no              | 없음            |
+| Parcel   | `source` exports condition    | no              | 없음            |
+| **ZNTC** | `source` exports condition    | **no**          | **없음**        |
 
 ## 다른 번들러와의 차이
 

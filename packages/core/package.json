@@ -6,6 +6,7 @@
   "bin": {
     "zntc": "./bin/zntc.mjs"
   },
+  "source": "./index.ts",
   "files": [
     "dist/",
     "bin/",
@@ -16,6 +17,7 @@
   "types": "dist/core/index.d.ts",
   "exports": {
     ".": {
+      "source": "./index.ts",
       "import": "./dist/index.js",
       "types": "./dist/core/index.d.ts"
     }
