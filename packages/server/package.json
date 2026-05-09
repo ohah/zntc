@@ -4,6 +4,7 @@
   "private": true,
   "description": "ZNTC internal server layer — HMR protocol, WS frame, watcher, TLS",
   "license": "MIT",
+  "source": "./src/index.ts",
   "files": [
     "dist/",
     "README.md"
@@ -13,12 +14,13 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zntc/core",
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test --timeout 10000"
