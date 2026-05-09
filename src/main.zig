@@ -2464,11 +2464,7 @@ pub fn main() !void {
             try mtime_map.put(entry_dupe, entry_mtime);
 
             if (result.module_paths) |paths| {
-                for (paths) |p| {
-                    const duped = allocator.dupe(u8, p) catch continue;
-                    const mt = getFileMtime(p) catch continue;
-                    mtime_map.put(duped, mt) catch continue;
-                }
+                for (paths) |p| upsertMtimePath(allocator, &mtime_map, p);
             }
 
             // --watch-folder: 번들 그래프 밖 루트를 재귀 스캔해 감시 대상에 추가
@@ -2665,17 +2661,9 @@ pub fn main() !void {
                     while (kit.next()) |k| allocator.free(k.*);
                     mtime_map.clearRetainingCapacity();
 
-                    // 엔트리 재추가
-                    const re_entry = allocator.dupe(u8, abs_entry) catch continue;
-                    const re_mtime = getFileMtime(abs_entry) catch 0;
-                    mtime_map.put(re_entry, re_mtime) catch continue;
-
+                    upsertMtimePath(allocator, &mtime_map, abs_entry);
                     if (rebuild_result.module_paths) |paths| {
-                        for (paths) |p| {
-                            const duped = allocator.dupe(u8, p) catch continue;
-                            const mt = getFileMtime(p) catch continue;
-                            mtime_map.put(duped, mt) catch continue;
-                        }
+                        for (paths) |p| upsertMtimePath(allocator, &mtime_map, p);
                     }
                 }
             }
@@ -2930,6 +2918,23 @@ fn writeJsonString(writer: anytype, s: []const u8) !void {
 fn getFileMtime(path: []const u8) !i128 {
     const stat = try std.fs.cwd().statFile(path);
     return stat.mtime;
+}
+
+/// path → mtime upsert. 키 충돌 시 std.HashMap.put 이 기존 키 유지 +
+/// 값만 갱신하는 동작 때문에 무조건 dupe 후 put 하면 두 번째 dupe 가 leak.
+/// getPtr 로 존재 확인 후 새 entry 일 때만 dupe.
+fn upsertMtimePath(
+    allocator: std.mem.Allocator,
+    map: *std.StringHashMap(i128),
+    path: []const u8,
+) void {
+    const mt = getFileMtime(path) catch return;
+    if (map.getPtr(path)) |existing| {
+        existing.* = mt;
+        return;
+    }
+    const duped = allocator.dupe(u8, path) catch return;
+    map.put(duped, mt) catch allocator.free(duped);
 }
 
 /// 디렉토리를 순회하며 .ts/.tsx 파일의 mtime을 수집한다.
