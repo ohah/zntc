@@ -13,11 +13,16 @@
 //! - references/esbuild/internal/js_parser/js_parser.go
 
 pub const transformer = @import("transformer.zig");
+pub const options = @import("options.zig");
 pub const runtime_helper_bits = @import("runtime_helper_bits.zig");
 pub const Transformer = transformer.Transformer;
-pub const DefineEntry = transformer.DefineEntry;
+pub const AutoLabelMode = options.AutoLabelMode;
+pub const BindingLite = options.BindingLite;
+pub const DefineEntry = options.DefineEntry;
+pub const ModuleSpecifierMapEntry = options.ModuleSpecifierMapEntry;
+pub const Plugin = options.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
-pub const TransformOptions = transformer.TransformOptions;
+pub const TransformOptions = options.TransformOptions;
 pub const ast_plugin_mod = @import("ast_plugin.zig");
 
 /// ES 다운레벨링 모듈 (절충안 구조: 파일 분리 + 단일 패스)
@@ -35,6 +40,7 @@ pub const minify = @import("minify.zig");
 
 test {
     _ = transformer;
+    _ = options;
     _ = runtime_helper_bits;
     _ = es2015;
     _ = es2016;
