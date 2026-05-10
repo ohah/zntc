@@ -47,6 +47,30 @@ pub fn addSourceMapping(self: anytype, span: Span) !void {
     }
 }
 
+/// mangler 가 rename 한 식별자 emit 직전 호출. 원본 이름을 names 배열에 등록하고
+/// mapping 의 name_index 로 참조 — Sentry / DevTools 가 minified `f` → 원본
+/// `calculateTotalPrice` 복원 가능. `original_name` 이 비어있거나 합성 span 이면
+/// 일반 매핑으로 fallback (이름 없이).
+pub fn addSourceMappingWithName(self: anytype, span: Span, original_name: []const u8) !void {
+    if (self.sm_builder) |*sm| {
+        if (span.start & Ast.STRING_TABLE_BIT != 0) return;
+        if (span.start == span.end) return;
+        const lc = getOriginalLineColumn(self, span.start);
+        const name_idx: ?u32 = if (original_name.len > 0)
+            try sm.addName(original_name)
+        else
+            null;
+        try sm.addMapping(.{
+            .generated_line = self.gen_line,
+            .generated_column = self.gen_col,
+            .source_index = 0,
+            .original_line = lc.line,
+            .original_column = lc.column,
+            .name_index = name_idx,
+        });
+    }
+}
+
 fn getOriginalLineColumn(self: anytype, offset: u32) struct { line: u32, column: u32 } {
     const offsets = self.line_offsets;
     if (offsets.len == 0) return .{ .line = 0, .column = offset };

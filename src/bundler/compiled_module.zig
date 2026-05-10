@@ -16,6 +16,10 @@ pub const CompiledModule = struct {
     helpers: RuntimeHelpers = .{},
     /// codegen 이 생성한 매핑 (bundle SourceMap 빌더에 병합).
     mappings: ?[]const SourceMap.Mapping = null,
+    /// codegen builder 의 names 배열 (mangler rename 발생 시 원본 식별자 이름).
+    /// `mappings[i].name_index` 가 가리키는 module-local 인덱스. bundle 머지 시 chunk
+    /// builder 로 옮길 때 chunk-global 인덱스로 재매핑 (#2987).
+    names: []const []const u8 = &.{},
     /// preamble/래퍼 헤더로 codegen 매핑과 어긋나는 줄 수.
     preamble_lines: u32 = 0,
     /// per-source function map JSON. null = 비활성/함수 없음.
@@ -38,6 +42,8 @@ pub const CompiledModule = struct {
     pub fn deinit(self: CompiledModule, allocator: std.mem.Allocator) void {
         if (self.code) |c| allocator.free(c);
         if (self.mappings) |m| allocator.free(m);
+        for (self.names) |n| allocator.free(n);
+        if (self.names.len > 0) allocator.free(self.names);
         if (self.fn_map_json) |j| allocator.free(j);
         if (self.entry_chain) |c| allocator.free(c);
         for (self.shared_ns_decls) |d| {
@@ -55,6 +61,14 @@ pub const CompiledModule = struct {
         errdefer if (code) |c| allocator.free(c);
         const mappings = if (self.mappings) |m| try allocator.dupe(SourceMap.Mapping, m) else null;
         errdefer if (mappings) |m| allocator.free(m);
+        const names = try allocator.alloc([]const u8, self.names.len);
+        errdefer allocator.free(names);
+        var names_filled: usize = 0;
+        errdefer for (names[0..names_filled]) |n| allocator.free(n);
+        for (self.names, 0..) |n, i| {
+            names[i] = try allocator.dupe(u8, n);
+            names_filled = i + 1;
+        }
         const fn_map = if (self.fn_map_json) |j| try allocator.dupe(u8, j) else null;
         errdefer if (fn_map) |j| allocator.free(j);
         const ec = if (self.entry_chain) |c| try allocator.dupe(u8, c) else null;
@@ -78,6 +92,7 @@ pub const CompiledModule = struct {
             .code = code,
             .helpers = self.helpers,
             .mappings = mappings,
+            .names = names,
             .preamble_lines = self.preamble_lines,
             .fn_map_json = fn_map,
             .entry_chain = ec,

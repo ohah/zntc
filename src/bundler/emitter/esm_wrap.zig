@@ -84,6 +84,9 @@ fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
 pub const EsmEmitResult = struct {
     code: []const u8,
     mappings: ?[]const SourceMap.Mapping = null,
+    /// codegen builder 의 names 배열 (mangler rename 발생 시 원본 식별자 이름).
+    /// `mappings[i].name_index` 가 가리키는 module-local 인덱스 (#2987).
+    names: []const []const u8 = &.{},
     /// `CompiledModule.entry_chain` 참조. emitter 로 전달되는 unroll 버퍼.
     entry_chain: ?[]const u8 = null,
 };

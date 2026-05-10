@@ -74,6 +74,10 @@ pub const Mapping = struct {
     original_line: u32,
     /// 소스 파일의 열 (0-based)
     original_column: u32,
+    /// names 배열 인덱스 (mangler rename 발생 시 원본 이름). null 이면 5-segment VLQ
+    /// (line/col/source/orig_line/orig_col), non-null 이면 6-segment (+name_index).
+    /// Sentry 같은 도구가 minified 식별자의 원본 이름을 복원하는 데 사용.
+    name_index: ?u32 = null,
 
     pub fn lessThan(_: void, a: Mapping, b: Mapping) bool {
         if (a.generated_line != b.generated_line) return a.generated_line < b.generated_line;
@@ -221,6 +225,13 @@ pub const SourceMapBuilder = struct {
     is_sorted: bool = true,
     last_gen_line: u32 = 0,
     last_gen_col: u32 = 0,
+    /// sourcemap spec `names` 배열. mangler 가 rename 한 식별자의 원본 이름이
+    /// 들어가고 mapping.name_index 가 이 배열을 가리킨다. Sentry / DevTools 가
+    /// minified 식별자를 원본 이름으로 표시하는 데 사용 (#2987).
+    names: std.ArrayList([]const u8) = .empty,
+    /// names 배열 dedup 용 — 같은 원본 이름 여러 번 등장 시 같은 인덱스 반환.
+    /// 키는 builder allocator 로 dupe 된 문자열 (names 배열과 ownership 공유).
+    name_index_map: std.StringHashMapUnmanaged(u32) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) SourceMapBuilder {
         return .{
@@ -235,10 +246,13 @@ pub const SourceMapBuilder = struct {
     pub fn deinit(self: *SourceMapBuilder) void {
         for (self.sources.items) |s| self.allocator.free(s);
         for (self.source_contents.items) |c| self.allocator.free(c);
+        for (self.names.items) |n| self.allocator.free(n);
         self.mappings.deinit(self.allocator);
         self.sources.deinit(self.allocator);
         self.source_contents.deinit(self.allocator);
         self.ignored_sources.deinit(self.allocator);
+        self.names.deinit(self.allocator);
+        self.name_index_map.deinit(self.allocator);
         self.buf.deinit(self.allocator);
     }
 
@@ -300,6 +314,19 @@ pub const SourceMapBuilder = struct {
         try self.source_contents.append(self.allocator, copy);
     }
 
+    /// names 배열에 식별자 추가 — 같은 이름은 첫 인덱스 반환 (dedup). 키는 builder
+    /// allocator 로 dupe 되어 names 배열과 ownership 공유. mangler rename 발생 시
+    /// 원본 이름을 등록해 mapping.name_index 로 참조.
+    pub fn addName(self: *SourceMapBuilder, name: []const u8) !u32 {
+        if (self.name_index_map.get(name)) |idx| return idx;
+        const copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(copy);
+        const idx: u32 = @intCast(self.names.items.len);
+        try self.names.append(self.allocator, copy);
+        try self.name_index_map.put(self.allocator, copy, idx);
+        return idx;
+    }
+
     /// 매핑 추가. emitter 가 outer wrapper 진입 시 발행한 mapping 과 첫 자식 emitter
     /// 가 발행한 mapping 이 동일 (gen,src) 위치에 박히는 패턴이 잦아 (예: expression
     /// statement → operand expression 의 첫 토큰), 직전 mapping 과 모든 좌표가 같으면
@@ -352,7 +379,16 @@ pub const SourceMapBuilder = struct {
             try self.appendJsonString(src);
         }
 
-        try self.buf.appendSlice(self.allocator, "],\"names\":[],\"mappings\":\"");
+        try self.buf.appendSlice(self.allocator, "],\"names\":[");
+
+        // names 배열 — mangler rename 발생 시 등록된 원본 식별자들. mapping.name_index 가
+        // 이 배열을 가리켜 Sentry 가 minified `f` → 원본 `calculateTotalPrice` 복원.
+        for (self.names.items, 0..) |n, i| {
+            if (i > 0) try self.buf.append(self.allocator, ',');
+            try self.appendJsonString(n);
+        }
+
+        try self.buf.appendSlice(self.allocator, "],\"mappings\":\"");
 
         // mappings 인코딩
         try self.encodeMappings();
@@ -460,6 +496,7 @@ pub const SourceMapBuilder = struct {
         var prev_src_idx: i32 = 0;
         var prev_src_line: i32 = 0;
         var prev_src_col: i32 = 0;
+        var prev_name_idx: i32 = 0;
         var prev_gen_line: u32 = 0;
         var is_first_segment_on_line = true;
 
@@ -478,7 +515,7 @@ pub const SourceMapBuilder = struct {
             }
             is_first_segment_on_line = false;
 
-            // 4개 필드 VLQ 인코딩
+            // 4개 필드 VLQ 인코딩 (name_index 가 있으면 5번째 필드까지)
             // 1. 출력 열 (이전 세그먼트 대비 상대값)
             try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.generated_column)) - prev_gen_col);
             // 2. 소스 인덱스 (상대값)
@@ -487,6 +524,12 @@ pub const SourceMapBuilder = struct {
             try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.original_line)) - prev_src_line);
             // 4. 소스 열 (상대값)
             try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.original_column)) - prev_src_col);
+            // 5. names 인덱스 (옵션) — mangler rename 발생 시만 발행. spec: prev_name_idx 는
+            // mapping 단위가 아니라 file 전체에 걸쳐 누적 (5-segment mapping 끼리만 chain).
+            if (m.name_index) |ni| {
+                try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(ni)) - prev_name_idx);
+                prev_name_idx = @intCast(ni);
+            }
 
             prev_gen_col = @intCast(m.generated_column);
             prev_src_idx = @intCast(m.source_index);
