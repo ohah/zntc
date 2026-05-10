@@ -200,9 +200,11 @@ jobs:
           # os/cpu 로 mingw vs MSVC 구분 못 하고, GHA windows-latest = MSVC node
           # 라 install 시나리오 검증 의미 없음 (napi-rs/swc/oxc 모두 미publish).
           # mingw build 가능성은 PR 2 의 release.yml 매트릭스에서 자연 검증.
+          # windows-latest 자체가 x86_64-windows-msvc 라 zig native = target 동일.
+          # 'native' 로 두면 host dogfood build 1회로 충분 (Build platform NAPI step skip).
           - platform: win32-x64-msvc
             os: windows-latest
-            zig_target: x86_64-windows-msvc
+            zig_target: native
           - platform: win32-arm64-msvc
             os: windows-11-arm
             zig_target: native
