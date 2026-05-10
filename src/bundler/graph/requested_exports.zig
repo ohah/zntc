@@ -40,11 +40,11 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
 
 pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
     if (self.dev_mode or self.preserve_modules) return false;
-    if (!(m.side_effects_user_defined and
-        !m.side_effects and
-        m.exports_kind.isEsm() and
-        m.import_records.len > 0 and
-        m.export_bindings.len > 0)) return false;
+    if (!m.side_effects_user_defined or
+        m.side_effects or
+        !m.exports_kind.isEsm() or
+        m.import_records.len == 0 or
+        m.export_bindings.len == 0) return false;
 
     // Wrapper-barrel pattern: `import x from './w'; export default x;` 같이 imported
     // binding 을 default 로 re-export 하는 경우 body 가 그 binding 을 mutate 할
