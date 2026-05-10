@@ -1,6 +1,6 @@
 import { spawn } from 'bun';
 import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from 'node:fs/promises';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 
@@ -288,35 +288,50 @@ export async function runNode(file: string): Promise<{ stdout: string; stderr: s
 
 // ─── watch-json 테스트 공용 헬퍼 ───
 
-/// `zntc --watch-json ...`을 shell 경유로 spawn하고 stdout을 jsonOutPath로 리다이렉트.
+/// `zntc --watch-json ...`을 직접 spawn하고 stdout을 jsonOutPath로 리다이렉트.
 /// bun test가 child process stdout pipe를 제대로 처리 못 해서 파일 리다이렉트 방식 사용.
+/// `sh -c` 래퍼는 사용하지 않는다 — `proc.kill()` 이 sh 만 죽이고 자식 zntc 는
+/// 좀비로 남는 leak (#2945 후속) 회피. fd 를 open 해서 stdio 로 직접 넘긴다.
 export function spawnWatchJson(
   args: string[],
   jsonOutPath: string,
 ): import('node:child_process').ChildProcess {
   const { spawn: spawnChild } = require('node:child_process');
-  const quoted = args.map((a) => `"${a}"`).join(' ');
-  return spawnChild('sh', ['-c', `"${ZNTC_BIN}" ${quoted} > "${jsonOutPath}" 2>/dev/null`]);
+  const fd = openSync(jsonOutPath, 'w');
+  try {
+    return spawnChild(ZNTC_BIN, args, { stdio: ['ignore', fd, 'ignore'] });
+  } finally {
+    // child 가 fd duplicate 를 들고 있으므로 부모는 즉시 닫아도 안전.
+    closeSync(fd);
+  }
 }
 
 /// watch 프로세스를 kill하고 종료를 기다림. 2초 후 SIGKILL fallback — 좀비 방지.
+/// Bun 의 child_process 호환층에서 `proc.kill()` 이 자식 PID 에 시그널을 정확히
+/// 전달하지 않는 경우가 관찰되어, `process.kill(proc.pid, signal)` 로 명시적
+/// 송신한다 (orphan 좀비 방지).
 export function killAndWait(proc: import('node:child_process').ChildProcess): Promise<void> {
   return new Promise<void>((resolve) => {
     if (proc.exitCode !== null) {
       resolve();
       return;
     }
-    const timeout = setTimeout(() => {
+    const pid = proc.pid;
+    const sendSignal = (signal: NodeJS.Signals) => {
+      if (pid === undefined) return;
       try {
-        proc.kill('SIGKILL');
+        process.kill(pid, signal);
       } catch {}
+    };
+    const timeout = setTimeout(() => {
+      sendSignal('SIGKILL');
       resolve();
     }, 2000);
     proc.on('exit', () => {
       clearTimeout(timeout);
       resolve();
     });
-    proc.kill();
+    sendSignal('SIGTERM');
   });
 }
 
