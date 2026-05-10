@@ -284,8 +284,19 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
     self.needs_arguments_var = saved_needs_args;
     self.super_call_this_alias = saved_super_alias;
 
-    // $RefreshSig$ (hook signature) 스캔은 제거 — transform 후 stale AST 인덱스로 OOM 유발.
-    // Metro도 직접 스캔하지 않고 Babel/SWC에 위임. $RefreshReg$만 유지.
+    // React Fast Refresh — hook signature opt-in. default off 면 visitFunction
+    // hot path 영향 0 (옵션 read + early-return). opt-in 시 babel-plugin-react-refresh
+    // 동등 emit. `findHookCallsInNodeDepth` 가 depth=50 + node tag whitelist +
+    // bounds check 로 stale 인덱스 방어.
+    if (self.options.react_refresh and self.options.react_refresh_hook_signatures) {
+        const fn_name_for_sig: ?[]const u8 = blk: {
+            if (new_name.isNone()) break :blk null;
+            const name_node = self.ast.getNode(new_name);
+            if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) break :blk null;
+            break :blk self.ast.getText(name_node.data.string_ref);
+        };
+        try self.maybeRegisterRefreshSignature(fn_name_for_sig, old_body_idx, &new_body);
+    }
 
     const none = @intFromEnum(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);

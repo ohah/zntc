@@ -49,14 +49,26 @@ export interface TranspileOptions {
   /** JS 파일에서도 JSX 허용 */
   jsxInJs?: boolean;
   /**
-   * React Fast Refresh transform — 컴포넌트에 `$RefreshReg$(_c, "Name")` 등록 +
-   * Hook 사용 함수에 `_s = $RefreshSig$()` 시그니처 호출 emit. SWC builtin 의
-   * `jsc.transform.react.refresh: true` / babel-plugin-react-refresh 와 동등.
-   * loader (rspack-loader, webpack/vite plugin) 가 single-file transpile 경로에서
-   * 활성화 시 사용. HMR runtime ($RefreshReg$/$RefreshSig$ 정의) 은 컨슈머 측
-   * `react-refresh/runtime` 또는 dev server 가 prelude 로 주입한다고 가정.
+   * React Fast Refresh transform — 컴포넌트에 `$RefreshReg$(_c, "Name")` 등록.
+   * SWC builtin 의 `jsc.transform.react.refresh: true` / babel-plugin-react-refresh
+   * 의 component registration 과 동등. loader (rspack-loader, webpack/vite plugin)
+   * 가 single-file transpile 경로에서 활성화 시 사용.
+   *
+   * Default 동작은 Metro 호환 (registration 만, hook signature 없음).
+   * babel/SWC 동등의 hook signature emit 은 `reactRefreshHookSignatures: true`
+   * opt-in. HMR runtime ($RefreshReg$/$RefreshSig$ 정의) 은 컨슈머 측 책임.
    */
   reactRefresh?: boolean;
+  /**
+   * `reactRefresh: true` 위에 hook signature emit (`var _s = $RefreshSig$();` +
+   * `_s(Component, "sig")`) 을 추가. babel-plugin-react-refresh 와 동등.
+   * default false — Metro 정책 (signature 없음) 보존.
+   *
+   * 활성화 시 transformer 가 함수 본문 안 hook 호출을 스캔해 signature 문자열
+   * 빌드 → component 등록 직후 `_s(Comp, "sig")` 호출 emit. RN HMR 은 default
+   * (false) 그대로라 영향 없음.
+   */
+  reactRefreshHookSignatures?: boolean;
   /** console.* 호출 제거 */
   dropConsole?: boolean;
   /** debugger 문 제거 */
@@ -227,6 +239,7 @@ export function buildOptionsJson(
   if (opts.flow) payload.flow = true;
   if (opts.jsxInJs) payload.jsxInJs = true;
   if (opts.reactRefresh) payload.reactRefresh = true;
+  if (opts.reactRefreshHookSignatures) payload.reactRefreshHookSignatures = true;
   if (opts.jsx !== undefined) {
     // CLI vocab → Zig enum tag (kebab-case → snake_case): automatic-dev → automatic_dev.
     // 그 외 (`react-jsx` 등 tsconfig vocab, typo) 도 그대로 forward — NAPI / `optionsFromJson`

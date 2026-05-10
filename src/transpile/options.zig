@@ -51,9 +51,13 @@ pub const TranspileOptions = struct {
     tsconfig_path: ?[]const u8 = null,
     drop_console: bool = false,
     drop_debugger: bool = false,
-    /// React Fast Refresh transform — `$RefreshReg$` / `$RefreshSig$` emit.
+    /// React Fast Refresh transform — `$RefreshReg$` (component registration) emit.
     /// loader 등 single-file transpile 경로용 surface (bundler 의 build option 과 별개).
     react_refresh: bool = false,
+    /// `react_refresh` 위에 `$RefreshSig$` (hook signature) emit 까지 활성화.
+    /// default false — Metro 정책 (signature 없음) 보존, RN build 무영향. opt-in 시
+    /// babel-plugin-react-refresh 동등 (component body 시작에 _s() 삽입 + 모듈 끝 _s(Comp, "sig")).
+    react_refresh_hook_signatures: bool = false,
 
     // --- 코드 생성 ---
     module_format: codegen.ModuleFormat = .esm,
@@ -102,6 +106,7 @@ pub const ConfigOptionsDto = struct {
     flow: ?bool = null,
     jsxInJs: ?bool = null,
     reactRefresh: ?bool = null,
+    reactRefreshHookSignatures: ?bool = null,
     jsx: ?codegen.JsxRuntime = null,
     jsxFactory: ?[]const u8 = null,
     jsxFragment: ?[]const u8 = null,
@@ -207,6 +212,9 @@ pub fn applyTranspileSharedFields(
     // CliOptions 미보유 — bundler 는 BuildOptionsCommon 으로 별도 surface 사용.
     if (dto.reactRefresh) |v| if (@hasField(@TypeOf(target.*), "react_refresh")) {
         target.react_refresh = v;
+    };
+    if (dto.reactRefreshHookSignatures) |v| if (@hasField(@TypeOf(target.*), "react_refresh_hook_signatures")) {
+        target.react_refresh_hook_signatures = v;
     };
     if (dto.jsx) |v| target.jsx_runtime = v;
     if (dto.jsxFactory) |s| if (s.len > 0) {
