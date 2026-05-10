@@ -426,9 +426,12 @@ pub const Linker = struct {
                 // import binding이 top-level 변수를 생성하는 경우에만 충돌 대상에 포함:
                 // - CJS preamble: var X = require_xxx().X
                 // - __esm 호이스팅: var X; (래퍼 밖으로 호이스팅)
+                // - namespace import 의 inline ns_var (`var z = external_ns;`) 는
+                //   wrap_kind 에 무관하게 emit 되므로 collision detection 대상.
                 const generates_top_level_var = blk: {
                     for (m.import_bindings) |ib| {
                         if (!std.mem.eql(u8, ib.local_name, sym_name)) continue;
+                        if (ib.kind == .namespace) break :blk true;
                         if (ib.import_record_index >= m.import_records.len) break :blk false;
                         const rec = m.import_records[ib.import_record_index];
                         if (rec.resolved.isNone()) break :blk !rec.is_lazy_resolved;

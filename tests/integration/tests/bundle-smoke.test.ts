@@ -379,6 +379,25 @@ describe('번들 스모크 테스트', () => {
     expect(result.runOutput).toBe('ok');
   });
 
+  test('namespace import 와 다른 모듈의 동명 module-local var 충돌 방지', async () => {
+    // 두 모듈이 같은 이름 `z` 를 가지지만 한 쪽은 namespace import (`import * as z`),
+    // 다른 쪽은 module-local const. linker collectModuleNames 가 namespace import 의
+    // ns_var (`var z = ...`) 도 collision detection 에 등록해야 한다.
+    // zod entry 의 `import { z }` + 내부 from-json-schema.js 의 `const z = {...}` 패턴
+    // (browser-smoke.test.ts 의 `Identifier 'z' has already been declared` 회귀 가드).
+    const result = await bundleAndRun({
+      'index.ts': `import { z } from "./pkg"; import other from "./collision"; console.log(typeof z.foo, other.local);`,
+      'pkg.ts': `import * as z from "./target"; export { z }; export default z;`,
+      'target.ts': `export function foo() { return "ok"; }`,
+      'collision.ts': `const z = { local: true }; export default z;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runStderr).not.toMatch(/Identifier .* has already been declared/);
+    expect(result.runOutput).toBe('function true');
+  });
+
   test('namespace 변수명 progressive 충돌 방지 (z_ns export 존재 시 z_ns2)', async () => {
     const result = await bundleAndRun({
       'index.ts': `import * as z from "./lib"; console.log(z.foo(), z.z_ns, Object.keys(z).sort().join(","));`,
