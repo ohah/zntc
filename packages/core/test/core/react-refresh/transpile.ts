@@ -2,13 +2,31 @@ import { describe, test, expect } from '../helpers';
 import { transpileReactRefreshCode } from './fixture';
 
 describe('React Refresh: transpile() single-file path', () => {
-  test('reactRefresh=true 면 함수 컴포넌트에 $RefreshReg$ 등록 emit', () => {
+  test('함수 선언 컴포넌트는 $RefreshReg$(_c, "Name") 호출 + _c 할당 emit', () => {
     const code = transpileReactRefreshCode(
       `function MyComponent() { return <div /> }\nexport default MyComponent;`,
       { reactRefresh: true },
     );
-    expect(code).toContain('$RefreshReg$');
-    expect(code).toContain('MyComponent');
+    expect(code).toContain('_c = MyComponent');
+    expect(code).toContain('$RefreshReg$(_c, "MyComponent")');
+  });
+
+  test('arrow assignment 컴포넌트도 binding 이름으로 등록', () => {
+    const code = transpileReactRefreshCode(
+      `import * as React from 'react';\nconst MyArrow = () => <div />;\nexport default MyArrow;`,
+      { reactRefresh: true },
+    );
+    expect(code).toContain('_c = MyArrow');
+    expect(code).toContain('$RefreshReg$(_c, "MyArrow")');
+  });
+
+  test('function expression assignment 컴포넌트도 binding 이름으로 등록', () => {
+    const code = transpileReactRefreshCode(
+      `const MyFE = function() { return null; };\nexport default MyFE;`,
+      { filename: 'MyFE.tsx', reactRefresh: true },
+    );
+    expect(code).toContain('_c = MyFE');
+    expect(code).toContain('$RefreshReg$(_c, "MyFE")');
   });
 
   test.each([{ reactRefresh: undefined }, { reactRefresh: false as const }])(
