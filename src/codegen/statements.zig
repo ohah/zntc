@@ -155,8 +155,10 @@ fn emitIfVerbatim(self: anytype, t: anytype) !void {
     try self.writeByte(')');
     try self.emitNode(t.b);
     if (!t.c.isNone()) {
-        // else 분기가 DCE로 완전히 제거되는 if문이면 else 키워드 자체를 생략
-        if (isDeadIfNode(self, t.c)) return;
+        // else 분기가 DCE 결과 비어 있으면 else 키워드 자체를 생략 (#2967).
+        // 변환 전 transformer 가 dead `if` 본문을 `empty_statement` 로 바꿨거나
+        // 빈 block 으로 만들면 minify 시 statement 가 사라져 `else }` SyntaxError.
+        if (isElidedAlternate(self, t.c)) return;
         if (self.options.minify_whitespace) {
             const next_node = self.ast.getNode(t.c);
             if (next_node.tag == .block_statement) {
@@ -174,6 +176,35 @@ fn emitIfVerbatim(self: anytype, t: anytype) !void {
 fn isFunctionDeclarationNode(self: anytype, node_idx: NodeIndex) bool {
     if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
     return self.ast.getNode(node_idx).tag == .function_declaration;
+}
+
+/// else 분기가 출력 후 빈 statement 가 되는지 검사 (#2967):
+///   - `empty_statement` (transformer 가 dead `if` 를 변환한 결과)
+///   - dead `if (false)` 체인
+///   - 모든 element 가 elided 인 block
+/// 셋 다 minify 시 `else }` SyntaxError 를 만들므로 else 키워드 자체를 elide.
+fn isElidedAlternate(self: anytype, node_idx: NodeIndex) bool {
+    return isElidedAlternateDepth(self, node_idx, 0);
+}
+
+fn isElidedAlternateDepth(self: anytype, node_idx: NodeIndex, depth: u32) bool {
+    if (depth >= 128) return false;
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(node_idx);
+    switch (n.tag) {
+        .empty_statement => return true,
+        .if_statement => return isDeadIfNodeDepth(self, node_idx, depth + 1),
+        .block_statement => {
+            const list = n.data.list;
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+            for (indices) |raw| {
+                const idx: NodeIndex = @enumFromInt(raw);
+                if (!isElidedAlternateDepth(self, idx, depth + 1)) return false;
+            }
+            return true;
+        },
+        else => return false,
+    }
 }
 
 /// else 분기의 if_statement가 상수 조건 DCE로 아무것도 출력하지 않는지 재귀 확인.
@@ -250,8 +281,45 @@ fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?boo
             }
             return null;
         },
+        .binary_expression => {
+            // string-literal 양쪽 비교만 처리 (#2967): define 으로
+            // `process.env.NODE_ENV !== "production"` 이 `"production" !== "production"`
+            // 으로 inline 된 후 isDeadIfNode 가 dead branch 를 잡을 수 있도록.
+            // 다른 binary op (number, identifier 등) 는 부수효과/런타임 의존이라 evaluate
+            // 안 함 — esbuild 도 동일하게 string equality 만 안전 평가.
+            const op: Kind = @enumFromInt(cond.data.binary.flags);
+            //   eq2 = `==`, eq3 = `===`, neq = `!=`, neq2 = `!==`
+            if (op != .eq2 and op != .eq3 and op != .neq and op != .neq2) return null;
+            const left = self.ast.getNode(cond.data.binary.left);
+            const right = self.ast.getNode(cond.data.binary.right);
+            if (left.tag != .string_literal or right.tag != .string_literal) return null;
+            // string_literal span 은 quote 포함. 다른 quote 문자 (single vs double) 라도
+            // value 가 같으면 같음으로 — quote 제거 비교.
+            const lt_raw = self.ast.getText(left.span);
+            const rt_raw = self.ast.getText(right.span);
+            const lt = stripQuotes(lt_raw);
+            const rt = stripQuotes(rt_raw);
+            const eq = std.mem.eql(u8, lt, rt);
+            return switch (op) {
+                .eq2, .eq3 => eq,
+                .neq, .neq2 => !eq,
+                else => unreachable,
+            };
+        },
         else => null,
     };
+}
+
+/// string literal span (quote 포함) → 내용만. escape 시퀀스는 정확히 같으면 통과,
+/// 다르면 보수적으로 비교 실패 처리해도 무방 (false negative 만 → DCE 효과 약간 감소).
+fn stripQuotes(s: []const u8) []const u8 {
+    if (s.len < 2) return s;
+    const first = s[0];
+    const last = s[s.len - 1];
+    if ((first == '"' or first == '\'' or first == '`') and first == last) {
+        return s[1 .. s.len - 1];
+    }
+    return s;
 }
 
 pub fn emitWhile(self: anytype, node: Node) !void {
