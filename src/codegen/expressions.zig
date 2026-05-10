@@ -205,7 +205,7 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
     }
 }
 
-fn identifierHasRename(self: anytype, idx: NodeIndex) bool {
+pub fn identifierHasRename(self: anytype, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
     const key_node = self.ast.getNode(idx);
     if (self.options.linking_metadata) |meta| {
