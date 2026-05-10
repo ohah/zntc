@@ -307,7 +307,7 @@ const MODULES = [_]HelperModule{
         },
     },
 
-    // RegExp named capture group downlevel (#1063) — Hermes/ES5 호환.
+    // RegExp named capture group downlevel — Hermes/ES5 호환.
     .{
         .short = "wrap-regex",
         .helpers = &.{"__wrapRegExp"},

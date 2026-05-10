@@ -709,9 +709,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             });
 
             // named capture group 이 있고 strip 됐으면 `__wrapRegExp(/.../, {n:1,...})` 로 wrap
-            // — exec().groups.NAME / replace(re, "$<NAME>") semantic 보존 (#1063). graph 가
-            // helper module (`runtime_helper_modules.zig` 의 wrap-regex) 을 import 해서
-            // chunk 분배까지 자동 처리.
+            // — exec().groups.NAME / replace(re, "$<NAME>") semantic 보존. graph 가 helper
+            // module (`runtime_helper_modules.zig` 의 wrap-regex) 을 import 해서 chunk
+            // 분배까지 자동 처리.
             if (result.named_groups) |ng| {
                 self.runtime_helpers.wrap_regex = true;
 

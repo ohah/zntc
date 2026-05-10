@@ -295,7 +295,7 @@ pub const TransformOptions = struct {
                 .await_expression => if (u.top_level_await) return true,
                 // regex 다운레벨 (named capture, dotall, sticky, unicode brace escape).
                 // named capture 는 wrap 변환에 helper module import 필요 — prepass 거쳐야
-                // graph 가 helper module 을 등록 (#1063).
+                // graph 가 helper module 을 등록.
                 .regexp_literal => {
                     if (u.regex_dotall or u.regex_named_groups or u.regex_sticky or u.unicode_brace_escape) return true;
                 },
