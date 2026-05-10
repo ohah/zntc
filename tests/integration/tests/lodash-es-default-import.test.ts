@@ -124,10 +124,12 @@ describe('export default <imported_id>: dangling _default reference 회귀 가�
   });
 
   test.skipIf(!hasPackage('lodash-es'))(
-    'lodash-es: 종합 import 패턴 — dangling _default 가 발생하지 않는다',
+    'lodash-es: 종합 import 패턴 + default 객체 method 호출이 정상 작동',
     async () => {
-      // lodash-es 는 위 합성 fixture 와 동일한 default re-export chain 을 가진다
-      // (lodash.js → lodash.default.js → wrapperLodash.js). 실제 패키지로 회귀 검증.
+      // lodash-es 의 default re-export chain (lodash.js → lodash.default.js
+      // → wrapperLodash.js) 에서 lodash.default.js 의 body mutation
+      // (`lodash.uniq = uniq;`) 이 보존되어 `_.uniq()` 같은 method 호출이
+      // 작동해야 한다.
       const fixture = await createFixture({
         'package.json': '{"type":"module"}',
         'entry.ts': `
@@ -136,15 +138,15 @@ describe('export default <imported_id>: dangling _default reference 회귀 가�
           import * as L from 'lodash-es';
           import uniqDirect from 'lodash-es/uniq.js';
 
-          // 직접 사용되는 named/namespace/subpath 함수는 정상 동작 검증.
-          // \`_\` (default) 는 lodash.default.js 의 mutation 까지 살리는 별도 작업
-          // (graph-level lazy import resolution) 이 필요해 typeof 만 확인.
           const out = {
             named_uniq: uniq([1, 1, 2, 2, 3]),
             named_chunk: chunk([1, 2, 3, 4, 5], 2),
             namespace_zip: L.zip(['a', 'b'], [1, 2]),
             subpath: uniqDirect([7, 7, 8]),
-            default_typeof: typeof _,
+            default_uniq: _.uniq([3, 3, 1, 1, 2, 2]),
+            default_keys: _.keys({ x: 1, y: 2 }),
+            default_camelCase: _.camelCase('foo bar baz'),
+            default_max: _.max([1, 9, 3]),
           };
           console.log(JSON.stringify(out));
         `,
@@ -175,8 +177,10 @@ describe('export default <imported_id>: dangling _default reference 회귀 가�
         ['b', 2],
       ]);
       expect(parsed.subpath).toEqual([7, 8]);
-      // _ 가 function 형태로 import 되어야 (실제 method 호출은 별도 PR 에서 수정).
-      expect(parsed.default_typeof).toBe('function');
+      expect(parsed.default_uniq).toEqual([3, 1, 2]);
+      expect(parsed.default_keys).toEqual(['x', 'y']);
+      expect(parsed.default_camelCase).toBe('fooBarBaz');
+      expect(parsed.default_max).toBe(9);
 
       expectNoDanglingDefaultRefs(readFileSync(outFile, 'utf8'));
     },
