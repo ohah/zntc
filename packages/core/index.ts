@@ -146,9 +146,29 @@ let native: NativeModule | null = null;
 // npm 의 `os`/`cpu`/`libc` 매칭으로 platform sub-package 가 자동 install 됨
 // (메인 `@zntc/core` 의 optionalDependencies). 사용자 환경에 맞는 1개만 설치.
 // PLATFORMS 는 ./src/platforms.ts 의 단일 source — bun build 가 inline.
+//
+// libc 검출: linux 에서 musl(Alpine) vs glibc(Debian/Ubuntu) 분기 — node 표준
+// `process.report.getReport().header.glibcVersionRuntime` 사용 (napi-rs/esbuild
+// 동일 패턴, dependency 불필요). 검출 못 하면 musl 로 fallback (alpine 등).
+function detectLinuxLibc(): 'glibc' | 'musl' | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const report = (process.report as { getReport?: () => unknown } | undefined)?.getReport?.() as
+      | { header?: { glibcVersionRuntime?: string } }
+      | undefined;
+    if (report?.header?.glibcVersionRuntime) return 'glibc';
+  } catch {
+    /* fallthrough */
+  }
+  return 'musl';
+}
+
 function getPlatformPackage(): string | null {
   const { platform, arch } = process;
-  const match = PLATFORMS.find((p) => p.npmOs === platform && p.npmCpu === arch);
+  const libc = detectLinuxLibc();
+  const match = PLATFORMS.find(
+    (p) => p.npmOs === platform && p.npmCpu === arch && p.npmLibc === libc,
+  );
   return match ? subPackageName(match) : null;
 }
 
