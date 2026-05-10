@@ -271,6 +271,11 @@ jobs:
           echo "MAIN_TARBALL=${main_tarball}" >> "$GITHUB_ENV"
           echo "PLAT_TARBALL=${plat_tarball}" >> "$GITHUB_ENV"
 
+      # ESM resolver 는 .mjs 파일이 위치한 디렉토리 기준으로 node_modules 탐색 —
+      # `node ../scripts/napi-smoke-test.mjs` 로 실행하면 repo_root/node_modules
+      # (workspace symlink) 가 잡혀 dev `packages/core` 가 import 됨 → tarball
+      # 검증이 무력화. `--input-type=module < <file>` 은 stdin 입력이라 cwd
+      # (tmp-napi-smoke/node_modules) 기준 resolution 이 작동.
       - name: Run smoke (host)
         if: matrix.smoke_container == ''
         shell: bash
@@ -278,7 +283,7 @@ jobs:
           cd tmp-napi-smoke
           npm init -y >/dev/null
           npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
-          node ../scripts/napi-smoke-test.mjs
+          node --input-type=module < ../scripts/napi-smoke-test.mjs
 
       # addnab/docker-run-action@v3 은 host 의 $GITHUB_ENV 자동 forward 안 함 —
       # MAIN/PLAT_TARBALL 명시 전달 필요.
@@ -293,7 +298,7 @@ jobs:
             cd tmp-napi-smoke
             npm init -y >/dev/null
             npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
-            node ../scripts/napi-smoke-test.mjs
+            node --input-type=module < ../scripts/napi-smoke-test.mjs
         env:
           MAIN_TARBALL: ${{ env.MAIN_TARBALL }}
           PLAT_TARBALL: ${{ env.PLAT_TARBALL }}

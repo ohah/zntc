@@ -1,6 +1,11 @@
 // ci.yml `napi-package-smoke` job 의 host/Alpine 두 smoke step 공통 assertion.
-// host 시나리오: heredoc 으로 inline 했던 코드를 file 로 분리 — 두 step 이 같은
-// 단일 source 사용하여 drift 차단.
+//
+// 호출: `cd tmp-napi-smoke && node --input-type=module < ../scripts/napi-smoke-test.mjs`
+// 주의 — `node ../scripts/napi-smoke-test.mjs` 로 직접 실행하면 ESM resolver 가
+// 이 파일 위치(repo_root/scripts) 기준으로 node_modules 를 찾아 workspace
+// symlink 를 잡아버림 → tarball 검증 무력화. stdin 입력 + `--input-type=module`
+// 은 cwd 기준 resolution 이라 `tmp-napi-smoke/node_modules` 에 install 된
+// tarball 을 정확히 import.
 import { init, tokenize, transpile } from '@zntc/core';
 
 init();
