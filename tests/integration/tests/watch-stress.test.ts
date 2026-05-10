@@ -32,22 +32,6 @@ async function sampleRSS(pid: number): Promise<number> {
   return rss;
 }
 
-/** shell 부모 PID의 자식(zntc) 찾기. Linux/macOS 공용. */
-async function findZntcChildPid(parentPid: number): Promise<number> {
-  const proc = Bun.spawn({
-    cmd: ['pgrep', '-P', String(parentPid), 'zntc'],
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const stdout = await new Response(proc.stdout).text();
-  await proc.exited;
-  const pid = Number.parseInt(stdout.trim().split('\n')[0], 10);
-  if (Number.isNaN(pid)) {
-    throw new Error(`failed to find zntc child of pid ${parentPid}`);
-  }
-  return pid;
-}
-
 /** samples = [{x,y}...] 에서 최소제곱법 기울기(y per x). */
 function linearSlope(samples: Array<{ x: number; y: number }>): number {
   const n = samples.length;
@@ -87,7 +71,8 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
       try {
         await waitForNdjsonLines(jsonOut, 1, tail, { timeoutMs: 15000 });
 
-        const zntcPid = await findZntcChildPid(proc.pid!);
+        // spawnWatchJson 가 zntc 를 직접 spawn 하므로 proc.pid 가 곧 zntc PID.
+        const zntcPid = proc.pid!;
         const samples: Array<{ x: number; y: number }> = [];
         samples.push({ x: 0, y: await sampleRSS(zntcPid) });
 
