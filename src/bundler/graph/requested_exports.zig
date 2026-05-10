@@ -38,30 +38,35 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
     return true;
 }
 
+/// 이 모듈이 user-declared `sideEffects:false` ESM barrel 인지 — `requested_exports` 에
+/// 일치하는 것만 link 하는 정밀 트리쉐이킹 hint 의 적용 대상.
 pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
     if (self.dev_mode or self.preserve_modules) return false;
-    if (!m.side_effects_user_defined or
-        m.side_effects or
-        !m.exports_kind.isEsm() or
-        m.import_records.len == 0 or
-        m.export_bindings.len == 0) return false;
+    return m.side_effects_user_defined and
+        !m.side_effects and
+        m.exports_kind.isEsm() and
+        m.import_records.len > 0 and
+        m.export_bindings.len > 0;
+}
 
-    // Wrapper-barrel pattern: `import x from './w'; export default x;` 같이 imported
-    // binding 을 default 로 re-export 하는 경우 body 가 그 binding 을 mutate 할
-    // 가능성이 높다 (lodash-es lodash.default.js: `import lodash from './wrapperLodash.js';
-    // lodash.uniq = uniq; ... export default lodash;`). lazy 처리하면 body 의 mutation
-    // 들이 reference 하는 35 개 import 가 graph 에 등록되지 않아 runtime 에서
-    // `_mixin is not defined` 같은 ReferenceError 가 발생. 이 패턴이 있으면 lazy
-    // 비활성화 — 모든 import 가 link 되어 정상 BFS 추적 가능하도록.
+/// Wrapper-barrel pattern: `import x from './w'; export default x;` 같이 imported
+/// binding 을 default 로 re-export 하는 lazy_barrel_candidate 의 부분집합. body 가
+/// imported binding 을 mutate 할 가능성이 높아 (lodash-es lodash.default.js 의
+/// `lodash.uniq = uniq;` 같은 ~300 개 mutation) lazy 처리하면 mutation reference imports
+/// 가 누락되어 runtime ReferenceError 발생. graph 의 `shouldLinkResolvedRecordForModule`
+/// 와 tree_shaker 의 시드 게이트 양쪽이 이 함수를 사용해 wrapper-barrel 만 정확히
+/// 처리하도록 한다.
+pub fn isWrapperBarrel(self: anytype, m: *const Module) bool {
+    if (!isLazyBarrelCandidate(self, m)) return false;
     for (m.export_bindings) |eb| {
         if (eb.kind == .re_export and
             std.mem.eql(u8, eb.exported_name, "default") and
             std.mem.eql(u8, eb.local_name, "default"))
         {
-            return false;
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 pub fn localNeedsAllRecords(m: *const Module, req: *const RequestedExports) bool {
@@ -91,6 +96,8 @@ pub fn shouldLinkResolvedRecordForModule(self: anytype, mod_idx: usize, rec_i: u
     }
 
     if (!isLazyBarrelCandidate(self, m)) return true;
+    // Wrapper-barrel pattern 은 body mutation 이 imports 에 의존하므로 lazy 비활성화.
+    if (isWrapperBarrel(self, m)) return true;
 
     const key: u32 = @intCast(mod_idx);
     self.requested_exports_mutex.lock();
