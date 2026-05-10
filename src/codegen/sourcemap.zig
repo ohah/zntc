@@ -300,12 +300,26 @@ pub const SourceMapBuilder = struct {
         try self.source_contents.append(self.allocator, copy);
     }
 
-    /// 매핑 추가.
+    /// 매핑 추가. emitter 가 outer wrapper 진입 시 발행한 mapping 과 첫 자식 emitter
+    /// 가 발행한 mapping 이 동일 (gen,src) 위치에 박히는 패턴이 잦아 (예: expression
+    /// statement → operand expression 의 첫 토큰), 직전 mapping 과 모든 좌표가 같으면
+    /// 중복 push 를 생략한다. 출력 VLQ size 와 mappings 배열 메모리 절감.
     pub fn addMapping(self: *SourceMapBuilder, mapping: Mapping) !void {
-        if (self.is_sorted and self.mappings.items.len > 0) {
-            const out_of_order = mapping.generated_line < self.last_gen_line or
-                (mapping.generated_line == self.last_gen_line and mapping.generated_column < self.last_gen_col);
-            if (out_of_order) self.is_sorted = false;
+        if (self.mappings.items.len > 0) {
+            const last = self.mappings.items[self.mappings.items.len - 1];
+            if (last.generated_line == mapping.generated_line and
+                last.generated_column == mapping.generated_column and
+                last.source_index == mapping.source_index and
+                last.original_line == mapping.original_line and
+                last.original_column == mapping.original_column)
+            {
+                return;
+            }
+            if (self.is_sorted) {
+                const out_of_order = mapping.generated_line < self.last_gen_line or
+                    (mapping.generated_line == self.last_gen_line and mapping.generated_column < self.last_gen_col);
+                if (out_of_order) self.is_sorted = false;
+            }
         }
         self.last_gen_line = mapping.generated_line;
         self.last_gen_col = mapping.generated_column;

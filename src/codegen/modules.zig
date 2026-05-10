@@ -9,6 +9,7 @@ const rt = @import("../bundler/runtime_helpers.zig");
 const linker_mod = @import("../bundler/linker.zig");
 
 pub fn emitImport(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
     if (self.options.module_format == .cjs) {
@@ -292,6 +293,7 @@ pub fn emitImportSpecifierRename(self: anytype, spec_node: Node, sep: []const u8
 }
 
 pub fn emitExportNamed(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
 
     if (self.options.module_format == .cjs) {
@@ -452,6 +454,7 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
 }
 
 pub fn emitExportDefault(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     if (self.options.module_format == .cjs) {
         if (self.options.skip_cjs_exports) {
             // __esm 모듈: export는 __export()가 처리.
@@ -581,6 +584,7 @@ pub fn emitDefaultVarAssignment(self: anytype, name: []const u8, inner: NodeInde
 }
 
 pub fn emitExportAll(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
     if (self.options.module_format == .cjs) {
         // export * from './bar' → Object.assign(exports,require('./bar'));

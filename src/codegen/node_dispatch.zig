@@ -29,26 +29,17 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         try statement_emit.emitComments(self, node.span.start);
     }
 
-    // 소스맵 매핑: 유의미한 노드 출력 시 원본 위치 기록.
-    // 컨테이너 노드(program, block, function_body)는 자식의 매핑을 오염시키므로 제외.
-    if (self.sm_builder != null and node.span.start != node.span.end) {
-        switch (node.tag) {
-            .program,
-            .block_statement,
-            .function_body,
-            .class_body,
-            .static_block,
-            .switch_statement,
-            .try_statement,
-            => {},
-            else => try self.addSourceMapping(node.span),
-        }
-    }
+    // 소스맵 매핑은 각 emitter / inline case 가 명시 발행 (oxc/esbuild 패턴).
+    // 컨테이너 노드 (program, block_statement, function_body, class_body, static_block,
+    // switch_statement, try_statement) 는 자식이 매핑하므로 자체 발행 안 함.
 
     switch (node.tag) {
         .program => try statement_emit.emitProgram(self, node),
         .block_statement => try statement_emit.emitBlock(self, node),
-        .empty_statement => try self.writeByte(';'),
+        .empty_statement => {
+            try self.addSourceMapping(node.span);
+            try self.writeByte(';');
+        },
         .expression_statement => try statement_emit.emitExpressionStatement(self, node),
         .variable_declaration => try binding_emit.emitVariableDeclaration(self, node),
         .variable_declarator => try binding_emit.emitVariableDeclarator(self, node),
@@ -65,12 +56,16 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .switch_case => try statement_emit.emitSwitchCase(self, node),
         .break_statement => try statement_emit.emitSimpleStmt(self, node, "break"),
         .continue_statement => try statement_emit.emitSimpleStmt(self, node, "continue"),
-        .debugger_statement => try self.write("debugger;"),
+        .debugger_statement => {
+            try self.addSourceMapping(node.span);
+            try self.write("debugger;");
+        },
         .try_statement => try statement_emit.emitTry(self, node),
         .catch_clause => try statement_emit.emitCatch(self, node),
         .labeled_statement => try statement_emit.emitLabeled(self, node),
         .with_statement => try statement_emit.emitWith(self, node),
         .directive => {
+            try self.addSourceMapping(node.span);
             // span 은 문자열 리터럴 범위 (따옴표 포함). quote_style 정규화를 적용해
             // `'use server'` → `"use server"` 같은 변환이 일반 string_literal 과 동일하게
             // 일어나도록 writeStringLiteral 사용. 항상 `;` 를 붙여 ASI 의존을 피한다.
@@ -78,11 +73,15 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             try self.writeByte(';');
         },
         .hashbang => {
-            if (!self.options.strip_hashbang) try self.writeNodeSpan(node);
+            if (!self.options.strip_hashbang) {
+                try self.addSourceMapping(node.span);
+                try self.writeNodeSpan(node);
+            }
         },
 
         // Literals
         .boolean_literal => {
+            try self.addSourceMapping(node.span);
             // Peephole: true → !0, false → !1 (minify_syntax 활성화 시).
             // #1552: 각 리터럴당 2-3 byte 절감. 출현 빈도 높아 총 크기 영향 있음.
             // span의 첫 byte는 `t` 또는 `f`로 고정(렉서 불변식) — 한 byte 검사로 판별.
@@ -97,9 +96,15 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .numeric_literal,
         .bigint_literal,
         .regexp_literal,
-        => try self.writeNodeSpan(node),
+        => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
 
-        .string_literal => try self.writeStringLiteral(node.span),
+        .string_literal => {
+            try self.addSourceMapping(node.span);
+            try self.writeStringLiteral(node.span);
+        },
 
         // Identifiers — 번들 모드에서 symbol_id 기반 리네임 적용
         .identifier_reference,
@@ -107,6 +112,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .binding_identifier,
         .assignment_target_identifier,
         => {
+            try self.addSourceMapping(node.span);
             // Peephole: global `undefined` → `(void 0)` (minify_syntax 활성화 시).
             // 9 bytes → 8 bytes, 1 byte 절감. parens는 member/call/new 등 모든 parent
             // context에서 안전하게 해석되도록 유지 — `undefined.x`/`undefined()` 같은
@@ -166,8 +172,14 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             try self.writeSpan(node.data.string_ref);
         },
 
-        .this_expression => try self.write("this"),
-        .super_expression => try self.write("super"),
+        .this_expression => {
+            try self.addSourceMapping(node.span);
+            try self.write("this");
+        },
+        .super_expression => {
+            try self.addSourceMapping(node.span);
+            try self.write("super");
+        },
 
         // Expressions
         .unary_expression => try expression_emit.emitUnary(self, node),
@@ -190,10 +202,14 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .call_expression => try call_emit.emitCall(self, node),
         .new_expression => try call_emit.emitNew(self, node),
         .template_literal => try function_class_emit.emitTemplateLiteral(self, node),
-        .template_element => try self.writeNodeSpan(node),
+        .template_element => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
         .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node),
         .import_expression => try call_emit.emitImportExpr(self, node),
         .meta_property => try call_emit.emitMetaProperty(self, node),
+        // chain_expression / TS·Flow type-cast: transparent wrapper — operand 가 자기 매핑 발행.
         .chain_expression => try self.emitNode(node.data.unary.operand),
 
         // Functions / Classes
@@ -225,7 +241,10 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .import_default_specifier,
         .import_namespace_specifier,
         .import_attribute,
-        => try self.writeNodeSpan(node),
+        => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
         .export_named_declaration => try module_emit.emitExportNamed(self, node),
         .export_default_declaration => try module_emit.emitExportDefault(self, node),
         .export_all_declaration => try module_emit.emitExportAll(self, node),
@@ -238,7 +257,10 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
 
         // Flow match expression — transformer에서 if-else IIFE로 변환됨
         // 변환되지 않은 경우 (non-bundle 등) span 텍스트 그대로 출력
-        .flow_match_expression => try self.writeNodeSpan(node),
+        .flow_match_expression => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
 
         // JSX: Transformer의 jsx_lowering이 call_expression으로 변환 완료.
         // codegen은 JSX AST 노드를 만나지 않아야 함.
@@ -275,6 +297,9 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         => {},
 
         // 그 외 — 소스 텍스트 그대로 출력
-        else => try self.writeNodeSpan(node),
+        else => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
     }
 }
