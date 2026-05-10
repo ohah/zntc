@@ -17,9 +17,16 @@ const NsExportPair = Linker.NsExportPair;
 const SharedNsInline = Linker.SharedNsInline;
 const max_chain_depth = 100;
 
+/// 모듈의 중첩 스코프 (비-모듈 스코프) 에 해당 이름이 존재하는지 확인.
+/// linker.zig 의 method 와 동일.
 fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
-    if (module_index >= self.nested_name_sets.len) return false;
-    return self.nested_name_sets[module_index].contains(name);
+    const m = self.getModule(module_index) orelse return false;
+    const sem = m.semantic orelse return false;
+    for (sem.scope_maps, 0..) |scope_map, scope_idx| {
+        if (scope_idx == 0) continue;
+        if (scope_map.get(name) != null) return true;
+    }
+    return false;
 }
 
 /// ESM namespace import를 위한 namespace 객체 preamble 생성.
