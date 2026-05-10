@@ -180,6 +180,16 @@ jobs:
           - platform: linux-arm64-gnu
             os: ubuntu-24.04-arm
             zig_target: native
+          # musl: zig 가 ubuntu host 에서 musl libc 까지 self-contained cross
+          # build → require/transpile 검증은 alpine container 안에서.
+          - platform: linux-x64-musl
+            os: ubuntu-latest
+            zig_target: x86_64-linux-musl
+            smoke_container: node:24-alpine
+          - platform: linux-arm64-musl
+            os: ubuntu-24.04-arm
+            zig_target: aarch64-linux-musl
+            smoke_container: node:24-alpine
           - platform: darwin-arm64
             os: macos-latest
             zig_target: native
@@ -193,6 +203,15 @@ jobs:
           - platform: win32-x64-msvc
             os: windows-latest
             zig_target: x86_64-windows-msvc
+          - platform: win32-arm64-msvc
+            os: windows-11-arm
+            zig_target: native
+          # ia32: windows-latest (x64) 에서 zig cross-build → setup-node 의
+          # architecture: x86 으로 32-bit Node 설치 후 WoW64 native require.
+          - platform: win32-ia32-msvc
+            os: windows-latest
+            zig_target: x86-windows-msvc
+            node_arch: x86
 
     steps:
       - name: Checkout
@@ -214,6 +233,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          architecture: ${{ matrix.node_arch || '' }}
 
       - uses: ./.github/actions/bun-cache
         with:
@@ -240,31 +260,43 @@ jobs:
 
       # 사용자 시나리오: npm install @zntc/core → main + 환경 매칭 sub-package 1개 install.
       # 두 tarball 같이 install 해서 loader 가 sub-package require.resolve 로 binary 찾는 흐름 검증.
-      - name: Pack and run installed package
+      # musl 은 host(ubuntu)에서 npm pack 까지 수행 후 실행만 alpine container 로 위임.
+      - name: Pack tarballs
         shell: bash
         run: |
           rm -rf tmp-napi-pack tmp-napi-smoke
           mkdir -p tmp-napi-pack tmp-napi-smoke
           main_tarball="$(npm pack ./packages/core --pack-destination tmp-napi-pack --silent | tail -n 1)"
           plat_tarball="$(npm pack ./packages/core-${{ matrix.platform }} --pack-destination tmp-napi-pack --silent | tail -n 1)"
+          echo "MAIN_TARBALL=${main_tarball}" >> "$GITHUB_ENV"
+          echo "PLAT_TARBALL=${plat_tarball}" >> "$GITHUB_ENV"
+
+      - name: Run smoke (host)
+        if: matrix.smoke_container == ''
+        shell: bash
+        run: |
           cd tmp-napi-smoke
           npm init -y >/dev/null
-          npm install "../tmp-napi-pack/${main_tarball}" "../tmp-napi-pack/${plat_tarball}" --ignore-scripts
-          node --input-type=module <<'EOF'
-          import { init, tokenize, transpile } from "@zntc/core";
+          npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
+          node ../scripts/napi-smoke-test.mjs
 
-          init();
-
-          const result = transpile("const value: number = 1;", { filename: "input.ts" });
-          if (!result.code.includes("const value = 1")) {
-            throw new Error(`unexpected transpile output: ${result.code}`);
-          }
-
-          const tokens = tokenize("const x = 1;", { filename: "input.ts" });
-          if (!Array.isArray(tokens) || tokens.length === 0) {
-            throw new Error("tokenize returned no tokens");
-          }
-          EOF
+      # addnab/docker-run-action@v3 은 host 의 $GITHUB_ENV 자동 forward 안 함 —
+      # MAIN/PLAT_TARBALL 명시 전달 필요.
+      - name: Run smoke (Alpine container, musl)
+        if: matrix.smoke_container != ''
+        uses: addnab/docker-run-action@v3
+        with:
+          image: ${{ matrix.smoke_container }}
+          options: -v ${{ github.workspace }}:/work -w /work -e MAIN_TARBALL -e PLAT_TARBALL
+          run: |
+            set -e
+            cd tmp-napi-smoke
+            npm init -y >/dev/null
+            npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
+            node ../scripts/napi-smoke-test.mjs
+        env:
+          MAIN_TARBALL: ${{ env.MAIN_TARBALL }}
+          PLAT_TARBALL: ${{ env.PLAT_TARBALL }}
 
   publish-smoke:
     name: Publish Smoke Test

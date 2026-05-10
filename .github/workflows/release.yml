@@ -16,13 +16,16 @@ permissions:
 
 jobs:
   # ─── NAPI 바이너리 매트릭스 빌드 ───
-  # PLATFORMS in scripts/lib/platforms.ts 와 sync (YAML 정적 한계). 5 platform
+  # PLATFORMS in packages/core/src/platforms.ts 와 sync (YAML 정적 한계). 9 platform
   # 각각 native runner 에서 zig build napi → zntc.node artifact.
   build-napi:
     name: Build NAPI (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: true
+      # 9 platform 중 windows-11-arm 같은 preview runner 가 일시 flaky 일 때
+      # 다른 8 개 빌드까지 abort → 전체 재실행 비용. 하나 실패해도 나머지는
+      # 완주시켜 부분 publish/디버그 가능하도록.
+      fail-fast: false
       matrix:
         include:
           - platform: linux-x64-gnu
@@ -31,6 +34,12 @@ jobs:
           - platform: linux-arm64-gnu
             runner: ubuntu-24.04-arm
             zig_target: aarch64-linux-gnu
+          - platform: linux-x64-musl
+            runner: ubuntu-latest
+            zig_target: x86_64-linux-musl
+          - platform: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            zig_target: aarch64-linux-musl
           - platform: darwin-x64
             runner: macos-15-intel
             zig_target: x86_64-macos
@@ -40,6 +49,12 @@ jobs:
           - platform: win32-x64-msvc
             runner: windows-latest
             zig_target: x86_64-windows-msvc
+          - platform: win32-arm64-msvc
+            runner: windows-11-arm
+            zig_target: aarch64-windows-msvc
+          - platform: win32-ia32-msvc
+            runner: windows-latest
+            zig_target: x86-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -76,27 +91,41 @@ jobs:
           path: ${{ steps.locate.outputs.path }}
 
   # ─── CLI 바이너리 매트릭스 (GitHub Release tarball) ───
+  # NAPI 매트릭스와 동일한 9 platform — standalone CLI 사용자도 동일 커버리지.
   build-cli:
     name: Build CLI (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: x86_64-linux
+          - target: x86_64-linux-gnu
             os: ubuntu-latest
-            artifact: zntc-x86_64-linux
-          - target: aarch64-linux
+            artifact: zntc-x86_64-linux-gnu
+          - target: aarch64-linux-gnu
             os: ubuntu-24.04-arm
-            artifact: zntc-aarch64-linux
+            artifact: zntc-aarch64-linux-gnu
+          - target: x86_64-linux-musl
+            os: ubuntu-latest
+            artifact: zntc-x86_64-linux-musl
+          - target: aarch64-linux-musl
+            os: ubuntu-24.04-arm
+            artifact: zntc-aarch64-linux-musl
           - target: x86_64-macos
             os: macos-15-intel
             artifact: zntc-x86_64-macos
           - target: aarch64-macos
             os: macos-latest
             artifact: zntc-aarch64-macos
-          - target: x86_64-windows
+          - target: x86_64-windows-msvc
             os: windows-latest
             artifact: zntc-x86_64-windows
+          - target: aarch64-windows-msvc
+            os: windows-11-arm
+            artifact: zntc-aarch64-windows
+          - target: x86-windows-msvc
+            os: windows-latest
+            artifact: zntc-x86-windows
 
     steps:
       - uses: actions/checkout@v4
