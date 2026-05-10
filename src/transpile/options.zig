@@ -51,6 +51,9 @@ pub const TranspileOptions = struct {
     tsconfig_path: ?[]const u8 = null,
     drop_console: bool = false,
     drop_debugger: bool = false,
+    /// React Fast Refresh transform — `$RefreshReg$` / `$RefreshSig$` emit.
+    /// loader 등 single-file transpile 경로용 surface (bundler 의 build option 과 별개).
+    react_refresh: bool = false,
 
     // --- 코드 생성 ---
     module_format: codegen.ModuleFormat = .esm,
@@ -98,6 +101,7 @@ pub const ConfigOptionsDto = struct {
     unsupported: ?u32 = null,
     flow: ?bool = null,
     jsxInJs: ?bool = null,
+    reactRefresh: ?bool = null,
     jsx: ?codegen.JsxRuntime = null,
     jsxFactory: ?[]const u8 = null,
     jsxFragment: ?[]const u8 = null,
@@ -200,6 +204,10 @@ pub fn applyTranspileSharedFields(
     if (dto.unsupported) |u| target.unsupported = @bitCast(u);
     if (dto.flow) |v| target.flow = v;
     if (dto.jsxInJs) |v| target.jsx_in_js = v;
+    // CliOptions 미보유 — bundler 는 BuildOptionsCommon 으로 별도 surface 사용.
+    if (dto.reactRefresh) |v| if (@hasField(@TypeOf(target.*), "react_refresh")) {
+        target.react_refresh = v;
+    };
     if (dto.jsx) |v| target.jsx_runtime = v;
     if (dto.jsxFactory) |s| if (s.len > 0) {
         target.jsx_factory = if (dupe_strings) try allocator.dupe(u8, s) else s;

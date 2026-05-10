@@ -1,4 +1,15 @@
-import { buildSync, expect, join, mkdtempSync, rmSync, tmpdir, writeFileSync } from '../helpers';
+import {
+  buildSync,
+  expect,
+  join,
+  mkdtempSync,
+  rmSync,
+  tmpdir,
+  transpile,
+  writeFileSync,
+} from '../helpers';
+
+type TranspileOptions = NonNullable<Parameters<typeof transpile>[1]>;
 
 export function buildReactRefreshCode(source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
@@ -14,4 +25,10 @@ export function buildReactRefreshCode(source: string): string {
   } finally {
     rmSync(dir, { recursive: true });
   }
+}
+
+export function transpileReactRefreshCode(source: string, options: TranspileOptions = {}): string {
+  const result = transpile(source, { filename: 'entry.tsx', jsx: 'automatic', ...options });
+  expect(result.errors).toBeUndefined();
+  return result.code;
 }
