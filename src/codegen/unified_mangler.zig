@@ -145,20 +145,13 @@ pub fn mangleAll(
     errdefer allocator.free(phase_b_stats);
 
     for (input.modules, 0..) |m, i| {
-        // Phase B 는 per-module 독립 counter. external_reserved 는 해당 모듈
-        // scope 심볼의 Phase A mangled 이름만 포함 (outer shadow 방지 + 전역
-        // pool 공유의 over-reserving 회피).
-        var module_reserved: std.StringHashMap(void) = .init(allocator);
-        defer module_reserved.deinit();
-        if (m.scope_maps.len > 0) {
-            var sit = m.scope_maps[0].iterator();
-            while (sit.next()) |entry| {
-                const sid: u32 = @intCast(entry.value_ptr.*);
-                const key: ModuleSymKey = .{ .module_index = @intCast(i), .symbol_id = sid };
-                if (renames.get(key)) |mangled| try module_reserved.put(mangled, {});
-            }
-        }
-
+        // Phase B 는 per-module 독립 counter 지만 external_reserved 로 전역
+        // `reserved` 를 그대로 전달한다 (#2956). 다른 모듈의 Phase A mangled
+        // 이름이 이 모듈의 nested binding 과 충돌하면 cross-module shadow 가
+        // 발생 (date-fns: outer constructDateFrom='t' 와 다른 모듈 addDays 의
+        // inner const _date='t' 가 자기참조 ReferenceError). 자기 모듈의
+        // top-scope binding 은 Phase A 에서 이미 reserved 에 등록되어 있으므로
+        // 별도 module_reserved 를 만들지 않아도 된다.
         var nested = try mangler.mangle(allocator, .{
             .scopes = m.scopes,
             .symbols = m.symbols,
@@ -166,7 +159,7 @@ pub fn mangleAll(
             .references = m.references,
             .source = m.source,
             .skip_symbols = m.module_scope_symbols,
-            .external_reserved = &module_reserved,
+            .external_reserved = &reserved,
         });
         defer nested.deinit();
         phase_b_stats[i] = nested.stats;
