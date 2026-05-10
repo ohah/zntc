@@ -615,6 +615,17 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*con
             return switch (inner.tag) {
                 .function_declaration => false,
                 .class_declaration => classHasSideEffects(ast, inner, unresolved_globals),
+                // `export default <id>` 는 codegen 이 `_default$N = <id>` 할당을
+                // emit 한다. <id> 가 다른 stmt (import / var) 로 선언된 경우
+                // synthetic _default 심볼의 declarer 가 그 stmt 라 BFS 가
+                // export_default_declaration 자체에 닿지 않아 `_default = <id>`
+                // 가 emit 안 됨 (lodash-es lodash.default.js
+                // `import lodash from './wrapperLodash.js'; export default lodash;`).
+                // 익명 expression default (`export default {...}`) 는 synthetic
+                // _default 심볼이 export_default_declaration 을 declarer 로 가져
+                // 기존 isNodePureDepth fallback 그대로 두어 unused default 의
+                // tslib-style DCE 보존.
+                .identifier_reference => true,
                 else => !isNodePureDepth(ast, inner, unresolved_globals, 0),
             };
         },
