@@ -189,10 +189,6 @@ pub const Linker = struct {
     /// Phase A (top-level) 인지 Phase B (nested) 인지 이 bitset 으로 판정.
     unified_module_scopes: []std.DynamicBitSet = &.{},
 
-    /// 모듈별 중첩 스코프 바인딩 이름 집합 (사전 구축).
-    /// computeRenames에서 한 번 구축, hasNestedBinding에서 O(1) 조회.
-    nested_name_sets: []std.StringHashMapUnmanaged(void) = &.{},
-
     /// resolveExportChain 메모이제이션 캐시.
     /// 키: makeModuleKeyBuf 형식 (4바이트 module_index + 0x00 + name).
     /// Phase 1(fixpoint) + Phase 2(BFS) 간 중복 resolve를 제거.
@@ -292,12 +288,6 @@ pub const Linker = struct {
         self.canonical_symbols.deinit(self.allocator);
         self.canonical_names_used.deinit();
         self.reserved_globals.deinit();
-        for (self.nested_name_sets) |*set| {
-            set.deinit(self.allocator);
-        }
-        if (self.nested_name_sets.len > 0) {
-            self.allocator.free(self.nested_name_sets);
-        }
         // chain_cache: 키는 allocator로 dupe됨
         var cc_it = self.chain_cache.keyIterator();
         while (cc_it.next()) |key| self.allocator.free(key.*);
@@ -617,10 +607,6 @@ pub const Linker = struct {
             const m = self.getModule(@intCast(i)) orelse continue;
             try self.collectModuleNames(m.*, @intCast(i), &name_to_owners);
         }
-
-        // 1.5. 모듈별 중첩 스코프 바인딩 이름 집합을 구축.
-        // calculateRenames/resolveNestedShadowConflicts에서 hasNestedBinding이 O(1)로 동작하도록 미리 구축.
-        try self.buildNestedNameSets();
 
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
@@ -943,14 +929,10 @@ pub const Linker = struct {
         return null;
     }
 
-    /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
-    /// 첫 호출 시 해당 모듈의 nested name set을 lazy 구축하여 이후 O(1) 조회.
+    /// 모듈의 중첩 스코프 (비-모듈 스코프) 에 해당 이름이 존재하는지 확인.
+    /// esbuild/rolldown/rollup 과 동일하게 semantic.scope_maps 직접 scan — scope 깊이는
+    /// 보통 1~10 정도라 별도 cache 없이 충분.
     fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
-        if (module_index < self.nested_name_sets.len) {
-            return self.nested_name_sets[module_index].contains(name);
-        }
-
-        // fallback
         const m = self.getModule(module_index) orelse return false;
         const sem = m.semantic orelse return false;
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
@@ -958,38 +940,6 @@ pub const Linker = struct {
             if (scope_map.get(name) != null) return true;
         }
         return false;
-    }
-
-    /// 모듈별 중첩 스코프 바인딩 이름을 하나의 HashSet으로 병합.
-    /// computeRenames에서 한 번 호출하면, 이후 hasNestedBinding이 O(1)로 동작.
-    fn buildNestedNameSets(self: *Linker) !void {
-        self.clearNestedNameSets();
-        const count = self.graph.moduleCount();
-        const sets = try self.allocator.alloc(std.StringHashMapUnmanaged(void), count);
-        for (sets) |*s| s.* = .{};
-
-        for (0..count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            const sem = m.semantic orelse continue;
-            for (sem.scope_maps, 0..) |scope_map, scope_idx| {
-                if (scope_idx == 0) continue; // 모듈 스코프는 스킵
-                var it = scope_map.iterator();
-                while (it.next()) |entry| {
-                    try sets[i].put(self.allocator, entry.key_ptr.*, {});
-                }
-            }
-        }
-        self.nested_name_sets = sets;
-    }
-
-    fn clearNestedNameSets(self: *Linker) void {
-        for (self.nested_name_sets) |*set| {
-            set.deinit(self.allocator);
-        }
-        if (self.nested_name_sets.len > 0) {
-            self.allocator.free(self.nested_name_sets);
-        }
-        self.nested_name_sets = &.{};
     }
 
     /// ECMAScript 예약어 + CJS 런타임 + 브라우저/Node 주요 글로벌인지 확인.

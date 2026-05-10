@@ -202,6 +202,11 @@ const FIXTURES: FixtureSpec[] = [
     module_count: 1000,
     externals: ['react', 'vue', 'lodash', 'rxjs', 'zod', 'axios', 'date-fns', 'three'],
   },
+  {
+    name: 'xxlarge (5000 modules, 8 ext)',
+    module_count: 5000,
+    externals: ['react', 'vue', 'lodash', 'rxjs', 'zod', 'axios', 'date-fns', 'three'],
+  },
 ];
 
 interface ToolResult {
