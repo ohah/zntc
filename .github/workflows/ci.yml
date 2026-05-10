@@ -94,6 +94,11 @@ jobs:
       - name: Audit AST addNode variants (#1797, #1802)
         run: bun scripts/audit_addnode_variants.ts --strict-cosmetic
 
+      # codegen 모든 emitter 가 첫 줄에 `addSourceMapping(node.span)` 발행하는지
+      # 정적 검사. 새 emitter 추가 시 매핑 누락 회귀 (#2982 패턴) 차단 (#2983).
+      - name: Audit codegen sourcemap mapping (#2983)
+        run: bun scripts/audit-codegen-sourcemap.ts
+
   napi:
     name: NAPI Build & Test
     runs-on: ${{ matrix.os }}
