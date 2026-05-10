@@ -595,6 +595,19 @@ pub const SemanticAnalyzer = struct {
                     try self.addRedeclarationError(decl_span, name_text, existing.declaration_span);
                     return;
                 }
+                // JS spec: 매개변수 + 같은 이름 var 는 동일 binding (var hoisting). 새 symbol
+                // 만들면 mangler 가 두 binding 으로 처리해 \`function f(fn){var fn=...}\` 의
+                // 매개변수가 reference 와 다르게 mangle 됨 (#2976 express \`Router.use(fn)\`).
+                if (kind == .variable_var and (existing.kind == .parameter or existing.kind == .variable_var)) {
+                    if (self.findSymbolIndexInScope(target_scope, name_text)) |existing_sym_idx| {
+                        if (node_idx) |ni| {
+                            if (ni < self.symbol_ids.items.len) {
+                                self.symbol_ids.items[ni] = @intCast(existing_sym_idx);
+                            }
+                        }
+                        return;
+                    }
+                }
             }
         }
 
