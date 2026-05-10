@@ -26,7 +26,7 @@ f\`0\${" "}1\${" "}2\${" "}3\${" "}4\${" "}5\${" "}6\${" "}7\${" "}8\${" "}9\${"
 
 exports[`TSC: es6/templates taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02 1`] = `
 "// @target: es2015
-\`0\${ " " }1\${ " " }2\${ " " }3\${ " " }4\${ " " }5\${ " " }6\${ " " }7\${ " " }8\${ " " }9\${ " " }10\${ " " }11\${ " " }12\${ " " }13\${ " " }14\${ " " }15\${ " " }16\${ " " }17\${ " " }18\${ " " }19\${ " " }20\${ " " }2028\${ " " }2029\${ " " }0085\${ " " }t\${ " " }v\${ " " }f\${ " " }b\${ " " }r\${ " " }n\`;
+\`0\${" "}1\${" "}2\${" "}3\${" "}4\${" "}5\${" "}6\${" "}7\${" "}8\${" "}9\${" "}10\${" "}11\${" "}12\${" "}13\${" "}14\${" "}15\${" "}16\${" "}17\${" "}18\${" "}19\${" "}20\${" "}2028\${" "}2029\${" "}0085\${" "}t\${" "}v\${" "}f\${" "}b\${" "}r\${" "}n\`;
 "
 `;
 
@@ -229,14 +229,14 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithManyCallAndMemberExpressions 1`] = `
 "// @target: es2015
 var f;
-var x = new new new f()()()\`abc\${0}def\`.member("hello")(42) === true;
+var x = new (new (new f())())()\`abc\${0}def\`.member("hello")(42) === true;
 "
 `;
 
 exports[`TSC: es6/templates taggedTemplateStringsWithManyCallAndMemberExpressionsES6 1`] = `
 "// @target: ES6
 var f;
-var x = new new new f()()()\`abc\${0}def\`.member("hello")(42) === true;
+var x = new (new (new f())())()\`abc\${0}def\`.member("hello")(42) === true;
 "
 `;
 
@@ -643,7 +643,7 @@ exports[`TSC: es6/templates taggedTemplateWithConstructableTag02 1`] = `
 
 exports[`TSC: es6/templates templateStringBinaryOperations 1`] = `
 "// @target: es2015
-var a = 1 + \`\${ 3 }\`;
+var a = 1 + \`\${3}\`;
 var b = 1 + \`2\${3}\`;
 var c = 1 + \`\${3}4\`;
 var d = 1 + \`2\${3}4\`;
@@ -696,7 +696,7 @@ var l4 = 1 + \`2\${3 & 4}5\` + 6;
 
 exports[`TSC: es6/templates templateStringBinaryOperationsES6 1`] = `
 "// @target: ES6
-var a = 1 + \`\${ 3 }\`;
+var a = 1 + \`\${3}\`;
 var b = 1 + \`2\${3}\`;
 var c = 1 + \`\${3}4\`;
 var d = 1 + \`2\${3}4\`;
@@ -749,7 +749,7 @@ var l4 = 1 + \`2\${3 & 4}5\` + 6;
 
 exports[`TSC: es6/templates templateStringBinaryOperationsES6Invalid 1`] = `
 "// @target: ES6
-var a = 1 - \`\${ 3 }\`;
+var a = 1 - \`\${3}\`;
 var b = 1 - \`2\${3}\`;
 var c = 1 - \`\${3}4\`;
 var d = 1 - \`2\${3}4\`;
@@ -850,7 +850,7 @@ var hc = \`2\${3 & 4}5\` & 6;
 
 exports[`TSC: es6/templates templateStringBinaryOperationsInvalid 1`] = `
 "// @target: es2015
-var a = 1 - \`\${ 3 }\`;
+var a = 1 - \`\${3}\`;
 var b = 1 - \`2\${3}\`;
 var c = 1 - \`\${3}4\`;
 var d = 1 - \`2\${3}4\`;
@@ -999,7 +999,7 @@ var x = \`\\x20\\u0020 20\`;
 
 exports[`TSC: es6/templates templateStringInArray 1`] = `
 "// @target: es2015
-var x = [1, 2, \`abc\${ 123 }def\`];
+var x = [1, 2, \`abc\${123}def\`];
 "
 `;
 
@@ -1029,13 +1029,13 @@ exports[`TSC: es6/templates templateStringInCallExpressionES6 1`] = `
 
 exports[`TSC: es6/templates templateStringInConditional 1`] = `
 "// @target: es2015
-var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
+var x = \`abc\${" "}def\` ? \`abc\${" "}def\` : \`abc\${" "}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInConditionalES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
+var x = \`abc\${" "}def\` ? \`abc\${" "}def\` : \`abc\${" "}def\`;
 "
 `;
 
@@ -1053,26 +1053,25 @@ delete \`abc\${0}abc\`;
 
 exports[`TSC: es6/templates templateStringInDivision 1`] = `
 "// @target: es2015
-var x = \`abc\${ 1 }def\`  / 1;
+var x = \`abc\${1}def\` / 1;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInEqualityChecks 1`] = `
 "// @target: es2015
-var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\` === \`abc\` || \`abc\` !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInEqualityChecksES6 1`] = `
 "// @target: ES6
-var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\` === \`abc\` || \`abc\` !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInFunctionExpression 1`] = `
 "var x = function y() {
-	\`abc\${ 0 }def\`
-    ;
+	\`abc\${0}def\`;
 	return \`abc\${0}def\`;
 };
 "
@@ -1080,8 +1079,7 @@ exports[`TSC: es6/templates templateStringInFunctionExpression 1`] = `
 
 exports[`TSC: es6/templates templateStringInFunctionExpressionES6 1`] = `
 "var x = function y() {
-	\`abc\${ 0 }def\`
-    ;
+	\`abc\${0}def\`;
 	return \`abc\${0}def\`;
 };
 "
@@ -1101,49 +1099,49 @@ exports[`TSC: es6/templates templateStringInIndexExpressionES6 1`] = `
 
 exports[`TSC: es6/templates templateStringInInOperator 1`] = `
 "// @target: es2015
-var x = \`\${ "hi" }\`  in { hi: 10, hello: 20 };
+var x = \`\${"hi"}\` in { hi: 10, hello: 20 };
 "
 `;
 
 exports[`TSC: es6/templates templateStringInInOperatorES6 1`] = `
 "// @target: ES6
-var x = \`\${ "hi" }\`  in { hi: 10, hello: 20 };
+var x = \`\${"hi"}\` in { hi: 10, hello: 20 };
 "
 `;
 
 exports[`TSC: es6/templates templateStringInInstanceOf 1`] = `
 "// @target: es2015
-var x = \`abc\${ 0 }def\`  instanceof String;
+var x = \`abc\${0}def\` instanceof String;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInInstanceOfES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ 0 }def\`  instanceof String;
+var x = \`abc\${0}def\` instanceof String;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInModulo 1`] = `
 "// @target: es2015
-var x = 1 % \`abc\${ 1 }def\`;
+var x = 1 % \`abc\${1}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInModuloES6 1`] = `
 "// @target: ES6
-var x = 1 % \`abc\${ 1 }def\`;
+var x = 1 % \`abc\${1}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInMultiplication 1`] = `
 "// @target: es2015
-var x = 1 * \`abc\${ 1 }def\`;
+var x = 1 * \`abc\${1}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInMultiplicationES6 1`] = `
 "// @target: ES6
-var x = 1 * \`abc\${ 1 }def\`;
+var x = 1 * \`abc\${1}def\`;
 "
 `;
 
@@ -1161,13 +1159,13 @@ new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
 
 exports[`TSC: es6/templates templateStringInNewOperator 1`] = `
 "// @target: es2015
-var x = new \`abc\${ 1 }def\`();
+var x = new \`abc\${1}def\`();
 "
 `;
 
 exports[`TSC: es6/templates templateStringInNewOperatorES6 1`] = `
 "// @target: ES6
-var x = new \`abc\${ 1 }def\`();
+var x = new \`abc\${1}def\`();
 "
 `;
 
@@ -1185,15 +1183,13 @@ var x = (\`abc\${0}abc\`);
 
 exports[`TSC: es6/templates templateStringInPropertyAssignment 1`] = `
 "// @target: es2015
-var x = { a: \`abc\${ 123 }def\${ 456 }ghi\`
- };
+var x = { a: \`abc\${123}def\${456}ghi\` };
 "
 `;
 
 exports[`TSC: es6/templates templateStringInPropertyAssignmentES6 1`] = `
 "// @target: ES6
-var x = { a: \`abc\${ 123 }def\${ 456 }ghi\`
- };
+var x = { a: \`abc\${123}def\${456}ghi\` };
 "
 `;
 
@@ -1221,49 +1217,49 @@ switch (\`abc\${0}abc\`) {
 
 exports[`TSC: es6/templates templateStringInTaggedTemplate 1`] = `
 "// @target: es2015
-\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
+\`I AM THE \${\`\${\`TAG\`} \`} PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTaggedTemplateES6 1`] = `
 "// @target: ES6
-\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
+\`I AM THE \${\`\${\`TAG\`} \`} PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTypeAssertion 1`] = `
 "// @target: es2015
-var x = \`abc\${ 123 }def\`;
+var x = \`abc\${123}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTypeAssertionES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ 123 }def\`;
+var x = \`abc\${123}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTypeOf 1`] = `
 "// @target: es2015
-var x = typeof \`abc\${ 123 }def\`;
+var x = typeof \`abc\${123}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTypeOfES6 1`] = `
 "// @target: ES6
-var x = typeof \`abc\${ 123 }def\`;
+var x = typeof \`abc\${123}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInUnaryPlus 1`] = `
 "// @target: es2015
-var x = +\`abc\${ 123 }def\`;
+var x = +\`abc\${123}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInUnaryPlusES6 1`] = `
 "// @target: ES6
-var x = +\`abc\${ 123 }def\`;
+var x = +\`abc\${123}def\`;
 "
 `;
 
@@ -1287,7 +1283,7 @@ exports[`TSC: es6/templates templateStringInYieldKeyword 1`] = `
 "// @strict: false
 function* gen() {
 	// Once this is supported, the inner expression does not need to be parenthesized.
-	var x = yield \`abc\${ x }def\`;
+	var x = yield \`abc\${x}def\`;
 }
 "
 `;
@@ -1360,13 +1356,13 @@ exports[`TSC: es6/templates templateStringPlainCharactersThatArePartsOfEscapes01
 
 exports[`TSC: es6/templates templateStringPlainCharactersThatArePartsOfEscapes02_ES6 1`] = `
 "// @target: es6
-\`0\${ " " }1\${ " " }2\${ " " }3\${ " " }4\${ " " }5\${ " " }6\${ " " }7\${ " " }8\${ " " }9\${ " " }10\${ " " }11\${ " " }12\${ " " }13\${ " " }14\${ " " }15\${ " " }16\${ " " }17\${ " " }18\${ " " }19\${ " " }20\${ " " }2028\${ " " }2029\${ " " }0085\${ " " }t\${ " " }v\${ " " }f\${ " " }b\${ " " }r\${ " " }n\`;
+\`0\${" "}1\${" "}2\${" "}3\${" "}4\${" "}5\${" "}6\${" "}7\${" "}8\${" "}9\${" "}10\${" "}11\${" "}12\${" "}13\${" "}14\${" "}15\${" "}16\${" "}17\${" "}18\${" "}19\${" "}20\${" "}2028\${" "}2029\${" "}0085\${" "}t\${" "}v\${" "}f\${" "}b\${" "}r\${" "}n\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringPlainCharactersThatArePartsOfEscapes02 1`] = `
 "// @target: es2015
-\`0\${ " " }1\${ " " }2\${ " " }3\${ " " }4\${ " " }5\${ " " }6\${ " " }7\${ " " }8\${ " " }9\${ " " }10\${ " " }11\${ " " }12\${ " " }13\${ " " }14\${ " " }15\${ " " }16\${ " " }17\${ " " }18\${ " " }19\${ " " }20\${ " " }2028\${ " " }2029\${ " " }0085\${ " " }t\${ " " }v\${ " " }f\${ " " }b\${ " " }r\${ " " }n\`;
+\`0\${" "}1\${" "}2\${" "}3\${" "}4\${" "}5\${" "}6\${" "}7\${" "}8\${" "}9\${" "}10\${" "}11\${" "}12\${" "}13\${" "}14\${" "}15\${" "}16\${" "}17\${" "}18\${" "}19\${" "}20\${" "}2028\${" "}2029\${" "}0085\${" "}t\${" "}v\${" "}f\${" "}b\${" "}r\${" "}n\`;
 "
 `;
 
@@ -1502,13 +1498,13 @@ a}\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedAddition 1`] = `
 "// @target: es2015
-var x = \`abc\${ 10 + 10 }def\`;
+var x = \`abc\${10 + 10}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedAdditionES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ 10 + 10 }def\`;
+var x = \`abc\${10 + 10}def\`;
 "
 `;
 
@@ -1538,71 +1534,53 @@ var x = \`abc\${(x) => x}def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedComments 1`] = `
 "// @target: es2015
-\`head\${ // single line comment
-10
-}
-middle\${
-/* Multi-
+\`head\${// single line comment
+10}
+middle\${/* Multi-
  * line
  * comment
  */
- 20
- // closing comment
-}
+20}
 tail\`;
-// single line comment
-/* Multi-
- * line
- * comment
- */
 // closing comment
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedCommentsES6 1`] = `
 "// @target: ES6
-\`head\${ // single line comment
-10
-}
-middle\${
-/* Multi-
+\`head\${// single line comment
+10}
+middle\${/* Multi-
  * line
  * comment
  */
- 20
- // closing comment
-}
+20}
 tail\`;
-// single line comment
-/* Multi-
- * line
- * comment
- */
 // closing comment
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedConditional 1`] = `
 "// @target: es2015
-var x = \`abc\${ true ? false : " " }def\`;
+var x = \`abc\${true ? false : " "}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedConditionalES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ true ? false : " " }def\`;
+var x = \`abc\${true ? false : " "}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedDivision 1`] = `
 "// @target: es2015
-var x = \`abc\${ 1 / 1 }def\`;
+var x = \`abc\${1 / 1}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedDivisionES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ 1 / 1 }def\`;
+var x = \`abc\${1 / 1}def\`;
 "
 `;
 
@@ -1634,37 +1612,37 @@ var x = \`abc\${"hi" in { hi: 10, hello: 20 }}def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedInstanceOf 1`] = `
 "// @target: es2015
-var x = \`abc\${ "hello" instanceof String }def\`;
+var x = \`abc\${"hello" instanceof String}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedInstanceOfES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ "hello" instanceof String }def\`;
+var x = \`abc\${"hello" instanceof String}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedModulo 1`] = `
 "// @target: es2015
-var x = \`abc\${ 1 % 1 }def\`;
+var x = \`abc\${1 % 1}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedModuloES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ 1 % 1 }def\`;
+var x = \`abc\${1 % 1}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedMultiplication 1`] = `
 "// @target: es2015
-var x = \`abc\${ 7 * 6 }def\`;
+var x = \`abc\${7 * 6}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedMultiplicationES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ 7 * 6 }def\`;
+var x = \`abc\${7 * 6}def\`;
 "
 `;
 
@@ -1694,13 +1672,13 @@ var x = \`abc\${{ x: 10, y: 20 }}def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateString 1`] = `
 "// @target: es2015
-var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
+var x = \`123\${\`456 \${" | "} 654\`}321 123\${\`456 \${" | "} 654\`}321\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateStringES6 1`] = `
 "// @target: ES6
-var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
+var x = \`123\${\`456 \${" | "} 654\`}321 123\${\`456 \${" | "} 654\`}321\`;
 "
 `;
 
@@ -1744,7 +1722,7 @@ exports[`TSC: es6/templates templateStringWithEmbeddedYieldKeywordES6 1`] = `
 "// @strict: false
 function* gen() {
 	// Once this is supported, yield *must* be parenthesized.
-	var x = \`abc\${ yield 10 }def\`;
+	var x = \`abc\${yield 10}def\`;
 }
 "
 `;
@@ -1787,13 +1765,13 @@ var m = \`1\${0}2\${0}3\`;
 
 exports[`TSC: es6/templates templateStringWithOpenCommentInStringPortion 1`] = `
 "// @target: es2015
-\` /**head  \${ 10 } // still middle  \${ 20 } /* still tail \`;
+\` /**head  \${10} // still middle  \${20} /* still tail \`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithOpenCommentInStringPortionES6 1`] = `
 "// @target: ES6
-\` /**head  \${ 10 } // still middle  \${ 20 } /* still tail \`;
+\` /**head  \${10} // still middle  \${20} /* still tail \`;
 "
 `;
 
