@@ -47,6 +47,7 @@ const PUBLISH_ORDER = [
   'packages/web',
   'packages/react-native',
   'packages/vite-plugin-zntc',
+  'packages/rspack-loader',
   'packages/wasm',
   'packages/init',
 ];
