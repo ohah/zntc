@@ -4,6 +4,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const writer = @import("writer.zig");
+const expressions = @import("expressions.zig");
 
 const writeNewline = writer.writeNewline;
 const writeSpace = writer.writeSpace;
@@ -27,8 +28,18 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
     } else {
         try self.writeSpan(key_node.span);
     }
-    // shorthand: right가 none이면 {key} 형태 — 콜론 생략
-    if (!node.data.binary.right.isNone()) {
+    // shorthand (right=none): \`{key}\` — 기본은 콜론 생략. 단 implicit RHS 식별자가
+    // mangle 됐으면 \`key:mangled\` longhand 로 expand (#2977 yargs). \`let {x}=obj\` 와
+    // \`({x}=obj)\` (binding_property / assignment_target_property_identifier) 양쪽에 적용.
+    // expressions.zig 의 emitObjectProperty 와 동일한 분기.
+    if (node.data.binary.right.isNone()) {
+        if (expressions.identifierHasRename(self, node.data.binary.left)) {
+            try self.writeByte(':');
+            try self.emitNode(node.data.binary.left);
+        }
+        return;
+    }
+    {
         // shorthand_with_default: { x = val } → x:x=val
         // cover grammar에서 assignment_target_property_identifier로 변환된 경우,
         // right가 default value이고 key가 binding name이다.
