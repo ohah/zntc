@@ -154,7 +154,12 @@ let native: NativeModule | null = null;
 function detectLinuxLibc(): 'glibc' | 'musl' | undefined {
   if (process.platform !== 'linux') return undefined;
   try {
-    if (process.report?.getReport().header.glibcVersionRuntime) return 'glibc';
+    // @types/node 의 `getReport(): object` 가 너무 좁아 header 접근 불가 →
+    // 명시 narrow. 실제 shape 는 Node docs 의 ProcessReport 참고.
+    const report = process.report?.getReport() as
+      | { header?: { glibcVersionRuntime?: string } }
+      | undefined;
+    if (report?.header?.glibcVersionRuntime) return 'glibc';
   } catch {
     // process.report 미지원 런타임 → musl fallback
   }
