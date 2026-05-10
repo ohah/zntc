@@ -267,3 +267,97 @@ fn emitOneImport(
         try output.appendSlice(allocator, eol);
     }
 }
+
+// ============================================================
+// Tests
+// ============================================================
+
+const testing = std.testing;
+
+fn runEmit(group: *const SpecifierGroup, spec: []const u8, minify: bool) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(testing.allocator);
+    try emitOneImport(&output, testing.allocator, spec, group, minify);
+    return output.toOwnedSlice(testing.allocator);
+}
+
+test "emitOneImport: default-only minify — 식별자↔keyword 토큰 경계 공백 (#2955)" {
+    var group: SpecifierGroup = .{ .default_local = "process$1" };
+    defer group.deinit(testing.allocator);
+
+    const out = try runEmit(&group, "node:process", true);
+    defer testing.allocator.free(out);
+
+    // `importprocess$1from"…"` 가 아니라 양쪽에 공백.
+    try testing.expectEqualStrings("import process$1 from\"node:process\";", out);
+}
+
+test "emitOneImport: default + named minify — brace 직후 from 공백 생략 (minify 효과)" {
+    var group: SpecifierGroup = .{ .default_local = "D" };
+    defer group.deinit(testing.allocator);
+    try group.named.append(testing.allocator, .{ .imported = "x", .local = "x" });
+
+    const out = try runEmit(&group, "spec", true);
+    defer testing.allocator.free(out);
+
+    // `}` 가 토큰 경계라 from 앞 공백 생략 가능 — 단 import↔D 사이는 공백 필수.
+    try testing.expectEqualStrings("import D,{x}from\"spec\";", out);
+}
+
+test "emitOneImport: named-only minify — 양쪽 brace 가 경계라 공백 모두 생략" {
+    var group: SpecifierGroup = .{};
+    defer group.deinit(testing.allocator);
+    try group.named.append(testing.allocator, .{ .imported = "createRequire", .local = "createRequire" });
+
+    const out = try runEmit(&group, "node:module", true);
+    defer testing.allocator.free(out);
+
+    try testing.expectEqualStrings("import{createRequire}from\"node:module\";", out);
+}
+
+test "emitOneImport: namespace minify — 식별자 직후 from 공백 필수 (#2955)" {
+    var group: SpecifierGroup = .{ .namespace_local = "ns" };
+    defer group.deinit(testing.allocator);
+
+    const out = try runEmit(&group, "spec", true);
+    defer testing.allocator.free(out);
+
+    // `*as N` 의 N 은 식별자라 from 앞 공백 필수. `nsfrom"…"` 형태 회귀 방지.
+    try testing.expectEqualStrings("import*as ns from\"spec\";", out);
+}
+
+test "emitOneImport: side-effect minify — `\"` 가 토큰 경계라 공백 불필요" {
+    var group: SpecifierGroup = .{ .side_effect_only = true };
+    defer group.deinit(testing.allocator);
+
+    const out = try runEmit(&group, "polyfill", true);
+    defer testing.allocator.free(out);
+
+    try testing.expectEqualStrings("import\"polyfill\";", out);
+}
+
+test "emitOneImport: non-minify default + named — 보수적 공백 + newline" {
+    var group: SpecifierGroup = .{ .default_local = "D" };
+    defer group.deinit(testing.allocator);
+    try group.named.append(testing.allocator, .{ .imported = "x", .local = "y" });
+
+    const out = try runEmit(&group, "spec", false);
+    defer testing.allocator.free(out);
+
+    try testing.expectEqualStrings("import D, { x as y } from \"spec\";\n", out);
+}
+
+test "emitOneImport: rename 없는 named 두 개 — list_sep 적용" {
+    var group: SpecifierGroup = .{};
+    defer group.deinit(testing.allocator);
+    try group.named.append(testing.allocator, .{ .imported = "a", .local = "a" });
+    try group.named.append(testing.allocator, .{ .imported = "b", .local = "b" });
+
+    const min = try runEmit(&group, "x", true);
+    defer testing.allocator.free(min);
+    try testing.expectEqualStrings("import{a,b}from\"x\";", min);
+
+    const pretty = try runEmit(&group, "x", false);
+    defer testing.allocator.free(pretty);
+    try testing.expectEqualStrings("import { a, b } from \"x\";\n", pretty);
+}
