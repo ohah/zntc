@@ -697,14 +697,57 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             }
             const raw = self.ast.getText(node.span);
             const result = try regex_lower.lower(self.allocator, raw, .{ .unsupported = u });
+            defer if (result.named_groups) |ng| self.allocator.free(ng);
             const new_text = result.text orelse break :blk self.copyNodeDirect(idx);
             defer self.allocator.free(new_text);
+
             const new_span = try self.ast.addString(new_text);
-            break :blk try self.ast.addNode(.{
+            const new_regex = try self.ast.addNode(.{
                 .tag = .regexp_literal,
                 .span = new_span,
                 .data = .{ .string_ref = new_span },
             });
+
+            // named capture group 이 있고 strip 됐으면 `__wrapRegExp(/.../, {n:1,...})` 로 wrap
+            // — exec().groups.NAME / replace(re, "$<NAME>") semantic 보존 (#1063). graph 가
+            // helper module (`runtime_helper_modules.zig` 의 wrap-regex) 을 import 해서
+            // chunk 분배까지 자동 처리.
+            if (result.named_groups) |ng| {
+                self.runtime_helpers.wrap_regex = true;
+
+                // {name1: 1, name2: 2, ...} object literal 합성. property key 는 quoted
+                // string literal (`"name"`) — reserved word/하이픈 등 고려 않게 일관 처리.
+                const props_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(props_top);
+                for (ng) |entry| {
+                    const key_quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{entry.name});
+                    defer self.allocator.free(key_quoted);
+                    const key_span = try self.ast.addString(key_quoted);
+                    const key_node = try self.ast.addNode(.{
+                        .tag = .string_literal,
+                        .span = key_span,
+                        .data = .{ .string_ref = key_span },
+                    });
+                    const val_node = try es_helpers.makeNumericLiteral(self, entry.index);
+                    const prop_node = try self.ast.addNode(.{
+                        .tag = .object_property,
+                        .span = node.span,
+                        .data = .{ .binary = .{ .left = key_node, .right = val_node, .flags = 0 } },
+                    });
+                    try self.scratch.append(self.allocator, prop_node);
+                }
+                const props_list = try self.ast.addNodeList(self.scratch.items[props_top..]);
+                const groups_obj = try self.ast.addNode(.{
+                    .tag = .object_expression,
+                    .span = node.span,
+                    .data = .{ .list = props_list },
+                });
+
+                const wrap_ref = try es_helpers.makeRuntimeHelperRef(self, "__wrapRegExp");
+                break :blk try es_helpers.makeCallExpr(self, wrap_ref, &.{ new_regex, groups_obj }, node.span);
+            }
+
+            break :blk new_regex;
         },
         .identifier_reference => {
             // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments

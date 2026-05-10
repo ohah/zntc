@@ -306,6 +306,13 @@ const MODULES = [_]HelperModule{
             .es5_min = rt.USING_RUNTIME_ES5_MIN,
         },
     },
+
+    // RegExp named capture group downlevel (#1063) — Hermes/ES5 호환.
+    .{
+        .short = "wrap-regex",
+        .helpers = &.{"__wrapRegExp"},
+        .body = .{ .plain = rt.WRAP_REGEXP_RUNTIME, .min = rt.WRAP_REGEXP_RUNTIME_MIN },
+    },
 };
 
 // ============================================================

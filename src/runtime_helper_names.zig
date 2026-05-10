@@ -70,6 +70,8 @@ pub const NAMES = struct {
     // ES2025 explicit resource management
     pub const USING_MIN = "$us"; // __using
     pub const CALL_DISPOSE_MIN = "$cD"; // __callDispose
+    // RegExp downlevel
+    pub const WRAP_REGEXP_MIN = "$wR"; // __wrapRegExp (named capture downlevel)
 };
 
 /// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
@@ -127,6 +129,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__propKey", .short = NAMES.PROP_KEY_MIN },
     .{ .base = "__using", .short = NAMES.USING_MIN },
     .{ .base = "__callDispose", .short = NAMES.CALL_DISPOSE_MIN },
+    .{ .base = "__wrapRegExp", .short = NAMES.WRAP_REGEXP_MIN },
 };
 
 /// PAIRS 로부터 base_name → short_name comptime 해시맵.

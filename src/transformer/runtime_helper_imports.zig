@@ -62,6 +62,7 @@ const HelperBit = enum {
     await_helper,
     tdz,
     read,
+    wrap_regex,
 };
 
 const BitDef = struct {
@@ -109,6 +110,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .await_helper, .bases = &.{"__await"} },
     .{ .bit = .tdz, .bases = &.{"__tdz"} },
     .{ .bit = .read, .bases = &.{"__read"} },
+    .{ .bit = .wrap_regex, .bases = &.{"__wrapRegExp"} },
 };
 
 comptime {

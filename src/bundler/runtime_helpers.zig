@@ -558,6 +558,70 @@ pub const GENERATOR_RUNTIME =
 ;
 pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){var __iterProto={};__iterProto[Symbol.iterator]=function(){return this};var __genProto=Object.create(__iterProto);return function(thisArg,body,genFn){var _={label:0,sent:function(){if(t[0]&1)throw t[1];return t[1]},trys:[],ops:[]},f,y,t,g;if(genFn){if(!genFn.__proto_set){Object.setPrototypeOf(genFn.prototype,__genProto);genFn.__proto_set=true}g=Object.create(genFn.prototype)}else{g={};g[Symbol.iterator]=function(){return this}}g.next=verb(0);g[\"throw\"]=verb(1);g[\"return\"]=verb(2);return g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(thisArg,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}}}();";
 
+/// __wrapRegExp: named capture group 다운레벨 (#1063). Hermes/ES5 등 named capture 미지원
+/// 환경에서 strip 후에도 `re.exec(s).groups.NAME` / `s.replace(re, "$<NAME>")` 가 동작하도록
+/// RegExp 를 wrap 한다. Babel `_wrapRegExp` 와 동일 패턴 (RegExp 상속 + exec/Symbol.replace
+/// override + WeakMap 으로 groups map 보유).
+pub const WRAP_REGEXP_RUNTIME =
+    \\var __wrapRegExp = function() {
+    \\  __wrapRegExp = function(re, groups) { return new BabelRegExp(re, undefined, groups); };
+    \\  var _super = RegExp.prototype;
+    \\  var _groups = new WeakMap();
+    \\  function BabelRegExp(re, flags, groups) {
+    \\    var _this = new RegExp(re, flags);
+    \\    _groups.set(_this, groups || _groups.get(re));
+    \\    return Object.setPrototypeOf(_this, BabelRegExp.prototype);
+    \\  }
+    \\  Object.setPrototypeOf(BabelRegExp.prototype, RegExp.prototype);
+    \\  BabelRegExp.prototype.exec = function(str) {
+    \\    var result = _super.exec.call(this, str);
+    \\    if (result) {
+    \\      result.groups = buildGroups(result, this);
+    \\      var indices = result.indices;
+    \\      if (indices) indices.groups = buildGroups(indices, this);
+    \\    }
+    \\    return result;
+    \\  };
+    \\  BabelRegExp.prototype[Symbol.replace] = function(str, substitution) {
+    \\    if (typeof substitution === "string") {
+    \\      var groups = _groups.get(this);
+    \\      return _super[Symbol.replace].call(this, str, substitution.replace(/\$<([^>]+)(>|$)/g, function(match, name, end) {
+    \\        if (end === "") return match;
+    \\        var group = groups[name];
+    \\        return Array.isArray(group) ? "$" + group.join("$") : typeof group === "number" ? "$" + group : "";
+    \\      }));
+    \\    } else if (typeof substitution === "function") {
+    \\      var _this = this;
+    \\      return _super[Symbol.replace].call(this, str, function() {
+    \\        var args = arguments;
+    \\        if (typeof args[args.length - 1] !== "object") {
+    \\          args = [].slice.call(args);
+    \\          args.push(buildGroups(args, _this));
+    \\        }
+    \\        return substitution.apply(this, args);
+    \\      });
+    \\    }
+    \\    return _super[Symbol.replace].call(this, str, substitution);
+    \\  };
+    \\  function buildGroups(result, re) {
+    \\    var g = _groups.get(re);
+    \\    return Object.keys(g).reduce(function(groups, name) {
+    \\      var i = g[name];
+    \\      if (typeof i === "number") groups[name] = result[i];
+    \\      else {
+    \\        var k = 0;
+    \\        while (result[i[k]] === undefined && k + 1 < i.length) k++;
+    \\        groups[name] = result[i[k]];
+    \\      }
+    \\      return groups;
+    \\    }, Object.create(null));
+    \\  }
+    \\  return __wrapRegExp.apply(this, arguments);
+    \\};
+    \\
+;
+pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=function(){" ++ NAMES.WRAP_REGEXP_MIN ++ "=function(re,groups){return new BabelRegExp(re,undefined,groups)};var _super=RegExp.prototype;var _groups=new WeakMap();function BabelRegExp(re,flags,groups){var _this=new RegExp(re,flags);_groups.set(_this,groups||_groups.get(re));return Object.setPrototypeOf(_this,BabelRegExp.prototype)}Object.setPrototypeOf(BabelRegExp.prototype,RegExp.prototype);BabelRegExp.prototype.exec=function(str){var result=_super.exec.call(this,str);if(result){result.groups=buildGroups(result,this);var indices=result.indices;if(indices)indices.groups=buildGroups(indices,this)}return result};BabelRegExp.prototype[Symbol.replace]=function(str,substitution){if(typeof substitution===\"string\"){var groups=_groups.get(this);return _super[Symbol.replace].call(this,str,substitution.replace(/\\$<([^>]+)(>|$)/g,function(match,name,end){if(end===\"\")return match;var group=groups[name];return Array.isArray(group)?\"$\"+group.join(\"$\"):typeof group===\"number\"?\"$\"+group:\"\"}))}else if(typeof substitution===\"function\"){var _this=this;return _super[Symbol.replace].call(this,str,function(){var args=arguments;if(typeof args[args.length-1]!==\"object\"){args=[].slice.call(args);args.push(buildGroups(args,_this))}return substitution.apply(this,args)})}return _super[Symbol.replace].call(this,str,substitution)};function buildGroups(result,re){var g=_groups.get(re);return Object.keys(g).reduce(function(groups,name){var i=g[name];if(typeof i===\"number\")groups[name]=result[i];else{var k=0;while(result[i[k]]===undefined&&k+1<i.length)k++;groups[name]=result[i[k]]}return groups},Object.create(null))}return " ++ NAMES.WRAP_REGEXP_MIN ++ ".apply(this,arguments)};";
+
 /// __await: async generator 안 await 표현의 wrapper. (#1911)
 /// `await x` 는 async generator body 안에서 `yield __await(x)` 로 변환되며,
 /// `__asyncGenerator` 의 step() 가 `r.value instanceof __await` 으로 인식해 Promise resolve.
@@ -1219,6 +1283,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);
+    }
+    if (helpers.wrap_regex) {
+        try buf.appendSlice(allocator, if (minify) WRAP_REGEXP_RUNTIME_MIN else WRAP_REGEXP_RUNTIME);
     }
     if (helpers.keep_names) {
         try buf.appendSlice(allocator, if (minify) KEEP_NAMES_RUNTIME_MIN else KEEP_NAMES_RUNTIME);
