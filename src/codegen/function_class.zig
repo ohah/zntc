@@ -26,9 +26,14 @@ fn collectKeepNameEntry(self: anytype, name_idx: NodeIndex) void {
 /// template literal을 child node 단위로 emit.
 /// rename/mangling이 적용되려면 expression을 개별 emitNode로 처리해야 한다.
 pub fn emitTemplateLiteral(self: anytype, node: Node) !void {
-    // substitution 없는 단순 template은 data.none=0 (list가 아님).
-    // extern union이므로 list.start로 읽으면 none 값과 동일 — 0이면 raw span.
-    if (node.data.none == 0) {
+    // raw-span shorthand (#2957): emotion / styled_components 의 transformer 가
+    // `.data = .{ .list = .{ .start = 0, .len = 0 } }` 로 만든 template literal.
+    // 이 경우만 raw span path 로 출력. parser-created template literal 은 list.start
+    // 가 우연히 0 이어도 list.len > 0 이라 이 분기를 피한다 (이전엔 `data.none == 0`
+    // 으로 검사해 list.start = 0 인 정상 template literal 의 expression 이 mangle
+    // 되지 않고 source span 그대로 출력 — `${code}` 같은 매개변수 reference 가
+    // 깨지는 회귀).
+    if (node.data.list.len == 0) {
         try self.writeNodeSpan(node);
         return;
     }
