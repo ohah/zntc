@@ -39,13 +39,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+      - uses: ./.github/actions/bun-cache
 
       - name: Build ZNTC (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
