@@ -79,6 +79,11 @@ const emptyResult: BundlerResult = {
 
 interface SmokeOptions {
   keepOutputDir?: string;
+  deep?: boolean;
+  /** 모든 fixture 에 minify 강제. fixture 의 minify=false 도 override 한다. */
+  forceMinify?: boolean;
+  /** 모든 fixture 를 CJS 빌드로 시도. 일부 ESM-only 라이브러리는 빌드 실패할 수 있음. */
+  forceCjs?: boolean;
 }
 
 function stderrSummary(stderr: string): string {
@@ -127,6 +132,11 @@ interface ProjectConfig {
   name: string;
   pkg: string;
   entry: string;
+  /**
+   * `entry` 를 완전히 대체한다 (extend 가 아님). 라이브러리 내부 코드 path 를
+   * 실제로 깨워서 트리쉐이커가 잘못 잘라낸 코드를 런타임 에러로 드러내는 게 목적.
+   */
+  deepEntry?: string;
   files?: Record<string, string>;
   external?: string[];
   format?: 'esm' | 'cjs';
@@ -163,7 +173,8 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
   const entryFile = join(__dirname, `_smoke_entry_${p.name}.ts`);
   const extraFiles: string[] = [];
   try {
-    writeFileSync(entryFile, p.entry);
+    const activeEntry = options.deep && p.deepEntry ? p.deepEntry : p.entry;
+    writeFileSync(entryFile, activeEntry);
     if (p.files) {
       for (const [relativePath, content] of Object.entries(p.files)) {
         const filePath = join(__dirname, relativePath);
@@ -183,17 +194,18 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
     const esOut = join(dir, 'dist-esbuild.js');
     const rdOut = join(dir, 'dist-rolldown.js');
     const ext = p.external ?? [];
-    const format = p.format ?? 'esm';
+    const format = options.forceCjs ? 'cjs' : (p.format ?? 'esm');
     const platform = p.platform ?? 'node';
     const production = isProductionBuild(p);
     const nodeEnvDefine = production ? `"production"` : `"development"`;
+    const minify = options.forceMinify || !!p.minify;
 
     // ZNTC
     const zntcExternalArgs = ext.flatMap((e) => ['--external', e]);
     const zntcFormatArgs = format === 'cjs' ? ['--format=cjs'] : [];
     const zntcTsconfigArgs = p.tsconfig ? ['-p', tsconfigFile] : [];
     const zntcTargetArgs = p.target ? [`--target=${p.target}`] : [];
-    const zntcMinifyArgs = p.minify ? ['--minify'] : [];
+    const zntcMinifyArgs = minify ? ['--minify'] : [];
     const zntcDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
     result.zntc = bundleAndRun(
       ZNTC_BIN,
@@ -221,7 +233,7 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
       const esExternalArgs = ext.flatMap((e) => [`--external:${e}`]);
       const esFormatArgs = format === 'esm' ? [`--format=esm`] : [];
       const esTargetArgs = p.target ? [`--target=${p.target}`] : [];
-      const esMinifyArgs = p.minify ? ['--minify'] : [];
+      const esMinifyArgs = minify ? ['--minify'] : [];
       const esDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
       result.esbuild = bundleAndRun(
         ESBUILD_BIN,
@@ -248,7 +260,7 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
     // rolldown
     if (existsSync(ROLLDOWN_BIN)) {
       const rdExternalArgs = ext.flatMap((e) => ['--external', e]);
-      const rdMinifyArgs = p.minify ? ['--minify'] : [];
+      const rdMinifyArgs = minify ? ['--minify'] : [];
       const rdDefineArgs = ['--transform.define', `process.env.NODE_ENV:${nodeEnvDefine}`];
       result.rolldown = bundleAndRun(
         ROLLDOWN_BIN,
@@ -281,7 +293,7 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
         output: { path: ${JSON.stringify(rsOut)}, filename: "main.js" },
         target: ${JSON.stringify(platform === 'node' ? 'node' : 'web')},
         mode: ${JSON.stringify(production ? 'production' : 'development')},
-        optimization: { minimize: ${p.minify ? 'true' : 'false'} },
+        optimization: { minimize: ${minify ? 'true' : 'false'} },
         module: { rules: [{ test: /\\.ts$/, use: { loader: "builtin:swc-loader", options: { jsc: { parser: { syntax: "typescript" } } } } }] },
         ${ext.length > 0 ? `externals: ${JSON.stringify(ext)},` : ''}
       };`;
@@ -346,16 +358,78 @@ const projects: ProjectConfig[] = [
     name: 'lodash-es',
     pkg: 'lodash-es',
     entry: `import { groupBy, sortBy, uniq } from 'lodash-es';\nconsole.log(groupBy, sortBy, uniq);`,
+    deepEntry: `import { groupBy, sortBy, uniq, chunk, flatMap, keyBy, mapValues, pick, omit, debounce } from 'lodash-es';
+const arr = [{ c: 'a', n: 1 }, { c: 'b', n: 2 }, { c: 'a', n: 3 }, { c: 'b', n: 4 }, { c: 'a', n: 5 }];
+const grouped = groupBy(arr, 'c');
+const sorted = sortBy(arr, 'n');
+const u = uniq([1, 2, 2, 3, 3, 3]);
+const chunked = chunk([1, 2, 3, 4, 5, 6, 7], 3);
+const flat = flatMap([1, 2, 3], (n) => [n, n * 10]);
+const indexed = keyBy(arr, 'n');
+const valued = mapValues(grouped, (list) => list.length);
+const picked = pick({ a: 1, b: 2, c: 3 }, ['a', 'c']);
+const omitted = omit({ a: 1, b: 2, c: 3 }, ['b']);
+const dbg = debounce(() => 0, 100);
+console.log(JSON.stringify({
+  grouped: Object.keys(grouped).sort(),
+  sortedFirst: sorted[0].n,
+  uniq: u,
+  chunked: chunked.length,
+  flat,
+  indexedKeys: Object.keys(indexed).sort(),
+  valued,
+  picked,
+  omitted,
+  hasDbg: typeof dbg === 'function',
+}));`,
   },
   {
     name: 'preact',
     pkg: 'preact',
     entry: `import { h, render } from 'preact';\nconsole.log(h, render);`,
+    deepEntry: `import { h, Fragment, Component, cloneElement, createRef, createContext, options } from 'preact';
+const el = h('div', { id: 't' }, h('span', null, 'a'), h('span', null, 'b'));
+const cloned = cloneElement(el, { 'data-x': '1' });
+const ref = createRef();
+const ctx = createContext('default');
+console.log(JSON.stringify({
+  type: el.type,
+  id: el.props.id,
+  kids: (el.props.children as unknown[]).length,
+  cloned: cloned.props['data-x'],
+  fragment: typeof Fragment === 'function',
+  comp: typeof Component === 'function',
+  ref: ref.current === null,
+  ctx: typeof ctx.Provider === 'function',
+  optsObj: typeof options === 'object',
+}));`,
   },
   {
     name: 'date-fns',
     pkg: 'date-fns',
     entry: `import { format, addDays } from 'date-fns';\nconsole.log(format(addDays(new Date(), 1), 'yyyy-MM-dd'));`,
+    deepEntry: `import { format, addDays, subDays, differenceInDays, parseISO, isValid, startOfMonth, endOfMonth, addMonths, isAfter } from 'date-fns';
+const d = new Date('2024-06-15T00:00:00Z');
+const next = addDays(d, 10);
+const prev = subDays(d, 5);
+const diff = differenceInDays(next, prev);
+const parsed = parseISO('2024-12-31');
+const valid = isValid(parsed);
+const som = startOfMonth(d);
+const eom = endOfMonth(d);
+const nm = addMonths(d, 1);
+const after = isAfter(next, d);
+console.log(JSON.stringify({
+  next: format(next, 'yyyy-MM-dd'),
+  prev: format(prev, 'yyyy-MM-dd'),
+  diff,
+  parsedYear: parsed.getUTCFullYear(),
+  valid,
+  som: format(som, 'yyyy-MM-dd'),
+  eom: format(eom, 'yyyy-MM-dd'),
+  nextMonth: format(nm, 'yyyy-MM-dd'),
+  after,
+}));`,
   },
   {
     name: 'uuid',
@@ -366,26 +440,121 @@ const projects: ProjectConfig[] = [
     name: 'zod',
     pkg: 'zod',
     entry: `import { z } from 'zod';\nconst schema = z.string().email();\nconsole.log(schema.parse('test@test.com'));`,
+    deepEntry: `import { z } from 'zod';
+const Schema = z.object({
+  name: z.string().min(2),
+  age: z.number().int().min(0).max(120),
+  email: z.string().email(),
+  tags: z.array(z.string()).optional(),
+  role: z.enum(['admin', 'user']).default('user'),
+});
+const Union = z.union([z.literal('a'), z.literal('b')]);
+const Tuple = z.tuple([z.string(), z.number()]);
+const ok = Schema.safeParse({ name: 'Alice', age: 30, email: 'a@b.com', tags: ['x'] });
+const fail = Schema.safeParse({ name: 'A', age: -1, email: 'no' });
+const u = Union.safeParse('a');
+const t = Tuple.safeParse(['x', 1]);
+console.log(JSON.stringify({
+  ok: ok.success && ok.data.role === 'user',
+  failErrors: !fail.success && fail.error.issues.length >= 2,
+  union: u.success && u.data,
+  tuple: t.success && JSON.stringify(t.data),
+}));`,
   },
   {
     name: 'axios',
     pkg: 'axios',
     entry: `import axios from 'axios';\nconsole.log(typeof axios.get, typeof axios.post, typeof axios.create);`,
+    deepEntry: `import axios, { isAxiosError, isCancel, AxiosHeaders, AxiosError } from 'axios';
+const inst = axios.create({ baseURL: 'http://x', timeout: 1000, headers: { 'X-Test': '1' } });
+const headers = new AxiosHeaders({ 'Content-Type': 'application/json' });
+headers.set('X-Y', '2');
+const err = new AxiosError('boom');
+console.log(JSON.stringify({
+  client: typeof inst.get === 'function' && typeof inst.post === 'function',
+  baseURL: inst.defaults.baseURL,
+  timeout: inst.defaults.timeout,
+  contentType: headers.get('Content-Type'),
+  xy: headers.get('X-Y'),
+  isErr: isAxiosError(err),
+  isCancelFalse: isCancel(err) === false,
+  errMsg: err.message,
+}));`,
   },
   {
     name: 'toolkit',
     pkg: '@reduxjs/toolkit react redux',
     entry: `import { configureStore, createSlice } from '@reduxjs/toolkit';\nconst slice = createSlice({ name: 'test', initialState: 0, reducers: { inc: s => s + 1 } });\nconsole.log(slice.name, typeof slice.reducer);`,
+    deepEntry: `import { configureStore, createSlice, createAction, createReducer, createSelector, combineReducers } from '@reduxjs/toolkit';
+const counter = createSlice({
+  name: 'counter',
+  initialState: { v: 0, log: [] as number[] },
+  reducers: {
+    inc: (s) => { s.v++; s.log.push(s.v); },
+    add: (s, a: { type: string; payload: number }) => { s.v += a.payload; s.log.push(s.v); },
+  },
+});
+const ext = createAction<string>('ext');
+const reducer2 = createReducer({ msg: '' }, (b) => {
+  b.addCase(ext, (s, a) => { s.msg = a.payload; });
+});
+const root = combineReducers({ c: counter.reducer, r2: reducer2 });
+const store = configureStore({ reducer: root });
+store.dispatch(counter.actions.inc());
+store.dispatch(counter.actions.add(5));
+store.dispatch(ext('hi'));
+const selectV = createSelector((s: ReturnType<typeof root>) => s.c.v, (v: number) => v * 2);
+console.log(JSON.stringify({
+  counter: store.getState().c,
+  msg: store.getState().r2.msg,
+  selected: selectV(store.getState()),
+}));`,
   },
   {
     name: 'rxjs',
     pkg: 'rxjs',
     entry: `import { of, map, filter, toArray } from 'rxjs';\nof(1,2,3,4,5).pipe(filter(x=>x%2===0), map(x=>x*10), toArray()).subscribe(arr=>console.log(JSON.stringify(arr)));`,
+    deepEntry: `import { of, from, map, filter, scan, take, mergeMap, catchError, throwError, lastValueFrom, toArray, distinct } from 'rxjs';
+(async () => {
+  const a = await lastValueFrom(of(1, 2, 3, 4, 5).pipe(
+    filter((x) => x % 2 === 1),
+    map((x) => x * 10),
+    scan((acc, n) => acc + n, 0),
+    take(3),
+  ));
+  const b = await lastValueFrom(from([10, 20, 30]).pipe(
+    mergeMap((n) => of(n + 1)),
+    toArray(),
+  ));
+  const c = await lastValueFrom(throwError(() => new Error('boom')).pipe(
+    catchError(() => of('caught')),
+  ));
+  const d = await lastValueFrom(of(1, 1, 2, 3, 3, 4).pipe(distinct(), toArray()));
+  console.log(JSON.stringify({ a, b, c, d }));
+})();`,
   },
   {
     name: 'immer',
     pkg: 'immer',
     entry: `import { produce } from 'immer';\nconst o = { a: 1, b: [1,2] };\nconst n = produce(o, d => { d.a = 2; d.b.push(3); });\nconsole.log(o.a, n.a, o === n);`,
+    deepEntry: `import { produce, produceWithPatches, applyPatches, isDraft, enablePatches } from 'immer';
+enablePatches();
+const base = { a: 1, list: [1, 2, 3], nested: { x: 10 } };
+const next = produce(base, (d) => { d.a = 2; d.list.push(4); d.nested.x = 99; });
+const [withPatches, patches] = produceWithPatches(base, (d) => { d.a = 100; });
+const applied = applyPatches(base, patches);
+let drafted = false;
+produce(base, (d) => { drafted = isDraft(d); });
+console.log(JSON.stringify({
+  baseA: base.a,
+  nextA: next.a,
+  shareList: base.list === next.list,
+  shareNested: base.nested === next.nested,
+  newListLen: next.list.length,
+  withPatches: withPatches.a,
+  appliedA: applied.a,
+  drafted,
+}));`,
   },
   {
     name: 'superjson',
@@ -396,16 +565,62 @@ const projects: ProjectConfig[] = [
     name: 'express',
     pkg: 'express',
     entry: `import express from 'express';\nconst app = express();\napp.get('/t', (q,s)=>s.json({ok:true}));\nconsole.log(typeof app.listen, typeof app.get);`,
+    deepEntry: `import express, { Router } from 'express';
+const app = express();
+const router = Router();
+app.use((_req: any, _res: any, next: any) => next());
+app.get('/users/:id', (req: any, res: any) => res.json({ id: req.params.id }));
+router.get('/inner', (_req: any, res: any) => res.send('inner'));
+app.use('/api', router);
+console.log(JSON.stringify({
+  hasListen: typeof app.listen === 'function',
+  hasGet: typeof app.get === 'function',
+  hasUse: typeof app.use === 'function',
+  routerOk: typeof Router === 'function',
+  json: typeof express.json === 'function',
+  urlEnc: typeof express.urlencoded === 'function',
+  staticFn: typeof express.static === 'function',
+  routerInst: typeof router.get === 'function',
+}));`,
   },
   {
     name: 'react',
     pkg: 'react',
     entry: `import React from 'react';\nconst el = React.createElement('div', {id:'t'}, 'hi');\nconsole.log(el.type, el.props.id);`,
+    deepEntry: `import React, { createElement, Children, Fragment, Component, isValidElement, cloneElement, version } from 'react';
+const el = createElement('div', { id: 't' }, createElement('span', null, 'a'), createElement('span', null, 'b'));
+const cloned = cloneElement(el, { 'data-x': '1' });
+const arr = Children.toArray(el.props.children);
+console.log(JSON.stringify({
+  type: el.type,
+  id: el.props.id,
+  kids: arr.length,
+  cloned: cloned.props['data-x'],
+  fragment: typeof Fragment === 'symbol' || typeof Fragment === 'object',
+  comp: typeof Component === 'function',
+  isElem: isValidElement(el),
+  v: typeof version === 'string' && version.length > 0,
+  reactDef: typeof React === 'object',
+}));`,
   },
   {
     name: 'commander',
     pkg: 'commander',
     entry: `import { Command } from 'commander';\nconst p = new Command();\np.option('-n, --name <str>', 'name').parse(['node', 'test', '--name', 'hello']);\nconsole.log(p.opts().name);`,
+    deepEntry: `import { Command, Option, Argument } from 'commander';
+const p = new Command();
+p.name('test').version('1.2.3').description('A test program');
+p.addOption(new Option('-n, --name <str>', 'name').default('anon'));
+p.addOption(new Option('--mode <m>', 'mode').choices(['a', 'b']).default('a'));
+p.addArgument(new Argument('<file>', 'input file'));
+p.parse(['node', 'test', '--name', 'alice', '--mode', 'b', 'in.txt'], { from: 'node' });
+console.log(JSON.stringify({
+  name: p.opts().name,
+  mode: p.opts().mode,
+  arg: p.args[0],
+  ver: p.version(),
+  desc: p.description(),
+}));`,
   },
   {
     name: 'eventemitter3',
@@ -446,6 +661,18 @@ const projects: ProjectConfig[] = [
     name: 'tanstack-query',
     pkg: '@tanstack/query-core',
     entry: `import { QueryClient } from '@tanstack/query-core';\nconst qc = new QueryClient();\nqc.fetchQuery({queryKey:['t'],queryFn:()=>Promise.resolve(42)}).then(r=>{console.log(r);qc.clear();});`,
+    deepEntry: `import { QueryClient } from '@tanstack/query-core';
+(async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const a = await qc.fetchQuery({ queryKey: ['a'], queryFn: () => Promise.resolve(42) });
+  const b = await qc.fetchQuery({ queryKey: ['b', 1], queryFn: () => Promise.resolve('hi') });
+  await qc.invalidateQueries({ queryKey: ['a'] });
+  const cache = qc.getQueryCache();
+  const all = cache.getAll().length;
+  qc.clear();
+  const cleared = qc.getQueryCache().getAll().length;
+  console.log(JSON.stringify({ a, b, all, cleared }));
+})();`,
   },
   {
     name: 'fast-glob',
@@ -471,32 +698,134 @@ const projects: ProjectConfig[] = [
     name: 'chalk',
     pkg: 'chalk@5',
     entry: `import chalk from 'chalk';\nconsole.log(chalk.red('hello'));`,
+    deepEntry: `import chalk, { supportsColor, Chalk } from 'chalk';
+const red = chalk.red('hello');
+const blueBold = chalk.blue.bold('world');
+const tpl = chalk.green('x ' + 'y' + ' z');
+const hex = chalk.hex('#ff8800')('orange');
+const bg = chalk.bgYellow.black('warn');
+const custom = new Chalk({ level: 0 });
+const plain = custom.red('plain');
+console.log(JSON.stringify({
+  red,
+  blueBold,
+  tpl,
+  hex,
+  bg,
+  hasSupport: typeof supportsColor === 'object' || supportsColor === false,
+  level: typeof chalk.level === 'number',
+  plainNoAnsi: plain === 'plain',
+}));`,
   },
   {
     name: 'yaml',
     pkg: 'yaml',
     entry: `import { parse } from 'yaml';\nconsole.log(JSON.stringify(parse('a: 1\\nb: 2')));`,
+    deepEntry: `import { parse, stringify, parseDocument } from 'yaml';
+const obj = parse('a: 1\\nb:\\n  - 1\\n  - 2\\nc:\\n  d: hello\\n');
+const out = stringify({ x: 1, y: [10, 20], z: { p: 'q' } });
+const doc = parseDocument('foo: bar\\nlist: [1, 2, 3]\\n');
+const docOut = doc.toJS();
+console.log(JSON.stringify({
+  obj,
+  outHasX: out.includes('x: 1'),
+  outHasY: out.includes('- 10') || out.includes('- 10\\n'),
+  doc: docOut,
+}));`,
   },
   {
     name: 'yargs',
     pkg: 'yargs',
     entry: `import yargs from 'yargs';\nconsole.log(typeof yargs);`,
     format: 'cjs',
+    deepEntry: `import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
+const argv = yargs(['--name', 'alice', '--age', '30', '--flag', 'pos1'])
+  .option('name', { type: 'string' })
+  .option('age', { type: 'number' })
+  .option('flag', { type: 'boolean' })
+  .parseSync();
+console.log(JSON.stringify({
+  name: argv.name,
+  age: argv.age,
+  flag: argv.flag,
+  pos: argv._,
+  hideBin: typeof hideBin === 'function',
+}));`,
   },
   {
     name: 'effect',
     pkg: 'effect',
     entry: `import { Effect, pipe } from 'effect';\nconst p = pipe(Effect.succeed(42), Effect.map((n: number) => n + 1));\nEffect.runPromise(p).then(r => console.log(r));`,
+    deepEntry: `import { Effect, pipe } from 'effect';
+const program = pipe(
+  Effect.succeed(10),
+  Effect.map((n: number) => n * 2),
+  Effect.flatMap((n: number) => Effect.succeed(n + 5)),
+  Effect.tap((n: number) => Effect.sync(() => { void n; })),
+);
+const sum = pipe(
+  Effect.succeed([1, 2, 3, 4, 5]),
+  Effect.map((arr: number[]) => arr.reduce((a, b) => a + b, 0)),
+);
+const fail = pipe(
+  Effect.fail('boom' as const),
+  Effect.catchAll(() => Effect.succeed('recovered' as const)),
+);
+Promise.all([
+  Effect.runPromise(program),
+  Effect.runPromise(sum),
+  Effect.runPromise(fail),
+]).then(([a, b, c]) => {
+  console.log(JSON.stringify({ a, b, c }));
+});`,
   },
   {
     name: 'vue',
     pkg: 'vue',
     entry: `import { ref, computed } from 'vue';\nconst c = ref(0);\nconst d = computed(() => c.value * 2);\nconsole.log(c.value, d.value);`,
+    deepEntry: `import { ref, computed, reactive, isRef, isReactive, toRefs, readonly, shallowRef, customRef } from 'vue';
+const c = ref(0);
+const dbl = computed(() => c.value * 2);
+const obj = reactive({ a: 1, b: 2 });
+const ro = readonly(obj);
+const sr = shallowRef({ deep: 1 });
+c.value = 5;
+obj.a = 10;
+const refs = toRefs(obj);
+console.log(JSON.stringify({
+  ref: c.value,
+  dbl: dbl.value,
+  isRef: isRef(c),
+  reactiveOk: isReactive(obj),
+  readonlyOk: isReactive(ro),
+  refsA: refs.a.value,
+  shallowOk: isRef(sr),
+  customRefOk: typeof customRef === 'function',
+}));`,
   },
   {
     name: 'svelte',
     pkg: 'svelte',
     entry: `import { readable } from 'svelte/store';\nconst t = readable(0, set => { set(42); return () => {}; });\nlet v; t.subscribe(x => v = x);\nconsole.log(v);`,
+    deepEntry: `import { readable, writable, derived, get } from 'svelte/store';
+const r = readable(0, (set: (v: number) => void) => { set(42); return () => {}; });
+const w = writable(10);
+const d = derived(w, ($w: number) => $w * 3);
+let rv = -1;
+let dv = -1;
+r.subscribe((x: number) => { rv = x; });
+const unsubD = d.subscribe((x: number) => { dv = x; });
+w.set(100);
+const wv = get(w);
+w.update((v: number) => v + 5);
+unsubD();
+console.log(JSON.stringify({
+  readable: rv,
+  writable: wv,
+  updated: get(w),
+  derived: dv,
+}));`,
   },
   // svelte tree-shaking 스펙트럼. `platform: "browser"`가 필수 — svelte의
   // package.json `exports` 조건부 resolve가 node에서는 서버 stub
@@ -537,32 +866,182 @@ const projects: ProjectConfig[] = [
     name: 'solid-js',
     pkg: 'solid-js',
     entry: `import { createSignal } from 'solid-js';\nconst [count, setCount] = createSignal(0);\nsetCount(1);\nconsole.log(count());`,
+    deepEntry: `import { createSignal, createMemo, createEffect, createRoot, batch, untrack } from 'solid-js';
+let result: any;
+createRoot((dispose) => {
+  const [c, setC] = createSignal(0);
+  const dbl = createMemo(() => c() * 2);
+  let eff = -1;
+  createEffect(() => { eff = c() + 1; });
+  setC(5);
+  batch(() => { setC(10); setC(11); });
+  const unt = untrack(() => c());
+  result = { c: c(), dbl: dbl(), eff, unt };
+  dispose();
+});
+console.log(JSON.stringify(result));`,
   },
   {
     name: 'three',
     pkg: 'three',
     entry: `import { Vector3 } from 'three';\nconst v = new Vector3(1, 2, 3);\nconsole.log(v.length().toFixed(2));`,
+    deepEntry: `import { Vector3, Matrix4, Quaternion, Box3, Euler, Color, MathUtils, Plane } from 'three';
+const v = new Vector3(1, 2, 3);
+const w = new Vector3(4, 5, 6);
+const dot = v.dot(w);
+const cross = v.clone().cross(w);
+const m = new Matrix4().makeRotationY(Math.PI / 2);
+const q = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
+const e = new Euler(0, Math.PI / 4, 0);
+const c = new Color(0.5, 0.25, 1.0);
+const box = new Box3().setFromCenterAndSize(v.clone(), new Vector3(2, 2, 2));
+console.log(JSON.stringify({
+  len: +v.length().toFixed(4),
+  dot,
+  cross: [cross.x, cross.y, cross.z],
+  mDet: +m.determinant().toFixed(4),
+  qNorm: +q.length().toFixed(4),
+  eulerY: +e.y.toFixed(4),
+  hex: c.getHex(),
+  boxMin: [box.min.x, box.min.y, box.min.z],
+  clamp: MathUtils.clamp(15, 0, 10),
+  hasPlane: typeof Plane === 'function',
+}));`,
   },
   {
     name: 'graphql',
     pkg: 'graphql',
     entry: `import { parse } from 'graphql';\nconst d = parse('{ hello }');\nconsole.log(d.definitions[0].selectionSet.selections[0].name.value);`,
+    deepEntry: `import { parse, print, validate, buildSchema, Kind, visit, GraphQLString, GraphQLInt, GraphQLObjectType, GraphQLSchema, graphqlSync } from 'graphql';
+const doc = parse('query GetUser($id: ID!) { user(id: $id) { id name posts(limit: 5) { title } } }');
+const fieldNames: string[] = [];
+visit(doc, {
+  Field(node) { fieldNames.push(node.name.value); },
+});
+const printed = print(doc).replace(/\\s+/g, ' ').trim();
+const schema = buildSchema('type Query { hello(name: String!): String }');
+const validQuery = parse('{ hello(name: \"world\") }');
+const errs = validate(schema, validQuery);
+const QueryType = new GraphQLObjectType({
+  name: 'Query',
+  fields: {
+    add: {
+      type: GraphQLInt,
+      args: { a: { type: GraphQLInt }, b: { type: GraphQLInt } },
+      resolve: (_: unknown, { a, b }: { a: number; b: number }) => a + b,
+    },
+    greet: {
+      type: GraphQLString,
+      args: { name: { type: GraphQLString } },
+      resolve: (_: unknown, { name }: { name: string }) => 'hi ' + name,
+    },
+  },
+});
+const execSchema = new GraphQLSchema({ query: QueryType });
+const execResult = graphqlSync({ schema: execSchema, source: '{ add(a: 2, b: 3) greet(name: \"zntc\") }' });
+console.log(JSON.stringify({
+  defKind: doc.definitions[0].kind,
+  isOpDef: doc.definitions[0].kind === Kind.OPERATION_DEFINITION,
+  fields: fieldNames,
+  printedHasUser: printed.includes('user(id: $id)'),
+  validateOk: errs.length === 0,
+  execData: execResult.data,
+  execErrs: execResult.errors?.length ?? 0,
+}));`,
   },
   {
     name: 'supabase',
     pkg: '@supabase/supabase-js',
     entry: `import { createClient } from '@supabase/supabase-js';\nconsole.log(typeof createClient);`,
+    deepEntry: `import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+let lastUrl = '';
+let lastMethod = '';
+const fakeFetch: typeof fetch = async (input, init) => {
+  lastUrl = typeof input === 'string' ? input : (input as URL).toString();
+  lastMethod = init?.method ?? 'GET';
+  return new Response(JSON.stringify([{ id: 1, name: 'a' }]), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+};
+const c: SupabaseClient = createClient('https://x.supabase.co', 'anon-key', {
+  global: { fetch: fakeFetch },
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+(async () => {
+  const { data, error } = await c.from('users').select('id,name').eq('active', true).order('id', { ascending: false }).limit(10);
+  console.log(JSON.stringify({
+    queryUrl: lastUrl.includes('/rest/v1/users') && lastUrl.includes('select=id%2Cname'),
+    queryMethod: lastMethod,
+    rowsLen: Array.isArray(data) ? data.length : -1,
+    err: error,
+    auth: {
+      signIn: typeof c.auth.signInWithPassword,
+      signOut: typeof c.auth.signOut,
+      getSession: typeof c.auth.getSession,
+      onAuthStateChange: typeof c.auth.onAuthStateChange,
+    },
+    surface: {
+      storage: typeof c.storage.from,
+      channel: typeof c.channel,
+      rpc: typeof c.rpc,
+      removeAllChannels: typeof c.removeAllChannels,
+    },
+  }));
+})();`,
   },
   {
     name: 'mobx',
     pkg: 'mobx',
     entry: `import { observable } from 'mobx';\nconst o = observable({ v: 0 });\no.v = 42;\nconsole.log(o.v);`,
+    deepEntry: `import { observable, autorun, makeAutoObservable, runInAction, isObservable, action, computed } from 'mobx';
+class Store {
+  v = 0;
+  list: number[] = [];
+  constructor() { makeAutoObservable(this); }
+  inc() { this.v++; this.list.push(this.v); }
+  get dbl() { return this.v * 2; }
+}
+const s = new Store();
+let runs = 0;
+const dispose = autorun(() => { runs++; void s.v; });
+s.inc();
+s.inc();
+runInAction(() => { s.v = 100; s.list.push(99); });
+const obs = observable.box(7);
+obs.set(8);
+dispose();
+console.log(JSON.stringify({
+  v: s.v,
+  dbl: s.dbl,
+  list: s.list,
+  runs,
+  obsBox: obs.get(),
+  isObs: isObservable(s),
+  hasAction: typeof action === 'function',
+  hasComputed: typeof computed === 'function',
+}));`,
   },
   {
     name: 'jotai',
     pkg: 'jotai react',
     entry: `import { atom, createStore } from 'jotai';\nconst a = atom(0);\nconst s = createStore();\ns.set(a, 42);\nconsole.log(s.get(a));`,
     external: ['react'],
+    deepEntry: `import { atom, createStore } from 'jotai';
+const a = atom(0);
+const dbl = atom((get) => get(a) * 2);
+const writer = atom(null, (get, set, n: number) => { set(a, get(a) + n); });
+const s = createStore();
+const watched: number[] = [];
+const unsub = s.sub(a, () => { watched.push(s.get(a)); });
+s.set(a, 10);
+s.set(writer, 5);
+unsub();
+console.log(JSON.stringify({
+  a: s.get(a),
+  dbl: s.get(dbl),
+  watched,
+}));`,
   },
   {
     name: 'mitt',
@@ -573,31 +1052,154 @@ const projects: ProjectConfig[] = [
     name: 'zustand',
     pkg: 'zustand',
     entry: `import { createStore } from 'zustand/vanilla';\nconst store = createStore((set) => ({ count: 0, inc: () => set((s) => ({ count: s.count + 1 })) }));\nstore.getState().inc();\nconsole.log(store.getState().count);`,
+    deepEntry: `import { createStore } from 'zustand/vanilla';
+type S = { count: number; log: number[]; inc: () => void; add: (n: number) => void };
+const store = createStore<S>((set) => ({
+  count: 0,
+  log: [],
+  inc: () => set((s) => ({ count: s.count + 1, log: [...s.log, s.count + 1] })),
+  add: (n) => set((s) => ({ count: s.count + n, log: [...s.log, s.count + n] })),
+}));
+const snaps: number[] = [];
+const unsub = store.subscribe((s) => { snaps.push(s.count); });
+store.getState().inc();
+store.getState().inc();
+store.getState().add(10);
+unsub();
+store.getState().add(5);
+console.log(JSON.stringify({
+  count: store.getState().count,
+  log: store.getState().log,
+  snaps,
+}));`,
   },
   {
     name: 'valtio',
     pkg: 'valtio',
     entry: `import { proxy, snapshot } from 'valtio/vanilla';\nconst state = proxy({ count: 0 });\nstate.count = 42;\nconsole.log(snapshot(state).count);`,
+    deepEntry: `import { proxy, snapshot, subscribe, ref } from 'valtio/vanilla';
+(async () => {
+  const state = proxy({ count: 0, list: [] as number[], nested: { x: 1 } });
+  let notifyCount = 0;
+  const unsub = subscribe(state, () => { notifyCount++; });
+  state.count = 1;
+  state.count = 2;
+  state.list.push(10, 20);
+  state.nested.x = 99;
+  await new Promise((r) => setTimeout(r, 30));
+  const snap = snapshot(state);
+  unsub();
+  state.count = 999;
+  console.log(JSON.stringify({
+    count: snap.count,
+    list: [...snap.list],
+    nestedX: snap.nested.x,
+    notified: notifyCount > 0,
+    liveAfterUnsub: state.count === 999,
+    hasRef: typeof ref === 'function',
+  }));
+})();`,
   },
   {
     name: 'react-dom',
     pkg: 'react-dom react',
     entry: `import { renderToString } from 'react-dom/server';\nimport { createElement } from 'react';\nconsole.log(renderToString(createElement('div', null, 'Hello')));`,
+    deepEntry: `import { renderToString, renderToStaticMarkup, version } from 'react-dom/server';
+import { createElement, Fragment } from 'react';
+const tree = createElement('div', { id: 'a' },
+  createElement('h1', null, 'Title'),
+  createElement('ul', null,
+    createElement('li', { key: 1 }, 'one'),
+    createElement('li', { key: 2 }, 'two'),
+  ),
+  createElement(Fragment, null, createElement('span', null, 'frag')),
+);
+const html1 = renderToString(tree);
+const html2 = renderToStaticMarkup(createElement('p', { className: 'x' }, 'static'));
+console.log(JSON.stringify({
+  ssrHasTitle: html1.includes('<h1>Title</h1>'),
+  ssrHasList: html1.includes('<ul>') && html1.includes('one') && html1.includes('two'),
+  ssrFrag: html1.includes('frag'),
+  staticP: html2 === '<p class="x">static</p>',
+  v: typeof version === 'string',
+}));`,
   },
   {
     name: 'd3',
     pkg: 'd3',
     entry: `import { scaleLinear, range } from 'd3';\nconst s = scaleLinear().domain([0, 100]).range([0, 1]);\nconsole.log(s(50));`,
+    deepEntry: `import { scaleLinear, scaleLog, range, extent, mean, median, max, min, bisector, ascending } from 'd3';
+const data = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5];
+const s = scaleLinear().domain([0, 100]).range([0, 1]);
+const sl = scaleLog().domain([1, 1000]).range([0, 1]);
+const r = range(0, 5);
+const ext = extent(data);
+const m = mean(data);
+const med = median(data);
+const mx = max(data);
+const mn = min(data);
+const bis = bisector((d: number) => d).left;
+const sorted = data.slice().sort(ascending);
+const idx = bis(sorted, 4);
+console.log(JSON.stringify({
+  s50: +s(50).toFixed(4),
+  sl100: +sl(100).toFixed(4),
+  range: r,
+  ext,
+  mean: m,
+  median: med,
+  max: mx,
+  min: mn,
+  bisIdx: idx,
+}));`,
   },
   {
     name: 'hono',
     pkg: 'hono',
     entry: `import { Hono } from 'hono';\nconst app = new Hono();\napp.get('/', (c) => c.text('Hello'));\nconsole.log('routes:', app.routes.length);`,
+    deepEntry: `import { Hono } from 'hono';
+(async () => {
+  const app = new Hono();
+  app.get('/', (c) => c.text('Hello'));
+  app.get('/u/:id', (c) => c.json({ id: c.req.param('id') }));
+  app.post('/p', async (c) => c.json(await c.req.json()));
+  const r1 = await app.request('/');
+  const t1 = await r1.text();
+  const r2 = await app.request('/u/42');
+  const j2 = await r2.json();
+  const r3 = await app.request('/p', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ k: 'v' }),
+  });
+  const j3 = await r3.json();
+  console.log(JSON.stringify({
+    t1,
+    j2,
+    j3,
+    routeCount: app.routes.length,
+  }));
+})();`,
   },
   {
     name: 'dayjs',
     pkg: 'dayjs',
     entry: `import dayjs from 'dayjs';\nconsole.log(dayjs('2024-01-01').format('YYYY/MM/DD'));`,
+    deepEntry: `import dayjs from 'dayjs';
+const d = dayjs('2024-06-15T12:00:00.000Z');
+const next = d.add(10, 'day');
+const before = d.subtract(2, 'month');
+const diff = next.diff(before, 'day');
+console.log(JSON.stringify({
+  iso: d.toISOString(),
+  next: next.format('YYYY-MM-DD'),
+  before: before.format('YYYY-MM-DD'),
+  diff,
+  year: d.year(),
+  month: d.month() + 1,
+  day: d.date(),
+  format: d.format('DD/MM/YYYY HH:mm'),
+}));`,
   },
   {
     name: 'nanoid',
@@ -1189,6 +1791,13 @@ const keepOutputDir = keepOutputArg
   : undefined;
 const jsonArg = process.argv.find((a) => a.startsWith('--json='));
 const jsonPath = jsonArg ? resolve(jsonArg.slice('--json='.length)) : undefined;
+// --deep: opt-in. CI 기본 동작 영향 없음.
+const deepMode = process.argv.includes('--deep');
+// --minify-all: fixture 가 minify=false 여도 강제로 minify 적용. minify가 dead code 를
+// 잘못 잘라내는지, 변수 mangling 이 라이브러리 동작을 깨는지 드러남.
+const forceMinify = process.argv.includes('--minify-all');
+// --format-cjs: 모든 fixture 를 CJS 출력으로 빌드 시도. ESM-only 라이브러리는 fail 가능.
+const forceCjs = process.argv.includes('--format-cjs');
 const filteredProjects = filterPatterns
   ? projects.filter((p) => filterPatterns.some((pattern) => p.name.includes(pattern)))
   : projects;
@@ -1201,7 +1810,7 @@ const results: SmokeResult[] = [];
 
 for (const p of filteredProjects) {
   process.stdout.write(`Testing ${p.name}... `);
-  const r = testProject(p, { keepOutputDir });
+  const r = testProject(p, { keepOutputDir, deep: deepMode, forceMinify, forceCjs });
   results.push(r);
 
   const status = r.zntc.build ? 'OK' : 'FAIL';

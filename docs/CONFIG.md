@@ -355,6 +355,43 @@ bundler 가 src 를 inline 해도 TS `tsc` 와 IDE 는 producer 의 `dist/*.d.ts
 | Parcel   | `source` exports condition    | no              | 없음            |
 | **ZNTC** | `source` exports condition    | **no**          | **없음**        |
 
+## package.json field / exports condition 우선순위
+
+dual-package (CJS + ESM 동시 출시) 라이브러리에서 ZNTC 가 어떤 entry 를 따라가는지.
+
+### main fields
+
+기본값 (`--main-fields` 미지정 시):
+
+```
+1. "module"   ← ESM 우선
+2. "main"     ← CJS fallback
+```
+
+코드: `src/bundler/resolver.zig` `resolveByMainFields`. `--main-fields=main,module` 처럼 명시 override 가능.
+
+### exports conditions
+
+기본값:
+
+```
+"import" → "module" → "browser" → "default"
+```
+
+코드: `src/bundler/resolver.zig` `conditions` 기본값. `--conditions=source,...` 로 추가 condition 만 받고, `module` 등 기본값을 자동 제거하지 않는다 (esbuild 의 "커스텀 조건 시 module 자동 제거" 함정 회피 — `DECISIONS.md` D064).
+
+### platform=node 에서도 ESM 우선 — esbuild 와 차이
+
+esbuild `--platform=node` 는 `main_fields=main,module` + `conditions=node,require,...` 로 잡혀서 **CJS 경로**를 우선한다. ZNTC 는 platform 분기 없이 항상 위 기본값 — `--platform=node` 빌드도 ESM 경로를 먼저 시도한다.
+
+**효과**: fp-ts (2.16.x), lodash-es, effect 등 dual-package 라이브러리에서 ESM (`es6/`, `esm/`) 경로로 진입 → cross-module dead code elimination 이 깊게 들어가 esbuild 대비 번들 크기가 크게 줄어든다.
+
+예) fp-ts `pipe(some(1), map(n => n + 1), getOrElse(() => 0))`:
+- esbuild `--platform=node`: `lib/Option.js` (CJS) → 17개 typeclass 모듈 keep → 70KB
+- ZNTC `--platform=node`: `es6/Option.js` (ESM) → 4개 모듈만 keep → 2.4KB
+
+**주의**: 일부 라이브러리는 CJS 와 ESM 빌드의 동작이 미세하게 다를 수 있다 (특히 `__esModule` interop, default export 처리). esbuild 에서 마이그레이션 중 동작 차이가 의심되면 `--main-fields=main,module` 로 명시해 esbuild 정책에 맞출 수 있다.
+
 ## 다른 번들러와의 차이
 
 ### Vite

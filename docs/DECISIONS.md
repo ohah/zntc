@@ -394,6 +394,7 @@
   - 커스텀 조건은 추가 방식 (Rollup처럼), `module` 절대 자동 제거 안 함
   - TS 확장자 매핑: `.js`→`[.js, .ts, .tsx]` (Rolldown 방식)
   - `default`는 항상 마지막 (Node.js 스펙)
+- **main fields 우선순위**: `module` → `main` (ESM 우선). `--platform=node` 분기 없음 — esbuild 와 의도적으로 다른 결정. 이유: dual-package 라이브러리(fp-ts/lodash-es/effect)에서 ESM 경로 진입 시 cross-module DCE 가 훨씬 깊게 들어가 번들 크기 이점이 크다 (fp-ts 사례에서 70KB → 2.4KB). 사용자 가시 동작은 `CONFIG.md` "package.json field / exports condition 우선순위" 섹션 참조.
 - **참고**: `references/rolldown/crates/rolldown_resolver/src/resolver_config.rs`, `references/bun/src/resolver/package_json.zig`
 
 ### D065: 순환 참조 처리
