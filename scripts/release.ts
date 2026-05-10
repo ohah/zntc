@@ -25,7 +25,7 @@ import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { PLATFORMS, subPackageDir } from './lib/platforms.ts';
+import { PLATFORMS, subPackageDir } from '../packages/core/src/platforms.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');

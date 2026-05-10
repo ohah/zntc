@@ -23,8 +23,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { detectWorkspacePackages, packTarball, type PackageInfo } from './lib/workspace.ts';
+import { PLATFORMS, subPackageName, subPackageDir } from '../packages/core/src/platforms.ts';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const PRIVATE_PACKAGES = new Set(['@zntc/server']);
 
@@ -201,6 +205,46 @@ async function smokeOne(target: PackageInfo, tmpRoot: string): Promise<void> {
   ok(`tarball 파일 ${tarballFiles.length}개`);
 }
 
+// Platform sub-package 검사 — workspace 미포함이라 detectWorkspacePackages 가
+// 못 본다. zntc.node 자체는 release.yml 매트릭스가 채우므로 dev 에선 없을 수
+// 있어 main 파일 존재 검증은 release.ts 의 verifySubPackageBinary 에 위임.
+// 여기선 package.json 의 fields 일관성만 (단일 manifest sync 검증 포함).
+async function checkPlatformSubPackages() {
+  console.log(`\n=== Platform sub-packages (${PLATFORMS.length}) — fields 일관성 ===`);
+  for (const p of PLATFORMS) {
+    const pkgName = subPackageName(p);
+    const dir = subPackageDir(p);
+    const pkgJsonPath = join(repoRoot, dir, 'package.json');
+    const before = failures.length;
+    let pkg: Record<string, unknown>;
+    try {
+      pkg = JSON.parse(await readFile(pkgJsonPath, 'utf8'));
+    } catch (e) {
+      fail(pkgName, `package.json 읽기 실패: ${(e as Error).message}`);
+      continue;
+    }
+    if (pkg.name !== pkgName) fail(pkgName, `name mismatch: ${String(pkg.name)} ≠ ${pkgName}`);
+    if (pkg.main !== 'zntc.node') fail(pkgName, `main 이 'zntc.node' 아님: ${String(pkg.main)}`);
+    if (!Array.isArray(pkg.files) || !pkg.files.includes('zntc.node')) {
+      fail(pkgName, `files 에 'zntc.node' 누락`);
+    }
+    const cmp = (field: string, expected: string | undefined) => {
+      const v = pkg[field];
+      if (expected === undefined) {
+        if (v !== undefined) fail(pkgName, `${field} 가 정의됐는데 manifest 엔 없음: ${JSON.stringify(v)}`);
+        return;
+      }
+      if (!Array.isArray(v) || v.length !== 1 || v[0] !== expected) {
+        fail(pkgName, `${field} 가 ['${expected}'] 가 아님: ${JSON.stringify(v)}`);
+      }
+    };
+    cmp('os', p.npmOs);
+    cmp('cpu', p.npmCpu);
+    cmp('libc', p.npmLibc);
+    if (failures.length === before) ok(`${pkgName}: fields 일관`);
+  }
+}
+
 async function main() {
   const targets = await detectWorkspacePackages();
   console.log(`Detected ${targets.length} workspace packages:`, targets.map((t) => t.dir).join(', '));
@@ -223,6 +267,8 @@ async function main() {
         fail(t.name, `예외: ${(e as Error).message}`);
       }
     }
+
+    await checkPlatformSubPackages();
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }

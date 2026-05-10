@@ -39,7 +39,9 @@ async function loadCoreModule() {
     console.error('note: source TypeScript is not loaded directly by Node.');
     console.error('');
     console.error('help: run `bun run --cwd packages/core build:js` from the repository root.');
-    console.error('help: for a full local build, run `bun run --cwd packages/core build`.');
+    console.error(
+      'help: for a full local build (NAPI binary 포함), run `bun run --cwd packages/core build:local`.',
+    );
     process.exit(1);
   }
 }
