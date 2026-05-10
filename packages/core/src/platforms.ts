@@ -18,7 +18,7 @@ export interface PlatformTarget {
   /** npm `os` 필드 — install 매칭. */
   npmOs: 'linux' | 'darwin' | 'win32';
   /** npm `cpu` 필드. */
-  npmCpu: 'x64' | 'arm64';
+  npmCpu: 'x64' | 'arm64' | 'ia32';
   /** npm `libc` 필드 (linux 만). */
   npmLibc?: 'glibc' | 'musl';
   /** `zig build napi -Dtarget=<zigTarget>` */
@@ -45,6 +45,22 @@ export const PLATFORMS: PlatformTarget[] = [
     ghaRunner: 'ubuntu-24.04-arm',
   },
   {
+    name: 'linux-x64-musl',
+    npmOs: 'linux',
+    npmCpu: 'x64',
+    npmLibc: 'musl',
+    zigTarget: 'x86_64-linux-musl',
+    ghaRunner: 'ubuntu-latest',
+  },
+  {
+    name: 'linux-arm64-musl',
+    npmOs: 'linux',
+    npmCpu: 'arm64',
+    npmLibc: 'musl',
+    zigTarget: 'aarch64-linux-musl',
+    ghaRunner: 'ubuntu-24.04-arm',
+  },
+  {
     name: 'darwin-x64',
     npmOs: 'darwin',
     npmCpu: 'x64',
@@ -65,6 +81,20 @@ export const PLATFORMS: PlatformTarget[] = [
     zigTarget: 'x86_64-windows-msvc',
     ghaRunner: 'windows-latest',
   },
+  {
+    name: 'win32-arm64-msvc',
+    npmOs: 'win32',
+    npmCpu: 'arm64',
+    zigTarget: 'aarch64-windows-msvc',
+    ghaRunner: 'windows-11-arm',
+  },
+  {
+    name: 'win32-ia32-msvc',
+    npmOs: 'win32',
+    npmCpu: 'ia32',
+    zigTarget: 'x86-windows-msvc',
+    ghaRunner: 'windows-latest',
+  },
 ];
 
 export function subPackageName(platform: PlatformTarget): string {
@@ -73,4 +103,20 @@ export function subPackageName(platform: PlatformTarget): string {
 
 export function subPackageDir(platform: PlatformTarget): string {
   return `packages/core-${platform.name}`;
+}
+
+/**
+ * findAddon() 의 "Supported: ..." 에러 메시지용 — PLATFORMS 변경 시 자동 반영.
+ * 동일 (os, cpu) 에 glibc/musl 둘 다 있으면 "(glibc/musl)" 로 합쳐 표기.
+ */
+export function formatSupportedPlatforms(): string {
+  const groups = new Map<string, string[]>();
+  for (const p of PLATFORMS) {
+    const key = `${p.npmOs}-${p.npmCpu}`;
+    if (!groups.has(key)) groups.set(key, []);
+    if (p.npmLibc) groups.get(key)!.push(p.npmLibc);
+  }
+  return Array.from(groups, ([key, libcs]) =>
+    libcs.length > 0 ? `${key} (${libcs.join('/')})` : key,
+  ).join(', ');
 }

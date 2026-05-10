@@ -1,0 +1,20 @@
+{
+  "name": "@zntc/core-win32-ia32-msvc",
+  "version": "0.1.0",
+  "description": "Windows ia32 (32-bit, MSVC) native binary for @zntc/core",
+  "license": "MIT",
+  "files": [
+    "zntc.node",
+    "README.md"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "ia32"
+  ],
+  "main": "zntc.node",
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/check-platform-binary.mjs"
+  }
+}

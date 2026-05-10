@@ -17,7 +17,7 @@ import { createRequire } from 'module';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { PLATFORMS, subPackageName } from './src/platforms.ts';
+import { PLATFORMS, formatSupportedPlatforms, subPackageName } from './src/platforms.ts';
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from '../shared/index';
 import type { TranspileOptions, TranspileResult } from '../shared/index';
@@ -145,7 +145,7 @@ let native: NativeModule | null = null;
 
 // npm 의 `os`/`cpu`/`libc` 매칭으로 platform sub-package 가 자동 install 됨
 // (메인 `@zntc/core` 의 optionalDependencies). 사용자 환경에 맞는 1개만 설치.
-// PLATFORMS 는 scripts/lib/platforms.ts 의 단일 source — bun build 가 inline.
+// PLATFORMS 는 ./src/platforms.ts 의 단일 source — bun build 가 inline.
 function getPlatformPackage(): string | null {
   const { platform, arch } = process;
   const match = PLATFORMS.find((p) => p.npmOs === platform && p.npmCpu === arch);
@@ -184,7 +184,7 @@ function findAddon(): string {
   const expected = platformPkg ? ` (expected sub-package: ${platformPkg})` : '';
   throw new Error(
     `@zntc/core: native binary not found for ${process.platform}-${process.arch}${expected}. ` +
-      'Supported: linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64. ' +
+      `Supported: ${formatSupportedPlatforms()}. ` +
       'For development run `zig build napi`. ' +
       'If your platform should be supported, please open an issue.',
   );

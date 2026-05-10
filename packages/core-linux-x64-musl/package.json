@@ -1,0 +1,23 @@
+{
+  "name": "@zntc/core-linux-x64-musl",
+  "version": "0.1.0",
+  "description": "Linux x64 (musl) native binary for @zntc/core",
+  "license": "MIT",
+  "files": [
+    "zntc.node",
+    "README.md"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "musl"
+  ],
+  "main": "zntc.node",
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/check-platform-binary.mjs"
+  }
+}
