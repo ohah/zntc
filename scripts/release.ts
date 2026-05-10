@@ -3,26 +3,29 @@
  *
  * 안전 기본값:
  * - default 는 dry-run (실제 publish 안 함)
- * - 실제 publish 는 `--publish` flag 명시 + stdin 'yes' confirm 모두 필요
+ * - 실제 publish 는 `--publish` flag 명시 + stdin 'yes' confirm 모두 필요 (CI 는 --yes 로 우회)
  * - pre-release-check 통과 강제
  * - npm registry 에 이미 같은 version 이 publish 됐으면 그 패키지 skip (idempotent)
+ * - sub-package (`@zntc/core-{platform}`) 의 zntc.node 누락/빈 파일 검증 — 빈 binary publish 차단
  *
  * 사용:
- *   bun scripts/release.ts                 # dry-run, 변경 없음
- *   bun scripts/release.ts --publish       # confirm 후 실제 publish (--access public)
+ *   bun scripts/release.ts                       # dry-run, 변경 없음
+ *   bun scripts/release.ts --publish             # confirm 후 실제 publish (--access public)
+ *   bun scripts/release.ts --publish --yes       # confirm prompt 우회 (CI/release.yml 자동화)
  *   bun scripts/release.ts --publish --tag next  # dist-tag 'next' 로
  *
- * publish 순서: core → server (skip, private) → web / react-native /
- * vite-plugin-zntc / wasm / init (core 만 의존하므로 순서 무관)
+ * publish 순서: platform sub-package 5개 (no deps, main 의 optionalDependencies)
+ *   → core → server (skip, private) → web / react-native / vite-plugin-zntc / wasm / init
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { PLATFORMS, subPackageDir } from './lib/platforms.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -31,10 +34,15 @@ interface ReleaseTarget {
   dir: string;
   name: string;
   version: string;
+  isPlatformSubPackage: boolean;
 }
 
-// publishable 토폴로지: core 먼저, 그 다음 core 만 의존하는 패키지들
+// publishable 토폴로지:
+//   1) platform sub-package 5개 — main 의 optionalDependencies 가 reference 하므로 먼저 publish
+//   2) core — sub-package 들에 optionalDependency
+//   3) core 만 의존하는 패키지들
 const PUBLISH_ORDER = [
+  ...PLATFORMS.map(subPackageDir),
   'packages/core',
   'packages/web',
   'packages/react-native',
@@ -42,6 +50,22 @@ const PUBLISH_ORDER = [
   'packages/wasm',
   'packages/init',
 ];
+
+const PLATFORM_SUB_DIRS = new Set(PLATFORMS.map(subPackageDir));
+
+// sub-package 디렉토리 안 zntc.node 가 정상 binary 인지 확인 — 빈 placeholder
+// publish 차단. release.yml 매트릭스 빌드가 실제 binary 로 채워야 통과.
+// sub-package 의 prepublishOnly hook (`scripts/check-platform-binary.mjs`) 와
+// 같은 검증 — defense-in-depth.
+function verifySubPackageBinary(dir: string, name: string): void {
+  const res = spawnSync('node', [resolve(__dirname, 'check-platform-binary.mjs'), 'zntc.node'], {
+    cwd: resolve(repoRoot, dir),
+    encoding: 'utf8',
+  });
+  if (res.status !== 0) {
+    throw new Error(`${name}: ${res.stderr.trim() || 'binary 검증 실패'}`);
+  }
+}
 
 async function loadTargets(): Promise<ReleaseTarget[]> {
   const targets: ReleaseTarget[] = [];
@@ -56,7 +80,12 @@ async function loadTargets(): Promise<ReleaseTarget[]> {
       console.log(`skip: ${pkg.name} (private)`);
       continue;
     }
-    targets.push({ dir, name: pkg.name, version: pkg.version });
+    targets.push({
+      dir,
+      name: pkg.name,
+      version: pkg.version,
+      isPlatformSubPackage: PLATFORM_SUB_DIRS.has(dir),
+    });
   }
   return targets;
 }
@@ -82,12 +111,14 @@ async function confirm(prompt: string): Promise<boolean> {
 async function main() {
   const args = process.argv.slice(2);
   const isPublish = args.includes('--publish');
+  const isYes = args.includes('--yes');
   const tagIdx = args.indexOf('--tag');
   const tag = tagIdx >= 0 ? args[tagIdx + 1] : undefined;
 
   console.log('=== ZNTC release ===');
   console.log(`mode: ${isPublish ? 'PUBLISH (실제 publish)' : 'dry-run (변경 없음)'}`);
   if (tag) console.log(`tag: ${tag}`);
+  if (isYes) console.log('confirm: --yes (prompt 우회)');
   console.log();
 
   // 1. pre-release-check 먼저 실행
@@ -97,8 +128,7 @@ async function main() {
     stdio: 'inherit',
   });
   if (checkRes.status !== 0) {
-    console.error('\n❌ pre-release-check 실패 — release 중단');
-    process.exit(1);
+    throw new Error('pre-release-check 실패 — release 중단');
   }
   console.log('\n✓ pre-release-check 통과\n');
 
@@ -139,7 +169,13 @@ async function main() {
   console.log('실제 publish 대상:');
   for (const t of toPublish) console.log(`  - ${t.name}@${t.version}`);
   console.log();
-  const ok = await confirm("확인하시려면 'yes' 입력 (그 외 입력 시 중단): ");
+
+  // sub-package binary 무결성 검증 — 빈 placeholder publish 차단.
+  for (const t of toPublish) {
+    if (t.isPlatformSubPackage) verifySubPackageBinary(t.dir, t.name);
+  }
+
+  const ok = isYes || await confirm("확인하시려면 'yes' 입력 (그 외 입력 시 중단): ");
   if (!ok) {
     console.log('취소됨.');
     return;
@@ -155,12 +191,15 @@ async function main() {
       stdio: 'inherit',
     });
     if (res.status !== 0) {
-      console.error(`\n❌ ${t.name} publish 실패 — 중단 (이전 패키지는 publish 됨)`);
-      process.exit(1);
+      throw new Error(`${t.name} publish 실패 — 중단 (이전 패키지는 publish 됨)`);
     }
   }
 
   console.log('\n=== 모두 publish 완료 ===');
 }
 
-await main();
+await main().catch((e: unknown) => {
+  const msg = e instanceof Error ? e.message : String(e);
+  console.error(`\n❌ ${msg}`);
+  process.exit(1);
+});
