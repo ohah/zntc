@@ -24,6 +24,10 @@ pub const Options = struct {
 pub const Result = struct {
     /// 최종 regex literal 텍스트 (`/pattern/flags` 전체). 변환이 없으면 null.
     text: ?[]const u8,
+    /// named capture group 이 있고 `regex_named_groups` strip 이 적용된 경우의
+    /// (name → positional index) 매핑. 호출자가 `__wrapRegExp(re, {...})` 로 감싸는 데
+    /// 사용 (#1063). free 책임은 호출자.
+    named_groups: ?[]const NamedGroupMapping = null,
 };
 
 /// regex literal 원본 텍스트(`/pattern/flags`)를 받아 변환이 필요하면 새 슬라이스를 반환.
@@ -53,6 +57,15 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
 
     if (!need_dotall and !need_named and !need_sticky and !need_unicode) return .{ .text = null };
 
+    // named capture mapping 추출 (strip 전에 — strip 후엔 named group 이 사라져 인덱스 추적 불가).
+    // 호출자가 `__wrapRegExp(re, {...})` 합성에 사용 (#1063).
+    var named_groups: ?[]const NamedGroupMapping = null;
+    errdefer if (named_groups) |ng| allocator.free(ng);
+    if (need_named) {
+        const map = try extractNamedGroupMap(allocator, pattern);
+        if (map.len > 0) named_groups = map else allocator.free(map);
+    }
+
     // /pattern/flags 를 단일 버퍼로 조립. dotAll/unicode 치환을 고려해 +8 여유.
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -70,7 +83,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
         if (need_unicode and c == 'u') continue;
         try out.append(allocator, c);
     }
-    return .{ .text = try out.toOwnedSlice(allocator) };
+    return .{ .text = try out.toOwnedSlice(allocator), .named_groups = named_groups };
 }
 
 const PatternOpts = struct {
@@ -348,6 +361,7 @@ const testing = std.testing;
 
 fn runLower(raw: []const u8, unsupported: compat.UnsupportedFeatures) !?[]const u8 {
     const r = try lower(testing.allocator, raw, .{ .unsupported = unsupported });
+    if (r.named_groups) |ng| testing.allocator.free(ng);
     return r.text;
 }
 
@@ -384,6 +398,33 @@ test "regex: named capture 여러 개" {
     const out = (try runLower("/(?<y>\\d{4})-(?<m>\\d{2})/", .{ .regex_named_groups = true })).?;
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("/(\\d{4})-(\\d{2})/", out);
+}
+
+test "regex: named capture mapping 반환 (#1063 wrapRegExp 입력)" {
+    const r = try lower(testing.allocator, "/(?<y>\\d{4})-(?<m>\\d{2})/", .{ .unsupported = .{ .regex_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.named_groups != null);
+    const ng = r.named_groups.?;
+    try testing.expectEqual(@as(usize, 2), ng.len);
+    try testing.expectEqualStrings("y", ng[0].name);
+    try testing.expectEqual(@as(u32, 1), ng[0].index);
+    try testing.expectEqualStrings("m", ng[1].name);
+    try testing.expectEqual(@as(u32, 2), ng[1].index);
+}
+
+test "regex: named group 없을 때 mapping null (#1063)" {
+    const r = try lower(testing.allocator, "/(\\d+)/", .{ .unsupported = .{ .regex_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.named_groups == null);
+}
+
+test "regex: lookbehind 만 있을 때 mapping null (#1063)" {
+    const r = try lower(testing.allocator, "/(?<=a)b/", .{ .unsupported = .{ .regex_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.named_groups == null);
 }
 
 test "regex: lookbehind (?<=...) 은 유지" {

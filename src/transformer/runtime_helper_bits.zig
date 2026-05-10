@@ -58,7 +58,10 @@ pub const RuntimeHelpers = packed struct(u32) {
     /// transpile-only 모드에서도 헬퍼 정의가 출력에 inline 되도록 transformer 가
     /// 호출 emit 시 함께 set 한다.
     legacy_decorator: bool = false,
-    _padding: u6 = 0,
+    /// __wrapRegExp: named capture group downlevel (Hermes/ES5 등) 에서 RegExp
+    /// 결과의 `.groups.NAME` 접근을 살리는 wrapper (#1063).
+    wrap_regex: bool = false,
+    _padding: u5 = 0,
 
     /// 어떤 helper flag 라도 set 됐는지 - emitter 의 prepend 분기에서 빈 helper 시
     /// no-op 결정에 사용.
