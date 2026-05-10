@@ -12,7 +12,10 @@ import { isAbsolute, resolve } from 'node:path';
  * 모두 strip.
  */
 function stripVirtualPrefix(src: string): string {
-  return src.replace(/^[\x00-\x20]+/, '');
+  // NUL prefix 와 control range 를 의도적으로 strip — Rolldown virtual module
+  // convention. oxlint no-control-regex 가 unicode escape 도 잡아 disable.
+  // oxlint-disable-next-line no-control-regex
+  return src.replace(/^[\u0000-\u0020]+/, '');
 }
 
 /**

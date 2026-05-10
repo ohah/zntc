@@ -250,7 +250,7 @@ export function createBabelTransformer(
     try {
       ensureBabel();
       const result = babel!.transformSync(code, {
-        ...(babelOptions ?? {}),
+        ...babelOptions,
         filename,
       });
       if (result?.code && result.code !== code) {

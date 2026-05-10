@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ROOT, ZNTC_BIN, findNodeModulesBin } from './_runner';
+import { ZNTC_BIN, findNodeModulesBin } from './_runner';
 
 const ITERATIONS = 10;
 

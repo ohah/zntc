@@ -8,7 +8,7 @@
  */
 
 import { mkdirSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve, relative, dirname, basename, extname, join, sep } from 'node:path';
+import { resolve, dirname, basename, extname, join, sep } from 'node:path';
 import { createServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { createRequire } from 'node:module';
@@ -54,7 +54,6 @@ const {
   buildAppSync,
   buildSync,
   envToDefine,
-  prepareAppDevSync,
   filterWorkspaces,
   findConfigPath,
   findModeConfigPath,

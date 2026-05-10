@@ -75,7 +75,7 @@ export function createCodegenTransformer(
     try {
       ensureBabel();
       const result = babel!.transformSync(code, {
-        ...(babelOptions ?? {}),
+        ...babelOptions,
         filename,
         parserOpts: { plugins: parserPlugins },
       });

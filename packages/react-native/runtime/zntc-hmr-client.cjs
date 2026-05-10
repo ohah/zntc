@@ -32,7 +32,7 @@ function getDirectNativeDevLoadingView() {
         return root.NativeModules.DevLoadingView;
       }
     }
-  } catch (_e) {
+  } catch {
     // fallback 으로 내려간다.
   }
 
@@ -44,7 +44,7 @@ function getDirectNativeDevLoadingView() {
         return nativeModules.DevLoadingView;
       }
     }
-  } catch (_e) {
+  } catch {
     // fallback 으로 내려간다.
   }
 
@@ -56,7 +56,7 @@ function getDirectNativeDevLoadingView() {
         return rnNativeModules.DevLoadingView;
       }
     }
-  } catch (_e) {
+  } catch {
     // fallback 으로 내려간다.
   }
 
@@ -92,7 +92,7 @@ function getDevLoadingView() {
       var mod = require('./DevLoadingView');
       return mod && (mod.default || mod) ? mod.default || mod : null;
     }
-  } catch (_e) {
+  } catch {
     // RN module resolution 실패 시 fallback 으로 내려간다.
   }
 
@@ -115,7 +115,7 @@ var HMRClient = {
     if (dlv && typeof dlv[method] === 'function') {
       try {
         dlv[method].apply(dlv, args);
-      } catch (_e) {
+      } catch {
         // DevLoadingView 호출 실패는 HMR 동작과 무관 — 무시
       }
     }
@@ -145,7 +145,7 @@ var HMRClient = {
     if (this._socket && this._socket.readyState === 1) {
       try {
         this._socket.send(JSON.stringify({ type: 'log', level: level, data: data }));
-      } catch (_e) {
+      } catch {
         // ignore
       }
     }
@@ -195,7 +195,7 @@ var HMRClient = {
                 if (socket.readyState !== 1) return;
                 if (socket.bufferedAmount > BUFFER_LIMIT) return;
                 var argsLen = arguments.length;
-                var args = new Array(argsLen);
+                var args = Array.from({ length: argsLen });
                 for (var j = 0; j < argsLen; j++) args[j] = arguments[j];
                 // seen / replacer 를 호출별 local 로 — toString 등으로 인한 reentrancy
                 // (console.log 가 다른 console.log 를 trigger) 에도 안전.
@@ -210,7 +210,7 @@ var HMRClient = {
                 };
                 try {
                   socket.send(JSON.stringify({ type: 'log', level: level, data: args }, replacer));
-                } catch (_e) {
+                } catch {
                   // serialization 실패 — drop
                 }
               };
