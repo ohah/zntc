@@ -143,9 +143,52 @@ zntc --ascii-only app.ts  # non-ASCII → \uXXXX 이스케이프
 zntc --define:DEBUG=false --define:VERSION='"1.0.0"' app.ts
 ```
 
-## Drop
+값은 **JavaScript 리터럴** 이어야 합니다. 큰따옴표 빠뜨리는 함정에 주의.
 
 ```bash
-zntc --drop=console app.ts     # console.* 제거
-zntc --drop=debugger app.ts    # debugger 문 제거
+# ✗ 틀림 — admin 이 식별자로 처리되어 의도와 다른 코드 생성
+zntc --define:USERNAME=admin app.ts
+
+# ✓ 맞음 — 큰따옴표 포함해 문자열 리터럴
+zntc --define:USERNAME='"admin"' app.ts
+
+# ✓ 숫자 / 불리언 / null 은 그대로 리터럴
+zntc --define:DEBUG=false --define:MAX=100 --define:USER=null app.ts
+
+# ✓ 객체 / 배열도 JSON 리터럴이면 OK
+zntc --define:ENV='{"mode":"prod"}' app.ts
 ```
+
+쉘 quoting 함정 — bash/zsh 에서 큰따옴표를 보존하려면 작은따옴표로 감싸야 합니다.
+
+## Drop
+
+세 가지 제거 옵션이 독립적으로 동작 — 동시에 사용 가능합니다.
+
+```bash
+# console.* 호출 제거
+zntc --drop=console app.ts
+
+# debugger 문 제거
+zntc --drop=debugger app.ts
+
+# labeled block 통째로 제거 — 쉼표로 여러 라벨 지정
+zntc --drop-labels=DEV,TEST app.ts
+
+# 셋 다 동시에
+zntc --drop=console --drop=debugger --drop-labels=DEV,TEST app.ts
+```
+
+`--drop-labels` 예시:
+
+```ts
+// 원본
+DEV: {
+  console.log("debug only");
+  attachDevtools();
+}
+
+// --drop-labels=DEV → 위 블록 전체가 출력에서 사라짐
+```
+
+production 빌드 전용 디버그 코드를 라벨로 감싸면 한 번에 제거할 수 있습니다.

@@ -169,6 +169,34 @@ zntc --bundle entry.ts -o bundle.js --analyze
 
 Upload `meta.json` to [Metafile Analyze](/zntc/analyze/) to inspect output sizes, input sizes, and the import graph.
 
+### Which metric to look at, and what to do about it
+
+| Metric | What it tells you | Action |
+|---|---|---|
+| **bytesInOutput per chunk** | Chunk size distribution | If one chunk is bloated, try `--splitting` or `manualChunks` |
+| **inputs[].imports** | Which module imports what | Surface unintended deep imports (e.g. all of `lodash`) — switch to named imports |
+| **inputs[].bytes vs bytesInOutput** | Input vs output size ratio | Ratio close to 1 means tree-shaking barely fired — check `sideEffects` / `@__PURE__` |
+| **outputs[].imports** | Inter-chunk dependency graph | Decide preload/prefetch priority |
+| **entry pointer chain** | Hops from entry to first used module | Candidates for shortening initial-load critical path |
+
+## `allowOverwrite`
+
+By default ZNTC refuses output paths that would overwrite an input file. Allow it explicitly when you really intend an in-place transpile.
+
+```bash
+zntc --bundle src/index.ts -o src/index.ts --allow-overwrite
+```
+
+```ts
+defineConfig({
+  entryPoints: ["src/index.ts"],
+  outfile: "src/index.ts",
+  allowOverwrite: true,
+});
+```
+
+Note: with sourcemaps enabled, overwriting in place causes the second build's sourcemap reference to point at the first build's output. Prefer a separate output directory whenever possible.
+
 ## Minify
 
 ```bash
@@ -327,3 +355,67 @@ defineConfig({
 zntc --bundle entry.ts -o bundle.js --watch
 zntc --bundle entry.ts -o bundle.js --watch-json  # NDJSON event output
 ```
+
+## Debugging — limits worth knowing
+
+The cases you most commonly trip over when bundle output isn't what you expect.
+
+### CJS wrapper modules don't tree-shake
+
+```ts
+// my-lib (CJS)
+const featureA = require('./feature-a');
+const featureB = require('./feature-b');
+module.exports = { featureA, featureB };
+```
+
+```ts
+// entry.ts
+import { featureA } from 'my-lib';   // featureB is also bundled
+```
+
+A `require_X()` call counts as a side effect, so the entire CJS wrap module is preserved even when the named import is unused. Either migrate the library to ESM or import the deep path directly:
+
+```ts
+import featureA from 'my-lib/feature-a';  // only what you need
+```
+
+JSON modules are converted to ESM ASTs and *do* tree-shake at the named-export level.
+
+### Variables that shadow globals get auto-renamed
+
+```ts
+const document = createVirtualDocument();
+document.title = "Hi";
+```
+
+In the bundle this becomes `document$1` or similar — automatic protection against TDZ and shadowing accidents. Sourcemaps preserve the original names. Which names are protected depends on the target environment (`browser` / `node` / `react-native`).
+
+### Namespace re-export hurts tree-shaking precision
+
+```ts
+// barrel.ts
+import * as utils from './utils';
+export { utils };
+```
+
+This pattern marks every export of `utils` as used. Prefer explicit re-exports when you can:
+
+```ts
+export { foo, bar } from './utils';
+```
+
+### `--define` values must be JavaScript literals
+
+```bash
+# ✗ Wrong — admin becomes an identifier, producing unintended code
+zntc --bundle entry.ts --define:USERNAME=admin
+
+# ✓ Right — quote it so it becomes a string literal
+zntc --bundle entry.ts --define:USERNAME='"admin"'
+
+# ✓ Numbers / booleans / null are literals as-is
+zntc --bundle entry.ts --define:DEBUG=false --define:MAX=100
+```
+
+Shell quoting gotcha: in bash/zsh you need to wrap the double quotes in single quotes to keep them.

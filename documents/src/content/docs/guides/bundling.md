@@ -169,6 +169,34 @@ zntc --bundle entry.ts -o bundle.js --analyze
 
 `meta.json`은 [Metafile 분석](/zntc/analyze/) 페이지에 업로드해 output 크기, input 크기, import graph를 확인할 수 있습니다.
 
+### 어떤 메트릭을 보고 무엇을 결정하나
+
+| 메트릭 | 무엇을 보는가 | 행동 |
+|---|---|---|
+| **bytesInOutput per chunk** | 청크 사이즈 분포 | 한 청크가 비대해지면 `--splitting` 또는 `manualChunks` |
+| **inputs[].imports** | 어떤 모듈이 어디서 import 됐는지 | 의도치 않은 deep import (예: `lodash` 전체) → named import 로 변경 |
+| **inputs[].bytes vs bytesInOutput** | 입력 vs 출력 크기 비율 | 비율이 1 에 가까우면 트리쉐이킹이 거의 없음 — `sideEffects` / `@__PURE__` 검토 |
+| **outputs[].imports** | 청크 간 의존 관계 | preload/prefetch 우선순위 결정 |
+| **entry pointer chain** | entry → 첫 사용 모듈까지 거리 | 초기 로딩 critical path 단축 후보 |
+
+## `allowOverwrite`
+
+기본적으로 입력 파일을 덮어쓰는 출력 경로는 안전을 위해 거부됩니다. `in-place` 트랜스파일이 의도라면 명시 허용하세요.
+
+```bash
+zntc --bundle src/index.ts -o src/index.ts --allow-overwrite
+```
+
+```ts
+defineConfig({
+  entryPoints: ["src/index.ts"],
+  outfile: "src/index.ts",
+  allowOverwrite: true,
+});
+```
+
+소스맵을 켠 채 같은 경로에 덮어쓰면 두 번째 빌드의 sourcemap reference 가 첫 빌드의 출력을 가리키게 되므로 주의 — 가능하면 별도 출력 디렉토리를 권장합니다.
+
 ## Minify
 
 ```bash
@@ -327,3 +355,67 @@ defineConfig({
 zntc --bundle entry.ts -o bundle.js --watch
 zntc --bundle entry.ts -o bundle.js --watch-json  # NDJSON 이벤트 출력
 ```
+
+## 디버깅 — 알아두면 좋은 한계
+
+번들 결과가 의도와 다르게 나올 때 가장 자주 부딪히는 케이스들입니다.
+
+### CJS 래퍼 모듈은 트리쉐이킹되지 않음
+
+```ts
+// my-lib (CJS)
+const featureA = require('./feature-a');
+const featureB = require('./feature-b');
+module.exports = { featureA, featureB };
+```
+
+```ts
+// entry.ts
+import { featureA } from 'my-lib';   // featureB 도 번들에 포함됨
+```
+
+`require_X()` 호출은 사이드이펙트로 간주되므로, 미사용 named import 라도 CJS wrap 모듈 전체가 보존됩니다. 가능하면 라이브러리를 ESM 으로 마이그레이션하거나, 직접 deep import 하세요.
+
+```ts
+import featureA from 'my-lib/feature-a';  // 필요한 것만
+```
+
+JSON 모듈은 ESM AST 로 변환되어 named export 단위 트리쉐이킹이 동작합니다.
+
+### 글로벌과 같은 이름의 변수는 자동 rename
+
+```ts
+const document = createVirtualDocument();
+document.title = "Hi";
+```
+
+번들 결과에서 `document` → `document$1` 처럼 rename 됩니다 — TDZ 또는 shadowing 사고를 피하기 위한 자동 보호. sourcemap 으로 원본 이름은 그대로 추적됩니다. 어떤 이름이 보호 대상인지는 타겟 환경(`browser` / `node` / `react-native`) 에 따라 다릅니다.
+
+### Namespace re-export 는 트리쉐이킹 정밀도가 낮아짐
+
+```ts
+// barrel.ts
+import * as utils from './utils';
+export { utils };
+```
+
+이 패턴은 `utils` 의 모든 export 가 사용된 것으로 간주됩니다. 가능하면 명시적 re-export 로 바꾸세요:
+
+```ts
+export { foo, bar } from './utils';
+```
+
+### `--define` 값은 JavaScript 리터럴이어야 함
+
+```bash
+# ✗ 틀림 — admin 이 식별자로 처리되어 의도와 다른 코드가 생성됨
+zntc --bundle entry.ts --define:USERNAME=admin
+
+# ✓ 맞음 — 큰따옴표를 포함해 문자열 리터럴
+zntc --bundle entry.ts --define:USERNAME='"admin"'
+
+# ✓ 숫자/불리언/null 은 그대로 리터럴
+zntc --bundle entry.ts --define:DEBUG=false --define:MAX=100
+```
+
+쉘 quoting 함정 — bash/zsh 에서 큰따옴표를 보존하려면 작은따옴표로 감싸야 합니다.

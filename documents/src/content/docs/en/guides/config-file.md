@@ -35,6 +35,86 @@ ZNTC merges options in this order (**later wins**):
 
 You can override config values from the CLI but not the other way around. To temporarily disable the config, rename or delete the file.
 
+## Advanced merge rules
+
+Most options follow simple "higher wins", but a few have asymmetric/special behaviors that bite users.
+
+### Boolean options merge asymmetrically
+
+A boolean flag like `--minify` cannot distinguish between "not passed" and "passed as false". Hence the asymmetry below.
+
+```json
+// zntc.config.json
+{ "minify": true, "sourcesContent": false }
+```
+
+```bash
+zntc --bundle entry.ts            # CLI passes neither --minify nor --sources-content
+# → minify=true            (default=false, so config's true applies)
+# → sourcesContent=false   (default=true, so config's false applies)
+```
+
+Rule: **only config values opposite to the default actually take effect.**
+
+| Default | config=true | config=false |
+|---|---|---|
+| `false` | ✅ applied | (no-op — already false) |
+| `true` | (no-op — already true) | ✅ applied |
+
+For precise control across CLI and config, use the functional config form's `command`/`mode` branching.
+
+```ts
+defineConfig(({ command, mode }) => ({
+  minify: command === 'bundle' && mode === 'production',
+}));
+```
+
+### `plugins` is concat (unlike other arrays)
+
+```ts
+// zntc.config.ts
+defineConfig({ plugins: [a, b] });
+```
+
+```bash
+zntc --bundle --plugin ./c.js --plugin ./d.js entry.ts
+# → plugins = [a, b, c, d]   (config + CLI concat)
+```
+
+Other array options (`external`, `inject`, `drop`, ...) follow "**CLI replaces config when non-empty**", but `plugins` is concatenated. Since order affects hook results (see first-match / chaining policy in the [Plugins guide](/zntc/en/guides/plugins/)), be intentional with registration order.
+
+### `--tsconfig-raw` for inline JSON
+
+You can pass tsconfig contents as a raw JSON string on the CLI — bypassing both `-p path` and auto-discovery.
+
+```bash
+zntc --bundle entry.ts --tsconfig-raw='{"compilerOptions":{"jsx":"preserve"}}'
+```
+
+Useful in CI / Docker where you'd rather not write a tsconfig file just to flip an option. Priority: `--tsconfig-raw` > `-p path` > auto-discovery.
+
+### tsconfig + `zntc.config` + CLI 3-way (e.g. `jsx`)
+
+If the same option is defined in all three, priority resolves "highest wins".
+
+```json
+// tsconfig.json
+{ "compilerOptions": { "jsx": "preserve" } }
+```
+
+```ts
+// zntc.config.ts
+export default defineConfig({ jsx: 'automatic' });
+```
+
+```bash
+zntc --bundle --jsx=transform App.tsx
+# → jsx=transform   (CLI wins)
+# → config's automatic and tsconfig's preserve are both ignored
+```
+
+If only `zntc.config` is present (no CLI flag), `automatic` applies. If even that is missing, tsconfig's `preserve` is the fallback.
+
 ## Editor setup
 
 ### VSCode

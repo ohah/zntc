@@ -35,6 +35,86 @@ ZNTC는 다음 순서로 옵션을 병합합니다 (**뒤가 우선**):
 
 CLI 인자로 `zntc.config.json`의 값을 덮어쓸 수 있지만, 반대는 불가능합니다. config 파일을 일시 비활성화하려면 파일을 이름 변경하거나 삭제하세요.
 
+## 고급 머지 규칙
+
+대부분의 옵션은 단순히 "위가 이긴다" 지만, 몇 가지는 사용자가 자주 함정에 빠지는 비대칭/특수 동작이 있습니다.
+
+### Boolean 옵션의 비대칭 머지
+
+`--minify` 같은 boolean flag 는 CLI 가 "안 줬을 때" 와 "false 로 줬을 때" 를 구분하지 못합니다. 그래서 다음 비대칭이 적용됩니다.
+
+```json
+// zntc.config.json
+{ "minify": true, "sourcesContent": false }
+```
+
+```bash
+zntc --bundle entry.ts            # CLI 에 --minify, --sources-content 둘 다 안 줌
+# → minify=true            (default=false 이므로 config 의 true 적용)
+# → sourcesContent=false   (default=true 이므로 config 의 false 적용)
+```
+
+규칙: **default 와 반대 방향으로 설정된 config 값만 효과를 가집니다.**
+
+| Default | config=true | config=false |
+|---|---|---|
+| `false` | ✅ 적용됨 | (무시 — 이미 false) |
+| `true` | (무시 — 이미 true) | ✅ 적용됨 |
+
+CLI 와 config 모두 정밀하게 제어하고 싶다면 함수형 config 의 `command`/`mode` 분기를 사용하세요.
+
+```ts
+defineConfig(({ command, mode }) => ({
+  minify: command === 'bundle' && mode === 'production',
+}));
+```
+
+### `plugins` 는 concat (다른 배열과 다름)
+
+```ts
+// zntc.config.ts
+defineConfig({ plugins: [a, b] });
+```
+
+```bash
+zntc --bundle --plugin ./c.js --plugin ./d.js entry.ts
+# → plugins = [a, b, c, d]   (config + CLI concat)
+```
+
+다른 배열 옵션 (`external`, `inject`, `drop`, ...) 은 **CLI 가 비어있지 않으면 CLI 만 사용** (덮어쓰기) 인 반면, `plugins` 는 합쳐집니다. 순서가 hook 결과에 영향을 주므로 ([플러그인 가이드](/zntc/guides/plugins/) 의 first-match / chaining 정책 참고) 등록 순서를 의식해서 작성하세요.
+
+### `--tsconfig-raw` JSON 직접 주입
+
+CLI 에서 tsconfig 내용을 JSON 문자열로 직접 전달할 수 있습니다 — 파일 기반 `-p path` 와 자동 탐색을 모두 우회합니다.
+
+```bash
+zntc --bundle entry.ts --tsconfig-raw='{"compilerOptions":{"jsx":"preserve"}}'
+```
+
+CI / Docker 환경에서 tsconfig 파일을 새로 만들지 않고 동적으로 옵션을 주입할 때 유용합니다. 우선순위는 `--tsconfig-raw` > `-p path` > 자동 탐색 순.
+
+### tsconfig + `zntc.config` + CLI 3-way (`jsx` 예시)
+
+같은 옵션이 세 곳에 정의되면 우선순위에 따라 가장 위가 이깁니다.
+
+```json
+// tsconfig.json
+{ "compilerOptions": { "jsx": "preserve" } }
+```
+
+```ts
+// zntc.config.ts
+export default defineConfig({ jsx: 'automatic' });
+```
+
+```bash
+zntc --bundle --jsx=transform App.tsx
+# → jsx=transform   (CLI 우선)
+# → config 의 automatic, tsconfig 의 preserve 둘 다 무시
+```
+
+`zntc.config` 만 있고 CLI 가 없으면 `automatic` 이 적용되고, `zntc.config` 도 없으면 tsconfig 의 `preserve` 가 fallback 됩니다.
+
 ## $schema 에디터 설정
 
 ### VSCode

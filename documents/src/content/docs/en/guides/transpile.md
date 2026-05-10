@@ -143,9 +143,52 @@ zntc --ascii-only app.ts  # Escape non-ASCII to \uXXXX
 zntc --define:DEBUG=false --define:VERSION='"1.0.0"' app.ts
 ```
 
-## Drop
+Values must be **JavaScript literals**. Watch out for missing quotes.
 
 ```bash
-zntc --drop=console app.ts     # Remove console.* calls
-zntc --drop=debugger app.ts    # Remove debugger statements
+# ✗ Wrong — admin becomes an identifier, producing unintended code
+zntc --define:USERNAME=admin app.ts
+
+# ✓ Right — quote it so it becomes a string literal
+zntc --define:USERNAME='"admin"' app.ts
+
+# ✓ Numbers / booleans / null are literals as-is
+zntc --define:DEBUG=false --define:MAX=100 --define:USER=null app.ts
+
+# ✓ Object / array work too if they're valid JSON literals
+zntc --define:ENV='{"mode":"prod"}' app.ts
 ```
+
+Shell quoting gotcha: in bash/zsh you need to wrap the double quotes in single quotes to keep them.
+
+## Drop
+
+Three independent removal options that can be combined.
+
+```bash
+# Remove console.* calls
+zntc --drop=console app.ts
+
+# Remove debugger statements
+zntc --drop=debugger app.ts
+
+# Remove labeled blocks entirely — comma-separated labels
+zntc --drop-labels=DEV,TEST app.ts
+
+# All three at once
+zntc --drop=console --drop=debugger --drop-labels=DEV,TEST app.ts
+```
+
+`--drop-labels` example:
+
+```ts
+// Source
+DEV: {
+  console.log("debug only");
+  attachDevtools();
+}
+
+// --drop-labels=DEV → the whole block disappears in the output
+```
+
+Wrap dev-only debug code in a label and you can strip it all in one switch for production builds.
