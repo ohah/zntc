@@ -792,17 +792,12 @@ pub const TreeShaker = struct {
                             try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
                         }
                     }
-                } else if (m.side_effects_user_defined and
-                    !m.side_effects and
-                    !graph_requested_exports.isLazyBarrelCandidate(self.graph, m))
-                {
-                    // user 가 명시적으로 sideEffects:false 선언 + graph 가 wrapper-barrel
-                    // pattern (`import x; export default x;` + body mutate) 으로 식별한
-                    // 모듈만 body 시드. 일반 lazy barrel (named exports / object literal
-                    // default 등) 은 isLazyBarrelCandidate 가 true 라 이 분기에 안 들어와
-                    // 기존 lazy seed 유지. node_modules 밖에서 sideEffects:false 가
-                    // 적용 안 된 모듈 (user_def=false) 도 영향 없음. lodash-es
-                    // lodash.default.js 의 `lodash.uniq = uniq;` 같은 mutation 시드.
+                } else if (graph_requested_exports.isWrapperBarrel(self.graph, m)) {
+                    // wrapper-barrel pattern (`import x; export default x;` + body mutate)
+                    // 은 body 의 mutation 이 보존돼야 BFS 가 reference 따라 imports 까지
+                    // 도달 가능. 일반 lazy barrel / user_def=false 모듈은 isWrapperBarrel
+                    // 첫 검사 (isLazyBarrelCandidate) 에서 false → 영향 없음.
+                    // lodash-es lodash.default.js 의 `lodash.uniq = uniq;` 같은 mutation 시드.
                     for (infos.stmts, 0..) |stmt, si| {
                         if (stmt.has_side_effects) {
                             try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
@@ -1731,17 +1726,15 @@ pub const TreeShaker = struct {
                     self.included.set(src);
                     changed = true;
                 }
-                // wrapper-barrel intermediate 보존: src 모듈이 user-declared
-                // sideEffects:false + wrapper-barrel pattern 인 경우, prune phase 에서
-                // hasAnyUsedExport=false 로 unset 되지 않도록 default 를 used 마킹.
-                // graph 의 isLazyBarrelCandidate wrapper-barrel detection 과 대응.
-                // lodash-es lodash.js → lodash.default.js → wrapperLodash.js chain 의
-                // intermediate 보존.
+                // wrapper-barrel intermediate 보존: chain 끝 canonical 까지의 intermediate
+                // (lodash.default.js) 가 prune phase 에서 hasAnyUsedExport=false 로 unset
+                // 되지 않도록 default 를 used 마킹. lodash-es lodash.js → lodash.default.js
+                // → wrapperLodash.js chain 보존. `default as X` alias 는 line 1716 gate 에서
+                // X 가 used 가 아니면 propagation 자체 차단되므로 narrow check 로 충분.
                 if (eb.kind == .re_export and
                     std.mem.eql(u8, eb.exported_name, "default") and
                     std.mem.eql(u8, eb.local_name, "default") and
-                    src_module.side_effects_user_defined and
-                    !src_module.side_effects)
+                    graph_requested_exports.isWrapperBarrel(self.graph, src_module))
                 {
                     try self.markExportUsed(@intCast(src), "default");
                 }
