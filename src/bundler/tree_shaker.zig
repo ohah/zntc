@@ -762,8 +762,10 @@ pub const TreeShaker = struct {
                 // entry는 번들 진입점이지만 pure local declaration은 실행 의미가 없다.
                 // side-effect statement와 entry export seed만 살리고, local-only pure statement는
                 // BFS dependency로 필요할 때만 도달시킨다.
-                // side_effects=true 모듈은 side-effect stmt만 시드.
-                // side_effects=false 모듈은 enqueue의 lazy 시드로 처리 (사용 시에만).
+                // side_effects=true (user_defined) 모듈은 모든 stmt 시드.
+                // 그 외 included 모듈은 side-effect stmt 만 시드 — sideEffects:false 라도
+                // ESM 의미상 included module 의 top-level body 는 실행되어야 하므로
+                // 관찰 가능한 mutation (예: `lodash.uniq = uniq;`) 은 보존돼야 한다.
                 if (self.entry_set.isSet(i)) {
                     var has_entry_side_effect_stmt = false;
                     for (infos.stmts) |stmt| {
