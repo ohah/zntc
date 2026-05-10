@@ -206,12 +206,10 @@ jobs:
           - platform: win32-arm64-msvc
             os: windows-11-arm
             zig_target: native
-          # ia32: windows-latest (x64) 에서 zig cross-build → setup-node 의
-          # architecture: x86 으로 32-bit Node 설치 후 WoW64 native require.
-          - platform: win32-ia32-msvc
-            os: windows-latest
-            zig_target: x86-windows-msvc
-            node_arch: x86
+          # win32-ia32-msvc 는 smoke 매트릭스에서 제외 — Node.js v24 가 win-x86
+          # 빌드를 폐지 (https://nodejs.org/dist/v24.0.0/SHASUMS256.txt). build
+          # 검증은 release.yml 의 build-napi/build-cli 에서 zig cross-build +
+          # check-platform-binary 사이즈 체크로 커버.
 
     steps:
       - name: Checkout
@@ -233,7 +231,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          architecture: ${{ matrix.node_arch || '' }}
 
       - uses: ./.github/actions/bun-cache
         with:
@@ -242,17 +239,23 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build NAPI module
+      # build:js:cjs 가 ZNTC self-host (`node bin/zntc.mjs --bundle`) — host
+      # node 가 packages/core/zntc.node 를 dlopen 함. host 와 ABI 가 다른 cross
+      # binary (musl 등) 는 못 읽으므로 host native 를 먼저 빌드해 두고, cross
+      # 매트릭스만 그 후 target binary 로 zig-out 을 덮어 sub-package 에 복사.
+      - name: Build host NAPI (dogfood)
         shell: bash
         run: |
-          if [ "${{ matrix.zig_target }}" = "native" ]; then
-            zig build napi
-          else
-            zig build napi -Dtarget=${{ matrix.zig_target }}
-          fi
+          zig build napi
+          cp zig-out/lib/zntc.node packages/core/zntc.node
 
       - name: Build JS wrapper + dts
         run: cd packages/core && bun run build:js && bun run build:dts
+
+      - name: Build platform NAPI (cross)
+        if: matrix.zig_target != 'native'
+        shell: bash
+        run: zig build napi -Dtarget=${{ matrix.zig_target }}
 
       - name: Copy .node into platform sub-package
         shell: bash
