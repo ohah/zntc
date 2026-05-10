@@ -162,10 +162,46 @@ pub fn emitArrow(self: anytype, node: Node) !void {
     try self.writeSpace();
     try self.write("=>");
     // block body는 emitBlock이 { 앞 공백을 관리, non-block은 여기서 추가
-    if (body.isNone() or self.ast.getNode(body).tag != .block_statement) {
-        try self.writeSpace();
-    }
+    const is_block_body = !body.isNone() and self.ast.getNode(body).tag == .block_statement;
+    if (!is_block_body) try self.writeSpace();
+
+    // expression body 의 leftmost token 이 `{` 면 paren wrap (#2964): constant
+    // inline 으로 \`x => ({obj})[x]\` 가 \`x => {obj}[x]\` 로 변환되면 \`{\` 가
+    // block body 로 해석되어 SyntaxError. object_expression 이 leftmost 인 모든
+    // expression (member/binary/conditional 의 left chain) 을 검사.
+    const needs_paren = !is_block_body and !body.isNone() and expressionStartsWithBrace(self, body);
+    if (needs_paren) try self.writeByte('(');
     try self.emitNode(body);
+    if (needs_paren) try self.writeByte(')');
+}
+
+fn expressionStartsWithBrace(self: anytype, node_idx: ast_mod.NodeIndex) bool {
+    return expressionStartsWithBraceDepth(self, node_idx, 0);
+}
+
+fn expressionStartsWithBraceDepth(self: anytype, node_idx: ast_mod.NodeIndex, depth: u32) bool {
+    if (depth >= 32) return false;
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(node_idx);
+    return switch (n.tag) {
+        .object_expression => true,
+        // member: extra = [object(0), property(1), flags(2)]
+        .static_member_expression, .computed_member_expression, .private_field_expression => blk: {
+            const ex = n.data.extra;
+            if (ex >= self.ast.extra_data.items.len) break :blk false;
+            const obj_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[ex]);
+            break :blk expressionStartsWithBraceDepth(self, obj_idx, depth + 1);
+        },
+        .binary_expression, .logical_expression, .assignment_expression => expressionStartsWithBraceDepth(self, n.data.binary.left, depth + 1),
+        .conditional_expression => expressionStartsWithBraceDepth(self, n.data.ternary.a, depth + 1),
+        .sequence_expression => blk: {
+            const list = n.data.list;
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+            if (indices.len == 0) break :blk false;
+            break :blk expressionStartsWithBraceDepth(self, @enumFromInt(indices[0]), depth + 1);
+        },
+        else => false,
+    };
 }
 
 /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
