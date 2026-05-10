@@ -123,9 +123,7 @@ jobs:
     needs: build-napi
     runs-on: ubuntu-latest
     env:
-      # main `@zntc/core` 의 prepublishOnly build 가 ZNTC self-host 호출 — runner 와
-      # 일치하는 NAPI artifact 가 packages/core/zntc.node 에 있어야 동작. runs-on
-      # 변경 시 여기 값도 함께 갱신.
+      # `runs-on` 과 매칭 — 변경 시 함께 갱신. 사용처: "Place zntc.node in main package".
       MAIN_BUILD_NAPI_PLATFORM: linux-x64-gnu
 
     steps:
@@ -195,7 +193,8 @@ jobs:
             exit 1
           fi
           cp "$src" packages/core/zntc.node
-          echo "✓ packages/core/zntc.node placed for prepublishOnly build"
+          size=$(stat -c%s packages/core/zntc.node 2>/dev/null || stat -f%z packages/core/zntc.node)
+          echo "✓ packages/core/zntc.node (${size} bytes) — prepublishOnly build"
 
       # dist-tag 자동 감지: v0.1.0 → latest, v0.1.0-rc.1 → rc, v0.1.0-beta.1 → beta
       - name: Determine npm dist-tag

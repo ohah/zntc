@@ -277,6 +277,10 @@ pub fn build(b: *std.Build) void {
 
         const napi_install = b.addInstallArtifact(napi_lib, .{
             .dest_sub_path = "zntc.node",
+            // windows 가 dll 을 `bin/` 에 두는 zig default 를 override — 모든 OS
+            // 에서 `zig-out/lib/zntc.node` 로 통일. 컨슈머 (CI cp / findAddon())
+            // 가 단일 경로만 보면 됨.
+            .dest_dir = .{ .override = .lib },
         });
         const napi_step = b.step("napi", "Build NAPI native module (.node)");
         napi_step.dependOn(&napi_install.step);
