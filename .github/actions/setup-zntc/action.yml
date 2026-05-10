@@ -83,14 +83,8 @@ runs:
         EOF
       shell: bash
 
-    - name: Cache Bun packages
-      if: ${{ inputs.install == 'true' }}
-      uses: actions/cache@v4
-      with:
-        path: ~/.bun/install/cache
-        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
-        restore-keys: |
-          ${{ runner.os }}-bun-
+    - if: ${{ inputs.install == 'true' }}
+      uses: ./.github/actions/bun-cache
 
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}

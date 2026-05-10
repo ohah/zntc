@@ -118,13 +118,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+      - uses: ./.github/actions/bun-cache
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -220,14 +214,9 @@ jobs:
         with:
           node-version: 24
 
-      - name: Cache Bun packages
-        uses: actions/cache@v4
+      - uses: ./.github/actions/bun-cache
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ matrix.platform }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.platform }}-bun-
-            ${{ runner.os }}-bun-
+          platform: ${{ matrix.platform }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -338,13 +327,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+      - uses: ./.github/actions/bun-cache
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
