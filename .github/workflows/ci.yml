@@ -235,8 +235,8 @@ jobs:
         run: cd packages/core && bun run build:js && bun run build:dts
 
       - name: Copy .node into platform sub-package
-        run: |
-          node -e "const fs=require('node:fs'); const from=['zig-out/lib/zntc.node','zig-out/bin/zntc.node'].find(fs.existsSync); if(!from) throw new Error('zntc.node build artifact not found'); fs.copyFileSync(from, 'packages/core-${{ matrix.platform }}/zntc.node');"
+        shell: bash
+        run: cp zig-out/lib/zntc.node packages/core-${{ matrix.platform }}/zntc.node
 
       # 사용자 시나리오: npm install @zntc/core → main + 환경 매칭 sub-package 1개 install.
       # 두 tarball 같이 install 해서 loader 가 sub-package require.resolve 로 binary 찾는 흐름 검증.
