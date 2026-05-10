@@ -5,12 +5,79 @@ on:
     tags:
       - 'v*'
 
+# permissions:
+#   contents: write   — github-release job (CLI binary tarball 업로드)
+#   id-token: write   — publish-npm job (npm OIDC trusted publishing 준비)
+# 첫 publish 는 NPM_TOKEN 으로. trusted publisher 등록 + NPM_TOKEN 삭제 후엔
+# OIDC 만으로 동작 (--provenance 자동 부착).
 permissions:
   contents: write
+  id-token: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
+  # ─── NAPI 바이너리 매트릭스 빌드 ───
+  # PLATFORMS in scripts/lib/platforms.ts 와 sync (YAML 정적 한계). 5 platform
+  # 각각 native runner 에서 zig build napi → zntc.node artifact.
+  build-napi:
+    name: Build NAPI (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux-x64-gnu
+            runner: ubuntu-latest
+            zig_target: x86_64-linux-gnu
+          - platform: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            zig_target: aarch64-linux-gnu
+          - platform: darwin-x64
+            runner: macos-15-intel
+            zig_target: x86_64-macos
+          - platform: darwin-arm64
+            runner: macos-latest
+            zig_target: aarch64-macos
+          - platform: win32-x64-msvc
+            runner: windows-latest
+            zig_target: x86_64-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build NAPI (ReleaseFast)
+        shell: bash
+        run: zig build napi -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+
+      - name: Locate zntc.node
+        id: locate
+        shell: bash
+        run: |
+          if [ -f "zig-out/lib/zntc.node" ]; then
+            echo "path=zig-out/lib/zntc.node" >> "$GITHUB_OUTPUT"
+          elif [ -f "zig-out/bin/zntc.node" ]; then
+            echo "path=zig-out/bin/zntc.node" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::zntc.node not found after zig build napi"
+            exit 1
+          fi
+
+      - name: Upload zntc.node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zntc-node-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ steps.locate.outputs.path }}
+
+  # ─── CLI 바이너리 매트릭스 (GitHub Release tarball) ───
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -19,10 +86,10 @@ jobs:
             os: ubuntu-latest
             artifact: zntc-x86_64-linux
           - target: aarch64-linux
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             artifact: zntc-aarch64-linux
           - target: x86_64-macos
-            os: macos-latest
+            os: macos-15-intel
             artifact: zntc-x86_64-macos
           - target: aarch64-macos
             os: macos-latest
@@ -32,46 +99,125 @@ jobs:
             artifact: zntc-x86_64-windows
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
-      - name: Build (ReleaseFast)
+      - name: Build CLI (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 1
           path: zig-out/bin/
 
-  release:
-    name: Create Release
-    needs: build
+  # ─── npm publish (5 sub-package + main + 나머지) ───
+  publish-npm:
+    name: Publish to npm
+    needs: build-napi
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download all artifacts
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: ./.github/actions/bun-cache
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download all NAPI artifacts
         uses: actions/download-artifact@v4
         with:
+          path: napi-artifacts/
+          pattern: zntc-node-*
+
+      # build-napi 매트릭스의 artifact 디렉토리 자체를 glob — platform 이름 hardcoded
+      # 제거 (PLATFORMS 가 늘면 release.yml 매트릭스만 추가하면 자동 픽업).
+      - name: Distribute zntc.node into platform sub-packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in napi-artifacts/zntc-node-*/; do
+            platform="${dir#napi-artifacts/zntc-node-}"
+            platform="${platform%/}"
+            src="${dir}zntc.node"
+            dst="packages/core-${platform}/zntc.node"
+            if [ ! -f "$src" ]; then
+              echo "::error::missing artifact: $src"
+              exit 1
+            fi
+            if [ ! -d "packages/core-${platform}" ]; then
+              echo "::error::sub-package directory missing: packages/core-${platform}"
+              exit 1
+            fi
+            cp "$src" "$dst"
+            size=$(stat -c%s "$dst" 2>/dev/null || stat -f%z "$dst")
+            echo "✓ ${dst} (${size} bytes)"
+          done
+
+      # dist-tag 자동 감지: v0.1.0 → latest, v0.1.0-rc.1 → rc, v0.1.0-beta.1 → beta
+      - name: Determine npm dist-tag
+        id: tag
+        shell: bash
+        run: |
+          REF="${{ github.ref_name }}"
+          VERSION="${REF#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            PREID="${VERSION#*-}"
+            DIST_TAG="${PREID%%.*}"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "dist-tag=${DIST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Will publish with --tag ${DIST_TAG}"
+
+      - name: Publish via release.ts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: bun scripts/release.ts --publish --yes --tag "${{ steps.tag.outputs.dist-tag }}"
+
+  # ─── GitHub Release (CLI binary tarball) ───
+  github-release:
+    name: Create GitHub Release
+    needs: [build-cli, publish-npm]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
           path: artifacts/
+          pattern: zntc-*-*
 
       - name: Create tarballs
         run: |
           cd artifacts
-          for dir in */; do
+          for dir in zntc-*/; do
             name="${dir%/}"
             tar -czf "${name}.tar.gz" -C "$dir" .
           done
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/*.tar.gz
+          files: artifacts/zntc-*.tar.gz

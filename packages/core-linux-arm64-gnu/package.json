@@ -16,5 +16,8 @@
   "libc": [
     "glibc"
   ],
-  "main": "zntc.node"
+  "main": "zntc.node",
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/check-platform-binary.mjs"
+  }
 }
