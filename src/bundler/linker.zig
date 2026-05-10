@@ -777,7 +777,15 @@ pub const Linker = struct {
 
                         if (blocks) continue;
                         if (exported.contains(sym_name)) continue;
-                        if (sym_name.len <= 1) continue;
+                        if (sym_name.len <= 1) {
+                            // candidate skip 한 1-char binding 도 reserved 에 등록 (#2965).
+                            // entry deepEntry 의 \`const e = ...\` 같은 짧은 식별자는
+                            // mangle 안 되고 source 그대로 emit 되므로 internal binding 의
+                            // mangle 결과로 동일 이름 부여 시 충돌 — three 의 \`class e\` ↔
+                            // entry \`const e = new Euler(...)\` 가 그 케이스.
+                            try reserved.put(sym_name, {});
+                            continue;
+                        }
                         if (std.mem.eql(u8, sym_name, "default")) continue;
                         if (std.mem.eql(u8, sym_name, "arguments")) continue;
 
@@ -789,7 +797,12 @@ pub const Linker = struct {
                         if (sym.synthetic_kind == .default_export) continue;
 
                         const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
-                        if (key.len <= 1) continue;
+                        if (key.len <= 1) {
+                            // canonical_name 이 sym_name 과 다른 1-char 케이스도 reserve
+                            // (위 sym_name 분기와 대칭 — #2965).
+                            try reserved.put(key, {});
+                            continue;
+                        }
                         if (exported.contains(key)) continue;
 
                         try candidates.append(self.allocator, .{
