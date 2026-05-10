@@ -48,6 +48,15 @@ export interface TranspileOptions {
   jsxImportSource?: string;
   /** JS 파일에서도 JSX 허용 */
   jsxInJs?: boolean;
+  /**
+   * React Fast Refresh transform — 컴포넌트에 `$RefreshReg$(_c, "Name")` 등록 +
+   * Hook 사용 함수에 `_s = $RefreshSig$()` 시그니처 호출 emit. SWC builtin 의
+   * `jsc.transform.react.refresh: true` / babel-plugin-react-refresh 와 동등.
+   * loader (rspack-loader, webpack/vite plugin) 가 single-file transpile 경로에서
+   * 활성화 시 사용. HMR runtime ($RefreshReg$/$RefreshSig$ 정의) 은 컨슈머 측
+   * `react-refresh/runtime` 또는 dev server 가 prelude 로 주입한다고 가정.
+   */
+  reactRefresh?: boolean;
   /** console.* 호출 제거 */
   dropConsole?: boolean;
   /** debugger 문 제거 */
@@ -217,6 +226,7 @@ export function buildOptionsJson(
     payload.unsupported = unsupportedOverride;
   if (opts.flow) payload.flow = true;
   if (opts.jsxInJs) payload.jsxInJs = true;
+  if (opts.reactRefresh) payload.reactRefresh = true;
   if (opts.jsx !== undefined) {
     // CLI vocab → Zig enum tag (kebab-case → snake_case): automatic-dev → automatic_dev.
     // 그 외 (`react-jsx` 등 tsconfig vocab, typo) 도 그대로 forward — NAPI / `optionsFromJson`
