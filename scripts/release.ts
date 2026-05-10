@@ -15,7 +15,7 @@
  *   bun scripts/release.ts --publish --tag next  # dist-tag 'next' 로
  *
  * publish 순서: platform sub-package 5개 (no deps, main 의 optionalDependencies)
- *   → core → server (skip, private) → web / react-native / vite-plugin-zntc / wasm / init
+ *   → core → server (skip, private) → web / react-native / @zntc/vite-plugin / @zntc/rspack-loader / wasm / init
  */
 
 import { spawnSync } from 'node:child_process';
@@ -46,7 +46,7 @@ const PUBLISH_ORDER = [
   'packages/core',
   'packages/web',
   'packages/react-native',
-  'packages/vite-plugin-zntc',
+  'packages/vite-plugin',
   'packages/rspack-loader',
   'packages/wasm',
   'packages/init',

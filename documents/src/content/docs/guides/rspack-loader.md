@@ -150,6 +150,6 @@ Rspack 의 `builtin:swc-loader` 는 Rust 로 컴파일돼 rspack core 안에 들
 
 ## 관련 문서
 
-- [Vite 어댑터](/zntc/guides/dev-server/) — `vite-plugin-zntc`
+- [Vite 어댑터](/zntc/guides/dev-server/) — `@zntc/vite-plugin`
 - [Transpile 옵션](/zntc/reference/options/) — 전체 `TranspileOptions` 레퍼런스
 - [도구 비교](/zntc/guides/comparison/)

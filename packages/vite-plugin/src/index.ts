@@ -1,11 +1,11 @@
 /**
- * vite-plugin-zntc — Vite의 esbuild transform을 ZNTC로 교체하는 플러그인
+ * @zntc/vite-plugin — Vite의 esbuild transform을 ZNTC로 교체하는 플러그인
  *
  * @example
  * ```ts
  * // vite.config.ts
  * import { defineConfig } from "vite";
- * import { zntc } from "vite-plugin-zntc";
+ * import { zntc } from "@zntc/vite-plugin";
  *
  * export default defineConfig({
  *   plugins: [zntc()],
@@ -54,7 +54,7 @@ export function zntc(options: ZntcPluginOptions = {}): Plugin {
   let cache: TsconfigCache | undefined;
 
   return {
-    name: 'vite-plugin-zntc',
+    name: '@zntc/vite-plugin',
 
     // Vite 5: esbuild transform 비활성화, Vite 6+: 이미 Rolldown 기반이므로 불필요
     config(_, _env) {

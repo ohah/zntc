@@ -12,7 +12,7 @@
     { "path": "./packages/server" },
     { "path": "./packages/web" },
     { "path": "./packages/react-native" },
-    { "path": "./packages/vite-plugin-zntc" },
+    { "path": "./packages/vite-plugin" },
     { "path": "./packages/rspack-loader" },
     { "path": "./packages/init" },
     { "path": "./packages/wasm" }

@@ -298,6 +298,6 @@ zntc bench --phase=parse --compare=baseline.json src/main.ts
 - JS API (`@zntc/core`) in `packages/core/index.ts` provides the same options programmatically.
 - Surface-level option coverage is listed in the [Options Matrix](/zntc/en/reference/options-matrix/).
 - Visualize `--metafile` output on the [Metafile Analyze](/zntc/analyze/) page.
-- Use `vite-plugin-zntc` or `vitePlugin()` for the Vite adapter.
+- Use `@zntc/vite-plugin` or `vitePlugin()` for the Vite adapter.
 - Use `@zntc/rspack-loader` for the Rspack / Webpack 5 adapter. ([guide](/zntc/en/guides/rspack-loader/))
 - Unsupported options and future plans: [docs/ROADMAP.md](https://github.com/ohah/zntc/blob/main/docs/ROADMAP.md).

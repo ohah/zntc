@@ -75,7 +75,7 @@ cd tests/e2e && bun test                 # Playwright E2E (dev server, 브라우
 
 **Resolve / 외부 호환**
 - `resolve-fallback.test.ts` / `browser-field.test.ts` / `block-list.test.ts`
-- `vite-plugin-zntc.test.ts` / `zntc-config-bundler.test.ts`
+- `vite-plugin.test.ts` / `zntc-config-bundler.test.ts`
 
 **ESM / namespace / semantic 회귀**
 - `esm-enum-hoisting.test.ts` / `esm-function-hoist.test.ts`

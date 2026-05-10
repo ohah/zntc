@@ -65,7 +65,7 @@ const out = await build({
 - [@zntc/react-native](https://npmjs.com/package/@zntc/react-native) — RN preset + Metro HMR adapter
 - [@zntc/wasm](https://npmjs.com/package/@zntc/wasm) — browser-side WASM 빌드 (NAPI 대신)
 - [@zntc/init](https://npmjs.com/package/@zntc/init) — 기존 RN 프로젝트에 ZNTC 도입
-- [vite-plugin-zntc](https://npmjs.com/package/vite-plugin-zntc) — Vite 의 esbuild transform 을 ZNTC 로 교체
+- [@zntc/vite-plugin](https://npmjs.com/package/@zntc/vite-plugin) — Vite 의 esbuild transform 을 ZNTC 로 교체
 
 ## 라이센스
 

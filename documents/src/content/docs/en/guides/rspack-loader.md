@@ -150,6 +150,6 @@ Rspack's `builtin:swc-loader` is compiled into rspack core in Rust, and external
 
 ## See also
 
-- [Vite adapter](/zntc/en/guides/dev-server/) — `vite-plugin-zntc`
+- [Vite adapter](/zntc/en/guides/dev-server/) — `@zntc/vite-plugin`
 - [Transpile Options](/zntc/en/reference/options/) — full `TranspileOptions` reference
 - [Tool comparison](/zntc/en/guides/comparison/)
