@@ -289,6 +289,22 @@ fn newCalleeNeedsParens(self: anytype, idx: NodeIndex) bool {
             .static_member_expression, .computed_member_expression, .private_field_expression => {
                 cur = self.ast.readExtraNode(n.data.extra, 0);
             },
+            // `new MemberExpression` callee 슬롯이 아닌 expression: paren 을 벗기면 결합이 깨진다.
+            // `new (a||b)()` → `new a||b()` 가 `(new a)||b()` 로 결합 (#2960).
+            // function/class expression 은 PrimaryExpression 이라 callee 슬롯에 직접 가능 (#1586).
+            .logical_expression,
+            .binary_expression,
+            .conditional_expression,
+            .assignment_expression,
+            .sequence_expression,
+            .arrow_function_expression,
+            .new_expression,
+            .yield_expression,
+            .await_expression,
+            .import_expression,
+            .unary_expression,
+            .update_expression,
+            => return true,
             else => return false,
         }
     }
