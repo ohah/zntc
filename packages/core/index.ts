@@ -17,6 +17,7 @@ import { createRequire } from 'module';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { PLATFORMS, subPackageName } from './src/platforms.ts';
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from '../shared/index';
 import type { TranspileOptions, TranspileResult } from '../shared/index';
@@ -144,14 +145,11 @@ let native: NativeModule | null = null;
 
 // npm 의 `os`/`cpu`/`libc` 매칭으로 platform sub-package 가 자동 install 됨
 // (메인 `@zntc/core` 의 optionalDependencies). 사용자 환경에 맞는 1개만 설치.
+// PLATFORMS 는 scripts/lib/platforms.ts 의 단일 source — bun build 가 inline.
 function getPlatformPackage(): string | null {
   const { platform, arch } = process;
-  if (platform === 'linux' && arch === 'x64') return '@zntc/core-linux-x64-gnu';
-  if (platform === 'linux' && arch === 'arm64') return '@zntc/core-linux-arm64-gnu';
-  if (platform === 'darwin' && arch === 'x64') return '@zntc/core-darwin-x64';
-  if (platform === 'darwin' && arch === 'arm64') return '@zntc/core-darwin-arm64';
-  if (platform === 'win32' && arch === 'x64') return '@zntc/core-win32-x64-msvc';
-  return null;
+  const match = PLATFORMS.find((p) => p.npmOs === platform && p.npmCpu === arch);
+  return match ? subPackageName(match) : null;
 }
 
 function findAddon(): string {
