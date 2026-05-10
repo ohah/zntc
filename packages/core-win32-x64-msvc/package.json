@@ -1,0 +1,17 @@
+{
+  "name": "@zntc/core-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "Windows x64 (MSVC) native binary for @zntc/core",
+  "license": "MIT",
+  "files": [
+    "zntc.node",
+    "README.md"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "zntc.node"
+}
