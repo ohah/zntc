@@ -8,6 +8,7 @@ on:
       # still run CI, but they should not publish docs unless docs files changed.
       - "documents/**"
       - ".github/workflows/docs.yml"
+      - ".github/actions/bun-cache/**"
   workflow_dispatch:
 
 permissions:
@@ -41,6 +42,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - uses: ./.github/actions/bun-cache
 
       - name: Build WASM (transpile + bundler)
         run: zig build wasm wasm-bundler
