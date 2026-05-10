@@ -26,7 +26,8 @@ pub const Result = struct {
     text: ?[]const u8,
     /// named capture group 이 있고 `regex_named_groups` strip 이 적용된 경우의
     /// (name → positional index) 매핑. 호출자가 `__wrapRegExp(re, {...})` 로 감싸는 데
-    /// 사용 (#1063). free 책임은 호출자.
+    /// 사용. free 책임은 호출자. `name` 슬라이스는 호출자가 lower 에 전달한 raw
+    /// 텍스트의 lifetime 에 의존 — owner 가 살아있는 동안만 유효.
     named_groups: ?[]const NamedGroupMapping = null,
 };
 
@@ -58,7 +59,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     if (!need_dotall and !need_named and !need_sticky and !need_unicode) return .{ .text = null };
 
     // named capture mapping 추출 (strip 전에 — strip 후엔 named group 이 사라져 인덱스 추적 불가).
-    // 호출자가 `__wrapRegExp(re, {...})` 합성에 사용 (#1063).
+    // 호출자가 `__wrapRegExp(re, {...})` 합성에 사용.
     var named_groups: ?[]const NamedGroupMapping = null;
     errdefer if (named_groups) |ng| allocator.free(ng);
     if (need_named) {
