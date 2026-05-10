@@ -12,6 +12,7 @@ const IMPORT_META_URL_NODE = "require(\"url\").pathToFileURL(__filename).href";
 const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__dirname,filename:__filename}";
 
 pub fn emitCall(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 3)) return;
     const callee = self.ast.readExtraNode(e, 0);
@@ -369,6 +370,7 @@ fn tryEmitWorkerURL(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, a
 }
 
 pub fn emitNew(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 3)) return;
     var callee = self.ast.readExtraNode(e, 0);
@@ -420,6 +422,7 @@ pub fn resolveImportMetaProp(self: anytype, object: NodeIndex, property: NodeInd
 }
 
 pub fn emitMetaProperty(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const text = self.ast.getText(node.span);
     if (std.mem.eql(u8, text, "import.meta")) {
         if (self.options.module_format == .cjs or self.options.replace_import_meta) {
@@ -435,6 +438,7 @@ pub fn emitMetaProperty(self: anytype, node: Node) !void {
 }
 
 pub fn emitImportExpr(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("import(");
     try self.emitNode(node.data.binary.left);
     if (!node.data.binary.right.isNone()) {

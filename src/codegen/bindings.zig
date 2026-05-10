@@ -14,12 +14,14 @@ const writeSpace = writer.writeSpace;
 // ================================================================
 
 pub fn emitAssignmentPattern(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.emitNode(node.data.binary.left);
     try self.writeByte('=');
     try self.emitNode(node.data.binary.right);
 }
 
 pub fn emitBindingProperty(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     // key는 원본 span 출력 (프로퍼티 이름이므로 rename 적용 안 함).
     // computed property key ([expr])는 내부 표현식에 rename이 필요하므로 emitNode 사용.
     const key_node = self.ast.getNode(node.data.binary.left);
@@ -59,6 +61,7 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
 }
 
 pub fn emitRest(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("...");
     try self.emitNode(node.data.unary.operand);
 }
@@ -68,6 +71,7 @@ pub fn emitRest(self: anytype, node: Node) !void {
 // ================================================================
 
 pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
     const kind = self.ast.variableDeclarationKind(node);
@@ -138,6 +142,7 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
 }
 
 pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
     const name: NodeIndex = @enumFromInt(extras[0]);
@@ -166,6 +171,7 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
 }
 
 pub fn emitFormalParam(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
     const extras = self.ast.extra_data.items[e .. e + 6];

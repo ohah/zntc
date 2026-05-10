@@ -11,6 +11,7 @@ const rt = @import("../bundler/runtime_helpers.zig");
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
 pub fn emitEnumIIFE(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     const members_start = self.ast.extra_data.items[e + 1];
@@ -224,6 +225,7 @@ const EnumMemberValue = union(enum) {
 ///   - Symbol body: 각 member 의 init 으로 \`Symbol('name')\` 자동 emit
 ///   - number/boolean body + defaulted: ZNTC 가 default value (auto-increment / false) 채움
 pub fn emitFlowEnum(self: anytype, node: Node) std.mem.Allocator.Error!void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     const members_start = self.ast.extra_data.items[e + 1];
@@ -317,6 +319,7 @@ pub fn emitNamespaceIIFE(self: anytype, node: Node) !void {
 
 /// parent_ns: 부모 namespace 이름 (중첩 시 foo.bar 경로 생성용)
 fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !void {
+    try self.addSourceMapping(node.span);
     const name_idx = node.data.binary.left;
     const body_idx = node.data.binary.right;
 

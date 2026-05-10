@@ -26,6 +26,7 @@ fn collectKeepNameEntry(self: anytype, name_idx: NodeIndex) void {
 /// template literal을 child node 단위로 emit.
 /// rename/mangling이 적용되려면 expression을 개별 emitNode로 처리해야 한다.
 pub fn emitTemplateLiteral(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     // raw-span shorthand (#2957): emotion / styled_components 의 transformer 가
     // `.data = .{ .list = .{ .start = 0, .len = 0 } }` 로 만든 template literal.
     // 이 경우만 raw span path 로 출력. parser-created template literal 은 list.start
@@ -50,6 +51,7 @@ pub fn emitTemplateLiteral(self: anytype, node: Node) !void {
 }
 
 pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 1 >= extras.len) return;
@@ -67,6 +69,7 @@ pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
 }
 
 pub fn emitFunction(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     // function_expression은 ret_type 없이 4 slots, function_declaration/function은 5 slots.
     // 공통 [name(0), params(1), body(2), flags(3)]만 읽는다.
@@ -131,6 +134,7 @@ pub fn emitFunction(self: anytype, node: Node) !void {
 
 /// arrow_function_expression: extra = [params, body, flags]
 pub fn emitArrow(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 2 >= extras.len) return;
@@ -206,6 +210,7 @@ fn expressionStartsWithBraceDepth(self: anytype, node_idx: ast_mod.NodeIndex, de
 
 /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
 pub fn emitClass(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     const super_class: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
@@ -310,6 +315,7 @@ pub fn emitStaticBlock(self: anytype, node: Node) !void {
 }
 
 pub fn emitMethodDef(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 6];
     const key: NodeIndex = @enumFromInt(extras[ast_mod.MethodExtra.key]);
@@ -350,6 +356,7 @@ pub fn emitMethodDef(self: anytype, node: Node) !void {
 }
 
 pub fn emitPropertyDef(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 5];
     const key: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.key]);
@@ -383,6 +390,7 @@ pub fn emitPropertyDef(self: anytype, node: Node) !void {
 }
 
 pub fn emitDecorator(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.writeByte('@');
     try self.emitNode(node.data.unary.operand);
 }
@@ -400,6 +408,7 @@ fn emitMemberDecorators(self: anytype, deco_start: u32, deco_len: u32) !void {
 }
 
 pub fn emitAccessorProp(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 5];
     const key: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.key]);

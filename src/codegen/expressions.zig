@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
 
 pub fn emitUnary(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 1 >= extras.len) return;
@@ -24,6 +25,7 @@ pub fn emitUnary(self: anytype, node: Node) !void {
 }
 
 pub fn emitUpdate(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 1 >= extras.len) return;
@@ -37,6 +39,7 @@ pub fn emitUpdate(self: anytype, node: Node) !void {
 }
 
 pub fn emitBinary(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const op: Kind = @enumFromInt(node.data.binary.flags);
     if (self.options.linking_metadata != null and node.tag == .logical_expression) {
         if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
@@ -66,6 +69,7 @@ pub fn emitBinary(self: anytype, node: Node) !void {
 }
 
 pub fn emitAssignment(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.emitNode(node.data.binary.left);
     try self.writeSpace();
     if (node.data.binary.flags != 0) {
@@ -92,6 +96,7 @@ pub fn emitAssignment(self: anytype, node: Node) !void {
 }
 
 pub fn emitConditional(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const t = node.data.ternary;
     if (self.options.linking_metadata != null) {
         if (self.evalBooleanCondition(t.a)) |cond| {
@@ -111,26 +116,31 @@ pub fn emitConditional(self: anytype, node: Node) !void {
 }
 
 pub fn emitSequence(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.emitList(node, ",");
 }
 
 pub fn emitParen(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.writeByte('(');
     try self.emitNode(node.data.unary.operand);
     try self.writeByte(')');
 }
 
 pub fn emitSpread(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("...");
     try self.emitNode(node.data.unary.operand);
 }
 
 pub fn emitAwait(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("await ");
     try self.emitNode(node.data.unary.operand);
 }
 
 pub fn emitYield(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("yield");
     if (node.data.unary.flags & 1 != 0) try self.writeByte('*');
     if (!node.data.unary.operand.isNone()) {
@@ -140,12 +150,14 @@ pub fn emitYield(self: anytype, node: Node) !void {
 }
 
 pub fn emitArray(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.writeByte('[');
     try self.emitList(node, self.listSep());
     try self.writeByte(']');
 }
 
 pub fn emitObject(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const list = node.data.list;
     if (list.len == 0) {
         try self.write("{}");
@@ -163,6 +175,7 @@ pub fn emitObject(self: anytype, node: Node) !void {
 }
 
 pub fn emitObjectProperty(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const key = node.data.binary.left;
     const value = node.data.binary.right;
     if (key.isNone()) return;
@@ -235,12 +248,14 @@ fn identifierHasConstValue(self: anytype, idx: NodeIndex) bool {
 }
 
 pub fn emitComputedKey(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.writeByte('[');
     try self.emitNode(node.data.unary.operand);
     try self.writeByte(']');
 }
 
 pub fn emitStaticMember(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return;
     const object = self.ast.readExtraNode(e, 0);
@@ -321,6 +336,7 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
 }
 
 pub fn emitComputedMember(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return;
     const object = self.ast.readExtraNode(e, 0);

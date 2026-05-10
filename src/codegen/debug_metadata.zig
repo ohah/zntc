@@ -32,7 +32,10 @@ pub fn generateSourceMapWithFunctionMap(self: anytype, output_file: []const u8) 
 
 pub fn addSourceMapping(self: anytype, span: Span) !void {
     if (self.sm_builder) |*sm| {
-        if (span.start & Ast.STRING_TABLE_BIT != 0 or (span.start == 0 and span.end == 0)) return;
+        // 합성 노드 (string_table 참조) 와 zero-width span 은 발행 안 함 (zero span 도 포함).
+        // 호출자가 emitter 첫 줄에서 부담 없이 호출하도록 가드 일원화.
+        if (span.start & Ast.STRING_TABLE_BIT != 0) return;
+        if (span.start == span.end) return;
         const lc = getOriginalLineColumn(self, span.start);
         try sm.addMapping(.{
             .generated_line = self.gen_line,

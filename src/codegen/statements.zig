@@ -109,11 +109,13 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
 }
 
 pub fn emitExpressionStatement(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.emitNode(node.data.unary.operand);
     try self.writeByte(';');
 }
 
 pub fn emitReturn(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("return");
     if (!node.data.unary.operand.isNone()) {
         try self.writeByte(' ');
@@ -123,12 +125,14 @@ pub fn emitReturn(self: anytype, node: Node) !void {
 }
 
 pub fn emitThrow(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("throw ");
     try self.emitNode(node.data.unary.operand);
     try self.writeByte(';');
 }
 
 pub fn emitIf(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const t = node.data.ternary;
     // 상수 조건 DCE: if (false) → else만 출력, if (true) → then만 출력
     if (evalBooleanCondition(self, t.a)) |known| {
@@ -323,6 +327,7 @@ fn stripQuotes(s: []const u8) []const u8 {
 }
 
 pub fn emitWhile(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     if (self.options.minify_whitespace) try self.write("while(") else try self.write("while (");
     try self.emitNode(node.data.binary.left);
     try self.writeByte(')');
@@ -330,6 +335,7 @@ pub fn emitWhile(self: anytype, node: Node) !void {
 }
 
 pub fn emitDoWhile(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("do");
     // block body는 emitBracedList가 { 앞 공백 관리, non-block은 공백 필수 (dox++ 방지)
     if (node.data.binary.right.isNone() or self.ast.getNode(node.data.binary.right).tag != .block_statement) {
@@ -342,6 +348,7 @@ pub fn emitDoWhile(self: anytype, node: Node) !void {
 }
 
 pub fn emitFor(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 4];
     if (self.options.minify_whitespace) try self.write("for(") else try self.write("for (");
@@ -360,6 +367,7 @@ pub fn emitFor(self: anytype, node: Node) !void {
 }
 
 pub fn emitForAwaitOf(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     const t = node.data.ternary;
     // for-in/of 와 동일한 var initializer hoist/skip 처리.
     // ES2015 block-scoping 다운레벨이 `const/let x` → `var x = void 0` 로 바꾼
@@ -383,6 +391,7 @@ pub fn emitForAwaitOf(self: anytype, node: Node) !void {
 }
 
 pub fn emitForInOf(self: anytype, node: Node, keyword: []const u8) !void {
+    try self.addSourceMapping(node.span);
     const t = node.data.ternary;
 
     // for-in var initializer hoisting (esbuild 호환):
@@ -493,6 +502,7 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
 }
 
 pub fn emitSwitchCase(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     // 파서 구조: extra = [test_expr, stmts_start, stmts_len]
     // test_expr가 none이면 default:
     const e = node.data.extra;
@@ -522,6 +532,7 @@ pub fn emitSwitchCase(self: anytype, node: Node) !void {
 }
 
 pub fn emitSimpleStmt(self: anytype, node: Node, keyword: []const u8) !void {
+    try self.addSourceMapping(node.span);
     try self.write(keyword);
     // label이 있으면 출력
     if (!node.data.unary.operand.isNone()) {
@@ -549,6 +560,7 @@ pub fn emitTry(self: anytype, node: Node) !void {
 }
 
 pub fn emitCatch(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("catch");
     if (!node.data.binary.left.isNone()) {
         if (self.options.minify_whitespace) try self.writeByte('(') else try self.write(" (");
@@ -559,12 +571,14 @@ pub fn emitCatch(self: anytype, node: Node) !void {
 }
 
 pub fn emitLabeled(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.emitNode(node.data.binary.left);
     try self.writeByte(':');
     try self.emitNode(node.data.binary.right);
 }
 
 pub fn emitWith(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
     try self.write("with(");
     try self.emitNode(node.data.binary.left);
     try self.writeByte(')');
