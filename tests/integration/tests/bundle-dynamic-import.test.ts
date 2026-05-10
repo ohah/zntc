@@ -6,8 +6,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { spawn } from 'bun';
 import { join } from 'node:path';
-import { writeFileSync, readFileSync } from 'node:fs';
-import { bundleAndRun, createFixture, runZntc, ZNTC_BIN } from './helpers';
+import { bundleAndRun, createFixture, runZntc } from './helpers';
 
 describe('#2209: dynamic import default lazy-wrap', () => {
   let cleanup: (() => Promise<void>) | undefined;

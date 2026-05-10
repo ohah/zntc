@@ -190,6 +190,6 @@ describe('injectAppDevPipelineCssLinks', () => {
     // 유닉스 환경에서 path.sep 은 / 이라 replaceAll(sep, "/") 가 no-op.
     // input 에 backslash 가 그대로 남음 — 환경 별 동작 검증은 통합 테스트로.
     const html = readHtml();
-    expect(html).toMatch(/href="\/styles[\\\/]a\.css"/);
+    expect(html).toMatch(/href="\/styles[\\/]a\.css"/);
   });
 });
