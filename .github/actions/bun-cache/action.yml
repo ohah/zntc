@@ -3,7 +3,7 @@ description: ~/.bun/install/cache 캐시 — lockfile hashFiles 패턴을 단일
 
 inputs:
   platform:
-    description: Optional 키 segment (e.g. `${{ matrix.platform }}`). 빈 값이면 OS-only 키.
+    description: Optional 키 segment (예 — matrix.platform). 빈 값이면 OS-only 키.
     required: false
     default: ""
 
