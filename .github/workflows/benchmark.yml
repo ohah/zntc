@@ -51,7 +51,7 @@ jobs:
         run: zig build -Doptimize=ReleaseFast
 
       - name: Install benchmark dependencies
-        run: bun install --cwd tests/benchmark
+        run: bun install --cwd tests/benchmark --frozen-lockfile
 
       - name: Build NAPI module (Windows, MinGW ABI)
         if: runner.os == 'Windows'
