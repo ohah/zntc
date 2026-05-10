@@ -186,8 +186,12 @@ fn emitOneImport(
     const list_sep: []const u8 = if (minify_whitespace) "," else ", ";
     const brace_open: []const u8 = if (minify_whitespace) "{" else "{ ";
     const brace_close: []const u8 = if (minify_whitespace) "}" else " }";
-    const from_open: []const u8 = if (minify_whitespace) "from\"" else " from \"";
     const eol: []const u8 = if (minify_whitespace) "" else "\n";
+
+    // ESM token boundary 규칙 (#2955):
+    //   - `import D from "x"` 의 D 는 식별자라서 keyword 와 인접하면 공백 필수.
+    //   - `import{x}from"y"` 는 `{` / `}` 가 토큰 경계라 minify 시 공백 생략 가능.
+    //   - `import * as N from "x"` 의 N 도 식별자라 from 앞 공백 필수.
 
     const has_default_or_named = group.default_local != null or group.named.items.len > 0;
     const has_any = has_default_or_named or group.namespace_local != null;
@@ -205,12 +209,15 @@ fn emitOneImport(
     // (1) default + named — 한 줄. rolldown 의 `create_import_declaration` 동일.
     //     ESM spec 상 `import D, { x } from "spec"` 합법. namespace 는 같이 못 묶음.
     if (has_default_or_named) {
-        try output.appendSlice(allocator, if (minify_whitespace) "import" else "import ");
+        const import_kw: []const u8 = if (minify_whitespace and group.default_local == null) "import" else "import ";
+        try output.appendSlice(allocator, import_kw);
+
         var has_pre = false;
         if (group.default_local) |d| {
             try output.appendSlice(allocator, d);
             has_pre = true;
         }
+        var ends_with_brace = false;
         if (group.named.items.len > 0) {
             if (has_pre) try output.appendSlice(allocator, list_sep);
             try output.appendSlice(allocator, brace_open);
@@ -225,8 +232,14 @@ fn emitOneImport(
                 }
             }
             try output.appendSlice(allocator, brace_close);
+            ends_with_brace = true;
         }
-        try output.appendSlice(allocator, from_open);
+        const from_kw: []const u8 = blk: {
+            if (!minify_whitespace) break :blk " from \"";
+            if (ends_with_brace) break :blk "from\"";
+            break :blk " from\"";
+        };
+        try output.appendSlice(allocator, from_kw);
         try output.appendSlice(allocator, spec);
         try output.appendSlice(allocator, "\";");
         try output.appendSlice(allocator, eol);
@@ -237,7 +250,7 @@ fn emitOneImport(
     if (group.namespace_local) |n| {
         try output.appendSlice(allocator, if (minify_whitespace) "import*as " else "import * as ");
         try output.appendSlice(allocator, n);
-        try output.appendSlice(allocator, from_open);
+        try output.appendSlice(allocator, if (minify_whitespace) " from\"" else " from \"");
         try output.appendSlice(allocator, spec);
         try output.appendSlice(allocator, "\";");
         try output.appendSlice(allocator, eol);
