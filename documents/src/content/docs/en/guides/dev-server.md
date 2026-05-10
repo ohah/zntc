@@ -30,6 +30,134 @@ curl -X POST http://localhost:12300/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
+## HMR — `import.meta.hot` API
+
+`zntc --serve` pushes only changed modules to the client and re-runs them per module. Your code uses `import.meta.hot` to declare which modules are hot boundaries and what to do when an update arrives.
+
+ZNTC's `import.meta.hot` is **Vite-compatible**. Existing Vite plugins / code mostly carries over.
+
+### Basic usage
+
+```ts
+// src/store.ts
+export const store = createStore();
+
+if (import.meta.hot) {
+  // Mark this module as a hot boundary
+  import.meta.hot.accept((newModule) => {
+    if (newModule) {
+      // newModule.store is the new instance
+      replaceStore(newModule.store);
+    }
+  });
+}
+```
+
+The whole `import.meta.hot` block is removed automatically in **production builds** (only truthy in dev server).
+
+### Accepting dependency changes
+
+```ts
+// Self-update
+import.meta.hot.accept((newSelf) => { ... });
+
+// A specific dep
+import.meta.hot.accept('./logger', (newLogger) => { ... });
+
+// Multiple deps at once
+import.meta.hot.accept(['./a', './b'], ([newA, newB]) => { ... });
+```
+
+### Cleanup — `dispose`
+
+Called right before the module is replaced. Use it to clean up timers / listeners / sockets:
+
+```ts
+const id = setInterval(tick, 1000);
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    clearInterval(id);
+  });
+}
+```
+
+### Carrying state — `hot.data`
+
+Whatever you put on the object that `dispose` receives is readable from the new module via `import.meta.hot.data` — i.e. state handed across module replacements.
+
+```ts
+let count = import.meta.hot?.data.count ?? 0;
+
+if (import.meta.hot) {
+  import.meta.hot.dispose((data) => {
+    data.count = count;        // pass to the next module instance
+  });
+}
+```
+
+### Forcing a full reload — `invalidate`
+
+When you receive an update but can't apply it safely:
+
+```ts
+if (import.meta.hot) {
+  import.meta.hot.accept((newModule) => {
+    if (!canSafelyApply(newModule)) {
+      import.meta.hot.invalidate();   // full page reload
+    }
+  });
+}
+```
+
+In browsers this calls `location.reload()`. In React Native, `DevSettings.reload()`.
+
+### React Fast Refresh
+
+If a `.tsx` / `.jsx` file's exports are **all React components**, ZNTC treats it as a hot boundary automatically — you don't need to write `import.meta.hot.accept` yourself. Component functions, `forwardRef`, `memo`, and `lazy` count as components.
+
+```tsx
+// Auto Fast Refresh — no explicit hot code needed
+export function Button({ children }) {
+  return <button>{children}</button>;
+}
+```
+
+The auto boundary does NOT trigger (and a **full reload** happens) if:
+
+- A component and a non-component value are **exported together** — e.g. `export const config = {...}; export function App() {}`
+- The default export is an anonymous arrow (`export default () => <div />`) — no displayName
+- A component reads module-scoped state for `useState` initial values (state can be lost)
+
+Multiple component updates are batched into a single React refresh cycle with a 50 ms debounce.
+
+### File-change detection — watcher
+
+| OS | Mechanism |
+|---|---|
+| macOS | kqueue |
+| Linux | inotify |
+| Windows | ReadDirectoryChangesW |
+
+In most environments OS events fire instantly. The following environments have unreliable OS events and may drop changes:
+
+- Docker volume mounts (host → container)
+- Network filesystems like NFS / SMB
+- Windows WSL1 (WSL2 is fine)
+
+ZNTC does not currently expose a polling-fallback flag. If changes don't propagate in those environments, force a browser reload manually. Polling fallback is planned for a future release.
+
+### Debugging — when updates don't arrive
+
+| Symptom | Suspect |
+|---|---|
+| Saving the file doesn't refresh the client | watcher (consider polling fallback above) or missing hot boundary (no full reload either) |
+| Full reload happens repeatedly | Mixed exports, or no module along the dep chain calls `accept` |
+| Component state resets every time | React Fast Refresh boundary broke — check for anonymous default export or mixed exports |
+| Two instances coexist after update | Missing `dispose` — clean up timers/listeners |
+
+Subscribe to `/sse/events` to see whether the watcher caught the change (`watch_change` event) and whether the build succeeded (`bundle_build_done`).
+
 ## SSE event stream
 
 ### `GET /sse/events`

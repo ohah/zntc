@@ -30,6 +30,134 @@ curl -X POST http://localhost:12300/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
+## HMR — `import.meta.hot` API
+
+`zntc --serve` 로 띄운 dev 서버는 변경된 모듈만 클라이언트로 push 하고, 모듈 단위로 재실행합니다. 사용자 코드는 `import.meta.hot` 으로 어떤 모듈이 hot boundary 인지, 업데이트가 들어왔을 때 무엇을 할지 제어합니다.
+
+ZNTC 의 `import.meta.hot` 는 **Vite 호환** 입니다. 기존 Vite 플러그인 / 코드를 거의 그대로 가져올 수 있습니다.
+
+### 기본 사용법
+
+```ts
+// src/store.ts
+export const store = createStore();
+
+if (import.meta.hot) {
+  // 이 모듈을 hot boundary 로 표시
+  import.meta.hot.accept((newModule) => {
+    if (newModule) {
+      // newModule.store 가 새 인스턴스
+      replaceStore(newModule.store);
+    }
+  });
+}
+```
+
+빌드 산출물에서 `import.meta.hot` 블록 전체는 **production 빌드** 에서 자동으로 제거됩니다 (dev 서버에서만 truthy).
+
+### 의존성 변경 받기
+
+```ts
+// 자기 모듈 변경
+import.meta.hot.accept((newSelf) => { ... });
+
+// 특정 dep 의 변경
+import.meta.hot.accept('./logger', (newLogger) => { ... });
+
+// 여러 dep 한 번에
+import.meta.hot.accept(['./a', './b'], ([newA, newB]) => { ... });
+```
+
+### Cleanup — `dispose`
+
+모듈이 교체되기 직전에 호출됩니다. 타이머/리스너/소켓 정리에 사용:
+
+```ts
+const id = setInterval(tick, 1000);
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    clearInterval(id);
+  });
+}
+```
+
+### 데이터 전달 — `hot.data`
+
+`dispose` 콜백이 받는 객체에 무엇을 담아두면, 새 모듈의 `import.meta.hot.data` 에서 읽을 수 있습니다 — 모듈 교체 사이에 상태 전달.
+
+```ts
+let count = import.meta.hot?.data.count ?? 0;
+
+if (import.meta.hot) {
+  import.meta.hot.dispose((data) => {
+    data.count = count;        // 다음 모듈 인스턴스로 넘김
+  });
+}
+```
+
+### Full reload 강제 — `invalidate`
+
+업데이트를 받았지만 안전하게 처리할 수 없을 때:
+
+```ts
+if (import.meta.hot) {
+  import.meta.hot.accept((newModule) => {
+    if (!canSafelyApply(newModule)) {
+      import.meta.hot.invalidate();   // 페이지 전체 reload
+    }
+  });
+}
+```
+
+브라우저에서는 `location.reload()`, React Native 에서는 `DevSettings.reload()` 가 호출됩니다.
+
+### React Fast Refresh
+
+`.tsx` / `.jsx` 파일이 **모든 export 가 React 컴포넌트** 인 경우 — `import.meta.hot.accept` 를 직접 작성하지 않아도 자동으로 hot boundary 로 처리됩니다. 컴포넌트 함수 / forwardRef / memo / lazy 가 컴포넌트로 인식됩니다.
+
+```tsx
+// Auto Fast Refresh — 명시적 hot 코드 불필요
+export function Button({ children }) {
+  return <button>{children}</button>;
+}
+```
+
+다음 경우는 자동 boundary 가 동작하지 않아 **full reload** 됩니다:
+
+- 컴포넌트와 일반 값을 **함께 export** — 예: `export const config = {...}; export function App() {}`
+- default export 가 anonymous arrow (`export default () => <div />`) — displayName 없음
+- 컴포넌트 안에서 `useState` 의 초기값을 모듈 스코프 변수로 참조하는 경우 (state 손실 가능)
+
+여러 컴포넌트 업데이트는 50ms debounce 로 한 번의 React refresh 사이클에 배칭됩니다.
+
+### 파일 변경 감지 — watcher 동작
+
+| OS | 메커니즘 |
+|---|---|
+| macOS | kqueue |
+| Linux | inotify |
+| Windows | ReadDirectoryChangesW |
+
+대부분 환경에서 OS 이벤트가 즉시 반영됩니다. 다음 환경에서는 OS 이벤트가 불안정해 변경이 누락될 수 있습니다.
+
+- Docker volume mount (호스트 → 컨테이너)
+- NFS / SMB 같은 네트워크 파일시스템
+- Windows WSL1 (WSL2 는 OK)
+
+현재 ZNTC 에는 polling fallback flag 가 없습니다. 위 환경에서 변경이 반영되지 않으면 브라우저 새로고침으로 강제 갱신하세요. polling fallback 은 추후 추가 예정.
+
+### 디버깅 — 업데이트가 안 들어올 때
+
+| 증상 | 의심 |
+|---|---|
+| 파일 저장해도 클라이언트 갱신 없음 | watcher (위 polling fallback 검토) 또는 hot boundary 누락 (full reload 안 함) |
+| Full reload 가 자꾸 일어남 | mixed export, 또는 module dependency chain 의 어떤 모듈도 `accept` 안 함 |
+| Component state 가 매번 초기화됨 | React Fast Refresh boundary 가 깨졌음 — anonymous default export 또는 mixed export 확인 |
+| 업데이트 후 두 인스턴스 공존 | `dispose` 누락 — 타이머/리스너 정리 필요 |
+
+`/sse/events` 를 구독하면 watcher 가 변경을 감지했는지 (`watch_change` 이벤트), 빌드가 성공했는지 (`bundle_build_done`) 직접 확인할 수 있습니다.
+
 ## SSE 이벤트 스트림
 
 ### `GET /sse/events`
