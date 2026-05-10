@@ -1,0 +1,315 @@
+---
+title: 번들러 구조와 동작 원리
+description: ZNTC 번들러 파이프라인 6단계와 사용자가 알면 도움 되는 동작 원리 — 모듈 해석, 실행 순서, 스코프 호이스팅, CJS/ESM interop, 코드 스플리팅.
+---
+
+이 문서는 ZNTC 번들러가 입력에서 출력까지 어떤 단계를 거치는지, 그리고 사용자 코드에서 마주칠 수 있는 동작들이 어디서 결정되는지 설명합니다.
+
+CLI 옵션은 [번들링](/zntc/guides/bundling/) 을, 트리쉐이킹의 자세한 동작은 [트리쉐이킹](/zntc/guides/tree-shaking/) 을 참고하세요. 이 문서는 그 위에서 "왜 이렇게 동작하는가" 에 답합니다.
+
+## 파이프라인 6단계
+
+```
+Entry Points
+  → Resolver        (경로 → 절대 파일 경로)
+  → Module Graph    (BFS 파싱 + DFS 실행 순서)
+  → Linker          (스코프 호이스팅, 이름 충돌 해결)
+  → Tree-shaker     (사용 안 되는 export/문장 제거)
+  → Chunker         (동적 import → 청크 분할)
+  → Emitter         (모듈별 transform + codegen)
+  → Output (bundle.js + chunks + .map)
+```
+
+각 단계는 **단방향 의존** 입니다 — Resolver 는 Graph 를 모르고, Linker 는 Resolver 를 모릅니다. 한 단계의 출력이 다음 단계의 입력이 되고, 사용자 코드의 동작은 거의 항상 이 중 한 단계에서 결정됩니다.
+
+| 단계 | 입력 | 출력 | 사용자가 마주치는 것 |
+|---|---|---|---|
+| Resolver | import 경로 | 절대 파일 경로 | "Module not found" 에러, alias/fallback 동작 |
+| Graph | 진입점 | 모듈 + 의존성 + 실행 순서 | 순환 참조 경고, ESM 사이드이펙트 순서 |
+| Linker | 모듈 + 심볼 | 글로벌 심볼 테이블 | 변수 이름이 `Foo$1` 처럼 바뀌는 현상 |
+| Tree-shaker | 링크된 그래프 | 사용 마킹 | "왜 이 코드가 번들에 남았지?" |
+| Chunker | 마킹된 그래프 | 청크 목록 | `chunks/abc.js`, runtime loader |
+| Emitter | 청크 | JS + sourcemap | 최종 출력, line/column 매핑 |
+
+## 1. 모듈 해석 (Resolver)
+
+`import './foo'` 같은 specifier 가 어떤 파일로 풀리는지 결정합니다. 파서/AST 와 무관, 파일시스템만 사용합니다.
+
+### 해석 우선순위
+
+1. **alias** — `defineConfig({ alias: { ... } })` 또는 `--alias:foo=bar` 가 가장 먼저 적용됩니다. 일반 해석 **이전에 무조건** 치환됩니다.
+2. **tsconfig paths** — `tsconfig.json` 의 `compilerOptions.paths` 매핑.
+3. **package.json `exports`** — 조건부 매칭. `--conditions` 로 임의 조건 활성화.
+4. **`main-fields` 순서** — 기본 `module → main` (browser 타겟은 `browser` prepend, RN 타겟은 `react-native` prepend).
+5. **확장자 자동 추가** — `--resolve-extensions` 순서대로 시도 (`.tsx, .ts, .jsx, .js, ...`).
+6. **`fallback`** — 위 모두 실패한 경우에만 적용. webpack `resolve.fallback` / Metro `extraNodeModules` 호환.
+
+### 플랫폼별 동작
+
+| `--platform` | 자동 동작 |
+|---|---|
+| `browser` (기본) | Node 내장(`fs`, `path`, ...) → 빈 모듈, `process.env.NODE_ENV` → `"production"` define |
+| `node` | Node 내장 + `node:` 서브패스 자동 external |
+| `react-native` | `.native.*` / `.ios.*` / `.android.*` 확장자 자동 시도, `main-fields` 에 `react-native` prepend, Flow 자동 활성화, Hermes 타겟 강제 |
+
+### 조건부 exports
+
+```jsonc
+{
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  }
+}
+```
+
+- `--conditions=source` 를 켜면 모노레포 내부 패키지를 dist 빌드 없이 src 에서 직접 inline 합니다.
+- `--platform=browser` 는 `browser` 조건을, `--platform=node` 는 `node` 조건을 자동으로 추가합니다.
+
+## 2. 모듈 그래프와 실행 순서
+
+진입점부터 의존성을 BFS 로 병렬 파싱하고, 끝나면 DFS 후위 순서로 `exec_index` 를 부여합니다. 이 인덱스가 최종 번들에서 모듈 본문이 배치되는 순서이자 ESM 사이드이펙트 실행 순서입니다.
+
+### ESM 정적 import 순서 보장
+
+```ts
+// entry.ts
+import './a';   // a 의 top-level 실행
+import './b';   // b 의 top-level 실행
+```
+
+스코프 호이스팅으로 모든 모듈이 한 파일에 합쳐져도 **`a` 의 top-level 코드가 `b` 보다 먼저 실행됩니다**. 이는 ESM 스펙 준수이며, 사이드이펙트가 있는 모듈(polyfill, CSS 주입 등)이 정상 동작하는 근거입니다.
+
+### 순환 참조
+
+```ts
+// a.ts
+import { B } from './b';
+export const A = () => B();
+
+// b.ts
+import { A } from './a';
+export const B = () => A();
+```
+
+ZNTC 는 순환 참조를 **에러가 아닌 경고** 로 처리하고 같은 청크에 묶습니다. 사이클의 진입 모듈이 먼저 실행되며, 함수 호출 시점에는 양쪽 모두 초기화되어 있습니다 (런타임 호출 기준). 단, 사이클 안에서 **top-level 에서 즉시 호출** 하는 코드는 TDZ 에러가 날 수 있습니다 — Node.js ESM 동작과 동일.
+
+### 동적 import
+
+```ts
+const mod = await import('./heavy');
+```
+
+동적 import 는 별도 의존성으로 추적됩니다. `--splitting` 이 켜져 있으면 별도 청크로 분리되고, 꺼져 있으면 같은 번들에 inline 됩니다.
+
+### Top-level await
+
+```ts
+// data.ts
+export const data = await fetch('/data.json').then(r => r.json());
+```
+
+Top-level await 가 있는 모듈은 **동적으로 평가되어야 하므로 정적으로 hoist 할 수 없습니다.** 이를 사용하는 모든 모듈은 자동으로 async 평가 모드로 승격됩니다 — 의도하지 않은 모듈에 전파될 수 있으니 주의.
+
+## 3. 스코프 호이스팅 (Linker)
+
+여러 모듈을 한 파일로 합치면 변수 이름이 충돌합니다. ZNTC 는 이를 자동으로 rename 합니다.
+
+### 같은 이름 충돌
+
+```ts
+// a.ts
+const value = 1;
+export const A = value;
+
+// b.ts
+const value = 2;
+export const B = value;
+
+// entry.ts
+import { A } from './a';
+import { B } from './b';
+```
+
+번들 결과:
+
+```js
+// a.ts
+const value = 1;
+const A = value;
+// b.ts
+const value$1 = 2;       // 자동 suffix
+const B = value$1;
+```
+
+`$1`, `$2` 같은 suffix 가 붙는 이유입니다. sourcemap 으로 원본 위치는 그대로 추적됩니다.
+
+### 글로벌 보호
+
+`window`, `document`, `console`, `Math` 같은 글로벌 이름과 충돌하는 사용자 변수는 자동으로 rename 됩니다 (TDZ 또는 shadowing 사고 방지).
+
+### `default` 처리
+
+```ts
+// component.ts
+export default function Component() { ... }
+
+// entry.ts
+import Component from './component';
+```
+
+번들 결과에서 `default` 라는 키워드 이름은 사용 불가하므로, default export 는 모듈명 기반의 식별자(예: `component_default`) 로 rename 되어 호이스트됩니다.
+
+### 디버깅 팁
+
+- `sourcemap: true` 로 빌드하면 브라우저 devtools 에서 원본 변수명 확인 가능.
+- `--metafile=meta.json` + [Metafile 분석](/zntc/analyze/) 으로 어떤 모듈이 어떤 청크/위치에 들어갔는지 시각화.
+
+## 4. CJS ↔ ESM Interop
+
+CommonJS 모듈을 ESM 에서 import 하거나 그 반대일 때 어떻게 동작할지 결정하는 단계입니다.
+
+### `require()` 가 import 로 변환될 때
+
+CJS 모듈을 ESM 컨텍스트에서 import 하면 ZNTC 는 두 가지 모드 중 하나를 적용합니다.
+
+| Importer 종류 | 적용 모드 | 동작 |
+|---|---|---|
+| `.mjs` / `.mts` / `package.json` `"type": "module"` | **Node 모드** | `__toESM(require(), 1)` — Node.js 기본 동작과 동일 |
+| 기타 (`.js` / `.ts` / 일반 import) | **Babel 모드** | `__toESM(require())` — `__esModule` 플래그를 존중, default 추출 |
+
+### `default` import vs namespace import
+
+```ts
+// react.ts (CJS, exports.default = ..., module.exports.useState = ...)
+import React from 'react';        // default import
+import * as ReactNs from 'react'; // namespace import
+```
+
+| 형태 | CJS 모듈 결과 |
+|---|---|
+| `import X from 'cjs-mod'` | `__esModule` 이 true 면 `module.exports.default`, 아니면 `module.exports` 자체 |
+| `import * as X from 'cjs-mod'` | `module.exports` 의 모든 enumerable property 를 wrap 한 namespace 객체 |
+| `import { x } from 'cjs-mod'` | `module.exports.x` (정적 추출 가능한 경우만 — 아래 참고) |
+
+CJS named import 가 동작하려면 ZNTC 가 **정적으로 export 를 증명** 할 수 있어야 합니다. 지원하는 패턴:
+
+- `exports.foo = ...`
+- `module.exports = { foo, bar }`
+- `Object.defineProperty(exports, 'foo', { value })` / `{ get }`
+
+지원 안 되는 패턴 (보수적으로 보존):
+
+- `exports[k] = ...` (dynamic key)
+- `if (cond) exports.foo = ...` (runtime branch)
+- 동적 getter side-effect
+
+### `export *` 와 default
+
+```ts
+// re-export.ts
+export * from './source';
+```
+
+ESM 스펙(15.2.3.5) 에 따라 `export *` 는 **default 를 포함하지 않습니다.** default 도 같이 re-export 하려면:
+
+```ts
+export { default } from './source';
+export * from './source';
+```
+
+### Namespace barrel re-export
+
+```ts
+// barrel.ts
+import * as utils from './utils';
+export { utils };
+```
+
+이 패턴은 namespace 객체를 인라인으로 생성합니다 — 즉, `utils` 의 모든 export 가 사용된 것으로 간주되어 트리쉐이킹이 어려워집니다. 가능하면 명시적 re-export 로 바꾸세요:
+
+```ts
+export { foo, bar } from './utils';
+```
+
+## 5. 코드 스플리팅 (Chunker)
+
+`--splitting` 이 켜진 상태에서 동적 import 를 만나면 ZNTC 는 모듈 그래프를 청크로 나눕니다.
+
+### 청크 분할 규칙
+
+1. **동적 import target → 별도 청크**
+   ```ts
+   const mod = await import('./pages/about');
+   // → chunks/about-XXXXXX.js
+   ```
+2. **공통 모듈 자동 추출** — 여러 진입점이 공유하는 모듈은 별도 청크 (vendor 청크 효과).
+3. **순환 참조는 같은 청크** — 사이클 분리 시 ESM 평가 순서가 깨지므로 강제 묶음.
+
+### 런타임 로더
+
+청크가 분할되면 ZNTC 는 모듈을 동적으로 로드하는 작은 ESM 기반 로더를 entry 청크 prelude 로 emit 합니다. 추가 런타임 의존성은 없습니다 (esbuild/Rolldown 방식).
+
+### 파일명 패턴
+
+```bash
+zntc --bundle entry.ts --splitting --outdir dist/ \
+  --entry-names="[name]-[hash]" \
+  --chunk-names="chunks/[name]-[hash]" \
+  --asset-names="assets/[name]-[hash]"
+```
+
+- `[name]` — 모듈 basename (`about` 등)
+- `[hash]` — 콘텐츠 해시 (캐시 무효화)
+- `[ext]` — 확장자
+
+## 6. 코드 생성 (Emitter)
+
+청크별로 모듈 본문을 `exec_index` 순서로 배치하고, 각 모듈을 transformer + codegen 으로 처리합니다.
+
+### `format` 별 출력 형태
+
+| `--format` | 출력 |
+|---|---|
+| `esm` (기본) | `import` / `export` 문 그대로, 최상위 코드 |
+| `cjs` | `require()` / `module.exports` 로 변환 |
+| `iife` | `(function() { ... })()` 로 wrap, `--global-name` 으로 노출 |
+| `umd` | UMD 래퍼 (CJS / AMD / 글로벌 fallback) |
+| `amd` | `define([...], function (...) { ... })` |
+
+### `banner` / `footer` vs `intro` / `outro`
+
+- `banner` / `footer` — wrapper **밖** (라이선스 헤더, shebang)
+- `intro` / `outro` — wrapper **안** 번들 코드 앞/뒤 (Rollup `output.intro/outro` 호환)
+
+IIFE/UMD 같은 wrap 포맷에서 차이가 명확합니다.
+
+### 소스맵
+
+- `--sourcemap` — external `.map` 파일 + URL 주석
+- `--sourcemap=inline` — base64 inline data URL
+- `--sourcemap=hidden` — 파일 emit 만 하고 URL 주석 생략 (production)
+
+번들 소스맵은 AST span 으로 원본→최종 직접 매핑입니다 (체이닝 불필요). 입력에 이미 sourcemap 이 있으면 자동 체이닝합니다.
+
+## 디버깅 — 어느 단계에서 일어났는지 알기
+
+| 증상 | 의심 단계 | 도구 |
+|---|---|---|
+| `Could not resolve '...'` | Resolver | `--log-level=debug`, `--metafile` 의 `inputs` 확인 |
+| 변수 이름이 이상하게 바뀜 | Linker | sourcemap 확인, `--metafile` 의 `output` 매핑 |
+| 미사용 코드가 안 빠짐 | Tree-shaker | [트리쉐이킹](/zntc/guides/tree-shaking/) 의 한계 섹션 참고 |
+| CJS named import 동작 안 함 | Interop | 위 § "정적으로 증명 가능한 패턴" 참고 |
+| 청크가 너무 잘게 쪼개짐 | Chunker | `--splitting` 끄거나 `manualChunks` 사용 |
+| 출력 포맷이 의도와 다름 | Emitter | `--format`, `--global-name` 확인 |
+
+## 더 읽을거리
+
+- [트리쉐이킹](/zntc/guides/tree-shaking/) — `@__PURE__`, `sideEffects`, type-only elision, statement-level DCE
+- [manualChunks](/zntc/guides/manual-chunks/) — 청크 분할을 수동으로 제어
+- [번들링](/zntc/guides/bundling/) — CLI 옵션 전체
+- 컨트리뷰터용 설계 문서: [`docs/BUNDLER.md`](https://github.com/ohah/zntc/blob/main/docs/BUNDLER.md), [`docs/ARCHITECTURE.md`](https://github.com/ohah/zntc/blob/main/docs/ARCHITECTURE.md)

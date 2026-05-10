@@ -86,12 +86,18 @@ export default defineConfig({
             { label: "개요", slug: "guides/bundling", translations: { en: "Overview" } },
             { label: "트리쉐이킹", slug: "guides/tree-shaking", translations: { en: "Tree-shaking" } },
             { label: "manualChunks", slug: "guides/manual-chunks", translations: { en: "manualChunks" } },
+            {
+              label: "구조와 동작 원리",
+              slug: "guides/bundler-deep-dive",
+              translations: { en: "Architecture & Internals" },
+            },
           ],
         },
         {
           label: "React Native",
           items: [
             { label: "개요", slug: "guides/react-native", translations: { en: "Overview" } },
+            { label: "Flow 지원", slug: "guides/flow-support", translations: { en: "Flow Support" } },
           ],
         },
         {
