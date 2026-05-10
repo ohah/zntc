@@ -549,6 +549,7 @@ pub const Transformer = struct {
     pub const isComponentName = refresh.isComponentName;
     pub const getFunctionName = refresh.getFunctionName;
     pub const maybeRegisterRefreshComponent = refresh.maybeRegisterRefreshComponent;
+    pub const maybeRegisterRefreshComponentByBinding = refresh.maybeRegisterRefreshComponentByBinding;
     pub const makeRefreshHandle = refresh.makeRefreshHandle;
     pub const appendRefreshRegistrations = refresh.appendRefreshRegistrations;
     pub const buildRefreshAssignment = refresh.buildRefreshAssignment;

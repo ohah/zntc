@@ -139,6 +139,15 @@ pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
     if (self.options.styled_components and !new_init.isNone()) {
         new_init = try styled_components_mod.maybeMinifyHelperTemplate(self, new_init);
     }
+    // React Fast Refresh: `const Foo = () => ...` / `const Foo = function() {...}` 등록
+    // (function declaration 은 visitFunction 단계에서 자체 이름으로 등록됨).
+    if (!new_name.isNone() and !new_init.isNone()) {
+        const name_node = self.ast.getNode(new_name);
+        if (name_node.tag == .binding_identifier) {
+            const binding_text = self.ast.getText(name_node.data.string_ref);
+            try self.maybeRegisterRefreshComponentByBinding(new_init, binding_text);
+        }
+    }
     const none = @intFromEnum(NodeIndex.none);
     return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
 }

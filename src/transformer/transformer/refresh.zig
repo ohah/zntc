@@ -54,7 +54,32 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
     const name = self.getFunctionName(func_node) orelse return;
     if (!isComponentName(name)) return;
 
-    // 핸들 변수명 생성 + 등록 (프로그램 끝에서 일괄 주입)
+    try appendRefreshRegistration(self, name);
+}
+
+/// 변수 binding 기반 컴포넌트 등록 — `const Foo = () => ...` / `const Foo = function() {...}`
+/// 처럼 함수 자체에 이름이 없는 케이스. `visitVariableDeclarator` post-visit 에서 호출.
+/// `Foo` 가 PascalCase 이고 init 이 arrow/function 표현이면 등록.
+pub fn maybeRegisterRefreshComponentByBinding(
+    self: *Transformer,
+    init_idx: NodeIndex,
+    binding_name: []const u8,
+) Error!void {
+    if (!self.options.react_refresh) return;
+    if (self.plugins.refresh.suppress_registration) return;
+    if (init_idx.isNone()) return;
+    if (!isComponentName(binding_name)) return;
+
+    const init_tag = self.ast.getNode(init_idx).tag;
+    const is_target = init_tag == .arrow_function_expression or
+        init_tag == .function_expression or
+        init_tag == .function;
+    if (!is_target) return;
+
+    try appendRefreshRegistration(self, binding_name);
+}
+
+fn appendRefreshRegistration(self: *Transformer, name: []const u8) Error!void {
     const handle_span = try self.makeRefreshHandle();
     try self.plugins.refresh.registrations.append(self.allocator, .{
         .handle_span = handle_span,
