@@ -112,6 +112,15 @@ pub const ExportBinding = struct {
         }
     };
 
+    /// `export { default } from './m'` 같이 default → default 직진 named re-export
+    /// 인지. wrapper-barrel pattern (lodash-es lodash.js → lodash.default.js) detection
+    /// 의 한 부분. `default as X` 같이 alias 가 들어가는 케이스는 false.
+    pub fn isDefaultDirectReExport(self: ExportBinding) bool {
+        return self.kind == .re_export and
+            std.mem.eql(u8, self.exported_name, "default") and
+            std.mem.eql(u8, self.local_name, "default");
+    }
+
     /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
     /// #1338 Phase 4e-2d-a: synthetic_default는 항상 semantic 공간에 등록됨.
     pub fn hasSyntheticDefault(

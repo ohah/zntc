@@ -55,16 +55,17 @@ pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
 /// `lodash.uniq = uniq;` 같은 ~300 개 mutation) lazy 처리하면 mutation reference imports
 /// 가 누락되어 runtime ReferenceError 발생. graph 의 `shouldLinkResolvedRecordForModule`
 /// 와 tree_shaker 의 시드 게이트 양쪽이 이 함수를 사용해 wrapper-barrel 만 정확히
-/// 처리하도록 한다.
+/// 처리하도록 한다. `Module.is_wrapper_barrel` 캐시를 사용해 hot path 중복 계산 회피.
 pub fn isWrapperBarrel(self: anytype, m: *const Module) bool {
     if (!isLazyBarrelCandidate(self, m)) return false;
+    return m.is_wrapper_barrel;
+}
+
+/// `Module.is_wrapper_barrel` 캐시 채우는 1 회용 컴퓨터. graph build 의 `applySideEffects`
+/// 직후, parse 가 끝나 export_bindings 가 final 인 시점에 호출.
+pub fn computeIsWrapperBarrel(m: *const Module) bool {
     for (m.export_bindings) |eb| {
-        if (eb.kind == .re_export and
-            std.mem.eql(u8, eb.exported_name, "default") and
-            std.mem.eql(u8, eb.local_name, "default"))
-        {
-            return true;
-        }
+        if (eb.isDefaultDirectReExport()) return true;
     }
     return false;
 }
