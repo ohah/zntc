@@ -136,10 +136,18 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         };
     }
 
-    // 선언 scope 자체를 alive로 표시
+    // 선언 scope 자체 + 모든 후손 scope 를 alive 로 표시 (#2956 shadowing 방지).
+    //
+    // outer binding 은 모든 후손 scope 에서 reference 가능 (closure). 후손 scope 의
+    // declaration 이 ancestor 와 같은 slot 을 받으면 mangle 후 자기참조가 됨:
+    //   function e(t,n) { ... }
+    //   function p(n,t) { const e = e(n); ... }   // const e 가 outer e 를 shadow → ReferenceError
+    // declaration scope 의 subtree 전체를 alive 로 표시하면 이 binding 과 후손
+    // declaration 이 graph coloring 에서 다른 slot 을 받게 됨. sibling 은 declaration
+    // scope 가 같아 이미 충돌 (intersect) 처리되므로 영향 없음.
     for (symbols, 0..) |sym, i| {
         if (!sym.scope_id.isNone() and sym.scope_id.toIndex() < scope_count) {
-            symbol_liveness[i].set(sym.scope_id.toIndex());
+            markScopeSubtree(&symbol_liveness[i], children, sym.scope_id.toIndex());
         }
     }
 
@@ -403,6 +411,23 @@ fn markAncestorPath(
     }
 }
 
+/// scope_root 와 그 모든 후손 scope 를 liveness 에 set (#2956 shadowing 방지).
+/// children list 를 따라 재귀 DFS. scope tree depth 는 보통 < 100 으로 stack 안전.
+fn markScopeSubtree(
+    liveness: *std.DynamicBitSet,
+    children: ChildrenList,
+    scope_root: u32,
+) void {
+    liveness.set(scope_root);
+    if (scope_root + 1 >= children.offsets.len) return;
+    const start = children.offsets[scope_root];
+    const end = children.offsets[scope_root + 1];
+    var ci = start;
+    while (ci < end) : (ci += 1) {
+        markScopeSubtree(liveness, children, children.list[ci]);
+    }
+}
+
 /// 두 BitSet이 교집합을 가지는지 검사 (하나라도 겹치면 true).
 /// std.DynamicBitSet에는 non-destructive 교집합 검사가 없으므로 직접 구현.
 fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
@@ -640,4 +665,54 @@ test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("e", result.renames.get(0).?);
+}
+
+test "markScopeSubtree: declaration scope + 모든 후손 set, sibling/ancestor 는 제외 (#2956)" {
+    const allocator = std.testing.allocator;
+
+    // scope tree:
+    //   0 (root)
+    //     ├─ 1
+    //     │   └─ 3
+    //     └─ 2
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false, .symbol_count = 0 },
+    };
+
+    const children = try buildChildrenList(allocator, &scopes);
+    defer allocator.free(children.offsets);
+    defer allocator.free(children.list);
+
+    var liveness = try std.DynamicBitSet.initEmpty(allocator, scopes.len);
+    defer liveness.deinit();
+
+    // scope 1 의 subtree (1, 3) 만 set 되어야 한다.
+    markScopeSubtree(&liveness, children, 1);
+    try std.testing.expect(liveness.isSet(1));
+    try std.testing.expect(liveness.isSet(3));
+    try std.testing.expect(!liveness.isSet(0)); // ancestor 는 제외
+    try std.testing.expect(!liveness.isSet(2)); // sibling 은 제외
+}
+
+test "markScopeSubtree: leaf scope 은 자기 자신만 set" {
+    const allocator = std.testing.allocator;
+
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 0 },
+    };
+
+    const children = try buildChildrenList(allocator, &scopes);
+    defer allocator.free(children.offsets);
+    defer allocator.free(children.list);
+
+    var liveness = try std.DynamicBitSet.initEmpty(allocator, scopes.len);
+    defer liveness.deinit();
+
+    markScopeSubtree(&liveness, children, 1);
+    try std.testing.expect(liveness.isSet(1));
+    try std.testing.expect(!liveness.isSet(0));
 }
