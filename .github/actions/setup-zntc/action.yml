@@ -94,5 +94,5 @@ runs:
 
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}
-      run: bun install
+      run: bun install --frozen-lockfile
       shell: bash
