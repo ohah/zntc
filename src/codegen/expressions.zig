@@ -311,7 +311,11 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
     } else {
         try self.writeByte('.');
     }
-    try self.emitNode(property);
+    // property name 슬롯은 reserved word 도 valid identifier 로 취급되므로
+    // peephole 치환 (예: `undefined` → `(void 0)`) 이 적용되면 안 된다 (#2964).
+    // 예: `obj.undefined` 가 `obj.(void 0)` 로 깨지면 SyntaxError. raw span 으로 출력.
+    const prop_node = self.ast.getNode(property);
+    try self.writeNodeSpan(prop_node);
 }
 
 pub fn emitComputedMember(self: anytype, node: Node) !void {
