@@ -40,11 +40,28 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
 
 pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
     if (self.dev_mode or self.preserve_modules) return false;
-    return m.side_effects_user_defined and
+    if (!(m.side_effects_user_defined and
         !m.side_effects and
         m.exports_kind.isEsm() and
         m.import_records.len > 0 and
-        m.export_bindings.len > 0;
+        m.export_bindings.len > 0)) return false;
+
+    // Wrapper-barrel pattern: `import x from './w'; export default x;` 같이 imported
+    // binding 을 default 로 re-export 하는 경우 body 가 그 binding 을 mutate 할
+    // 가능성이 높다 (lodash-es lodash.default.js: `import lodash from './wrapperLodash.js';
+    // lodash.uniq = uniq; ... export default lodash;`). lazy 처리하면 body 의 mutation
+    // 들이 reference 하는 35 개 import 가 graph 에 등록되지 않아 runtime 에서
+    // `_mixin is not defined` 같은 ReferenceError 가 발생. 이 패턴이 있으면 lazy
+    // 비활성화 — 모든 import 가 link 되어 정상 BFS 추적 가능하도록.
+    for (m.export_bindings) |eb| {
+        if (eb.kind == .re_export and
+            std.mem.eql(u8, eb.exported_name, "default") and
+            std.mem.eql(u8, eb.local_name, "default"))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 pub fn localNeedsAllRecords(m: *const Module, req: *const RequestedExports) bool {
