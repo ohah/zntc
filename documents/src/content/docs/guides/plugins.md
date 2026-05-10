@@ -35,7 +35,53 @@ write
 closeBundle
 ```
 
-`watch()`에서는 같은 순서가 초기 build와 매 rebuild마다 반복되고, `buildEnd` 이후 `onReady` 또는 `onRebuild` callback이 실행됩니다. 여러 플러그인이 같은 hook을 구현하면 등록 순서대로 처리됩니다.
+`watch()`에서는 같은 순서가 초기 build와 매 rebuild마다 반복되고, `buildEnd` 이후 `onReady` 또는 `onRebuild` callback이 실행됩니다.
+
+### 다중 플러그인일 때 hook 별 선택 정책
+
+두 개 이상의 플러그인이 같은 hook 을 등록하면 어떻게 합쳐지는지가 hook 마다 다릅니다.
+
+| Hook | 정책 | 설명 |
+|---|---|---|
+| `resolveId` / `onResolve` | **first-match** | 첫 non-null 반환이 우승. 뒤 플러그인은 호출되지 않음 |
+| `load` / `onLoad` | **first-match** | 첫 non-null 반환이 우승 |
+| `transform` / `onTransform` | **chaining** | 등록 순서대로 모두 호출. 앞 hook 의 출력 → 뒤 hook 의 입력 |
+| `renderChunk` | **chaining** | 등록 순서대로 모두 호출 (chunk code 변환) |
+| `generateBundle` | **all-run, sequential** | 모두 실행 (반환값 무시 — observation only) |
+| `buildStart` / `buildEnd` / `closeBundle` | **all-run, sequential** | 모두 실행. lifecycle 신호 |
+
+**플러그인 순서가 결과에 영향을 주는 경우:**
+- `resolveId` / `load` — 앞에 등록된 플러그인이 매칭되면 뒤 플러그인은 기회 없음. virtual module / alias 처리는 일반 resolver 보다 앞에 두어야 함.
+- `transform` — 변환 chain 의 순서. 예: ENV 치환 → 코드 minify 순서가 뒤바뀌면 결과가 달라짐.
+
+**watch 모드 lifecycle 반복:**
+
+```text
+초기 build:    buildStart → resolveId/load/transform → buildEnd → write → onReady → closeBundle
+파일 변경 시:  buildStart → ... → buildEnd → onRebuild → closeBundle
+```
+
+매 rebuild 마다 `buildStart` / `closeBundle` 이 다시 호출되므로, **연결 재사용 (DB/소켓 등) 이 필요하면 build 외부 (모듈 로드 시점) 에서 한 번만 초기화** 하세요.
+
+**`buildEnd` / `closeBundle` 의 에러 swallow:**
+
+이 두 hook 에서 플러그인이 throw 해도 build/rebuild 결과는 정상 반환됩니다 (후처리 실패가 사용자 빌드를 가리지 않도록). 실패 감지가 필요하면 별도 flag/log 로 노출하세요:
+
+```typescript
+let lastBuildOk = true;
+const myPlugin = {
+  name: 'after-build',
+  buildEnd(err) {
+    if (err) { lastBuildOk = false; return; }
+    try {
+      runPostProcess();   // 실패해도 swallow 됨
+    } catch (e) {
+      lastBuildOk = false;
+      console.error('[after-build] failed:', e);
+    }
+  },
+};
+```
 
 ## NAPI 플러그인
 

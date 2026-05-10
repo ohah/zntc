@@ -35,7 +35,53 @@ write
 closeBundle
 ```
 
-In `watch()`, the same order runs for the initial build and every rebuild. `onReady` or `onRebuild` runs after `buildEnd`. When multiple plugins implement the same hook, they run in registration order.
+In `watch()`, the same order runs for the initial build and every rebuild. `onReady` or `onRebuild` runs after `buildEnd`.
+
+### Per-hook selection policy with multiple plugins
+
+When two or more plugins register the same hook, the way they combine differs by hook.
+
+| Hook | Policy | Notes |
+|---|---|---|
+| `resolveId` / `onResolve` | **first-match** | First non-null wins. Subsequent plugins aren't called |
+| `load` / `onLoad` | **first-match** | First non-null wins |
+| `transform` / `onTransform` | **chaining** | All called in registration order. Each hook's output is the next hook's input |
+| `renderChunk` | **chaining** | All called in registration order (chunk-code transforms) |
+| `generateBundle` | **all-run, sequential** | All run; return values ignored (observation only) |
+| `buildStart` / `buildEnd` / `closeBundle` | **all-run, sequential** | All run; lifecycle signals |
+
+**When plugin order changes the result:**
+- `resolveId` / `load` — once an earlier plugin matches, later plugins don't get a chance. Place virtual-module/alias handlers before the default resolver.
+- `transform` — chain order matters. If env-substitution → minify is swapped, the result differs.
+
+**Watch-mode lifecycle repetition:**
+
+```text
+Initial build: buildStart → resolveId/load/transform → buildEnd → write → onReady → closeBundle
+On file change: buildStart → ... → buildEnd → onRebuild → closeBundle
+```
+
+`buildStart` / `closeBundle` fire **on every rebuild**. If you need to reuse a long-lived resource (DB/socket), initialize it **outside the build** (at module load) — not in `buildStart`.
+
+**Errors in `buildEnd` / `closeBundle` are swallowed:**
+
+Throwing from these two hooks does not affect the build/rebuild result (post-processing failures must not mask the user's build). To surface failures, use an explicit flag/log:
+
+```typescript
+let lastBuildOk = true;
+const myPlugin = {
+  name: 'after-build',
+  buildEnd(err) {
+    if (err) { lastBuildOk = false; return; }
+    try {
+      runPostProcess();   // failure is swallowed
+    } catch (e) {
+      lastBuildOk = false;
+      console.error('[after-build] failed:', e);
+    }
+  },
+};
+```
 
 ## Config File
 
