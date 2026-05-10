@@ -2,6 +2,7 @@ import {
   describe,
   test,
   expect,
+  execSync,
   mkdtempSync,
   writeFileSync,
   rmSync,
@@ -99,5 +100,55 @@ describe('CLI: bundle syntax and targets > named capture regex (#1063)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// __wrapRegExp helper runtime semantic — Babel `_wrapRegExp` 와 동일 코드라 동등 동작 보장.
+// transpile + Node 로 실제 실행해서 결과 검증. 회귀 발생 시 이 case 들이 fail.
+// reference: babel/packages/babel-runtime/test/unittests/wrapRegExp.test.js
+describe('CLI: named capture regex (#1063) > runtime semantic (Babel parity)', () => {
+  function buildAndRun(entrySource: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-cli-wrapregex-rt-'));
+    try {
+      writeFileSync(join(dir, 'entry.ts'), entrySource);
+      const out = join(dir, 'out.js');
+      const { exitCode } = runCli(['--bundle', join(dir, 'entry.ts'), '-o', out, '--target=es5']);
+      expect(exitCode).toBe(0);
+      return execSync(`node ${out}`, { encoding: 'utf8' }).trim();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test('$<UNKNOWN> — 등록 안 된 group 은 empty 로 substitute', () => {
+    const result = buildAndRun(
+      'const re = /(?<group>foo)/;\n' + 'console.log("foobar".replace(re, "$<UNKNOWN>"));',
+    );
+    // foo 가 매칭, $<UNKNOWN> 은 empty → "foo" 가 "" 로 대체
+    expect(result).toBe('bar');
+  });
+
+  test('$<__proto__> — prototype pollution 방어 (groups map 이 Object.create(null))', () => {
+    const result = buildAndRun(
+      'const re = /(?<group>foo)/;\n' + 'console.log("foobar".replace(re, "$<__proto__>"));',
+    );
+    // __proto__ 는 groups 에 등록 안 됨 → empty substitute → "foo" 제거 → "bar"
+    expect(result).toBe('bar');
+  });
+
+  test('$<hasOwnProperty> — reserved name 도 일반 group 처럼 처리', () => {
+    const result = buildAndRun(
+      'const re = /(?<group>foo)/;\n' + 'console.log("foobar".replace(re, "$<hasOwnProperty>"));',
+    );
+    // hasOwnProperty 도 groups 에 없음 → empty → "bar"
+    expect(result).toBe('bar');
+  });
+
+  test('$<_$> — 특수 문자 group name 정상 substitute', () => {
+    const result = buildAndRun(
+      'const re = /(?<_$>foo)/;\n' + 'console.log("foobar".replace(re, "$<_$>$<_$>"));',
+    );
+    // _$ 가 등록된 group → 두 번 치환 → "foofoobar"
+    expect(result).toBe('foofoobar');
   });
 });
