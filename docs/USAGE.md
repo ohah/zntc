@@ -156,7 +156,7 @@ esbuild 스타일: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGen
 ### Rollup/Vite 호환 어댑터
 
 - `vitePlugin({ name, resolveId, load, transform, renderChunk, generateBundle, buildStart, buildEnd, closeBundle })` — 모든 훅 async 지원
-- `vite-plugin-zntc` — Vite의 esbuild transform을 ZNTC로 교체 (`zntc()` 플러그인)
+- `@zntc/vite-plugin` — Vite의 esbuild transform을 ZNTC로 교체 (`zntc()` 플러그인)
 
 상세: [docs/PLUGINS.md](./PLUGINS.md)
 

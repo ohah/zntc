@@ -340,7 +340,7 @@ pub const CjsExportFact = struct {
 ## 실전 검증 로드맵
 - **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZNTC로 변환, esbuild/SWC 출력과 비교
 - **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZNTC vs esbuild vs SWC)
-- **3단계 (N-API 후)**: `vite-plugin-zntc`로 실제 React/Vue 프로젝트 개발 서버
+- **3단계 (N-API 후)**: `@zntc/vite-plugin`로 실제 React/Vue 프로젝트 개발 서버
 - ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 111/111 통과, CI 통합 완료
 
 ## 성능 저하 위험 포인트
@@ -391,7 +391,7 @@ Zig 코어 (parser + transformer + codegen)
     ├─ CLI (직접 사용) — ✅ 이미 구현
     ├─ C ABI (.so/.dylib) — Zig export fn으로 노출
     │   └─ N-API 네이티브 모듈 (npm 패키지, 최고 속도)
-    │       ├─ vite-plugin-zntc    (esbuild 자리 대체)
+    │       ├─ @zntc/vite-plugin    (esbuild 자리 대체)
     │       ├─ zntc-loader         (swc-loader 자리 대체)
     │       └─ rollup-plugin-zntc
     └─ WASM (.wasm) — ✅ 빌드 이미 가능

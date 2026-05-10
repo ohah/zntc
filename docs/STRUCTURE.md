@@ -226,7 +226,7 @@ packages/
     src/wasm_entry.zig      #   transpile only WASM 진입
     src/wasm_bundler_entry.zig  # 번들러 포함 WASM 진입 (wasm32-wasi + threads)
   shared/                   # core/wasm 공유 타입 (TranspileOptions, Target, compat-engines)
-  vite-plugin-zntc/          # Vite 플러그인 (esbuild transform → ZNTC 교체, @zntc/core 만 사용)
+  @zntc/vite-plugin/          # Vite 플러그인 (esbuild transform → ZNTC 교체, @zntc/core 만 사용)
 
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈, 50,504건)

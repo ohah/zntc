@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import { createFixture, hasPackage } from './helpers';
 import { join, resolve } from 'node:path';
 
-// vite-plugin-zntc 스모크 테스트
+// @zntc/vite-plugin 스모크 테스트
 // Vite 빌드에서 ZNTC가 esbuild 대신 TS/JSX를 트랜스파일하는지 검증
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
@@ -11,7 +11,7 @@ const hasVite = hasPackage('vite');
 
 async function viteBuildLib(root: string, entry: string): Promise<{ output: any[] }> {
   const vite = await import('vite');
-  const { zntc } = await import(join(PROJECT_ROOT, 'packages/vite-plugin-zntc/src/index.ts'));
+  const { zntc } = await import(join(PROJECT_ROOT, 'packages/vite-plugin/src/index.ts'));
 
   const result = await vite.build({
     root,
@@ -29,7 +29,7 @@ async function viteBuildLib(root: string, entry: string): Promise<{ output: any[
   return { output: (rollupOutput as any).output ?? [] };
 }
 
-describe.skipIf(!hasVite)('vite-plugin-zntc', () => {
+describe.skipIf(!hasVite)('@zntc/vite-plugin', () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
     if (cleanup) {
@@ -60,7 +60,7 @@ describe.skipIf(!hasVite)('vite-plugin-zntc', () => {
     cleanup = fixture.cleanup;
 
     const vite = await import('vite');
-    const { zntc } = await import(join(PROJECT_ROOT, 'packages/vite-plugin-zntc/src/index.ts'));
+    const { zntc } = await import(join(PROJECT_ROOT, 'packages/vite-plugin/src/index.ts'));
     const r = await vite.build({
       root: fixture.dir,
       plugins: [zntc()],
@@ -175,7 +175,7 @@ describe.skipIf(!hasVite)('vite-plugin-zntc', () => {
     cleanup = fixture.cleanup;
 
     const vite = await import('vite');
-    const { zntc } = await import(join(PROJECT_ROOT, 'packages/vite-plugin-zntc/src/index.ts'));
+    const { zntc } = await import(join(PROJECT_ROOT, 'packages/vite-plugin/src/index.ts'));
     const r = await vite.build({
       root: fixture.dir,
       plugins: [zntc({ tsconfigCache: false })],

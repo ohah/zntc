@@ -41,7 +41,7 @@ bunx zntc preview   # production preview server
 
 - [@zntc/core](https://npmjs.com/package/@zntc/core) — 트랜스파일러 / 번들러 코어
 - [@zntc/react-native](https://npmjs.com/package/@zntc/react-native) — RN platform layer
-- [vite-plugin-zntc](https://npmjs.com/package/vite-plugin-zntc) — Vite 사용 시 ZNTC transform 적용
+- [@zntc/vite-plugin](https://npmjs.com/package/@zntc/vite-plugin) — Vite 사용 시 ZNTC transform 적용
 
 ## 라이센스
 

@@ -1,13 +1,13 @@
-# vite-plugin-zntc
+# @zntc/vite-plugin
 
 Vite 의 esbuild transform 을 ZNTC 로 교체하는 플러그인. TypeScript / JSX / Flow / decorators 변환을 ZNTC (Zig 기반) 가 담당하면서 Vite 의 dev server / HMR / plugin 생태계는 그대로 유지.
 
 ## 설치
 
 ```bash
-bun add -D vite-plugin-zntc @zntc/core
+bun add -D @zntc/vite-plugin @zntc/core
 # 또는
-npm i -D vite-plugin-zntc @zntc/core
+npm i -D @zntc/vite-plugin @zntc/core
 ```
 
 `@zntc/core` 가 dependency 로 함께 따라옴 (NAPI binary 포함).
@@ -17,7 +17,7 @@ npm i -D vite-plugin-zntc @zntc/core
 ```ts
 // vite.config.ts
 import { defineConfig } from 'vite';
-import { zntc } from 'vite-plugin-zntc';
+import { zntc } from '@zntc/vite-plugin';
 
 export default defineConfig({
   plugins: [zntc()],
