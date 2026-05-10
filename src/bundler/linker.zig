@@ -65,11 +65,17 @@ pub const UnifiedCollect = struct {
     top_level_candidates: []@import("../codegen/unified_mangler.zig").TopLevelCandidate,
     modules: []@import("../codegen/unified_mangler.zig").ModuleMangleInput,
     bitsets: []std.DynamicBitSet,
+    /// Phase A 의 base54 부여 시 회피해야 할 이름 (#2971): entry export name,
+    /// import binding local name 등. 짧은 (1-char) 이름이 candidate 에서 제외되더라도
+    /// reserved 에 들어가야 internal binding 의 mangle 결과가 동일 이름을 받지 않는다.
+    /// string 자체는 module source 가 소유 — slice 만 owned.
+    reserved_names: [][]const u8,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *UnifiedCollect) void {
         self.allocator.free(self.top_level_candidates);
         self.allocator.free(self.modules);
+        self.allocator.free(self.reserved_names);
         for (self.bitsets) |*b| b.deinit();
         self.allocator.free(self.bitsets);
     }
@@ -674,24 +680,39 @@ pub const Linker = struct {
         var candidates: std.ArrayListUnmanaged(um.TopLevelCandidate) = .empty;
         errdefer candidates.deinit(self.allocator);
 
+        // 두 set 을 한 module pass 로 채운다:
+        //   - exported: candidate 단계 skip filter (entry export + external import 만)
+        //   - reserved: Phase A base54 회피 set (위 + non-external import binding 까지)
+        // (#2971) zod 의 \`class z\` 가 entry import alias \`z\` 와 충돌한 root cause —
+        // inline 처리되어 var 가 안 만들어지더라도 entry source 의 reference 식별자는
+        // 그대로 emit 되므로 mangler 가 같은 이름을 다른 binding 의 short name 으로
+        // 부여하면 SyntaxError. is_external 무관하게 reserved 에 등록.
         var exported = std.StringHashMap(void).init(self.allocator);
         defer exported.deinit();
+        var reserved = std.StringHashMap(void).init(self.allocator);
+        defer reserved.deinit();
         var mit = self.graph.modulesIterator();
         while (mit.next()) |m| {
             if (m.is_entry_point) {
                 for (m.export_bindings) |eb| {
-                    try exported.put(eb.exported_name, {});
-                    try exported.put(m.exportBindingLocalName(eb), {});
+                    const exported_name = eb.exported_name;
+                    const local_name = m.exportBindingLocalName(eb);
+                    try exported.put(exported_name, {});
+                    try exported.put(local_name, {});
+                    try reserved.put(exported_name, {});
+                    try reserved.put(local_name, {});
                 }
             }
             for (m.import_bindings) |ib| {
                 if (ib.import_record_index >= m.import_records.len) continue;
-                if (!m.import_records[ib.import_record_index].is_external) continue;
                 // External import bindings may not have a semantic local symbol when the
                 // import is only preserved for output syntax. In that case the scanner
                 // local name is the external contract we must not mangle.
                 const local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
-                try exported.put(local_name, {});
+                try reserved.put(local_name, {});
+                if (m.import_records[ib.import_record_index].is_external) {
+                    try exported.put(local_name, {});
+                }
             }
         }
 
@@ -828,10 +849,19 @@ pub const Linker = struct {
             }
         }
 
+        // reserved 를 owned slice 로 직접 alloc — ArrayList 중간단계 생략.
+        // string 자체는 module source 가 소유, slice 만 새 array 로 복사.
+        const reserved_names = try self.allocator.alloc([]const u8, reserved.count());
+        errdefer self.allocator.free(reserved_names);
+        var ri: usize = 0;
+        var rit = reserved.iterator();
+        while (rit.next()) |entry| : (ri += 1) reserved_names[ri] = entry.key_ptr.*;
+
         return .{
             .top_level_candidates = try candidates.toOwnedSlice(self.allocator),
             .modules = modules,
             .bitsets = bitsets,
+            .reserved_names = reserved_names,
             .allocator = self.allocator,
         };
     }
@@ -849,15 +879,17 @@ pub const Linker = struct {
         const um = @import("../codegen/unified_mangler.zig");
 
         var collected = try self.collectUnifiedInput();
-        // bitsets 은 linker 로 이관 후 free, candidates/modules 는 여기서 해제.
+        // bitsets 은 linker 로 이관 후 free, candidates/modules/reserved 는 여기서 해제.
         defer {
             self.allocator.free(collected.top_level_candidates);
             self.allocator.free(collected.modules);
+            self.allocator.free(collected.reserved_names);
         }
 
         var result = try um.mangleAll(self.allocator, .{
             .modules = collected.modules,
             .top_level_candidates = collected.top_level_candidates,
+            .global_reserved = collected.reserved_names,
         });
         // result 소유권을 linker 로 이관 (deinit 은 linker.deinit 이 담당).
         errdefer result.deinit();
