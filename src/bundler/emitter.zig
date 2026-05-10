@@ -610,7 +610,7 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch null;
         }
     }
 
@@ -757,6 +757,7 @@ pub fn emitWithTreeShaking(
                     .module_id = sourcemapSourcePath(m.path, options),
                     .source = m.source,
                     .maps = maps,
+                    .module_names = results[i].names,
                     .base_line = module_line - region_lines,
                     .preamble_lines = results[i].preamble_lines,
                     .sources_content = options.sourcemap.sources_content,
@@ -845,6 +846,7 @@ pub fn emitWithTreeShaking(
                         .module_id = sourcemapSourcePath(m.path, options),
                         .source = m.source,
                         .maps = maps,
+                        .module_names = results[i].names,
                         .base_line = HMR_PREAMBLE_LINES,
                         .preamble_lines = results[i].preamble_lines,
                         .sources_content = options.sourcemap.sources_content,
@@ -1241,7 +1243,7 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *CompiledModule,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json, &result.entry_chain, &result.shared_ns_decls) catch null;
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.names, &result.preamble_lines, &result.fn_map_json, &result.entry_chain, &result.shared_ns_decls) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -1257,6 +1259,7 @@ pub fn emitModule(
     shaker: ?*const TreeShaker,
     helpers_out: ?*RuntimeHelpers,
     mappings_out: ?*?[]const SourceMap.Mapping,
+    names_out: ?*[]const []const u8,
     preamble_lines_out: ?*u32,
     fn_map_json_out: ?*?[]const u8,
     entry_chain_out: ?*?[]const u8,
@@ -1685,6 +1688,24 @@ pub fn emitModule(
         if (cg.sm_builder) |*sm| {
             if (sm.mappings.items.len > 0) {
                 mout.* = try allocator.dupe(SourceMap.Mapping, sm.mappings.items);
+            }
+        }
+    }
+    // sourcemap names 복사: mangler rename 발생한 식별자의 원본 이름. mappings 의
+    // name_index 가 가리키는 module-local 인덱스. bundle merge 시 chunk builder 로
+    // 옮길 때 chunk-global 인덱스로 재매핑 (#2987).
+    if (names_out) |nout| {
+        if (cg.sm_builder) |*sm| {
+            if (sm.names.items.len > 0) {
+                const dst = try allocator.alloc([]const u8, sm.names.items.len);
+                errdefer allocator.free(dst);
+                var filled: usize = 0;
+                errdefer for (dst[0..filled]) |s| allocator.free(s);
+                for (sm.names.items, 0..) |n, i| {
+                    dst[i] = try allocator.dupe(u8, n);
+                    filled = i + 1;
+                }
+                nout.* = dst;
             }
         }
     }

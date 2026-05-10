@@ -112,7 +112,12 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .binding_identifier,
         .assignment_target_identifier,
         => {
-            try self.addSourceMapping(node.span);
+            // mangler / ns_prefix 치환 / inline 치환이 발생하면 원본 이름을 sourcemap
+            // names 배열에 등록해 mapping.name_index 로 참조 — Sentry / DevTools 가
+            // minified `f` 의 원본 `originalName` 을 stack frame variable / hover 에서
+            // 복원. 치환 안 일어나는 일반 경로는 names 발행 X (size 폭증 회피, esbuild
+            // 동일 정책).
+
             // Peephole: global `undefined` → `(void 0)` (minify_syntax 활성화 시).
             // 9 bytes → 8 bytes, 1 byte 절감. parens는 member/call/new 등 모든 parent
             // context에서 안전하게 해석되도록 유지 — `undefined.x`/`undefined()` 같은
@@ -126,6 +131,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                     else
                         true;
                     if (is_global) {
+                        try self.addSourceMapping(node.span);
                         try self.write("(void 0)");
                         return;
                     }
@@ -138,16 +144,23 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                     // 상수 인라인: import symbol이 상수이면 리터럴로 대체
                     if (node.tag == .identifier_reference) {
                         if (meta.const_values.get(sid)) |cv| {
+                            try self.addSourceMapping(node.span);
                             try self.writeConstValue(cv);
                             return;
                         }
                     }
-                    // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환
+                    // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환.
+                    // 원본 식별자 이름을 names 에 등록해 디버거가 원형 lookup 가능.
                     if (meta.ns_inline_objects.get(sid)) |entry| {
+                        const original = self.ast.getText(node.data.string_ref);
+                        try self.addSourceMappingWithName(node.span, original);
                         try self.write(entry.var_name);
                         return;
                     }
+                    // mangler rename — 원본 이름 names 등록.
                     if (meta.renames.get(sid)) |new_name| {
+                        const original = self.ast.getText(node.data.string_ref);
+                        try self.addSourceMappingWithName(node.span, original);
                         try self.write(new_name);
                         return;
                     }
@@ -161,6 +174,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                     const name = self.ast.getText(node.data.string_ref);
                     if (self.ns_exports) |exports| {
                         if (exports.contains(name)) {
+                            try self.addSourceMappingWithName(node.span, name);
                             try self.write(prefix);
                             try self.writeByte('.');
                             try self.write(name);
@@ -169,6 +183,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                     }
                 }
             }
+            try self.addSourceMapping(node.span);
             try self.writeSpan(node.data.string_ref);
         },
 

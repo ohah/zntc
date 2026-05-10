@@ -242,6 +242,7 @@ pub const Codegen = struct {
     pub const generateSourceMap = debug_metadata.generateSourceMap;
     pub const generateSourceMapWithFunctionMap = debug_metadata.generateSourceMapWithFunctionMap;
     pub const addSourceMapping = debug_metadata.addSourceMapping;
+    pub const addSourceMappingWithName = debug_metadata.addSourceMappingWithName;
     const fnMapEnter = debug_metadata.fnMapEnter;
     const fnMapExit = debug_metadata.fnMapExit;
     pub const isFunctionLike = debug_metadata.isFunctionLike;

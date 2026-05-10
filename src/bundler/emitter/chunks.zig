@@ -352,6 +352,11 @@ pub fn emitChunks(
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
             var module_mappings: ?[]const SourceMap.Mapping = null;
             defer if (module_mappings) |maps| allocator.free(maps);
+            var module_names: []const []const u8 = &.{};
+            defer {
+                for (module_names) |n| allocator.free(n);
+                if (module_names.len > 0) allocator.free(module_names);
+            }
             var module_preamble_lines: u32 = 0;
             const raw_code = try emitModule(
                 allocator,
@@ -363,6 +368,7 @@ pub fn emitChunks(
                 null,
                 null,
                 if (chunk_sm != null) &module_mappings else null,
+                if (chunk_sm != null) &module_names else null,
                 if (chunk_sm != null) &module_preamble_lines else null,
                 null,
                 null,
@@ -412,6 +418,7 @@ pub fn emitChunks(
                     .module_id = parent.sourcemapSourcePath(m.path, options),
                     .source = m.source,
                     .maps = maps,
+                    .module_names = module_names,
                     .base_line = module_line.? - region_lines,
                     .preamble_lines = module_preamble_lines,
                     .sources_content = options.sourcemap.sources_content,
