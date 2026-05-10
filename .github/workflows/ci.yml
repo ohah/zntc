@@ -208,10 +208,16 @@ jobs:
           - platform: win32-arm64-msvc
             os: windows-11-arm
             zig_target: native
-          # win32-ia32-msvc 는 smoke 매트릭스에서 제외 — Node.js v24 가 win-x86
-          # 빌드를 폐지 (https://nodejs.org/dist/v24.0.0/SHASUMS256.txt). build
-          # 검증은 release.yml 의 build-napi/build-cli 에서 zig cross-build +
-          # check-platform-binary 사이즈 체크로 커버.
+          # win32-ia32-msvc: Node.js v24 가 win-x86 빌드를 폐지했으므로 v22 LTS
+          # (마지막 win-x86 공식 빌드 유지) 로 native require 검증. host dogfood
+          # 도 32-bit Node 가 dlopen 해야 하므로 host_zig_target 으로 32-bit
+          # binary 강제. release.yml 의 publish 는 9 platform 그대로.
+          - platform: win32-ia32-msvc
+            os: windows-latest
+            zig_target: x86-windows-msvc
+            host_zig_target: x86-windows-msvc
+            node_version: '22'
+            node_arch: x86
 
     steps:
       - name: Checkout
@@ -232,7 +238,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node_version || '24' }}
+          architecture: ${{ matrix.node_arch || '' }}
 
       - uses: ./.github/actions/bun-cache
         with:
@@ -245,17 +252,26 @@ jobs:
       # node 가 packages/core/zntc.node 를 dlopen 함. host 와 ABI 가 다른 cross
       # binary (musl 등) 는 못 읽으므로 host native 를 먼저 빌드해 두고, cross
       # 매트릭스만 그 후 target binary 로 zig-out 을 덮어 sub-package 에 복사.
+      # host_zig_target 명시 entry (ia32 등) 는 host node arch 에 맞춘 cross
+      # build 로 dogfood 가능하게 — windows-latest(64-bit) 에서 32-bit Node 가
+      # 64-bit binary dlopen 못 함.
       - name: Build host NAPI (dogfood)
         shell: bash
         run: |
-          zig build napi
+          if [ -n "${{ matrix.host_zig_target }}" ]; then
+            zig build napi -Dtarget=${{ matrix.host_zig_target }}
+          else
+            zig build napi
+          fi
           cp zig-out/lib/zntc.node packages/core/zntc.node
 
       - name: Build JS wrapper + dts
         run: cd packages/core && bun run build:js && bun run build:dts
 
+      # host_zig_target == zig_target 인 경우 (ia32) host build 가 이미 sub-package
+      # 용 binary 라 cross step 중복. zig cache 가 hit 해도 step 자체 overhead 회피.
       - name: Build platform NAPI (cross)
-        if: matrix.zig_target != 'native'
+        if: matrix.zig_target != 'native' && matrix.zig_target != matrix.host_zig_target
         shell: bash
         run: zig build napi -Dtarget=${{ matrix.zig_target }}
 
