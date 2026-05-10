@@ -1256,7 +1256,7 @@ class C2 {
 }
 class C3 {
 	constructor({ x:x, y:y, z:z }) {
-		this.{ x:x, y:y, z:z } = { x:x, y:y, z:z };
+		this.{ x, y, z } = { x:x, y:y, z:z };
 	}
 }
 var c1 = new C1([]);
@@ -1362,7 +1362,7 @@ exports[`TSC: es6/destructuring destructuringParameterProperties5 1`] = `
 "// @module: commonjs
 class C1 {
 	constructor([{ x1:x1, x2:x2, x3:x3 }, y, z]) {
-		this.[{ x1:x1, x2:x2, x3:x3 }, y, z] = [{ x1:x1, x2:x2, x3:x3 }, y, z];
+		this.[{ x1, x2, x3 }, y, z] = [{ x1:x1, x2:x2, x3:x3 }, y, z];
 		var foo = x1 || x2 || x3 || y || z;
 		var bar = this.x1 || this.x2 || this.x3 || this.y || this.z;
 	}
