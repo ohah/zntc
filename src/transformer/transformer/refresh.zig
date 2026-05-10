@@ -124,7 +124,17 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
     const var_decl = try self.buildRefreshVarDeclaration();
     try self.scratch.append(self.allocator, var_decl);
 
-    // $RefreshSig$ 스캔 제거 — Metro 방식. hook signature 없이 $RefreshReg$만 주입.
+    // $RefreshSig$ — opt-in (`react_refresh_hook_signatures`) 시에만 emit. default
+    // 는 Metro 정책 (registration only) 으로 RN HMR 영향 없음.
+    if (self.options.react_refresh_hook_signatures and self.plugins.refresh.signatures.items.len > 0) {
+        const refresh_sig_span = try self.ast.addString("$RefreshSig$");
+        for (self.plugins.refresh.signatures.items) |sig| {
+            const sig_decl = try self.buildRefreshSigDeclaration(sig, refresh_sig_span);
+            try self.scratch.append(self.allocator, sig_decl);
+            const sig_call = try self.buildRefreshSigCall(sig);
+            try self.scratch.append(self.allocator, sig_call);
+        }
+    }
 
     // $RefreshReg$(_c, "ComponentName"); 호출들
     const refresh_reg_span = try self.ast.addString("$RefreshReg$");
@@ -504,6 +514,8 @@ pub fn makeSigHandle(self: *Transformer) Error!Span {
 }
 
 /// Hook 시그니처가 있는 컴포넌트를 등록하고, body에 _s() 호출을 삽입한다.
+/// `react_refresh` + `react_refresh_hook_signatures` 둘 다 활성일 때만 동작.
+/// 후자가 default false 라 기본 빌드 (RN 포함) 는 영향 없음.
 pub fn maybeRegisterRefreshSignature(
     self: *Transformer,
     func_name: ?[]const u8,
@@ -511,6 +523,7 @@ pub fn maybeRegisterRefreshSignature(
     new_body: *NodeIndex,
 ) Error!void {
     if (!self.options.react_refresh) return;
+    if (!self.options.react_refresh_hook_signatures) return;
     const name = func_name orelse return;
     if (!isComponentName(name)) return;
 

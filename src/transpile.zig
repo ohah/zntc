@@ -456,7 +456,8 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
         !options.use_define_for_class_fields or
         options.experimental_decorators or
         options.emit_decorator_metadata or
-        options.react_refresh;
+        options.react_refresh or
+        options.react_refresh_hook_signatures;
 }
 
 fn buildTransformPlan(
@@ -1005,6 +1006,7 @@ fn transpileWithCallbackInternal(
         // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
         .minify_whitespace = options.minify_whitespace,
         .react_refresh = options.react_refresh,
+        .react_refresh_hook_signatures = options.react_refresh_hook_signatures,
     });
     // transformer.ast 도 arena owned (cloneForTransformer 결과). parser.ast 와 동일 이유.
     defer transformer.ast.dumpStringInternStatsIfEnabled();

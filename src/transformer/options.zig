@@ -69,8 +69,12 @@ pub const TransformOptions = struct {
     drop_labels: []const []const u8 = &.{},
     /// define 글로벌 치환 (D020). 예: process.env.NODE_ENV → "production"
     define: []const DefineEntry = &.{},
-    /// React Fast Refresh 활성화. 컴포넌트에 $RefreshReg$/$RefreshSig$ 주입.
+    /// React Fast Refresh 활성화. 컴포넌트에 $RefreshReg$ 주입.
     react_refresh: bool = false,
+    /// `react_refresh` 위에 hook signature ($RefreshSig$) emit 까지 활성화.
+    /// default false — Metro 정책 (registration only) 보존. opt-in 시 babel-plugin-
+    /// react-refresh 동등 (component body 에 `_s()` + 모듈 끝 `_s(Comp, "sig")`).
+    react_refresh_hook_signatures: bool = false,
     /// styled-components 1st-party transform 활성화 (compiler.styledComponents).
     /// 활성 시 `const X = styled.div\`...\`` 같은 선언에 displayName 자동 부여.
     /// componentId / SSR / CSS minify 등 추가 변환은 후속 PR.
