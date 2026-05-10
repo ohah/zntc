@@ -1731,9 +1731,7 @@ pub const TreeShaker = struct {
                 // 되지 않도록 default 를 used 마킹. lodash-es lodash.js → lodash.default.js
                 // → wrapperLodash.js chain 보존. `default as X` alias 는 line 1716 gate 에서
                 // X 가 used 가 아니면 propagation 자체 차단되므로 narrow check 로 충분.
-                if (eb.kind == .re_export and
-                    std.mem.eql(u8, eb.exported_name, "default") and
-                    std.mem.eql(u8, eb.local_name, "default") and
+                if (eb.isDefaultDirectReExport() and
                     graph_requested_exports.isWrapperBarrel(self.graph, src_module))
                 {
                     try self.markExportUsed(@intCast(src), "default");

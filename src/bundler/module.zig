@@ -237,6 +237,11 @@ pub const Module = struct {
     /// true면 tree-shaker의 auto-purity 분석이 이 값을 덮어쓸 수 없다.
     /// Rolldown `DeterminedSideEffects::UserDefined` 포팅.
     side_effects_user_defined: bool = false,
+    /// `import x; export default x;` body mutation pattern (lodash-es lodash.default.js).
+    /// `requested_exports.computeIsWrapperBarrel` 가 export_bindings 순회로 한 번 결정해
+    /// 캐시. graph link 결정 (`shouldLinkResolvedRecordForModule`) + tree_shaker 시드 게이트
+    /// + tree_shaker default→default re-export propagation 세 hot-path 호출처가 공유.
+    is_wrapper_barrel: bool = false,
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,

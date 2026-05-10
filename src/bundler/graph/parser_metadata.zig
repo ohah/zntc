@@ -84,6 +84,8 @@ pub fn materialize(
             }
             module.export_bindings = ebindings;
             module.exported_names = projectExportedNames(arena_alloc, ebindings);
+            // wrapper-barrel detection 캐시 (export_bindings 가 final 인 시점에 한 번 계산).
+            module.is_wrapper_barrel = @import("requested_exports.zig").computeIsWrapperBarrel(module);
         } else |_| {}
     }
 
