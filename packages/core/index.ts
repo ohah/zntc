@@ -149,16 +149,14 @@ let native: NativeModule | null = null;
 //
 // libc 검출: linux 에서 musl(Alpine) vs glibc(Debian/Ubuntu) 분기 — node 표준
 // `process.report.getReport().header.glibcVersionRuntime` 사용 (napi-rs/esbuild
-// 동일 패턴, dependency 불필요). 검출 못 하면 musl 로 fallback (alpine 등).
+// 동일 패턴, dependency 불필요). glibc 마커가 없으면 musl 로 분류 — Alpine 의도
+// 이며, Termux(bionic) 등 다른 비-glibc linux 도 musl 패키지로 떨어짐 (best-effort).
 function detectLinuxLibc(): 'glibc' | 'musl' | undefined {
   if (process.platform !== 'linux') return undefined;
   try {
-    const report = (process.report as { getReport?: () => unknown } | undefined)?.getReport?.() as
-      | { header?: { glibcVersionRuntime?: string } }
-      | undefined;
-    if (report?.header?.glibcVersionRuntime) return 'glibc';
+    if (process.report?.getReport().header.glibcVersionRuntime) return 'glibc';
   } catch {
-    /* fallthrough */
+    // process.report 미지원 런타임 → musl fallback
   }
   return 'musl';
 }
