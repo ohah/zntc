@@ -142,26 +142,51 @@ let native: NativeModule | null = null;
 
 // ─── .node 경로 탐색 ───
 
+// npm 의 `os`/`cpu`/`libc` 매칭으로 platform sub-package 가 자동 install 됨
+// (메인 `@zntc/core` 의 optionalDependencies). 사용자 환경에 맞는 1개만 설치.
+function getPlatformPackage(): string | null {
+  const { platform, arch } = process;
+  if (platform === 'linux' && arch === 'x64') return '@zntc/core-linux-x64-gnu';
+  if (platform === 'linux' && arch === 'arm64') return '@zntc/core-linux-arm64-gnu';
+  if (platform === 'darwin' && arch === 'x64') return '@zntc/core-darwin-x64';
+  if (platform === 'darwin' && arch === 'arm64') return '@zntc/core-darwin-arm64';
+  if (platform === 'win32' && arch === 'x64') return '@zntc/core-win32-x64-msvc';
+  return null;
+}
+
 function findAddon(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
+  const platformPkg = getPlatformPackage();
 
-  // 1. zig-out 빌드 산출물 우선 (개발 시 항상 최신 바이너리 사용)
+  // 1. zig-out 빌드 산출물 우선 (monorepo dev — 항상 최신 바이너리)
   const zigOut = join(__dirname, '../../zig-out/lib/zntc.node');
   if (existsSync(zigOut)) return zigOut;
-
-  // 2. dist에서 3단계 위 (packages/core/dist/ → zig-out/lib/)
   const zigOut2 = join(__dirname, '../../../zig-out/lib/zntc.node');
   if (existsSync(zigOut2)) return zigOut2;
 
-  // 3. 같은 디렉토리 (npm 배포 패키지)
+  // 2. platform sub-package (npm install — production)
+  if (platformPkg) {
+    try {
+      const require = createRequire(import.meta.url);
+      return require.resolve(platformPkg);
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // 3. legacy fallback — 같은/한 단계 위 디렉토리 (구버전 단일 패키지 install 호환)
   const local = join(__dirname, 'zntc.node');
   if (existsSync(local)) return local;
-
-  // 4. 한 단계 위 (dist/index.js에서 사용 시)
   const parent = join(__dirname, '../zntc.node');
   if (existsSync(parent)) return parent;
 
-  throw new Error('@zntc/core: zntc.node not found. Run `zig build napi` first.');
+  const expected = platformPkg ? ` (expected sub-package: ${platformPkg})` : '';
+  throw new Error(
+    `@zntc/core: native binary not found for ${process.platform}-${process.arch}${expected}. ` +
+      'Supported: linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64. ' +
+      'For development run `zig build napi`. ' +
+      'If your platform should be supported, please open an issue.',
+  );
 }
 
 // ─── Public API ───

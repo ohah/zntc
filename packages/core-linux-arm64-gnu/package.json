@@ -1,0 +1,20 @@
+{
+  "name": "@zntc/core-linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "Linux arm64 (glibc) native binary for @zntc/core",
+  "license": "MIT",
+  "files": [
+    "zntc.node",
+    "README.md"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "main": "zntc.node"
+}
