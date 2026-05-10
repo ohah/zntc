@@ -15,19 +15,27 @@
     "bin/zntc.mjs"
   ],
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "types": "dist/core/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/core/index.d.ts",
       "source": "./index.ts",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/core/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/core/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "scripts": {
     "build:napi": "cd ../.. && zig build napi",
-    "build:js": "bun build index.ts --outdir dist --format esm --target node",
-    "build:dts": "bun x tsc -b",
+    "build:js:esm": "bun build index.ts --outdir dist --format esm --target node",
+    "build:js:cjs": "node bin/zntc.mjs --bundle index.ts --outfile dist/index.cjs --format=cjs --platform=node --packages=external",
+    "build:js": "bun run build:js:esm && bun run build:js:cjs",
+    "build:dts": "bun x tsc -b && cp dist/core/index.d.ts dist/core/index.d.cts",
     "build": "bun run build:js && bun run build:dts",
     "build:local": "bun run build:napi && cp ../../zig-out/lib/zntc.node . && bun run build:js && bun run build:dts",
     "postinstall": "[ -f ../../zig-out/lib/zntc.node ] && cp ../../zig-out/lib/zntc.node . || true",

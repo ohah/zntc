@@ -165,8 +165,11 @@ function findAddon(): string {
   // 2. platform sub-package (npm install — production)
   if (platformPkg) {
     try {
-      const require = createRequire(import.meta.url);
-      return require.resolve(platformPkg);
+      // CJS 빌드에서 ZNTC 가 import.meta.url → `require("url").pathToFileURL(__filename).href`
+      // 로 inline 치환하므로, 같은 const 안에서 `require` 식별자 shadowing → TDZ
+      // 회피용 rename. 동작은 동일.
+      const nodeRequire = createRequire(import.meta.url);
+      return nodeRequire.resolve(platformPkg);
     } catch {
       /* fall through */
     }
@@ -251,8 +254,9 @@ import type { UserConfigInput } from './src/config-loader.ts';
 export function init(addonPath?: string): void {
   if (native) return;
   const path = addonPath ?? findAddon();
-  const require = createRequire(import.meta.url);
-  native = require(path) as NativeModule;
+  // require shadowing 회피 — findAddon() 참고.
+  const nodeRequire = createRequire(import.meta.url);
+  native = nodeRequire(path) as NativeModule;
 }
 
 /**
