@@ -717,12 +717,18 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
                 // {name1: 1, name2: 2, ...} object literal 합성. property key 는 quoted
                 // string literal (`"name"`) — reserved word/하이픈 등 고려 않게 일관 처리.
+                // identifier 는 실무상 짧으므로 256 byte 스택 버퍼로 heap alloc 회피.
                 const props_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(props_top);
                 for (ng) |entry| {
-                    const key_quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{entry.name});
-                    defer self.allocator.free(key_quoted);
-                    const key_span = try self.ast.addString(key_quoted);
+                    var stack_buf: [256]u8 = undefined;
+                    const need_heap = entry.name.len + 2 > stack_buf.len;
+                    const quoted = if (need_heap)
+                        try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{entry.name})
+                    else
+                        std.fmt.bufPrint(&stack_buf, "\"{s}\"", .{entry.name}) catch unreachable;
+                    defer if (need_heap) self.allocator.free(quoted);
+                    const key_span = try self.ast.addString(quoted);
                     const key_node = try self.ast.addNode(.{
                         .tag = .string_literal,
                         .span = key_span,
