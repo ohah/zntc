@@ -6,6 +6,8 @@ on:
     paths:
       - 'src/**'
       - 'tests/benchmark/**'
+      - '.github/workflows/benchmark.yml'
+      - '.github/actions/bun-cache/**'
   workflow_dispatch:
 
 concurrency:
