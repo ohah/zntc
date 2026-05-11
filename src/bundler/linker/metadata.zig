@@ -41,16 +41,21 @@ const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
 /// synthetic binding (JSX runtime 등) 은 semantic 이 추적하지 않으므로 "사용 중" 간주.
 /// `references` 가 비어있어도 보수적 보존. 호출자가 `verbatim_module_syntax` 를 먼저
 /// 확인해 true 이면 이 경로를 bypass.
-/// #1824: IIFE + `--globals` 매핑된 external 판정. UMD/AMD 와 동일한 factory-param
-/// preamble 경로로 분기하기 위한 공용 predicate. buildMetadataForAst / buildRequireRewrites
-/// 둘 다 동일 조건을 쓴다.
-inline fn isIifeMappedExternal(
+/// #1824: IIFE/UMD/AMD + `--globals` 매핑된 external 판정 + factory-param 이름 반환.
+/// wrapper 포맷 세 종류 모두 같은 preamble 경로로 분기하며, 매핑 이름까지 한 번에 돌려줘
+/// 호출자가 추가 lookup 없이 사용한다 (hot path 중복 스캔 회피). 매핑 없는 external 은
+/// emitter 가 ext_specifiers 에 넣지 않으므로 linker 도 일관되게 별도 경로로 흘려보낸다.
+inline fn mappedExternalParam(
     format: types.Format,
     globals: []const types.GlobalEntry,
     rec: types.ImportRecord,
-) bool {
-    return rec.is_external and format == .iife and
-        types.GlobalEntry.lookup(globals, rec.specifier) != null;
+) ?[]const u8 {
+    if (!rec.is_external) return null;
+    switch (format) {
+        .iife, .umd, .amd => {},
+        else => return null,
+    }
+    return types.GlobalEntry.lookup(globals, rec.specifier);
 }
 
 pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
@@ -305,13 +310,11 @@ pub fn buildMetadataForAst(
                     // top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨.
                     // init 함수 본문에서 `var`로 재선언하면 outer scope를 shadow → #1209.
                     const is_synthetic_esm = ib.isSynthetic() and m.wrap_kind == .esm;
-                    const is_iife_mapped = isIifeMappedExternal(self.format, self.iife_globals, rec);
-                    if (rec.is_external and (self.format == .umd or self.format == .amd or is_iife_mapped)) {
-                        // UMD/AMD/IIFE+globals: factory 매개변수에서 직접 참조.
-                        // 파라미터 이름은 UMD/AMD 관행대로 `specifierToParamName` 결과를 사용한다
-                        // (IIFE 도 emitter 쪽 factory 시그니처와 일치하는 이름 — #1824).
-                        const param_name = try types.specifierToParamName(self.allocator, rec.specifier);
-                        defer self.allocator.free(param_name);
+                    const mapped_param = mappedExternalParam(self.format, self.iife_globals, rec);
+                    if (mapped_param) |param_name| {
+                        // IIFE/UMD/AMD + globals 매핑: factory 매개변수에서 직접 참조.
+                        // 파라미터 이름 = globals 매핑 이름. emitter 의 wrapper factory
+                        // 시그니처와 동일하게 유지 (rollup `output.globals` 호환).
                         if (ib.kind == .namespace or ib.importsDefault()) {
                             // import * as React / import React → factory param 직접 사용
                             if (!std.mem.eql(u8, preamble_name, param_name)) {
@@ -821,12 +824,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
     for (m.import_records) |rec| {
         if (rec.resolved.isNone()) {
             // UMD/AMD/IIFE+globals: external require → factory 매개변수 참조.
-            // require("react") → React (factory params에서 주입, #1824 IIFE 확장)
-            const iife_mapped = isIifeMappedExternal(self.format, self.iife_globals, rec);
-            if (rec.is_external and (self.format == .umd or self.format == .amd or iife_mapped)) {
+            // require("react") → React (factory params에서 주입, #1824 IIFE 확장).
+            if (mappedExternalParam(self.format, self.iife_globals, rec)) |param| {
                 if (!require_rewrites.contains(rec.specifier)) {
-                    const param = try types.specifierToParamName(self.allocator, rec.specifier);
-                    defer self.allocator.free(param);
                     // "(React)" 형태로 저장 — emitRewriteValue가 '('로 시작하면 ()를 붙이지 않음
                     const owned = try std.fmt.allocPrint(self.allocator, "({s})", .{param});
                     try require_rewrites.put(self.allocator, rec.specifier, owned);

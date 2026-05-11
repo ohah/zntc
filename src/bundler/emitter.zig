@@ -349,46 +349,34 @@ pub fn emitWithTreeShaking(
     const use_arrow = !options.unsupported.arrow;
 
     // UMD/AMD/IIFE: external specifier 수집 (dependency array + factory params 생성용).
-    // IIFE 는 globals 매핑된 spec 만 수집 — 매핑 안 된 external 은 unresolved 로 취급되어
-    // linker 가 fatal_diagnostics 로 에러 발행 (#1791).
+    // 세 포맷 모두 `options.globals` 매핑된 spec 만 수록 — 매핑 없는 external 은 linker 가
+    // fatal_diagnostics 로 에러 발행 (#1791). PascalCase 자동 추정 fallback 은 사용자 의도
+    // 와 어긋나는 가짜 동작이라 제거.
     var ext_specifiers: std.ArrayList([]const u8) = .empty;
     defer ext_specifiers.deinit(allocator);
-    // IIFE 는 globals 매핑된 spec 에 대응되는 전역 인자를 수집한다. UMD/AMD 는 사용 안 함.
-    var iife_ext_globals: std.ArrayList([]const u8) = .empty;
-    defer iife_ext_globals.deinit(allocator);
-    const collect_externals = options.format == .umd or options.format == .amd or
-        (options.format == .iife and options.globals.len > 0);
+    var ext_globals: std.ArrayList([]const u8) = .empty;
+    defer ext_globals.deinit(allocator);
+    const collect_externals = (options.format == .umd or options.format == .amd or options.format == .iife) and
+        options.globals.len > 0;
     if (collect_externals) {
         var seen = std.StringHashMap(void).init(allocator);
         defer seen.deinit();
         for (sorted.items) |m| {
             for (m.import_records) |rec| {
                 if (!rec.is_external or seen.contains(rec.specifier)) continue;
-                if (options.format == .iife) {
-                    // IIFE: globals 매핑이 있는 spec 만 factory 파라미터에 수록.
-                    // 매핑이 없는 external 은 linker 가 fatal diagnostic 으로 처리.
-                    if (types.GlobalEntry.lookup(options.globals, rec.specifier)) |gname| {
-                        try seen.put(rec.specifier, {});
-                        try ext_specifiers.append(allocator, rec.specifier);
-                        try iife_ext_globals.append(allocator, gname);
-                    }
-                } else {
+                if (types.GlobalEntry.lookup(options.globals, rec.specifier)) |gname| {
                     try seen.put(rec.specifier, {});
                     try ext_specifiers.append(allocator, rec.specifier);
+                    try ext_globals.append(allocator, gname);
                 }
             }
         }
     }
 
-    // specifier → factory 매개변수명 precompute (UMD/AMD/IIFE 공통)
-    var ext_param_names: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (ext_param_names.items) |n| allocator.free(n);
-        ext_param_names.deinit(allocator);
-    }
-    for (ext_specifiers.items) |spec| {
-        try ext_param_names.append(allocator, try types.specifierToParamName(allocator, spec));
-    }
+    // factory 매개변수명 = globals 매핑 이름 그대로 사용. wrapper 의 `root.<name>` /
+    // factory parameter / caller arg 가 모두 같은 이름으로 일관 (rollup `output.globals` 호환).
+    // ext_globals 는 options.globals 슬라이스 참조라 별도 alloc/free 불필요.
+    const ext_param_names: []const []const u8 = ext_globals.items;
 
     // IIFE + externals 가 있으면 factory_fn 을 param 포함 형태로 조립 (#1824).
     // 예: `(function(React, ReactDom) {\n`. 그 외에는 정적 문자열 사용.
@@ -397,7 +385,7 @@ pub fn emitWithTreeShaking(
     else
         (if (use_arrow) "(() => {\n" else "(function() {\n");
     const factory_fn_owned: ?[]const u8 = blk: {
-        if (options.format != .iife or ext_param_names.items.len == 0) break :blk null;
+        if (options.format != .iife or ext_param_names.len == 0) break :blk null;
         const prefix = if (has_tla)
             (if (use_arrow) "(async (" else "(async function(")
         else
@@ -405,7 +393,7 @@ pub fn emitWithTreeShaking(
         var buf: std.ArrayList(u8) = .empty;
         errdefer buf.deinit(allocator);
         try buf.appendSlice(allocator, prefix);
-        for (ext_param_names.items, 0..) |n, i| {
+        for (ext_param_names, 0..) |n, i| {
             if (i > 0) try buf.appendSlice(allocator, ", ");
             try buf.appendSlice(allocator, n);
         }
@@ -424,7 +412,7 @@ pub fn emitWithTreeShaking(
     var prelude_scope = profile.begin(.emit_prelude);
 
     // 포맷별 prologue
-    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_param_names.items);
+    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_param_names);
 
     if (options.intro_js) |intro| {
         try output.appendSlice(allocator, intro);
@@ -934,7 +922,7 @@ pub fn emitWithTreeShaking(
         if (outro.len > 0 and outro[outro.len - 1] != '\n') try output.append(allocator, '\n');
     }
 
-    try emitFormatEpilogue(&output, allocator, options.format, iife_ext_globals.items);
+    try emitFormatEpilogue(&output, allocator, options.format, ext_globals.items);
 
     // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
     const lc_mode = resolveDefaultLegalComments(options.legal_comments, options.minify_whitespace);
