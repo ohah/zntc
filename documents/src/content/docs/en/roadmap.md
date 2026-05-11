@@ -17,6 +17,10 @@ Expose the ZNTC AST as a WASM module so it can be consumed outside Node and the 
 
 Zig plugins currently exist only for built-in transforms (worklet, Fast Refresh). User-authored Zig modules will be loadable as plugins, statically linked at build time and called in-process. No JS↔native serialization overhead, but the Zig compiler must be available at build time.
 
+#### Rollup plugin context API extension (ESTree AST)
+
+The `vitePlugin()` adapter supports the main Rollup hooks (`resolveId` · `load` · `transform` · `renderChunk` · `generateBundle`) and most fields of `getModuleInfo()`. Remaining items are parts of the plugin context API (`this.parse()` · `this.resolve()` · `this.emitFile()` · `ModuleInfo.meta`) and `ModuleInfo.ast` — an ESTree adapter that exposes each module's **ESTree-compatible AST** to plugins. It depends on converting ZNTC's internal AST to the ESTree shape.
+
 #### Per-chunk CSS splitting
 
 `import './style.css'` auto-emit, `@import` inlining, and Lightning CSS minification already work. Splitting CSS per output chunk during code-splitting is deferred. (`.module.css` class-name hashing / scoping is already built in for app mode — see [Plugin Recipes / CSS Modules](/zntc/en/guides/plugin-recipes/#css-modules).)
