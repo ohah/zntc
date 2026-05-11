@@ -127,10 +127,7 @@ export default defineConfig({
 
 function createIndexHtml(framework: WebFramework, name: string): string {
   const entry = `/${entryFile(framework)}`;
-  const body =
-    framework === 'react'
-      ? '    <div id="root"></div>\n'
-      : '    <div id="app"></div>\n';
+  const body = framework === 'react' ? '    <div id="root"></div>\n' : '    <div id="app"></div>\n';
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -194,7 +191,12 @@ interface ScaffoldFile {
   content: string;
 }
 
-function scaffoldFiles(root: string, framework: WebFramework, zntcVersion: string, name?: string): ScaffoldFile[] {
+function scaffoldFiles(
+  root: string,
+  framework: WebFramework,
+  zntcVersion: string,
+  name?: string,
+): ScaffoldFile[] {
   const files: ScaffoldFile[] = [
     { relPath: PACKAGE_JSON, content: createPackageJson(root, framework, { name, zntcVersion }) },
     { relPath: 'tsconfig.json', content: createTsconfig(framework) },
@@ -220,7 +222,10 @@ function planScaffoldFile(root: string, file: ScaffoldFile, force: boolean): Pla
   return { path, before, after: before, changed: false };
 }
 
-export function planWebInit(options: InitWebOptions = {}): { files: PlannedFile[]; framework: WebFramework } {
+export function planWebInit(options: InitWebOptions = {}): {
+  files: PlannedFile[];
+  framework: WebFramework;
+} {
   const root = resolve(options.root ?? process.cwd());
   const framework = options.framework ?? 'react';
   if (!WEB_FRAMEWORKS.includes(framework)) {

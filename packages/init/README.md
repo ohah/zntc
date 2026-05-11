@@ -8,12 +8,12 @@ npx @zntc/init <mode> [options]
 
 ## Modes
 
-| Mode | 동작 | 대상 |
-| --- | --- | --- |
-| `react-native` | overlay | 기존 React Native CLI 프로젝트 |
-| `vite` | overlay | 기존 Vite 프로젝트 (`@zntc/vite-plugin`) |
-| `rspack` | overlay | 기존 Rspack / Webpack 프로젝트 (`@zntc/rspack-loader`) |
-| `web` | scaffold | 빈 디렉토리에 ZNTC 단독 web 프로젝트 (Vite/Rspack 없이) |
+| Mode           | 동작     | 대상                                                    |
+| -------------- | -------- | ------------------------------------------------------- |
+| `react-native` | overlay  | 기존 React Native CLI 프로젝트                          |
+| `vite`         | overlay  | 기존 Vite 프로젝트 (`@zntc/vite-plugin`)                |
+| `rspack`       | overlay  | 기존 Rspack / Webpack 프로젝트 (`@zntc/rspack-loader`)  |
+| `web`          | scaffold | 빈 디렉토리에 ZNTC 단독 web 프로젝트 (Vite/Rspack 없이) |
 
 ```bash
 npx @zntc/init react-native       # RN overlay (mode 생략 시에도 동일하게 react-native)

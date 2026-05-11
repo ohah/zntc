@@ -26,7 +26,11 @@ describe('@zntc/init web scaffold', () => {
       expect(result.changes.every((c) => c.action === 'create')).toBe(true);
 
       const pkg = readJson(join(root, 'package.json'));
-      expect(pkg.scripts).toEqual({ dev: 'zntc dev', build: 'zntc build', preview: 'zntc preview' });
+      expect(pkg.scripts).toEqual({
+        dev: 'zntc dev',
+        build: 'zntc build',
+        preview: 'zntc preview',
+      });
       expect(pkg.dependencies.react).toBeDefined();
       expect(pkg.dependencies['react-dom']).toBeDefined();
       expect(pkg.devDependencies['@zntc/core']).toBe('^0.1.0');
@@ -114,7 +118,9 @@ describe('@zntc/init web scaffold', () => {
   test('rejects unknown framework via planWebInit', () => {
     const root = emptyDir();
     try {
-      expect(() => planWebInit({ root, framework: 'svelte' as any })).toThrow('unsupported framework');
+      expect(() => planWebInit({ root, framework: 'svelte' as any })).toThrow(
+        'unsupported framework',
+      );
     } finally {
       cleanup(root);
     }
