@@ -2,34 +2,34 @@
   "name": "@zntc/core-darwin-x64",
   "version": "0.1.0",
   "description": "macOS x64 native binary for @zntc/core",
+  "keywords": [
+    "compiler",
+    "darwin-x64",
+    "napi",
+    "native-binary",
+    "transpiler",
+    "zntc"
+  ],
+  "homepage": "https://ohah.github.io/zntc",
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
   "license": "MIT",
   "author": "ohah",
-  "homepage": "https://ohah.github.io/zntc",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ohah/zntc.git",
     "directory": "packages/core-darwin-x64"
   },
-  "bugs": {
-    "url": "https://github.com/ohah/zntc/issues"
-  },
-  "keywords": [
-    "zntc",
-    "napi",
-    "native-binary",
-    "transpiler",
-    "compiler",
-    "darwin-x64"
+  "files": [
+    "zntc.node",
+    "README.md"
   ],
   "os": [
     "darwin"
   ],
   "cpu": [
     "x64"
-  ],
-  "files": [
-    "zntc.node",
-    "README.md"
   ],
   "main": "zntc.node",
   "scripts": {

@@ -2,24 +2,28 @@
   "name": "@zntc/core-linux-x64-musl",
   "version": "0.1.0",
   "description": "Linux x64 (musl) native binary for @zntc/core",
+  "keywords": [
+    "compiler",
+    "linux-x64-musl",
+    "napi",
+    "native-binary",
+    "transpiler",
+    "zntc"
+  ],
+  "homepage": "https://ohah.github.io/zntc",
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
   "license": "MIT",
   "author": "ohah",
-  "homepage": "https://ohah.github.io/zntc",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ohah/zntc.git",
     "directory": "packages/core-linux-x64-musl"
   },
-  "bugs": {
-    "url": "https://github.com/ohah/zntc/issues"
-  },
-  "keywords": [
-    "zntc",
-    "napi",
-    "native-binary",
-    "transpiler",
-    "compiler",
-    "linux-x64-musl"
+  "files": [
+    "zntc.node",
+    "README.md"
   ],
   "os": [
     "linux"
@@ -29,10 +33,6 @@
   ],
   "libc": [
     "musl"
-  ],
-  "files": [
-    "zntc.node",
-    "README.md"
   ],
   "main": "zntc.node",
   "scripts": {

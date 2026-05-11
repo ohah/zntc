@@ -2,34 +2,34 @@
   "name": "@zntc/core-win32-arm64-msvc",
   "version": "0.1.0",
   "description": "Windows arm64 (MSVC) native binary for @zntc/core",
+  "keywords": [
+    "compiler",
+    "napi",
+    "native-binary",
+    "transpiler",
+    "win32-arm64-msvc",
+    "zntc"
+  ],
+  "homepage": "https://ohah.github.io/zntc",
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
   "license": "MIT",
   "author": "ohah",
-  "homepage": "https://ohah.github.io/zntc",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ohah/zntc.git",
     "directory": "packages/core-win32-arm64-msvc"
   },
-  "bugs": {
-    "url": "https://github.com/ohah/zntc/issues"
-  },
-  "keywords": [
-    "zntc",
-    "napi",
-    "native-binary",
-    "transpiler",
-    "compiler",
-    "win32-arm64-msvc"
+  "files": [
+    "zntc.node",
+    "README.md"
   ],
   "os": [
     "win32"
   ],
   "cpu": [
     "arm64"
-  ],
-  "files": [
-    "zntc.node",
-    "README.md"
   ],
   "main": "zntc.node",
   "scripts": {

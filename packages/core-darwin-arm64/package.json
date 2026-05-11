@@ -2,34 +2,34 @@
   "name": "@zntc/core-darwin-arm64",
   "version": "0.1.0",
   "description": "macOS arm64 (Apple Silicon) native binary for @zntc/core",
+  "keywords": [
+    "compiler",
+    "darwin-arm64",
+    "napi",
+    "native-binary",
+    "transpiler",
+    "zntc"
+  ],
+  "homepage": "https://ohah.github.io/zntc",
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
   "license": "MIT",
   "author": "ohah",
-  "homepage": "https://ohah.github.io/zntc",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ohah/zntc.git",
     "directory": "packages/core-darwin-arm64"
   },
-  "bugs": {
-    "url": "https://github.com/ohah/zntc/issues"
-  },
-  "keywords": [
-    "zntc",
-    "napi",
-    "native-binary",
-    "transpiler",
-    "compiler",
-    "darwin-arm64"
+  "files": [
+    "zntc.node",
+    "README.md"
   ],
   "os": [
     "darwin"
   ],
   "cpu": [
     "arm64"
-  ],
-  "files": [
-    "zntc.node",
-    "README.md"
   ],
   "main": "zntc.node",
   "scripts": {
