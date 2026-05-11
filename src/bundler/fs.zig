@@ -132,6 +132,43 @@ pub const RealReadFileCache = struct {
         self.dirs.deinit(allocator);
     }
 
+    /// stat 없는 read — fresh build path 에서 mtime 이 caller 없을 때 사용.
+    /// dir-fd cache (`openFile`) 는 그대로 활용해 path lookup 비용 절감.
+    /// 모듈당 syscall: open + read(+) + close (3+). readFileWithStat 대비 fstat
+    /// 1 syscall 절감 — 5000 modules 환경에서 측정 가능한 차이.
+    pub fn readFile(
+        self: *RealReadFileCache,
+        cache_allocator: std.mem.Allocator,
+        content_allocator: std.mem.Allocator,
+        path: []const u8,
+        max_bytes: usize,
+    ) FsError!LoadedModule {
+        const file = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_open);
+            defer scope.end();
+            break :blk self.openFile(cache_allocator, path) catch |err| return mapFsError(err);
+        };
+        defer {
+            var close_scope = profile.begin(.graph_discover_pm_setup_read_close);
+            defer close_scope.end();
+            file.close();
+        }
+
+        const bytes = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_bytes);
+            defer scope.end();
+            // size hint 없이 — readToEndAlloc 가 EOF 까지 dynamic grow. 일반 source
+            // 모듈 (< 8KB) 은 1회 read 안에 들어옴.
+            break :blk file.readToEndAlloc(content_allocator, max_bytes) catch |err| return mapFsError(err);
+        };
+
+        return .{
+            .contents = bytes,
+            .path = path,
+            .namespace = .file,
+        };
+    }
+
     pub fn readFileWithStat(
         self: *RealReadFileCache,
         cache_allocator: std.mem.Allocator,
@@ -212,6 +249,16 @@ pub const RealReadFileCache = struct {
 
 pub const VirtualReadFileCache = struct {
     pub fn deinit(_: *VirtualReadFileCache, _: std.mem.Allocator) void {}
+
+    pub fn readFile(
+        _: *VirtualReadFileCache,
+        _: std.mem.Allocator,
+        content_allocator: std.mem.Allocator,
+        path: []const u8,
+        max_bytes: usize,
+    ) FsError!LoadedModule {
+        return Implementation.init().readFile(content_allocator, path, max_bytes);
+    }
 
     pub fn readFileWithStat(
         _: *VirtualReadFileCache,

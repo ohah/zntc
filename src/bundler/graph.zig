@@ -101,6 +101,12 @@ pub const ModuleGraph = struct {
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
 
+    /// Incremental rebuild path 여부. bundler 가 `module_store` / `changed_files`
+    /// / `compiled_cache` 중 하나라도 주입한 경우 true — `readModuleSourceWithMtime`
+    /// 가 fstat 호출로 mtime 을 채워야 cache invalidation 이 동작. fresh build
+    /// (CLI / 첫 빌드 외부) 에서는 false — caller 자체가 없어 fstat 불필요.
+    /// 5000-module 합성 벤치에서 fstat ~5000 회 절감.
+    incremental_mode: bool = false,
     /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
     dev_mode: bool = false,
     /// `output.inlineDynamicImports` 런타임 부분. true 면 dynamic-import target 모듈을

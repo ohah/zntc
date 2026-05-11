@@ -223,7 +223,6 @@ function benchBundle(): BenchResult[] {
 
   const esbuildBin = findBin('esbuild');
   const rolldownBin = findBin('rolldown');
-  const webpackBin = findBin('webpack');
   const rspackBin = findBin('rspack');
 
   const benchModules = join(__dirname, 'node_modules');
@@ -279,27 +278,10 @@ function benchBundle(): BenchResult[] {
       );
     }
 
-    // webpack / rspack — 큰 스케일에서는 시간이 길어지지만 사용자 요청으로
-    // 전 스케일에서 측정. timeout 안에 못 끝나면 FAIL 로 노출.
-    if (webpackBin) {
-      const config = join(dir, 'webpack.config.js');
-      writeFileSync(
-        config,
-        `module.exports = {
-  mode: 'production', entry: '${entry}',
-  output: { path: '${outDir}', filename: 'webpack.js' },
-  resolve: { extensions: ['.ts', '.js'] },
-  resolveLoader: { modules: ['${benchModules}'] },
-  module: { rules: [{ test: /\\.ts$/, use: 'ts-loader', exclude: /node_modules/ }] },
-};`,
-      );
-      results.push(
-        runBench('webpack', 'bundle', scale.name, () => {
-          execBin(webpackBin, ['--config', config], dir);
-        }),
-      );
-    }
-
+    // rspack — webpack 은 사용자 요청으로 비교표에서 제외 (5000 modules 에서
+    // 19s+ 가 measurement run-time 을 비례적으로 늘려 측정 효율 저하 + 19s 의
+    // 대부분이 ts-loader 의 type-check 비용이라 ZNTC/Bun/esbuild 와 fair 한
+    // 비교가 아님).
     if (rspackBin) {
       const config = join(dir, 'rspack.config.js');
       writeFileSync(
