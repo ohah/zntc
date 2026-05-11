@@ -1596,8 +1596,7 @@ test "Bundler: UMD external dependencies in wrapper" {
         .format = .umd,
         .external = &.{"react"},
         .global_name = "MyApp",
-        // globals 매핑 필수 — PascalCase 자동 추정 fallback 제거됨.
-        .globals = &.{.{ .specifier = "react", .global_name = "React" }},
+        // globals 매핑 미지정 — UMD 는 PascalCase 자동 추정 (rollup/rolldown 관행).
     });
     defer b.deinit();
 
@@ -2094,8 +2093,7 @@ test "Bundler: AMD external dependencies in wrapper" {
         .entry_points = &.{entry},
         .format = .amd,
         .external = &.{"lodash"},
-        // globals 매핑 필수 — PascalCase 자동 추정 fallback 제거됨.
-        .globals = &.{.{ .specifier = "lodash", .global_name = "Lodash" }},
+        // globals 매핑 미지정 — AMD 는 PascalCase 자동 추정 (rollup/rolldown 관행).
     });
     defer b.deinit();
 
