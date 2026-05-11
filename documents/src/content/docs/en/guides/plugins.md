@@ -19,84 +19,23 @@ ZNTC provides a Rollup/Vite-compatible plugin interface. Plugins are written in 
 
 ### Plugin hook compatibility
 
+Sorted by status: ✅ Supported → ⚠️ Partial → ➖ no-op → ❌ Unsupported.
+
 | Surface | Status | Use |
 | ------- | ------ | --- |
-| esbuild-style `setup(build)` | Partial | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
-| Rollup/Vite-style `resolveId` / `load` / `transform` | Supported | `vitePlugin()` wrapper or config plugin |
-| **Vite 4+ hook object** `{ filter, handler }` | Supported | `vitePlugin()` extracts `handler` automatically (`filter` is ignored by native) |
-| **Plugin sourcemap object** (`RawSourceMap`) | Supported | wrapper validates V3 and stringifies; invalid maps are dropped with a one-time warning |
-| output hooks `renderChunk` / `generateBundle` | Partial | chunk post-processing and output-list access |
-| lifecycle `buildStart` / `buildEnd` / `closeBundle` | Supported | called for `build()` and for each initial/rebuild cycle in `watch()` |
-| Plugin context `this.error()` / `this.warn()` | Supported | `warn` is prefixed with `@zntc/core [name]:` |
-| Plugin context `this.addWatchFile()` | no-op | Callable but not propagated to the native watcher (SFC `<style src="..."/>` external dep may go stale) |
+| Rollup/Vite-style `resolveId` / `load` / `transform` | ✅ Supported | `vitePlugin()` wrapper or config plugin |
+| **Vite 4+ hook object** `{ filter, handler }` | ✅ Supported | `vitePlugin()` extracts `handler` automatically (`filter` is ignored by native) |
+| **Plugin sourcemap object** (`RawSourceMap`) | ✅ Supported | wrapper validates V3 and stringifies; invalid maps are dropped with a one-time warning |
+| lifecycle `buildStart` / `buildEnd` / `closeBundle` | ✅ Supported | called for `build()` and for each initial/rebuild cycle in `watch()` |
+| Plugin context `this.error()` / `this.warn()` | ✅ Supported | `warn` is prefixed with `@zntc/core [name]:` |
+| esbuild-style `setup(build)` | ⚠️ Partial | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
+| output hooks `renderChunk` / `generateBundle` | ⚠️ Partial | chunk post-processing and output-list access |
+| Plugin context `this.addWatchFile()` | ➖ no-op | Callable but not propagated to the native watcher (SFC `<style src="..."/>` external dep may go stale) |
 | Plugin context `this.resolve()` / `this.emitFile()` | ❌ Unsupported | Throws an informative Error — graph mutation surface is missing |
 | **Framework SFC** (`.vue` / `.svelte`) | ❌ Unsupported | Requires recognising virtual module IDs and `?vue&type=style&lang.css` query sub-imports — [details + workarounds →](/zntc/en/guides/plugin-recipes/#framework-sfc-vue--svelte--currently-unsupported) |
-| `buildSync()` + JS plugins | Unsupported | use async `build()` / `watch()` |
+| `buildSync()` + JS plugins | ❌ Unsupported | use async `build()` / `watch()` |
 
 The native ZNTC worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
-
-## Hook Order
-
-```text
-buildStart
-  -> resolveId / onResolve
-  -> load / onLoad
-  -> transform / onTransform
-  -> native link / tree-shake / emit
-  -> renderChunk
-  -> generateBundle
-buildEnd
-write
-closeBundle
-```
-
-In `watch()`, the same order runs for the initial build and every rebuild. `onReady` or `onRebuild` runs after `buildEnd`.
-
-### Per-hook selection policy with multiple plugins
-
-When two or more plugins register the same hook, the way they combine differs by hook.
-
-| Hook | Policy | Notes |
-|---|---|---|
-| `resolveId` / `onResolve` | **first-match** | First non-null wins. Subsequent plugins aren't called |
-| `load` / `onLoad` | **first-match** | First non-null wins |
-| `transform` / `onTransform` | **chaining** | All called in registration order. Each hook's output is the next hook's input |
-| `renderChunk` | **chaining** | All called in registration order (chunk-code transforms) |
-| `generateBundle` | **all-run, sequential** | All run; return values ignored (observation only) |
-| `buildStart` / `buildEnd` / `closeBundle` | **all-run, sequential** | All run; lifecycle signals |
-
-**When plugin order changes the result:**
-- `resolveId` / `load` — once an earlier plugin matches, later plugins don't get a chance. Place virtual-module/alias handlers before the default resolver.
-- `transform` — chain order matters. If env-substitution → minify is swapped, the result differs.
-
-**Watch-mode lifecycle repetition:**
-
-```text
-Initial build: buildStart → resolveId/load/transform → buildEnd → write → onReady → closeBundle
-On file change: buildStart → ... → buildEnd → onRebuild → closeBundle
-```
-
-`buildStart` / `closeBundle` fire **on every rebuild**. If you need to reuse a long-lived resource (DB/socket), initialize it **outside the build** (at module load) — not in `buildStart`.
-
-**Errors in `buildEnd` / `closeBundle` are swallowed:**
-
-Throwing from these two hooks does not affect the build/rebuild result (post-processing failures must not mask the user's build). To surface failures, use an explicit flag/log:
-
-```typescript
-let lastBuildOk = true;
-const myPlugin = {
-  name: 'after-build',
-  buildEnd(err) {
-    if (err) { lastBuildOk = false; return; }
-    try {
-      runPostProcess();   // failure is swallowed
-    } catch (e) {
-      lastBuildOk = false;
-      console.error('[after-build] failed:', e);
-    }
-  },
-};
-```
 
 ## Authoring a plugin from scratch — 5 steps
 
@@ -177,6 +116,69 @@ The same `plugins: [...]` array works when calling the `build()` API directly.
 - Use `console.warn` and prefix messages with your plugin name — `[my-plugin] ...`. Calling `this.warn(msg)` does this automatically (`@zntc/core [name]:`).
 - `transform` / `load` run **once per module**, so avoid heavy synchronous work (e.g. sync file system reads) on the hot path.
 - Throw with `this.error(new Error(...))` — ZNTC prints the plugin name and file location alongside the diagnostic.
+
+## Hook Order
+
+```text
+buildStart
+  -> resolveId / onResolve
+  -> load / onLoad
+  -> transform / onTransform
+  -> native link / tree-shake / emit
+  -> renderChunk
+  -> generateBundle
+buildEnd
+write
+closeBundle
+```
+
+In `watch()`, the same order runs for the initial build and every rebuild. `onReady` or `onRebuild` runs after `buildEnd`.
+
+### Per-hook selection policy with multiple plugins
+
+When two or more plugins register the same hook, the way they combine differs by hook.
+
+| Hook | Policy | Notes |
+|---|---|---|
+| `resolveId` / `onResolve` | **first-match** | First non-null wins. Subsequent plugins aren't called |
+| `load` / `onLoad` | **first-match** | First non-null wins |
+| `transform` / `onTransform` | **chaining** | All called in registration order. Each hook's output is the next hook's input |
+| `renderChunk` | **chaining** | All called in registration order (chunk-code transforms) |
+| `generateBundle` | **all-run, sequential** | All run; return values ignored (observation only) |
+| `buildStart` / `buildEnd` / `closeBundle` | **all-run, sequential** | All run; lifecycle signals |
+
+**When plugin order changes the result:**
+- `resolveId` / `load` — once an earlier plugin matches, later plugins don't get a chance. Place virtual-module/alias handlers before the default resolver.
+- `transform` — chain order matters. If env-substitution → minify is swapped, the result differs.
+
+**Watch-mode lifecycle repetition:**
+
+```text
+Initial build: buildStart → resolveId/load/transform → buildEnd → write → onReady → closeBundle
+On file change: buildStart → ... → buildEnd → onRebuild → closeBundle
+```
+
+`buildStart` / `closeBundle` fire **on every rebuild**. If you need to reuse a long-lived resource (DB/socket), initialize it **outside the build** (at module load) — not in `buildStart`.
+
+**Errors in `buildEnd` / `closeBundle` are swallowed:**
+
+Throwing from these two hooks does not affect the build/rebuild result (post-processing failures must not mask the user's build). To surface failures, use an explicit flag/log:
+
+```typescript
+let lastBuildOk = true;
+const myPlugin = {
+  name: 'after-build',
+  buildEnd(err) {
+    if (err) { lastBuildOk = false; return; }
+    try {
+      runPostProcess();   // failure is swallowed
+    } catch (e) {
+      lastBuildOk = false;
+      console.error('[after-build] failed:', e);
+    }
+  },
+};
+```
 
 ## Config File
 
