@@ -527,16 +527,12 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
         } else if (std.mem.eql(u8, arg, "--jsx-in-js")) {
             opts.jsx_in_js = true;
         } else if (std.mem.startsWith(u8, arg, "--jsx=")) {
-            // CLI vocab: automatic / automatic-dev / classic. tsconfig vocab ("react-jsx" /
-            // "react-jsxdev") 는 CLI 가 받지 않음 — tsconfig 파싱 (`tsconfig_merge`) 이 처리.
+            // CLI vocab: classic / automatic / automatic-dev / preserve. tsconfig vocab
+            // (`react-jsx` / `react-jsxdev` / `react-native`) 은 CLI 가 받지 않음 —
+            // `tsconfig_merge` 가 처리. unknown 값은 `.classic` 으로 silent fallback
+            // (기존 동작 보존, NAPI 의 strict throw 와 의도적으로 다름).
             const val = arg["--jsx=".len..];
-            if (std.mem.eql(u8, val, "automatic")) {
-                opts.jsx_runtime = .automatic;
-            } else if (std.mem.eql(u8, val, "automatic-dev")) {
-                opts.jsx_runtime = .automatic_dev;
-            } else {
-                opts.jsx_runtime = .classic;
-            }
+            opts.jsx_runtime = lib.codegen.codegen.JsxRuntime.fromString(val) orelse .classic;
         } else if (std.mem.eql(u8, arg, "--jsx-dev")) {
             opts.jsx_runtime = .automatic_dev;
         } else if (std.mem.startsWith(u8, arg, "--jsx-factory=")) {

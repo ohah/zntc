@@ -99,7 +99,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  --verbatim-module-syntax          Preserve unused value imports (TS 5.0+)
         \\
         \\JSX options:
-        \\  --jsx=<mode>                      preserve | transform | automatic | automatic-dev
+        \\  --jsx=<mode>                      classic | automatic | automatic-dev | preserve
         \\  --jsx-dev                         Shortcut for --jsx=automatic-dev
         \\  --jsx-factory=<name>              Element factory (classic, default: React.createElement)
         \\  --jsx-fragment=<name>             Fragment factory (classic, default: React.Fragment)

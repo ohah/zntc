@@ -626,7 +626,13 @@ interface BuildOptionsCommon {
    * - `false`: 비활성화 (웹과 동일한 URL 문자열 export)
    * 기본 경로: `"react-native/Libraries/Image/AssetRegistry"` */
   assetRegistry?: string | false;
-  jsx?: 'classic' | 'automatic' | 'automatic-dev';
+  /** JSX runtime mode. `'preserve'` 는 JSX 를 변환 없이 그대로 출력 — TS 어노테이션만
+   * strip. downstream tool (`@vitejs/plugin-react` / `@preact/preset-vite` /
+   * `vite-plugin-solid` 등) 이 JSX 를 처리하도록 위임할 때 사용. tsc 의
+   * `"jsx": "preserve"` 와 동등.
+   * 알려진 제약 — JSX 안의 expression container 내부 TS 어노테이션
+   * (e.g. `<Foo prop={value as Type}>`) 은 strip 되지 않은 채 raw 로 남음. */
+  jsx?: 'classic' | 'automatic' | 'automatic-dev' | 'preserve';
   jsxFactory?: string;
   jsxFragment?: string;
   jsxImportSource?: string;

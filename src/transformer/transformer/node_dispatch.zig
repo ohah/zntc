@@ -125,7 +125,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // JSX — fragment는 .list, element/opening_element는 .extra
         .jsx_fragment => {
-            if (self.options.jsx_transform) {
+            // preserve 모드면 lowering skip — visitJSXElement / visitListNode 가 자식만
+            // visit (TS strip 적용) 하고 JSX 노드 자체는 유지. downstream tool 이 JSX 를
+            // 처리할 때 (vite plugin chain 등) 활용.
+            if (self.options.shouldLowerJsx()) {
                 return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXFragment(self, node);
             }
             return self.visitListNode(idx);
@@ -189,7 +192,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const pushed_emotion_scope = try emotion_mod.maybeEnterClassNamesScope(self, node);
             defer if (pushed_emotion_scope) emotion_mod.exitClassNamesScope(self);
 
-            if (self.options.jsx_transform) {
+            if (self.options.shouldLowerJsx()) {
                 return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXElement(self, node);
             }
             return self.visitJSXElement(node);

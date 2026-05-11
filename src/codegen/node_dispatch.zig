@@ -277,15 +277,29 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             try self.writeNodeSpan(node);
         },
 
-        // JSX: Transformer의 jsx_lowering이 call_expression으로 변환 완료.
-        // codegen은 JSX AST 노드를 만나지 않아야 함.
+        // JSX: 일반적으로 Transformer 의 jsx_lowering 이 call_expression 으로 변환.
+        // jsx_runtime == .preserve 면 JSX 노드가 codegen 까지 도달 — 원본 소스
+        // slice 를 그대로 emit (downstream tool 이 처리하도록 위임).
+        //
+        // 알려진 제약: JSX 자식 (attribute value / expression container) 내부의
+        // TypeScript 어노테이션 (e.g. `<Foo prop={value as Type}>`) 은 strip 되지
+        // 않은 채 raw 로 남는다. preserve 모드의 주 사용처가 vite plugin chain 의
+        // downstream tool 위임이라 그쪽이 TS 까지 함께 처리하는 것으로 가정.
         .jsx_element,
         .jsx_fragment,
-        .jsx_expression_container,
-        .jsx_text,
+        .jsx_opening_element,
+        .jsx_closing_element,
+        .jsx_attribute,
         .jsx_spread_attribute,
         .jsx_spread_child,
-        => unreachable,
+        .jsx_expression_container,
+        .jsx_text,
+        .jsx_namespaced_name,
+        .jsx_member_expression,
+        => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
 
         // TS enum/namespace → IIFE 출력
         .ts_enum_declaration => try type_runtime_emit.emitEnumIIFE(self, node),

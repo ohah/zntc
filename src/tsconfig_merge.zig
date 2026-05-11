@@ -52,12 +52,14 @@ pub const MergedFlags = struct {
 };
 
 /// tsconfig 의 "jsx" 문자열 값을 ZNTC 의 `JsxRuntime` 으로 매핑.
-/// "preserve" 와 인식 못 하는 값은 null — caller 가 default(`.classic`) 를 적용.
+/// 인식 못 하는 값은 null — caller 가 default(`.classic`) 를 적용.
 fn mapTsConfigJsxToRuntime(tsconfig_jsx: ?[]const u8) ?codegen.JsxRuntime {
     const s = tsconfig_jsx orelse return null;
     if (std.mem.eql(u8, s, "react")) return .classic;
     if (std.mem.eql(u8, s, "react-jsx")) return .automatic;
     if (std.mem.eql(u8, s, "react-jsxdev")) return .automatic_dev;
+    if (std.mem.eql(u8, s, "preserve")) return .preserve;
+    if (std.mem.eql(u8, s, "react-native")) return .preserve;
     return null;
 }
 
@@ -167,13 +169,19 @@ test "merge: explicit jsx runtime wins over tsconfig" {
     try std.testing.expect(merged.jsx_runtime == .classic);
 }
 
-test "merge: preserve / unknown jsx falls back to default classic" {
+test "merge: preserve / react-native jsx → .preserve" {
     var ts = TsConfig{};
 
     ts.jsx = "preserve";
-    try std.testing.expect(merge(&ts, .{}).jsx_runtime == .classic);
+    try std.testing.expect(merge(&ts, .{}).jsx_runtime == .preserve);
 
     ts.jsx = "react-native";
+    try std.testing.expect(merge(&ts, .{}).jsx_runtime == .preserve);
+}
+
+test "merge: unknown jsx falls back to default classic" {
+    var ts = TsConfig{};
+    ts.jsx = "invalid-jsx-mode";
     try std.testing.expect(merge(&ts, .{}).jsx_runtime == .classic);
 }
 

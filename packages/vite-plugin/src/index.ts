@@ -41,6 +41,8 @@ export interface ZntcPluginOptions {
 
 const DEFAULT_INCLUDE = /\.(tsx?|jsx)$/;
 const DEFAULT_EXCLUDE = /node_modules/;
+/// jsx: 'preserve' 모드에서 ZNTC 가 위임할 파일 패턴 — JSX 가 있을 수 있는 확장자.
+const JSX_EXT_PATTERN = /\.[jt]sx$/;
 
 export function zntc(options: ZntcPluginOptions = {}): Plugin {
   const include = options.include ?? DEFAULT_INCLUDE;
@@ -79,6 +81,15 @@ export function zntc(options: ZntcPluginOptions = {}): Plugin {
     transform(code, id) {
       if (!include.test(id)) return null;
       if (exclude.test(id)) return null;
+
+      // jsx: 'preserve' 면 JSX 가 포함될 수 있는 .tsx/.jsx 는 ZNTC 가 건너뛰고
+      // downstream framework plugin (`@vitejs/plugin-react`, `@preact/preset-vite`,
+      // `vite-plugin-solid` 등) 이 JSX 와 TS strip 까지 함께 처리하도록 위임한다.
+      // ZNTC core 의 preserve 출력 (raw JSX + TS stripped) 을 babel-based plugin
+      // 이 후처리할 때 sourcemap 이나 parse 측면에서 깨지는 케이스가 있어 안전쪽으로.
+      if (transpileOpts.jsx === 'preserve' && JSX_EXT_PATTERN.test(id)) {
+        return null;
+      }
 
       const result = transpile(code, {
         ...transpileOpts,
