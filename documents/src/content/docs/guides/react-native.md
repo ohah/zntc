@@ -181,11 +181,11 @@ react-native → browser → module → main
 | `--sourcemap-sources-root <dir>` | 소스맵의 `sourceRoot` (`--source-root` 와 동일 의미) |
 | `--sourcemap-use-absolute-path` | 소스맵 내 source 경로를 절대 경로로 |
 | `--assets-dest <dir>` | 이미지/폰트 등 asset 복사 대상 — production (`--dev` 아님) 빌드에서 asset 로더가 해당 디렉토리로 복사 (iOS 는 1x/2x/3x, Android 는 `res/`) |
-| `--asset-catalog-dest <dir>` | iOS asset catalog (`.xcassets`) 생성 대상 |
+| `--asset-catalog-dest <dir>` | iOS asset catalog 대상 — **현재 무시** (받기만 하고 동작 없음, stderr 경고) |
 | `--bundle-encoding <utf8\|utf16le\|ascii>` | 번들 파일 인코딩 (기본 `utf-8`) |
 | `--reset-cache` | 시작 시 캐시 무효화 |
 | `--max-workers <n>` | 병렬 워커 수 — `--jobs` 의 alias |
-| `--unstable-transform-profile <name>` | Hermes transform profile (`hermes-stable` 등) |
+| `--unstable-transform-profile <name>` | Hermes transform profile — **현재 무시** (받기만 하고 동작 없음, stderr 경고) |
 | `--no-interactive` | 터미널 인터랙티브 액션 비활성 (Metro UI 호환) |
 | `--watchFolders <a,b>` | 감시 루트 추가 (Metro 의 camelCase 형, comma 구분) — RN preset 의 watchFolders 로 전달. zntc 네이티브 watcher 의 `--watch-folder` 와 별개 |
 | `--sourceExts <a,b>` | 추가 소스 확장자 (Metro 의 camelCase 형, comma 구분) |

@@ -181,11 +181,11 @@ react-native → browser → module → main
 | `--sourcemap-sources-root <dir>` | Source map `sourceRoot` (same meaning as `--source-root`) |
 | `--sourcemap-use-absolute-path` | Use absolute paths for sources in the source map |
 | `--assets-dest <dir>` | Destination for copied assets (images/fonts) — in production (not `--dev`) builds the asset loader copies there (iOS 1x/2x/3x, Android `res/`) |
-| `--asset-catalog-dest <dir>` | Destination for the iOS asset catalog (`.xcassets`) |
+| `--asset-catalog-dest <dir>` | iOS asset catalog destination — **currently ignored** (accepted but no-op, stderr warning) |
 | `--bundle-encoding <utf8\|utf16le\|ascii>` | Bundle file encoding (default `utf-8`) |
 | `--reset-cache` | Invalidate the cache on startup |
 | `--max-workers <n>` | Parallel worker count — alias of `--jobs` |
-| `--unstable-transform-profile <name>` | Hermes transform profile (`hermes-stable`, etc.) |
+| `--unstable-transform-profile <name>` | Hermes transform profile — **currently ignored** (accepted but no-op, stderr warning) |
 | `--no-interactive` | Disable terminal interactive actions (Metro UI compat) |
 | `--watchFolders <a,b>` | Extra watch roots (Metro's camelCase form, comma-separated) — forwarded to the RN preset's watchFolders. Distinct from the native watcher's `--watch-folder` |
 | `--sourceExts <a,b>` | Extra source extensions (Metro's camelCase form, comma-separated) |

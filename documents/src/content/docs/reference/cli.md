@@ -124,14 +124,13 @@ Options:
 | `--sourcemap-output=<path>` | 소스맵 출력 경로 (지정 시 sourcemap 자동 활성) |
 | `--source-map-url=<url>` | `//# sourceMappingURL` 값 |
 | `--assets-dest=<dir>` | production 빌드의 asset 복사 대상 (iOS 1x/2x/3x, Android `res/`) |
-| `--asset-catalog-dest=<dir>` | iOS asset catalog (`.xcassets`) 생성 대상 |
 | `--bundle-encoding=<utf8\|utf16le\|ascii>` | 번들 파일 인코딩 (기본 `utf-8`) |
 | `--reset-cache` | 시작 시 캐시 무효화 |
 | `--max-workers=<n>` | 병렬 워커 수 — `--jobs` alias |
 | `--rn-project-root=<dir>` | RN preset projectRoot (기본 cwd, monorepo root 지정 시) |
 | `--watchFolders=<a,b>` / `--sourceExts=<a,b>` | Metro camelCase 형 — RN preset 으로 전달 (`--watch-folder` 와 별개) |
-| `--unstable-transform-profile=<name>` / `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro 호환 옵션 |
-| `--transform-option=<k=v>` / `--resolver-option=<k=v>` | Metro transformer/resolver 옵션 (반복 가능) — **현재 무시** (Metro graph-bundler 전용) |
+| `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro 호환 옵션 |
+| `--asset-catalog-dest=<dir>` / `--unstable-transform-profile=<name>` / `--transform-option=<k=v>` / `--resolver-option=<k=v>` | 받기만 하고 **현재 무시** (Metro graph-bundler 전용) |
 
 전체 표 + 동작 설명: [React Native 가이드](/zntc/guides/react-native/#metro--react-native-bundle-호환-옵션)
 

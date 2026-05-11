@@ -126,14 +126,13 @@ Options:
 | `--sourcemap-output=<path>` | Source map output path (implies sourcemap when set) |
 | `--source-map-url=<url>` | Value for `//# sourceMappingURL` |
 | `--assets-dest=<dir>` | Asset copy destination in production builds (iOS 1x/2x/3x, Android `res/`) |
-| `--asset-catalog-dest=<dir>` | Destination for the iOS asset catalog (`.xcassets`) |
 | `--bundle-encoding=<utf8\|utf16le\|ascii>` | Bundle file encoding (default `utf-8`) |
 | `--reset-cache` | Invalidate the cache on startup |
 | `--max-workers=<n>` | Parallel worker count — alias of `--jobs` |
 | `--rn-project-root=<dir>` | RN preset projectRoot (defaults to cwd; set for monorepo roots) |
 | `--watchFolders=<a,b>` / `--sourceExts=<a,b>` | Metro camelCase forms — forwarded to the RN preset (distinct from `--watch-folder`) |
-| `--unstable-transform-profile=<name>` / `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro compat options |
-| `--transform-option=<k=v>` / `--resolver-option=<k=v>` | Metro transformer/resolver options (repeatable) — **currently ignored** (Metro graph-bundler only) |
+| `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro compat options |
+| `--asset-catalog-dest=<dir>` / `--unstable-transform-profile=<name>` / `--transform-option=<k=v>` / `--resolver-option=<k=v>` | Accepted but **currently ignored** (Metro graph-bundler only) |
 
 Full table + behavior: [React Native guide](/zntc/en/guides/react-native/#metro--react-native-bundle-compatibility-flags)
 

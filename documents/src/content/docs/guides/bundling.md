@@ -128,7 +128,7 @@ defineConfig({
 zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 ```
 
-지원 로더: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary`, `copy`, `empty`
+지원 로더: `js`, `jsx`, `ts`, `tsx`, `json`, `css`, `text`, `file`, `dataurl`, `base64`, `binary`, `copy`, `empty`
 
 ## Web Worker
 
@@ -155,7 +155,7 @@ self.onmessage = (e) => {
 
 ### 출력
 
-워커 엔트리는 메인 번들의 import dependency 가 아닌 **별도 chunk** 로 생성됩니다. 파일명은 `--chunk-names` 패턴을 따르며, 메인 번들의 `new Worker(new URL(...))` 호출부는 빌드된 워커 파일 URL 로 자동 치환됩니다. 워커 chunk 의 모듈 포맷은 항상 IIFE 입니다 (Node CJS 타겟 빌드에서는 CJS).
+워커 엔트리는 메인 번들의 import dependency 가 아닌 **별도 chunk** 로 생성됩니다. 파일명은 `<원본파일명>-<crc32 hex>.js` 고정 형식이며 (`--chunk-names` 패턴 미적용), 메인 번들의 `new Worker(new URL(...))` 호출부는 빌드된 워커 파일 URL 로 자동 치환됩니다. 워커 chunk 의 모듈 포맷은 항상 IIFE 입니다 (Node CJS 타겟 빌드에서는 CJS).
 
 ### 한계
 
