@@ -56,6 +56,7 @@ pub const ResolveCache = struct {
 
     /// 디렉토리 엔트리 캐시 — readdir() 결과를 메모리에 보관하여 stat() syscall 대폭 감소.
     dir_cache: resolver_mod.DirEntryCache,
+    realpath_cache: resolver_mod.RealpathCache,
 
     /// 패키지 디렉토리별 browser 필드 override 캐시 (disabled + string remap).
     /// pkg_dir_path → BrowserOverrides (null 이면 browser 필드 없음).
@@ -226,6 +227,7 @@ pub const ResolveCache = struct {
             .platform = platform,
             .packages_external = options.packages_external,
             .dir_cache = resolver_mod.DirEntryCache.init(allocator),
+            .realpath_cache = resolver_mod.RealpathCache.init(allocator),
             .browser_overrides_cache = std.StringHashMap(?BrowserOverrides).init(allocator),
             .conditions_import = cond_import,
             .conditions_require = cond_require,
@@ -236,6 +238,7 @@ pub const ResolveCache = struct {
 
     pub fn deinit(self: *ResolveCache) void {
         self.dir_cache.deinit();
+        self.realpath_cache.deinit();
 
         // 캐시된 경로 문자열 해제
         var it = self.cache.iterator();
@@ -393,6 +396,7 @@ pub const ResolveCache = struct {
         var local_resolver = self.resolver;
         local_resolver.conditions = self.conditionsFor(kind);
         local_resolver.dir_cache = &self.dir_cache;
+        local_resolver.realpath_cache = &self.realpath_cache;
         if (!thread_safe) {
             // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원
             self.resolver.conditions = local_resolver.conditions;
