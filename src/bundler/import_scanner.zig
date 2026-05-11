@@ -35,6 +35,7 @@ const MemberFlags = @import("../parser/ast.zig").MemberFlags;
 const TokenKind = @import("../lexer/token.zig").Kind;
 const scan_results = @import("../parser/scan_results.zig");
 const module_parser = @import("../parser/module.zig");
+const import_specifier_unescape = @import("../parser/import_specifier.zig");
 const DefineEntry = scan_results.DefineEntry;
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
@@ -872,8 +873,12 @@ fn isExportsDotAssign(ast: *const Ast, node: Node) bool {
         std.mem.eql(u8, ast.getText(prop.span), "exports");
 }
 
-/// string_literal 노드의 텍스트를 따옴표 없이 반환한다.
-/// 소스 코드에서 직접 참조하므로 할당 없음 (zero-copy).
+/// string_literal 노드의 텍스트를 따옴표 제거 + JS escape unescape 후 반환한다.
+/// escape 가 없으면 zero-copy 로 source slice 그대로, 있으면 ast.allocator 로 할당된
+/// 새 buffer 반환. parser 의 `extractImportSpecifier` 와 동일한 unescape 규칙 — 두
+/// scan path (parser inline scan + bundler import_scanner) 가 같은 specifier 를
+/// 다르게 보존하던 #3025 회귀 해소. NUL byte 시작 (Rollup/Vite 의 `\0` 가상 모듈
+/// 관례) 도 valid 한 specifier 로 보존.
 fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     if (idx.isNone()) return null;
     if (@intFromEnum(idx) >= ast.nodes.items.len) return null;
@@ -881,7 +886,8 @@ fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     const node = ast.getNode(idx);
     if (node.tag != .string_literal) return null;
 
-    return stripQuotes(ast.getText(node.span));
+    const stripped = stripQuotes(ast.getText(node.span)) orelse return null;
+    return import_specifier_unescape.unescape(ast.allocator, stripped);
 }
 
 /// new Worker(new URL('./worker.ts', import.meta.url)) 패턴 감지.
