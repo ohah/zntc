@@ -1549,14 +1549,15 @@ test "Bundler: IIFE + --globals maps external to factory arg (#1824)" {
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
 
-    // factory signature: `var MyLib = ((React, ReactDom) => {` (arrow, ES target 기본값)
-    try std.testing.expect(std.mem.indexOf(u8, output, "var MyLib = ((React, ReactDom) => {") != null);
+    // factory signature: `var MyLib = ((React, ReactDOM) => {` (arrow, ES target 기본값).
+    // globals 매핑 이름 (React/ReactDOM) 으로 factory param/caller arg/preamble 모두 일관.
+    try std.testing.expect(std.mem.indexOf(u8, output, "var MyLib = ((React, ReactDOM) => {") != null);
     // factory call args: 매핑된 전역 (`React, ReactDOM`)
     try std.testing.expect(std.mem.endsWith(u8, output, "})(React, ReactDOM);\n"));
     // named import preamble: `var useState = React.useState;`
     try std.testing.expect(std.mem.indexOf(u8, output, "var useState = React.useState") != null);
-    // default import → factory param 직접 사용
-    try std.testing.expect(std.mem.indexOf(u8, output, "ReactDom") != null);
+    // default import → factory param 직접 사용 (ReactDOM)
+    try std.testing.expect(std.mem.indexOf(u8, output, "ReactDOM") != null);
     // body 에 bare require 없음
     try std.testing.expect(std.mem.indexOf(u8, output, "require(\"react\")") == null);
 }
@@ -1595,6 +1596,8 @@ test "Bundler: UMD external dependencies in wrapper" {
         .format = .umd,
         .external = &.{"react"},
         .global_name = "MyApp",
+        // globals 매핑 필수 — PascalCase 자동 추정 fallback 제거됨.
+        .globals = &.{.{ .specifier = "react", .global_name = "React" }},
     });
     defer b.deinit();
 
@@ -1605,11 +1608,11 @@ test "Bundler: UMD external dependencies in wrapper" {
 
     // UMD wrapper에 dependency array 포함
     try std.testing.expect(std.mem.indexOf(u8, output, "define([\"react\"]") != null);
-    // factory 매개변수 포함
+    // factory 매개변수 = globals 매핑 이름
     try std.testing.expect(std.mem.indexOf(u8, output, "function(React)") != null);
     // CJS 경로에 require("react") 포함
     try std.testing.expect(std.mem.indexOf(u8, output, "require(\"react\")") != null);
-    // IIFE 글로벌 경로
+    // IIFE 글로벌 경로 — globals 매핑 이름 사용
     try std.testing.expect(std.mem.indexOf(u8, output, "root.React") != null);
     // body에 bare require("react") 없음 (factory param으로 대체됨)
     try std.testing.expect(std.mem.indexOf(u8, output, "var React = require(\"react\")") == null);
@@ -2091,6 +2094,8 @@ test "Bundler: AMD external dependencies in wrapper" {
         .entry_points = &.{entry},
         .format = .amd,
         .external = &.{"lodash"},
+        // globals 매핑 필수 — PascalCase 자동 추정 fallback 제거됨.
+        .globals = &.{.{ .specifier = "lodash", .global_name = "Lodash" }},
     });
     defer b.deinit();
 
@@ -2101,7 +2106,7 @@ test "Bundler: AMD external dependencies in wrapper" {
 
     // AMD wrapper에 dependency array 포함
     try std.testing.expect(std.mem.indexOf(u8, output, "define([\"lodash\"]") != null);
-    // factory 매개변수 포함
+    // factory 매개변수 = globals 매핑 이름
     try std.testing.expect(std.mem.indexOf(u8, output, "function(Lodash)") != null);
 }
 
