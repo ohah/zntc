@@ -13,7 +13,7 @@ const LogFilterOptions = options_mod.LogFilterOptions;
 /// sequence (NUL 포함 binary asset) 도 안전. `text` 는 JS 측 lazy getter 가
 /// `TextDecoder` 로 디코드한다 (esbuild OutputFile shape 와 동등). 진정한 zero-copy
 /// (external_buffer + finalizer) 는 BundleResult arena lifetime audit 후 별도 epic.
-fn setContentsBuffer(env: c.napi_env, js_file: c.napi_value, bytes: []const u8) void {
+pub fn setContentsBuffer(env: c.napi_env, js_file: c.napi_value, bytes: []const u8) void {
     var js_contents: c.napi_value = undefined;
     var data_ptr: ?*anyopaque = null;
     _ = c.napi_create_buffer_copy(env, bytes.len, bytes.ptr, &data_ptr, &js_contents);

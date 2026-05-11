@@ -59,11 +59,18 @@ interface OutputFile {
   imports?: string[];
 }
 
+/** stateless. `attachTextGetter` 의 cache miss 마다 새 인스턴스를 만들지 않도록 module-level singleton. */
+const UTF8_DECODER = new TextDecoder('utf-8');
+
 /** NAPI 가 만든 raw OutputFile (`{path, contents}`) 에 lazy `text` getter 를 부착.
  * `text` 는 첫 access 시 `TextDecoder` 로 디코드한 후 캐시 — 대부분의 binary asset
  * (CSS bundle / worker chunk) 은 `text` 가 호출되지 않아 비용 0. `file.contents` 가
  * 후처리에서 reassign (예: `postProcessCssOutputs` 의 minify) 되면 reference 비교로
- * 자동 invalidate. */
+ * 자동 invalidate.
+ *
+ * `enumerable: false` — `for..in` / `Object.keys` / `JSON.stringify` 에서 text 를
+ * 빼서 contents (Uint8Array → `{0:..,1:..}` 직렬화) 와의 페이로드 중복을 막는다.
+ * (esbuild `OutputFile.text` 도 prototype getter 라 enumerable 아님.) */
 function attachTextGetter(file: { path: string; contents: Uint8Array }): OutputFile {
   let cachedContents: Uint8Array | undefined;
   let cachedText: string | undefined;
@@ -71,14 +78,23 @@ function attachTextGetter(file: { path: string; contents: Uint8Array }): OutputF
     get(): string {
       if (cachedContents !== file.contents) {
         cachedContents = file.contents;
-        cachedText = new TextDecoder('utf-8').decode(cachedContents);
+        cachedText = UTF8_DECODER.decode(cachedContents);
       }
       return cachedText!;
     },
-    enumerable: true,
+    enumerable: false,
     configurable: true,
   });
   return file as OutputFile;
+}
+
+/** NAPI 가 반환한 raw build 결과의 모든 OutputFile 에 `text` getter 를 부착. build /
+ * buildSync / buildAppSync 가 공유하는 단일 진입점 — 새 NAPI 진입점 추가 시 drift 방지. */
+function wrapOutputFiles<T extends { outputFiles: Array<{ path: string; contents: Uint8Array }> }>(
+  result: T,
+): T {
+  for (const file of result.outputFiles) attachTextGetter(file);
+  return result;
 }
 
 interface Diagnostic {
@@ -1550,12 +1566,17 @@ function lifecycleHookSpec(
   surfaceFailures: boolean;
 } | null {
   switch (hookName) {
-    case 'generateBundle':
+    case 'generateBundle': {
+      // NAPI 는 raw `{path, contents}` 만 노출 — plugin callback 이 `outputs[i].text` 를 쓸 수
+      // 있도록 main build entry 와 동일하게 lazy getter 부착.
+      const outputs = arg1 as Array<{ path: string; contents: Uint8Array }>;
+      for (const file of outputs) attachTextGetter(file);
       return {
         callbacks: reg.generateBundleCallbacks,
-        arg: arg1 as OutputFile[],
+        arg: outputs as OutputFile[],
         surfaceFailures: false,
       };
+    }
     case 'buildStart':
       return { callbacks: reg.buildStartCallbacks, arg: undefined, surfaceFailures: false };
     case 'buildEnd': {
@@ -2114,8 +2135,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // 위해 writeOutputFiles 다음에 JS layer 가 직접 호출 — native bundle() 끝 시점은 contents
   // 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
   try {
-    const result: BuildResult = await native.build(napiOptions);
-    for (const file of result.outputFiles) attachTextGetter(file);
+    const result: BuildResult = wrapOutputFiles(await native.build(napiOptions));
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
@@ -2150,8 +2170,7 @@ export function buildSync(options: BuildOptions): BuildResult {
   const dispatcher = resolveDispatcher(options, 'sync');
   if (dispatcher) napiOptions._pluginDispatcherSync = dispatcher;
   try {
-    const result: BuildResult = native.buildSync(napiOptions);
-    for (const file of result.outputFiles) attachTextGetter(file);
+    const result: BuildResult = wrapOutputFiles(native.buildSync(napiOptions));
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
@@ -2174,19 +2193,19 @@ export function buildSync(options: BuildOptions): BuildResult {
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   const { publicDir, compiler, ...rest } = options;
-  const result: BuildResult = native.buildAppSync({
-    ...rest,
-    define: withDefaultAppBuildDefines(options),
-    ...(publicDir === false
-      ? { disablePublicDir: true }
-      : publicDir !== undefined
-        ? { publicDir }
-        : {}),
-    // compiler.* → flat NAPI fields. `prepareNapiOptions` 와 동일 변환을 한 곳에서.
-    ...buildCompilerNapiFields(compiler),
-  });
-  for (const file of result.outputFiles) attachTextGetter(file);
-  return result;
+  return wrapOutputFiles(
+    native.buildAppSync({
+      ...rest,
+      define: withDefaultAppBuildDefines(options),
+      ...(publicDir === false
+        ? { disablePublicDir: true }
+        : publicDir !== undefined
+          ? { publicDir }
+          : {}),
+      // compiler.* → flat NAPI fields. `prepareNapiOptions` 와 동일 변환을 한 곳에서.
+      ...buildCompilerNapiFields(compiler),
+    }),
+  );
 }
 
 /// `compiler.styledComponents` / `compiler.emotion` (boolean / 객체 form) 를 평면 NAPI
