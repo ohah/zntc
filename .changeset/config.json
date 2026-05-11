@@ -2,7 +2,17 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.4/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [],
+  "fixed": [
+    [
+      "@zntc/core",
+      "@zntc/web",
+      "@zntc/vite-plugin",
+      "@zntc/rspack-loader",
+      "@zntc/react-native",
+      "@zntc/init",
+      "@zntc/wasm"
+    ]
+  ],
   "linked": [],
   "access": "public",
   "baseBranch": "main",
