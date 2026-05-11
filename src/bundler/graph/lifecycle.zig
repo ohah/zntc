@@ -45,7 +45,6 @@ pub fn deinit(self: *ModuleGraph) void {
         self.allocator.free(we.resolved_path);
     }
     self.worker_entries.deinit(self.allocator);
-    if (self.jsx_specifier_cache) |s| self.allocator.free(s);
     if (self.plugins_with_helpers) |p| self.allocator.free(p);
     self.runtime_polyfill_roots.deinit(self.allocator);
 }

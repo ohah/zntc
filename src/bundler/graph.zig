@@ -155,8 +155,6 @@ pub const ModuleGraph = struct {
     jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
     /// JSX import source (--jsx-import-source). 기본: "react".
     jsx_import_source: []const u8 = "react",
-    /// JSX runtime specifier 캐시. 모든 모듈에서 동일하므로 한 번만 할당.
-    jsx_specifier_cache: ?[]const u8 = null,
     /// Worker 엔트리: new Worker(new URL(...)) 패턴에서 수집된 worker 파일 경로.
     /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
