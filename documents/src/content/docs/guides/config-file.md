@@ -198,6 +198,35 @@ defineConfig({
 
 전체 옵션 목록은 [Babel 마이그레이션 가이드](/zntc/guides/babel-migration/)를 참조하세요.
 
+#### `index.html` 안의 환경변수 — EJS 토큰
+
+`index.html` 본문에 `<%= ZNTC_KEY %>` 형태로 토큰을 쓰면, `dev` / `build` 양쪽에서 자동으로 `.env` 의 값으로 치환됩니다. JS 측 `import.meta.env.X` 와는 별개 경로 — HTML 안에서 직접 사용 가능합니다.
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <title><%= ZNTC_APP_TITLE %></title>
+    <meta name="version" content="<%= ZNTC_BUILD_VERSION %>" />
+  </head>
+  <body><div id="root"></div></body>
+</html>
+```
+
+```bash
+# .env
+ZNTC_APP_TITLE=My App
+ZNTC_BUILD_VERSION=2026.05
+```
+
+**Spec**:
+
+- 토큰 양식: `<%= KEY %>` (delimiter 양쪽 공백 허용 — `<%=KEY%>` / `<%=   KEY   %>` 모두 OK).
+- 키 prefix 는 **`ZNTC_` 만** 허용. JS 측 `envPrefixes` 가 `VITE_*` 까지 허용해도 HTML 본문에는 노출 안 됨 — secret 누설 방지.
+- 다른 prefix 키 (`<%= VITE_API_KEY %>`) 는 **원본 보존 + warning** (token 이 사이트에 그대로 노출되므로 즉시 감지 가능).
+- 미발견 키 (`<%= ZNTC_UNDEFINED %>`) 는 **빈 문자열 + warning** (Vite / CRA 와 동일).
+- expression 평가 (`<%= mode === 'prod' ? '/' : '/dev/' %>`) 는 **미지원** — key-only.
+
 #### 함수형 config 의 `ConfigEnv.command`
 
 `zntc.config.ts` 에서 `defineConfig(({ command, mode, env }) => ...)` 형태를 쓸 때 `command` 가 받을 수 있는 값:
