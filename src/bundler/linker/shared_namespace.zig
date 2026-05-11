@@ -118,19 +118,11 @@ pub fn registerNamespaceRewrites(
             const ns_var = if (ns_target_to_var.get(target)) |cached|
                 cached
             else blk: {
-                // splitting / manualChunks 시 referrer 청크 self-preamble 에 inline
-                // 하면 entry 청크에 vendor 코드 누출 (#2990). use_shared_ns_preamble
-                // 활성 시 정의자 모듈 (`target`) 의 청크 preamble 로 분리 — linker 의
-                // ns_shared_inline_cache 에 등록 후 청크 emit 단계에서 chunk filter.
+                // splitting 시엔 referrer 청크 self-preamble 대신 정의자 청크 preamble 에
+                // namespace 가 위치하도록 shared cache 경유.
                 if (self.use_shared_ns_preamble) {
-                    const ns_var_name = try getOrCreateSharedNamespaceVar(self, target, &seen_exports);
+                    const ns_var_name = try appendSharedNsInlineEntry(self, ns_inline_list, null, target, &seen_exports);
                     try ns_target_to_var.put(target, ns_var_name);
-                    try ns_inline_list.append(self.allocator, .{
-                        .symbol_id = null,
-                        .object_literal = try self.allocator.dupe(u8, ""),
-                        .var_name = try self.allocator.dupe(u8, ns_var_name),
-                        .shared_target_mod_idx = target,
-                    });
                     break :blk ns_var_name;
                 }
                 const fresh = try makeUniqueNsVarName(self, exp.exported, &seen_exports);
@@ -164,13 +156,7 @@ pub fn registerNamespaceRewrites(
     // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
     if (force_inline or has_shadow) {
         if (self.use_shared_ns_preamble) {
-            const ns_var_name = try getOrCreateSharedNamespaceVar(self, target_mod_idx, &seen_exports);
-            try ns_inline_list.append(self.allocator, .{
-                .symbol_id = symbol_id,
-                .object_literal = try self.allocator.dupe(u8, ""),
-                .var_name = try self.allocator.dupe(u8, ns_var_name),
-                .shared_target_mod_idx = target_mod_idx,
-            });
+            _ = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports);
         } else {
             const obj_str = try buildInlineObjectStr(self, target_mod_idx, 0);
             const ns_var_name = try makeUniqueNsVarName(self, var_name, &seen_exports);
@@ -181,6 +167,27 @@ pub fn registerNamespaceRewrites(
             });
         }
     }
+}
+
+/// shared namespace cache 에 declaration-only entry 추가. `getOrCreateSharedNamespaceVar`
+/// 로 청크-glob 한 var name 발급 + ns_inline_list 에 빈 object_literal 로 등록 (실 literal
+/// 은 ns_shared_inline_cache 가 보유, 청크 emit 단계가 정의자 청크 preamble 로 inline).
+/// 반환값은 var name — caller 가 inner_map 등에 사용.
+fn appendSharedNsInlineEntry(
+    self: *const Linker,
+    ns_inline_list: *std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+    symbol_id: ?u32,
+    target_mod_idx: u32,
+    seen_exports: *std.StringHashMap(void),
+) std.mem.Allocator.Error![]const u8 {
+    const ns_var_name = try getOrCreateSharedNamespaceVar(self, target_mod_idx, seen_exports);
+    try ns_inline_list.append(self.allocator, .{
+        .symbol_id = symbol_id,
+        .object_literal = try self.allocator.dupe(u8, ""),
+        .var_name = try self.allocator.dupe(u8, ns_var_name),
+        .shared_target_mod_idx = target_mod_idx,
+    });
+    return ns_var_name;
 }
 
 fn getOrCreateSharedNamespaceVar(
@@ -227,8 +234,8 @@ pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8
 }
 
 /// 특정 청크의 정의자 모듈에 속한 namespace 만 emit. `target_filter` 가 non-null 이면
-/// 그 set 에 속한 target_mod_idx 만 inline (splitting / manualChunks #2990 fix —
-/// referrer 청크가 아닌 정의자 청크의 preamble 에 namespace 가 위치하도록).
+/// 그 set 에 속한 target_mod_idx 만 inline — splitting / manualChunks 시 referrer
+/// 청크가 아닌 정의자 청크의 preamble 에 namespace 가 위치하도록 한다.
 /// null 이면 전 namespace inline (single-file bundle 호환).
 pub fn appendSharedNamespacePreambleFiltered(
     self: *const Linker,
