@@ -118,7 +118,7 @@ zntc --bundle index.js --platform=react-native -o bundle.js --watch-json
 
 ## blockList
 
-Metro `resolver.blockList` 호환. 매칭되는 절대 경로는 resolver 가 해석 실패시켜 그래프에서 제외한다.
+Metro `resolver.blockList` 호환. 매칭되는 절대 경로는 resolver 가 해석 실패시켜 그래프에서 제외합니다.
 
 - `RegExp[]` 또는 `string[]` (regex 문자열). 두 형태 혼용 가능.
 - 지원 구문: 리터럴, `.*`, `^`, `$`, `\x` 이스케이프. `|`, `[]`, `()`, `+?`, `\w\d` 미지원.
@@ -133,7 +133,7 @@ defineConfig({
 
 ## silentConsoleErrorPatterns
 
-RN/Expo native immutable global polyfill 충돌 같은 noise 만 선택적으로 swallow. Prologue 에 `console.error` setter intercept 를 주입한다.
+RN/Expo native immutable global polyfill 충돌 같은 noise 만 선택적으로 swallow. Prologue 에 `console.error` setter intercept 를 주입합니다.
 
 - 값이 비었거나 미지정이면 wrap 자체를 emit 안 함 — vanilla RN CLI 빌드는 dead code 0.
 - RN preset 에서 자동 활성화 안 함 (trigger 가 environment-specific).

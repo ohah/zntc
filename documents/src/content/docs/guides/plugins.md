@@ -281,7 +281,7 @@ export default defineConfig({
 
 ### onResolveContext
 
-`require.context(dir, recursive, filter, mode)` 의 매칭 결과를 호스트 런타임에서 채운다. ZNTC 는 자체 regex executor 가 없어 host 의 RegExp (Node V8 / Bun JSC) 에 위임.
+`require.context(dir, recursive, filter, mode)` 의 매칭 결과를 호스트 런타임에서 채웁니다. ZNTC 는 자체 regex executor 가 없어 host 의 RegExp (Node V8 / Bun JSC) 에 위임합니다.
 
 콜백 인자:
 - `dir` — `require.context` 의 첫 인자.
@@ -313,7 +313,7 @@ import { join } from "node:path";
 
 ### onAstFunction
 
-고출력 AST 훅. `filter` 매칭된 파일 안 함수 단위로 `AstFunctionInfo` 를 받아, `stripDirective` 로 디렉티브 제거 + `trailingCode` 로 함수 뒤에 코드를 추가할 수 있다.
+고출력 AST 훅. `filter` 매칭된 파일 안 함수 단위로 `AstFunctionInfo` 를 받아, `stripDirective` 로 디렉티브 제거 + `trailingCode` 로 함수 뒤에 코드를 추가할 수 있습니다.
 
 ```typescript
 interface AstFunctionInfo {
