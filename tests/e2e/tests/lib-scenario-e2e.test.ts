@@ -477,6 +477,28 @@ render(<App />, mount);
     },
   },
   {
+    // 회귀 테스트 — #1209: JSX 컴포넌트를 require() 로 소비하면 그 모듈이 ESM-wrapped
+    // (__esm init 함수) 로 강제된다. helper marker binding (`_jsx` 등) 이 top-level 로
+    // hoist 되지 않으면 init 함수 안의 `var _jsx = ...` 가 호이스팅된 컴포넌트 함수에서
+    // 접근 불가 → `_jsx is not a function`. esm_wrap 의 hoist loop 가 is_helper binding
+    // 을 처리하는지 검증.
+    name: 'H9_preact_jsx_esm_wrapped',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.ts',
+    extraArgs: ['--jsx=automatic', '--jsx-import-source=preact'],
+    files: {
+      // .tsx 모듈을 require() 로 소비 → ESM-wrap 강제
+      'Comp.tsx': `import { render } from 'preact';\nexport function mountComp() {\n  const m = document.createElement('div');\n  document.body.appendChild(m);\n  render(<p data-testid="esm">esm-wrapped-ok</p>, m);\n}\n`,
+    },
+    entry: `const { mountComp } = require('./Comp.tsx');
+mountComp();
+`,
+    expect: {
+      esm: 'esm-wrapped-ok',
+    },
+  },
+  {
     name: 'H2_vue_h_render',
     category: 'H_jsx_ts',
     packages: ['vue'],
