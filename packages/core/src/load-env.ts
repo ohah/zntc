@@ -67,6 +67,8 @@ function parseDotenvFile(filePath: string): Record<string, string> {
 export function loadEnv(
   mode: string,
   envDir: string,
+  // 주의: html-env 의 DEFAULT_HTML_ENV_PREFIX 는 별도 `'ZNTC_'` 만 — HTML 본문 노출은
+  // secret 누설 방지를 위해 의도적으로 VITE_* 를 배제한다. JS 측 import.meta.env 와는 다름.
   prefixes: string | string[] = ['VITE_', 'ZNTC_'],
 ): Record<string, string> {
   const prefixList = Array.isArray(prefixes) ? prefixes : [prefixes];

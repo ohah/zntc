@@ -391,6 +391,11 @@ export function createAppDevController(
   // F1+F2 cache (incremental prep 에서 재사용). 구조 변화 (스타일 파일 추가/삭제) 시
   // 무효화 — `prepareAppCssPipelineRoot` 가 cache miss 일 때 자체적으로 재수집한다.
   let pipelineCache: PipelineCache | null = null;
+  // HTML env (ZNTC_*) cache + warning dedupe. dev 세션 내 envDir 변경은 restartTriggers
+  // 가 process 를 재시작하므로 메모이즈 안전. warning 은 같은 key 로 매 rebuild 마다
+  // 출력되면 노이즈 — Set 으로 1회 limit.
+  let htmlEnvCache: { mode: string; dir: string; env: Record<string, string> } | null = null;
+  const warnedHtmlEnv = new Set<string>();
 
   return {
     root,
@@ -436,10 +441,21 @@ export function createAppDevController(
         envDir,
         envPrefixes: opts.envPrefixes ? Array.from(opts.envPrefixes) : undefined,
       });
-      const htmlEnv = loadEnv(configEnv.mode, envDir, ['ZNTC_']);
+      const htmlEnv =
+        htmlEnvCache && htmlEnvCache.mode === configEnv.mode && htmlEnvCache.dir === envDir
+          ? htmlEnvCache.env
+          : (htmlEnvCache = {
+              mode: configEnv.mode,
+              dir: envDir,
+              env: loadEnv(configEnv.mode, envDir, ['ZNTC_']),
+            }).env;
       const { warnings: htmlWarnings } = applyHtmlEnvTokens(outdir, htmlEnv);
       if (opts.logLevel !== 'silent') {
-        for (const w of htmlWarnings) console.warn(`[zntc] ${w}`);
+        for (const w of htmlWarnings) {
+          if (warnedHtmlEnv.has(w)) continue;
+          warnedHtmlEnv.add(w);
+          console.error(`[html-env] ${w}`);
+        }
       }
       injectAppDevHmrClient(outdir);
       // dev mode 한정 — bundler 가 dev splitting=false 라 CSS chunk 를 emit 하지

@@ -77,6 +77,35 @@ describe('transformHtmlEnvTokens', () => {
     expect(out.changed).toBe(false);
     expect(out.warnings).toEqual([]);
   });
+
+  test('missing key alone keeps changed=false when both sides equal', () => {
+    const out = transformHtmlEnvTokens('<x><%= ZNTC_X %></x>', {});
+    expect(out.html).toBe('<x></x>');
+    expect(out.changed).toBe(true);
+    const stable = transformHtmlEnvTokens('<x></x>', {});
+    expect(stable.changed).toBe(false);
+  });
+
+  test('escapes <, >, &, " in env values', () => {
+    const { html } = transformHtmlEnvTokens('<div data="<%= ZNTC_BIO %>"></div>', {
+      ZNTC_BIO: `<script>alert("&")</script>`,
+    });
+    expect(html).toBe('<div data="&lt;script&gt;alert(&quot;&amp;&quot;)&lt;/script&gt;"></div>');
+  });
+
+  test('attribute value with " stays safe', () => {
+    const { html } = transformHtmlEnvTokens('<meta content="<%= ZNTC_X %>">', {
+      ZNTC_X: '" onerror="alert(1)',
+    });
+    expect(html).toBe('<meta content="&quot; onerror=&quot;alert(1)">');
+  });
+
+  test('same key multiple times all replaced', () => {
+    const { html } = transformHtmlEnvTokens('<%= ZNTC_X %>-<%= ZNTC_X %>-<%= ZNTC_X %>', {
+      ZNTC_X: 'v',
+    });
+    expect(html).toBe('v-v-v');
+  });
 });
 
 describe('applyHtmlEnvTokens', () => {
