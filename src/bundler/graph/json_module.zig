@@ -83,7 +83,7 @@ pub fn parse(self: *ModuleGraph, module: *Module) void {
         module.state = .ready;
         return;
     };
-    module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &(module.ast.?), scan_result.records) catch &.{};
+    module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &(module.ast.?), scan_result.records, null) catch &.{};
     binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &(module.ast.?), module.import_bindings) catch {};
     module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
     module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);

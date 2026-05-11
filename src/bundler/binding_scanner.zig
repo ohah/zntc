@@ -52,6 +52,11 @@ pub const ImportBinding = struct {
     /// linker.populateImportSymbols가 채움. invalid = synthetic binding 등
     /// semantic scope에 로컬이 없는 경우.
     local_symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
+    /// #3068: helper marker (runtime helper / JSX runtime) 가 적용된 binding.
+    /// linker 의 local_symbol lookup 이 일반 `module_scope` 가 아닌 격리된
+    /// `helper_scope_map` 에서 sym_index 를 찾아야 사용자가 같은 이름의 식별자를
+    /// 선언한 경우에도 충돌이 일어나지 않는다.
+    is_helper: bool = false,
 
     pub const Kind = enum {
         default,
@@ -142,10 +147,15 @@ pub const ExportBinding = struct {
 
 /// AST에서 import 바인딩 상세를 추출한다.
 /// import_record_map: import source span → ImportRecord 인덱스 매핑
+/// `helper_ref_nodes` 가 non-null 이면 import_specifier 의 local_node idx 가 그 sorted slice
+/// 에 있을 때 해당 binding 에 `is_helper=true` 를 set 한다. linker 가 이 binding 의 local_symbol
+/// 을 일반 module_scope 가 아닌 격리된 helper_scope_map 에서 찾도록 보장 — 사용자가 같은
+/// 식별자를 선언해도 충돌 회피 (#3068).
 pub fn extractImportBindings(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     import_records: []const types.ImportRecord,
+    helper_ref_nodes: ?[]const u32,
 ) ![]ImportBinding {
     var bindings: std.ArrayList(ImportBinding) = .empty;
     errdefer bindings.deinit(allocator);
@@ -219,11 +229,21 @@ pub fn extractImportBindings(
                     const imported_node = ast.getNode(imported_idx);
                     const imported_name = ast.getText(imported_node.span);
 
-                    const local_node = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
-                        ast.getNode(local_idx)
+                    const local_node_idx = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
+                        local_idx
                     else
-                        imported_node;
+                        imported_idx;
+                    const local_node = ast.getNode(local_node_idx);
                     const local_name = ast.getText(local_node.span);
+
+                    const is_helper = if (helper_ref_nodes) |refs|
+                        std.sort.binarySearch(u32, refs, @intFromEnum(local_node_idx), struct {
+                            fn cmp(needle: u32, item: u32) std.math.Order {
+                                return std.math.order(needle, item);
+                            }
+                        }.cmp) != null
+                    else
+                        false;
 
                     try bindings.append(allocator, .{
                         .kind = .named,
@@ -231,6 +251,7 @@ pub fn extractImportBindings(
                         .imported_name = imported_name,
                         .local_span = local_node.span,
                         .import_record_index = rec_idx,
+                        .is_helper = is_helper,
                     });
                 },
                 else => {},

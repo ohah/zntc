@@ -1434,7 +1434,16 @@ pub const Linker = struct {
                 // current-side: scope_maps[0]에서 로컬 심볼 조회
                 if (module_scope_opt) |module_scope| {
                     if (!ib.isSynthetic()) {
-                        if (module_scope.get(ib.local_name)) |sym_idx| {
+                        // #3068: helper binding 은 user 가 같은 이름을 선언했어도 격리된
+                        // helper_scope_map 에서 lookup. 일반 module_scope.get 가 user 의
+                        // sym_idx 를 반환하면 JSX call 이 user binding 으로 잘못 묶인다.
+                        const sym_lookup = if (ib.is_helper) blk: {
+                            if (importer.semantic) |*sem| {
+                                if (sem.helper_scope_map.get(ib.local_name)) |sym_idx| break :blk @as(?usize, sym_idx);
+                            }
+                            break :blk @as(?usize, null);
+                        } else module_scope.get(ib.local_name);
+                        if (sym_lookup) |sym_idx| {
                             ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(mod_idx, sym_idx);
                         }
                     }

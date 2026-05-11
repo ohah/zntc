@@ -1406,13 +1406,14 @@ test "JSX automatic: ESM-wrapped module with CJS jsx-runtime — synthetic bindi
 }
 
 test "JSX automatic-dev: #1209 — _jsxDEV must be assigned per module (HMR safety)" {
-    // #3062 이후 synthetic JSX 우회 (synthetic ImportBinding `_jsxDEV` 등) 가
-    // 제거되고 transformer 가 entry AST 에 정식 import 노드를 추가하는 방식으로
-    // 변경됐다. 이 테스트의 assertion (`_jsxDEV` 식별자 substring, `var _jsxDEV`
-    // shadow 회귀) 은 기존 방식의 구체 emit pattern 가정이라 새 방식에선
-    // 부적용 — entry 의 `_jsxDEV` 호출은 source 의 canonical 식별자로 rename됨.
-    // 동등 동작 검증은 e2e `lib-scenario-e2e.test.ts` 의 `H1_preact_jsx_automatic`
-    // 시나리오가 더 정확히 cover.
+    // #3062 이후 synthetic JSX 우회 제거 + transformer 가 정식 import 노드 추가. 새
+    // 방식에선 `_jsxDEV` 식별자가 source 의 canonical 로 rename 되어 substring
+    // assertion 부적용. brittle substring 보다 더 robust 한 e2e DOM 검증으로 대체:
+    //   - tests/e2e/tests/lib-scenario-e2e.test.ts 의 H1/H4/H5/H6 시나리오가
+    //     preact JSX automatic 의 빌드 → 브라우저 실행 → DOM 검증까지 다룸.
+    //     H4: 사용자 `_jsx` 식별자 충돌 (#3068 helper scope 격리)
+    //     H5: 멀티 모듈 jsx-runtime 공유
+    //     H6: barrel re-export JSX
     return error.SkipZigTest;
 }
 
@@ -1449,9 +1450,9 @@ test "JSX automatic-dev: #1209 — browser platform also affected" {
 }
 
 test "JSX automatic: multiple modules sharing same jsx-runtime" {
-    // #3062: synthetic JSX 우회 제거 후 entry 의 `_jsx` 식별자는 source 의 canonical
-    // 식별자 (rename 적용 후) 로 emit 되므로 `_jsx(` substring assertion 이 부적용.
-    // 동등 동작 검증은 e2e `lib-scenario-e2e.test.ts` 의 `H1_preact_jsx_automatic`.
+    // #3062 이후 substring assertion 부적용. e2e 대체:
+    //   tests/e2e/tests/lib-scenario-e2e.test.ts 의 H5_preact_jsx_multi_module
+    //   (CompA / CompB / entry 가 동시에 JSX 사용 + 브라우저 DOM 검증).
     return error.SkipZigTest;
 }
 
@@ -1540,15 +1541,17 @@ test "JSX automatic: mixed JSX and non-JSX modules" {
 }
 
 test "JSX automatic: re-export of JSX component" {
-    // #3062: `_jsx` substring assertion 이 새 emit 방식과 부적용. 동등 동작 검증은
-    // e2e `lib-scenario-e2e.test.ts` 의 `H1_preact_jsx_automatic`.
+    // #3062 이후 substring assertion 부적용. e2e 대체:
+    //   tests/e2e/tests/lib-scenario-e2e.test.ts 의 H6_preact_jsx_re_export
+    //   (barrel 파일 통과 후 Button 컴포넌트 → 브라우저 DOM 검증).
     return error.SkipZigTest;
 }
 
 test "JSX automatic: ESM-wrapped hoisted function can access _jsxDEV (scope test)" {
-    // #3062: `_jsxDEV` 식별자 substring 및 outer scope 선언 assertion 이 새 emit
-    // 방식과 부적용. 동등 동작 검증은 e2e `lib-scenario-e2e.test.ts` 의
-    // `H1_preact_jsx_automatic`.
+    // #3062 이후 substring assertion 부적용. e2e 대체:
+    //   tests/e2e/tests/lib-scenario-e2e.test.ts 의 H1/H4/H5/H6 가 preact JSX
+    //   automatic 의 빌드/렌더 정상성을 브라우저 동작까지 검증. 별도 ESM-wrapped
+    //   require 소비 fixture 가 필요하면 후속 시나리오로 추가 가능.
     return error.SkipZigTest;
 }
 

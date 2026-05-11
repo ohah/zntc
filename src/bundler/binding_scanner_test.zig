@@ -33,7 +33,7 @@ fn parseAndExtractBindings(allocator: std.mem.Allocator, source: []const u8) !st
 
     const records = try import_scanner.extractImports(allocator, &parser.ast);
 
-    const import_bindings = try extractImportBindings(allocator, &parser.ast, records);
+    const import_bindings = try extractImportBindings(allocator, &parser.ast, records, null);
     const export_bindings = try extractExportBindings(allocator, &parser.ast, records, import_bindings);
 
     return .{

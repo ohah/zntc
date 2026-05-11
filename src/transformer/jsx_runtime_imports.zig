@@ -11,10 +11,10 @@
 //! 일반 import 처럼 detect → 다운스트림에 synthetic 분기 없이 처리된다.
 //! `runtime_helper_imports.zig` 가 사용하는 패턴과 의도적으로 동일 구조.
 //!
-//! 참고 — runtime helper 의 `markRuntimeHelperRef` (#2869, helper_scope_map 격리) 는
-//! 본 모듈에서 호출하지 않는다. JSX local 이름은 `_jsx`/`_jsxs`/`_Fragment` 등
-//! single-underscore 라 관례상 internal 이지만 helper 의 `__extends` (double underscore)
-//! 와 달리 사용자 코드 충돌 위험이 있어, 추가 격리 정책은 별도 PR 에서 검증한다.
+//! `#2869` helper marker (helper_scope_map 격리) 도 함께 적용 (#3068). 사용자가
+//! `const _jsx = ...` 같이 같은 이름을 선언했을 때 resync 의 binding_scanner 가
+//! user scope 와 helper scope 를 분리 → JSX call 이 사용자 binding 을 잘못 가리키는
+//! 충돌을 회피. `jsx_lowering` 의 ref 생성도 같은 marker 를 거친다.
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
@@ -114,6 +114,7 @@ fn emitImportDeclaration(
             .span = local_text,
             .data = .{ .string_ref = local_text },
         });
+        try self.markRuntimeHelperRef(local_node);
 
         const spec = try self.ast.addNode(.{
             .tag = .import_specifier,
