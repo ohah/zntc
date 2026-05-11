@@ -288,7 +288,7 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
     // hot path 영향 0 (옵션 read + early-return). opt-in 시 babel-plugin-react-refresh
     // 동등 emit. `findHookCallsInNodeDepth` 가 depth=50 + node tag whitelist +
     // bounds check 로 stale 인덱스 방어.
-    if (self.options.react_refresh and self.options.react_refresh_hook_signatures) {
+    if (self.refreshEnabled() and self.options.react_refresh_hook_signatures) {
         const fn_name_for_sig: ?[]const u8 = blk: {
             if (new_name.isNone()) break :blk null;
             const name_node = self.ast.getNode(new_name);

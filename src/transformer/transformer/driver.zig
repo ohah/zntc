@@ -61,8 +61,9 @@ pub fn transform(self: anytype) Error!NodeIndex {
         }
     }
 
-    // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거)
-    if (self.options.react_refresh and self.plugins.refresh.registrations.items.len > 0) {
+    // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거).
+    // refreshEnabled() 가 path filter (Vite plugin-react 호환 — `.[jt]sx?$`/`.mjs$` + node_modules 제외) 까지 검증.
+    if (self.refreshEnabled() and self.plugins.refresh.registrations.items.len > 0) {
         root = try self.appendRefreshRegistrations(root);
     }
 
