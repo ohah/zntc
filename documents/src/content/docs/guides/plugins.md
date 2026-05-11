@@ -9,13 +9,28 @@ ZNTC 플러그인은 Rollup/Vite 호환 인터페이스로, `@zntc/core`의 NAPI
 
 ## 호환성 요약
 
+### 플러그인 작성 surface
+
+| Surface | 상태 | 비고 |
+| ------- | ---- | --- |
+| **JavaScript (NAPI)** — Node.js / Bun in-process | ✅ 지원 | 가장 일반적. Rollup/Vite/esbuild plugin 그대로 또는 어댑터 경유 |
+| **네이티브 Zig** plugin (`*.zig` → 정적 링크) | ❌ 추후 지원 예정 | NAPI overhead 없이 in-engine 호출 — frontend/transform 핫패스 가속용 |
+| **WASM** plugin (`*.wasm` 동적 로드) | ❌ 추후 지원 예정 | 언어 자유 + 격리 (Rust / AssemblyScript / Go 등) |
+
+### Plugin hook 호환성
+
 | Surface | 상태 | 사용 경로 |
 | ------- | ---- | -------- |
 | esbuild-style `setup(build)` | 부분 지원 | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
 | Rollup/Vite-style `resolveId` / `load` / `transform` | 지원 | `vitePlugin()` wrapper 또는 config plugin |
+| **Vite 4+ hook object** `{ filter, handler }` | 지원 | `vitePlugin()` 가 `handler` 자동 추출 (`filter` 는 native 가 무시) |
+| **Plugin sourcemap object** (`RawSourceMap`) | 지원 | wrapper 가 V3 검증 + stringify. invalid 시 drop + warn |
 | output hook `renderChunk` / `generateBundle` | 부분 지원 | chunk 후처리, output 목록 접근 |
 | lifecycle `buildStart` / `buildEnd` / `closeBundle` | 지원 | `build()`와 `watch()` 초기 build/rebuild마다 호출 |
-| Rollup context `this.resolve()` / `this.emitFile()` | 미지원 | graph mutation이 필요한 별도 surface |
+| Plugin context `this.error()` / `this.warn()` | 지원 | `warn` 은 `@zntc/core [name]:` prefix |
+| Plugin context `this.addWatchFile()` | no-op | 호출 가능하지만 native watcher 에 전파 X (SFC `<style src="..."/>` 외부 dep stale 가능) |
+| Plugin context `this.resolve()` / `this.emitFile()` | ❌ 미지원 | 호출 시 informative Error throw — graph mutation surface 부재 |
+| **프레임워크 SFC** (`.vue` / `.svelte`) | ❌ 미지원 | virtual module ID + `?vue&type=style&lang.css` query sub-import 인식 필요 — 별도 follow-up |
 | `buildSync()` + JS plugin | 미지원 | async `build()` / `watch()` 사용 |
 
 ZNTC native worker는 module을 만날 때 NAPI threadsafe function으로 JS hook을 호출하고 응답을 기다립니다. 따라서 hook filter를 좁게 잡고, 단순 확장자 처리는 `loader` 옵션을 먼저 쓰는 편이 빠릅니다.
@@ -82,6 +97,84 @@ const myPlugin = {
   },
 };
 ```
+
+## 처음부터 만들기 — 5 단계
+
+ZNTC 플러그인은 **JavaScript 로 작성**하고, ZNTC 의 NAPI 바인딩이 native worker 에서 호출합니다 (별도 컴파일 단계 없음). 가장 단순한 형태부터 출발해 hook 을 하나씩 더해가는 방식이 안전합니다.
+
+### 1. 빈 plugin 스켈레톤
+
+```typescript
+// my-plugin.ts
+import type { ZntcPlugin } from "@zntc/core";
+
+export function myPlugin(): ZntcPlugin {
+  return {
+    name: "my-plugin",
+    setup(build) {
+      // 여기에 hook 을 등록
+    },
+  };
+}
+```
+
+`name` 은 진단 메시지(`Plugin "<name>" failed ...`) 에 그대로 노출되므로 사용자가 식별 가능한 형태로 짓습니다.
+
+### 2. `resolveId` — 가상 모듈 / 별칭 처리
+
+```typescript
+build.onResolve({ filter: /^virtual:settings$/ }, () => ({
+  path: "\0virtual:settings",
+}));
+```
+
+`\0` prefix 는 esbuild/Rollup 관례로 "실제 파일이 아닌 가상 ID" 를 의미합니다. ZNTC 의 native resolver 가 해당 ID 를 디스크에서 찾지 않습니다.
+
+### 3. `load` — 모듈 본문 만들기
+
+```typescript
+build.onLoad({ filter: /^\0virtual:settings$/ }, () => ({
+  contents: `export const apiUrl = ${JSON.stringify(process.env.API_URL ?? "")};`,
+  loader: "ts", // 또는 "js" / "json"
+}));
+```
+
+`loader` 를 지정해두면 native 가 어떤 parser 로 파싱할지 즉시 알 수 있습니다.
+
+### 4. `transform` — 기존 모듈 코드 변환
+
+```typescript
+build.onTransform({ filter: /\.tsx?$/ }, (args) => {
+  if (!args.code.includes("__BUILD_TIME__")) return null; // 변경 없음
+  return {
+    code: args.code.replace(/__BUILD_TIME__/g, JSON.stringify(new Date().toISOString())),
+  };
+});
+```
+
+변경이 없으면 `null` 을 반환하세요 — ZNTC 가 원본을 그대로 사용합니다 (불필요한 sourcemap 재생성 회피).
+
+### 5. 등록 + 사용
+
+```typescript
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
+import { myPlugin } from "./my-plugin";
+
+export default defineConfig({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  plugins: [myPlugin()],
+});
+```
+
+`build()` API 로 직접 호출 시에도 동일한 `plugins: [...]` 배열을 넘기면 됩니다.
+
+### Tip — 디버깅
+
+- `console.warn` 으로 출력하되, 메시지에 plugin 이름 prefix 를 넣으세요 — `[my-plugin] ...` 처럼. `this.warn(msg)` 를 쓰면 `@zntc/core [name]:` 가 자동으로 붙습니다.
+- transform/load 가 **모듈마다 한 번씩** 호출되므로 hot-path 에서 동기 큰 작업(파일 시스템 동기 읽기 등) 은 피하세요.
+- 에러는 `this.error(new Error(...))` 로 throw 하면 ZNTC 가 plugin 이름 + 파일 위치를 진단에 같이 출력합니다.
 
 ## NAPI 플러그인
 
