@@ -1501,6 +1501,65 @@ test "Bundler: dev mode refresh registration" {
     try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") == null);
 }
 
+// ----------------------------------------------------------------
+// react-refresh Vite plugin-react 호환 path filter 회귀 가드
+// ----------------------------------------------------------------
+
+test "Bundler: refresh — node_modules entry skipped by Vite-compatible path filter" {
+    // node_modules 안에 있는 모듈은 PascalCase 함수여도 $RefreshReg$ 등록 코드를
+    // 주입하지 않는다 (Vite @vitejs/plugin-react 의 default exclude).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("node_modules/lib");
+    try writeFile(tmp.dir, "node_modules/lib/index.tsx",
+        \\export default function LibComp() { return 1; }
+    );
+
+    const entry = try absPath(&tmp, "node_modules/lib/index.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // node_modules 모듈은 register 코드가 들어가지 않아야 한다 — runtime stub
+    // (`g.$RefreshReg$ = function() {}`) 은 별도라 `_c = LibComp;` 패턴으로 검증.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_c = LibComp") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$(_c, \"LibComp\"") == null);
+}
+
+test "Bundler: refresh — user-land .tsx still registers (positive control)" {
+    // 위 음성 케이스의 짝 — 동일 fixture 패턴에서 path 만 다른 경우 register 가 들어간다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "Comp.tsx",
+        \\export default function MyComp() { return 1; }
+    );
+
+    const entry = try absPath(&tmp, "Comp.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$(_c, \"MyComp\"") != null);
+}
+
 test "Bundler: dev mode ES5 runtime helpers injected globally" {
     // Phase 2: ES5 타겟 dev mode에서 __classCallCheck 등 헬퍼가 모듈 코드 앞에 주입
     var tmp = std.testing.tmpDir(.{});
