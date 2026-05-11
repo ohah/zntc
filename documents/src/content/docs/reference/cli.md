@@ -108,10 +108,32 @@ Options:
 | `--platform=browser\|node\|neutral\|react-native` | 타겟 플랫폼                                                        |
 | `--rn-platform=ios\|android`                      | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자)                      |
 | `--target=<spec>`                                 | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
+| `--browserslist=<query>`                          | Browserslist 쿼리로 ES 다운레벨 타겟 지정 (`"defaults"`, `"last 2 versions, not dead"` 등 — `--target` 의 대안) |
 | `--runtime-polyfills=auto\|usage\|entry\|off`     | core-js 런타임 API 폴리필 주입. `auto`/`usage`는 graph usage 기반  |
 | `--runtime-target=<query>`                        | core-js 폴리필 Browserslist 타겟. 반복 가능 (`ios_saf 12`)         |
 | `--core-js=<version>`                             | core-js-compat 계산에 사용할 core-js 버전                          |
 | `--global-name=<name>`                            | IIFE export 변수명                                                 |
+
+## React Native bundle (Metro) 호환
+
+`zntc --bundle --platform=react-native` 가 `react-native bundle` (Metro CLI) 의 standard flag 를 dropin 으로 받습니다. 자주 쓰는 것:
+
+| 옵션 | 설명 |
+|---|---|
+| `--bundle-output=<path>` | 번들 출력 경로 (`-o` 와 동일, `-o` 미지정 시 fallback) |
+| `--sourcemap-output=<path>` | 소스맵 출력 경로 (지정 시 sourcemap 자동 활성) |
+| `--source-map-url=<url>` | `//# sourceMappingURL` 값 |
+| `--assets-dest=<dir>` | production 빌드의 asset 복사 대상 (iOS 1x/2x/3x, Android `res/`) |
+| `--asset-catalog-dest=<dir>` | iOS asset catalog (`.xcassets`) 생성 대상 |
+| `--bundle-encoding=<utf8\|utf16le\|ascii>` | 번들 파일 인코딩 (기본 `utf-8`) |
+| `--reset-cache` | 시작 시 캐시 무효화 |
+| `--max-workers=<n>` | 병렬 워커 수 — `--jobs` alias |
+| `--rn-project-root=<dir>` | RN preset projectRoot (기본 cwd, monorepo root 지정 시) |
+| `--watchFolders=<a,b>` / `--sourceExts=<a,b>` | Metro camelCase 형 — RN preset 으로 전달 (`--watch-folder` 와 별개) |
+| `--unstable-transform-profile=<name>` / `--source-map-url=<url>` / `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro 호환 옵션 |
+| `--transform-option=<k=v>` / `--resolver-option=<k=v>` | Metro transformer/resolver 옵션 (반복 가능) — **현재 무시** (Metro graph-bundler 전용) |
+
+전체 표 + 동작 설명: [React Native 가이드](/zntc/guides/react-native/#metro--react-native-bundle-호환-옵션)
 
 ## 미니파이
 
