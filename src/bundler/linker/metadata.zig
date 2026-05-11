@@ -41,21 +41,32 @@ const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
 /// synthetic binding (JSX runtime 등) 은 semantic 이 추적하지 않으므로 "사용 중" 간주.
 /// `references` 가 비어있어도 보수적 보존. 호출자가 `verbatim_module_syntax` 를 먼저
 /// 확인해 true 이면 이 경로를 bypass.
-/// #1824: IIFE/UMD/AMD + `--globals` 매핑된 external 판정 + factory-param 이름 반환.
-/// wrapper 포맷 세 종류 모두 같은 preamble 경로로 분기하며, 매핑 이름까지 한 번에 돌려줘
-/// 호출자가 추가 lookup 없이 사용한다 (hot path 중복 스캔 회피). 매핑 없는 external 은
-/// emitter 가 ext_specifiers 에 넣지 않으므로 linker 도 일관되게 별도 경로로 흘려보낸다.
+/// #1824: IIFE/UMD/AMD wrapper 의 external → factory-param 이름 결정.
+/// 정책:
+///   - IIFE: `--globals` 매핑된 spec 만 반환 (없으면 null → linker 가 fatal #1791).
+///     caller args 가 글로벌 변수 참조라 사용자가 명시 안 하면 어떤 이름인지 알 수 없음.
+///   - UMD/AMD: 매핑 우선, 없으면 specifier 의 PascalCase 자동 추정 (rollup/rolldown 관행).
+///     emitter 가 동일 정책으로 wrapper 의 factory param 을 만들기 때문에 일관 유지.
+/// 반환 slice 는 allocator 소유 — 호출자가 free.
 inline fn mappedExternalParam(
     format: types.Format,
     globals: []const types.GlobalEntry,
     rec: types.ImportRecord,
-) ?[]const u8 {
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!?[]const u8 {
     if (!rec.is_external) return null;
+    const mapped = types.GlobalEntry.lookup(globals, rec.specifier);
     switch (format) {
-        .iife, .umd, .amd => {},
+        .iife => {
+            const gname = mapped orelse return null;
+            return try allocator.dupe(u8, gname);
+        },
+        .umd, .amd => {
+            if (mapped) |gname| return try allocator.dupe(u8, gname);
+            return try types.specifierToParamName(allocator, rec.specifier);
+        },
         else => return null,
     }
-    return types.GlobalEntry.lookup(globals, rec.specifier);
 }
 
 pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
@@ -310,11 +321,11 @@ pub fn buildMetadataForAst(
                     // top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨.
                     // init 함수 본문에서 `var`로 재선언하면 outer scope를 shadow → #1209.
                     const is_synthetic_esm = ib.isSynthetic() and m.wrap_kind == .esm;
-                    const mapped_param = mappedExternalParam(self.format, self.iife_globals, rec);
+                    const mapped_param = try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator);
                     if (mapped_param) |param_name| {
-                        // IIFE/UMD/AMD + globals 매핑: factory 매개변수에서 직접 참조.
-                        // 파라미터 이름 = globals 매핑 이름. emitter 의 wrapper factory
-                        // 시그니처와 동일하게 유지 (rollup `output.globals` 호환).
+                        defer self.allocator.free(param_name);
+                        // IIFE/UMD/AMD: factory 매개변수에서 직접 참조. emitter 의 wrapper
+                        // factory 시그니처와 동일 이름 (rollup `output.globals` 호환).
                         if (ib.kind == .namespace or ib.importsDefault()) {
                             // import * as React / import React → factory param 직접 사용
                             if (!std.mem.eql(u8, preamble_name, param_name)) {
@@ -825,7 +836,8 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
         if (rec.resolved.isNone()) {
             // UMD/AMD/IIFE+globals: external require → factory 매개변수 참조.
             // require("react") → React (factory params에서 주입, #1824 IIFE 확장).
-            if (mappedExternalParam(self.format, self.iife_globals, rec)) |param| {
+            if (try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator)) |param| {
+                defer self.allocator.free(param);
                 if (!require_rewrites.contains(rec.specifier)) {
                     // "(React)" 형태로 저장 — emitRewriteValue가 '('로 시작하면 ()를 붙이지 않음
                     const owned = try std.fmt.allocPrint(self.allocator, "({s})", .{param});

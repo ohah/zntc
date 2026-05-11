@@ -349,34 +349,43 @@ pub fn emitWithTreeShaking(
     const use_arrow = !options.unsupported.arrow;
 
     // UMD/AMD/IIFE: external specifier 수집 (dependency array + factory params 생성용).
-    // 세 포맷 모두 `options.globals` 매핑된 spec 만 수록 — 매핑 없는 external 은 linker 가
-    // fatal_diagnostics 로 에러 발행 (#1791). PascalCase 자동 추정 fallback 은 사용자 의도
-    // 와 어긋나는 가짜 동작이라 제거.
+    // 정책:
+    //   - IIFE: caller args 가 글로벌 변수 직접 참조라 `options.globals` 매핑 필수.
+    //     매핑 없는 external 은 linker 가 fatal_diagnostics 로 에러 발행 (#1791).
+    //   - UMD/AMD: 모든 external 수록. 매핑 우선, 없으면 specifier 의 PascalCase 자동 추정
+    //     (`react` → `React`) — rollup/rolldown 관행과 일치. wrapper / factory param /
+    //     body reference 가 동일 이름 사용해 일관 유지.
     var ext_specifiers: std.ArrayList([]const u8) = .empty;
     defer ext_specifiers.deinit(allocator);
-    var ext_globals: std.ArrayList([]const u8) = .empty;
-    defer ext_globals.deinit(allocator);
-    const collect_externals = (options.format == .umd or options.format == .amd or options.format == .iife) and
-        options.globals.len > 0;
+    var ext_param_names_buf: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ext_param_names_buf.items) |n| allocator.free(n);
+        ext_param_names_buf.deinit(allocator);
+    }
+    const requires_globals_mapping = options.format == .iife;
+    const collect_externals = options.format == .umd or options.format == .amd or
+        (options.format == .iife and options.globals.len > 0);
     if (collect_externals) {
         var seen = std.StringHashMap(void).init(allocator);
         defer seen.deinit();
         for (sorted.items) |m| {
             for (m.import_records) |rec| {
                 if (!rec.is_external or seen.contains(rec.specifier)) continue;
-                if (types.GlobalEntry.lookup(options.globals, rec.specifier)) |gname| {
-                    try seen.put(rec.specifier, {});
-                    try ext_specifiers.append(allocator, rec.specifier);
-                    try ext_globals.append(allocator, gname);
-                }
+                const mapped = types.GlobalEntry.lookup(options.globals, rec.specifier);
+                if (requires_globals_mapping and mapped == null) continue;
+                const param = if (mapped) |gname|
+                    try allocator.dupe(u8, gname)
+                else
+                    try types.specifierToParamName(allocator, rec.specifier);
+                errdefer allocator.free(param);
+                try seen.put(rec.specifier, {});
+                try ext_specifiers.append(allocator, rec.specifier);
+                try ext_param_names_buf.append(allocator, param);
             }
         }
     }
 
-    // factory 매개변수명 = globals 매핑 이름 그대로 사용. wrapper 의 `root.<name>` /
-    // factory parameter / caller arg 가 모두 같은 이름으로 일관 (rollup `output.globals` 호환).
-    // ext_globals 는 options.globals 슬라이스 참조라 별도 alloc/free 불필요.
-    const ext_param_names: []const []const u8 = ext_globals.items;
+    const ext_param_names: []const []const u8 = ext_param_names_buf.items;
 
     // IIFE + externals 가 있으면 factory_fn 을 param 포함 형태로 조립 (#1824).
     // 예: `(function(React, ReactDom) {\n`. 그 외에는 정적 문자열 사용.
@@ -922,7 +931,7 @@ pub fn emitWithTreeShaking(
         if (outro.len > 0 and outro[outro.len - 1] != '\n') try output.append(allocator, '\n');
     }
 
-    try emitFormatEpilogue(&output, allocator, options.format, ext_globals.items);
+    try emitFormatEpilogue(&output, allocator, options.format, ext_param_names_buf.items);
 
     // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
     const lc_mode = resolveDefaultLegalComments(options.legal_comments, options.minify_whitespace);
