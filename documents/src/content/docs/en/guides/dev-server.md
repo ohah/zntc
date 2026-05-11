@@ -137,15 +137,15 @@ Multiple component updates are batched into a single React refresh cycle with a 
 |---|---|
 | macOS | kqueue |
 | Linux | inotify |
-| Windows | ReadDirectoryChangesW |
+| Windows / other | mtime polling fallback |
 
-In most environments OS events fire instantly. The following environments have unreliable OS events and may drop changes:
+macOS / Linux deliver OS events instantly. Windows and other platforms fall back to mtime polling, and in the following environments change detection may be slow or miss changes:
 
 - Docker volume mounts (host → container)
 - Network filesystems like NFS / SMB
 - Windows WSL1 (WSL2 is fine)
 
-ZNTC does not currently expose a polling-fallback flag. If changes don't propagate in those environments, force a browser reload manually. Polling fallback is planned for a future release.
+There is no user flag to tune the polling interval yet. If changes don't propagate in those environments, force a browser reload manually.
 
 ### Debugging — when updates don't arrive
 

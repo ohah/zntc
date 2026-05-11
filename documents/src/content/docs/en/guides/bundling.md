@@ -128,7 +128,7 @@ defineConfig({
 zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 ```
 
-Supported loaders: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary`, `copy`, `empty`
+Supported loaders: `js`, `jsx`, `ts`, `tsx`, `json`, `css`, `text`, `file`, `dataurl`, `base64`, `binary`, `copy`, `empty`
 
 ## Web Worker
 
@@ -155,7 +155,7 @@ self.onmessage = (e) => {
 
 ### Output
 
-The worker entry is emitted as a **separate chunk** (not an import dependency of the main bundle). Its filename follows the `--chunk-names` pattern, and the `new Worker(new URL(...))` call site in the main bundle is automatically rewritten to point at the built worker URL. The worker chunk's module format is always IIFE (or CJS when bundling for a Node CJS target).
+The worker entry is emitted as a **separate chunk** (not an import dependency of the main bundle). Its filename uses the fixed form `<source-stem>-<crc32-hex>.js` (the `--chunk-names` pattern does not apply here), and the `new Worker(new URL(...))` call site in the main bundle is automatically rewritten to point at the built worker URL. The worker chunk's module format is always IIFE (or CJS when bundling for a Node CJS target).
 
 ### Limitations
 

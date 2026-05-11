@@ -137,15 +137,15 @@ export function Button({ children }) {
 |---|---|
 | macOS | kqueue |
 | Linux | inotify |
-| Windows | ReadDirectoryChangesW |
+| Windows / 기타 | mtime 폴링 폴백 |
 
-대부분 환경에서 OS 이벤트가 즉시 반영됩니다. 다음 환경에서는 OS 이벤트가 불안정해 변경이 누락될 수 있습니다.
+macOS / Linux 는 OS 이벤트가 즉시 반영됩니다. Windows 및 그 외 환경은 mtime 폴링으로 폴백하며, 다음 환경에서는 변경 감지가 느리거나 누락될 수 있습니다.
 
 - Docker volume mount (호스트 → 컨테이너)
 - NFS / SMB 같은 네트워크 파일시스템
 - Windows WSL1 (WSL2 는 OK)
 
-현재 ZNTC 에는 polling fallback flag 가 없습니다. 위 환경에서 변경이 반영되지 않으면 브라우저 새로고침으로 강제 갱신하세요. polling fallback 은 추후 추가 예정.
+폴링 간격을 조정하는 사용자 flag 는 아직 없습니다. 위 환경에서 변경이 반영되지 않으면 브라우저 새로고침으로 강제 갱신하세요.
 
 ### 디버깅 — 업데이트가 안 들어올 때
 
