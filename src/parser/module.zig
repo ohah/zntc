@@ -21,6 +21,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 const binding_mod = @import("binding.zig");
 const scan_results_mod = @import("scan_results.zig");
 const import_scanner = @import("../bundler/import_scanner.zig");
+const import_specifier_unescape = @import("import_specifier.zig");
 const profile = @import("../profile.zig");
 
 /// `import_declaration` extra slot 3에 저장되는 phase modifier.
@@ -154,7 +155,7 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
         const arg_node = self.ast.getNode(arg);
         if (arg_node.tag == .string_literal) {
             const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
-            const spec = stripImportQuotes(raw);
+            const spec = extractImportSpecifier(self, raw);
             _ = appendImportRecord(self, spec, .dynamic_import, arg_node.span);
         }
     }
@@ -256,7 +257,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         if (self.enable_scan and !is_type_only and !source_node.isNone()) {
             const src_node = self.ast.getNode(source_node);
             const raw = self.ast.source[src_node.span.start..src_node.span.end];
-            const spec = stripImportQuotes(raw);
+            const spec = extractImportSpecifier(self, raw);
             _ = appendImportRecord(self, spec, .side_effect, src_node.span);
             self.scan_result.has_esm_syntax = true;
         }
@@ -373,7 +374,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 if (self.enable_scan and !source_node.isNone()) {
                     const src_node = self.ast.getNode(source_node);
                     const raw = self.ast.source[src_node.span.start..src_node.span.end];
-                    const specifier = stripImportQuotes(raw);
+                    const specifier = extractImportSpecifier(self, raw);
                     const rec_idx = appendImportRecord(self, specifier, .static_import, src_node.span);
                     collectImportBindings(self, scratch_top, rec_idx);
                     self.scan_result.has_esm_syntax = true;
@@ -440,7 +441,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     if (self.enable_scan and !source_node.isNone()) {
         const src_node = self.ast.getNode(source_node);
         const raw = self.ast.source[src_node.span.start..src_node.span.end];
-        const spec = stripImportQuotes(raw);
+        const spec = extractImportSpecifier(self, raw);
         const rec_idx = appendImportRecord(self, spec, .static_import, src_node.span);
         collectImportBindings(self, scratch_top, rec_idx);
         self.scan_result.has_esm_syntax = true;
@@ -701,7 +702,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             self.scan_result.has_esm_syntax = true;
             const src_node = self.ast.getNode(source_node);
             const raw = self.ast.source[src_node.span.start..src_node.span.end];
-            const spec = stripImportQuotes(raw);
+            const spec = extractImportSpecifier(self, raw);
             const rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
 
             if (!exported_name.isNone() and @intFromEnum(exported_name) < self.ast.nodes.items.len) {
@@ -793,7 +794,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             if (has_source) {
                 const src_node = self.ast.getNode(source_node);
                 const raw = self.ast.source[src_node.span.start..src_node.span.end];
-                const spec = stripImportQuotes(raw);
+                const spec = extractImportSpecifier(self, raw);
                 rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
             }
 
@@ -1170,6 +1171,13 @@ fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
 /// import_scanner.stripQuotes에 위임한다.
 fn stripImportQuotes(text: []const u8) []const u8 {
     return import_scanner.stripQuotes(text) orelse text;
+}
+
+/// 따옴표 제거 + escape unescape 를 한 번에 처리. ImportRecord.specifier 가 JS string
+/// literal 의 unescape 된 byte 시퀀스를 보유하도록 보장 — esbuild / rolldown 동작과
+/// 동등. 구현은 `parser/import_specifier.zig` 에 공통화. (#3025)
+fn extractImportSpecifier(self: *Parser, raw: []const u8) []const u8 {
+    return import_specifier_unescape.extract(self.allocator, raw);
 }
 
 /// import 선언에서 수집한 specifier들의 바인딩을 scan_import_bindings에 추가한다.

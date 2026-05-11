@@ -8,6 +8,7 @@ const Span = @import("../../lexer/token.zig").Span;
 const Parser = @import("../parser.zig").Parser;
 const scan_results_mod = @import("../scan_results.zig");
 const import_scanner = @import("../../bundler/import_scanner.zig");
+const import_specifier_unescape = @import("../import_specifier.zig");
 
 /// require("specifier") 호출을 감지하여 CJS import record를 추가한다.
 /// call_expression이 생성되기 직전, callee(expr)와 arg_list가 확정된 시점에서 호출.
@@ -33,7 +34,7 @@ pub fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) voi
     if (arg_node.tag != .string_literal) return;
 
     const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
-    const specifier = import_scanner.stripQuotes(raw) orelse raw;
+    const specifier = import_specifier_unescape.extract(self.allocator, raw);
 
     self.scan_import_records.append(self.allocator, .{
         .specifier = specifier,
@@ -75,7 +76,7 @@ pub fn scanGlobCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
     if (arg_node.tag != .string_literal) return;
 
     const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
-    const specifier = import_scanner.stripQuotes(raw) orelse raw;
+    const specifier = import_specifier_unescape.extract(self.allocator, raw);
 
     const opts = import_scanner.parseGlobOptions(
         self.ast.nodes.items,
