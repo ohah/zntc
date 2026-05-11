@@ -60,6 +60,9 @@ describe('@zntc/init React Native overlay', () => {
       expect(pkg.scripts['bundle:ios']).toContain('zntc --bundle index.js');
       expect(pkg.scripts['bundle:ios']).toContain('--bundle-output ios/main.jsbundle');
       expect(pkg.scripts['bundle:ios']).toContain('--assets-dest ios');
+      // Metro 의 `--dev false` 와 parity — minify 자동 활성 (회귀 가드)
+      expect(pkg.scripts['bundle:ios']).toContain('--minify');
+      expect(pkg.scripts['bundle:android']).toContain('--minify');
       expect(pkg.scripts['bundle:android']).toContain('--assets-dest android/app/src/main/res');
       expect(pkg.scripts['bundle:metro:ios']).toContain('react-native bundle --platform ios');
       expect(readFileSync(join(root, 'zntc.config.ts'), 'utf8')).toBe(createReactNativeConfig());
