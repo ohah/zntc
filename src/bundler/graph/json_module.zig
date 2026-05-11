@@ -57,6 +57,7 @@ pub fn parse(self: *ModuleGraph, module: *Module) void {
                 arena_alloc,
                 &(module.ast.?),
                 analyzer.symbols.items,
+                analyzer.scopes.items,
                 analyzer.references.items,
                 if (module.semantic) |*s| &s.unresolved_references else null,
                 false,
