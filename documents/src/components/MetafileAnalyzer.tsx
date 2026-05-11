@@ -1,4 +1,11 @@
 import { useMemo, useState } from "react";
+import ReactEChartsCore from "echarts-for-react/lib/core";
+import * as echarts from "echarts/core";
+import { TreemapChart, GraphChart } from "echarts/charts";
+import { TooltipComponent, LegendComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
+
+echarts.use([TreemapChart, GraphChart, TooltipComponent, LegendComponent, CanvasRenderer]);
 
 type ImportRecord = {
   path?: string;
@@ -35,6 +42,10 @@ type RankedModule = {
   path: string;
   bytes: number;
 };
+
+type ViewMode = "summary" | "treemap" | "graph";
+
+const GRAPH_NODE_LIMIT = 250;
 
 const sampleMetafile = JSON.stringify(
   {
@@ -113,6 +124,95 @@ function countImports(inputs: Record<string, InputMeta> | undefined): number {
   return Object.values(inputs ?? {}).reduce((sum, input) => sum + (input.imports?.length ?? 0), 0);
 }
 
+type TreemapNode = {
+  name: string;
+  value?: number;
+  children?: TreemapNode[];
+  path?: string;
+};
+
+function buildTreemap(inputs: Record<string, InputMeta> | undefined): TreemapNode[] {
+  if (!inputs) return [];
+  const root: TreemapNode = { name: "bundle", children: [] };
+  for (const [path, meta] of Object.entries(inputs)) {
+    const segments = path.split("/").filter(Boolean);
+    let cursor = root;
+    for (let i = 0; i < segments.length - 1; i++) {
+      const dir = segments[i];
+      let next = cursor.children?.find((c) => c.name === dir);
+      if (!next) {
+        next = { name: dir, children: [] };
+        cursor.children!.push(next);
+      }
+      cursor = next;
+    }
+    const leaf = segments[segments.length - 1] ?? path;
+    cursor.children!.push({ name: leaf, value: meta.bytes ?? 0, path });
+  }
+  return root.children ?? [];
+}
+
+type GraphNode = {
+  id: string;
+  name: string;
+  value: number;
+  symbolSize: number;
+  category: number;
+};
+
+type GraphLink = {
+  source: string;
+  target: string;
+  lineStyle: { type: "solid" | "dashed" | "dotted"; opacity?: number };
+};
+
+type GraphData = {
+  nodes: GraphNode[];
+  links: GraphLink[];
+  categories: { name: string }[];
+};
+
+function buildGraph(inputs: Record<string, InputMeta> | undefined): GraphData {
+  const nodes: GraphNode[] = [];
+  const seen = new Map<string, GraphNode>();
+  const links: GraphLink[] = [];
+  if (!inputs) return { nodes, links, categories: [{ name: "module" }, { name: "external" }] };
+
+  const allBytes = Object.values(inputs).map((m) => m.bytes ?? 0);
+  const maxBytes = Math.max(1, ...allBytes);
+
+  function ensureNode(id: string, bytes: number, category: number): void {
+    if (seen.has(id)) return;
+    const size = bytes > 0 ? Math.max(8, Math.min(42, 8 + (bytes / maxBytes) * 34)) : 8;
+    const node: GraphNode = {
+      id,
+      name: id.split("/").pop() ?? id,
+      value: bytes,
+      symbolSize: size,
+      category,
+    };
+    seen.set(id, node);
+    nodes.push(node);
+  }
+
+  for (const [path, meta] of Object.entries(inputs)) {
+    ensureNode(path, meta.bytes ?? 0, 0);
+    for (const imp of meta.imports ?? []) {
+      const target = imp.path ?? imp.original;
+      if (!target) continue;
+      const category = imp.external ? 1 : 0;
+      const targetBytes = (!imp.external && inputs[target]?.bytes) || 0;
+      ensureNode(target, targetBytes, category);
+      const kind = imp.kind ?? "import-statement";
+      const type: "solid" | "dashed" | "dotted" =
+        kind === "dynamic-import" ? "dashed" : kind === "require-resolve" ? "dotted" : "solid";
+      links.push({ source: path, target, lineStyle: { type, opacity: 0.55 } });
+    }
+  }
+
+  return { nodes, links, categories: [{ name: "module" }, { name: "external" }] };
+}
+
 function BarRow({
   label,
   bytes,
@@ -153,9 +253,179 @@ function SummaryTile({ label, value, hint }: { label: string; value: string; hin
   );
 }
 
+function ViewToggleButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "rounded border px-3 py-1.5 text-[13px] " +
+        (active
+          ? "border-zig-500 bg-zig-500/10 text-zig-300"
+          : "border-surface-700 text-neutral-200 hover:border-zig-500 hover:text-zig-300")
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+function TreemapView({ inputs }: { inputs: Record<string, InputMeta> | undefined }) {
+  const data = useMemo(() => buildTreemap(inputs), [inputs]);
+  const option = useMemo(
+    () => ({
+      backgroundColor: "transparent",
+      tooltip: {
+        backgroundColor: "rgba(15,15,15,0.95)",
+        borderColor: "#262626",
+        textStyle: { color: "#e5e5e5", fontSize: 12 },
+        formatter: (info: { treePathInfo?: { name: string }[]; value?: number; name?: string }) => {
+          const trail = info.treePathInfo?.map((t) => t.name).join(" / ") ?? info.name ?? "";
+          const bytes = typeof info.value === "number" ? formatBytes(info.value) : "—";
+          return `<div style="font-family:ui-monospace,Menlo,monospace;font-size:11px;">${trail}</div><div style="margin-top:4px;color:#f7a41d;font-weight:600;">${bytes}</div>`;
+        },
+      },
+      series: [
+        {
+          type: "treemap",
+          data,
+          width: "100%",
+          height: "100%",
+          roam: false,
+          nodeClick: "zoomToNode",
+          breadcrumb: {
+            show: true,
+            top: 6,
+            itemStyle: { color: "#1f2937", borderColor: "#374151", textStyle: { color: "#e5e5e5", fontSize: 11 } },
+          },
+          label: { show: true, formatter: "{b}", color: "#fafafa", fontSize: 11 },
+          upperLabel: { show: true, height: 22, color: "#fafafa", fontSize: 11, backgroundColor: "rgba(0,0,0,0.35)" },
+          itemStyle: { borderColor: "#0a0a0a", gapWidth: 2, borderWidth: 1 },
+          levels: [
+            { itemStyle: { borderWidth: 0, gapWidth: 4, borderColorSaturation: 0.6 } },
+            { itemStyle: { borderWidth: 4, gapWidth: 2, borderColorSaturation: 0.6 } },
+            { itemStyle: { borderWidth: 1, gapWidth: 1 }, colorSaturation: [0.35, 0.55] },
+          ],
+        },
+      ],
+    }),
+    [data],
+  );
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[520px] items-center justify-center rounded border border-surface-800 bg-surface-900 text-[13px] text-neutral-500">
+        inputs 가 비어 있어 treemap 을 그릴 수 없습니다.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-surface-800 bg-surface-900 p-2">
+      <ReactEChartsCore echarts={echarts} option={option} style={{ height: "600px", width: "100%" }} />
+    </div>
+  );
+}
+
+function GraphView({ inputs }: { inputs: Record<string, InputMeta> | undefined }) {
+  const data = useMemo(() => buildGraph(inputs), [inputs]);
+
+  const option = useMemo(
+    () => ({
+      backgroundColor: "transparent",
+      tooltip: {
+        backgroundColor: "rgba(15,15,15,0.95)",
+        borderColor: "#262626",
+        textStyle: { color: "#e5e5e5", fontSize: 12 },
+        formatter: (info: { dataType?: string; data?: GraphNode | GraphLink }) => {
+          if (info.dataType === "node") {
+            const n = info.data as GraphNode;
+            return `<div style="font-family:ui-monospace,Menlo,monospace;font-size:11px;">${n.id}</div><div style="margin-top:4px;color:#f7a41d;font-weight:600;">${formatBytes(n.value)}</div>`;
+          }
+          if (info.dataType === "edge") {
+            const l = info.data as GraphLink;
+            return `<div style="font-family:ui-monospace,Menlo,monospace;font-size:11px;">${l.source}<br/>↓<br/>${l.target}</div>`;
+          }
+          return "";
+        },
+      },
+      legend: [
+        {
+          data: ["module", "external"],
+          top: 6,
+          right: 12,
+          textStyle: { color: "#e5e5e5", fontSize: 12 },
+        },
+      ],
+      color: ["#f7a41d", "#737373"],
+      series: [
+        {
+          type: "graph",
+          layout: "force",
+          data: data.nodes,
+          links: data.links,
+          categories: data.categories,
+          roam: true,
+          draggable: true,
+          label: {
+            show: true,
+            position: "right",
+            color: "#e5e5e5",
+            fontSize: 11,
+            formatter: (p: { data: GraphNode }) => p.data.name,
+          },
+          force: { repulsion: 90, edgeLength: 70, gravity: 0.08, friction: 0.6 },
+          lineStyle: { color: "source", curveness: 0.05, width: 1 },
+          emphasis: { focus: "adjacency", lineStyle: { width: 2 } },
+        },
+      ],
+    }),
+    [data],
+  );
+
+  if (data.nodes.length === 0) {
+    return (
+      <div className="flex h-[520px] items-center justify-center rounded border border-surface-800 bg-surface-900 text-[13px] text-neutral-500">
+        inputs 가 비어 있어 graph 를 그릴 수 없습니다.
+      </div>
+    );
+  }
+  if (data.nodes.length > GRAPH_NODE_LIMIT) {
+    return (
+      <div className="flex h-[520px] flex-col items-center justify-center gap-2 rounded border border-surface-800 bg-surface-900 px-6 text-center text-[13px] text-neutral-300">
+        <div className="font-semibold text-neutral-100">
+          {nf.format(data.nodes.length)} nodes — force layout 비활성화
+        </div>
+        <div className="max-w-[480px] text-neutral-400">
+          그래프 시각화는 {GRAPH_NODE_LIMIT} 노드까지 안정적입니다. 그 이상은 force simulation 이 brower 를 멈춥니다. Treemap view 또는 path 필터링된 Largest inputs 를 이용하세요.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-surface-800 bg-surface-900 p-2">
+      <ReactEChartsCore echarts={echarts} option={option} style={{ height: "600px", width: "100%" }} />
+      <div className="border-t border-surface-800 px-3 py-2 text-[11px] text-neutral-500">
+        <span className="font-semibold text-neutral-300">solid</span> = static import ·{" "}
+        <span className="font-semibold text-neutral-300">dashed</span> = dynamic-import · 휠로 zoom, 드래그로 pan, 노드 drag 가능
+      </div>
+    </div>
+  );
+}
+
 export function MetafileAnalyzer() {
   const [text, setText] = useState(sampleMetafile);
   const [filter, setFilter] = useState("");
+  const [view, setView] = useState<ViewMode>("summary");
   const parsed = useMemo(() => parseMetafile(text), [text]);
   const meta = parsed.meta;
 
@@ -224,73 +494,98 @@ export function MetafileAnalyzer() {
               <SummaryTile label="Inputs" value={nf.format(inputs.length)} hint={formatBytes(inputTotal)} />
               <SummaryTile label="Outputs" value={nf.format(outputs.length)} hint={formatBytes(outputTotal)} />
               <SummaryTile label="Imports" value={nf.format(importTotal)} hint="resolved graph edges" />
-              <SummaryTile label="Format" value={outputs.some(([, out]) => out.inputs) ? "Detailed" : "Basic"} hint="output attribution" />
+              <SummaryTile
+                label="Format"
+                value={outputs.some(([, out]) => out.inputs) ? "Detailed" : "Basic"}
+                hint="output attribution"
+              />
             </div>
 
-            <section className="rounded border border-surface-800 bg-surface-900">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-800 px-4 py-3">
-                <h2 className="text-[14px] font-semibold text-neutral-100">Outputs</h2>
-                <span className="text-[12px] text-neutral-500">esbuild-compatible `outputs[*].inputs` is used when present</span>
-              </div>
-              <div className="grid gap-3 p-4 xl:grid-cols-2">
-                {outputs.map(([path, output]) => {
-                  const contributions = outputContributions(output);
-                  const maxBytes = contributions[0]?.bytes ?? 0;
-                  return (
-                    <article key={path} className="rounded border border-surface-800 bg-surface-950 p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <h3 className="truncate text-[13px] font-semibold text-neutral-100" title={path}>
-                            {path}
-                          </h3>
-                          {output.entryPoint ? <p className="mt-1 text-[12px] text-neutral-500">entry: {output.entryPoint}</p> : null}
-                        </div>
-                        <div className="shrink-0 font-mono text-[12px] text-neutral-300">{formatBytes(output.bytes ?? 0)}</div>
-                      </div>
-                      <div className="mt-3 flex flex-col gap-2">
-                        {contributions.length > 0 ? (
-                          contributions
-                            .slice(0, 6)
-                            .map((item) => <BarRow key={item.path} label={item.path} bytes={item.bytes} maxBytes={maxBytes} />)
-                        ) : (
-                          <p className="text-[12px] leading-5 text-neutral-500">
-                            이 output에는 input 기여도 정보가 없습니다. 현재 ZNTC metafile의 basic form에서는 output 크기와 graph
-                            input/import 목록을 함께 확인하세요.
-                          </p>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
+            <div className="flex flex-wrap items-center gap-2">
+              <ViewToggleButton active={view === "summary"} label="Summary" onClick={() => setView("summary")} />
+              <ViewToggleButton active={view === "treemap"} label="Treemap" onClick={() => setView("treemap")} />
+              <ViewToggleButton active={view === "graph"} label="Import graph" onClick={() => setView("graph")} />
+            </div>
 
-            <section className="rounded border border-surface-800 bg-surface-900">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-800 px-4 py-3">
-                <h2 className="text-[14px] font-semibold text-neutral-100">Largest inputs</h2>
-                <input
-                  value={filter}
-                  placeholder="Filter path"
-                  onChange={(event) => setFilter(event.currentTarget.value)}
-                  className="w-[220px] rounded border border-surface-700 bg-surface-950 px-2 py-1 text-[12px] text-neutral-200 outline-none"
-                />
-              </div>
-              <div className="flex max-h-[420px] flex-col gap-3 overflow-auto p-4">
-                {filteredInputs.slice(0, 80).map((item) => {
-                  const input = meta?.inputs?.[item.path];
-                  const importCount = input?.imports?.length ?? 0;
-                  return (
-                    <BarRow
-                      key={item.path}
-                      label={item.path}
-                      bytes={item.bytes}
-                      maxBytes={maxInputBytes}
-                      sublabel={importCount === 1 ? "1 import" : `${importCount} imports`}
+            {view === "treemap" ? <TreemapView inputs={meta?.inputs} /> : null}
+            {view === "graph" ? <GraphView inputs={meta?.inputs} /> : null}
+
+            {view === "summary" ? (
+              <>
+                <section className="rounded border border-surface-800 bg-surface-900">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-800 px-4 py-3">
+                    <h2 className="text-[14px] font-semibold text-neutral-100">Outputs</h2>
+                    <span className="text-[12px] text-neutral-500">
+                      esbuild-compatible `outputs[*].inputs` is used when present
+                    </span>
+                  </div>
+                  <div className="grid gap-3 p-4 xl:grid-cols-2">
+                    {outputs.map(([path, output]) => {
+                      const contributions = outputContributions(output);
+                      const maxBytes = contributions[0]?.bytes ?? 0;
+                      return (
+                        <article key={path} className="rounded border border-surface-800 bg-surface-950 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <h3 className="truncate text-[13px] font-semibold text-neutral-100" title={path}>
+                                {path}
+                              </h3>
+                              {output.entryPoint ? (
+                                <p className="mt-1 text-[12px] text-neutral-500">entry: {output.entryPoint}</p>
+                              ) : null}
+                            </div>
+                            <div className="shrink-0 font-mono text-[12px] text-neutral-300">
+                              {formatBytes(output.bytes ?? 0)}
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-col gap-2">
+                            {contributions.length > 0 ? (
+                              contributions
+                                .slice(0, 6)
+                                .map((item) => (
+                                  <BarRow key={item.path} label={item.path} bytes={item.bytes} maxBytes={maxBytes} />
+                                ))
+                            ) : (
+                              <p className="text-[12px] leading-5 text-neutral-500">
+                                이 output에는 input 기여도 정보가 없습니다. 현재 ZNTC metafile의 basic form에서는 output 크기와 graph
+                                input/import 목록을 함께 확인하세요.
+                              </p>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="rounded border border-surface-800 bg-surface-900">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-800 px-4 py-3">
+                    <h2 className="text-[14px] font-semibold text-neutral-100">Largest inputs</h2>
+                    <input
+                      value={filter}
+                      placeholder="Filter path"
+                      onChange={(event) => setFilter(event.currentTarget.value)}
+                      className="w-[220px] rounded border border-surface-700 bg-surface-950 px-2 py-1 text-[12px] text-neutral-200 outline-none"
                     />
-                  );
-                })}
-              </div>
-            </section>
+                  </div>
+                  <div className="flex max-h-[420px] flex-col gap-3 overflow-auto p-4">
+                    {filteredInputs.slice(0, 80).map((item) => {
+                      const input = meta?.inputs?.[item.path];
+                      const importCount = input?.imports?.length ?? 0;
+                      return (
+                        <BarRow
+                          key={item.path}
+                          label={item.path}
+                          bytes={item.bytes}
+                          maxBytes={maxInputBytes}
+                          sublabel={importCount === 1 ? "1 import" : `${importCount} imports`}
+                        />
+                      );
+                    })}
+                  </div>
+                </section>
+              </>
+            ) : null}
           </div>
         </section>
       </div>
