@@ -124,7 +124,6 @@ Options:
 | `--keep-names`                      | 함수/클래스 `.name` 보존                                       |
 | `--charset=utf8`                    | non-ASCII 문자를 그대로 유지 (parser 는 `utf8` 만 받음)        |
 | `--ascii-only`                      | non-ASCII → `\uXXXX` (반대 방향 — `--charset=ascii` 는 미지원) |
-| `--mangle-report=<path>`            | minify-identifiers 적용 시 원본↔축약 매핑 JSON 출력            |
 | `--quotes=double\|single\|preserve` | 문자열 따옴표 스타일                                           |
 | `--line-limit=<n>`                  | 안전한 토큰 경계에서 긴 출력 라인 줄바꿈 (`0`은 무제한)        |
 

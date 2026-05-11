@@ -247,6 +247,7 @@ function parseArgs(argv) {
     jsxFactory: undefined,
     jsxFragment: undefined,
     jsxImportSource: undefined,
+    devMode: false,
     flow: false,
     experimentalDecorators: false,
     useDefineForClassFields: true,
@@ -1255,6 +1256,17 @@ async function runBundle(opts, config) {
     jsxFragment: opts.jsxFragment,
     jsxImportSource: opts.jsxImportSource,
     inject: opts.inject.map((p) => resolve(p)),
+    devMode: opts.devMode,
+    globalIdentifiers: opts.globalIdentifiers,
+    // --polyfill / --run-before-main / --watch-folder 는 경로 → abs 변환 (--inject 와 동일).
+    // --watch-include / --watch-exclude 는 루트 기준 glob 이므로 변환 안 함.
+    polyfills: opts.polyfills?.length ? opts.polyfills.map((p) => resolve(p)) : undefined,
+    runBeforeMain: opts.runBeforeMain?.length
+      ? opts.runBeforeMain.map((p) => resolve(p))
+      : undefined,
+    watchFolders: opts.watchFolders?.length ? opts.watchFolders.map((p) => resolve(p)) : undefined,
+    watchInclude: opts.watchInclude?.length ? opts.watchInclude : undefined,
+    watchExclude: opts.watchExclude?.length ? opts.watchExclude : undefined,
     jobs: opts.jobs,
     outbase: opts.outbase,
     plugins: plugins.length > 0 ? plugins : undefined,
