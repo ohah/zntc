@@ -197,6 +197,83 @@ pub const DirEntryCache = struct {
     }
 };
 
+/// Directory-level realpath 캐시.
+///
+/// `makeResult()` 는 모듈마다 `fs.realpath()` syscall 을 호출하는데, 대형 그래프
+/// (5000+ 모듈) 에서 이 호출이 38% 비중 (`resolve.realpath` profile, 2026-05-11
+/// 실측). 같은 디렉토리의 N 개 파일도 N 번 syscall 한다.
+///
+/// 이 캐시는 path 의 dirname 만 realpath 하고 basename 은 join — pnpm/.bun
+/// symlink 패턴 (디렉토리 단위 symlink) 을 그대로 cover 한다. 같은 디렉토리의
+/// 파일 1000 개 → realpath syscall 1 회.
+///
+/// 한계: file-level symlink (개별 파일이 symlink 인 케이스) 는 dir-level resolve
+/// 뒤 basename join 이라 따라가지 못한다. ZNTC 가 import 하는 일반 source/dep
+/// 경로는 이 패턴이 거의 없어 영향 없음. preserve_symlinks=true 면 어차피 cache
+/// 우회 (기존 동작 동일).
+pub const RealpathCache = struct {
+    /// dir 절대 경로 → realpath(dir). value 는 allocator 소유.
+    cache: std.StringHashMap([]const u8),
+    mutex: std.Thread.Mutex = .{},
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) RealpathCache {
+        return .{
+            .cache = std.StringHashMap([]const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *RealpathCache) void {
+        var it = self.cache.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.cache.deinit();
+    }
+
+    /// path 의 realpath 를 owned slice 로 반환.
+    /// dir-level 캐시 적중 시 syscall 0. 캐시 miss 면 dir 만 realpath 후 cache + join.
+    pub fn resolve(self: *RealpathCache, path: []const u8) error{OutOfMemory}![]const u8 {
+        const dir = std.fs.path.dirname(path) orelse {
+            // dirname 없음 (root path "/"). 그대로 dupe.
+            return self.allocator.dupe(u8, path);
+        };
+        const basename = std.fs.path.basename(path);
+
+        self.mutex.lock();
+        const cached_dir: ?[]const u8 = if (self.cache.get(dir)) |v| v else null;
+        self.mutex.unlock();
+
+        const resolved_dir = cached_dir orelse blk: {
+            const new_dir = fs.realpath(self.allocator, dir) catch
+                self.allocator.dupe(u8, dir) catch return error.OutOfMemory;
+
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            // race: 다른 thread 가 먼저 넣었을 수 있음.
+            if (self.cache.get(dir)) |existing| {
+                self.allocator.free(new_dir);
+                break :blk existing;
+            }
+            const key = self.allocator.dupe(u8, dir) catch {
+                self.allocator.free(new_dir);
+                return error.OutOfMemory;
+            };
+            self.cache.put(key, new_dir) catch {
+                self.allocator.free(key);
+                self.allocator.free(new_dir);
+                return error.OutOfMemory;
+            };
+            break :blk new_dir;
+        };
+
+        // resolved_dir + "/" + basename
+        return std.fs.path.join(self.allocator, &.{ resolved_dir, basename });
+    }
+};
+
 pub const Resolver = struct {
     allocator: std.mem.Allocator,
     /// 조건 세트 (D064: import kind별로 다를 수 있음).
@@ -229,6 +306,9 @@ pub const Resolver = struct {
     main_fields: []const []const u8 = &.{},
     /// 디렉토리 엔트리 캐시. null이면 캐시 없이 매번 stat() 호출 (테스트용).
     dir_cache: ?*DirEntryCache = null,
+    /// Directory-level realpath 캐시. null 이면 매번 fs.realpath() 호출 (테스트용).
+    /// 같은 디렉토리의 N 개 파일 → 1 realpath syscall. 대형 그래프에서 큰 비중.
+    realpath_cache: ?*RealpathCache = null,
     /// NODE_PATH 추가 탐색 경로 (--node-paths). 상위 디렉토리 탐색 실패 시 폴백.
     node_paths: []const []const u8 = &.{},
 
@@ -664,11 +744,15 @@ pub const Resolver = struct {
         const resolved = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
-            break :blk if (self.preserve_symlinks)
-                self.allocator.dupe(u8, path) catch return error.OutOfMemory
-            else
-                fs.realpath(self.allocator, path) catch
+            if (self.preserve_symlinks) {
+                break :blk self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+            }
+            if (self.realpath_cache) |cache| {
+                break :blk cache.resolve(path) catch
                     self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+            }
+            break :blk fs.realpath(self.allocator, path) catch
+                self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         };
         const ext = std.fs.path.extension(resolved);
         return .{
