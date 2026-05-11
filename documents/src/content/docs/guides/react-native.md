@@ -21,8 +21,11 @@ my-rn-app/
 
 기존 RN CLI 프로젝트에 ZNTC 를 얹는 가장 빠른 방법은 `@zntc/init` 입니다. native shell 을 새로 만들지 않고 `package.json` 의 script 와 `zntc.config.ts` 만 패치합니다.
 
+`zntc-init` 는 모드를 첫 인자로 받으며 RN 은 `react-native` 입니다 (모드를 생략하면 `react-native` 로 동작 — 기존 호환). 다른 모드: `vite`, `rspack`, `web` 은 각 가이드 참조.
+
 ```bash
-npx @zntc/init
+npx @zntc/init react-native
+npx @zntc/init react-native --platform=android
 npx @zntc/init --help
 ```
 
@@ -37,31 +40,51 @@ npx @zntc/init --help
 도움말 출력:
 
 ```text
-Usage: zntc-init [react-native] [options]
+Usage: zntc-init <mode> [options]
 
-Overlay ZNTC onto an existing React Native CLI project.
+Modes:
+  react-native    Overlay ZNTC onto an existing React Native CLI project
+  vite            Overlay ZNTC onto an existing Vite project (@zntc/vite-plugin)
+  rspack          Overlay ZNTC onto an existing Rspack/Webpack project (@zntc/rspack-loader)
+  web             Scaffold a standalone ZNTC web project (no Vite/Rspack)
 
-Options:
-  --root <dir>               Project root (default: cwd)
-  --platform <ios|android>   Default platform for the start script (default: ios)
-  --zntc-version <range>     Version range for @zntc packages (default: latest)
-  --package-manager <pm>     Install command hint: bun, npm, pnpm, or yarn
-  --no-metro-fallback        Do not add Metro fallback scripts
-  --force                    Overwrite an existing zntc.config.ts
-  --dry-run                  Print planned changes without writing files
-  --help, -h                 Show this help message
+Common options:
+  --root <dir>                Project root (default: cwd)
+  --zntc-version <range>      Version range for @zntc packages (default: latest)
+  --package-manager <pm>      Install command hint: bun, npm, pnpm, or yarn
+  --force                     Overwrite existing files where the mode allows
+  --dry-run                   Print planned changes without writing files
+  --help, -h                  Show this help message
+
+react-native options:
+  --platform <ios|android>    Default platform for the start script (default: ios)
+  --no-metro-fallback         Do not add Metro fallback scripts
+
+rspack options:
+  --bundler <rspack|webpack>  Force bundler choice (default: auto-detect)
+
+web options:
+  --name <pkg-name>           package.json name field (default: directory name)
+  --framework <react|vanilla> Starter template (default: react)
 ```
 
-| 옵션                                       | 설명                                                             |
-| ------------------------------------------ | ---------------------------------------------------------------- |
-| `--root <dir>`                             | 프로젝트 루트. 기본값은 현재 디렉터리                            |
-| `--platform <ios\|android>`                | `start` script 의 기본 RN platform. 기본값은 `ios`               |
-| `--zntc-version <range>`                   | 추가할 `@zntc/core` / `@zntc/react-native` 버전 범위             |
-| `--package-manager <bun\|npm\|pnpm\|yarn>` | 초기화 후 출력할 install 명령 힌트                               |
-| `--no-metro-fallback`                      | `start:metro` / `bundle:metro:*` fallback script 를 추가하지 않음 |
-| `--force`                                  | 기존 `zntc.config.ts` 덮어쓰기                                   |
-| `--dry-run`                                | 파일을 쓰지 않고 변경 계획만 출력                                |
-| `--help`, `-h`                             | 도움말 출력                                                      |
+### 공통 옵션
+
+| 옵션                                       | 설명                                                       |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| `--root <dir>`                             | 프로젝트 루트. 기본값은 현재 디렉터리                       |
+| `--zntc-version <range>`                   | 추가할 `@zntc/*` 패키지 버전 범위 (기본값: `latest`)         |
+| `--package-manager <bun\|npm\|pnpm\|yarn>` | 초기화 후 출력할 install 명령 힌트                          |
+| `--force`                                  | 모드가 허용하는 범위에서 기존 파일 덮어쓰기                  |
+| `--dry-run`                                | 파일을 쓰지 않고 변경 계획만 출력                            |
+| `--help`, `-h`                             | 도움말 출력                                                |
+
+### react-native 모드 옵션
+
+| 옵션                          | 설명                                                              |
+| ----------------------------- | ----------------------------------------------------------------- |
+| `--platform <ios\|android>`   | `start` script 의 기본 RN platform. 기본값은 `ios`                |
+| `--no-metro-fallback`         | `start:metro` / `bundle:metro:*` fallback script 를 추가하지 않음 |
 
 ## 수동 적용
 

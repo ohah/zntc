@@ -21,8 +21,11 @@ my-rn-app/
 
 The fastest way to add ZNTC to an existing RN CLI project is `@zntc/init`. It patches `package.json` scripts and writes `zntc.config.ts` — it does not generate a new native shell.
 
+`zntc-init` takes a mode as its first argument; for RN it's `react-native` (omitting the mode falls back to `react-native` for backward compatibility). Other modes — `vite`, `rspack`, `web` — are covered by their own guides.
+
 ```bash
-npx @zntc/init
+npx @zntc/init react-native
+npx @zntc/init react-native --platform=android
 npx @zntc/init --help
 ```
 
@@ -37,31 +40,51 @@ What it does:
 Help output:
 
 ```text
-Usage: zntc-init [react-native] [options]
+Usage: zntc-init <mode> [options]
 
-Overlay ZNTC onto an existing React Native CLI project.
+Modes:
+  react-native    Overlay ZNTC onto an existing React Native CLI project
+  vite            Overlay ZNTC onto an existing Vite project (@zntc/vite-plugin)
+  rspack          Overlay ZNTC onto an existing Rspack/Webpack project (@zntc/rspack-loader)
+  web             Scaffold a standalone ZNTC web project (no Vite/Rspack)
 
-Options:
-  --root <dir>               Project root (default: cwd)
-  --platform <ios|android>   Default platform for the start script (default: ios)
-  --zntc-version <range>     Version range for @zntc packages (default: latest)
-  --package-manager <pm>     Install command hint: bun, npm, pnpm, or yarn
-  --no-metro-fallback        Do not add Metro fallback scripts
-  --force                    Overwrite an existing zntc.config.ts
-  --dry-run                  Print planned changes without writing files
-  --help, -h                 Show this help message
+Common options:
+  --root <dir>                Project root (default: cwd)
+  --zntc-version <range>      Version range for @zntc packages (default: latest)
+  --package-manager <pm>      Install command hint: bun, npm, pnpm, or yarn
+  --force                     Overwrite existing files where the mode allows
+  --dry-run                   Print planned changes without writing files
+  --help, -h                  Show this help message
+
+react-native options:
+  --platform <ios|android>    Default platform for the start script (default: ios)
+  --no-metro-fallback         Do not add Metro fallback scripts
+
+rspack options:
+  --bundler <rspack|webpack>  Force bundler choice (default: auto-detect)
+
+web options:
+  --name <pkg-name>           package.json name field (default: directory name)
+  --framework <react|vanilla> Starter template (default: react)
 ```
 
-| Option                                     | Description                                                              |
-| ------------------------------------------ | ------------------------------------------------------------------------ |
-| `--root <dir>`                             | Project root. Defaults to cwd.                                           |
-| `--platform <ios\|android>`                | Default RN platform for the `start` script. Defaults to `ios`.           |
-| `--zntc-version <range>`                   | Version range for `@zntc/core` / `@zntc/react-native`.                   |
-| `--package-manager <bun\|npm\|pnpm\|yarn>` | Install-command hint printed after init.                                 |
-| `--no-metro-fallback`                      | Skip `start:metro` / `bundle:metro:*` fallback scripts.                  |
-| `--force`                                  | Overwrite an existing `zntc.config.ts`.                                  |
-| `--dry-run`                                | Print planned changes without writing files.                             |
-| `--help`, `-h`                             | Show help.                                                               |
+### Common options
+
+| Option                                     | Description                                                  |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| `--root <dir>`                             | Project root. Defaults to cwd.                               |
+| `--zntc-version <range>`                   | Version range for the `@zntc/*` packages (default: `latest`).|
+| `--package-manager <bun\|npm\|pnpm\|yarn>` | Install-command hint printed after init.                     |
+| `--force`                                  | Overwrite existing files where the mode allows.              |
+| `--dry-run`                                | Print planned changes without writing files.                 |
+| `--help`, `-h`                             | Show help.                                                   |
+
+### react-native mode options
+
+| Option                          | Description                                                    |
+| ------------------------------- | -------------------------------------------------------------- |
+| `--platform <ios\|android>`     | Default RN platform for the `start` script. Defaults to `ios`. |
+| `--no-metro-fallback`           | Skip `start:metro` / `bundle:metro:*` fallback scripts.        |
 
 ## Manual setup
 
