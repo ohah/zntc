@@ -147,7 +147,11 @@ pub const RealReadFileCache = struct {
             defer scope.end();
             break :blk self.openFile(cache_allocator, path) catch |err| return mapFsError(err);
         };
-        defer file.close();
+        defer {
+            var close_scope = profile.begin(.graph_discover_pm_setup_read_close);
+            defer close_scope.end();
+            file.close();
+        }
 
         const stat = blk: {
             var scope = profile.begin(.graph_discover_pm_setup_read_stat);
