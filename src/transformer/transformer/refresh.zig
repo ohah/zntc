@@ -616,3 +616,70 @@ pub fn insertSigCallAtBodyStart(self: *Transformer, body_idx: NodeIndex, handle_
         .data = .{ .list = new_list },
     });
 }
+
+// ================================================================
+// Tests — path filter (Vite plugin-react 기본 include/exclude 호환)
+// ================================================================
+
+test "isRefreshTargetPath: include extensions" {
+    try std.testing.expect(isRefreshTargetPath("/src/App.tsx"));
+    try std.testing.expect(isRefreshTargetPath("/src/App.ts"));
+    try std.testing.expect(isRefreshTargetPath("/src/App.jsx"));
+    try std.testing.expect(isRefreshTargetPath("/src/App.js"));
+    try std.testing.expect(isRefreshTargetPath("/src/App.mjs"));
+}
+
+test "isRefreshTargetPath: exclude non-JS extensions" {
+    try std.testing.expect(!isRefreshTargetPath("/src/App.css"));
+    try std.testing.expect(!isRefreshTargetPath("/src/App.vue"));
+    try std.testing.expect(!isRefreshTargetPath("/src/App.svelte"));
+    try std.testing.expect(!isRefreshTargetPath("/src/App.zig"));
+    try std.testing.expect(!isRefreshTargetPath("/src/App.json"));
+    try std.testing.expect(!isRefreshTargetPath("/src/App.cjs"));
+    try std.testing.expect(!isRefreshTargetPath("/src/App.cts"));
+    try std.testing.expect(!isRefreshTargetPath("/src/Makefile"));
+}
+
+test "isRefreshTargetPath: exclude /node_modules/ regardless of extension" {
+    try std.testing.expect(!isRefreshTargetPath("/project/node_modules/react/index.tsx"));
+    try std.testing.expect(!isRefreshTargetPath("/project/node_modules/foo/bar/Baz.tsx"));
+    try std.testing.expect(!isRefreshTargetPath("/a/node_modules/.pnpm/x/dist/y.jsx"));
+    // node_modules 가 path 의 일부지만 segment 경계가 아닌 경우 — `/foo_node_modules_bar/`
+    // 같은 fake match 는 거의 안 일어나지만 Vite 동작 (substring 검사) 그대로 유지.
+}
+
+test "isRefreshTargetPath: empty path → conservative allow" {
+    // jsx_filename 이 비어있는 transpile direct API 경로는 보수적으로 허용.
+    try std.testing.expect(isRefreshTargetPath(""));
+}
+
+test "isRefreshTargetPath: no extension" {
+    try std.testing.expect(!isRefreshTargetPath("/src/script"));
+}
+
+test "computeRefreshEnabled: react_refresh=false short-circuits filter" {
+    const TransformOptions = @import("../transformer.zig").TransformOptions;
+    const opts: TransformOptions = .{ .react_refresh = false, .jsx_filename = "/src/App.tsx" };
+    try std.testing.expect(!computeRefreshEnabled(opts));
+}
+
+test "computeRefreshEnabled: react_refresh=true + matching path" {
+    const TransformOptions = @import("../transformer.zig").TransformOptions;
+    const opts: TransformOptions = .{ .react_refresh = true, .jsx_filename = "/src/App.tsx" };
+    try std.testing.expect(computeRefreshEnabled(opts));
+}
+
+test "computeRefreshEnabled: react_refresh=true + non-matching path → false" {
+    const TransformOptions = @import("../transformer.zig").TransformOptions;
+    const opts: TransformOptions = .{ .react_refresh = true, .jsx_filename = "/src/App.css" };
+    try std.testing.expect(!computeRefreshEnabled(opts));
+}
+
+test "computeRefreshEnabled: react_refresh=true + node_modules → false" {
+    const TransformOptions = @import("../transformer.zig").TransformOptions;
+    const opts: TransformOptions = .{
+        .react_refresh = true,
+        .jsx_filename = "/project/node_modules/react/index.tsx",
+    };
+    try std.testing.expect(!computeRefreshEnabled(opts));
+}
