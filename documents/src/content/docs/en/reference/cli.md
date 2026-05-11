@@ -126,7 +126,6 @@ Options:
 | `--keep-names`                      | Preserve function/class `.name`                                            |
 | `--charset=utf8`                    | Preserve non-ASCII verbatim (parser only accepts `utf8`)                   |
 | `--ascii-only`                      | Non-ASCII → `\uXXXX` (asymmetric — `--charset=ascii` is not accepted)      |
-| `--mangle-report=<path>`            | Emit original-to-mangled identifier map JSON (with `--minify-identifiers`) |
 | `--quotes=double\|single\|preserve` | String quote style                                                         |
 | `--line-limit=<n>`                  | Wrap long output lines at safe token boundaries (`0` disables wrapping)    |
 

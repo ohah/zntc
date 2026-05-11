@@ -85,6 +85,8 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--allow-overwrite', target: 'allowOverwrite' },
   { kind: 'bool', flag: '--jsx-side-effects', target: 'jsxSideEffects' },
   { kind: 'bool', flag: '--ignore-annotations', target: 'ignoreAnnotations' },
+  // dev 모드 — HMR 런타임 주입 등 dev 동작 활성화. NAPI BuildOptions.devMode 와 동일.
+  { kind: 'bool', flag: '--dev', target: 'devMode' },
 
   // ─── kind=string — string scalar (`--key=value` 단방향) ───
   { kind: 'string', flag: '--format', target: 'format', forms: ['equal'] },
@@ -175,6 +177,18 @@ export const FLAG_REGISTRY = [
   { kind: 'array', flag: '--drop', target: 'drop', forms: ['equal'] },
   { kind: 'array', flag: '--plugin', target: 'pluginPaths', forms: ['pair'] },
   { kind: 'array', flag: '--runtime-target', target: 'runtimeTargetQueries' },
+  // scope hoisting 시 예약할 전역 식별자 (반복 가능). NAPI BuildOptions.globalIdentifiers.
+  { kind: 'array', flag: '--global-identifier', target: 'globalIdentifiers', forms: ['equal'] },
+  // 번들 시작 시 즉시 실행할 폴리필 경로 / 엔트리 모듈 직전 실행 모듈 (반복 가능, 경로 abs 변환).
+  { kind: 'array', flag: '--polyfill', target: 'polyfills', forms: ['equal'] },
+  { kind: 'array', flag: '--run-before-main', target: 'runBeforeMain', forms: ['equal'] },
+  // 번들 그래프 밖 디렉토리를 감시 루트에 추가 (반복 가능, abs 변환). NAPI BuildOptions.watchFolders.
+  // 주의: RN-CLI 호환 csv flag `--watchFolders` (target=rnWatchFolders, 위 csv 섹션) 와 별개 —
+  // 이쪽은 zntc 네이티브 watcher, 저쪽은 Metro graph-bundler 경로.
+  { kind: 'array', flag: '--watch-folder', target: 'watchFolders', forms: ['equal'] },
+  // watchFolders 스캔 시 포함/제외 glob (반복 가능, 루트 기준 상대 경로 — abs 변환 안 함).
+  { kind: 'array', flag: '--watch-include', target: 'watchInclude', forms: ['equal'] },
+  { kind: 'array', flag: '--watch-exclude', target: 'watchExclude', forms: ['equal'] },
 
   // ─── kind=csv — `,` 분리 → array ───
   { kind: 'csv', flag: '--drop-labels', target: 'dropLabels', forms: ['equal'] },
@@ -185,6 +199,7 @@ export const FLAG_REGISTRY = [
   { kind: 'csv', flag: '--node-paths', target: 'nodePaths', forms: ['equal'] },
   { kind: 'csv', flag: '--profile', target: 'profile', forms: ['equal'] },
   // RN CLI 호환 (#2605 audit P0) — Metro 의 camelCase flag.
+  // 주의: zntc 네이티브 watcher 용 kebab flag `--watch-folder` (target=watchFolders, 위 array 섹션) 와 별개.
   { kind: 'csv', flag: '--watchFolders', target: 'rnWatchFolders' },
   { kind: 'csv', flag: '--sourceExts', target: 'rnSourceExts' },
 

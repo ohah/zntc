@@ -378,6 +378,12 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // out-extension — esbuild 식 namespace (`--out-extension:.js=`). BuildOptions 의
     // `outExtension: string` (단일) 와 1:N. zntc.mjs 가 `.js` 만 받아 단일 string 으로 변환.
     '--out-extension:.js=',
+    // --dev — CLI shorthand, BuildOptions 는 `devMode: boolean`.
+    '--dev',
+    // 단수 flag 이름 ↔ 복수 BuildOptions 키 (단순 키 매칭으론 추적 안 됨).
+    '--global-identifier=', // → globalIdentifiers
+    '--polyfill=', // → polyfills
+    '--watch-folder=', // → watchFolders (RN-CLI `--watchFolders` csv 와 별개)
   ]);
 
   // BuildOptions/TranspileOptions 에 있고 CLI 에 없는 키 (의도적). 함수형/고급 옵션.
