@@ -3,7 +3,7 @@
  * 에러 코드 문서 자동 생성 스크립트
  *
  * error_codes.zig에서 코드 목록을 파싱하여
- * documents/src/content/docs/reference/errors/ 에 .md 파일을 생성한다.
+ * documents/src/content/docs/{reference,en/reference}/errors/ 에 .md 파일을 생성한다.
  *
  * 사용법: node scripts/generate-error-docs.mjs
  */
@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const ERROR_CODES_PATH = join(ROOT, "src/error_codes.zig");
-const DOCS_DIR = join(ROOT, "documents/src/content/docs/reference/errors");
+const KO_DOCS_DIR = join(ROOT, "documents/src/content/docs/reference/errors");
+const EN_DOCS_DIR = join(ROOT, "documents/src/content/docs/en/reference/errors");
 
 // Playground URL 생성 (hash 기반 base64)
 // options가 있으면 JSON { code, options } 포맷, 없으면 코드만
@@ -115,39 +116,70 @@ const examples = {
   super_call_outside_constructor: { code: 'class C { f() { super(); } }', opts: {}, cliOpts: "" },
 };
 
-// 파일 생성
-mkdirSync(DOCS_DIR, { recursive: true });
+const LOCALES = [
+  {
+    dir: KO_DOCS_DIR,
+    indexTitle: "에러 코드 레퍼런스",
+    indexDesc: "ZNTC 에러 코드 전체 목록",
+    indexIntro: "ZNTC는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클릭하면 상세 설명과 재현 코드를 볼 수 있습니다.",
+    indexHeader: ["코드", "메시지"],
+    catLabel: "카테고리",
+    reproHeading: "재현 코드",
+    optionsLabel: "옵션",
+    playgroundLink: "Playground에서 재현하기 →",
+    fixHeading: "해결 방법",
+    fixBody: "이 에러의 원인과 해결 방법은 에러 메시지를 참고하세요.",
+    catName: (c) => c.name,
+    routePrefix: "/zntc/reference/errors",
+  },
+  {
+    dir: EN_DOCS_DIR,
+    indexTitle: "Error codes reference",
+    indexDesc: "Complete list of ZNTC error codes",
+    indexIntro: "ZNTC assigns a unique code to every diagnostic. Click a code for details and a reproduction snippet.",
+    indexHeader: ["Code", "Message"],
+    catLabel: "Category",
+    reproHeading: "Reproduction",
+    optionsLabel: "Options",
+    playgroundLink: "Reproduce in Playground →",
+    fixHeading: "How to fix",
+    fixBody: "See the error message for cause and resolution.",
+    catName: (c) => c.nameEn,
+    routePrefix: "/zntc/en/reference/errors",
+  },
+];
 
-let indexContent = `---
-title: 에러 코드 레퍼런스
-description: ZNTC 에러 코드 전체 목록
----
+for (const L of LOCALES) mkdirSync(L.dir, { recursive: true });
 
-ZNTC는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클릭하면 상세 설명과 재현 코드를 볼 수 있습니다.
-
-`;
-
-let currentCategory = "";
+const indexBuffers = LOCALES.map((L) => ({
+  L,
+  content: `---\ntitle: ${L.indexTitle}\ndescription: ${L.indexDesc}\n---\n\n${L.indexIntro}\n\n`,
+  currentCategory: "",
+}));
 
 for (const v of variants) {
   const code = `ZNTC${String(v.number).padStart(4, "0")}`;
   const msg = messages[v.name] || v.name;
+  if (/[\n\r]/.test(msg)) {
+    throw new Error(`error_codes.zig: message for ${v.name} contains newline — single-quoted YAML can't represent this. Fix the source.`);
+  }
   const cat = getCategory(v.number);
   const example = examples[v.name];
-
-  // 인덱스 페이지에 카테고리 헤더 추가
-  if (cat.name !== currentCategory) {
-    currentCategory = cat.name;
-    indexContent += `\n## ${cat.name}\n\n| 코드 | 메시지 |\n|------|--------|\n`;
-  }
-  indexContent += `| [\`${code}\`](/zntc/reference/errors/${code.toLowerCase()}) | ${msg} |\n`;
-
-  // YAML frontmatter: single quote로 감싸서 double quote 문제 회피
-  // single quote 안의 single quote는 '' 로 이스케이프
+  // 한 번만 인코딩 — locale 별로 재사용
+  const exampleUrl = example ? playgroundUrl(example.code, example.opts) : null;
   const yamlMsg = msg.replace(/'/g, "''");
 
-  // 개별 에러 페이지
-  let pageContent = `---
+  for (const buf of indexBuffers) {
+    const L = buf.L;
+    const catLocalized = L.catName(cat);
+
+    if (catLocalized !== buf.currentCategory) {
+      buf.currentCategory = catLocalized;
+      buf.content += `\n## ${catLocalized}\n\n| ${L.indexHeader[0]} | ${L.indexHeader[1]} |\n|------|--------|\n`;
+    }
+    buf.content += `| [\`${code}\`](${L.routePrefix}/${code.toLowerCase()}) | ${msg} |\n`;
+
+    let pageContent = `---
 title: '${code}: ${yamlMsg}'
 description: '${yamlMsg}'
 ---
@@ -156,33 +188,34 @@ description: '${yamlMsg}'
 
 > ${msg}
 
-**카테고리**: ${cat.name}
+**${L.catLabel}**: ${catLocalized}
 `;
 
-  if (example) {
-    const url = playgroundUrl(example.code, example.opts);
-    pageContent += `
-### 재현 코드
+    if (example) {
+      pageContent += `
+### ${L.reproHeading}
 
 \`\`\`ts
 ${example.code}
 \`\`\`
 
-${example.cliOpts ? `**옵션**: \`${example.cliOpts}\`\n` : ""}
-[Playground에서 재현하기 →](${url})
+${example.cliOpts ? `**${L.optionsLabel}**: \`${example.cliOpts}\`\n` : ""}
+[${L.playgroundLink}](${exampleUrl})
 `;
+    }
+
+    pageContent += `
+### ${L.fixHeading}
+
+${L.fixBody}
+`;
+
+    writeFileSync(join(L.dir, `${code.toLowerCase()}.md`), pageContent);
   }
-
-  pageContent += `
-### 해결 방법
-
-이 에러의 원인과 해결 방법은 에러 메시지를 참고하세요.
-`;
-
-  writeFileSync(join(DOCS_DIR, `${code.toLowerCase()}.md`), pageContent);
 }
 
-// 인덱스 페이지 작성
-writeFileSync(join(DOCS_DIR, "index.md"), indexContent);
+for (const buf of indexBuffers) {
+  writeFileSync(join(buf.L.dir, "index.md"), buf.content);
+}
 
-console.log(`✅ ${variants.length}개 에러 문서 생성 완료 → ${DOCS_DIR}`);
+console.log(`✅ ${variants.length}개 에러 문서 생성 완료 (ko + en)`);

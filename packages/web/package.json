@@ -3,6 +3,30 @@
   "version": "0.1.0",
   "description": "ZNTC web platform — dev server + HMR overlay + postcss/sass pipeline + dev controller",
   "license": "MIT",
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/web"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "zntc",
+    "dev-server",
+    "hmr",
+    "postcss",
+    "sass",
+    "tailwind",
+    "vite",
+    "transpiler",
+    "bundler"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "files": [
     "dist/",
     "README.md"

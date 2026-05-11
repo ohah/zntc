@@ -3,6 +3,27 @@
   "version": "0.1.0",
   "description": "ZNTC project initializer and React Native CLI overlay",
   "license": "MIT",
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/init"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "zntc",
+    "init",
+    "create",
+    "scaffold",
+    "react-native",
+    "transpiler"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "bin": {
     "zntc-init": "./bin/zntc-init.mjs"
   },
