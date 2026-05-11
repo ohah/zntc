@@ -316,6 +316,36 @@ dev 서버를 먼저 띄운 뒤 MCP 클라이언트(Claude Code 등) 시작.
 - **이벤트 버퍼**: `get_build_events`가 참조하는 ring buffer는 최근 256개. 그 이상은 덮어쓰임.
 - **SSE 동시 연결**: 64개. 초과 시 거부.
 
+## Proxy — `--proxy`
+
+백엔드 API 호출을 dev server 가 가로채서 다른 origin 으로 포워딩합니다. CLI 플래그로 지정.
+
+```bash
+zntc dev . --proxy /api=http://localhost:8080
+# 여러 개 — 플래그 반복
+zntc dev . --proxy /api=http://localhost:8080 --proxy /ws=http://localhost:9000
+```
+
+요청 path 가 prefix 로 시작하면 prefix 를 떼고 target 뒤에 붙여 재요청합니다.
+
+| 요청 | 포워딩 |
+|---|---|
+| `GET /api/users` (`--proxy /api=http://localhost:8080`) | `GET http://localhost:8080/users` |
+| `GET /api/users?page=2` | `GET http://localhost:8080/users?page=2` |
+
+### 한계
+
+현재 proxy 는 *prefix → target* 단순 매핑만 지원합니다. 다음 시나리오는 미지원이므로 별도 reverse proxy (nginx / Caddy / Node `http-proxy` 모듈을 별도 프로세스로 띄우는 방식) 를 앞단에 두는 것을 권장합니다.
+
+- **요청 method / header / body**: Bun 런타임에서는 method / header / body 가 모두 target 으로 전달되지 않아 모든 요청이 사실상 `GET` 으로 다운그레이드됩니다. Node 런타임에서는 method 와 header 는 전달되지만 body 는 전달되지 않습니다. 어느 쪽이든 mutation API (POST / PUT / PATCH / DELETE) 를 proxy 통해 호출하면 의도대로 동작하지 않습니다.
+- **regex / 함수형 path 재작성**: prefix strip 만 가능. `^/api/v1/(.*) → /v2/$1` 같은 변환은 미지원.
+- **WebSocket upgrade (`ws://`)**: HTTP upgrade 요청은 가로채지 않습니다. 별도 ws target 필요 시 reverse proxy 필수.
+- **HTTPS target 의 self-signed cert 검증 우회**: `secure: false` 등 옵션 없음. 개발용 self-signed target 은 일반적으로 검증 실패.
+- **Host header / Origin 변경**: target 에 원본 Host 가 그대로 전달. virtual-host 기반 백엔드와 호환 안 될 수 있음.
+- **per-request bypass / 커스텀 middleware 훅**: 특정 요청만 proxy 우회하거나 응답을 가공하는 훅 없음.
+
+> 위 옵션들은 향후 정식 지원 예정입니다. 그 전까지는 외부 reverse proxy 사용을 권장합니다.
+
 ## `server` config (zntc.config)
 
 CLI `--port` / `--host` / `--open` 외에 config 파일에서도 같은 항목을 지정할 수 있습니다 (Vite `server` 호환). CLI flag 가 항상 우선.
