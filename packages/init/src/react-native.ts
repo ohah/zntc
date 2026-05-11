@@ -84,7 +84,9 @@ function bundleOut(platform: ReactNativePlatform): string {
 }
 
 function zntcBundleScript(platform: ReactNativePlatform): string {
-  return `zntc --bundle ${DEFAULT_RN_ENTRY} --platform=react-native --rn-platform=${platform} ${bundleOut(platform)}`;
+  // Metro 의 `react-native bundle --dev false` 가 minify 를 자동 활성하는 동작과 parity.
+  // RN 사용자가 `bun run bundle:ios` 했을 때 ~2배 큰 비-minify bundle 받는 사고 차단.
+  return `zntc --bundle ${DEFAULT_RN_ENTRY} --platform=react-native --rn-platform=${platform} --minify ${bundleOut(platform)}`;
 }
 
 function metroBundleScript(platform: ReactNativePlatform): string {
