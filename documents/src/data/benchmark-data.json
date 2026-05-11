@@ -28,24 +28,26 @@
       { "tool": "SWC", "scale": "large (5K lines)", "medianMs": 56.2, "minMs": 55.9, "maxMs": 56.4, "p95Ms": 56.3 }
     ],
     "bundleCli": [
-      { "tool": "ZNTC", "scale": "small (10 modules)", "medianMs": 2.56, "minMs": 2.4, "maxMs": 2.57, "p95Ms": 2.57 },
-      { "tool": "Bun", "scale": "small (10 modules)", "medianMs": 5.38, "minMs": 5.27, "maxMs": 5.44, "p95Ms": 5.43 },
-      { "tool": "esbuild", "scale": "small (10 modules)", "medianMs": 6.16, "minMs": 6.03, "maxMs": 6.32, "p95Ms": 6.31 },
-      { "tool": "rolldown", "scale": "small (10 modules)", "medianMs": 47.8, "minMs": 47.6, "maxMs": 49.1, "p95Ms": 49.0 },
-      { "tool": "rspack", "scale": "small (10 modules)", "medianMs": 51.6, "minMs": 51.0, "maxMs": 60.1, "p95Ms": 59.7 },
-      { "tool": "webpack", "scale": "small (10 modules)", "medianMs": 183, "minMs": 183, "maxMs": 184, "p95Ms": 184 },
+      { "tool": "ZNTC", "scale": "small (10 modules)", "medianMs": 3.2, "minMs": 2.95, "maxMs": 3.29, "p95Ms": 3.29 },
+      { "tool": "Bun", "scale": "small (10 modules)", "medianMs": 6.38, "minMs": 6.13, "maxMs": 6.62, "p95Ms": 6.58 },
+      { "tool": "esbuild", "scale": "small (10 modules)", "medianMs": 8.45, "minMs": 8.22, "maxMs": 9.5, "p95Ms": 9.33 },
+      { "tool": "rolldown", "scale": "small (10 modules)", "medianMs": 50.6, "minMs": 48.9, "maxMs": 52.3, "p95Ms": 52.3 },
+      { "tool": "rspack", "scale": "small (10 modules)", "medianMs": 57.5, "minMs": 57.3, "maxMs": 59.3, "p95Ms": 59.1 },
+      { "tool": "webpack", "scale": "small (10 modules)", "medianMs": 464, "minMs": 461, "maxMs": 472, "p95Ms": 471 },
 
-      { "tool": "ZNTC", "scale": "medium (50 modules)", "medianMs": 4.0, "minMs": 3.76, "maxMs": 4.05, "p95Ms": 4.04 },
-      { "tool": "Bun", "scale": "medium (50 modules)", "medianMs": 6.0, "minMs": 5.88, "maxMs": 6.18, "p95Ms": 6.15 },
-      { "tool": "esbuild", "scale": "medium (50 modules)", "medianMs": 7.0, "minMs": 6.9, "maxMs": 7.06, "p95Ms": 7.05 },
-      { "tool": "rolldown", "scale": "medium (50 modules)", "medianMs": 51.2, "minMs": 48.4, "maxMs": 52.3, "p95Ms": 52.2 },
-      { "tool": "rspack", "scale": "medium (50 modules)", "medianMs": 55.2, "minMs": 54.5, "maxMs": 55.9, "p95Ms": 55.8 },
-      { "tool": "webpack", "scale": "medium (50 modules)", "medianMs": 184, "minMs": 183, "maxMs": 185, "p95Ms": 184 },
+      { "tool": "ZNTC", "scale": "medium (1000 modules)", "medianMs": 29.3, "minMs": 28.2, "maxMs": 30.5, "p95Ms": 30.3 },
+      { "tool": "Bun", "scale": "medium (1000 modules)", "medianMs": 19.5, "minMs": 18.4, "maxMs": 19.8, "p95Ms": 19.8 },
+      { "tool": "esbuild", "scale": "medium (1000 modules)", "medianMs": 24.4, "minMs": 23.8, "maxMs": 25.0, "p95Ms": 24.9 },
+      { "tool": "rolldown", "scale": "medium (1000 modules)", "medianMs": 67.7, "minMs": 65.5, "maxMs": 70.6, "p95Ms": 70.1 },
+      { "tool": "rspack", "scale": "medium (1000 modules)", "medianMs": 83.6, "minMs": 81.5, "maxMs": 84.9, "p95Ms": 84.8 },
+      { "tool": "webpack", "scale": "medium (1000 modules)", "medianMs": 1865, "minMs": 1747, "maxMs": 1918, "p95Ms": 1917 },
 
-      { "tool": "ZNTC", "scale": "large (200 modules)", "medianMs": 8.12, "minMs": 7.96, "maxMs": 8.22, "p95Ms": 8.22 },
-      { "tool": "Bun", "scale": "large (200 modules)", "medianMs": 8.29, "minMs": 8.17, "maxMs": 8.45, "p95Ms": 8.43 },
-      { "tool": "esbuild", "scale": "large (200 modules)", "medianMs": 10.0, "minMs": 9.97, "maxMs": 10.2, "p95Ms": 10.2 },
-      { "tool": "rolldown", "scale": "large (200 modules)", "medianMs": 55.3, "minMs": 54.4, "maxMs": 56.1, "p95Ms": 56.1 }
+      { "tool": "ZNTC", "scale": "large (5000 modules)", "medianMs": 140, "minMs": 139, "maxMs": 142, "p95Ms": 142 },
+      { "tool": "Bun", "scale": "large (5000 modules)", "medianMs": 65.0, "minMs": 57.6, "maxMs": 71.9, "p95Ms": 71.7 },
+      { "tool": "esbuild", "scale": "large (5000 modules)", "medianMs": 86.7, "minMs": 86.6, "maxMs": 88.1, "p95Ms": 88.0 },
+      { "tool": "rolldown", "scale": "large (5000 modules)", "medianMs": 124, "minMs": 123, "maxMs": 127, "p95Ms": 127 },
+      { "tool": "rspack", "scale": "large (5000 modules)", "medianMs": 180, "minMs": 170, "maxMs": 228, "p95Ms": 219 },
+      { "tool": "webpack", "scale": "large (5000 modules)", "medianMs": 19908, "minMs": 19895, "maxMs": 20255, "p95Ms": 20197 }
     ],
     "napiWasmCli": [
       { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.335, "minMs": 0.324, "maxMs": 0.369, "p95Ms": 0.368 },
