@@ -489,8 +489,6 @@ Sub-phases (only populated when `profile: ["..."]` / `ZNTC_PROFILE=...` is activ
 
 `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
 
-> Pre-2026-04-22 NAPI exposed `phaseDurations.parse` / `semantic`, which were actually `graph` / `link+shake` under legacy names and have been removed. Migrate to the new names (`graph` / `link` / `shake`).
-
 ## See also
 
 - [Server-Sent Events (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)

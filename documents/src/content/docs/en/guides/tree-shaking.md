@@ -21,7 +21,7 @@ zntc --bundle src/index.ts -o dist/bundle.js --pure=myUtil --pure=invariant
 
 ## Stage 1 — Module level
 
-Starting from entry points, fixpoint iteration narrows reachable modules and exports (max 100 iterations, typically converges in 2–3).
+Starting from entry points, fixpoint iteration narrows reachable modules and exports.
 
 ### Used-export tracking
 
@@ -73,15 +73,6 @@ The `sideEffects` policy is applied **monotonically** — once a file is marked 
 ### Auto-purity inference
 
 Even without `sideEffects` in `package.json`, ZNTC infers `side_effects = false` for non-entry modules whose top-level is entirely pure.
-
-### Performance milestones
-
-| Optimization | Effect |
-|---|---|
-| Fixpoint oscillation fix (#1558) | 100 iters → 2 iters; tree-shake 238ms → 51ms |
-| `has_direct_used_export` O(1) array (#917) | Module-level used-export lookup is O(1) |
-| Pre-built StmtInfo (#1558) | tree-shake 29.8ms → 5.6ms (-81%); transpile total -31% |
-| `re_export_star_targets` bitset (#1928) | Avoids O(M·E) `tryMarkReExportNsSubset` scan |
 
 ## Stage 2 — Statement level
 
@@ -217,6 +208,5 @@ Deep DCE for runtime-time side effects (getters, Proxy, global mutation) is not 
 
 ## Further reading
 
-- Contributor implementation guide: [`docs/BUNDLER.md` § Tree-shaking 구현](https://github.com/ohah/zntc/blob/main/docs/BUNDLER.md#tree-shaking-%EA%B5%AC%ED%98%84-%EB%AA%A8%EB%93%88-%EC%88%98%EC%A4%80--statement-%EC%88%98%EC%A4%80) — data structures, file:line citations, algorithm pseudocode
+- Internal design doc: [`docs/BUNDLER.md` § Tree-shaking 구현](https://github.com/ohah/zntc/blob/main/docs/BUNDLER.md#tree-shaking-%EA%B5%AC%ED%98%84-%EB%AA%A8%EB%93%88-%EC%88%98%EC%A4%80--statement-%EC%88%98%EC%A4%80)
 - Architecture overview: [`docs/ARCHITECTURE.md` § Tree-shaking Design](https://github.com/ohah/zntc/blob/main/docs/ARCHITECTURE.md)
-- Related PRs: #458, #460 (stage 1), #1558 (statement-level), #1791 (type-only elision), #1928 (re-export optimization)

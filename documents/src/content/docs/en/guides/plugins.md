@@ -254,7 +254,7 @@ Custom module content loading (first-match).
 }
 ```
 
-#### `loader` option — asset loader override (#2157)
+#### `loader` option — asset loader override
 
 When the object returned from `load` includes `loader`, the graph overrides the module loader to that value (skipping extension inference). Same semantics as esbuild's `onLoad` callback `loader: 'text' | 'binary' | ...`.
 
@@ -277,7 +277,7 @@ Supported loaders: `file` / `copy` / `dataurl` / `base64` / `text` / `binary` / 
 
 `js` / `jsx` / `ts` / `tsx` force the `contents` returned from `onLoad` into the matching parser mode — useful for extension-less virtual modules or sources disguised under a different extension.
 
-#### `contents` binary support (#2157 follow-up)
+#### `contents` binary support
 
 `contents` accepts `string` or `Uint8Array` / Node.js `Buffer` — PNG/JPG and other utf-8-invalid byte sequences are forwarded losslessly.
 
@@ -408,7 +408,7 @@ This is the external surface for 1st-party transforms like Reanimated worklets (
 }
 ```
 
-### buildStart / buildEnd / closeBundle (#2156)
+### buildStart / buildEnd / closeBundle
 
 Bundle lifecycle hooks. Compatible with esbuild's `onStart` / `onEnd` / `onDispose` and Rollup/Vite/rolldown's `buildStart` / `buildEnd` / `closeBundle`.
 

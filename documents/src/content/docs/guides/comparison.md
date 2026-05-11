@@ -39,8 +39,6 @@ ZNTC는 **TypeScript/Flow 트랜스파일러 + library/app 번들러 + dev serve
 | `buildSync()` + JS plugin | 미지원 | native worker가 JS callback을 기다리는 구조와 충돌 |
 | plugin hook filter | 부분 | esbuild-style filter는 지원. Rolldown object-hook filter와 완전 동일하지 않음 |
 
-Rolldown은 Rollup 호환 plugin API와 hook lifecycle 문서를 강하게 제공합니다. ZNTC는 `vitePlugin()`로 주요 hook을 받지만, 고급 Rollup context API는 아직 좁습니다.
-
 ## CLI와 분석 도구
 
 | 영역 | ZNTC | 비교 |
