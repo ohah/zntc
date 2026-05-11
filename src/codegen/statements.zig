@@ -119,23 +119,37 @@ pub fn emitReturn(self: anytype, node: Node) !void {
     try self.write("return");
     if (!node.data.unary.operand.isNone()) {
         try self.writeByte(' ');
-        // operand 의 leading comments 가 `emitNode` 내부에서 emit 될 때 newline + indent 를
-        // 끼우면 `return` 직후 줄바꿈이 와 JavaScript ASI 가 `return;` 으로 종료해버린다
-        // (`/* @__PURE__ */ jsxs(...)` 같은 leading annotation 이 흔한 케이스). 미리
-        // inline (space-separated) 으로 소비해 ASI hazard 회피.
-        const operand_node = self.ast.getNode(node.data.unary.operand);
-        const has_real_span = operand_node.span.start != operand_node.span.end and
-            (operand_node.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
-        if (has_real_span) {
-            try emitLeadingCommentsInline(self, operand_node.span.start);
-        }
-        try self.emitNode(node.data.unary.operand);
+        try emitNoLineTerminatorOperand(self, node.data.unary.operand);
     }
     try self.writeByte(';');
 }
 
-/// operand 의 leading comments 를 newline 없이 inline 으로 emit. `return` /
-/// `throw` 등 ASI-sensitive position 에서 호출.
+pub fn emitThrow(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
+    try self.write("throw ");
+    try emitNoLineTerminatorOperand(self, node.data.unary.operand);
+    try self.writeByte(';');
+}
+
+/// `return` / `throw` 처럼 ECMAScript `NoLineTerminator` restriction 이 있는
+/// keyword 직후의 operand 를 emit. operand 의 leading comments 를 newline 없이
+/// inline (space-separated) 으로 미리 소비한다 — `emitNode` 가 호출되면 안에서
+/// `emitComments` 가 newline + indent 를 끼우는데, 그게 keyword 직후에 오면
+/// `return` 은 ASI 로 종료 (`return;`), `throw` 는 syntax error 가 된다.
+/// `/* @__PURE__ */ jsxs(...)` 같은 leading annotation 이 흔한 회귀 케이스.
+fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex) !void {
+    if (operand.isNone()) return;
+    const operand_node = self.ast.getNode(operand);
+    const has_real_span = operand_node.span.start != operand_node.span.end and
+        (operand_node.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
+    if (has_real_span) {
+        try emitLeadingCommentsInline(self, operand_node.span.start);
+    }
+    try self.emitNode(operand);
+}
+
+/// `emitNoLineTerminatorOperand` 의 leading-comment 소비 — `emitComments` 와
+/// 동일하나 줄바꿈 대신 space 로 구분한다.
 fn emitLeadingCommentsInline(self: anytype, pos: u32) !void {
     while (self.next_comment_idx < self.comments.len) {
         const comment = self.comments[self.next_comment_idx];
@@ -148,13 +162,6 @@ fn emitLeadingCommentsInline(self: anytype, pos: u32) !void {
         try self.writeByte(' ');
         self.next_comment_idx += 1;
     }
-}
-
-pub fn emitThrow(self: anytype, node: Node) !void {
-    try self.addSourceMapping(node.span);
-    try self.write("throw ");
-    try self.emitNode(node.data.unary.operand);
-    try self.writeByte(';');
 }
 
 pub fn emitIf(self: anytype, node: Node) !void {
