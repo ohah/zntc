@@ -255,7 +255,7 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `import.meta.url`                    | Supported (ESM standard)                                                                                 |
 | `@vitejs/plugin-react`               | `--jsx=automatic` (automatic runtime built-in)                                                           |
 | `@vitejs/plugin-react` Fast Refresh  | Built-in HMR (React Refresh)                                                                             |
-| `@vitejs/plugin-vue`                 | Not supported                                                                                            |
+| `@vitejs/plugin-vue`                 | Not supported ([details + workarounds](/zntc/en/guides/plugin-recipes/#framework-sfc-vue--svelte--currently-unsupported)) |
 | `@vitejs/plugin-legacy`              | Partial via `--target=es5` etc.                                                                          |
 | CSS Modules (`.module.css`)          | Supported in app mode. Provides default exports and valid named exports                                  |
 | CSS `@import`                        | Built-in Lightning CSS or `--loader:.css=text`                                                           |

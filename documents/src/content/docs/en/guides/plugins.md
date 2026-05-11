@@ -30,7 +30,7 @@ ZNTC provides a Rollup/Vite-compatible plugin interface. Plugins are written in 
 | Plugin context `this.error()` / `this.warn()` | Supported | `warn` is prefixed with `@zntc/core [name]:` |
 | Plugin context `this.addWatchFile()` | no-op | Callable but not propagated to the native watcher (SFC `<style src="..."/>` external dep may go stale) |
 | Plugin context `this.resolve()` / `this.emitFile()` | ❌ Unsupported | Throws an informative Error — graph mutation surface is missing |
-| **Framework SFC** (`.vue` / `.svelte`) | ❌ Unsupported | Requires recognising virtual module IDs and `?vue&type=style&lang.css` query sub-imports — tracked separately |
+| **Framework SFC** (`.vue` / `.svelte`) | ❌ Unsupported | Requires recognising virtual module IDs and `?vue&type=style&lang.css` query sub-imports — [details + workarounds →](/zntc/en/guides/plugin-recipes/#framework-sfc-vue--svelte--currently-unsupported) |
 | `buildSync()` + JS plugins | Unsupported | use async `build()` / `watch()` |
 
 The native ZNTC worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
@@ -102,6 +102,8 @@ const myPlugin = {
 
 ZNTC plugins are **written in JavaScript** and called by the native worker through ZNTC's NAPI binding (no separate compile step). Start with the smallest skeleton and add hooks one at a time.
 
+Pick only the hooks you need — for example, a plugin that just needs **transform** (env replacement, banner injection, JSX rewrite) can skip steps 2 and 3.
+
 ### 1. Empty plugin skeleton
 
 ```typescript
@@ -128,7 +130,7 @@ build.onResolve({ filter: /^virtual:settings$/ }, () => ({
 }));
 ```
 
-The `\0` prefix is an esbuild/Rollup convention for "not a real file" — ZNTC's native resolver will not look this ID up on disk.
+The `\0` prefix is an esbuild/Rollup convention for "not a real file". Because a NUL byte cannot appear in any real filesystem path, ZNTC's native resolver never even attempts an fs lookup — virtual IDs cannot accidentally collide with real files.
 
 ### 3. `load` — synthesize module contents
 

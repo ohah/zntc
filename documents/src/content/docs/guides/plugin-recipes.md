@@ -404,4 +404,4 @@ minimal `App.vue` + `main.ts` 빌드 결과:
 - **Vue/Svelte 라이브러리 자체의 JS API 사용**: `vue` 의 `createApp`/`ref` 같은 런타임 import 와 `svelte/store` 같은 라이브러리는 정상 동작 — 단지 `.vue` / `.svelte` 파일 자체의 SFC 컴파일이 미지원.
 - 위 두 surface (virtual module + query sub-import) 가 native 에 추가되면 plugin 그대로 동작할 예정. 현재 wrapper(`vitePlugin()`)는 이미 vite 4+ 신형 hook object 와 plugin sourcemap object 를 모두 받을 수 있다.
 
-자세한 내부 동작 차이는 [번들러 구조와 동작 원리](/zntc/guides/bundler-deep-dive/) 의 "모듈 해석 (Resolver)" 섹션 참조.
+자세한 내부 동작 차이는 [번들러 구조와 동작 원리 → 모듈 해석 (Resolver)](/zntc/guides/bundler-deep-dive/#1-모듈-해석-resolver) 섹션 참조.

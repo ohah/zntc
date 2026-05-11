@@ -255,7 +255,7 @@ export default defineConfig({
 | `import.meta.url`                    | 지원 (ESM 표준)                                                                                        |
 | `@vitejs/plugin-react`               | `--jsx=automatic` (자동 런타임 내장)                                                                   |
 | `@vitejs/plugin-react` Fast Refresh  | HMR 내장 (React Refresh)                                                                               |
-| `@vitejs/plugin-vue`                 | 미지원                                                                                                 |
+| `@vitejs/plugin-vue`                 | 미지원 ([자세히 + 대안](/zntc/guides/plugin-recipes/#프레임워크-sfc-vue--svelte--현재-미지원))          |
 | `@vitejs/plugin-legacy`              | `--target=es5` 등으로 일부 대응                                                                        |
 | CSS Modules (`.module.css`)          | 앱 모드에서 지원. default export와 가능한 named export 제공                                            |
 | CSS `@import`                        | Lightning CSS 내장 후처리 또는 `--loader:.css=text`                                                    |

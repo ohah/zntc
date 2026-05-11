@@ -404,4 +404,4 @@ Building a minimal `App.vue` + `main.ts` produces:
 - **JS APIs of Vue / Svelte themselves**: runtime imports like `createApp` / `ref` from `vue` and stores from `svelte/store` work — only single-file `.vue` / `.svelte` *compilation* is missing.
 - Once the two surfaces above land in native, the plugins should work as-is. The `vitePlugin()` adapter already accepts vite 4+ hook objects and plugin sourcemap objects.
 
-See [Bundler architecture & internals](/zntc/en/guides/bundler-deep-dive/) → Module Resolution for the underlying differences.
+See [Bundler architecture & internals → Module Resolution](/zntc/en/guides/bundler-deep-dive/#1-module-resolution) for the underlying differences.
