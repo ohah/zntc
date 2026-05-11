@@ -418,6 +418,65 @@ render(<App />, mount);
     },
   },
   {
+    // 회귀 테스트 — JSX element 의 static children 여러 개 → `_jsxs` 사용 경로.
+    // automatic transform 의 callee 분기 (`_jsx` vs `_jsxs`) 가 helper marker 와
+    // 함께 정상 동작하는지 검증.
+    name: 'H7_preact_jsx_static_children',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.tsx',
+    extraArgs: ['--jsx=automatic', '--jsx-import-source=preact'],
+    entry: `import { render } from 'preact';
+
+function App() {
+  return (
+    <div>
+      <span data-testid="c1">one</span>
+      <span data-testid="c2">two</span>
+      <span data-testid="c3">three</span>
+    </div>
+  );
+}
+
+const mount = document.createElement('div');
+document.body.appendChild(mount);
+render(<App />, mount);
+`,
+    expect: {
+      c1: 'one',
+      c2: 'two',
+      c3: 'three',
+    },
+  },
+  {
+    // 회귀 테스트 — JSX fragment (`<>...</>`) + static children → `_jsxs(_Fragment, ...)`.
+    // _Fragment helper ref 도 marker 를 거치는지 검증.
+    name: 'H8_preact_jsx_fragment_static',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.tsx',
+    extraArgs: ['--jsx=automatic', '--jsx-import-source=preact'],
+    entry: `import { render } from 'preact';
+
+function App() {
+  return (
+    <>
+      <span data-testid="f1">alpha</span>
+      <span data-testid="f2">beta</span>
+    </>
+  );
+}
+
+const mount = document.createElement('div');
+document.body.appendChild(mount);
+render(<App />, mount);
+`,
+    expect: {
+      f1: 'alpha',
+      f2: 'beta',
+    },
+  },
+  {
     name: 'H2_vue_h_render',
     category: 'H_jsx_ts',
     packages: ['vue'],
