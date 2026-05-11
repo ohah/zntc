@@ -371,6 +371,31 @@ export default defineConfig({
 | `strictPort` | `boolean` | `false` | If `true`, exit on port conflict instead of falling back to the next port. |
 | `open` | `boolean` | `false` | Open the served URL in the browser after startup. CLI `--open` overrides. |
 
+## HTTPS — `--certfile` / `--keyfile`
+
+Pass PEM-encoded cert / key files and the dev server listens on `https://localhost:12300`. HMR WebSockets are automatically upgraded to `wss://`.
+
+```bash
+zntc dev . --certfile ./certs/dev.pem --keyfile ./certs/dev-key.pem
+```
+
+### Generating a self-signed cert
+
+For local development, [`mkcert`](https://github.com/FiloSottile/mkcert) is the easiest option — it sets up a local CA in your system trust store, so browsers don't show security warnings.
+
+```bash
+mkcert -install
+mkcert localhost 127.0.0.1
+# → localhost+1.pem (cert) / localhost+1-key.pem (key)
+
+zntc dev . --certfile ./localhost+1.pem --keyfile ./localhost+1-key.pem
+```
+
+### Limitations
+
+- TLS is only supported on the Node / Bun JS dev server (`zntc dev <root>`). `zntc serve` running as a standalone server does not support TLS — if you need a binary without Node installed, terminate TLS at an external reverse proxy (nginx / Caddy) in front of the dev server.
+- Browser trust for self-signed certs depends on the OS / browser. Without `mkcert -install`, you may need workarounds like Chrome flags or `--ignore-certificate-errors`.
+
 ## Lazy sourcemap — `emitDiskSourcemap` + `WatchHandle`
 
 When you host a dev server directly on top of `@zntc/core`'s `watch()` handle, this moves the `.map` disk-write cost out of HMR latency.

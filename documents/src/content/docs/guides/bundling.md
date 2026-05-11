@@ -130,6 +130,42 @@ zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 
 지원 로더: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary`, `copy`, `empty`
 
+## Web Worker
+
+`new Worker(new URL("./worker.ts", import.meta.url))` 패턴을 자동 감지해 워커 엔트리를 **별도 IIFE 번들** 로 분리합니다. 사용자가 빌드 설정이나 entry 옵션을 추가할 필요가 없습니다.
+
+```ts
+// src/main.ts
+const worker = new Worker(new URL("./worker.ts", import.meta.url));
+worker.postMessage({ task: "compute", n: 1000 });
+worker.onmessage = (e) => console.log(e.data);
+
+// src/worker.ts
+self.onmessage = (e) => {
+  const { task, n } = e.data;
+  if (task === "compute") {
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += i;
+    self.postMessage({ sum });
+  }
+};
+```
+
+`SharedWorker` 도 동일한 패턴 (`new SharedWorker(new URL(...))`) 으로 자동 감지됩니다.
+
+### 출력
+
+워커 엔트리는 메인 번들의 import dependency 가 아닌 **별도 chunk** 로 생성됩니다. 파일명은 `--chunk-names` 패턴을 따르며, 메인 번들의 `new Worker(new URL(...))` 호출부는 빌드된 워커 파일 URL 로 자동 치환됩니다. 워커 chunk 의 모듈 포맷은 항상 IIFE 입니다 (Node CJS 타겟 빌드에서는 CJS).
+
+### 한계
+
+- `new Worker(new URL(...))` / `new SharedWorker(new URL(...))` 의 **정확한 정적 패턴** 만 자동 감지합니다. 다음 형태는 미감지:
+  - 변수에 담긴 URL: `const url = new URL(...); new Worker(url);`
+  - 동적 경로: `new Worker(new URL(\`./${name}.ts\`, import.meta.url))`
+  - 별도 별칭 변수: `const W = Worker; new W(new URL(...))`
+- 두 번째 인수 옵션 객체 (`{ type: "module" }` 등) 는 무시되고 항상 IIFE 로 번들됩니다. ESM module worker 가 필요하면 별도 entry 로 빌드하고 URL 을 직접 지정하세요.
+- `ServiceWorker` 는 자동 감지하지 않습니다. 별도 entry 로 빌드한 뒤 사용자가 직접 URL 을 지정하세요.
+
 ## 파일명 패턴
 
 ```bash

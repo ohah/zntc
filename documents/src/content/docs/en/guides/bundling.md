@@ -130,6 +130,42 @@ zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 
 Supported loaders: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary`, `copy`, `empty`
 
+## Web Worker
+
+ZNTC auto-detects the `new Worker(new URL("./worker.ts", import.meta.url))` pattern and emits the worker entry as a **standalone IIFE bundle**. No additional build configuration or entry option is needed.
+
+```ts
+// src/main.ts
+const worker = new Worker(new URL("./worker.ts", import.meta.url));
+worker.postMessage({ task: "compute", n: 1000 });
+worker.onmessage = (e) => console.log(e.data);
+
+// src/worker.ts
+self.onmessage = (e) => {
+  const { task, n } = e.data;
+  if (task === "compute") {
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += i;
+    self.postMessage({ sum });
+  }
+};
+```
+
+`SharedWorker` is auto-detected with the same pattern (`new SharedWorker(new URL(...))`).
+
+### Output
+
+The worker entry is emitted as a **separate chunk** (not an import dependency of the main bundle). Its filename follows the `--chunk-names` pattern, and the `new Worker(new URL(...))` call site in the main bundle is automatically rewritten to point at the built worker URL. The worker chunk's module format is always IIFE (or CJS when bundling for a Node CJS target).
+
+### Limitations
+
+- Only the **exact static pattern** `new Worker(new URL(...))` / `new SharedWorker(new URL(...))` is auto-detected. These forms are not picked up:
+  - URL stored in a variable: `const url = new URL(...); new Worker(url);`
+  - Dynamic path: `new Worker(new URL(\`./${name}.ts\`, import.meta.url))`
+  - Aliased constructor: `const W = Worker; new W(new URL(...))`
+- The second-argument options object (e.g. `{ type: "module" }`) is ignored — workers are always bundled as IIFE. If you need an ESM module worker, build it as a separate entry and pass the URL manually.
+- `ServiceWorker` is not auto-detected. Build it as a separate entry and pass the resulting URL manually.
+
 ## Filename Patterns
 
 ```bash
