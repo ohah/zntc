@@ -164,11 +164,17 @@ async function resolveWasmSource(
   defaultFile: string,
 ): Promise<BufferSource | WebAssembly.Module | Response> {
   if (input === undefined) {
-    const fs = await import('fs');
-    const path = await import('path');
-    const url = await import('url');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const url = await import('node:url');
     const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
-    return fs.readFileSync(path.join(__dirname, defaultFile));
+    // dist/index.js 기준으로 .wasm 은 publish layout 상 package root 에 있음.
+    // dist/ 안에 wasm 을 둘 수도 있어 두 위치 모두 시도.
+    const candidates = [path.join(__dirname, defaultFile), path.join(__dirname, '..', defaultFile)];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return fs.readFileSync(candidate);
+    }
+    throw new Error(`zntc-wasm: ${defaultFile} not found near ${__dirname}`);
   }
   if (input instanceof WebAssembly.Module) return input;
   if (input instanceof Response) return input;
