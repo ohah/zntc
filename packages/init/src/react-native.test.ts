@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 
 import {
   createReactNativeConfig,
-  detectPackageManager,
   initReactNativeProject,
   planReactNativeInit,
 } from './react-native.ts';
+import { detectPackageManager } from './shared.ts';
 
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'zntc-init-'));
