@@ -126,6 +126,9 @@ export default defineConfig({
           items: [
             { label: "Dev Server (SSE/MCP)", slug: "guides/dev-server" },
             { label: "Electron", slug: "guides/electron" },
+            { label: "Vite", slug: "guides/vite" },
+            { label: "Rspack / Webpack", slug: "guides/rspack" },
+            { label: "Web (standalone)", slug: "guides/web-starter" },
             { label: "React Native", slug: "guides/react-native" },
             { label: "React Native + Expo", slug: "guides/react-native-expo" },
             { label: "Flow 지원", slug: "guides/flow-support", translations: { en: "Flow Support" } },
