@@ -3,22 +3,20 @@ title: Bundler Architecture & How It Works
 description: The six stages of the ZNTC bundler pipeline plus the runtime behavior worth knowing — module resolution, execution order, scope hoisting, CJS/ESM interop, code splitting.
 ---
 
+import Mermaid from "@components/Mermaid";
+import {
+  BUNDLER_PIPELINE_CHART,
+  BUNDLER_CIRCULAR_DEPS_CHART,
+  BUNDLER_CJS_ESM_INTEROP_CHART,
+} from "@components/diagrams";
+
 This guide explains what the ZNTC bundler does between input and output, and which stage is responsible for behaviors you might encounter in your code.
 
 For CLI options see [Bundling](/zntc/en/guides/bundling/); for tree-shaking specifics see [Tree-shaking](/zntc/en/guides/tree-shaking/). This page sits on top of those and answers "why does it work this way?"
 
 ## The six stages
 
-```
-Entry Points
-  → Resolver        (specifier → absolute file path)
-  → Module Graph    (parallel BFS parse + DFS execution order)
-  → Linker          (scope hoisting, name conflict resolution)
-  → Tree-shaker     (drop unused exports/statements)
-  → Chunker         (split dynamic imports into chunks)
-  → Emitter         (per-module transform + codegen)
-  → Output (bundle.js + chunks + .map)
-```
+<Mermaid client:visible chart={BUNDLER_PIPELINE_CHART} />
 
 Each stage has a **single direction of dependency** — the resolver knows nothing about the graph, the linker knows nothing about the resolver. The output of one becomes the input of the next, and almost every observable behavior in your code is decided by exactly one of these stages.
 
@@ -95,6 +93,8 @@ export const A = () => B();
 import { A } from './a';
 export const B = () => A();
 ```
+
+<Mermaid client:visible chart={BUNDLER_CIRCULAR_DEPS_CHART} />
 
 ZNTC treats cycles as a **warning, not an error**, and packs them into the same chunk. The cycle's entry module runs first, and by the time functions are actually called both sides are initialized (matching Node.js ESM behavior). One caveat: **calling something inside the cycle at top level** can still trip TDZ.
 
@@ -176,6 +176,8 @@ This stage decides what happens when CommonJS imports ESM, or vice versa.
 ### When `require()` is converted to import
 
 Importing a CJS module from ESM picks one of two modes:
+
+<Mermaid client:visible chart={BUNDLER_CJS_ESM_INTEROP_CHART} />
 
 | Importer kind | Mode | Behavior |
 |---|---|---|
