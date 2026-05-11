@@ -64,8 +64,11 @@ pub const ImportBinding = struct {
         namespace,
     };
 
-    /// Synthetic binding (JSX runtime 등, graph.zig에서 sentinel span으로 주입)
-    /// 감지. 실제 AST import에는 없고 linker/emitter가 인공 생성한 바인딩.
+    /// Synthetic binding (JSX runtime 등 — graph 가 인공 생성하던 sentinel-span 바인딩).
+    /// #3067 (JSX synthetic 우회 제거) 이후 이 sentinel 을 set 하는 생성처가 없어
+    /// `isSynthetic()` 는 항상 false. 잔여 분기 (linker / emitter / metadata 의 7곳)
+    /// 제거는 후속 — `metadata.zig` 의 `is_synthetic_esm` / `is_synthetic` 변수가
+    /// emit 분기 여러 곳에서 쓰여 점진적 검증 필요.
     pub const SYNTHETIC_SPAN_BASE: u32 = 0xFFFF_0000;
 
     pub fn isSynthetic(self: ImportBinding) bool {

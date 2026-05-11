@@ -54,7 +54,6 @@ pub const ModuleGraph = struct {
     pub const matchSideEffectsPatterns = graph_package_side_effects.matchPatterns;
     const configureParserForModule = graph_parse_helpers.configureParserForModule;
     const isFlowPath = graph_parse_helpers.isFlowPath;
-    const mergeImportBindings = graph_parse_helpers.mergeImportBindings;
     const mergeImportRecords = graph_parse_helpers.mergeImportRecords;
     const requestAllExports = graph_requested_exports.requestAll;
     const requestNamedExport = graph_requested_exports.requestNamed;
