@@ -141,25 +141,22 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
             // 여기서 값 표현식으로 낮출 수 없는 loader는 JS 파이프라인으로 계속 진행한다.
             module.source = plugin_result.contents;
         } else {
-            // plugin 이 loader override 안 했을 때 세 가지 케이스 (#3022):
-            // - 확장자 없는 가상 모듈 (`.none`, e.g. runtime helper `\0zntc:runtime/...`):
-            //   `.javascript` + `.js` 강제 — 기존 동작 유지.
-            // - `.javascript` loader 이지만 module_type 이 `.ts` / `.tsx` (SFC `?...&lang.ts`):
-            //   addModule 에서 결정한 module_type 유지. 여기서 `.js` 로 덮어쓰면 TS
-            //   문법이 JS 파서로 가서 "type annotations are not allowed" syntax error.
-            // - 이외 (`.css` / `.json` 등 명시적 non-JS loader 또는 module_type 도 `.js` 인
-            //   순수 JS): 그대로 둠.
-            switch (module.loader) {
-                .none => {
-                    module.loader = .javascript;
-                    module.module_type = .js;
-                },
-                .javascript => {
-                    if (module.module_type != .ts and module.module_type != .tsx) {
-                        module.module_type = .js;
-                    }
-                },
-                else => {},
+            // plugin contract: load 가 loader 명시 안 하면 contents 는 JS 로 가정.
+            // 기본은 `.javascript` + `.js` 로 강제 (esbuild / rolldown 동일 — #3024 회귀
+            // 해소). 다만 plugin 가상 ID (NUL prefix 또는 query 포함) 의 경우 addModule
+            // 의 `loaderExtensionFor` 가 이미 SFC sub-import 의 `lang.X` query 로
+            // `.css/.ts` 등을 결정해뒀고, 그게 plugin 이 반환한 실제 컨텐츠 확장자다 — 그
+            // 때만 module 의 loader/module_type 을 유지한다 (#3022). `isPluginVirtualId`
+            // 는 같은 파일의 single source of truth.
+            const is_virtual_id = isPluginVirtualId(module.path);
+            const has_explicit_non_js_loader = module.loader != .javascript and module.loader != .none;
+            const is_typescript_module_type = module.module_type == .ts or module.module_type == .tsx;
+            const keep_module_typing = is_virtual_id and
+                (has_explicit_non_js_loader or
+                    (module.loader == .javascript and is_typescript_module_type));
+            if (!keep_module_typing) {
+                module.loader = .javascript;
+                module.module_type = .js;
             }
             module.source = plugin_result.contents;
         }

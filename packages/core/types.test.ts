@@ -78,7 +78,16 @@ describe('@zntc/core TypeScript declaration', () => {
   test('exports.types 역시 실제 파일을 가리킴', () => {
     const pkgPath = join(import.meta.dir, 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-    const typesPath = join(import.meta.dir, pkg.exports['.'].types);
-    expect(existsSync(typesPath)).toBe(true);
+    // conditional exports 형식 (`exports['.'].import.types` / `.require.types`) 와 top-level
+    // `exports['.'].types` 양쪽 모두 인식. 각 조건의 `types` 파일이 실제로 존재해야 한다.
+    const exportEntry = pkg.exports['.'];
+    const candidates: string[] = [];
+    if (typeof exportEntry.types === 'string') candidates.push(exportEntry.types);
+    if (typeof exportEntry.import?.types === 'string') candidates.push(exportEntry.import.types);
+    if (typeof exportEntry.require?.types === 'string') candidates.push(exportEntry.require.types);
+    expect(candidates.length).toBeGreaterThan(0);
+    for (const rel of candidates) {
+      expect(existsSync(join(import.meta.dir, rel))).toBe(true);
+    }
   });
 });
