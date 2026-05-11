@@ -238,9 +238,12 @@ pub const NapiPlugin = struct {
                 var js_path: c.napi_value = undefined;
                 _ = c.napi_create_string_utf8(env, file.path.ptr, file.path.len, &js_path);
                 _ = c.napi_set_named_property(env, js_file, "path", js_path);
-                var js_text: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(env, file.contents.ptr, file.contents.len, &js_text);
-                _ = c.napi_set_named_property(env, js_file, "text", js_text);
+                // contents 는 Buffer 로 노출 — string copy + UTF-8 검증 비용 회피.
+                // JS 의 OutputFile lazy `text` getter 가 `TextDecoder` 로 디코드. (#3022 follow-up)
+                var js_contents: c.napi_value = undefined;
+                var data_ptr: ?*anyopaque = null;
+                _ = c.napi_create_buffer_copy(env, file.contents.len, file.contents.ptr, &data_ptr, &js_contents);
+                _ = c.napi_set_named_property(env, js_file, "contents", js_contents);
                 _ = c.napi_set_element(env, js_arg1, @intCast(i), js_file);
             }
         } else {
@@ -675,9 +678,10 @@ pub const NapiSyncPlugin = struct {
                 var js_path: c.napi_value = undefined;
                 _ = c.napi_create_string_utf8(self.env, file.path.ptr, file.path.len, &js_path);
                 _ = c.napi_set_named_property(self.env, js_file, "path", js_path);
-                var js_text: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(self.env, file.contents.ptr, file.contents.len, &js_text);
-                _ = c.napi_set_named_property(self.env, js_file, "text", js_text);
+                var js_contents: c.napi_value = undefined;
+                var data_ptr: ?*anyopaque = null;
+                _ = c.napi_create_buffer_copy(self.env, file.contents.len, file.contents.ptr, &data_ptr, &js_contents);
+                _ = c.napi_set_named_property(self.env, js_file, "contents", js_contents);
                 _ = c.napi_set_element(self.env, js_arg1, @intCast(i), js_file);
             }
         } else {

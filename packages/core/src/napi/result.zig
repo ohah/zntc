@@ -8,6 +8,18 @@ const c = common.c;
 const bundler_mod = zntc_lib.bundler;
 const LogFilterOptions = options_mod.LogFilterOptions;
 
+/// OutputFile 의 byte contents 를 V8 Buffer 로 wrap 한다. `napi_create_buffer_copy` 는
+/// 한 번 복사하되 string copy 와 달리 UTF-8 검증을 거치지 않아 native 의 어떤 byte
+/// sequence (NUL 포함 binary asset) 도 안전. `text` 는 JS 측 lazy getter 가
+/// `TextDecoder` 로 디코드한다 (esbuild OutputFile shape 와 동등). 진정한 zero-copy
+/// (external_buffer + finalizer) 는 BundleResult arena lifetime audit 후 별도 epic.
+fn setContentsBuffer(env: c.napi_env, js_file: c.napi_value, bytes: []const u8) void {
+    var js_contents: c.napi_value = undefined;
+    var data_ptr: ?*anyopaque = null;
+    _ = c.napi_create_buffer_copy(env, bytes.len, bytes.ptr, &data_ptr, &js_contents);
+    _ = c.napi_set_named_property(env, js_file, "contents", js_contents);
+}
+
 pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult, log_opts: LogFilterOptions) c.napi_value {
     var js_result: c.napi_value = undefined;
     if (c.napi_create_object(env, &js_result) != c.napi_ok) return null;
@@ -24,9 +36,7 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             _ = c.napi_create_string_utf8(env, out.path.ptr, out.path.len, &js_path);
             _ = c.napi_set_named_property(env, js_file, "path", js_path);
 
-            var js_text: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, out.contents.ptr, out.contents.len, &js_text);
-            _ = c.napi_set_named_property(env, js_file, "text", js_text);
+            setContentsBuffer(env, js_file, out.contents);
 
             var js_ids: c.napi_value = undefined;
             _ = c.napi_create_array(env, &js_ids);
@@ -65,9 +75,7 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
         _ = c.napi_create_string_utf8(env, "bundle.js", "bundle.js".len, &js_path);
         _ = c.napi_set_named_property(env, js_file, "path", js_path);
 
-        var js_text: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, result.output.ptr, result.output.len, &js_text);
-        _ = c.napi_set_named_property(env, js_file, "text", js_text);
+        setContentsBuffer(env, js_file, result.output);
 
         _ = c.napi_set_element(env, js_outputs, 0, js_file);
 
@@ -79,9 +87,7 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             _ = c.napi_create_string_utf8(env, "bundle.js.map", "bundle.js.map".len, &js_sm_path);
             _ = c.napi_set_named_property(env, js_sm_file, "path", js_sm_path);
 
-            var js_sm_text: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, sm.ptr, sm.len, &js_sm_text);
-            _ = c.napi_set_named_property(env, js_sm_file, "text", js_sm_text);
+            setContentsBuffer(env, js_sm_file, sm);
 
             _ = c.napi_set_element(env, js_outputs, 1, js_sm_file);
         }
@@ -103,9 +109,7 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             _ = c.napi_create_string_utf8(env, asset.path.ptr, asset.path.len, &js_path);
             _ = c.napi_set_named_property(env, js_asset, "path", js_path);
 
-            var js_text: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, asset.contents.ptr, asset.contents.len, &js_text);
-            _ = c.napi_set_named_property(env, js_asset, "text", js_text);
+            setContentsBuffer(env, js_asset, asset.contents);
 
             _ = c.napi_set_element(env, js_outputs, current_len + @as(u32, @intCast(i)), js_asset);
         }

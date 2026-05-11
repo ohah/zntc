@@ -448,15 +448,18 @@ function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwr
     // chunk 등) 으로 outfile 의 dirname 안에 basename. 옛 코드가 `[1]` slot 을 무조건
     // sourcemap 으로 가정해 asset 이 함께 emit 될 때 asset 이 `.map` 자리에 잘못
     // write 되던 회귀 해소.
-    writeFileSync(outPath, outputFiles[0].text);
+    // file.contents 는 Uint8Array — Node fs 가 그대로 syscall 로 전달 (utf-8 encode
+    // 비용 없음). transpile path 가 만든 임시 outputFiles 도 `{ path, contents }` 형식
+    // (자세히: line 912 참고).
+    writeFileSync(outPath, outputFiles[0].contents);
     for (let i = 1; i < outputFiles.length; i++) {
       const file = outputFiles[i];
       if (file.path.endsWith('.map')) {
-        writeFileSync(outPath + '.map', file.text);
+        writeFileSync(outPath + '.map', file.contents);
       } else {
         const assetPath = join(outDirAbs, basename(file.path));
         assertCanWriteOutput(assetPath, resolvedEntries);
-        writeFileSync(assetPath, file.text);
+        writeFileSync(assetPath, file.contents);
       }
     }
   } else if (outdir) {
@@ -465,7 +468,7 @@ function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwr
     for (const file of outputFiles) {
       const outPath = join(outDirAbs, basename(file.path));
       assertCanWriteOutput(outPath, resolvedEntries);
-      writeFileSync(outPath, file.text);
+      writeFileSync(outPath, file.contents);
     }
   }
 }
@@ -909,9 +912,12 @@ async function runTranspile(opts) {
 
   if (opts.outfile || opts.outdir) {
     const name = basename(opts.entryPoints[0]).replace(/\.[^.]+$/, '.js');
-    const outputFiles = [{ path: name, text: result.code }];
+    // transpile result.code / result.map 은 string — writeOutputFiles 는 contents
+    // (Uint8Array) 를 받으므로 `Buffer.from` 으로 한 번 변환. 같은 메모리 backing 의
+    // utf-8 byte view 라 추가 copy 없음.
+    const outputFiles = [{ path: name, contents: Buffer.from(result.code) }];
     if (opts.outfile && result.map) {
-      outputFiles.push({ path: name + '.map', text: result.map });
+      outputFiles.push({ path: name + '.map', contents: Buffer.from(result.map) });
     }
     writeOutputFiles(outputFiles, opts.outfile, opts.outdir, opts.entryPoints, opts.allowOverwrite);
   } else {
