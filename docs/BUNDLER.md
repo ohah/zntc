@@ -306,8 +306,7 @@ pub const CjsExportFact = struct {
 
 ### 한계
 
-- **CJS wrap Asset 모듈**: `require_X()` 호출이 side-effect 로 간주돼 미사용 import 라도 트리쉐이킹 불가. esbuild 의 `NoSideEffects_PureData` 마킹은 미적용 (ROADMAP.md § "CJS wrap Asset"). JSON 모듈은 ESM AST 변환으로 우회 (#589).
-- **Namespace import barrel**: `import * as X; export { X }` 는 symbol 기반 추적 불가 → local export 로 분류, lazyBarrel 정밀화 미완료 (ROADMAP.md § lazyBarrel).
+- **Namespace import barrel**: `import * as X; export { X }` / `re_export_namespace` 처리 완료 (`requested_exports.zig` + `linker.zig:1237` + `tree_shaker.zig:1220`). 남은 정밀화는 **wrapper-barrel body mutation** — lodash-es `lodash.default.js` 처럼 imported binding 을 mutate 하는 패턴은 `isWrapperBarrel` 가 lazy 통째 비활성화 (보수적). default import 의 부분 method 사용 시에도 모든 mutation 이 link 됨.
 - **getter/proxy/global side-effect**: 깊은 분석 미구현 (전략 3단계, 후순위).
 - **BindingLite shadow 한계**: 64 개 초과 named import 는 full semantic 으로 보수적 fallback (스택 버퍼 overflow — `transpile.zig` `hasNamedImportLocalBindingShadow`).
 
