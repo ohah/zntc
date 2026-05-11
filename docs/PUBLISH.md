@@ -113,7 +113,8 @@ bun run changeset:status   # 누적된 changeset 보기 (어느 패키지가 어
   - `access: "public"` — scoped `@zntc/*` 와 unscoped `@zntc/vite-plugin` 모두 public publish (default 가 모든 package 에 적용)
   - `ignore: ["documents"]` — `documents` 는 publishable name 인데 publish 의도 없음. private 인 server / examples / tests 는 `private: true` 로 자동 skip
   - `baseBranch: "main"`
-- changesets 의 bump 대상 = release.ts 의 publish 대상 = `packages/*` 중 non-private 7개 (core / web / react-native / @zntc/vite-plugin / @zntc/rspack-loader / wasm / init) + platform sub-package 9개. 불일치 시 release.ts `PUBLISH_ORDER` 도 동기화 필요
+  - `fixed`: main 패키지 7개 (`@zntc/core` / `web` / `vite-plugin` / `rspack-loader` / `react-native` / `init` / `wasm`) 를 한 그룹으로 묶어 **lockstep version** 강제. 어느 패키지 changeset 이 와도 7개 모두 같은 version 으로 bump. 정책 / 근거는 [RELEASE_STRATEGY.md](./RELEASE_STRATEGY.md) 참조
+- changesets 의 bump 대상 = release.ts 의 publish 대상 = `packages/*` 중 non-private 7개 (core / web / react-native / @zntc/vite-plugin / @zntc/rspack-loader / wasm / init) + platform sub-package 9개. 불일치 시 release.ts `PUBLISH_ORDER` 도 동기화 필요. platform sub-package 는 `fixed` 에 안 들어가도 core 의 `optionalDependencies` hard-pin 으로 자동 동기화
 
 ## 관련 PR
 
