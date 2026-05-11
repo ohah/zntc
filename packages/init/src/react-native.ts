@@ -1,10 +1,22 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+
+import {
+  DEFAULT_ZNTC_VERSION,
+  PACKAGE_JSON,
+  ZNTC_CONFIG,
+  addDevDependency,
+  applyPlan,
+  ensureObject,
+  formatJson,
+  hasAnyDependency,
+  parsePackageJson,
+  readText,
+  type FileChange,
+  type PackageManager,
+  type PlannedFile,
+} from './shared.ts';
 
 export type ReactNativePlatform = 'ios' | 'android';
-
-export const PACKAGE_MANAGERS = ['bun', 'npm', 'pnpm', 'yarn'] as const;
-export type PackageManager = (typeof PACKAGE_MANAGERS)[number];
 
 export interface InitReactNativeOptions {
   root?: string;
@@ -16,18 +28,6 @@ export interface InitReactNativeOptions {
   zntcVersion?: string;
 }
 
-export interface PlannedFile {
-  path: string;
-  before: string | null;
-  after: string;
-  changed: boolean;
-}
-
-export interface FileChange {
-  path: string;
-  action: 'create' | 'update' | 'unchanged';
-}
-
 export interface InitReactNativeResult {
   root: string;
   changes: FileChange[];
@@ -35,47 +35,8 @@ export interface InitReactNativeResult {
   installCommand: string;
 }
 
-const PACKAGE_JSON = 'package.json';
-const ZNTC_CONFIG = 'zntc.config.ts';
-
 export const DEFAULT_RN_ENTRY = 'index.js';
 export const DEFAULT_RN_PLATFORM: ReactNativePlatform = 'ios';
-
-const DEFAULT_ZNTC_VERSION = 'latest';
-
-function readText(path: string): string | null {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
-}
-
-function formatJson(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function parsePackageJson(raw: string): Record<string, any> {
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `failed to parse ${PACKAGE_JSON}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-function hasReactNativeDependency(pkg: Record<string, any>): boolean {
-  return Boolean(pkg.dependencies?.['react-native'] ?? pkg.devDependencies?.['react-native']);
-}
-
-function ensureObject(value: unknown): Record<string, any> {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, any>;
-  }
-  return {};
-}
 
 function bundleOut(platform: ReactNativePlatform): string {
   return platform === 'ios'
@@ -99,18 +60,10 @@ function patchPackageJson(
     Pick<InitReactNativeOptions, 'defaultPlatform' | 'metroFallback' | 'zntcVersion'>
   >,
 ): Record<string, any> {
-  const next = { ...pkg };
+  let next = addDevDependency(pkg, '@zntc/core', options.zntcVersion);
+  next = addDevDependency(next, '@zntc/react-native', options.zntcVersion);
+
   const scripts = { ...ensureObject(next.scripts) };
-  const dependencies = ensureObject(next.dependencies);
-  const devDependencies = { ...ensureObject(next.devDependencies) };
-
-  if (!dependencies['@zntc/core'] && !devDependencies['@zntc/core']) {
-    devDependencies['@zntc/core'] = options.zntcVersion;
-  }
-  if (!dependencies['@zntc/react-native'] && !devDependencies['@zntc/react-native']) {
-    devDependencies['@zntc/react-native'] = options.zntcVersion;
-  }
-
   const zntcStart = `zntc dev --platform=react-native --rn-platform=${options.defaultPlatform} ${DEFAULT_RN_ENTRY}`;
   const previousStart = typeof scripts.start === 'string' ? scripts.start : undefined;
   if (options.metroFallback && previousStart && previousStart !== zntcStart) {
@@ -128,11 +81,7 @@ function patchPackageJson(
       scripts['bundle:metro:android'] ?? metroBundleScript('android');
   }
 
-  next.scripts = scripts;
-  if (Object.keys(devDependencies).length > 0 || next.devDependencies !== undefined) {
-    next.devDependencies = devDependencies;
-  }
-  return next;
+  return { ...next, scripts };
 }
 
 export function createReactNativeConfig(): string {
@@ -179,9 +128,9 @@ function planPackageJson(
     throw new Error(`package.json not found in ${root}`);
   }
   const pkg = parsePackageJson(before);
-  if (!hasReactNativeDependency(pkg)) {
+  if (!hasAnyDependency(pkg, ['react-native'])) {
     throw new Error(
-      'react-native dependency not found; @zntc/init currently supports React Native CLI projects only',
+      'react-native dependency not found; use `zntc-init vite|rspack|web` for non-RN projects',
     );
   }
   const after = formatJson(patchPackageJson(pkg, options));
@@ -211,55 +160,15 @@ export function planReactNativeInit(options: InitReactNativeOptions = {}): Plann
   return [planPackageJson(root, normalized), planConfig(root, force)];
 }
 
-export function detectPackageManager(root: string): PackageManager {
-  if (existsSync(join(root, 'bun.lock')) || existsSync(join(root, 'bun.lockb'))) return 'bun';
-  if (existsSync(join(root, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (existsSync(join(root, 'yarn.lock'))) return 'yarn';
-
-  const rawPackageJson = readText(join(root, PACKAGE_JSON));
-  if (rawPackageJson) {
-    try {
-      const packageManager = JSON.parse(rawPackageJson).packageManager;
-      if (typeof packageManager === 'string') {
-        for (const pm of PACKAGE_MANAGERS) {
-          if (packageManager.startsWith(`${pm}@`)) return pm;
-        }
-      }
-    } catch {}
-  }
-
-  return 'npm';
-}
-
-function installCommand(pm: PackageManager): string {
-  return `${pm} install`;
-}
-
-function toChange(file: PlannedFile): FileChange {
-  if (!file.changed) return { path: file.path, action: 'unchanged' };
-  return { path: file.path, action: file.before === null ? 'create' : 'update' };
-}
-
 export function initReactNativeProject(
   options: InitReactNativeOptions = {},
 ): InitReactNativeResult {
   const root = resolve(options.root ?? process.cwd());
   const planned = planReactNativeInit({ ...options, root });
-  const dryRun = options.dryRun ?? false;
-
-  if (!dryRun) {
-    for (const file of planned) {
-      if (!file.changed) continue;
-      mkdirSync(dirname(file.path), { recursive: true });
-      writeFileSync(file.path, file.after);
-    }
-  }
-
-  const pm = options.packageManager ?? detectPackageManager(root);
-  return {
+  return applyPlan({
     root,
-    changes: planned.map(toChange),
-    dryRun,
-    installCommand: installCommand(pm),
-  };
+    planned,
+    dryRun: options.dryRun ?? false,
+    packageManager: options.packageManager,
+  });
 }
