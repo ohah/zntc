@@ -217,6 +217,32 @@ function ChartPanel({ chart, isDark }: { chart: ChartDefinition; isDark: boolean
   );
 }
 
+type BenchmarkResultKey = keyof typeof benchmarkData.results;
+
+/** 단일 차트만 컴팩트하게 렌더 — 랜딩/하이라이트 용. */
+export function BenchmarkHighlight({
+  chartKey,
+  height,
+}: {
+  chartKey: BenchmarkResultKey;
+  height?: number;
+}) {
+  const isDark = useIsDark();
+  const entries = benchmarkData.results[chartKey] as BenchEntry[];
+  const option = useMemo(() => buildHorizontalBarOption(entries, isDark), [entries, isDark]);
+
+  return (
+    <div className="not-content overflow-x-auto">
+      <ReactEChartsCore
+        echarts={echarts}
+        option={option}
+        style={{ height: height ?? chartHeight(entries), minWidth: 720, width: "100%" }}
+        lazyUpdate
+      />
+    </div>
+  );
+}
+
 export default function BenchmarkCharts() {
   const isDark = useIsDark();
   const charts: ChartDefinition[] = [
