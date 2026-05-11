@@ -132,6 +132,7 @@ export default defineConfig({
           translations: { en: "Recipes" },
           items: [
             { label: "Dev Server (SSE/MCP)", slug: "guides/dev-server" },
+            { label: "Electron", slug: "guides/electron" },
           ],
         },
         {
@@ -144,6 +145,7 @@ export default defineConfig({
             { label: "옵션 매트릭스", slug: "reference/options-matrix", translations: { en: "Options Matrix" } },
             { label: "벤치마크", slug: "reference/benchmarks", translations: { en: "Benchmarks" } },
             { label: "Metafile 분석", link: "/analyze/", translations: { en: "Metafile Analyze" } },
+            { label: "로드맵", slug: "roadmap", translations: { en: "Roadmap" } },
             {
               label: "에러 코드",
               translations: { en: "Error Codes" },
