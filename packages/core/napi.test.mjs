@@ -126,13 +126,19 @@ describe('@zntc/core buildSync NAPI (Node.js)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // raw NAPI binding 의 shape 는 `{ path: string, contents: Uint8Array }` — `text`
+  // string getter 는 JS layer (build / buildSync from index.ts) 가 후처리로 부착하므로
+  // 이 raw test 들은 contents (Buffer/Uint8Array) 를 직접 decode 한다.
+  const decode = (file) => new TextDecoder('utf-8').decode(file.contents);
+
   it('기본 번들링', () => {
     const result = native.buildSync({
       entryPoints: [join(dir, 'entry.ts')],
     });
     assert.ok(result.outputFiles.length > 0);
     assert.equal(result.errors.length, 0);
-    assert.ok(result.outputFiles[0].text.includes('hello'));
+    assert.ok(result.outputFiles[0].contents instanceof Uint8Array);
+    assert.ok(decode(result.outputFiles[0]).includes('hello'));
   });
 
   it('소스맵 생성', () => {
@@ -143,7 +149,7 @@ describe('@zntc/core buildSync NAPI (Node.js)', () => {
     assert.equal(result.outputFiles.length, 2);
     const smFile = result.outputFiles.find((f) => f.path.endsWith('.map'));
     assert.ok(smFile);
-    const map = JSON.parse(smFile.text);
+    const map = JSON.parse(decode(smFile));
     assert.equal(map.version, 3);
   });
 
@@ -153,7 +159,7 @@ describe('@zntc/core buildSync NAPI (Node.js)', () => {
       entryPoints: [join(dir, 'entry.ts')],
       minify: true,
     });
-    assert.ok(minified.outputFiles[0].text.length < normal.outputFiles[0].text.length);
+    assert.ok(minified.outputFiles[0].contents.length < normal.outputFiles[0].contents.length);
   });
 
   it('metafile', () => {

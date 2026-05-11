@@ -42,7 +42,13 @@ export type { RuntimePolyfillOptions, RuntimePolyfillsOption };
 
 interface OutputFile {
   path: string;
-  text: string;
+  /** Raw byte content. NAPI 가 `napi_create_buffer_copy` 로 노출 — string copy + UTF-8
+   * 검증 비용 회피 (binary asset / CSS bundle / source map 모두 안전). esbuild
+   * OutputFile.contents 와 동등. */
+  contents: Uint8Array;
+  /** Lazy UTF-8 decode of `contents`. 첫 access 시 한 번 디코드 후 캐시. esbuild
+   * OutputFile.text 와 동등. */
+  readonly text: string;
   /** code splitting 시 이 chunk 에 포함된 모듈 절대경로 (rolldown `chunk.moduleIds` 호환).
    * 단일 번들 / asset output 은 빈 배열. */
   moduleIds?: string[];
@@ -51,6 +57,28 @@ interface OutputFile {
   /** 이 chunk 가 import 하는 다른 chunk 의 최종 filename 배열 (rolldown `chunk.imports` 호환).
    * content-hash 까지 확정된 경로. */
   imports?: string[];
+}
+
+/** NAPI 가 만든 raw OutputFile (`{path, contents}`) 에 lazy `text` getter 를 부착.
+ * `text` 는 첫 access 시 `TextDecoder` 로 디코드한 후 캐시 — 대부분의 binary asset
+ * (CSS bundle / worker chunk) 은 `text` 가 호출되지 않아 비용 0. `file.contents` 가
+ * 후처리에서 reassign (예: `postProcessCssOutputs` 의 minify) 되면 reference 비교로
+ * 자동 invalidate. */
+function attachTextGetter(file: { path: string; contents: Uint8Array }): OutputFile {
+  let cachedContents: Uint8Array | undefined;
+  let cachedText: string | undefined;
+  Object.defineProperty(file, 'text', {
+    get(): string {
+      if (cachedContents !== file.contents) {
+        cachedContents = file.contents;
+        cachedText = new TextDecoder('utf-8').decode(cachedContents);
+      }
+      return cachedText!;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  return file as OutputFile;
 }
 
 interface Diagnostic {
@@ -2005,11 +2033,13 @@ function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void
     if (!file.path.endsWith('.css')) continue;
     try {
       const transformed = lcss.transform({
-        code: Buffer.from(file.text),
+        code: file.contents,
         minify: true,
         filename: file.path,
       });
-      file.text = transformed.code.toString();
+      // lightningcss 결과는 Buffer (Uint8Array). attachTextGetter 가 reference
+      // 비교로 cached text 를 자동 invalidate.
+      file.contents = transformed.code;
     } catch {
       // CSS 변환 실패 시 원본 유지
     }
@@ -2056,7 +2086,9 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
       mkdirSync(dir, { recursive: true });
       createdDirs.add(dir);
     }
-    writeFileSync(outPath, file.text, 'utf-8');
+    // file.contents 는 Uint8Array (NAPI buffer copy). Node fs.writeFileSync 는
+    // Uint8Array/Buffer 를 그대로 syscall 로 전달 — utf-8 encode 비용 없음.
+    writeFileSync(outPath, file.contents);
   }
 }
 
@@ -2083,6 +2115,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
   try {
     const result: BuildResult = await native.build(napiOptions);
+    for (const file of result.outputFiles) attachTextGetter(file);
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
@@ -2118,6 +2151,7 @@ export function buildSync(options: BuildOptions): BuildResult {
   if (dispatcher) napiOptions._pluginDispatcherSync = dispatcher;
   try {
     const result: BuildResult = native.buildSync(napiOptions);
+    for (const file of result.outputFiles) attachTextGetter(file);
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
@@ -2140,7 +2174,7 @@ export function buildSync(options: BuildOptions): BuildResult {
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   const { publicDir, compiler, ...rest } = options;
-  return native.buildAppSync({
+  const result: BuildResult = native.buildAppSync({
     ...rest,
     define: withDefaultAppBuildDefines(options),
     ...(publicDir === false
@@ -2151,6 +2185,8 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
     // compiler.* → flat NAPI fields. `prepareNapiOptions` 와 동일 변환을 한 곳에서.
     ...buildCompilerNapiFields(compiler),
   });
+  for (const file of result.outputFiles) attachTextGetter(file);
+  return result;
 }
 
 /// `compiler.styledComponents` / `compiler.emotion` (boolean / 객체 form) 를 평면 NAPI
