@@ -391,6 +391,11 @@ export function createAppDevController(
   // F1+F2 cache (incremental prep 에서 재사용). 구조 변화 (스타일 파일 추가/삭제) 시
   // 무효화 — `prepareAppCssPipelineRoot` 가 cache miss 일 때 자체적으로 재수집한다.
   let pipelineCache: PipelineCache | null = null;
+  // dev pipeline 이 SCSS / CSS Modules 결과 CSS 를 mirror + link inject 했는지 flag.
+  // true 면 같은 SCSS source 가 bundler 의 CSS asset (`main.css`) 에도 합본돼 있어
+  // 둘 다 link 하면 cascade 충돌 — sass incremental 은 pipeline 만 갱신하니 stale
+  // main.css 가 이김. pipeline active 일 땐 bundle CSS link 는 skip한다.
+  let hasPipelineCss = false;
   // HTML env (ZNTC_*) cache + warning dedupe. dev 세션 내 envDir 변경은 restartTriggers
   // 가 process 를 재시작하므로 메모이즈 안전. warning 은 같은 key 로 매 rebuild 마다
   // 출력되면 노이즈 — Set 으로 1회 limit.
@@ -429,6 +434,7 @@ export function createAppDevController(
       );
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
+      hasPipelineCss = (pipeline?.generatedCssAbsPaths.length ?? 0) > 0;
       const prepareRoot = pipelineRoot ?? root;
       const envDir = opts.envDir ? resolve(opts.envDir) : prepareRoot;
       const prepared = prepareAppDevSync({
@@ -490,6 +496,13 @@ export function createAppDevController(
       return result;
     },
     injectBundleCssLinks(bundleResult: BundleResult) {
+      // pipeline 이 SCSS / CSS Modules generated CSS 를 inject 한 상태면 bundler 의
+      // CSS asset (entry 의 모든 CSS import 가 합본된 main.css) 은 같은 source 의
+      // 중복이라 cascade 마지막에서 stale 값으로 이긴다. pipeline 우선.
+      // 알려진 제약: 같은 entry 가 SCSS + plain `.css` 를 모두 import 하면 bundle
+      // main.css 의 plain CSS 부분이 누락 — pipeline 이 plain `.css` 까지 cover
+      // 하도록 확장하거나 metafile inputs 기반 정밀 dedup 으로 follow-up.
+      if (hasPipelineCss) return;
       injectAppDevBundleCssLinks(outdir, base, bundleResult);
     },
     isPostcssConfig(absPath) {
