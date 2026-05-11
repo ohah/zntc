@@ -61,6 +61,34 @@ pub fn transform(self: anytype) Error!NodeIndex {
         }
     }
 
+    // #3062: JSX automatic runtime import 를 정식 AST 노드로 추가.
+    // 기존엔 `JsxImportInfo.buildImportString` 으로 만든 string 을 `transpile.zig`
+    // 가 출력 앞에 prepend 하던 single-file 경로뿐이라, bundle 흐름은 별도 synthetic
+    // ImportRecord/Binding 우회 경로 (parser_metadata) 를 사용했다. transformer 가
+    // 정식 AST 노드를 만들면 bundle 의 resync 도 일반 import 로 처리한다.
+    // 동일 게이트 (`emit_runtime_helper_imports`) — bundle pre-pass 만 true, emitter
+    // in-place transform 호출은 false 유지.
+    if (self.options.emit_runtime_helper_imports and !root.isNone() and
+        self.jsx_import_info.hasImports() and self.options.jsx_runtime != .classic)
+    {
+        const jsx_runtime_imports = @import("../jsx_runtime_imports.zig");
+        const root_span = self.ast.getNode(root).span;
+        var imports: std.ArrayList(NodeIndex) = .empty;
+        defer imports.deinit(self.allocator);
+        const is_dev = self.options.jsx_runtime == .automatic_dev;
+        try jsx_runtime_imports.appendJsxRuntimeImports(
+            self,
+            self.jsx_import_info,
+            self.options.jsx_import_source,
+            is_dev,
+            root_span,
+            &imports,
+        );
+        if (imports.items.len > 0) {
+            root = try self.prependStatementsToBody(root, imports.items);
+        }
+    }
+
     // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거).
     // refreshEnabled() 가 path filter (Vite plugin-react 호환 — `.[jt]sx?$`/`.mjs$` + node_modules 제외) 까지 검증.
     if (self.refreshEnabled() and self.plugins.refresh.registrations.items.len > 0) {

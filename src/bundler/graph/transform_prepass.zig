@@ -14,9 +14,7 @@ const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
 const Span = @import("../../lexer/token.zig").Span;
-const Ast = @import("../../parser/ast.zig").Ast;
 const parse_helpers = @import("parse_helpers.zig");
-const graph_synthetic_imports = @import("synthetic_imports.zig");
 
 const isFlowPath = parse_helpers.isFlowPath;
 const suppressRuntimeHelperInternalUnresolved = parse_helpers.suppressRuntimeHelperInternalUnresolved;
@@ -24,8 +22,6 @@ const mergeImportRecords = parse_helpers.mergeImportRecords;
 const mergeImportBindings = parse_helpers.mergeImportBindings;
 const projectExportedNames = parse_helpers.projectExportedNames;
 const determineExportsKind = parse_helpers.determineExportsKind;
-const injectJsxRuntimeImports = graph_synthetic_imports.injectJsxRuntimeImports;
-const createJsxImportBindings = graph_synthetic_imports.createJsxImportBindings;
 
 /// 보수적 graph pre-pass 게이트.
 ///
@@ -416,7 +412,9 @@ pub fn resyncAfterAstMutation(
         var classify_scope = profile.begin(.graph_resync_classify);
         defer classify_scope.end();
 
-        try injectJsxSyntheticImportsForModule(self, module, arena_alloc, ast);
+        // #3062: transformer 가 JSX runtime import 를 정식 AST 노드로 추가 → resync 의
+        // import_scanner / binding_scanner 가 일반 import 로 detect. synthetic
+        // ImportRecord/Binding inject 우회 경로 제거.
 
         // 기존 exports_kind 가 ESM 인데 post-transform scan 이 `.none` 으로 떨어지는 경우
         // (예: TS interface-only 파일의 `export {};` 를 transformer 가 drop) ESM 분류를 유지한다.
@@ -439,46 +437,4 @@ pub fn resyncAfterAstMutation(
     }
 
     try refreshStableBindingRefsAfterSemanticResync(self, module, arena_alloc, .graph_resync_alias);
-}
-
-fn injectJsxSyntheticImportsForModule(
-    self: anytype,
-    module: *Module,
-    arena_alloc: std.mem.Allocator,
-    ast: *const Ast,
-) !void {
-    if (self.jsx_runtime == .classic or !ast.has_jsx) return;
-    if (self.jsx_specifier_cache == null) {
-        const is_dev = self.jsx_runtime == .automatic_dev;
-        self.jsx_specifier_cache = try std.fmt.allocPrint(
-            self.allocator,
-            "{s}/{s}",
-            .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
-        );
-    }
-    const specifier = self.jsx_specifier_cache orelse return;
-    for (module.import_records) |rec| {
-        if (rec.kind == .static_import and std.mem.eql(u8, rec.specifier, specifier)) return;
-    }
-    const base_record_count: u32 = @intCast(module.import_records.len);
-    var specs_buf: [2][]const u8 = undefined;
-    specs_buf[0] = specifier;
-    var n: usize = 1;
-    const react_injected = ast.has_jsx_key_after_spread;
-    if (react_injected) {
-        specs_buf[n] = self.jsx_import_source;
-        n += 1;
-    }
-    module.import_records = try injectJsxRuntimeImports(
-        specs_buf[0..n],
-        arena_alloc,
-        module.import_records,
-    );
-    module.import_bindings = try createJsxImportBindings(
-        self.jsx_runtime,
-        arena_alloc,
-        module.import_bindings,
-        base_record_count,
-        if (react_injected) base_record_count + 1 else null,
-    );
 }

@@ -14,9 +14,7 @@ const ImportRecord = types.ImportRecord;
 
 const determineExportsKind = graph_parse_helpers.determineExportsKind;
 const projectExportedNames = graph_parse_helpers.projectExportedNames;
-const injectJsxRuntimeImports = graph_synthetic_imports.injectJsxRuntimeImports;
 const injectFlowEnumRuntimeImport = graph_synthetic_imports.injectFlowEnumRuntimeImport;
-const createJsxImportBindings = graph_synthetic_imports.createJsxImportBindings;
 
 pub fn materialize(
     self: anytype,
@@ -143,42 +141,10 @@ pub fn materialize(
         .has_esmodule_marker = parser.scan_result.has_esmodule_marker,
     };
 
-    var jsx_injected = false;
-    var react_injected = false;
-    var jsx_inject_base: u32 = 0;
-    // `react` 는 key-after-spread 때만 주입한다. 모든 JSX 모듈에 넣으면
-    // `createElement 미노출` 회귀 테스트가 깨진다.
-    {
-        var jsx_scope = profile.begin(.graph_discover_pm_post_jsx_imports);
-        defer jsx_scope.end();
-        if (self.jsx_runtime != .classic and parser.ast.has_jsx) {
-            if (self.jsx_specifier_cache == null) {
-                const is_dev = self.jsx_runtime == .automatic_dev;
-                self.jsx_specifier_cache = std.fmt.allocPrint(
-                    self.allocator,
-                    "{s}/{s}",
-                    .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
-                ) catch null;
-            }
-            if (self.jsx_specifier_cache) |specifier| {
-                var specs_buf: [2][]const u8 = undefined;
-                specs_buf[0] = specifier;
-                var n: usize = 1;
-                if (parser.ast.has_jsx_key_after_spread) {
-                    specs_buf[n] = self.jsx_import_source;
-                    n += 1;
-                }
-                jsx_inject_base = @intCast(module.import_records.len);
-                module.import_records = injectJsxRuntimeImports(
-                    specs_buf[0..n],
-                    arena_alloc,
-                    module.import_records,
-                ) catch module.import_records;
-                jsx_injected = (module.import_records.len > jsx_inject_base);
-                react_injected = (n == 2) and jsx_injected;
-            }
-        }
-    }
+    // #3062: JSX automatic synthetic ImportRecord/Binding inject 우회는 transformer 가
+    // 정식 import_declaration AST 노드를 추가하는 새 경로로 대체됐다. 다운스트림 (resync
+    // 의 import_scanner / binding_scanner) 가 일반 import 로 detect 하므로 별도 inject
+    // 불필요. createJsxImportBindings 호출도 함께 제거.
 
     module.exports_kind = determineExportsKind(scan_result, module.path);
     module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
@@ -190,16 +156,5 @@ pub fn materialize(
         scan_result.has_esmodule_marker,
     );
 
-    if (jsx_injected) {
-        const jsx_record_idx: u32 = jsx_inject_base;
-        const react_record_idx: ?u32 = if (react_injected) jsx_record_idx + 1 else null;
-        module.import_bindings = createJsxImportBindings(
-            self.jsx_runtime,
-            arena_alloc,
-            module.import_bindings,
-            jsx_record_idx,
-            react_record_idx,
-        ) catch module.import_bindings;
-    }
     return true;
 }

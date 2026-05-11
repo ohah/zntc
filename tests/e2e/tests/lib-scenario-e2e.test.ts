@@ -356,12 +356,32 @@ BBPromise.resolve('bb-ok').then((v: string) => {
       bluebird: 'bb-ok',
     },
   },
-  // NOTE: preact + JSX 시나리오 (automatic / classic 양쪽) 는 zntc 회귀로 베이스라인 fail.
-  //   #3062: `--jsx=automatic --jsx-import-source=preact` 시 jsx-runtime 자동 import 가
-  //          ESM (wrap_kind=.none) source 의 canonical 식별자와 alias 안 됨
-  //   #3063: `--jsx=classic --jsx-factory=h` 가 preact 의 minified `h` 와 충돌
-  // 두 회귀 모두 머지되면 H1 (Preact JSX) 시나리오 재추가 예정. 현재는 cover 공백을
-  // H3 (TS legacy decorator) 로 채운다.
+  {
+    // 회귀 테스트 — #3062 (`--jsx=automatic --jsx-import-source=preact`):
+    // transformer 가 JSX runtime import 를 정식 AST 노드로 추가하지 않고 parser_metadata
+    // 가 synthetic ImportRecord/Binding 만 inject 하던 우회 경로 때문에, ESM
+    // (wrap_kind=.none) source 의 canonical 식별자와 entry 의 `_jsx` 가 alias 안 되어
+    // `ReferenceError: _jsx is not defined` 발생했다. fix 이후 transformer 가 직접
+    // import_declaration 노드를 prepend 하면 다운스트림이 일반 import 로 처리한다.
+    name: 'H1_preact_jsx_automatic',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.tsx',
+    extraArgs: ['--jsx=automatic', '--jsx-import-source=preact'],
+    entry: `import { render } from 'preact';
+
+function App() {
+  return <p data-testid="preact">preact-ok</p>;
+}
+
+const mount = document.createElement('div');
+document.body.appendChild(mount);
+render(<App />, mount);
+`,
+    expect: {
+      preact: 'preact-ok',
+    },
+  },
   {
     name: 'H2_vue_h_render',
     category: 'H_jsx_ts',
