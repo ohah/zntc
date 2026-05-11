@@ -83,6 +83,7 @@ pub const Category = enum {
     graph_discover_pm_setup_read_open,
     graph_discover_pm_setup_read_stat,
     graph_discover_pm_setup_read_bytes,
+    graph_discover_pm_setup_read_close,
     graph_discover_pm_setup_parser,
     graph_discover_pm_parse,
     graph_discover_pm_semantic,
