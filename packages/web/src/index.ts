@@ -33,6 +33,12 @@ export {
   injectAppDevPipelineCssLinks,
   injectIntoDevHtml,
 } from './inject.ts';
+export {
+  DEFAULT_HTML_ENV_PREFIX,
+  type TransformHtmlEnvResult,
+  applyHtmlEnvTokens,
+  transformHtmlEnvTokens,
+} from './html-env.ts';
 export { joinUrl } from './url.ts';
 export {
   isCssIdent,

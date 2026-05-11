@@ -195,6 +195,35 @@ defineConfig({
 
 For the full option list, see the [Babel migration guide](/zntc/en/guides/babel-migration/).
 
+#### Env tokens inside `index.html` (EJS style)
+
+Place `<%= ZNTC_KEY %>` tokens directly inside `index.html`. They get substituted with `.env` values during both `dev` and `build` — completely independent of the JS-side `import.meta.env.X` mechanism.
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <title><%= ZNTC_APP_TITLE %></title>
+    <meta name="version" content="<%= ZNTC_BUILD_VERSION %>" />
+  </head>
+  <body><div id="root"></div></body>
+</html>
+```
+
+```bash
+# .env
+ZNTC_APP_TITLE=My App
+ZNTC_BUILD_VERSION=2026.05
+```
+
+**Spec**:
+
+- Token form: `<%= KEY %>` (whitespace inside delimiters allowed — `<%=KEY%>` / `<%=   KEY   %>` all work).
+- Prefix is restricted to **`ZNTC_`** only. Even if the JS side `envPrefixes` allows `VITE_*`, those keys are not exposed in HTML — prevents secret leakage.
+- Other prefix tokens (`<%= VITE_API_KEY %>`) are **left as-is plus warning** (the raw token is visible on the page, making the mistake easy to spot).
+- Missing keys (`<%= ZNTC_UNDEFINED %>`) are **replaced with an empty string plus warning** (same as Vite / CRA).
+- Expression evaluation (`<%= mode === 'prod' ? '/' : '/dev/' %>`) is **not supported** — key-only.
+
 #### Functional config `ConfigEnv.command`
 
 When using `defineConfig(({ command, mode, env }) => ...)` in `zntc.config.ts`, `command` can take:

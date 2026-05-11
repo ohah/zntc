@@ -10,7 +10,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
-import { prepareAppDevSync } from '@zntc/core';
+import { loadEnv, prepareAppDevSync } from '@zntc/core';
+
+import { applyHtmlEnvTokens } from './html-env.ts';
 
 import {
   type BundleResult,
@@ -423,6 +425,7 @@ export function createAppDevController(
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
       const prepareRoot = pipelineRoot ?? root;
+      const envDir = opts.envDir ? resolve(opts.envDir) : prepareRoot;
       const prepared = prepareAppDevSync({
         root: prepareRoot,
         outdir,
@@ -430,9 +433,14 @@ export function createAppDevController(
         publicDir: opts.publicDir === undefined ? 'public' : opts.publicDir,
         base,
         mode: configEnv.mode,
-        envDir: opts.envDir ? resolve(opts.envDir) : prepareRoot,
+        envDir,
         envPrefixes: opts.envPrefixes ? Array.from(opts.envPrefixes) : undefined,
       });
+      const htmlEnv = loadEnv(configEnv.mode, envDir, ['ZNTC_']);
+      const { warnings: htmlWarnings } = applyHtmlEnvTokens(outdir, htmlEnv);
+      if (opts.logLevel !== 'silent') {
+        for (const w of htmlWarnings) console.warn(`[zntc] ${w}`);
+      }
       injectAppDevHmrClient(outdir);
       // dev mode 한정 — bundler 가 dev splitting=false 라 CSS chunk 를 emit 하지
       // 않으므로 Sass / CSS Modules 결과를 outdir 로 mirror + `<link>` 주입.

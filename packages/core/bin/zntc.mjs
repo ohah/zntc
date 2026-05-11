@@ -573,7 +573,10 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       splitting: opts.splitting || undefined,
       compiler: config?.compiler,
     });
+    const htmlEnv = loadEnv(configEnv.mode, opts.envDir ? resolve(opts.envDir) : (pipelineRoot ?? root), ['ZNTC_']);
+    const { warnings: htmlWarnings } = web.applyHtmlEnvTokens(outdir, htmlEnv);
     if (opts.logLevel !== 'silent') {
+      for (const w of htmlWarnings) console.warn(`[zntc] ${w}`);
       console.error(`[build] wrote ${result.outputCount ?? 0} files to ${outdir}`);
     }
     return result;
