@@ -54,17 +54,12 @@ const { code } = await transpile({
     { value: "19", unit: "×", label: "faster", caption: "vs rolldown (small)" },
     { value: "340", unit: "+", label: "문서 페이지", caption: "ko · en 지원" },
   ]}
-  note="2026-04-24 기준 · darwin arm64 · 5회 평균"
+  note="2026-05-06 기준 · darwin arm64 · 5회 평균"
 />
 
 <Section padding="py-16">
   <div class="not-content mx-auto max-w-5xl">
-    <h2 class="mb-2 text-center text-2xl font-bold sm:text-3xl">번들 성능 비교</h2>
-    <p class="mb-8 text-center text-sm text-[color:var(--sl-color-gray-3)]">
-      ZNTC 는 small/medium/large 모든 규모에서 한 자리 ms · 다른 도구는 수십 ~ 수백 ms.
-      <br class="hidden sm:inline" />
-      median wall time · 직접 CLI 바이너리 실행 · 낮을수록 빠름.
-    </p>
+    <h2 class="mb-8 text-center text-2xl font-bold sm:text-3xl">번들 성능 비교</h2>
 
     <BenchmarkHighlight chartKey="bundleCli" client:only="react" />
 

@@ -54,17 +54,12 @@ const { code } = await transpile({
     { value: "19", unit: "×", label: "faster", caption: "vs rolldown (small)" },
     { value: "340", unit: "+", label: "Doc pages", caption: "ko · en" },
   ]}
-  note="As of 2026-04-24 · darwin arm64 · 5-run average"
+  note="As of 2026-05-06 · darwin arm64 · 5-run average"
 />
 
 <Section padding="py-16">
   <div class="not-content mx-auto max-w-5xl">
-    <h2 class="mb-2 text-center text-2xl font-bold sm:text-3xl">Bundle performance</h2>
-    <p class="mb-8 text-center text-sm text-[color:var(--sl-color-gray-3)]">
-      ZNTC stays in the single-digit-ms range across small/medium/large; other tools sit in the tens to hundreds.
-      <br class="hidden sm:inline" />
-      Median wall time · direct CLI binaries · lower is better.
-    </p>
+    <h2 class="mb-8 text-center text-2xl font-bold sm:text-3xl">Bundle performance</h2>
 
     <BenchmarkHighlight chartKey="bundleCli" client:only="react" />
 
