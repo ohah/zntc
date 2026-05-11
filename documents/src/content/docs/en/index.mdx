@@ -49,12 +49,12 @@ const { code } = await transpile({
 
 <StatsStrip
   stats={[
-    { value: "2", unit: "ms", label: "Transpile", caption: "100 LOC · TypeScript" },
-    { value: "3", unit: "ms", label: "Bundle", caption: "10 modules" },
+    { value: "2.3", unit: "ms", label: "Transpile", caption: "1K LOC · TypeScript" },
+    { value: "2.6", unit: "ms", label: "Bundle", caption: "10 modules" },
     { value: "19", unit: "×", label: "faster", caption: "vs rolldown (small)" },
     { value: "340", unit: "+", label: "Doc pages", caption: "ko · en" },
   ]}
-  note="As of 2026-05-06 · darwin arm64 · 5-run average"
+  note="As of 2026-05-06 · darwin arm64 · 5-run median"
 />
 
 <Section padding="py-16">
