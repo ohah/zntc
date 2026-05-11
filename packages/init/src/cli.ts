@@ -116,7 +116,8 @@ function parseArgs(argv: string[]): ParsedArgs {
         opts.dryRun = true;
         break;
       case '--platform': {
-        if (mode !== 'react-native') throw new Error(`--platform is only valid for react-native mode`);
+        if (mode !== 'react-native')
+          throw new Error(`--platform is only valid for react-native mode`);
         const value = readValue(rest, i, arg);
         if (value !== 'ios' && value !== 'android') {
           throw new Error(`--platform must be "ios" or "android"`);

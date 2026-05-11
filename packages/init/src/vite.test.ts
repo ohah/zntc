@@ -111,7 +111,9 @@ describe('@zntc/init vite overlay', () => {
     try {
       initViteProject({ root });
       const second = initViteProject({ root });
-      expect(second.changes.every((c) => c.action === 'unchanged' || c.action === 'manual')).toBe(true);
+      expect(second.changes.every((c) => c.action === 'unchanged' || c.action === 'manual')).toBe(
+        true,
+      );
     } finally {
       cleanup(root);
     }
