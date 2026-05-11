@@ -1,53 +1,105 @@
 ---
 title: 설치
-description: ZNTC를 설치하는 방법을 알아봅니다.
+description: ZNTC 를 npm / bun / pnpm / yarn / deno 로 설치하는 방법.
 ---
 
-## 빌드 (소스)
+import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-ZNTC는 현재 소스에서 빌드해야 합니다.
+ZNTC 는 npm registry 에 publish 된 여러 패키지로 구성되어 있습니다. 사용 시나리오에 맞춰 필요한 패키지를 설치하세요.
 
-### 사전 요구사항
+## 패키지 한눈에 보기
 
-- **Zig 0.15.2** ([mise](https://mise.jdx.dev/)로 설치 권장)
-- **Git**
+| 패키지 | 용도 | 포함 |
+|---|---|---|
+| `@zntc/core` | CLI + Node/Bun in-process API (NAPI) | `zntc` 바이너리, `transpile()` / `build()` / `buildSync()` / `watch()` / `vitePlugin()` |
+| `@zntc/wasm` | 브라우저 · Edge · WASI 환경 | WASM 빌드 트랜스파일러 |
+| `@zntc/vite-plugin` | Vite 통합 | esbuild 자리 대체 plugin |
+| `@zntc/react-native` | React Native 번들러 / RN 0.72+ | Metro 호환 surface |
+| `@zntc/init` | 기존 RN CLI 프로젝트에 ZNTC 얹기 | `zntc-init` 스캐폴드 |
 
-### 빌드
+## CLI + JS API (`@zntc/core`)
 
-```bash
-git clone https://github.com/ohah/zntc.git
-cd zntc
-zig build -Doptimize=ReleaseFast
-```
+가장 흔한 시나리오. `zntc` 명령과 `import { ... } from '@zntc/core'` 둘 다 제공.
 
-빌드된 바이너리는 `zig-out/bin/zntc`에 생성됩니다.
-
-### PATH에 추가
-
-```bash
-# ~/.zshrc 또는 ~/.bashrc
-export PATH="$PATH:/path/to/zntc/zig-out/bin"
-```
-
-## WASM (브라우저/Node.js)
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
 
 ```bash
-bun add @zntc/wasm
+bun add -d @zntc/core
 ```
 
-```typescript
-import { init, transpile } from "@zntc/wasm";
-
-await init();
-const result = transpile("const x: number = 1;");
-console.log(result.code); // "const x = 1;"
-```
-
-## NAPI (Node.js/Bun — 권장)
+  </TabItem>
+  <TabItem label="npm">
 
 ```bash
-bun add @zntc/core
+npm i -D @zntc/core
 ```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm add -D @zntc/core
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn add -D @zntc/core
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno add -D npm:@zntc/core
+```
+
+  </TabItem>
+</Tabs>
+
+설치 후 즉시 CLI 사용 가능:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+
+```bash
+bunx zntc --bundle src/index.ts -o dist/bundle.js
+```
+
+  </TabItem>
+  <TabItem label="npm">
+
+```bash
+npx zntc --bundle src/index.ts -o dist/bundle.js
+```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm dlx zntc --bundle src/index.ts -o dist/bundle.js
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn dlx zntc --bundle src/index.ts -o dist/bundle.js
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno run -A npm:@zntc/core --bundle src/index.ts -o dist/bundle.js
+```
+
+  </TabItem>
+</Tabs>
+
+JS API:
 
 ```typescript
 import { init, transpile, build, buildSync, vitePlugin } from "@zntc/core";
@@ -92,18 +144,264 @@ const result3 = await build({
 });
 ```
 
-## JS Build API (NAPI, in-process)
+`@zntc/core` 는 OS/아키텍처별 native binary (`@zntc/core-darwin-arm64`, `@zntc/core-linux-x64-gnu` 등) 를 optional dependency 로 자동 가져갑니다.
 
-`@zntc/core`의 `build()` / `buildSync()` / `watch()` 를 사용해 Node.js/Bun 안에서 직접 번들링:
+## WASM — 브라우저 / Edge / WASI
+
+Node.js 가 없는 환경 (브라우저 playground, Cloudflare Workers, Deno) 에서는 WASM 빌드를 사용:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+
+```bash
+bun add @zntc/wasm
+```
+
+  </TabItem>
+  <TabItem label="npm">
+
+```bash
+npm i @zntc/wasm
+```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm add @zntc/wasm
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn add @zntc/wasm
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno add npm:@zntc/wasm
+```
+
+  </TabItem>
+</Tabs>
 
 ```typescript
-import { init, build } from "@zntc/core";
-init();
+import { init, transpile } from "@zntc/wasm";
 
-const result = await build({
-  entryPoints: ["src/index.ts"],
-  outdir: "dist",
-  bundle: true,
-  plugins: [/* Vite/Rollup 스타일 훅 */],
+await init();
+const result = transpile("const x: number = 1;");
+console.log(result.code); // "const x = 1;"
+```
+
+## Vite 플러그인
+
+esbuild 자리 대체:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+
+```bash
+bun add -d @zntc/vite-plugin
+```
+
+  </TabItem>
+  <TabItem label="npm">
+
+```bash
+npm i -D @zntc/vite-plugin
+```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm add -D @zntc/vite-plugin
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn add -D @zntc/vite-plugin
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno add -D npm:@zntc/vite-plugin
+```
+
+  </TabItem>
+</Tabs>
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import zntc from "@zntc/vite-plugin";
+
+export default defineConfig({
+  plugins: [zntc()],
 });
+```
+
+## React Native
+
+기존 React Native CLI 프로젝트에 얹기 — 단발 실행:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+
+```bash
+bunx @zntc/init
+```
+
+  </TabItem>
+  <TabItem label="npm">
+
+```bash
+npx @zntc/init
+```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm dlx @zntc/init
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn dlx @zntc/init
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno run -A npm:@zntc/init
+```
+
+  </TabItem>
+</Tabs>
+
+자세한 옵션은 [React Native 가이드](/zntc/guides/react-native/) 참고.
+
+직접 설치:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+
+```bash
+bun add -d @zntc/core @zntc/react-native
+```
+
+  </TabItem>
+  <TabItem label="npm">
+
+```bash
+npm i -D @zntc/core @zntc/react-native
+```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm add -D @zntc/core @zntc/react-native
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn add -D @zntc/core @zntc/react-native
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno add -D npm:@zntc/core npm:@zntc/react-native
+```
+
+  </TabItem>
+</Tabs>
+
+## 글로벌 설치 (CLI 만)
+
+특정 프로젝트와 무관하게 `zntc` 명령을 시스템 전역에서 사용:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+
+```bash
+bun add -g @zntc/core
+```
+
+  </TabItem>
+  <TabItem label="npm">
+
+```bash
+npm i -g @zntc/core
+```
+
+  </TabItem>
+  <TabItem label="pnpm">
+
+```bash
+pnpm add -g @zntc/core
+```
+
+  </TabItem>
+  <TabItem label="yarn">
+
+```bash
+yarn global add @zntc/core
+```
+
+  </TabItem>
+  <TabItem label="deno">
+
+```bash
+deno install -A -g npm:@zntc/core
+```
+
+  </TabItem>
+</Tabs>
+
+## 소스에서 빌드 (컨트리뷰터 / 최신 main)
+
+publish 된 npm 버전이 아닌 최신 main 브랜치 또는 직접 수정한 코드로 동작시키려면:
+
+### 사전 요구사항
+
+- **Zig 0.15.2** ([mise](https://mise.jdx.dev/) 설치 권장)
+- **Bun 1.3+** 또는 **Node.js 24+**
+- **Git**
+
+### 빌드
+
+```bash
+git clone https://github.com/ohah/zntc.git
+cd zntc
+zig build -Doptimize=ReleaseFast
+```
+
+빌드된 바이너리: `zig-out/bin/zntc`. PATH 에 추가하면 npm 설치본과 같은 식으로 사용 가능:
+
+```bash
+# ~/.zshrc 또는 ~/.bashrc
+export PATH="$PATH:/path/to/zntc/zig-out/bin"
+```
+
+NAPI 패키지를 직접 빌드하려면:
+
+```bash
+zig build napi               # @zntc/core 의 native binary
+zig build wasm wasm-bundler  # @zntc/wasm 의 .wasm
 ```
