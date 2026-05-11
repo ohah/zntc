@@ -130,7 +130,7 @@ Options:
 | `--max-workers=<n>` | 병렬 워커 수 — `--jobs` alias |
 | `--rn-project-root=<dir>` | RN preset projectRoot (기본 cwd, monorepo root 지정 시) |
 | `--watchFolders=<a,b>` / `--sourceExts=<a,b>` | Metro camelCase 형 — RN preset 으로 전달 (`--watch-folder` 와 별개) |
-| `--unstable-transform-profile=<name>` / `--source-map-url=<url>` / `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro 호환 옵션 |
+| `--unstable-transform-profile=<name>` / `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro 호환 옵션 |
 | `--transform-option=<k=v>` / `--resolver-option=<k=v>` | Metro transformer/resolver 옵션 (반복 가능) — **현재 무시** (Metro graph-bundler 전용) |
 
 전체 표 + 동작 설명: [React Native 가이드](/zntc/guides/react-native/#metro--react-native-bundle-호환-옵션)
