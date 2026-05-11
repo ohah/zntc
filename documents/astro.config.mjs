@@ -77,6 +77,11 @@ export default defineConfig({
           translations: { en: "Transpile" },
           items: [
             { label: "개요", slug: "guides/transpile", translations: { en: "Overview" } },
+            {
+              label: "네이티브 트랜스폼 (Babel 없이)",
+              slug: "guides/native-transforms",
+              translations: { en: "Native Transforms (No Babel)" },
+            },
           ],
         },
         {

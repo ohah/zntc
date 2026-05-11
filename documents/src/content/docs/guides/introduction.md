@@ -16,6 +16,17 @@ ZNTC는 **Zig Native Transpiler & Compiler**의 약자로, JavaScript/TypeScript
 - **Dev Server**: HMR, 프록시, 정적 파일 서빙
 - **WASM**: 브라우저에서 직접 트랜스파일 가능
 
+## Babel 없이 1st-party 지원
+
+다른 번들러에서 Babel 플러그인 / preset 으로 따로 묶어야 했던 변환들이 ZNTC 본체에 내장되어 있습니다. `@babel/core` 의존성 없이 옵션 한 줄로 켜집니다.
+
+- **styled-components** — `compiler.styledComponents` (`babel-plugin-styled-components` 대응)
+- **emotion** — `compiler.emotion` (`@emotion/babel-plugin` 대응)
+- **Reanimated worklets** — `"worklet"` 디렉티브 자동 처리 (`react-native-worklets/plugin` 대응, RN 플랫폼에서 자동 활성)
+- **Flow** — 타입 어노테이션을 파서에서 직접 처리 (`@babel/preset-flow` 대응, RN 플랫폼에서 자동 활성)
+
+자세한 사용법은 [네이티브 트랜스폼 가이드](/zntc/guides/native-transforms/) 를 참조하세요.
+
 ## esbuild와의 비교
 
 ZNTC는 esbuild의 CLI 옵션과 동작을 호환하면서도, Rollup/Rolldown 스타일의 플러그인 시스템을 제공합니다.
