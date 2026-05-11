@@ -440,11 +440,24 @@ function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwr
   const resolvedEntries = allowOverwrite ? null : new Set(entryPoints.map(safeRealpath));
   if (outfile) {
     const outPath = resolve(outfile);
+    const outDirAbs = dirname(outPath);
     assertCanWriteOutput(outPath, resolvedEntries);
-    mkdirSync(dirname(outPath), { recursive: true });
+    mkdirSync(outDirAbs, { recursive: true });
+    // 첫 entry 는 main bundle/transpile output → outfile. 나머지는 path 로 분기 —
+    // `.map` 으로 끝나면 sourcemap (`outfile.map`), 아니면 asset (CSS bundle / worker
+    // chunk 등) 으로 outfile 의 dirname 안에 basename. 옛 코드가 `[1]` slot 을 무조건
+    // sourcemap 으로 가정해 asset 이 함께 emit 될 때 asset 이 `.map` 자리에 잘못
+    // write 되던 회귀 해소.
     writeFileSync(outPath, outputFiles[0].text);
-    if (outputFiles.length > 1) {
-      writeFileSync(resolve(outfile + '.map'), outputFiles[1].text);
+    for (let i = 1; i < outputFiles.length; i++) {
+      const file = outputFiles[i];
+      if (file.path.endsWith('.map')) {
+        writeFileSync(outPath + '.map', file.text);
+      } else {
+        const assetPath = join(outDirAbs, basename(file.path));
+        assertCanWriteOutput(assetPath, resolvedEntries);
+        writeFileSync(assetPath, file.text);
+      }
     }
   } else if (outdir) {
     const outDirAbs = resolve(outdir);

@@ -86,6 +86,31 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             _ = c.napi_set_element(env, js_outputs, 1, js_sm_file);
         }
     }
+
+    // asset_outputs (CSS bundle / worker chunks / file-loader 산출물 등) 도 outputFiles
+    // 배열에 합쳐 JS 의 `writeOutputFiles` 가 dist 에 write 하도록 한다. native 만
+    // 별도 storage 라 path/contents 외 metadata (module_ids/exports/imports) 는 없다.
+    // (#3022 — vue/svelte SFC 의 `?vue&type=style&lang.css` sub-import 의 CSS bundle 이
+    // dist 에 누락되던 회귀 해소.)
+    if (result.asset_outputs) |assets| {
+        var current_len: u32 = 0;
+        _ = c.napi_get_array_length(env, js_outputs, &current_len);
+        for (assets, 0..) |asset, i| {
+            var js_asset: c.napi_value = undefined;
+            _ = c.napi_create_object(env, &js_asset);
+
+            var js_path: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, asset.path.ptr, asset.path.len, &js_path);
+            _ = c.napi_set_named_property(env, js_asset, "path", js_path);
+
+            var js_text: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, asset.contents.ptr, asset.contents.len, &js_text);
+            _ = c.napi_set_named_property(env, js_asset, "text", js_text);
+
+            _ = c.napi_set_element(env, js_outputs, current_len + @as(u32, @intCast(i)), js_asset);
+        }
+    }
+
     _ = c.napi_set_named_property(env, js_result, "outputFiles", js_outputs);
 
     var js_errors: c.napi_value = undefined;
