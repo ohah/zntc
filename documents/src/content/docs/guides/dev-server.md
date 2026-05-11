@@ -371,6 +371,31 @@ export default defineConfig({
 | `strictPort` | `boolean` | `false` | `true` 면 포트 점유 시 다음 포트로 fallback 하지 않고 종료. |
 | `open` | `boolean` | `false` | 시작 후 served URL 을 브라우저에서 자동 열기. CLI `--open` 가 override. |
 
+## HTTPS — `--certfile` / `--keyfile`
+
+PEM 형식 cert / key 파일을 지정하면 dev server 가 `https://localhost:12300` 으로 listen 합니다. HMR WebSocket 도 자동으로 `wss://` 로 업그레이드됩니다.
+
+```bash
+zntc dev . --certfile ./certs/dev.pem --keyfile ./certs/dev-key.pem
+```
+
+### Self-signed cert 만들기
+
+로컬 개발용으로 [`mkcert`](https://github.com/FiloSottile/mkcert) 같은 도구가 가장 편합니다 — 로컬 CA 를 시스템 trust store 에 자동 등록해 줘서 브라우저 보안 경고 없이 사용할 수 있습니다.
+
+```bash
+mkcert -install
+mkcert localhost 127.0.0.1
+# → localhost+1.pem (cert) / localhost+1-key.pem (key) 생성
+
+zntc dev . --certfile ./localhost+1.pem --keyfile ./localhost+1-key.pem
+```
+
+### 한계
+
+- TLS 는 Node / Bun 런타임의 JS dev server (`zntc dev <root>`) 에서만 지원합니다. `zntc serve` 로 띄우는 standalone 서버는 TLS 미지원 — Node 미설치 환경이 필요하면 dev server 앞에 별도 reverse proxy (nginx / Caddy) 로 TLS termination 을 위임하세요.
+- self-signed cert 의 브라우저 신뢰는 OS / 브라우저별로 다릅니다. `mkcert -install` 미사용 시 Chrome flags 또는 `--ignore-certificate-errors` 같은 우회가 필요할 수 있습니다.
+
 ## Lazy sourcemap — `emitDiskSourcemap` + `WatchHandle`
 
 `@zntc/core` 의 `watch()` 핸들로 dev server 를 직접 호스팅할 때 — `.map` 디스크 쓰기 비용을 HMR latency 밖으로 빼냅니다.
