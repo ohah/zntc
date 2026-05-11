@@ -205,6 +205,7 @@ pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
                     arena_alloc,
                     &parser.ast,
                     analyzer.symbols.items,
+                    analyzer.scopes.items,
                     analyzer.references.items,
                     if (module.semantic) |*s| &s.unresolved_references else null,
                     false,

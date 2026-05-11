@@ -15,7 +15,9 @@ const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
-const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const scope_mod = @import("../semantic/scope.zig");
+const ScopeId = scope_mod.ScopeId;
+const Scope = scope_mod.Scope;
 const purity = @import("purity.zig");
 
 pub const StmtInfo = struct {
@@ -1105,12 +1107,17 @@ fn buildStmtInfoSlot(
     };
 }
 
+fn scopeIsFunctionOrClassBody(sc: Scope) bool {
+    return sc.kind == .function or sc.kind == .class_body;
+}
+
 /// Semantic Analyzer 의 `references` 배열로부터 ModuleStmtInfos 를 구축한다.
 /// declare/read/write 플래그로 stmt 단위 선언·참조 bucket 을 분배 (analyzer 는 중간 캐시를 유지하지 않음).
 pub fn buildFromSemantic(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     symbols: []const Symbol,
+    scopes: []const Scope,
     references: []const Reference,
     unresolved_globals: ?*const purity.GlobalRefSet,
     collect_cjs_exports: bool,
@@ -1197,7 +1204,11 @@ pub fn buildFromSemantic(
             try declared_buckets[r.stmt_idx].append(allocator, sym_u32);
         } else {
             try referenced_buckets[r.stmt_idx].append(allocator, sym_u32);
-            if (r.flags.write) {
+            // 함수/클래스 body 안의 write 는 함수가 호출될 때만 실행되므로 call graph
+            // (referenced_symbols → declarer 엣지) 가 처리. 여기서 writer 엣지를 만들면
+            // enclosing 함수 declaration 이 false-positive 로 live 가 되어 dead 함수 body 의
+            // transitive import 까지 cascade 보존됨.
+            if (r.flags.write and !scope_mod.anyAncestor(scopes, r.scope_id, scopeIsFunctionOrClassBody)) {
                 try writer_buckets[sym_u32].append(allocator, r.stmt_idx);
             }
         }

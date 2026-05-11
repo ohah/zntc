@@ -83,3 +83,17 @@ pub const Scope = struct {
         return self.subtree_has_direct_eval or self.subtree_has_with;
     }
 };
+
+/// `start` 또는 그 조상 스코프 중 `pred` 를 만족하는 것이 있으면 true.
+/// 잘못된 인덱스를 만나면 false (defensive — analyzer 가 항상 valid 한 chain 보장).
+pub fn anyAncestor(scopes: []const Scope, start: ScopeId, comptime pred: fn (Scope) bool) bool {
+    var sid = start;
+    while (!sid.isNone()) {
+        const idx = sid.toIndex();
+        if (idx >= scopes.len) return false;
+        const sc = scopes[idx];
+        if (pred(sc)) return true;
+        sid = sc.parent;
+    }
+    return false;
+}

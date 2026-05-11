@@ -378,13 +378,11 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn isInsideFunctionScope(self: *const SemanticAnalyzer) bool {
-        var scope_id = self.current_scope;
-        while (!scope_id.isNone()) {
-            const scope = self.scopes.items[scope_id.toIndex()];
-            if (scope.kind == .function) return true;
-            scope_id = scope.parent;
-        }
-        return false;
+        return scope_mod.anyAncestor(self.scopes.items, self.current_scope, struct {
+            fn pred(sc: scope_mod.Scope) bool {
+                return sc.kind == .function;
+            }
+        }.pred);
     }
 
     /// 현재 스코프가 strict mode인지 확인한다.
