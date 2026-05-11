@@ -215,8 +215,8 @@ zntc --bundle entry.ts --drop=console --drop=debugger
 zntc --bundle entry.ts --drop-labels=DEV,TEST
 ```
 
-`--drop-labels`는 지정한 labeled statement 전체를 제거한다. 예를 들어
-`DEV: { console.log("dev only"); }`는 `--drop-labels=DEV`에서 번들에 남지 않는다.
+`--drop-labels`는 지정한 labeled statement 전체를 제거합니다. 예를 들어
+`DEV: { console.log("dev only"); }`는 `--drop-labels=DEV`에서 번들에 남지 않습니다.
 
 ## ES 타겟
 
