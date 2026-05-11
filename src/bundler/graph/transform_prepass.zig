@@ -300,12 +300,15 @@ fn refreshStableBindingRefsAfterSemanticResync(
     const scope0: ?std.StringHashMap(usize) =
         if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
     for (module.import_bindings) |*ib| {
-        if (ib.isSynthetic()) continue;
         ib.local_symbol = bundler_symbol.SymbolRef.invalid;
-        if (scope0) |module_scope| {
-            if (module_scope.get(ib.local_name)) |sym_idx| {
-                ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, sym_idx);
-            }
+        // #3068: helper binding 은 user 가 같은 이름 점유 시에도 격리된 helper_scope_map
+        // 에서 lookup — 일반 module_scope.get 면 user sym 을 잘못 가리킨다 (linker
+        // populateImportSymbols 와 동일 정책).
+        const sym_lookup: ?usize = if (ib.is_helper)
+            sem.helper_scope_map.get(ib.local_name)
+        else if (scope0) |module_scope| module_scope.get(ib.local_name) else null;
+        if (sym_lookup) |sym_idx| {
+            ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, sym_idx);
         }
     }
 

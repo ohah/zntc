@@ -64,17 +64,6 @@ pub const ImportBinding = struct {
         namespace,
     };
 
-    /// Synthetic binding (JSX runtime 등 — graph 가 인공 생성하던 sentinel-span 바인딩).
-    /// #3067 (JSX synthetic 우회 제거) 이후 이 sentinel 을 set 하는 생성처가 없어
-    /// `isSynthetic()` 는 항상 false. 잔여 분기 (linker / emitter / metadata 의 7곳)
-    /// 제거는 후속 — `metadata.zig` 의 `is_synthetic_esm` / `is_synthetic` 변수가
-    /// emit 분기 여러 곳에서 쓰여 점진적 검증 필요.
-    pub const SYNTHETIC_SPAN_BASE: u32 = 0xFFFF_0000;
-
-    pub fn isSynthetic(self: ImportBinding) bool {
-        return self.local_span.start >= SYNTHETIC_SPAN_BASE;
-    }
-
     /// `import x from './m'` (kind=.default) 또는 `import { default as X }`
     /// (kind=.named, imported_name="default") 어느 쪽이든 source의 default를
     /// import하는 케이스 통칭.
