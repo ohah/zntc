@@ -1602,6 +1602,7 @@ pub const Linker = struct {
 
     pub const registerNamespaceRewrites = shared_namespace.registerNamespaceRewrites;
     pub const appendSharedNamespacePreamble = shared_namespace.appendSharedNamespacePreamble;
+    pub const appendSharedNamespacePreambleFiltered = shared_namespace.appendSharedNamespacePreambleFiltered;
     pub const restoreSharedNamespaceDecls = shared_namespace.restoreSharedNamespaceDecls;
     pub const collectSharedNamespaceDecls = shared_namespace.collectSharedNamespaceDecls;
 

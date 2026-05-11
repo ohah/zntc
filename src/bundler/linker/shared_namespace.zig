@@ -118,6 +118,21 @@ pub fn registerNamespaceRewrites(
             const ns_var = if (ns_target_to_var.get(target)) |cached|
                 cached
             else blk: {
+                // splitting / manualChunks 시 referrer 청크 self-preamble 에 inline
+                // 하면 entry 청크에 vendor 코드 누출 (#2990). use_shared_ns_preamble
+                // 활성 시 정의자 모듈 (`target`) 의 청크 preamble 로 분리 — linker 의
+                // ns_shared_inline_cache 에 등록 후 청크 emit 단계에서 chunk filter.
+                if (self.use_shared_ns_preamble) {
+                    const ns_var_name = try getOrCreateSharedNamespaceVar(self, target, &seen_exports);
+                    try ns_target_to_var.put(target, ns_var_name);
+                    try ns_inline_list.append(self.allocator, .{
+                        .symbol_id = null,
+                        .object_literal = try self.allocator.dupe(u8, ""),
+                        .var_name = try self.allocator.dupe(u8, ns_var_name),
+                        .shared_target_mod_idx = target,
+                    });
+                    break :blk ns_var_name;
+                }
                 const fresh = try makeUniqueNsVarName(self, exp.exported, &seen_exports);
                 try ns_target_to_var.put(target, fresh);
                 const obj_str = try buildInlineObjectStr(self, target, 0);
@@ -208,6 +223,18 @@ fn getOrCreateSharedNamespaceVar(
 }
 
 pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8)) std.mem.Allocator.Error!void {
+    try appendSharedNamespacePreambleFiltered(self, out, null);
+}
+
+/// 특정 청크의 정의자 모듈에 속한 namespace 만 emit. `target_filter` 가 non-null 이면
+/// 그 set 에 속한 target_mod_idx 만 inline (splitting / manualChunks #2990 fix —
+/// referrer 청크가 아닌 정의자 청크의 preamble 에 namespace 가 위치하도록).
+/// null 이면 전 namespace inline (single-file bundle 호환).
+pub fn appendSharedNamespacePreambleFiltered(
+    self: *const Linker,
+    out: *std.ArrayList(u8),
+    target_filter: ?*const std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!void {
     const sorted_targets = try self.allocator.dupe(u32, self.ns_shared_inline_order.items);
     defer self.allocator.free(sorted_targets);
     const SortCtx = struct {
@@ -223,6 +250,9 @@ pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8
     std.mem.sort(u32, sorted_targets, SortCtx{ .linker = self }, SortCtx.lessThan);
 
     for (sorted_targets) |target_mod_idx| {
+        if (target_filter) |f| {
+            if (!f.contains(target_mod_idx)) continue;
+        }
         const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
         try out.appendSlice(self.allocator, "var ");
         try out.appendSlice(self.allocator, entry.var_name);
