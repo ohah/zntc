@@ -28,6 +28,33 @@ pub fn isComponentName(name: []const u8) bool {
     return name[0] >= 'A' and name[0] <= 'Z';
 }
 
+/// Vite core `JS_TYPES_RE` (`/\.(?:j|t)sx?$|\.mjs$/`) 매칭 확장자 — plugin-react 기본 filter.
+const refresh_target_extensions = [_][]const u8{ ".js", ".jsx", ".ts", ".tsx", ".mjs" };
+
+/// 파일 경로가 `@vitejs/plugin-react` 기본 filter 와 호환되는지 — `.[jt]sx?` 또는
+/// `.mjs` 확장자 + `node_modules` 제외. plugin-react 의 default `include`/`exclude` 정확 일치.
+fn isRefreshTargetPath(path: []const u8) bool {
+    if (path.len == 0) return true; // path 정보 없으면 보수적으로 허용 (transpile direct API 등)
+    if (std.mem.indexOf(u8, path, "/node_modules/") != null) return false;
+    const last_dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
+    const ext = path[last_dot..];
+    for (refresh_target_extensions) |target| {
+        if (std.mem.eql(u8, ext, target)) return true;
+    }
+    return false;
+}
+
+/// `Transformer.refresh_enabled_cached` 의 init 값 계산. `lifecycle.finishInit` 에서 호출.
+pub fn computeRefreshEnabled(opts: @import("../transformer.zig").TransformOptions) bool {
+    if (!opts.react_refresh) return false;
+    return isRefreshTargetPath(opts.jsx_filename);
+}
+
+/// react-refresh transform 활성화 여부 — init 시 계산한 캐시 값 read. hot path 안전.
+pub inline fn refreshEnabled(self: *const Transformer) bool {
+    return self.refresh_enabled_cached;
+}
+
 /// 함수 노드에서 이름 텍스트를 추출한다.
 /// function_declaration의 extra[0]이 binding_identifier.
 /// ast의 extra_data에서 읽음 (visitFunction이 이미 노드를 생성했으므로).
@@ -44,7 +71,7 @@ pub fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
 /// 변환된 함수 노드가 React 컴포넌트이면 등록 정보를 수집한다.
 /// visitFunction에서 호출.
 pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex) Error!void {
-    if (!self.options.react_refresh) return;
+    if (!refreshEnabled(self)) return;
     if (self.plugins.refresh.suppress_registration) return;
 
     const func_node = self.ast.getNode(new_func_idx);
@@ -65,7 +92,7 @@ pub fn maybeRegisterRefreshComponentByBinding(
     init_idx: NodeIndex,
     binding_name: []const u8,
 ) Error!void {
-    if (!self.options.react_refresh) return;
+    if (!refreshEnabled(self)) return;
     if (self.plugins.refresh.suppress_registration) return;
     if (init_idx.isNone()) return;
     if (!isComponentName(binding_name)) return;
@@ -347,7 +374,7 @@ pub fn isHookCall(name: []const u8) bool {
 /// ast에서 함수 body 내의 Hook 호출을 스캔하여 시그니처 문자열을 생성한다.
 /// Hook이 없으면 null 반환.
 pub fn scanHookSignature(self: *Transformer, func_body_idx: NodeIndex) Error!?[]const u8 {
-    if (!self.options.react_refresh) return null;
+    if (!refreshEnabled(self)) return null;
     if (func_body_idx.isNone()) return null;
 
     var sig_buf: std.ArrayList(u8) = .empty;
@@ -522,7 +549,7 @@ pub fn maybeRegisterRefreshSignature(
     old_body_idx: NodeIndex,
     new_body: *NodeIndex,
 ) Error!void {
-    if (!self.options.react_refresh) return;
+    if (!refreshEnabled(self)) return;
     if (!self.options.react_refresh_hook_signatures) return;
     const name = func_name orelse return;
     if (!isComponentName(name)) return;

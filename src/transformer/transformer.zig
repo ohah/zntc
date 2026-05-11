@@ -70,6 +70,11 @@ pub const Transformer = struct {
     /// 설정
     options: TransformOptions,
 
+    /// `options.react_refresh` + `options.jsx_filename` 의 Vite plugin-react path filter
+    /// (`.[jt]sx?$`/`.mjs$` + `node_modules` 제외) 결합 결과. jsx_filename 이 모듈 단위
+    /// 고정이라 init 시점에 한 번 계산. 함수 노드마다 호출되는 hot path 에서 path 재스캔 회피.
+    refresh_enabled_cached: bool = false,
+
     /// allocator (ArrayList 호출에 필요)
     allocator: std.mem.Allocator,
 
@@ -548,6 +553,7 @@ pub const Transformer = struct {
     const refresh = @import("transformer/refresh.zig");
     pub const isComponentName = refresh.isComponentName;
     pub const getFunctionName = refresh.getFunctionName;
+    pub const refreshEnabled = refresh.refreshEnabled;
     pub const maybeRegisterRefreshComponent = refresh.maybeRegisterRefreshComponent;
     pub const maybeRegisterRefreshComponentByBinding = refresh.maybeRegisterRefreshComponentByBinding;
     pub const makeRefreshHandle = refresh.makeRefreshHandle;

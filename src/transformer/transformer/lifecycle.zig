@@ -50,6 +50,7 @@ fn finishInit(
         .ast = ast_ptr,
         .parser_node_count = parser_count,
         .options = opts,
+        .refresh_enabled_cached = @import("refresh.zig").computeRefreshEnabled(opts),
         .allocator = allocator,
         .scratch = .empty,
         .pending_nodes = .empty,
