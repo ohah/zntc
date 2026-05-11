@@ -20,20 +20,33 @@ pub fn printUsage(writer: anytype) !void {
         \\Options:
         \\  -o, --out-file <path>            Output file path
         \\  --outdir <path>                  Output directory (for directory input)
+        \\  --outbase=<dir>                  Common parent dir for entry points (preserves tree under --outdir)
         \\  --allow-overwrite                Permit output paths to overwrite input files
-        \\  --minify                         Minify output
+        \\  --minify                         Minify output (whitespace + identifiers + syntax)
+        \\  --minify-whitespace              Remove whitespace only
+        \\  --minify-identifiers             Mangle identifiers only
+        \\  --minify-syntax                  Apply AST-level syntax minification only
+        \\  --keep-names                     Preserve `.name` of fn/class under minification (__name helper)
+        \\  --target=<spec>                  ES version or engine matrix (esnext|es2015..|chrome80,safari14,...)
         \\  --format=esm|cjs|iife|umd|amd    Module format (default: esm)
         \\  --drop=console                   Remove console.* calls
         \\  --drop=debugger                  Remove debugger statements
+        \\  --drop-labels=A,B                Remove labeled blocks named A or B
         \\  --pure:CALLEE                    Mark matching call/new expressions as removable when unused
+        \\  --ignore-annotations             Ignore /* @__PURE__ */ and `sideEffects` field
         \\  --define:KEY=VALUE               Replace KEY with VALUE globally
         \\  --sourcemap                      Generate source map (.js.map)
+        \\  --sourcemap=<mode>               external | inline | linked | both | none
         \\  --sourcemap-debug-ids            Add Sentry debugId to JS and source map
         \\  --ascii-only                     Escape non-ASCII to \uXXXX
+        \\  --charset=utf8                   Force UTF-8 output (no \uXXXX escape)
         \\  --quotes=<style>                 String quote style (double|single|preserve)
+        \\  --legal-comments=<mode>          none | inline | eof — license/legal comment placement
         \\  -w, --watch                      Watch for file changes
+        \\  --watch-delay=<ms>               Debounce window for file events (default: 50)
         \\  -p, --project <path>             Path to tsconfig.json file or directory
         \\  --tsconfig-path <path>           Alias of -p/--project (matches NAPI `tsconfigPath`)
+        \\  --tsconfig-raw=<json>            Inline tsconfig JSON (overrides file/auto-discovery)
         \\  --tokenize                       Print tokens instead of transpiling
         \\  --test262 <dir>                  Run Test262 tests
         \\  -h, --help                       Show this help
@@ -56,9 +69,26 @@ pub fn printUsage(writer: anytype) !void {
         \\  --splitting                      Enable code splitting (requires --outdir)
         \\  --preserve-modules               One file per module (library builds, requires --outdir)
         \\  --preserve-modules-root=<dir>    Root directory for output structure
-        \\  --external <pkg>                 Exclude package (repeatable)
-        \\  --globals SPEC=GLOBAL            IIFE external → global mapping (rollup output.globals)
+        \\  --inline-dynamic-imports         Force dynamic import() into the main chunk
+        \\  --external <pkg>                 Exclude package (repeatable, also: --external=pkg, --external:pkg)
+        \\  --packages=external              Treat every bare import as external
+        \\  --globals SPEC=GLOBAL            UMD/AMD/IIFE external → global mapping (rollup output.globals)
         \\  --globals=SPEC=GLOBAL[,...]      Same, comma-separated form
+        \\  --global-name=<name>             IIFE/UMD container global identifier
+        \\  --alias:K=V                      Force-rewrite import specifier K → V (resolve전)
+        \\  --fallback:K=V                   Map K → V only when normal resolve fails (`=false` → empty)
+        \\  --banner:js=<text>               Prepend text to the JS output
+        \\  --footer:js=<text>               Append text to the JS output
+        \\  --inject:KEY=PATH                Auto-import PATH and bind to KEY in every entry
+        \\  --loader:.ext=<type>             Per-extension loader (js|ts|jsx|tsx|json|text|file|dataurl|binary|copy|css|empty)
+        \\  --public-path=<url>              URL prefix for assets/chunks
+        \\  --entry-names=<pattern>          Entry filename pattern (e.g. `[name]-[hash]`)
+        \\  --chunk-names=<pattern>          Chunk filename pattern
+        \\  --asset-names=<pattern>          Asset filename pattern
+        \\  --metafile                       Emit build metadata to stderr
+        \\  --metafile=<path>                Emit build metadata to file (esbuild compat)
+        \\  --analyze                        Print bundle analyzer summary
+        \\  --shim-missing-exports           Stub-export missing named imports (rolldown compat)
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)
@@ -68,12 +98,22 @@ pub fn printUsage(writer: anytype) !void {
         \\  --use-define-for-class-fields=false  Move fields to constructor (assign semantics)
         \\  --verbatim-module-syntax          Preserve unused value imports (TS 5.0+)
         \\
+        \\JSX options:
+        \\  --jsx=<mode>                      preserve | transform | automatic | automatic-dev
+        \\  --jsx-dev                         Shortcut for --jsx=automatic-dev
+        \\  --jsx-factory=<name>              Element factory (classic, default: React.createElement)
+        \\  --jsx-fragment=<name>             Fragment factory (classic, default: React.Fragment)
+        \\  --jsx-import-source=<pkg>         Runtime import source (automatic, default: react)
+        \\  --jsx-side-effects                Preserve unused JSX expressions
+        \\
         \\Flow options:
         \\  --flow                            Enable Flow type stripping (auto-detected via @flow pragma)
         \\
         \\Resolve options:
         \\  --resolve-extensions=<exts>       Comma-separated extension order (e.g. .ios.ts,.ts,.js)
         \\  --main-fields=<fields>            Comma-separated package.json field order (e.g. react-native,browser,main)
+        \\  --node-paths=<dirs>               Comma-separated extra bare-specifier search dirs (NODE_PATH-like)
+        \\  --preserve-symlinks               Resolve symlinks to the link path itself
         \\
         \\Profiling (pipeline timing):
         \\  --profile=<CATS>                  Categories to profile. CSV of:
