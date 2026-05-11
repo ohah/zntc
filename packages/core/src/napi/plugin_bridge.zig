@@ -22,6 +22,7 @@ const parseStringArray = common.parseStringArray;
 // 메인 스레드: JS 콜백 실행 → 결과 저장 → condvar 시그널
 
 const plugin_mod = bundler_mod.plugin;
+const graph_plugins_mod = bundler_mod.graph_plugins;
 const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
 
@@ -429,6 +430,17 @@ fn NapiPluginAdapter(comptime Self: type) type {
             }
 
             if (resp.resolved_path) |path| {
+                // esbuild/Rollup 관례: NUL byte prefix 또는 query (`?` 포함) 가 있는 ID 는
+                // fs 에 실재하지 않는 가상 모듈. `.file` 로 wrap 하면 native resolver 가
+                // fs lookup 을 시도해 `Cannot resolve module` 진단을 낸다. `.virtual` 로
+                // 격상해 plugin 의 load hook 이 본문을 채울 때까지 그래프에 등록만 한다.
+                // (#3022 — vue/svelte SFC 의 `\0plugin-vue:...` 및 `?vue&type=style&lang.css`)
+                // 술어는 graph/plugins.zig 와 동일 — 한 곳에서만 정의 (drift 방지).
+                if (graph_plugins_mod.isPluginVirtualId(path)) {
+                    return .{ .virtual = .{
+                        .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                    } };
+                }
                 return .{ .file = .{
                     .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
                     .module_type = .js,
