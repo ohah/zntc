@@ -24,6 +24,7 @@ import StatsStrip from "../../components/landing/StatsStrip.astro";
 import FeatureGrid from "../../components/landing/FeatureGrid.astro";
 import Section from "../../components/landing/Section.astro";
 import CtaCard from "../../components/landing/CtaCard.astro";
+import { BenchmarkHighlight } from "../../components/BenchmarkCharts.tsx";
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <Hero
@@ -55,6 +56,48 @@ const { code } = await transpile({
   ]}
   note="2026-04-24 기준 · darwin arm64 · 5회 평균"
 />
+
+<Section padding="py-16">
+  <div class="not-content mx-auto max-w-5xl">
+    <h2 class="mb-2 text-center text-2xl font-bold sm:text-3xl">번들 성능 비교</h2>
+    <p class="mb-8 text-center text-sm text-[color:var(--sl-color-gray-3)]">
+      ZNTC 는 small/medium/large 모든 규모에서 한 자리 ms · 다른 도구는 수십 ~ 수백 ms.
+      <br class="hidden sm:inline" />
+      median wall time · 직접 CLI 바이너리 실행 · 낮을수록 빠름.
+    </p>
+
+    <BenchmarkHighlight chartKey="bundleCli" client:only="react" />
+
+    <div class="mt-6 grid gap-4 text-sm sm:grid-cols-3">
+      <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">small (10 modules)</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">2.56 ms</strong></div>
+        <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
+          vs Bun 5.38 · esbuild 6.16 · rolldown 47.8 · rspack 51.6 · webpack 183 ms
+        </div>
+      </div>
+      <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">medium (50 modules)</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">4.0 ms</strong></div>
+        <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
+          vs Bun 6.0 · esbuild 7.0 · rolldown 51.2 · rspack 55.2 · webpack 184 ms
+        </div>
+      </div>
+      <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">large (200 modules)</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">8.12 ms</strong></div>
+        <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
+          vs Bun 8.29 · esbuild 10.0 · rolldown 55.3 ms
+        </div>
+      </div>
+    </div>
+
+    <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
+      2026-05-06 · darwin arm64 · 5회 median ·
+      <a href="/zntc/reference/benchmarks/" class="ml-1 text-zig-400 hover:underline">전체 벤치마크 →</a>
+    </p>
+  </div>
+</Section>
 
 <FeatureGrid
   heading="왜 ZNTC 인가"
