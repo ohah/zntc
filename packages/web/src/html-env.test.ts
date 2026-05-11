@@ -17,18 +17,17 @@ describe('transformHtmlEnvTokens', () => {
   });
 
   test('replaces multiple tokens', () => {
-    const { html } = transformHtmlEnvTokens(
-      '<a href="<%= ZNTC_BASE %>"><%= ZNTC_LABEL %></a>',
-      { ZNTC_BASE: '/app/', ZNTC_LABEL: 'Home' },
-    );
+    const { html } = transformHtmlEnvTokens('<a href="<%= ZNTC_BASE %>"><%= ZNTC_LABEL %></a>', {
+      ZNTC_BASE: '/app/',
+      ZNTC_LABEL: 'Home',
+    });
     expect(html).toBe('<a href="/app/">Home</a>');
   });
 
   test('tolerates whitespace variants', () => {
-    const { html } = transformHtmlEnvTokens(
-      '<%=ZNTC_A%>|<%= ZNTC_A %>|<%=   ZNTC_A   %>',
-      { ZNTC_A: 'x' },
-    );
+    const { html } = transformHtmlEnvTokens('<%=ZNTC_A%>|<%= ZNTC_A %>|<%=   ZNTC_A   %>', {
+      ZNTC_A: 'x',
+    });
     expect(html).toBe('x|x|x');
   });
 
