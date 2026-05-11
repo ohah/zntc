@@ -1606,6 +1606,15 @@ pub fn emitModule(
         if (mappings_out) |mout| {
             mout.* = esm_result.mappings;
         }
+        // ESM-wrapped 모듈도 mangler rename 시 names 전파 — Sentry 가 RN cycle /
+        // scope-hoisted ESM 모듈에서도 원본 식별자 복원 가능하도록.
+        if (names_out) |nout| {
+            nout.* = esm_result.names;
+        } else if (esm_result.names.len > 0) {
+            // out 슬롯 없으면 누수 — 안전하게 free.
+            for (esm_result.names) |n| allocator.free(n);
+            allocator.free(esm_result.names);
+        }
         // entry_error_guard + entry: chain 을 entry_chain_out 으로 전달.
         // 비-entry 또는 비-guard 면 entry_chain == null.
         if (entry_chain_out) |out| {
@@ -1693,7 +1702,7 @@ pub fn emitModule(
     }
     // sourcemap names 복사: mangler rename 발생한 식별자의 원본 이름. mappings 의
     // name_index 가 가리키는 module-local 인덱스. bundle merge 시 chunk builder 로
-    // 옮길 때 chunk-global 인덱스로 재매핑 (#2987).
+    // 옮길 때 chunk-global 인덱스로 재매핑.
     if (names_out) |nout| {
         if (cg.sm_builder) |*sm| {
             if (sm.names.items.len > 0) {

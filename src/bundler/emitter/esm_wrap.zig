@@ -85,7 +85,7 @@ pub const EsmEmitResult = struct {
     code: []const u8,
     mappings: ?[]const SourceMap.Mapping = null,
     /// codegen builder 의 names 배열 (mangler rename 발생 시 원본 식별자 이름).
-    /// `mappings[i].name_index` 가 가리키는 module-local 인덱스 (#2987).
+    /// `mappings[i].name_index` 가 가리키는 module-local 인덱스.
     names: []const []const u8 = &.{},
     /// `CompiledModule.entry_chain` 참조. emitter 로 전달되는 unroll 버퍼.
     entry_chain: ?[]const u8 = null,
@@ -341,6 +341,7 @@ pub fn emitEsmWrappedModule(
 
     // 3. 호이스팅된 function 선언 (rolldown 방식: canonical 변수 직접 참조)
     var hoist_mappings: ?[]const SourceMap.Mapping = null;
+    var hoist_names: []const []const u8 = &.{};
     var hoist_preamble_lines: u32 = 0;
     if (hoisted_stmts.items.len > 0) {
         var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
@@ -371,6 +372,7 @@ pub fn emitEsmWrappedModule(
             if (sm.mappings.items.len > 0) {
                 hoist_mappings = sm.mappings.items;
             }
+            hoist_names = sm.names.items;
         }
     }
 
@@ -552,6 +554,7 @@ pub fn emitEsmWrappedModule(
     // 5. body codegen (variable_declaration/class → 할당문만)
     // func_code의 sourcemap 매핑을 병합 단계까지 보존 (호이스팅된 함수 정의 매핑, #1315)
     var func_mappings: ?[]const SourceMap.Mapping = null;
+    var func_names: []const []const u8 = &.{};
     var func_preamble_lines: u32 = 0;
     var body_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
         .minify_whitespace = options.minify_whitespace,
@@ -604,6 +607,7 @@ pub fn emitEsmWrappedModule(
         func_code = try func_cg.generateStatements(root, body_func_stmts.items);
         if (func_cg.sm_builder) |*sm| {
             if (sm.mappings.items.len > 0) func_mappings = sm.mappings.items;
+            func_names = sm.names.items;
         }
     }
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
@@ -911,13 +915,20 @@ pub fn emitEsmWrappedModule(
     }
 
     // 소스맵 매핑 수집: hoisted + body 매핑을 병합하여 단일 슬라이스로 할당.
+    // hoist/func/body 각 codegen builder 의 names 도 concat — 각 partition 의 mapping
+    // name_index 에 partition offset 을 더해 통합 names 인덱스로 재매핑.
     var mappings: ?[]const SourceMap.Mapping = null;
+    var names_merged: []const []const u8 = &.{};
     {
         const hm = hoist_mappings orelse &[_]SourceMap.Mapping{};
         const fm = func_mappings orelse &[_]SourceMap.Mapping{};
         const bm = if (body_cg.sm_builder) |*sm| sm.mappings.items else &[_]SourceMap.Mapping{};
+        const hn = hoist_names;
+        const fn_names = func_names;
+        const bn = if (body_cg.sm_builder) |*sm| sm.names.items else &[_][]const u8{};
         const all_maps = [_][]const SourceMap.Mapping{ hm, fm, bm };
         const line_offsets = [_]u32{ hoist_preamble_lines, func_preamble_lines, body_preamble_lines };
+        const name_offsets = [_]u32{ 0, @intCast(hn.len), @intCast(hn.len + fn_names.len) };
         const total = hm.len + fm.len + bm.len;
         if (total > 0) {
             // 각 줄의 첫 매핑이 column 0이 아니면, column 0 매핑을 추가.
@@ -936,20 +947,44 @@ pub fn emitEsmWrappedModule(
 
             const buf = try allocator.alloc(SourceMap.Mapping, total + col0_count);
             var wi: usize = 0;
-            for (all_maps, line_offsets) |maps, offset| {
+            for (all_maps, line_offsets, name_offsets) |maps, offset, name_off| {
                 var prev_gl: u32 = std.math.maxInt(u32);
                 for (maps) |m| {
                     const gl = m.generated_line + offset;
                     if (gl != prev_gl and m.generated_column > 0) {
+                        // col0 line anchor — name 없음 (line 단위 fallback 용도).
                         buf[wi] = .{ .generated_line = gl, .generated_column = 0, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
                         wi += 1;
                     }
                     prev_gl = gl;
-                    buf[wi] = .{ .generated_line = gl, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
+                    const shifted_name: ?u32 = if (m.name_index) |ni| ni + name_off else null;
+                    buf[wi] = .{ .generated_line = gl, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column, .name_index = shifted_name };
                     wi += 1;
                 }
             }
             mappings = buf[0..wi];
+        }
+
+        // names concat — hoist + func + body. mapping.name_index 의 partition offset 과 정합.
+        const total_names = hn.len + fn_names.len + bn.len;
+        if (total_names > 0) {
+            const names_buf = try allocator.alloc([]const u8, total_names);
+            errdefer allocator.free(names_buf);
+            var filled: usize = 0;
+            errdefer for (names_buf[0..filled]) |s| allocator.free(s);
+            for (hn) |n| {
+                names_buf[filled] = try allocator.dupe(u8, n);
+                filled += 1;
+            }
+            for (fn_names) |n| {
+                names_buf[filled] = try allocator.dupe(u8, n);
+                filled += 1;
+            }
+            for (bn) |n| {
+                names_buf[filled] = try allocator.dupe(u8, n);
+                filled += 1;
+            }
+            names_merged = names_buf;
         }
     }
 
@@ -963,6 +998,7 @@ pub fn emitEsmWrappedModule(
     return .{
         .code = try allocator.dupe(u8, wrapped.items),
         .mappings = mappings,
+        .names = names_merged,
         .entry_chain = entry_chain_owned,
     };
 }

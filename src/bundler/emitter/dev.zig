@@ -16,7 +16,7 @@ pub const ModuleMappingArgs = struct {
     maps: []const SourceMap.Mapping,
     /// codegen builder 의 names 슬라이스. mapping.name_index 가 가리키는 식별자
     /// 원본 이름들 — chunk builder 로 옮길 때 module-local 인덱스를 chunk-global
-    /// 인덱스로 재매핑 (#2987).
+    /// 인덱스로 재매핑.
     module_names: []const []const u8 = &.{},
     base_line: u32,
     preamble_lines: u32,
@@ -135,8 +135,8 @@ inline fn emitResolvedMapping(
 ) !ResolvedMapping {
     const r = try resolver.resolve(m);
     // module-local name_index → chunk-global 재매핑. mangler rename 발생 시
-    // codegen 이 module builder 의 names 에 등록한 원본 이름을 chunk builder
-    // 로 옮겨 Sentry / DevTools 가 minified 식별자의 원본을 복원 가능하게.
+    // codegen 이 module builder 의 names 에 등록한 원본 이름을 chunk builder 로
+    // 옮겨 Sentry / DevTools 가 minified 식별자의 원본 복원 가능.
     const chunk_name_idx: ?u32 = blk: {
         const local = m.name_index orelse break :blk null;
         if (local >= args.module_names.len) break :blk null;
