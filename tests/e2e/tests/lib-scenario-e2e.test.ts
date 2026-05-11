@@ -572,6 +572,29 @@ render(<App />, mount);
     },
   },
   {
+    // 회귀 테스트 — IIFE format + JSX automatic. IIFE 는 ESM `import` 가 불가하므로
+    // transformer 가 추가한 jsx-runtime import 노드가 chunk top 의 `import` 가 아니라
+    // 번들 안에 inline 합쳐져야 한다 (preact/jsx-runtime 모듈이 IIFE wrapper 내부).
+    name: 'H10_preact_jsx_iife',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.tsx',
+    extraArgs: ['--format=iife', '--jsx=automatic', '--jsx-import-source=preact'],
+    entry: `import { render } from 'preact';
+
+function App() {
+  return <p data-testid="iife">iife-jsx-ok</p>;
+}
+
+const mount = document.createElement('div');
+document.body.appendChild(mount);
+render(<App />, mount);
+`,
+    expect: {
+      iife: 'iife-jsx-ok',
+    },
+  },
+  {
     name: 'H3_ts_legacy_decorator',
     category: 'H_jsx_ts',
     packages: [],
