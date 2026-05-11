@@ -573,7 +573,11 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       splitting: opts.splitting || undefined,
       compiler: config?.compiler,
     });
-    const htmlEnv = loadEnv(configEnv.mode, opts.envDir ? resolve(opts.envDir) : (pipelineRoot ?? root), ['ZNTC_']);
+    const htmlEnv = loadEnv(
+      configEnv.mode,
+      opts.envDir ? resolve(opts.envDir) : (pipelineRoot ?? root),
+      ['ZNTC_'],
+    );
     const { warnings: htmlWarnings } = web.applyHtmlEnvTokens(outdir, htmlEnv);
     if (opts.logLevel !== 'silent') {
       for (const w of htmlWarnings) console.error(`[html-env] ${w}`);
