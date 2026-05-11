@@ -1110,7 +1110,9 @@ fn shouldSkipLazyBarrelEmit(
 
     for (module.import_bindings) |binding| {
         if (binding.kind == .namespace) return false;
-        if (binding.isSynthetic()) return false;
+        // helper marker binding (JSX runtime / runtime helper import) 이 있으면 단순
+        // re-export barrel 이 아니다 — elide 대상에서 제외.
+        if (binding.is_helper) return false;
     }
 
     for (module.export_bindings) |binding| {
