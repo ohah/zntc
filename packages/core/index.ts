@@ -2322,47 +2322,151 @@ export function benchmark(options: BenchmarkOptions): BenchmarkResult {
 
 type MaybePromise<T> = T | Promise<T>;
 
-export interface RollupPluginContext {
-  error(error: unknown): never;
+/** vite 4+ 신형 hook object. plugin 작성자가 hook 단위로 filter 를 선언하는 형식.
+ *  ZNTC 는 현재 filter 를 native 단계에서 활용하지 않고 handler 만 추출해 호출한다. */
+type HookObject<F extends (...args: never[]) => unknown> = {
+  filter?: unknown;
+  order?: 'pre' | 'post' | null;
+  handler: F;
+};
+
+type Hook<F extends (...args: never[]) => unknown> = F | HookObject<F>;
+
+function extractHandler<F extends (...args: never[]) => unknown>(
+  hook: Hook<F> | undefined,
+): F | undefined {
+  if (hook == null) return undefined;
+  if (typeof hook === 'function') return hook;
+  if (typeof hook === 'object' && typeof (hook as HookObject<F>).handler === 'function') {
+    return (hook as HookObject<F>).handler;
+  }
+  return undefined;
 }
+
+export interface RollupPluginContext {
+  /** plugin 안에서 error 를 throw 한다. Rollup `this.error` 호환. */
+  error(error: unknown): never;
+  /** warning 을 콘솔에 출력한다. Rollup `this.warn` 호환 — 빌드를 멈추지 않음. */
+  warn(message: unknown): void;
+  /** Watch 모드에서 추가로 감시할 파일을 등록. 현재 no-op (graph mutation 미지원). */
+  addWatchFile(id: string): void;
+  /** 모듈 resolve. 현재 미지원 — 호출 시 Error throw 로 plugin 작성자에게 알림. */
+  resolve(
+    source: string,
+    importer?: string | null,
+    options?: unknown,
+  ): Promise<{ id: string; external?: boolean } | null>;
+  /** Asset/chunk 추가 emit. 현재 미지원 — 호출 시 Error throw. */
+  emitFile(file: unknown): string;
+}
+
+type ResolveIdResult = string | null | undefined | void | { id: string; external?: boolean };
+type LoadResult = string | null | undefined | void | { code: string; map?: unknown };
+type TransformResult = string | null | undefined | void | { code: string; map?: unknown };
+type RenderChunkResult = string | null | undefined | void | { code: string };
 
 export interface RollupPlugin {
   name: string;
-  resolveId?(
-    this: RollupPluginContext,
-    source: string,
-    importer?: string | null,
-  ): MaybePromise<string | null | undefined | void | { id: string; external?: boolean }>;
-  load?(
-    this: RollupPluginContext,
-    id: string,
-  ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
-  transform?(
-    this: RollupPluginContext,
-    code: string,
-    id: string,
-  ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
-  renderChunk?(
-    this: RollupPluginContext,
-    code: string,
-    chunk: string,
-  ): MaybePromise<string | null | undefined | void | { code: string }>;
-  generateBundle?(this: RollupPluginContext, outputs: OutputFile[]): MaybePromise<void>;
+  /** Rollup `resolveId`. Function 또는 vite 4+ 신형 hook object `{ filter, handler }` 둘 다 허용. */
+  resolveId?: Hook<
+    (
+      this: RollupPluginContext,
+      source: string,
+      importer?: string | null,
+    ) => MaybePromise<ResolveIdResult>
+  >;
+  load?: Hook<(this: RollupPluginContext, id: string) => MaybePromise<LoadResult>>;
+  transform?: Hook<
+    (this: RollupPluginContext, code: string, id: string) => MaybePromise<TransformResult>
+  >;
+  renderChunk?: Hook<
+    (this: RollupPluginContext, code: string, chunk: string) => MaybePromise<RenderChunkResult>
+  >;
+  generateBundle?: Hook<(this: RollupPluginContext, outputs: OutputFile[]) => MaybePromise<void>>;
   /** Bundle 시작 시 1회. esbuild `onStart` / Rollup `buildStart` 호환 (#2156).
    *  ZNTC 는 인자 없이 호출 (esbuild 스타일) — Rollup plugin 이 `options` 인자를 기대하면
    *  plugin 자체 closure 로 받아둘 것. */
-  buildStart?(this: RollupPluginContext): MaybePromise<void>;
+  buildStart?: Hook<(this: RollupPluginContext) => MaybePromise<void>>;
   /** Bundle 종료 시 1회. Rollup `buildEnd` 호환 — error 가 있으면 빌드 실패. */
-  buildEnd?(this: RollupPluginContext, error?: Error): MaybePromise<void>;
+  buildEnd?: Hook<(this: RollupPluginContext, error?: Error) => MaybePromise<void>>;
   /** Output 파일 write 완료 후. Rollup `closeBundle` 호환. */
-  closeBundle?(this: RollupPluginContext): MaybePromise<void>;
+  closeBundle?: Hook<(this: RollupPluginContext) => MaybePromise<void>>;
 }
 
-function createRollupPluginContext(): RollupPluginContext {
+/** ZNTC native source-map parser 가 요구하는 V3 필드(version=3, sources array, mappings string)
+ *  를 사전 검증한 후 `serializePluginSourceMap` 에 위임해 정규화. 일부 plugin (vue/svelte 등) 이
+ *  `null` mappings · sources 누락된 sparse map 또는 `"3"` string version 을 반환할 수 있어
+ *  V3 명세에 너그럽게 coerce 한다. 검증 실패 시 map 을 drop 하고 `onDrop` 으로 1회 알린다
+ *  (조용히 drop 하면 plugin 작성자가 sourcemap 누락 원인을 추적 불가). */
+function normalizeVitePluginSourceMap(
+  map: unknown,
+  onDrop: (reason: string) => void,
+): string | undefined {
+  if (map == null) return undefined;
+  if (typeof map === 'object') {
+    const obj = map as Record<string, unknown>;
+    const ver = typeof obj.version === 'string' ? Number(obj.version) : obj.version;
+    if (ver !== 3) {
+      onDrop(`version=${String(obj.version)} (expected 3)`);
+      return undefined;
+    }
+    if (!Array.isArray(obj.sources)) {
+      onDrop(`missing sources array`);
+      return undefined;
+    }
+    if (typeof obj.mappings !== 'string') {
+      onDrop(`missing mappings string`);
+      return undefined;
+    }
+  }
+  try {
+    return serializePluginSourceMap(map) ?? undefined;
+  } catch (err) {
+    onDrop(err instanceof Error ? err.message : String(err));
+    return undefined;
+  }
+}
+
+function createRollupPluginContext(pluginName: string): RollupPluginContext {
   return {
     error(error: unknown): never {
       throw error;
     },
+    warn(message: unknown): void {
+      console.warn(
+        `@zntc/core [${pluginName}]: ${typeof message === 'string' ? message : String(message)}`,
+      );
+    },
+    addWatchFile(_id: string): void {
+      // no-op: ZNTC 는 plugin 이 알려준 추가 watch 파일을 native watcher 에 전파하는 surface 가
+      // 아직 없다. 대부분 transform 의 부수 dep 추적용이라 source change 자체로 잡힌다.
+      // SFC 의 `<style src="./x.css">` 같은 *외부* 파일 변경은 stale 캐시 가능 — 회귀 시 별도
+      // surface 필요.
+    },
+    resolve(_source, _importer, _options): Promise<never> {
+      // tsc 가 `Promise<never>` declared return 에서 sync `this.error(...)` (never) 만 있을 때
+      // reachable end point 검사를 통과시키지 못해 직접 throw 로 시그니처와 일치시킨다.
+      throw new Error(
+        `@zntc/core [${pluginName}]: this.resolve() is not supported by vitePlugin() adapter yet ` +
+          `(graph mutation surface missing). Use alias config or another plugin's resolveId hook.`,
+      );
+    },
+    emitFile(_file): never {
+      throw new Error(
+        `@zntc/core [${pluginName}]: this.emitFile() is not supported by vitePlugin() adapter yet.`,
+      );
+    },
+  };
+}
+
+/** 동일 plugin 의 동일 sourcemap drop reason 은 한 번만 warn — vue/svelte SFC 처럼 모듈 N 개에서
+ *  같은 메시지가 반복되면 콘솔이 노이즈로 가득 차 원인을 가린다. */
+function createDropWarner(context: RollupPluginContext): (reason: string) => void {
+  const seen = new Set<string>();
+  return (reason) => {
+    if (seen.has(reason)) return;
+    seen.add(reason);
+    context.warn(`sourcemap dropped: ${reason}`);
   };
 }
 
@@ -2370,11 +2474,12 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
   return {
     name: rollupPlugin.name,
     setup(build) {
-      const context = createRollupPluginContext();
-      if (rollupPlugin.resolveId) {
-        const hook = rollupPlugin.resolveId;
+      const context = createRollupPluginContext(rollupPlugin.name);
+      const onDropSourceMap = createDropWarner(context);
+      const resolveId = extractHandler(rollupPlugin.resolveId);
+      if (resolveId) {
         build.onResolve({ filter: /.*/ }, (args) => {
-          const result = hook.call(context, args.path, args.importer);
+          const result = resolveId.call(context, args.path, args.importer);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
             if (typeof result === 'string') return { path: result };
@@ -2386,40 +2491,46 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
         });
       }
 
-      if (rollupPlugin.load) {
-        const hook = rollupPlugin.load;
+      const load = extractHandler(rollupPlugin.load);
+      if (load) {
         build.onLoad({ filter: /.*/ }, (args) => {
-          const result = hook.call(context, args.path);
+          const result = load.call(context, args.path);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
             if (typeof result === 'string') return { contents: result };
             if (typeof result === 'object' && 'code' in result) {
-              return { contents: result.code, map: result.map };
+              return {
+                contents: result.code,
+                map: normalizeVitePluginSourceMap(result.map, onDropSourceMap),
+              };
             }
             return null;
           });
         });
       }
 
-      if (rollupPlugin.transform) {
-        const hook = rollupPlugin.transform;
+      const transform = extractHandler(rollupPlugin.transform);
+      if (transform) {
         build.onTransform({ filter: /.*/ }, (args) => {
-          const result = hook.call(context, args.code, args.path);
+          const result = transform.call(context, args.code, args.path);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
             if (typeof result === 'string') return { code: result };
             if (typeof result === 'object' && 'code' in result) {
-              return { code: result.code, map: result.map };
+              return {
+                code: result.code,
+                map: normalizeVitePluginSourceMap(result.map, onDropSourceMap),
+              };
             }
             return null;
           });
         });
       }
 
-      if (rollupPlugin.renderChunk) {
-        const hook = rollupPlugin.renderChunk;
+      const renderChunk = extractHandler(rollupPlugin.renderChunk);
+      if (renderChunk) {
         build.onRenderChunk({ filter: /.*/ }, (args) => {
-          const result = hook.call(context, args.code, args.chunk);
+          const result = renderChunk.call(context, args.code, args.chunk);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
             if (typeof result === 'string') return { code: result };
@@ -2431,24 +2542,24 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
         });
       }
 
-      if (rollupPlugin.generateBundle) {
-        const hook = rollupPlugin.generateBundle;
-        build.onGenerateBundle((outputs) => hook.call(context, outputs));
+      const generateBundle = extractHandler(rollupPlugin.generateBundle);
+      if (generateBundle) {
+        build.onGenerateBundle((outputs) => generateBundle.call(context, outputs));
       }
 
-      if (rollupPlugin.buildStart) {
-        const hook = rollupPlugin.buildStart;
-        build.onBuildStart(() => hook.call(context));
+      const buildStart = extractHandler(rollupPlugin.buildStart);
+      if (buildStart) {
+        build.onBuildStart(() => buildStart.call(context));
       }
 
-      if (rollupPlugin.buildEnd) {
-        const hook = rollupPlugin.buildEnd;
-        build.onBuildEnd((err) => hook.call(context, err));
+      const buildEnd = extractHandler(rollupPlugin.buildEnd);
+      if (buildEnd) {
+        build.onBuildEnd((err) => buildEnd.call(context, err));
       }
 
-      if (rollupPlugin.closeBundle) {
-        const hook = rollupPlugin.closeBundle;
-        build.onCloseBundle(() => hook.call(context));
+      const closeBundle = extractHandler(rollupPlugin.closeBundle);
+      if (closeBundle) {
+        build.onCloseBundle(() => closeBundle.call(context));
       }
     },
   };
