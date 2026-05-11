@@ -1,18 +1,22 @@
 ---
-title: Error code reference
-description: Full list of ZNTC error codes
+title: Error codes reference
+description: Complete list of ZNTC error codes
 ---
 
-ZNTC assigns a unique code to every diagnostic. Click a code to see details and a reproduction.
+ZNTC assigns a unique code to every diagnostic. Click a code for details and a reproduction snippet.
 
 
-## Target / compatibility
+## Target/Compatibility
 
 | Code | Message |
 |------|--------|
 | [`ZNTC0001`](/zntc/en/reference/errors/zntc0001) | Top-level await is not available in the configured target environment |
+| [`ZNTC0002`](/zntc/en/reference/errors/zntc0002) | Top-level await requires ESM output format |
+| [`ZNTC0003`](/zntc/en/reference/errors/zntc0003) | Code splitting requires ESM output format |
+| [`ZNTC0004`](/zntc/en/reference/errors/zntc0004) | Entry path is empty or not found |
+| [`ZNTC0005`](/zntc/en/reference/errors/zntc0005) | preserveModules requires ESM output format |
 
-## Bundler — import/export
+## Bundler: Import/Export
 
 | Code | Message |
 |------|--------|
@@ -22,7 +26,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0103`](/zntc/en/reference/errors/zntc0103) | Module resolution failed |
 | [`ZNTC0104`](/zntc/en/reference/errors/zntc0104) | Re-export references the module itself (self-cycle) |
 
-## Bundler — files / loaders
+## Bundler: File/Loader
 
 | Code | Message |
 |------|--------|
@@ -30,7 +34,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0201`](/zntc/en/reference/errors/zntc0201) | Failed to parse JSON |
 | [`ZNTC0202`](/zntc/en/reference/errors/zntc0202) | No loader is configured for this file type |
 
-## Parser — import/export
+## Parser: Import/Export
 
 | Code | Message |
 |------|--------|
@@ -50,7 +54,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0313`](/zntc/en/reference/errors/zntc0313) | Expected 'import.meta', 'import.source', or 'import.defer' |
 | [`ZNTC0314`](/zntc/en/reference/errors/zntc0314) | 'import.source'/'import.defer' requires arguments |
 
-## Parser — declarations / classes
+## Parser: Declaration/Class
 
 | Code | Message |
 |------|--------|
@@ -70,7 +74,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0413`](/zntc/en/reference/errors/zntc0413) | Labelled function declaration is not allowed in loop body |
 | [`ZNTC0414`](/zntc/en/reference/errors/zntc0414) | Lexical declaration is not allowed in statement position |
 
-## Parser — bindings / identifiers
+## Parser: Binding/Identifier
 
 | Code | Message |
 |------|--------|
@@ -94,7 +98,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0517`](/zntc/en/reference/errors/zntc0517) | Invalid assignment target |
 | [`ZNTC0518`](/zntc/en/reference/errors/zntc0518) | Assignment to 'eval' or 'arguments' is not allowed in strict mode |
 
-## Parser — expressions / operators
+## Parser: Expression/Operator
 
 | Code | Message |
 |------|--------|
@@ -107,6 +111,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0606`](/zntc/en/reference/errors/zntc0606) | Private field access on super is not allowed |
 | [`ZNTC0620`](/zntc/en/reference/errors/zntc0620) | 'super' is not allowed outside of a method |
 | [`ZNTC0621`](/zntc/en/reference/errors/zntc0621) | 'super()' is only allowed in a class constructor |
+| [`ZNTC0622`](/zntc/en/reference/errors/zntc0622) | 'super' cannot be used as the base of an optional chain |
 | [`ZNTC0607`](/zntc/en/reference/errors/zntc0607) | Tagged template cannot be used in optional chain |
 | [`ZNTC0608`](/zntc/en/reference/errors/zntc0608) | Property key expected |
 | [`ZNTC0609`](/zntc/en/reference/errors/zntc0609) | Expected ':' after property key |
@@ -121,7 +126,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0618`](/zntc/en/reference/errors/zntc0618) | String literal contains lone surrogate |
 | [`ZNTC0619`](/zntc/en/reference/errors/zntc0619) | 'new.target' is not allowed outside of functions |
 
-## Parser — statements / control flow
+## Parser: Statement/Control Flow
 
 | Code | Message |
 |------|--------|
@@ -136,7 +141,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0708`](/zntc/en/reference/errors/zntc0708) | Escaped reserved word cannot be used as label in strict mode |
 | [`ZNTC0709`](/zntc/en/reference/errors/zntc0709) | Reserved word in strict mode cannot be used as label |
 
-## Parser — strict mode
+## Parser: Strict Mode
 
 | Code | Message |
 |------|--------|
@@ -146,7 +151,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0803`](/zntc/en/reference/errors/zntc0803) | Deleting an identifier is not allowed in strict mode |
 | [`ZNTC0804`](/zntc/en/reference/errors/zntc0804) | \"use strict\" not allowed in function with non-simple parameters |
 
-## Parser — await / yield / JSX / TS
+## Parser: Await/Yield/JSX/TS
 
 | Code | Message |
 |------|--------|
@@ -165,22 +170,26 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC0912`](/zntc/en/reference/errors/zntc0912) | Type expected |
 | [`ZNTC0913`](/zntc/en/reference/errors/zntc0913) | Expected 'in' in mapped type |
 | [`ZNTC0914`](/zntc/en/reference/errors/zntc0914) | Expected 'type' after 'opaque' |
+| [`ZNTC0915`](/zntc/en/reference/errors/zntc0915) | Modifiers cannot appear on index signature parameters |
+| [`ZNTC0916`](/zntc/en/reference/errors/zntc0916) | An index signature parameter cannot have a question mark |
+| [`ZNTC0917`](/zntc/en/reference/errors/zntc0917) | 'yield' is not allowed outside generator function |
+| [`ZNTC0918`](/zntc/en/reference/errors/zntc0918) | TypeScript syntax is not allowed in JavaScript source |
 
-## Semantic — redeclaration
+## Semantic: Redeclaration
 
 | Code | Message |
 |------|--------|
 | [`ZNTC1000`](/zntc/en/reference/errors/zntc1000) | Identifier has already been declared |
 | [`ZNTC1001`](/zntc/en/reference/errors/zntc1001) | Cannot be used as a binding identifier in strict mode |
 
-## Semantic — private
+## Semantic: Private Member
 
 | Code | Message |
 |------|--------|
 | [`ZNTC1100`](/zntc/en/reference/errors/zntc1100) | Private field has already been declared |
 | [`ZNTC1101`](/zntc/en/reference/errors/zntc1101) | Private field must be declared in an enclosing class |
 
-## Semantic — export / label
+## Semantic: Export/Label
 
 | Code | Message |
 |------|--------|
@@ -190,7 +199,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC1203`](/zntc/en/reference/errors/zntc1203) | Cannot continue to non-loop label |
 | [`ZNTC1204`](/zntc/en/reference/errors/zntc1204) | Undefined label |
 
-## Semantic — class / other
+## Semantic: Class/Other
 
 | Code | Message |
 |------|--------|
@@ -198,3 +207,8 @@ ZNTC assigns a unique code to every diagnostic. Click a code to see details and 
 | [`ZNTC1301`](/zntc/en/reference/errors/zntc1301) | Property name __proto__ appears more than once in object literal |
 | [`ZNTC1302`](/zntc/en/reference/errors/zntc1302) | Getter must not have any formal parameters |
 | [`ZNTC1303`](/zntc/en/reference/errors/zntc1303) | Setter must have exactly one formal parameter |
+| [`ZNTC1400`](/zntc/en/reference/errors/zntc1400) | Type reference is not defined in the same file |
+| [`ZNTC1401`](/zntc/en/reference/errors/zntc1401) | Prop type is not supported by codegen |
+| [`ZNTC1402`](/zntc/en/reference/errors/zntc1402) | NativeProps body is not an object literal or known wrapper |
+| [`ZNTC1403`](/zntc/en/reference/errors/zntc1403) | Duplicate component name in schema |
+| [`ZNTC1404`](/zntc/en/reference/errors/zntc1404) | Inheritance / intersection chain exceeds depth limit |

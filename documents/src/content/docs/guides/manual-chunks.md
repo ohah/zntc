@@ -60,7 +60,7 @@ manualChunks: (id, meta) => {
 | `dynamicImporters` | `string[]` | `import()` 한 모듈들 |
 | `importedIds` | `string[]` | 이 모듈이 static import 한 것들 (external 포함) |
 | `dynamicallyImportedIds` | `string[]` | 이 모듈이 dynamic import 한 것들 |
-| `syntheticNamedExports` | `boolean` | plugin 정의 — 현재 항상 false (Phase B 대기) |
+| `syntheticNamedExports` | `boolean` | plugin 정의 — 현재 항상 false |
 | `implicitlyLoadedAfterOneOf` | `string[]` | plugin emitFile 옵션 — 현재 항상 [] |
 | `implicitlyLoadedBefore` | `string[]` | 같음 |
 
@@ -181,8 +181,6 @@ export default defineConfig({
 });
 ```
 
-## 향후
+## 지원 범위
 
-현재 13/14 Rollup `ModuleInfo` 필드 노출. 진행 중:
-- **Phase B** (issue #1880): plugin context API (`this.getModuleInfo`/`emitFile`/`resolve`) + `info.meta` 필드
-- **Phase C** (issue #1881): ESTree adapter — `info.ast` 노출
+Rollup `ModuleInfo` 14개 필드 중 13개 노출. `info.ast` 및 plugin context API (`this.getModuleInfo` / `emitFile` / `resolve`) 는 아직 제공하지 않습니다.

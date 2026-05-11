@@ -38,12 +38,14 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
   ]}
   codeFilename="example.ts"
   codeLang="ts"
-  codeExample={`import { transpile } from '@zntc/core';
+  codeExample={`import { init, transpile } from '@zntc/core';
 
-const { code } = await transpile({
-  code: source,
-  jsx: 'preserve',
-  target: 'es2020',
+init();
+
+const { code } = transpile(source, {
+  filename: 'input.tsx',
+  jsx: 'automatic',
+  target: 'es2022',
 });`}
 />
 

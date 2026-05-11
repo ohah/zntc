@@ -3,6 +3,30 @@
   "version": "0.1.0",
   "description": "ZNTC React Native platform — Metro HMR adapter + RN preset (buildRnBundleOptions) + plugin factories + RN runtime",
   "license": "MIT",
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/react-native"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "react-native",
+    "metro",
+    "hermes",
+    "flow",
+    "worklets",
+    "reanimated",
+    "transpiler",
+    "bundler",
+    "zntc"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "files": [
     "dist/",
     "runtime/",

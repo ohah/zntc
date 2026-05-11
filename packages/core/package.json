@@ -3,12 +3,42 @@
   "version": "0.1.0",
   "description": "ZNTC native transpiler & compiler binding",
   "license": "MIT",
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "transpiler",
+    "compiler",
+    "bundler",
+    "typescript",
+    "javascript",
+    "jsx",
+    "tsx",
+    "flow",
+    "zig",
+    "napi",
+    "swc",
+    "esbuild",
+    "oxc",
+    "zntc"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "bin": {
     "zntc": "./bin/zntc.mjs"
   },
   "source": "./index.ts",
   "files": [
     "dist/",
+    "bin/banner.mjs",
     "bin/cli-flags.mjs",
     "bin/rn-asset-copy.mjs",
     "bin/rn-dev-input.mjs",

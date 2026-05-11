@@ -21,6 +21,7 @@ import {
   buildRnBundleOverride,
   buildRnDevServerInput,
 } from './rn-dev-input.mjs';
+import { printZntcBanner } from './banner.mjs';
 
 function isMissingBuiltCore(error) {
   if (!error || error.code !== 'ERR_MODULE_NOT_FOUND') return false;
@@ -77,6 +78,20 @@ const {
 export { KNOWN_FLAGS };
 const requireFromCli = createRequire(import.meta.url);
 const cliNodeModules = resolve(dirname(fileURLToPath(import.meta.url)), '../../..', 'node_modules');
+
+// `@zntc/core` 패키지 version — dev server banner 의 v0.x.y 자리에 표시.
+// dev / serve / RN dev 분기에서만 사용되므로 lazy 로 읽어 `zntc transpile` 같은
+// one-shot CLI 의 cold start 비용 회피.
+let cliVersionCache;
+function getCliVersion() {
+  if (cliVersionCache !== undefined) return cliVersionCache;
+  try {
+    cliVersionCache = requireFromCli('../package.json').version;
+  } catch {
+    cliVersionCache = null;
+  }
+  return cliVersionCache;
+}
 
 // ─── CLI 인자 파싱 ───
 
@@ -610,6 +625,11 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
 // (web 의 dist 에 server 가 inline). #2539 PR #6a cut over.
 
 async function runAppDev(opts, config, configEnv, _dotenvVars) {
+  printZntcBanner({
+    flavor: 'web',
+    version: getCliVersion(),
+    silent: opts.logLevel === 'silent',
+  });
   const web = await loadWebModule();
   const root = resolve(opts.appRoot ?? '.');
   opts.outdir = opts.outdir || join(root, '.zntc-dev');
@@ -818,9 +838,10 @@ async function runRnDev(opts, config) {
     );
     process.exit(1);
   }
-  // serveRn 가 자체 banner / startup log 출력 (`logInfo` Metro-style badge).
+  // banner / bundle log 모두 serveRn 내부가 출력 — version 만 주입.
   const handle = await rn.serveRn(rn.buildRnDevServerOptions(input), {
     silent: opts.logLevel === 'silent',
+    version: getCliVersion(),
   });
 
   // Graceful shutdown — SIGINT / SIGTERM 시 handle.stop().
@@ -1855,6 +1876,11 @@ async function dispatchBuild(opts, config, configEnv, dotenvVars) {
     return { errors: 0 };
   }
   if (opts.serve) {
+    printZntcBanner({
+      flavor: 'web',
+      version: getCliVersion(),
+      silent: opts.logLevel === 'silent',
+    });
     await runServe(opts, config);
     return { errors: 0 };
   }

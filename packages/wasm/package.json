@@ -3,6 +3,32 @@
   "version": "0.1.0",
   "description": "ZNTC native transpiler & compiler — WASM build",
   "license": "MIT",
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "wasm",
+    "webassembly",
+    "transpiler",
+    "compiler",
+    "bundler",
+    "typescript",
+    "javascript",
+    "browser",
+    "deno",
+    "workers",
+    "zntc"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "files": [
     "dist/",
     "zntc.wasm",

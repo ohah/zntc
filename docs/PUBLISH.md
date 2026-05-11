@@ -55,7 +55,7 @@ bun run release:publish
 - `--tag <name>`: dist-tag (예: `next` / `beta`) 명시
 - `--access public`: 자동 (scoped package 의 default)
 
-순서: `core → web / react-native / @zntc/vite-plugin / wasm / init` (server 는 private skip).
+순서: platform sub-package 9개 (`@zntc/core-{darwin,linux,win32}-{x64,arm64,...}` — main 의 optionalDependencies 가 reference 하므로 먼저) → `core` → `web` → `react-native` → `@zntc/vite-plugin` → `@zntc/rspack-loader` → `wasm` → `init` (server 는 private skip). 정확한 순서는 `scripts/release.ts` 의 `PUBLISH_ORDER` 가 single source of truth.
 
 ## 수동 publish (필요 시)
 
@@ -113,7 +113,7 @@ bun run changeset:status   # 누적된 changeset 보기 (어느 패키지가 어
   - `access: "public"` — scoped `@zntc/*` 와 unscoped `@zntc/vite-plugin` 모두 public publish (default 가 모든 package 에 적용)
   - `ignore: ["documents"]` — `documents` 는 publishable name 인데 publish 의도 없음. private 인 server / examples / tests 는 `private: true` 로 자동 skip
   - `baseBranch: "main"`
-- changesets 의 bump 대상 = release.ts 의 publish 대상 = `packages/*` 중 non-private 6개 (core / web / react-native / @zntc/vite-plugin / wasm / init). 불일치 시 release.ts `PUBLISH_ORDER` 도 동기화 필요
+- changesets 의 bump 대상 = release.ts 의 publish 대상 = `packages/*` 중 non-private 7개 (core / web / react-native / @zntc/vite-plugin / @zntc/rspack-loader / wasm / init) + platform sub-package 9개. 불일치 시 release.ts `PUBLISH_ORDER` 도 동기화 필요
 
 ## 관련 PR
 

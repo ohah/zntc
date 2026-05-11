@@ -3,6 +3,33 @@
   "version": "0.1.0",
   "description": "Use ZNTC as the TypeScript/JSX/Flow transformer in Rspack and Webpack (drop-in alternative to swc-loader / esbuild-loader / babel-loader)",
   "license": "MIT",
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/rspack-loader"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "rspack",
+    "rspack-loader",
+    "webpack",
+    "webpack-loader",
+    "swc-loader",
+    "esbuild-loader",
+    "babel-loader",
+    "typescript",
+    "jsx",
+    "flow",
+    "transpiler",
+    "zntc"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "source": "./src/index.ts",
   "files": [
     "dist/",

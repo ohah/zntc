@@ -3,9 +3,23 @@
   "version": "0.1.0",
   "description": "Linux arm64 (musl) native binary for @zntc/core",
   "license": "MIT",
-  "files": [
-    "zntc.node",
-    "README.md"
+  "author": "ohah",
+  "homepage": "https://ohah.github.io/zntc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ohah/zntc.git",
+    "directory": "packages/core-linux-arm64-musl"
+  },
+  "bugs": {
+    "url": "https://github.com/ohah/zntc/issues"
+  },
+  "keywords": [
+    "zntc",
+    "napi",
+    "native-binary",
+    "transpiler",
+    "compiler",
+    "linux-arm64-musl"
   ],
   "os": [
     "linux"
@@ -15,6 +29,10 @@
   ],
   "libc": [
     "musl"
+  ],
+  "files": [
+    "zntc.node",
+    "README.md"
   ],
   "main": "zntc.node",
   "scripts": {
