@@ -6,11 +6,11 @@ import {
   mkdtempSync,
   rmSync,
   mkdirSync,
+  readdirSync,
   tmpdir,
   join,
   resolve,
   BIN_DIR,
-  CLI,
   RUNTIME,
   shellQuote,
   readRedirectedProcessOutput,
@@ -23,10 +23,9 @@ describe('CLI: bootstrap', () => {
     try {
       const binDir = join(dir, 'bin');
       mkdirSync(binDir, { recursive: true });
-      cpSync(CLI, join(binDir, 'zntc.mjs'));
-      cpSync(resolve(BIN_DIR, 'cli-flags.mjs'), join(binDir, 'cli-flags.mjs'));
-      cpSync(resolve(BIN_DIR, 'rn-dev-input.mjs'), join(binDir, 'rn-dev-input.mjs'));
-      cpSync(resolve(BIN_DIR, 'rn-asset-copy.mjs'), join(binDir, 'rn-asset-copy.mjs'));
+      for (const f of readdirSync(BIN_DIR)) {
+        if (f.endsWith('.mjs')) cpSync(resolve(BIN_DIR, f), join(binDir, f));
+      }
 
       const result = readRedirectedProcessOutput(
         [RUNTIME, join(binDir, 'zntc.mjs'), '--help'].map(shellQuote).join(' '),
