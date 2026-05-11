@@ -287,12 +287,12 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    // synthetic JSX import binding: top-level에 var 선언이 필요.
-    // preamble은 __esm init 블록 안에 삽입되므로, var _jsxDEV = ... 형태면
-    // 호이스팅된 함수에서 접근 불가. var _jsxDEV;를 top-level에 선언하고
-    // init 안에서 _jsxDEV = ... (할당만)으로 처리해야 함.
+    // helper marker import binding (JSX runtime / runtime helper): top-level 에
+    // var 선언이 필요. preamble 은 __esm init 블록 안에 삽입되므로, `var _jsxDEV = ...`
+    // 형태면 호이스팅된 함수에서 접근 불가 (#1209). `var _jsxDEV;` 를 top-level 에
+    // 선언하고 init 안에서 `_jsxDEV = ...` (할당만) 으로 처리.
     for (module.import_bindings) |ib| {
-        if (ib.isSynthetic()) {
+        if (ib.is_helper) {
             try hoisted_var_names.append(allocator, try arena_alloc.dupe(u8, module.importBindingLocalName(ib)));
         }
     }
