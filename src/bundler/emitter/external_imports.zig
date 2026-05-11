@@ -76,7 +76,10 @@ pub fn emitChunkExternalImports(
             const rec = m.import_records[ib.import_record_index];
             if (!rec.is_external) continue;
             if (rec.kind != .static_import and rec.kind != .re_export) continue;
-            if (!ib.isSynthetic() and !ib.local_symbol.isValid()) continue;
+            // helper binding (JSX runtime / runtime helper) 은 user 가 같은 이름 점유
+            // 시 semantic 로컬이 없을 수 있다 — local_name 은 importBindingLocalName 의
+            // is_helper fallback 으로 얻으므로 local_symbol 없어도 통과시킨다.
+            if (!ib.is_helper and !ib.local_symbol.isValid()) continue;
 
             // verbatim_module_syntax=true 면 모두 보존, 아니면 type-only 는 drop.
             if (!verbatim) {
