@@ -3,9 +3,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { PORTS } from './ports';
 
 const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
-const TEST_PORT = 3999;
+const TEST_PORT = PORTS.SMOKE;
 
 let server: ChildProcess | null = null;
 let fixtureDir: string;

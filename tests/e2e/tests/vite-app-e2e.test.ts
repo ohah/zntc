@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { PORTS } from './ports';
 
 /**
  * Multi-module Vite 앱을 @zntc/vite-plugin로 빌드 → 브라우저 실행 E2E.
@@ -16,7 +17,7 @@ import { dirname, join, resolve } from 'node:path';
  */
 
 const PROJECT_ROOT = resolve(__dirname, '../../..');
-const TEST_PORT = 3996;
+const TEST_PORT = PORTS.VITE_APP;
 
 const FILES: Record<string, string> = {
   'index.html': `<!doctype html>
