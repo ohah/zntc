@@ -249,6 +249,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .unresolved_references = analyzer.unresolved_references,
             .references = analyzer.references.items,
             .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
         };
         if (!self.minify_identifiers) {
             if (previous_semantic) |old_sem| {
@@ -372,7 +373,8 @@ pub fn resyncAfterAstMutation(
         var import_bindings_scope = profile.begin(.graph_resync_import_bindings);
         defer import_bindings_scope.end();
 
-        const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records);
+        const helper_refs: ?[]const u32 = if (module.transform_cache) |cache| cache.helper_ref_nodes else null;
+        const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records, helper_refs);
         module.import_bindings = try mergeImportBindings(arena_alloc, previous_import_bindings, transformed_import_bindings);
         try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
     }

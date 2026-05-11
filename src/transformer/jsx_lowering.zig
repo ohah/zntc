@@ -175,6 +175,16 @@ pub fn JsxLowering(comptime Transformer: type) type {
         // ================================================================
 
         /// Classic: React.createElement(tag, props, ...children)
+        /// JSX runtime helper 식별자 (`_jsx`, `_jsxs`, `_jsxDEV`, `_Fragment`,
+        /// `_createElement`) 참조 노드를 만든다. `#2869` helper marker 도 함께 등록해
+        /// resync 분석기가 이 ref 를 user scope 가 아닌 helper_scope_map 으로 binding
+        /// 시킨다 — 사용자가 같은 이름의 식별자를 선언해도 충돌 회피 (#3068).
+        fn makeJsxRuntimeRef(self: *Transformer, name: []const u8) Transformer.Error!NodeIndex {
+            const idx = try helpers.makeIdentifierRef(self, name);
+            try self.markRuntimeHelperRef(idx);
+            return idx;
+        }
+
         fn lowerElementClassic(
             self: *Transformer,
             span: Span,
@@ -264,13 +274,13 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // callee 선택
             const callee = if (is_dev) blk: {
                 self.jsx_import_info.used_jsxDEV = true;
-                break :blk try helpers.makeIdentifierRef(self, "_jsxDEV");
+                break :blk try makeJsxRuntimeRef(self, "_jsxDEV");
             } else if (is_static) blk: {
                 self.jsx_import_info.used_jsxs = true;
-                break :blk try helpers.makeIdentifierRef(self, "_jsxs");
+                break :blk try makeJsxRuntimeRef(self, "_jsxs");
             } else blk: {
                 self.jsx_import_info.used_jsx = true;
-                break :blk try helpers.makeIdentifierRef(self, "_jsx");
+                break :blk try makeJsxRuntimeRef(self, "_jsx");
             };
 
             // 1st arg: tag name
@@ -340,16 +350,16 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             const callee = if (is_dev) blk: {
                 self.jsx_import_info.used_jsxDEV = true;
-                break :blk try helpers.makeIdentifierRef(self, "_jsxDEV");
+                break :blk try makeJsxRuntimeRef(self, "_jsxDEV");
             } else if (is_static) blk: {
                 self.jsx_import_info.used_jsxs = true;
-                break :blk try helpers.makeIdentifierRef(self, "_jsxs");
+                break :blk try makeJsxRuntimeRef(self, "_jsxs");
             } else blk: {
                 self.jsx_import_info.used_jsx = true;
-                break :blk try helpers.makeIdentifierRef(self, "_jsx");
+                break :blk try makeJsxRuntimeRef(self, "_jsx");
             };
 
-            const fragment_ref = try helpers.makeIdentifierRef(self, "_Fragment");
+            const fragment_ref = try makeJsxRuntimeRef(self, "_Fragment");
 
             // props: {children: ...} or {}
             const props_arg = try buildAutomaticProps(self, 0, 0, children_start, children_len, null, effective_children, span, .none);
@@ -400,7 +410,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             children_len: u32,
         ) Transformer.Error!NodeIndex {
             self.jsx_import_info.used_createElement = true;
-            const callee = try helpers.makeIdentifierRef(self, "_createElement");
+            const callee = try makeJsxRuntimeRef(self, "_createElement");
             const tag_arg = try lowerTagName(self, tag_name_idx);
 
             // classic-style props (key 포함)
