@@ -316,6 +316,36 @@ Response (`content[0].text` is a JSON string):
 - **Event buffer**: `get_build_events` reads from a 256-entry ring buffer. Older events are overwritten.
 - **SSE concurrent connections**: 64. Additional connections rejected.
 
+## Proxy — `--proxy`
+
+The dev server can intercept backend API calls and forward them to a different origin. Use the CLI flag.
+
+```bash
+zntc dev . --proxy /api=http://localhost:8080
+# multiple proxies — repeat the flag
+zntc dev . --proxy /api=http://localhost:8080 --proxy /ws=http://localhost:9000
+```
+
+Requests whose path starts with the prefix are forwarded with the prefix stripped and appended to the target.
+
+| Request | Forwarded to |
+|---|---|
+| `GET /api/users` (`--proxy /api=http://localhost:8080`) | `GET http://localhost:8080/users` |
+| `GET /api/users?page=2` | `GET http://localhost:8080/users?page=2` |
+
+### Limitations
+
+Proxy currently supports only the simple *prefix → target* mapping. For any of the scenarios below, run a dedicated reverse proxy (nginx / Caddy / Node `http-proxy` in a separate process) in front of the dev server.
+
+- **Request method / headers / body**: Under the Bun runtime, method, headers, and body are all dropped, so every request is effectively downgraded to `GET`. Under Node, method and headers are forwarded but the body is not. Either way, mutation APIs (POST / PUT / PATCH / DELETE) called through the proxy will not behave as intended.
+- **Regex / functional path rewrite**: Only prefix-strip works. Transforms like `^/api/v1/(.*) → /v2/$1` are not supported.
+- **WebSocket upgrade (`ws://`)**: HTTP upgrade requests are not intercepted. If you need a WebSocket target, an external reverse proxy is required.
+- **Skipping self-signed cert verification for HTTPS targets**: No `secure: false` equivalent. Self-signed dev targets generally fail verification.
+- **Host / Origin header rewriting**: The original `Host` header is forwarded as-is to the target. Virtual-host-based backends may reject the request.
+- **Per-request bypass / custom middleware hook**: No hook to skip the proxy for some requests or to post-process the response.
+
+> These options are planned for a future release. Until then we recommend an external reverse proxy.
+
 ## `server` config (zntc.config)
 
 The same fields exposed via CLI `--port` / `--host` / `--open` can be set in the config file (Vite `server` compatible). CLI flags always take precedence.
