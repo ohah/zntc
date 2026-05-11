@@ -250,7 +250,7 @@ export default defineConfig({
 | `import.meta.env.MODE`               | 앱 모드는 `.env*` 자동 로드, CLI 번들은 `--define:import.meta.env.MODE=\"production\"`                 |
 | `import.meta.env.DEV`                | 앱 모드는 dev/build mode로 자동 주입, CLI 번들은 `--define:import.meta.env.DEV=true`                   |
 | `.env` / `.env.production` 자동 로드 | 앱 모드에서 지원 (`--env-dir`, `--env-prefix`)                                                         |
-| `import.meta.glob`                   | 미지원 (구현 예정)                                                                                     |
+| `import.meta.glob`                   | 지원 (Vite 호환 `eager` / `import` 옵션)                                                              |
 | `import.meta.hot`                    | 지원 (`--serve --bundle`)                                                                              |
 | `import.meta.url`                    | 지원 (ESM 표준)                                                                                        |
 | `@vitejs/plugin-react`               | `--jsx=automatic` (자동 런타임 내장)                                                                   |
@@ -269,7 +269,7 @@ export default defineConfig({
 | `resolve.conditions`                 | `conditions: ["prod", "foo"]` 또는 `--conditions=prod,foo`                                             |
 | `optimizeDeps` (pre-bundling)        | 불필요 (번들 시 직접 처리)                                                                             |
 | `ssr` / SSR 빌드                     | 미지원                                                                                                 |
-| `worker.format`                      | 미지원 (Worker 번들 일반 지원은 별도)                                                                  |
+| `worker.format`                      | `new Worker(new URL("./w.ts", import.meta.url))` 자동 감지 → 별도 IIFE 번들. Vite `worker.format` 설정 자체는 미지원 |
 | Rollup 플러그인 호환                 | `resolveId`/`load`/`transform` 훅 호환                                                                 |
 
 ## webpack에서 마이그레이션
@@ -313,7 +313,7 @@ module.exports = {
 | `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS는 앱 모드에서 지원. Less/Stylus는 사전 컴파일 필요 |
 | `postcss-loader`                                | 앱 모드에서 PostCSS 지원. library bundling은 plugin 또는 사전 처리 |
 | `html-loader`                                   | 앱 모드는 `index.html` rewrite 지원. 문자열 import는 `--loader:.html=text` |
-| `worker-loader`                                 | 미지원 (Bundle 내 Worker 일반 지원은 별도)                   |
+| `worker-loader`                                 | 불필요. `new Worker(new URL("./w.ts", import.meta.url))` 자동 감지 + IIFE 번들 내장 |
 | `thread-loader`                                 | 불필요. ZNTC 병렬 파이프라인 내장 (`--jobs=N`)                |
 | `cache-loader`                                  | 불필요. `.zig-cache` / 모듈 레벨 캐시                        |
 
