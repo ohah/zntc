@@ -1,22 +1,23 @@
 /**
  * Publish install test — 각 publishable workspace package 의 tarball 을
- * fresh dir 에 실제 install 시도. publish-smoke (tarball layout) 가 잡지 못하는
- * 사고를 cover:
+ * fresh dir 에 실제 install + entry import + (있는 경우) entry function 호출
+ * 까지 검증. publish-smoke (tarball layout) 가 잡지 못하는 사고를 cover:
  *
  * - dependency resolution 실제로 동작하는지 (workspace:* 변환 후 link 가능?)
  * - bin / main / types 가 install dir 에 정확히 풀리는지
  * - peer/optional dependency 누락 시 install 자체는 통과해야 (선택적)
  * - cross-package install (web → core) 가 file: link 로 자가 monorepo 에서 동작
+ * - SMOKE_CHECKS 정의된 패키지는 entry function (init/transpile/plugin())
+ *   호출까지 — `url.fileURLToPath is not a function` (#3005) 같은
+ *   "import 는 통과 / 호출 시 깨짐" 회귀를 사전 차단
  *
  * 전략: workspace 의 publishable package 마다
  *   1. bun pm pack 으로 tarball 생성
- *   2. tmp dir 에 npm init -y
+ *   2. tmp dir 에 빈 package.json
  *   3. 자기 + transitive workspace dep tarball 들을 file: 로 동시 install
- *   4. require.resolve("<pkgName>") 로 entry 해결 가능 검증
- *
- * import 호출 시 NAPI binary / WASM / RN runtime 등 환경 의존 module 이 missing
- * 으로 fail 가능 — 본 script 는 layout / resolution 만 검증. 깊이 import 는
- * 별도 jobs (NAPI/WASM/RN) 가 담당.
+ *   4. dynamic import 로 entry resolve 검증
+ *   5. SMOKE_CHECKS[pkg] 정의돼 있으면 그 script 실행. ENV_SKIP_PATTERNS
+ *      매칭 throw 는 환경 의존 (NAPI binary / RN runtime 누락) 으로 skip
  *
  * 사용:
  *   bun scripts/publish-install-test.ts
@@ -33,6 +34,64 @@ interface Failure {
   pkg: string;
   msg: string;
 }
+
+/** entry import 후 실행할 검증 — pkg 가 import 결과 namespace. throws 면 fail
+ * 단 ENV_SKIP_PATTERNS 매칭은 환경 의존 (NAPI/RN runtime 누락) 으로 간주, skip */
+interface SmokeCheck {
+  script: string;
+}
+
+/** 다음 패턴의 throw message 는 install 환경 의존이라 skip — 실제 publish 사용자
+ * 환경에선 NAPI binary / RN runtime 등이 갖춰져 있음. publish-install-test 는
+ * 일반 dev macOS 에서 돌아 platform binary 일부가 missing 일 수 있음. */
+const ENV_SKIP_PATTERNS: RegExp[] = [
+  /native binary not found/i,
+  /Cannot find module.*\.node/,
+  /react-native|metro|hermes/i,
+];
+
+const SMOKE_CHECKS: Record<string, SmokeCheck> = {
+  '@zntc/core': {
+    script: `
+      const { init, transpile } = pkg;
+      if (typeof init !== 'function') throw new Error('init export 누락');
+      if (typeof transpile !== 'function') throw new Error('transpile export 누락');
+      init();
+      const t = transpile('const x: number = 1;', { filename: 'x.ts' });
+      if (typeof t.code !== 'string' || !t.code.includes('const x')) {
+        throw new Error('transpile 결과 invalid: ' + JSON.stringify(t).slice(0, 100));
+      }
+    `,
+  },
+  '@zntc/wasm': {
+    script: `
+      const { init, transpile } = pkg;
+      if (typeof init !== 'function') throw new Error('init export 누락');
+      if (typeof transpile !== 'function') throw new Error('transpile export 누락');
+      await init();
+      const t = transpile('const x: number = 1;', { filename: 'x.ts' });
+      if (typeof t.code !== 'string' || !t.code.includes('const x')) {
+        throw new Error('transpile 결과 invalid: ' + JSON.stringify(t).slice(0, 100));
+      }
+    `,
+  },
+  '@zntc/vite-plugin': {
+    script: `
+      const fn = pkg.default ?? pkg.zntc ?? pkg;
+      if (typeof fn !== 'function') throw new Error('default export 가 function 아님');
+      const plugin = fn();
+      if (!plugin || typeof plugin !== 'object' || typeof plugin.name !== 'string') {
+        throw new Error('plugin() 결과가 vite plugin shape 아님');
+      }
+    `,
+  },
+  '@zntc/rspack-loader': {
+    script: `
+      const fn = pkg.default ?? pkg;
+      if (typeof fn !== 'function') throw new Error('loader (default export) 가 function 아님');
+    `,
+  },
+};
 
 const failures: Failure[] = [];
 function fail(pkg: string, msg: string) {
@@ -140,31 +199,62 @@ async function installOne(target: TargetInfo, allTargets: TargetInfo[], tmpRoot:
     return;
   }
 
-  // dynamic import 로 entry 검증 — ESM 사용자가 'import X from \"@zntc/Y\"' 시
-  // 정확히 동일 condition (import / default). NAPI binding 호출 / WASM init /
-  // RN runtime 등 호출 시점 의존은 throw 가능 — ERR_MODULE_NOT_FOUND
-  // (resolution 자체 실패) 만 fail 로 처리.
+  // dynamic import + (정의돼 있으면) entry function smoke check.
+  // NAPI binding 누락 / RN runtime 부재 같은 환경 의존 throw 는 ENV_SKIP_PATTERNS
+  // 으로 skip — 실제 publish 사용자 환경엔 갖춰져 있음. 그 외 throw 는 fail
+  // (#3005 같은 "import 통과 / 호출 시 깨짐" 회귀 catch).
+  const smokeScript = SMOKE_CHECKS[target.name]?.script ?? '';
+  const envSkipSrc = JSON.stringify(ENV_SKIP_PATTERNS.map((r) => r.source));
+  const envSkipFlagsSrc = JSON.stringify(ENV_SKIP_PATTERNS.map((r) => r.flags));
   const checkScript = `
+    const ENV_SKIP = ${envSkipSrc}.map((s, i) => new RegExp(s, ${envSkipFlagsSrc}[i]));
+    function isEnvSkip(e) {
+      const msg = (e && (e.message ?? String(e))) || '';
+      return ENV_SKIP.some((re) => re.test(msg));
+    }
     try {
-      const m = await import(${JSON.stringify(target.name)});
-      const keys = Object.keys(m);
-      console.log('IMPORT OK:', keys.length, 'exports');
+      const pkg = await import(${JSON.stringify(target.name)});
+      console.log('IMPORT OK:', Object.keys(pkg).length, 'exports');
+      const smokeSrc = ${JSON.stringify(smokeScript)};
+      if (smokeSrc.trim()) {
+        try {
+          const fn = new Function('pkg', '"use strict"; return (async () => {' + smokeSrc + '})();');
+          await fn(pkg);
+          console.log('SMOKE OK');
+        } catch (e) {
+          if (isEnvSkip(e)) {
+            console.log('SMOKE skip (env):', (e && e.message) || e);
+          } else {
+            console.error('SMOKE FAILED:', (e && e.stack) || e);
+            process.exit(2);
+          }
+        }
+      }
     } catch (e) {
       if (e && (e.code === 'ERR_MODULE_NOT_FOUND' || e.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED')) {
         console.error('RESOLVE FAILED:', e.message);
         process.exit(1);
       }
-      // 그 외 runtime 에러 (NAPI/WASM/RN 환경 의존) 는 resolution 자체는 OK
-      console.log('IMPORT OK (resolution); runtime error 무시:', e && e.code || (e && e.message || e));
+      if (isEnvSkip(e)) {
+        console.log('IMPORT OK (resolution); env skip:', e && e.code || (e && e.message || e));
+      } else {
+        console.error('IMPORT THREW (non-env):', (e && e.stack) || e);
+        process.exit(3);
+      }
     }
   `;
   await writeFile(join(installDir, 'check.mjs'), checkScript);
   const checkRes = spawnSync('node', ['check.mjs'], { cwd: installDir, encoding: 'utf8' });
   if (checkRes.status !== 0) {
-    fail(target.name, `entry resolve 실패: ${checkRes.stdout.trim()} ${checkRes.stderr.trim()}`);
+    const reason =
+      checkRes.status === 2 ? 'smoke (entry function 호출)'
+      : checkRes.status === 3 ? 'import 시점 throw'
+      : 'entry resolve';
+    fail(target.name, `${reason} 실패: ${checkRes.stdout.trim()} ${checkRes.stderr.trim()}`);
     return;
   }
-  ok(`install + resolve OK${target.workspaceDeps.length > 0 ? ` (workspace deps: ${target.workspaceDeps.join(', ')})` : ''}`);
+  const smokeRan = !!SMOKE_CHECKS[target.name];
+  ok(`install + resolve${smokeRan ? ' + smoke' : ''} OK${target.workspaceDeps.length > 0 ? ` (workspace deps: ${target.workspaceDeps.join(', ')})` : ''}`);
 }
 
 async function main() {
