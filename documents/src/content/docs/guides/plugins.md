@@ -30,7 +30,7 @@ ZNTC 플러그인은 Rollup/Vite 호환 인터페이스로, `@zntc/core`의 NAPI
 | Plugin context `this.error()` / `this.warn()` | 지원 | `warn` 은 `@zntc/core [name]:` prefix |
 | Plugin context `this.addWatchFile()` | no-op | 호출 가능하지만 native watcher 에 전파 X (SFC `<style src="..."/>` 외부 dep stale 가능) |
 | Plugin context `this.resolve()` / `this.emitFile()` | ❌ 미지원 | 호출 시 informative Error throw — graph mutation surface 부재 |
-| **프레임워크 SFC** (`.vue` / `.svelte`) | ❌ 미지원 | virtual module ID + `?vue&type=style&lang.css` query sub-import 인식 필요 — 별도 follow-up |
+| **프레임워크 SFC** (`.vue` / `.svelte`) | ❌ 미지원 | virtual module ID + `?vue&type=style&lang.css` query sub-import 인식 필요 — [자세히 + 대안 →](/zntc/guides/plugin-recipes/#프레임워크-sfc-vue--svelte--현재-미지원) |
 | `buildSync()` + JS plugin | 미지원 | async `build()` / `watch()` 사용 |
 
 ZNTC native worker는 module을 만날 때 NAPI threadsafe function으로 JS hook을 호출하고 응답을 기다립니다. 따라서 hook filter를 좁게 잡고, 단순 확장자 처리는 `loader` 옵션을 먼저 쓰는 편이 빠릅니다.
@@ -102,6 +102,8 @@ const myPlugin = {
 
 ZNTC 플러그인은 **JavaScript 로 작성**하고, ZNTC 의 NAPI 바인딩이 native worker 에서 호출합니다 (별도 컴파일 단계 없음). 가장 단순한 형태부터 출발해 hook 을 하나씩 더해가는 방식이 안전합니다.
 
+필요한 hook 만 골라 쓰면 됩니다 — 예: ENV 치환 / banner 주입 / JSX 변환처럼 **transform 만 필요한** 플러그인은 2·3 단계를 건너뛰어도 동작합니다.
+
 ### 1. 빈 plugin 스켈레톤
 
 ```typescript
@@ -128,7 +130,7 @@ build.onResolve({ filter: /^virtual:settings$/ }, () => ({
 }));
 ```
 
-`\0` prefix 는 esbuild/Rollup 관례로 "실제 파일이 아닌 가상 ID" 를 의미합니다. ZNTC 의 native resolver 가 해당 ID 를 디스크에서 찾지 않습니다.
+`\0` prefix 는 esbuild/Rollup 관례로 "실제 파일이 아닌 가상 ID" 를 의미합니다. NUL byte 는 어떤 파일 시스템 경로에도 등장할 수 없기에 ZNTC 의 native resolver 가 fs lookup 자체를 시도하지 않습니다 — 가상 ID 가 우연히 진짜 파일과 충돌할 위험이 없습니다.
 
 ### 3. `load` — 모듈 본문 만들기
 
