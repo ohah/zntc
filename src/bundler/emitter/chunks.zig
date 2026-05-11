@@ -63,13 +63,11 @@ pub fn emitChunks(
 
     // splitting / manualChunks 모드에서도 namespace import 의 object literal 을
     // referrer 모듈 self-preamble 이 아닌 정의자 청크 preamble 로 분리해야 entry
-    // 청크에 vendor 코드가 누출되지 않음 (#2990). `use_shared_ns_preamble = true`
-    // 면 metadata.finalizeNamespaceData 가 entry 의 object_literal 을 빈 문자열로
-    // 두고, linker 의 ns_shared_inline_cache 에 정의자 mod_idx + 실 object_literal
-    // 저장 — 청크 emit 시 정의자 모듈이 속한 청크 preamble 에서 inline.
-    if (linker) |l| {
-        @constCast(l).use_shared_ns_preamble = true;
-    }
+    // 청크에 vendor 코드가 누출되지 않음. `use_shared_ns_preamble = true` 면
+    // finalizeNamespaceData 가 referrer 측 object_literal 을 빈 문자열로 두고,
+    // linker 의 ns_shared_inline_cache 에 정의자 mod_idx + 실 object_literal 저장
+    // — 청크 emit 시 정의자 모듈이 속한 청크 preamble 에서 inline.
+    if (linker) |l| @constCast(l).use_shared_ns_preamble = true;
 
     var outputs: std.ArrayList(OutputFile) = .empty;
     errdefer {
@@ -163,11 +161,11 @@ pub fn emitChunks(
             );
         }
 
-        // shared namespace preamble (#2990): 이 청크의 정의자 모듈에 속한 namespace
-        // object literal 만 inline. referrer 청크가 자기 self-preamble 에 inline
-        // 하던 동작 (entry 에 vendor 코드 누출) 을 정의자 청크 preamble 로 옮긴다.
+        // 이 청크의 정의자 모듈에 속한 namespace object literal 만 inline.
+        // referrer 청크가 자기 self-preamble 에 inline 하던 동작 (entry 에 vendor
+        // 코드 누출) 을 정의자 청크 preamble 로 옮긴다.
         if (linker) |l| if (l.use_shared_ns_preamble) {
-            var chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .{};
+            var chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer chunk_targets.deinit(allocator);
             try chunk_targets.ensureTotalCapacity(allocator, @intCast(chunk.modules.items.len));
             for (chunk.modules.items) |mod_idx| {
