@@ -102,4 +102,15 @@ describe('OutputFile shape contract — contents (Uint8Array) + lazy text getter
     expect(result.outputFiles.length).toBeGreaterThan(0);
     expect(result.outputFiles[0].contents).toBeInstanceOf(Uint8Array);
   });
+
+  test('text 는 non-enumerable — JSON.stringify / Object.keys 가 contents 와 중복 직렬화 안 함', () => {
+    const result = buildSync({ entryPoints: [join(dir, 'entry.ts')] });
+    const file = result.outputFiles[0];
+
+    // text getter 가 enumerable 이면 JSON.stringify 가 string body 를 한 번 더 직렬화해 페이로드 2배.
+    expect(Object.keys(file)).not.toContain('text');
+    expect(JSON.stringify(file)).not.toContain('text');
+    // 단 getter 는 여전히 동작.
+    expect(typeof file.text).toBe('string');
+  });
 });

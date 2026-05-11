@@ -128,8 +128,10 @@ describe('@zntc/core buildSync NAPI (Node.js)', () => {
 
   // raw NAPI binding 의 shape 는 `{ path: string, contents: Uint8Array }` — `text`
   // string getter 는 JS layer (build / buildSync from index.ts) 가 후처리로 부착하므로
-  // 이 raw test 들은 contents (Buffer/Uint8Array) 를 직접 decode 한다.
-  const decode = (file) => new TextDecoder('utf-8').decode(file.contents);
+  // 이 raw test 들은 contents (Buffer/Uint8Array) 를 직접 decode 한다. TextDecoder 는
+  // stateless 라 singleton.
+  const utf8 = new TextDecoder('utf-8');
+  const decode = (file) => utf8.decode(file.contents);
 
   it('기본 번들링', () => {
     const result = native.buildSync({
