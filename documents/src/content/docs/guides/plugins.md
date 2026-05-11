@@ -292,7 +292,7 @@ export default defineConfig({
 }
 ```
 
-#### `loader` 옵션 — asset 로더 override (#2157)
+#### `loader` 옵션 — asset 로더 override
 
 `load` 가 반환하는 객체에 `loader` 를 명시하면 graph 가 그 값으로 module loader 를 override 합니다 (확장자 추론 무시). esbuild `onLoad` callback 의 `loader: 'text' | 'binary' | ...` 와 동일.
 
@@ -315,7 +315,7 @@ export default defineConfig({
 
 `js` / `jsx` / `ts` / `tsx` 는 `onLoad` 가 반환한 `contents` 를 해당 parser mode 로 강제 해석 — 확장자 없는 virtual module 이나 다른 확장자로 위장된 소스를 강제 파싱할 때 사용.
 
-#### `contents` binary 지원 (#2157 follow-up)
+#### `contents` binary 지원
 
 `contents` 는 `string` 또는 `Uint8Array` / Node.js `Buffer` 모두 받습니다 — PNG/JPG 등 utf-8 invalid bytes 도 손실 없이 forward.
 
@@ -446,7 +446,7 @@ Reanimated worklet (`"worklet"` 디렉티브 함수에 hash/closure/initData 주
 }
 ```
 
-### buildStart / buildEnd / closeBundle (#2156)
+### buildStart / buildEnd / closeBundle
 
 Bundle lifecycle hook. esbuild `onStart` / `onEnd` / `onDispose`, Rollup/Vite/rolldown `buildStart` / `buildEnd` / `closeBundle` 호환.
 
