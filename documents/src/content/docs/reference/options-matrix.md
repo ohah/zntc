@@ -16,7 +16,7 @@ ZNTC 옵션은 네 개의 surface로 노출됩니다. 새 기능을 추가하거
 | ------ | --- | ------ | ------ | ------ | ---- |
 | 입출력 (`outfile`, `outdir`, `outbase`, `outExtension`) | ✅ | ✅ | ✅ | ❌ | `outdir`/패턴 옵션은 번들러 출력 전용 |
 | 모듈 포맷 (`format`, `platform`) | ✅ | ✅ | ✅ | ✅ | `react-native`는 RN preset을 함께 켭니다 |
-| ES/엔진 타겟 (`target`, `browserslist`) | ✅ | ✅ | ✅ | ✅ | `browserslist`는 config/API 전용, 지정 시 `target`보다 우선 |
+| ES/엔진 타겟 (`target`, `browserslist`) | ✅ | ✅ | ✅ | ✅ | `--browserslist` CLI flag 도 있음 (`--target` 대안), 지정 시 `target`보다 우선 |
 | 런타임 폴리필 (`runtimePolyfills`, `runtimeTarget`, `coreJs`) | ✅ | ✅ | ✅ | ❌ | graph usage 기반 core-js 주입 |
 | JSX / TS / Flow 변환 | ✅ | ✅ | ✅ | ✅ | `tsconfig` 일부 필드는 config 미지정 시 fallback |
 | define/drop/inject/pure | ✅ | ✅ | ✅ | 일부 | `dropLabels`, `pure`, `inject`는 번들러 쪽 의미가 큼 |

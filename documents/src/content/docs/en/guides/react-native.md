@@ -169,6 +169,32 @@ The RN platform sets `package.json` field order automatically:
 react-native → browser → module → main
 ```
 
+## Metro / `react-native bundle` compatibility flags
+
+`zntc --bundle --platform=react-native` accepts the standard `react-native bundle` (Metro CLI) flags — a dropin layer so you can swap a `react-native bundle ...` call in `package.json` for `zntc --bundle ...`.
+
+| Metro flag | Description |
+|---|---|
+| `--bundle-output <path>` | Bundle output path (treated like `-o`; used as a fallback when `-o` is not given) |
+| `--sourcemap-output <path>` | Source map output path — implies sourcemap when set |
+| `--source-map-url <url>` | Value for the trailing `//# sourceMappingURL` (default: the source map file name) |
+| `--sourcemap-sources-root <dir>` | Source map `sourceRoot` (same meaning as `--source-root`) |
+| `--sourcemap-use-absolute-path` | Use absolute paths for sources in the source map |
+| `--assets-dest <dir>` | Destination for copied assets (images/fonts) — in production (not `--dev`) builds the asset loader copies there (iOS 1x/2x/3x, Android `res/`) |
+| `--asset-catalog-dest <dir>` | Destination for the iOS asset catalog (`.xcassets`) |
+| `--bundle-encoding <utf8\|utf16le\|ascii>` | Bundle file encoding (default `utf-8`) |
+| `--reset-cache` | Invalidate the cache on startup |
+| `--max-workers <n>` | Parallel worker count — alias of `--jobs` |
+| `--unstable-transform-profile <name>` | Hermes transform profile (`hermes-stable`, etc.) |
+| `--no-interactive` | Disable terminal interactive actions (Metro UI compat) |
+| `--watchFolders <a,b>` | Extra watch roots (Metro's camelCase form, comma-separated) — forwarded to the RN preset's watchFolders. Distinct from the native watcher's `--watch-folder` |
+| `--sourceExts <a,b>` | Extra source extensions (Metro's camelCase form, comma-separated) |
+| `--rn-project-root <dir>` | The RN preset's projectRoot. Defaults to cwd; set it for monorepo roots |
+| `--transform-option key=value` | Metro transformer option (repeatable) — **currently ignored** (Metro graph-bundler only; emits an unsupported-stderr warning) |
+| `--resolver-option key=value` | Metro resolver option (repeatable) — **currently ignored** (same) |
+
+> `--transform-option` / `--resolver-option` are accepted for compatibility but have no effect. Customize the Babel transform via `transformer.babel` in `zntc.config.ts`.
+
 ## Flow / Hermes / Watch
 
 ### Flow support

@@ -16,7 +16,7 @@ ZNTC exposes options through four public surfaces. Use this matrix to catch docu
 | ------------- | --- | ------ | ------ | ------ | ----- |
 | I/O (`outfile`, `outdir`, `outbase`, `outExtension`) | ✅ | ✅ | ✅ | ❌ | `outdir` and naming patterns are bundler output options |
 | Module format (`format`, `platform`) | ✅ | ✅ | ✅ | ✅ | `react-native` also enables the RN preset |
-| ES/runtime targets (`target`, `browserslist`) | ✅ | ✅ | ✅ | ✅ | `browserslist` is config/API-only and takes precedence over `target` |
+| ES/runtime targets (`target`, `browserslist`) | ✅ | ✅ | ✅ | ✅ | there's also a `--browserslist` CLI flag (alternative to `--target`); when set it takes precedence over `target` |
 | Runtime polyfills (`runtimePolyfills`, `runtimeTarget`, `coreJs`) | ✅ | ✅ | ✅ | ❌ | core-js injection from graph usage |
 | JSX / TS / Flow transforms | ✅ | ✅ | ✅ | ✅ | selected `tsconfig` fields are used as fallback values |
 | define/drop/inject/pure | ✅ | ✅ | ✅ | partial | `dropLabels`, `pure`, and `inject` are mostly bundler-facing |
