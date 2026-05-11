@@ -17,8 +17,8 @@ pub const CompiledModule = struct {
     /// codegen 이 생성한 매핑 (bundle SourceMap 빌더에 병합).
     mappings: ?[]const SourceMap.Mapping = null,
     /// codegen builder 의 names 배열 (mangler rename 발생 시 원본 식별자 이름).
-    /// `mappings[i].name_index` 가 가리키는 module-local 인덱스. bundle 머지 시 chunk
-    /// builder 로 옮길 때 chunk-global 인덱스로 재매핑 (#2987).
+    /// `mappings[i].name_index` 가 가리키는 module-local 인덱스. bundle 머지 시
+    /// chunk builder 로 옮길 때 chunk-global 인덱스로 재매핑.
     names: []const []const u8 = &.{},
     /// preamble/래퍼 헤더로 codegen 매핑과 어긋나는 줄 수.
     preamble_lines: u32 = 0,

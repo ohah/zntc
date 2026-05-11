@@ -227,7 +227,7 @@ pub const SourceMapBuilder = struct {
     last_gen_col: u32 = 0,
     /// sourcemap spec `names` 배열. mangler 가 rename 한 식별자의 원본 이름이
     /// 들어가고 mapping.name_index 가 이 배열을 가리킨다. Sentry / DevTools 가
-    /// minified 식별자를 원본 이름으로 표시하는 데 사용 (#2987).
+    /// minified 식별자를 원본 이름으로 표시하는 데 사용.
     names: std.ArrayList([]const u8) = .empty,
     /// names 배열 dedup 용 — 같은 원본 이름 여러 번 등장 시 같은 인덱스 반환.
     /// 키는 builder allocator 로 dupe 된 문자열 (names 배열과 ownership 공유).
