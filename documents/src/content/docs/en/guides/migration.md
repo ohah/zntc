@@ -250,7 +250,7 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `import.meta.env.MODE`               | App mode auto-loads `.env*`; CLI bundles can use `--define:import.meta.env.MODE=\"production\"`          |
 | `import.meta.env.DEV`                | App mode injects dev/build mode automatically; CLI bundles can use `--define:import.meta.env.DEV=true`   |
 | `.env` / `.env.production` auto-load | Supported in app mode (`--env-dir`, `--env-prefix`)                                                      |
-| `import.meta.glob`                   | Not supported (planned)                                                                                  |
+| `import.meta.glob`                   | Supported (Vite-compatible `eager` / `import` options)                                                   |
 | `import.meta.hot`                    | Supported (`--serve --bundle`)                                                                           |
 | `import.meta.url`                    | Supported (ESM standard)                                                                                 |
 | `@vitejs/plugin-react`               | `--jsx=automatic` (automatic runtime built-in)                                                           |
@@ -269,7 +269,7 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `resolve.conditions`                 | `conditions: ["prod", "foo"]` or `--conditions=prod,foo`                                                 |
 | `optimizeDeps` (pre-bundling)        | Not needed (handled during bundling)                                                                     |
 | `ssr` / SSR build                    | Not supported                                                                                            |
-| `worker.format`                      | Not supported (general Worker bundle support separate)                                                   |
+| `worker.format`                      | `new Worker(new URL("./w.ts", import.meta.url))` is auto-detected and bundled as a standalone IIFE. The Vite `worker.format` knob itself is not supported |
 | Rollup plugin compat                 | `resolveId`/`load`/`transform` hooks compatible                                                          |
 
 ## Migrating from webpack
@@ -313,7 +313,7 @@ module.exports = {
 | `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS is supported in app mode. Pre-compile Less/Stylus    |
 | `postcss-loader`                                | Supported in app mode. Use a plugin or pre-processing for library bundling |
 | `html-loader`                                   | App mode rewrites `index.html`; `--loader:.html=text` can stringify imports |
-| `worker-loader`                                 | Not supported (general Worker bundle support separate)         |
+| `worker-loader`                                 | Not needed. `new Worker(new URL("./w.ts", import.meta.url))` auto-detected and bundled as a standalone IIFE |
 | `thread-loader`                                 | Not needed. ZNTC has built-in parallel pipeline (`--jobs=N`)    |
 | `cache-loader`                                  | Not needed. Uses `.zig-cache` / module-level cache             |
 

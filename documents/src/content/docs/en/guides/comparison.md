@@ -66,7 +66,7 @@ Rolldown has a stronger Rollup-compatible plugin API and lifecycle reference. ZN
 | Less/Stylus | Unsupported | precompile or use plugin-level handling |
 | CSS-only HMR | Supported | includes PostCSS dependency watch |
 | Error overlay | Supported | build/runtime overlay with sourcemap remapping |
-| `import.meta.glob` | Unsupported | candidate Vite-compatible surface |
+| `import.meta.glob` | Supported | Vite-compatible (`eager` / `import` options) |
 | SSR build | Unsupported | outside the current app-builder boundary |
 | Dev proxy | Supported | `--proxy /api=http://...` |
 
