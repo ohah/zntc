@@ -68,12 +68,23 @@ pub fn pluginRunnerWithBuiltins(self: anytype) ?plugin_mod.PluginRunner {
     return plugin_mod.PluginRunner.init(list);
 }
 
+/// esbuild/Rollup 관례: NUL byte prefix 또는 query (`?` 포함) 가 있는 ID 는
+/// plugin 이 직접 처리할 가상 모듈. user plugin 등록 없이도 hook 을 거치게 해
+/// runtime_helper_modules 외 plugin (예: vue/svelte SFC) 의 가상 ID 도 인식한다.
+/// NAPI bridge (plugin_bridge.zig) 가 resolveId 결과 wrap 시점에 같은 술어를
+/// 사용하므로 single source of truth 로 두기 위해 `pub` 으로 export.
+pub fn isPluginVirtualId(id: []const u8) bool {
+    if (id.len == 0) return false;
+    if (id[0] == '\x00') return true;
+    return std.mem.indexOfScalar(u8, id, '?') != null;
+}
+
 pub fn shouldRunResolveId(self: anytype, specifier: []const u8) bool {
-    return self.has_user_resolve_id_plugins or runtime_helper_modules.isVirtualId(specifier);
+    return self.has_user_resolve_id_plugins or runtime_helper_modules.isVirtualId(specifier) or isPluginVirtualId(specifier);
 }
 
 pub fn shouldRunLoad(self: anytype, path: []const u8) bool {
-    return self.has_user_load_plugins or runtime_helper_modules.isVirtualId(path);
+    return self.has_user_load_plugins or runtime_helper_modules.isVirtualId(path) or isPluginVirtualId(path);
 }
 
 pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.PluginRunner) LoadHookResult {
@@ -130,8 +141,26 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
             // 여기서 값 표현식으로 낮출 수 없는 loader는 JS 파이프라인으로 계속 진행한다.
             module.source = plugin_result.contents;
         } else {
-            module.loader = .javascript;
-            module.module_type = .js;
+            // plugin 이 loader override 안 했을 때 세 가지 케이스 (#3022):
+            // - 확장자 없는 가상 모듈 (`.none`, e.g. runtime helper `\0zntc:runtime/...`):
+            //   `.javascript` + `.js` 강제 — 기존 동작 유지.
+            // - `.javascript` loader 이지만 module_type 이 `.ts` / `.tsx` (SFC `?...&lang.ts`):
+            //   addModule 에서 결정한 module_type 유지. 여기서 `.js` 로 덮어쓰면 TS
+            //   문법이 JS 파서로 가서 "type annotations are not allowed" syntax error.
+            // - 이외 (`.css` / `.json` 등 명시적 non-JS loader 또는 module_type 도 `.js` 인
+            //   순수 JS): 그대로 둠.
+            switch (module.loader) {
+                .none => {
+                    module.loader = .javascript;
+                    module.module_type = .js;
+                },
+                .javascript => {
+                    if (module.module_type != .ts and module.module_type != .tsx) {
+                        module.module_type = .js;
+                    }
+                },
+                else => {},
+            }
             module.source = plugin_result.contents;
         }
         return .applied;

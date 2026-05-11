@@ -23,6 +23,32 @@ pub fn resolveLoader(self: *const ModuleGraph, ext: []const u8) types.ParsedLoad
     return types.ParsedLoader.fromExtension(ext);
 }
 
+/// vue/svelte SFC 의 sub-import (예: `App.vue?vue&type=style&lang.css`) 처럼
+/// query/fragment 가 붙은 가상 specifier 에서 loader 결정용 확장자를 추출한다.
+/// `?` 위치를 한 번만 scan 해 두 검사를 모두 처리 — query 가 없는 일반 경로
+/// (대부분) 에서도 hot path 비용을 한 번으로 묶는다. (#3022)
+///
+/// 1. query 의 마지막 토큰이 `lang.X` 형식이면 그 `.X` 를 반환 — vite SFC 관례.
+/// 2. 아니면 query/fragment 제거한 base path 의 표준 extension 을 반환.
+fn loaderExtensionFor(abs_path: []const u8) []const u8 {
+    const q_opt = std.mem.indexOfScalar(u8, abs_path, '?');
+    const h_opt = std.mem.indexOfScalar(u8, abs_path, '#');
+
+    if (q_opt) |q| {
+        const query_end = if (h_opt) |h| @min(h, abs_path.len) else abs_path.len;
+        const query = abs_path[q + 1 .. query_end];
+        var it = std.mem.tokenizeScalar(u8, query, '&');
+        while (it.next()) |token| {
+            if (std.mem.startsWith(u8, token, "lang.")) {
+                return token[4..]; // ".X" — leading dot 포함
+            }
+        }
+        return std.fs.path.extension(abs_path[0..q]);
+    }
+    if (h_opt) |h| return std.fs.path.extension(abs_path[0..h]);
+    return std.fs.path.extension(abs_path);
+}
+
 pub fn discardResolvedModule(self: *ModuleGraph, resolved: plugin_mod.ResolvedModule) void {
     switch (resolved) {
         .file => |f| self.allocator.free(f.path),
@@ -51,10 +77,10 @@ pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
     const path_owned = try self.allocator.dupe(u8, abs_path);
 
     var module = Module.init(index, path_owned);
-    const ext = std.fs.path.extension(abs_path);
-    module.module_type = ModuleType.fromExtension(ext);
+    const ext_for_loader = loaderExtensionFor(abs_path);
+    module.module_type = ModuleType.fromExtension(ext_for_loader);
     // 로더 결정: --loader 오버라이드 → 확장자 기본값
-    const parsed_loader = resolveLoader(self, ext);
+    const parsed_loader = resolveLoader(self, ext_for_loader);
     module.loader = parsed_loader.loader;
     module.module_type = parsed_loader.module_type orelse moduleTypeForLoader(module.module_type, module.loader);
     try self.modules.append(self.allocator, module);

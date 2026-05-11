@@ -21,6 +21,7 @@ pub const package_json = @import("package_json.zig");
 pub const resolve_cache = @import("resolve_cache.zig");
 pub const module = @import("module.zig");
 pub const graph = @import("graph.zig");
+pub const graph_plugins = @import("graph/plugins.zig");
 pub const emitter = @import("emitter.zig");
 pub const binding_scanner = @import("binding_scanner.zig");
 pub const linker = @import("linker.zig");
