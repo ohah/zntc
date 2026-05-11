@@ -66,30 +66,29 @@ const { code } = await transpile({
     <div class="mt-6 grid gap-4 text-sm sm:grid-cols-3">
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">small (10 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">2.56 ms</strong></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">3.20 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1st)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 5.38 · esbuild 6.16 · rolldown 47.8 · rspack 51.6 · webpack 183 ms
+          vs Bun 6.38 · esbuild 8.45 · rolldown 50.6 · rspack 57.5 · webpack 464 ms
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
-        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">medium (50 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">4.0 ms</strong></div>
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">medium (1000 modules)</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">29.3 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(3rd)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 6.0 · esbuild 7.0 · rolldown 51.2 · rspack 55.2 · webpack 184 ms
+          vs Bun 19.5 · esbuild 24.4 · rolldown 67.7 · rspack 83.6 · webpack 1865 ms
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
-        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">large (200 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">8.12 ms</strong></div>
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">large (5000 modules)</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">140 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(4th)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 8.29 · esbuild 10.0 · rolldown 55.3 ms
+          vs Bun 65 · esbuild 86.7 · rolldown 124 · rspack 180 · webpack 19908 ms
         </div>
       </div>
     </div>
 
     <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
-      2026-05-06 · darwin arm64 · 5-run median ·
-      <a href="/zntc/en/reference/benchmarks/" class="ml-1 text-zig-400 hover:underline">Full benchmarks →</a>
+      2026-05-11 · darwin arm64 · 5-run median · fan-out tree fixture (see <a href="/zntc/en/reference/benchmarks/" class="text-zig-400 hover:underline">full benchmarks →</a>)
     </p>
   </div>
 </Section>
