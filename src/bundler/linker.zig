@@ -448,9 +448,10 @@ pub const Linker = struct {
                         if (helper_modules.isVirtualId(target_module.path)) break :blk false;
                         const target_wrap = target_module.wrap_kind;
                         if (m.wrap_kind == .esm) {
-                            // CJS named import는 `require_xxx().prop` 직접 참조로
-                            // 치환하므로 별도 top-level var를 만들지 않는다.
-                            if (target_wrap == .cjs and ib.kind == .named and !ib.isSynthetic()) break :blk false;
+                            // CJS named import는 `require_xxx().prop` 직접 참조로 치환하므로
+                            // 별도 top-level var를 만들지 않는다. helper binding (JSX runtime
+                            // 등) 은 call site 가 식별자 (`_jsx(...)`) 라 var 할당이 필요.
+                            if (target_wrap == .cjs and ib.kind == .named and !ib.is_helper) break :blk false;
                             // __esm: scope-hoisted 타겟의 import는 skip되어 var 미생성
                             break :blk target_wrap != .none;
                         } else {

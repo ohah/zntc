@@ -70,7 +70,8 @@ inline fn mappedExternalParam(
 }
 
 pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
-    if (ib.isSynthetic()) return false;
+    // helper binding (JSX runtime / runtime helper) 은 런타임 호출이라 type-only 가 아니다.
+    if (ib.is_helper) return false;
     // named 한정 — default / namespace 는 JSX pragma 등 implicit value use 위험이
     // 큼 (#1793 revert 원인). transformer 와 동일 제한.
     if (ib.kind != .named) return false;
@@ -315,12 +316,12 @@ pub fn buildMetadataForAst(
             if (rec.resolved.isNone()) {
                 if (rec.is_lazy_resolved) continue;
                 if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                    if (!ib.isSynthetic() and !ib.local_symbol.isValid()) continue;
+                    if (!ib.is_helper and !ib.local_symbol.isValid()) continue;
                     const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
-                    // synthetic binding(JSX runtime 등) + ESM-wrapped 모듈 조합에서는
-                    // top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨.
-                    // init 함수 본문에서 `var`로 재선언하면 outer scope를 shadow → #1209.
-                    const is_synthetic_esm = ib.isSynthetic() and m.wrap_kind == .esm;
+                    // helper binding (JSX runtime 등) + ESM-wrapped 모듈 조합에서는 top-level
+                    // 에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨 (esm_wrap). init 함수
+                    // 본문에서 `var` 로 재선언하면 outer scope 를 shadow → #1209.
+                    const is_helper_esm = ib.is_helper and m.wrap_kind == .esm;
                     const mapped_param = try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator);
                     if (mapped_param) |param_name| {
                         defer self.allocator.free(param_name);
@@ -345,7 +346,7 @@ pub fn buildMetadataForAst(
                             try preamble.write(ib.imported_name);
                             try preamble.write(";\n");
                         }
-                    } else if (self.format == .iife and !ib.isSynthetic()) {
+                    } else if (self.format == .iife and !ib.is_helper) {
                         // #1791 IIFE: 매핑 안 된 unresolved external 은 의미 자체가 성립 안 함
                         // (factory 스코프에 require 없음, top-level import 도 불가).
                         // #1824: --globals 로 매핑된 external 은 위 `is_iife_mapped` 브랜치에서 처리됨.
@@ -370,17 +371,17 @@ pub fn buildMetadataForAst(
                                 .suggestion = null,
                             });
                         }
-                    } else if (self.format == .esm and rec.is_external and !is_synthetic_esm) {
+                    } else if (self.format == .esm and rec.is_external and !is_helper_esm) {
                         // #1962 ESM external: chunk top 의 ESM `import` 구문이 binding 을
                         // 제공하므로 모듈 preamble 에 require() 를 두지 않는다.
                         // - emitter 의 `external_imports.emitChunkExternalImports` 가 dedup 후 emit.
                         // - codegen 은 import_declaration 노드를 skip (skip_imports=true).
                         // - canonical rename 은 emitter 측에서 동일 ImportBinding 을 보고 적용.
-                        // synthetic_esm (JSX runtime 합성 binding + ESM-wrapped 모듈) 은 init
-                        // 함수 본문에서 var 할당이 필요해 require() 경로를 유지한다.
+                        // helper binding + ESM-wrapped 모듈은 init 함수 본문에서 var 할당이
+                        // 필요해 require() 경로를 유지한다 (#1209).
                     } else {
-                        // CJS / ESM-wrapped + synthetic / 그 외: require() preamble 생성.
-                        if (is_synthetic_esm) {
+                        // CJS / ESM-wrapped + helper / 그 외: require() preamble 생성.
+                        if (is_helper_esm) {
                             try preamble.writeUnresolvedRequireAssignOnly(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
                         } else {
                             try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
@@ -401,9 +402,9 @@ pub fn buildMetadataForAst(
             // named import는 `require_xxx().name` 직접 참조로 치환해 top-level
             // binding을 만들지 않는다. default/namespace는 interop 값 자체가 필요하므로
             // outer var를 선언하고 init preamble에서 할당한다.
-            const is_synthetic = ib.isSynthetic();
+            const is_helper_binding = ib.is_helper;
             const canonical_m_opt = self.getModule(canonical_mod);
-            if (!is_synthetic and m.wrap_kind == .esm and canonical_m_opt != null and
+            if (!is_helper_binding and m.wrap_kind == .esm and canonical_m_opt != null and
                 (canonical_m_opt.?.wrap_kind == .cjs or canonical_mod == module_index))
             {
                 if (canonical_m_opt.?.wrap_kind == .cjs) {
@@ -447,8 +448,8 @@ pub fn buildMetadataForAst(
                 const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                 const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                 const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                // ESM-wrapped + synthetic binding: top-level에 이미 var 선언됨 → 할당만
-                if (is_synthetic and m.wrap_kind == .esm) {
+                // ESM-wrapped + helper binding: top-level 에 이미 var 선언됨 (esm_wrap) → 할당만
+                if (is_helper_binding and m.wrap_kind == .esm) {
                     if (ib.importsDefault() and m.canUseDirectCjsDefaultImport(canonical_m_opt.?)) {
                         try preamble.writeCjsDirectDefault(preamble_name, req_var, true);
                     } else {
