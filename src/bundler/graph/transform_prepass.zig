@@ -19,7 +19,6 @@ const parse_helpers = @import("parse_helpers.zig");
 const isFlowPath = parse_helpers.isFlowPath;
 const suppressRuntimeHelperInternalUnresolved = parse_helpers.suppressRuntimeHelperInternalUnresolved;
 const mergeImportRecords = parse_helpers.mergeImportRecords;
-const mergeImportBindings = parse_helpers.mergeImportBindings;
 const projectExportedNames = parse_helpers.projectExportedNames;
 const determineExportsKind = parse_helpers.determineExportsKind;
 
@@ -351,7 +350,6 @@ pub fn resyncAfterAstMutation(
 
     const ast = &(module.ast orelse return);
     const previous_import_records = module.import_records;
-    const previous_import_bindings = module.import_bindings;
 
     try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
 
@@ -373,9 +371,11 @@ pub fn resyncAfterAstMutation(
         var import_bindings_scope = profile.begin(.graph_resync_import_bindings);
         defer import_bindings_scope.end();
 
+        // #3067 이후 transformer 가 직접 추가하던 synthetic ImportBinding (JSX runtime
+        // 등) 이 정식 import 노드로 대체됐다 — post-transform AST 에서 일반 binding 으로
+        // 추출되므로 previous 에서 따로 보존할 synthetic binding 이 없다.
         const helper_refs: ?[]const u32 = if (module.transform_cache) |cache| cache.helper_ref_nodes else null;
-        const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records, helper_refs);
-        module.import_bindings = try mergeImportBindings(arena_alloc, previous_import_bindings, transformed_import_bindings);
+        module.import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records, helper_refs);
         try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
     }
 
