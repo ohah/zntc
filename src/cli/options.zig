@@ -648,6 +648,12 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             if (val.len > 0) {
                 try opts.external_list.append(allocator, val);
             }
+        } else if (std.mem.startsWith(u8, arg, "--external:")) {
+            // esbuild 호환: --external:react (콜론 형식)
+            const val = arg["--external:".len..];
+            if (val.len > 0) {
+                try opts.external_list.append(allocator, val);
+            }
         } else if (std.mem.eql(u8, arg, "--globals")) {
             // --globals react=React (다음 인자)
             if (i + 1 < args.len) {
