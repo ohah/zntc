@@ -230,6 +230,27 @@ pub const Plugin = struct {
 7. webpack Compiler/Compilation 호환 — 5단계
 8. Loader 시스템 (module.rules) — 5단계
 
+## 활용 가능한 플러그인
+
+ZNTC가 공식 빌트인이나 레퍼런스 예제로 동봉하지 않지만, 현재 plugin API (`onResolve`/`onLoad`/`transform`) 와 `vitePlugin()` Rollup 호환 어댑터로 다음 시나리오는 모두 활용 가능. 빌트인 통합 (CSS pipeline에 직접 끼우는 등) 은 4단계 Dev Server 통일 (`appDev` 추상화, ROADMAP 4-4) 이후로 일정 정리.
+
+### PostCSS / Tailwind
+- 경로 1 — **PostCSS as a plugin**: `transform` 훅에서 `postcss(plugins).process(code, { from, to }).then(r => ({ code: r.css, map: r.map }))`. PostCSS 플러그인 (`autoprefixer`, `tailwindcss`, `postcss-nested`, …) 그대로 import.
+- 경로 2 — **Vite/Rollup 어댑터**: 기존 `@vitejs/plugin-*` / `rollup-plugin-postcss` 를 `vitePlugin()` 으로 감싸서 그대로 사용.
+- 한계: `appDev` 컨트롤러가 현재 postcss/sass 를 **직접** 호출 (`zntc.mjs:runServe`) 하기 때문에, plugin API 경로와 컨트롤러 경로가 병행 존재. 사용자가 양쪽을 동시에 켜면 중복 변환 가능 — 4-4 단계에서 단일 plugin 경로로 통합 예정.
+
+### SVG
+- 경로 1 — **`onLoad` 직접**: `.svg` 확장자 필터로 파일 텍스트를 읽어 `export default ${JSON.stringify(svgText)}` (raw) / `export default "data:image/svg+xml;base64,..."` (data URL) / `import { ReactComponent } from "..."` (JSX wrapper) 중 원하는 형태로 변환.
+- 경로 2 — **Vite 어댑터**: `vite-plugin-svgr` 같은 기존 플러그인을 `vitePlugin()` 으로 활용.
+- 한계: ZNTC 빌트인 `asset` 로더 (`--loader:.svg=file|dataurl`) 는 raw URL / data URL 만 지원. JSX 컴포넌트 변환은 사용자 plugin 필요.
+
+### YAML
+- 경로 1 — **`onLoad` 직접**: `.yaml`/`.yml` 확장자 필터에서 `yaml` (eemeli/yaml) 등 npm 파서로 파싱 후 `export default ${JSON.stringify(data)}` 로 emit. 결과는 JSON-loader 와 동일한 named exports + default export 형태로 ZNTC tree-shaker 가 흡수.
+- 경로 2 — **Rollup 어댑터**: `@rollup/plugin-yaml` 을 `vitePlugin()` 으로 활용.
+- 한계: 동적 YAML 파일 watcher 통합은 ZNTC HMR `import.meta.hot.accept` 로 사용자가 명시.
+
+> 참고: 위 시나리오들은 모두 npm 의존성을 사용자 측에서 제공한다 (ZNTC 가 PostCSS / Tailwind / yaml 파서를 묶지 않음). 정식 레퍼런스 예제 (`examples/postcss`, `examples/tailwind`, ...) 는 ROADMAP "3단계 생태계" 에 트래킹되어 있고 미공급 상태.
+
 ## 참고
 - Rollup/Rolldown: `references/rolldown/packages/rolldown/src/plugin/index.ts`
 - Vite: `references/vite/packages/vite/src/node/plugin.ts`
