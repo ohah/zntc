@@ -833,6 +833,9 @@ pub const Bundler = struct {
         var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.dev_mode = self.options.dev_mode;
+        graph.incremental_mode = self.options.module_store != null or
+            self.options.changed_files != null or
+            self.options.compiled_cache != null;
         graph.inline_dynamic_imports = self.options.inline_dynamic_imports;
         // require.context 등 parser inline scan 의 build-time 정적 평가에 사용 (#1579 Phase 2.6)
         graph.defines = self.options.define;

@@ -173,8 +173,9 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
     module.state = .ready;
 }
 
-/// fs.readFile + 실패 시 read_error diagnostic 추가 + module.state=ready 마킹.
-/// caller 는 `orelse return` 으로 함수 종료. 5+곳 중복 catch handler 통일.
+/// stat 없는 source read — dir-fd cache 경유 (path lookup 비용 절감) + EOF 까지
+/// dynamic grow read. mtime 이 필요한 caller (incremental rebuild) 가 없을 때만
+/// 사용 — 모듈당 fstat 1 syscall 절감.
 fn readModuleSource(
     self: *ModuleGraph,
     module: *Module,
@@ -185,7 +186,7 @@ fn readModuleSource(
     const loaded = blk: {
         var scope = profile.begin(.graph_discover_pm_setup_read_file);
         defer scope.end();
-        break :blk fs.readFile(alloc, module.path, max_bytes) catch {
+        break :blk self.source_read_cache.readFile(self.allocator, alloc, module.path, max_bytes) catch {
             self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
             module.state = .ready;
             return null;
@@ -202,6 +203,14 @@ pub fn readModuleSourceWithMtime(
     step: BundlerDiagnostic.Step,
 ) ?[]const u8 {
     if (module.mtime != 0) return readModuleSource(self, module, alloc, max_bytes, step);
+
+    // Fresh build (CLI / 첫 빌드): module_store / compiled_cache / changed_files 모두
+    // null 이므로 mtime 을 read 하는 caller 가 없다 — fstat 호출을 생략해 모듈당
+    // 1 syscall 절감. incremental rebuild 에서는 cache invalidation 이 mtime 에
+    // 의존하므로 stat 유지.
+    if (!self.incremental_mode) {
+        return readModuleSource(self, module, alloc, max_bytes, step);
+    }
 
     const loaded = self.source_read_cache.readFileWithStat(self.allocator, alloc, module.path, max_bytes) catch {
         self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
