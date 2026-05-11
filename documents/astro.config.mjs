@@ -99,13 +99,6 @@ export default defineConfig({
           ],
         },
         {
-          label: "React Native",
-          items: [
-            { label: "개요", slug: "guides/react-native", translations: { en: "Overview" } },
-            { label: "Flow 지원", slug: "guides/flow-support", translations: { en: "Flow Support" } },
-          ],
-        },
-        {
           label: "플러그인",
           translations: { en: "Plugins" },
           items: [
@@ -133,6 +126,9 @@ export default defineConfig({
           items: [
             { label: "Dev Server (SSE/MCP)", slug: "guides/dev-server" },
             { label: "Electron", slug: "guides/electron" },
+            { label: "React Native", slug: "guides/react-native" },
+            { label: "React Native + Expo", slug: "guides/react-native-expo" },
+            { label: "Flow 지원", slug: "guides/flow-support", translations: { en: "Flow Support" } },
           ],
         },
         {

@@ -1,22 +1,38 @@
 ---
 title: React Native
-description: Learn how to use ZNTC with React Native projects.
+description: Build and serve a React Native CLI project with ZNTC.
 ---
 
-## Overview
+ZNTC ships a `--platform=react-native` preset that emits **Metro-compatible** RN bundles. No extra adapter is required — `zntc dev` / `zntc --bundle` plug straight into an RN CLI project. For Expo projects, see [React Native + Expo](/zntc/en/guides/react-native-expo/).
 
-ZNTC supports Metro-compatible React Native bundling via the `--platform=react-native` preset.
+## Project layout
 
-## Initialize a React Native CLI Project
+```text
+my-rn-app/
+├── index.js                # entry — calls registerRootComponent
+├── App.tsx
+├── ios/                    # native shell (RN CLI)
+├── android/                # native shell (RN CLI)
+├── zntc.config.ts          # ZNTC config
+└── package.json
+```
 
-Use `@zntc/init` to overlay ZNTC onto an existing React Native CLI project. Expo
-project creation/initialization is currently out of scope, and this command does
-not create a new native shell. It patches the existing app.
+## Automatic setup (RN CLI projects)
+
+The fastest way to add ZNTC to an existing RN CLI project is `@zntc/init`. It patches `package.json` scripts and writes `zntc.config.ts` — it does not generate a new native shell.
 
 ```bash
 npx @zntc/init
 npx @zntc/init --help
 ```
+
+What it does:
+
+- Adds `@zntc/core`, `@zntc/react-native` to dev dependencies.
+- Replaces `start` with `zntc dev --platform=react-native --rn-platform=<ios|android> index.js`.
+- Adds `bundle:ios`, `bundle:android` ZNTC bundle commands.
+- Preserves existing Metro commands as `start:metro`, `bundle:metro:ios`, `bundle:metro:android` fallbacks.
+- Writes a default `zntc.config.ts` if missing; existing files are not overwritten without `--force`.
 
 Help output:
 
@@ -36,76 +52,117 @@ Options:
   --help, -h                 Show this help message
 ```
 
-The initializer:
+| Option                                     | Description                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------ |
+| `--root <dir>`                             | Project root. Defaults to cwd.                                           |
+| `--platform <ios\|android>`                | Default RN platform for the `start` script. Defaults to `ios`.           |
+| `--zntc-version <range>`                   | Version range for `@zntc/core` / `@zntc/react-native`.                   |
+| `--package-manager <bun\|npm\|pnpm\|yarn>` | Install-command hint printed after init.                                 |
+| `--no-metro-fallback`                      | Skip `start:metro` / `bundle:metro:*` fallback scripts.                  |
+| `--force`                                  | Overwrite an existing `zntc.config.ts`.                                  |
+| `--dry-run`                                | Print planned changes without writing files.                             |
+| `--help`, `-h`                             | Show help.                                                               |
 
-- Adds `@zntc/core` and `@zntc/react-native` dev dependencies to `package.json`.
-- Changes the default `start` script to `zntc dev --platform=react-native --rn-platform=<ios|android> index.js`.
-- Adds ZNTC RN bundle scripts as `bundle:ios` and `bundle:android`.
-- Preserves existing Metro commands as `start:metro`, `bundle:metro:ios`, and `bundle:metro:android` fallback scripts.
-- Creates a default `zntc.config.ts` when missing, and does not overwrite an existing file unless `--force` is set.
+## Manual setup
 
-Key options:
+To author the same result yourself, write these two files.
 
-| Option                                     | Description                                                   |
-| ------------------------------------------ | ------------------------------------------------------------- |
-| `--root <dir>`                             | Project root. Defaults to the current directory               |
-| `--platform <ios\|android>`                | Default RN platform for the `start` script. Defaults to `ios` |
-| `--zntc-version <range>`                   | Version range for `@zntc/core` and `@zntc/react-native`       |
-| `--package-manager <bun\|npm\|pnpm\|yarn>` | Install command hint printed after initialization             |
-| `--no-metro-fallback`                      | Do not add `start:metro` / `bundle:metro:*` fallback scripts  |
-| `--force`                                  | Overwrite an existing `zntc.config.ts`                        |
-| `--dry-run`                                | Print planned changes without writing files                   |
-| `--help`, `-h`                             | Show help                                                     |
+### package.json scripts
 
-## Basic Usage
+```jsonc
+{
+  "scripts": {
+    "start": "zntc dev --platform=react-native --rn-platform=ios index.js",
+    "bundle:ios": "zntc --bundle index.js --platform=react-native --rn-platform=ios --minify -o ios/main.jsbundle",
+    "bundle:android": "zntc --bundle index.js --platform=react-native --rn-platform=android --minify -o android/app/src/main/assets/index.android.bundle",
 
-```bash
-zntc --bundle index.js --platform=react-native -o bundle.js
+    "start:metro": "react-native start",
+    "bundle:metro:ios": "react-native bundle --platform ios --entry-file index.js --bundle-output ios/main.jsbundle",
+    "bundle:metro:android": "react-native bundle --platform android --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle"
+  }
+}
 ```
 
-## RN Sub-platform
+### zntc.config.ts
+
+```ts
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+export default {
+  root: __dirname,
+  entry: "index.js",
+  dev: true,
+  minify: false,
+  transformer: {
+    babel: {},
+  },
+  serializer: {
+    polyfills: [],
+    prelude: [],
+  },
+  server: {
+    port: 8081,
+    host: "localhost",
+    useGlobalHotkey: true,
+    forwardClientLogs: true,
+  },
+};
+```
+
+## Basic build commands
 
 ```bash
-# iOS build
+# Default (no sub-platform — shared bundle)
+zntc --bundle index.js --platform=react-native -o bundle.js
+
+# iOS
 zntc --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
 
-# Android build
+# Android
 zntc --bundle index.js --platform=react-native --rn-platform=android -o bundle.js
 ```
 
-### Extension Resolution Order
+`.ios.*` / `.android.*` extension resolution kicks in once a sub-platform is specified.
+
+### Extension resolution order
 
 With `--rn-platform=ios`:
 
 ```
-.ios.tsx -> .ios.ts -> .ios.jsx -> .ios.js ->
-.native.tsx -> .native.ts -> .native.jsx -> .native.js ->
-.tsx -> .ts -> .jsx -> .js -> .json
+.ios.tsx → .ios.ts → .ios.jsx → .ios.js →
+.native.tsx → .native.ts → .native.jsx → .native.js →
+.tsx → .ts → .jsx → .js → .json
 ```
 
-## Flow Support
+### main-fields
 
-Flow is automatically enabled when `--platform=react-native` is set. Type annotations are stripped from files containing the `@flow` pragma.
-
-## main-fields
-
-On the RN platform, `package.json` field resolution order is automatically configured:
+The RN platform sets `package.json` field order automatically:
 
 ```
-react-native -> browser -> module -> main
+react-native → browser → module → main
 ```
 
-## Hermes Compatibility
+## Flow / Hermes / Watch
 
-ZNTC ES5 downleveling produces output compatible with the Hermes engine.
+### Flow support
+
+Flow is enabled automatically under `--platform=react-native`. Types are stripped from files with the `@flow` pragma. See [Flow Support](/zntc/en/guides/flow-support/) for details.
+
+### Hermes compatibility
+
+ZNTC's ES5 downleveling produces Hermes-compatible output.
 
 ```bash
 zntc --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
 ```
 
-## Watch + NDJSON
+### Watch + NDJSON
 
-NDJSON event output for integration with external tools:
+Stream NDJSON events for external tooling:
 
 ```bash
 zntc --bundle index.js --platform=react-native -o bundle.js --watch-json
@@ -116,117 +173,106 @@ zntc --bundle index.js --platform=react-native -o bundle.js --watch-json
 {"type":"rebuild","success":true,"changed":["/src/app.tsx"],"modules":["/src/app.tsx"],"bytes":123456}
 ```
 
-## blockList
+## Common options
 
-Metro `resolver.blockList` compatibility. Matching absolute paths cause the resolver to fail resolution and exclude them from the graph.
+### blockList
 
-- `RegExp[]` or `string[]` (regex strings). The two forms can be mixed.
-- Supported syntax: literals, `.*`, `^`, `$`, `\x` escapes. `|`, `[]`, `()`, `+?`, `\w\d` are not supported.
-- With `platform: "react-native"`, Metro defaults (`__tests__`, iOS/Android build folders, etc.) are auto-prepended. User patterns are appended after.
+Compatible with Metro `resolver.blockList`. Absolute paths matching a pattern are dropped from the graph (the resolver fails them).
+
+- `RegExp[]` or `string[]` (regex strings). Both forms can be mixed.
+- Supported syntax: literals, `.*`, `^`, `$`, `\x` escapes. `|`, `[]`, `()`, `+?`, `\w\d` are not.
+- Under `platform: "react-native"`, Metro's default patterns (`__tests__`, iOS/Android build folders, …) are prepended; user patterns are appended.
 
 ```ts
 defineConfig({
-  platform: 'react-native',
-  blockList: [/\.web\.tsx?$/, 'fixtures/.*'],
+  platform: "react-native",
+  blockList: [/\.web\.tsx?$/, "fixtures/.*"],
 });
 ```
 
-## silentConsoleErrorPatterns
+### silentConsoleErrorPatterns
 
-Selectively swallow noise like the RN/Expo native immutable global polyfill conflict. Injects a `console.error` setter intercept into the prologue.
+Selectively swallow noise like RN/Expo native-immutable-global polyfill conflicts. Injects a `console.error` setter intercept into the prologue.
 
-- If empty or unset, no wrap is emitted — vanilla RN CLI builds incur 0 dead code.
-- Not auto-enabled by the RN preset (the trigger is environment-specific).
+- Empty/unset → the wrapper isn't emitted at all (vanilla RN CLI build pays zero dead code).
+- The RN preset does not turn this on automatically (trigger is environment-specific).
 - Orthogonal to `entryErrorGuard`.
 
 ```ts
 defineConfig({
-  platform: 'react-native',
-  silentConsoleErrorPatterns: ['^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$'],
+  platform: "react-native",
+  silentConsoleErrorPatterns: ["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"],
 });
 ```
 
-## assetRegistry
+### assetRegistry
 
-Metro AssetRegistry module path. Controls RN-style asset wrapping.
+Path to Metro's AssetRegistry module. Controls RN-style asset wrapping.
 
-- `undefined`: platform preset decides. With `platform: "react-native"` defaults to `react-native/Libraries/Image/AssetRegistry`.
+- `undefined`: decided by the platform preset. Under `platform: "react-native"`, defaults to `react-native/Libraries/Image/AssetRegistry`.
 - `string`: wraps as `module.exports = require(path).registerAsset({...})`.
-- `false`: disabled (emits a plain URL string export, same as web).
+- `false`: disabled (asset exports become URL strings, like web).
+
+### watchFolders / watchInclude / watchExclude
+
+Metro `watchFolders` compatible. Adds watch roots that live outside the bundle graph.
 
 ```ts
 defineConfig({
-  platform: 'react-native',
-  assetRegistry: 'react-native/Libraries/Image/AssetRegistry',
+  platform: "react-native",
+  watchFolders: ["../shared", "../design-tokens"],
+  watchInclude: ["**/*.ts", "**/*.tsx"],
+  watchExclude: ["**/__tests__/**"],
 });
 ```
 
-## watchFolders / watchInclude / watchExclude
+### moduleSpecifierMap
 
-Metro `watchFolders` compatibility. Includes directories outside the bundle graph in the watch root.
-
-- `watchFolders: string[]` — absolute or relative paths. Recursively scanned.
-- `watchInclude: string[]` — glob whitelist (relative to root).
-- `watchExclude: string[]` — glob blacklist (relative to root).
+Cherry-pick rewrite for `import { x } from 'mod'` (equivalent to babel-plugin-lodash). Used to force tree-shaking on large RN packages. Only applies to: named specifiers, no alias, not type-only.
 
 ```ts
 defineConfig({
-  platform: 'react-native',
-  watchFolders: ['../shared', '../design-tokens'],
-  watchInclude: ['**/*.ts', '**/*.tsx'],
-  watchExclude: ['**/__tests__/**'],
+  platform: "react-native",
+  moduleSpecifierMap: { lodash: "lodash/{name}" },
 });
+// import { map } from 'lodash' → import map from 'lodash/map'
 ```
 
-## moduleSpecifierMap
+### runBeforeMain / polyfills / globalIdentifiers
 
-Cherry-pick rewriting for `import { x } from 'mod'` (babel-plugin-lodash equivalent). Useful for forcing tree-shaking on large packages in RN.
+Pre-main resources executed before the entry module.
 
-- Conditions: named specifier only, no alias, not type-only. Otherwise the original import is kept.
+- `polyfills: string[]` — executed first thing in the bundle (e.g. RN's `InitializeCore`).
+- `runBeforeMain: string[]` — module paths run right before the entry.
+- `globalIdentifiers: string[]` — globals reserved during scope hoisting (RN runtime: `__DEV__`, `__r`, `__d`, `__c`, …).
 
 ```ts
 defineConfig({
-  platform: 'react-native',
-  moduleSpecifierMap: { lodash: 'lodash/{name}' },
-});
-// import { map } from 'lodash' -> import map from 'lodash/map'
-```
-
-## runBeforeMain / polyfills / globalIdentifiers
-
-Pre-main resources that run before the entry module.
-
-- `polyfills: string[]` — executed at the start of the bundle. RN's `InitializeCore` family.
-- `runBeforeMain: string[]` — modules to execute right before the entry module.
-- `globalIdentifiers: string[]` — identifiers reserved during scope hoisting (RN runtime: `__DEV__`, `__r`, `__d`, `__c`, etc.).
-
-```ts
-defineConfig({
-  platform: 'react-native',
-  polyfills: ['react-native/Libraries/Core/InitializeCore.js'],
-  runBeforeMain: ['./bootstrap.js'],
-  globalIdentifiers: ['__DEV__', '__r', '__d', '__c', 'global'],
+  platform: "react-native",
+  polyfills: ["react-native/Libraries/Core/InitializeCore.js"],
+  runBeforeMain: ["./bootstrap.js"],
+  globalIdentifiers: ["__DEV__", "__r", "__d", "__c", "global"],
 });
 ```
 
-## RN-mode option reference
+### RN mode option reference
 
-One-line summary of options commonly used on the RN platform. See each option's JSDoc / docs for full behavior.
+One-line summary of the RN-specific options.
 
-| Option                 | Description                                                                                                                                     |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workletPluginVersion` | Reanimated worklet `__pluginVersion`. Must match the user's installed `react-native-worklets` version to avoid runtime errors.                  |
-| `codegenTransform`     | Replaces `codegenNativeComponent` calls in `*NativeComponent.{js,ts}` with inline view configs. Auto-enabled on the RN platform.                |
-| `entryErrorGuard`      | Wraps entry trigger calls in `try/catch + ErrorUtils.reportFatalError` (Metro `guardedLoadModule` equivalent). Auto-enabled on the RN platform. |
-| `strictExecutionOrder` | Downgrades function declarations to in-factory assignments to prevent hoisting (Rolldown equivalent). Auto-enabled on the RN platform.          |
-| `configurableExports`  | Adds `configurable: true` to `Object.defineProperty` (RN/Hermes compatibility).                                                                 |
-| `reactRefresh`         | Enables React Fast Refresh.                                                                                                                     |
-| `devMode`              | Wraps modules in a `__zntc_register()` factory and injects the HMR runtime.                                                                     |
-| `rootDir`              | Base path for dev-mode module IDs.                                                                                                              |
-| `collectModuleCodes`   | Collects per-module codes in dev mode (for HMR rebuilds).                                                                                       |
-| `workletTransform`     | Injects `__workletHash`/`__closure`/`__initData` into "worklet" directive functions. Auto-enabled on the RN platform.                           |
+| Option                 | Description                                                                                                                              |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `workletPluginVersion` | Reanimated worklet's `__pluginVersion`. Must match the installed `react-native-worklets` version, or you'll get a runtime error.         |
+| `codegenTransform`     | Replaces `codegenNativeComponent(...)` in `*NativeComponent.{js,ts}` with an inline view config. Auto-enabled by the RN platform.        |
+| `entryErrorGuard`      | Wraps the entry trigger in `try/catch + ErrorUtils.reportFatalError` (Metro `guardedLoadModule` equivalent). Auto-enabled.               |
+| `strictExecutionOrder` | Demotes function declarations to in-factory assignments to prevent hoisting (Rolldown equivalent). Auto-enabled.                         |
+| `configurableExports`  | Adds `configurable: true` to `Object.defineProperty` (RN / Hermes compatibility).                                                        |
+| `reactRefresh`         | Enables React Fast Refresh.                                                                                                              |
+| `devMode`              | Wraps modules in a `__zntc_register()` factory and injects the HMR runtime.                                                              |
+| `rootDir`              | Base path for dev-mode module IDs.                                                                                                       |
+| `collectModuleCodes`   | Collects per-module code in dev mode (used by HMR rebuilds).                                                                             |
+| `workletTransform`     | Injects `__workletHash` / `__closure` / `__initData` into `"worklet"` directive functions. Auto-enabled.                                 |
 
-## Dev server (#2605)
+## Dev server
 
 `zntc dev --platform=react-native` starts a Metro-compatible dev server.
 
@@ -235,27 +281,27 @@ zntc dev --platform=react-native --rn-platform=ios index.js \
   --port=8081 --host=localhost
 ```
 
-Endpoints (Metro compatible):
+Endpoints (Metro-compatible):
 
-- `GET /status` — packager live check (`packager-status:running`).
-- `GET /index.bundle?platform=ios&dev=true` — main bundle. With `Accept: multipart/mixed`, returns progress + bundle chunks.
-- `GET /index.map?platform=ios` — bundle source map (lazy, build-scoped cache).
+- `GET /status` — packager liveness check (`packager-status:running`).
+- `GET /index.bundle?platform=ios&dev=true` — main bundle. With `multipart/mixed` Accept, returns progress + bundle chunks.
+- `GET /index.map?platform=ios` — source map (lazy, per-build cache).
 - `GET /__zntc_hmr_map/<id>?platform=ios` — per-module HMR source map.
 - `GET /assets/*`, `/node_modules/*` — asset registry (iOS @2x/@3x scale variants + 7-strategy package resolve).
 - `WS /hot` — HMR (`hmr:update-start` → `hmr:update` → `hmr:update-done` / `hmr:reload` / `hmr:error`).
-- `POST /symbolicate` — RN runtime LogBox stack trace symbolication.
-- `POST /reload` / `POST /devmenu` / `POST /open-url` — Metro message broadcast.
+- `POST /symbolicate` — reverse-map RN LogBox stack traces.
+- `POST /reload` / `POST /devmenu` / `POST /open-url` — emits Metro-compatible messages.
 
-### Peer-optional packages
+### Optional peer packages
 
-Some features lazy-load these packages; missing packages skip gracefully:
+The dev server lazy-loads some features; missing ones degrade gracefully:
 
-| Package                                  | Feature                                                                                                                                                      |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@react-native-community/cli-server-api` | `messageSocketEndpoint.broadcast` (`/reload` / `/devmenu` over WS) + cli websocket endpoints (`/message`, `/events`, `/debugger-proxy`).                     |
-| `@react-native/dev-middleware`           | DevTools inspector / `/json` / `/open-debugger` / `/launch-js-devtools` / fusebox. **Resolved from project context** to allow Rozenite-style monkey-patches. |
+| Package                                   | Feature                                                                                                                                              |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@react-native-community/cli-server-api`  | `messageSocketEndpoint.broadcast` (`/reload` / `/devmenu` ws) + CLI websocket endpoints (`/message`, `/events`, `/debugger-proxy`).                  |
+| `@react-native/dev-middleware`            | DevTools inspector / `/json` / `/open-debugger` / `/launch-js-devtools` / fusebox. Resolved per project — compatible with monkey-patchers like Rozenite. |
 
-Install (RN 0.83+ recommended):
+Install (recommended on RN 0.83+):
 
 ```bash
 bun add -D @react-native-community/cli-server-api @react-native/dev-middleware
@@ -263,13 +309,13 @@ bun add -D @react-native-community/cli-server-api @react-native/dev-middleware
 
 ### Keyboard shortcuts
 
-In the dev server terminal (Metro compatible):
+In the dev server terminal (Metro-compatible):
 
 - `r` — Reload
 - `d` — Dev Menu
 - `j` — DevTools (`POST /open-debugger`)
 - `i` — iOS Simulator open (darwin only)
-- `a` — Android Emulator open (`ANDROID_HOME` required)
+- `a` — Android Emulator open (requires `ANDROID_HOME`)
 - `c` — Clear cache
 - `?` — Help
 - Ctrl+C / Ctrl+D — graceful shutdown
@@ -277,30 +323,28 @@ In the dev server terminal (Metro compatible):
 ### Programmatic API
 
 ```ts
-import { buildRnDevServerOptions, serveRn } from '@zntc/react-native';
+import { buildRnDevServerOptions, serveRn } from "@zntc/react-native";
 
 const handle = await serveRn(
   buildRnDevServerOptions({
     bundle: {
-      entry: 'index.js',
+      entry: "index.js",
       projectRoot: process.cwd(),
-      rnPlatform: 'ios',
+      rnPlatform: "ios",
       dev: true,
     },
     port: 8081,
-    host: 'localhost',
-    // User enhanceMiddleware hook (Rozenite / other DevTools).
+    host: "localhost",
     enhanceMiddleware: (base, ctx) => (req, res, next) => {
-      if (req.url?.startsWith('/rozenite/')) {
-        // Custom handling...
+      if (req.url?.startsWith("/rozenite/")) {
+        // user-defined handling...
         return;
       }
       base(req, res, next);
     },
     symbolicator: {
       customizeFrame: async (frame) => ({
-        // Collapse node_modules frames in DevTools.
-        collapse: frame.file?.includes('/node_modules/') ?? false,
+        collapse: frame.file?.includes("/node_modules/") ?? false,
       }),
     },
   }),
@@ -310,14 +354,14 @@ console.log(`Listening on ${handle.url}`);
 // ... handle.stop() for graceful shutdown.
 ```
 
-### Examples
+## Examples
 
-Validation matrix (both use \`bun run start:zntc\` for the ZNTC dev server):
+Verification matrix (both use `bun run start:zntc` for the ZNTC dev server):
 
 - [`examples/react-native-bare/`](https://github.com/ohah/zntc/tree/main/examples/react-native-bare) — RN 0.85 bare.
 - [`examples/react-native-expo/`](https://github.com/ohah/zntc/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
 
-### Compatibility
+## Compatibility
 
-- RN `>= 0.83` peer optional. `@zntc/react-native` is compatible with Hermes / the RN runtime HMRClient interface and sourceMappingURL route conventions.
-- Runs on Bun and Node 22+. Dev-server lifecycle guarantees graceful shutdown on SIGINT/SIGTERM.
+- RN `>= 0.83` peer-optional. `@zntc/react-native` matches the Hermes / RN-runtime HMRClient interface and Metro's `sourceMappingURL` route conventions.
+- Runs on Bun + Node 22+. Dev-server lifecycle handles SIGINT / SIGTERM with a graceful shutdown.
