@@ -41,7 +41,7 @@ export default defineConfig({
           output: "reference/api",
           sidebar: {
             label: "API Reference",
-            collapsed: false,
+            collapsed: true,
           },
           typeDoc: {
             excludePrivate: true,
@@ -147,6 +147,7 @@ export default defineConfig({
             {
               label: "에러 코드",
               translations: { en: "Error Codes" },
+              collapsed: true,
               autogenerate: { directory: "reference/errors" },
             },
           ],
@@ -154,7 +155,18 @@ export default defineConfig({
         typeDocSidebarGroup,
         {
           label: "Playground",
-          items: [{ label: "Playground", link: "/playground/" }],
+          items: [
+            {
+              label: "트랜스파일러",
+              link: "/playground/",
+              translations: { en: "Transpiler" },
+            },
+            {
+              label: "번들러",
+              link: "/playground/bundler/",
+              translations: { en: "Bundler" },
+            },
+          ],
         },
       ],
       customCss: ["./src/styles/tailwind.css", "./src/styles/custom.css"],
