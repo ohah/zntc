@@ -407,6 +407,9 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // CLI 가 enum→boolean 변환 (`--charset=utf8` → charsetUtf8: true)
     'charsetUtf8',
     'analyze', // CLI 가 boolean flag, BuildOptions 는 boolean — 매칭되지만 alias 처리 누락 가능
+    // React Refresh 관련 opt-in — `reactRefresh` 자체가 config-only (CLI flag 없음).
+    // hook signature emit (babel/SWC 동등) 도 config 에서만 켠다.
+    'reactRefreshHookSignatures',
   ]);
 
   test('CLI flag 가 BuildOptions / TranspileOptions 키와 매칭되거나 cliOnlyFlags 에 등록', () => {
