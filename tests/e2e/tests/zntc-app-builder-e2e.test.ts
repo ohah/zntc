@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { PORTS } from './ports';
 
 /**
  * Vite-style app builder (`zntc build` / `zntc dev` / `zntc preview`) 의 브라우저 E2E.
@@ -16,17 +17,17 @@ import { dirname, join, resolve } from 'node:path';
 const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
 const ZNTC_JS_CLI = resolve(__dirname, '../../../packages/core/bin/zntc.mjs');
 const ZNTC_JS_RUNTIME = 'bun';
-const BUILD_PREVIEW_PORT = 3997;
-const DEV_PORT = 3998;
-const CSS_MODULE_PREVIEW_PORT = 3995;
-const CSS_MODULE_DEV_PORT = 3994;
-const SCSS_PREVIEW_PORT = 3993;
-const SCSS_DEV_PORT = 3992;
-const SASS_HTML_PREVIEW_PORT = 3991;
-const SCSS_RECOVERY_DEV_PORT = 3990;
-const OVERLAY_DEV_PORT = 3989;
-const RUNTIME_OVERLAY_DEV_PORT = 3988;
-const REJECTION_OVERLAY_DEV_PORT = 3987;
+const BUILD_PREVIEW_PORT = PORTS.BUILD_PREVIEW;
+const DEV_PORT = PORTS.DEV;
+const CSS_MODULE_PREVIEW_PORT = PORTS.CSS_MODULE_PREVIEW;
+const CSS_MODULE_DEV_PORT = PORTS.CSS_MODULE_DEV;
+const SCSS_PREVIEW_PORT = PORTS.SCSS_PREVIEW;
+const SCSS_DEV_PORT = PORTS.SCSS_DEV;
+const SASS_HTML_PREVIEW_PORT = PORTS.SASS_HTML_PREVIEW;
+const SCSS_RECOVERY_DEV_PORT = PORTS.SCSS_RECOVERY_DEV;
+const OVERLAY_DEV_PORT = PORTS.OVERLAY_DEV;
+const RUNTIME_OVERLAY_DEV_PORT = PORTS.RUNTIME_OVERLAY_DEV;
+const REJECTION_OVERLAY_DEV_PORT = PORTS.REJECTION_OVERLAY_DEV;
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -317,7 +318,7 @@ test.describe.serial('zntc dev E2E', () => {
 test.describe.serial('zntc build: nested CSS path preservation E2E', () => {
   let nestedDir: string;
   let nestedPreview: ChildProcess | null = null;
-  const NESTED_PORT = 3996;
+  const NESTED_PORT = PORTS.NESTED;
 
   test.beforeAll(async () => {
     nestedDir = await mkdtemp(join(tmpdir(), 'zntc-app-nested-css-e2e-'));

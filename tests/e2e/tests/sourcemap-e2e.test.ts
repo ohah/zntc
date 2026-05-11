@@ -3,9 +3,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { PORTS } from './ports';
 
 const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
-const TEST_PORT = 3997;
+const TEST_PORT = PORTS.SOURCEMAP;
 
 // 10줄 소스 — "console.log(greeting)"은 10번째 줄(0-indexed 9)로 CDP breakpoint 테스트에 사용.
 const APP_TS = `
