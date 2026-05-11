@@ -19,84 +19,23 @@ ZNTC 플러그인은 Rollup/Vite 호환 인터페이스로, `@zntc/core`의 NAPI
 
 ### Plugin hook 호환성
 
+상태 순서로 정렬: ✅ 지원 → ⚠️ 부분 지원 → ➖ no-op → ❌ 미지원.
+
 | Surface | 상태 | 사용 경로 |
 | ------- | ---- | -------- |
-| esbuild-style `setup(build)` | 부분 지원 | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
-| Rollup/Vite-style `resolveId` / `load` / `transform` | 지원 | `vitePlugin()` wrapper 또는 config plugin |
-| **Vite 4+ hook object** `{ filter, handler }` | 지원 | `vitePlugin()` 가 `handler` 자동 추출 (`filter` 는 native 가 무시) |
-| **Plugin sourcemap object** (`RawSourceMap`) | 지원 | wrapper 가 V3 검증 + stringify. invalid 시 drop + warn |
-| output hook `renderChunk` / `generateBundle` | 부분 지원 | chunk 후처리, output 목록 접근 |
-| lifecycle `buildStart` / `buildEnd` / `closeBundle` | 지원 | `build()`와 `watch()` 초기 build/rebuild마다 호출 |
-| Plugin context `this.error()` / `this.warn()` | 지원 | `warn` 은 `@zntc/core [name]:` prefix |
-| Plugin context `this.addWatchFile()` | no-op | 호출 가능하지만 native watcher 에 전파 X (SFC `<style src="..."/>` 외부 dep stale 가능) |
+| Rollup/Vite-style `resolveId` / `load` / `transform` | ✅ 지원 | `vitePlugin()` wrapper 또는 config plugin |
+| **Vite 4+ hook object** `{ filter, handler }` | ✅ 지원 | `vitePlugin()` 가 `handler` 자동 추출 (`filter` 는 native 가 무시) |
+| **Plugin sourcemap object** (`RawSourceMap`) | ✅ 지원 | wrapper 가 V3 검증 + stringify. invalid 시 drop + warn |
+| lifecycle `buildStart` / `buildEnd` / `closeBundle` | ✅ 지원 | `build()`와 `watch()` 초기 build/rebuild마다 호출 |
+| Plugin context `this.error()` / `this.warn()` | ✅ 지원 | `warn` 은 `@zntc/core [name]:` prefix |
+| esbuild-style `setup(build)` | ⚠️ 부분 지원 | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
+| output hook `renderChunk` / `generateBundle` | ⚠️ 부분 지원 | chunk 후처리, output 목록 접근 |
+| Plugin context `this.addWatchFile()` | ➖ no-op | 호출 가능하지만 native watcher 에 전파 X (SFC `<style src="..."/>` 외부 dep stale 가능) |
 | Plugin context `this.resolve()` / `this.emitFile()` | ❌ 미지원 | 호출 시 informative Error throw — graph mutation surface 부재 |
 | **프레임워크 SFC** (`.vue` / `.svelte`) | ❌ 미지원 | virtual module ID + `?vue&type=style&lang.css` query sub-import 인식 필요 — [자세히 + 대안 →](/zntc/guides/plugin-recipes/#프레임워크-sfc-vue--svelte--현재-미지원) |
-| `buildSync()` + JS plugin | 미지원 | async `build()` / `watch()` 사용 |
+| `buildSync()` + JS plugin | ❌ 미지원 | async `build()` / `watch()` 사용 |
 
 ZNTC native worker는 module을 만날 때 NAPI threadsafe function으로 JS hook을 호출하고 응답을 기다립니다. 따라서 hook filter를 좁게 잡고, 단순 확장자 처리는 `loader` 옵션을 먼저 쓰는 편이 빠릅니다.
-
-## 실행 순서
-
-```text
-buildStart
-  -> resolveId / onResolve
-  -> load / onLoad
-  -> transform / onTransform
-  -> native link / tree-shake / emit
-  -> renderChunk
-  -> generateBundle
-buildEnd
-write
-closeBundle
-```
-
-`watch()`에서는 같은 순서가 초기 build와 매 rebuild마다 반복되고, `buildEnd` 이후 `onReady` 또는 `onRebuild` callback이 실행됩니다.
-
-### 다중 플러그인일 때 hook 별 선택 정책
-
-두 개 이상의 플러그인이 같은 hook 을 등록하면 어떻게 합쳐지는지가 hook 마다 다릅니다.
-
-| Hook | 정책 | 설명 |
-|---|---|---|
-| `resolveId` / `onResolve` | **first-match** | 첫 non-null 반환이 우승. 뒤 플러그인은 호출되지 않음 |
-| `load` / `onLoad` | **first-match** | 첫 non-null 반환이 우승 |
-| `transform` / `onTransform` | **chaining** | 등록 순서대로 모두 호출. 앞 hook 의 출력 → 뒤 hook 의 입력 |
-| `renderChunk` | **chaining** | 등록 순서대로 모두 호출 (chunk code 변환) |
-| `generateBundle` | **all-run, sequential** | 모두 실행 (반환값 무시 — observation only) |
-| `buildStart` / `buildEnd` / `closeBundle` | **all-run, sequential** | 모두 실행. lifecycle 신호 |
-
-**플러그인 순서가 결과에 영향을 주는 경우:**
-- `resolveId` / `load` — 앞에 등록된 플러그인이 매칭되면 뒤 플러그인은 기회 없음. virtual module / alias 처리는 일반 resolver 보다 앞에 두어야 함.
-- `transform` — 변환 chain 의 순서. 예: ENV 치환 → 코드 minify 순서가 뒤바뀌면 결과가 달라짐.
-
-**watch 모드 lifecycle 반복:**
-
-```text
-초기 build:    buildStart → resolveId/load/transform → buildEnd → write → onReady → closeBundle
-파일 변경 시:  buildStart → ... → buildEnd → onRebuild → closeBundle
-```
-
-매 rebuild 마다 `buildStart` / `closeBundle` 이 다시 호출되므로, **연결 재사용 (DB/소켓 등) 이 필요하면 build 외부 (모듈 로드 시점) 에서 한 번만 초기화** 하세요.
-
-**`buildEnd` / `closeBundle` 의 에러 swallow:**
-
-이 두 hook 에서 플러그인이 throw 해도 build/rebuild 결과는 정상 반환됩니다 (후처리 실패가 사용자 빌드를 가리지 않도록). 실패 감지가 필요하면 별도 flag/log 로 노출하세요:
-
-```typescript
-let lastBuildOk = true;
-const myPlugin = {
-  name: 'after-build',
-  buildEnd(err) {
-    if (err) { lastBuildOk = false; return; }
-    try {
-      runPostProcess();   // 실패해도 swallow 됨
-    } catch (e) {
-      lastBuildOk = false;
-      console.error('[after-build] failed:', e);
-    }
-  },
-};
-```
 
 ## 처음부터 만들기 — 5 단계
 
@@ -177,6 +116,69 @@ export default defineConfig({
 - `console.warn` 으로 출력하되, 메시지에 plugin 이름 prefix 를 넣으세요 — `[my-plugin] ...` 처럼. `this.warn(msg)` 를 쓰면 `@zntc/core [name]:` 가 자동으로 붙습니다.
 - transform/load 가 **모듈마다 한 번씩** 호출되므로 hot-path 에서 동기 큰 작업(파일 시스템 동기 읽기 등) 은 피하세요.
 - 에러는 `this.error(new Error(...))` 로 throw 하면 ZNTC 가 plugin 이름 + 파일 위치를 진단에 같이 출력합니다.
+
+## 실행 순서
+
+```text
+buildStart
+  -> resolveId / onResolve
+  -> load / onLoad
+  -> transform / onTransform
+  -> native link / tree-shake / emit
+  -> renderChunk
+  -> generateBundle
+buildEnd
+write
+closeBundle
+```
+
+`watch()`에서는 같은 순서가 초기 build와 매 rebuild마다 반복되고, `buildEnd` 이후 `onReady` 또는 `onRebuild` callback이 실행됩니다.
+
+### 다중 플러그인일 때 hook 별 선택 정책
+
+두 개 이상의 플러그인이 같은 hook 을 등록하면 어떻게 합쳐지는지가 hook 마다 다릅니다.
+
+| Hook | 정책 | 설명 |
+|---|---|---|
+| `resolveId` / `onResolve` | **first-match** | 첫 non-null 반환이 우승. 뒤 플러그인은 호출되지 않음 |
+| `load` / `onLoad` | **first-match** | 첫 non-null 반환이 우승 |
+| `transform` / `onTransform` | **chaining** | 등록 순서대로 모두 호출. 앞 hook 의 출력 → 뒤 hook 의 입력 |
+| `renderChunk` | **chaining** | 등록 순서대로 모두 호출 (chunk code 변환) |
+| `generateBundle` | **all-run, sequential** | 모두 실행 (반환값 무시 — observation only) |
+| `buildStart` / `buildEnd` / `closeBundle` | **all-run, sequential** | 모두 실행. lifecycle 신호 |
+
+**플러그인 순서가 결과에 영향을 주는 경우:**
+- `resolveId` / `load` — 앞에 등록된 플러그인이 매칭되면 뒤 플러그인은 기회 없음. virtual module / alias 처리는 일반 resolver 보다 앞에 두어야 함.
+- `transform` — 변환 chain 의 순서. 예: ENV 치환 → 코드 minify 순서가 뒤바뀌면 결과가 달라짐.
+
+**watch 모드 lifecycle 반복:**
+
+```text
+초기 build:    buildStart → resolveId/load/transform → buildEnd → write → onReady → closeBundle
+파일 변경 시:  buildStart → ... → buildEnd → onRebuild → closeBundle
+```
+
+매 rebuild 마다 `buildStart` / `closeBundle` 이 다시 호출되므로, **연결 재사용 (DB/소켓 등) 이 필요하면 build 외부 (모듈 로드 시점) 에서 한 번만 초기화** 하세요.
+
+**`buildEnd` / `closeBundle` 의 에러 swallow:**
+
+이 두 hook 에서 플러그인이 throw 해도 build/rebuild 결과는 정상 반환됩니다 (후처리 실패가 사용자 빌드를 가리지 않도록). 실패 감지가 필요하면 별도 flag/log 로 노출하세요:
+
+```typescript
+let lastBuildOk = true;
+const myPlugin = {
+  name: 'after-build',
+  buildEnd(err) {
+    if (err) { lastBuildOk = false; return; }
+    try {
+      runPostProcess();   // 실패해도 swallow 됨
+    } catch (e) {
+      lastBuildOk = false;
+      console.error('[after-build] failed:', e);
+    }
+  },
+};
+```
 
 ## NAPI 플러그인
 
