@@ -147,10 +147,14 @@ pub const ExportBinding = struct {
 
 /// AST에서 import 바인딩 상세를 추출한다.
 /// import_record_map: import source span → ImportRecord 인덱스 매핑
-/// `helper_ref_nodes` 가 non-null 이면 import_specifier 의 local_node idx 가 그 sorted slice
-/// 에 있을 때 해당 binding 에 `is_helper=true` 를 set 한다. linker 가 이 binding 의 local_symbol
+/// `helper_ref_nodes` 가 non-null 이면 import_specifier 의 local_node idx 가 그 slice 에
+/// 있을 때 해당 binding 에 `is_helper=true` 를 set 한다. linker 가 이 binding 의 local_symbol
 /// 을 일반 module_scope 가 아닌 격리된 helper_scope_map 에서 찾도록 보장 — 사용자가 같은
 /// 식별자를 선언해도 충돌 회피 (#3068).
+///
+/// `helper_ref_nodes` 는 ascending sorted 여야 한다 (binary search 전제). transformer 의
+/// `markRuntimeHelperRef` 가 새 NodeIndex 만 단조 증가로 append → `ownedHelperRefNodes` 가
+/// 그 invariant 를 보존하며 sort 한다 (analyzer.zig 의 `isHelperRefNode` 도 동일 가정).
 pub fn extractImportBindings(
     allocator: std.mem.Allocator,
     ast: *const Ast,
