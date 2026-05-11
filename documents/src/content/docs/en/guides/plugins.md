@@ -9,13 +9,28 @@ ZNTC provides a Rollup/Vite-compatible plugin interface. Plugins are written in 
 
 ## Compatibility Summary
 
+### Plugin authoring surfaces
+
+| Surface | Status | Note |
+| ------- | ------ | ---- |
+| **JavaScript (NAPI)** — in-process on Node.js / Bun | ✅ Supported | Most common. Use Rollup/Vite/esbuild plugins directly or via the adapter |
+| **Native Zig** plugin (`*.zig`, statically linked) | ❌ Planned | Skip the NAPI overhead and run in-engine — for frontend/transform hot-path acceleration |
+| **WASM** plugin (`*.wasm`, dynamically loaded) | ❌ Planned | Any language + isolation (Rust / AssemblyScript / Go, …) |
+
+### Plugin hook compatibility
+
 | Surface | Status | Use |
 | ------- | ------ | --- |
 | esbuild-style `setup(build)` | Partial | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
 | Rollup/Vite-style `resolveId` / `load` / `transform` | Supported | `vitePlugin()` wrapper or config plugin |
+| **Vite 4+ hook object** `{ filter, handler }` | Supported | `vitePlugin()` extracts `handler` automatically (`filter` is ignored by native) |
+| **Plugin sourcemap object** (`RawSourceMap`) | Supported | wrapper validates V3 and stringifies; invalid maps are dropped with a one-time warning |
 | output hooks `renderChunk` / `generateBundle` | Partial | chunk post-processing and output-list access |
 | lifecycle `buildStart` / `buildEnd` / `closeBundle` | Supported | called for `build()` and for each initial/rebuild cycle in `watch()` |
-| Rollup context `this.resolve()` / `this.emitFile()` | Unsupported | needs a separate graph mutation surface |
+| Plugin context `this.error()` / `this.warn()` | Supported | `warn` is prefixed with `@zntc/core [name]:` |
+| Plugin context `this.addWatchFile()` | no-op | Callable but not propagated to the native watcher (SFC `<style src="..."/>` external dep may go stale) |
+| Plugin context `this.resolve()` / `this.emitFile()` | ❌ Unsupported | Throws an informative Error — graph mutation surface is missing |
+| **Framework SFC** (`.vue` / `.svelte`) | ❌ Unsupported | Requires recognising virtual module IDs and `?vue&type=style&lang.css` query sub-imports — tracked separately |
 | `buildSync()` + JS plugins | Unsupported | use async `build()` / `watch()` |
 
 The native ZNTC worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
@@ -82,6 +97,84 @@ const myPlugin = {
   },
 };
 ```
+
+## Authoring a plugin from scratch — 5 steps
+
+ZNTC plugins are **written in JavaScript** and called by the native worker through ZNTC's NAPI binding (no separate compile step). Start with the smallest skeleton and add hooks one at a time.
+
+### 1. Empty plugin skeleton
+
+```typescript
+// my-plugin.ts
+import type { ZntcPlugin } from "@zntc/core";
+
+export function myPlugin(): ZntcPlugin {
+  return {
+    name: "my-plugin",
+    setup(build) {
+      // register hooks here
+    },
+  };
+}
+```
+
+The `name` is exposed verbatim in diagnostics (`Plugin "<name>" failed ...`), so pick something users can recognise.
+
+### 2. `resolveId` — virtual modules and aliases
+
+```typescript
+build.onResolve({ filter: /^virtual:settings$/ }, () => ({
+  path: "\0virtual:settings",
+}));
+```
+
+The `\0` prefix is an esbuild/Rollup convention for "not a real file" — ZNTC's native resolver will not look this ID up on disk.
+
+### 3. `load` — synthesize module contents
+
+```typescript
+build.onLoad({ filter: /^\0virtual:settings$/ }, () => ({
+  contents: `export const apiUrl = ${JSON.stringify(process.env.API_URL ?? "")};`,
+  loader: "ts", // or "js" / "json"
+}));
+```
+
+Specifying `loader` tells the native parser which front-end to use immediately.
+
+### 4. `transform` — modify existing module code
+
+```typescript
+build.onTransform({ filter: /\.tsx?$/ }, (args) => {
+  if (!args.code.includes("__BUILD_TIME__")) return null; // no change
+  return {
+    code: args.code.replace(/__BUILD_TIME__/g, JSON.stringify(new Date().toISOString())),
+  };
+});
+```
+
+Return `null` when nothing changed — ZNTC keeps the original (avoids unnecessary sourcemap regeneration).
+
+### 5. Register and use
+
+```typescript
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
+import { myPlugin } from "./my-plugin";
+
+export default defineConfig({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  plugins: [myPlugin()],
+});
+```
+
+The same `plugins: [...]` array works when calling the `build()` API directly.
+
+### Tips — debugging
+
+- Use `console.warn` and prefix messages with your plugin name — `[my-plugin] ...`. Calling `this.warn(msg)` does this automatically (`@zntc/core [name]:`).
+- `transform` / `load` run **once per module**, so avoid heavy synchronous work (e.g. sync file system reads) on the hot path.
+- Throw with `this.error(new Error(...))` — ZNTC prints the plugin name and file location alongside the diagnostic.
 
 ## Config File
 

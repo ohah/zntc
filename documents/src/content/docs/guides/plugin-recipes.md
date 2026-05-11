@@ -363,3 +363,45 @@ export const gitHash = ${JSON.stringify(
 import { buildTime, gitHash } from "virtual:build-info";
 console.log(`Built at ${buildTime} (${gitHash})`);
 ```
+
+
+## 프레임워크 SFC (Vue / Svelte) — 현재 미지원
+
+`@vitejs/plugin-vue@6.x` / `@sveltejs/vite-plugin-svelte@7.x` 같은 공식 vite plugin 을 `vitePlugin()` 어댑터로 감싸 적용하면 **plugin hook 자체는 호출되지만 빌드는 완전히 통과하지 못한다**. ZNTC native resolver/loader 가 SFC 가 의존하는 다음 두 surface 를 아직 인식하지 않기 때문이다:
+
+1. **Virtual module ID** — vue plugin 이 `\0plugin-vue:export-helper` 같은 가상 ID 를 반환.
+2. **Query parameter sub-import** — 단일 `.vue` 파일이 SFC compile 후 `App.vue?vue&type=script&setup=true&lang.ts`, `App.vue?vue&type=style&index=0&scoped=...&lang.css` 처럼 query 가 붙은 sub-import 로 쪼개짐. ZNTC 는 query 의 `lang.X` 를 보고 parser/loader 를 분기시키는 로직이 없다.
+
+### 현재 시도 시 동작
+
+```typescript
+// zntc.config.ts
+import { defineConfig, vitePlugin } from "@zntc/core";
+import vue from "@vitejs/plugin-vue";
+
+export default defineConfig({
+  entryPoints: ["main.ts"],
+  bundler: true,
+  platform: "browser",
+  loader: { ".vue": "js" }, // .vue 진입 자체는 통과
+  plugins: [vitePlugin(vue())],
+});
+```
+
+minimal `App.vue` + `main.ts` 빌드 결과:
+
+```
+✓ Plugin hook 호출 성공 (hook object format / sourcemap object 지원됨)
+✗ Cannot resolve module App.vue?vue&type=style&index=0&scoped=...&lang.css
+✗ Expression expected — CSS sub-module 을 JS 파서가 처리
+✗ TypeScript type annotations are not allowed when parsing as JavaScript
+  — ?vue&type=script&setup=true&lang.ts 가 JS 로 처리됨
+```
+
+### 대안 (현재 시점)
+
+- **컴파일된 Vue / Svelte 컴포넌트만 사용**: SFC 가 빌드 시점이 아닌 *별도 단계* 에서 미리 컴파일된 `.js` + `.css` 산출물로 바뀌어 있으면 ZNTC 는 일반 JS 라이브러리로 처리 가능 (실제 벤치 결과 `vue 1MB`, `svelte` ESM API 빌드 정상 동작).
+- **Vue/Svelte 라이브러리 자체의 JS API 사용**: `vue` 의 `createApp`/`ref` 같은 런타임 import 와 `svelte/store` 같은 라이브러리는 정상 동작 — 단지 `.vue` / `.svelte` 파일 자체의 SFC 컴파일이 미지원.
+- 위 두 surface (virtual module + query sub-import) 가 native 에 추가되면 plugin 그대로 동작할 예정. 현재 wrapper(`vitePlugin()`)는 이미 vite 4+ 신형 hook object 와 plugin sourcemap object 를 모두 받을 수 있다.
+
+자세한 내부 동작 차이는 [번들러 구조와 동작 원리](/zntc/guides/bundler-deep-dive/) 의 "모듈 해석 (Resolver)" 섹션 참조.

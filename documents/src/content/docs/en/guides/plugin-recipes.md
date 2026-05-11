@@ -364,3 +364,44 @@ export const gitHash = ${JSON.stringify(
 import { buildTime, gitHash } from "virtual:build-info";
 console.log(`Built at ${buildTime} (${gitHash})`);
 ```
+
+## Framework SFC (Vue / Svelte) — currently unsupported
+
+Wrapping official vite plugins like `@vitejs/plugin-vue@6.x` / `@sveltejs/vite-plugin-svelte@7.x` with `vitePlugin()` makes **the plugin hooks themselves run, but the build still does not complete**. ZNTC's native resolver/loader does not yet recognise two surfaces that SFC builds rely on:
+
+1. **Virtual module IDs** — plugin-vue returns IDs like `\0plugin-vue:export-helper`.
+2. **Query-parameter sub-imports** — a single `.vue` file is split during SFC compile into sub-imports such as `App.vue?vue&type=script&setup=true&lang.ts` and `App.vue?vue&type=style&index=0&scoped=...&lang.css`. ZNTC has no logic that reads the `lang.X` query and routes to a different parser/loader.
+
+### What happens today
+
+```typescript
+// zntc.config.ts
+import { defineConfig, vitePlugin } from "@zntc/core";
+import vue from "@vitejs/plugin-vue";
+
+export default defineConfig({
+  entryPoints: ["main.ts"],
+  bundler: true,
+  platform: "browser",
+  loader: { ".vue": "js" }, // the .vue entry itself is fine
+  plugins: [vitePlugin(vue())],
+});
+```
+
+Building a minimal `App.vue` + `main.ts` produces:
+
+```
+✓ Plugin hooks invoked (hook object format / sourcemap object both accepted)
+✗ Cannot resolve module App.vue?vue&type=style&index=0&scoped=...&lang.css
+✗ Expression expected — CSS sub-module went through the JS parser
+✗ TypeScript type annotations are not allowed when parsing as JavaScript
+  — ?vue&type=script&setup=true&lang.ts was treated as JS
+```
+
+### Workarounds (today)
+
+- **Pre-compiled Vue / Svelte components**: if SFCs are compiled in a separate step into plain `.js` + `.css` artifacts, ZNTC handles them as ordinary JS libraries (real benchmarks confirm `vue 1MB` and `svelte` ESM APIs bundle correctly).
+- **JS APIs of Vue / Svelte themselves**: runtime imports like `createApp` / `ref` from `vue` and stores from `svelte/store` work — only single-file `.vue` / `.svelte` *compilation* is missing.
+- Once the two surfaces above land in native, the plugins should work as-is. The `vitePlugin()` adapter already accepts vite 4+ hook objects and plugin sourcemap objects.
+
+See [Bundler architecture & internals](/zntc/en/guides/bundler-deep-dive/) → Module Resolution for the underlying differences.
