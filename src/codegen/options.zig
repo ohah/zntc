@@ -46,6 +46,24 @@ pub const JsxRuntime = enum {
     automatic,
     /// jsxDEV from "<importSource>/jsx-dev-runtime". source info 포함.
     automatic_dev,
+    /// JSX 를 변환 없이 그대로 출력 (tsc `"jsx": "preserve"` 동등). TypeScript
+    /// 어노테이션만 strip. downstream tool (`@vitejs/plugin-react` /
+    /// `@preact/preset-vite` / `vite-plugin-solid` 등) 이 JSX 처리 담당하도록
+    /// 위임할 때 사용 — vite/rollup plugin chain 안에서 ZNTC 가 먼저 처리해도
+    /// JSX 가 raw 로 남아 후속 plugin 이 정상 변환 가능.
+    preserve,
+
+    /// CLI / NAPI string 입력을 enum 으로 변환. invalid 면 null — caller 가
+    /// strict throw (NAPI) 또는 default fallback (CLI) 정책을 결정.
+    /// tsconfig vocab (`react` / `react-jsx` / `react-jsxdev` / `react-native`)
+    /// 은 받지 않음 — `tsconfig_merge.mapTsConfigJsxToRuntime` 가 처리.
+    pub fn fromString(s: []const u8) ?JsxRuntime {
+        if (std.mem.eql(u8, s, "classic")) return .classic;
+        if (std.mem.eql(u8, s, "automatic")) return .automatic;
+        if (std.mem.eql(u8, s, "automatic-dev")) return .automatic_dev;
+        if (std.mem.eql(u8, s, "preserve")) return .preserve;
+        return null;
+    }
 };
 
 pub const CodegenOptions = struct {

@@ -38,8 +38,10 @@ export interface TranspileOptions {
   minifySyntax?: boolean;
   /** 전체 축소 (whitespace + identifiers + syntax) */
   minify?: boolean;
-  /** JSX 런타임 */
-  jsx?: 'classic' | 'automatic' | 'automatic-dev';
+  /** JSX 런타임. `'preserve'` 는 JSX 를 변환 없이 그대로 출력 — TypeScript 어노테이션만
+   * strip. downstream tool (e.g. @vitejs/plugin-react, @preact/preset-vite,
+   * vite-plugin-solid) 이 JSX 를 처리하도록 위임할 때 사용. tsc `"jsx": "preserve"` 와 동등. */
+  jsx?: 'classic' | 'automatic' | 'automatic-dev' | 'preserve';
   /** classic 모드 JSX factory (기본: "React.createElement") */
   jsxFactory?: string;
   /** classic 모드 Fragment factory (기본: "React.Fragment") */

@@ -81,6 +81,20 @@ describe('@zntc/core NAPI (Node.js)', () => {
     assert.ok(result.code.includes('preact'));
   });
 
+  it('JSX preserve — JSX 는 raw, TS 는 strip', () => {
+    const src =
+      'export function App({ initial }: { initial: number }) { const x: number = initial; return <div data-x={x}>hi</div>; }';
+    const result = call(src, 'app.tsx', { jsx: 'preserve' });
+    // JSX 가 그대로 출력 (React.createElement / jsx() 변환 없음)
+    assert.ok(result.code.includes('<div'));
+    assert.ok(result.code.includes('</div>'));
+    assert.ok(!result.code.includes('React.createElement'));
+    assert.ok(!result.code.includes('jsx-runtime'));
+    // TS 어노테이션 stripped
+    assert.ok(!result.code.includes(': number'));
+    assert.ok(!result.code.includes(': { initial'));
+  });
+
   it('ES5 다운레벨링', () => {
     const result = call('const x = () => 1;', 'input.ts', { target: 'es5' });
     assert.ok(!result.code.includes('=>'));

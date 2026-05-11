@@ -119,9 +119,35 @@ pub fn emitReturn(self: anytype, node: Node) !void {
     try self.write("return");
     if (!node.data.unary.operand.isNone()) {
         try self.writeByte(' ');
+        // operand 의 leading comments 가 `emitNode` 내부에서 emit 될 때 newline + indent 를
+        // 끼우면 `return` 직후 줄바꿈이 와 JavaScript ASI 가 `return;` 으로 종료해버린다
+        // (`/* @__PURE__ */ jsxs(...)` 같은 leading annotation 이 흔한 케이스). 미리
+        // inline (space-separated) 으로 소비해 ASI hazard 회피.
+        const operand_node = self.ast.getNode(node.data.unary.operand);
+        const has_real_span = operand_node.span.start != operand_node.span.end and
+            (operand_node.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
+        if (has_real_span) {
+            try emitLeadingCommentsInline(self, operand_node.span.start);
+        }
         try self.emitNode(node.data.unary.operand);
     }
     try self.writeByte(';');
+}
+
+/// operand 의 leading comments 를 newline 없이 inline 으로 emit. `return` /
+/// `throw` 등 ASI-sensitive position 에서 호출.
+fn emitLeadingCommentsInline(self: anytype, pos: u32) !void {
+    while (self.next_comment_idx < self.comments.len) {
+        const comment = self.comments[self.next_comment_idx];
+        if (comment.start > pos) break;
+        if (self.options.minify_whitespace and !comment.is_legal) {
+            self.next_comment_idx += 1;
+            continue;
+        }
+        try self.write(self.ast.source[comment.start..comment.end]);
+        try self.writeByte(' ');
+        self.next_comment_idx += 1;
+    }
 }
 
 pub fn emitThrow(self: anytype, node: Node) !void {

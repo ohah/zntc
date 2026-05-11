@@ -120,6 +120,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 .classic => lowerElementClassic(self, working_node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len),
                 .automatic => lowerElementAutomatic(self, working_node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len, false),
                 .automatic_dev => lowerElementAutomatic(self, working_node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len, true),
+                // preserve 는 dispatch 단에서 visitJSXElement 로 우회되므로 lowering 진입 불가.
+                .preserve => unreachable,
             };
         }
 
@@ -130,6 +132,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 .classic => lowerFragmentClassic(self, node.span, list.start, list.len),
                 .automatic => lowerFragmentAutomatic(self, node.span, list.start, list.len, false),
                 .automatic_dev => lowerFragmentAutomatic(self, node.span, list.start, list.len, true),
+                .preserve => unreachable,
             };
         }
 

@@ -313,4 +313,10 @@ pub const TransformOptions = struct {
         const e = node.data.extra;
         return ast.hasExtra(e, ast_mod.ArrowExtra.flags) and (ast.readExtra(e, ast_mod.ArrowExtra.flags) & flag) != 0;
     }
+
+    /// JSX 노드를 call_expression 으로 lowering 할지 판단.
+    /// preserve 모드는 lowering 을 skip 하고 codegen 이 raw source slice 를 emit 한다.
+    pub fn shouldLowerJsx(self: @This()) bool {
+        return self.jsx_transform and self.jsx_runtime != .preserve;
+    }
 };
