@@ -428,14 +428,14 @@ pub const Module = struct {
     }
 
     /// ImportBinding의 현재 모듈 로컬 이름.
-    /// 일반 import 는 semantic ref 에서 이름을 가져와야 한다. synthetic import
-    /// binding(JSX runtime 등)은 semantic scope 에 실제 로컬 선언이 없으므로 scanner 가
-    /// 저장한 `local_name` 이 canonical source of truth 다.
+    /// 일반 import 는 semantic ref 에서 이름을 가져온다. helper marker binding (JSX
+    /// runtime / runtime helper) 은 user 가 같은 이름을 점유했을 때 semantic scope 에
+    /// 로컬이 없을 수 있으므로 scanner 가 저장한 `local_name` 이 fallback.
     pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
         if (self.refName(ib.local_symbol)) |name| return name;
-        if (ib.isSynthetic()) return ib.local_name;
+        if (ib.is_helper) return ib.local_name;
         std.debug.panic(
-            "non-synthetic import binding '{s}' in module '{s}' has no semantic local symbol",
+            "non-helper import binding '{s}' in module '{s}' has no semantic local symbol",
             .{ ib.local_name, self.path },
         );
     }
@@ -561,7 +561,7 @@ pub const Module = struct {
     }
 };
 
-test "Module.importBindingLocalName allows synthetic binding local_name" {
+test "Module.importBindingLocalName allows helper binding local_name fallback" {
     var module = Module.init(@enumFromInt(0), "synthetic.tsx");
     defer module.deinit(std.testing.allocator);
 
@@ -569,11 +569,9 @@ test "Module.importBindingLocalName allows synthetic binding local_name" {
         .kind = .named,
         .local_name = "_jsx",
         .imported_name = "jsx",
-        .local_span = .{
-            .start = ImportBinding.SYNTHETIC_SPAN_BASE,
-            .end = ImportBinding.SYNTHETIC_SPAN_BASE + 1,
-        },
+        .local_span = Span.EMPTY,
         .import_record_index = 0,
+        .is_helper = true,
     };
 
     try std.testing.expectEqualStrings("_jsx", module.importBindingLocalName(ib));
