@@ -195,7 +195,7 @@ pub fn extractImportBindings(
             const spec_node = ast.getNode(spec);
             switch (spec_node.tag) {
                 .import_default_specifier => {
-                    const name = ast.getText(spec_node.span);
+                    const name = try ast.getTextStable(allocator, spec_node.span);
                     try bindings.append(allocator, .{
                         .kind = .default,
                         .local_name = name,
@@ -205,7 +205,7 @@ pub fn extractImportBindings(
                     });
                 },
                 .import_namespace_specifier => {
-                    const name = ast.getText(spec_node.span);
+                    const name = try ast.getTextStable(allocator, spec_node.span);
                     try bindings.append(allocator, .{
                         .kind = .namespace,
                         .local_name = name,
@@ -223,14 +223,14 @@ pub fn extractImportBindings(
                     if (imported_idx.isNone()) continue;
 
                     const imported_node = ast.getNode(imported_idx);
-                    const imported_name = ast.getText(imported_node.span);
+                    const imported_name = try ast.getTextStable(allocator, imported_node.span);
 
                     const local_node_idx = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
                         local_idx
                     else
                         imported_idx;
                     const local_node = ast.getNode(local_node_idx);
-                    const local_name = ast.getText(local_node.span);
+                    const local_name = try ast.getTextStable(allocator, local_node.span);
 
                     const is_helper = if (helper_ref_nodes) |refs|
                         std.sort.binarySearch(u32, refs, @intFromEnum(local_node_idx), struct {
