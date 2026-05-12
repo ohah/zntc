@@ -20,6 +20,7 @@ const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const binding_mod = @import("binding.zig");
 const scan_results_mod = @import("scan_results.zig");
+const ast_walk = @import("ast_walk.zig");
 const import_scanner = @import("../bundler/import_scanner.zig");
 const import_specifier_unescape = @import("import_specifier.zig");
 const profile = @import("../profile.zig");
@@ -1279,17 +1280,8 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
                 if (@intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
                 const name_node = self.ast.getNode(name_idx);
 
-                if (name_node.tag == .object_pattern) {
-                    collectObjectPatternExportBindings(self, name_node);
-                } else {
-                    const name = self.ast.source[name_node.span.start..name_node.span.end];
-                    self.scan_export_bindings.append(self.allocator, .{
-                        .exported_name = name,
-                        .local_name = name,
-                        .local_span = name_node.span,
-                        .kind = .local,
-                    }) catch {};
-                }
+                _ = name_node;
+                collectPatternExportBindings(self, name_idx);
             }
         },
         .function_declaration, .class_declaration => {
@@ -1310,26 +1302,19 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
     }
 }
 
-/// object_pattern에서 export binding name을 추출한다.
-fn collectObjectPatternExportBindings(self: *Parser, pattern: Node) void {
-    const list = pattern.data.list;
-    if (list.len == 0) return;
-    if (list.start + list.len > self.ast.extra_data.items.len) return;
-    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-    for (indices) |raw_idx| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) continue;
-        const prop = self.ast.getNode(prop_idx);
-        if (prop.tag == .binding_property) {
-            const key = self.ast.getNode(prop.data.binary.left);
-            const name = self.ast.source[key.span.start..key.span.end];
-            self.scan_export_bindings.append(self.allocator, .{
-                .exported_name = name,
-                .local_name = name,
-                .local_span = key.span,
-                .kind = .local,
-            }) catch {};
-        }
+/// declaration binding pattern의 BoundNames를 export binding으로 수집한다.
+fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex) void {
+    var w = ast_walk.bindingIdentifiers(self.allocator, &self.ast, pattern_idx, .{}) catch return;
+    defer w.deinit();
+    while (w.next() catch null) |name_idx| {
+        const name_node = self.ast.getNode(name_idx);
+        const name = self.ast.getText(name_node.span);
+        self.scan_export_bindings.append(self.allocator, .{
+            .exported_name = name,
+            .local_name = name,
+            .local_span = name_node.span,
+            .kind = .local,
+        }) catch {};
     }
 }
 

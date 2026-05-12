@@ -102,8 +102,8 @@ export interface RnBundleInput {
      * strip / RN preset / Reanimated 등) 은 자동 제외 — 충돌 회피.
      *
      * 사용자 babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZNTC native filter
-     * 통과 후 babel pass 에 forward. presets 는 zntc 가 추가하는 `preset-typescript`
-     * 외에 추가됨.
+     * 통과 후 babel pass 에 forward. TS/Flow strip 은 ZNTC native transform 이 처리하므로
+     * presets 는 사용자가 명시한 non-native 항목만 forward 됨.
      */
     babel?: InlineBabelConfig;
     /**

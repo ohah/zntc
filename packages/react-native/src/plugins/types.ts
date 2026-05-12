@@ -23,7 +23,7 @@ export interface PluginConfig {
   /**
    * Inline babel preset / plugin (zntc.config.ts 의 `transformer.babel`). 사용자
    * babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZNTC native filter 통과
-   * 후 babel pass 에 등록.
+   * 후 babel pass 에 등록. TS/Flow strip 은 ZNTC native transform 이 처리한다.
    */
   inlineBabel?: InlineBabelConfig;
 }

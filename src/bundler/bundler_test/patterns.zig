@@ -700,6 +700,35 @@ test "Mixed: destructuring in import and export" {
     try std.testing.expect(!result.hasErrors());
 }
 
+test "Mixed: array destructuring export emits each bound name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { getInstallerPackageName, getInstallerPackageNameSync } from './device';
+        \\console.log(getInstallerPackageName, getInstallerPackageNameSync);
+    );
+    try writeFile(tmp.dir, "device.ts",
+        \\const fns = [() => 'async', () => 'sync'];
+        \\export const [
+        \\  getInstallerPackageName,
+        \\  getInstallerPackageNameSync,
+        \\] = fns;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"[\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getInstallerPackageName") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getInstallerPackageNameSync") != null);
+}
+
 test "Mixed: generator function across modules" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
