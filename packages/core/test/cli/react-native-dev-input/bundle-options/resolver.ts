@@ -17,6 +17,7 @@ describe('buildRnDevServerInput — resolver bundle option config 추출 (#2605)
       },
     );
     expect(input?.nodeModulesPaths).toEqual(['../../node_modules']);
+    expect(input?.bundle.extra?.nodeModulesPaths).toEqual(['../../node_modules']);
     expect(input?.bundle.extra?.blockList).toEqual([/.web.tsx?$/]);
     expect(input?.bundle.extra?.fallback).toEqual({ foo: '/x' });
     expect(input?.bundle.extra?.sourceExts).toEqual(['.ts']);

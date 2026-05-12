@@ -50,6 +50,7 @@ export function buildRnBundleExtra(config, opts = {}) {
   const server = cfg.server ?? {};
   return {
     watchFolders: opts.rnWatchFolders ?? cfg.watchFolders ?? undefined,
+    nodeModulesPaths: resolver.nodeModulesPaths ?? undefined,
     sourceExts: opts.rnSourceExts ?? resolver.sourceExts ?? undefined,
     assetExts: resolver.assetExts ?? undefined,
     blockList: resolver.blockList ?? undefined,

@@ -365,6 +365,13 @@ describe('buildRnBundleOptions — extra (watchFolders / blockList / fallback)',
     expect(opts.watchFolders).toEqual([join(dir, 'shared'), '/abs/other']);
   });
 
+  test('nodeModulesPaths — Metro resolver 경로를 core nodePaths 로 정규화', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { nodeModulesPaths: ['./node_modules', '/abs/monorepo/node_modules'] } }),
+    );
+    expect(opts.nodePaths).toEqual([join(dir, 'node_modules'), '/abs/monorepo/node_modules']);
+  });
+
   test('blockList — 빈 배열은 미설정', () => {
     const opts = buildRnBundleOptions(baseInput({ extra: { blockList: [] } }));
     expect(opts.blockList).toBeUndefined();
