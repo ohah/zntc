@@ -761,8 +761,10 @@ fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
     const ctx: minify_mod.MinifyCtx = .{
         .symbols = analyzer.symbols.items,
         .symbol_ids = transformer.symbol_ids.items,
+        .symbol_ids_mut = transformer.symbol_ids.items, // alias inline (#3112)
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
+        .references = analyzer.references.items,
     };
     minify_mod.minify(transformer.ast, ctx, a, root);
     minify_mod.mergeDecls(transformer.ast, null);
@@ -822,12 +824,37 @@ test "dead store: read 1회 + literal init — Phase 2 inline" {
     );
 }
 
-test "dead store: read 1회 + 비-constant init — 보존 (inline 조건 미충족)" {
-    // Phase 2+3 inline 은 init 이 constant-expression 일 때만 동작. 식별자 의존이
-    // 있는 init (예: 파라미터) 은 inline 제외 → 원래 dead-store "read>=1 보존" 경로.
+test "single-use inline #3112: immutable binding 의 alias (같은 scope read) 는 inline" {
+    // `let x = n` 에서 `n` 은 재할당 없는 파라미터(write_count == 0) → `x` 는 불변 alias.
+    // `return x` 가 `let x` 와 같은 scope → read 위치를 `n` 으로 치환 + symbol_id 갱신, decl 제거.
     try expectMinifyDead(
         "function f(n) { let x = n; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\tlet x = n;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn n;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "single-use inline #3112: alias read 가 nested scope 면 보존 (shadow collision 회피)" {
+    // `q` 의 read(`return q + p`)가 `const q` 와 다른 scope(inner block) → ref 를 옮기면
+    // inner `let p` 가 outer `p` 를 shadow 하는 자리에 ref 가 가 mangler 가 처리 못함 → skip.
+    try expectMinifyDead(
+        "function f(p) { const q = p; { let p = compute(); use(p); return q + p; } } f(1);",
+        "function run() {\n\tfunction f(p) {\n\t\tconst q = p;\n\t\t{\n\t\t\tlet p = compute();\n\t\t\tuse(p);\n\t\t\treturn q + p;\n\t\t}\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "single-use inline #3112: 재할당되는 binding 의 alias 는 보존 (immutable 아님)" {
+    try expectMinifyDead(
+        "function f(n) { let x = n; n = 9; return x; } f(1);",
+        "function run() {\n\tfunction f(n) {\n\t\tlet x = n;\n\t\tn = 9;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "single-use inline #3112: const 의 alias (같은 scope) 도 inline" {
+    // `const c = obj(); const a = c; return [a, c];` — `a` 는 `c`(const, write_count 0) alias,
+    // `return [a, c]` 가 `const a` 와 같은 scope → inline → `c` 가 2회 사용이라 더 안 함.
+    try expectMinifyDead(
+        "function f(){ const c = obj(); const a = c; return [a, c]; } f();",
+        "function run() {\n\tfunction f() {\n\t\tconst c = obj();\n\t\t;\n\t\treturn [c, c];\n\t}\n\tf();\n}\nrun();",
     );
 }
 

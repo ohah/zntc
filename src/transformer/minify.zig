@@ -41,6 +41,11 @@ const unused_expr = @import("minify/unused_expr.zig");
 pub const MinifyCtx = struct {
     symbols: []const symbol_mod.Symbol,
     symbol_ids: []const ?u32,
+    /// `symbol_ids` 의 mutable view (동일 backing). single-use **identifier-alias** inline
+    /// 이 read 위치 노드의 symbol_id 를 init 식별자(`S`)의 것으로 갱신하는 데 필요 —
+    /// codegen/mangler 의 rename 조회가 symbol_id 기준이라(둘 다 `transformer.symbol_ids` 를
+    /// 읽음 = 단일 진실의 원천). null 이면 alias inline 자체를 skip (constant inline 무관).
+    symbol_ids_mut: ?[]?u32 = null,
     scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
     /// per-reference 배열. #1666 single-use inline 이 declaration ↔ read adjacency
@@ -718,7 +723,28 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
 
     const init_idx: NodeIndex = @enumFromInt(init_raw);
     if (init_idx.isNone()) return;
-    if (!isConstantExpr(ast, init_idx)) return;
+    const init_ni = @intFromEnum(init_idx);
+    if (init_ni >= ast.nodes.items.len) return;
+    const init_node = ast.nodes.items[init_ni];
+
+    // inline 대상 두 종류: ① 식별자 의존 없는 constant expr (mutable state 무관 → 위치 자유),
+    // ② **immutable binding 의 alias** — `const x = foo;` 에서 `foo` 가 재할당 없는 심볼
+    //   (const / import / param / function·class 선언명; write_count == 0). ②는 read 가 `x`
+    //   선언과 **같은 scope** 에 있을 때만 (아래 scope 검사) — 다른 scope 로 ref 를 옮기면
+    //   `foo` 의 이름이 그 scope 의 다른 binding 에 의해 shadow 될 수 있고, mangler 는
+    //   "outer 심볼 ref 가 그 이름을 shadow 하는 inner scope 안에 나타나는" 상황을 가정 안 함
+    //   (특히 1글자 이름은 skip 되어 원본 유지) → collision. 같은 scope 면 `foo` resolve 가
+    //   선언 위치와 동일하므로 그런 상황이 생기지 않음.
+    var alias_sym: ?u32 = null;
+    if (!isConstantExpr(ast, init_idx)) {
+        if (ctx.symbol_ids_mut == null) return; // alias inline 은 mutable symbol_ids 필요
+        if (init_node.tag != .identifier_reference) return;
+        if (init_ni >= ctx.symbol_ids.len) return;
+        const s = ctx.symbol_ids[init_ni] orelse return; // unresolved global → 불변성 확인 불가
+        if (s >= ctx.symbols.len or s == sym_id) return; // self-ref(`const x = x;`) 방어
+        if (ctx.symbols[s].write_count != 0) return; // 어딘가 재할당 → 불변 아님
+        alias_sym = s;
+    }
     if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
 
     // 실측 identifier_reference 수 확인 — ref_deltas 를 감안한 ref_count 와 정확히 1 일치.
@@ -726,6 +752,20 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     if (counts[sym_id] != 1) return;
     const read_ni = first_loc[sym_id];
     if (read_ni == std.math.maxInt(u32) or read_ni >= ast.nodes.items.len) return;
+
+    // alias inline: read 위치가 `x` 선언과 같은 scope 여야 안전 (위 주석). read 의 scope 는
+    // pre-minify `references` 에서 `node_index == read_ni` 인 항목으로 조회 — transformer 가
+    // 노드를 copy 했으면 매칭 실패(orphan) → 안전 보수적 skip.
+    if (alias_sym != null) {
+        var read_scope_ok = false;
+        for (ctx.references) |r| {
+            if (@intFromEnum(r.node_index) != read_ni) continue;
+            if (@intFromEnum(r.symbol_id) != sym_id) continue;
+            read_scope_ok = @intFromEnum(r.scope_id) == @intFromEnum(sym.scope_id);
+            break;
+        }
+        if (!read_scope_ok) return;
+    }
     // Forward-reference 검증 (#2195). read 가 declaration 이전이면 TDZ throw 대상이라
     // inline 금지 — `let x = 1; console.log(x)` 와 `console.log(x); let x = 1;` 의 의미가
     // 다름 (전자는 1, 후자는 ReferenceError). 이전엔 top-level 만 검증해 block-scoped
@@ -736,10 +776,6 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     // 안전 우선 (semantic-preserving).
     if (sourceSpanStart(ast.nodes.items[read_ni]) <= sourceSpanStart(node)) return;
 
-    const init_ni = @intFromEnum(init_idx);
-    if (init_ni >= ast.nodes.items.len) return;
-    const init_node = ast.nodes.items[init_ni];
-
     // in-place swap: read 위치의 identifier_reference 를 init 의 tag/data 로 덮어쓴다.
     // init 의 자식은 extra_data 공유 → codegen 은 read_ni 에서 init 전체를 출력.
     // span 은 init 의 것을 사용 (source map 에서 inlined 값의 위치 유지).
@@ -748,6 +784,14 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
         .span = init_node.span,
         .data = init_node.data,
     };
+    // alias inline: codegen/mangler 의 rename 조회가 symbol_id 기준이므로 read 위치의
+    // symbol_id 를 `S` 로 갱신. ref count 는 불변 — init 의 `S`-ref 가 read 위치로 "이동"
+    // 하고, decl 제거로 orphan 되는 init 노드가 `reference_count(S)` 를 balance.
+    if (alias_sym) |s| {
+        if (ctx.symbol_ids_mut) |sids| {
+            if (read_ni < sids.len) sids[read_ni] = s;
+        }
+    }
 
     replaceNode(ast, decl_stmt_idx, .{
         .tag = .empty_statement,
