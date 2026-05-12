@@ -41,8 +41,18 @@ pub fn shouldRun(
 
         // Check cheap single-byte flags before the heavier option predicate.
         if (self.minify_identifiers) return true;
-        if (self.react_refresh or self.styled_components or self.emotion or self.worklet_transform) {
-            return true;
+        // react_refresh / styled-components / emotion 은 emitter·`run` 과 마찬가지로 user
+        // code 에만 적용된다 (`/node_modules/` 밖). node_modules 의 plain ESM/ES5 dep 까지
+        // pre-pass 를 돌리던 게 가장 큰 낭비였다 — 그 모듈들은 helper import 도 안 만든다.
+        const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
+        if (is_user_code and (self.react_refresh or self.styled_components or self.emotion)) return true;
+        // worklet 변환은 react-native / @react-native 코어를 제외한 모든 모듈 대상 (`run` 의
+        // exclude_worklet 과 동일). 워크릿 디렉티브가 없으면 plugin 은 no-op 이지만, 변환이
+        // helper 를 주입할 수 있으니 게이트는 보수적으로 유지.
+        if (self.worklet_transform) {
+            const is_rn_core = std.mem.indexOf(u8, module.path, "/node_modules/react-native/") != null or
+                std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null;
+            if (!is_rn_core) return true;
         }
     }
 
