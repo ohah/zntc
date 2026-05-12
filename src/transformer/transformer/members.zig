@@ -11,6 +11,42 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
+fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex {
+    if (!self.options.unsupported.block_scoping) return null;
+    if (!node.data.binary.right.isNone()) return null;
+
+    const key_idx = node.data.binary.left;
+    if (key_idx.isNone()) return null;
+    const key_node = self.ast.getNode(key_idx);
+    if (key_node.tag != .identifier_reference) return null;
+
+    const name = self.ast.getText(key_node.data.string_ref);
+    const new_name = self.lookupBlockRename(name) orelse return null;
+
+    // Object shorthand 의 key 는 property 이름이라 원본을 보존해야 하지만,
+    // 암시된 value 참조는 block-scoping lowering 이 만든 renamed binding 을 읽어야 한다.
+    const new_key = try self.copyNodeDirect(key_idx);
+    self.propagateSymbolId(key_idx, new_key);
+
+    const value_span = try self.ast.addString(new_name);
+    const new_value = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = value_span,
+        .data = .{ .string_ref = value_span },
+    });
+    self.propagateSymbolId(key_idx, new_value);
+
+    return try self.ast.addNode(.{
+        .tag = .object_property,
+        .span = node.span,
+        .data = .{ .binary = .{
+            .left = new_key,
+            .right = new_value,
+            .flags = node.data.binary.flags,
+        } },
+    });
+}
+
 // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
 // constructor의 parameter property (public x: number) 변환도 처리.
 // abstract 메서드는 런타임에 존재하면 안 되므로 완전히 제거.
@@ -209,6 +245,7 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
     if (self.options.unsupported.object_extensions and node.data.binary.right.isNone()) {
         return es2015_shorthand.ES2015Shorthand(Transformer).expandShorthand(self, node);
     }
+    if (try expandBlockRenamedShorthand(self, node)) |expanded| return expanded;
     // non-computed key(identifier, string, numeric)는 property 이름이므로
     // block scoping rename 등 변수 치환을 적용하면 안 됨. copyNodeDirect 사용.
     // symbol_id는 항상 전파: shorthand({ x })에서 codegen이 rename을

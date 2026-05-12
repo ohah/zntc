@@ -101,6 +101,38 @@ test "rename leak: for-of body 의 template literal compound assign 도 일관 r
     try testing.expect(std.mem.indexOf(u8, body, "t += ") == null);
 }
 
+test "rename leak: object shorthand 는 block-rename 된 value 로 확장됨" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js",
+        \\let routes = "module-level";
+        \\export function derive(cond, state, props) {
+        \\  if (cond) {
+        \\    let routes = state.routes;
+        \\    let previousRoutes = state.previousRoutes;
+        \\    let descriptors = props.descriptors;
+        \\    let previousDescriptors = state.previousDescriptors;
+        \\    return { routes, previousRoutes, descriptors, previousDescriptors };
+        \\  }
+        \\  let routes = props.routes;
+        \\  return { routes };
+        \\}
+        \\export function getModuleRoutes() { return routes; }
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { derive, getModuleRoutes } from './lib.js';
+        \\derive(true, { routes: ['a'], previousRoutes: [], previousDescriptors: {} }, { routes: ['b'], descriptors: {} });
+        \\getModuleRoutes();
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    const code = r.code();
+
+    try testing.expect(std.mem.indexOf(u8, code, "routes: routes$") != null);
+    try testing.expect(std.mem.indexOf(u8, code, "return { routes, previousRoutes") == null);
+}
+
 // 충돌 없는 단일 let 은 rename 없이 유지 (over-fix 방지).
 test "rename leak: 충돌 없는 let 은 suffix 없이 그대로" {
     var tmp = testing.tmpDir(.{});
