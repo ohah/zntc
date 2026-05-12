@@ -79,9 +79,10 @@ pub fn emitBlock(self: anytype, node: Node) !void {
     try emitBracedList(self, node);
 }
 
-/// `if`/`else`/`for`/`while`/`for-in`/`for-of` 의 본문을 emit. minify 시 본문이
-/// "벗겨도 안전한" statement 하나뿐인 block 이면 `{}` 를 제거하고 그 statement 만 출력
-/// (`if(x){f()}` → `if(x)f()`). 그 외에는 본문 노드를 그대로 emit.
+/// 제어흐름 본문(`if`/`else`/`for`/`while`/`for-in`/`for-of`/`do-while`) 또는 standalone
+/// statement 자리(상수-조건 DCE 로 남은 분기)의 노드를 emit. minify 시 그 자리가 "벗겨도
+/// 안전한" statement 하나뿐인 block 이면 `{}` 를 제거하고 그 statement 만 출력
+/// (`if(x){f()}` → `if(x)f()`). 그 외에는 노드를 그대로 emit.
 pub fn emitStatementBody(self: anytype, body_idx: NodeIndex) !void {
     if (unwrappedStatementBody(self, body_idx)) |inner| {
         try self.emitNode(inner);
@@ -236,13 +237,13 @@ pub fn emitIf(self: anytype, node: Node) !void {
             // if (false) { ... } else { alt } → alt만 출력
             if (!t.c.isNone()) {
                 if (isFunctionDeclarationNode(self, t.c)) return emitIfVerbatim(self, t);
-                try self.emitNode(t.c);
+                try emitStatementBody(self, t.c);
             }
             return;
         } else {
             // if (true) { ... } → then만 출력
             if (isFunctionDeclarationNode(self, t.b)) return emitIfVerbatim(self, t);
-            try self.emitNode(t.b);
+            try emitStatementBody(self, t.b);
             return;
         }
     }
@@ -577,11 +578,13 @@ pub fn emitWhile(self: anytype, node: Node) !void {
 pub fn emitDoWhile(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.write("do");
-    // block body는 emitBracedList가 { 앞 공백 관리, non-block은 공백 필수 (dox++ 방지)
-    if (node.data.binary.right.isNone() or self.ast.getNode(node.data.binary.right).tag != .block_statement) {
-        try self.writeByte(' ');
-    }
-    try self.emitNode(node.data.binary.right);
+    const body = node.data.binary.right;
+    // block body 면 emitBracedList 가 `{` 앞 공백을 관리. non-block(또는 #3094 로 `{}` 가
+    // 벗겨질 block)은 키워드 뒤 공백 필수 (`dox++` 방지).
+    const body_is_braces = !body.isNone() and self.ast.getNode(body).tag == .block_statement and
+        unwrappedStatementBody(self, body) == null;
+    if (!body_is_braces) try self.writeByte(' ');
+    try emitStatementBody(self, body);
     if (self.options.minify_whitespace) try self.write("while(") else try self.write(" while (");
     try self.emitNode(node.data.binary.left);
     try self.write(");");

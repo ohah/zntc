@@ -738,3 +738,50 @@ test "Codegen #3107: minify_syntax off → 변환 안 함 (anti-regression)" {
     defer r.deinit();
     try std.testing.expectEqualStrings("if(c)a();else b();", r.output);
 }
+
+// ============================================================
+// #3111: do-while 본문 / if(true)·if(false) DCE 분기 의 single-statement {} 제거
+//   (#3094 후속 — emitStatementBody 인프라 재사용).
+// ============================================================
+
+test "Codegen #3111: do-while 본문 단일 statement → {} 제거" {
+    var r = try e2e(std.testing.allocator, "do { f(); } while (c);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("do f();while(c);", r.output);
+}
+
+test "Codegen #3111: do-while 2개 statement 면 {} 유지" {
+    var r = try e2e(std.testing.allocator, "do { f(); g(); } while (c);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("do{f();g();}while(c);", r.output);
+}
+
+test "Codegen #3111: do-while let 본문은 {} 유지" {
+    var r = try e2e(std.testing.allocator, "do { let x = 1; } while (c);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("do{let x=1;}while(c);", r.output);
+}
+
+test "Codegen #3111: if(true) DCE 분기 {} 제거" {
+    var r = try e2e(std.testing.allocator, "if (true) { f(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("f();", r.output);
+}
+
+test "Codegen #3111: if(false)/else DCE 분기 {} 제거" {
+    var r = try e2e(std.testing.allocator, "if (false) { bad(); } else { g(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("g();", r.output);
+}
+
+test "Codegen #3111: if(true) DCE 분기 let 은 {} 유지" {
+    var r = try e2e(std.testing.allocator, "if (true) { let x = 1; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("{let x=1;}", r.output);
+}
+
+test "Codegen #3111: non-minify 는 do {} 유지 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "do { f(); } while (c);", .{});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{") != null);
+}
