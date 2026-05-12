@@ -37,8 +37,9 @@ pub fn emitOutputExportsConflictDiag(
 }
 
 /// Entry export struct를 ESM `export { ... }` 구문으로 출력.
-/// #3096: minify_whitespace 시 brace 안 공백 / 항목 사이 공백 / 후행 newline 제거
-/// (`export{a,b as c};`). chunks.zig 의 chunk export emit 과 동일 관습.
+/// #3096: minify_whitespace 시 brace 안 공백 / 항목 사이 공백 제거 (`export{a,b as c};`).
+/// 후행 `\n` 은 유지 — bundle 끝의 `//# sourceMappingURL=` 주석이 같은 줄로 붙어
+/// `--line-limit` 초과하던 회귀(#3096 후속) 방지.
 pub fn emitEsmEntryExports(
     allocator: std.mem.Allocator,
     entries: []const FinalExportEntry,
@@ -59,7 +60,7 @@ pub fn emitEsmEntryExports(
             try out.appendSlice(allocator, e.exported);
         }
     }
-    try out.appendSlice(allocator, if (minify_whitespace) "};" else " };\n");
+    try out.appendSlice(allocator, if (minify_whitespace) "};\n" else " };\n");
     return try out.toOwnedSlice(allocator);
 }
 
@@ -86,7 +87,7 @@ pub fn emitWrappedEntryExports(
             try out.appendSlice(allocator, e.local);
         }
     }
-    try out.appendSlice(allocator, if (minify_whitespace) "};" else " };\n");
+    try out.appendSlice(allocator, if (minify_whitespace) "};\n" else " };\n");
     return try out.toOwnedSlice(allocator);
 }
 
@@ -239,7 +240,7 @@ test "emitEsmEntryExports: minify 시 공백/newline 제거 (#3096)" {
     };
     const out = try emitEsmEntryExports(std.testing.allocator, entries, true);
     defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("export{a,b$1 as b};", out);
+    try std.testing.expectEqualStrings("export{a,b$1 as b};\n", out);
 }
 
 test "emitWrappedEntryExports: emits object return from typed entries" {
@@ -260,5 +261,5 @@ test "emitWrappedEntryExports: minify 시 공백/newline 제거 (#3096)" {
     };
     const out = try emitWrappedEntryExports(std.testing.allocator, entries, true);
     defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("return{a,b:b$1};", out);
+    try std.testing.expectEqualStrings("return{a,b:b$1};\n", out);
 }
