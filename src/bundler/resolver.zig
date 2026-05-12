@@ -855,6 +855,7 @@ pub const Resolver = struct {
 pub fn isRelativeOrAbsolute(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
     if (specifier[0] == '/') return true;
+    if (specifier.len == 1 and specifier[0] == '.') return true;
     // "./" — 현재 디렉토리 상대
     if (specifier.len >= 2 and specifier[0] == '.' and specifier[1] == '/') return true;
     // "../" — 상위 디렉토리 상대. ".." 뒤에 / 또는 끝이어야 함 ("..foo"는 bare specifier)
