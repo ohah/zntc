@@ -34,25 +34,43 @@ const builtin = @import("builtin");
 /// counters(`totals_ns` 등)를 atomic 으로 갱신할지 여부 (comptime).
 ///
 /// native multi-thread 빌드는 worker pool 에서 phase 가 동시에 끝나므로 atomic add 가
-/// 필요하다(lost update 방지). 두 경우만 예외로 plain `+=`:
+/// 필요하다(lost update 방지). 단, 타깃이 해당 counter 폭의 atomic 을 지원하지 않으면 mutex
+/// fallback 을 쓴다:
 /// - `single_threaded` 빌드(transpile-only `zig build wasm`) — race 자체가 없음.
 /// - WASM — Zig 0.15.2 는 64-bit atomic RMW(`@atomicRmw(u64, …)`)를 지원하지 않는다
 ///   (atomics feature 가 있는 `wasm-bundler` 타깃도 "expected 32-bit integer type or
-///   smaller" 로 컴파일 실패). wasm-bundler 가 multi-thread 라도 profile 카운터의 가끔
-///   발생하는 lost update 는 허용한다 — 번들 정확성과 무관한 진단용 수치이고, thread-aware
-///   한 핵심 수정(nesting 스택 threadlocal 화)은 이 flag 와 무관하게 항상 적용된다.
-const atomic_counters = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
+///   smaller" 로 컴파일 실패). wasm-bundler 가 multi-thread 면 프로파일 카운터만 mutex 로
+///   느려질 수 있고, 번들 결과와는 무관하다.
+/// - 32-bit native targets — `u64` timing counters 는 atomic 불가지만 `u32` counts 는
+///   계속 atomic 가능하다.
+inline fn useAtomicCounter(comptime T: type) bool {
+    return !builtin.single_threaded and
+        !builtin.cpu.arch.isWasm() and
+        @bitSizeOf(T) <= @bitSizeOf(usize);
+}
+
+var counter_mutex: std.Thread.Mutex = .{};
 
 inline fn atomicAdd(comptime T: type, slot: *T, delta: T) void {
-    if (atomic_counters) {
+    if (useAtomicCounter(T)) {
         _ = @atomicRmw(T, slot, .Add, delta, .monotonic);
+    } else if (!builtin.single_threaded) {
+        counter_mutex.lock();
+        defer counter_mutex.unlock();
+        slot.* += delta;
     } else {
         slot.* += delta;
     }
 }
 
 inline fn atomicGet(comptime T: type, slot: *const T) T {
-    return if (atomic_counters) @atomicLoad(T, slot, .monotonic) else slot.*;
+    if (useAtomicCounter(T)) return @atomicLoad(T, slot, .monotonic);
+    if (!builtin.single_threaded) {
+        counter_mutex.lock();
+        defer counter_mutex.unlock();
+        return slot.*;
+    }
+    return slot.*;
 }
 
 // ============================================================================
