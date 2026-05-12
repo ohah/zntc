@@ -296,6 +296,24 @@ test "resolve: trailing slash bare specifier uses package root" {
     try std.testing.expectEqual(ModuleType.js, result.module_type);
 }
 
+test "resolve: trailing slash bare specifier walks up to workspace root node_modules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "node_modules/buffer/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, "node_modules/buffer/index.js");
+    try createFile(tmp.dir, "packages/app/src/entry.ts");
+
+    const source_path = try tmp.dir.realpathAlloc(std.testing.allocator, "packages/app/src");
+    defer std.testing.allocator.free(source_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = try resolver.resolve(source_path, "buffer/");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "buffer/index.js"));
+    try std.testing.expectEqual(ModuleType.js, result.module_type);
+}
+
 test "resolve: bare specifier walk up directories" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
