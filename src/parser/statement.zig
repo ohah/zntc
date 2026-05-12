@@ -74,6 +74,13 @@ pub fn parse(self: *Parser) !NodeIndex {
     // Unambiguous 모드 해결: import/export 유무로 module/script 확정 (oxc 방식)
     try self.resolveModuleKind();
 
+    // per-file JSX pragma (D026) — scanner 가 주석 스캔 중 누적한 값을 AST 로 carry.
+    // 파일 어디의 주석이든 (esbuild 와 동일) 마지막 값이 적용된다.
+    self.ast.jsx_pragma_factory = self.scanner.jsx_factory_pragma;
+    self.ast.jsx_pragma_fragment = self.scanner.jsx_frag_pragma;
+    self.ast.jsx_pragma_runtime = self.scanner.jsx_runtime_pragma;
+    self.ast.jsx_pragma_import_source = self.scanner.jsx_import_source_pragma;
+
     const list = try self.ast.addNodeList(stmts.items);
     return try self.ast.addNode(.{
         .tag = .program,

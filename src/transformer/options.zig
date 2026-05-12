@@ -331,6 +331,23 @@ pub const TransformOptions = struct {
     pub fn jsxClassicFragmentHead(self: @This()) []const u8 {
         return jsxHeadIdent(self.jsx_fragment);
     }
+
+    /// per-file JSX pragma 주석 (D026) 을 적용한 module-local 옵션 사본.
+    /// `@jsxRuntime` → runtime, `@jsx` → factory, `@jsxFrag` → fragment,
+    /// `@jsxImportSource` → import source. 우선순위는 file pragma > tsconfig/CLI
+    /// (esbuild / TypeScript 동일). pragma 가 없는 항목은 그대로 둔다. transform 의
+    /// 모든 진입점 (graph pre-pass, transpile) 이 이 함수 하나를 거쳐 module 의
+    /// effective JSX 설정을 확정한다.
+    pub fn withModuleJsxPragmas(self: @This(), ast: *const Ast) @This() {
+        var out = self;
+        if (ast.jsx_pragma_runtime) |s| {
+            if (codegen_options.JsxRuntime.fromString(s)) |rt| out.jsx_runtime = rt;
+        }
+        if (ast.jsx_pragma_factory) |s| out.jsx_factory = s;
+        if (ast.jsx_pragma_fragment) |s| out.jsx_fragment = s;
+        if (ast.jsx_pragma_import_source) |s| out.jsx_import_source = s;
+        return out;
+    }
 };
 
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게

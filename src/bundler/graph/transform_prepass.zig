@@ -104,6 +104,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     opts.plugins = merged_plugins;
     opts.jsx_transform = ast_ptr.has_jsx;
     opts.jsx_filename = module.path;
+    // per-file JSX pragma (D026): `@jsxRuntime` / `@jsx` / `@jsxFrag` / `@jsxImportSource`
+    // 가 tsconfig/CLI 보다 우선. lowering 전에 module 의 effective JSX 설정을 확정.
+    opts = opts.withModuleJsxPragmas(ast_ptr);
     // #1961 PR 1h 후 splitting / single-bundle 양쪽에서 helper module virtual import
     // 모델 활성. mangler 가 helper module top-level 식별자를 reserved 처리
     // (linker.zig 의 candidates collect 에서 isVirtualId 분기) — cross-module binding
