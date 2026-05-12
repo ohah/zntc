@@ -962,6 +962,21 @@ test "Enum: export enum declaration" {
     try analyzeNoErrors("export enum Color { Red, Green }");
 }
 
+test "Enum: export enum declaration marks exported symbol" {
+    var r = try analyzeModule("export enum Color { Red, Green }");
+    defer r.deinit();
+
+    try std.testing.expect(r.analyzer.exported_names.contains("Color"));
+
+    var found = false;
+    for (r.analyzer.symbols.items) |sym| {
+        if (!std.mem.eql(u8, sym.nameText(r.parser.ast.source), "Color")) continue;
+        found = true;
+        try std.testing.expect(sym.decl_flags.is_exported);
+    }
+    try std.testing.expect(found);
+}
+
 test "Enum: default export" {
     try analyzeNoErrors("enum Status { Active }\nexport default Status;");
 }

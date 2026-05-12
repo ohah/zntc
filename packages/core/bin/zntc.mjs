@@ -247,7 +247,7 @@ function parseArgs(argv) {
     jsxFactory: undefined,
     jsxFragment: undefined,
     jsxImportSource: undefined,
-    devMode: false,
+    devMode: undefined,
     flow: false,
     experimentalDecorators: false,
     useDefineForClassFields: true,

@@ -110,6 +110,7 @@ export function buildRnDevServerInput(opts, config) {
   // shortcut 의 enable gate. CLI flag 우선 — 명시 시 config override.
   const terminalActions =
     opts.noInteractive === true || server.useGlobalHotkey === false ? false : undefined;
+  const dev = opts.devMode !== undefined ? Boolean(opts.devMode) : cfg.dev !== false;
 
   return {
     bundle: {
@@ -117,7 +118,7 @@ export function buildRnDevServerInput(opts, config) {
       projectRoot,
       rnPlatform,
       // dev server 는 default __DEV__=true / sourcemap=true (bundle 의 default false 와 의도적 비대칭).
-      dev: opts.devMode !== false && cfg.dev !== false,
+      dev,
       // dev server 는 항상 sourcemap=true — RN LogBox / DevTools 의 source link
       // 동작에 필수. zntc.mjs 의 `opts.sourcemap` default 가 false 라 `!== false`
       // 비교는 무용 (사용자 명시 disable 구분 불가). dev server 컨텍스트에선

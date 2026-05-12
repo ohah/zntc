@@ -20,13 +20,19 @@ describe('buildRnDevServerInput — runtime bundle option config 추출 (#2605)'
     expect(input?.bundle.extra?.babelTransformerPath).toBe('react-native-svg-transformer');
   });
 
-  test('config.dev=false → bundle.dev=false (CLI override 가능)', async () => {
+  test('dev 우선순위: CLI devMode > config.dev > default true', async () => {
     const buildRnDevServerInput = await loadBuildRnDevServerInput();
-    const a = buildRnDevServerInput({ entryPoints: ['i.js'] }, { dev: false });
-    expect(a?.bundle.dev).toBe(false);
+    const defaultInput = buildRnDevServerInput({ entryPoints: ['i.js'] }, {});
+    expect(defaultInput?.bundle.dev).toBe(true);
 
-    const b = buildRnDevServerInput({ entryPoints: ['i.js'], devMode: false }, { dev: true });
-    expect(b?.bundle.dev).toBe(false);
+    const configOff = buildRnDevServerInput({ entryPoints: ['i.js'] }, { dev: false });
+    expect(configOff?.bundle.dev).toBe(false);
+
+    const cliOff = buildRnDevServerInput({ entryPoints: ['i.js'], devMode: false }, { dev: true });
+    expect(cliOff?.bundle.dev).toBe(false);
+
+    const cliOn = buildRnDevServerInput({ entryPoints: ['i.js'], devMode: true }, { dev: false });
+    expect(cliOn?.bundle.dev).toBe(true);
   });
 
   test('config.minify → bundle.minify', async () => {
