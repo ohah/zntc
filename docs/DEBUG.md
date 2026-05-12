@@ -213,24 +213,30 @@ ZNTC_PROFILE=hmr zntc --watch entry.ts
 
 ```
 === ZNTC Profile ===
-Phase                Total       %      Count
---------------------|-----------|-------|------
-parse                   0.43ms  54.7%      1
-semantic                0.36ms  45.3%      1
-total                   0.78ms  100.0%
+Phase                Total       Self        %      Count
+--------------------|-----------|-----------|-------|------
+parse                   0.43ms     0.07ms  54.7%      1
+semantic                0.36ms     0.36ms  45.3%      1
+--------------------|-----------|-----------|-------|------
+total                   0.78ms     0.78ms  100.0%   (Σ self, all threads)
+wall                    0.50ms
 ```
+
+- **Total** = phase 의 inclusive 시간 (자식 포함). **Self** = 자식 제외.
+- **`total` 줄 = Σ self (모든 worker thread 합산)**. 번들러는 parse/resolve/emit 을 thread pool 에서 돌리므로 병렬 구간이 있으면 이 값이 `wall` 보다 크다 — 정상이다. "어느 phase 가 CPU 를 많이 먹나" 는 `%`(= self / Σself) 로 본다.
+- **`wall` 줄** = 첫 측정부터 리포트까지 실제 경과 시간. `Σ self / wall` 가 대략 유효 병렬도.
 
 ### tree (detailed)
 
 ```
 === ZNTC Profile (detailed) ===
-total: 1.20ms
-├─ parse             0.77ms  (64.2%)
-│  └─ ast.build      0.72ms  (93.5% of parse)
-├─ transform         0.34ms  (28.4%)
-│  ├─ ts.strip       0.12ms  (35.1% of transform)
-│  └─ jsx            0.08ms  (23.5% of transform)
-└─ codegen           0.09ms  ( 7.5%)
+wall: 0.50ms   |   Σ self (all threads): 1.20ms
+├─ parse             0.77ms total     0.07ms self  (64.2%)
+│  └─ ast.build      0.72ms total     0.72ms self  (93.5% of parse)
+├─ transform         0.34ms total     0.10ms self  (28.4%)
+│  ├─ ts.strip       0.12ms total     0.12ms self  (35.1% of transform)
+│  └─ jsx            0.08ms total     0.08ms self  (23.5% of transform)
+└─ codegen           0.09ms total     0.09ms self  ( 7.5%)
 ```
 
 ### json (스크립팅)
@@ -239,22 +245,25 @@ total: 1.20ms
 {
   "profile_version": 1,
   "total_ms": 1.196,
+  "wall_ms": 0.500,
   "level": "summary",
   "phases": {
-    "parse": { "total_ms": 0.767, "count": 1, "pct": 64.17 },
-    "transform": { "total_ms": 0.339, "count": 1, "pct": 28.37 },
-    "codegen": { "total_ms": 0.089, "count": 1, "pct": 7.46 }
+    "parse": { "total_ms": 0.767, "self_ms": 0.047, "count": 1, "pct": 64.17, "self_pct": 3.93 },
+    "transform": { "total_ms": 0.339, "self_ms": 0.130, "count": 1, "pct": 28.37, "self_pct": 10.87 },
+    "codegen": { "total_ms": 0.089, "self_ms": 0.089, "count": 1, "pct": 7.46, "self_pct": 7.46 }
   }
 }
 ```
 
+(`total_ms` = Σ self over all threads; `wall_ms` = elapsed wall time. `pct`/`self_pct` 는 Σself 대비 비율.)
+
 ### csv (스프레드시트)
 
 ```csv
-phase,total_ms,count,pct
-parse,0.767,1,64.17
-transform,0.339,1,28.37
-codegen,0.089,1,7.46
+phase,total_ms,self_ms,count,pct,self_pct
+parse,0.767,0.047,1,64.17,3.93
+transform,0.339,0.130,1,28.37,10.87
+codegen,0.089,0.089,1,7.46,7.46
 ```
 
 ---
