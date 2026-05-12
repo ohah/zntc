@@ -104,6 +104,107 @@ pub const ParsedPackageJson = struct {
     }
 };
 
+/// 디렉토리당 1회만 package.json 을 read+parse 하는 thread-safe 캐시.
+/// `parsePackageJson` 자체는 캐시가 없어서 (cf. `DirEntryCache`/`RealpathCache` 는 있음)
+/// 같은 `node_modules/<pkg>/package.json` 을 importer 디렉토리마다 다시 읽었다 — 대형
+/// RN 그래프에서 `resolve.resolver.pkg.json` ~0.7s aggregate.
+///
+/// `DirEntryCache` 와 동일 패턴: shared lock 으로 조회, 미스면 lock 밖에서 parse,
+/// 다 만든 뒤 짧게 exclusive lock 으로 삽입 (그 사이 다른 스레드가 먼저 넣었으면 폐기).
+/// 반환 포인터는 캐시 소유 — 호출자가 `deinit` 하면 안 된다 (deinit 전까지 유효).
+/// `PackageJsonCache.getOrParse` 의 에러 — `parsePackageJson` 의 deterministic 에러
+/// (FileNotFound/IoError/JsonParseError)는 캐시되고, OutOfMemory 는 transient 라 전파.
+pub const PkgJsonCacheError = error{ FileNotFound, IoError, JsonParseError, OutOfMemory };
+
+pub const PackageJsonCache = struct {
+    cache: std.StringHashMap(Entry),
+    rwlock: std.Thread.RwLock = .{},
+    allocator: std.mem.Allocator,
+
+    const Entry = union(enum) {
+        ok: *ParsedPackageJson,
+        file_not_found,
+        io_error,
+        parse_error,
+
+        fn result(self: Entry) PkgJsonCacheError!*ParsedPackageJson {
+            return switch (self) {
+                .ok => |p| p,
+                .file_not_found => error.FileNotFound,
+                .io_error => error.IoError,
+                .parse_error => error.JsonParseError,
+            };
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator) PackageJsonCache {
+        return .{ .cache = std.StringHashMap(Entry).init(allocator), .allocator = allocator };
+    }
+
+    fn freeBuilt(self: *PackageJsonCache, built: ?*ParsedPackageJson) void {
+        if (built) |p| {
+            p.deinit();
+            self.allocator.destroy(p);
+        }
+    }
+
+    pub fn deinit(self: *PackageJsonCache) void {
+        var it = self.cache.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == .ok) self.freeBuilt(entry.value_ptr.ok);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.cache.deinit();
+    }
+
+    pub fn getOrParse(self: *PackageJsonCache, pkg_dir_path: []const u8) PkgJsonCacheError!*ParsedPackageJson {
+        // 1. fast path — shared lock 으로 조회.
+        {
+            self.rwlock.lockShared();
+            defer self.rwlock.unlockShared();
+            if (self.cache.get(pkg_dir_path)) |entry| return entry.result();
+        }
+
+        // 2. 캐시 미스 — lock 없이 parse. (errdefer 는 안 쓴다 — `result()` 가 음수 entry 일 때
+        //  error 를 반환하므로 errdefer 가 "성공적으로 캐시한 key" 까지 free 해버려 double-free.)
+        var built: ?*ParsedPackageJson = null;
+        const new_entry: Entry = blk: {
+            const parsed = parsePackageJson(self.allocator, pkg_dir_path) catch |err| switch (err) {
+                error.FileNotFound => break :blk .file_not_found,
+                error.IoError => break :blk .io_error,
+                error.JsonParseError => break :blk .parse_error,
+                error.OutOfMemory => return error.OutOfMemory, // transient — 캐시 안 함
+            };
+            const p = self.allocator.create(ParsedPackageJson) catch {
+                var pp = parsed;
+                pp.deinit();
+                return error.OutOfMemory;
+            };
+            p.* = parsed;
+            built = p;
+            break :blk .{ .ok = p };
+        };
+
+        // 3. exclusive lock 으로 삽입. 그 사이 다른 스레드가 먼저 넣었을 수 있다.
+        self.rwlock.lock();
+        defer self.rwlock.unlock();
+        if (self.cache.get(pkg_dir_path)) |existing| {
+            self.freeBuilt(built);
+            return existing.result();
+        }
+        const key = self.allocator.dupe(u8, pkg_dir_path) catch {
+            self.freeBuilt(built);
+            return error.OutOfMemory;
+        };
+        self.cache.put(key, new_entry) catch {
+            self.allocator.free(key);
+            self.freeBuilt(built);
+            return error.OutOfMemory;
+        };
+        return new_entry.result();
+    }
+};
+
 /// `pkg_dir_path` 디렉토리의 package.json 을 읽고 파싱한다. path 기반 시그니처로
 /// fs.zig 추상화 통과 — std.fs.Dir 핸들 의존 제거 (#1921, #1885 Phase 1 완성).
 pub fn parsePackageJson(allocator: std.mem.Allocator, pkg_dir_path: []const u8) !ParsedPackageJson {
@@ -338,9 +439,3 @@ fn parseSideEffects(obj: std.json.ObjectMap, allocator: std.mem.Allocator) Packa
         else => return .unknown,
     }
 }
-
-pub const Error = error{
-    FileNotFound,
-    JsonParseError,
-    OutOfMemory,
-};

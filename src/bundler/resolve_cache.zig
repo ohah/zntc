@@ -57,6 +57,8 @@ pub const ResolveCache = struct {
     /// 디렉토리 엔트리 캐시 — readdir() 결과를 메모리에 보관하여 stat() syscall 대폭 감소.
     dir_cache: resolver_mod.DirEntryCache,
     realpath_cache: resolver_mod.RealpathCache,
+    /// package.json 파싱 캐시 — 디렉토리당 1회 read+parse (importer 디렉토리마다 재파싱 방지).
+    pkg_json_cache: pkg_json.PackageJsonCache,
 
     /// 패키지 디렉토리별 browser 필드 override 캐시 (disabled + string remap).
     /// pkg_dir_path → BrowserOverrides (null 이면 browser 필드 없음).
@@ -232,6 +234,7 @@ pub const ResolveCache = struct {
             .packages_external = options.packages_external,
             .dir_cache = resolver_mod.DirEntryCache.init(allocator),
             .realpath_cache = resolver_mod.RealpathCache.init(allocator),
+            .pkg_json_cache = pkg_json.PackageJsonCache.init(allocator),
             .browser_overrides_cache = std.StringHashMap(?BrowserOverrides).init(allocator),
             .conditions_import = cond_import,
             .conditions_require = cond_require,
@@ -243,6 +246,7 @@ pub const ResolveCache = struct {
     pub fn deinit(self: *ResolveCache) void {
         self.dir_cache.deinit();
         self.realpath_cache.deinit();
+        self.pkg_json_cache.deinit();
 
         // 캐시된 경로 문자열 해제
         var it = self.cache.iterator();
@@ -401,6 +405,7 @@ pub const ResolveCache = struct {
         local_resolver.conditions = self.conditionsFor(kind);
         local_resolver.dir_cache = &self.dir_cache;
         local_resolver.realpath_cache = &self.realpath_cache;
+        local_resolver.pkg_json_cache = &self.pkg_json_cache;
         if (!thread_safe) {
             // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원
             self.resolver.conditions = local_resolver.conditions;
@@ -640,11 +645,8 @@ pub const ResolveCache = struct {
     /// package.json 의 browser 필드를 4 축 (path/module × disabled/remap) 으로 수집.
     /// 키 prefix 로 분류: "./foo" → path-key, 나머지는 bare module key (#1530).
     fn buildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
-        // self.allocator 통과 — page_allocator 가 wasm32 multi-threaded 미지원 (#1885 Phase 2).
-        // parsed.deinit() 이 같은 allocator 로 free 하므로 leak 없음.
-        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir_path) catch return null;
-        defer parsed.deinit();
-
+        // pkg_json_cache 가 소유 — 여기서 deinit 하지 않는다 (디렉토리당 1회 parse 재사용).
+        const parsed = self.pkg_json_cache.getOrParse(pkg_dir_path) catch return null;
         const browser_map = parsed.pkg.browser_map orelse return null;
         const browser_obj = browser_map.object;
 

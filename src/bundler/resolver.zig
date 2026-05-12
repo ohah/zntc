@@ -324,6 +324,9 @@ pub const Resolver = struct {
     /// Directory-level realpath 캐시. null 이면 매번 fs.realpath() 호출 (테스트용).
     /// 같은 디렉토리의 N 개 파일 → 1 realpath syscall. 대형 그래프에서 큰 비중.
     realpath_cache: ?*RealpathCache = null,
+    /// package.json 파싱 캐시. null 이면 매번 read+parse (테스트용).
+    /// 같은 `node_modules/<pkg>/package.json` 을 importer 디렉토리마다 다시 읽지 않게.
+    pkg_json_cache: ?*pkg_json.PackageJsonCache = null,
     /// NODE_PATH 추가 탐색 경로 (--node-paths). 상위 디렉토리 탐색 실패 시 폴백.
     node_paths: []const []const u8 = &.{},
 
@@ -555,17 +558,37 @@ pub const Resolver = struct {
         return null;
     }
 
+    /// package.json 을 캐시(있으면) 또는 직접 read+parse 한다.
+    /// 캐시 hit/miss 면 borrowed 포인터 (deinit 금지) + `owned_out` 는 null 그대로.
+    /// 캐시 없으면 (테스트 경로) `owned_out` 에 by-value 결과를 두고 그 포인터를 반환 — 호출자가
+    /// `owned_out` 의 lifetime/deinit 을 관리. 어느 쪽이든 반환은 `*ParsedPackageJson`.
+    fn getPackageJson(
+        self: *Resolver,
+        dir_path: []const u8,
+        owned_out: *?pkg_json.ParsedPackageJson,
+    ) pkg_json.PkgJsonCacheError!*pkg_json.ParsedPackageJson {
+        var pj_scope = profile.begin(.resolve_resolver_pkg_json);
+        defer pj_scope.end();
+        if (self.pkg_json_cache) |cache| {
+            owned_out.* = null;
+            return cache.getOrParse(dir_path);
+        }
+        owned_out.* = pkg_json.parsePackageJson(self.allocator, dir_path) catch |err| switch (err) {
+            error.FileNotFound => return error.FileNotFound,
+            error.IoError => return error.IoError,
+            error.JsonParseError => return error.JsonParseError,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        return &owned_out.*.?;
+    }
+
     /// 디렉토리 내 package.json에서 module/main 필드를 읽어 resolve 시도.
     /// fp-ts 등에서 사용하는 서브패스 package.json 패턴 지원.
     fn tryDirectoryPackageJson(self: *Resolver, dir_path: []const u8) ResolveError!?ResolveResult {
-        var parsed = blk: {
-            var pj_scope = profile.begin(.resolve_resolver_pkg_json);
-            defer pj_scope.end();
-            break :blk pkg_json.parsePackageJson(self.allocator, dir_path) catch return null;
-        };
-        defer parsed.deinit();
-
-        return self.resolveByMainFields(&parsed, dir_path);
+        var pj_owned: ?pkg_json.ParsedPackageJson = null;
+        defer if (pj_owned) |*o| o.deinit();
+        const parsed = self.getPackageJson(dir_path, &pj_owned) catch return null;
+        return self.resolveByMainFields(parsed, dir_path);
     }
 
     /// package.json의 main_fields 또는 기본 순서(module → main)로 엔트리포인트를 찾는다.
@@ -657,17 +680,14 @@ pub const Resolver = struct {
     /// 패키지 디렉토리에서 엔트리포인트를 해석한다.
     /// 우선순위: exports → module → main → index 파일
     fn resolvePackage(self: *Resolver, pkg_dir_path: []const u8, subpath: []const u8) ResolveError!?ResolveResult {
-        // package.json 파싱 시도
-        var parsed = blk: {
-            var pj_scope = profile.begin(.resolve_resolver_pkg_json);
-            defer pj_scope.end();
-            break :blk pkg_json.parsePackageJson(self.allocator, pkg_dir_path) catch |err| switch (err) {
-                // package.json 없으면 index 파일 탐색
-                error.FileNotFound => return self.tryDirectoryIndex(pkg_dir_path),
-                else => return null,
-            };
+        // package.json 파싱 시도 (캐시 통과)
+        var pj_owned: ?pkg_json.ParsedPackageJson = null;
+        defer if (pj_owned) |*o| o.deinit();
+        const parsed = self.getPackageJson(pkg_dir_path, &pj_owned) catch |err| switch (err) {
+            // package.json 없으면 index 파일 탐색
+            error.FileNotFound => return self.tryDirectoryIndex(pkg_dir_path),
+            else => return null,
         };
-        defer parsed.deinit();
 
         const pkg = &parsed.pkg;
 
@@ -718,7 +738,7 @@ pub const Resolver = struct {
             return null;
         }
 
-        if (try self.resolveByMainFields(&parsed, pkg_dir_path)) |result| return result;
+        if (try self.resolveByMainFields(parsed, pkg_dir_path)) |result| return result;
 
         // 4. index 파일 폴백
         return self.tryDirectoryIndex(pkg_dir_path);
