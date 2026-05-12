@@ -190,6 +190,20 @@ Options:
 | `--jsx-in-js`                             | `.js` 파일에서도 JSX 파싱 허용                                     |
 | `--jsx-side-effects`                      | 사용되지 않은 JSX expression을 side-effect가 있는 것으로 보고 보존 |
 
+### Per-file pragma 주석
+
+파일 주석으로 그 파일만의 JSX 설정을 override 합니다 (esbuild/TypeScript/Babel 동일).
+**우선순위: file pragma > tsconfig / CLI 옵션 > 기본값.** `//` 한 줄 주석도 인식.
+
+- `/** @jsx h */` — classic factory (= `--jsx-factory`)
+- `/** @jsxFrag Fragment */` — classic fragment (= `--jsx-fragment`)
+- `/** @jsxRuntime automatic|classic */` — 런타임 모드 (= `--jsx`)
+- `/** @jsxImportSource preact */` — automatic import source (= `--jsx-import-source`)
+
+`@jsx` / `@jsxFrag` 는 effective 런타임이 classic 일 때만 효과가 있습니다 (automatic 모드는
+factory 미사용). 예: 프로젝트는 React(`jsx: react-jsx`)지만 한 파일만 preact —
+`/** @jsxImportSource preact */` 한 줄로 그 파일만 `preact/jsx-runtime` 을 씁니다.
+
 ## TypeScript
 
 | 옵션                                           | 설명                                                                     |

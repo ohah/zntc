@@ -193,6 +193,21 @@ Full table + behavior: [React Native guide](/zntc/en/guides/react-native/#metro-
 | `--jsx-in-js`                             | Allow JSX parsing in `.js` files                  |
 | `--jsx-side-effects`                      | Preserve unused JSX expressions as side-effectful |
 
+### Per-file pragma comments
+
+Per-file comments override that file's JSX settings (same as esbuild/TypeScript/Babel).
+**Precedence: file pragma > tsconfig / CLI options > defaults.** `//` line comments work too.
+
+- `/** @jsx h */` — classic factory (= `--jsx-factory`)
+- `/** @jsxFrag Fragment */` — classic fragment (= `--jsx-fragment`)
+- `/** @jsxRuntime automatic|classic */` — runtime mode (= `--jsx`)
+- `/** @jsxImportSource preact */` — automatic import source (= `--jsx-import-source`)
+
+`@jsx` / `@jsxFrag` only take effect when the effective runtime is classic (the automatic
+runtime doesn't use a factory). E.g. a project on React (`jsx: react-jsx`) can have one file
+use preact by adding just `/** @jsxImportSource preact */` — that file alone uses
+`preact/jsx-runtime`.
+
 ## TypeScript
 
 | Option                                         | Description                                                                  |
