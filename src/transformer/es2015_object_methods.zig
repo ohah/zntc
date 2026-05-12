@@ -42,22 +42,8 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                 (self.options.unsupported.generator and (flags & ast_mod.MethodFlags.is_generator) != 0);
         }
 
-        /// object_expression 멤버 중 method_definition이 있는지 확인.
-        /// getter/setter(flags 0x02/0x04)는 ES5도 지원하므로 제외.
-        pub fn hasObjectMethod(self: *const Transformer, node: Node) bool {
-            const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-            for (members) |raw_idx| {
-                const m = self.ast.getNode(@enumFromInt(raw_idx));
-                if (m.tag != .method_definition) continue;
-                const flags = self.ast.extra_data.items[m.data.extra + ast_mod.MethodExtra.flags];
-                if (!isPlainObjectMethod(flags)) continue;
-                return true;
-            }
-            return false;
-        }
-
         /// 현재 타겟에서 method_definition → object_property + function_expression
-        /// 변환이 필요한 멤버가 있는지 확인.
+        /// 변환이 필요한 멤버(getter/setter 및 보존 가능한 일반 method 제외)가 있는지 확인.
         pub fn needsObjectMethodLowering(self: *const Transformer, node: Node) bool {
             const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (members) |raw_idx| {

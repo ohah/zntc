@@ -109,8 +109,7 @@ function hasNonNative(plugins: unknown[]): boolean {
 
 function parserPluginsFor(filename: string): string[] {
   const ext = extname(filename);
-  if (ext === '.ts') return ['typescript', 'jsx'];
-  if (ext === '.tsx') return ['typescript', 'jsx'];
+  if (ext === '.ts' || ext === '.tsx') return ['typescript', 'jsx'];
   if (ext === '.js' || ext === '.jsx' || ext === '.mjs' || ext === '.cjs') {
     return ['jsx', 'flow'];
   }
