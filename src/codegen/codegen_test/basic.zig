@@ -94,7 +94,7 @@ test "Codegen: TS export = class expression → module.exports = class" {
 test "Codegen: TS export = function expression → module.exports = function" {
     var r = try e2e(std.testing.allocator, "export = function add(a: number, b: number) { return a + b; };");
     defer r.deinit();
-    try std.testing.expectEqualStrings("module.exports=function add(a,b){return a + b;};", r.output);
+    try std.testing.expectEqualStrings("module.exports=function add(a,b){return a+b;};", r.output);
 }
 
 test "Codegen: TS export = require().default cherry-pick" {
@@ -288,4 +288,76 @@ test "Codegen: 원본 소스의 !0/!1은 minify_syntax와 무관하게 유지" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "!0") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "!1") != null);
+}
+
+// ============================================================
+// #3097: binary `+` / `-` 연산자 공백 — minify_whitespace 시 tight
+//   `a + b` → `a+b`, 단 `+`/`-` 다음에 `+`/`-`/`++`/`--` 로 시작하는 RHS 가
+//   오면 `++`/`--` 로 토큰이 잘못 합쳐지므로 한 칸만 삽입.
+// ============================================================
+
+test "Codegen #3097: minify 시 binary +/- tight" {
+    var r = try e2e(std.testing.allocator, "var z = a + b - c;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a+b-c;", r.output);
+}
+
+test "Codegen #3097: minify 시 * / 는 기존대로 tight (anti-regression)" {
+    var r = try e2e(std.testing.allocator, "var z = a * b / c;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a*b/c;", r.output);
+}
+
+test "Codegen #3097: + 다음 unary + 는 한 칸 (a+ +b)" {
+    var r = try e2e(std.testing.allocator, "var z = a + +b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a+ +b;", r.output);
+}
+
+test "Codegen #3097: - 다음 unary - 는 한 칸 (a- -b)" {
+    var r = try e2e(std.testing.allocator, "var z = a - -b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a- -b;", r.output);
+}
+
+test "Codegen #3097: + 다음 unary - 는 공백 불필요 (a+-b)" {
+    var r = try e2e(std.testing.allocator, "var z = a + -b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a+-b;", r.output);
+}
+
+test "Codegen #3097: - 다음 unary + 는 공백 불필요 (a-+b)" {
+    var r = try e2e(std.testing.allocator, "var z = a - +b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a-+b;", r.output);
+}
+
+test "Codegen #3097: + 다음 prefix ++ 는 한 칸 (a+ ++b)" {
+    var r = try e2e(std.testing.allocator, "var z = a + ++b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a+ ++b;", r.output);
+}
+
+test "Codegen #3097: - 다음 prefix -- 는 한 칸 (a- --b)" {
+    var r = try e2e(std.testing.allocator, "var z = a - --b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a- --b;", r.output);
+}
+
+test "Codegen #3097: postfix ++ 좌측은 공백 불필요 (a+++b == (a++)+b)" {
+    var r = try e2e(std.testing.allocator, "var z = a++ + b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a+++b;", r.output);
+}
+
+test "Codegen #3097: 더 높은 우선순위 RHS 의 leftmost 가 unary - (a- -b*c)" {
+    var r = try e2e(std.testing.allocator, "var z = a - -b * c;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=a- -b*c;", r.output);
+}
+
+test "Codegen #3097: non-minify 는 ` + ` 공백 유지 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "var z = a + b;", .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z = a + b;\n", r.output);
 }
