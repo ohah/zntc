@@ -491,9 +491,9 @@ fn copyDiagnostics(
     }
 }
 
-/// PoC (`ZNTC_MODULE_STATS=1`): "plain-dep 고속 경로" 견적용 모듈 분류 히스토그램.
+/// `ZNTC_DEBUG=module_stats` 진단: 모듈 분류 히스토그램 (docs/DEBUG.md §1).
 /// node_modules dep 중 JSX/decorator/TS-feature 없는 모듈이 얼마나 되고 그 중 semantic 데이터를
-/// 들고 있는지 = 모듈당 작업(semantic/metadata)을 통째로 스킵할 수 있는 후보 규모.
+/// 들고 있는지 = 모듈당 작업(semantic/metadata)이 어디 쏠려있는지 파악용.
 fn dumpModuleStats(graph: *ModuleGraph) void {
     var total: usize = 0;
     var nm: usize = 0; // node_modules
@@ -549,19 +549,21 @@ fn dumpModuleStats(graph: *ModuleGraph) void {
         e.value_ptr.* += 1;
     }
 
+    const debug_log = @import("../debug_log.zig");
     const pct = @as(f64, @floatFromInt(nm)) * 100.0 / @as(f64, @floatFromInt(@max(total, 1)));
-    std.debug.print(
-        "\n=== ZNTC module stats ===\n" ++
-            "total={d}  node_modules={d} ({d:.0}%)  has_semantic={d}  prepass_ran(transform_cache)={d}\n" ++
-            "wrap_kind: none={d} cjs={d} esm={d}\n" ++
-            "features: jsx={d} decorator={d} ts(ns|enum|import=|export=)={d}\n" ++
-            "plain(no jsx/deco/ts) in node_modules: none={d} cjs={d} esm={d}  | of which has_semantic={d}\n",
+    debug_log.print(
+        .module_stats,
+        "module stats\n" ++
+            "  total={d}  node_modules={d} ({d:.0}%)  has_semantic={d}  prepass_ran(transform_cache)={d}\n" ++
+            "  wrap_kind: none={d} cjs={d} esm={d}\n" ++
+            "  features: jsx={d} decorator={d} ts(ns|enum|import=|export=)={d}\n" ++
+            "  plain(no jsx/deco/ts) in node_modules: none={d} cjs={d} esm={d}  | of which has_semantic={d}\n" ++
+            "  module_type:",
         .{ total, nm, pct, has_sem, prepass_ran, w_none, w_cjs, w_esm, jsx, deco, ts_feat, plain_none_nm, plain_cjs_nm, plain_esm_nm, plain_nm_has_sem },
     );
     var hit = type_hist.iterator();
-    std.debug.print("module_type:", .{});
     while (hit.next()) |e| std.debug.print(" {s}={d}", .{ e.key_ptr.*, e.value_ptr.* });
-    std.debug.print("\n\n", .{});
+    std.debug.print("\n", .{});
 }
 
 pub const Bundler = struct {
@@ -1057,12 +1059,8 @@ pub const Bundler = struct {
         }
         graph_scope.end();
 
-        // PoC: ZNTC_MODULE_STATS=1 → 모듈 분류 히스토그램 (plain-dep 고속 경로 견적용).
-        // `std.posix.getenv` 은 Windows 미지원 — `getEnvVarOwned` 로 cross-platform 체크.
-        if (std.process.getEnvVarOwned(self.allocator, "ZNTC_MODULE_STATS") catch null) |v| {
-            self.allocator.free(v);
-            dumpModuleStats(&graph);
-        }
+        // ZNTC_DEBUG=module_stats → 모듈 분류 히스토그램 (docs/DEBUG.md §1).
+        if (@import("../debug_log.zig").enabled(.module_stats)) dumpModuleStats(&graph);
 
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.

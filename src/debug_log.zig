@@ -40,6 +40,10 @@ pub const Category = enum {
     string_intern,
     /// Runtime core-js usage detection and graph prelude decisions.
     runtime_polyfills,
+    /// 빌드 끝에 모듈 분류 히스토그램 출력 — 출처(node_modules/유저) · wrap 종류 ·
+    /// 변환 feature(jsx/decorator/ts) · semantic 보유 여부. 빌드 작업이 어디 쏠려있는지
+    /// 파악용. 다른 카테고리와 달리 멀티라인 블록을 출력한다 (`bundler.dumpModuleStats`).
+    module_stats,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
