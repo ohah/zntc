@@ -94,10 +94,12 @@ pub fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeInde
 
     // 선택적 리턴 타입: <T>(): R => body
     // Flow: return type에서 `=>` 를 function type arrow로 해석하지 않도록 플래그 설정
-    const saved_flow_flag = self.flow_in_return_type;
-    self.flow_in_return_type = true;
-    defer self.flow_in_return_type = saved_flow_flag;
-    _ = try self.tryParseReturnType();
+    {
+        const saved_flow_flag = self.flow_in_return_type;
+        self.flow_in_return_type = true;
+        defer self.flow_in_return_type = saved_flow_flag;
+        _ = try self.tryParseReturnType();
+    }
 
     // => 가 와야 arrow function
     if (self.current() != .arrow or self.scanner.token.has_newline_before) {
