@@ -92,46 +92,30 @@ pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemant
     return true;
 }
 
-fn hasFunctionAncestor(sem: *const @import("../module.zig").ModuleSemanticData, scope_id: @import("../../semantic/scope.zig").ScopeId) bool {
-    var sid = scope_id;
-    while (!sid.isNone()) {
-        const idx = sid.toIndex();
-        if (idx >= sem.scopes.len) return false;
-        const scope = sem.scopes[idx];
-        if (scope.kind == .function) return true;
-        sid = scope.parent;
-    }
-    return false;
-}
-
-fn isFunctionOnlyValueImport(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
-    if (ib.is_helper) return false;
-    if (ib.kind == .namespace) return false;
-    const sym_idx = ib.local_symbol.semanticIndex() orelse return false;
-    if (sym_idx >= sem.symbols.items.len) return false;
-
-    var saw_value_use = false;
-    for (sem.references) |r| {
-        if (@intFromEnum(r.symbol_id) != sym_idx) continue;
-        if (!r.isValueUse()) continue;
-        saw_value_use = true;
-        if (!hasFunctionAncestor(sem, r.scope_id)) return false;
-    }
-    return saw_value_use;
-}
-
 fn allocLazyEsmImportExpr(self: *const Linker, target_mod: *const Module, target_name: []const u8) ![]const u8 {
     const sep = if (self.minify_whitespace) "," else ", ";
+    const guard_close_expr = "})";
+    const guard = target_mod.shouldGuard(self.entry_error_guard);
     if (self.dev_mode) {
-        return try std.fmt.allocPrint(
-            self.allocator,
-            "(__zntc_modules[\"{s}\"].fn(){s}{s})",
-            .{ target_mod.dev_id, sep, target_name },
-        );
+        if (guard) {
+            return try std.fmt.allocPrint(
+                self.allocator,
+                "({s}__zntc_modules[\"{s}\"].fn(){s}{s}{s})",
+                .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, target_mod.dev_id, guard_close_expr, sep, target_name },
+            );
+        }
+        return try std.fmt.allocPrint(self.allocator, "(__zntc_modules[\"{s}\"].fn(){s}{s})", .{ target_mod.dev_id, sep, target_name });
     }
 
     const init_name = try target_mod.allocInitName(self.allocator);
     defer self.allocator.free(init_name);
+    if (guard) {
+        return try std.fmt.allocPrint(
+            self.allocator,
+            "({s}{s}(){s}{s}{s})",
+            .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, init_name, guard_close_expr, sep, target_name },
+        );
+    }
     return try std.fmt.allocPrint(
         self.allocator,
         "({s}(){s}{s})",
@@ -535,6 +519,11 @@ pub fn buildMetadataForAst(
                 // 환경에서는 is_included bit 가 신뢰 불가라 가드 미적용 (line 408 동일 정책).
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const target_mod = canonical_m_opt.?;
+                // Metro inlineRequires 호환: RN 에서는 static import 의 module init 을
+                // 모듈 선두 preamble 로 당기지 않고 실제 값 참조 지점에 둔다.
+                // 기존 function-only 한정은 함수 body cycle 만 해결했지만, Metro 는
+                // top-level initializer 안의 named import 도 `require(...).name` 위치에서
+                // 평가하므로 selector/navigator cycle 에서 초기화 순서 차이가 생겼다.
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
@@ -542,8 +531,7 @@ pub fn buildMetadataForAst(
                     !is_helper_binding and
                     ib.kind != .namespace and
                     !target_mod.uses_top_level_await and
-                    !exported_locals.contains(m.importBindingLocalName(ib)) and
-                    isFunctionOnlyValueImport(&sem, ib);
+                    !exported_locals.contains(m.importBindingLocalName(ib));
                 if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(@intCast(canonical_mod), {});
                     const is_tla = target_mod.uses_top_level_await;
