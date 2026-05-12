@@ -507,30 +507,9 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
                 }
             }
         },
-        .function_declaration => {
-            const e = decl.data.extra;
-            if (e >= ast.extra_data.items.len) return names.toOwnedSlice(allocator);
-            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-            if (name_idx.isNone()) return names.toOwnedSlice(allocator);
-            const name_node = ast.getNode(name_idx);
-            try names.append(allocator, .{
-                .name = ast.getText(name_node.span),
-                .span = name_node.span,
-            });
-        },
-        .class_declaration => {
-            const e = decl.data.extra;
-            if (e >= ast.extra_data.items.len) return names.toOwnedSlice(allocator);
-            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-            if (name_idx.isNone()) return names.toOwnedSlice(allocator);
-            const name_node = ast.getNode(name_idx);
-            try names.append(allocator, .{
-                .name = ast.getText(name_node.span),
-                .span = name_node.span,
-            });
-        },
-        .ts_enum_declaration => {
-            // extra = [name, members_start, members_len, flags]
+        // 모두 extra[0] 이 이름 노드 (function: [name, ...], class: [name, ...],
+        // enum: [name, members_start, members_len, flags]).
+        .function_declaration, .class_declaration, .ts_enum_declaration => {
             const e = decl.data.extra;
             if (e >= ast.extra_data.items.len) return names.toOwnedSlice(allocator);
             const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);

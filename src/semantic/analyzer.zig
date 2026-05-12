@@ -3325,27 +3325,7 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
             },
-            .function_declaration => {
-                const extras = self.ast.extra_data.items;
-                if (node.data.extra >= extras.len) return;
-                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
-                    const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.getText(name_node.span);
-                    try self.registerExportedName(name, name_node.span);
-                }
-            },
-            .class_declaration => {
-                const extras = self.ast.extra_data.items;
-                if (node.data.extra >= extras.len) return;
-                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
-                    const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.getText(name_node.span);
-                    try self.registerExportedName(name, name_node.span);
-                }
-            },
-            .ts_enum_declaration => {
+            .function_declaration, .class_declaration, .ts_enum_declaration => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra >= extras.len) return;
                 const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
@@ -3395,17 +3375,7 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
             },
-            .function_declaration, .class_declaration => {
-                const extras = self.ast.extra_data.items;
-                if (node.data.extra >= extras.len) return;
-                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
-                    const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.getText(name_node.span);
-                    self.markSymbolExported(name, false);
-                }
-            },
-            .ts_enum_declaration => {
+            .function_declaration, .class_declaration, .ts_enum_declaration => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra >= extras.len) return;
                 const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
