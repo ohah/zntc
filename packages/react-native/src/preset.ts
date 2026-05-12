@@ -68,6 +68,8 @@ export interface RnBundleInput {
   /** Metro 호환 추가 옵션 (caller 의 ResolvedConfig 에서 추출). */
   extra?: {
     watchFolders?: string[];
+    /** Metro `resolver.nodeModulesPaths` 호환. bare import 추가 탐색 경로. */
+    nodeModulesPaths?: string[];
     blockList?: (RegExp | string)[];
     fallback?: Record<string, string | false>;
     /** RN 외 사용자 plugin (asset/babel/codegen/require-context/metro-resolve-request 외 추가). */
@@ -433,6 +435,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
 
   if (extra?.watchFolders && extra.watchFolders.length > 0) {
     preset.watchFolders = extra.watchFolders.map((p) => resolve(projectRoot, p));
+  }
+  if (extra?.nodeModulesPaths && extra.nodeModulesPaths.length > 0) {
+    preset.nodePaths = extra.nodeModulesPaths.map((p) => resolve(projectRoot, p));
   }
   if (extra?.blockList && extra.blockList.length > 0) {
     preset.blockList = extra.blockList;
