@@ -1,6 +1,7 @@
 const std = @import("std");
 const resolver_mod = @import("resolver.zig");
 const Resolver = resolver_mod.Resolver;
+const DirEntryCache = resolver_mod.DirEntryCache;
 const AliasEntry = resolver_mod.AliasEntry;
 const ModuleType = @import("types.zig").ModuleType;
 const isRelativeOrAbsolute = resolver_mod.isRelativeOrAbsolute;
@@ -492,4 +493,73 @@ test "resolve.alias — multiple entries first match wins" {
     const result = try Resolver.applyAlias(std.testing.allocator, aliases, "react");
     defer std.testing.allocator.free(result.?);
     try std.testing.expectEqualStrings("preact/compat", result.?);
+}
+
+// ============================================================
+// DirEntryCache
+// ============================================================
+
+test "DirEntryCache: hasFile / hasDir / negative 캐시" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(tmp.dir, "a.ts");
+    try createFile(tmp.dir, "sub/b.ts");
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+    const sub_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "sub" });
+    defer std.testing.allocator.free(sub_path);
+    const missing_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "nope" });
+    defer std.testing.allocator.free(missing_path);
+
+    var cache = DirEntryCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    // 첫 조회 → readdir, 두 번째 → 캐시 hit. 결과는 동일해야 한다.
+    try std.testing.expect(cache.hasFile(dir_path, "a.ts"));
+    try std.testing.expect(cache.hasFile(dir_path, "a.ts"));
+    try std.testing.expect(!cache.hasFile(dir_path, "missing.ts"));
+    try std.testing.expect(cache.hasDir(dir_path, "sub"));
+    try std.testing.expect(!cache.hasDir(dir_path, "a.ts")); // 파일은 dir 아님
+    try std.testing.expect(cache.hasFile(sub_path, "b.ts"));
+
+    // 존재하지 않는 디렉토리 → negative 캐시 (반복 조회해도 일관)
+    try std.testing.expect(!cache.hasFile(missing_path, "x.ts"));
+    try std.testing.expect(!cache.hasFile(missing_path, "x.ts"));
+    try std.testing.expect(!cache.dirExists(missing_path));
+    try std.testing.expect(cache.dirExists(sub_path));
+}
+
+test "DirEntryCache: 동시 조회 — 같은 디렉토리에 여러 스레드" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    inline for (.{ "f0.ts", "f1.ts", "f2.ts", "f3.ts" }) |name| try createFile(tmp.dir, name);
+    // 디렉토리도 여러 개 — cache 가 readdir 미스를 lock 밖에서 처리하는 경로를 동시에 친다.
+    inline for (.{ "d0", "d1", "d2", "d3" }) |name| try tmp.dir.makePath(name);
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = DirEntryCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const Worker = struct {
+        fn run(c: *DirEntryCache, base: []const u8) void {
+            var i: usize = 0;
+            while (i < 200) : (i += 1) {
+                _ = c.hasFile(base, "f1.ts");
+                _ = c.hasFile(base, "missing.ts");
+                _ = c.hasDir(base, "d2");
+            }
+        }
+    };
+
+    var threads: [4]std.Thread = undefined;
+    for (&threads) |*t| t.* = try std.Thread.spawn(.{}, Worker.run, .{ &cache, dir_path });
+    for (threads) |t| t.join();
+
+    // 경합 후에도 정답은 그대로.
+    try std.testing.expect(cache.hasFile(dir_path, "f1.ts"));
+    try std.testing.expect(!cache.hasFile(dir_path, "missing.ts"));
+    try std.testing.expect(cache.hasDir(dir_path, "d2"));
 }

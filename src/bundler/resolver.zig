@@ -80,11 +80,20 @@ fn matchTsPathEntry(entry: @import("../config.zig").TsConfig.PathEntry, specifie
 /// 디렉토리 엔트리 캐시 (esbuild 방식).
 /// 디렉토리를 처음 접근할 때 readdir()로 파일 목록을 통째로 읽어 캐시.
 /// 이후 같은 디렉토리의 파일 존재 확인은 syscall 없이 메모리 조회.
-/// 멀티스레드 resolve에서 공유되므로 mutex로 보호.
+///
+/// 멀티스레드 resolve 에서 공유된다. 두 가지 contention 회피:
+///   1. **읽기는 `RwLock` 의 shared lock** — 캐시 hit 가 압도적으로 많고(워밍업 후
+///      readdir 거의 없음) 서로 막지 않게.
+///   2. **readdir + EntrySet 빌드는 lock 을 안 쥔 채** 수행하고, 다 만든 뒤 짧게
+///      exclusive lock 을 잡아 삽입. 예전엔 첫 스레드가 느린 readdir syscall 을
+///      global mutex 를 쥔 채로 돌려서 나머지 worker 를 전부 막았다.
+///
+/// `EntrySet` 은 heap 에 두고 map 에는 `*EntrySet` 만 저장 — `getOrLoad` 가 돌려준
+/// 포인터가 이후 다른 스레드의 삽입(map rehash)에도 dangling 되지 않게 한다.
 pub const DirEntryCache = struct {
-    /// 디렉토리 절대 경로 → 엔트리 집합. null이면 디렉토리가 존재하지 않음.
-    cache: std.StringHashMap(?EntrySet),
-    mutex: std.Thread.Mutex = .{},
+    /// 디렉토리 절대 경로 → 엔트리 집합. null이면 디렉토리가 존재하지 않음 (negative 캐시).
+    cache: std.StringHashMap(?*EntrySet),
+    rwlock: std.Thread.RwLock = .{},
     allocator: std.mem.Allocator,
 
     const EntrySet = struct {
@@ -94,7 +103,7 @@ pub const DirEntryCache = struct {
 
     pub fn init(allocator: std.mem.Allocator) DirEntryCache {
         return .{
-            .cache = std.StringHashMap(?EntrySet).init(allocator),
+            .cache = std.StringHashMap(?*EntrySet).init(allocator),
             .allocator = allocator,
         };
     }
@@ -102,17 +111,20 @@ pub const DirEntryCache = struct {
     pub fn deinit(self: *DirEntryCache) void {
         var it = self.cache.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.*) |*set| {
-                var fit = set.files.keyIterator();
-                while (fit.next()) |k| self.allocator.free(k.*);
-                set.files.deinit();
-                var dit = set.dirs.keyIterator();
-                while (dit.next()) |k| self.allocator.free(k.*);
-                set.dirs.deinit();
-            }
+            if (entry.value_ptr.*) |set| self.destroyEntrySet(set);
             self.allocator.free(entry.key_ptr.*);
         }
         self.cache.deinit();
+    }
+
+    fn destroyEntrySet(self: *DirEntryCache, set: *EntrySet) void {
+        var fit = set.files.keyIterator();
+        while (fit.next()) |k| self.allocator.free(k.*);
+        set.files.deinit();
+        var dit = set.dirs.keyIterator();
+        while (dit.next()) |k| self.allocator.free(k.*);
+        set.dirs.deinit();
+        self.allocator.destroy(set);
     }
 
     /// 디렉토리 내 파일 존재 확인. 캐시 미스 시 readdir() 후 캐시.
@@ -137,63 +149,66 @@ pub const DirEntryCache = struct {
     }
 
     fn getOrLoad(self: *DirEntryCache, dir_path: []const u8) ?*const EntrySet {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.cache.get(dir_path)) |maybe_set| {
-            if (maybe_set) |*set| return set;
-            return null; // 디렉토리 없음 (캐시된 negative)
+        // 1. fast path — shared lock 으로 조회.
+        {
+            self.rwlock.lockShared();
+            defer self.rwlock.unlockShared();
+            if (self.cache.get(dir_path)) |maybe_set| return maybe_set;
         }
 
-        // 캐시 미스 → readdir
-        const entries = fs.listDir(self.allocator, dir_path) catch {
-            // 디렉토리 없음 → negative 캐시
-            const key = self.allocator.dupe(u8, dir_path) catch return null;
-            self.cache.put(key, null) catch {
-                self.allocator.free(key);
-                return null;
-            };
+        // 2. 캐시 미스 — lock 없이 readdir + EntrySet 빌드.
+        const built: ?*EntrySet = self.buildEntrySet(dir_path);
+
+        // 3. exclusive lock 으로 삽입. 그 사이 다른 스레드가 먼저 넣었을 수 있다.
+        self.rwlock.lock();
+        defer self.rwlock.unlock();
+        if (self.cache.get(dir_path)) |existing| {
+            if (built) |b| self.destroyEntrySet(b);
+            return existing;
+        }
+        const key = self.allocator.dupe(u8, dir_path) catch {
+            if (built) |b| self.destroyEntrySet(b);
             return null;
         };
-        // entries 의 name 은 cache 에 소유권 이전되거나 free 됨 — slice 자체만 free.
+        self.cache.put(key, built) catch {
+            self.allocator.free(key);
+            if (built) |b| self.destroyEntrySet(b);
+            return null;
+        };
+        return built;
+    }
+
+    /// readdir() 후 heap 에 `EntrySet` 을 만들어 반환. 디렉토리가 없거나 OOM 이면 null
+    /// (호출자는 negative 로 캐시) — 기존 동작과 동일.
+    fn buildEntrySet(self: *DirEntryCache, dir_path: []const u8) ?*EntrySet {
+        const entries = fs.listDir(self.allocator, dir_path) catch return null;
+        // entries 의 name 은 hashmap 으로 소유권 이전되거나 free 됨 — slice 자체만 free.
         defer self.allocator.free(entries);
 
-        var files = std.StringHashMap(void).init(self.allocator);
-        var dirs = std.StringHashMap(void).init(self.allocator);
+        const set = self.allocator.create(EntrySet) catch {
+            for (entries) |entry| self.allocator.free(entry.name);
+            return null;
+        };
+        set.* = .{
+            .files = std.StringHashMap(void).init(self.allocator),
+            .dirs = std.StringHashMap(void).init(self.allocator),
+        };
 
         for (entries) |entry| {
             switch (entry.kind) {
-                .file => files.put(entry.name, {}) catch {
-                    self.allocator.free(entry.name);
-                },
-                .directory => dirs.put(entry.name, {}) catch {
-                    self.allocator.free(entry.name);
-                },
+                .file => set.files.put(entry.name, {}) catch self.allocator.free(entry.name),
+                .directory => set.dirs.put(entry.name, {}) catch self.allocator.free(entry.name),
                 .symlink => {
                     // symlink는 대상이 파일인지 디렉토리인지 readdir만으로 알 수 없으므로 양쪽에 등록.
                     // Linux의 bun install이 node_modules에 symlink 디렉토리를 만들기 때문에 필수.
-                    files.put(entry.name, {}) catch {};
+                    set.files.put(entry.name, {}) catch {};
                     const name2 = self.allocator.dupe(u8, entry.name) catch continue;
-                    dirs.put(name2, {}) catch {
-                        self.allocator.free(name2);
-                    };
+                    set.dirs.put(name2, {}) catch self.allocator.free(name2);
                 },
                 else => self.allocator.free(entry.name),
             }
         }
-
-        const key = self.allocator.dupe(u8, dir_path) catch return null;
-        const set = EntrySet{ .files = files, .dirs = dirs };
-        self.cache.put(key, set) catch {
-            self.allocator.free(key);
-            return null;
-        };
-
-        // cache.get은 포인터 안정적 (StringHashMap 내부 포인터)
-        if (self.cache.getPtr(key)) |ptr| {
-            if (ptr.*) |*s| return s;
-        }
-        return null;
+        return set;
     }
 };
 
