@@ -7,6 +7,10 @@ import { init, close, build } from '../../../packages/core/index';
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
 const ROOT_NODE_MODULES = join(PROJECT_ROOT, 'node_modules');
 
+// 실 라이브러리 스모크는 실제 npm 패키지를 번들+실행하므로 콜드 빌드/CI 부하 시
+// 기본 5s 를 넘길 수 있다.
+const REAL_LIB_SMOKE_TIMEOUT_MS = 10_000;
+
 // manualChunks 스모크 테스트 — 실제 번들 → Node 로 실행 → 출력 검증.
 // Zig unit + NAPI integration 테스트와 달리 **최종 런타임 동작**까지 확인.
 // vendor/ui 디렉토리 구조로 실제 라이브러리 분리 시나리오 모방.
@@ -343,42 +347,46 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
     expect(vendor.text.length).toBeLessThan(200);
   });
 
-  test.skipIf(!hasPackage('clsx'))('실 라이브러리: clsx 를 vendor 청크로 분리', async () => {
-    // 실제 node_modules 의 clsx 를 사용자 앱에서 import 하는 현실적 시나리오.
-    // manualChunks 로 node_modules 전체를 vendor 에 몰아넣는 가장 흔한 패턴.
-    const fixture = await createFixture({
-      'ui.ts': `
+  test.skipIf(!hasPackage('clsx'))(
+    '실 라이브러리: clsx 를 vendor 청크로 분리',
+    async () => {
+      // 실제 node_modules 의 clsx 를 사용자 앱에서 import 하는 현실적 시나리오.
+      // manualChunks 로 node_modules 전체를 vendor 에 몰아넣는 가장 흔한 패턴.
+      const fixture = await createFixture({
+        'ui.ts': `
           import clsx from "clsx";
           export const label = clsx("a", { b: true, c: false }, ["d"]);
         `,
-      'entry.ts': `
+        'entry.ts': `
           import { label } from "./ui";
           console.log("RESULT:" + label);
         `,
-    });
-    cleanup = fixture.cleanup;
+      });
+      cleanup = fixture.cleanup;
 
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'entry.ts')],
-      splitting: true,
-      outdir: join(fixture.dir, 'dist'),
-      write: false,
-      nodePaths: [ROOT_NODE_MODULES],
-      manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
-    });
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        splitting: true,
+        outdir: join(fixture.dir, 'dist'),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
+      });
 
-    // vendor 청크에 clsx 구현이 들어가야 함
-    const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
-    expect(vendor).toBeDefined();
-    // clsx 의 특징적 function body pattern
-    expect(vendor!.text).toMatch(/function/);
-    expect(vendor!.text.length).toBeGreaterThan(50);
+      // vendor 청크에 clsx 구현이 들어가야 함
+      const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
+      expect(vendor).toBeDefined();
+      // clsx 의 특징적 function body pattern
+      expect(vendor!.text).toMatch(/function/);
+      expect(vendor!.text.length).toBeGreaterThan(50);
 
-    // entry 에는 clsx 구현 없이 ui/app 코드만 + vendor import
-    const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'));
-    expect(entry).toBeDefined();
-    expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
-  });
+      // entry 에는 clsx 구현 없이 ui/app 코드만 + vendor import
+      const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'));
+      expect(entry).toBeDefined();
+      expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
+    },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
+  );
 
   test.skipIf(!hasPackage('lodash-es'))(
     '실 라이브러리: lodash-es 여러 함수 import + tree-shake',
@@ -412,6 +420,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       expect(entry!.text).toContain('LODASH_RESULT');
       expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test.skipIf(!hasPackage('nanoid'))(
@@ -442,6 +451,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       expect(entry!.text).toContain('NANO_LEN');
       expect(entry!.text).not.toMatch(/function\s+nanoid/); // 구현은 vendor 에
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test.skipIf(!hasPackage('lodash-es') || !hasPackage('clsx') || !hasPackage('nanoid'))(
@@ -476,6 +486,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       // vendor 청크 크기가 lodash + clsx + nanoid 합치므로 유의미한 사이즈
       expect(vendors[0].text.length).toBeGreaterThan(500);
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test.skipIf(!hasPackage('zod'))(
@@ -526,6 +537,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       expect(vendor!.moduleIds!.every((id) => id.includes('node_modules'))).toBe(true);
       expect(entry!.moduleIds!.find((id) => id.includes('node_modules'))).toBeUndefined();
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test.skipIf(!hasPackage('lodash-es') || !hasPackage('clsx'))(
@@ -567,6 +579,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       // vendor 는 clsx 만, lodash 는 lodash-es 만 (서로 섞이지 않음)
       expect(lodashChunk!.text).not.toMatch(/clsx/i);
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test.skipIf(!hasPackage('react') || !hasPackage('react-dom'))(
@@ -608,61 +621,70 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       // entry 크기가 vendor 대비 극소 (실제 구현은 전부 vendor 로)
       expect(entry!.text.length * 10).toBeLessThan(vendor!.text.length);
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
-  test.skipIf(!hasPackage('preact'))('실 라이브러리: preact — 경량 대안도 잘 분리', async () => {
-    // preact 는 React 보다 10x 작은 대안. ESM 지원 안 될 수 있어 compat 경로 확인.
-    const fixture = await createFixture({
-      'entry.tsx': `
+  test.skipIf(!hasPackage('preact'))(
+    '실 라이브러리: preact — 경량 대안도 잘 분리',
+    async () => {
+      // preact 는 React 보다 10x 작은 대안. ESM 지원 안 될 수 있어 compat 경로 확인.
+      const fixture = await createFixture({
+        'entry.tsx': `
           import { h } from "preact";
           const el = h("div", { id: "x" }, "PREACT_MARKER");
           console.log(el.type);
         `,
-    });
-    cleanup = fixture.cleanup;
+      });
+      cleanup = fixture.cleanup;
 
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'entry.tsx')],
-      splitting: true,
-      outdir: join(fixture.dir, 'dist'),
-      write: false,
-      nodePaths: [ROOT_NODE_MODULES],
-      manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
-    });
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'entry.tsx')],
+        splitting: true,
+        outdir: join(fixture.dir, 'dist'),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
+      });
 
-    const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
-    expect(vendor).toBeDefined();
-    // preact 는 작지만 여전히 h 구현 포함
-    expect(vendor!.text.length).toBeGreaterThan(500);
-  });
+      const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
+      expect(vendor).toBeDefined();
+      // preact 는 작지만 여전히 h 구현 포함
+      expect(vendor!.text.length).toBeGreaterThan(500);
+    },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
+  );
 
-  test.skipIf(!hasPackage('immer'))('실 라이브러리: immer — state management vendor', async () => {
-    const fixture = await createFixture({
-      'entry.ts': `
+  test.skipIf(!hasPackage('immer'))(
+    '실 라이브러리: immer — state management vendor',
+    async () => {
+      const fixture = await createFixture({
+        'entry.ts': `
           import { produce } from "immer";
           const base = { count: 0, items: [1, 2, 3] };
           const next = produce(base, (draft: any) => { draft.count = 1; });
           console.log("IMMER:" + next.count);
         `,
-    });
-    cleanup = fixture.cleanup;
+      });
+      cleanup = fixture.cleanup;
 
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'entry.ts')],
-      splitting: true,
-      outdir: join(fixture.dir, 'dist'),
-      write: false,
-      nodePaths: [ROOT_NODE_MODULES],
-      manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
-    });
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        splitting: true,
+        outdir: join(fixture.dir, 'dist'),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
+      });
 
-    const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
-    const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'));
-    expect(vendor).toBeDefined();
-    expect(entry!.text).toContain('IMMER:');
-    // immer 는 중형 라이브러리 (Proxy 기반 로직)
-    expect(vendor!.text.length).toBeGreaterThan(3000);
-  });
+      const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
+      const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'));
+      expect(vendor).toBeDefined();
+      expect(entry!.text).toContain('IMMER:');
+      // immer 는 중형 라이브러리 (Proxy 기반 로직)
+      expect(vendor!.text.length).toBeGreaterThan(3000);
+    },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
+  );
 
   test.skipIf(!hasPackage('date-fns'))(
     '실 라이브러리: date-fns — tree-shakable 함수형 라이브러리',
@@ -694,36 +716,41 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       expect(vendor!.text.length).toBeGreaterThan(2000);
       expect(entry!.text).toContain('DATE:');
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
-  test.skipIf(!hasPackage('rxjs'))('실 라이브러리: rxjs — Observable 체이닝 vendor', async () => {
-    const fixture = await createFixture({
-      'entry.ts': `
+  test.skipIf(!hasPackage('rxjs'))(
+    '실 라이브러리: rxjs — Observable 체이닝 vendor',
+    async () => {
+      const fixture = await createFixture({
+        'entry.ts': `
           import { of } from "rxjs";
           import { map, filter } from "rxjs/operators";
           of(1, 2, 3, 4)
             .pipe(filter((n: number) => n % 2 === 0), map((n: number) => n * 10))
             .subscribe((n: number) => console.log("RX:" + n));
         `,
-    });
-    cleanup = fixture.cleanup;
+      });
+      cleanup = fixture.cleanup;
 
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'entry.ts')],
-      splitting: true,
-      outdir: join(fixture.dir, 'dist'),
-      write: false,
-      nodePaths: [ROOT_NODE_MODULES],
-      manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
-    });
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        splitting: true,
+        outdir: join(fixture.dir, 'dist'),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : null),
+      });
 
-    const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
-    const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'));
-    expect(vendor).toBeDefined();
-    // rxjs 는 큰 라이브러리 (Observable, Subject 등)
-    expect(vendor!.text.length).toBeGreaterThan(5000);
-    expect(entry!.text).toContain('RX:');
-  });
+      const vendor = result.outputFiles.find((o) => o.path.includes('vendor'));
+      const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'));
+      expect(vendor).toBeDefined();
+      // rxjs 는 큰 라이브러리 (Observable, Subject 등)
+      expect(vendor!.text.length).toBeGreaterThan(5000);
+      expect(entry!.text).toContain('RX:');
+    },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
+  );
 
   test.skipIf(!hasPackage('react') || !hasPackage('react-dom') || !hasPackage('immer'))(
     "실 라이브러리 조합: react + react-dom 은 'react-vendor', immer 는 'vendor' (세밀 분리)",
@@ -777,6 +804,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
         vendorChunk!.moduleIds!.find((id) => /\/(react|scheduler)\//.test(id)),
       ).toBeUndefined();
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test('대형 가상 vendor: date-utils 스타일 다중 모듈 → vendor 합병', async () => {
@@ -964,6 +992,7 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
         ]),
       );
     },
+    REAL_LIB_SMOKE_TIMEOUT_MS,
   );
 
   test('엔트리 모듈이 manualChunks 매칭: 엔트리 청크로 유지 (정책)', async () => {
