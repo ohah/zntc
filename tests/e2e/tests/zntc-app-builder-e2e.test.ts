@@ -28,6 +28,8 @@ const SCSS_RECOVERY_DEV_PORT = PORTS.SCSS_RECOVERY_DEV;
 const OVERLAY_DEV_PORT = PORTS.OVERLAY_DEV;
 const RUNTIME_OVERLAY_DEV_PORT = PORTS.RUNTIME_OVERLAY_DEV;
 const REJECTION_OVERLAY_DEV_PORT = PORTS.REJECTION_OVERLAY_DEV;
+const DEV_JSX_PORT = PORTS.DEV_JSX;
+const BUILD_JSX_PORT = PORTS.BUILD_JSX;
 
 test.describe.configure({ mode: 'parallel' });
 
@@ -715,5 +717,137 @@ $label-color: rgb(170, 20, 60)
       await new Promise((r) => server.on('close', r));
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── #3087: zntc build / dev 가 tsconfig 의 jsx / jsxImportSource 를 app 빌드에 적용 ───
+test.describe.serial('zntc build/dev: preact JSX (tsconfig jsxImportSource) E2E', () => {
+  let buildFixtureDir: string;
+  let devFixtureDir: string;
+  let preview: ChildProcess | null = null;
+  let devServer: ChildProcess | null = null;
+
+  const appV1 = `import { render } from 'preact';
+export function mountApp() {
+  render(<p data-testid="jsx">jsx-v1</p>, document.getElementById('root'));
+}
+`;
+  const appV2 = `import { render } from 'preact';
+export function mountApp() {
+  render(<p data-testid="jsx">jsx-v2</p>, document.getElementById('root'));
+}
+`;
+
+  async function writeJsxFixture(dir: string, appBody: string): Promise<void> {
+    await mkdir(join(dir, 'src'), { recursive: true });
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'preact-jsx-app', private: true }),
+    );
+    spawnSync(
+      'npm',
+      ['install', 'preact', '--prefer-offline', '--no-audit', '--no-fund', '--no-progress'],
+      { cwd: dir, stdio: 'pipe', timeout: 120000 },
+    );
+    // CLI 옵션이 아니라 tsconfig 로 jsx 설정 — esbuild/vite 호환 경로 검증 (#3087).
+    await writeFile(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: 'preact' } }),
+    );
+    await writeFile(
+      join(dir, 'index.html'),
+      '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>',
+    );
+    await writeFile(join(dir, 'src/App.tsx'), appBody);
+    await writeFile(join(dir, 'src/main.tsx'), "import { mountApp } from './App';\nmountApp();\n");
+  }
+
+  async function waitForServer(port: number, deadlineMs: number): Promise<boolean> {
+    const deadline = Date.now() + deadlineMs;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(`http://localhost:${port}/`);
+        if (r.ok) return true;
+      } catch {
+        // not ready
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return false;
+  }
+
+  test.beforeAll(async () => {
+    buildFixtureDir = await mkdtemp(join(tmpdir(), 'zntc-app-preact-jsx-build-'));
+    devFixtureDir = await mkdtemp(join(tmpdir(), 'zntc-app-preact-jsx-dev-'));
+    await writeJsxFixture(buildFixtureDir, appV1);
+    await writeJsxFixture(devFixtureDir, appV1);
+
+    const built = spawnSync(
+      ZNTC_BIN,
+      ['build', buildFixtureDir, '--outdir', join(buildFixtureDir, 'dist')],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    if (built.status !== 0) {
+      throw new Error(
+        `zntc build (preact jsx) failed (exit ${built.status})\n${built.stdout}\n${built.stderr}`,
+      );
+    }
+    preview = spawn(
+      ZNTC_BIN,
+      ['preview', join(buildFixtureDir, 'dist'), '--port', String(BUILD_JSX_PORT)],
+      {
+        stdio: 'pipe',
+      },
+    );
+    devServer = spawn(ZNTC_BIN, ['dev', devFixtureDir, '--port', String(DEV_JSX_PORT)], {
+      stdio: 'pipe',
+    });
+
+    const previewOk = await waitForServer(BUILD_JSX_PORT, 10000);
+    const devOk = await waitForServer(DEV_JSX_PORT, 15000);
+    if (!previewOk || !devOk) {
+      throw new Error(`servers not ready: preview=${previewOk} dev=${devOk}`);
+    }
+  });
+
+  test.afterAll(async () => {
+    if (preview) {
+      preview.kill();
+      await new Promise((r) => preview!.on('close', r));
+    }
+    if (devServer) {
+      devServer.kill();
+      await new Promise((r) => devServer!.on('close', r));
+    }
+    if (buildFixtureDir) await rm(buildFixtureDir, { recursive: true, force: true });
+    if (devFixtureDir) await rm(devFixtureDir, { recursive: true, force: true });
+  });
+
+  test('zntc build: preact JSX 가 tsconfig jsxImportSource 로 transform 되고 브라우저에서 렌더된다', async ({
+    page,
+  }) => {
+    await page.goto(`http://localhost:${BUILD_JSX_PORT}/`);
+    await expect(page.getByTestId('jsx')).toHaveText('jsx-v1');
+  });
+
+  test('zntc dev: preact JSX 가 정상 렌더된다', async ({ page }) => {
+    await page.goto(`http://localhost:${DEV_JSX_PORT}/`);
+    await expect(page.getByTestId('jsx')).toHaveText('jsx-v1');
+  });
+
+  test('zntc dev: JSX 컴포넌트 파일 변경 시 HMR 후 페이지가 갱신된다', async ({ page }) => {
+    test.skip(!!process.env.CI && process.platform === 'linux', 'inotify timing on Linux CI');
+    await page.goto(`http://localhost:${DEV_JSX_PORT}/`);
+    await expect(page.getByTestId('jsx')).toHaveText('jsx-v1');
+
+    await new Promise((r) => setTimeout(r, 1000));
+    await writeFile(join(devFixtureDir, 'src/App.tsx'), appV2);
+    await expect(page.getByTestId('jsx')).toHaveText('jsx-v2', { timeout: 8000 });
+
+    await writeFile(join(devFixtureDir, 'src/App.tsx'), appV1);
+    await new Promise((r) => setTimeout(r, 1000));
   });
 });

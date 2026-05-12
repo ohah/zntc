@@ -49,6 +49,10 @@ pub const DevServer = struct {
     proxy: []const ProxyRule = &.{},
     base_path: []const u8 = "/",
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+    jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
+    jsx_import_source: []const u8 = "react",
+    jsx_factory: []const u8 = "React.createElement",
+    jsx_fragment: []const u8 = "React.Fragment",
     sourcemap_cache: struct {
         mutex: std.Thread.Mutex = .{},
         data: ?[]const u8 = null,
@@ -75,6 +79,10 @@ pub const DevServer = struct {
         proxy: []const ProxyRule = &.{},
         base_path: []const u8 = "/",
         define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+        jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
+        jsx_import_source: []const u8 = "react",
+        jsx_factory: []const u8 = "React.createElement",
+        jsx_fragment: []const u8 = "React.Fragment",
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
@@ -415,6 +423,10 @@ pub const DevServer = struct {
             .proxy = options.proxy,
             .base_path = options.base_path,
             .define = options.define,
+            .jsx_runtime = options.jsx_runtime,
+            .jsx_import_source = options.jsx_import_source,
+            .jsx_factory = options.jsx_factory,
+            .jsx_fragment = options.jsx_fragment,
             .event_ring = EventRing.init(allocator),
         };
     }
@@ -715,6 +727,10 @@ pub const DevServer = struct {
             .collect_module_codes = true,
             .plugins = self.plugins,
             .define = self.define,
+            .jsx_runtime = self.jsx_runtime,
+            .jsx_import_source = self.jsx_import_source,
+            .jsx_factory = self.jsx_factory,
+            .jsx_fragment = self.jsx_fragment,
         });
         defer inc_bundler.deinit();
 
@@ -1320,6 +1336,10 @@ pub const DevServer = struct {
             .react_refresh = true,
             .plugins = self.plugins,
             .define = self.define,
+            .jsx_runtime = self.jsx_runtime,
+            .jsx_import_source = self.jsx_import_source,
+            .jsx_factory = self.jsx_factory,
+            .jsx_fragment = self.jsx_fragment,
         });
         defer bundler.deinit();
 

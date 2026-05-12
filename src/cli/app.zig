@@ -3,6 +3,8 @@
 const std = @import("std");
 const lib = @import("zntc_lib");
 
+const JsxRuntime = lib.codegen.codegen.JsxRuntime;
+
 pub const Command = enum { dev, build, preview };
 
 pub const Options = struct {
@@ -22,6 +24,11 @@ pub const Options = struct {
     minify: bool = false,
     sourcemap: bool = false,
     splitting: bool = true,
+    // JSX 옵션 — `zntc --bundle` 과 동일 vocab. null 은 "미지정 → tsconfig 또는 default".
+    jsx_runtime: ?JsxRuntime = null,
+    jsx_import_source: ?[]const u8 = null,
+    jsx_factory: ?[]const u8 = null,
+    jsx_fragment: ?[]const u8 = null,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
 
     pub fn deinit(self: *Options, allocator: std.mem.Allocator) void {
@@ -87,6 +94,16 @@ pub fn parseArgs(allocator: std.mem.Allocator, command: Command, args: []const [
             opts.splitting = true;
         } else if (std.mem.eql(u8, arg, "--no-splitting")) {
             opts.splitting = false;
+        } else if (try appStringFlag(args, &i, "--jsx")) |value| {
+            opts.jsx_runtime = JsxRuntime.fromString(value) orelse .classic;
+        } else if (std.mem.eql(u8, arg, "--jsx-dev")) {
+            opts.jsx_runtime = .automatic_dev;
+        } else if (try appStringFlag(args, &i, "--jsx-import-source")) |value| {
+            opts.jsx_import_source = value;
+        } else if (try appStringFlag(args, &i, "--jsx-factory")) |value| {
+            opts.jsx_factory = value;
+        } else if (try appStringFlag(args, &i, "--jsx-fragment")) |value| {
+            opts.jsx_fragment = value;
         } else if (try appStringFlag(args, &i, "--proxy")) |value| {
             try parseProxy(&opts, allocator, value, stderr);
         } else if (arg.len > 0 and arg[0] != '-') {
@@ -155,6 +172,26 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
     const base = try normalizeBase(allocator, opts.base);
     defer allocator.free(base);
 
+    // JSX 설정: CLI 옵션 + `<root>/tsconfig.json` 머지 (`zntc --bundle` 과 동일 우선순위).
+    // tsconfig 의 backing string 을 buildApp / DevServer 가 borrow 하므로 run() 끝까지 유지.
+    var tsconfig = if (opts.command == .preview)
+        lib.config.TsConfig{}
+    else
+        (lib.config.TsConfig.load(allocator, root) catch lib.config.TsConfig{});
+    defer tsconfig.deinit();
+    const jsx_merged = lib.tsconfig_merge.merge(&tsconfig, .{
+        .jsx_runtime = opts.jsx_runtime,
+        .jsx_factory = opts.jsx_factory,
+        .jsx_fragment = opts.jsx_fragment,
+        .jsx_import_source = opts.jsx_import_source,
+    });
+    const jsx_config = app_build.JsxConfig{
+        .runtime = jsx_merged.jsx_runtime,
+        .import_source = jsx_merged.jsx_import_source,
+        .factory = jsx_merged.jsx_factory,
+        .fragment = jsx_merged.jsx_fragment,
+    };
+
     switch (opts.command) {
         .build => {
             const outdir = opts.outdir orelse "dist";
@@ -171,6 +208,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
                 .minify = opts.minify,
                 .sourcemap = opts.sourcemap,
                 .splitting = opts.splitting,
+                .jsx = jsx_config,
             }) catch |err| {
                 try stderr.print("zntc build: app build failed: {}\n", .{err});
                 std.process.exit(1);
@@ -219,6 +257,10 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
                 .proxy = opts.proxy_list.items,
                 .base_path = base,
                 .define = server_defines,
+                .jsx_runtime = jsx_config.runtime,
+                .jsx_import_source = jsx_config.import_source,
+                .jsx_factory = jsx_config.factory,
+                .jsx_fragment = jsx_config.fragment,
             }) catch |err| {
                 try stderr.print("zntc dev: failed to start dev server: {}\n", .{err});
                 std.process.exit(1);

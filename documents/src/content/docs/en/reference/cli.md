@@ -45,6 +45,13 @@ updates stylesheets for CSS edits without a full page reload.
 | `--env-prefix <list>`       | exposed env prefix CSV (default: `VITE_,ZNTC_`)                                   |
 | `--env-dir <dir>`           | directory for `.env*` files                                                       |
 | `--spa-fallback[=file]`     | in `preview`, fall back route-like 404 requests to `index.html` or the given file |
+| `--jsx*`                    | JSX runtime (`--jsx`, `--jsx-dev`, `--jsx-import-source`, `--jsx-factory`, `--jsx-fragment`). When unset, the app root `tsconfig.json` `jsx` / `jsxImportSource` is used |
+
+`zntc dev` / `zntc build` resolve the JSX runtime in this order: CLI `--jsx*`
+options → app root `tsconfig.json` (`compilerOptions.jsx` / `jsxImportSource`) →
+default classic (`React.createElement`). Non-React apps such as preact/solid only
+need `"jsx": "react-jsx", "jsxImportSource": "preact"` in `tsconfig.json` for both
+dev and build to work.
 
 If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
 ZNTC automatically applies it to CSS. In `zntc dev`, original CSS files and PostCSS
