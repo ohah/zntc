@@ -615,10 +615,28 @@ test "Codegen #3095: else 없으면 변환 안 함" {
     try std.testing.expectEqualStrings("function h(){if(c)return 1;g()}", r.output);
 }
 
-test "Codegen #3095: 중첩 — else 분기의 if도 변환 (체인 부분 적용)" {
+test "Codegen #3109: else-if return 체인 전체를 ternary 로 (right-assoc)" {
     var r = try e2eMinAll(std.testing.allocator, "function h(){ if (a) return 1; else if (b) return 2; else return 3; }");
     defer r.deinit();
-    try std.testing.expectEqualStrings("function h(){if(a)return 1;else return b?2:3}", r.output);
+    try std.testing.expectEqualStrings("function h(){return a?1:b?2:3}", r.output);
+}
+
+test "Codegen #3109: return arg 가 conditional 이어도 paren 불필요" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (a) return x ? y : z; else return 1; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return a?x?y:z:1}", r.output);
+}
+
+test "Codegen #3109: 체인 중간 cond 가 unsafe(assignment) 면 전체 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (a) return 1; else if (c = d) return 2; else return 3; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(a)return 1;else if(c=d)return 2;else return 3}", r.output);
+}
+
+test "Codegen #3109: 체인 마지막 else 가 return 아니면 전체 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (a) return 1; else if (b) return 2; else f(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(a)return 1;else if(b)return 2;else f()}", r.output);
 }
 
 test "Codegen #3095: cond 앞 leading comment 가 있어도 return ASI 안 됨 (minify_syntax only)" {

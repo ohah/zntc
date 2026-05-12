@@ -294,28 +294,44 @@ fn singleReturnArg(self: anytype, idx_in: NodeIndex) ?NodeIndex {
     return n.data.unary.operand;
 }
 
-/// `if(c){return A}else{return B}` → `return c?A:B;` 출력 시도. minify_syntax 전용.
-/// `c` 가 paren 없이 `?:` test 자리에 올 수 있고 A/B 가 sequence(comma) 가 아닐 때만.
-/// 출력했으면 true. (else-if 체인은 미지원 — else 분기 자체가 다시 emitIf 를 타며 변환됨.)
-fn tryEmitIfReturnTernary(self: anytype, t: anytype) !bool {
-    if (!self.options.minify_syntax or t.c.isNone()) return false;
-    const a_arg = singleReturnArg(self, t.b) orelse return false;
-    const b_arg = singleReturnArg(self, t.c) orelse return false;
+/// `if(c){return A}else{...}` 체인 전체가 `return c?A:...` 로 평탄화 가능한지 (pure check).
+/// then/else 가 모두 `return <expr>` 이거나 else 가 다시 같은 형태의 if 이고, 모든 cond 가
+/// `?:` test 자리에 paren 없이 올 수 있으며, 모든 return arg 가 sequence(comma) 가 아닐 때.
+fn canEmitIfReturnChain(self: anytype, t: anytype, depth: u8) bool {
+    if (depth >= 32 or t.c.isNone()) return false;
     if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return false;
+    const a_arg = singleReturnArg(self, t.b) orelse return false;
     if (self.ast.getNode(a_arg).tag == .sequence_expression) return false;
-    if (self.ast.getNode(b_arg).tag == .sequence_expression) return false;
-    try self.write("return ");
-    // `return` 직후 cond — leading comment 가 newline 을 끼우면 ASI 로 `return;` 됨.
-    // `emitReturn` 과 동일하게 NoLineTerminator 처리.
-    try emitNoLineTerminatorOperand(self, t.a);
+    if (singleReturnArg(self, t.c)) |b_arg| {
+        return self.ast.getNode(b_arg).tag != .sequence_expression;
+    }
+    const else_node = self.ast.getNode(t.c);
+    return else_node.tag == .if_statement and canEmitIfReturnChain(self, else_node.data.ternary, depth + 1);
+}
+
+/// `canEmitIfReturnChain` 가 통과한 if 체인을 `cond?A:<rest>` 식으로 emit.
+/// `is_first` 면 cond 를 `emitNoLineTerminatorOperand` 로 (`return` 직후 ASI 회피).
+/// `?:` 는 right-assoc 이라 `a?1:b?2:3` 가 `a?1:(b?2:3)` 로 정확히 파싱됨 — paren 불필요.
+fn emitIfReturnChainTail(self: anytype, t: anytype, is_first: bool) !void {
+    if (is_first) try emitNoLineTerminatorOperand(self, t.a) else try self.emitNode(t.a);
     try writeSpace(self);
     try self.writeByte('?');
     try writeSpace(self);
-    try self.emitNode(a_arg);
+    try self.emitNode(singleReturnArg(self, t.b).?);
     try writeSpace(self);
     try self.writeByte(':');
     try writeSpace(self);
-    try self.emitNode(b_arg);
+    if (singleReturnArg(self, t.c)) |b_arg| {
+        try self.emitNode(b_arg);
+    } else {
+        try emitIfReturnChainTail(self, self.ast.getNode(t.c).data.ternary, false);
+    }
+}
+
+fn tryEmitIfReturnTernary(self: anytype, t: anytype) !bool {
+    if (!self.options.minify_syntax or !canEmitIfReturnChain(self, t, 0)) return false;
+    try self.write("return ");
+    try emitIfReturnChainTail(self, t, true);
     try self.writeByte(';');
     return true;
 }
