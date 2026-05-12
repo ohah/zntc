@@ -38,21 +38,30 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
     return true;
 }
 
-/// 이 모듈이 user-declared `sideEffects:false` ESM barrel 인지 — `requested_exports` 에
-/// 일치하는 것만 link 하는 정밀 트리쉐이킹 hint 의 적용 대상.
+/// 이 모듈이 user-declared `sideEffects:false` 인 *순수 re-export barrel* 인지 —
+/// `requested_exports` 에 일치하는 record 만 link 하는 정밀 트리쉐이킹 hint 의 적용 대상.
+///
+/// 순수 barrel 이 아니라 (a) `export class`/`export const x = …` 같은 local 선언이나
+/// (b) pre-pass 가 주입한 runtime helper (`__extends` 등) 가 있는 모듈은 `init_<mod>()`
+/// 가 그 body 를 실행하면서 자신의 import 를 (helper virtual import 포함) 참조하므로,
+/// import record 를 lazy 로 미루면 `export *` chain 으로 번들에 끌려 들어왔을 때 resolve
+/// 가 안 돼 emit 에 raw `require("…")` 가 남아 런타임 크래시한다.
 pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
     if (self.dev_mode or self.preserve_modules) return false;
-    // pre-pass 가 runtime helper (`__extends`/`__classCallCheck` …) 를 주입한 모듈은
-    // 순수 re-export barrel 이 아니라 downlevel 된 실제 코드다. 이런 모듈의 import
-    // record (helper virtual import 포함) 를 lazy 로 미루면 `export *` chain 으로 번들에
-    // 끌려 들어왔을 때 resolve 가 안 돼 emit 에 raw `require("\x00zntc:runtime/…")` 가
-    // 남아 런타임 크래시.
     if (m.transform_cache) |tc| if (tc.runtime_helpers.hasAny()) return false;
+    if (moduleHasLocalExport(m)) return false;
     return m.side_effects_user_defined and
         !m.side_effects and
         m.exports_kind.isEsm() and
         m.import_records.len > 0 and
         m.export_bindings.len > 0;
+}
+
+fn moduleHasLocalExport(m: *const Module) bool {
+    for (m.export_bindings) |eb| {
+        if (eb.kind == .local) return true;
+    }
+    return false;
 }
 
 /// Wrapper-barrel pattern: `import x from './w'; export default x;` 같이 imported
@@ -72,17 +81,6 @@ pub fn isWrapperBarrel(self: anytype, m: *const Module) bool {
 pub fn computeIsWrapperBarrel(m: *const Module) bool {
     for (m.export_bindings) |eb| {
         if (eb.isDefaultDirectReExport()) return true;
-    }
-    return false;
-}
-
-pub fn localNeedsAllRecords(m: *const Module, req: *const RequestedExports) bool {
-    if (req.all) return true;
-    var it = req.names.keyIterator();
-    while (it.next()) |name| {
-        for (m.export_bindings) |eb| {
-            if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, name.*)) return true;
-        }
     }
     return false;
 }
@@ -111,7 +109,6 @@ pub fn shouldLinkResolvedRecordForModule(self: anytype, mod_idx: usize, rec_i: u
     defer self.requested_exports_mutex.unlock();
     const req = self.requested_exports.get(key) orelse return true;
     if (req.all) return true;
-    if (localNeedsAllRecords(m, &req)) return true;
     return reExportRecordMatchesRequest(m, rec_i, &req);
 }
 
