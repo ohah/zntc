@@ -558,7 +558,11 @@ pub const Resolver = struct {
     /// 디렉토리 내 package.json에서 module/main 필드를 읽어 resolve 시도.
     /// fp-ts 등에서 사용하는 서브패스 package.json 패턴 지원.
     fn tryDirectoryPackageJson(self: *Resolver, dir_path: []const u8) ResolveError!?ResolveResult {
-        var parsed = pkg_json.parsePackageJson(self.allocator, dir_path) catch return null;
+        var parsed = blk: {
+            var pj_scope = profile.begin(.resolve_resolver_pkg_json);
+            defer pj_scope.end();
+            break :blk pkg_json.parsePackageJson(self.allocator, dir_path) catch return null;
+        };
         defer parsed.deinit();
 
         return self.resolveByMainFields(&parsed, dir_path);
@@ -654,12 +658,14 @@ pub const Resolver = struct {
     /// 우선순위: exports → module → main → index 파일
     fn resolvePackage(self: *Resolver, pkg_dir_path: []const u8, subpath: []const u8) ResolveError!?ResolveResult {
         // package.json 파싱 시도
-        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir_path) catch |err| switch (err) {
-            error.FileNotFound => {
+        var parsed = blk: {
+            var pj_scope = profile.begin(.resolve_resolver_pkg_json);
+            defer pj_scope.end();
+            break :blk pkg_json.parsePackageJson(self.allocator, pkg_dir_path) catch |err| switch (err) {
                 // package.json 없으면 index 파일 탐색
-                return self.tryDirectoryIndex(pkg_dir_path);
-            },
-            else => return null,
+                error.FileNotFound => return self.tryDirectoryIndex(pkg_dir_path),
+                else => return null,
+            };
         };
         defer parsed.deinit();
 
@@ -675,7 +681,12 @@ pub const Resolver = struct {
         const exports_subpath = allocated_subpath orelse subpath;
 
         if (pkg.exports) |exports| {
-            if (pkg_json.resolveExports(self.allocator, exports, exports_subpath, self.conditions)) |exports_result| {
+            const exports_match = blk: {
+                var ex_scope = profile.begin(.resolve_resolver_exports);
+                defer ex_scope.end();
+                break :blk pkg_json.resolveExports(self.allocator, exports, exports_subpath, self.conditions);
+            };
+            if (exports_match) |exports_result| {
                 defer if (exports_result.allocated) self.allocator.free(exports_result.path);
                 const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, exports_result.path }) catch
                     return error.OutOfMemory;

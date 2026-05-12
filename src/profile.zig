@@ -61,6 +61,8 @@ pub const Category = enum {
     resolve_cache_lookup,
     resolve_browser_override,
     resolve_resolver,
+    resolve_resolver_pkg_json,
+    resolve_resolver_exports,
     resolve_cache_store,
     resolve_path,
     resolve_file_exists,
