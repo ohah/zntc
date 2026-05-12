@@ -1058,7 +1058,11 @@ pub const Bundler = struct {
         graph_scope.end();
 
         // PoC: ZNTC_MODULE_STATS=1 → 모듈 분류 히스토그램 (plain-dep 고속 경로 견적용).
-        if (std.posix.getenv("ZNTC_MODULE_STATS") != null) dumpModuleStats(&graph);
+        // `std.posix.getenv` 은 Windows 미지원 — `getEnvVarOwned` 로 cross-platform 체크.
+        if (std.process.getEnvVarOwned(self.allocator, "ZNTC_MODULE_STATS") catch null) |v| {
+            self.allocator.free(v);
+            dumpModuleStats(&graph);
+        }
 
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
