@@ -1919,6 +1919,18 @@ test "ES2015: derived constructor super 중복 호출은 할당 전 검사" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this,_this=") == null);
 }
 
+test "ES2015: derived constructor arrow this capture waits for super" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class B{}class C extends B{constructor(emitter){super();emitter.addListener('evt',event=>{this.seen=event.value;});}}",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(event){_this.seen=event.value;}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") == null);
+}
+
 test "ES2015: derived constructor arrow super uses lexical NewTarget" {
     // arrow 안의 super() 도 outer 의 _newTarget 변수를 closure 로 캡쳐 → lexical NewTarget 보존.
     var r = try e2eTarget(std.testing.allocator, "class B{constructor(arg){this.x=arg;}}class C extends B{constructor(){var callSuper=()=>super('foo');callSuper();}}", .es5);
