@@ -3224,6 +3224,19 @@ test "Flow: typed arrow with return type" {
     , .{ .jsx = true });
 }
 
+test "Flow: typed arrow restores return type context before body" {
+    try expectNoParseErrorFlow(
+        \\const f = (x: number) => {
+        \\  const cb = (resolve: A => B) => resolve;
+        \\};
+    );
+    try expectNoParseErrorFlow(
+        \\const g = <T>(x: T) => {
+        \\  const cb = (resolve: A => B) => resolve;
+        \\};
+    );
+}
+
 test "Flow: shorthand function type as method return" {
     try expectNoParseErrorFlow(
         \\class C {
