@@ -690,6 +690,9 @@ pub const BundlerDiagnostic = struct {
         plugin_error,
         /// `output.exports = "default"` 모드 + named export 섞임. Rollup 도 동일 케이스 throw. #2159
         output_exports_conflict,
+        /// `@jsx` / `@jsxFrag` pragma 가 있는데 effective JSX runtime 이 automatic — classic
+        /// factory 가 무시됨 (D026). warning severity.
+        jsx_pragma_ignored,
     };
 
     pub const Severity = enum {

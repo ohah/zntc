@@ -348,6 +348,20 @@ pub const TransformOptions = struct {
         if (ast.jsx_pragma_import_source) |s| out.jsx_import_source = s;
         return out;
     }
+
+    /// `@jsx` / `@jsxFrag` pragma 가 있는데 (pragma·tsconfig·CLI 머지 후) effective
+    /// runtime 이 automatic 이면 classic factory 가 무시된다 — caller 가 warning 을 띄운다.
+    pub fn jsxClassicPragmaIgnoredUnderAutomatic(self: @This(), ast: *const Ast) bool {
+        if (!ast.has_jsx) return false;
+        if (self.jsx_runtime != .automatic and self.jsx_runtime != .automatic_dev) return false;
+        return ast.jsx_pragma_factory != null or ast.jsx_pragma_fragment != null;
+    }
+
+    /// `jsxClassicPragmaIgnoredUnderAutomatic` 가 true 일 때 caller 가 띄우는 메시지.
+    /// graph pre-pass(structured diagnostic) 와 transpile(`std.log.warn`) 양쪽이 공유.
+    pub const jsx_pragma_ignored_msg =
+        "@jsx / @jsxFrag pragma ignored — the effective JSX runtime is automatic; " ++
+        "add /** @jsxRuntime classic */ to use a custom factory, or remove the pragma";
 };
 
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게

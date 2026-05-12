@@ -752,3 +752,31 @@ test "Stress: MVC 7-module framework" {
         try std.testing.expect(std.mem.indexOf(u8, result.output, needle) != null);
     }
 }
+
+test "JSX: @jsx pragma + automatic runtime → warning diagnostic (D026)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 프로젝트는 automatic 인데 파일에 classic factory pragma — factory 가 무시됨.
+    try writeFile(tmp.dir, "app.tsx",
+        \\/** @jsx h */
+        \\export const App = () => <p>x</p>;
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .automatic });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // (react/jsx-runtime 미설치라 resolve error 도 같이 나지만) jsx_pragma_ignored warning 은 와야 함.
+    var has_pragma_warning = false;
+    for (result.getDiagnostics()) |d| {
+        if (d.code == .jsx_pragma_ignored and d.severity == .warning) {
+            has_pragma_warning = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_pragma_warning);
+}
