@@ -47,12 +47,18 @@ await build({
 
 현재 정의된 카테고리:
 
-| 이름             | 출력 내용                                                | 추가된 PR         |
-| ---------------- | -------------------------------------------------------- | ----------------- |
-| `compiled_cache` | HMR/watch 의 compiled output cache hit/miss 집계         | RFC #1672 B2      |
-| `ast_mutation`   | `Ast.addNode` 추적 (idx, tag, total, transform_boundary) | RFC #1672 D1 prep |
+| 이름                | 출력 내용                                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------- |
+| `compiled_cache`    | HMR/watch 의 compiled output cache hit/miss 집계                                                     |
+| `transform_plan`    | standalone transpile fast-path 라우팅 (`.none`/`.bindings`/`.full`) + `SemanticPlanReason` hit-rate   |
+| `ast_mutation`      | `Ast.addNode`/`addString`/`addNodeList` 추적 (idx, tag, total, transform_boundary)                   |
+| `string_intern`     | `Ast.addString` intern map hit/miss 통계 (모듈별)                                                    |
+| `runtime_polyfills` | core-js 사용 감지 + graph prelude 결정                                                               |
+| `module_stats`      | 빌드 끝에 모듈 분류 히스토그램 (출처·wrap 종류·변환 feature·semantic 보유) — 아래 §`module_stats` 참고 |
 
 추가 시: `src/debug_log.zig` 의 `Category` enum 에 이름만 추가 → 사용처에서 `debug_log.print(.new_category, ...)` 호출 → 이 표 업데이트.
+
+> `--profile`(§2)은 phase 별 **타이밍**, `ZNTC_DEBUG`는 **구조/상태 진단**. `module_stats` 는 빌드의 *모양*(어떤 모듈이 얼마나 들어왔나)을 보여주는 거라 후자에 속한다 — 타이밍은 안 잰다. 둘을 같이 보면 "metadata 가 3.2s 인데(`--profile`) 그게 plain dep 864개를 처리하느라(`module_stats`)" 식으로 읽힌다.
 
 ## 출력 형식
 
@@ -84,6 +90,31 @@ append 하는 흐름을 추적하는 데 사용. `transform_boundary` 는 parser
 - `Ast.transformed_root: ?NodeIndex` — `transform()` 종료 시 root 기록. D1a 부터 활성. 이중 호출 (재진입) 은 `transform()` 진입 시 null 검증으로 탐지.
 - `Ast.assertInvariants()` — Debug 빌드 전용 invariant 검증. boundary 범위 + transformed_root 유효성.
 - `Module.ast` 의 ownership 주석 — parse_arena 소유 규약 명시
+
+### `module_stats` 활용 (빌드 작업 분포 파악)
+
+`ZNTC_DEBUG=module_stats` 로 빌드하면 그래프에 들어온 모듈을 출처·wrap 종류·변환 feature·semantic 보유 여부로 분류한 멀티라인 블록을 빌드 끝에 stderr 로 출력한다 (`src/bundler/bundler.zig` 의 `dumpModuleStats`). 다른 카테고리와 달리 `[cat] key=val` 한 줄이 아니라 헤더 한 줄 + 들여쓴 본문.
+
+```
+[module_stats] module stats
+  total=954  node_modules=938 (98%)  has_semantic=954  prepass_ran(transform_cache)=681
+  wrap_kind: none=173 cjs=92 esm=689
+  features: jsx=61 decorator=0 ts(ns|enum|import=|export=)=14
+  plain(no jsx/deco/ts) in node_modules: none=165 cjs=90 esm=609  | of which has_semantic=864
+  module_type: ts=378 js=534 json=3 tsx=39
+```
+
+| 필드 | 의미 |
+| --- | --- |
+| `node_modules=N (P%)` | 그래프 모듈 중 `/node_modules/` 경로 비율 |
+| `has_semantic=N` | semantic(scopes/symbols/refs) 데이터를 들고 있는 모듈 수 — linker 가 요구하므로 보통 전부 |
+| `prepass_ran(transform_cache)=N` | transformer pre-pass 가 돈 모듈 수 (`module.transform_cache != null`) |
+| `wrap_kind: none/cjs/esm` | scope-hoist(`none`) vs `__commonJS` vs `__esm` wrap |
+| `features: jsx/decorator/ts(...)` | 무거운 변환이 실제로 필요한 모듈 수 |
+| `plain(...) in node_modules` | "평범한"(jsx/deco/ts 없는) dep 을 wrap 종류별로 — `of which has_semantic` 이 곧 "모듈당 작업을 줄일 여지가 있는 후보 규모" |
+| `module_type: ...` | 확장자/타입별 카운트 |
+
+항목 추가 시 `dumpModuleStats` 와 이 표를 함께 갱신.
 
 ## 코드 사용법
 
