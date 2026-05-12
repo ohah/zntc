@@ -494,17 +494,8 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
                 const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de]);
                 if (name_idx.isNone()) continue;
                 if (@intFromEnum(name_idx) >= ast.nodes.items.len) continue;
-                const name_node = ast.getNode(name_idx);
 
-                // destructuring: export const { X, Y } = obj
-                if (name_node.tag == .object_pattern) {
-                    try extractObjectPatternNames(&names, allocator, ast, name_node);
-                } else {
-                    try names.append(allocator, .{
-                        .name = ast.getText(name_node.span),
-                        .span = name_node.span,
-                    });
-                }
+                try extractBindingPatternNames(&names, allocator, ast, name_idx);
             }
         },
         // 모두 extra[0] 이 이름 노드 (function: [name, ...], class: [name, ...],
@@ -526,36 +517,23 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
     return names.toOwnedSlice(allocator);
 }
 
-/// object_pattern의 각 프로퍼티 이름을 추출한다.
-/// `{ Command, Option }` → ["Command", "Option"]
-fn extractObjectPatternNames(
+/// declaration binding pattern의 BoundNames를 export 이름으로 추출한다.
+/// `export const [a, b] = ...` → ["a", "b"]
+/// `export const { key: local } = ...` → ["local"]
+fn extractBindingPatternNames(
     names: *std.ArrayList(NameInfo),
     allocator: std.mem.Allocator,
     ast: *const Ast,
-    pattern: Node,
+    pattern_idx: NodeIndex,
 ) !void {
-    const list = pattern.data.list;
-    if (list.len == 0) return;
-    if (list.start + list.len > ast.extra_data.items.len) return;
-    const indices = ast.extra_data.items[list.start .. list.start + list.len];
-    for (indices) |raw_idx| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) continue;
-        const prop = ast.getNode(prop_idx);
-        switch (prop.tag) {
-            .binding_property => {
-                // binary: left=key, right=value
-                // shorthand { X } → left == right (같은 노드), exported_name = "X"
-                // rename { X: Y } → left=key "X", right=value "Y", exported_name = key
-                const key = ast.getNode(prop.data.binary.left);
-                const exported_name = ast.getText(key.span);
-                try names.append(allocator, .{
-                    .name = exported_name,
-                    .span = key.span,
-                });
-            },
-            else => {},
-        }
+    var w = try ast_walk.bindingIdentifiers(allocator, ast, pattern_idx, .{});
+    defer w.deinit();
+    while (try w.next()) |name_idx| {
+        const name_node = ast.getNode(name_idx);
+        try names.append(allocator, .{
+            .name = ast.getText(name_node.span),
+            .span = name_node.span,
+        });
     }
 }
 

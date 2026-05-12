@@ -7,7 +7,7 @@
 
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 
 import type { ZntcPlugin } from '@zntc/core';
 
@@ -105,6 +105,16 @@ function hasNonNative(plugins: unknown[]): boolean {
     // negative.
     return typeof name === 'string' && name !== '' && !isZntcNativePlugin(name);
   });
+}
+
+function parserPluginsFor(filename: string): string[] {
+  const ext = extname(filename);
+  if (ext === '.ts') return ['typescript', 'jsx'];
+  if (ext === '.tsx') return ['typescript', 'jsx'];
+  if (ext === '.js' || ext === '.jsx' || ext === '.mjs' || ext === '.cjs') {
+    return ['jsx', 'flow'];
+  }
+  return ['jsx'];
 }
 
 /**
@@ -214,10 +224,9 @@ export function createBabelTransformer(
       }
     }
 
-    // ZNTC 가 항상 추가하는 preset (TS strip) + 사용자 inline preset.
-    const customPresets: unknown[] = [
-      ['@babel/preset-typescript', { isTSX: true, allExtensions: true }],
-    ];
+    // TS/Flow strip 은 ZNTC native transform 이 처리하므로 Babel 에 preset-typescript 를
+    // 강제 주입하지 않는다. 여기서는 사용자가 명시한 non-native preset 만 forward 한다.
+    const customPresets: unknown[] = [];
     if (inline?.presets) {
       for (const preset of inline.presets) {
         const name = entryName(preset);
@@ -252,6 +261,7 @@ export function createBabelTransformer(
       const result = babel!.transformSync(code, {
         ...babelOptions,
         filename,
+        parserOpts: { plugins: parserPluginsFor(filename) },
       });
       if (result?.code && result.code !== code) {
         process.stderr.write(

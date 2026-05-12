@@ -166,15 +166,15 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // method shorthand → { key: function() {} } 를 먼저 처리.
             // function_expression 내부 async/generator lowering까지 visitNode 경로로 수행한 뒤,
             // computed key가 남아 있으면 아래 ES2015Computed가 후속 처리한다.
-            if (self.options.unsupported.object_extensions) {
-                if (es2015_object_methods.ES2015ObjectMethods(Transformer).hasObjectMethod(self, node)) {
-                    const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethods(self, node);
-                    const lowered_node = self.ast.getNode(lowered);
+            if (es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node)) {
+                const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethods(self, node);
+                const lowered_node = self.ast.getNode(lowered);
+                if (self.options.unsupported.object_extensions) {
                     if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, lowered_node)) {
                         return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, lowered_node);
                     }
-                    return lowered;
                 }
+                return lowered;
             }
             if (self.options.unsupported.object_extensions) {
                 if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, node)) {

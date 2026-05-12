@@ -68,12 +68,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const super_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.super);
             const body_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.body);
 
-            // 클래스 이름 추출
-            const new_name = try self.visitNode(name_idx);
+            // 클래스 이름 추출. `export default class {}` 는 class_declaration 이지만
+            // 이름이 없으므로, ES5 lowering 의 outer `var` 선언에도 실제 binding 이 필요하다.
+            var new_name = try self.visitNode(name_idx);
             const name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
-            else
-                try self.ast.addString("_Class");
+            else blk: {
+                const synthetic = try self.ast.addString("_Class");
+                new_name = try es_helpers.makeBindingIdentifier(self, synthetic);
+                break :blk synthetic;
+            };
 
             // super class 처리
             const has_super = !super_idx.isNone();

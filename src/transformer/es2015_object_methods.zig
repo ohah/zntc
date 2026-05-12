@@ -1,6 +1,8 @@
 //! ES2015 다운레벨링: object literal method shorthand
 //!
 //! --target < es2015 (object_extensions unsupported) 일 때 활성화.
+//! 또한 Hermes/RN 처럼 method shorthand 자체는 지원하지만 async/generator 를
+//! 다운레벨링해야 하는 타겟에서는 해당 method만 function expression으로 바꾼다.
 //! { m() {} } → { m: function() {} }
 //! { async a() {} } → { a: function() {} }  (body는 async lowering)
 //! { *g() {} } → { g: function*() {} }      (이후 generator lowering)
@@ -28,7 +30,19 @@ const NodeList = ast_mod.NodeList;
 
 pub fn ES2015ObjectMethods(comptime Transformer: type) type {
     return struct {
-        /// object_expression 멤버 중 변환 대상 method_definition이 있는지 확인.
+        fn isPlainObjectMethod(flags: u32) bool {
+            return (flags & ast_mod.MethodFlags.is_getter) == 0 and
+                (flags & ast_mod.MethodFlags.is_setter) == 0;
+        }
+
+        fn methodNeedsFunctionLowering(self: *const Transformer, flags: u32) bool {
+            if (!isPlainObjectMethod(flags)) return false;
+            return self.options.unsupported.object_extensions or
+                (self.options.unsupported.async_await and (flags & ast_mod.MethodFlags.is_async) != 0) or
+                (self.options.unsupported.generator and (flags & ast_mod.MethodFlags.is_generator) != 0);
+        }
+
+        /// object_expression 멤버 중 method_definition이 있는지 확인.
         /// getter/setter(flags 0x02/0x04)는 ES5도 지원하므로 제외.
         pub fn hasObjectMethod(self: *const Transformer, node: Node) bool {
             const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
@@ -36,9 +50,21 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                 const m = self.ast.getNode(@enumFromInt(raw_idx));
                 if (m.tag != .method_definition) continue;
                 const flags = self.ast.extra_data.items[m.data.extra + ast_mod.MethodExtra.flags];
-                // getter / setter 는 ES5 지원 → 변환 제외
-                if ((flags & ast_mod.MethodFlags.is_getter) != 0 or (flags & ast_mod.MethodFlags.is_setter) != 0) continue;
+                if (!isPlainObjectMethod(flags)) continue;
                 return true;
+            }
+            return false;
+        }
+
+        /// 현재 타겟에서 method_definition → object_property + function_expression
+        /// 변환이 필요한 멤버가 있는지 확인.
+        pub fn needsObjectMethodLowering(self: *const Transformer, node: Node) bool {
+            const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            for (members) |raw_idx| {
+                const m = self.ast.getNode(@enumFromInt(raw_idx));
+                if (m.tag != .method_definition) continue;
+                const flags = self.ast.extra_data.items[m.data.extra + ast_mod.MethodExtra.flags];
+                if (methodNeedsFunctionLowering(self, flags)) return true;
             }
             return false;
         }
@@ -74,8 +100,8 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                 const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.body]);
                 const flags: u32 = self.ast.extra_data.items[me + ast_mod.MethodExtra.flags];
 
-                // getter/setter는 원본 그대로 방문 (ES5 지원)
-                if ((flags & ast_mod.MethodFlags.is_getter) != 0 or (flags & ast_mod.MethodFlags.is_setter) != 0) {
+                // getter/setter 또는 현재 타겟에서 보존 가능한 일반 method는 원본 그대로 방문.
+                if (!methodNeedsFunctionLowering(self, flags)) {
                     const new_m = try self.visitNode(m_idx);
                     if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
                     continue;

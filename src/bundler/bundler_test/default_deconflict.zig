@@ -42,6 +42,46 @@ test "Default: export default class" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "new MyClass") != null);
 }
 
+test "Default: RN anonymous export default class lowers with synthetic binding" {
+    // react-native-root-siblings 의 `export default class extends Component` 처럼
+    // 클래스명이 없는 default class 패턴. RN/Hermes preset 은 class 를 ES5 로 낮추므로
+    // outer var declarator 에도 `_Class` binding 이 실제로 존재해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import StaticContainer from './StaticContainer';
+        \\const inst = new StaticContainer();
+        \\console.log(inst.value());
+    );
+    try writeFile(tmp.dir, "Component.js",
+        \\export class Component {}
+    );
+    try writeFile(tmp.dir, "StaticContainer.js",
+        \\import { Component } from './Component';
+        \\export default class extends Component {
+        \\  extendsCheck() { return Component !== undefined; }
+        \\  value() { return 'static-container'; }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function _Class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return _Class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "static-container") != null);
+}
+
 test "Default: export default arrow function" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -159,6 +199,38 @@ test "Default: export { X as default } where X is default-import (#1321 edge)" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"REAL\"") != null);
+}
+
+test "Default: default-import barrel getter uses local binding for wrapped CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { listenToKeyboardEvents } from './index';
+        \\console.log(listenToKeyboardEvents());
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import listenToKeyboardEvents from './hoc.cjs';
+        \\export { listenToKeyboardEvents };
+    );
+    try writeFile(tmp.dir, "hoc.cjs",
+        \\module.exports = function listen() { return 'ok'; };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return default") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=> listenToKeyboardEvents") != null);
 }
 
 test "Default: mixed default + named imports re-exported from single source (#1321 edge)" {

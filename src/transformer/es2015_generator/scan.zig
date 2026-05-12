@@ -29,6 +29,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
         const node = self.ast.getNode(idx);
 
         if (node.tag == .yield_expression or node.tag == .await_expression) return true;
+        if (node.tag == .for_await_of_statement and self.options.unsupported.needsForAwaitOfDownlevel()) return true;
         if (node.tag == .break_statement or node.tag == .continue_statement) {
             if (node.data.unary.operand.isNone()) {
                 if (self.generator_label_stack.items.len > 0) return true;
@@ -65,6 +66,13 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .spread_element,
             .rest_element,
             .parenthesized_expression,
+            .ts_as_expression,
+            .ts_satisfies_expression,
+            .ts_non_null_expression,
+            .ts_type_assertion,
+            .ts_instantiation_expression,
+            .flow_as_expression,
+            .flow_type_cast_expression,
             => {
                 if (!pushNode(self, &stack, node.data.unary.operand)) return true;
             },
@@ -95,6 +103,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .if_statement,
             .for_in_statement,
             .for_of_statement,
+            .for_await_of_statement,
             .try_statement,
             => {
                 if (!pushNode(self, &stack, node.data.ternary.a)) return true;
@@ -193,7 +202,7 @@ pub fn containsReturn(self: anytype, root_idx: NodeIndex) bool {
                     if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
                 }
             },
-            .if_statement, .for_in_statement, .for_of_statement => {
+            .if_statement, .for_in_statement, .for_of_statement, .for_await_of_statement => {
                 if (!pushNode(self, &stack, node.data.ternary.b)) return true;
                 if (!pushNode(self, &stack, node.data.ternary.c)) return true;
             },

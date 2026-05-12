@@ -1009,6 +1009,38 @@ test "ES2015: object async method → state machine wrapped in function" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "async a(") == null);
 }
 
+test "Hermes: async object method lowers even when object extensions are supported" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        "new ReadableStream({async pull(controller){const {done,value}=await iterator.next();return value;},cancel(reason){return iterator.return(reason);}});",
+        .{ .unsupported = TransformOptions.compat.fromHermesPreset() },
+        .{ .minify_whitespace = true },
+        ".js",
+    );
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "pull:function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__async") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async pull") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield iterator.next") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "cancel(reason)") != null);
+}
+
+test "Hermes: async arrow expression body extracts nested await" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        "const encodeText=async (str)=>new Uint8Array(await new Request(str).arrayBuffer());",
+        .{ .unsupported = TransformOptions.compat.fromHermesPreset() },
+        .{ .minify_whitespace = true },
+        ".js",
+    );
+    defer r.deinit();
+
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield new Request") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "new Uint8Array(_") != null);
+}
+
 test "ES2015: object generator method → state machine wrapped in function" {
     var r = try e2eTarget(std.testing.allocator, "var o={*g(){yield 1;}};", .es5);
     defer r.deinit();
@@ -2397,6 +2429,30 @@ test "ES2018: for-await-of with break — lowered (#1381)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".return") != null);
 }
 
+test "ES2018: for-await-of inside try participates in async state machine" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){try{for await(const v of iter){await g(v);}}finally{cleanup();}}", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "await ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
+}
+
+test "ES5: throw sequence with nested await extracts before throw" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(err){throw this.once('error',function(){}),await finished(this.destroy(err)),err;}", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "throw this.once") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "throw err") != null);
+}
+
+test "ES5: await inside TS assertion participates in async state machine" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(permission){const status=(await NativeModule.check(permission)) as PermissionStatus;return status;}", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "status=((yield") == null);
+}
+
 test "ES2018: for-await-of preserved at esnext" {
     var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter)g(v);}", .esnext);
     defer r.deinit();
@@ -3051,4 +3107,41 @@ test "ES5: for-await-of hoists loop var to function top (#1901)" {
         std.mem.indexOf(u8, r.output, ",v=") != null or
         std.mem.indexOf(u8, r.output, ",v,") != null;
     try std.testing.expect(has_v_decl);
+}
+
+test "ES5: async for-in body extracts await into state machine" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\async function validateAll(fields) {
+        \\  for (const name in fields) {
+        \\    const field = fields[name];
+        \\    const fieldError = await validateField(field);
+        \\    if (fieldError) break;
+        \\  }
+        \\  return true;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.keys") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(yield validateField") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "validateField(field)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
+}
+
+test "ES5: async switch case block extracts await" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\async function requestCamera(result) {
+        \\  switch (result) {
+        \\    case "denied": {
+        \\      const permission = await requestCameraPermission();
+        \\      return permission === "granted";
+        \\    }
+        \\    default:
+        \\      return false;
+        \\  }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(yield requestCameraPermission") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "requestCameraPermission()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
 }

@@ -518,7 +518,9 @@ pub fn emitEsmWrappedModule(
                             const local_name = module.exportBindingLocalName(eb);
                             for (module.import_bindings) |ib| {
                                 if (ib.import_record_index != rec_idx) continue;
-                                if (std.mem.eql(u8, ib.imported_name, local_name)) break :re_export;
+                                if (std.mem.eql(u8, ib.imported_name, local_name)) {
+                                    break :blk l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
+                                }
                             }
 
                             const getter_val = try makeStarGetterValue(allocator, l, src_mod, si, local_name);

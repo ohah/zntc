@@ -314,9 +314,48 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = NodeIndex.none } });
                     }
                 },
+                .throw_statement => {
+                    const value_idx = stmt.data.unary.operand;
+                    if (!value_idx.isNone()) {
+                        const value_node = self.ast.getNode(value_idx);
+                        if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
+                            // throw await x → yield x; throw _state.sent()
+                            const inner_value = value_node.data.unary.operand;
+                            const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
+                            try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = new_inner } });
+                            next_label.* += 1;
+                            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                            const sent = try buildSentCall(self, stmt.span);
+                            const throw_stmt = try self.ast.addNode(.{
+                                .tag = .throw_statement,
+                                .span = stmt.span,
+                                .data = .{ .unary = .{ .operand = sent, .flags = 0 } },
+                            });
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = throw_stmt } });
+                        } else if (es2015_scan.containsYield(self, value_idx)) {
+                            // throw (a(), await b(), err) → extract await before the throw.
+                            const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
+                            const throw_stmt = try self.ast.addNode(.{
+                                .tag = .throw_statement,
+                                .span = stmt.span,
+                                .data = .{ .unary = .{ .operand = new_value, .flags = 0 } },
+                            });
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = throw_stmt } });
+                        } else {
+                            const new_stmt = try self.visitNode(stmt_idx);
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                        }
+                    } else {
+                        const new_stmt = try self.visitNode(stmt_idx);
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                    }
+                },
                 .variable_declaration => {
                     // 모든 var는 호이스팅됨. init를 assignment로 변환.
                     try collectVarDeclWithYield(self, stmt, ops, next_label);
+                },
+                .block_statement, .function_body => {
+                    try collectBodyOperations(self, stmt_idx, ops, next_label);
                 },
                 .if_statement => {
                     try collectIfOperations(self, stmt_idx, stmt, ops, next_label);
@@ -537,31 +576,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// for-of/for-in 문의 연산 수집.
         /// for (const x of arr) { yield ... }
         /// → for (var _i = 0, _arr = arr; _i < _arr.length; _i++) { var x = _arr[_i]; yield ... }
-        /// 배열 기반 변환 후 collectForOperations와 동일한 yield 추출.
+        /// for-in은 Object.keys(obj) snapshot을 순회하는 동일한 배열 기반 루프로 낮춘다.
         fn collectForOfOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            _ = stmt_idx;
             const span = stmt.span;
             const left = stmt.data.ternary.a; // loop variable
             const right = stmt.data.ternary.b; // iterable
             const body_idx = stmt.data.ternary.c; // body
 
-            // for-in: yield를 포함한 state machine 변환은 미지원.
-            // for-in은 iterable protocol이 아닌 object key 열거이므로 배열 변환 불가.
-            // yield는 방문되지만 state machine 추출 없이 그대로 출력됨.
-            if (stmt.tag == .for_in_statement) {
-                const new_stmt = try self.visitNode(stmt_idx);
-                if (!new_stmt.isNone()) {
-                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
-                }
-                return;
-            }
-
-            // for-of → for 변환: _i (index), _arr (array)
+            // for-of/for-in → for 변환: _i (index), _arr (array or key snapshot)
             const idx_span = try es_helpers.makeTempVarSpan(self);
             const arr_span = try es_helpers.makeTempVarSpan(self);
             // 임시 변수를 호이스팅 리스트에 등록 (buildGeneratorBody에서 var 선언 생성)
             try self.generator_temp_var_spans.append(self.allocator, idx_span);
             try self.generator_temp_var_spans.append(self.allocator, arr_span);
-            const new_right = try self.visitNode(right);
+            const new_right = if (es2015_scan.containsYield(self, right))
+                try visitExprWithYieldExtraction(self, right, ops, next_label)
+            else
+                try self.visitNode(right);
+            const iterable_value = if (stmt.tag == .for_in_statement) blk: {
+                const object_ref = try es_helpers.makeIdentifierRef(self, "Object");
+                const keys_ref = try es_helpers.makeIdentifierRef(self, "keys");
+                const keys_member = try es_helpers.makeStaticMember(self, object_ref, keys_ref, span);
+                break :blk try es_helpers.makeCallExpr(self, keys_member, &.{new_right}, span);
+            } else new_right;
 
             // init: _i = 0, _arr = iterable (assignment)
             // __generator 콜백은 매 호출마다 새 실행 컨텍스트이므로
@@ -581,7 +619,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const arr_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = arr_ref_init, .right = new_right, .flags = 0 } },
+                .data = .{ .binary = .{ .left = arr_ref_init, .right = iterable_value, .flags = 0 } },
             });
             const arr_stmt = try es_helpers.makeExprStmt(self, arr_assign, span);
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = arr_stmt } });
@@ -1479,6 +1517,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return es_helpers.makeParenExpr(self, inner, node.span);
             }
 
+            // TS/Flow type wrappers are runtime-transparent. Look through them so
+            // `(await x) as T` does not become raw `(yield x)` after type stripping.
+            if (node.tag == .ts_as_expression or
+                node.tag == .ts_satisfies_expression or
+                node.tag == .ts_non_null_expression or
+                node.tag == .ts_type_assertion or
+                node.tag == .ts_instantiation_expression or
+                node.tag == .flow_as_expression or
+                node.tag == .flow_type_cast_expression)
+            {
+                return visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+            }
+
             // logical/binary expression: 양쪽 재귀
             if (node.tag == .logical_expression or node.tag == .binary_expression) {
                 const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
@@ -1500,6 +1551,33 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .span = node.span,
                     .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
                 });
+            }
+
+            // sequence expression: a(), await b(), c()
+            // 앞쪽 expression은 순서 보존을 위해 statement operation으로 먼저 방출하고,
+            // 마지막 expression만 원래 expression 자리의 값으로 반환한다.
+            if (node.tag == .sequence_expression) {
+                const list_start = node.data.list.start;
+                const list_len = node.data.list.len;
+                if (list_len == 0) return self.visitNode(expr_idx);
+
+                var i_seq: u32 = 0;
+                while (i_seq < list_len) : (i_seq += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i_seq]);
+                    const is_last = i_seq + 1 == list_len;
+                    const new_elem = if (es2015_scan.containsYield(self, elem_idx))
+                        try visitExprWithYieldExtraction(self, elem_idx, ops, next_label)
+                    else
+                        try self.visitNode(elem_idx);
+
+                    if (is_last) return new_elem;
+                    if (!new_elem.isNone()) {
+                        const elem_node = self.ast.getNode(elem_idx);
+                        const stmt = try es_helpers.makeExprStmt(self, new_elem, elem_node.span);
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = stmt } });
+                    }
+                }
+                return .none;
             }
 
             // unary/update expression: extra = [operand, operator_and_flags]
@@ -1640,28 +1718,49 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span) Transformer.Error!StateMachineResult {
-            // expression body는 최대 3개 연산 (yield + nop + return)
-            var ops_buf: [3]Operation = undefined;
-            var ops_len: usize = 0;
+            var ops: std.ArrayList(Operation) = .empty;
+            defer ops.deinit(self.allocator);
+            var next_label: u32 = 1;
 
             if (body.tag == .await_expression or body.tag == .yield_expression) {
                 // return await/yield x → yield x + return _state.sent()
                 const inner_value = body.data.unary.operand;
-                const new_inner = if (!inner_value.isNone()) try self.visitNode(inner_value) else NodeIndex.none;
-                ops_buf[0] = .{ .code = yieldOpCodeFor(body), .arg = .{ .node = new_inner } };
-                ops_buf[1] = .{ .code = .nop, .arg = .{ .none = {} } };
+                const new_inner = if (!inner_value.isNone())
+                    try visitExprWithYieldExtraction(self, inner_value, &ops, &next_label)
+                else
+                    NodeIndex.none;
+                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(body), .arg = .{ .node = new_inner } });
+                next_label += 1;
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                 const sent = try buildSentCall(self, span);
-                ops_buf[2] = .{ .code = .return_op, .arg = .{ .node = sent } };
-                ops_len = 3;
+                try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = sent } });
+            } else if (es2015_scan.containsYield(self, body_idx)) {
+                // async arrow expression body: `async x => f(await x)` 는 implicit return 이므로,
+                // block body 의 `return f(await x)` 와 동일하게 nested await를 먼저 추출한다.
+                const new_value = try visitExprWithYieldExtraction(self, body_idx, &ops, &next_label);
+                try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
             } else {
                 // 일반 expression: return expr
                 const new_value = try self.visitNode(body_idx);
-                ops_buf[0] = .{ .code = .return_op, .arg = .{ .node = new_value } };
-                ops_len = 1;
+                try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
             }
 
-            const switch_node = try buildSwitchFromOps(self, ops_buf[0..ops_len], span);
-            return .{ .body = switch_node, .var_decl = .none };
+            const switch_node = try buildSwitchFromOps(self, ops.items, span);
+
+            var var_decl_node: NodeIndex = .none;
+            if (self.generator_temp_var_spans.items.len > 0) {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                for (self.generator_temp_var_spans.items) |temp_span| {
+                    const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                    const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
+                    try self.scratch.append(self.allocator, declarator);
+                }
+                self.generator_temp_var_spans.clearRetainingCapacity();
+                var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
+            }
+
+            return .{ .body = switch_node, .var_decl = var_decl_node };
         }
 
         /// 연산 리스트를 switch case로 변환.
