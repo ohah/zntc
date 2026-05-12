@@ -256,6 +256,41 @@ test "Bundler: try-block 안의 unresolved require 는 warning 만 + stub 으로
     try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
 }
 
+test "Bundler: try-block 안의 unresolved require 는 실행 시 MODULE_NOT_FOUND 를 던진다" {
+    // Node/Metro 의미: try 안의 optional peer require 는 resolve 실패를 catch 로 넘긴다.
+    // 빈 모듈을 반환하면 destructuring default 가 undefined 로 떨어져 catch 가 실행되지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\let fallback;
+        \\try {
+        \\  const { default: EventSource } = require("missing-optional-peer");
+        \\  fallback = EventSource.prototype;
+        \\} catch (e) {
+        \\  fallback = "mock";
+        \\}
+        \\module.exports = fallback;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "missing-optional-peer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Cannot find module") != null);
+}
+
 test "Bundler: try-block 바깥의 unresolved require 는 여전히 hard error (회귀 가드)" {
     // optional 마킹이 너무 광범위해 일반 require 의 hard error 를 잃지 않도록.
     var tmp = std.testing.tmpDir(.{});

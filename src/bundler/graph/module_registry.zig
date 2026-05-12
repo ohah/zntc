@@ -96,7 +96,23 @@ pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
 pub fn addDisabledModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex {
     // 가상 경로: "(disabled):specifier" (esbuild 형식).
     // specifier 기준으로 중복 체크 — 여러 모듈이 같은 빌트인을 require해도 하나만 생성.
-    const disabled_path = try std.mem.concat(self.allocator, u8, &.{ "(disabled):", specifier });
+    return addDisabledModuleWithMode(self, module_mod.DISABLED_MODULE_PREFIX, specifier, false);
+}
+
+/// try/catch 안의 unresolved optional dependency 를 등록한다.
+/// 빈 모듈을 반환하면 destructuring/default access 가 catch 로 넘어가지 않으므로,
+/// require 되는 순간 Node/Metro처럼 MODULE_NOT_FOUND 를 던지는 CJS wrapper 를 출력한다.
+pub fn addOptionalMissingModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex {
+    return addDisabledModuleWithMode(self, module_mod.OPTIONAL_MISSING_MODULE_PREFIX, specifier, true);
+}
+
+fn addDisabledModuleWithMode(
+    self: *ModuleGraph,
+    prefix: []const u8,
+    specifier: []const u8,
+    throw_on_require: bool,
+) !ModuleIndex {
+    const disabled_path = try std.mem.concat(self.allocator, u8, &.{ prefix, specifier });
 
     // 중복 체크
     if (self.path_to_module.get(disabled_path)) |existing| {
@@ -110,6 +126,7 @@ pub fn addDisabledModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex
     module.exports_kind = .commonjs;
     module.wrap_kind = .cjs;
     module.is_disabled = true;
+    module.disabled_throw_on_require = throw_on_require;
     module.side_effects = false;
     module.state = .ready;
     try self.modules.append(self.allocator, module);
