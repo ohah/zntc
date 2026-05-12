@@ -2362,7 +2362,7 @@ fn buildRnGuardedWithSilentPatterns(allocator: std.mem.Allocator, entry: []const
     });
 }
 
-test "entry_error_guard #1: 옵션 활성 시 prologue 에 helper + inGuard pattern 보존" {
+test "entry_error_guard #1: 옵션 활성 시 prologue 에 Metro guard helper emit" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
@@ -2375,9 +2375,12 @@ test "entry_error_guard #1: 옵션 활성 시 prologue 에 helper + inGuard patt
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // helper 정의 + ZNTC policy: 각 호출 별 독립 try/catch + console.warn 로 LogBox 보고.
+    // helper 정의 + Metro guardedLoadModule semantics:
+    // outer guard + ErrorUtils.reportFatalError, ErrorUtils 없으면 fallback rethrow.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function __zntc_guarded") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_in_guard") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guard_global.ErrorUtils.reportFatalError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return fn();") != null);
 }
 
 test "entry_error_guard #2: 옵션 비활성 시 helper / wrap 모두 없음 (회귀 방지)" {
@@ -2563,11 +2566,9 @@ test "entry_error_guard #9: mixed CJS + ESM dependencies — 모두 wrap" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(") != null);
 }
 
-test "entry_error_guard #10: 각 호출 별 독립 try/catch (ZNTC policy)" {
-    // Metro 의 inGuard pattern 은 iOS 26.4+ native fatal handler 와 조합으로 부팅 정지
-    // 이슈 발생. ZNTC 는 각 호출을 독립 try/catch 로 wrap 해 한 layer throw 가 다음
-    // layer 영향 없도록 함 — 각 outer (rbm, winter, metro-runtime, entry chain, entry)
-    // 가 별도 catch 로 swallow + console.error 로 보고.
+test "entry_error_guard #10: Metro inGuard + ErrorUtils fallback rethrow semantics" {
+    // Metro 는 ErrorUtils 가 있을 때만 outermost 호출을 catch/report 한다.
+    // ErrorUtils 미정의 구간은 unguarded 로 실행해야 InitializeCore 실패를 숨기지 않는다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.js", "export const v = 1;\n");
@@ -2580,8 +2581,10 @@ test "entry_error_guard #10: 각 호출 별 독립 try/catch (ZNTC policy)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 각 호출 별 독립 try/catch — inGuard short-circuit 없이 매 호출이 outer
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "if (!__zntc_in_guard && __zntc_guard_global && __zntc_guard_global.ErrorUtils)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_in_guard = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_in_guard = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return fn();") != null);
 }
 
 test "entry_error_guard #11: entry 안의 var/function 정의 + chain 혼재" {
@@ -2655,11 +2658,12 @@ test "entry_error_guard #13: minify_whitespace — minified helper 형태 정상
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // minified 형태도 helper 정의 + console.warn swallow 보존
+    // minified 형태도 helper 정의 + Metro ErrorUtils guard 보존
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function $zg") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$zg(") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$zgG.ErrorUtils.reportFatalError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return fn()") != null);
 }
 
 test "entry_error_guard #14: 비-entry 모듈의 chain 도 wrap (preamble + side-effect)" {
@@ -2797,9 +2801,9 @@ test "entry_error_guard #17b: silent_console_error_patterns 비어있으면 sett
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function __zntc_guarded") != null);
 }
 
-test "entry_error_guard #18: __ZNTC_DEBUG_GUARD toggle — 기본 silent, toggle on 시 console.warn" {
-    // `__zntc_guarded` 의 catch block 은 기본 silent. 디버그 시 globalThis.__ZNTC_DEBUG_GUARD
-    // 를 truthy 로 set 하면 console.warn 으로 출력 — escape hatch.
+test "entry_error_guard #18: silent swallow/debug toggle 제거 — Metro ErrorUtils 보고만 사용" {
+    // `__zntc_guarded` 는 Metro 와 동일하게 ErrorUtils 가 있으면 reportFatalError,
+    // 없으면 rethrow. 별도 debug toggle 로 예외를 삼키지 않는다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
@@ -2812,13 +2816,10 @@ test "entry_error_guard #18: __ZNTC_DEBUG_GUARD toggle — 기본 silent, toggle
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // toggle gate — silent 기본 + 명시적 enable.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__ZNTC_DEBUG_GUARD") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn(\"[zntc:guard] caught:\"") != null);
-    // bare console.warn (toggle 무시) 또는 console.error 호출이 catch block 에 없어야 함.
-    // simple substring: "[zntc:guard]" 는 toggle gate 안에서만 나와야 함 — 한 번만 등장.
-    const tag_count = std.mem.count(u8, result.output, "[zntc:guard]");
-    try std.testing.expectEqual(@as(usize, 1), tag_count);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__ZNTC_DEBUG_GUARD") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[zntc:guard]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guard_global.ErrorUtils.reportFatalError") != null);
 }
 
 test "entry_error_guard #19: dev_mode + entry_chain — __zntc_modules[\"...\"].fn() 도 wrap" {

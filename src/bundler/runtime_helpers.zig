@@ -1007,17 +1007,18 @@ pub const REFRESH_STUB =
 
 /// `entry_error_guard` 활성 시 prologue 에 주입. `__zntc_guarded(fn)` helper —
 /// 각 module init 호출 site (entry trigger / linker preamble / re-export / side-effect
-/// init) 가 통과. throw 를 silent swallow 해서 부팅 진행. Metro 의 `metro-runtime/src/
-/// polyfills/require.js:178` `guardedLoadModule` 와 등가 mechanism — Metro 도 module
-/// 평가는 eager 이지만 top-level `__r(N)` 호출이 try/catch wrap 되어 있어 throw 가
-/// LogBox 로 흘러가고 RN runtime 자체는 살아있음. ZNTC 는 자체 module 시스템
-/// (`__esm`/`__commonJS`) 사용해 metro require.js 를 안 써서 이 invariant 가 빠져있었음.
+/// init) 가 통과. Metro 의 `metro-runtime/src/polyfills/require.js` `guardedLoadModule`
+/// 과 같은 의미를 유지한다:
 ///
-/// Metro 의 `inGuard` flag (nested 호출 무력화) 는 채택하지 않음 — 그건 native
-/// `ErrorUtils.reportFatalError` → `RN$handleException` 와 짝인데, iOS native immutable
-/// global 이 trigger 한 상황 (관측: iPad iOS 26.4 + Expo SDK 55) 에서는 그 handler 가
-/// "runtime not ready" 로 부팅 정지시킴. ZNTC 는 silent swallow + 디버그 toggle:
-/// `globalThis.__ZNTC_DEBUG_GUARD = true`.
+/// - outermost 호출이고 `global.ErrorUtils` 가 있으면 try/catch 후
+///   `ErrorUtils.reportFatalError(e)` 로 전달한다.
+/// - 이미 guard 안이거나 `ErrorUtils` 가 없으면 unguarded 로 실행해 예외를 그대로
+///   다시 던진다.
+///
+/// RN 초기화 중 `InitializeCore` 이전 예외를 silent swallow 하면 `setUpXHR` /
+/// `setUpBatchedBridge` 가 건너뛰어 `AbortController`, `HMRClient`, `RCTDeviceEventEmitter`
+/// 가 등록되지 않고, 후속 `AppRegistry.registerComponent` 미호출처럼 보이는 2차 오류로
+/// 번진다. 따라서 Metro 와 동일하게 ErrorUtils 미설치 구간에서는 반드시 throw 를 보존한다.
 ///
 /// 별도 `console.error` setter intercept (`emitConsoleErrorIntercept`) 는 RN preset 자동
 /// 활성 안 함 — `silent_console_error_patterns` 옵션이 비어있으면 emit X. trigger 가
@@ -1025,20 +1026,30 @@ pub const REFRESH_STUB =
 /// immutable 충돌처럼 specific 환경에서만 발생하므로, consumer (bungae 등) 가 환경 감지
 /// 후 패턴 주입. vanilla RN CLI 빌드는 dead code 0.
 pub const GUARDED_RUNTIME =
+    \\var __zntc_in_guard = false;
+    \\var __zntc_guard_global = typeof global !== "undefined" ? global :
+    \\  typeof globalThis !== "undefined" ? globalThis :
+    \\  typeof self !== "undefined" ? self :
+    \\  typeof window !== "undefined" ? window : void 0;
     \\function __zntc_guarded(fn) {
-    \\  try { return fn(); }
-    \\  catch (e) {
-    \\    if (typeof globalThis !== "undefined" && globalThis.__ZNTC_DEBUG_GUARD &&
-    \\        typeof console !== "undefined" && console.warn) {
-    \\      console.warn("[zntc:guard] caught:", e);
+    \\  if (!__zntc_in_guard && __zntc_guard_global && __zntc_guard_global.ErrorUtils) {
+    \\    __zntc_in_guard = true;
+    \\    var returnValue;
+    \\    try {
+    \\      returnValue = fn();
+    \\    } catch (e) {
+    \\      __zntc_guard_global.ErrorUtils.reportFatalError(e);
     \\    }
+    \\    __zntc_in_guard = false;
+    \\    return returnValue;
     \\  }
+    \\  return fn();
     \\}
     \\
 ;
 
 pub const GUARDED_RUNTIME_MIN =
-    "function $zg(fn){try{return fn()}catch(e){if(typeof globalThis!==\"undefined\"&&globalThis.__ZNTC_DEBUG_GUARD&&typeof console!==\"undefined\"&&console.warn)console.warn(\"[zntc:guard] caught:\",e)}}\n";
+    "var $zi=false,$zgG=typeof global!==\"undefined\"?global:typeof globalThis!==\"undefined\"?globalThis:typeof self!==\"undefined\"?self:typeof window!==\"undefined\"?window:void 0;function $zg(fn){if(!$zi&&$zgG&&$zgG.ErrorUtils){$zi=true;var r;try{r=fn()}catch(e){$zgG.ErrorUtils.reportFatalError(e)}$zi=false;return r}return fn()}\n";
 
 /// `silent_console_error_patterns` 가 비어있지 않을 때 prologue 에 주입.
 /// `Object.defineProperty(console, "error", { set })` setter intercept — RN
