@@ -126,7 +126,7 @@ test "Codegen: arrow single param" {
 test "Codegen: arrow block body" {
     var r = try e2e(std.testing.allocator, "const f = (a, b) => { return a + b; };");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const f=(a,b)=>{return a + b;};", r.output);
+    try std.testing.expectEqualStrings("const f=(a,b)=>{return a+b;};", r.output);
 }
 
 test "Codegen: arrow rest param" {
@@ -641,7 +641,7 @@ test "Codegen: namespace export reference substitution" {
 test "Codegen: namespace export reference — multiple exports" {
     var r = try e2e(std.testing.allocator, "namespace ns { export let a = 1, b = 2; console.log(a + b); }");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.a + ns.b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.a+ns.b)") != null);
 }
 
 test "Codegen: namespace export reference — function" {

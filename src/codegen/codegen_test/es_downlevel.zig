@@ -832,25 +832,25 @@ test "ES2015: no-substitution template" {
 test "ES2015: template with substitution" {
     var r = try e2eTarget(std.testing.allocator, "var x=`a${b}c`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var x=\"a\" + b + \"c\";", r.output);
+    try std.testing.expectEqualStrings("var x=\"a\"+b+\"c\";", r.output);
 }
 
 test "ES2015: template empty head" {
     var r = try e2eTarget(std.testing.allocator, "var x=`${a}`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var x=\"\" + a;", r.output);
+    try std.testing.expectEqualStrings("var x=\"\"+a;", r.output);
 }
 
 test "ES2015: template multiple substitutions" {
     var r = try e2eTarget(std.testing.allocator, "var x=`${a}${b}`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var x=\"\" + a + b;", r.output);
+    try std.testing.expectEqualStrings("var x=\"\"+a+b;", r.output);
 }
 
 test "ES2015: template with text between substitutions" {
     var r = try e2eTarget(std.testing.allocator, "var x=`a${b}c${d}e`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var x=\"a\" + b + \"c\" + d + \"e\";", r.output);
+    try std.testing.expectEqualStrings("var x=\"a\"+b+\"c\"+d+\"e\";", r.output);
 }
 
 test "ES2015: empty template" {
@@ -1099,13 +1099,13 @@ test "ES2015: arrow expression body" {
 test "ES2015: arrow with param" {
     var r = try e2eTarget(std.testing.allocator, "var f=x=>x+1;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var f=function(x){return x + 1;};", r.output);
+    try std.testing.expectEqualStrings("var f=function(x){return x+1;};", r.output);
 }
 
 test "ES2015: arrow with parens param" {
     var r = try e2eTarget(std.testing.allocator, "var f=(x)=>x+1;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var f=function(x){return x + 1;};", r.output);
+    try std.testing.expectEqualStrings("var f=function(x){return x+1;};", r.output);
 }
 
 test "ES2015: arrow block body" {
@@ -1117,7 +1117,7 @@ test "ES2015: arrow block body" {
 test "ES2015: arrow multiple params" {
     var r = try e2eTarget(std.testing.allocator, "var f=(a,b)=>a+b;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var f=function(a,b){return a + b;};", r.output);
+    try std.testing.expectEqualStrings("var f=function(a,b){return a+b;};", r.output);
 }
 
 test "ES2015: arrow no transform on esnext" {
@@ -1173,7 +1173,7 @@ test "ES2015: arrow simple params — no unnecessary lowering" {
     var r = try e2eTarget(std.testing.allocator, "var f=(a,b)=>a+b;", .es5);
     defer r.deinit();
     // 단순 파라미터는 그대로 유지 (destructuring lowering 불필요)
-    try std.testing.expectEqualStrings("var f=function(a,b){return a + b;};", r.output);
+    try std.testing.expectEqualStrings("var f=function(a,b){return a+b;};", r.output);
 }
 
 test "ES2015: class method destructuring params lowered" {
@@ -2468,7 +2468,7 @@ test "ES2015: template with actual newline" {
 test "ES2015: template with newline and substitution" {
     var r = try e2eTarget(std.testing.allocator, "var s=`a\n${b}\nc`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var s=\"a\\n\" + b + \"\\nc\";", r.output);
+    try std.testing.expectEqualStrings("var s=\"a\\n\"+b+\"\\nc\";", r.output);
 }
 
 test "ES2015: template with carriage return" {

@@ -54,18 +54,81 @@ pub fn emitBinary(self: anytype, node: Node) !void {
         }
     }
     try self.emitNode(node.data.binary.left);
-    if (op == .kw_in or op == .kw_instanceof or op == .plus or op == .minus) {
+    if (op == .kw_in or op == .kw_instanceof) {
+        // 영문 키워드 연산자는 양옆 공백 필수 (`a in b` ≠ `ainb`) — minify 와 무관.
+        try self.writeByte(' ');
+        try self.write(op.symbol());
         try self.writeByte(' ');
     } else {
+        const sym = op.symbol();
+        // `+`/`-` 도 minify 시엔 tight (`a+b`). 단 RHS 가 unary `+`/`-` 또는 prefix
+        // `++`/`--` 로 시작하면 `++`/`--` 로 토큰이 잘못 합쳐지므로(`a+ +b` → `a++b`)
+        // 그 경우에만 한 칸 삽입. 좌측은 합쳐질 일 없음 — postfix `a++` + `+b` 는
+        // `a+++b` 로 다시 lex 해도 `(a++)+b` 라 의미 동일.
         try self.writeSpace();
-    }
-    try self.write(op.symbol());
-    if (op == .kw_in or op == .kw_instanceof or op == .plus or op == .minus) {
-        try self.writeByte(' ');
-    } else {
-        try self.writeSpace();
+        try self.write(sym);
+        if (self.options.minify_whitespace and (op == .plus or op == .minus) and
+            rhsLeadingSignChar(self, node.data.binary.right) == sym[0])
+        {
+            try self.writeByte(' ');
+        } else {
+            try self.writeSpace();
+        }
     }
     try self.emitNode(node.data.binary.right);
+}
+
+/// unary_expression / update_expression 의 extra = [operand, flags]. flags 의 low byte 가
+/// 연산자 Kind. extra 범위 밖이면 null.
+fn unaryOpKind(self: anytype, extra_base: u32) ?Kind {
+    const extras = self.ast.extra_data.items;
+    if (extra_base + 1 >= extras.len) return null;
+    return @enumFromInt(@as(u8, @truncate(extras[extra_base + 1])));
+}
+
+/// binary `+`/`-` 의 RHS 가 출력 시 `+` 또는 `-` 로 시작하는지 — 시작하면 그 문자 반환,
+/// 아니면 null. minify 시 `++`/`--` 토큰 오결합 방지용. unary `+`/`-`, prefix `++`/`--`,
+/// 그리고 (상수 폴딩으로 생긴) 음수 numeric/bigint literal 만 해당. 더 높은 우선순위
+/// 이항식은 codegen 이 paren 없이 출력하므로 leftmost leaf 로 내려가 검사한다.
+fn rhsLeadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
+    var cur = idx;
+    var depth: u8 = 0;
+    while (depth < 32) : (depth += 1) {
+        const n = self.ast.getNode(cur);
+        switch (n.tag) {
+            .unary_expression => return switch (unaryOpKind(self, n.data.extra) orelse return null) {
+                .plus => '+',
+                .minus => '-',
+                else => null, // !x, ~x, typeof/void/delete x → 다른 글자로 시작
+            },
+            .update_expression => {
+                const extras = self.ast.extra_data.items;
+                const e = n.data.extra;
+                if (e + 1 >= extras.len) return null;
+                if ((extras[e + 1] & ast_mod.UnaryFlags.postfix) != 0) {
+                    cur = @enumFromInt(extras[e]); // `x++` → operand 의 첫 글자로 시작 → 내려감
+                    continue;
+                }
+                return switch (@as(Kind, @enumFromInt(@as(u8, @truncate(extras[e + 1]))))) {
+                    .plus2 => '+',
+                    .minus2 => '-',
+                    else => null,
+                };
+            },
+            .numeric_literal, .bigint_literal => {
+                const text = self.ast.getText(n.span);
+                return if (text.len > 0 and text[0] == '-') '-' else null;
+            },
+            // 같은/낮은 우선순위 RHS 는 paren 으로 감싸져 `(` 로 시작 → 안전(null).
+            // 더 높은 우선순위(`a + b*c` 의 `b*c`)면 leftmost leaf 로 내려가 검사.
+            .binary_expression, .logical_expression => {
+                cur = n.data.binary.left;
+                continue;
+            },
+            else => return null,
+        }
+    }
+    return null;
 }
 
 pub fn emitAssignment(self: anytype, node: Node) !void {
