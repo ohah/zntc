@@ -4,6 +4,7 @@ const types = @import("../types.zig");
 const emitter = @import("../emitter.zig");
 const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
+const rt = @import("../runtime_helpers.zig");
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -3126,4 +3127,52 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
     defer std.testing.allocator.free(lazy_remote_value);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_remote_value) != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
+}
+
+test "react_native inlineRequires: object parameter default visits ESM value import" {
+    // `{ backgroundColor = COLOR_TOKENS.bgPrimary }` 는 binding pattern 이지만
+    // default initializer 는 값 표현식이다. Metro/Babel 은 이 import 를 값 참조로
+    // 남기므로 zntc 도 lazy ESM import 치환을 적용해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { TabTemplate } from './template';
+        \\globalThis.__zntcParamDefaultResult = TabTemplate({});
+    );
+    try writeFile(tmp.dir, "tokens.js",
+        \\export const COLOR_TOKENS = { bgPrimary: 'primary-bg' };
+    );
+    try writeFile(tmp.dir, "template.js",
+        \\import { COLOR_TOKENS } from './tokens';
+        \\export const TabTemplate = ({ backgroundColor = COLOR_TOKENS.bgPrimary }) => backgroundColor;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const tokens = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(tokens);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "backgroundColor=COLOR_TOKENS.bgPrimary") == null);
+
+    const lazy_tokens_value = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "backgroundColor=({s}__zntc_modules[\"{s}\"].fn()}}), COLOR_TOKENS).bgPrimary",
+        .{ rt.GUARD_LAMBDA_OPEN, tokens },
+    );
+    defer std.testing.allocator.free(lazy_tokens_value);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_tokens_value) != null);
 }
