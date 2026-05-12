@@ -50,6 +50,10 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
                 const dep_idx = try self.addDisabledModule(dep.path);
                 try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
             },
+            .optional_missing => {
+                const dep_idx = try self.addOptionalMissingModule(dep.path);
+                try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
+            },
             .external => {
                 const ext_idx = try self.addExternalModule(dep.path);
                 if (dep.record_index) |rec_idx| {
@@ -205,11 +209,11 @@ pub fn applyResolveResult(
         // runtime 에 catch 되는 의도된 케이스를 build hard-fail 시키지 않는다.
         if (record.is_optional) {
             self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Optional dependency not resolved (will throw at runtime if reached)", record.specifier);
-            const dep_idx = try self.addDisabledModule(record.specifier);
+            const dep_idx = try self.addOptionalMissingModule(record.specifier);
             try appendResolvedDep(self, mod_idx, .{
                 .record_index = @intCast(rec_i),
                 .kind = record.kind,
-                .target = .disabled,
+                .target = .optional_missing,
                 .path = record.specifier,
             });
             try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);

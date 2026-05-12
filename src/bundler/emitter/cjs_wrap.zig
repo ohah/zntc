@@ -6,7 +6,8 @@
 
 const std = @import("std");
 const rt = @import("../runtime_helpers.zig");
-const Module = @import("../module.zig").Module;
+const module_mod = @import("../module.zig");
+const Module = module_mod.Module;
 const EmitOptions = @import("../emitter.zig").EmitOptions;
 
 /// Disabled 모듈: platform=browser에서 Node 빌트인 모듈을 빈 __commonJS wrapper로 출력.
@@ -16,6 +17,24 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
     defer allocator.free(var_name);
 
     var buf: std.ArrayList(u8) = .empty;
+    if (module.disabled_throw_on_require) {
+        const specifier = optionalMissingSpecifier(module);
+        if (minify) {
+            try buf.appendSlice(allocator, "var ");
+            try buf.appendSlice(allocator, var_name);
+            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"(optional-missing)\"(exports,module){");
+            try appendOptionalMissingThrow(allocator, &buf, specifier, true);
+            try buf.appendSlice(allocator, "}});");
+        } else {
+            try buf.appendSlice(allocator, "var ");
+            try buf.appendSlice(allocator, var_name);
+            try buf.appendSlice(allocator, " = __commonJS({\n\t\"(optional-missing)\"(exports, module) {\n\t\t");
+            try appendOptionalMissingThrow(allocator, &buf, specifier, false);
+            try buf.appendSlice(allocator, "\t}\n});\n");
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
@@ -27,6 +46,55 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
         try buf.appendSlice(allocator, " = __commonJS({\n\t\"(disabled)\"(exports, module) {\n\t}\n});\n");
     }
     return try buf.toOwnedSlice(allocator);
+}
+
+fn optionalMissingSpecifier(module: *const Module) []const u8 {
+    if (std.mem.startsWith(u8, module.path, module_mod.OPTIONAL_MISSING_MODULE_PREFIX)) {
+        return module.path[module_mod.OPTIONAL_MISSING_MODULE_PREFIX.len..];
+    }
+    return module.path;
+}
+
+fn appendOptionalMissingThrow(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayList(u8),
+    specifier: []const u8,
+    minify: bool,
+) !void {
+    if (minify) {
+        try buf.appendSlice(allocator, "var e=new Error(\"Cannot find module \\\"\"+");
+        try appendJsStringLiteral(allocator, buf, specifier);
+        try buf.appendSlice(allocator, "+\"\\\"\");e.code=\"MODULE_NOT_FOUND\";throw e;");
+        return;
+    }
+
+    try buf.appendSlice(allocator, "var e = new Error(\"Cannot find module \\\"\" + ");
+    try appendJsStringLiteral(allocator, buf, specifier);
+    try buf.appendSlice(allocator, " + \"\\\"\");\n\t\te.code = \"MODULE_NOT_FOUND\";\n\t\tthrow e;\n");
+}
+
+fn appendJsStringLiteral(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
+    const hex = "0123456789abcdef";
+    try buf.append(allocator, '"');
+    for (value) |c| {
+        switch (c) {
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    try buf.appendSlice(allocator, "\\u00");
+                    try buf.append(allocator, hex[c >> 4]);
+                    try buf.append(allocator, hex[c & 0x0f]);
+                } else {
+                    try buf.append(allocator, c);
+                }
+            },
+        }
+    }
+    try buf.append(allocator, '"');
 }
 
 /// Asset 모듈(file/copy 로더)을 CJS wrap 패턴으로 출력. source엔 값 표현식이 저장됨.

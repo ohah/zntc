@@ -28,6 +28,9 @@ const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
 const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 
+pub const DISABLED_MODULE_PREFIX = "(disabled):";
+pub const OPTIONAL_MISSING_MODULE_PREFIX = "(optional-missing):";
+
 /// 증분 빌드용 path 기반 resolve cache.
 ///
 /// `ImportRecord.resolved` 는 빌드마다 새로 배정되는 ModuleIndex라 다음 rebuild에서
@@ -44,6 +47,7 @@ pub const CachedResolvedDep = struct {
     pub const Target = enum {
         file,
         disabled,
+        optional_missing,
         external,
         worker,
         virtual,
@@ -254,6 +258,9 @@ pub const Module = struct {
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,
+    /// try/catch 안의 optional unresolved dependency. Graph 상으론 disabled 모듈처럼 AST가
+    /// 없지만, require 되는 순간 Node/Metro처럼 MODULE_NOT_FOUND 를 던져 catch 로 넘어가야 한다.
+    disabled_throw_on_require: bool = false,
     /// `external` 패턴 매칭으로 번들에 포함되지 않는 모듈. graph 에는 phantom 으로 등록되어
     /// `meta.getModuleInfo` / `info.importedIds` 등 graph traversal API 의 1급 노드로 보이지만
     /// chunk 배정 / emit / tree-shake 에선 제외. AST 없음, source 없음, path = original specifier.

@@ -287,6 +287,7 @@ pub const ModuleGraph = struct {
     pub const markRecordLazyResolved = graph_module_registry.markRecordLazyResolved;
     pub const addModule = graph_module_registry.addModule;
     pub const addDisabledModule = graph_module_registry.addDisabledModule;
+    pub const addOptionalMissingModule = graph_module_registry.addOptionalMissingModule;
     pub const addExternalModule = graph_module_registry.addExternalModule;
     pub const linkDependency = graph_module_registry.linkDependency;
     pub const linkDynamicImport = graph_module_registry.linkDynamicImport;
