@@ -1022,7 +1022,7 @@ test "#1275: private method + field 혼합 (RN PerformanceObserver 케이스)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_nativeHandle.set(this,null)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_createObserver)") != null);
     // this.#callback = callback 은 assignment_expression → expression value 반환 helper 경유 (#1488).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateFieldSet(_callback,this,callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__zntcClassPrivateFieldSet(_callback,this,callback)") != null);
 }
 
 test "#1275: private method만 있고 원본 constructor 없을 때 새 constructor 1개 생성" {

@@ -54,6 +54,7 @@ pub const NAMES = struct {
     pub const PRIVATE_METHOD_INIT_MIN = "$pI"; // __classPrivateMethodInit
     pub const PRIVATE_METHOD_GET_MIN = "$pG"; // __classPrivateMethodGet
     pub const PRIVATE_FIELD_SET_MIN = "$pF"; // __classPrivateFieldSet
+    pub const PRIVATE_FIELD_SET_LOCAL = "__zntcClassPrivateFieldSet";
     pub const STATIC_PRIVATE_ACCESS_MIN = "$sA"; // __classCheckPrivateStaticAccess
     pub const STATIC_PRIVATE_DESC_MIN = "$sD"; // __classCheckPrivateStaticFieldDescriptor
     pub const STATIC_PRIVATE_GET_MIN = "$sG"; // __classStaticPrivateFieldSpecGet
@@ -146,11 +147,16 @@ pub const ALL_SHORT_NAMES: [PAIRS.len][]const u8 = blk: {
     break :blk names;
 };
 
-/// transformer 가 AST identifier 로 emit 하는 runtime helper 이름을 minify 플래그에
+/// transformer 가 AST identifier 로 emit 하는 runtime helper local 이름을 minify 플래그에
 /// 따라 축약/원본으로 선택한다. non-helper identifier (Math, writable 등) 에는
 /// 호출하지 않는다 — `PAIRS` 에 등록된 이름만 처리. 매핑에 없으면 원본 반환
 /// (mangler_test 가 drift 를 빌드 타임에 잡음).
 pub fn helperName(base_name: []const u8, minify: bool) []const u8 {
-    if (!minify) return base_name;
+    if (!minify) {
+        // tslib UMD가 RN global에 같은 helper 이름을 export한다. ZNTC private-field
+        // helper는 시그니처가 달라 실제 local/call 이름만 내부 전용 이름으로 둔다.
+        if (std.mem.eql(u8, base_name, "__classPrivateFieldSet")) return NAMES.PRIVATE_FIELD_SET_LOCAL;
+        return base_name;
+    }
     return helper_map.get(base_name) orelse base_name;
 }
