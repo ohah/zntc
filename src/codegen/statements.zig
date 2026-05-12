@@ -157,11 +157,19 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     if (indices.len > 0) {
         self.indent_level += 1;
-        for (indices) |raw_idx| {
-            const idx: NodeIndex = @enumFromInt(raw_idx);
+        var i: usize = 0;
+        while (i < indices.len) : (i += 1) {
+            const idx: NodeIndex = @enumFromInt(indices[i]);
             if (isElidedStmt(self, idx)) continue;
             try writeNewline(self);
             try writeIndent(self);
+            // #3110: `if(c)return A;` 바로 다음 형제가 `return B;` 면 `return c?A:B;` 로 합침.
+            if (self.options.minify_syntax) {
+                if (try tryEmitReturnFallthrough(self, indices, i)) |consumed_j| {
+                    i = consumed_j; // loop 의 `: (i += 1)` 가 소비된 `return B;` 슬롯을 지나감
+                    continue;
+                }
+            }
             try self.emitNode(idx);
         }
         self.indent_level -= 1;
@@ -335,6 +343,40 @@ fn tryEmitIfReturnTernary(self: anytype, t: anytype) !bool {
     try emitIfReturnChainTail(self, t, true);
     try self.writeByte(';');
     return true;
+}
+
+/// statement list 의 `indices[i]` 가 `if(c)return A;` (else 없음/elided) 이고 바로 다음
+/// 출력 statement 가 `return B;` 면 `return c?A:B;` 를 emit 하고 소비한 `return B;` 의
+/// list 인덱스를 반환. 아니면 null. minify_syntax 전용 (emitBracedList 에서만 호출).
+/// `c` 가 paren 없이 `?:` test 자리에 올 수 있고, A/B 가 sequence(comma) / void 가 아닐 때만.
+fn tryEmitReturnFallthrough(self: anytype, indices: []const u32, i: usize) !?usize {
+    const if_node = self.ast.getNode(@enumFromInt(indices[i]));
+    if (if_node.tag != .if_statement) return null;
+    const t = if_node.data.ternary;
+    if (!t.c.isNone() and !isElidedAlternate(self, t.c)) return null; // else 가 있으면 #3095 가 처리
+    if (evalBooleanCondition(self, t.a) != null) return null; // 상수 조건은 DCE 가 처리 (더 작음)
+    if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return null;
+    const a_arg = singleReturnArg(self, t.b) orelse return null;
+    if (self.ast.getNode(a_arg).tag == .sequence_expression) return null;
+    var j = i + 1;
+    while (j < indices.len and isElidedStmt(self, @enumFromInt(indices[j]))) : (j += 1) {}
+    if (j >= indices.len) return null;
+    const next = self.ast.getNode(@enumFromInt(indices[j]));
+    if (next.tag != .return_statement or next.data.unary.operand.isNone()) return null;
+    const b_arg = next.data.unary.operand;
+    if (self.ast.getNode(b_arg).tag == .sequence_expression) return null;
+    try self.write("return ");
+    try emitNoLineTerminatorOperand(self, t.a); // `return` 직후 cond — leading comment ASI 회피
+    try writeSpace(self);
+    try self.writeByte('?');
+    try writeSpace(self);
+    try self.emitNode(a_arg);
+    try writeSpace(self);
+    try self.writeByte(':');
+    try writeSpace(self);
+    try self.emitNode(b_arg);
+    try self.writeByte(';');
+    return j;
 }
 
 /// `idx` 가 `<expr>;` (expression statement) 이거나 그것 하나만 담은 block 이면 그 expr 의 idx,

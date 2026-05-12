@@ -785,3 +785,68 @@ test "Codegen #3111: non-minify 는 do {} 유지 (anti-regression)" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "{") != null);
 }
+
+// ============================================================
+// #3110: list-level — `if(c)return A;` 바로 다음 형제가 `return B;` 면 `return c?A:B;`.
+//   (early-return inversion 등 나머지 list-level 평탄화는 후속.)
+// ============================================================
+
+test "Codegen #3110: if-return + 다음 return → return c?A:B" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) return a; return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return c?a:b}", r.output);
+}
+
+test "Codegen #3110: block then-branch도 → return c?A:B" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { return a; } return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return c?a:b}", r.output);
+}
+
+test "Codegen #3110: member cond" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (x.y) return 1; return 2; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return x.y?1:2}", r.output);
+}
+
+test "Codegen #3110: assignment cond 는 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c = d) return a; return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c=d)return a;return b}", r.output);
+}
+
+test "Codegen #3110: then-branch 2개 statement 면 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { return a; x(); } return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c){return a;x()}return b}", r.output);
+}
+
+test "Codegen #3110: if 에 else 가 있으면 list-level 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) return a; else d(); return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return a;else d();return b}", r.output);
+}
+
+test "Codegen #3110: return; (인자 없음) 은 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) return; return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return;return b}", r.output);
+}
+
+test "Codegen #3110: 다음 형제가 return 아니면 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) return a; f(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return a;f()}", r.output);
+}
+
+test "Codegen #3110: return 뒤 dead code 는 그대로 (별도 DCE)" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) return a; return b; x(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return c?a:b;x()}", r.output);
+}
+
+test "Codegen #3110: minify_syntax off → 변환 안 함 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "function h(){ if (c) return a; return b; }", .{ .minify_whitespace = true });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return a;return b;}", r.output);
+}
