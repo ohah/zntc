@@ -282,80 +282,14 @@ The matrix is shared with CSS post-processing (Lightning CSS).
 
 ## Runtime Polyfills (core-js)
 
-`--target` lowers syntax. `--runtime-polyfills` fills runtime API gaps with `core-js`. When APIs such as `String.prototype.replaceAll`, `Array.prototype.at`, `Object.hasOwn`, `Promise`, `Map`, `Set`, or `structuredClone` are detected in the bundle graph, ZNTC injects the required `core-js/modules/*.js` prelude before the user entry runs.
+`--target` lowers syntax; `--runtime-polyfills` fills runtime API gaps (`Promise`, `Map`, `String.prototype.replaceAll`, `Array.prototype.at`, `structuredClone`, …) with `core-js`. The `core-js/modules/*.js` the target doesn't support are detected in the bundle graph and injected as a prelude that runs before the user entry.
 
 ```bash
 bun add core-js core-js-compat
-
-zntc --bundle entry.ts -o bundle.js \
-  --target=es5 \
-  --runtime-polyfills=auto \
-  --runtime-target="ios_saf 12" \
-  --core-js=3.49
+zntc --bundle entry.ts -o bundle.js --target=es5 --runtime-polyfills=auto --runtime-target="ios_saf 12"
 ```
 
-Modes:
-
-| Mode | Behavior |
-|---|---|
-| `off` | Default. Does not load `core-js-compat` or run the graph collector |
-| `auto` | Injects only graph-used `core-js` modules that the target does not support |
-| `usage` | Alias for the same graph usage mode as `auto` |
-| `entry` | Injects every target-required `core-js` ES/Web module into the entry prelude regardless of usage |
-
-`auto`/`usage` does not use a Babel pre-scan in the JS wrapper. It runs from the native graph after resolve, package exports, aliases, plugin load, and plugin transform. Dependency code is included in detection, and when code splitting is enabled the runtime prelude remains a graph root that executes before user entries.
-
-Config/API usage can pass an object for `include`/`exclude` control.
-
-```ts
-import { build } from "@zntc/core";
-
-await build({
-  entryPoints: ["src/index.ts"],
-  bundle: true,
-  outfile: "dist/index.js",
-  target: "es5",
-  runtimePolyfills: {
-    mode: "auto",
-    targets: ["safari 12", "ios_saf 12"],
-    coreJs: "3.49",
-    include: ["es.array.at"],
-    exclude: ["web.url"],
-  },
-});
-```
-
-`include` forces modules into the runtime prelude. `exclude` removes modules after target and usage calculation. Values can be written as `es.string.replace-all` or `core-js/modules/es.string.replace-all.js`.
-
-Runtime targets are Browserslist queries using the same shape as Rspack/SWC `env.targets`. Use explicit queries such as `ios_saf 12`, `safari 12`, or `node 18`; compact shorthand such as `ios12` or `node18`, and physical device names such as `"iPhone 8"`, are not supported. Use `--platform=react-native` for the default Hermes target.
-
-Detection is static AST based. Local bindings/imports that shadow globals are ignored, and dynamic computed access such as `obj["replaceAll"]()` is not inferred. Cover those cases with `include` or `entry` mode.
-
-Execution order preserves existing manual polyfills and entry hooks.
-
-```text
-manual polyfills / inject roots -> runtime core-js prelude -> runBeforeMain -> user entry
-```
-
-`runBeforeMain` is an array of module paths to run immediately before the entry module. They are pulled into the bundle graph and emitted as a prelude that runs after manual polyfills / runtime polyfills and just before the user entry. Use it for environment setup that must run before the entry — for example the React Native polyfill flow (`InitializeCore` and friends). For plain polyfill injection that runs at the very start of the bundle, use `polyfills` instead.
-
-```ts
-defineConfig({
-  runBeforeMain: ["./src/setup-env.ts"],
-});
-```
-
-For observability, enable the runtime polyfill debug category with graph profiling.
-
-```bash
-ZNTC_DEBUG=runtime_polyfills zntc --bundle entry.ts \
-  --runtime-polyfills=auto \
-  --runtime-target="safari 12" \
-  --profile=graph \
-  --profile-level=detailed \
-  --profile-format=json
-```
-
+Modes (`auto`/`usage`/`entry`/`off`), the `runtimePolyfills` config object, the `@babel/preset-env useBuiltIns` mapping, execution order — see → **[Runtime Polyfills (core-js)](/zntc/en/guides/runtime-polyfills/)**.
 ## Output Format
 
 ```bash

@@ -32,6 +32,8 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 
 #### Runtime Polyfills / core-js
 
+> Full guide (modes · execution order · `@babel/preset-env useBuiltIns` mapping): [Runtime Polyfills (core-js)](/zntc/en/guides/runtime-polyfills/). Below is the config-object reference.
+
 `target` handles syntax downleveling. `runtimePolyfills` handles runtime APIs such as `Promise`, `Map`, `Object.values`, `String.prototype.replaceAll`, `Array.prototype.at`, and `structuredClone` by adding a `core-js` prelude.
 
 ```ts
