@@ -11,6 +11,7 @@ const ModuleGraph = @import("../graph.zig").ModuleGraph;
 const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
+const ast_walk = @import("../../parser/ast_walk.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 const Codegen = @import("../../codegen/codegen.zig").Codegen;
@@ -244,6 +245,16 @@ pub fn emitEsmWrappedModule(
                         const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(name_node.data.string_ref));
                         const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(name_raw), raw_name));
                         try hoisted_var_names.append(allocator, resolved);
+                    } else {
+                        var it = try ast_walk.bindingIdentifiers(allocator, esm_ast, name_raw, .{});
+                        defer it.deinit();
+                        while (try it.next()) |bind_idx| {
+                            const bind_node = esm_ast.nodes.items[@intFromEnum(bind_idx)];
+                            if (bind_node.tag != .binding_identifier) continue;
+                            const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(bind_node.data.string_ref));
+                            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(bind_idx), raw_name));
+                            try hoisted_var_names.append(allocator, resolved);
+                        }
                     }
                 }
                 // body에 넣어서 할당문으로 변환

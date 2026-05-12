@@ -78,45 +78,34 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
     const list_start = extras[1];
     const list_len = extras[2];
 
-    // __esm 호이스팅: top-level 단순 변수 선언만 키워드 제거 (할당문으로 변환).
+    // __esm 호이스팅: top-level 변수 선언은 래퍼 밖 `var`에 대응하는 할당문으로 변환.
     // indent_level == 0: factory body의 top-level에서만 적용.
     // 함수 안의 const/let/var는 그대로 유지해야 함.
-    // destructuring 패턴이 있으면 normal 경로 (키워드 필요).
     if (self.options.esm_var_assign_only and self.indent_level == 0 and !self.in_for_init) {
         const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
-        // destructuring 여부 확인: 하나라도 binding_identifier가 아니면 normal 경로
-        var has_destructuring = false;
+        var has_output = false;
         for (declarators) |raw_decl_idx| {
             const decl_node = self.ast.nodes.items[raw_decl_idx];
             const dextras2 = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
             const n_idx: NodeIndex = @enumFromInt(dextras2[0]);
-            if (!n_idx.isNone() and self.ast.nodes.items[@intFromEnum(n_idx)].tag != .binding_identifier) {
-                has_destructuring = true;
-                break;
-            }
+            const init_idx: NodeIndex = @enumFromInt(dextras2[2]);
+            if (init_idx.isNone()) continue;
+
+            if (n_idx.isNone()) continue;
+            if (has_output) try writeNewline(self);
+            const name_node = self.ast.nodes.items[@intFromEnum(n_idx)];
+            const needs_paren = name_node.tag == .object_pattern;
+            if (needs_paren) try self.writeByte('(');
+            try self.emitNode(n_idx);
+            try writeSpace(self);
+            try self.writeByte('=');
+            try writeSpace(self);
+            try self.emitNode(init_idx);
+            if (needs_paren) try self.writeByte(')');
+            try self.writeByte(';');
+            has_output = true;
         }
-        if (!has_destructuring) {
-            var has_output = false;
-            for (declarators) |raw_decl_idx| {
-                const decl_node = self.ast.nodes.items[raw_decl_idx];
-                const de = decl_node.data.extra;
-                const dextras = self.ast.extra_data.items[de .. de + 3];
-                const name_idx: NodeIndex = @enumFromInt(dextras[0]);
-                const init_idx: NodeIndex = @enumFromInt(dextras[2]);
-                if (!init_idx.isNone()) {
-                    if (has_output) try writeNewline(self);
-                    try self.emitNode(name_idx);
-                    try writeSpace(self);
-                    try self.writeByte('=');
-                    try writeSpace(self);
-                    try self.emitNode(init_idx);
-                    try self.writeByte(';');
-                    has_output = true;
-                }
-            }
-            return;
-        }
-        // destructuring → fall through to normal path (var 키워드 유지)
+        return;
     }
 
     // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시

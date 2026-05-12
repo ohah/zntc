@@ -692,12 +692,15 @@ test "Mixed: destructuring in import and export" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var {x:x,y:y}=point;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var point, x, y;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "({ x:x, y:y } = point);") != null);
 }
 
 test "Mixed: array destructuring export emits each bound name" {
