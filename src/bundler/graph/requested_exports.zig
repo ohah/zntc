@@ -54,14 +54,7 @@ pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
         m.import_records.len > 0 and
         m.export_bindings.len > 0)) return false;
     if (m.transform_cache) |tc| if (tc.runtime_helpers.hasAny()) return false;
-    return !moduleHasLocalExport(m);
-}
-
-fn moduleHasLocalExport(m: *const Module) bool {
-    for (m.export_bindings) |eb| {
-        if (eb.kind == .local) return true;
-    }
-    return false;
+    return !m.has_local_export;
 }
 
 /// Wrapper-barrel pattern: `import x from './w'; export default x;` 같이 imported
@@ -76,13 +69,18 @@ pub fn isWrapperBarrel(self: anytype, m: *const Module) bool {
     return m.is_wrapper_barrel;
 }
 
-/// `Module.is_wrapper_barrel` 캐시 채우는 1 회용 컴퓨터. graph build 의 `applySideEffects`
-/// 직후, parse 가 끝나 export_bindings 가 final 인 시점에 호출.
-pub fn computeIsWrapperBarrel(m: *const Module) bool {
+/// `Module.is_wrapper_barrel` / `has_local_export` 캐시를 한 번의 export_bindings 순회로
+/// 채운다. graph build 의 `applySideEffects` 직후, parse 가 끝나 export_bindings 가 final
+/// 인 시점에 호출.
+pub fn computeBarrelFlags(m: *Module) void {
+    var is_wrapper = false;
+    var has_local = false;
     for (m.export_bindings) |eb| {
-        if (eb.isDefaultDirectReExport()) return true;
+        if (eb.isDefaultDirectReExport()) is_wrapper = true;
+        if (eb.kind == .local) has_local = true;
     }
-    return false;
+    m.is_wrapper_barrel = is_wrapper;
+    m.has_local_export = has_local;
 }
 
 pub fn nameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {

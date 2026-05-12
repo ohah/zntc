@@ -94,7 +94,7 @@ pub const ParseAccessor = struct {
     pub inline fn setExportBindings(self: ParseAccessor, idx: ModuleIndex, bindings: []ExportBinding) void {
         if (self.graph.moduleAtMut(idx)) |m| {
             m.export_bindings = bindings;
-            m.is_wrapper_barrel = @import("graph/requested_exports.zig").computeIsWrapperBarrel(m);
+            @import("graph/requested_exports.zig").computeBarrelFlags(m);
         }
     }
 

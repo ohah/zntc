@@ -243,10 +243,14 @@ pub const Module = struct {
     /// Rolldown `DeterminedSideEffects::UserDefined` 포팅.
     side_effects_user_defined: bool = false,
     /// `import x; export default x;` body mutation pattern (lodash-es lodash.default.js).
-    /// `requested_exports.computeIsWrapperBarrel` 가 export_bindings 순회로 한 번 결정해
+    /// `requested_exports.computeBarrelFlags` 가 export_bindings 순회로 한 번 결정해
     /// 캐시. graph link 결정 (`shouldLinkResolvedRecordForModule`) + tree_shaker 시드 게이트
     /// + tree_shaker default→default re-export propagation 세 hot-path 호출처가 공유.
     is_wrapper_barrel: bool = false,
+    /// `.local` export binding (`export class`/`export const x = …`/`export function`) 보유 —
+    /// 순수 re-export barrel 이 아니므로 `isLazyBarrelCandidate` 에서 제외 (body 가 import 참조).
+    /// `is_wrapper_barrel` 과 같은 패스에서 채워지는 hot-path 캐시.
+    has_local_export: bool = false,
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,
