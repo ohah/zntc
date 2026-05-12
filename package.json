@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "test": "bun run test:integration",
-    "test:integration": "bun test --cwd tests/integration",
+    "test:integration": "bun run --cwd tests/integration test",
     "test:runtime-polyfills:coverage": "bun run scripts/check-runtime-polyfill-coverage.mjs",
     "test:publish-smoke": "bun scripts/publish-smoke-test.ts",
     "test:publish-install": "bun scripts/publish-install-test.ts",
