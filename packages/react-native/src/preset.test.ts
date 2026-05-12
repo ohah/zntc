@@ -60,9 +60,9 @@ describe('buildRnBundleOptions — 기본 RN preset 필드', () => {
     expect(opts.globalIdentifiers).toEqual([...RN_GLOBAL_IDENTIFIERS]);
   });
 
-  test('mainFields — react-native / browser / module / main', () => {
+  test('mainFields — Metro RN default 와 동일하게 react-native / browser / main', () => {
     const opts = buildRnBundleOptions(baseInput());
-    expect(opts.mainFields).toEqual(['react-native', 'browser', 'module', 'main']);
+    expect(opts.mainFields).toEqual(['react-native', 'browser', 'main']);
   });
 });
 

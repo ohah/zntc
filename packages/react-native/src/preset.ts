@@ -3,7 +3,7 @@
 //
 // 자동 활성 필드 (RN platform 시): target=es5, flow=true, jsxInJs=true,
 // configurableExports=true, strictExecutionOrder=true, workletTransform=true,
-// resolveExtensions (ios/android prefix), mainFields (RN/browser/module/main),
+// resolveExtensions (ios/android prefix), mainFields (RN/browser/main),
 // banner (RN prelude), define (__DEV__/process.env), polyfills/runBeforeMain/
 // globalIdentifiers (resolveRnPolyfills + InitializeCore + RN_GLOBAL_IDENTIFIERS),
 // loader (asset 확장자), plugins (asset/codegen/babel/require-context/[metro-resolve-request]).
@@ -405,7 +405,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     workletTransform: true,
     codegenTransform: true,
     resolveExtensions: buildResolveExtensions(rnPlatform),
-    mainFields: ['react-native', 'browser', 'module', 'main'],
+    mainFields: ['react-native', 'browser', 'main'],
     loader: baseLoader,
     alias: {},
     define,
