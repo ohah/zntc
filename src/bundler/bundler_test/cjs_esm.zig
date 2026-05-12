@@ -727,6 +727,36 @@ test "CJS: React Native mixed import plus module.exports uses Metro CJS wrapper"
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var init_AlertAdapter = __esm") == null);
 }
 
+test "CJS: React Native missing named import is shimmed to undefined" {
+    // Metro/Babel은 `require("./lib").missing` property access로 남겨 undefined를 반환한다.
+    // RN 플랫폼에서 zntc가 strict ESM missing export처럼 free identifier를 만들면 런타임 ReferenceError가 난다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import { missing } from './lib';
+        \\class SDK {
+        \\  static missing = missing;
+        \\}
+        \\console.log(SDK.missing);
+    );
+    try writeFile(tmp.dir, "lib.js", "export const existing = 42;");
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "void 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "static missing = missing") == null);
+}
+
 test "CJS: ESM import inside __commonJS wrapper rewritten to require_xxx()" {
     // ESM 모듈이 require()로 소비되어 __commonJS 래핑될 때,
     // 내부 import 문이 require("specifier")로 변환되는데,
