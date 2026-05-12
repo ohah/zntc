@@ -1360,10 +1360,13 @@ pub fn emitModule(
     // dev 에서 아무 minify 안 하는 것과 동일한 trade-off.
     if (!options.dev_mode) {
         const minify_mod = @import("../transformer/minify.zig");
-        const ctx: minify_mod.MinifyCtx = if (module.semantic != null)
+        var ctx: minify_mod.MinifyCtx = if (module.semantic != null)
             minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, options.minify_syntax)
         else
             .empty;
+        // codegen/mangler 도 `transformer.symbol_ids` 를 읽으므로(override_syms → md.symbol_ids)
+        // alias inline 의 symbol_id 갱신이 전파됨. 동일 backing 의 mutable view.
+        ctx.symbol_ids_mut = transformer.symbol_ids.items;
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
 

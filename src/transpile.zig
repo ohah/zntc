@@ -1037,6 +1037,9 @@ fn transpileWithCallbackInternal(
         const ctx: minify_mod.MinifyCtx = .{
             .symbols = analyzer.symbols.items,
             .symbol_ids = transformer.symbol_ids.items,
+            // 동일 backing 의 mutable view — codegen/mangler 도 `transformer.symbol_ids` 를
+            // 읽으므로(mangle_metadata.symbol_ids) alias inline 의 symbol_id 갱신이 전파됨.
+            .symbol_ids_mut = transformer.symbol_ids.items,
             .scopes = analyzer.scopes.items,
             .unresolved_globals = null,
             .references = analyzer.references.items,
