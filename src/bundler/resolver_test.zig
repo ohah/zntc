@@ -168,6 +168,22 @@ test "resolve: directory index (./dir → ./dir/index.ts)" {
     try std.testing.expect(pathEndsWith(result.path, "components/index.ts"));
 }
 
+test "resolve: current directory dot specifier resolves index" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(tmp.dir, "feature/index.js");
+    try createFile(tmp.dir, "feature/component.js");
+
+    const feature_path = try tmp.dir.realpathAlloc(std.testing.allocator, "feature");
+    defer std.testing.allocator.free(feature_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = try resolver.resolve(feature_path, ".");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "feature/index.js"));
+}
+
 test "resolve: directory index (.tsx)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
