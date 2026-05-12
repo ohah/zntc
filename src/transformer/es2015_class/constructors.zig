@@ -69,7 +69,7 @@ pub fn Constructors(comptime Transformer: type) type {
             }
             defer self.new_target_ctx = saved_new_target_ctx;
 
-            var new_body = try visitMethodBody(self, body_idx, span);
+            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived);
 
             const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
             const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
@@ -170,6 +170,20 @@ pub fn Constructors(comptime Transformer: type) type {
 
         /// visitMethodBody + new.target 컨텍스트 지정
         pub fn visitMethodBodyWithCtx(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx) Transformer.Error!NodeIndex {
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false);
+        }
+
+        /// visitMethodBodyWithCtx의 내부 구현.
+        /// derived constructor는 postProcessDerivedConstructorBody가 `var _this;` 선언과
+        /// super() 결과 대입을 맡는다. 여기서 arrow 캡처용 `var _this = this;`를 넣으면
+        /// super() 전 this 접근이 되어 Babel helper가 "Super constructor may only be called once"를 던진다.
+        fn visitMethodBodyWithCtxImpl(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            span: Span,
+            nt_ctx: ?Transformer.NewTargetCtx,
+            derived_constructor_this_alias: bool,
+        ) Transformer.Error!NodeIndex {
             // arrow this state save/restore (일반 함수는 자체 this 바인딩)
             const saved_arrow_depth = self.arrow_this_depth;
             const saved_needs_this = self.needs_this_var;
@@ -192,7 +206,7 @@ pub fn Constructors(comptime Transformer: type) type {
                 var capture_stmts: [2]NodeIndex = undefined;
                 var capture_count: usize = 0;
 
-                if (self.needs_this_var) {
+                if (self.needs_this_var and !derived_constructor_this_alias) {
                     const this_init = try self.ast.addNode(.{
                         .tag = .this_expression,
                         .span = span,
