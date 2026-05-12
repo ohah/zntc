@@ -199,30 +199,49 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // Phase 2: 연산을 switch case로 변환
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
-
-            // var 선언을 __generator 콜백 밖으로 분리하여 함수 스코프에 배치.
-            // 콜백 안에 두면 매 호출마다 var가 재선언되어 상태가 리셋됨.
-            var var_decl_node: NodeIndex = .none;
-            const has_temp_vars = self.generator_temp_var_spans.items.len > 0;
-            if (hoisted_vars.items.len > 0 or has_temp_vars) {
-                const scratch_top2 = self.scratch.items.len;
-                defer self.scratch.shrinkRetainingCapacity(scratch_top2);
-
-                for (hoisted_vars.items) |binding| {
-                    const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
-                    try self.scratch.append(self.allocator, declarator);
-                }
-                // for-of 변환에서 생성한 임시 변수도 호이스팅
-                for (self.generator_temp_var_spans.items) |temp_span| {
-                    const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
-                    const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
-                    try self.scratch.append(self.allocator, declarator);
-                }
-                self.generator_temp_var_spans.clearRetainingCapacity();
-                var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top2..], .@"var", span);
-            }
-
+            const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span);
             return .{ .body = switch_node, .var_decl = var_decl_node };
+        }
+
+        /// generator body 의 hoisted `var` 선언과 for-of/await 변환에서 생성한 임시 변수를
+        /// 하나의 `var` 선언으로 합쳐 반환. __generator 콜백 밖(함수 스코프)에 배치해야 한다 —
+        /// 콜백 안에 두면 매 호출마다 재선언되어 상태가 리셋된다. 합칠 변수가 없으면 `.none`.
+        fn buildHoistedVarDecl(self: *Transformer, hoisted_vars: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (hoisted_vars.len == 0 and self.generator_temp_var_spans.items.len == 0) return .none;
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            for (hoisted_vars) |binding| {
+                const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
+                try self.scratch.append(self.allocator, declarator);
+            }
+            for (self.generator_temp_var_spans.items) |temp_span| {
+                const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
+                try self.scratch.append(self.allocator, declarator);
+            }
+            self.generator_temp_var_spans.clearRetainingCapacity();
+            return es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
+        }
+
+        /// `return`/`throw` 의 피연산자 식을 yield 추출과 함께 처리한 뒤, 그 자리에 들어갈
+        /// 최종 식 노드를 반환한다.
+        ///  - `await x` / `yield x` 자체: yield 연산 + nop 을 ops 에 방출하고 `_state.sent()` 반환.
+        ///  - 중첩 yield (`f(await x)` 등): yield 들을 추출한 뒤 남은 식 반환.
+        ///  - yield 없음: 그냥 visitNode 결과 반환.
+        fn lowerYieldingOperand(self: *Transformer, value_idx: NodeIndex, span: Span, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const value_node = self.ast.getNode(value_idx);
+            if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
+                const inner_value = value_node.data.unary.operand;
+                const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
+                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = new_inner } });
+                next_label.* += 1;
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                return buildSentCall(self, span);
+            }
+            if (es2015_scan.containsYield(self, value_idx)) {
+                return visitExprWithYieldExtraction(self, value_idx, ops, next_label);
+            }
+            return self.visitNode(value_idx);
         }
 
         /// AST 문을 순회하며 연산을 수집.
@@ -291,63 +310,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .return_statement => {
                     const value_idx = stmt.data.unary.operand;
-                    if (!value_idx.isNone()) {
-                        const value_node = self.ast.getNode(value_idx);
-                        if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
-                            // return yield/await x → yield x + return _state.sent()
-                            const inner_value = value_node.data.unary.operand;
-                            const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
-                            try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = new_inner } });
-                            next_label.* += 1;
-                            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                            const sent = try buildSentCall(self, stmt.span);
-                            try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = sent } });
-                        } else if (es2015_scan.containsYield(self, value_idx)) {
-                            // return foo(await x) — 중첩 yield를 추출 후 return
-                            const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
-                            try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
-                        } else {
-                            const new_value = try self.visitNode(value_idx);
-                            try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
-                        }
-                    } else {
-                        try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = NodeIndex.none } });
-                    }
+                    const new_value = if (value_idx.isNone())
+                        NodeIndex.none
+                    else
+                        try lowerYieldingOperand(self, value_idx, stmt.span, ops, next_label);
+                    try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
                 },
                 .throw_statement => {
                     const value_idx = stmt.data.unary.operand;
-                    if (!value_idx.isNone()) {
-                        const value_node = self.ast.getNode(value_idx);
-                        if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
-                            // throw await x → yield x; throw _state.sent()
-                            const inner_value = value_node.data.unary.operand;
-                            const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
-                            try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = new_inner } });
-                            next_label.* += 1;
-                            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                            const sent = try buildSentCall(self, stmt.span);
-                            const throw_stmt = try self.ast.addNode(.{
-                                .tag = .throw_statement,
-                                .span = stmt.span,
-                                .data = .{ .unary = .{ .operand = sent, .flags = 0 } },
-                            });
-                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = throw_stmt } });
-                        } else if (es2015_scan.containsYield(self, value_idx)) {
-                            // throw (a(), await b(), err) → extract await before the throw.
-                            const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
-                            const throw_stmt = try self.ast.addNode(.{
-                                .tag = .throw_statement,
-                                .span = stmt.span,
-                                .data = .{ .unary = .{ .operand = new_value, .flags = 0 } },
-                            });
-                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = throw_stmt } });
-                        } else {
-                            const new_stmt = try self.visitNode(stmt_idx);
-                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
-                        }
-                    } else {
+                    if (value_idx.isNone() or !es2015_scan.containsYield(self, value_idx)) {
                         const new_stmt = try self.visitNode(stmt_idx);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                    } else {
+                        const new_value = try lowerYieldingOperand(self, value_idx, stmt.span, ops, next_label);
+                        const throw_stmt = try self.ast.addNode(.{
+                            .tag = .throw_statement,
+                            .span = stmt.span,
+                            .data = .{ .unary = .{ .operand = new_value, .flags = 0 } },
+                        });
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = throw_stmt } });
                     }
                 },
                 .variable_declaration => {
@@ -380,7 +361,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .for_of_statement, .for_in_statement => {
                     if (es2015_scan.containsYield(self, stmt_idx)) {
-                        try collectForOfOperations(self, stmt_idx, stmt, ops, next_label);
+                        try collectForOfOperations(self, stmt, ops, next_label);
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
                         if (!new_stmt.isNone()) {
@@ -577,8 +558,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// for (const x of arr) { yield ... }
         /// → for (var _i = 0, _arr = arr; _i < _arr.length; _i++) { var x = _arr[_i]; yield ... }
         /// for-in은 Object.keys(obj) snapshot을 순회하는 동일한 배열 기반 루프로 낮춘다.
-        fn collectForOfOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
-            _ = stmt_idx;
+        fn collectForOfOperations(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const span = stmt.span;
             const left = stmt.data.ternary.a; // loop variable
             const right = stmt.data.ternary.b; // iterable
@@ -1517,8 +1497,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return es_helpers.makeParenExpr(self, inner, node.span);
             }
 
-            // TS/Flow type wrappers are runtime-transparent. Look through them so
-            // `(await x) as T` does not become raw `(yield x)` after type stripping.
+            // TS/Flow 타입 wrapper 는 런타임상 noop 이므로 통과한다. 그러지 않으면 타입 스트립
+            // 이후 `(await x) as T` 가 추출되지 못한 raw `(yield x)` 로 남는다.
             if (node.tag == .ts_as_expression or
                 node.tag == .ts_satisfies_expression or
                 node.tag == .ts_non_null_expression or
@@ -1746,20 +1726,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
-
-            var var_decl_node: NodeIndex = .none;
-            if (self.generator_temp_var_spans.items.len > 0) {
-                const scratch_top = self.scratch.items.len;
-                defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                for (self.generator_temp_var_spans.items) |temp_span| {
-                    const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
-                    const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
-                    try self.scratch.append(self.allocator, declarator);
-                }
-                self.generator_temp_var_spans.clearRetainingCapacity();
-                var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
-            }
-
+            const var_decl_node = try buildHoistedVarDecl(self, &.{}, span);
             return .{ .body = switch_node, .var_decl = var_decl_node };
         }
 

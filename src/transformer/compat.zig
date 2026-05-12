@@ -198,6 +198,14 @@ pub const UnsupportedFeatures = packed struct(u32) {
         return self.class or self.class_private_field or self.class_private_method;
     }
 
+    /// object literal method shorthand 를 `key: function` 형태로 낮춰야 하는 타겟인지.
+    /// object_extensions 미지원이면 전부 변환 대상이고, Hermes/RN 처럼 shorthand 자체는
+    /// 지원하지만 async/generator method 만 낮춰야 하는 경우도 포함. node 단위 정밀 판정 전에
+    /// 멤버 순회를 건너뛰기 위한 cheap gate.
+    pub fn needsObjectMethodDownlevel(self: UnsupportedFeatures) bool {
+        return self.object_extensions or self.async_await or self.generator;
+    }
+
     /// `for await (... of ...)` 는 ES2018 문법. 전용 feature 비트가 없어서, ES2018 비트
     /// (object_spread / regex_dotall / regex_named_groups) 중 하나라도 unsupported 면
     /// "타겟이 ES2018 미만" 으로 간주. async_await (ES2017) 도 같이 OR — ES2017 미지원 타겟은
