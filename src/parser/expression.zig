@@ -1156,6 +1156,28 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
     return expr;
 }
 
+fn isFlowMatchExpressionStart(self: *Parser) ParseError2!bool {
+    const saved = self.saveState();
+    defer self.restoreState(saved);
+
+    try self.scanner.next(); // skip 'match'
+    if (self.current() != .l_paren) return false;
+
+    var paren_depth: u32 = 1;
+    while (paren_depth > 0) {
+        try self.scanner.next();
+        switch (self.current()) {
+            .eof => return false,
+            .l_paren => paren_depth += 1,
+            .r_paren => paren_depth -= 1,
+            else => {},
+        }
+    }
+
+    try self.scanner.next();
+    return self.current() == .l_curly;
+}
+
 fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
@@ -1168,8 +1190,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
     {
         // Flow match expression: match (expr) { Pattern => expr, ... }
         if (self.is_flow and self.isContextual("match")) {
-            const next_kind = try self.peekNextKind();
-            if (next_kind == .l_paren) {
+            if (try isFlowMatchExpressionStart(self)) {
                 return try flow.parseMatchExpression(self);
             }
         }

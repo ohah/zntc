@@ -3151,6 +3151,18 @@ test "Flow: match expression" {
     );
 }
 
+test "Flow: match call expression is not match syntax" {
+    try expectNoParseErrorFlow("const out = (match(value, callback = /x/));");
+    try expectNoParseErrorFlow(
+        \\function f(value, callback) {
+        \\  switch (match(value, callback = /(::plac\w+|:read-\w+)/)) {
+        \\    case ':read-only':
+        \\      break;
+        \\  }
+        \\}
+    );
+}
+
 test "Flow: import typeof specifier" {
     try expectNoParseErrorFlow("import {typeof VirtualizedList as VirtualizedListT} from './VirtualizedList';");
 }
