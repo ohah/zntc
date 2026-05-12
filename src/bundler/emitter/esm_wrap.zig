@@ -59,6 +59,11 @@ fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
     };
 }
 
+inline fn cjsInteropMode(options: *const EmitOptions, importer: *const Module) types.Interop {
+    if (options.platform == .react_native) return .babel;
+    return if (importer.def_format.isEsm()) .node else .babel;
+}
+
 /// re_export_alias에 linker가 주입한 canonical_name을 반환. null이면
 /// alias 심볼이 아니거나 linker가 resolve하지 못한 경우.
 /// re-export 의 source 모듈을 resolve. resolved + non-self-cycle 인 정상 record 만 반환,
@@ -712,7 +717,7 @@ pub fn emitEsmWrappedModule(
                         } else {
                             const rv = try source_mod.allocRequireName(allocator);
                             defer allocator.free(rv);
-                            const interop_mode: types.Interop = if (module.def_format.isEsm()) .node else .babel;
+                            const interop_mode = cjsInteropMode(options, module);
                             // #1621: minify 시 __toESM → $tE 축약.
                             const to_esm_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
                             try reexport_buf.appendSlice(allocator, to_esm_name);

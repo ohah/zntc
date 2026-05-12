@@ -572,6 +572,37 @@ test "CJS: default import keeps __toESM when defineProperty __esModule marker ex
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib()).default") != null);
 }
 
+test "CJS: React Native type module default import uses Babel interop" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("node_modules/pkg");
+    try writeFile(tmp.dir, "entry.cjs", "require('pkg');\n");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{"type":"module","react-native":"./widget.tsx","main":"./fallback.cjs"}
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/widget.tsx", "import styled from './styled.cjs';\nexport const value = styled('View');\n");
+    try writeFile(tmp.dir, "node_modules/pkg/styled.cjs",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = function styled(component) { return component; };
+        \\exports.styled = exports.default;
+    );
+
+    const entry = try absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_pkg_styled()).default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_pkg_styled(), 1).default") == null);
+}
+
 test "CJS: multiple ESM modules importing same CJS module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
