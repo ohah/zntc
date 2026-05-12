@@ -801,13 +801,12 @@ pub fn emitEsmWrappedModule(
 
     const is_async = module.uses_top_level_await;
 
-    // Option B (entry chain unroll): entry+entry_error_guard 활성 시 factory body 의
-    // chain init 호출 (rbm + preamble + star_init) 을 별 buffer 로 capture 후
-    // EsmEmitResult.entry_chain 으로 export. emitter 가 entry trigger 위치에서
-    // separate top-level statement 로 unroll emit → 각 chain 호출이 별 outer
-    // `__zntc_guarded(...)` (Metro `__r(N)` 와 동등). nested 호출은 inGuard 로
-    // wrap 효과 없이 throw propagate (Metro 100% 동등 mechanism).
-    const unroll_entry_chain = module.is_entry_point and options.entry_error_guard;
+    // entry+entry_error_guard 활성 시 runBeforeMain만 entry trigger 위치로 분리한다.
+    // Metro는 runBeforeMainModule을 entry `__r(entry)`와 별도 top-level `__r(...)`로
+    // 실행하지만, entry dependency chain은 entry factory 안의 nested require로 남긴다.
+    // dependency를 top-level 개별 guard로 풀면 ErrorUtils 설치 후 throw가 swallow되어
+    // entry 평가가 계속 진행된다.
+    const unroll_run_before_main = module.is_entry_point and options.entry_error_guard;
     var entry_chain_buf: std.ArrayList(u8) = .empty;
     errdefer entry_chain_buf.deinit(allocator);
 
@@ -835,15 +834,15 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, " \"+id)};");
             try wrapped.appendSlice(allocator, "__zntc_g.$RefreshSig$=function(){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
-        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_entry_chain, false);
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_run_before_main, false);
         if (func_code.len > 0) {
             func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
             try wrapped.appendSlice(allocator, func_code);
         }
         if (preamble_code) |p| {
-            try writeChainPiece(&entry_chain_buf, &wrapped, allocator, p, unroll_entry_chain, false);
+            try writeChainPiece(&entry_chain_buf, &wrapped, allocator, p, false, false);
         }
-        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, star_init_buf.items, unroll_entry_chain, false);
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, star_init_buf.items, false, false);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
@@ -881,7 +880,7 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, "\t\treturn function(t) { return t; };\n");
             try wrapped.appendSlice(allocator, "\t};\n");
         }
-        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_entry_chain, true);
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_run_before_main, true);
         // func_code를 preamble 앞에 배치: 순환 참조에서 preamble이 의존 모듈을 init할 때
         // 이 모듈의 함수가 이미 할당된 상태여야 한다. (#1092)
         if (func_code.len > 0) {
@@ -890,9 +889,9 @@ pub fn emitEsmWrappedModule(
             try appendIndented(&wrapped, allocator, func_code);
         }
         if (preamble_code) |p| {
-            try writeChainPiece(&entry_chain_buf, &wrapped, allocator, p, unroll_entry_chain, true);
+            try writeChainPiece(&entry_chain_buf, &wrapped, allocator, p, false, true);
         }
-        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, star_init_buf.items, unroll_entry_chain, true);
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, star_init_buf.items, false, true);
         body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {
             try wrapped.append(allocator, '\t');
@@ -995,8 +994,9 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    // entry_chain: unroll 모드에서 caller (emitter.zig) 에 전달. 빈 buffer 면 null.
-    const entry_chain_owned: ?[]const u8 = if (unroll_entry_chain and entry_chain_buf.items.len > 0)
+    // entry_chain: runBeforeMain unroll 모드에서 caller (emitter.zig) 에 전달.
+    // 빈 buffer 면 null.
+    const entry_chain_owned: ?[]const u8 = if (unroll_run_before_main and entry_chain_buf.items.len > 0)
         try allocator.dupe(u8, entry_chain_buf.items)
     else
         null;

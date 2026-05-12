@@ -911,8 +911,10 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // 래핑된 엔트리 자동 호출. Metro `getAppendScripts` 와 동등 — `runBeforeMainModule`
-    // + entry 각 path 마다 separate `__r(N);` (= 독립 outer `__zntc_guarded(...)`) 로 emit.
+    // 래핑된 엔트리 자동 호출. Metro `getAppendScripts` 와 동등하게
+    // runBeforeMainModule은 entry 앞의 별도 `__r(N);`로 실행하고, entry 자체는 한 번만
+    // outer `__zntc_guarded(...)`로 호출한다. entry dependency chain은 entry factory
+    // 내부 nested require로 남아야 throw가 entry 평가를 중단한다.
     if (entry_idx) |ei| {
         for (sorted.items, 0..) |em, ei_idx| {
             if (em.index.toU32() == ei and em.wrap_kind.isWrapped()) {
