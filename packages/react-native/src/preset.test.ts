@@ -113,6 +113,43 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     // Hermes 가 spec global lazy registration trigger.
     expect(opts.banner).not.toContain('globalThis.__ZNTC_RN_BUNDLER__');
     expect(opts.banner).not.toContain('__BUNGAE_');
+    // Metro prelude 는 `global` 을 var 로 재선언하지 않는다. RN/Hermes 의 native global
+    // binding 을 가리지 않도록 zntc prelude 도 fallback assignment 만 둔다.
+    expect(opts.banner).not.toContain('var global=');
+  });
+
+  test('banner — Metro 처럼 native global 을 먼저 선택하고 hasOwnProperty 를 보강', () => {
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    expect(opts.banner).toContain(
+      "__ZNTC_RN_GLOBAL__=(function(g,t,w,s){return g&&(typeof g==='object'||typeof g==='function')?g:",
+    );
+    expect(opts.banner).toContain("Object.defineProperty(__ZNTC_RN_GLOBAL__,'hasOwnProperty'");
+
+    const nativeGlobal = Object.create(null) as Record<string, unknown>;
+    const specGlobal = Object.create(null) as Record<string, unknown>;
+    const selectRnGlobal = new Function(
+      'nativeGlobal',
+      'specGlobal',
+      `var global=nativeGlobal;var globalThis=specGlobal;${opts.banner};return __ZNTC_RN_GLOBAL__;`,
+    ) as (
+      nativeGlobal: Record<string, unknown>,
+      specGlobal: Record<string, unknown>,
+    ) => Record<string, unknown>;
+
+    const selected = selectRnGlobal(nativeGlobal, specGlobal) as Record<string, unknown> & {
+      window?: { hasOwnProperty?: (key: string) => boolean };
+    };
+    selected.window = selected;
+
+    expect(selected).toBe(nativeGlobal);
+    expect(typeof selected.hasOwnProperty).toBe('function');
+    expect(() => selected.window!.hasOwnProperty!('__REACT_DEVTOOLS_GLOBAL_HOOK__')).not.toThrow();
+
+    const selectFallbackGlobal = new Function(
+      'specGlobal',
+      `var global=null;var globalThis=specGlobal;${opts.banner};return __ZNTC_RN_GLOBAL__;`,
+    ) as (specGlobal: Record<string, unknown>) => Record<string, unknown>;
+    expect(selectFallbackGlobal(specGlobal)).toBe(specGlobal);
   });
 
   test('bannerExtras — RN prelude 끝에 append', () => {
@@ -128,6 +165,7 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     // top-level globalThis assignment 회피 — IIFE 안에서 set
     expect(opts.footer).toContain('__ZNTC_RN_BUNDLER__');
     expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZNTC_RN_BUNDLER__/);
+    expect(opts.footer).toContain("typeof global!=='undefined'?global:void 0");
     expect(opts.footer).toContain('DevLoadingView.hide');
   });
 

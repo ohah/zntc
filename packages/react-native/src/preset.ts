@@ -221,6 +221,9 @@ const PRELUDE_RESERVED = new Set([
   'process',
 ]);
 
+const RN_GLOBAL_EXPR =
+  "(function(g,t,w,s){return g&&(typeof g==='object'||typeof g==='function')?g:t&&(typeof t==='object'||typeof t==='function')?t:w&&(typeof w==='object'||typeof w==='function')?w:s;})(typeof global!=='undefined'?global:void 0,typeof globalThis!=='undefined'?globalThis:void 0,typeof window!=='undefined'?window:void 0,this)";
+
 function formatExtraVars(extraVars: Record<string, unknown>): string {
   const out: string[] = [];
   for (const [key, value] of Object.entries(extraVars)) {
@@ -238,11 +241,16 @@ function buildPrelude(input: RnBundleInput): string {
   // `Object.defineProperty(globalThis, ...)` 시도 → throw → 부팅 실패. Metro bundle 도 모든
   // globalThis assignment 를 module factory 안 (nested scope) 에 두는 패턴이라 trigger 회피.
   // 추가 식별자가 필요하면 `__ZNTC_RN_BUNDLER__` 처럼 footer 의 IIFE 안에서 세팅.
+  //
+  // RN 런타임 소스의 `global` 식별자는 Metro 에서 `metro-runtime/src/polyfills/require.js`
+  // 가 module factory 에 넘기는 native global 과 동등해야 한다. 따라서 zntc 치환 대상인
+  // `__ZNTC_RN_GLOBAL__` 도 `globalThis` 보다 native `global` 을 먼저 선택한다.
   const lines = [
     `var __BUNDLE_START_TIME__=this.nativePerformanceNow?nativePerformanceNow():Date.now();`,
     `var __DEV__=${dev};`,
-    `var __ZNTC_RN_GLOBAL__=typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this;`,
-    `if(typeof global==='undefined')var global=__ZNTC_RN_GLOBAL__;`,
+    `var __ZNTC_RN_GLOBAL__=${RN_GLOBAL_EXPR};`,
+    `if(typeof global==='undefined')global=__ZNTC_RN_GLOBAL__;`,
+    `if(typeof __ZNTC_RN_GLOBAL__.hasOwnProperty!=='function')try{Object.defineProperty(__ZNTC_RN_GLOBAL__,'hasOwnProperty',{value:Object.prototype.hasOwnProperty,configurable:true,writable:true});}catch(_e){try{__ZNTC_RN_GLOBAL__.hasOwnProperty=Object.prototype.hasOwnProperty;}catch(_e2){}}`,
     `var process=__ZNTC_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? 'development' : 'production'}";`,
   ];
   if (extra?.extraVars && Object.keys(extra.extraVars).length > 0) {
@@ -260,7 +268,7 @@ function buildPrelude(input: RnBundleInput): string {
 function buildFooter(dev: boolean): string {
   const parts: string[] = [
     // __ZNTC_RN_BUNDLER__ flag — IIFE 안에서 set 해야 안전
-    `(function(g){g.__ZNTC_RN_BUNDLER__=true;})(typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this);`,
+    `(function(g){g.__ZNTC_RN_BUNDLER__=true;})(${RN_GLOBAL_EXPR});`,
   ];
   if (dev) {
     parts.push(`setTimeout(function(){try{NativeModules.DevLoadingView.hide()}catch(e){}},0);`);
