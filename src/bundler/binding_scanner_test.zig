@@ -188,6 +188,20 @@ test "export binding: export function" {
     try std.testing.expectEqualStrings("greet", r.export_bindings[0].exported_name);
 }
 
+test "export binding: export enum" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc, "export enum RuntimeKind { ReactNative = 1, UI = 2 }");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
+    try std.testing.expectEqualStrings("RuntimeKind", r.export_bindings[0].exported_name);
+    try std.testing.expectEqualStrings("RuntimeKind", r.export_bindings[0].local_name);
+    try std.testing.expectEqual(ExportBinding.Kind.local, r.export_bindings[0].kind);
+}
+
 test "export binding: multi-declarator (export const x=1, y=2)" {
     const alloc = std.testing.allocator;
     var r = try parseAndExtractBindings(alloc, "export const x = 1, y = 2;");

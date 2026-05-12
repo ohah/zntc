@@ -1637,6 +1637,21 @@ test "typescript: enum import used directly" {
     try std.testing.expect(r.shaker.isIncluded(r.findModule("enums.ts").?));
 }
 
+test "typescript: exported enum in sideEffects false module stays reachable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { UIRuntimeId } from './use'; console.log(UIRuntimeId);");
+    try writeFile(tmp.dir, "use.ts", "import { RuntimeKind } from './runtimeKind'; export const UIRuntimeId = RuntimeKind.UI;");
+    try writeFile(tmp.dir, "runtimeKind.ts", "export enum RuntimeKind { ReactNative = 1, UI = 2, Worker = 3 }");
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "use.ts", "runtimeKind.ts" });
+    defer r.deinit();
+
+    const runtime_mod = r.findModule("runtimeKind.ts").?;
+    try std.testing.expect(r.shaker.isIncluded(runtime_mod));
+    try std.testing.expect(r.shaker.isExportUsed(runtime_mod, "RuntimeKind"));
+}
+
 test "typescript: abstract class import" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
