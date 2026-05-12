@@ -361,3 +361,40 @@ test "Codegen #3097: non-minify 는 ` + ` 공백 유지 (anti-regression)" {
     defer r.deinit();
     try std.testing.expectEqualStrings("var z = a + b;\n", r.output);
 }
+
+// ============================================================
+// #3098: const → let 다운그레이드 — minify_syntax 시 함수/블록 스코프 const 도
+//   3자 `let` 으로. `using` / `await using` 은 disposal 의미가 달라 그대로.
+// ============================================================
+
+test "Codegen #3098: minify_syntax 시 const → let" {
+    var r = try e2eWithOptions(std.testing.allocator, "{ const x = 1; }", .{ .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let x = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const") == null);
+}
+
+test "Codegen #3098: minify_syntax off → const 유지 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "{ const x = 1; }", .{});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const x = 1") != null);
+}
+
+test "Codegen #3098: let / var 는 그대로 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "{ let a = 1; var b = 2; }", .{ .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let a = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var b = 2") != null);
+}
+
+test "Codegen #3098: for-of const → let" {
+    var r = try e2eWithOptions(std.testing.allocator, "for (const x of arr) console.log(x);", .{ .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for (let x of arr)") != null);
+}
+
+test "Codegen #3098: using 은 const 로 안 바뀜 (그대로 using)" {
+    var r = try e2eWithOptions(std.testing.allocator, "{ using x = getResource(); }", .{ .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "using x = getResource()") != null);
+}
