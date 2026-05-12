@@ -31,6 +31,9 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
                 if (target.module_type == .json) {
                     target.exports_kind = .commonjs;
                     target.wrap_kind = .cjs;
+                } else if (shouldUseMetroCjsForMixedModule(self, target)) {
+                    target.exports_kind = .commonjs;
+                    target.wrap_kind = .cjs;
                 } else if (target.exports_kind.isEsm()) {
                     target.wrap_kind = .esm;
                 } else {
@@ -98,6 +101,11 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             if (m.wrap_kind != .none) continue;
+            if (shouldUseMetroCjsForMixedModule(self, m)) {
+                m.exports_kind = .commonjs;
+                m.wrap_kind = .cjs;
+                continue;
+            }
             if (!m.exports_kind.isEsm()) continue;
             // RN production: side-effect free + non-cyclic + no TLA + no re_export 모듈은
             // scope-hoist 유지. re_export 가 있는 barrel 은 wrap 필수 (#1340/#1193 —
@@ -127,6 +135,12 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
             m.wrap_kind = .esm;
         }
     }
+}
+
+fn shouldUseMetroCjsForMixedModule(self: *ModuleGraph, module: *const Module) bool {
+    return self.resolve_cache.platform == .react_native and
+        module.exports_kind == .esm_with_dynamic_fallback and
+        module.has_cjs_export_signal;
 }
 
 pub fn promoteRunBeforeMainModules(self: *ModuleGraph) void {

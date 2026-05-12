@@ -664,6 +664,38 @@ test "CJS: esm_with_dynamic_fallback module required — wrapped in __esm (bundl
     try std.testing.expect(std.mem.indexOf(u8, result.output, "init_hybrid") != null);
 }
 
+test "CJS: React Native mixed import plus module.exports uses Metro CJS wrapper" {
+    // Metro+Babel은 RN .js 파일의 import를 require로 낮춘 뒤 CJS module wrapper에서
+    // 실행한다. import + module.exports 혼용 파일을 __esm으로 감싸면 module이 없어져
+    // @payhereinc/react-native-code-push/AlertAdapter.js 패턴이 부팅 중 실패한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import adapter from './AlertAdapter.js';\nconsole.log(adapter.Alert);");
+    try writeFile(tmp.dir, "AlertAdapter.js",
+        \\import React, { Platform } from './rn.js';
+        \\let { Alert } = React;
+        \\if (Platform.OS === 'android') Alert = {};
+        \\module.exports = { Alert };
+    );
+    try writeFile(tmp.dir, "rn.js",
+        \\export const Platform = { OS: 'ios' };
+        \\export default { Alert: 'alert', Platform };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"AlertAdapter.js\"(exports, module)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var require_AlertAdapter = __commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var init_AlertAdapter = __esm") == null);
+}
+
 test "CJS: ESM import inside __commonJS wrapper rewritten to require_xxx()" {
     // ESM 모듈이 require()로 소비되어 __commonJS 래핑될 때,
     // 내부 import 문이 require("specifier")로 변환되는데,
