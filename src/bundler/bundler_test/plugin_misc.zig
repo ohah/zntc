@@ -2876,9 +2876,10 @@ test "entry_error_guard #19: dev_mode + entry import chain — __zntc_modules[\"
     // chain도 entry factory 내부에 남기되 동일한 guard lambda 형식을 유지해야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "dep.js", "export const d = 1;\n");
+    try writeFile(tmp.dir, "dep.js", "export const d = getD();\nfunction getD() { return 1; }\n");
     try writeFile(tmp.dir, "entry.js",
         \\import { d } from './dep.js';
+        \\globalThis.__zntcGuardDevValue = d;
         \\export const r = d;
     );
     const entry = try absPath(&tmp, "entry.js");
@@ -2904,6 +2905,7 @@ test "entry_error_guard #19: dev_mode + entry import chain — __zntc_modules[\"
     const top_level = result.output[top_start..];
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, top_level, "__zntc_guarded("));
     try std.testing.expect(std.mem.indexOf(u8, top_level, "dep.js") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
 }
 
 test "entry_error_guard #20: silent_console_error_patterns 정확도 — 실제 expo 메시지 형식과 매치" {
@@ -3042,6 +3044,7 @@ test "react_native inlineRequires: defer function-only ESM imports across select
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
+        .entry_error_guard = true,
     });
     defer dev_b.deinit();
     const dev_result = try dev_b.bundle();
@@ -3051,4 +3054,76 @@ test "react_native inlineRequires: defer function-only ESM imports across select
     try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "__zntc_modules[") != null);
     try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "sellerInitialState.ready") == null);
     try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "sellerInitialState).ready") != null);
+}
+
+test "react_native inlineRequires: defer top-level ESM value imports to use site" {
+    // Metro inlineRequires 는 named import 의 require() 를 모듈 선두로 올리지 않고
+    // 실제 값 참조 지점에 둔다. Payhere mobile-seller 의 selector/navigator cycle 에서
+    // zntc 가 import init 을 먼저 실행하면 Metro 보다 이른 시점에 순환 모듈이 열려
+    // reselect input selector 가 undefined 로 평가된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { select } from './local';
+        \\globalThis.__zntcTopLevelInlineRequiresResult = select();
+    );
+    try writeFile(tmp.dir, "reselect.js",
+        \\export function createSelector(inputs, result) {
+        \\  if (inputs.some((fn) => typeof fn !== 'function')) {
+        \\    throw new Error('bad selector');
+        \\  }
+        \\  return function selector() {
+        \\    return result(...inputs.map((fn) => fn()));
+        \\  };
+        \\}
+    );
+    try writeFile(tmp.dir, "local.js",
+        \\import { createSelector } from './reselect';
+        \\import { getRemoteValue } from './remote';
+        \\export const getLocalValue = () => 'local';
+        \\export const select = createSelector([getRemoteValue], (value) => value);
+    );
+    try writeFile(tmp.dir, "remote.js",
+        \\import { createSelector } from './reselect';
+        \\import { getLocalValue } from './local';
+        \\export const getRemoteBase = () => 'remote';
+        \\export const getRemoteValue = createSelector([getLocalValue], (value) => value);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const remote = try absPath(&tmp, "remote.js");
+    defer std.testing.allocator.free(remote);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const eager_remote_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn();}});",
+        .{remote},
+    );
+    defer std.testing.allocator.free(eager_remote_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, eager_remote_init) == null);
+
+    const lazy_remote_value = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}),",
+        .{remote},
+    );
+    defer std.testing.allocator.free(lazy_remote_value);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_remote_value) != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
 }
