@@ -495,14 +495,20 @@ pub const Resolver = struct {
         defer scope.end();
 
         const extensions = if (self.custom_extensions.len > 0) self.custom_extensions else default_extensions;
+        // dir_cache 멤버십 체크는 (dir, name) 으로 한다 — 후보마다 full path 를 alloc 하지 않고
+        // basename 만 stack 버퍼에서 조립해 확인, hit 일 때만 full path 를 1회 alloc.
+        const dir = std.fs.path.dirname(base) orelse return null;
+        const stem = std.fs.path.basename(base);
+        var name_buf: [std.fs.max_name_bytes]u8 = undefined;
         for (extensions) |ext| {
-            const path = std.mem.concat(self.allocator, u8, &.{ base, ext }) catch
-                return error.OutOfMemory;
-            defer self.allocator.free(path);
+            if (stem.len + ext.len > name_buf.len) continue; // NAME_MAX 초과 — 실존 불가
+            @memcpy(name_buf[0..stem.len], stem);
+            @memcpy(name_buf[stem.len..][0..ext.len], ext);
+            if (!self.fileExistsIn(dir, name_buf[0 .. stem.len + ext.len])) continue;
 
-            if (self.fileExists(path)) {
-                return self.makeResult(path);
-            }
+            const path = std.mem.concat(self.allocator, u8, &.{ base, ext }) catch return error.OutOfMemory;
+            defer self.allocator.free(path);
+            return self.makeResult(path);
         }
         return null;
     }
@@ -546,14 +552,20 @@ pub const Resolver = struct {
         if (try self.tryDirectoryPackageJson(path)) |result| return result;
 
         const extensions = if (self.custom_extensions.len > 0) self.custom_extensions else default_extensions;
+        // `index<ext>` 후보는 짧으니 stack 버퍼에서 조립 → dir_cache 멤버십만 확인,
+        // hit 일 때만 full path 를 1회 alloc (cf. tryExtensions).
+        const idx_prefix = "index";
+        var name_buf: [std.fs.max_name_bytes]u8 = undefined;
+        @memcpy(name_buf[0..idx_prefix.len], idx_prefix);
         for (extensions) |ext| {
-            const index_name = std.mem.concat(self.allocator, u8, &.{ "index", ext }) catch
-                return error.OutOfMemory;
-            defer self.allocator.free(index_name);
+            if (idx_prefix.len + ext.len > name_buf.len) continue;
+            @memcpy(name_buf[idx_prefix.len..][0..ext.len], ext);
+            const index_name = name_buf[0 .. idx_prefix.len + ext.len];
+            if (!self.fileExistsIn(path, index_name)) continue;
             const index_path = std.fs.path.resolve(self.allocator, &.{ path, index_name }) catch
                 return error.OutOfMemory;
             defer self.allocator.free(index_path);
-            if (self.fileExists(index_path)) return self.makeResult(index_path);
+            return self.makeResult(index_path);
         }
         return null;
     }
@@ -808,17 +820,25 @@ pub const Resolver = struct {
     }
 
     fn fileExists(self: *const Resolver, path: []const u8) bool {
+        const dir_path = std.fs.path.dirname(path) orelse return false;
+        const file_name = std.fs.path.basename(path);
+        return self.fileExistsIn(dir_path, file_name);
+    }
+
+    /// `dir_path` 안에 `file_name` 이 있는지. 후보 확장자 탐색 등에서 full path 를 매번
+    /// alloc 했다가 `fileExists` 가 다시 dirname/basename 으로 쪼개던 낭비를 피한다 — caller 가
+    /// dir + name 을 직접 넘긴다. (DirEntryCache 자체가 dir 단위 readdir 캐시라 이게 자연스럽다.)
+    fn fileExistsIn(self: *const Resolver, dir_path: []const u8, file_name: []const u8) bool {
         var scope = profile.begin(.resolve_file_exists);
         defer scope.end();
-
+        if (file_name.len == 0) return false;
         if (self.dir_cache) |cache| {
-            const dir_path = std.fs.path.dirname(path) orelse return false;
-            const file_name = std.fs.path.basename(path);
-            if (file_name.len == 0) return false;
             // constCast: getOrLoad 내부에서 캐시 write를 위해 mutex 사용
             return @constCast(cache).hasFile(dir_path, file_name);
         }
-        const stat = fs.statFile(path) catch return false;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const joined = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ dir_path, std.fs.path.sep, file_name }) catch return false;
+        const stat = fs.statFile(joined) catch return false;
         return stat.kind == .file;
     }
 
