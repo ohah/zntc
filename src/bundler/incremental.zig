@@ -174,6 +174,13 @@ pub const IncrementalBundler = struct {
                 return .fatal;
             };
             result.deinit(self.allocator);
+            // 빌드 에러 후엔 다음 rebuild 를 full rebuild 로 강제. 그렇지 않으면 broken
+            // module 이 persistent_store 에 캐시된 채 남아, 같은 broken 파일에 대한
+            // 다음 incremental rebuild 가 cache hit → `result.hasErrors()` false → `.success`
+            // (changed_modules=0) 로 잘못 보고하고, dev server 가 overlay 를 clear 해버린다.
+            // 파일이 고쳐지면 full rebuild 가 에러 없이 끝나며 doBuild 의 `if (is_first)`
+            // 분기에서 flag 가 자동 해제된다.
+            self.needs_full_rebuild = true;
             return .{ .build_error = err_json };
         }
 
