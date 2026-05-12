@@ -79,6 +79,63 @@ pub fn emitBlock(self: anytype, node: Node) !void {
     try emitBracedList(self, node);
 }
 
+/// `if`/`else`/`for`/`while`/`for-in`/`for-of` 의 본문을 emit. minify 시 본문이
+/// "벗겨도 안전한" statement 하나뿐인 block 이면 `{}` 를 제거하고 그 statement 만 출력
+/// (`if(x){f()}` → `if(x)f()`). 그 외에는 본문 노드를 그대로 emit.
+pub fn emitStatementBody(self: anytype, body_idx: NodeIndex) !void {
+    if (unwrappedStatementBody(self, body_idx)) |inner| {
+        try self.emitNode(inner);
+        return;
+    }
+    try self.emitNode(body_idx);
+}
+
+/// `body_idx` 가 minify 시 `{}` 를 벗길 수 있는 block 이면 그 안의 단일 statement idx,
+/// 아니면 null. `else` 키워드 spacing 결정에도 쓰여 별도 함수로 둔다.
+fn unwrappedStatementBody(self: anytype, body_idx: NodeIndex) ?NodeIndex {
+    if (!self.options.minify_whitespace or body_idx.isNone()) return null;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement) return null;
+    return singleUnwrappableStmt(self, body);
+}
+
+/// block 에서 "출력되는" statement 가 정확히 1개이고, 그게 `{}` 없이 단독으로 와도
+/// 안전한 종류면 그 statement 의 idx 를 반환. 아니면 null.
+///
+/// **안전 조건**: lexical declaration(`let`/`const`/`class`/`function` 선언) 은 `if`/`for`
+/// 본문으로 올 수 없으므로 거부. `if`/`for`/`while` 류는 뒤따르는 `else` 를 잘못 흡수
+/// (dangling else)하거나 ASI 가 미묘해 보수적으로 거부. `var` 선언은 본문으로 valid 하고
+/// hoisting 의미도 동일하므로 허용. `return`/`throw`/`break`/`continue`/`debugger`/
+/// expression statement 는 `else` 흡수 불가 + lexical decl 아님 → 안전.
+fn singleUnwrappableStmt(self: anytype, block: Node) ?NodeIndex {
+    const list = block.data.list;
+    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    var only: ?NodeIndex = null;
+    for (indices) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        if (isElidedStmt(self, idx)) continue;
+        if (only != null) return null; // 출력되는 statement 가 2개+ → 못 벗김
+        only = idx;
+    }
+    const stmt_idx = only orelse return null; // 빈 block — `{}` 그대로 (보수적)
+    const s = self.ast.getNode(stmt_idx);
+    switch (s.tag) {
+        .expression_statement,
+        .return_statement,
+        .throw_statement,
+        .break_statement,
+        .continue_statement,
+        .debugger_statement,
+        => return stmt_idx,
+        // `var` 는 본문으로 valid + hoisting 동일 → 허용. 단 `esm_var_assign_only`
+        // (wrapped ESM body) 에선 top-level `var` 키워드가 codegen 에서 제거되는데,
+        // hoist scan 은 block 안 `var` 를 안 잡으므로 벗기면 미선언 할당 → 거부.
+        .variable_declaration => return if (!self.options.esm_var_assign_only and
+            self.ast.variableDeclarationKind(s) == .@"var") stmt_idx else null,
+        else => return null,
+    }
+}
+
 /// { item1 item2 ... } — 블록과 클래스 바디 공통.
 /// `{` 앞 공백: 마지막 바이트가 공백/줄바꿈이 아니면 자동 추가 (이중 공백 방지).
 pub fn emitBracedList(self: anytype, node: Node) !void {
@@ -190,23 +247,22 @@ fn emitIfVerbatim(self: anytype, t: anytype) !void {
     if (self.options.minify_whitespace) try self.write("if(") else try self.write("if (");
     try self.emitNode(t.a);
     try self.writeByte(')');
-    try self.emitNode(t.b);
+    try emitStatementBody(self, t.b);
     if (!t.c.isNone()) {
         // else 분기가 DCE 결과 비어 있으면 else 키워드 자체를 생략 (#2967).
         // 변환 전 transformer 가 dead `if` 본문을 `empty_statement` 로 바꿨거나
         // 빈 block 으로 만들면 minify 시 statement 가 사라져 `else }` SyntaxError.
         if (isElidedAlternate(self, t.c)) return;
         if (self.options.minify_whitespace) {
-            const next_node = self.ast.getNode(t.c);
-            if (next_node.tag == .block_statement) {
-                try self.write("else");
-            } else {
-                try self.write("else ");
-            }
+            // else 분기가 `{...}` 로 출력되면 `else{`, 아니면(bare statement 또는
+            // #3094 로 `{}` 가 벗겨지는 block) 키워드 뒤 공백 필수.
+            const emits_braces = self.ast.getNode(t.c).tag == .block_statement and
+                unwrappedStatementBody(self, t.c) == null;
+            try self.write(if (emits_braces) "else" else "else ");
         } else {
             try self.write(" else ");
         }
-        try self.emitNode(t.c);
+        try emitStatementBody(self, t.c);
     }
 }
 
@@ -364,7 +420,7 @@ pub fn emitWhile(self: anytype, node: Node) !void {
     if (self.options.minify_whitespace) try self.write("while(") else try self.write("while (");
     try self.emitNode(node.data.binary.left);
     try self.writeByte(')');
-    try self.emitNode(node.data.binary.right);
+    try emitStatementBody(self, node.data.binary.right);
 }
 
 pub fn emitDoWhile(self: anytype, node: Node) !void {
@@ -396,7 +452,7 @@ pub fn emitFor(self: anytype, node: Node) !void {
     if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
     try self.emitNode(@enumFromInt(extras[2]));
     try self.writeByte(')');
-    try self.emitNode(@enumFromInt(extras[3]));
+    try emitStatementBody(self, @enumFromInt(extras[3]));
 }
 
 pub fn emitForAwaitOf(self: anytype, node: Node) !void {
@@ -420,7 +476,7 @@ pub fn emitForAwaitOf(self: anytype, node: Node) !void {
     try self.write(" of ");
     try self.emitNode(t.b);
     try self.writeByte(')');
-    try self.emitNode(t.c);
+    try emitStatementBody(self, t.c);
 }
 
 pub fn emitForInOf(self: anytype, node: Node, keyword: []const u8) !void {
@@ -449,7 +505,7 @@ pub fn emitForInOf(self: anytype, node: Node, keyword: []const u8) !void {
     try self.writeByte(' ');
     try self.emitNode(t.b);
     try self.writeByte(')');
-    try self.emitNode(t.c);
+    try emitStatementBody(self, t.c);
 }
 
 /// for-in var initializer가 있으면 `name = init;`를 hoisting 출력.
