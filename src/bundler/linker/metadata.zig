@@ -92,6 +92,53 @@ pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemant
     return true;
 }
 
+fn hasFunctionAncestor(sem: *const @import("../module.zig").ModuleSemanticData, scope_id: @import("../../semantic/scope.zig").ScopeId) bool {
+    var sid = scope_id;
+    while (!sid.isNone()) {
+        const idx = sid.toIndex();
+        if (idx >= sem.scopes.len) return false;
+        const scope = sem.scopes[idx];
+        if (scope.kind == .function) return true;
+        sid = scope.parent;
+    }
+    return false;
+}
+
+fn isFunctionOnlyValueImport(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
+    if (ib.is_helper) return false;
+    if (ib.kind == .namespace) return false;
+    const sym_idx = ib.local_symbol.semanticIndex() orelse return false;
+    if (sym_idx >= sem.symbols.items.len) return false;
+
+    var saw_value_use = false;
+    for (sem.references) |r| {
+        if (@intFromEnum(r.symbol_id) != sym_idx) continue;
+        if (!r.isValueUse()) continue;
+        saw_value_use = true;
+        if (!hasFunctionAncestor(sem, r.scope_id)) return false;
+    }
+    return saw_value_use;
+}
+
+fn allocLazyEsmImportExpr(self: *const Linker, target_mod: *const Module, target_name: []const u8) ![]const u8 {
+    const sep = if (self.minify_whitespace) "," else ", ";
+    if (self.dev_mode) {
+        return try std.fmt.allocPrint(
+            self.allocator,
+            "(__zntc_modules[\"{s}\"].fn(){s}{s})",
+            .{ target_mod.dev_id, sep, target_name },
+        );
+    }
+
+    const init_name = try target_mod.allocInitName(self.allocator);
+    defer self.allocator.free(init_name);
+    return try std.fmt.allocPrint(
+        self.allocator,
+        "({s}(){s}{s})",
+        .{ init_name, sep, target_name },
+    );
+}
+
 pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
     const node_count = ast.nodes.items.len;
     var skip_nodes = try std.DynamicBitSet.initEmpty(allocator, node_count);
@@ -480,15 +527,25 @@ pub fn buildMetadataForAst(
             // 호이스팅된 함수는 top-level에 있으므로 rename으로 참조 가능.
             // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
             // `entry_error_guard` 활성 시 wrap. TLA 는 await 가 lambda 안에 못 들어가서 제외.
+            var lazy_esm_import = false;
             if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm) {
                 // CJS path 와 동일하게 tree-shake 결과 반영 (#2398). `sideEffects: false`
                 // 인 .esm wrap 모듈이 unused 로 drop 되면 `init_xxx is not defined` 가
                 // 나므로 preamble 도 함께 생략. `tree_shaker_active=false` 인 단위 테스트
                 // 환경에서는 is_included bit 가 신뢰 불가라 가드 미적용 (line 408 동일 정책).
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
-                if (!esm_init_set.contains(@intCast(canonical_mod))) {
+                const target_mod = canonical_m_opt.?;
+                lazy_esm_import = self.inline_requires and
+                    m.wrap_kind == .esm and
+                    rec.kind == .static_import and
+                    canonical_mod != module_index and
+                    !is_helper_binding and
+                    ib.kind != .namespace and
+                    !target_mod.uses_top_level_await and
+                    !exported_locals.contains(m.importBindingLocalName(ib)) and
+                    isFunctionOnlyValueImport(&sem, ib);
+                if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(@intCast(canonical_mod), {});
-                    const target_mod = canonical_m_opt.?;
                     const is_tla = target_mod.uses_top_level_await;
                     const guard = target_mod.shouldGuard(self.entry_error_guard);
                     if (is_tla) try preamble.write("await ");
@@ -642,13 +699,25 @@ pub fn buildMetadataForAst(
             // 채워졌으면 rename 스킵 (#2429).
             if (!isReservedName(target_name) and target_name.len > 0 and isValidIdentStartByte(target_name[0])) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                    try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, target_name);
+                    const rename_value = if (lazy_esm_import)
+                        try allocLazyEsmImportExpr(self, canonical_m_opt.?, target_name)
+                    else
+                        target_name;
+                    if (lazy_esm_import) {
+                        var rename_owned_by_list = false;
+                        errdefer if (!rename_owned_by_list) self.allocator.free(rename_value);
+                        try owned_nested_renames.append(self.allocator, rename_value);
+                        rename_owned_by_list = true;
+                        try renames.put(sym_idx, rename_value);
+                    } else {
+                        try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, rename_value);
+                    }
                     // __esm → __esm live binding: __export getter override 등록 +
                     // 자체 rename 루프에서 덮어쓰기 방지
                     if (m.wrap_kind == .esm and canonical_m_opt != null and
                         canonical_m_opt.?.wrap_kind == .esm)
                     {
-                        try export_getter_overrides.put(self.allocator, m.importBindingLocalName(ib), target_name);
+                        try export_getter_overrides.put(self.allocator, m.importBindingLocalName(ib), rename_value);
                     }
                 }
             }

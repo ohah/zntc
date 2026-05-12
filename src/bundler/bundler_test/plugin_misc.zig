@@ -2964,3 +2964,91 @@ test "entry_error_guard #21: silent_console_error_patterns 다중 패턴 — 모
     // 배열 loop 으로 검사 (단일 regex .test 가 아니라 IGNORE.length loop).
     try std.testing.expect(std.mem.indexOf(u8, result.output, "for (var i = 0; i < IGNORE.length") != null);
 }
+
+test "react_native inlineRequires: defer function-only ESM imports across selector cycles" {
+    // Payhere mobile-seller 축소 재현:
+    // seller selector 가 함수 안에서만 seller module state 를 읽는데, 그 import 를
+    // eager init 하면 sellerModule -> sagas -> local -> sellerSelectors 순환이 먼저 열려
+    // local 의 top-level createSelector 가 아직 할당 전인 getMode 를 받는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { getMode, readInitial } from './sellerSelectors';
+        \\globalThis.__zntcInlineRequiresResult = [getMode(), readInitial()];
+    );
+    try writeFile(tmp.dir, "reselect.js",
+        \\export function createSelector(inputs, result) {
+        \\  if (inputs.some((fn) => typeof fn !== 'function')) {
+        \\    throw new Error('bad selector');
+        \\  }
+        \\  return function selector() {
+        \\    return result(...inputs.map((fn) => fn()));
+        \\  };
+        \\}
+    );
+    try writeFile(tmp.dir, "local.js",
+        \\import { createSelector } from './reselect';
+        \\import { getMode } from './sellerSelectors';
+        \\export const storage = () => true;
+        \\export const select = createSelector(
+        \\  [getMode, storage],
+        \\  (mode, visible) => mode && visible,
+        \\);
+    );
+    try writeFile(tmp.dir, "sellerSelectors/index.js",
+        \\export * from './seller';
+    );
+    try writeFile(tmp.dir, "sellerSelectors/seller.js",
+        \\import { sellerInitialState } from '../sellerModule';
+        \\export const getMode = () => true;
+        \\export function readInitial() {
+        \\  return sellerInitialState.ready ? 'READY_MARKER' : 'EMPTY_MARKER';
+        \\}
+    );
+    try writeFile(tmp.dir, "sellerModule/index.js",
+        \\export { sellerInitialState } from './module';
+        \\export { watchers } from './sagas';
+    );
+    try writeFile(tmp.dir, "sellerModule/module.js",
+        \\export const sellerInitialState = { ready: true };
+    );
+    try writeFile(tmp.dir, "sellerModule/sagas.js",
+        \\import { select } from '../local';
+        \\export const watchers = [select];
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "sellerInitialState.ready") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "sellerInitialState).ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "READY_MARKER") != null);
+
+    var dev_b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+    });
+    defer dev_b.deinit();
+    const dev_result = try dev_b.bundle();
+    defer dev_result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!dev_result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "sellerInitialState.ready") == null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "sellerInitialState).ready") != null);
+}

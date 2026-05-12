@@ -153,6 +153,10 @@ pub const Linker = struct {
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
 
+    /// Metro inlineRequires 호환 경로. RN에서는 함수 내부에서만 읽히는 import의
+    /// module init을 top-level preamble에서 미루고, 참조 지점에서 lazy init한다.
+    inline_requires: bool = false,
+
     /// `EmitOptions.entry_error_guard` propagate. preamble 의 module init 호출을
     /// `__zntc_guarded(fn)` 으로 wrap 하여 outermost 에서 `ErrorUtils.reportFatalError`
     /// 로 swallow. helper 자체는 emitter prologue 에 주입.
