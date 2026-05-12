@@ -156,12 +156,15 @@ pub fn emitArrow(self: anytype, node: Node) !void {
     if (flags & ast_mod.ArrowFlags.is_async != 0) try self.write("async ");
 
     // params 출력 — #1283 이후 항상 formal_parameters 노드. 괄호는 codegen이 부착.
-    if (!params.isNone()) {
+    // #3096: minify 시 단일 plain identifier 파라미터는 괄호 생략 (`x => ...`).
+    if (params.isNone()) {
+        try self.write("()");
+    } else if (self.options.minify_whitespace and arrowParamsOmittable(self, params)) {
+        try self.emitNode(params);
+    } else {
         try self.writeByte('(');
         try self.emitNode(params);
         try self.writeByte(')');
-    } else {
-        try self.write("()");
     }
     try self.writeSpace();
     try self.write("=>");
@@ -177,6 +180,30 @@ pub fn emitArrow(self: anytype, node: Node) !void {
     if (needs_paren) try self.writeByte('(');
     try self.emitNode(body);
     if (needs_paren) try self.writeByte(')');
+}
+
+/// 파라미터 노드가 단순 식별자 1개(이름만 출력) 인지 — `binding_identifier` 또는
+/// 파서 cover-grammar 변환 산물인 `assignment_target_identifier`. destructuring / rest /
+/// default 패턴은 여기 해당 안 함.
+fn isPlainIdentifierParam(tag: ast_mod.Node.Tag) bool {
+    return tag == .binding_identifier or tag == .assignment_target_identifier;
+}
+
+/// arrow 파라미터를 괄호 없이 출력해도 되는지 — 정확히 1개의 plain identifier 파라미터
+/// (default / rest / destructuring 없음)일 때만. `emitFormalParam` / 식별자 emit 이 그
+/// 경우 이름만 출력하므로 `x => ...` 가 valid arrow 가 된다.
+fn arrowParamsOmittable(self: anytype, params_idx: NodeIndex) bool {
+    const pnode = self.ast.getNode(params_idx);
+    if (pnode.tag != .formal_parameters) return false;
+    const list = pnode.data.list;
+    if (list.len != 1 or list.start >= self.ast.extra_data.items.len) return false;
+    const elem = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[list.start]));
+    if (isPlainIdentifierParam(elem.tag)) return true;
+    if (elem.tag != .formal_parameter) return false;
+    const FP = ast_mod.FormalParameterExtra;
+    if (!self.ast.hasExtra(elem.data.extra, FP.default)) return false;
+    if (!self.ast.readExtraNode(elem.data.extra, FP.default).isNone()) return false; // (x = 1) => — 괄호 필수
+    return isPlainIdentifierParam(self.ast.getNode(self.ast.readExtraNode(elem.data.extra, FP.pattern)).tag);
 }
 
 fn expressionStartsWithBrace(self: anytype, node_idx: ast_mod.NodeIndex) bool {
