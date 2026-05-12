@@ -2340,6 +2340,58 @@ test "#1791 type-only elision: positive + negative cases" {
 }
 
 // ============================================================
+// #3063: classic JSX factory(named import) 가 elision 되지 않아야 한다
+//
+// classic JSX lowering 은 `<App/>` 를 `h(App, null)` 로 바꾸지만, elision 이 보는
+// reference/binding_lite 스캔은 lowering 전 AST 를 본다 — factory `h` 가 import 의
+// 유일한 사용처면 specifier 가 잘못 제거되어 `h(...)` 가 ReferenceError 가 됐다.
+// ============================================================
+
+test "#3063 classic JSX factory named import 보존 / non-JSX 는 그대로 elide" {
+    // factory(h) 가 유일 사용처 — 보존되어야 함.
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\import { h } from "preact";
+            \\export const App = () => <p>x</p>;
+        ,
+            "input.jsx",
+            .{ .jsx_runtime = .classic, .jsx_factory = "h", .jsx_fragment = "Fragment" },
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "\"preact\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "h(\"p\"") != null);
+    }
+    // fragment(Fragment) 도 보존 — `<>...</>` lowering 이 참조.
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\import { h, Fragment } from "preact";
+            \\export const App = () => <><p>a</p><p>b</p></>;
+        ,
+            "input.jsx",
+            .{ .jsx_runtime = .classic, .jsx_factory = "h", .jsx_fragment = "Fragment" },
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "\"preact\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "h(Fragment") != null);
+    }
+    // JSX 없는 파일 — 같은 이름이어도 정상 elide (over-keep 회귀 방지).
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\import { h } from "preact";
+            \\export const x = 1;
+        ,
+            "input.ts",
+            .{ .jsx_runtime = .classic, .jsx_factory = "h", .jsx_fragment = "Fragment" },
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "import") == null);
+    }
+}
+
+// ============================================================
 // --define 치환 (#1552)
 // ============================================================
 
