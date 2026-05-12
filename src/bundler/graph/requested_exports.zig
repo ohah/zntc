@@ -48,13 +48,13 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
 /// 가 안 돼 emit 에 raw `require("…")` 가 남아 런타임 크래시한다.
 pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
     if (self.dev_mode or self.preserve_modules) return false;
-    if (m.transform_cache) |tc| if (tc.runtime_helpers.hasAny()) return false;
-    if (moduleHasLocalExport(m)) return false;
-    return m.side_effects_user_defined and
+    if (!(m.side_effects_user_defined and
         !m.side_effects and
         m.exports_kind.isEsm() and
         m.import_records.len > 0 and
-        m.export_bindings.len > 0;
+        m.export_bindings.len > 0)) return false;
+    if (m.transform_cache) |tc| if (tc.runtime_helpers.hasAny()) return false;
+    return !moduleHasLocalExport(m);
 }
 
 fn moduleHasLocalExport(m: *const Module) bool {
@@ -165,19 +165,21 @@ pub fn requestedExportsForReExportRecord(
                         changed = (try requestNamed(self, dep_idx, eb.local_name)) or changed;
                     }
                 },
+                // namespace / star re-export 는 dep 전체를 요청한다 — 한 번 `.all` 이 되면
+                // 이후 requested_name 들의 작업은 전부 no-op 이므로 즉시 반환.
                 .re_export_namespace => {
                     if (std.mem.eql(u8, eb.exported_name, requested_name)) {
-                        changed = (try requestAll(self, dep_idx)) or changed;
+                        return (try requestAll(self, dep_idx)) or changed;
                     }
                 },
                 .re_export_star => {
                     // `export * from "./X"` 는 어느 source 가 이 이름을 제공하는지 정적으로
-                    // 알 수 없다 — 후보 source 마다 namespace 전체를 요청해야 한다. 그러지
+                    // 알 수 없다 — 후보 source 의 namespace 전체를 요청해야 한다. 그러지
                     // 않으면 X 가 이 이름을 안 가졌을 때 X 의 import record 가 deferred 인
                     // 채로 (wrapped barrel 의 `init_*` 로 도달 가능해) 번들에 남아 raw
                     // `require()` 가 출력된다 (#3136).
                     if (!nameHasDirectNonStarExport(importer, requested_name)) {
-                        changed = (try requestAll(self, dep_idx)) or changed;
+                        return (try requestAll(self, dep_idx)) or changed;
                     }
                 },
                 .local => {},
