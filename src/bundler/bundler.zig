@@ -1071,7 +1071,9 @@ pub const Bundler = struct {
         var link_scope = profile.begin(.link);
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, &graph, self.options.format, self.options.global_identifiers);
-            l.shim_missing_exports = self.options.shim_missing_exports;
+            // Metro+Babel은 named import를 CommonJS property access로 낮추므로, export가
+            // 실제로 없어도 런타임 값은 ReferenceError가 아니라 undefined가 된다.
+            l.shim_missing_exports = self.options.shim_missing_exports or self.options.platform == .react_native;
             l.dev_mode = self.options.dev_mode;
             l.entry_error_guard = self.options.entry_error_guard;
             l.inline_requires = self.options.platform == .react_native;
