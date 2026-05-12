@@ -883,6 +883,12 @@ pub fn splitBareSpecifier(specifier: []const u8) BareSpecifierSplit {
         if (std.mem.indexOfScalar(u8, specifier, '/')) |first_slash| {
             // 두 번째 / 를 찾으면 그 뒤가 서브패스
             if (std.mem.indexOfScalarPos(u8, specifier, first_slash + 1, '/')) |second_slash| {
+                if (second_slash == specifier.len - 1) {
+                    return .{
+                        .pkg_name = specifier[0..second_slash],
+                        .subpath = ".",
+                    };
+                }
                 return .{
                     .pkg_name = specifier[0..second_slash],
                     .subpath = specifier[second_slash..],
@@ -894,6 +900,12 @@ pub fn splitBareSpecifier(specifier: []const u8) BareSpecifierSplit {
 
     // 일반 패키지: name/subpath
     if (std.mem.indexOfScalar(u8, specifier, '/')) |slash| {
+        if (slash == specifier.len - 1) {
+            return .{
+                .pkg_name = specifier[0..slash],
+                .subpath = ".",
+            };
+        }
         return .{
             .pkg_name = specifier[0..slash],
             .subpath = specifier[slash..],
