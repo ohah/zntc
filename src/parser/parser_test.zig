@@ -1005,6 +1005,12 @@ test "Parser: TS type predicate in function type literal" {
     }
 }
 
+test "Parser: TS function type property signature in .ts mode" {
+    try expectNoParseErrorWithExt(
+        \\type X = { create: (target: string) => string; };
+    , ".ts");
+}
+
 test "Parser: TS object type literal" {
     var scanner = try Scanner.init(std.testing.allocator, "const obj: { x: number; y: string } = { x: 1, y: 'a' };");
     defer scanner.deinit();

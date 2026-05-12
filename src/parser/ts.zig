@@ -1283,13 +1283,21 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
 /// identifier/this 다음에 : 또는 ? 가 오면 함수 타입 파라미터
 fn isFunctionTypeParam(self: *Parser) bool {
     // identifier/this 다음에 : 또는 ? → 확정 함수 파라미터
-    if (self.current() == .identifier or self.current() == .kw_this) {
+    if (isFunctionTypeParamName(self.current())) {
         const next = self.peekNextKind() catch return false;
         return next == .colon or next == .question;
     }
     // destructuring 패턴: [...] 또는 {...} → 함수 파라미터
     if (self.current() == .l_bracket or self.current() == .l_curly) return true;
     return false;
+}
+
+fn isFunctionTypeParamName(kind: @import("../lexer/token.zig").Kind) bool {
+    return kind == .identifier or
+        kind == .escaped_keyword or
+        kind == .escaped_strict_reserved or
+        kind == .kw_this or
+        (kind.isKeyword() and !kind.isReservedKeyword());
 }
 
 /// 함수 타입 파라미터 리스트를 파싱하여 함수 타입 노드 생성
