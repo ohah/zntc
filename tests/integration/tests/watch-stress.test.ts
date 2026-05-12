@@ -53,6 +53,8 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
     async () => {
       const ITERATIONS = 150;
       const SAMPLE_EVERY = 15;
+      // 첫 ~40% 의 rebuild 는 cache warmup 구간 — slope 측정에서 제외 (아래 주석 참조).
+      const WARMUP_FRACTION = 0.4;
       // 임계: 실측 0.05 KB/rebuild 대비 넉넉하되 누수는 탐지 가능한 범위.
       // 실제 누수 발생 시 수십 KB/회 수준이 통상.
       const SLOPE_THRESHOLD_KB = 2;
@@ -89,11 +91,16 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
         const first = samples[0].y;
         const last = samples[samples.length - 1].y;
         const max = Math.max(...samples.map((s) => s.y));
-        const slope = linearSlope(samples);
+        // warmup 구간 동안 resolve/compiled cache·module store·intern table 가 차오르며
+        // RSS 가 한 번 ramp 후 평탄해진다 (bounded). 전체 샘플에 linear fit 하면 이 ramp 가
+        // slope 를 부풀려 false positive. 누수 판정은 warmup 이후 steady-state 구간의 slope 로
+        // — 실제 누수면 평탄화되지 않고 steady-state 에서도 기울기가 남는다.
+        const steadyState = samples.slice(Math.floor(samples.length * WARMUP_FRACTION));
+        const slope = linearSlope(steadyState.length >= 2 ? steadyState : samples);
         const totalGrowth = max - first;
 
         const trace = samples.map((s) => `${s.x}:${s.y}KB`).join(', ');
-        const summary = `iters=${ITERATIONS} first=${first}KB last=${last}KB max=${max}KB slope=${slope.toFixed(2)}KB/rebuild growth=${totalGrowth}KB`;
+        const summary = `iters=${ITERATIONS} first=${first}KB last=${last}KB max=${max}KB steadySlope=${slope.toFixed(2)}KB/rebuild growth=${totalGrowth}KB`;
 
         // 실패 시 디버깅 편의. 성공 시에도 CI 로그에 궤적 한 줄 남겨 트렌드 모니터링.
         console.log(`[watch-stress] ${summary}`);
