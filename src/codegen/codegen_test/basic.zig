@@ -459,3 +459,106 @@ test "Codegen #3096: non-minify 는 (x) 유지 (anti-regression)" {
     defer r.deinit();
     try std.testing.expectEqualStrings("var f = (x) => x;\n", r.output);
 }
+
+// ============================================================
+// #3094: single-statement block 의 불필요한 `{}` 제거 — minify_whitespace 시
+//   `if(x){f()}` → `if(x)f()`. 본문이 출력되는 statement 1개뿐이고 그게
+//   expression/return/throw/break/continue/debugger/var 일 때만 (let/const/class/
+//   function 선언 · if/for/while 류 · 빈 block · 2개+ 는 `{}` 유지).
+// ============================================================
+
+test "Codegen #3094: if 본문 단일 statement → {} 제거" {
+    var r = try e2e(std.testing.allocator, "if (a) { f(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a)f();", r.output);
+}
+
+test "Codegen #3094: if/else 양쪽 단일 statement → {} 제거" {
+    var r = try e2e(std.testing.allocator, "if (a) { f(); } else { g(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a)f();else g();", r.output);
+}
+
+test "Codegen #3094: if/else return → return c;else return d;" {
+    var r = try e2e(std.testing.allocator, "function h(){ if (a) { return 1; } else { return 2; } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(a)return 1;else return 2;}", r.output);
+}
+
+test "Codegen #3094: var 선언은 본문으로 valid → {} 제거" {
+    var r = try e2e(std.testing.allocator, "if (a) { var x = 1; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a)var x=1;", r.output);
+}
+
+test "Codegen #3094: let 선언은 {} 유지 (lexical decl)" {
+    var r = try e2e(std.testing.allocator, "if (a) { let x = 1; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a){let x=1;}", r.output);
+}
+
+test "Codegen #3094: class 선언은 {} 유지" {
+    var r = try e2e(std.testing.allocator, "if (a) { class C {} }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(a){class C") != null);
+}
+
+test "Codegen #3094: for 본문 단일 statement → {} 제거" {
+    var r = try e2e(std.testing.allocator, "for (;;) { f(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("for(;;)f();", r.output);
+}
+
+test "Codegen #3094: for-of 본문 → {} 제거" {
+    var r = try e2e(std.testing.allocator, "for (const x of arr) { g(x); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("for(const x of arr)g(x);", r.output);
+}
+
+test "Codegen #3094: while 본문 → {} 제거" {
+    var r = try e2e(std.testing.allocator, "while (c) { f(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("while(c)f();", r.output);
+}
+
+test "Codegen #3094: 2개 이상 statement 는 {} 유지" {
+    var r = try e2e(std.testing.allocator, "if (a) { f(); g(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a){f();g();}", r.output);
+}
+
+test "Codegen #3094: 본문이 if statement 면 {} 유지 (dangling-else 회피, 보수적)" {
+    var r = try e2e(std.testing.allocator, "if (a) { if (b) c(); } else d();");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a){if(b)c();}else d();", r.output);
+}
+
+test "Codegen #3094: 빈 block 은 {} 유지" {
+    var r = try e2e(std.testing.allocator, "if (a) {}");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a){}", r.output);
+}
+
+test "Codegen #3094: throw 본문 → {} 제거" {
+    var r = try e2e(std.testing.allocator, "if (a) { throw e; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a)throw e;", r.output);
+}
+
+test "Codegen #3094: 중첩 — for 안 if 안 expr" {
+    var r = try e2e(std.testing.allocator, "for (const x of arr) { if (x) { use(x); } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("for(const x of arr){if(x)use(x);}", r.output);
+}
+
+test "Codegen #3094: non-minify 는 {} 유지 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "if (a) { f(); }", .{});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{") != null);
+}
+
+test "Codegen #3094: break/continue 본문 → {} 제거" {
+    var r = try e2e(std.testing.allocator, "for (;;) { if (a) { break; } else { continue; } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("for(;;){if(a)break;else continue;}", r.output);
+}
