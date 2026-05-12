@@ -174,8 +174,13 @@ pub fn requestedExportsForReExportRecord(
                     }
                 },
                 .re_export_star => {
+                    // `export * from "./X"` 는 어느 source 가 이 이름을 제공하는지 정적으로
+                    // 알 수 없다 — 후보 source 마다 namespace 전체를 요청해야 한다. 그러지
+                    // 않으면 X 가 이 이름을 안 가졌을 때 X 의 import record 가 deferred 인
+                    // 채로 (wrapped barrel 의 `init_*` 로 도달 가능해) 번들에 남아 raw
+                    // `require()` 가 출력된다 (#3136).
                     if (!nameHasDirectNonStarExport(importer, requested_name)) {
-                        changed = (try requestNamed(self, dep_idx, requested_name)) or changed;
+                        changed = (try requestAll(self, dep_idx)) or changed;
                     }
                 },
                 .local => {},
