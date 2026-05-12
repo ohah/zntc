@@ -140,9 +140,10 @@
 - **결정**: 렉서에서 지원
 - **이유**: 트리쉐이킹의 핵심. esbuild/Bun/oxc 전부 렉서에서 이 주석을 토큰에 달아줌. 함수 호출이 부작용 없음을 표시하는 사실상 표준
 
-### D026: JSX pragma 주석 감지
-- **결정**: 렉서에서 지원
-- **이유**: `/** @jsx h */`, `/** @jsxRuntime automatic */` 등 파일 상단 주석에서 JSX 설정 오버라이드. esbuild/Bun/SWC 전부 지원. 렉서가 파일 시작 주석에서 추출
+### D026: JSX pragma 주석 감지 — 구현 완료
+- **결정**: 지원 (lexer 감지 + transform 단계 module override)
+- **이유**: `/** @jsx h */` / `/** @jsxFrag Fragment */` / `/** @jsxRuntime automatic */` / `/** @jsxImportSource preact */` (single-line `// @jsx h` 포함) 파일 주석에서 JSX 설정 per-file override. esbuild/Bun/SWC/TS/Babel 전부 지원
+- **구현**: lexer(`Scanner`) 가 주석 스캔 중 감지 → `Ast.jsx_pragma_*` 로 carry → `TransformOptions.withModuleJsxPragmas(ast)` 가 module 단위로 `jsx_runtime`/`jsx_factory`/`jsx_fragment`/`jsx_import_source` override. 우선순위 file pragma > tsconfig/CLI. `@jsx`/`@jsxFrag` 는 effective runtime 이 classic 일 때만 효과 (automatic 에선 무시 — esbuild 는 error 이나 TS 처럼 관대)
 
 ### D027: AMD / SystemJS 모듈 출력
 - **결정**: 미지원

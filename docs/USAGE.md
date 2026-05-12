@@ -98,6 +98,26 @@ zntc --bundle src/index.ts --drop-labels=DEV,TEST
 zntc --bundle src/index.ts --pure:React.createElement --pure:PropTypes.*
 ```
 
+### JSX pragma 주석 (per-file override)
+
+파일 주석으로 그 파일만의 JSX 설정을 지정할 수 있다 (esbuild/TS/Babel 동일).
+**우선순위: file pragma > tsconfig / CLI 옵션 > 기본값.**
+
+- `/** @jsx h */` — classic factory (= `--jsx-factory`)
+- `/** @jsxFrag Fragment */` — classic fragment (= `--jsx-fragment`)
+- `/** @jsxRuntime automatic|classic */` — JSX 런타임 모드 (= `--jsx`)
+- `/** @jsxImportSource preact */` — automatic import source (= `--jsx-import-source`)
+
+`//` 한 줄 주석(`// @jsx h`)도 인식한다. `@jsx` / `@jsxFrag` 는 effective 런타임이
+classic 일 때만 효과가 있다 (automatic 모드는 factory 를 안 쓰므로 무시). 프로젝트는
+React(`jsx: react-jsx`)인데 특정 파일만 preact / `@emotion/react` 로 쓰고 싶을 때:
+
+```tsx
+/** @jsxImportSource preact */
+import { render } from "preact";
+export const App = () => <p>preact only here</p>;
+```
+
 ### 플러그인은 `@zntc/core` JS API로 (npm 배포 CLI)
 
 JS 플러그인을 쓰려면 npm 배포 CLI(`packages/core/bin/zntc.mjs`)를 사용. 내부적으로
