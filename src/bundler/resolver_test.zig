@@ -279,6 +279,23 @@ test "resolve: bare specifier with index fallback" {
     try std.testing.expect(pathEndsWith(result.path, "simple/index.js"));
 }
 
+test "resolve: trailing slash bare specifier uses package root" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "node_modules/buffer/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, "node_modules/buffer/index.js");
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = try resolver.resolve(dir_path, "buffer/");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "buffer/index.js"));
+    try std.testing.expectEqual(ModuleType.js, result.module_type);
+}
+
 test "resolve: bare specifier walk up directories" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -318,6 +335,10 @@ test "splitBareSpecifier" {
     try std.testing.expectEqualStrings("react", s2.pkg_name);
     try std.testing.expectEqualStrings("/jsx-runtime", s2.subpath);
 
+    const s2_trailing = splitBareSpecifier("buffer/");
+    try std.testing.expectEqualStrings("buffer", s2_trailing.pkg_name);
+    try std.testing.expectEqualStrings(".", s2_trailing.subpath);
+
     const s3 = splitBareSpecifier("@mui/material");
     try std.testing.expectEqualStrings("@mui/material", s3.pkg_name);
     try std.testing.expectEqualStrings(".", s3.subpath);
@@ -325,6 +346,10 @@ test "splitBareSpecifier" {
     const s4 = splitBareSpecifier("@mui/material/Button");
     try std.testing.expectEqualStrings("@mui/material", s4.pkg_name);
     try std.testing.expectEqualStrings("/Button", s4.subpath);
+
+    const s4_trailing = splitBareSpecifier("@mui/material/");
+    try std.testing.expectEqualStrings("@mui/material", s4_trailing.pkg_name);
+    try std.testing.expectEqualStrings(".", s4_trailing.subpath);
 }
 
 test "resolve: json module type" {
