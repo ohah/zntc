@@ -398,3 +398,64 @@ test "Codegen #3098: using 은 const 로 안 바뀜 (그대로 using)" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "using x = getResource()") != null);
 }
+
+// ============================================================
+// #3096: single-param arrow 의 불필요한 괄호 제거 — minify_whitespace 시
+//   `(x) => ...` → `x => ...`. 단일 plain identifier 파라미터일 때만
+//   (default / rest / destructuring / 0개 / 2개+ 는 괄호 유지).
+// ============================================================
+
+test "Codegen #3096: minify 시 single-param arrow 괄호 제거" {
+    var r = try e2e(std.testing.allocator, "var f = (x) => x;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=x=>x;", r.output);
+}
+
+test "Codegen #3096: 이미 괄호 없는 single-param 은 그대로 (anti-regression)" {
+    var r = try e2e(std.testing.allocator, "var f = x => x + 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=x=>x+1;", r.output);
+}
+
+test "Codegen #3096: 0개 파라미터는 () 유지" {
+    var r = try e2e(std.testing.allocator, "var f = () => 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=()=>1;", r.output);
+}
+
+test "Codegen #3096: 2개 이상 파라미터는 () 유지" {
+    var r = try e2e(std.testing.allocator, "var f = (a, b) => a;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=(a,b)=>a;", r.output);
+}
+
+test "Codegen #3096: rest 파라미터는 () 유지" {
+    var r = try e2e(std.testing.allocator, "var f = (...args) => args;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=(...args)=>args;", r.output);
+}
+
+test "Codegen #3096: default 파라미터는 () 유지" {
+    var r = try e2e(std.testing.allocator, "var f = (x = 1) => x;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=(x=1)=>x;", r.output);
+}
+
+test "Codegen #3096: destructuring 파라미터는 () 유지" {
+    var r = try e2e(std.testing.allocator, "var f = ({ x }) => x;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "f=({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "})=>x") != null);
+}
+
+test "Codegen #3096: async single-param 은 괄호 제거하되 async 공백 유지" {
+    var r = try e2e(std.testing.allocator, "var f = async (x) => x;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=async x=>x;", r.output);
+}
+
+test "Codegen #3096: non-minify 는 (x) 유지 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "var f = (x) => x;", .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f = (x) => x;\n", r.output);
+}

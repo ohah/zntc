@@ -37,26 +37,29 @@ pub fn emitOutputExportsConflictDiag(
 }
 
 /// Entry export struct를 ESM `export { ... }` 구문으로 출력.
+/// #3096: minify_whitespace 시 brace 안 공백 / 항목 사이 공백 / 후행 newline 제거
+/// (`export{a,b as c};`). chunks.zig 의 chunk export emit 과 동일 관습.
 pub fn emitEsmEntryExports(
     allocator: std.mem.Allocator,
     entries: []const FinalExportEntry,
+    minify_whitespace: bool,
 ) ![]const u8 {
     if (entries.len == 0) return try allocator.dupe(u8, "");
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    try out.appendSlice(allocator, "export {");
+    try out.appendSlice(allocator, if (minify_whitespace) "export{" else "export {");
     for (entries, 0..) |e, i| {
         if (i > 0) try out.appendSlice(allocator, ",");
-        try out.append(allocator, ' ');
+        if (!minify_whitespace) try out.append(allocator, ' ');
         try out.appendSlice(allocator, e.local);
         if (!std.mem.eql(u8, e.local, e.exported)) {
             try out.appendSlice(allocator, " as ");
             try out.appendSlice(allocator, e.exported);
         }
     }
-    try out.appendSlice(allocator, " };\n");
+    try out.appendSlice(allocator, if (minify_whitespace) "};" else " };\n");
     return try out.toOwnedSlice(allocator);
 }
 
@@ -64,25 +67,26 @@ pub fn emitEsmEntryExports(
 pub fn emitWrappedEntryExports(
     allocator: std.mem.Allocator,
     entries: []const FinalExportEntry,
+    minify_whitespace: bool,
 ) ![]const u8 {
     if (entries.len == 0) return try allocator.dupe(u8, "");
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    try out.appendSlice(allocator, "return {");
+    try out.appendSlice(allocator, if (minify_whitespace) "return{" else "return {");
     for (entries, 0..) |e, i| {
         if (i > 0) try out.appendSlice(allocator, ",");
-        try out.append(allocator, ' ');
+        if (!minify_whitespace) try out.append(allocator, ' ');
         if (!e.isDefault() and std.mem.eql(u8, e.local, e.exported)) {
             try out.appendSlice(allocator, e.local);
         } else {
             try out.appendSlice(allocator, e.exported);
-            try out.appendSlice(allocator, ": ");
+            try out.appendSlice(allocator, if (minify_whitespace) ":" else ": ");
             try out.appendSlice(allocator, e.local);
         }
     }
-    try out.appendSlice(allocator, " };\n");
+    try out.appendSlice(allocator, if (minify_whitespace) "};" else " };\n");
     return try out.toOwnedSlice(allocator);
 }
 
@@ -223,9 +227,19 @@ test "emitEsmEntryExports: emits export statement from typed entries" {
         FinalExportEntry{ .local = "b$1", .exported = "b" },
         FinalExportEntry{ .local = "x", .exported = "default" },
     };
-    const out = try emitEsmEntryExports(std.testing.allocator, entries);
+    const out = try emitEsmEntryExports(std.testing.allocator, entries, false);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("export { a, b$1 as b, x as default };\n", out);
+}
+
+test "emitEsmEntryExports: minify 시 공백/newline 제거 (#3096)" {
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a" },
+        FinalExportEntry{ .local = "b$1", .exported = "b" },
+    };
+    const out = try emitEsmEntryExports(std.testing.allocator, entries, true);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("export{a,b$1 as b};", out);
 }
 
 test "emitWrappedEntryExports: emits object return from typed entries" {
@@ -234,7 +248,17 @@ test "emitWrappedEntryExports: emits object return from typed entries" {
         FinalExportEntry{ .local = "b$1", .exported = "b" },
         FinalExportEntry{ .local = "x", .exported = "default" },
     };
-    const out = try emitWrappedEntryExports(std.testing.allocator, entries);
+    const out = try emitWrappedEntryExports(std.testing.allocator, entries, false);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("return { a, b: b$1, default: x };\n", out);
+}
+
+test "emitWrappedEntryExports: minify 시 공백/newline 제거 (#3096)" {
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a" },
+        FinalExportEntry{ .local = "b$1", .exported = "b" },
+    };
+    const out = try emitWrappedEntryExports(std.testing.allocator, entries, true);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("return{a,b:b$1};", out);
 }

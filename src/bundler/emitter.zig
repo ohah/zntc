@@ -1796,7 +1796,7 @@ pub fn emitModule(
     const final_exports = if (final_export_entries) |entries| blk: {
         if (options.format.isWrappedFormat()) {
             if (options.format != .iife or options.global_name != null) {
-                final_exports_buf = try emitWrappedEntryExports(allocator, entries);
+                final_exports_buf = try emitWrappedEntryExports(allocator, entries, options.minify_whitespace);
                 break :blk final_exports_buf;
             }
             // 래핑 포맷 (globalName 없음, IIFE): export는 syntax error이므로 제거
@@ -1815,7 +1815,7 @@ pub fn emitModule(
             };
             break :blk final_exports_buf;
         }
-        final_exports_buf = try emitEsmEntryExports(allocator, entries);
+        final_exports_buf = try emitEsmEntryExports(allocator, entries, options.minify_whitespace);
         break :blk final_exports_buf;
     } else raw_final_exports;
 

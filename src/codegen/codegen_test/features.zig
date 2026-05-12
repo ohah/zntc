@@ -117,10 +117,10 @@ test "Codegen: arrow no params" {
 }
 
 test "Codegen: arrow single param" {
-    // esbuild 호환: 단일 파라미터도 항상 괄호로 감싸기
+    // #3096: minify 시 단일 plain identifier 파라미터는 괄호 생략 (esbuild/SWC 동일)
     var r = try e2e(std.testing.allocator, "const f = x => x;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const f=(x)=>x;", r.output);
+    try std.testing.expectEqualStrings("const f=x=>x;", r.output);
 }
 
 test "Codegen: arrow block body" {
