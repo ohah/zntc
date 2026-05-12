@@ -304,10 +304,20 @@ fn isImportSpecifierUnused(self: *const Transformer, spec_idx: NodeIndex, spec_n
     if (spec_node.tag != .import_specifier) return false;
     const local_idx = spec_node.data.binary.right;
     const sym_node_idx: u32 = if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
+    const local_node = if (!local_idx.isNone()) self.ast.getNode(local_idx) else spec_node;
+    const local_name = self.ast.getText(local_node.span);
+
+    // classic JSX lowering 은 source 에 없던 factory/fragment identifier 참조를 만든다 —
+    // elision 이 보는 reference / binding_lite 스캔에는 안 잡히므로, head identifier 가
+    // 일치하면 value-use 로 간주해 keep. automatic 모드의 jsx-runtime import 는
+    // transformer 가 직접 주입하므로 (user import 아님) 이 경로와 무관 (#3063).
+    if (self.ast.has_jsx and self.options.shouldLowerJsx() and self.options.jsx_runtime == .classic) {
+        if (std.mem.eql(u8, local_name, self.options.jsxClassicFactoryHead()) or
+            std.mem.eql(u8, local_name, self.options.jsxClassicFragmentHead()))
+            return false;
+    }
 
     if (self.binding_lite) |binding_lite| {
-        const local_node = if (!local_idx.isNone()) self.ast.getNode(local_idx) else spec_node;
-        const local_name = self.ast.getText(local_node.span);
         if (binding_lite.namedImportValueUse(local_name)) |used_as_value| return !used_as_value;
         return false;
     }

@@ -319,4 +319,22 @@ pub const TransformOptions = struct {
     pub fn shouldLowerJsx(self: @This()) bool {
         return self.jsx_transform and self.jsx_runtime != .preserve;
     }
+
+    /// classic JSX lowering 이 참조하는 factory 의 head identifier
+    /// (`React.createElement` → `React`, `h` → `h`). 이 식별자는 source 에 직접
+    /// 쓰이지 않으므로 import elision 이 별도로 살아있는 것으로 취급해야 한다 (#3063).
+    pub fn jsxClassicFactoryHead(self: @This()) []const u8 {
+        return jsxHeadIdent(self.jsx_factory);
+    }
+
+    /// classic JSX `<>...</>` lowering 이 참조하는 fragment 의 head identifier.
+    pub fn jsxClassicFragmentHead(self: @This()) []const u8 {
+        return jsxHeadIdent(self.jsx_fragment);
+    }
 };
+
+/// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
+/// `factory[0..첫 '.']` 를 root-scope binding 으로 attach 하므로 둘이 일치해야 한다.
+fn jsxHeadIdent(spec: []const u8) []const u8 {
+    return std.mem.sliceTo(spec, '.');
+}

@@ -595,6 +595,35 @@ render(<App />, mount);
     },
   },
   {
+    // 회귀 테스트 — #3063: classic `--jsx-factory=h` 가 import 의 유일 사용처일 때
+    // import elision 이 lowering 전 AST 만 보고 `h`/`Fragment` specifier 를 제거 →
+    // `h(...)` ReferenceError. fix 이후 factory/fragment head ident 를 value-use 로 취급.
+    name: 'H11_preact_jsx_classic_named_factory',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.tsx',
+    extraArgs: ['--jsx=classic', '--jsx-factory=h', '--jsx-fragment=Fragment'],
+    entry: `import { h, Fragment, render } from 'preact';
+
+function App() {
+  return (
+    <>
+      <p data-testid="classic">classic-jsx-ok</p>
+      <span data-testid="classic2">classic-frag-ok</span>
+    </>
+  );
+}
+
+const mount = document.createElement('div');
+document.body.appendChild(mount);
+render(<App />, mount);
+`,
+    expect: {
+      classic: 'classic-jsx-ok',
+      classic2: 'classic-frag-ok',
+    },
+  },
+  {
     name: 'H3_ts_legacy_decorator',
     category: 'H_jsx_ts',
     packages: [],
