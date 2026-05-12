@@ -2334,9 +2334,10 @@ test "JSX automatic: _createElement injected for .js source (expo-router useScre
 // 검증 invariant:
 // 1. helper 가 prologue 에 1번만 emit (중복 방지)
 // 2. helper 의 inGuard pattern 보존 (Metro 동등) — nested 호출은 throw propagate
-// 3. entry chain unroll — entry init body 의 module init 호출이 entry trigger 위치에
-//    separate top-level statement 로 emit 되어 각각 별 outer try/catch
-// 4. 비-entry 모듈의 chain 호출은 그대로 (factory body 안)
+// 3. runBeforeMain unroll — runBeforeMainModule은 entry trigger 앞의 separate
+//    top-level statement 로 emit
+// 4. entry dependency chain 과 비-entry 모듈 chain 호출은 factory body 안에 남아
+//    nested throw propagation 보존
 // 5. ErrorUtils 정의 환경 / 미정의 환경 fallback 정확
 // 6. side-effect / re-export / CJS / mixed / TLA edge case 모두 안전
 // 7. minify 출력에서도 동일 의미
@@ -2448,9 +2449,10 @@ test "entry_error_guard #4: 단순 entry — chain unroll 없이 entry trigger �
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(") != null);
 }
 
-test "entry_error_guard #5: 다중 chain entry — 각 import 의 init 호출이 separate outer wrap" {
-    // Option B 핵심: entry init body 의 chain 이 entry trigger 위치에 unroll 되어
-    // 각 모듈 init 호출이 별 top-level `__zntc_guarded(...)` statement 가 됨.
+test "entry_error_guard #5: 다중 chain entry — import init 은 entry guard 안에 유지" {
+    // Metro는 entry `__r(entry)` 하나만 outer guard로 감싸고, entry import chain은
+    // factory 내부 nested require로 실행한다. dependency throw가 entry 평가를 중단해야
+    // 하므로 import init을 top-level 개별 guard로 풀면 안 된다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.js", "globalThis.__guardA = 1; export const a = globalThis.__guardA;\n");
@@ -2471,10 +2473,58 @@ test "entry_error_guard #5: 다중 chain entry — 각 import 의 init 호출이
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 호출 site count 가 chain 수에 비례 — entry 3 imports + entry 자체 trigger
-    const guarded_calls = std.mem.count(u8, result.output, "__zntc_guarded(");
-    // 최소 4 (3 chain + 1 entry trigger). 실제로 더 많을 수 있음 (esm_wrap 의 다른 path)
-    try std.testing.expect(guarded_calls >= 4);
+    const marker = "//#endregion\n";
+    const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
+    const top_level = result.output[top_start..];
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, top_level, "__zntc_guarded("));
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_a") == null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_b") == null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_c") == null);
+}
+
+test "entry_error_guard #5b: runBeforeMain 만 entry 앞에 분리하고 entry import 는 중첩 유지" {
+    // 재현 최소 케이스: runBeforeMain이 ErrorUtils를 설치한 뒤 entry dependency가 throw.
+    // Metro에서는 entry outer guard가 그 throw를 report하고 entry factory를 중단하므로
+    // 뒤 import/entry body가 실행되지 않는다. zntc가 entry import를 top-level 개별 guard로
+    // unroll하면 throw가 swallow되어 뒤 import가 계속 실행된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "setup.js", "globalThis.ErrorUtils = { reportFatalError(e) { globalThis.reported = e.message; } };\n");
+    try writeFile(tmp.dir, "boom.js", "throw new Error('boom');\n");
+    try writeFile(tmp.dir, "after.js", "globalThis.afterRan = true;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import './boom.js';
+        \\import './after.js';
+        \\globalThis.entryRan = true;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const setup = try absPath(&tmp, "setup.js");
+    defer std.testing.allocator.free(setup);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+        .run_before_main = &.{setup},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const marker = "//#endregion\n";
+    const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
+    const top_level = result.output[top_start..];
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_boom") == null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_after") == null);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return init_boom();});") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return init_after();});") != null);
 }
 
 test "entry_error_guard #6: side-effect import — wrap 적용 + 평가 시점 보존" {
@@ -2694,9 +2744,10 @@ test "entry_error_guard #14: 비-entry 모듈의 chain 도 wrap (preamble + side
     try std.testing.expect(guarded_calls >= 2);
 }
 
-test "entry_error_guard #15: entry chain unroll — entry init body 안 chain 라인이 entry trigger 위치로 이동" {
-    // Option B 핵심 검증: entry 모듈의 init body 안에 chain init 호출이 *없어야* 하고,
-    // 대신 entry trigger 위치 (bundle 끝) 에 separate top-level 로 emit 되어야 함.
+test "entry_error_guard #15: entry import chain 은 entry init body 안에 남김" {
+    // Metro 동등성 검증: entry 모듈의 init body 안에 import init 호출이 남아야 한다.
+    // bundle 끝 entry trigger 영역에는 entry 자체 호출만 있어야 dependency throw가
+    // 같은 outer guard 아래에서 전파된다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "dep.js", "export const d = 1;\n");
@@ -2713,12 +2764,10 @@ test "entry_error_guard #15: entry chain unroll — entry init body 안 chain �
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // bundle 의 마지막 부분 (entry trigger 영역) 에 chain unroll 결과 — separate
-    // top-level `__zntc_guarded(...);` statement 가 여러 개 존재해야 함.
-    // 정확한 패턴 검증은 구현 후 strict assertion 으로 강화.
-    const tail_start = if (result.output.len > 2000) result.output.len - 2000 else 0;
-    const tail = result.output[tail_start..];
-    try std.testing.expect(std.mem.indexOf(u8, tail, "__zntc_guarded(") != null);
+    const marker = "//#endregion\n";
+    const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
+    const top_level = result.output[top_start..];
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_dep") == null);
 }
 
 test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metadata 두 사이트 일관" {
@@ -2822,9 +2871,9 @@ test "entry_error_guard #18: silent swallow/debug toggle 제거 — Metro ErrorU
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guard_global.ErrorUtils.reportFatalError") != null);
 }
 
-test "entry_error_guard #19: dev_mode + entry_chain — __zntc_modules[\"...\"].fn() 도 wrap" {
-    // dev_mode 에서는 init 호출이 `__zntc_modules["id"].fn()` 형식. entry_chain unroll
-    // 시 이것도 `__zntc_guarded(function(){return __zntc_modules["id"].fn();})` 로 wrap 되어야 함.
+test "entry_error_guard #19: dev_mode + entry import chain — __zntc_modules[\"...\"].fn() 도 중첩 wrap" {
+    // dev_mode 에서는 init 호출이 `__zntc_modules["id"].fn()` 형식이다. entry import
+    // chain도 entry factory 내부에 남기되 동일한 guard lambda 형식을 유지해야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "dep.js", "export const d = 1;\n");
@@ -2847,9 +2896,14 @@ test "entry_error_guard #19: dev_mode + entry_chain — __zntc_modules[\"...\"].
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // dev_mode 형식 + wrap 둘 다 존재.
+    // dev_mode 형식 + nested wrap 둘 다 존재.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return __zntc_modules[") != null);
+    const marker = "//#endregion\n";
+    const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
+    const top_level = result.output[top_start..];
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, top_level, "__zntc_guarded("));
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "dep.js") == null);
 }
 
 test "entry_error_guard #20: silent_console_error_patterns 정확도 — 실제 expo 메시지 형식과 매치" {
