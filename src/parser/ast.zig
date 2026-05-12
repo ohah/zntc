@@ -1493,6 +1493,17 @@ pub const Ast = struct {
         return self.source[span.start..span.end];
     }
 
+    /// `getText` 와 같지만, span 이 `string_table` 을 가리키면 (transformer 가 `addString`
+    /// 으로 만든 synthetic 이름 — runtime helper / JSX runtime import 등) `allocator` 로
+    /// owned 복사를 반환한다. `string_table` 은 후속 transform/link 단계에서 reallocate/free
+    /// 될 수 있어, raw 슬라이스를 parse 이후까지 들고 가면 dangling → 출력에 `0xaa` 등
+    /// garbage 가 섞인다 (#3100). source span 은 `source` 가 안 움직이므로 그대로 반환.
+    pub fn getTextStable(self: *const Ast, allocator: std.mem.Allocator, span: Span) ![]const u8 {
+        const text = self.getText(span);
+        if (span.start & STRING_TABLE_BIT != 0) return allocator.dupe(u8, text);
+        return text;
+    }
+
     /// object_property 노드에서 value 위치 노드를 반환한다.
     /// shorthand `{ x }` 는 right 가 none → key (left) 가 곧 value.
     /// 그 외 explicit `{ k: v }` 는 right 가 value.

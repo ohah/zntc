@@ -554,7 +554,10 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn declareSymbolWithNode(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span, node_idx: ?u32) AllocError!void {
-        const name_text = self.ast.getText(name_span);
+        const is_synthetic_name = name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0;
+        // transformer 가 `addString` 으로 만든 이름(string_table span)은 owned 복사 — symbol
+        // `synthetic_name` / scope_map 키로 raw 슬라이스를 들고 가면 dangling (#3100).
+        const name_text = try self.ast.getTextStable(self.allocator, name_span);
 
         // function-like 선언의 스코핑 규칙:
         // - var scope(global/function/module) 안에서 직접 선언: var scope에 등록 (호이스팅)
@@ -659,7 +662,7 @@ pub const SemanticAnalyzer = struct {
             .decl_flags = decl_flags,
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
-            .synthetic_name = if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0) name_text else "",
+            .synthetic_name = if (is_synthetic_name) name_text else "",
         });
 
         // symbol_ids에 선언 노드 기록
@@ -3062,7 +3065,11 @@ pub const SemanticAnalyzer = struct {
         decl_span: Span,
         node_idx: u32,
     ) AllocError!void {
-        const name_text = self.ast.getText(name_span);
+        // helper import 의 이름은 transformer 가 `addString` 으로 만든 string_table span
+        // — owned 복사를 써야 symbol synthetic_name + helper_scope_map/scope_map 키가
+        // dangling 되지 않는다 (#3100).
+        const is_synthetic_name = name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0;
+        const name_text = try self.ast.getTextStable(self.allocator, name_span);
         const target_scope = self.findVarScope();
 
         const sym_index = self.symbols.items.len;
@@ -3073,7 +3080,7 @@ pub const SemanticAnalyzer = struct {
             .decl_flags = SymbolKind.import_binding.declFlags(),
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
-            .synthetic_name = if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0) name_text else "",
+            .synthetic_name = if (is_synthetic_name) name_text else "",
         });
 
         if (node_idx < self.symbol_ids.items.len) {
