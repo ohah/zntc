@@ -320,8 +320,65 @@ fn tryEmitIfReturnTernary(self: anytype, t: anytype) !bool {
     return true;
 }
 
+/// `idx` 가 `<expr>;` (expression statement) 이거나 그것 하나만 담은 block 이면 그 expr 의 idx,
+/// 아니면 null.
+fn singleExprStmt(self: anytype, idx_in: NodeIndex) ?NodeIndex {
+    var idx = idx_in;
+    if (idx.isNone()) return null;
+    var n = self.ast.getNode(idx);
+    if (n.tag == .block_statement) {
+        idx = singleNonElidedStmt(self, n) orelse return null;
+        n = self.ast.getNode(idx);
+    }
+    if (n.tag != .expression_statement) return null;
+    return n.data.unary.operand;
+}
+
+/// `&&` 의 좌/우 피연산자로 paren 없이 올 수 있는 노드 tag 인지 — `?:` test whitelist 에서
+/// `logical_expression` 만 추가로 제외 (`||`/`??` 가 `&&` 보다 느슨해 `(a||b)&&c` paren 필요;
+/// `a&&b` 는 valid 지만 op 검사 회피 위해 통째로 제외 — 보수적).
+fn isSafeAndOperand(tag: ast_mod.Node.Tag) bool {
+    return isSafeTernaryTest(tag) and tag != .logical_expression;
+}
+
+/// `if(c){a()}else{b()}` → `c?a():b();`, `if(c){a()}` (else 없음/elided) → `c&&a();`.
+/// minify_syntax 전용. 양쪽 본문이 단일 expression statement 이고 paren-safety 충족 시만.
+fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
+    if (!self.options.minify_syntax) return false;
+    const then_expr = singleExprStmt(self, t.b) orelse return false;
+    const has_else = !t.c.isNone() and !isElidedAlternate(self, t.c);
+    if (!has_else) {
+        // `if(c)a();` → `c&&a();` — c 와 a() 둘 다 `&&` 피연산자로 paren 없이 와야 함.
+        if (!isSafeAndOperand(self.ast.getNode(t.a).tag)) return false;
+        if (!isSafeAndOperand(self.ast.getNode(then_expr).tag)) return false;
+        try self.emitNode(t.a);
+        try writeSpace(self);
+        try self.write("&&");
+        try writeSpace(self);
+        try self.emitNode(then_expr);
+        try self.writeByte(';');
+        return true;
+    }
+    const else_expr = singleExprStmt(self, t.c) orelse return false;
+    if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return false;
+    if (self.ast.getNode(then_expr).tag == .sequence_expression) return false;
+    if (self.ast.getNode(else_expr).tag == .sequence_expression) return false;
+    try self.emitNode(t.a);
+    try writeSpace(self);
+    try self.writeByte('?');
+    try writeSpace(self);
+    try self.emitNode(then_expr);
+    try writeSpace(self);
+    try self.writeByte(':');
+    try writeSpace(self);
+    try self.emitNode(else_expr);
+    try self.writeByte(';');
+    return true;
+}
+
 fn emitIfVerbatim(self: anytype, t: anytype) !void {
     if (try tryEmitIfReturnTernary(self, t)) return;
+    if (try tryEmitIfExprStatement(self, t)) return;
     if (self.options.minify_whitespace) try self.write("if(") else try self.write("if (");
     try self.emitNode(t.a);
     try self.writeByte(')');

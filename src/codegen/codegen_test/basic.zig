@@ -636,3 +636,87 @@ test "Codegen #3095: minify_syntax off → 변환 안 함 (anti-regression)" {
     defer r.deinit();
     try std.testing.expectEqualStrings("function h(){if(c)return 1;else return 2;}", r.output);
 }
+
+// ============================================================
+// #3107: if → 논리/삼항 식 변환 — minify_syntax 시
+//   `if(c){a()}else{b()}` → `c?a():b();`, `if(c){a()}` → `c&&a();`.
+//   양쪽 본문이 단일 expression statement 이고 paren-safety 충족 시만.
+// ============================================================
+
+test "Codegen #3107: if/else expr → c?a():b()" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) { a(); } else { b(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("c?a():b();", r.output);
+}
+
+test "Codegen #3107: bare expr 양쪽도 → c?a():b()" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) a(); else b();");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("c?a():b();", r.output);
+}
+
+test "Codegen #3107: 양쪽 assignment → c?x=1:x=2" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) x = 1; else x = 2;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("c?x=1:x=2;", r.output);
+}
+
+test "Codegen #3107: else 없음 → c&&a()" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) { a(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("c&&a();", r.output);
+}
+
+test "Codegen #3107: bare 본문 else 없음 → c&&a()" {
+    var r = try e2eMinAll(std.testing.allocator, "if (x.y) a();");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("x.y&&a();", r.output);
+}
+
+test "Codegen #3107: logical cond 은 ?: test 로는 안전 (x.y&&z?a():b())" {
+    var r = try e2eMinAll(std.testing.allocator, "if (x.y && z) a(); else b();");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("x.y&&z?a():b();", r.output);
+}
+
+test "Codegen #3107: logical cond + else 없음 은 && 변환 안 함 (paren 필요)" {
+    var r = try e2eMinAll(std.testing.allocator, "if (a || b) f();");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(a||b)f();", r.output);
+}
+
+test "Codegen #3107: 본문이 assignment + else 없음 은 && 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(c)x=1;", r.output);
+}
+
+test "Codegen #3107: 본문이 logical expr + else 없음 은 && 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) a || b;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(c)a||b;", r.output);
+}
+
+test "Codegen #3107: 2개 statement 면 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "if (c) { a(); b(); } else { x(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(c){a();b()}else x();", r.output);
+}
+
+test "Codegen #3107: else-if 체인 — 안쪽부터 부분 적용" {
+    var r = try e2eMinAll(std.testing.allocator, "if (p) a(); else if (q) b(); else f();");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(p)a();else q?b():f();", r.output);
+}
+
+test "Codegen #3107: 한쪽이 expr 아니면(return) 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { a(); } else { return 1; } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)a();else return 1}", r.output);
+}
+
+test "Codegen #3107: minify_syntax off → 변환 안 함 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "if (c) a(); else b();", .{ .minify_whitespace = true });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("if(c)a();else b();", r.output);
+}
