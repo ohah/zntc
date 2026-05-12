@@ -29,6 +29,11 @@ const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
 
+inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Interop {
+    if (self.graph.resolve_cache.platform == .react_native) return .babel;
+    return if (importer.def_format.isEsm()) .node else .babel;
+}
+
 /// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 있는지 조회.
 /// analyzer 가 각 Reference 에 `type_context` / `value_as_type` flag 를 기록하므로,
 /// symbol 의 Reference 들 중 **순수 value read** 가 하나라도 있으면 false. 하나도 없으면
@@ -423,7 +428,7 @@ pub fn buildMetadataForAst(
                             try renames.put(sym_idx, direct_access);
                         }
                     } else {
-                        const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                        const interop_mode = cjsInteropMode(self, &m);
                         const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                         const hoisted_name = try self.allocator.dupe(u8, preamble_name);
                         errdefer self.allocator.free(hoisted_name);
@@ -453,7 +458,7 @@ pub fn buildMetadataForAst(
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                 const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
-                const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                const interop_mode = cjsInteropMode(self, &m);
                 // ESM-wrapped + helper binding: top-level 에 이미 var 선언됨 (esm_wrap) → 할당만
                 if (is_helper_binding and m.wrap_kind == .esm) {
                     if (ib.importsDefault() and m.canUseDirectCjsDefaultImport(canonical_m_opt.?)) {
@@ -553,7 +558,7 @@ pub fn buildMetadataForAst(
                 if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
                     const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
-                    const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                    const interop_mode2 = cjsInteropMode(self, &m);
                     const effective_name = rb.canonical.export_name;
                     if (std.mem.eql(u8, effective_name, "default") and m.canUseDirectCjsDefaultImport(cjs_mod_opt.?)) {
                         try preamble.writeCjsDirectDefault(preamble_name, req_var, false);
