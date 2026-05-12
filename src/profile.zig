@@ -325,23 +325,24 @@ const all_categories: [num_categories]Category = blk: {
 const ProfileMask = std.StaticBitSet(num_categories);
 
 /// 활성 카테고리 비트마스크. hot path 에서는 `enabled()` 의 bitset lookup 만 수행.
-/// 프로세스 전역 — 초기화 후 read-only 로 다뤄 thread-safe. 수집 data array 는 현재
-/// single-thread 가정 (PR 7 에서 per-thread merge 로 확장 예정).
+/// 프로세스 전역 — 초기화 후 read-only 로 다뤄 thread-safe.
 var enabled_mask: ProfileMask = ProfileMask.initEmpty();
 
 /// 현재 level. Reporter 가 어떤 수준까지 노출할지 결정.
 var current_level: Level = .summary;
 
-/// 각 category 별 누적 시간 (ns).
+/// 각 category 별 누적 시간 (ns) — 모든 스레드 합산.
 /// Parent scope 전체 시간을 보존하는 inclusive total 이다.
+/// 번들러는 phase 를 thread pool 에서 돌리므로 increment 는 atomic 으로 한다 (`recordTiming`).
+/// 읽기(`totalNs` 등 / reporter)는 worker join 이후라 race 없지만 일관성 위해 atomic load.
 var totals_ns: [num_categories]u64 = [_]u64{0} ** num_categories;
 
-/// 각 category 별 child scope 제외 시간 (ns).
+/// 각 category 별 child scope 제외 시간 (ns) — 모든 스레드 합산.
 /// `total_ms` 는 기존 호환성을 위해 inclusive 로 유지하고, 전체 합계/JSON self_ms 는
 /// 이 값을 사용해 nested phase 중복 합산을 피한다.
 var self_totals_ns: [num_categories]u64 = [_]u64{0} ** num_categories;
 
-/// 각 category 별 호출 횟수.
+/// 각 category 별 호출 횟수 — 모든 스레드 합산.
 var counts: [num_categories]u32 = [_]u32{0} ** num_categories;
 
 const max_scope_depth = 128;
@@ -350,8 +351,17 @@ const ActiveScope = struct {
     child_ns: u64 = 0,
 };
 
-var active_scopes: [max_scope_depth]ActiveScope = [_]ActiveScope{.{}} ** max_scope_depth;
-var active_scope_len: u8 = 0;
+/// Scope nesting 스택은 **스레드별** 로 둔다. 예전엔 프로세스 전역이라 worker thread 들이
+/// 같은 스택을 동시에 push/pop → `stack_index` 계산이 깨지면서 parent scope 가 자기
+/// inclusive 시간을 전부 self 로 기록 → 합계가 wall time 의 수십 배로 부풀던 버그.
+threadlocal var active_scopes: [max_scope_depth]ActiveScope = [_]ActiveScope{.{}} ** max_scope_depth;
+threadlocal var active_scope_len: u8 = 0;
+
+/// 프로파일 활성화 시점 — reporter 가 wall-clock 경과를 함께 보여주려고 보관.
+/// Σself(모든 스레드 누적)은 병렬 구간 때문에 wall 보다 클 수 있어 비교 기준이 필요하다.
+/// 활성화(`addFromCsv`/`addCategories`)는 worker thread 가 생기기 전 startup 에서 1회뿐이라
+/// hot path(`begin`) 에 검사를 둘 필요 없이 여기서 한 번 찍는다.
+var wall_start: ?std.time.Instant = null;
 
 // ============================================================================
 // Activation API (CLI / NAPI / env 공용)
@@ -378,6 +388,11 @@ pub fn setLevel(lv: Level) void {
     current_level = lv;
 }
 
+/// 활성화된 직후 호출 — wall-clock 기준점을 1회 찍는다 (이미 찍혔으면 no-op).
+fn markActivated() void {
+    if (wall_start == null and anyEnabled()) wall_start = std.time.Instant.now() catch null;
+}
+
 /// 쉼표 구분 카테고리 목록을 mask 에 합집합으로 추가. `all` / `none` 키워드 지원.
 /// Parent category 지정 시 child (prefix 매칭) 도 자동 활성.
 pub fn addFromCsv(csv: []const u8) void {
@@ -398,6 +413,7 @@ pub fn addFromCsv(csv: []const u8) void {
             enableCategoryAndChildren(c);
         }
     }
+    markActivated();
 }
 
 /// 문자열 배열을 mask 에 합집합으로 추가 (NAPI option 용).
@@ -415,6 +431,7 @@ pub fn addCategories(names: []const []const u8) void {
             enableCategoryAndChildren(c);
         }
     }
+    markActivated();
 }
 
 /// `ZNTC_PROFILE` / `ZNTC_PROFILE_LEVEL` env 를 읽어 활성화. 미설정 시 no-op.
@@ -440,7 +457,10 @@ fn zeroCounters() void {
     totals_ns = [_]u64{0} ** num_categories;
     self_totals_ns = [_]u64{0} ** num_categories;
     counts = [_]u32{0} ** num_categories;
+    // active_scope_len 은 threadlocal — 호출 스레드 것만 리셋된다. 호출처(test reset / HMR
+    // rebuild 직전)는 모두 single-thread 라 안전; worker 들은 join 된 상태(depth 0)다.
     active_scope_len = 0;
+    wall_start = null;
 }
 
 /// 테스트 / 재초기화용. 전체 상태 초기화 (mask + level + counters 모두).
@@ -541,22 +561,24 @@ pub inline fn beginMaybe(cat: ?Category) Scope {
 
 fn recordTiming(cat: Category, ns: u64, self_ns: u64) void {
     const idx = @intFromEnum(cat);
-    totals_ns[idx] += ns;
-    self_totals_ns[idx] += self_ns;
-    counts[idx] += 1;
+    // 여러 worker thread 가 동시에 기록할 수 있으므로 atomic add (lost update 방지).
+    // 측정 구간(`t.read()`) 밖이라 contention 시간이 sample 에 섞이지 않는다.
+    _ = @atomicRmw(u64, &totals_ns[idx], .Add, ns, .monotonic);
+    _ = @atomicRmw(u64, &self_totals_ns[idx], .Add, self_ns, .monotonic);
+    _ = @atomicRmw(u32, &counts[idx], .Add, 1, .monotonic);
 }
 
-/// 수집된 원시 데이터 조회 (테스트 + 외부 리포터용).
+/// 수집된 원시 데이터 조회 (테스트 + 외부 리포터용). 모든 스레드 합산값.
 pub fn totalNs(cat: Category) u64 {
-    return totals_ns[@intFromEnum(cat)];
+    return @atomicLoad(u64, &totals_ns[@intFromEnum(cat)], .monotonic);
 }
 
 pub fn selfNs(cat: Category) u64 {
-    return self_totals_ns[@intFromEnum(cat)];
+    return @atomicLoad(u64, &self_totals_ns[@intFromEnum(cat)], .monotonic);
 }
 
 pub fn count(cat: Category) u32 {
-    return counts[@intFromEnum(cat)];
+    return @atomicLoad(u32, &counts[@intFromEnum(cat)], .monotonic);
 }
 
 // ============================================================================
@@ -575,8 +597,25 @@ pub fn report(writer: anytype, format: Format) !void {
 
 fn totalAllNs() u64 {
     var sum: u64 = 0;
-    for (self_totals_ns) |ns| sum += ns;
+    for (&self_totals_ns) |*ns| sum += @atomicLoad(u64, ns, .monotonic);
     return sum;
+}
+
+/// 프로파일 활성화 이후 경과한 실제 벽시계 시간 (ns). 측정 안 시작했으면 0.
+/// 병렬 phase 때문에 Σself 가 wall 을 초과하는 게 정상이므로 비교 기준으로 함께 보여준다.
+fn wallNs() u64 {
+    const start = wall_start orelse return 0;
+    const now = std.time.Instant.now() catch return 0;
+    return now.since(start);
+}
+
+fn nsToMs(ns: u64) f64 {
+    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+}
+
+fn pctOf(part: u64, whole: u64) f64 {
+    if (whole == 0) return 0.0;
+    return @as(f64, @floatFromInt(part)) / @as(f64, @floatFromInt(whole)) * 100.0;
 }
 
 fn isTopLevel(cat: Category) bool {
@@ -606,26 +645,24 @@ fn reportTable(writer: anytype) !void {
 
     inline for (@typeInfo(Category).@"enum".fields) |f| {
         const cat = @field(Category, f.name);
-        const idx = @intFromEnum(cat);
+        const cnt = count(cat);
         const is_sub = !isTopLevel(cat);
-        const skip = counts[idx] == 0 or (current_level == .summary and is_sub);
+        const skip = cnt == 0 or (current_level == .summary and is_sub);
         if (!skip) {
-            const ns = totals_ns[idx];
-            const self_ns = self_totals_ns[idx];
-            const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
-            const pct = @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0;
-            const name = Category.displayName(cat);
-
+            const self_ns = selfNs(cat);
             try writer.print("{s: <20} {d: >7.2}ms  {d: >7.2}ms  {d: >4.1}%  {d: >5}\n", .{
-                name, ms, self_ms, pct, counts[idx],
+                Category.displayName(cat), nsToMs(totalNs(cat)), nsToMs(self_ns), pctOf(self_ns, total), cnt,
             });
         }
     }
 
     try writer.writeAll("--------------------|-----------|-----------|-------|------\n");
-    const total_ms = @as(f64, @floatFromInt(total)) / 1_000_000.0;
-    try writer.print("{s: <20} {d: >7.2}ms  {d: >7.2}ms  100.0%\n", .{ "total", total_ms, total_ms });
+    // `total` = Σself(모든 스레드). 병렬 phase 가 있으면 wall 보다 큰 게 정상.
+    try writer.print("{s: <20} {d: >7.2}ms  {d: >7.2}ms  100.0%   (Σ self, all threads)\n", .{ "total", nsToMs(total), nsToMs(total) });
+    const wall_ns = wallNs();
+    if (wall_ns > 0) {
+        try writer.print("{s: <20} {d: >7.2}ms\n", .{ "wall", nsToMs(wall_ns) });
+    }
 }
 
 fn reportTree(writer: anytype) !void {
@@ -637,35 +674,32 @@ fn reportTree(writer: anytype) !void {
         return;
     }
 
-    const total_ms = @as(f64, @floatFromInt(total)) / 1_000_000.0;
-    try writer.print("total: {d:.2}ms\n", .{total_ms});
+    const wall_ns = wallNs();
+    if (wall_ns > 0) {
+        try writer.print("wall: {d:.2}ms   |   Σ self (all threads): {d:.2}ms\n", .{ nsToMs(wall_ns), nsToMs(total) });
+    } else {
+        try writer.print("total: {d:.2}ms\n", .{nsToMs(total)});
+    }
 
     // Top-level categories.
     for (all_categories) |cat| {
-        const idx = @intFromEnum(cat);
-        if (counts[idx] > 0 and isTopLevel(cat)) {
-            const ns = totals_ns[idx];
-            const self_ns = self_totals_ns[idx];
-            const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
-            const pct = @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0;
-            try writer.print("├─ {s: <16} {d: >7.2}ms total  {d: >7.2}ms self  ({d:.1}%)\n", .{ Category.displayName(cat), ms, self_ms, pct });
+        if (count(cat) > 0 and isTopLevel(cat)) {
+            const ns = totalNs(cat);
+            const self_ns = selfNs(cat);
+            try writer.print("├─ {s: <16} {d: >7.2}ms total  {d: >7.2}ms self  ({d:.1}%)\n", .{
+                Category.displayName(cat), nsToMs(ns), nsToMs(self_ns), pctOf(self_ns, total),
+            });
 
             if (current_level != .summary) {
                 // Sub-phases.
                 for (all_categories) |sub_cat| {
-                    const sub_idx = @intFromEnum(sub_cat);
-                    if (counts[sub_idx] > 0 and isChildOf(sub_cat, cat)) {
-                        const sub_ns = totals_ns[sub_idx];
-                        const sub_self_ns = self_totals_ns[sub_idx];
-                        const sub_ms = @as(f64, @floatFromInt(sub_ns)) / 1_000_000.0;
-                        const sub_self_ms = @as(f64, @floatFromInt(sub_self_ns)) / 1_000_000.0;
-                        const sub_pct_of_parent = @as(f64, @floatFromInt(sub_self_ns)) / @as(f64, @floatFromInt(ns)) * 100.0;
+                    if (count(sub_cat) > 0 and isChildOf(sub_cat, cat)) {
+                        const sub_self_ns = selfNs(sub_cat);
                         try writer.print("│  └─ {s: <13} {d: >7.2}ms total  {d: >7.2}ms self  ({d:.1}% of {s})\n", .{
                             Category.displayName(sub_cat),
-                            sub_ms,
-                            sub_self_ms,
-                            sub_pct_of_parent,
+                            nsToMs(totalNs(sub_cat)),
+                            nsToMs(sub_self_ns),
+                            pctOf(sub_self_ns, ns),
                             Category.displayName(cat),
                         });
                     }
@@ -677,39 +711,30 @@ fn reportTree(writer: anytype) !void {
 
 fn reportJson(writer: anytype) !void {
     const total = totalAllNs();
-    const total_ms = @as(f64, @floatFromInt(total)) / 1_000_000.0;
 
     try writer.writeAll("{\n");
     try writer.print("  \"profile_version\": 1,\n", .{});
-    try writer.print("  \"total_ms\": {d:.3},\n", .{total_ms});
+    // total_ms = Σ self (모든 스레드). wall_ms = 실제 경과. 병렬 phase 가 있으면 total > wall.
+    try writer.print("  \"total_ms\": {d:.3},\n", .{nsToMs(total)});
+    try writer.print("  \"wall_ms\": {d:.3},\n", .{nsToMs(wallNs())});
     try writer.print("  \"level\": \"{s}\",\n", .{@tagName(current_level)});
     try writer.writeAll("  \"phases\": {\n");
 
     var first = true;
     inline for (@typeInfo(Category).@"enum".fields) |f| {
         const cat = @field(Category, f.name);
-        const idx = @intFromEnum(cat);
+        const cnt = count(cat);
         const is_sub = !isTopLevel(cat);
-        const skip = counts[idx] == 0 or (current_level == .summary and is_sub);
+        const skip = cnt == 0 or (current_level == .summary and is_sub);
         if (!skip) {
-            const ns = totals_ns[idx];
-            const self_ns = self_totals_ns[idx];
-            const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
-            const pct = if (total > 0)
-                @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(total)) * 100.0
-            else
-                0.0;
-            const self_pct = if (total > 0)
-                @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0
-            else
-                0.0;
+            const ns = totalNs(cat);
+            const self_ns = selfNs(cat);
 
             if (!first) try writer.writeAll(",\n");
             first = false;
             try writer.print(
                 "    \"{s}\": {{ \"total_ms\": {d:.3}, \"self_ms\": {d:.3}, \"count\": {d}, \"pct\": {d:.2}, \"self_pct\": {d:.2} }}",
-                .{ Category.displayName(cat), ms, self_ms, counts[idx], pct, self_pct },
+                .{ Category.displayName(cat), nsToMs(ns), nsToMs(self_ns), cnt, pctOf(ns, total), pctOf(self_ns, total) },
             );
         }
     }
@@ -722,24 +747,15 @@ fn reportCsv(writer: anytype) !void {
 
     inline for (@typeInfo(Category).@"enum".fields) |f| {
         const cat = @field(Category, f.name);
-        const idx = @intFromEnum(cat);
+        const cnt = count(cat);
         const is_sub = !isTopLevel(cat);
-        const skip = counts[idx] == 0 or (current_level == .summary and is_sub);
+        const skip = cnt == 0 or (current_level == .summary and is_sub);
         if (!skip) {
-            const ns = totals_ns[idx];
-            const self_ns = self_totals_ns[idx];
-            const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
-            const pct = if (total > 0)
-                @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(total)) * 100.0
-            else
-                0.0;
-            const self_pct = if (total > 0)
-                @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0
-            else
-                0.0;
-
-            try writer.print("{s},{d:.3},{d:.3},{d},{d:.2},{d:.2}\n", .{ Category.displayName(cat), ms, self_ms, counts[idx], pct, self_pct });
+            const ns = totalNs(cat);
+            const self_ns = selfNs(cat);
+            try writer.print("{s},{d:.3},{d:.3},{d},{d:.2},{d:.2}\n", .{
+                Category.displayName(cat), nsToMs(ns), nsToMs(self_ns), cnt, pctOf(ns, total), pctOf(self_ns, total),
+            });
         }
     }
 }
