@@ -81,7 +81,8 @@ pub const ResolveCache = struct {
     };
 
     fn cacheShardFor(self: *ResolveCache, cache_key: []const u8) *CacheShard {
-        return &self.cache_shards[std.hash_map.hashString(cache_key) % num_resolve_cache_shards];
+        const shard_index: usize = @intCast(std.hash_map.hashString(cache_key) % num_resolve_cache_shards);
+        return &self.cache_shards[shard_index];
     }
 
     /// browser 필드 override — 4 축 분리 (path-key / module-key) × (disabled / remap).
