@@ -129,7 +129,10 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
     const keyword = if (demote_to_var) "var " else switch (kind) {
         .@"var" => "var ",
         .let => "let ",
-        .@"const" => "const ",
+        // #3098: syntax minify 시 const → let. 런타임 의미 동일 (차이는 컴파일타임
+        // 재할당 에러뿐) → 올바른 프로그램엔 영향 없음. `using`/`await using` 은
+        // disposal 의미가 달라 제외.
+        .@"const" => if (self.options.minify_syntax) "let " else "const ",
         .using => "using ",
         .await_using => "await using ",
     };

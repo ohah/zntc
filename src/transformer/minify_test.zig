@@ -449,13 +449,14 @@ test "minify: comma operator mixed keeps non-literal" {
 // ================================================================
 
 test "minify_syntax: undefined → (void 0)" {
-    try expectMinifySyntax("const x = undefined;", "const x = (void 0);");
+    // #3098: minify_syntax 는 const → let 도 적용 → 출력은 `let`.
+    try expectMinifySyntax("const x = undefined;", "let x = (void 0);");
 }
 
 test "minify_syntax: undefined 비교" {
     try expectMinifySyntax(
         "const x = a === undefined;",
-        "const x = a === (void 0);",
+        "let x = a === (void 0);",
     );
 }
 
@@ -464,7 +465,7 @@ test "minify_syntax: undefined.x 치환 시 parens로 안전 유지" {
     // `(void 0)` 형태 유지로 member access가 정확히 `(void 0).x`가 된다.
     try expectMinifySyntax(
         "const x = undefined.foo;",
-        "const x = (void 0).foo;",
+        "let x = (void 0).foo;",
     );
 }
 
