@@ -191,7 +191,13 @@ pub const Category = enum {
     shake_numeric_postpass_minify_skip,
     shake_mirror,
     metadata,
+    metadata_skip_nodes,
+    metadata_import_bindings,
     metadata_register_ns_rewrites,
+    metadata_merge_phase_b,
+    metadata_finalize_ns,
+    metadata_require_rewrites,
+    metadata_final_exports,
 
     // ── Transform ──
     transform,

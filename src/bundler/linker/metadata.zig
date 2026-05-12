@@ -204,7 +204,11 @@ pub fn buildMetadataForAst(
     // 래핑 모듈: import를 skip하지 않음 (emitImportCJS가 처리).
     // scope hoisted 타겟 import만 import_bindings 루프에서 개별 skip.
     const skip_imports = !m.wrap_kind.isWrapped();
-    var skip_nodes = try buildSkipNodes(self.allocator, ast, skip_imports);
+    var skip_nodes = blk: {
+        var sn_scope = profile.begin(.metadata_skip_nodes);
+        defer sn_scope.end();
+        break :blk try buildSkipNodes(self.allocator, ast, skip_imports);
+    };
     errdefer skip_nodes.deinit();
 
     var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
@@ -294,6 +298,8 @@ pub fn buildMetadataForAst(
     // collectExportsRecursive DFS 를 한 번만 수행하도록 공유 (#1734).
 
     if (sem.scope_maps.len > 0) {
+        var ib_scope = profile.begin(.metadata_import_bindings);
+        defer ib_scope.end();
         const module_scope = sem.scope_maps[0];
 
         // export된 local name을 미리 수집 — namespace import가 re-export되는지 O(1) 확인용
@@ -713,7 +719,11 @@ pub fn buildMetadataForAst(
         // nested rename 을 `Linker.unified_result` 에서 조회. Phase A (module
         // scope) 은 위 self-rename 루프에서 canonical_name 경유로 이미 처리됨.
         // metadata 가 dupe 하여 소유 — unified_result 가 deinit 되어도 안전.
-        mergeUnifiedPhaseB(self, module_index, &renames, &owned_nested_renames) catch {};
+        {
+            var mb_scope = profile.begin(.metadata_merge_phase_b);
+            defer mb_scope.end();
+            mergeUnifiedPhaseB(self, module_index, &renames, &owned_nested_renames) catch {};
+        }
     }
 
     // Side-effect-only import has no ImportBinding, so scope-hoisted modules that
@@ -774,12 +784,16 @@ pub fn buildMetadataForAst(
     }
 
     // 3. 엔트리 포인트 final exports
-    const final_export_entries = try self.buildFinalExports(
-        is_entry,
-        module_index,
-        m.export_bindings,
-        &owned_nested_renames,
-    );
+    const final_export_entries = blk: {
+        var fe_scope = profile.begin(.metadata_final_exports);
+        defer fe_scope.end();
+        break :blk try self.buildFinalExports(
+            is_entry,
+            module_index,
+            m.export_bindings,
+            &owned_nested_renames,
+        );
+    };
 
     // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
     const const_values = try self.buildCrossModuleConstValues(self.getModule(module_index).?, sem);
@@ -787,14 +801,22 @@ pub fn buildMetadataForAst(
     // ns_member_rewrites / ns_inline_objects 소유권 이동 + namespace preamble 생성.
     // finalizeNamespaceData가 리스트를 소비(deinit)하므로, 이후 에러 시
     // errdefer가 이미 해제된 리스트에 접근하지 않도록 마지막에 호출한다.
-    const ns_result = try finalizeNamespaceData(self.allocator, &ns_rewrite_list, &ns_inline_list, cjs_import_preamble);
+    const ns_result = blk: {
+        var ns_scope = profile.begin(.metadata_finalize_ns);
+        defer ns_scope.end();
+        break :blk try finalizeNamespaceData(self.allocator, &ns_rewrite_list, &ns_inline_list, cjs_import_preamble);
+    };
     const ns_rewrites = ns_result.rewrites;
     const ns_inlines = ns_result.inlines;
     const combined_preamble = ns_result.combined_preamble;
 
     // ESM+CJS 혼합 모듈(esm_with_dynamic_fallback)이 scope hoisting될 때
     // 내부 require() 호출도 require_xxx()로 치환해야 함.
-    const require_rewrites = try self.buildRequireRewrites(&m);
+    const require_rewrites = blk: {
+        var rr_scope = profile.begin(.metadata_require_rewrites);
+        defer rr_scope.end();
+        break :blk try self.buildRequireRewrites(&m);
+    };
 
     // ns_var_list → dev_ns_vars: backing slice 소유권 이전 (복사 없음)
     const dev_ns_vars: ?[]const []const u8 = if (ns_var_list.items.len > 0)
