@@ -44,15 +44,18 @@ pub const node_builtins: []const []const u8 = &.{
     "worker_threads", "zlib",
 };
 
+/// resolve 결과 캐시 샤드 수 (2의 거듭제곱). 병렬 discover 에서 worker 들이 mutex 한 개에
+/// 직렬화되던 걸 분산 — `hash(cache_key) % N` 로 샤드를 골라 서로 다른 cache line 을 쓰게 한다.
+const num_resolve_cache_shards = 16;
+
 pub const ResolveCache = struct {
     allocator: std.mem.Allocator,
     resolver: Resolver,
-    cache: std.StringHashMap(CachedResult),
+    /// 병렬 resolve 결과 캐시 — `num_resolve_cache_shards` 개의 (mutex + map) 로 샤딩.
+    cache_shards: [num_resolve_cache_shards]CacheShard,
     external_patterns: []const []const u8,
     platform: Platform,
     packages_external: bool = false,
-    /// 병렬 resolve 시 캐시 접근 보호용 mutex.
-    cache_mutex: std.Thread.Mutex = .{},
 
     /// 디렉토리 엔트리 캐시 — readdir() 결과를 메모리에 보관하여 stat() syscall 대폭 감소.
     dir_cache: resolver_mod.DirEntryCache,
@@ -71,6 +74,15 @@ pub const ResolveCache = struct {
     conditions_import: []const []const u8 = &.{},
     conditions_require: []const []const u8 = &.{},
     conditions_allocated: bool = false,
+
+    const CacheShard = struct {
+        mutex: std.Thread.Mutex = .{},
+        map: std.StringHashMap(CachedResult),
+    };
+
+    fn cacheShardFor(self: *ResolveCache, cache_key: []const u8) *CacheShard {
+        return &self.cache_shards[std.hash_map.hashString(cache_key) % num_resolve_cache_shards];
+    }
 
     /// browser 필드 override — 4 축 분리 (path-key / module-key) × (disabled / remap).
     /// path_* : 키가 "./..." 로 시작 — 패키지 루트 상대 경로 매칭.
@@ -225,10 +237,12 @@ pub const ResolveCache = struct {
         else
             baseConditionsFor(platform, .require);
         r.conditions = cond_import;
+        var cache_shards: [num_resolve_cache_shards]CacheShard = undefined;
+        for (&cache_shards) |*s| s.* = .{ .map = std.StringHashMap(CachedResult).init(allocator) };
         const rc = ResolveCache{
             .allocator = allocator,
             .resolver = r,
-            .cache = std.StringHashMap(CachedResult).init(allocator),
+            .cache_shards = cache_shards,
             .external_patterns = external_patterns,
             .platform = platform,
             .packages_external = options.packages_external,
@@ -249,15 +263,17 @@ pub const ResolveCache = struct {
         self.pkg_json_cache.deinit();
 
         // 캐시된 경로 문자열 해제
-        var it = self.cache.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            switch (entry.value_ptr.*) {
-                .resolved => |m| self.allocator.free(cachedPath(m)),
-                .not_found => {},
+        for (&self.cache_shards) |*shard| {
+            var it = shard.map.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                switch (entry.value_ptr.*) {
+                    .resolved => |m| self.allocator.free(cachedPath(m)),
+                    .not_found => {},
+                }
             }
+            shard.map.deinit();
         }
-        self.cache.deinit();
 
         // browser overrides 캐시 해제
         var bd_it = self.browser_overrides_cache.iterator();
@@ -336,13 +352,16 @@ pub const ResolveCache = struct {
         };
         defer if (key_len > key_buf.len) self.allocator.free(cache_key);
 
+        // 이 키가 속한 캐시 샤드 — lookup/store/putCache 모두 이 샤드의 mutex 로 보호.
+        const cache_shard = self.cacheShardFor(cache_key);
+
         // 캐시 조회
         {
             var lookup_scope = profile.begin(.resolve_cache_lookup);
             defer lookup_scope.end();
-            if (thread_safe) self.cache_mutex.lock();
-            defer if (thread_safe) self.cache_mutex.unlock();
-            if (self.cache.get(cache_key)) |cached| {
+            if (thread_safe) cache_shard.mutex.lock();
+            defer if (thread_safe) cache_shard.mutex.unlock();
+            if (cache_shard.map.get(cache_key)) |cached| {
                 return switch (cached) {
                     // Phase 1 의 cache 는 file/disabled 만 저장 (putCache 호출처 검증).
                     // path 만 caller 소유로 dupe — 다른 필드는 by-value copy.
@@ -381,8 +400,8 @@ pub const ResolveCache = struct {
                             const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
-                            if (thread_safe) self.cache_mutex.lock();
-                            defer if (thread_safe) self.cache_mutex.unlock();
+                            if (thread_safe) cache_shard.mutex.lock();
+                            defer if (thread_safe) cache_shard.mutex.unlock();
                             self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
                                 .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
                                 .module_type = .js,
@@ -419,8 +438,8 @@ pub const ResolveCache = struct {
                 error.ModuleNotFound => {
                     var store_scope = profile.begin(.resolve_cache_store);
                     defer store_scope.end();
-                    if (thread_safe) self.cache_mutex.lock();
-                    defer if (thread_safe) self.cache_mutex.unlock();
+                    if (thread_safe) cache_shard.mutex.lock();
+                    defer if (thread_safe) cache_shard.mutex.unlock();
                     self.putCache(cache_key, .not_found) catch {};
                     return error.ModuleNotFound;
                 },
@@ -429,8 +448,8 @@ pub const ResolveCache = struct {
         };
 
         // browser override 체크 + 캐시 저장 (disabled / remap / normal).
-        if (thread_safe) self.cache_mutex.lock();
-        defer if (thread_safe) self.cache_mutex.unlock();
+        if (thread_safe) cache_shard.mutex.lock();
+        defer if (thread_safe) cache_shard.mutex.unlock();
 
         // resolver 가 `--fallback:NAME=false` (또는 다른 disabled 경로) 로 빈 모듈을
         // 반환한 경우 — disabled variant 로 캐싱 + 반환. 이 분기 없이는 `.file` 로
@@ -477,9 +496,9 @@ pub const ResolveCache = struct {
                             return fileResult(result.path, result.module_type, result.is_module_field);
                         };
                         defer self.allocator.free(spec_buf);
-                        if (thread_safe) self.cache_mutex.unlock();
+                        if (thread_safe) cache_shard.mutex.unlock();
                         const maybe_replaced = self.resolver.resolve(pkg_root, spec_buf);
-                        if (thread_safe) self.cache_mutex.lock();
+                        if (thread_safe) cache_shard.mutex.lock();
                         if (maybe_replaced) |replaced| {
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
@@ -532,9 +551,11 @@ pub const ResolveCache = struct {
     }
 
     /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
+    /// 호출자는 `cacheShardFor(cache_key)` 의 mutex 를 쥔 상태여야 한다 (resolveInner 가 그렇게 한다).
     fn putCache(self: *ResolveCache, cache_key: []const u8, value: CachedResult) !void {
+        const map = &self.cacheShardFor(cache_key).map;
         // 기존 엔트리가 있으면 해제
-        if (self.cache.fetchRemove(cache_key)) |old| {
+        if (map.fetchRemove(cache_key)) |old| {
             self.allocator.free(old.key);
             switch (old.value) {
                 .resolved => |m| self.allocator.free(cachedPath(m)),
@@ -542,7 +563,7 @@ pub const ResolveCache = struct {
             }
         }
         const key_owned = self.allocator.dupe(u8, cache_key) catch return error.OutOfMemory;
-        self.cache.put(key_owned, value) catch return error.OutOfMemory;
+        map.put(key_owned, value) catch return error.OutOfMemory;
     }
 
     /// 해석된 절대 경로가 package.json "browser" 필드에서 override (disabled / remap) 되었는지 판별.
