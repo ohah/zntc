@@ -83,7 +83,11 @@ test "nextBase54Name: skips all runtime helper short names" {
 test "helperName: base_name → short mapping for every PAIR" {
     const rt = @import("../runtime_helper_names.zig");
     inline for (rt.PAIRS) |p| {
-        try std.testing.expectEqualStrings(p.base, rt.helperName(p.base, false));
+        const plain = if (std.mem.eql(u8, p.base, "__classPrivateFieldSet"))
+            rt.NAMES.PRIVATE_FIELD_SET_LOCAL
+        else
+            p.base;
+        try std.testing.expectEqualStrings(plain, rt.helperName(p.base, false));
         try std.testing.expectEqualStrings(p.short, rt.helperName(p.base, true));
     }
     // 알 수 없는 이름 → 원본 반환 (fallback 안전성)

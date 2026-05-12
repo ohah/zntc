@@ -808,7 +808,7 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN =
 /// `wm.set(obj, value)` 는 WeakMap을 반환하므로 expression 값이 값 자체가 되도록 helper 사용.
 /// 통합 spec: `this.#x = v` expression value === v, `this.#x += 5` === new value.
 pub const PRIVATE_FIELD_SET_RUNTIME =
-    \\var __classPrivateFieldSet = function(wm, obj, value) {
+    \\var __zntcClassPrivateFieldSet = function(wm, obj, value) {
     \\  wm.set(obj, value);
     \\  return value;
     \\};

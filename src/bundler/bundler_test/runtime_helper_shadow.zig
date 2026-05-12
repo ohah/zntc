@@ -178,3 +178,52 @@ test "Runtime helper shadow: helper 호출이 user binding 의 rename 결과를 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"shadow-ati\"") != null);
 }
+
+test "Runtime helper shadow: private field set helper avoids UMD global helper overwrite" {
+    // RN/Metro 환경에서 tslib UMD는 helper를 module.exports와 global 양쪽에 export한다.
+    // Metro+Babel의 class private helper는 모듈 래퍼 내부 local이라 global write에
+    // 덮이지 않는다. ZNTC도 transformer helper call site가 global helper 이름
+    // `__classPrivateFieldSet` 자체에 묶이면 tslib의 TS signature helper에 덮여
+    // `state.has is not a function`으로 죽는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './tslib-umd.js';
+        \\import { Box } from './box';
+        \\export const value = new Box().set(1);
+    );
+    try writeFile(tmp.dir, "box.ts",
+        \\export class Box {
+        \\  #value = 0;
+        \\  set(next: number) {
+        \\    return this.#value = next;
+        \\  }
+        \\}
+    );
+    try writeFile(tmp.dir, "tslib-umd.js",
+        \\const root = typeof globalThis === 'object' ? globalThis : global;
+        \\root.__classPrivateFieldSet = function(receiver, state, value) {
+        \\  if (!state.has(receiver)) throw new TypeError('tslib private field helper');
+        \\  state.set(receiver, value);
+        \\  return value;
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "root.__classPrivateFieldSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntcClassPrivateFieldSet(_value, this, next)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateFieldSet(_value, this, next)") == null);
+}
