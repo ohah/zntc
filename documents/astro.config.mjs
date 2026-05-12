@@ -90,6 +90,11 @@ export default defineConfig({
           items: [
             { label: "개요", slug: "guides/bundling", translations: { en: "Overview" } },
             { label: "트리쉐이킹", slug: "guides/tree-shaking", translations: { en: "Tree-shaking" } },
+            {
+              label: "런타임 폴리필 (core-js)",
+              slug: "guides/runtime-polyfills",
+              translations: { en: "Runtime Polyfills (core-js)" },
+            },
             { label: "manualChunks", slug: "guides/manual-chunks", translations: { en: "manualChunks" } },
             {
               label: "구조와 동작 원리",

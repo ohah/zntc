@@ -32,6 +32,8 @@ ZNTC의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compt
 
 #### Runtime Polyfills / core-js
 
+> 전체 가이드 (모드·실행 순서·`@babel/preset-env useBuiltIns` 대응): [런타임 폴리필 (core-js)](/zntc/guides/runtime-polyfills/). 아래는 설정 객체 레퍼런스.
+
 `target`은 문법 다운레벨링을 담당하고, `runtimePolyfills`는 `Promise`, `Map`, `Object.values`, `String.prototype.replaceAll`, `Array.prototype.at`, `structuredClone` 같은 런타임 API를 `core-js` prelude로 보강합니다.
 
 ```ts

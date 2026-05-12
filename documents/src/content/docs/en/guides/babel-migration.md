@@ -10,7 +10,8 @@ A guide to mapping each plugin/preset when migrating a Metro-based `babel.config
 | Babel config | ZNTC equivalent | Note |
 |---|---|---|
 | `@react-native/babel-preset` | `platform: "react-native"` | JSX/Flow/class props automatic |
-| `@babel/preset-env` | `target: "es2020"` etc. | engine targets also supported (`chrome80` etc.) |
+| `@babel/preset-env` (syntax downlevel) | `target: "es2020"` etc. | engine targets also supported (`chrome80` etc.) |
+| `@babel/preset-env { useBuiltIns: "usage", corejs }` | `runtimePolyfills: "auto"` (+ `bun add core-js core-js-compat`) | [Runtime Polyfills guide](/zntc/en/guides/runtime-polyfills/) — `useBuiltIns: "entry"` → `{ mode: "entry" }` |
 | `@babel/plugin-transform-flow-strip-types` | `flow: true` or RN preset | `.js.flow`/`@flow` pragma automatic |
 | `@babel/plugin-proposal-decorators { legacy }` | `experimentalDecorators: true` | Stage 3 also supported |
 | `@babel/plugin-transform-class-properties { loose }` | `useDefineForClassFields: false` | Synced with tsconfig |
@@ -275,6 +276,7 @@ Each stage is independently deployable.
 
 ## See also
 
+- [Runtime Polyfills (core-js)](/zntc/en/guides/runtime-polyfills/) — migrating `useBuiltIns` + `core-js`
 - Plugin Guide
 - Plugin Recipes
 - React Native Guide
