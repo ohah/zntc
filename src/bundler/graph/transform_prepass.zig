@@ -410,7 +410,7 @@ pub fn resyncAfterAstMutation(
             module.import_bindings,
         );
         module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
-        module.is_wrapper_barrel = @import("requested_exports.zig").computeIsWrapperBarrel(module);
+        @import("requested_exports.zig").computeBarrelFlags(module);
     }
 
     const has_refreshed_cjs = scan_result.has_cjs_require or
