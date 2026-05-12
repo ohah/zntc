@@ -2392,6 +2392,81 @@ test "#3063 classic JSX factory named import 보존 / non-JSX 는 그대로 elid
 }
 
 // ============================================================
+// D026: per-file JSX pragma 주석 — `@jsx` / `@jsxFrag` / `@jsxRuntime` / `@jsxImportSource`
+//
+// lexer 가 주석에서 감지(scanner.jsx_*_pragma) → AST 로 carry → transform 단계에서
+// `TransformOptions.withModuleJsxPragmas` 가 module 단위로 jsx 설정 override.
+// 우선순위: file pragma > tsconfig/CLI (esbuild/TypeScript 동일).
+// ============================================================
+
+test "D026 per-file JSX pragma override" {
+    // `@jsx` / `@jsxFrag` → classic factory/fragment override (default `React.createElement` 무시).
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\/** @jsx h */
+            \\/** @jsxFrag Fragment */
+            \\import { h, Fragment } from "preact";
+            \\export const App = () => <><p>a</p></>;
+        ,
+            "input.jsx",
+            .{},
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "h(Fragment") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "React.createElement") == null);
+        // #3063 elision 연동 — pragma 가 effective factory/fragment 를 정하므로 specifier 도 보존.
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "\"preact\"") != null);
+    }
+    // single-line `// @jsx h` 도 동일.
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\// @jsx h
+            \\import { h } from "preact";
+            \\export const App = () => <div>c</div>;
+        ,
+            "input.jsx",
+            .{},
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "h(\"div\"") != null);
+    }
+    // `@jsxImportSource` → automatic import source override.
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\/** @jsxImportSource preact */
+            \\export const App = () => <p>x</p>;
+        ,
+            "input.jsx",
+            .{ .jsx_runtime = .automatic },
+        );
+        defer result.deinit(std.testing.allocator);
+        // `"preact/jsx-runtime"` 가 `react/jsx-runtime` 을 substring 으로 포함하므로
+        // 음성 단언은 `from "react/jsx-runtime"` 처럼 quote 까지 포함해 검사.
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "\"preact/jsx-runtime\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "from \"react/jsx-runtime\"") == null);
+    }
+    // `@jsxRuntime classic` → automatic 기본 프로젝트를 classic 으로 전환.
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\/** @jsxRuntime classic */
+            \\/** @jsx h */
+            \\import { h } from "preact";
+            \\export const App = () => <div>d</div>;
+        ,
+            "input.jsx",
+            .{ .jsx_runtime = .automatic },
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "h(\"div\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "jsx-runtime") == null);
+    }
+}
+
+// ============================================================
 // --define 치환 (#1552)
 // ============================================================
 

@@ -86,8 +86,8 @@ pub const Scanner = struct {
     prev_token_kind: Kind = .eof,
 
     /// JSX pragma (D026): 파일 상단 주석에서 감지.
-    /// `@jsx h` → jsx_pragma = "h"
-    jsx_pragma: ?[]const u8 = null,
+    /// `@jsx h` → jsx_factory_pragma = "h"
+    jsx_factory_pragma: ?[]const u8 = null,
     /// `@jsxFrag Fragment` → jsx_frag_pragma = "Fragment"
     jsx_frag_pragma: ?[]const u8 = null,
     /// `@jsxRuntime automatic` → jsx_runtime_pragma = "automatic"
@@ -1129,7 +1129,7 @@ pub const Scanner = struct {
                 !std.mem.startsWith(u8, val, "Runtime") and
                 !std.mem.startsWith(u8, val, "ImportSource"))
             {
-                self.jsx_pragma = val;
+                self.jsx_factory_pragma = val;
             }
         }
     }

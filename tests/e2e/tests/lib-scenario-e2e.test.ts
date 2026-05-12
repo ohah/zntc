@@ -624,6 +624,30 @@ render(<App />, mount);
     },
   },
   {
+    // D026 per-file JSX pragma: 프로젝트 기본 `--jsx=automatic` (import source = react,
+    // 미설치) 인데 파일이 `/** @jsxImportSource preact */` 로 override → preact/jsx-runtime
+    // 사용. pragma 가 안 먹히면 빌드 시 `react/jsx-runtime` resolve 실패로 fail.
+    name: 'H12_jsx_pragma_import_source',
+    category: 'H_jsx_ts',
+    packages: ['preact'],
+    entryFile: 'index.tsx',
+    extraArgs: ['--jsx=automatic'],
+    entry: `/** @jsxImportSource preact */
+import { render } from 'preact';
+
+function App() {
+  return <p data-testid="pragma">jsx-pragma-ok</p>;
+}
+
+const mount = document.createElement('div');
+document.body.appendChild(mount);
+render(<App />, mount);
+`,
+    expect: {
+      pragma: 'jsx-pragma-ok',
+    },
+  },
+  {
     name: 'H3_ts_legacy_decorator',
     category: 'H_jsx_ts',
     packages: [],

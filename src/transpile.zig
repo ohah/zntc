@@ -17,6 +17,7 @@ const Ast = ast_mod.Ast;
 const ast_walk = @import("parser/ast_walk.zig");
 const SemanticAnalyzer = @import("semantic/mod.zig").SemanticAnalyzer;
 const Transformer = @import("transformer/transformer.zig").Transformer;
+const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
 const BindingLite = @import("transformer/transformer.zig").BindingLite;
 const Codegen = @import("codegen/codegen.zig").Codegen;
 const SourceMap = @import("codegen/sourcemap.zig");
@@ -987,7 +988,7 @@ fn transpileWithCallbackInternal(
     }
 
     // 4. 변환
-    var transformer = try Transformer.init(arena_alloc, &parser.ast, .{
+    const transform_opts: TransformOptions = .{
         .drop_console = options.drop_console,
         .drop_debugger = options.drop_debugger,
         .define = options.define,
@@ -1007,7 +1008,9 @@ fn transpileWithCallbackInternal(
         .minify_whitespace = options.minify_whitespace,
         .react_refresh = options.react_refresh,
         .react_refresh_hook_signatures = options.react_refresh_hook_signatures,
-    });
+    };
+    // per-file JSX pragma (D026): tsconfig/CLI 보다 우선 — graph pre-pass 와 동일 경로.
+    var transformer = try Transformer.init(arena_alloc, &parser.ast, transform_opts.withModuleJsxPragmas(&parser.ast));
     // transformer.ast 도 arena owned (cloneForTransformer 결과). parser.ast 와 동일 이유.
     defer transformer.ast.dumpStringInternStatsIfEnabled();
     if (analyzer_storage) |*analyzer| {
@@ -1082,10 +1085,12 @@ fn transpileWithCallbackInternal(
     }
     const raw_output = cg.generate(root) catch return error.CodegenError;
 
-    // 6.5. JSX import prepend (transformer가 JSX lowering 수행한 경우)
+    // 6.5. JSX import prepend (transformer가 JSX lowering 수행한 경우).
+    // transformer.options 는 per-file pragma (#D026) 가 적용된 effective 설정 — 원본
+    // `options.jsx_*` 가 아니라 이쪽을 써야 `@jsxImportSource` / `@jsxRuntime` 가 반영된다.
     const jsx_import_str: ?[]const u8 = if (transformer.jsx_import_info.hasImports()) blk: {
-        const is_dev = options.jsx_runtime == .automatic_dev;
-        break :blk transformer.jsx_import_info.buildImportString(arena_alloc, options.jsx_import_source, is_dev);
+        const is_dev = transformer.options.jsx_runtime == .automatic_dev;
+        break :blk transformer.jsx_import_info.buildImportString(arena_alloc, transformer.options.jsx_import_source, is_dev);
     } else null;
     const jsx_output = prependImportLine(arena_alloc, jsx_import_str, raw_output);
 

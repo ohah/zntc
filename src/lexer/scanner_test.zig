@@ -1155,7 +1155,7 @@ test "Scanner: @jsx pragma in single-line comment" {
 
     try scanner.next(); // const (comment is skipped)
     try std.testing.expectEqual(Kind.kw_const, scanner.token.kind);
-    try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
+    try std.testing.expectEqualStrings("h", scanner.jsx_factory_pragma.?);
 }
 
 test "Scanner: @jsx pragma in multi-line comment" {
@@ -1164,7 +1164,7 @@ test "Scanner: @jsx pragma in multi-line comment" {
     defer scanner.deinit();
 
     try scanner.next();
-    try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
+    try std.testing.expectEqualStrings("h", scanner.jsx_factory_pragma.?);
 }
 
 test "Scanner: @jsxFrag pragma" {
@@ -1202,7 +1202,7 @@ test "Scanner: multiple pragmas in one file" {
     // 전체 스캔
     try drainTokensToEof(&scanner);
 
-    try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
+    try std.testing.expectEqualStrings("h", scanner.jsx_factory_pragma.?);
     try std.testing.expectEqualStrings("Fragment", scanner.jsx_frag_pragma.?);
 }
 
@@ -1212,7 +1212,7 @@ test "Scanner: no pragma in normal comment" {
     defer scanner.deinit();
 
     try scanner.next();
-    try std.testing.expect(scanner.jsx_pragma == null);
+    try std.testing.expect(scanner.jsx_factory_pragma == null);
     try std.testing.expect(scanner.jsx_frag_pragma == null);
 }
 
