@@ -562,3 +562,77 @@ test "Codegen #3094: break/continue 본문 → {} 제거" {
     defer r.deinit();
     try std.testing.expectEqualStrings("for(;;){if(a)break;else continue;}", r.output);
 }
+
+// ============================================================
+// #3095: if/return 평탄화 — minify_syntax 시 `if(c){return A}else{return B}` →
+//   `return c?A:B;`. c 가 paren 없이 ?: test 자리에 올 수 있고 A/B 가 sequence
+//   (comma) 가 아닐 때만. else-if 체인은 미지원 (else 분기가 다시 변환됨).
+// ============================================================
+
+fn e2eMinAll(allocator: std.mem.Allocator, source: []const u8) !helpers.TestResult {
+    return e2eWithOptions(allocator, source, .{ .minify_whitespace = true, .minify_syntax = true });
+}
+
+test "Codegen #3095: if/else return block → return c?A:B" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { return 1; } else { return 2; } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return c?1:2}", r.output);
+}
+
+test "Codegen #3095: bare return 양쪽도 → return c?A:B" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) return a; else return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return c?a:b}", r.output);
+}
+
+test "Codegen #3095: member / logical cond 안전" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (x.y && z) return a; else return b; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){return x.y&&z?a:b}", r.output);
+}
+
+test "Codegen #3095: assignment cond 는 변환 안 함 (paren 필요)" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (a = b) return x; else return y; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(a=b)return x;else return y}", r.output);
+}
+
+test "Codegen #3095: 한쪽이 return 아니면 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { return 1; } else { f(); } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return 1;else f()}", r.output);
+}
+
+test "Codegen #3095: return 인자 없으면 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { return; } else { return 2; } }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return;else return 2}", r.output);
+}
+
+test "Codegen #3095: else 없으면 변환 안 함" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (c) { return 1; } g(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return 1;g()}", r.output);
+}
+
+test "Codegen #3095: 중첩 — else 분기의 if도 변환 (체인 부분 적용)" {
+    var r = try e2eMinAll(std.testing.allocator, "function h(){ if (a) return 1; else if (b) return 2; else return 3; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(a)return 1;else return b?2:3}", r.output);
+}
+
+test "Codegen #3095: cond 앞 leading comment 가 있어도 return ASI 안 됨 (minify_syntax only)" {
+    // legal comment 는 minify_whitespace 없으면 보존되며 newline 을 끼움 → emitNode 로
+    // 그대로 emit 하면 `return /*!c*/\n c?1:2` 가 되어 ASI 로 `return;` — emitNoLineTerminatorOperand 로 방지.
+    var r = try e2eWithOptions(std.testing.allocator, "function h(){ if (/*! note */ c) return 1; else return 2; }", .{ .minify_syntax = true });
+    defer r.deinit();
+    // `return` 과 cond 사이에 newline 이 없어야 함 (ASI 방지)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "?") != null);
+}
+
+test "Codegen #3095: minify_syntax off → 변환 안 함 (anti-regression)" {
+    var r = try e2eWithOptions(std.testing.allocator, "function h(){ if (c) { return 1; } else { return 2; } }", .{ .minify_whitespace = true });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function h(){if(c)return 1;else return 2;}", r.output);
+}

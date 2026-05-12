@@ -107,17 +107,23 @@ fn unwrappedStatementBody(self: anytype, body_idx: NodeIndex) ?NodeIndex {
 /// (dangling else)하거나 ASI 가 미묘해 보수적으로 거부. `var` 선언은 본문으로 valid 하고
 /// hoisting 의미도 동일하므로 허용. `return`/`throw`/`break`/`continue`/`debugger`/
 /// expression statement 는 `else` 흡수 불가 + lexical decl 아님 → 안전.
-fn singleUnwrappableStmt(self: anytype, block: Node) ?NodeIndex {
+/// block 의 element 중 출력되는(= elided 아닌) statement 가 정확히 1개면 그 idx, 아니면 null
+/// (0개 또는 2개+ → null).
+fn singleNonElidedStmt(self: anytype, block: Node) ?NodeIndex {
     const list = block.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     var only: ?NodeIndex = null;
     for (indices) |raw| {
         const idx: NodeIndex = @enumFromInt(raw);
         if (isElidedStmt(self, idx)) continue;
-        if (only != null) return null; // 출력되는 statement 가 2개+ → 못 벗김
+        if (only != null) return null;
         only = idx;
     }
-    const stmt_idx = only orelse return null; // 빈 block — `{}` 그대로 (보수적)
+    return only;
+}
+
+fn singleUnwrappableStmt(self: anytype, block: Node) ?NodeIndex {
+    const stmt_idx = singleNonElidedStmt(self, block) orelse return null; // 빈/2개+ block → `{}` 그대로
     const s = self.ast.getNode(stmt_idx);
     switch (s.tag) {
         .expression_statement,
@@ -243,7 +249,79 @@ pub fn emitIf(self: anytype, node: Node) !void {
     try emitIfVerbatim(self, t);
 }
 
+/// #3095: `cond` 가 paren 없이 `?:` test(= ShortCircuitExpression 또는 그보다 tight)
+/// 자리에 올 수 있는 노드 tag 인지 — 보수적 whitelist. assignment / sequence / yield /
+/// arrow / conditional 등은 `?:` 보다 느슨해 paren 이 필요하므로 거부 (transform skip).
+fn isSafeTernaryTest(tag: ast_mod.Node.Tag) bool {
+    return switch (tag) {
+        .identifier_reference,
+        .this_expression,
+        .static_member_expression,
+        .computed_member_expression,
+        .private_field_expression,
+        .call_expression,
+        .new_expression,
+        .numeric_literal,
+        .string_literal,
+        .boolean_literal,
+        .null_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .template_literal,
+        .tagged_template_expression,
+        .parenthesized_expression,
+        .unary_expression,
+        .update_expression,
+        .await_expression,
+        .binary_expression,
+        .logical_expression,
+        => true,
+        else => false,
+    };
+}
+
+/// `idx` 가 `return <expr>;` 이거나 그것 하나만 담은 block 이면 그 expr 의 idx, 아니면 null.
+/// `return;` (인자 없음) 은 null.
+fn singleReturnArg(self: anytype, idx_in: NodeIndex) ?NodeIndex {
+    var idx = idx_in;
+    if (idx.isNone()) return null;
+    var n = self.ast.getNode(idx);
+    if (n.tag == .block_statement) {
+        idx = singleNonElidedStmt(self, n) orelse return null;
+        n = self.ast.getNode(idx);
+    }
+    if (n.tag != .return_statement or n.data.unary.operand.isNone()) return null;
+    return n.data.unary.operand;
+}
+
+/// `if(c){return A}else{return B}` → `return c?A:B;` 출력 시도. minify_syntax 전용.
+/// `c` 가 paren 없이 `?:` test 자리에 올 수 있고 A/B 가 sequence(comma) 가 아닐 때만.
+/// 출력했으면 true. (else-if 체인은 미지원 — else 분기 자체가 다시 emitIf 를 타며 변환됨.)
+fn tryEmitIfReturnTernary(self: anytype, t: anytype) !bool {
+    if (!self.options.minify_syntax or t.c.isNone()) return false;
+    const a_arg = singleReturnArg(self, t.b) orelse return false;
+    const b_arg = singleReturnArg(self, t.c) orelse return false;
+    if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return false;
+    if (self.ast.getNode(a_arg).tag == .sequence_expression) return false;
+    if (self.ast.getNode(b_arg).tag == .sequence_expression) return false;
+    try self.write("return ");
+    // `return` 직후 cond — leading comment 가 newline 을 끼우면 ASI 로 `return;` 됨.
+    // `emitReturn` 과 동일하게 NoLineTerminator 처리.
+    try emitNoLineTerminatorOperand(self, t.a);
+    try writeSpace(self);
+    try self.writeByte('?');
+    try writeSpace(self);
+    try self.emitNode(a_arg);
+    try writeSpace(self);
+    try self.writeByte(':');
+    try writeSpace(self);
+    try self.emitNode(b_arg);
+    try self.writeByte(';');
+    return true;
+}
+
 fn emitIfVerbatim(self: anytype, t: anytype) !void {
+    if (try tryEmitIfReturnTernary(self, t)) return;
     if (self.options.minify_whitespace) try self.write("if(") else try self.write("if (");
     try self.emitNode(t.a);
     try self.writeByte(')');
