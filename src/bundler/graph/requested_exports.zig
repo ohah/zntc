@@ -42,6 +42,12 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
 /// 일치하는 것만 link 하는 정밀 트리쉐이킹 hint 의 적용 대상.
 pub fn isLazyBarrelCandidate(self: anytype, m: *const Module) bool {
     if (self.dev_mode or self.preserve_modules) return false;
+    // pre-pass 가 runtime helper (`__extends`/`__classCallCheck` …) 를 주입한 모듈은
+    // 순수 re-export barrel 이 아니라 downlevel 된 실제 코드다. 이런 모듈의 import
+    // record (helper virtual import 포함) 를 lazy 로 미루면 `export *` chain 으로 번들에
+    // 끌려 들어왔을 때 resolve 가 안 돼 emit 에 raw `require("\x00zntc:runtime/…")` 가
+    // 남아 런타임 크래시.
+    if (m.transform_cache) |tc| if (tc.runtime_helpers.hasAny()) return false;
     return m.side_effects_user_defined and
         !m.side_effects and
         m.exports_kind.isEsm() and
