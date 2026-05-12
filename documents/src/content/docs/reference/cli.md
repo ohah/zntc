@@ -45,6 +45,12 @@ HTML asset URL, `%ENV%` 토큰을 rewrite하며 static split chunk는 `modulepre
 | `--env-prefix <list>`       | 노출할 env prefix CSV (기본: `VITE_,ZNTC_`)                                |
 | `--env-dir <dir>`           | `.env*` 파일 탐색 디렉토리                                                 |
 | `--spa-fallback[=file]`     | `preview`에서 route-like 404 요청을 `index.html` 또는 지정 파일로 fallback |
+| `--jsx*`                    | JSX 런타임 (`--jsx`, `--jsx-dev`, `--jsx-import-source`, `--jsx-factory`, `--jsx-fragment`). 미지정 시 app root `tsconfig.json`의 `jsx` / `jsxImportSource`를 사용 |
+
+`zntc dev` / `zntc build`는 JSX 런타임을 CLI `--jsx*` 옵션 → app root `tsconfig.json`
+(`compilerOptions.jsx` / `jsxImportSource`) → 기본 classic(`React.createElement`) 순으로
+결정합니다. preact/solid 등 비-React 앱은 `tsconfig.json`에 `"jsx": "react-jsx",
+"jsxImportSource": "preact"`만 지정하면 dev/build 모두 동작합니다.
 
 앱 root에 `postcss.config.{js,mjs,cjs,json}` 또는 `.postcssrc*`가 있으면 CSS에 자동
 적용됩니다. `zntc dev`는 원본 CSS와 PostCSS `dependency` / `dir-dependency` 메시지를

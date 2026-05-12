@@ -6,6 +6,16 @@ const transformer_mod = @import("../transformer/transformer.zig");
 const Bundler = bundler_mod.Bundler;
 const BundleOptions = bundler_mod.BundleOptions;
 const DefineEntry = transformer_mod.DefineEntry;
+const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
+
+/// app build / dev 의 JSX runtime 설정. `zntc --bundle` 과 동일 vocab. caller
+/// (cli/app.zig) 가 CLI 옵션 + tsconfig 를 머지해 확정값을 전달한다.
+pub const JsxConfig = struct {
+    runtime: JsxRuntime = .classic,
+    import_source: []const u8 = "react",
+    factory: []const u8 = "React.createElement",
+    fragment: []const u8 = "React.Fragment",
+};
 
 pub const AppBuildOptions = struct {
     root: []const u8 = ".",
@@ -20,6 +30,7 @@ pub const AppBuildOptions = struct {
     minify: bool = false,
     sourcemap: bool = false,
     splitting: bool = true,
+    jsx: JsxConfig = .{},
     /// styled-components 1st-party transform 활성화 (compiler.styledComponents).
     styled_components: bool = false,
     /// styled-components.ssr 옵션 — false 면 componentId 생략.
@@ -142,6 +153,10 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .asset_names = "[name]-[hash]",
         .output_filename = "bundle.js",
         .root_dir = root,
+        .jsx_runtime = opts.jsx.runtime,
+        .jsx_import_source = opts.jsx.import_source,
+        .jsx_factory = opts.jsx.factory,
+        .jsx_fragment = opts.jsx.fragment,
         .styled_components = opts.styled_components,
         .styled_components_ssr = opts.styled_components_ssr,
         .styled_components_minify = opts.styled_components_minify,
