@@ -61,6 +61,10 @@ pub const ResolveCache = struct {
     /// 패키지 디렉토리별 browser 필드 override 캐시 (disabled + string remap).
     /// pkg_dir_path → BrowserOverrides (null 이면 browser 필드 없음).
     browser_overrides_cache: std.StringHashMap(?BrowserOverrides),
+    /// `browser_overrides_cache` 접근 보호 — `getBareModuleOverride` 는 어떤 락도 안 쥐고
+    /// 호출되므로(`resolveInner` 의 pre-resolve 분기) 두 worker 가 같은 패키지를 처음
+    /// 만나면 `.put` 이 동시에 일어나 HashMap 이 깨질 수 있다.
+    browser_cache_mutex: std.Thread.Mutex = .{},
     /// 커스텀 조건이 병합된 조건 배열 (import용, require용).
     conditions_import: []const []const u8 = &.{},
     conditions_require: []const []const u8 = &.{},
@@ -565,17 +569,7 @@ pub const ResolveCache = struct {
 
         const pkg_dir_path = resolved_path[0 .. nm_pos + nm.len + pkg_end];
 
-        // 캐시 조회: 이미 이 패키지의 browser 필드를 파싱한 적이 있으면 재사용
-        const overrides_opt = self.browser_overrides_cache.get(pkg_dir_path) orelse blk: {
-            const built = self.buildBrowserOverrides(pkg_dir_path);
-            const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch return .none;
-            self.browser_overrides_cache.put(key_owned, built) catch {
-                self.allocator.free(key_owned);
-                return .none;
-            };
-            break :blk built;
-        };
-        const overrides = overrides_opt orelse return .none;
+        const overrides = self.getOrBuildBrowserOverrides(pkg_dir_path) orelse return .none;
 
         // resolved_path 에서 패키지 루트 이후의 상대 경로 추출
         const relative_in_pkg = resolved_path[nm_pos + nm.len + pkg_end ..];
@@ -604,20 +598,43 @@ pub const ResolveCache = struct {
         // source_dir 이 node_modules/<pkg> 내부이면 해당 pkg 의 browser 필드 조회.
         const pkg_dir_path = findPackageDirPath(source_dir) orelse return .none;
 
-        const overrides_opt = self.browser_overrides_cache.get(pkg_dir_path) orelse blk: {
-            const built = self.buildBrowserOverrides(pkg_dir_path);
-            const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch return .none;
-            self.browser_overrides_cache.put(key_owned, built) catch {
-                self.allocator.free(key_owned);
-                return .none;
-            };
-            break :blk built;
-        };
-        const overrides = overrides_opt orelse return .none;
+        const overrides = self.getOrBuildBrowserOverrides(pkg_dir_path) orelse return .none;
 
         if (overrides.module_disabled.contains(specifier)) return .disabled;
         if (overrides.module_remap.get(specifier)) |rep| return .{ .remap = rep };
         return .none;
+    }
+
+    /// 패키지의 browser override 를 캐시에서 가져오거나 (없으면) 빌드해 넣는다. thread-safe.
+    /// 빌드(package.json 파싱)는 락 밖에서 하고, 다 만든 뒤 짧게 락 잡아 삽입 — 그 사이 다른
+    /// 스레드가 먼저 넣었으면 내가 만든 건 폐기 (DirEntryCache 와 동일 패턴).
+    /// 반환값은 캐시 map 과 무관한 by-value 복사라 락 밖에서 읽어도 안전 (BrowserOverrides 의
+    /// 내부 map 들은 빌드 후 불변, 그 버킷은 deinit 전까지 안 풀린다).
+    fn getOrBuildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
+        {
+            self.browser_cache_mutex.lock();
+            defer self.browser_cache_mutex.unlock();
+            if (self.browser_overrides_cache.get(pkg_dir_path)) |cached| return cached;
+        }
+
+        var built = self.buildBrowserOverrides(pkg_dir_path);
+
+        self.browser_cache_mutex.lock();
+        defer self.browser_cache_mutex.unlock();
+        if (self.browser_overrides_cache.get(pkg_dir_path)) |existing| {
+            if (built) |*b| b.deinit(self.allocator);
+            return existing;
+        }
+        const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch {
+            if (built) |*b| b.deinit(self.allocator);
+            return null;
+        };
+        self.browser_overrides_cache.put(key_owned, built) catch {
+            self.allocator.free(key_owned);
+            if (built) |*b| b.deinit(self.allocator);
+            return null;
+        };
+        return built;
     }
 
     /// package.json 의 browser 필드를 4 축 (path/module × disabled/remap) 으로 수집.
