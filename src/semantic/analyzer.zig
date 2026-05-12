@@ -1021,8 +1021,12 @@ pub const SemanticAnalyzer = struct {
                 }
                 return;
             },
-            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+            .binding_property, .assignment_target_property_property => {
                 try self.recheckPredeclaredVar(bnode.data.binary.right);
+                return;
+            },
+            .assignment_target_property_identifier => {
+                try self.recheckPredeclaredVar(bnode.data.binary.left);
                 return;
             },
             .assignment_pattern, .assignment_target_with_default => {
@@ -1067,8 +1071,11 @@ pub const SemanticAnalyzer = struct {
                     self.setSymbolIdForPredeclaredBinding(op);
                 }
             },
-            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+            .binding_property, .assignment_target_property_property => {
                 self.setSymbolIdForPredeclaredBinding(node.data.binary.right);
+            },
+            .assignment_target_property_identifier => {
+                self.setSymbolIdForPredeclaredBinding(node.data.binary.left);
             },
             .assignment_pattern, .assignment_target_with_default => {
                 self.setSymbolIdForPredeclaredBinding(node.data.binary.left);
@@ -2019,8 +2026,11 @@ pub const SemanticAnalyzer = struct {
                     try self.predeclareBindingNames(op, kind);
                 }
             },
-            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+            .binding_property, .assignment_target_property_property => {
                 try self.predeclareBindingNames(node.data.binary.right, kind);
+            },
+            .assignment_target_property_identifier => {
+                try self.predeclareBindingNames(node.data.binary.left, kind);
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // default value(right)는 순회하지 않고, 바인딩 이름(left)만 추출
@@ -2049,8 +2059,13 @@ pub const SemanticAnalyzer = struct {
                     try self.visitBindingPatternExpressions(op);
                 }
             },
-            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+            .binding_property, .assignment_target_property_property => {
                 try self.visitBindingPatternExpressions(node.data.binary.right);
+            },
+            .assignment_target_property_identifier => {
+                if (!node.data.binary.right.isNone()) {
+                    try self.visitNode(node.data.binary.right);
+                }
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // default value(right)를 순회
@@ -2216,7 +2231,9 @@ pub const SemanticAnalyzer = struct {
                 }
                 return false;
             },
-            .assignment_target_with_default => return self.isLexicalPredeclared(node.data.binary.left),
+            .binding_property, .assignment_target_property_property => return self.isLexicalPredeclared(node.data.binary.right),
+            .assignment_target_property_identifier => return self.isLexicalPredeclared(node.data.binary.left),
+            .assignment_pattern, .assignment_target_with_default => return self.isLexicalPredeclared(node.data.binary.left),
             .rest_element, .spread_element => return self.isLexicalPredeclared(node.data.unary.operand),
             else => return false,
         }
@@ -2246,7 +2263,9 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
             },
-            .assignment_target_with_default => try self.predeclareLexicalBinding(n.data.binary.left, sym_kind, decl_span),
+            .binding_property, .assignment_target_property_property => try self.predeclareLexicalBinding(n.data.binary.right, sym_kind, decl_span),
+            .assignment_target_property_identifier => try self.predeclareLexicalBinding(n.data.binary.left, sym_kind, decl_span),
+            .assignment_pattern, .assignment_target_with_default => try self.predeclareLexicalBinding(n.data.binary.left, sym_kind, decl_span),
             else => {},
         }
     }
@@ -2452,6 +2471,16 @@ pub const SemanticAnalyzer = struct {
                     try self.declareArrowParams(@enumFromInt(raw_idx));
                 }
             },
+            .formal_parameter => {
+                const e = node.data.extra;
+                if (!self.ast.hasExtra(e, 2)) return;
+                const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                try self.declareArrowParams(pattern);
+                if (!default_value.isNone()) {
+                    try self.visitNode(default_value);
+                }
+            },
             .parenthesized_expression => {
                 try self.declareArrowParams(node.data.unary.operand);
             },
@@ -2510,8 +2539,11 @@ pub const SemanticAnalyzer = struct {
             .assignment_target_property_identifier => {
                 // shorthand property: { x } 또는 { x = default }
                 // left = key(바인딩), right = default value 또는 none
-                // 항상 left(key)에서 바인딩을 추출한다. right는 default value.
+                // 항상 left(key)에서 바인딩을 추출하고, default value 는 값 표현식으로 방문한다.
                 try self.declareBindingPattern(node.data.binary.left);
+                if (!node.data.binary.right.isNone()) {
+                    try self.visitNode(node.data.binary.right);
+                }
             },
             .assignment_target_property_property => {
                 // long-form property: { key: value }
@@ -2519,8 +2551,11 @@ pub const SemanticAnalyzer = struct {
                 try self.declareBindingPattern(node.data.binary.right);
             },
             .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
-                // 기본값: left가 바인딩
+                // 기본값: left가 바인딩, right는 값 표현식이다.
                 try self.declareBindingPattern(node.data.binary.left);
+                if (!node.data.binary.right.isNone()) {
+                    try self.visitNode(node.data.binary.right);
+                }
             },
             .spread_element, .rest_element, .assignment_target_rest => {
                 try self.declareBindingPattern(node.data.unary.operand);
@@ -3476,6 +3511,16 @@ pub const SemanticAnalyzer = struct {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
+            .formal_parameter => {
+                const e = node.data.extra;
+                if (!self.ast.hasExtra(e, 2)) return;
+                const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                try self.registerBinding(pattern, kind);
+                if (!default_value.isNone()) {
+                    try self.visitNode(default_value);
+                }
+            },
             .binding_identifier, .assignment_target_identifier => {
                 try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
             },
@@ -3489,11 +3534,17 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .binding_property,
-            .assignment_target_property_identifier,
             .assignment_target_property_property,
             => {
                 // binary: { left = key, right = value }
                 try self.registerBinding(node.data.binary.right, kind);
+            },
+            .assignment_target_property_identifier => {
+                // `{ x }` / `{ x = imported.value }`: left가 바인딩, right는 default 표현식.
+                try self.registerBinding(node.data.binary.left, kind);
+                if (!node.data.binary.right.isNone()) {
+                    try self.visitNode(node.data.binary.right);
+                }
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = binding, right = default_value }
