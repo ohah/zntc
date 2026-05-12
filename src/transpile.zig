@@ -1010,7 +1010,11 @@ fn transpileWithCallbackInternal(
         .react_refresh_hook_signatures = options.react_refresh_hook_signatures,
     };
     // per-file JSX pragma (D026): tsconfig/CLI 보다 우선 — graph pre-pass 와 동일 경로.
-    var transformer = try Transformer.init(arena_alloc, &parser.ast, transform_opts.withModuleJsxPragmas(&parser.ast));
+    const effective_opts = transform_opts.withModuleJsxPragmas(&parser.ast);
+    if (effective_opts.jsxClassicPragmaIgnoredUnderAutomatic(&parser.ast)) {
+        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.jsx_pragma_ignored_msg });
+    }
+    var transformer = try Transformer.init(arena_alloc, &parser.ast, effective_opts);
     // transformer.ast 도 arena owned (cloneForTransformer 결과). parser.ast 와 동일 이유.
     defer transformer.ast.dumpStringInternStatsIfEnabled();
     if (analyzer_storage) |*analyzer| {

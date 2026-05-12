@@ -2464,6 +2464,21 @@ test "D026 per-file JSX pragma override" {
         try std.testing.expect(std.mem.indexOf(u8, result.code, "h(\"div\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, result.code, "jsx-runtime") == null);
     }
+    // `@jsx h` 만 + effective runtime automatic → factory 무시 (automatic transform 그대로).
+    // (warning 도 함께 emit 되지만 std.log.warn 은 여기서 단언 불가 — 동작만 검증.)
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\/** @jsx h */
+            \\export const App = () => <p>x</p>;
+        ,
+            "input.jsx",
+            .{ .jsx_runtime = .automatic },
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "jsx-runtime") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "h(\"p\"") == null);
+    }
 }
 
 // ============================================================

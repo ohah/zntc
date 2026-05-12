@@ -12,6 +12,7 @@ const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
+const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
 const Span = @import("../../lexer/token.zig").Span;
 const parse_helpers = @import("parse_helpers.zig");
@@ -107,6 +108,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // per-file JSX pragma (D026): `@jsxRuntime` / `@jsx` / `@jsxFrag` / `@jsxImportSource`
     // 가 tsconfig/CLI 보다 우선. lowering 전에 module 의 effective JSX 설정을 확정.
     opts = opts.withModuleJsxPragmas(ast_ptr);
+    if (opts.jsxClassicPragmaIgnoredUnderAutomatic(ast_ptr)) {
+        self.addDiag(.jsx_pragma_ignored, .warning, module.path, Span.EMPTY, .parse, TransformOptions.jsx_pragma_ignored_msg, null);
+    }
     // #1961 PR 1h 후 splitting / single-bundle 양쪽에서 helper module virtual import
     // 모델 활성. mangler 가 helper module top-level 식별자를 reserved 처리
     // (linker.zig 의 candidates collect 에서 isVirtualId 분기) — cross-module binding
