@@ -2792,13 +2792,16 @@ test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metada
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 모든 wrap 호출은 정확히 `__zntc_guarded(function(){return ` 으로 시작 + `;});` 으로 종료.
-    // 다른 형식 (예: `__zntc_guarded(()=>` 또는 `__zntc_guarded(function(){X();})` 등) 검출.
+    // 모든 wrap 호출은 정확히 `__zntc_guarded(function(){return ` 으로 시작한다.
+    // statement guard 는 `;});`, expression guard 는 `}),` 로 닫힌다.
+    // expression guard 에 statement terminator 가 섞이면 `(...;});, value)` 문법 오류가 된다.
     const open_count = std.mem.count(u8, result.output, "__zntc_guarded(function(){return ");
-    const close_count = std.mem.count(u8, result.output, ";});");
+    const statement_close_count = std.mem.count(u8, result.output, ";});");
+    const expression_close_count = std.mem.count(u8, result.output, "}),");
     try std.testing.expect(open_count >= 2);
     // close 는 wrap 외 다른 곳 (ESM closure 등) 에서도 나올 수 있어 >= 만 검증.
-    try std.testing.expect(close_count >= open_count);
+    try std.testing.expect(statement_close_count + expression_close_count >= open_count);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
 }
 
 test "entry_error_guard #17: silent_console_error_patterns 주입 시 setter intercept emit" {
