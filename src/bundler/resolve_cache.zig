@@ -23,6 +23,7 @@ const ModuleType = types.ModuleType;
 const ImportKind = types.ImportKind;
 const pkg_json = @import("package_json.zig");
 const profile = @import("../profile.zig");
+const debug_log = @import("../debug_log.zig");
 
 /// 타겟 플랫폼. codegen.Platform을 번들러 전체에서 공유.
 pub const Platform = @import("../codegen/codegen.zig").Platform;
@@ -448,6 +449,8 @@ pub const ResolveCache = struct {
         const result = blk: {
             var resolver_scope = profile.begin(.resolve_resolver);
             defer resolver_scope.end();
+            var audit = debug_log.auditScope(.resolve_audit);
+            defer if (audit.on) debug_log.print(.resolve_audit, "resolve bare={d} spec_len={d} src_len={d} ns={d}\n", .{ @intFromBool(!resolver_mod.isRelativeOrAbsolute(effective_spec)), effective_spec.len, source_dir.len, audit.elapsedNs() });
             break :blk resolve_ptr.resolve(source_dir, effective_spec) catch |err| switch (err) {
                 error.ModuleNotFound => {
                     var store_scope = profile.begin(.resolve_cache_store);
