@@ -144,6 +144,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'mainFields',
   'packagesExternal',
   'preserveSymlinks',
+  'disableHierarchicalLookup',
   // ─── Bundle 출력 ───
   'splitting',
   'outputExports',

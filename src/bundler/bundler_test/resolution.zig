@@ -259,6 +259,79 @@ test "PackageJson: react-native package exports with RN condition wins over impo
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-import-export\"") == null);
 }
 
+test "Resolver: disableHierarchicalLookup=false (default) finds parent node_modules" {
+    // Metro `disableHierarchicalLookup = false` (Node.js 기본 algorithm) — entry 가
+    // `packages/app/src/` 에서 import 하면 그 위의 `node_modules` 를 walk-up
+    // 탐색해 root 의 `node_modules/lodash` 를 정상 resolve.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "packages/app/src/entry.ts", "import { val } from 'rootonly';\nconsole.log(val);");
+    try writeFile(tmp.dir, "node_modules/rootonly/package.json",
+        \\{ "name": "rootonly", "main": "./index.js" }
+    );
+    try writeFile(tmp.dir, "node_modules/rootonly/index.js", "export const val = 'from-root';");
+
+    const entry = try absPath(&tmp, "packages/app/src/entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-root\"") != null);
+}
+
+test "Resolver: disableHierarchicalLookup=true blocks parent node_modules walk-up" {
+    // Metro `disableHierarchicalLookup = true` — walk-up 차단. entry 의 directory
+    // 와 NODE_PATH 만 탐색. 동일 fixture 에서 resolve 실패해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "packages/app/src/entry.ts", "import { val } from 'rootonly';\nconsole.log(val);");
+    try writeFile(tmp.dir, "node_modules/rootonly/package.json",
+        \\{ "name": "rootonly", "main": "./index.js" }
+    );
+    try writeFile(tmp.dir, "node_modules/rootonly/index.js", "export const val = 'from-root';");
+
+    const entry = try absPath(&tmp, "packages/app/src/entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .disable_hierarchical_lookup = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // walk-up 차단으로 resolve 실패해야 한다 — root node_modules 에 있어도 못 찾음.
+    try std.testing.expect(result.hasErrors());
+}
+
+test "Resolver: disableHierarchicalLookup=true still resolves co-located node_modules" {
+    // walk-up 차단 시에도 entry 와 같은 디렉토리 (또는 NODE_PATH) 의 node_modules
+    // 는 정상 resolve. 같은 워크스페이스 안의 의존성은 평소처럼 작동.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "packages/app/src/entry.ts", "import { val } from 'local';\nconsole.log(val);");
+    try writeFile(tmp.dir, "packages/app/src/node_modules/local/package.json",
+        \\{ "name": "local", "main": "./index.js" }
+    );
+    try writeFile(tmp.dir, "packages/app/src/node_modules/local/index.js", "export const val = 'from-local';");
+
+    const entry = try absPath(&tmp, "packages/app/src/entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .disable_hierarchical_lookup = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-local\"") != null);
+}
+
 test "PackageJson: no package.json index.js fallback" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

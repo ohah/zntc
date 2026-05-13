@@ -410,6 +410,16 @@ describe('buildRnBundleOptions — extra (watchFolders / blockList / fallback)',
     expect(opts.nodePaths).toEqual([join(dir, 'node_modules'), '/abs/monorepo/node_modules']);
   });
 
+  test('disableHierarchicalLookup — true 시 BuildOptions 로 forwarding', () => {
+    const opts = buildRnBundleOptions(baseInput({ extra: { disableHierarchicalLookup: true } }));
+    expect(opts.disableHierarchicalLookup).toBe(true);
+  });
+
+  test('disableHierarchicalLookup — 미지정 시 undefined (기본 동작)', () => {
+    const opts = buildRnBundleOptions(baseInput({}));
+    expect(opts.disableHierarchicalLookup).toBeUndefined();
+  });
+
   test('blockList — 빈 배열은 미설정', () => {
     const opts = buildRnBundleOptions(baseInput({ extra: { blockList: [] } }));
     expect(opts.blockList).toBeUndefined();

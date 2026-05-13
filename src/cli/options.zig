@@ -73,6 +73,8 @@ pub const CliOptions = struct {
     /// 이후 파이프라인 skip → empty output (debug/profile 용).
     core_stop_after: ?lib.transpile.StopAfter = null,
     preserve_symlinks: bool = false,
+    /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
+    disable_hierarchical_lookup: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
     /// PATH 대신 "false"로 쓰면 빈 모듈로 대체.
@@ -716,6 +718,8 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             }
         } else if (std.mem.eql(u8, arg, "--preserve-symlinks")) {
             opts.preserve_symlinks = true;
+        } else if (std.mem.eql(u8, arg, "--disable-hierarchical-lookup")) {
+            opts.disable_hierarchical_lookup = true;
         } else if (std.mem.startsWith(u8, arg, "--alias:")) {
             // --alias:react=preact/compat (esbuild 호환)
             const kv = arg["--alias:".len..];

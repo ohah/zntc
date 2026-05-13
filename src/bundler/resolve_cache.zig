@@ -205,6 +205,8 @@ pub const ResolveCache = struct {
         external_patterns: []const []const u8 = &.{},
         custom_conditions: []const []const u8 = &.{},
         preserve_symlinks: bool = false,
+        /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
+        disable_hierarchical_lookup: bool = false,
         alias: []const resolver_mod.AliasEntry = &.{},
         /// tsconfig `paths` (절대 경로로 정규화됨). alias 보다 먼저 매칭, 다중 후보 순차 시도.
         ts_paths: []const @import("../config.zig").TsConfig.PathEntry = &.{},
@@ -231,6 +233,7 @@ pub const ResolveCache = struct {
         const alias = options.alias;
         var r = Resolver.init(allocator);
         r.preserve_symlinks = preserve_symlinks;
+        r.disable_hierarchical_lookup = options.disable_hierarchical_lookup;
         r.alias = alias;
         r.ts_paths = options.ts_paths;
         r.fallback = options.fallback;
