@@ -279,6 +279,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
                 const new_key = try self.visitNode(key_idx);
                 const new_init = try self.visitNode(self.readNodeIdx(me, ast_mod.PropertyExtra.init));
+                const is_private_accessor = self.ast.getNode(key_idx).tag == .private_identifier;
 
                 if (deco_len > 0) {
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
@@ -289,13 +290,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
                     const names = try self.buildFieldInitNames(name_node_idx);
-                    const clean_name = names.clean_name;
 
                     try member_infos.append(self.allocator, .{
                         .kind = "accessor",
                         .name = name_node_idx,
                         .is_static = is_static,
-                        .is_private = false,
+                        .is_private = is_private_accessor,
                         .decorators = decos,
                         .initializers_name = names.init_name,
                         .extra_initializers_name = names.extra_name,
@@ -303,7 +303,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     });
 
                     // accessor → private backing field + getter + setter
-                    const storage_name = try std.fmt.allocPrint(self.allocator, "#_{s}_accessor_storage", .{clean_name});
+                    const storage_name = try std.fmt.allocPrint(self.allocator, "#_{s}_accessor_storage", .{var_n});
                     defer self.allocator.free(storage_name);
                     const storage_span = try self.ast.addString(storage_name);
                     const storage_key = try self.ast.addNode(.{
@@ -353,7 +353,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     // 우연히 동작하던 것을 안정화).
                     {
                         const return_expr = try makeThisPrivateField(self, storage_span);
-                        const getter_key = try self.ast.addNode(.{
+                        const getter_key = if (is_private_accessor) new_key else try self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = self.ast.getNode(new_key).data.string_ref,
                             .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
@@ -364,7 +364,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
                     // set x(value) { this.#_x_accessor_storage = value; }
                     {
-                        const setter_key = try self.ast.addNode(.{
+                        const setter_key = if (is_private_accessor) new_key else try self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = self.ast.getNode(new_key).data.string_ref,
                             .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },

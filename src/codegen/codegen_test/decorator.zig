@@ -556,6 +556,22 @@ test "stage3: accessor decorator → kind accessor + backing field" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_x_initializers") != null);
 }
 
+test "stage3: private accessor decorator strips # from backing storage name" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  accessor #x = 1;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"accessor\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "private: true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#_x_accessor_storage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#_#x_accessor_storage") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get #x()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "set #x(") != null);
+}
+
 // --- No decorator → passthrough ---
 
 test "stage3: no decorator → class preserved as-is" {

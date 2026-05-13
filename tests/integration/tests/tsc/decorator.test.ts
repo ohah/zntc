@@ -858,7 +858,9 @@ class C {
     });
 
     test('decoratorOnClass8 - wrong decorator signature on class', async () => {
-      await expectError(`
+      // TSC rejects this via decorator signature type-checking. zntc only parses
+      // and transforms here, matching decoratorOnClass3 above.
+      await expectPass(`
 declare function dec(): (target: Function, paramIndex: number) => void;
 
 @dec()
