@@ -1,5 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { bundleAndRun, transpileAndRun } from './helpers';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { bundleAndRun, createFixture, runZntc, transpileAndRun } from './helpers';
 
 describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -115,6 +117,45 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
   });
 
   describe('syntax audit regressions', () => {
+    test('async await extraction preserves lazy logical and conditional branches', async () => {
+      const fixture = await createFixture({
+        'index.ts': `
+          async function run(client: null | { end(): void }, flag: boolean) {
+            client && (client.end(), await delay());
+            true || await skipOr();
+            "value" ?? await skipNullish();
+            return flag ? await thenBranch() : await elseBranch();
+          }
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const outFile = join(fixture.dir, 'out.js');
+      const transpile = await runZntc([join(fixture.dir, 'index.ts'), '-o', outFile, '--target=es5']);
+      expect(transpile.exitCode).toBe(0);
+
+      const output = readFileSync(outFile, 'utf8');
+      const clientTemp = output.match(/(_[a-z]+) = client;/)?.[1];
+      expect(clientTemp).toBeDefined();
+      const clientRead = output.indexOf(`${clientTemp} = client;`);
+      const andGuard = output.indexOf(`if (!(${clientTemp}))`, clientRead);
+      const clientEnd = output.indexOf('client.end();');
+      const skipOrMatch = output.match(/(_[a-z]+) = true;[\s\S]*?if \(\1\)[\s\S]*?skipOr\(\)/);
+      const skipNullishMatch = output.match(/(_[a-z]+) = "value";[\s\S]*?if \(\1 != null\)[\s\S]*?skipNullish\(\)/);
+      const conditionalGuard = output.indexOf('if (!(flag))');
+      const thenBranch = output.indexOf('thenBranch()');
+      const elseBranch = output.indexOf('elseBranch()');
+
+      expect(clientRead).toBeGreaterThanOrEqual(0);
+      expect(andGuard).toBeGreaterThan(clientRead);
+      expect(clientEnd).toBeGreaterThan(andGuard);
+      expect(skipOrMatch).not.toBeNull();
+      expect(skipNullishMatch).not.toBeNull();
+      expect(conditionalGuard).toBeGreaterThanOrEqual(0);
+      expect(thenBranch).toBeGreaterThan(conditionalGuard);
+      expect(elseBranch).toBeGreaterThan(thenBranch);
+    });
+
     test('logical nullish assignment reads member value only once', async () => {
       const result = await transpileAndRun(
         `
