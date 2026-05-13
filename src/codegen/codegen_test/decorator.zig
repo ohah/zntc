@@ -572,6 +572,29 @@ test "stage3: private accessor decorator strips # from backing storage name" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "set #x(") != null);
 }
 
+test "stage3: accessor + private accessor sharing base name get unique backing storage" {
+    // 같은 base name (`x`) 의 public + private accessor 가 한 class 에 동거할
+    // 때 backing storage 이름이 충돌하면 안 된다. `extractCleanVarName` 이
+    // 둘 다 "x" 를 반환하므로 단일 `allocPrint` 라면 같은 `#_x_accessor_storage`
+    // 가 두 개 생성됨. PrivateNameAllocator 가 충돌 회피.
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec accessor x = 1;
+        \\  @dec accessor #x = 2;
+        \\}
+    );
+    defer r.deinit();
+    // 첫 번째 storage 는 `#_x_accessor_storage`, 두 번째는 suffix 변형.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#_x_accessor_storage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#_x_accessor_storage2") != null);
+    // public accessor 의 get x() / set x()
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get x()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "set x(") != null);
+    // private accessor 의 get #x() / set #x()
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get #x()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "set #x(") != null);
+}
+
 // --- No decorator → passthrough ---
 
 test "stage3: no decorator → class preserved as-is" {
