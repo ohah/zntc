@@ -147,16 +147,98 @@ pub const ALL_SHORT_NAMES: [PAIRS.len][]const u8 = blk: {
     break :blk names;
 };
 
+/// tslib UMD 가 global 에 노출하는 private class helper 이름.
+/// 출처: `node_modules/tslib/tslib.js` 의 `exporter("__classPrivate*", ...)`.
+/// 시그니처가 ZNTC inline 과 다를 수 있으므로, `PAIRS` 에 같은 base 가 있으면
+/// (즉 ZNTC 가 그 이름으로 inline emit 한다면) `LOCAL_OVERRIDES` 에 `__zntc`
+/// prefix local 을 등록해 격리해야 한다. 새 helper 추가 / tslib 업데이트로
+/// PAIRS 가 늘면 아래 `comptime` drift check 가 빌드 타임에 잡는다.
+pub const TSLIB_UMD_EXPORTS = [_][]const u8{
+    "__classPrivateFieldGet",
+    "__classPrivateFieldSet",
+    "__classPrivateFieldIn",
+};
+
+/// 비minify 모드에서 helper 의 local 이름을 ZNTC 전용 prefix 로 격리하는 매핑.
+/// tslib UMD 가 같은 이름을 global 에 노출해도 emit 된 호출이 사용자 코드의
+/// helper 로 잘못 resolve 되지 않도록 보장 (#3141 `ea519cbb`).
+pub const LOCAL_OVERRIDES = [_]struct { base: []const u8, local: []const u8 }{
+    .{ .base = "__classPrivateFieldSet", .local = NAMES.PRIVATE_FIELD_SET_LOCAL },
+};
+
+// 빌드 타임 drift 가드 — `TSLIB_UMD_EXPORTS` 와 `PAIRS` 가 겹치는 base 는
+// 반드시 `LOCAL_OVERRIDES` 에 등록되어야 한다. ZNTC 가 새 inline helper 를
+// 추가하다가 tslib 와 충돌하는 이름을 우연히 사용하는 경우, 또는 tslib
+// 신규 helper export 가 PAIRS 에 추가될 경우, 컴파일 단계에서 즉시 실패.
+comptime {
+    @setEvalBranchQuota(10_000);
+    for (TSLIB_UMD_EXPORTS) |tslib_name| {
+        var in_pairs = false;
+        for (PAIRS) |p| {
+            if (std.mem.eql(u8, p.base, tslib_name)) {
+                in_pairs = true;
+                break;
+            }
+        }
+        if (in_pairs) {
+            var has_override = false;
+            for (LOCAL_OVERRIDES) |o| {
+                if (std.mem.eql(u8, o.base, tslib_name)) {
+                    has_override = true;
+                    break;
+                }
+            }
+            if (!has_override) {
+                @compileError("tslib UMD export collides with ZNTC inline helper, add LOCAL_OVERRIDES entry: " ++ tslib_name);
+            }
+        }
+    }
+}
+
 /// transformer 가 AST identifier 로 emit 하는 runtime helper local 이름을 minify 플래그에
 /// 따라 축약/원본으로 선택한다. non-helper identifier (Math, writable 등) 에는
 /// 호출하지 않는다 — `PAIRS` 에 등록된 이름만 처리. 매핑에 없으면 원본 반환
 /// (mangler_test 가 drift 를 빌드 타임에 잡음).
 pub fn helperName(base_name: []const u8, minify: bool) []const u8 {
     if (!minify) {
-        // tslib UMD가 RN global에 같은 helper 이름을 export한다. ZNTC private-field
-        // helper는 시그니처가 달라 실제 local/call 이름만 내부 전용 이름으로 둔다.
-        if (std.mem.eql(u8, base_name, "__classPrivateFieldSet")) return NAMES.PRIVATE_FIELD_SET_LOCAL;
+        // tslib UMD 와 시그니처가 다른 ZNTC inline helper 는 `__zntc` prefix
+        // 로 local 격리. drift 는 위 comptime check 로 빌드 타임에 검출.
+        inline for (LOCAL_OVERRIDES) |o| {
+            if (std.mem.eql(u8, base_name, o.base)) return o.local;
+        }
         return base_name;
     }
     return helper_map.get(base_name) orelse base_name;
+}
+
+test "helperName: tslib UMD 와 충돌하는 PAIRS entry 는 LOCAL_OVERRIDES 로 격리" {
+    // TSLIB_UMD_EXPORTS 에 등록된 이름이 PAIRS 에도 있다면 (즉 ZNTC inline
+    // 이 그 이름을 emit 한다면) helperName(.., false) 결과는 반드시 base 와
+    // 달라야 한다. comptime drift check 가 빌드 타임에 잡지만, runtime
+    // invariant 도 명시적으로 잠가 invariant 위반 시 즉시 실패.
+    for (TSLIB_UMD_EXPORTS) |tslib_name| {
+        var in_pairs = false;
+        for (PAIRS) |p| {
+            if (std.mem.eql(u8, p.base, tslib_name)) {
+                in_pairs = true;
+                break;
+            }
+        }
+        if (!in_pairs) continue;
+
+        const local = helperName(tslib_name, false);
+        try std.testing.expect(!std.mem.eql(u8, local, tslib_name));
+    }
+}
+
+test "helperName: 일반 helper 는 비minify 에서 base 그대로 반환" {
+    // PRIVATE_FIELD_SET 외 다른 helper 는 override 없으니 base 그대로.
+    try std.testing.expectEqualStrings("__extends", helperName("__extends", false));
+    try std.testing.expectEqualStrings("__generator", helperName("__generator", false));
+    try std.testing.expectEqualStrings("__classCallCheck", helperName("__classCallCheck", false));
+}
+
+test "helperName: minify 모드는 short 매핑 반환" {
+    try std.testing.expectEqualStrings(NAMES.EXTENDS_MIN, helperName("__extends", true));
+    try std.testing.expectEqualStrings(NAMES.PRIVATE_FIELD_SET_MIN, helperName("__classPrivateFieldSet", true));
 }
