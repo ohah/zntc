@@ -1218,6 +1218,25 @@ test "Parser: TS parameter property" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: TS generic class method named get/set" {
+    var scanner = try Scanner.init(std.testing.allocator,
+        \\class QueryCache {
+        \\  get<T>(queryHash: string): Query<T> | undefined {
+        \\    return this.queries.get(queryHash) as Query<T> | undefined
+        \\  }
+        \\  set<T>(queryHash: string, value: Query<T>): void {
+        \\    this.queries.set(queryHash, value)
+        \\  }
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
 test "Parser: decorator on class" {
     var scanner = try Scanner.init(std.testing.allocator, "@Component class Foo { }");
     defer scanner.deinit();

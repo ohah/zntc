@@ -621,7 +621,9 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         // get/set 뒤 다음 토큰이 accessor 대상이 될 수 있는지 판별.
         // class body에서 get\nx()는 accessor (줄바꿈 있어도). 단, get\n*x()는 ASI.
         // TypeScript PR#60225: newline은 * 앞에서만 ASI 유발
+        // `get<T>()` / `set<T>()`는 TS generic method 이름이지 accessor가 아니다.
         const is_accessor_target = next_tok.kind != .l_paren and
+            next_tok.kind != .l_angle and
             next_tok.kind != .semicolon and next_tok.kind != .eq and
             next_tok.kind != .r_curly and next_tok.kind != .eof;
         const newline_blocks = next_tok.has_newline_before and
