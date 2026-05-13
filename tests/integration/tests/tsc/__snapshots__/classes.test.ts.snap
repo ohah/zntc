@@ -2179,7 +2179,7 @@ class D {
 }
 class E {
 	constructor(x=this) {
-		this.x = this = x=this;
+		this.x = x;
 	}
 }
 class F extends C {
@@ -2212,14 +2212,14 @@ class E {
 exports[`TSC: classes constructorImplementationWithDefaultValues2 1`] = `
 "class C {
 	constructor(x=1) {
-		this.x: string = 1 = x=1;
+		this.x = x;
 		// error
 		var y = x;
 	}
 }
 class D {
 	constructor(x=1,y=x) {
-		this.y: U = x = y=x;
+		this.y = y;
 		// error
 		var z = x;
 	}
@@ -3145,7 +3145,7 @@ class DerivedInIf extends Object {
 class DerivedInBlockWithProperties extends Object {
 	prop = 1;
 	constructor(paramProp=2) {
-		this.paramProp = 2 = paramProp=2;
+		this.paramProp = paramProp;
 		{
 			super();
 		}
@@ -3154,7 +3154,7 @@ class DerivedInBlockWithProperties extends Object {
 class DerivedInConditionalWithProperties extends Object {
 	prop = 1;
 	constructor(paramProp=2) {
-		this.paramProp = 2 = paramProp=2;
+		this.paramProp = paramProp;
 		if (Math.random()) {
 			super(1);
 		} else {
