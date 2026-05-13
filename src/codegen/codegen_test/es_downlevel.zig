@@ -295,6 +295,42 @@ test "ES5: async try/catch return lowers to generator return op" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return 2;") == null);
 }
 
+test "ES5: async sync-return-only catalog — every statement type triggers state machine" {
+    // PR #3141 의 205d4e4e + d61f861a 가 같은 invariant (`containsYield` 와 함께
+    // `containsReturn` 도 fast-path skip 가드에서 검사) 의 statement-type 별 누락을
+    // 두 라운드로 발견했던 사례.
+    //
+    // `es2015_generator/scan.zig` 의 `hasYieldOrReturn` helper 가 모든 collect-
+    // *-operations 진입점에서 일관 호출되어야 한다. 새 statement type 의 fast-path
+    // 분기 추가 시 helper 누락이면 sync `return` 이 raw 로 emit 되고 `__generator`
+    // callback 이 generator instruction `[op, value]` 가 아닌 raw 값을 반환 →
+    // 런타임 무한 동기 루프.
+    //
+    // 새 statement type 의 fast-path 분기를 추가했다면 아래 cases 에도 한 줄 추가.
+    const cases = [_]struct { tag: []const u8, src: []const u8 }{
+        .{ .tag = "if-else", .src = "async function f(x) { if (x) { return 1; } else { return 0; } }" },
+        .{ .tag = "switch", .src = "async function f(x) { switch (x) { case 1: return 1; default: return 0; } }" },
+        .{ .tag = "for", .src = "async function f() { for (var i = 0; i < 2; i++) { return i; } }" },
+        .{ .tag = "while", .src = "async function f() { while (true) { return 1; } }" },
+        .{ .tag = "do-while", .src = "async function f() { do { return 1; } while (false); }" },
+        .{ .tag = "for-of", .src = "async function f(arr) { for (var x of arr) { return x; } }" },
+        .{ .tag = "for-in", .src = "async function f(o) { for (var k in o) { return k; } }" },
+        .{ .tag = "try", .src = "async function f() { try { return 1; } catch (e) {} }" },
+        .{ .tag = "try-finally", .src = "async function f() { try { } finally { return 1; } }" },
+    };
+
+    for (cases) |c| {
+        var r = try e2eTarget(std.testing.allocator, c.src, .es5);
+        defer r.deinit();
+        try expectAsyncStateMachine(r.output);
+        // generator instruction `return [2, ...]` (terminate op) 가 emit 되어야 함.
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,") != null);
+        // raw `return X;` 가 generator callback 안에 새지 않았는지 — raw return
+        // 패턴 검사는 fixture 마다 다르지만 `[2,` 가 있으면서 raw 식별자 return
+        // 만 또 존재하면 누락 신호.
+    }
+}
+
 test "ES5: async control-flow return after await lowers to generator return op" {
     const cases = [_]struct {
         src: []const u8,
