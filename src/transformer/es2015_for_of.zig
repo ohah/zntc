@@ -186,6 +186,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
                 if (lexical_names.items.len > 0 and BlockScoping.hasCapturedClosure(self, body, lexical_names.items)) {
                     const is_async = BlockScoping.hasAwaitExpression(self, body);
+                    const preserve_this = BlockScoping.hasLexicalThisReference(self, body);
                     var flow = BlockScoping.FlowResult{};
                     defer flow.labels.deinit(self.allocator);
                     BlockScoping.analyzeControlFlow(self, body, &flow, 0, 0);
@@ -202,6 +203,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         local_label,
                         span,
                         is_async,
+                        preserve_this,
                     );
                     loop_fn_decl = result.loop_fn;
                     body_after_closure = result.call_and_check;
