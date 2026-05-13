@@ -1765,6 +1765,36 @@ test "ESM re-export: named re-export from CJS binds via require getter (#1425)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_registry().getAssetByID") != null);
 }
 
+test "ESM namespace import: CJS named re-export member binds via require getter" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.setTag = function setTag(value) { globalThis.tag = value; };
+    );
+    try writeFile(tmp.dir, "facade.js",
+        \\export { setTag } from './registry.js';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as facade from './facade.js';
+        \\facade.setTag('ok');
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_registry().setTag(\"ok\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\nsetTag(\"ok\")") == null);
+}
+
 test "ESM re-export: named re-export from ESM binds via exports getter (#1425)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
