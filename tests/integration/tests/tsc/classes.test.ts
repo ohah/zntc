@@ -11187,7 +11187,9 @@ declare class C3 {
     );
   });
   test('autoAccessorExperimentalDecorators', async () => {
-    await expectError(
+    // TSC rejects this by checking the decorator function signature for auto-accessors.
+    // zntc does not type-check, so the syntax-level transform should still pass.
+    await expectPass(
       `
 declare var dec: (target: any, key: PropertyKey, desc: PropertyDescriptor) => void;
 
