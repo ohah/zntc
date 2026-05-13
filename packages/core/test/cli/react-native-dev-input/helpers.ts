@@ -3,6 +3,11 @@ export async function loadBuildRnDevServerInput() {
   return buildRnDevServerInput;
 }
 
+export async function loadBuildRnBundleOverride() {
+  const { buildRnBundleOverride } = await import('../../../bin/rn-dev-input.mjs');
+  return buildRnBundleOverride;
+}
+
 export function captureStderr<T>(callback: () => T): { result: T; output: string } {
   const original = process.stderr.write.bind(process.stderr);
   const writes: string[] = [];
