@@ -774,6 +774,18 @@ test "Codegen #3111: if(false)/else DCE 분기 {} 제거" {
     try std.testing.expectEqualStrings("g();", r.output);
 }
 
+test "Codegen: string literal DCE decodes unicode escapes" {
+    var r = try e2e(std.testing.allocator, "if (\"Ā\" !== \"\\u0100\") { console.error(\"bad\"); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("", r.output);
+}
+
+test "Codegen: string literal DCE decodes hex escapes" {
+    var r = try e2e(std.testing.allocator, "if (\"\\x41\" === \"A\") { good(); }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("good();", r.output);
+}
+
 test "Codegen #3111: if(true) DCE 분기 let 은 {} 유지" {
     var r = try e2e(std.testing.allocator, "if (true) { let x = 1; }");
     defer r.deinit();
