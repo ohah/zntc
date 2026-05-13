@@ -141,11 +141,9 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(exp.exported, ns_var);
             continue;
         }
-        const local = if (exp.owned)
-            try self.allocator.dupe(u8, exp.local)
-        else
-            exp.local;
-        try inner_map.put(exp.exported, local);
+        // exp.local 은 owned=true 면 ns_export_cache 가, 아니면 target module 이 소유한다.
+        // metadata map 은 값 포인터만 빌린다.
+        try inner_map.put(exp.exported, exp.local);
     }
     try ns_rewrite_list.append(self.allocator, .{
         .symbol_id = symbol_id,

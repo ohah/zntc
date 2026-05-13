@@ -1627,6 +1627,16 @@ pub const Linker = struct {
         return name;
     }
 
+    fn cjsNamespaceExportAccess(self: *const Linker, ref: SymbolRef) std.mem.Allocator.Error!?[]const u8 {
+        const target = self.graph.getModule(ref.module_index) orelse return null;
+        if (target.wrap_kind != .cjs) return null;
+        if (std.mem.eql(u8, ref.export_name, "default")) return null;
+
+        const req_var = try target.allocRequireName(self.allocator);
+        defer self.allocator.free(req_var);
+        return try std.fmt.allocPrint(self.allocator, "{s}().{s}", .{ req_var, ref.export_name });
+    }
+
     /// `import_records[idx].resolved` 가 valid 면 모듈 인덱스 반환, 아니면 null.
     /// `collectExportsRecursive` 의 3개 분기에서 공유.
     inline fn resolvedRecordModule(records: anytype, rec_idx_opt: ?u32) ?u32 {
@@ -1676,6 +1686,7 @@ pub const Linker = struct {
             // 가 access site 마다 객체 literal 을 inline emit (#1928). 대신 source mod_idx
             // 만 기록하고 ns_var 등록은 호출 site 가 일임.
             var ns_target_mod: ?u32 = null;
+            var owns_actual_local = false;
             const actual_local = if (eb.kind == .re_export_namespace) blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, eb.import_record_index);
                 break :blk eb_local;
@@ -1693,7 +1704,13 @@ pub const Linker = struct {
                             }
                         }
                     }
-                    if (ns_target_mod == null) break :blk self.resolveToLocalName(canonical);
+                    if (ns_target_mod == null) {
+                        if (try self.cjsNamespaceExportAccess(canonical)) |expr| {
+                            owns_actual_local = true;
+                            break :blk expr;
+                        }
+                        break :blk self.resolveToLocalName(canonical);
+                    }
                     break :blk eb_local;
                 }
                 break :blk eb_local;
@@ -1703,12 +1720,15 @@ pub const Linker = struct {
                 break :blk eb_local;
             };
 
-            const safe_local = self.safeIdentifierName(actual_local, @intCast(mod_i));
+            const safe_local = if (owns_actual_local)
+                actual_local
+            else
+                self.safeIdentifierName(actual_local, @intCast(mod_i));
 
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
                 .local = safe_local,
-                .owned = false,
+                .owned = owns_actual_local,
                 .ns_target_mod = ns_target_mod,
             });
         }
