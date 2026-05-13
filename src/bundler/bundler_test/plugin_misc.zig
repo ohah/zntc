@@ -2189,6 +2189,42 @@ test "RN preset: #1302 for-of destructuring + const→var는 void 0 init 추가 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "} = void 0;") == null);
 }
 
+test "RN preset: for-of loop closure preserves method this" {
+    // 루프 body 를 _loop 함수로 추출하더라도 원래 메서드의 `this` 의미를 보존해야 한다.
+    // RN DebuggingOverlayRegistry 의 private method call 이 이 경로에서 깨졌다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const callbacks = [];
+        \\class Registry {
+        \\  #find(instance) { return instance; }
+        \\  draw(updates) {
+        \\    const out = [];
+        \\    for (const { id, instance, color } of updates) {
+        \\      const parent = this.#find(instance);
+        \\      callbacks.push(function() { return id + color; });
+        \\      out.push(parent);
+        \\    }
+        \\    return out;
+        \\  }
+        \\}
+        \\console.log(new Registry().draw([{ id: 1, instance: 2, color: 3 }]), callbacks[0]());
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_loop.call(this") != null);
+}
+
 test "RN preset: #1299 let/const → var 다운레벨 (Hermes block scoping)" {
     // `for (let q = 0, ...)` 같은 패턴이 object literal 평가를 깨뜨려 후속 prop 누락.
     // arrow → function 변환만으로 회피되지 않음. Rolldown도 block-scoping 변환.

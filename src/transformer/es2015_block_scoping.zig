@@ -185,6 +185,50 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }.visit);
         }
 
+        /// loop body 를 `_loop` 함수로 추출할 때 원래 body 의 lexical `this` /
+        /// `super` 의미가 필요한지 검사한다. 일반 function/class/method 는 자체
+        /// `this` 를 가지므로 경계에서 멈추고, arrow function 은 outer `this` 를
+        /// 캡처하므로 계속 탐색한다.
+        pub fn hasLexicalThisReference(self: *Transformer, body_idx: NodeIndex) bool {
+            if (body_idx.isNone()) return false;
+            const max_node = self.parser_node_count;
+
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, body_idx) catch return true;
+
+            while (stack.items.len > 0) {
+                const idx = stack.pop() orelse break;
+                if (idx.isNone()) continue;
+                if (@intFromEnum(idx) >= max_node) continue;
+                const node = self.ast.getNode(idx);
+
+                switch (node.tag) {
+                    .this_expression,
+                    .super_expression,
+                    => return true,
+
+                    .function_expression,
+                    .function_declaration,
+                    .function,
+                    .method_definition,
+                    .class_expression,
+                    .class_declaration,
+                    => continue,
+
+                    else => {},
+                }
+
+                var children: std.ArrayList(NodeIndex) = .empty;
+                defer children.deinit(self.allocator);
+                collectChildIndices(self, node, &children) catch return true;
+                for (children.items) |child_idx| {
+                    stack.append(self.allocator, child_idx) catch return true;
+                }
+            }
+            return false;
+        }
+
         /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
         /// 공통 `ast_walk.ChildIterator` 로 자식 순회 + `parser_node_count` 가드로
         /// transformer 신규 노드 영역을 걸러낸다 (extra 자식에만 한정).
@@ -238,6 +282,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             local_label: ?[]const u8,
             span: Span,
             is_async: bool,
+            preserve_this: bool,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
@@ -312,19 +357,16 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
+            const loop_ref = try es_helpers.makeIdentifierRef(self, loop_name);
+            const call_callee = if (preserve_this) blk: {
+                const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+                try self.scratch.append(self.allocator, try es_helpers.makeThisExpr(self, span));
+                break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
+            } else loop_ref;
             for (lexical_names) |name| {
                 try self.scratch.append(self.allocator, try es_helpers.makeIdentifierRef(self, name));
             }
-            const call_args = try self.ast.addNodeList(self.scratch.items[scratch_top2..]);
-            const loop_ref = try es_helpers.makeIdentifierRef(self, loop_name);
-            const call_extra = try self.ast.addExtras(&.{
-                @intFromEnum(loop_ref), call_args.start, call_args.len, 0,
-            });
-            const loop_call = try self.ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
 
             // is_async — `_loop(...)` 가 Promise 반환. 호출부도 `await _loop(...)` 로
             // wrap 해야 iteration 순서 보존 + needsRetVar 시 _ret 가 resolved value.

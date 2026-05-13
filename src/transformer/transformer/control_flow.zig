@@ -29,6 +29,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             // for-await-of 자체는 enclosing async function 보장이지만 body 에 await
             // 가 없으면 sync _loop 으로 충분.
             const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
+            const preserve_this = if (has_capture) BlockScoping.hasLexicalThisReference(self, orig_body_idx) else false;
 
             var flow = BlockScoping.FlowResult{};
             defer flow.labels.deinit(self.allocator);
@@ -52,6 +53,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     null,
                     node.span,
                     is_async,
+                    preserve_this,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -182,6 +184,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             const orig_body_idx = self.readNodeIdx(e, 3);
             const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
             const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
+            const preserve_this = if (has_capture) BlockScoping.hasLexicalThisReference(self, orig_body_idx) else false;
 
             // 제어 흐름 분석도 원본에서 수행
             var flow = BlockScoping.FlowResult{};
@@ -204,6 +207,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     null,
                     node.span,
                     is_async,
+                    preserve_this,
                 );
 
                 // var _loop = function(...) { ... };
