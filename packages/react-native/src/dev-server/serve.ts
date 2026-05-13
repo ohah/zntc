@@ -89,7 +89,11 @@ export async function serveRn(
 
   // hmrBridge 먼저 생성 — registry callback 으로 onRebuild 전달.
   const hmrBridge = options.hmr
-    ? createHmrBridge({ path: HMR_PATH, silent: extras.silent })
+    ? createHmrBridge({
+        path: HMR_PATH,
+        silent: extras.silent,
+        forwardClientLogs: options.bundle.extra?.forwardClientLogs,
+      })
     : undefined;
   const platforms = createPlatformStateRegistry(options, hmrBridge?.callbacks);
 

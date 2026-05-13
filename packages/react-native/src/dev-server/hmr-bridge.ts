@@ -20,6 +20,8 @@ export interface HmrBridgeOptions {
   readonly path: string;
   /** rebuild log 출력 비활성 (test 환경). default false. */
   readonly silent?: boolean;
+  /** Metro `server.forwardClientLogs` 호환. default true. */
+  readonly forwardClientLogs?: boolean;
 }
 
 export interface HmrBridge {
@@ -28,10 +30,7 @@ export interface HmrBridge {
   readonly path: string;
   /** http upgrade chain 안에서 호출 — channel.accept + initial greeting. */
   acceptUpgrade(req: IncomingMessage, socket: Socket): void;
-  /**
-   * RN runtime console.log forwarding 출력 표시 toggle. 새 상태 반환. server-side
-   * mute 라 클라이언트는 계속 보냄 — 트래픽 절약하려면 forwardClientLogs OFF 로 build.
-   */
+  /** RN runtime console.log forwarding 출력 표시 toggle. 새 상태 반환. */
   toggleLogs(): boolean;
 }
 
@@ -139,7 +138,7 @@ function buildAckFrame(): Buffer {
 export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
   const adapter = createMetroHmrAdapter();
   const onRebuild = buildOnRebuild(adapter, { silent: options.silent });
-  let logsEnabled = true;
+  let logsEnabled = options.forwardClientLogs !== false;
   adapter.channel.onIncoming(buildIncomingHandler(adapter, () => logsEnabled));
 
   return {

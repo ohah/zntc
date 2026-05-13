@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { Buffer } from 'node:buffer';
+import { EventEmitter } from 'node:events';
+import type { IncomingMessage } from 'node:http';
+import type { Socket } from 'node:net';
 
 import type { WatchHandle, WatchRebuildEvent } from '@zntc/core';
 
@@ -51,6 +55,35 @@ function rebuild(overrides: Partial<WatchRebuildEvent> = {}): WatchRebuildEvent 
     graphChanged: false,
     ...overrides,
   } as WatchRebuildEvent;
+}
+
+class MockSocket extends EventEmitter {
+  written: Buffer[] = [];
+  destroyed = false;
+  write(chunk: Buffer | string): boolean {
+    this.written.push(typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk));
+    return true;
+  }
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
+
+function fakeUpgradeRequest(): IncomingMessage {
+  return {
+    headers: { 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' },
+  } as unknown as IncomingMessage;
+}
+
+function clientTextFrame(text: string): Buffer {
+  const payload = Buffer.from(text);
+  const mask = Buffer.from([1, 2, 3, 4]);
+  const header = Buffer.from([0x81, 0x80 | payload.length]);
+  const masked = Buffer.allocUnsafe(payload.length);
+  for (let i = 0; i < payload.length; i++) {
+    masked[i] = payload[i]! ^ mask[i % 4]!;
+  }
+  return Buffer.concat([header, mask, masked]);
 }
 
 describe('createHmrBridge — onRebuild', () => {
@@ -154,5 +187,71 @@ describe('createHmrBridge — acceptUpgrade', () => {
   test('path readonly 노출', () => {
     const bridge = createHmrBridge({ path: '/__zntc_hot__' });
     expect(bridge.path).toBe('/__zntc_hot__');
+  });
+});
+
+describe('createHmrBridge — client log forwarding', () => {
+  test('forwardClientLogs 기본값 true — Metro 처럼 incoming log 를 터미널에 출력', () => {
+    const bridge = createHmrBridge({ path: '/hot' });
+    const socket = new MockSocket();
+    const original = console.log;
+    const calls: unknown[][] = [];
+    console.log = (...args: unknown[]) => {
+      calls.push(args);
+    };
+    try {
+      bridge.acceptUpgrade(fakeUpgradeRequest(), socket as unknown as Socket);
+      socket.emit(
+        'data',
+        clientTextFrame(JSON.stringify({ type: 'log', level: 'error', data: ['boom'] })),
+      );
+    } finally {
+      console.log = original;
+    }
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]![0])).toContain('ERROR');
+    expect(String(calls[0]![0])).toContain('boom');
+  });
+
+  test('forwardClientLogs=false — incoming log 를 터미널에 출력하지 않음', () => {
+    const bridge = createHmrBridge({ path: '/hot', forwardClientLogs: false });
+    const socket = new MockSocket();
+    const original = console.log;
+    const calls: unknown[][] = [];
+    console.log = (...args: unknown[]) => {
+      calls.push(args);
+    };
+    try {
+      bridge.acceptUpgrade(fakeUpgradeRequest(), socket as unknown as Socket);
+      socket.emit(
+        'data',
+        clientTextFrame(JSON.stringify({ type: 'log', level: 'error', data: ['boom'] })),
+      );
+    } finally {
+      console.log = original;
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test('forwardClientLogs=true — incoming log 를 터미널에 출력', () => {
+    const bridge = createHmrBridge({ path: '/hot', forwardClientLogs: true });
+    const socket = new MockSocket();
+    const original = console.log;
+    const calls: unknown[][] = [];
+    console.log = (...args: unknown[]) => {
+      calls.push(args);
+    };
+    try {
+      bridge.acceptUpgrade(fakeUpgradeRequest(), socket as unknown as Socket);
+      socket.emit(
+        'data',
+        clientTextFrame(JSON.stringify({ type: 'log', level: 'error', data: ['boom'] })),
+      );
+    } finally {
+      console.log = original;
+    }
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]![0])).toContain('ERROR');
+    expect(String(calls[0]![0])).toContain('boom');
   });
 });

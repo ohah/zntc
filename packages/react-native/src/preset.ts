@@ -132,9 +132,8 @@ export interface RnBundleInput {
      */
     silentConsoleErrorPatterns?: string[];
     /**
-     * Metro `server.forwardClientLogs` 호환. true면 RN runtime console.* 를 dev
-     * server 터미널로 forwarding. 기본 false — RN 내부/devtool 로그 직렬화가 앱
-     * 메모리를 계속 늘리는 시나리오를 피한다.
+     * Metro `server.forwardClientLogs` 호환. RN core 의 HMRClient.log 경유 로그를
+     * dev server 터미널로 forwarding. 기본 true.
      */
     forwardClientLogs?: boolean;
   };
@@ -341,7 +340,6 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       rnPlatform,
       sourceExts,
       babelTransformerPath: extra?.babelTransformerPath,
-      forwardClientLogs: extra?.forwardClientLogs,
     }),
   ];
 

@@ -71,10 +71,7 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
       // HMRClient.js path 매칭 — onLoad 응답으로 ZNTC_HMR_CLIENT_CODE 그대로.
       const hmrClientPattern = new RegExp(`${escapeRegex(HMR_CLIENT_SUFFIX)}$`);
       build.onLoad({ filter: hmrClientPattern }, () => ({
-        contents: ZNTC_HMR_CLIENT_CODE.replace(
-          /__ZNTC_FORWARD_CLIENT_LOGS__/g,
-          config.forwardClientLogs === true ? 'true' : 'false',
-        ),
+        contents: ZNTC_HMR_CLIENT_CODE,
       }));
 
       const hasSvgSource = config.sourceExts.some((e) => normalizeExt(e).toLowerCase() === '.svg');

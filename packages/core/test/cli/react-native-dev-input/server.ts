@@ -100,4 +100,19 @@ describe('buildRnDevServerInput — server config 추출 (#2605)', () => {
     expect(input?.bundle.extra?.forwardClientLogs).toBe(true);
     expect(input?.hmr).toBe(false);
   });
+
+  test('config.server.forwardClientLogs 기본값은 Metro 와 같이 true', async () => {
+    const buildRnDevServerInput = await loadBuildRnDevServerInput();
+    const input = buildRnDevServerInput({ entryPoints: ['i.js'] }, {});
+    expect(input?.bundle.extra?.forwardClientLogs).toBe(true);
+  });
+
+  test('config.server.forwardClientLogs=false → dev server input false', async () => {
+    const buildRnDevServerInput = await loadBuildRnDevServerInput();
+    const input = buildRnDevServerInput(
+      { entryPoints: ['i.js'] },
+      { server: { forwardClientLogs: false } },
+    );
+    expect(input?.bundle.extra?.forwardClientLogs).toBe(false);
+  });
 });

@@ -64,7 +64,7 @@ export function buildRnBundleExtra(config, opts = {}) {
     inlineSourceMap: serializer.inlineSourceMap ?? undefined,
     sourceRoot: cfg.sourcemapSourcesRoot ?? undefined,
     silentConsoleErrorPatterns: server.silentConsoleErrorPatterns ?? undefined,
-    forwardClientLogs: server.forwardClientLogs === true,
+    forwardClientLogs: server.forwardClientLogs !== false,
   };
 }
 
