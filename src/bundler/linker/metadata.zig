@@ -519,17 +519,18 @@ pub fn buildMetadataForAst(
                 // 환경에서는 is_included bit 가 신뢰 불가라 가드 미적용 (line 408 동일 정책).
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const target_mod = canonical_m_opt.?;
-                // Metro inlineRequires 호환: RN 에서는 static import 의 module init 을
-                // 모듈 선두 preamble 로 당기지 않고 실제 값 참조 지점에 둔다.
-                // 기존 function-only 한정은 함수 body cycle 만 해결했지만, Metro 는
-                // top-level initializer 안의 named import 도 `require(...).name` 위치에서
-                // 평가하므로 selector/navigator cycle 에서 초기화 순서 차이가 생겼다.
+                // Metro inlineRequires 호환: RN 은 named import 만 `require(...).name`
+                // 위치로 미루고 default/namespace import 는 eager require 로 유지한다.
+                // default import 된 모듈은 top-level provider 등록 같은 부작용을 가질
+                // 수 있으므로 lazy 처리하면 RNFirebase Firestore 처럼 초기화 순서가
+                // Metro 와 달라진다.
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
                     canonical_mod != module_index and
                     !is_helper_binding and
-                    ib.kind != .namespace and
+                    ib.kind == .named and
+                    !ib.importsDefault() and
                     !target_mod.uses_top_level_await and
                     !exported_locals.contains(m.importBindingLocalName(ib));
                 if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {

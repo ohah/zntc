@@ -3132,6 +3132,94 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
 }
 
+test "react_native inlineRequires: keeps default ESM imports eager for provider side effects" {
+    // Metro inlineRequires 는 `import Foo from './foo'` 를 named import 처럼
+    // `require(...).Foo` 위치로 미루지 않는다. RNFirebase Firestore 는 default
+    // import 된 모듈의 top-level provider 호출로 DocumentReference 내부 slot 을
+    // 채우므로 default import 를 lazy 처리하면 `new null.prototype` 계열 런타임
+    // 오류가 난다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { makeDoc } from './firestore-index';
+        \\globalThis.__zntcFirestoreDocResult = makeDoc();
+    );
+    try writeFile(tmp.dir, "firestore-index.js",
+        \\import FirestoreQuery from './FirestoreQuery';
+        \\import FirestoreDocumentReference from './FirestoreDocumentReference';
+        \\export function makeQuery() {
+        \\  return new FirestoreQuery();
+        \\}
+        \\export function makeDoc() {
+        \\  return new FirestoreDocumentReference().get();
+        \\}
+    );
+    try writeFile(tmp.dir, "FirestoreQuery.js",
+        \\import FirestoreDocumentSnapshot from './FirestoreDocumentSnapshot';
+        \\export default class FirestoreQuery {
+        \\  snapshot() {
+        \\    return new FirestoreDocumentSnapshot().name;
+        \\  }
+        \\}
+    );
+    try writeFile(tmp.dir, "FirestoreDocumentSnapshot.js",
+        \\import { provideDocumentSnapshotClass } from './FirestoreDocumentReference';
+        \\export default class FirestoreDocumentSnapshot {
+        \\  constructor() {
+        \\    this.name = 'snapshot-ready';
+        \\  }
+        \\}
+        \\provideDocumentSnapshotClass(FirestoreDocumentSnapshot);
+    );
+    try writeFile(tmp.dir, "FirestoreDocumentReference.js",
+        \\let FirestoreDocumentSnapshot = null;
+        \\export function provideDocumentSnapshotClass(cls) {
+        \\  FirestoreDocumentSnapshot = cls;
+        \\}
+        \\export default class FirestoreDocumentReference {
+        \\  get() {
+        \\    return new FirestoreDocumentSnapshot().name;
+        \\  }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const query = try absPath(&tmp, "FirestoreQuery.js");
+    defer std.testing.allocator.free(query);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const eager_query_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn();}});",
+        .{query},
+    );
+    defer std.testing.allocator.free(eager_query_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, eager_query_init) != null);
+
+    const lazy_query_value = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), FirestoreQuery)",
+        .{query},
+    );
+    defer std.testing.allocator.free(lazy_query_value);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_query_value) == null);
+}
+
 test "react_native inlineRequires: object parameter default visits ESM value import" {
     // `{ backgroundColor = COLOR_TOKENS.bgPrimary }` 는 binding pattern 이지만
     // default initializer 는 값 표현식이다. Metro/Babel 은 이 import 를 값 참조로
