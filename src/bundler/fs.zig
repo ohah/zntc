@@ -224,6 +224,21 @@ pub const RealReadFileCache = struct {
         };
     }
 
+    /// 신규 모듈이 그래프에 등록되는 시점에 호출 — 그 모듈을 후속 read 할 때 발생하는
+    /// `openFile` 의 dir-fd cache MISS (`getOrOpenDir` 의 첫 `std.fs.cwd().openDir`)
+    /// 를 미리 처리해 hot path 의 wall 을 줄인다. 결과는 cache 에만 박아둬 caller 는
+    /// fd 를 받지 않는다 — 에러는 모두 swallow (best-effort).
+    ///
+    /// caller 가 fs file path 인지 확신할 수 없는 위치 (`graph.addModule` 처럼 plugin
+    /// virtual / disabled-prefix / specifier 가 섞여 들어오는 곳) 에서도 안전하게
+    /// 호출하도록 path 검증을 둔다 — non-absolute 또는 null-byte 포함 path 는 skip.
+    pub fn preopenDir(self: *RealReadFileCache, allocator: std.mem.Allocator, dir_path: []const u8) void {
+        if (dir_path.len == 0) return;
+        if (!std.fs.path.isAbsolute(dir_path)) return;
+        if (std.mem.indexOfScalar(u8, dir_path, 0) != null) return;
+        _ = self.getOrOpenDir(allocator, dir_path) catch {};
+    }
+
     fn openFile(self: *RealReadFileCache, allocator: std.mem.Allocator, path: []const u8) !std.fs.File {
         const dir_path = std.fs.path.dirname(path) orelse ".";
         const file_name = std.fs.path.basename(path);
@@ -280,6 +295,9 @@ pub const VirtualReadFileCache = struct {
     ) FsError!LoadedModuleWithStat {
         return Implementation.init().readFileWithStat(content_allocator, path, max_bytes);
     }
+
+    /// WASM 빌드 noop — VFS 는 dir-fd cache 가 없으므로 pre-warm 의미 없음.
+    pub fn preopenDir(_: *VirtualReadFileCache, _: std.mem.Allocator, _: []const u8) void {}
 };
 
 /// 호스트 OS 의 std.fs.cwd() 를 wrapping. NAPI / CLI 빌드의 default 구현.

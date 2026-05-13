@@ -86,6 +86,14 @@ pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
     try self.modules.append(self.allocator, module);
     try self.path_to_module.put(path_owned, index);
 
+    // 신규 모듈 path 의 dir 를 source_read_cache 에 pre-warm — readModuleSource 단계의
+    // dir-fd cache MISS (avg 70μs) 를 graph BFS 시점에 미리 처리. virtual path
+    // (disabled / optional missing 등) 는 disabled_path 전용 함수에서 처리되므로
+    // 여기 들어오는 abs_path 는 fs file path. openDir 실패는 preopenDir 가 swallow.
+    if (std.fs.path.dirname(abs_path)) |dir_path| {
+        self.source_read_cache.preopenDir(self.allocator, dir_path);
+    }
+
     // 파싱은 build()의 배치 루프에서 수행
     return index;
 }
