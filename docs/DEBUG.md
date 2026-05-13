@@ -123,6 +123,8 @@ append 하는 흐름을 추적하는 데 사용. `transform_boundary` 는 parser
 
 `--profile` 이 sub-phase 별 **총합**을 주는 반면, `*_audit` 카테고리는 같은 sub-phase의 **모듈/호출 단위 분포**를 stderr 로 한 줄씩 출력한다. 어디서 시간이 가는지 보려면 `--profile` 부터 → 한 phase 가 크면 그 audit 카테고리로 분포 확인 → grep/awk 로 집계.
 
+> **⚠️ 절대 timing 주의** — `std.debug.print` 는 stderr 를 프로세스 전역 mutex 로 직렬화한다. multi-thread 빌드에서 audit 활성 시 모든 worker 가 매 출력마다 lock wait 하므로 hot path wall 이 부풀려진다. 실제로 `resolve_audit` 활성 + 동시 `--profile=resolve` 측정 시 `resolve.resolver` Total 이 audit-off 측정 대비 25× 까지 늘었다 (실측 react-native-bare). 그래서 audit 출력의 `ns` 절대값은 부풀려진 값이고, 신뢰할 수 있는 정보는 **상대 ratio** (wrap_kind 별 분포, cache hit/miss 비율, 입력 사이즈 vs 비용 상관관계) 뿐이다. 절대 timing 이 필요하면 audit 끄고 `--profile` 만 사용.
+
 #### `metadata_audit`
 
 `buildMetadataForAst` 의 3개 sub-phase (한 모듈당 3줄):
