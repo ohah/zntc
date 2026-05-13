@@ -519,11 +519,17 @@ pub fn buildMetadataForAst(
                 // 환경에서는 is_included bit 가 신뢰 불가라 가드 미적용 (line 408 동일 정책).
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const target_mod = canonical_m_opt.?;
-                // Metro inlineRequires 호환: RN 은 named import 만 `require(...).name`
-                // 위치로 미루고 default/namespace import 는 eager require 로 유지한다.
-                // default import 된 모듈은 top-level provider 등록 같은 부작용을 가질
-                // 수 있으므로 lazy 처리하면 RNFirebase Firestore 처럼 초기화 순서가
-                // Metro 와 달라진다.
+                // RN inlineRequires 정책: named import 만 `(__zntc_modules[...].
+                // fn(), name)` 위치로 lazy 화하고 default / namespace import 는
+                // eager require 로 유지한다.
+                //
+                // Metro 자체의 `inline-requires` Babel plugin 은 default 포함
+                // 모든 import 를 `require()` access 로 inline 화한다. Metro 가 그렇게
+                // 해도 안전한 이유는 모듈별 side-effect-free 여부를 transformer 단계
+                // 에서 분석하기 때문이고 — ZNTC 는 그 정적 안전성 분석을 (아직) 갖고
+                // 있지 않다. 그래서 보수적으로 default 만 eager 유지: top-level
+                // provider 등록을 하는 모듈 (예: RNFirebase Firestore) 의 부작용이
+                // lazy 화로 누락되어 Metro 와 다른 초기화 순서가 되는 것을 차단.
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
