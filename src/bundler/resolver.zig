@@ -24,6 +24,7 @@ const pkg_json = @import("package_json.zig");
 const fs = @import("fs.zig");
 const PackageJson = pkg_json.PackageJson;
 const profile = @import("../profile.zig");
+const debug_log = @import("../debug_log.zig");
 
 pub const ResolveResult = struct {
     /// 해석된 절대 파일 경로
@@ -840,14 +841,17 @@ pub const Resolver = struct {
         var scope = profile.begin(.resolve_file_exists);
         defer scope.end();
         if (file_name.len == 0) return false;
-        if (self.dir_cache) |cache| {
-            // constCast: getOrLoad 내부에서 캐시 write를 위해 mutex 사용
-            return @constCast(cache).hasFile(dir_path, file_name);
-        }
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const joined = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ dir_path, std.fs.path.sep, file_name }) catch return false;
-        const stat = fs.statFile(joined) catch return false;
-        return stat.kind == .file;
+        var audit = debug_log.auditScope(.resolve_audit);
+        const result: bool = if (self.dir_cache) |cache|
+            @constCast(cache).hasFile(dir_path, file_name)
+        else blk: {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const joined = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ dir_path, std.fs.path.sep, file_name }) catch break :blk false;
+            const stat = fs.statFile(joined) catch break :blk false;
+            break :blk stat.kind == .file;
+        };
+        if (audit.on) debug_log.print(.resolve_audit, "exists cache={d} hit={d} dir_len={d} name_len={d} ns={d}\n", .{ @intFromBool(self.dir_cache != null), @intFromBool(result), dir_path.len, file_name.len, audit.elapsedNs() });
+        return result;
     }
 
     fn dirExists(self: *const Resolver, path: []const u8) bool {

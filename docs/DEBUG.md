@@ -55,10 +55,13 @@ await build({
 | `string_intern`     | `Ast.addString` intern map hit/miss 통계 (모듈별)                                                    |
 | `runtime_polyfills` | core-js 사용 감지 + graph prelude 결정                                                               |
 | `module_stats`      | 빌드 끝에 모듈 분류 히스토그램 (출처·wrap 종류·변환 feature·semantic 보유) — 아래 §`module_stats` 참고 |
+| `metadata_audit`    | `buildMetadataForAst` sub-phase (skip_nodes / import_bindings / require_rewrites) 의 per-module 분포 — 아래 §`*_audit` 참고 |
+| `resolve_audit`     | resolver / file.exists 의 per-call 분포 (cache hit, dir/spec 길이, 경과 ns) — 아래 §`*_audit` 참고 |
+| `graph_io_audit`    | `pm.setup.read.open` 의 per-call 분포 (dir-fd cache hit, path 길이, 경과 ns) — 아래 §`*_audit` 참고 |
 
 추가 시: `src/debug_log.zig` 의 `Category` enum 에 이름만 추가 → 사용처에서 `debug_log.print(.new_category, ...)` 호출 → 이 표 업데이트.
 
-> `--profile`(§2)은 phase 별 **타이밍**, `ZNTC_DEBUG`는 **구조/상태 진단**. `module_stats` 는 빌드의 *모양*(어떤 모듈이 얼마나 들어왔나)을 보여주는 거라 후자에 속한다 — 타이밍은 안 잰다. 둘을 같이 보면 "metadata 가 3.2s 인데(`--profile`) 그게 plain dep 864개를 처리하느라(`module_stats`)" 식으로 읽힌다.
+> `--profile`(§2)은 phase 별 **타이밍 집계**, `ZNTC_DEBUG`는 **구조/상태/분포 진단**. `module_stats` 는 빌드의 *모양*, `*_audit` 카테고리는 hot phase 의 *분포 (per-call/per-module)* — 둘 다 후자에 속한다. 같이 보면 "`metadata.import.bindings` 가 metadata 의 63% 인데(`--profile`) 그게 esm-wrap 671 모듈에 쏠려있다(`metadata_audit`)" 식으로 읽힌다.
 
 ## 출력 형식
 
@@ -115,6 +118,65 @@ append 하는 흐름을 추적하는 데 사용. `transform_boundary` 는 parser
 | `module_type: ...` | 확장자/타입별 카운트 |
 
 항목 추가 시 `dumpModuleStats` 와 이 표를 함께 갱신.
+
+### `*_audit` 활용 (hot phase per-call 분포 — issue #3142)
+
+`--profile` 이 sub-phase 별 **총합**을 주는 반면, `*_audit` 카테고리는 같은 sub-phase의 **모듈/호출 단위 분포**를 stderr 로 한 줄씩 출력한다. 어디서 시간이 가는지 보려면 `--profile` 부터 → 한 phase 가 크면 그 audit 카테고리로 분포 확인 → grep/awk 로 집계.
+
+#### `metadata_audit`
+
+`buildMetadataForAst` 의 3개 sub-phase (한 모듈당 3줄):
+
+```
+[metadata_audit] sn wrap=esm nodes=946 ns=833
+[metadata_audit] ib wrap=esm bindings=5 scopes=12 renames=3 preamble_bytes=84 ns=3120
+[metadata_audit] rr wrap=esm imports=4 result=3 ns=620
+```
+
+| 접두사 | sub-phase | 키 |
+| --- | --- | --- |
+| `sn` | `metadata.skip.nodes` | `wrap` · `nodes` (AST 노드 수) · `ns` |
+| `ib` | `metadata.import.bindings` | `wrap` · `bindings` (import_bindings 길이) · `scopes` (scope_maps 길이) · `renames` (생성된 rename 수) · `preamble_bytes` (생성된 preamble byte 수) · `ns` |
+| `rr` | `metadata.require.rewrites` | `wrap` · `imports` (import_records 길이) · `result` (require_rewrites map size) · `ns` |
+
+집계 예시:
+
+```bash
+ZNTC_DEBUG=metadata_audit zntc --bundle entry.ts 2>/tmp/audit.log
+awk '/^\[metadata_audit\] ib/ { match($0,/wrap=([a-z]+)/,w); match($0,/ns=([0-9]+)/,n); s[w[1]]+=n[1]; c[w[1]]++ } END { for(k in s) printf "%-4s n=%d ns=%d avg=%.0f\n",k,c[k],s[k],s[k]/c[k] }' /tmp/audit.log
+```
+
+#### `resolve_audit`
+
+`fileExistsIn` (모든 호출) + `resolve_cache.resolve` (cache miss 만 — hit 는 진입 안 함):
+
+```
+[resolve_audit] exists cache=1 hit=0 dir_len=58 name_len=8 ns=412
+[resolve_audit] resolve bare=1 spec_len=12 src_len=58 ns=341000
+```
+
+| 접두사 | 대상 | 키 |
+| --- | --- | --- |
+| `exists` | `resolve.file.exists` | `cache` (dir_cache 통과 여부) · `hit` (결과) · `dir_len` · `name_len` · `ns` |
+| `resolve` | `resolve.resolver` (cache miss path) | `bare` (bare specifier 여부) · `spec_len` · `src_len` · `ns` |
+
+`resolve` 호출의 `ns` 는 `Timer.read()` (wall) 라 sub-call 비용과 mutex/IO wait 까지 포함. `--profile=resolve.resolver` 의 self-time 보다 훨씬 클 수 있다 — 그 차이가 contention 신호.
+
+#### `graph_io_audit`
+
+`RealReadFileCache.openFile` 의 모든 호출:
+
+```
+[graph_io_audit] open path_len=72 dir_cache_hit=1 ns=24500
+```
+
+| 키 | 의미 |
+| --- | --- |
+| `path_len` | 파일 path 길이 |
+| `dir_cache_hit` | dir-fd cache 가 dir 을 이미 열어둔 상태였는지 (1) / `openDir` 가 필요했는지 (0) |
+| `ns` | open 호출 wall 시간 |
+
+cache HIT/MISS 비율과 호출당 평균이 batching/pre-warm 여지를 보여준다.
 
 ## 코드 사용법
 

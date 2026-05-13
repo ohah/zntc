@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types.zig");
 const profile = @import("../profile.zig");
+const debug_log = @import("../debug_log.zig");
 
 const is_wasm_build = builtin.target.cpu.arch == .wasm32;
 
@@ -228,8 +229,18 @@ pub const RealReadFileCache = struct {
         const file_name = std.fs.path.basename(path);
         if (file_name.len == 0) return error.FileNotFound;
 
+        var audit = debug_log.auditScope(.graph_io_audit);
+        // contains 의 lock 은 blk 종료 시 defer 로 풀린 뒤 getOrOpenDir 가 다시 잡으므로
+        // 재진입 없음. 그 사이 race 는 best-effort audit 으로 허용.
+        const dir_cache_hit: bool = if (audit.on) blk: {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            break :blk self.dirs.contains(dir_path);
+        } else false;
         const dir = try self.getOrOpenDir(allocator, dir_path);
-        return dir.openFile(file_name, .{});
+        const f = try dir.openFile(file_name, .{});
+        if (audit.on) debug_log.print(.graph_io_audit, "open path_len={d} dir_cache_hit={d} ns={d}\n", .{ path.len, @intFromBool(dir_cache_hit), audit.elapsedNs() });
+        return f;
     }
 
     fn getOrOpenDir(self: *RealReadFileCache, allocator: std.mem.Allocator, dir_path: []const u8) !std.fs.Dir {

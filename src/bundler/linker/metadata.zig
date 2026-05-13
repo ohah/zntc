@@ -18,6 +18,7 @@ const LinkingMetadata = linker_mod.LinkingMetadata;
 const SymbolRef = linker_mod.SymbolRef;
 const ResolvedBinding = linker_mod.ResolvedBinding;
 const profile = @import("../../profile.zig");
+const debug_log = @import("../../debug_log.zig");
 const makeExportKey = types.makeModuleKey;
 const makeExportKeyBuf = types.makeModuleKeyBuf;
 const PreambleWriter = linker_mod.PreambleWriter;
@@ -243,7 +244,10 @@ pub fn buildMetadataForAst(
     var skip_nodes = blk: {
         var sn_scope = profile.begin(.metadata_skip_nodes);
         defer sn_scope.end();
-        break :blk try buildSkipNodes(self.allocator, ast, skip_imports);
+        var audit = debug_log.auditScope(.metadata_audit);
+        const result = try buildSkipNodes(self.allocator, ast, skip_imports);
+        if (audit.on) debug_log.print(.metadata_audit, "sn wrap={s} nodes={d} ns={d}\n", .{ @tagName(m.wrap_kind), ast.nodes.items.len, audit.elapsedNs() });
+        break :blk result;
     };
     errdefer skip_nodes.deinit();
 
@@ -336,6 +340,9 @@ pub fn buildMetadataForAst(
     if (sem.scope_maps.len > 0) {
         var ib_scope = profile.begin(.metadata_import_bindings);
         defer ib_scope.end();
+        var audit = debug_log.auditScope(.metadata_audit);
+        const ib_preamble_start: usize = if (audit.on) preamble.buf.items.len else 0;
+        defer if (audit.on) debug_log.print(.metadata_audit, "ib wrap={s} bindings={d} scopes={d} renames={d} preamble_bytes={d} ns={d}\n", .{ @tagName(m.wrap_kind), m.import_bindings.len, sem.scope_maps.len, renames.count(), preamble.buf.items.len - ib_preamble_start, audit.elapsedNs() });
         const module_scope = sem.scope_maps[0];
 
         // export된 local name을 미리 수집 — namespace import가 re-export되는지 O(1) 확인용
@@ -924,6 +931,8 @@ pub fn buildMetadataForAst(
 pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHashMapUnmanaged([]const u8) {
     var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
     const self_idx = m.index.toU32();
+    var audit = debug_log.auditScope(.metadata_audit);
+    defer if (audit.on) debug_log.print(.metadata_audit, "rr wrap={s} imports={d} result={d} ns={d}\n", .{ @tagName(m.wrap_kind), m.import_records.len, require_rewrites.count(), audit.elapsedNs() });
     for (m.import_records) |rec| {
         if (rec.resolved.isNone()) {
             // UMD/AMD/IIFE+globals: external require → factory 매개변수 참조.

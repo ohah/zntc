@@ -44,6 +44,17 @@ pub const Category = enum {
     /// 변환 feature(jsx/decorator/ts) · semantic 보유 여부. 빌드 작업이 어디 쏠려있는지
     /// 파악용. 다른 카테고리와 달리 멀티라인 블록을 출력한다 (`bundler.dumpModuleStats`).
     module_stats,
+    /// `buildMetadataForAst` sub-phase (skip_nodes / import_bindings / require_rewrites
+    /// 등) 의 per-module 분포 — wrap_kind · input size (records/bindings) · result size
+    /// · 경과 ns. `--profile` 이 aggregate self-time 만 주는 것과 달리 이쪽은
+    /// 모듈 단위 분포를 보고 hot 모듈/빈 결과 비율을 식별하는 용도. issue #3142.
+    metadata_audit,
+    /// `resolve.zig` resolver / file.exists / extensions probe 의 per-call 분포 —
+    /// node_modules walk-up depth · 실패한 extension probe 횟수 · 경과 ns. issue #3142.
+    resolve_audit,
+    /// `graph.discover` 의 fs IO (특히 `pm.setup.read.open`) 분포 — file size ·
+    /// open ns · path 길이. parallel batching/precache 여지 식별. issue #3142.
+    graph_io_audit,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
@@ -107,6 +118,27 @@ pub fn resetForTest() void {
 pub fn print(comptime cat: Category, comptime fmt: []const u8, args: anytype) void {
     if (!enabled(cat)) return;
     std.debug.print("[" ++ @tagName(cat) ++ "] " ++ fmt, args);
+}
+
+/// per-call 분포 측정용 보조 구조체. 카테고리 비활성 시 `on=false`, `timer=null`
+/// — `if (audit.on)` 한 줄 분기로 모든 audit 작업 (값 계산 + 출력) 을 게이트해
+/// hot path 의 disabled-path 비용을 최소화한다. enabled 시에만 `Timer.start` 호출.
+pub const AuditScope = struct {
+    on: bool,
+    timer: ?std.time.Timer,
+
+    pub inline fn elapsedNs(self: *AuditScope) u64 {
+        if (self.timer) |*t| return t.read();
+        return 0;
+    }
+};
+
+pub inline fn auditScope(comptime cat: Category) AuditScope {
+    const on = enabled(cat);
+    return .{
+        .on = on,
+        .timer = if (on) std.time.Timer.start() catch null else null,
+    };
 }
 
 // ===========================================================================
