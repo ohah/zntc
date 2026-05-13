@@ -469,13 +469,6 @@ pub const Module = struct {
         return symbol_mod.SymbolRef.invalid;
     }
 
-    /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
-    /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.
-    pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {
-        if (importee.exports_kind != .commonjs) return null;
-        return if (self.def_format.isEsm()) .node else .babel;
-    }
-
     pub fn canUseDirectCjsDefaultImport(self: *const Module, importee: *const Module) bool {
         return importee.wrap_kind == .cjs and
             importee.can_skip_cjs_default_interop and
