@@ -1462,7 +1462,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// expression 내부의 yield/await를 별도 yield operation으로 추출하고
         /// 해당 위치를 _state.sent()로 치환한 expression을 반환.
         /// 조건식(if, while, for test) 등에서 yield/await가 중첩된 경우 사용.
-        /// 주의: short-circuit 평가(&&, ||)가 보존되지 않음 — await가 항상 평가됨.
         fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
             if (expr_idx.isNone()) return .none;
             const node = self.ast.getNode(expr_idx);
@@ -1521,8 +1520,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
             }
 
-            // logical/binary expression: 양쪽 재귀
-            if (node.tag == .logical_expression or node.tag == .binary_expression) {
+            // logical expression: short-circuit / nullish lazy branch 보존.
+            if (node.tag == .logical_expression) {
+                const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                switch (op_kind) {
+                    .amp2, .pipe2, .question2 => return lowerLogicalExprWithYieldExtraction(self, node, ops, next_label, op_kind),
+                    else => {},
+                }
+            }
+
+            // binary expression: 양쪽 재귀
+            if (node.tag == .binary_expression) {
                 const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
                 const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
                 return self.ast.addNode(.{
@@ -1534,14 +1542,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // conditional expression (ternary): a ? b : c
             if (node.tag == .conditional_expression) {
-                const new_a = try visitExprWithYieldExtraction(self, node.data.ternary.a, ops, next_label);
-                const new_b = try visitExprWithYieldExtraction(self, node.data.ternary.b, ops, next_label);
-                const new_c = try visitExprWithYieldExtraction(self, node.data.ternary.c, ops, next_label);
-                return self.ast.addNode(.{
-                    .tag = .conditional_expression,
-                    .span = node.span,
-                    .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
-                });
+                return lowerConditionalExprWithYieldExtraction(self, node, ops, next_label);
             }
 
             // sequence expression: a(), await b(), c()
@@ -1706,6 +1707,85 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 std.log.warn("visitExprWithYieldExtraction: unhandled tag {}", .{node.tag});
             }
             return self.visitNode(expr_idx);
+        }
+
+        // Expression-internal lazy branches need labels before their final `next_label`
+        // values are allocated. Use reserved sentinel labels, then patch only the ops
+        // emitted by the current expression once the real labels are known.
+        const EXPR_LAZY_BRANCH_END_SENTINEL = LABEL_SENTINEL_BASE - 10_000;
+        const EXPR_LAZY_COND_ELSE_SENTINEL = LABEL_SENTINEL_BASE - 10_001;
+        const EXPR_LAZY_COND_END_SENTINEL = LABEL_SENTINEL_BASE - 10_002;
+
+        fn appendAssignTempStmt(self: *Transformer, ops: *std.ArrayList(Operation), temp_span: Span, value_idx: NodeIndex, span: Span) Transformer.Error!void {
+            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = temp_ref, .right = value_idx, .flags = 0 } },
+            });
+            const stmt = try es_helpers.makeExprStmt(self, assign, span);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = stmt } });
+        }
+
+        fn lowerLogicalExprWithYieldExtraction(self: *Transformer, node: Node, ops: *std.ArrayList(Operation), next_label: *u32, op_kind: token_mod.Kind) Transformer.Error!NodeIndex {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            try self.generator_temp_var_spans.append(self.allocator, temp_span);
+            const ops_start = ops.items.len;
+
+            const left_value = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+            try appendAssignTempStmt(self, ops, temp_span, left_value, node.span);
+
+            const temp_for_cond = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const cond = if (op_kind == .question2)
+                try es_helpers.makeNeqNull(self, temp_for_cond, node.span)
+            else
+                temp_for_cond;
+            const branch_code: OpCode = if (op_kind == .amp2) .break_when_false else .break_when_true;
+            try ops.append(self.allocator, .{
+                .code = branch_code,
+                .arg = .{ .label_and_node = .{ .label = EXPR_LAZY_BRANCH_END_SENTINEL, .node = cond } },
+            });
+
+            const right_value = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
+            try appendAssignTempStmt(self, ops, temp_span, right_value, node.span);
+
+            const end_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            fixupSentinel(ops.items[ops_start..], EXPR_LAZY_BRANCH_END_SENTINEL, end_label);
+
+            return es_helpers.makeTempVarRef(self, temp_span, temp_span);
+        }
+
+        fn lowerConditionalExprWithYieldExtraction(self: *Transformer, node: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            try self.generator_temp_var_spans.append(self.allocator, temp_span);
+            const ops_start = ops.items.len;
+
+            const cond = try visitExprWithYieldExtraction(self, node.data.ternary.a, ops, next_label);
+            try ops.append(self.allocator, .{
+                .code = .break_when_false,
+                .arg = .{ .label_and_node = .{ .label = EXPR_LAZY_COND_ELSE_SENTINEL, .node = cond } },
+            });
+
+            const then_value = try visitExprWithYieldExtraction(self, node.data.ternary.b, ops, next_label);
+            try appendAssignTempStmt(self, ops, temp_span, then_value, node.span);
+            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = EXPR_LAZY_COND_END_SENTINEL } });
+
+            const else_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+            const else_value = try visitExprWithYieldExtraction(self, node.data.ternary.c, ops, next_label);
+            try appendAssignTempStmt(self, ops, temp_span, else_value, node.span);
+
+            const end_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            fixupSentinel(ops.items[ops_start..], EXPR_LAZY_COND_ELSE_SENTINEL, else_label);
+            fixupSentinel(ops.items[ops_start..], EXPR_LAZY_COND_END_SENTINEL, end_label);
+
+            return es_helpers.makeTempVarRef(self, temp_span, temp_span);
         }
 
         fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span) Transformer.Error!StateMachineResult {
