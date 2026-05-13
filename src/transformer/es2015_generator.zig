@@ -1098,8 +1098,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const catch_clause = stmt.data.ternary.b;
             const finally_body = stmt.data.ternary.c;
 
-            // yield가 없으면 그대로 visit
-            if (!es2015_scan.containsYield(self, try_body) and !es2015_scan.containsYield(self, catch_clause) and !es2015_scan.containsYield(self, finally_body)) {
+            const has_yield = es2015_scan.containsYield(self, try_body) or
+                es2015_scan.containsYield(self, catch_clause) or
+                es2015_scan.containsYield(self, finally_body);
+            const has_return = es2015_scan.containsReturn(self, try_body) or
+                es2015_scan.containsReturn(self, catch_clause) or
+                es2015_scan.containsReturn(self, finally_body);
+
+            // yield/await 없이도 return은 __generator callback 안에서 raw return으로
+            // 남으면 안 된다. __generator body는 [op, value] instruction을 반환해야
+            // 하므로 try/catch/finally 안 return도 state-machine op로 수집한다.
+            if (!has_yield and !has_return) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
