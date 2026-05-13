@@ -41,6 +41,27 @@ describe('buildRnDevServerInput — runtime bundle option config 추출 (#2605)'
     expect(input?.bundle.minify).toBe(true);
   });
 
+  test('decorator BuildOptions → bundle.override', async () => {
+    const buildRnDevServerInput = await loadBuildRnDevServerInput();
+    const configInput = buildRnDevServerInput(
+      { entryPoints: ['i.js'] },
+      { experimentalDecorators: true, emitDecoratorMetadata: true },
+    );
+    expect(configInput?.bundle.override?.experimentalDecorators).toBe(true);
+    expect(configInput?.bundle.override?.emitDecoratorMetadata).toBe(true);
+
+    const cliInput = buildRnDevServerInput(
+      {
+        entryPoints: ['i.js'],
+        experimentalDecorators: true,
+        useDefineForClassFields: false,
+      },
+      {},
+    );
+    expect(cliInput?.bundle.override?.experimentalDecorators).toBe(true);
+    expect(cliInput?.bundle.override?.useDefineForClassFields).toBe(false);
+  });
+
   test('config.root → projectRoot (resolve 적용)', async () => {
     const buildRnDevServerInput = await loadBuildRnDevServerInput();
     const input = buildRnDevServerInput({ entryPoints: ['i.js'] }, { root: '/abs/path' });
