@@ -1246,17 +1246,14 @@ exports[`TSC: es6/destructuring destructuringParameterProperties1 1`] = `
 "// @module: commonjs
 class C1 {
 	constructor([x, y, z]) {
-		this.[x, y, z] = [x, y, z];
 	}
 }
 class C2 {
 	constructor([x, y, z]) {
-		this.[x, y, z] = [x, y, z];
 	}
 }
 class C3 {
 	constructor({ x:x, y:y, z:z }) {
-		this.{ x, y, z } = { x:x, y:y, z:z };
 	}
 }
 var c1 = new C1([]);
@@ -1275,7 +1272,6 @@ exports[`TSC: es6/destructuring destructuringParameterProperties2 1`] = `
 class C1 {
 	constructor(k,[a, b, c]) {
 		this.k = k;
-		this.[a, b, c] = [a, b, c];
 		if ((b === undefined && c === undefined) || (this.b === undefined && this.c === undefined)) {
 			this.a = a || k;
 		}
@@ -1304,7 +1300,6 @@ exports[`TSC: es6/destructuring destructuringParameterProperties3 1`] = `
 class C1 {
 	constructor(k,[a, b, c]) {
 		this.k = k;
-		this.[a, b, c] = [a, b, c];
 		if ((b === undefined && c === undefined) || (this.b === undefined && this.c === undefined)) {
 			this.a = a || k;
 		}
@@ -1335,7 +1330,6 @@ exports[`TSC: es6/destructuring destructuringParameterProperties4 1`] = `
 class C1 {
 	constructor(k,[a, b, c]) {
 		this.k = k;
-		this.[a, b, c] = [a, b, c];
 		if ((b === undefined && c === undefined) || (this.b === undefined && this.c === undefined)) {
 			this.a = a || k;
 		}
@@ -1362,7 +1356,6 @@ exports[`TSC: es6/destructuring destructuringParameterProperties5 1`] = `
 "// @module: commonjs
 class C1 {
 	constructor([{ x1:x1, x2:x2, x3:x3 }, y, z]) {
-		this.[{ x1, x2, x3 }, y, z] = [{ x1:x1, x2:x2, x3:x3 }, y, z];
 		var foo = x1 || x2 || x3 || y || z;
 		var bar = this.x1 || this.x2 || this.x3 || this.y || this.z;
 	}
