@@ -61,7 +61,11 @@ fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
 
     // 블록 퇴장: rename 맵 + scope_var_names 모두 복원
     if (renames_added > 0) {
-        self.block_rename_stack.shrinkRetainingCapacity(self.block_rename_stack.items.len - renames_added);
+        const saved_rename_len = self.block_rename_stack.items.len - renames_added;
+        for (self.block_rename_stack.items[saved_rename_len..]) |entry| {
+            self.allocator.free(entry.new_name);
+        }
+        self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);
     }
     self.scope_var_names.shrinkRetainingCapacity(saved_scope_len);
 
