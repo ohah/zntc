@@ -9,6 +9,35 @@ const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
+/// `react_native inlineRequires:` 테스트들이 잠그는 lazy ESM import emit 패턴 —
+/// `(__zntc_guarded(function(){return __zntc_modules["<path>"].fn()}), <binding>).<member>`
+/// 형태. caller 는 free 책임 (returned slice 는 allocator 소유).
+///
+/// - `assign_to == ""` — bare lazy expression marker (`"...modules[...]..fn()}}), TOKENS).primary"`).
+///   raw bare `TOKENS.primary` 가 어디에도 없는지 확인할 때 contains 매칭용.
+/// - `assign_to != ""` — assignment form (`"name=(__zntc_guarded(...)).primary"`).
+///   class lowering 으로 default 가 풀려나가는 케이스에는 부적합 — bare form 사용.
+fn formatLazyMarker(
+    allocator: std.mem.Allocator,
+    assign_to: []const u8,
+    module_path: []const u8,
+    binding: []const u8,
+    member: []const u8,
+) ![]const u8 {
+    if (assign_to.len == 0) {
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}__zntc_modules[\"{s}\"].fn()}}), {s}).{s}",
+            .{ rt.GUARD_LAMBDA_OPEN, module_path, binding, member },
+        );
+    }
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}=({s}__zntc_modules[\"{s}\"].fn()}}), {s}).{s}",
+        .{ assign_to, rt.GUARD_LAMBDA_OPEN, module_path, binding, member },
+    );
+}
+
 // ============================================================
 // Batch D: metafile, analyze, legal-comments, inject, keepNames
 // ============================================================
@@ -3259,11 +3288,7 @@ test "react_native inlineRequires: object parameter default visits ESM value imp
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "backgroundColor=COLOR_TOKENS.bgPrimary") == null);
 
-    const lazy_tokens_value = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "backgroundColor=({s}__zntc_modules[\"{s}\"].fn()}}), COLOR_TOKENS).bgPrimary",
-        .{ rt.GUARD_LAMBDA_OPEN, tokens },
-    );
+    const lazy_tokens_value = try formatLazyMarker(std.testing.allocator, "backgroundColor", tokens, "COLOR_TOKENS", "bgPrimary");
     defer std.testing.allocator.free(lazy_tokens_value);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_tokens_value) != null);
 }
@@ -3305,11 +3330,7 @@ test "react_native inlineRequires: simple parameter default visits ESM value imp
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
 
-    const lazy = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "color=({s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
-        .{ rt.GUARD_LAMBDA_OPEN, tokens },
-    );
+    const lazy = try formatLazyMarker(std.testing.allocator, "color", tokens, "TOKENS", "primary");
     defer std.testing.allocator.free(lazy);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
 }
@@ -3353,11 +3374,7 @@ test "react_native inlineRequires: array pattern default visits ESM value import
     try std.testing.expect(std.mem.indexOf(u8, result.output, "=TOKENS.primary") == null);
 
     // lazy expression 일부가 등장해야 한다 — array element default 위치.
-    const lazy_marker = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
-        .{ rt.GUARD_LAMBDA_OPEN, tokens },
-    );
+    const lazy_marker = try formatLazyMarker(std.testing.allocator, "", tokens, "TOKENS", "primary");
     defer std.testing.allocator.free(lazy_marker);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
 }
@@ -3399,11 +3416,7 @@ test "react_native inlineRequires: nested destructuring default visits ESM value
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
 
-    const lazy = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "color=({s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
-        .{ rt.GUARD_LAMBDA_OPEN, tokens },
-    );
+    const lazy = try formatLazyMarker(std.testing.allocator, "color", tokens, "TOKENS", "primary");
     defer std.testing.allocator.free(lazy);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
 }
@@ -3452,11 +3465,7 @@ test "react_native inlineRequires: TS parameter property default visits ESM valu
     // 는 어디에도 남지 않아야 한다 — class lowering 으로 default 가
     // `if (color === void 0)` 형태로 풀릴 수 있어 prefix 는 다양하니
     // raw bare 부재 한 가지로 잠근다.
-    const lazy_marker = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
-        .{ rt.GUARD_LAMBDA_OPEN, tokens },
-    );
+    const lazy_marker = try formatLazyMarker(std.testing.allocator, "", tokens, "TOKENS", "primary");
     defer std.testing.allocator.free(lazy_marker);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
 
@@ -3509,11 +3518,7 @@ test "react_native inlineRequires: for-of binding default visits ESM value impor
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
 
-    const lazy_marker = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
-        .{ rt.GUARD_LAMBDA_OPEN, tokens },
-    );
+    const lazy_marker = try formatLazyMarker(std.testing.allocator, "", tokens, "TOKENS", "primary");
     defer std.testing.allocator.free(lazy_marker);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
 }
