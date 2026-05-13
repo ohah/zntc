@@ -217,9 +217,12 @@ pub fn visitMemberExpression(self: anytype, node: Node) Error!NodeIndex {
     const right_idx = self.readNodeIdx(e, 1);
     const flags = self.readU32(e, 2);
     const new_left = try self.visitNode(left_idx);
-    // computed_member: right는 임의 expression. static_member/private_field: right는 식별자 리프.
-    // visitNode가 리프를 copyNodeDirect로 처리하므로 동일하게 visitNode 호출.
-    const new_right = try self.visitNode(right_idx);
+    // computed member의 property만 expression이다. dot/private member의 property는
+    // lexical reference가 아니라 property key라 block-scoping rename 대상이 아니다.
+    const new_right = if (node.tag == .computed_member_expression)
+        try self.visitNode(right_idx)
+    else
+        right_idx;
     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_left), @intFromEnum(new_right), flags });
     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
 }
