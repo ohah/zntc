@@ -143,13 +143,16 @@ pub const ResolveCache = struct {
                 .node => &.{ c.require, c.node, c.default },
                 .browser => &.{ c.require, c.browser, c.default },
                 .neutral => &.{ c.require, c.default },
-                .react_native => &.{ c.require, c.react_native, c.browser, c.default },
+                .react_native => &.{ c.react_native, c.default },
             },
             else => switch (platform) {
                 .node => &.{ c.node, c.import, c.module, c.default },
                 .browser => &.{ c.browser, c.import, c.module, c.default },
                 .neutral => &.{ c.import, c.module, c.default },
-                .react_native => &.{ c.react_native, c.browser, c.import, c.module, c.default },
+                // Metro RN defaults assert only "react-native"; the resolver adds
+                // "default" for package exports. "import"/"require"/"browser" are
+                // not native RN defaults, and would bypass Metro's main-field fallback.
+                .react_native => &.{ c.react_native, c.default },
             },
         };
     }
