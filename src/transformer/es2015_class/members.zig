@@ -237,6 +237,8 @@ pub fn Members(comptime Transformer: type) type {
                 .static_private_fields = .empty,
                 .private_methods = .empty,
             };
+            var private_names = try es_helpers.PrivateNameAllocator.init(self.allocator, self.ast);
+            defer private_names.deinit();
 
             // 분류 phase — visitNode 호출 없이 metadata 만 모은다. instance field init / accessor backing 의
             // 실제 statement build 는 caller 가 setupPrivateFieldMappings 로 매핑을 set 한 뒤
@@ -274,7 +276,7 @@ pub fn Members(comptime Transformer: type) type {
                         if (key_node.tag == .private_identifier) {
                             const orig_name = self.ast.getText(key_node.span); // "#bar"
 
-                            const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, pm_kind);
+                            const names = try private_names.makePrivateMethodNames(orig_name, pm_kind);
 
                             try cm.private_methods.append(self.allocator, .{
                                 .member_idx = @enumFromInt(raw_idx),
@@ -322,7 +324,7 @@ pub fn Members(comptime Transformer: type) type {
                         const orig_name_owned = try self.allocator.dupe(u8, self.ast.getText(key_node.span));
                         try cm.synthesized_private_names.append(self.allocator, orig_name_owned);
                         const field_info = PrivateFieldInfo{
-                            .name = try es_helpers.makePrivateVarName(self.allocator, orig_name_owned),
+                            .name = try private_names.makePrivateVarName(orig_name_owned),
                             .original_name = orig_name_owned,
                             .init = init_val,
                         };
@@ -365,7 +367,7 @@ pub fn Members(comptime Transformer: type) type {
                         }
                     }
                 } else if (member.tag == .accessor_property) {
-                    try classifyAccessorProperty(self, &cm, member, span);
+                    try classifyAccessorProperty(self, &cm, &private_names, member, span);
                 } else {
                     std.debug.panic("classifyMembers: unexpected member tag {s}", .{@tagName(member.tag)});
                 }
@@ -379,6 +381,7 @@ pub fn Members(comptime Transformer: type) type {
         fn classifyAccessorProperty(
             self: *Transformer,
             cm: *ClassifiedMembers,
+            private_names: *es_helpers.PrivateNameAllocator,
             member: Node,
             span: Span,
         ) Transformer.Error!void {
@@ -390,10 +393,10 @@ pub fn Members(comptime Transformer: type) type {
 
             const key_node = self.ast.getNode(key_idx);
             if (key_node.tag == .private_identifier) {
-                return classifyPrivateAccessorProperty(self, cm, key_node, init_idx, is_static, member.span, span);
+                return classifyPrivateAccessorProperty(self, cm, private_names, key_node, init_idx, is_static, member.span, span);
             }
             if (key_node.tag == .computed_property_key) {
-                return classifyComputedAccessorProperty(self, cm, key_idx, init_idx, is_static, member.span, span);
+                return classifyComputedAccessorProperty(self, cm, private_names, key_idx, init_idx, is_static, member.span, span);
             }
 
             const raw_key = self.ast.getText(key_node.span);
@@ -404,7 +407,7 @@ pub fn Members(comptime Transformer: type) type {
             const storage_span = try self.ast.addString(storage_name_owned);
 
             const pfi = PrivateFieldInfo{
-                .name = try es_helpers.makePrivateVarName(self.allocator, storage_name_owned),
+                .name = try private_names.makePrivateVarName(storage_name_owned),
                 .original_name = storage_name_owned,
                 .init = init_idx,
             };
@@ -441,6 +444,7 @@ pub fn Members(comptime Transformer: type) type {
         fn classifyPrivateAccessorProperty(
             self: *Transformer,
             cm: *ClassifiedMembers,
+            private_names: *es_helpers.PrivateNameAllocator,
             key_node: Node,
             init_idx: NodeIndex,
             is_static: bool,
@@ -453,7 +457,7 @@ pub fn Members(comptime Transformer: type) type {
                 // static private accessor 는 class-singleton — 별도 backing / synthesis 없이 그대로
                 // static private field 로 등록하면 `this.#x` / `this.#x = v` 가 __classStaticPrivateFieldSpec(Get|Set) 로 lowering.
                 const pfi = PrivateFieldInfo{
-                    .name = try es_helpers.makePrivateVarName(self.allocator, orig_name),
+                    .name = try private_names.makePrivateVarName(orig_name),
                     .original_name = orig_name,
                     .init = init_idx,
                 };
@@ -467,7 +471,7 @@ pub fn Members(comptime Transformer: type) type {
             const storage_span = try self.ast.addString(storage_name_owned);
 
             const pfi = PrivateFieldInfo{
-                .name = try es_helpers.makePrivateVarName(self.allocator, storage_name_owned),
+                .name = try private_names.makePrivateVarName(storage_name_owned),
                 .original_name = storage_name_owned,
                 .init = init_idx,
             };
@@ -492,7 +496,7 @@ pub fn Members(comptime Transformer: type) type {
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
             const setter_idx = try self.buildSetterMethod(priv_key_set, setter_target, false, span);
 
-            const get_names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, .getter);
+            const get_names = try private_names.makePrivateMethodNames(orig_name, .getter);
             try cm.private_methods.append(self.allocator, .{
                 .member_idx = getter_idx,
                 .original_name = orig_name,
@@ -502,7 +506,7 @@ pub fn Members(comptime Transformer: type) type {
                 .kind = .getter,
             });
 
-            const set_names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, .setter);
+            const set_names = try private_names.makePrivateMethodNames(orig_name, .setter);
             try cm.private_methods.append(self.allocator, .{
                 .member_idx = setter_idx,
                 .original_name = orig_name,
@@ -519,6 +523,7 @@ pub fn Members(comptime Transformer: type) type {
         fn classifyComputedAccessorProperty(
             self: *Transformer,
             cm: *ClassifiedMembers,
+            private_names: *es_helpers.PrivateNameAllocator,
             key_idx: NodeIndex,
             init_idx: NodeIndex,
             is_static: bool,
@@ -532,7 +537,7 @@ pub fn Members(comptime Transformer: type) type {
             const storage_span = try self.ast.addString(storage_name_owned);
 
             const pfi = PrivateFieldInfo{
-                .name = try es_helpers.makePrivateVarName(self.allocator, storage_name_owned),
+                .name = try private_names.makePrivateVarName(storage_name_owned),
                 .original_name = storage_name_owned,
                 .init = init_idx,
             };
@@ -548,7 +553,9 @@ pub fn Members(comptime Transformer: type) type {
             // 이 변수를 computed_property_key 로 참조. emitAccessors 는 computed 분기로 Object.defineProperty(proto, _acc_key_N, ...).
             const key_node = self.ast.getNode(key_idx);
             const inner_expr = key_node.data.unary.operand;
-            const mem_var_name = try std.fmt.allocPrint(self.allocator, "_acc_key_{d}", .{seq});
+            const mem_var_base = try std.fmt.allocPrint(self.allocator, "_acc_key_{d}", .{seq});
+            defer self.allocator.free(mem_var_base);
+            const mem_var_name = try private_names.makeUniqueName(mem_var_base);
             try cm.synthesized_private_names.append(self.allocator, mem_var_name); // allocator 소유 보관용 재사용
             const mem_var_span = try self.ast.addString(mem_var_name);
             const visited_inner = try self.visitNode(inner_expr);
