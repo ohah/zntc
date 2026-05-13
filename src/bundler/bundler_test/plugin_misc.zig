@@ -3447,14 +3447,11 @@ test "react_native inlineRequires: TS parameter property default visits ESM valu
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // class lowering 으로 default 가 `if (color === void 0)` 형태로 풀릴 수
-    // 있어 prefix 위치가 다양하다. lazy guard wrap 자체가 들어갔는지 (TOKENS
-    // 가 guarded lambda 안에서 .primary 로 접근) 만 잠근다. 또한 bare
-    // `TOKENS.primary` 가 어디에도 남지 않아야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "(TOKENS.primary") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, " TOKENS.primary") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "=TOKENS.primary") == null);
 
+    // lazy guard 안의 `TOKENS).primary` 가 등장하면 raw `TOKENS.primary`
+    // 는 어디에도 남지 않아야 한다 — class lowering 으로 default 가
+    // `if (color === void 0)` 형태로 풀릴 수 있어 prefix 는 다양하니
+    // raw bare 부재 한 가지로 잠근다.
     const lazy_marker = try std.fmt.allocPrint(
         std.testing.allocator,
         "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
@@ -3462,6 +3459,10 @@ test "react_native inlineRequires: TS parameter property default visits ESM valu
     );
     defer std.testing.allocator.free(lazy_marker);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+
+    // raw `TOKENS.primary` 가 lazy_marker 외부에 남지 않았는지 — marker 안의
+    // `TOKENS).primary` 는 닫는 `)` 가 끼어 있어 substring 매칭 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOKENS.primary") == null);
 }
 
 test "react_native inlineRequires: for-of binding default visits ESM value import" {
