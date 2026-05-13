@@ -360,7 +360,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectSwitchOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 .for_of_statement, .for_in_statement => {
-                    if (es2015_scan.containsYield(self, stmt_idx)) {
+                    if (es2015_scan.containsYield(self, stmt_idx) or es2015_scan.containsReturn(self, stmt_idx)) {
                         try collectForOfOperations(self, stmt, ops, next_label);
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
@@ -468,7 +468,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
 
-            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, test_idx)) {
+            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, test_idx) and !es2015_scan.containsReturn(self, body_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -723,7 +723,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const condition = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
 
-            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, condition)) {
+            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, condition) and !es2015_scan.containsReturn(self, body_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -914,7 +914,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const cases_start_val = self.readU32(e, 1);
             const cases_len_val = self.readU32(e, 2);
 
-            if (!es2015_scan.containsYield(self, stmt_idx)) {
+            if (!es2015_scan.containsYield(self, stmt_idx) and !es2015_scan.containsReturn(self, stmt_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -1029,7 +1029,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const condition = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
 
-            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, condition)) {
+            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, condition) and !es2015_scan.containsReturn(self, body_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });

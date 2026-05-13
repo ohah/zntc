@@ -295,6 +295,47 @@ test "ES5: async try/catch return lowers to generator return op" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return 2;") == null);
 }
 
+test "ES5: async control-flow return after await lowers to generator return op" {
+    const cases = [_]struct {
+        src: []const u8,
+        expected: []const []const u8,
+        forbidden: []const []const u8,
+    }{
+        .{
+            .src = "async function f(x) { await a(); switch (x) { case 1: return true; default: return false; } }",
+            .expected = &.{ "return [2,true]", "return [2,false]" },
+            .forbidden = &.{ "return true;", "return false;" },
+        },
+        .{
+            .src = "async function f(xs) { await a(); for (var i = 0; i < xs.length; i++) { if (xs[i]) return 1; } return 0; }",
+            .expected = &.{ "return [2,1]", "return [2,0]" },
+            .forbidden = &.{"return 1;"},
+        },
+        .{
+            .src = "async function f(x) { await a(); while (x) { return 1; } return 0; }",
+            .expected = &.{ "return [2,1]", "return [2,0]" },
+            .forbidden = &.{"return 1;"},
+        },
+        .{
+            .src = "async function f(xs) { await a(); for (var x of xs) { return x; } return null; }",
+            .expected = &.{ "return [2,x]", "return [2,null]" },
+            .forbidden = &.{"return x;"},
+        },
+    };
+
+    for (cases) |c| {
+        var r = try e2eTarget(std.testing.allocator, c.src, .es5);
+        defer r.deinit();
+        try expectAsyncStateMachine(r.output);
+        for (c.expected) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, r.output, needle) != null);
+        }
+        for (c.forbidden) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, r.output, needle) == null);
+        }
+    }
+}
+
 test "ES5: async arrow block body → state machine" {
     var r = try e2eTarget(std.testing.allocator, "var f = async () => { await x; };", .es5);
     defer r.deinit();
