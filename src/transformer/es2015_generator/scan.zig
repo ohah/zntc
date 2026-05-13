@@ -173,6 +173,23 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
     return false;
 }
 
+/// async/generator state-machine 의 fast-path skip 여부 단일 진입점.
+/// `yield` 가 있으면 lowering 필수이고, sync `return` 도 `[2, value]`
+/// instruction 으로 변환해야 하므로 마찬가지. statement sub-tree 에 대한
+/// 새 fast-path 분기를 추가할 때 이 helper 를 사용하면 `containsYield` +
+/// `containsReturn` 둘 다 검사하는 invariant 가 누락되지 않는다.
+///
+/// 호출처는 모두 statement (블록/loop body, try/catch/finally body 등) 에
+/// 한정. expression sub-tree (loop condition, if test 등) 에는 `return` 이
+/// 문법상 들어갈 수 없으므로 `containsYield` 만 사용한다.
+///
+/// 회귀 배경: PR #3141 의 `205d4e4e` (try) + `d61f861a` (switch/for/while/
+/// do-while/for-of) 가 같은 invariant (`containsYield` 와 함께 `containsReturn`
+/// 도 검사) 의 statement-type 별 누락을 두 라운드로 발견한 사례.
+pub fn hasYieldOrReturn(self: anytype, root_idx: NodeIndex) bool {
+    return containsYield(self, root_idx) or containsReturn(self, root_idx);
+}
+
 /// AST 서브트리에 return_statement가 있는지 체크.
 /// generator 내 if body에서 return이 있으면 collectOperations로 처리해야
 /// return [2]로 변환됨.

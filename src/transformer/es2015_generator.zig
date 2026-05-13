@@ -360,7 +360,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectSwitchOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 .for_of_statement, .for_in_statement => {
-                    if (es2015_scan.containsYield(self, stmt_idx) or es2015_scan.containsReturn(self, stmt_idx)) {
+                    if (es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
                         try collectForOfOperations(self, stmt, ops, next_label);
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
@@ -406,9 +406,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const then_body = stmt.data.ternary.b;
             const else_body = stmt.data.ternary.c;
 
-            const has_yield_in_body = es2015_scan.containsYield(self, then_body) or es2015_scan.containsYield(self, else_body);
+            // body 는 statement → hasYieldOrReturn (yield + return 둘 다 검사),
+            // condition 은 expression → return 불가, containsYield 만.
             const has_yield_in_cond = es2015_scan.containsYield(self, condition);
-            if (!has_yield_in_body and !has_yield_in_cond and !es2015_scan.containsReturn(self, then_body) and !es2015_scan.containsReturn(self, else_body)) {
+            if (!es2015_scan.hasYieldOrReturn(self, then_body) and !es2015_scan.hasYieldOrReturn(self, else_body) and !has_yield_in_cond) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -468,7 +469,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
 
-            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, test_idx) and !es2015_scan.containsReturn(self, body_idx)) {
+            // body 는 statement → hasYieldOrReturn, test 는 expression → containsYield 만.
+            if (!es2015_scan.hasYieldOrReturn(self, body_idx) and !es2015_scan.containsYield(self, test_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -723,7 +725,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const condition = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
 
-            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, condition) and !es2015_scan.containsReturn(self, body_idx)) {
+            // body 는 statement → hasYieldOrReturn, condition 은 expression → containsYield 만.
+            if (!es2015_scan.hasYieldOrReturn(self, body_idx) and !es2015_scan.containsYield(self, condition)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -914,7 +917,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const cases_start_val = self.readU32(e, 1);
             const cases_len_val = self.readU32(e, 2);
 
-            if (!es2015_scan.containsYield(self, stmt_idx) and !es2015_scan.containsReturn(self, stmt_idx)) {
+            if (!es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -1029,7 +1032,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const condition = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
 
-            if (!es2015_scan.containsYield(self, body_idx) and !es2015_scan.containsYield(self, condition) and !es2015_scan.containsReturn(self, body_idx)) {
+            // body 는 statement → hasYieldOrReturn, condition 은 expression → containsYield 만.
+            if (!es2015_scan.hasYieldOrReturn(self, body_idx) and !es2015_scan.containsYield(self, condition)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -1098,17 +1102,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const catch_clause = stmt.data.ternary.b;
             const finally_body = stmt.data.ternary.c;
 
-            const has_yield = es2015_scan.containsYield(self, try_body) or
-                es2015_scan.containsYield(self, catch_clause) or
-                es2015_scan.containsYield(self, finally_body);
-            const has_return = es2015_scan.containsReturn(self, try_body) or
-                es2015_scan.containsReturn(self, catch_clause) or
-                es2015_scan.containsReturn(self, finally_body);
+            // try/catch/finally body 모두 statement → hasYieldOrReturn 으로 일관.
+            const requires_lowering = es2015_scan.hasYieldOrReturn(self, try_body) or
+                es2015_scan.hasYieldOrReturn(self, catch_clause) or
+                es2015_scan.hasYieldOrReturn(self, finally_body);
 
             // yield/await 없이도 return은 __generator callback 안에서 raw return으로
             // 남으면 안 된다. __generator body는 [op, value] instruction을 반환해야
             // 하므로 try/catch/finally 안 return도 state-machine op로 수집한다.
-            if (!has_yield and !has_return) {
+            if (!requires_lowering) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
