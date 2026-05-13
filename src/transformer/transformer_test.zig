@@ -1372,6 +1372,114 @@ test "block scoping: dot member property names are not lexical references" {
     try std.testing.expect(std.mem.indexOf(u8, code, "prototype$") != null);
 }
 
+test "block scoping: optional chain property names are not lexical references" {
+    // `?.foo` 는 같은 `static_member_expression` tag 의 flag bit 라 dot fix 와
+    // 같은 경로. inner `prototype` 이 rename 되어도 property key 는 유지.
+    const source =
+        \\let prototype = null;
+        \\function read(o) {
+        \\  const prototype = 1;
+        \\  return o?.prototype ?? prototype;
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "o?.prototype$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "o?.prototype") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "prototype$") != null);
+}
+
+test "block scoping: super member property names are not lexical references" {
+    // `super.foo` 도 `static_member_expression` 이고 left 가 super_expression.
+    // outer `value` 와 method body 의 inner `value` 가 shadow 될 때 inner
+    // 가 rename 되어도 `super.value` 의 property key 는 유지되어야 한다.
+    const source =
+        \\let value = "outer";
+        \\class Base {
+        \\  get value() { return "base"; }
+        \\}
+        \\class Derived extends Base {
+        \\  read() {
+        \\    const value = "inner";
+        \\    return super.value + value;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    // 핵심: super 의 property key 는 rename 되면 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, code, "super.value$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "super.value") != null);
+}
+
+test "block scoping: computed member key is renamed (negative)" {
+    // computed_member_expression 의 right 는 lexical reference 이므로 inner
+    // rename 이 그대로 적용되어야 한다. 위 dot/private/super fix 의 negative
+    // 가드.
+    const source =
+        \\let key = "a";
+        \\function pick(o) {
+        \\  const key = "b";
+        \\  return o[key];
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    // outer `key` 와 inner `key` 가 모두 같은 이름이면 안 됨 — 둘 중 하나가
+    // rename 되어야 한다. 어느 방향이든 inner 접근은 renamed binding 으로 가야.
+    try std.testing.expect(std.mem.indexOf(u8, code, "o[key$") != null or
+        std.mem.indexOf(u8, code, "o[key_") != null);
+}
+
+test "block scoping: private field property names are not lexical references" {
+    // `obj.#foo` 는 `private_field_expression` 이고 right 는 `#`-prefixed
+    // private_identifier 라 block_rename 키 (`foo`) 와 사실상 매칭되지
+    // 않는다. 그래도 명시적으로 잠가둠.
+    const source =
+        \\let value = "outer";
+        \\class C {
+        \\  #value = 1;
+        \\  read() {
+        \\    const value = 2;
+        \\    return this.#value + value;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    // private field name 은 `#value` 그대로 유지되어야 함 (다운레벨 가도 WeakMap
+    // hoist name 으로 들어가야지 block rename 으로 바뀌면 안 됨).
+    try std.testing.expect(std.mem.indexOf(u8, code, "#value$") == null);
+}
+
 test "#1797 native for-of + block scoping: let 캡처 시 _loop 함수로 추출" {
     // RN preset은 for-of 문법은 유지하지만 block_scoping으로 let/const를 var로 낮춘다.
     // 이때 getter/closure가 loop binding을 캡처하면 native for-of 경로에서도 fresh binding
