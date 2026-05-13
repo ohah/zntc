@@ -173,6 +173,51 @@ test "PackageJson: react-native platform follows Metro main field order" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") == null);
 }
 
+test "PackageJson: react-native package exports without RN/default falls back to main fields" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from 'rnpkg';\nconsole.log(value);");
+    try writeFile(tmp.dir, "node_modules/rnpkg/package.json",
+        \\{
+        \\  "name": "rnpkg",
+        \\  "react-native": "./rn.js",
+        \\  "main": "./main.js",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": {
+        \\        "types": "./dist/index.d.ts",
+        \\        "default": "./dist/index.js"
+        \\      },
+        \\      "require": {
+        \\        "types": "./dist/index.d.cts",
+        \\        "default": "./dist/index.cjs"
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/rnpkg/rn.js", "export const value = 'from-react-native';");
+    try writeFile(tmp.dir, "node_modules/rnpkg/main.js", "export const value = 'from-main';");
+    try writeFile(tmp.dir, "node_modules/rnpkg/dist/index.js", "export const value = 'from-import-default';");
+    try writeFile(tmp.dir, "node_modules/rnpkg/dist/index.cjs", "module.exports = { value: 'from-require-default' };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-react-native\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-import-default\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-require-default\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") == null);
+}
+
 test "PackageJson: no package.json index.js fallback" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
