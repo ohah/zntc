@@ -1041,6 +1041,138 @@ pub const PrivateMethodNames = struct {
     fn_name: []const u8,
 };
 
+/// Private field/method downlevel artifacts (`#x` -> `_x`) are emitted as
+/// ordinary `var`/`function` bindings in the surrounding transform scope. They
+/// must therefore avoid user bindings/references and artifacts emitted by
+/// earlier class transforms. Babel's scope.generateUidIdentifier follows the
+/// same invariant; without it, a class `#y` can shadow an existing `_y`
+/// function used inside the constructor.
+pub const PrivateNameAllocator = struct {
+    allocator: std.mem.Allocator,
+    reserved: std.StringHashMap(void),
+    method_weaksets: std.StringHashMap([]const u8),
+
+    pub fn init(allocator: std.mem.Allocator, ast: *const ast_mod.Ast) !PrivateNameAllocator {
+        var self = PrivateNameAllocator{
+            .allocator = allocator,
+            .reserved = std.StringHashMap(void).init(allocator),
+            .method_weaksets = std.StringHashMap([]const u8).init(allocator),
+        };
+        errdefer self.deinit();
+
+        // Fixed captures emitted by class/arrow lowering. Reserving them here
+        // keeps private helpers out of later transformer-generated bindings.
+        try self.reserveExisting("_this");
+        try self.reserveExisting("_arguments");
+
+        try self.collectExistingIdentifierNames(ast);
+        return self;
+    }
+
+    pub fn deinit(self: *PrivateNameAllocator) void {
+        var keys = self.reserved.keyIterator();
+        while (keys.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.reserved.deinit();
+        self.method_weaksets.deinit();
+    }
+
+    fn collectExistingIdentifierNames(self: *PrivateNameAllocator, ast: *const ast_mod.Ast) !void {
+        for (ast.nodes.items) |node| {
+            switch (node.tag) {
+                .identifier_reference,
+                .binding_identifier,
+                .assignment_target_identifier,
+                => try self.reserveExisting(ast.getText(node.data.string_ref)),
+                else => {},
+            }
+        }
+    }
+
+    fn reserveExisting(self: *PrivateNameAllocator, name: []const u8) !void {
+        if (self.reserved.contains(name)) return;
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.reserved.put(owned, {});
+    }
+
+    fn reserveGenerated(self: *PrivateNameAllocator, name: []const u8) !void {
+        try self.reserveExisting(name);
+    }
+
+    pub fn makeUniqueName(self: *PrivateNameAllocator, base: []const u8) ![]u8 {
+        var candidate = try self.allocator.dupe(u8, base);
+        if (!self.reserved.contains(candidate)) {
+            self.reserveGenerated(candidate) catch |err| {
+                self.allocator.free(candidate);
+                return err;
+            };
+            return candidate;
+        }
+        self.allocator.free(candidate);
+
+        var suffix: usize = 2;
+        while (true) : (suffix += 1) {
+            candidate = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, suffix });
+            if (!self.reserved.contains(candidate)) {
+                self.reserveGenerated(candidate) catch |err| {
+                    self.allocator.free(candidate);
+                    return err;
+                };
+                return candidate;
+            }
+            self.allocator.free(candidate);
+        }
+    }
+
+    /// "#bar" -> "_bar", with collision avoidance (`_bar2`, `_bar3`, ...).
+    pub fn makePrivateVarName(self: *PrivateNameAllocator, orig_name: []const u8) ![]u8 {
+        const bare = orig_name[1..]; // strip '#'
+        var suffix: usize = 0;
+        while (true) : (suffix += 1) {
+            const candidate = if (suffix == 0)
+                try std.fmt.allocPrint(self.allocator, "_{s}", .{bare})
+            else
+                try std.fmt.allocPrint(self.allocator, "_{s}{d}", .{ bare, suffix + 1 });
+
+            if (!self.reserved.contains(candidate)) {
+                self.reserveGenerated(candidate) catch |err| {
+                    self.allocator.free(candidate);
+                    return err;
+                };
+                return candidate;
+            }
+            self.allocator.free(candidate);
+        }
+    }
+
+    /// kind 별 suffix: method -> "_fn", getter -> "_get", setter -> "_set" (#1523).
+    /// Getter/setter pairs share the same WeakSet text but receive separately
+    /// owned slices because ClassifiedMembers deinit frees each mapping entry.
+    pub fn makePrivateMethodNames(self: *PrivateNameAllocator, orig_name: []const u8, kind: PrivateMethodKind) !PrivateMethodNames {
+        const weakset_name = if (self.method_weaksets.get(orig_name)) |existing|
+            try self.allocator.dupe(u8, existing)
+        else blk: {
+            const generated = try self.makePrivateVarName(orig_name);
+            errdefer self.allocator.free(generated);
+            try self.method_weaksets.put(orig_name, generated);
+            break :blk generated;
+        };
+        errdefer self.allocator.free(weakset_name);
+
+        const suffix: []const u8 = switch (kind) {
+            .method => "_fn",
+            .getter => "_get",
+            .setter => "_set",
+        };
+        const fn_base = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ weakset_name, suffix });
+        defer self.allocator.free(fn_base);
+        const fn_name = try self.makeUniqueName(fn_base);
+        return .{ .ws_name = weakset_name, .fn_name = fn_name };
+    }
+};
+
 /// "#bar" → "_bar" (allocator 소유). private field WeakMap/descriptor 변수명으로 사용.
 pub fn makePrivateVarName(allocator: std.mem.Allocator, orig_name: []const u8) ![]u8 {
     const bare = orig_name[1..]; // # 제거

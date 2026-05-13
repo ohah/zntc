@@ -306,6 +306,9 @@ pub fn ES2022(comptime Transformer: type) type {
             var field_init_idx: std.ArrayList(NodeIndex) = .empty;
             defer field_init_idx.deinit(self.allocator);
 
+            var private_names = try es_helpers.PrivateNameAllocator.init(self.allocator, self.ast);
+            defer private_names.deinit();
+
             {
                 const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
                 for (body_members) |raw_idx| {
@@ -324,7 +327,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
                         const orig_name = self.ast.getText(key_node.span);
                         const pm_kind = es_helpers.privateMethodKindFromFlags(flags);
-                        const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, pm_kind);
+                        const names = try private_names.makePrivateMethodNames(orig_name, pm_kind);
                         try method_mappings.append(self.allocator, .{
                             .original_name = orig_name,
                             .weakset_name = names.ws_name,
@@ -348,7 +351,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
                         const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
                         const orig_name = self.ast.getText(key_node.span);
-                        const var_name = try es_helpers.makePrivateVarName(self.allocator, orig_name);
+                        const var_name = try private_names.makePrivateVarName(orig_name);
 
                         try field_mappings.append(self.allocator, .{
                             .original_name = orig_name,

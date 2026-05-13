@@ -2097,6 +2097,26 @@ test "ES2015: class private field set" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__zntcClassPrivateFieldSet(_x,this,v)") != null);
 }
 
+test "ES2015: private field helper avoids constructor reference collision" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\function make(max) {
+        \\  var _y = function(n) { return Array; };
+        \\  class Cache {
+        \\    #y;
+        \\    constructor() {
+        \\      this.#y = 1;
+        \\      this.arr = new (max ? _y(max) : Array)(max);
+        \\    }
+        \\  }
+        \\  return new Cache().arr.length;
+        \\}
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _y2=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "new (max?_y(max):Array)(max)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _y=new WeakMap") == null);
+}
+
 // --- class static private field ---
 
 test "ES2022: static private field descriptor object" {
