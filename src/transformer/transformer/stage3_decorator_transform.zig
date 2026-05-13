@@ -32,6 +32,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     // 런타임 헬퍼 사용 표시
     self.runtime_helpers.es_decorator = true;
 
+    // accessor backing storage 이름 충돌 회피용 — 같은 base name 의 public/
+    // private accessor 가 한 class 에 동거하거나, 사용자 코드가 동일 이름의
+    // identifier 를 이미 사용 중이면 PrivateNameAllocator 가 suffix 로 회피.
+    var private_name_allocator = try es_helpers.PrivateNameAllocator.init(self.allocator, self.ast);
+    defer private_name_allocator.deinit();
+
     // 클래스 이름, super, body, decorator 추출
     const name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
     const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
@@ -302,8 +308,14 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .deco_var_name = deco_vname,
                     });
 
-                    // accessor → private backing field + getter + setter
-                    const storage_name = try std.fmt.allocPrint(self.allocator, "#_{s}_accessor_storage", .{var_n});
+                    // accessor → private backing field + getter + setter.
+                    // PrivateNameAllocator 가 `_x_accessor_storage` → 이미 사용
+                    // 중이면 `_x_accessor_storage2` 처럼 회피.
+                    const storage_base = try std.fmt.allocPrint(self.allocator, "_{s}_accessor_storage", .{var_n});
+                    defer self.allocator.free(storage_base);
+                    const storage_local = try private_name_allocator.makeUniqueName(storage_base);
+                    defer self.allocator.free(storage_local);
+                    const storage_name = try std.fmt.allocPrint(self.allocator, "#{s}", .{storage_local});
                     defer self.allocator.free(storage_name);
                     const storage_span = try self.ast.addString(storage_name);
                     const storage_key = try self.ast.addNode(.{
