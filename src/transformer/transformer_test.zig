@@ -1345,6 +1345,33 @@ test "#1797 negative: for-of down-level 꺼져있으면 변환 자체 비활성"
     try std.testing.expect(std.mem.indexOf(u8, code, "for (let k of") != null);
 }
 
+test "block scoping: dot member property names are not lexical references" {
+    // AxiosHeaders.accessor 패턴 축소. inner const `prototype` 은 rename 되어도
+    // `this.prototype` 의 property key 는 Metro/Babel 처럼 그대로 유지해야 한다.
+    const source =
+        \\class Outer {}
+        \\let prototype = Outer.prototype;
+        \\class Headers {
+        \\  static accessor() {
+        \\    const prototype = this.prototype;
+        \\    return prototype;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "this.prototype$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "this.prototype") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "prototype$") != null);
+}
+
 test "#1797 native for-of + block scoping: let 캡처 시 _loop 함수로 추출" {
     // RN preset은 for-of 문법은 유지하지만 block_scoping으로 let/const를 var로 낮춘다.
     // 이때 getter/closure가 loop binding을 캡처하면 native for-of 경로에서도 fresh binding
