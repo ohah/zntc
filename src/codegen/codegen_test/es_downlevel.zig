@@ -2364,6 +2364,13 @@ test "ES2015: class constructor with super and field" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized(_this).z=2") != null);
 }
 
+test "ES2015: parameter property with default uses bare binding for assignment" {
+    var r = try e2eTarget(std.testing.allocator, "class B{}class D extends B{constructor(public config: Config = {}){super();}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.config=config") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "config:Config") == null);
+}
+
 // --- generator edge cases ---
 
 test "ES2015: generator with while yield" {

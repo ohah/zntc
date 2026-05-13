@@ -356,10 +356,12 @@ pub fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!Para
         const param_node = self.ast.getNode(param_idx);
         // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
         // flags != 0 → parameter property (public/private/protected/readonly/override)
-        if (param_node.tag == .formal_parameter and self.ast.extra_data.items[param_node.data.extra + 3] != 0) {
-            const inner = try self.visitNode(@enumFromInt(self.ast.extra_data.items[param_node.data.extra]));
+        if (param_node.tag == .formal_parameter and self.ast.extra_data.items[param_node.data.extra + ast_mod.FormalParameterExtra.flags] != 0) {
+            const inner = try self.visitNode(@enumFromInt(self.ast.extra_data.items[param_node.data.extra + ast_mod.FormalParameterExtra.pattern]));
             try self.scratch.append(self.allocator, inner);
-            try result.prop_names.append(self.allocator, inner);
+            if (parameterPropertyBindingName(self, inner)) |binding| {
+                try result.prop_names.append(self.allocator, binding);
+            }
         } else {
             const new_param = try self.visitNode(@enumFromInt(raw_idx));
             if (!new_param.isNone()) {
@@ -370,6 +372,17 @@ pub fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!Para
 
     result.new_params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return result;
+}
+
+fn parameterPropertyBindingName(self: *Transformer, idx: NodeIndex) ?NodeIndex {
+    if (idx.isNone()) return null;
+    const node = self.ast.getNode(idx);
+    return switch (node.tag) {
+        .binding_identifier => idx,
+        .assignment_pattern => parameterPropertyBindingName(self, node.data.binary.left),
+        .formal_parameter => parameterPropertyBindingName(self, self.readNodeIdx(node.data.extra, ast_mod.FormalParameterExtra.pattern)),
+        else => null,
+    };
 }
 
 /// `this.x = x;` 형태의 expression_statement 노드들을 만들어 반환한다.
