@@ -7,6 +7,9 @@
 
 var REFRESH_TEXT_COLOR = -1; // #ffffff
 var REFRESH_BACKGROUND_COLOR = -14318360; // #2584e8
+var BUFFER_LIMIT = 1024 * 1024;
+var prettyFormat = require('pretty-format');
+var prettyFormatImpl = prettyFormat && (prettyFormat.default || prettyFormat);
 
 function getRoot() {
   return (
@@ -99,10 +102,21 @@ function getDevLoadingView() {
   return null;
 }
 
+function formatLogItem(item) {
+  if (typeof item === 'string') return item;
+  return prettyFormatImpl.format(item, {
+    escapeString: true,
+    highlight: true,
+    maxDepth: 3,
+    min: true,
+    plugins: [prettyFormatImpl.plugins.ReactElement],
+  });
+}
+
 var HMRClient = {
   _socket: null,
   _enabled: true,
-  _originalConsole: null,
+  _pendingLogs: [],
   // 중첩 update 카운트 — 마지막 update-done 에서만 배너 hide.
   _pendingUpdates: 0,
   // lazy cache — 첫 호출 때 1회 lookup (native module 가 setup 시점엔 아직 미로드).
@@ -141,12 +155,36 @@ var HMRClient = {
     // No-op: ZNTC bundler does not require bundle registration
   },
 
+  _sendLog: function (level, data) {
+    var socket = this._socket;
+    if (!socket || socket.readyState !== 1 || socket.bufferedAmount > BUFFER_LIMIT) {
+      return false;
+    }
+    try {
+      var formatted = Array.prototype.map.call(data || [], function (item) {
+        return formatLogItem(item);
+      });
+      socket.send(JSON.stringify({ type: 'log', level: level, data: formatted }));
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  _flushPendingLogs: function () {
+    var pending = this._pendingLogs;
+    this._pendingLogs = [];
+    for (var i = 0; i < pending.length; i++) {
+      this._sendLog(pending[i][0], pending[i][1]);
+    }
+  },
+
   log: function (level, data) {
-    if (this._socket && this._socket.readyState === 1) {
-      try {
-        this._socket.send(JSON.stringify({ type: 'log', level: level, data: data }));
-      } catch {
-        // ignore
+    if (this._sendLog(level, data)) return;
+    if (!this._socket) {
+      this._pendingLogs.push([level, data]);
+      if (this._pendingLogs.length > 100) {
+        this._pendingLogs.shift();
       }
     }
   },
@@ -172,52 +210,7 @@ var HMRClient = {
           platform: platform,
         }),
       );
-
-      var forwardClientLogs =
-        typeof __ZNTC_FORWARD_CLIENT_LOGS__ !== 'undefined' ? __ZNTC_FORWARD_CLIENT_LOGS__ : false;
-      if (forwardClientLogs === true && self._originalConsole == null) {
-        self._originalConsole = {};
-        // RN dev mode 는 idle 에도 LogBox/Animated/bridge 가 console 을 frame 단위로
-        // 호출. wrap 안에서 큰 객체를 deep-clone 하면 RN Fiber/props graph 가 매 frame
-        // 복제돼 GC 가 못 따라가고 RAM 이 grow (#2885). single-pass stringify +
-        // circular replacer + bufferedAmount 가드로 fix.
-        var levels = ['log', 'info', 'warn', 'error', 'debug'];
-        // server 가 burst 를 못 따라가면 native send buffer 에 누적 — 1MB 초과 시 drop.
-        // dev 메시지 forwarding 은 best-effort.
-        var BUFFER_LIMIT = 1024 * 1024;
-        for (var i = 0; i < levels.length; i++) {
-          (function (level) {
-            var original = console[level];
-            if (typeof original === 'function') {
-              self._originalConsole[level] = original;
-              console[level] = function () {
-                original.apply(console, arguments);
-                if (socket.readyState !== 1) return;
-                if (socket.bufferedAmount > BUFFER_LIMIT) return;
-                var argsLen = arguments.length;
-                var args = Array.from({ length: argsLen });
-                for (var j = 0; j < argsLen; j++) args[j] = arguments[j];
-                // seen / replacer 를 호출별 local 로 — toString 등으로 인한 reentrancy
-                // (console.log 가 다른 console.log 를 trigger) 에도 안전.
-                var seen = [];
-                var replacer = function (_key, value) {
-                  if (value instanceof Error) return value.message;
-                  if (typeof value === 'object' && value !== null) {
-                    if (seen.indexOf(value) !== -1) return '[Circular]';
-                    seen.push(value);
-                  }
-                  return value;
-                };
-                try {
-                  socket.send(JSON.stringify({ type: 'log', level: level, data: args }, replacer));
-                } catch {
-                  // serialization 실패 — drop
-                }
-              };
-            }
-          })(levels[i]);
-        }
-      }
+      self._flushPendingLogs();
     };
 
     socket.onmessage = function (event) {
@@ -237,8 +230,7 @@ var HMRClient = {
             break;
           case 'hmr:update':
             // hmr-client debug — __ZNTC_HMR_DEBUG__ true 시에만 update 도착/주입
-            // 진행 로그 출력. default false — forwardClientLogs 로 터미널 forwarding
-            // 시 사용자 앱 console.log 가 시스템 노이즈에 묻히지 않게.
+            // 진행 로그 출력. 터미널 forwarding 여부와 별개로 기본 비활성화.
             var hmrDebug = typeof __ZNTC_HMR_DEBUG__ !== 'undefined' ? __ZNTC_HMR_DEBUG__ : false;
             if (hmrDebug) {
               console.log(
@@ -319,15 +311,6 @@ var HMRClient = {
     };
 
     socket.onclose = function () {
-      // console intercept 복원 — reconnect 시 stale closure / 중복 wrap 방지.
-      if (self._originalConsole) {
-        for (var level in self._originalConsole) {
-          if (Object.prototype.hasOwnProperty.call(self._originalConsole, level)) {
-            console[level] = self._originalConsole[level];
-          }
-        }
-        self._originalConsole = null;
-      }
       // 중첩 update 도중 socket drop 시 stuck banner 방지.
       if (self._pendingUpdates > 0) {
         self._pendingUpdates = 0;

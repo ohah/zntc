@@ -69,8 +69,7 @@ let HMRClient;
 let mockGlobal;
 let mockConsole;
 let mockDevLoadingView;
-// wrap 전 console.X 의 mock 보존 — onopen 에서 console.X 가 wrappedFn 으로
-// 교체되므로 toHaveBeenCalledWith 검증 시 wrap 전 ref 사용 필요.
+let mockPrettyFormat;
 let originalConsole;
 
 beforeEach(() => {
@@ -91,6 +90,10 @@ beforeEach(() => {
     error: mock(() => {}),
     debug: mock(() => {}),
   };
+  mockPrettyFormat = {
+    format: mock((item) => `formatted:${item && item.message ? item.message : String(item)}`),
+    plugins: { ReactElement: {} },
+  };
   originalConsole = { ...mockConsole };
   HMRClient = loadHmrClient({
     global: mockGlobal,
@@ -102,6 +105,7 @@ beforeEach(() => {
     window: undefined,
     forwardClientLogs: true,
     require: (specifier) => {
+      if (specifier === 'pretty-format') return mockPrettyFormat;
       if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
       throw new Error(`Unexpected require: ${specifier}`);
     },
@@ -159,7 +163,7 @@ describe('setup()', () => {
   });
 });
 
-describe('onopen — hmr:connected + console wrap', () => {
+describe('onopen — hmr:connected + Metro log path', () => {
   test("'hmr:connected' 메시지 송출 + bundleEntry/platform 포함", () => {
     HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
     const ws = MockWebSocket.instances[0];
@@ -168,15 +172,15 @@ describe('onopen — hmr:connected + console wrap', () => {
     expect(msg).toEqual({ type: 'hmr:connected', bundleEntry: '/abs/idx.js', platform: 'ios' });
   });
 
-  test('console method wrap — original 호출 + socket.send forward', () => {
+  test('setup 은 console 을 직접 wrap 하지 않고 HMRClient.log 만 forward', () => {
     HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
     const ws = MockWebSocket.instances[0];
     ws.onopen();
-    // wrap 후 mockConsole.log 자체가 wrappedFn — 호출은 wrap 된 함수로.
     mockConsole.log('hello');
-    // wrap 안에서 original (originalConsole.log) 호출 검증.
     expect(originalConsole.log).toHaveBeenCalledWith('hello');
-    // socket.send forward — 'hmr:connected' + 'log' 메시지
+    expect(ws.sent.length).toBe(1);
+
+    HMRClient.log('log', ['hello']);
     expect(ws.sent.length).toBe(2);
     const log = JSON.parse(ws.sent[1]);
     expect(log.type).toBe('log');
@@ -202,6 +206,7 @@ describe('onopen — hmr:connected + console wrap', () => {
       window: undefined,
       forwardClientLogs: true,
       require: (specifier) => {
+        if (specifier === 'pretty-format') return mockPrettyFormat;
         if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
         throw new Error(`Unexpected require: ${specifier}`);
       },
@@ -223,7 +228,7 @@ describe('onopen — hmr:connected + console wrap', () => {
     expect(mockDevLoadingView.showMessage).not.toHaveBeenCalled();
   });
 
-  test('forwardClientLogs=false — console wrap 하지 않음', () => {
+  test('forwardClientLogs=false 여도 client console wrap 은 설치하지 않음', () => {
     HMRClient = loadHmrClient({
       global: mockGlobal,
       WebSocket: MockWebSocket,
@@ -234,6 +239,7 @@ describe('onopen — hmr:connected + console wrap', () => {
       window: undefined,
       forwardClientLogs: false,
       require: (specifier) => {
+        if (specifier === 'pretty-format') return mockPrettyFormat;
         if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
         throw new Error(`Unexpected require: ${specifier}`);
       },
@@ -246,26 +252,50 @@ describe('onopen — hmr:connected + console wrap', () => {
     expect(ws.sent.length).toBe(1);
   });
 
-  test('Error object 는 message 만 send', () => {
+  test('non-string log item 은 Metro 처럼 pretty-format 으로 format', () => {
     HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
     const ws = MockWebSocket.instances[0];
     ws.onopen();
-    mockConsole.error(new Error('boom'));
+    HMRClient.log('error', [new Error('boom')]);
     const log = JSON.parse(ws.sent[1]);
-    expect(log.data).toEqual(['boom']);
+    expect(mockPrettyFormat.format).toHaveBeenCalledWith(expect.any(Error), {
+      escapeString: true,
+      highlight: true,
+      maxDepth: 3,
+      min: true,
+      plugins: [mockPrettyFormat.plugins.ReactElement],
+    });
+    expect(log.data).toEqual(['formatted:boom']);
   });
 
-  test('circular reference — replacer 가 [Circular] 로 대체 (#2885)', () => {
+  test('pretty-format 실패 시 Metro 처럼 log frame 을 보내지 않음', () => {
+    HMRClient = loadHmrClient({
+      global: mockGlobal,
+      WebSocket: MockWebSocket,
+      console: mockConsole,
+      __zntc_apply_update: mockGlobal.__zntc_apply_update,
+      __zntc_reload: mockGlobal.__zntc_reload,
+      location: { reload: mock(() => {}) },
+      window: undefined,
+      forwardClientLogs: true,
+      require: (specifier) => {
+        if (specifier === 'pretty-format') {
+          return {
+            format: mock(() => {
+              throw new Error('format failed');
+            }),
+            plugins: { ReactElement: {} },
+          };
+        }
+        if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
+        throw new Error(`Unexpected require: ${specifier}`);
+      },
+    });
     HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
     const ws = MockWebSocket.instances[0];
     ws.onopen();
-    const obj = { a: 1 };
-    obj.self = obj;
-    mockConsole.log(obj);
-    const log = JSON.parse(ws.sent[1]);
-    expect(typeof log.data[0]).toBe('object');
-    expect(log.data[0].a).toBe(1);
-    expect(log.data[0].self).toBe('[Circular]');
+    expect(() => HMRClient.log('log', [{ a: 1 }])).not.toThrow();
+    expect(ws.sent).toHaveLength(1);
   });
 
   test('source 에 JSON.parse(JSON.stringify 패턴 없음 (#2885 deep-clone 회귀 가드)', () => {
@@ -283,7 +313,7 @@ describe('onopen — hmr:connected + console wrap', () => {
       return originalParse.apply(JSON, arguments);
     };
     try {
-      mockConsole.log({ a: 1, b: { c: 2 } });
+      HMRClient.log('log', [{ a: 1, b: { c: 2 } }]);
     } finally {
       JSON.parse = originalParse;
     }
@@ -296,10 +326,10 @@ describe('onopen — hmr:connected + console wrap', () => {
     ws.onopen();
     const sentBefore = ws.sent.length;
     ws.bufferedAmount = 2 * 1024 * 1024;
-    mockConsole.log('this should be dropped');
+    HMRClient.log('log', ['this should be dropped']);
     expect(ws.sent.length).toBe(sentBefore);
     ws.bufferedAmount = 0;
-    mockConsole.log('this should pass');
+    HMRClient.log('log', ['this should pass']);
     expect(ws.sent.length).toBe(sentBefore + 1);
   });
 
@@ -309,13 +339,13 @@ describe('onopen — hmr:connected + console wrap', () => {
     ws.onopen();
     const sentBefore = ws.sent.length;
     ws.readyState = 0; // CONNECTING
-    mockConsole.log('not yet open');
+    HMRClient.log('log', ['not yet open']);
     expect(ws.sent.length).toBe(sentBefore);
     ws.readyState = 2; // CLOSING
-    mockConsole.log('closing');
+    HMRClient.log('log', ['closing']);
     expect(ws.sent.length).toBe(sentBefore);
     ws.readyState = 3; // CLOSED
-    mockConsole.log('closed');
+    HMRClient.log('log', ['closed']);
     expect(ws.sent.length).toBe(sentBefore);
   });
 });
@@ -388,6 +418,7 @@ describe('onmessage — Metro 메시지 분기', () => {
       window: undefined,
       forwardClientLogs: true,
       require: (specifier) => {
+        if (specifier === 'pretty-format') return mockPrettyFormat;
         if (specifier === './DevLoadingView') return { default: mockDevLoadingView };
         throw new Error(`Unexpected require: ${specifier}`);
       },

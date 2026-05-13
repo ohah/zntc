@@ -48,14 +48,14 @@ describe('createAssetPlugin', () => {
 
     const result = hmrHandler.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
     expect(result).toEqual({
-      contents: ZNTC_HMR_CLIENT_CODE.replace(/__ZNTC_FORWARD_CLIENT_LOGS__/g, 'false'),
+      contents: ZNTC_HMR_CLIENT_CODE,
     });
   });
 
-  test('forwardClientLogs=true — HMR runtime flag true 로 치환', () => {
-    const handlers = captureHandlers({ ...baseConfig, forwardClientLogs: true });
+  test('HMR runtime source 는 client console wrap flag 를 주입하지 않음', () => {
+    const handlers = captureHandlers(baseConfig);
     const result = handlers[0]!.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
-    expect(result?.contents).toContain('typeof true');
+    expect(result?.contents).toBe(ZNTC_HMR_CLIENT_CODE);
     expect(result?.contents).not.toContain('__ZNTC_FORWARD_CLIENT_LOGS__');
   });
 
