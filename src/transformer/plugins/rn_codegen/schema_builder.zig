@@ -632,10 +632,21 @@ fn isFunctionType(ast: *const Ast, type_idx: NodeIndex) bool {
 /// type 이 `DirectEventHandler<T>` / `BubblingEventHandler<T>` 면 해당 BubblingType 반환.
 /// 그 외엔 null.
 fn eventHandlerBubbling(ast: *const Ast, type_idx: NodeIndex) ?schema.BubblingType {
+    return eventHandlerBubblingAt(ast, type_idx, 0);
+}
+
+fn eventHandlerBubblingAt(ast: *const Ast, type_idx: NodeIndex, depth: u8) ?schema.BubblingType {
+    if (depth >= MAX_ALIAS_DEPTH) return null;
     const node = ast.getNode(type_idx);
-    if (node.tag != .ts_type_reference and node.tag != .flow_type_reference) return null;
-    const name = getTypeReferenceName(ast, node) orelse return null;
-    return event_handler_names.get(lastSegment(name));
+    return switch (node.tag) {
+        .ts_type_reference, .flow_type_reference => blk: {
+            const name = getTypeReferenceName(ast, node) orelse return null;
+            break :blk event_handler_names.get(lastSegment(name));
+        },
+        .flow_nullable_type, .ts_parenthesized_type, .flow_parenthesized_type => eventHandlerBubblingAt(ast, node.data.unary.operand, depth + 1),
+        .ts_union_type, .flow_union_type => eventHandlerBubblingFromNullableUnion(ast, node, depth + 1),
+        else => null,
+    };
 }
 
 /// RN codegen 의 명시적 event wrapper — 이름이 bubble vs direct 결정.
@@ -643,6 +654,28 @@ const event_handler_names = std.StaticStringMap(schema.BubblingType).initComptim
     .{ "DirectEventHandler", .direct },
     .{ "BubblingEventHandler", .bubble },
 });
+
+fn eventHandlerBubblingFromNullableUnion(ast: *const Ast, node: Node, depth: u8) ?schema.BubblingType {
+    var found: ?schema.BubblingType = null;
+    var iter = ast.iterateExtraList(node.data.list);
+    while (iter.next()) |elem| {
+        const elem_node = ast.getNode(elem);
+        if (isNullishType(elem_node)) continue;
+        const bubbling = eventHandlerBubblingAt(ast, elem, depth) orelse return null;
+        if (found) |prev| {
+            if (prev != bubbling) return null;
+        }
+        found = bubbling;
+    }
+    return found;
+}
+
+fn isNullishType(node: Node) bool {
+    return switch (node.tag) {
+        .ts_null_keyword, .ts_undefined_keyword, .flow_null_keyword, .flow_void_keyword => true,
+        else => false,
+    };
+}
 
 /// 이벤트 prop 이름 → bubble vs direct 분류.
 /// 일반적 RN 컨벤션: `onCapture` 접미사가 있으면 direct, 그 외는 bubble.

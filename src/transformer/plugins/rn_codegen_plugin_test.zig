@@ -142,6 +142,25 @@ test "codegen_plugin: function-typed prop → event in output" {
     try expectContains(out, "phasedRegistrationNames");
 }
 
+test "codegen_plugin: Flow nullable DirectEventHandler emits directEventTypes" {
+    const code =
+        \\type NativeProps = $ReadOnly<{
+        \\  onOrientationChange?: ?DirectEventHandler<OrientationChangeEvent>,
+        \\}>;
+        \\export default codegenNativeComponent<NativeProps>('ModalHostView', {
+        \\  paperComponentName: 'RCTModalHostView',
+        \\});
+    ;
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/RCTModalHostViewNativeComponent.js");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+
+    try expectContains(out, "directEventTypes: {");
+    try expectContains(out, "topOrientationChange:");
+    try expectContains(out, "registrationName: 'onOrientationChange'");
+}
+
 test "codegen_plugin: paperComponentName option → uiViewClassName / nativeComponentName 둘 다 paper 이름" {
     const code =
         \\type NativeProps = { color: string };

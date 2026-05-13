@@ -1039,6 +1039,23 @@ test "schema_builder: Flow namespace CT.DirectEventHandler → direct event" {
     try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
 }
 
+test "schema_builder: Flow nullable DirectEventHandler in $ReadOnly → direct event" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = $ReadOnly<{
+        \\  onOrientationChange?: ?DirectEventHandler<OrientationChangeEvent>,
+        \\}>;
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "RCTModalHostView");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqualStrings("onOrientationChange", shape.events[0].name);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
 test "schema_builder: namespaced unknown last segment → mixed fallback (TS)" {
     // Foo.Bar 가 알려진 wrapper/event/reserved/numeric 어디에도 없음 → cross-file
     // 처럼 mixed permissive fallback.
