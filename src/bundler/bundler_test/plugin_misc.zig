@@ -3267,3 +3267,252 @@ test "react_native inlineRequires: object parameter default visits ESM value imp
     defer std.testing.allocator.free(lazy_tokens_value);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_tokens_value) != null);
 }
+
+test "react_native inlineRequires: simple parameter default visits ESM value import" {
+    // `function f(a = X.y)` — assignment_pattern at the formal parameter level.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { format } from './fmt';
+        \\globalThis.__zntcParamDefaultResult = format();
+    );
+    try writeFile(tmp.dir, "tokens.js",
+        \\export const TOKENS = { primary: 'primary-default' };
+    );
+    try writeFile(tmp.dir, "fmt.js",
+        \\import { TOKENS } from './tokens';
+        \\export function format(color = TOKENS.primary) { return color; }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const tokens = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(tokens);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
+
+    const lazy = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "color=({s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
+        .{ rt.GUARD_LAMBDA_OPEN, tokens },
+    );
+    defer std.testing.allocator.free(lazy);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
+}
+
+test "react_native inlineRequires: array pattern default visits ESM value import" {
+    // `function f([a = X.y])` — array_pattern element default.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { pick } from './pick';
+        \\globalThis.__zntcParamDefaultResult = pick([]);
+    );
+    try writeFile(tmp.dir, "tokens.js",
+        \\export const TOKENS = { primary: 'arr-default' };
+    );
+    try writeFile(tmp.dir, "pick.js",
+        \\import { TOKENS } from './tokens';
+        \\export function pick([first = TOKENS.primary] = []) { return first; }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const tokens = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(tokens);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // bare `=TOKENS.primary` 가 남으면 lazy 치환 누락.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=TOKENS.primary") == null);
+
+    // lazy expression 일부가 등장해야 한다 — array element default 위치.
+    const lazy_marker = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
+        .{ rt.GUARD_LAMBDA_OPEN, tokens },
+    );
+    defer std.testing.allocator.free(lazy_marker);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+}
+
+test "react_native inlineRequires: nested destructuring default visits ESM value import" {
+    // `function f({ a: { b = X.y } = {} })` — nested object inside object default.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { render } from './render';
+        \\globalThis.__zntcParamDefaultResult = render({});
+    );
+    try writeFile(tmp.dir, "tokens.js",
+        \\export const TOKENS = { primary: 'nested-default' };
+    );
+    try writeFile(tmp.dir, "render.js",
+        \\import { TOKENS } from './tokens';
+        \\export function render({ style: { color = TOKENS.primary } = {} } = {}) { return color; }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const tokens = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(tokens);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
+
+    const lazy = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "color=({s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
+        .{ rt.GUARD_LAMBDA_OPEN, tokens },
+    );
+    defer std.testing.allocator.free(lazy);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
+}
+
+test "react_native inlineRequires: TS parameter property default visits ESM value import" {
+    // `class C { constructor(public a = X.y) {} }` — TS access modifier 가
+    // `formal_parameter` wrap 을 만드는 분기. 240bba46 의 formal_parameter
+    // extra layout 분기를 정확히 잠근다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Theme } from './theme';
+        \\(globalThis as any).__zntcParamDefaultResult = new Theme();
+    );
+    try writeFile(tmp.dir, "tokens.ts",
+        \\export const TOKENS = { primary: 'ts-param-prop-default' };
+    );
+    try writeFile(tmp.dir, "theme.ts",
+        \\import { TOKENS } from './tokens';
+        \\export class Theme {
+        \\  constructor(public color: string = TOKENS.primary) {}
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const tokens = try absPath(&tmp, "tokens.ts");
+    defer std.testing.allocator.free(tokens);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // class lowering 으로 default 가 `if (color === void 0)` 형태로 풀릴 수
+    // 있어 prefix 위치가 다양하다. lazy guard wrap 자체가 들어갔는지 (TOKENS
+    // 가 guarded lambda 안에서 .primary 로 접근) 만 잠근다. 또한 bare
+    // `TOKENS.primary` 가 어디에도 남지 않아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(TOKENS.primary") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, " TOKENS.primary") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=TOKENS.primary") == null);
+
+    const lazy_marker = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
+        .{ rt.GUARD_LAMBDA_OPEN, tokens },
+    );
+    defer std.testing.allocator.free(lazy_marker);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+}
+
+test "react_native inlineRequires: for-of binding default visits ESM value import" {
+    // `for (const { a = X.y } of arr)` — `registerBinding` 경로의 default
+    // visit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { run } from './run';
+        \\globalThis.__zntcParamDefaultResult = run([{}, {}]);
+    );
+    try writeFile(tmp.dir, "tokens.js",
+        \\export const TOKENS = { primary: 'for-of-default' };
+    );
+    try writeFile(tmp.dir, "run.js",
+        \\import { TOKENS } from './tokens';
+        \\export function run(items) {
+        \\  const out = [];
+        \\  for (const { color = TOKENS.primary } of items) {
+        \\    out.push(color);
+        \\  }
+        \\  return out;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const tokens = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(tokens);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
+
+    const lazy_marker = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}__zntc_modules[\"{s}\"].fn()}}), TOKENS).primary",
+        .{ rt.GUARD_LAMBDA_OPEN, tokens },
+    );
+    defer std.testing.allocator.free(lazy_marker);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+}
