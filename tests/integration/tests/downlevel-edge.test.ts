@@ -131,7 +131,12 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       cleanup = fixture.cleanup;
 
       const outFile = join(fixture.dir, 'out.js');
-      const transpile = await runZntc([join(fixture.dir, 'index.ts'), '-o', outFile, '--target=es5']);
+      const transpile = await runZntc([
+        join(fixture.dir, 'index.ts'),
+        '-o',
+        outFile,
+        '--target=es5',
+      ]);
       expect(transpile.exitCode).toBe(0);
 
       const output = readFileSync(outFile, 'utf8');
@@ -141,7 +146,9 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       const andGuard = output.indexOf(`if (!(${clientTemp}))`, clientRead);
       const clientEnd = output.indexOf('client.end();');
       const skipOrMatch = output.match(/(_[a-z]+) = true;[\s\S]*?if \(\1\)[\s\S]*?skipOr\(\)/);
-      const skipNullishMatch = output.match(/(_[a-z]+) = "value";[\s\S]*?if \(\1 != null\)[\s\S]*?skipNullish\(\)/);
+      const skipNullishMatch = output.match(
+        /(_[a-z]+) = "value";[\s\S]*?if \(\1 != null\)[\s\S]*?skipNullish\(\)/,
+      );
       const conditionalGuard = output.indexOf('if (!(flag))');
       const thenBranch = output.indexOf('thenBranch()');
       const elseBranch = output.indexOf('elseBranch()');
