@@ -22,20 +22,24 @@ pub fn ES2015Shorthand(comptime Transformer: type) type {
         /// shorthand property를 full form으로 확장한다.
         /// { x } → { x: x }
         ///
-        /// key(identifier_reference)를 복제해서 value로 설정.
+        /// key 는 property name 이라 block_rename 대상이 아니므로 원본
+        /// identifier 를 그대로 복제한다. value 는 변수 참조라 visitNode 로
+        /// 변환해 block_scoping / scope hoist rename 을 적용 받아야 한다.
         pub fn expandShorthand(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const new_key = try self.visitNode(node.data.binary.left);
+            const left_idx = node.data.binary.left;
+            const original_left = self.ast.getNode(left_idx);
 
-            // key를 복제하여 value로 사용
-            const key_node = self.ast.getNode(new_key);
-            const new_value = try self.ast.addNode(.{
+            // key: 원본 이름 그대로. property name 이라 rename 대상 아님.
+            const new_key = try self.ast.addNode(.{
                 .tag = .identifier_reference,
-                .span = key_node.span,
-                .data = .{ .string_ref = key_node.data.string_ref },
+                .span = original_left.span,
+                .data = .{ .string_ref = original_left.data.string_ref },
             });
-            // scope hoisting rename이 value에도 적용되도록 symbol_id 복사.
-            // key는 프로퍼티 이름이므로 rename 불필요하나, value는 변수 참조이므로 필요.
-            self.copySymbolId(new_key, new_value);
+            // scope hoisting 등 다른 후속 transform 이 symbol 을 따라가도록 복사.
+            self.copySymbolId(left_idx, new_key);
+
+            // value: visitNode 가 block_rename / scope hoist 를 적용.
+            const new_value = try self.visitNode(left_idx);
 
             return self.ast.addNode(.{
                 .tag = .object_property,

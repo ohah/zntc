@@ -1482,6 +1482,42 @@ test "block scoping: private field property names are not lexical references" {
     try std.testing.expect(std.mem.indexOf(u8, code, "#value$") == null);
 }
 
+test "block scoping + object_extensions: shorthand key kept as property name" {
+    // `{ routes }` shorthand 의 key 는 property name 이라 block_rename 대상이
+    // 아니다. inner `routes` 가 outer `routes` 와 shadow 돼 `routes$N` 으로
+    // rename 되더라도 emit 결과는 `{ routes: routes$N }` 이어야 함.
+    // object_extensions + block_scoping 콤보에서 expandShorthand 가 key 도
+    // visitNode 로 rename 하던 누락을 가드한다.
+    const source =
+        \\let routes = "outer";
+        \\function f() {
+        \\  const routes = "inner";
+        \\  return { routes };
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{
+            .block_scoping = true,
+            .object_extensions = true,
+        } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    // shadowing 으로 inner binding 이 rename 되어야 한다 (전제 확인).
+    try std.testing.expect(std.mem.indexOf(u8, code, "routes$") != null);
+    // key 는 원래 이름 (`routes`), value 는 rename 된 식별자.
+    // codegen 이 minified 또는 expanded 어느 쪽으로 emit 해도 잠근다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "routes:routes$") != null or
+        std.mem.indexOf(u8, code, "routes: routes$") != null);
+    // 버그 형태 — key 자체가 rename 된 출력은 안 나와야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "routes$1:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "routes$1 :") == null);
+}
+
 test "#1797 native for-of + block scoping: let 캡처 시 _loop 함수로 추출" {
     // RN preset은 for-of 문법은 유지하지만 block_scoping으로 let/const를 var로 낮춘다.
     // 이때 getter/closure가 loop binding을 캡처하면 native for-of 경로에서도 fresh binding
