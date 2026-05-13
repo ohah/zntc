@@ -70,6 +70,12 @@ export interface RnBundleInput {
     watchFolders?: string[];
     /** Metro `resolver.nodeModulesPaths` 호환. bare import 추가 탐색 경로. */
     nodeModulesPaths?: string[];
+    /**
+     * Metro `resolver.disableHierarchicalLookup` 호환. true 면 entry 디렉토리
+     * 외부의 `node_modules` walk-up 탐색을 차단 — monorepo 에서 dependency
+     * hoisting 강제 또는 워크스페이스 외부 모듈 누수 방지에 사용.
+     */
+    disableHierarchicalLookup?: boolean;
     blockList?: (RegExp | string)[];
     fallback?: Record<string, string | false>;
     /** RN 외 사용자 plugin (asset/babel/codegen/require-context/metro-resolve-request 외 추가). */
@@ -461,6 +467,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   }
   if (extra?.silentConsoleErrorPatterns && extra.silentConsoleErrorPatterns.length > 0) {
     preset.silentConsoleErrorPatterns = [...extra.silentConsoleErrorPatterns];
+  }
+  if (extra?.disableHierarchicalLookup === true) {
+    preset.disableHierarchicalLookup = true;
   }
 
   // user override 는 마지막 — define / loader / alias 같은 dict 는 deep merge,

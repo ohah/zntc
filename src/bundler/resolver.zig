@@ -298,6 +298,12 @@ pub const Resolver = struct {
     /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks).
     /// true이면 makeResult()에서 realpathAlloc 대신 allocator.dupe 사용.
     preserve_symlinks: bool = false,
+    /// `resolveNodeModules` 의 parent dir walk-up 차단 (Metro `resolver.
+    /// disableHierarchicalLookup` 호환). monorepo 에서 dependency hoisting
+    /// 을 강제하거나, 워크스페이스 루트 외부의 `node_modules` 가 의도치
+    /// 않게 탐색되는 것을 막을 때 사용. 기본 false — 일반 Node.js algorithm
+    /// (cwd 부터 root 까지 hierarchical lookup) 그대로.
+    disable_hierarchical_lookup: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
     /// 정확 매칭: "react" → "preact/compat"
     /// 접두사 매칭: "react/hooks" → "preact/compat/hooks"
@@ -667,6 +673,8 @@ pub const Resolver = struct {
                 }
             }
 
+            // hierarchical lookup 차단 시 첫 dir 만 탐색.
+            if (self.disable_hierarchical_lookup) break;
             // 상위 디렉토리로 이동
             const parent = std.fs.path.dirname(current_dir) orelse break;
             if (std.mem.eql(u8, parent, current_dir)) break; // 루트 도달

@@ -756,6 +756,12 @@ interface BuildOptionsCommon {
   packagesExternal?: boolean;
   /** symlink를 따라가지 않고 링크 경로로 해석 */
   preserveSymlinks?: boolean;
+  /**
+   * Metro `resolver.disableHierarchicalLookup` 호환. true 면 entry 디렉토리
+   * 외부의 `node_modules` walk-up 탐색을 차단 — monorepo 에서 dependency
+   * hoisting 강제 또는 워크스페이스 외부 모듈 누수 방지에 사용.
+   */
+  disableHierarchicalLookup?: boolean;
   /** @__PURE__, sideEffects 어노테이션 무시 */
   ignoreAnnotations?: boolean;
   /** 미사용 JSX를 tree-shake하지 않음 */

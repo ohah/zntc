@@ -181,6 +181,10 @@ pub const BundleOptions = struct {
     conditions: []const []const u8 = &.{},
     /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks)
     preserve_symlinks: bool = false,
+    /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
+    /// monorepo 에서 dependency hoisting 강제 또는 워크스페이스 루트 외부의
+    /// `node_modules` 가 탐색되는 것을 차단할 때 사용.
+    disable_hierarchical_lookup: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
     alias: []const types.AliasEntry = &.{},
     /// tsconfig `paths` (절대 경로로 정규화된 형태). `*` wildcard + 다중 후보 순차 시도.
@@ -594,6 +598,7 @@ pub const Bundler = struct {
                 .external_patterns = options.external,
                 .custom_conditions = options.conditions,
                 .preserve_symlinks = options.preserve_symlinks,
+                .disable_hierarchical_lookup = options.disable_hierarchical_lookup,
                 .alias = options.alias,
                 .ts_paths = options.ts_paths,
                 .fallback = options.fallback,
