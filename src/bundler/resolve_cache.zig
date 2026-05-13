@@ -143,16 +143,23 @@ pub const ResolveCache = struct {
                 .node => &.{ c.require, c.node, c.default },
                 .browser => &.{ c.require, c.browser, c.default },
                 .neutral => &.{ c.require, c.default },
-                .react_native => &.{ c.react_native, c.default },
+                // Metro: `unstable_conditionNames: ["react-native"]` + 리졸버가
+                // importer 시점에 `require` / `default` 를 자동 추가
+                // (`references/metro/packages/metro-resolver/src/utils/matchSubpathFromExportsLike.js`).
+                // ESM 패키지가 react-native 조건 없이 require/default 만 노출해도
+                // Metro 는 `require` 매칭으로 정상 해석함 → `require` 를 살려야 한다.
+                .react_native => &.{ c.react_native, c.require, c.default },
             },
             else => switch (platform) {
                 .node => &.{ c.node, c.import, c.module, c.default },
                 .browser => &.{ c.browser, c.import, c.module, c.default },
                 .neutral => &.{ c.import, c.module, c.default },
-                // Metro RN defaults assert only "react-native"; the resolver adds
-                // "default" for package exports. "import"/"require"/"browser" are
-                // not native RN defaults, and would bypass Metro's main-field fallback.
-                .react_native => &.{ c.react_native, c.default },
+                // Metro: `unstable_conditionNames: ["react-native"]` + 리졸버가
+                // ESM importer 에서 `import` / `default` 를 자동 추가.
+                // ESM-only 패키지가 react-native 조건 없이 `import`/`default` 만
+                // 노출하는 경우에도 Metro 는 `./dist/index.js` 같은 import 분기를
+                // 정상 해석한다. `module` 은 RN 표준 main field 가 아니므로 미포함.
+                .react_native => &.{ c.react_native, c.import, c.default },
             },
         };
     }

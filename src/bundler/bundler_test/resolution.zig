@@ -173,7 +173,11 @@ test "PackageJson: react-native platform follows Metro main field order" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") == null);
 }
 
-test "PackageJson: react-native package exports without RN/default falls back to main fields" {
+test "PackageJson: react-native package exports without RN condition matches import" {
+    // Metro `unstable_conditionNames: ["react-native"]` + ESM importer 에서
+    // `import` / `default` 를 자동 추가하므로, `react-native` 조건이 없어도
+    // exports 의 `import` 분기가 우선 매칭된다. main field 의 `react-native`
+    // 보다 exports 가 우선.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { value } from 'rnpkg';\nconsole.log(value);");
@@ -212,10 +216,47 @@ test "PackageJson: react-native package exports without RN/default falls back to
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-react-native\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-import-default\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-import-default\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-react-native\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-require-default\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") == null);
+}
+
+test "PackageJson: react-native package exports with RN condition wins over import" {
+    // 패키지가 `react-native` 조건을 명시했으면 `import` / `default` 보다 우선.
+    // Metro 의 conditionNames Set 에서 `react-native` 가 unstable_conditionNames 로
+    // 먼저 들어가고, exports 의 키 매칭은 정의 순서를 따른다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from 'rnpkg2';\nconsole.log(value);");
+    try writeFile(tmp.dir, "node_modules/rnpkg2/package.json",
+        \\{
+        \\  "name": "rnpkg2",
+        \\  "exports": {
+        \\    ".": {
+        \\      "react-native": "./dist/index.native.js",
+        \\      "import": "./dist/index.js",
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/rnpkg2/dist/index.native.js", "export const value = 'from-rn-export';");
+    try writeFile(tmp.dir, "node_modules/rnpkg2/dist/index.js", "export const value = 'from-import-export';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-rn-export\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-import-export\"") == null);
 }
 
 test "PackageJson: no package.json index.js fallback" {
