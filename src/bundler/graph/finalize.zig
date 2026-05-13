@@ -32,6 +32,11 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
                     target.exports_kind = .commonjs;
                     target.wrap_kind = .cjs;
                 } else if (shouldUseMetroCjsForMixedModule(self, target)) {
+                    // 분기 순서 invariant: mixed (`.esm_with_dynamic_fallback` +
+                    // CJS export signal) 분기는 반드시 `.isEsm()` 분기보다 위에
+                    // 있어야 한다 (#3141 2dfb2620). `esm_with_dynamic_fallback` 도
+                    // `isEsm()==true` 라 순서가 뒤집히면 mixed 가 강제로 ESM 으로
+                    // 처리되어 `module.exports =` 가 wrapper 안에서 ReferenceError.
                     target.exports_kind = .commonjs;
                     target.wrap_kind = .cjs;
                 } else if (target.exports_kind.isEsm()) {
@@ -101,6 +106,8 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             if (m.wrap_kind != .none) continue;
+            // 분기 순서 invariant: Pass 1 과 동일 — mixed 분기는 반드시 `.isEsm()`
+            // 분기보다 위. Pass 3 의 wrap-all 로 흘러올 때도 같은 함정.
             if (shouldUseMetroCjsForMixedModule(self, m)) {
                 m.exports_kind = .commonjs;
                 m.wrap_kind = .cjs;
