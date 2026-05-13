@@ -68,7 +68,20 @@ export function buildRnBundleExtra(config, opts = {}) {
   };
 }
 
-export function buildRnBundleOverride(config, override) {
+function assignRnBuildOptionOverrides(out, config, opts = {}) {
+  const cfg = config ?? {};
+  if (opts.experimentalDecorators === true || cfg.experimentalDecorators === true) {
+    out.experimentalDecorators = true;
+  }
+  if (opts.emitDecoratorMetadata === true || cfg.emitDecoratorMetadata === true) {
+    out.emitDecoratorMetadata = true;
+  }
+  if (opts.useDefineForClassFields === false || cfg.useDefineForClassFields === false) {
+    out.useDefineForClassFields = false;
+  }
+}
+
+export function buildRnBundleOverride(config, opts = {}, override) {
   const cfg = config ?? {};
   const out = {};
   if (cfg.alias && typeof cfg.alias === 'object') {
@@ -77,6 +90,7 @@ export function buildRnBundleOverride(config, override) {
   if (cfg.moduleSpecifierMap && typeof cfg.moduleSpecifierMap === 'object') {
     out.moduleSpecifierMap = cfg.moduleSpecifierMap;
   }
+  assignRnBuildOptionOverrides(out, cfg, opts);
   if (override && typeof override === 'object') {
     Object.assign(out, override);
   }
@@ -133,7 +147,7 @@ export function buildRnDevServerInput(opts, config) {
         cfg.minify ||
         false,
       extra: buildRnBundleExtra(cfg, opts),
-      override: buildRnBundleOverride(cfg),
+      override: buildRnBundleOverride(cfg, opts),
     },
     port: opts.port ?? server.port ?? 8081,
     host: opts.host ?? server.host ?? 'localhost',

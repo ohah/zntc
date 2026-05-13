@@ -770,6 +770,7 @@ async function runRnBundle(opts, config) {
     extra: buildRnBundleExtra(cfg, opts),
     override: buildRnBundleOverride(
       cfg,
+      opts,
       outfile && !callerWrite ? { outfile, write: true } : undefined,
     ),
   });
