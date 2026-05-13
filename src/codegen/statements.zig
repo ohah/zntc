@@ -5,6 +5,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
+const string_escape = @import("../string_escape.zig");
 const writer = @import("writer.zig");
 
 const writeNewline = writer.writeNewline;
@@ -580,13 +581,9 @@ fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?boo
             const left = self.ast.getNode(cond.data.binary.left);
             const right = self.ast.getNode(cond.data.binary.right);
             if (left.tag != .string_literal or right.tag != .string_literal) return null;
-            // string_literal span 은 quote 포함. 다른 quote 문자 (single vs double) 라도
-            // value 가 같으면 같음으로 — quote 제거 비교.
             const lt_raw = self.ast.getText(left.span);
             const rt_raw = self.ast.getText(right.span);
-            const lt = stripQuotes(lt_raw);
-            const rt = stripQuotes(rt_raw);
-            const eq = std.mem.eql(u8, lt, rt);
+            const eq = stringLiteralValuesEqual(self.allocator, lt_raw, rt_raw) orelse return null;
             return switch (op) {
                 .eq2, .eq3 => eq,
                 .neq, .neq2 => !eq,
@@ -597,16 +594,14 @@ fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?boo
     };
 }
 
-/// string literal span (quote 포함) → 내용만. escape 시퀀스는 정확히 같으면 통과,
-/// 다르면 보수적으로 비교 실패 처리해도 무방 (false negative 만 → DCE 효과 약간 감소).
-fn stripQuotes(s: []const u8) []const u8 {
-    if (s.len < 2) return s;
-    const first = s[0];
-    const last = s[s.len - 1];
-    if ((first == '"' or first == '\'' or first == '`') and first == last) {
-        return s[1 .. s.len - 1];
-    }
-    return s;
+/// string_literal span 은 quote 포함이다. Raw body 비교는 `"Ā"` 와 `"\u0100"`을
+/// 다르게 보므로 JS 문자열 값으로 디코드한 뒤 비교한다.
+fn stringLiteralValuesEqual(allocator: std.mem.Allocator, left_raw: []const u8, right_raw: []const u8) ?bool {
+    const left = string_escape.decodeJsStringLiteral(allocator, left_raw) catch return null;
+    defer allocator.free(left);
+    const right = string_escape.decodeJsStringLiteral(allocator, right_raw) catch return null;
+    defer allocator.free(right);
+    return std.mem.eql(u8, left, right);
 }
 
 pub fn emitWhile(self: anytype, node: Node) !void {

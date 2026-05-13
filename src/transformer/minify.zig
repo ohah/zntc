@@ -31,6 +31,7 @@ const purity = @import("../bundler/purity.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const numeric = @import("minify/numeric.zig");
 const unused_expr = @import("minify/unused_expr.zig");
+const string_escape = @import("../string_escape.zig");
 
 /// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
 /// `symbols` 는 read-only 로 사용한다 — 과거엔 `reference_count` 를 직접 감산했지만,
@@ -272,7 +273,7 @@ fn runOnce(
     while (i < ast.nodes.items.len) : (i += 1) {
         const node = ast.nodes.items[i];
         switch (node.tag) {
-            .binary_expression => foldBinary(ast, i, node, &changed),
+            .binary_expression => foldBinary(ast, scratch, i, node, &changed),
             .logical_expression => foldLogical(ast, i, node, &changed),
             .unary_expression => foldUnary(ast, i, node, &changed),
             .call_expression => foldCall(ast, i, node, &changed),
@@ -942,7 +943,7 @@ pub fn mergeDecls(ast: *Ast, skip_nodes: ?*const std.DynamicBitSet) void {
 // Constant Folding — Binary Expression
 // ================================================================
 
-fn foldBinary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+fn foldBinary(ast: *Ast, allocator: std.mem.Allocator, node_idx: u32, node: Node, changed: *bool) void {
     const left_ni = @intFromEnum(node.data.binary.left);
     const right_ni = @intFromEnum(node.data.binary.right);
     if (left_ni >= ast.nodes.items.len or right_ni >= ast.nodes.items.len) return;
@@ -959,7 +960,7 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
             return;
         }
 
-        if (foldStrictEquality(ast, left, right)) |result| {
+        if (foldStrictEquality(ast, allocator, left, right)) |result| {
             const value = if (op == .neq2) !result else result;
             const text = if (value) "true" else "false";
             if (ast.addString(text)) |span| {
@@ -1204,7 +1205,7 @@ fn simplifyBooleanComparison(
     return true;
 }
 
-fn foldStrictEquality(ast: *const Ast, left: Node, right: Node) ?bool {
+fn foldStrictEquality(ast: *const Ast, allocator: std.mem.Allocator, left: Node, right: Node) ?bool {
     // 숫자 === 숫자
     if (left.tag == .numeric_literal and right.tag == .numeric_literal) {
         const a = numeric.parseLiteral(ast, left) orelse return null;
@@ -1222,11 +1223,19 @@ fn foldStrictEquality(ast: *const Ast, left: Node, right: Node) ?bool {
     if (left.tag == .null_literal and right.tag == .null_literal) return true;
     // string === string
     if (left.tag == .string_literal and right.tag == .string_literal) {
-        const a = stripQuotes(ast.getText(left.span));
-        const b = stripQuotes(ast.getText(right.span));
-        return std.mem.eql(u8, a, b);
+        return stringLiteralValuesEqual(allocator, ast.getText(left.span), ast.getText(right.span));
     }
     return null;
+}
+
+/// JS string literal equality must compare decoded string values, not raw literal
+/// bodies. For example `"Ā"` and `"\u0100"` are the same runtime string.
+fn stringLiteralValuesEqual(allocator: std.mem.Allocator, left_raw: []const u8, right_raw: []const u8) ?bool {
+    const left = string_escape.decodeJsStringLiteral(allocator, left_raw) catch return null;
+    defer allocator.free(left);
+    const right = string_escape.decodeJsStringLiteral(allocator, right_raw) catch return null;
+    defer allocator.free(right);
+    return std.mem.eql(u8, left, right);
 }
 
 // ================================================================

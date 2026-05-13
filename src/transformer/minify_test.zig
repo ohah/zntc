@@ -258,6 +258,14 @@ test "minify: strict equality strings" {
     );
 }
 
+test "minify: strict equality strings decode unicode escapes" {
+    try expectMinify("const x = \"Ā\" !== \"\\u0100\";", "const x = false;");
+}
+
+test "minify: strict equality strings decode hex escapes" {
+    try expectMinify("const x = \"\\x41\" === \"A\";", "const x = true;");
+}
+
 test "minify: strict equality booleans" {
     try expectMinify("const x = true === true;", "const x = true;");
 }
