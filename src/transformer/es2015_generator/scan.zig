@@ -242,6 +242,9 @@ pub fn containsReturn(self: anytype, root_idx: NodeIndex) bool {
                 if (!pushNode(self, &stack, node.data.ternary.b)) return true;
                 if (!pushNode(self, &stack, node.data.ternary.c)) return true;
             },
+            .catch_clause => {
+                if (!pushNode(self, &stack, node.data.binary.right)) return true;
+            },
             else => {},
         }
     }

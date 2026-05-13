@@ -285,6 +285,16 @@ test "ES5: async function with multiple awaits" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
 }
 
+test "ES5: async try/catch return lowers to generator return op" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo(x) { try { if (x) return 1; } catch (e) { return 2; } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return 1;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return 2;") == null);
+}
+
 test "ES5: async arrow block body → state machine" {
     var r = try e2eTarget(std.testing.allocator, "var f = async () => { await x; };", .es5);
     defer r.deinit();
