@@ -1421,9 +1421,11 @@ test "block scoping: super member property names are not lexical references" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
 
-    // 핵심: super 의 property key 는 rename 되면 안 됨.
+    // 핵심: super 의 property key 는 rename 되면 안 됨. inner binding 자체는
+    // rename 되어야 — shadowing 이 실제로 트리거됐는지 함께 잠금.
     try std.testing.expect(std.mem.indexOf(u8, code, "super.value$") == null);
     try std.testing.expect(std.mem.indexOf(u8, code, "super.value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "value$") != null);
 }
 
 test "block scoping: computed member key is renamed (negative)" {
@@ -1446,10 +1448,9 @@ test "block scoping: computed member key is renamed (negative)" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
 
-    // outer `key` 와 inner `key` 가 모두 같은 이름이면 안 됨 — 둘 중 하나가
-    // rename 되어야 한다. 어느 방향이든 inner 접근은 renamed binding 으로 가야.
-    try std.testing.expect(std.mem.indexOf(u8, code, "o[key$") != null or
-        std.mem.indexOf(u8, code, "o[key_") != null);
+    // rename 형식은 `{base}${n}` (lists.zig:238) — 항상 `$` suffix.
+    // computed access 의 key 가 inner shadow 로 rename 되어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, code, "o[key$") != null);
 }
 
 test "block scoping: private field property names are not lexical references" {
@@ -1477,6 +1478,7 @@ test "block scoping: private field property names are not lexical references" {
 
     // private field name 은 `#value` 그대로 유지되어야 함 (다운레벨 가도 WeakMap
     // hoist name 으로 들어가야지 block rename 으로 바뀌면 안 됨).
+    try std.testing.expect(std.mem.indexOf(u8, code, "#value") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "#value$") == null);
 }
 
