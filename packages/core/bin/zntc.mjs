@@ -768,11 +768,11 @@ async function runRnBundle(opts, config) {
     minify:
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
     extra: buildRnBundleExtra(cfg, opts),
-    override: buildRnBundleOverride(
-      cfg,
+    override: buildRnBundleOverride({
+      config: cfg,
       opts,
-      outfile && !callerWrite ? { outfile, write: true } : undefined,
-    ),
+      override: outfile && !callerWrite ? { outfile, write: true } : undefined,
+    }),
   });
 
   // caller-side write — bundle / sourcemap path 분리 + URL override 적용.

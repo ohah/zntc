@@ -81,7 +81,25 @@ function assignRnBuildOptionOverrides(out, config, opts = {}) {
   }
 }
 
-export function buildRnBundleOverride(config, opts = {}, override) {
+/**
+ * Internal helper — RN dev/bundle 경로의 `bundle.override` 객체를 구성한다.
+ * `@zntc/core` package.json `exports` 에 노출되지 않는 CLI bin 전용. 외부에서
+ * deep import 로 호출하지 말 것.
+ *
+ * @param {object} input
+ * @param {object} [input.config]   사용자 `zntc.config.{ts,js,json}` 의 root 객체.
+ *   `alias` / `moduleSpecifierMap` 같은 dict 타입은 RN preset 으로 forwarding.
+ *   `experimentalDecorators` 등은 BuildOptions override 로 forward.
+ * @param {object} [input.opts]     CLI flag 가 우선 적용된 RuntimeOptions
+ *   (`experimentalDecorators`/`emitDecoratorMetadata`/`useDefineForClassFields`).
+ *   config 와 OR 로 합산.
+ * @param {object} [input.override] 호출자(zntc.mjs) 가 build 결과 후 caller-side
+ *   write 를 처리할 때 강제로 덮어 씌우고 싶은 BuildOptions (예: `outfile`,
+ *   `write`). 마지막에 `Object.assign` 으로 머지.
+ * @returns {object | undefined} 빈 object 면 `undefined` 반환 — caller 의 spread/
+ *   merge 로직이 noop 으로 처리되도록.
+ */
+export function buildRnBundleOverride({ config, opts = {}, override } = {}) {
   const cfg = config ?? {};
   const out = {};
   if (cfg.alias && typeof cfg.alias === 'object') {
@@ -147,7 +165,7 @@ export function buildRnDevServerInput(opts, config) {
         cfg.minify ||
         false,
       extra: buildRnBundleExtra(cfg, opts),
-      override: buildRnBundleOverride(cfg, opts),
+      override: buildRnBundleOverride({ config: cfg, opts }),
     },
     port: opts.port ?? server.port ?? 8081,
     host: opts.host ?? server.host ?? 'localhost',
