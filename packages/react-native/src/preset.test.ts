@@ -420,6 +420,16 @@ describe('buildRnBundleOptions — extra (watchFolders / blockList / fallback)',
     expect(opts.disableHierarchicalLookup).toBeUndefined();
   });
 
+  test('preserveSymlinks — Metro처럼 pnpm logical path 기준으로 bare import 해석', () => {
+    const opts = buildRnBundleOptions(baseInput({}));
+    expect(opts.preserveSymlinks).toBe(true);
+  });
+
+  test('preserveSymlinks — 사용자 override 는 마지막에 적용', () => {
+    const opts = buildRnBundleOptions(baseInput({ override: { preserveSymlinks: false } }));
+    expect(opts.preserveSymlinks).toBe(false);
+  });
+
   test('blockList — 빈 배열은 미설정', () => {
     const opts = buildRnBundleOptions(baseInput({ extra: { blockList: [] } }));
     expect(opts.blockList).toBeUndefined();

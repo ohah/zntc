@@ -420,6 +420,10 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     mainFields: ['react-native', 'browser', 'main'],
     loader: baseLoader,
     alias: {},
+    // Metro resolves dependencies from the logical node_modules symlink path.
+    // With pnpm, realpathing a package before resolving its bare imports exposes
+    // the package's peer farm and can pull a second React copy into RN bundles.
+    preserveSymlinks: true,
     define,
     banner: buildPrelude(input),
     globalIdentifiers: [...RN_GLOBAL_IDENTIFIERS],
