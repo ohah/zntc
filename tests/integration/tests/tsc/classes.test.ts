@@ -3212,7 +3212,10 @@ class E extends D {
     );
   });
   test('readonlyInConstructorParameters', async () => {
-    await expectError(
+    // tsc 본가는 readonly assignment / modifier order (`readonly public`) 를 type
+    // 단계에서 잡지만 ZNTC 는 type checker 가 아니라 transpile 만 — runtime 정상.
+    // emit 결과가 valid 라 expectPass 로 회귀 감지.
+    await expectPass(
       `class C {
     constructor(readonly x: number) {}
 }
