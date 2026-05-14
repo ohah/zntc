@@ -3172,6 +3172,11 @@ pub const SemanticAnalyzer = struct {
                 if (spec_idx.isNone() or @intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
                 const spec_node = self.ast.getNode(spec_idx);
                 if (spec_node.tag == .export_specifier) {
+                    // markAutoTypeOnlyExportSpecifiers (transpile.zig) 가 이미 type-only 로
+                    // 마킹한 specifier 는 transformer 가 자동 drop 한다. 시맨틱 검증 (binding
+                    // 존재 / value 사용) 전부 skip — 출력에서 사라질 노드라 검증 무의미.
+                    if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
+
                     // exported name = right (the "as" name, or same as local if no "as")
                     const exported_idx = spec_node.data.binary.right;
                     if (!exported_idx.isNone() and @intFromEnum(exported_idx) < self.ast.nodes.items.len) {
