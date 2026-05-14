@@ -1234,6 +1234,21 @@ test "Parser: TS parameter property" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: TS parameter property with contextual keyword name" {
+    // `@shopify/react-native-skia` 의 `CanvasKitWebGLBufferImpl.ts` 같은 패턴이
+    // `next == .identifier` 만 체크하던 condition 에서 fail. parameter property
+    // modifier 다음 param name 으로 contextual keyword (source/async/from/of 등)
+    // 가 와도 binding 으로 받아야 한다.
+    try expectNoParseErrorWithExt("class C { constructor(private source: number) {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { constructor(public async: string) {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { constructor(public a: string, private source: number) {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { constructor(readonly defer: number) {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { constructor(public override target: string) {} }", ".ts");
+    // destructuring 패턴 + modifier 도 같은 condition 안 — 기존 동작 회귀 가드.
+    try expectNoParseErrorWithExt("class C { constructor(public { x, y }: Point) {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { constructor(readonly [a, b]: number[]) {} }", ".ts");
+}
+
 test "Parser: TS generic class method named get/set" {
     var scanner = try Scanner.init(std.testing.allocator,
         \\class QueryCache {
