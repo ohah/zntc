@@ -94,8 +94,9 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // static 수정자 (interface에서 static accessor x 등)
-    // static은 kw_static 토큰이므로 별도 체크 필요
-    if (self.current() == .kw_static or (self.current() == .identifier and self.isContextual("static"))) {
+    // scanner 가 `static` 을 `.kw_static` 토큰으로 production — `isContextual("static")`
+    // 분기는 identifier-only check 로 절대 안 통과 (dead).
+    if (self.current() == .kw_static) {
         const next = try self.peekNextKind();
         if (isFollowedByTypeMemberName(next) or next == .kw_accessor) {
             try self.advance(); // skip 'static'
@@ -122,7 +123,9 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // 4. getter 시그니처: get x(): Type
-    if (self.current() == .identifier and self.isContextual("get")) {
+    // scanner 가 `get` 을 `.kw_get` 토큰으로 production — `isContextual("get")` 은
+    // identifier 만 받아 절대 true 가 안 된다. token kind 로 직접 비교.
+    if (self.current() == .kw_get) {
         const next = try self.peekNextKind();
         if (isFollowedByTypeMemberName(next)) {
             try self.advance(); // skip 'get'
@@ -139,7 +142,7 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // 5. setter 시그니처: set x(v: Type)
-    if (self.current() == .identifier and self.isContextual("set")) {
+    if (self.current() == .kw_set) {
         const next = try self.peekNextKind();
         if (isFollowedByTypeMemberName(next)) {
             try self.advance(); // skip 'set'

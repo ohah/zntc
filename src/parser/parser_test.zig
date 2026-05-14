@@ -1011,6 +1011,22 @@ test "Parser: TS function type property signature in .ts mode" {
     , ".ts");
 }
 
+test "Parser: TS interface getter / setter signature" {
+    // `@reduxjs/toolkit` 의 `createSlice.ts` 같은 패턴이 `isContextual("get")` 의
+    // identifier-only check 로 fail 하던 회귀 가드. scanner 가 `get`/`set` 을
+    // `.kw_get`/`.kw_set` 으로 토큰화하므로 token kind 로 비교해야 한다.
+    try expectNoParseErrorWithExt("export interface S { get x(): string; }", ".ts");
+    try expectNoParseErrorWithExt("export interface S { set x(v: string); }", ".ts");
+    try expectNoParseErrorWithExt("export interface S { get x(): string; set x(v: string); }", ".ts");
+    // generic return type 도 처리.
+    try expectNoParseErrorWithExt("export interface S<T> { get items(): Array<T>; }", ".ts");
+    // type literal 안에서도 동일.
+    try expectNoParseErrorWithExt("type X = { get x(): string; set x(v: string); };", ".ts");
+    // static / readonly modifier 와 조합.
+    try expectNoParseErrorWithExt("export interface S { static get x(): string; }", ".ts");
+    try expectNoParseErrorWithExt("export interface S { readonly x: string; }", ".ts");
+}
+
 test "Parser: TS object type literal" {
     var scanner = try Scanner.init(std.testing.allocator, "const obj: { x: number; y: string } = { x: 1, y: 'a' };");
     defer scanner.deinit();
