@@ -61,10 +61,15 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
-    // get/set 메서드 shorthand: { get prop() {}, set prop(v) {} }
+    // get/set 메서드 shorthand: { get prop() {}, set prop(v) {} }.
+    // D17: setter/getter 는 generic type parameter 를 받을 수 없으므로 `<` 가 따라오면
+    // 일반 method 로 fallback — `{ set<T>(v: T) {} }` 는 'set' 이라는 이름의 generic
+    // method (Babel/tsc 동작). class member parser 는 동일 분기를 이미 처리.
     if (self.current() == .kw_get or self.current() == .kw_set) {
         const peek = try self.peekNextKind();
-        if (peek != .colon and peek != .l_paren and peek != .comma and peek != .r_curly) {
+        if (peek != .colon and peek != .l_paren and peek != .comma and peek != .r_curly and
+            peek != .l_angle)
+        {
             const method_flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04;
             try self.advance(); // skip get/set
             const key = try self.parsePropertyKey();
@@ -73,12 +78,14 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    // async 메서드 shorthand: { async foo() {} }
+    // async 메서드 shorthand: { async foo() {} }.
     // 주의: { async() {} }는 'async'라는 이름의 일반 메서드 (async 수식어가 아님).
+    // D17: { async<T>() {} } 도 'async' 이름의 generic method.
     if (self.current() == .kw_async) {
         const peek = try self.peekNext();
         if (peek.kind != .colon and peek.kind != .comma and
-            peek.kind != .r_curly and peek.kind != .l_paren and !peek.has_newline_before)
+            peek.kind != .r_curly and peek.kind != .l_paren and peek.kind != .l_angle and
+            !peek.has_newline_before)
         {
             var method_flags: u16 = 0x08; // async
             try self.advance(); // skip 'async'
