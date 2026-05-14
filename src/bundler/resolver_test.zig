@@ -330,6 +330,51 @@ test "resolve: trailing slash bare specifier walks up to workspace root node_mod
     try std.testing.expectEqual(ModuleType.js, result.module_type);
 }
 
+test "resolve: preserve_symlinks keeps pnpm package imports on logical node_modules path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("node_modules");
+    try writeFile(tmp.dir, "node_modules/react/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, "node_modules/react/index.js");
+
+    try writeFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/ui/package.json", "{\"main\":\"dist/index.js\"}");
+    try createFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/ui/dist/index.js");
+    try writeFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/react/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/react/index.js");
+
+    tmp.dir.symLink("../.pnpm/ui@1_react@18/node_modules/ui", "node_modules/ui", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var realpath_resolver = Resolver.init(std.testing.allocator);
+    const real_ui = try realpath_resolver.resolve(root, "ui");
+    defer std.testing.allocator.free(real_ui.path);
+    try std.testing.expect(std.mem.indexOf(u8, real_ui.path, ".pnpm") != null);
+
+    const real_ui_dir = std.fs.path.dirname(real_ui.path).?;
+    const peer_react = try realpath_resolver.resolve(real_ui_dir, "react");
+    defer std.testing.allocator.free(peer_react.path);
+    try std.testing.expect(std.mem.indexOf(u8, peer_react.path, ".pnpm/ui@1_react@18/node_modules/react") != null);
+
+    var logical_resolver = Resolver.init(std.testing.allocator);
+    logical_resolver.preserve_symlinks = true;
+    const logical_ui = try logical_resolver.resolve(root, "ui");
+    defer std.testing.allocator.free(logical_ui.path);
+    try std.testing.expect(pathEndsWith(logical_ui.path, "node_modules/ui/dist/index.js"));
+    try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") == null);
+
+    const logical_ui_dir = std.fs.path.dirname(logical_ui.path).?;
+    const root_react = try logical_resolver.resolve(logical_ui_dir, "react");
+    defer std.testing.allocator.free(root_react.path);
+    try std.testing.expect(pathEndsWith(root_react.path, "node_modules/react/index.js"));
+    try std.testing.expect(std.mem.indexOf(u8, root_react.path, ".pnpm/ui@1_react@18/node_modules/react") == null);
+}
+
 test "resolve: bare specifier walk up directories" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
