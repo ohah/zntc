@@ -26,12 +26,6 @@ exports[`TSC: es6/functionDeclarations FunctionDeclaration2_es6 1`] = `
 "
 `;
 
-exports[`TSC: es6/functionDeclarations FunctionDeclaration3_es6 1`] = `
-"function f(yield=yield) {
-}
-"
-`;
-
 exports[`TSC: es6/functionDeclarations FunctionDeclaration4_es6 1`] = `
 "function yield() {
 }
