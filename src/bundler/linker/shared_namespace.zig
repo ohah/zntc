@@ -113,6 +113,13 @@ pub fn registerNamespaceRewrites(
     var inner_map_transferred = false;
     errdefer if (!inner_map_transferred) inner_map.deinit();
     var has_shadow = false;
+    // target_init 은 target_mod_idx 에만 의존하므로 export 마다 재계산할 필요가 없다.
+    // 비-dev 빌드는 wrap 자체가 불필요하므로 호출도 생략한다 (lazy 런타임 미사용).
+    const target_init: ?[]const u8 = if (self.dev_mode)
+        try allocEsmInitExprForModuleIndex(self, target_mod_idx)
+    else
+        null;
+    defer if (target_init) |expr| self.allocator.free(expr);
     for (cached_exports) |exp| {
         if (hasNestedBinding(self, importer_mod_idx, exp.exported)) {
             has_shadow = true;
@@ -145,15 +152,17 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(exp.exported, ns_var);
             continue;
         }
-        if (try allocNamespaceMemberRewriteValue(self, target_mod_idx, exp)) |rewrite_value| {
-            var owned_by_list = false;
-            errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
-            // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
-            // LinkingMetadata.owned_rename_values 로 이전해 metadata deinit 에서 해제한다.
-            try owned_rewrite_values.append(self.allocator, rewrite_value);
-            owned_by_list = true;
-            try inner_map.put(exp.exported, rewrite_value);
-            continue;
+        if (self.dev_mode) {
+            if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp)) |rewrite_value| {
+                var owned_by_list = false;
+                errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
+                // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
+                // LinkingMetadata.owned_rename_values 로 이전해 metadata deinit 에서 해제한다.
+                try owned_rewrite_values.append(self.allocator, rewrite_value);
+                owned_by_list = true;
+                try inner_map.put(exp.exported, rewrite_value);
+                continue;
+            }
         }
         // exp.local 은 owned=true 면 ns_export_cache 가, 아니면 target module 이 소유한다.
         // metadata map 은 값 포인터만 빌린다.
@@ -546,15 +555,15 @@ fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.All
     return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ init_expr, sep, exp.local });
 }
 
-fn allocNamespaceMemberRewriteValue(self: *const Linker, target_mod_idx: u32, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
-    // dev_mode 의 `__zntc_modules[...].fn()` lazy 런타임에서만 init wrap 이 필요하다.
-    // 비-dev 빌드는 namespace import 의 top-level `init_X()` preamble 이 init 을 보장하므로
-    // wrap 이 중복이며 `(init_X(), name)` 형태가 직접 치환을 기대하는 호출지점을 깨뜨린다.
-    if (!self.dev_mode) return null;
-
-    const target_init = try allocEsmInitExprForModuleIndex(self, target_mod_idx);
-    defer if (target_init) |expr| self.allocator.free(expr);
-
+/// `target_init` 은 호출자가 미리 1회 계산한 target 모듈의 init 식 (예: `init_X()` 또는
+/// `__zntc_modules["..."].fn()`). dev_mode 의 lazy 런타임에서만 호출되며, 비-dev 호출 경로는
+/// caller 에서 차단된다 (top-level `init_X()` preamble 이 init 을 이미 보장).
+fn allocNamespaceMemberRewriteValue(
+    self: *const Linker,
+    target_init: ?[]const u8,
+    target_mod_idx: u32,
+    exp: NsExportPair,
+) std.mem.Allocator.Error!?[]const u8 {
     const source_init = if (exp.init_mod) |source_mod_idx|
         if (source_mod_idx != target_mod_idx)
             try allocEsmInitExprForModuleIndex(self, source_mod_idx)
