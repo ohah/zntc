@@ -605,7 +605,10 @@ fn markAutoTypeOnlyExportSpecifiers(
         try collectAutoTypeOnlyDeclNames(allocator, ast, stmt_idx, &value_names, &type_only_names);
     }
 
-    if (type_only_names.count() == 0) return;
+    // ast.declare_only_names: top-level `declare class/function/var/...` 는 parser 가
+    // strip 해 AST 에 없지만, 이름 자체는 parser 가 사이드테이블에 등록 (D13). value-only
+    // binding 으로 분류되지 않는 type-only binding 으로 취급.
+    if (type_only_names.count() == 0 and ast.declare_only_names.count() == 0) return;
 
     // pass 2
     for (ast.nodes.items) |node| {
@@ -636,9 +639,12 @@ fn markAutoTypeOnlyExportSpecifiers(
 
             const local_name = ast.getText(local_node.span);
             // declaration merging: 동명의 value binding 이 있으면 type-only 마킹 skip.
-            // `const X = 1; type X = ...; export { X };` 같은 케이스에서 value 우선.
+            // `const X = 1; type X = ...; export { X };` 또는
+            // `class A {}; declare class A; export { A };` 양쪽에서 value 우선.
             if (value_names.contains(local_name)) continue;
-            if (type_only_names.contains(local_name)) {
+            if (type_only_names.contains(local_name) or
+                ast.declare_only_names.contains(local_name))
+            {
                 ast.setBinaryFlags(spec_idx, spec_node.data.binary.flags | module_parser.SPEC_FLAG_TYPE_ONLY);
             }
         }
@@ -656,12 +662,22 @@ fn collectAutoTypeOnlyDeclNames(
 ) error{OutOfMemory}!void {
     const stmt = ast.getNode(stmt_idx);
     switch (stmt.tag) {
-        // value bindings: function / class / enum / module(namespace) — extras[0] = name
+        // value bindings: function / class / enum — extras[0] = name
         .function_declaration,
         .class_declaration,
         .ts_enum_declaration,
-        .ts_module_declaration,
         => try putNameAtExtraSlot(allocator, ast, stmt, 0, value_names),
+
+        // ts_module_declaration: binary layout — binary.left = name (namespace) 또는
+        // string_literal (declare module "..."). 후자는 binding 이름이 아니라 skip.
+        .ts_module_declaration => {
+            const name_idx = stmt.data.binary.left;
+            if (name_idx.isNone()) return;
+            if (@intFromEnum(name_idx) >= ast.nodes.items.len) return;
+            const name_node = ast.getNode(name_idx);
+            if (name_node.tag == .string_literal) return;
+            try putNodeIdName(allocator, ast, name_idx, value_names);
+        },
 
         // import X = require(...) — runtime value
         .ts_import_equals_declaration => {
@@ -1946,6 +1962,106 @@ test "TS auto type-only export: declaration merging preserves value binding" {
     ,
         \\var E = /* @__PURE__ */ ((E) => {E[E["A"]=0]="A";return E;})(E || {});
         \\export { E };
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+}
+
+// D13: top-level `declare class/function/var` 의 name 은 type-only binding.
+// `export { X as Y };` 가 declare 만 reference 하면 specifier 가 자동 elide (Babel
+// preset-typescript 동작). parser 가 top-level declare 를 strip 해 AST 에 사라지므로
+// markAutoTypeOnlyExportSpecifiers 가 별도 sideband (`ast.declare_only_names`) 에서
+// name 을 조회해야 한다.
+test "TS auto type-only export: top-level declare bindings elide rename specifier (D13)" {
+    // export declare class — Babel: `export {};` (ZNTC codegen 은 빈 export 통째 drop)
+    try expectTranspileOutput(
+        \\export declare class Foo {}
+        \\export { Foo as Bar };
+        \\
+    ,
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // export declare function (단독 통과는 simple_ts_strip 인데, 다른 케이스도 동등)
+    try expectTranspileOutput(
+        \\export declare function _lte(): number;
+        \\export { _lte as _max };
+        \\
+    ,
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // namespace import 가 선행하면 binding-lite path — 동일 결과
+    try expectTranspileOutput(
+        \\import * as foo from "./foo";
+        \\export declare function _lte(): number;
+        \\export { _lte as _max };
+        \\
+    ,
+        \\import * as foo from "./foo";
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // non-export declare 도 동일
+    try expectTranspileOutput(
+        \\declare class Foo {}
+        \\export { Foo };
+        \\
+    ,
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // declaration merging: value class 와 declare class 가 공존하면 value 우선
+    try expectTranspileOutput(
+        \\class A {}
+        \\declare class B {}
+        \\export { A, B };
+        \\
+    ,
+        \\class A {
+        \\}
+        \\export { A };
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // declare namespace — ts_module_declaration 은 binary layout. extras[0] 으로 잘못
+    // 읽으면 OOB panic. binary.left = name idx 가 정답.
+    try expectTranspileOutput(
+        \\declare namespace Foo {}
+        \\export { Foo as Bar };
+        \\
+    ,
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // declare module "..." — binary.left 가 string_literal 이라 name 등록 skip.
+    // 자체로 strip, 빈 export 도 strip.
+    try expectTranspileOutput(
+        \\declare module "*.svg" { const src: string; export default src; }
+        \\export const value = 1;
+        \\
+    ,
+        \\export const value = 1;
         \\
     ,
         "input.ts",

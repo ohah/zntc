@@ -938,6 +938,15 @@ pub const Ast = struct {
     /// 탐지/차단 용도로 확장 예정.
     transformed_root: ?NodeIndex = null,
 
+    /// top-level `declare class/function/var/let/const/enum/namespace/import =` 의
+    /// binding name 사이드테이블. parser 가 declare 노드를 `NodeIndex.none` 으로 strip
+    /// 하면 AST 에 노드가 사라져 transpile.zig 의 markAutoTypeOnlyExportSpecifiers 가
+    /// declare-only name 을 type_only_names 로 인식하지 못함 → `export { X as Y };`
+    /// 의 X 가 declare 만 reference 해도 elision 이 안 됨 (D13).
+    /// 이 set 은 strip 직전에 parseTsDeclareStatement 가 채운다. 키는 ast.source /
+    /// string_table slice — Ast 가 살아있는 동안 유효.
+    declare_only_names: std.StringHashMapUnmanaged(void) = .empty,
+
     /// 메모리 할당자 (Zig 0.15: ArrayList가 더 이상 allocator를 저장하지 않음)
     allocator: std.mem.Allocator,
 
@@ -993,6 +1002,7 @@ pub const Ast = struct {
         self.nodes.deinit(self.allocator);
         self.extra_data.deinit(self.allocator);
         self.string_table.deinit(self.allocator);
+        self.declare_only_names.deinit(self.allocator);
         self.deinitStringInterns();
     }
 
