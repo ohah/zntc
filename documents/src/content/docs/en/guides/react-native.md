@@ -492,4 +492,5 @@ Verification matrix (both use `bun run start:zntc` for the ZNTC dev server):
 ## Compatibility
 
 - RN `>= 0.83` peer-optional. `@zntc/react-native` matches the Hermes / RN-runtime HMRClient interface and Metro's `sourceMappingURL` route conventions.
-- Runs on Bun + Node 22+. Dev-server lifecycle handles SIGINT / SIGTERM with a graceful shutdown.
+- Runs on Node.js 24+. Bun 1.3+ is also supported through its Node-compatible runtime.
+- The dev-server lifecycle uses `process` signal handlers to perform graceful shutdown on SIGINT / SIGTERM.
