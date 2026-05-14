@@ -63,9 +63,29 @@ const TS18_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   18037, // 'await' expression cannot be used inside a class static block
 ]);
 
+/// TSC 의 일부 TS2xxx 진단도 실제로는 ECMAScript spec early-error — TSC 가
+/// type-system 진단으로 격하했을 뿐, 다른 parser (esbuild/oxc) 와 ZNTC 는
+/// parser-level 에서 거부한다. AssignmentTargetType 위반 + super 위치
+/// 규칙 등이 해당.
+const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
+  2335, // 'super' can only be referenced in a derived class
+  2337, // Super calls are not permitted outside constructors
+  2357, // Operand of increment/decrement must be a variable or a property access
+  2364, // LHS of an assignment expression must be a variable or a property access
+  2398, // 'constructor' cannot be used as a parameter property name
+  2406, // LHS of a 'for...in' must be a variable or a property access
+  2487, // LHS of a 'for...of' must be a variable or a property access
+  2701, // Target of object rest assignment must be a variable or a property access
+  2777, // Increment/decrement target may not be an optional property access
+  2779, // LHS of an assignment expression may not be an optional property access
+  // 의도적 제외: TS2300 ("Duplicate identifier") 는 JS spec early-error
+  // (`let x; let x;`) 와 TS-only semantic (`type X; type X;`) 양쪽에서 발화 —
+  // dual-purpose 라 syntax 로 일률 분류 불가.
+]);
+
 function isSyntaxLevelCode(code: number): boolean {
   if (code >= 1000 && code < 2000) return true;
-  return TS18_SYNTAX_LEVEL_CODES.has(code);
+  return TS18_SYNTAX_LEVEL_CODES.has(code) || TS2_SYNTAX_LEVEL_CODES.has(code);
 }
 
 const OUTCOMES = [
