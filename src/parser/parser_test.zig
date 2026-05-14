@@ -3213,6 +3213,22 @@ test "Flow: typed arrow in multi-param" {
     try expectNoParseErrorFlow("const f = (a, b, c: string) => c;");
 }
 
+test "TS: typed arrow with default-value parameters" {
+    // @shopify/react-native-skia 의 `vec = (x = 0, y?: number) => ...` 같은 패턴이
+    // `isTypedArrowFunction` detection 에서 fail 하던 회귀 가드.
+    // default 첫 param + optional/plain typed 두 번째.
+    try expectNoParseErrorWithExt("const f = (x = 0, y?: number) => 0;", ".ts");
+    try expectNoParseErrorWithExt("const f = (x = 0, y: number) => 0;", ".ts");
+    // default 두 번째 param + typed 세 번째.
+    try expectNoParseErrorWithExt("const f = (a, b = 1, c: string) => 0;", ".ts");
+    // default expression 의 nested literal 통과 — paren / brace / bracket skip 검증.
+    try expectNoParseErrorWithExt("const f = (x = Math.max(1, 2), y?: number) => 0;", ".ts");
+    try expectNoParseErrorWithExt("const f = (x = { a: 1 }, y: number) => 0;", ".ts");
+    try expectNoParseErrorWithExt("const f = (x = [1, 2, 3], y: number) => 0;", ".ts");
+    // 단일 param + default + return type annotation.
+    try expectNoParseErrorWithExt("const f = (x = 0): number => x;", ".ts");
+}
+
 test "Flow: nullable return type with arrow" {
     // ?(T) return type이 function type이 아닌 nullable paren type으로 해석되어야 함
     try expectNoParseErrorFlow(
