@@ -83,6 +83,36 @@ describe('buildRnBundleOptions — platform 분기 (resolveExtensions)', () => {
   });
 });
 
+describe('buildRnBundleOptions — extra.platforms validation', () => {
+  test('rnPlatform 이 extra.platforms 에 포함되어 있으면 통과', () => {
+    expect(() =>
+      buildRnBundleOptions(
+        baseInput({ rnPlatform: 'ios', extra: { platforms: ['ios', 'android', 'native', 'web'] } }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('rnPlatform 이 extra.platforms 에 없으면 throw', () => {
+    expect(() =>
+      buildRnBundleOptions(
+        baseInput({ rnPlatform: 'ios', extra: { platforms: ['android', 'web'] } }),
+      ),
+    ).toThrow(/does not include the active rnPlatform 'ios'/);
+  });
+
+  test('extra.platforms 미지정이면 통과 (기존 동작 유지)', () => {
+    expect(() => buildRnBundleOptions(baseInput({ rnPlatform: 'ios' }))).not.toThrow();
+  });
+
+  test('extra.platforms 는 resolveExtensions 의 prefix 에 영향 없음 (Metro 동일)', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ rnPlatform: 'ios', extra: { platforms: ['ios', 'android', 'web'] } }),
+    );
+    expect(opts.resolveExtensions?.[0]).toBe('.ios.ts');
+    expect(opts.resolveExtensions).not.toContain('.web.ts');
+  });
+});
+
 describe('buildRnBundleOptions — define / banner / footer / polyfills', () => {
   test('define — __DEV__ + process.env.NODE_ENV + Expo Router env + EXPO_OS', () => {
     const opts = buildRnBundleOptions(baseInput({ dev: true, rnPlatform: 'android' }));

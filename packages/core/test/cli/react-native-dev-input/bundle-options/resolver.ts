@@ -24,6 +24,25 @@ describe('buildRnDevServerInput — resolver bundle option config 추출 (#2605)
     expect(input?.bundle.extra?.assetExts).toEqual(['.png']);
   });
 
+  test('config.resolver.platforms → bundle.extra.platforms 매핑', async () => {
+    const buildRnDevServerInput = await loadBuildRnDevServerInput();
+    const input = buildRnDevServerInput(
+      { entryPoints: ['i.js'] },
+      {
+        resolver: {
+          platforms: ['ios', 'android', 'native', 'web'],
+        },
+      },
+    );
+    expect(input?.bundle.extra?.platforms).toEqual(['ios', 'android', 'native', 'web']);
+  });
+
+  test('config.resolver.platforms 미지정 → bundle.extra.platforms undefined', async () => {
+    const buildRnDevServerInput = await loadBuildRnDevServerInput();
+    const input = buildRnDevServerInput({ entryPoints: ['i.js'] }, { resolver: {} });
+    expect(input?.bundle.extra?.platforms).toBeUndefined();
+  });
+
   test('config.alias / moduleSpecifierMap → bundle.override 매핑', async () => {
     const buildRnDevServerInput = await loadBuildRnDevServerInput();
     const input = buildRnDevServerInput(
