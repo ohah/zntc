@@ -9,7 +9,7 @@ describe('buildRnDevServerInput — unsupported field warnings (#2605)', () => {
         { entryPoints: ['i.js'] },
         {
           transformer: { inlineRequires: true, minifier: 'terser' },
-          serializer: { bundleType: 'module' },
+          serializer: { bundleType: 'module', getRunModuleStatement: () => '__r(0);' },
           server: { forwardClientLogs: true, verifyConnections: true },
         },
       );
@@ -18,6 +18,7 @@ describe('buildRnDevServerInput — unsupported field warnings (#2605)', () => {
     expect(output).toContain('transformer.inlineRequires');
     expect(output).toContain('transformer.minifier');
     expect(output).toContain('serializer.bundleType');
+    expect(output).toContain('serializer.getRunModuleStatement');
     expect(output).toContain('server.verifyConnections');
     expect(output).not.toContain('transformer.babel');
     expect(output).not.toContain('serializer.prelude');

@@ -15,7 +15,7 @@ const UNSUPPORTED_FIELDS = [
   ['transformer', 'minifier'],
   ['serializer', 'bundleType'],
   ['serializer', 'getModulesRunBeforeMainModule'],
-  ['serializer', 'getPolyfills'],
+  ['serializer', 'getRunModuleStatement'],
   ['serializer', 'shouldAddToIgnoreList'],
   // dummy placeholder — bungae 도 declared-but-unused.
   ['server', 'verifyConnections'],
@@ -32,6 +32,39 @@ function warnUnsupported(config) {
       process.stderr.write(`[zntc:rn-dev] config.${section}.${key} (zntc 미지원, ignore)\n`);
     }
   }
+}
+
+function normalizeStringArray(value, label) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new TypeError(`config.serializer.${label} must be a string array`);
+  }
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new TypeError(`config.serializer.${label} must contain only strings`);
+    }
+  }
+  return value;
+}
+
+function getSerializerPolyfills(serializer, opts = {}) {
+  const polyfills = [];
+
+  const platform = opts.rnPlatform === 'android' ? 'android' : 'ios';
+  if (typeof serializer.getPolyfills === 'function') {
+    const generated = serializer.getPolyfills({ platform });
+    if (generated && typeof generated.then === 'function') {
+      throw new TypeError('async config.serializer.getPolyfills() is not supported');
+    }
+    polyfills.push(...normalizeStringArray(generated, 'getPolyfills() result'));
+  }
+
+  // Metro prepends getPolyfills() and then appends serializer.polyfillModuleNames.
+  polyfills.push(...normalizeStringArray(serializer.polyfillModuleNames, 'polyfillModuleNames'));
+  // ZNTC also keeps the existing serializer.polyfills compatibility field.
+  polyfills.push(...normalizeStringArray(serializer.polyfills, 'polyfills'));
+
+  return polyfills.length > 0 ? polyfills : undefined;
 }
 
 /**
@@ -57,7 +90,7 @@ export function buildRnBundleExtra(config, opts = {}) {
     fallback: resolver.extraNodeModules ?? undefined,
     metroResolveRequest: resolver.resolveRequest ?? undefined,
     babelTransformerPath: transformer.babelTransformerPath ?? undefined,
-    polyfills: serializer.polyfills ?? undefined,
+    polyfills: getSerializerPolyfills(serializer, opts),
     extraVars: serializer.extraVars ?? undefined,
     prelude: serializer.prelude ?? undefined,
     babel: transformer.babel ?? undefined,
