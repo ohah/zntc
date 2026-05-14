@@ -54,9 +54,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         // (`kw_source`/`kw_async`/`kw_from`/`kw_of`/`kw_let` 등) 도 받는다. ES reserved
         // (await/yield/...) 만 제외 (strict mode binding 규칙). destructuring 패턴
         // (`{...}` / `[...]`) 도 modifier 뒤에 올 수 있다.
-        const next_is_binding_name = next == .identifier or
-            (next.isKeyword() and !next.isReservedKeyword());
-        if (next_is_binding_name or next == .l_bracket or next == .l_curly) {
+        if (next.canBeBindingName() or next == .l_bracket or next == .l_curly) {
             var modifier_flags: u32 = if (is_readonly)
                 0x08
             else if (is_override)
@@ -132,9 +130,7 @@ fn parseBindingPatternInner(self: *Parser) ParseError2!NodeIndex {
     }
 
     // contextual keyword (get/set/number/string 등)도 binding 위치에서 식별자로 유효
-    if (self.current() == .identifier or
-        (self.current().isKeyword() and !self.current().isReservedKeyword()))
-    {
+    if (self.current().canBeBindingName()) {
         const span = self.currentSpan();
         if (self.current() == .identifier) try self.checkStrictBinding(span);
         try self.checkIdentifierKeywordUse(span);

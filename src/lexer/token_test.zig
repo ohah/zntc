@@ -54,6 +54,35 @@ test "Kind.isLiteralKeyword" {
     try std.testing.expect(!Kind.l_paren.isLiteralKeyword()); // 직후
 }
 
+test "Kind.canBeBindingName covers identifier + contextual/strict-reserved keywords" {
+    // identifier 자체
+    try std.testing.expect(Kind.identifier.canBeBindingName());
+    // contextual keyword (parser 전반의 D1/D2/D5/D6 fix 가 통과시켜야 하는 케이스)
+    try std.testing.expect(Kind.kw_async.canBeBindingName());
+    try std.testing.expect(Kind.kw_from.canBeBindingName());
+    try std.testing.expect(Kind.kw_of.canBeBindingName());
+    try std.testing.expect(Kind.kw_target.canBeBindingName());
+    try std.testing.expect(Kind.kw_meta.canBeBindingName());
+    try std.testing.expect(Kind.kw_source.canBeBindingName());
+    try std.testing.expect(Kind.kw_defer.canBeBindingName());
+    // strict-mode reserved — ES 기본 reserved 가 아니므로 type-only / non-strict 환경에선 받음
+    try std.testing.expect(Kind.kw_let.canBeBindingName());
+    try std.testing.expect(Kind.kw_yield.canBeBindingName());
+    try std.testing.expect(Kind.kw_static.canBeBindingName());
+    // literal keyword — 받음 (caller 가 isLiteralKeyword 로 strict mode 거부 책임)
+    try std.testing.expect(Kind.kw_true.canBeBindingName());
+    try std.testing.expect(Kind.kw_null.canBeBindingName());
+    // ES reserved — 거부 (binding 위치에서 사용 불가)
+    try std.testing.expect(!Kind.kw_await.canBeBindingName());
+    try std.testing.expect(!Kind.kw_with.canBeBindingName());
+    try std.testing.expect(!Kind.kw_class.canBeBindingName());
+    try std.testing.expect(!Kind.kw_function.canBeBindingName());
+    // 그 외 토큰 — 거부
+    try std.testing.expect(!Kind.l_paren.canBeBindingName());
+    try std.testing.expect(!Kind.plus.canBeBindingName());
+    try std.testing.expect(!Kind.escaped_keyword.canBeBindingName());
+}
+
 test "Kind.isNumericLiteral" {
     try std.testing.expect(Kind.decimal.isNumericLiteral());
     try std.testing.expect(Kind.hex.isNumericLiteral());

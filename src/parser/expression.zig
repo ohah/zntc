@@ -164,7 +164,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
             }
 
             // 형태 1: async x => body (단순 식별자)
-            if (peek.kind == .identifier or (peek.kind.isKeyword() and !peek.kind.isReservedKeyword())) {
+            if (peek.kind.canBeBindingName()) {
                 const saved = self.saveState();
                 try self.advance(); // skip 'async'
                 const id_span = self.currentSpan();
@@ -1184,9 +1184,8 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
     // contextual keyword도 expression 위치에서 식별자로 유효.
     // async는 제외 — async function/arrow에서 특수 처리 (아래 switch에서).
     // literal keyword (true, false, null)는 제외 — 아래 switch에서 boolean_literal/null_literal로 처리.
-    if (self.current() == .identifier or
-        (self.current().isKeyword() and !self.current().isReservedKeyword() and
-            !self.current().isLiteralKeyword() and self.current() != .kw_async))
+    if (self.current().canBeBindingName() and
+        !self.current().isLiteralKeyword() and self.current() != .kw_async)
     {
         // Flow match expression: match (expr) { Pattern => expr, ... }
         if (self.is_flow and self.isContextual("match")) {

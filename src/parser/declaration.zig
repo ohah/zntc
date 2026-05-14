@@ -203,10 +203,9 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     const is_generator = (flags & FunctionFlags.is_generator) != 0;
 
     // 이름은 선택적: identifier 또는 contextual keyword(defer, of, set 등)가 있으면 파싱
-    const name = if (self.current() == .identifier or
+    const name = if (self.current().canBeBindingName() or
         self.current() == .kw_yield or self.current() == .kw_await or
-        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved or
-        (self.current().isKeyword() and !self.current().isReservedKeyword()))
+        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
         try self.parseBindingIdentifier()
     else
         NodeIndex.none;
@@ -289,8 +288,8 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     var name = NodeIndex.none;
     // 함수 표현식의 이름: identifier + contextual keyword (get, set, async, from, of 등)
     // ECMAScript에서 reserved keyword만 함수 이름으로 사용 불가
-    if (self.current() == .identifier or self.current() == .kw_yield or self.current() == .kw_await or
-        (self.current().isKeyword() and !self.current().isReservedKeyword()))
+    if (self.current().canBeBindingName() or
+        self.current() == .kw_yield or self.current() == .kw_await)
     {
         name = try self.parseBindingIdentifier();
     }
