@@ -1915,6 +1915,70 @@ test "Self-require: RN 플랫폼 파일 패턴 (조건부 self-require)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./widget\")") == null);
 }
 
+test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve from real pnpm package" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/node_modules/@scope");
+    try tmp.dir.makePath("apps/app/node_modules/react-native");
+    try tmp.dir.makePath("node_modules/react-native");
+    try writeFile(tmp.dir, "apps/app/node_modules/react-native/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "apps/app/node_modules/react-native/index.js", "exports.NativeModules = { CodePush: {} };");
+    try writeFile(tmp.dir, "node_modules/react-native/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/react-native/index.js", "exports.NativeModules = { CodePush: {} };");
+
+    try tmp.dir.makePath("node_modules/.pnpm/pkg@1/node_modules/@scope/pkg");
+    try tmp.dir.makePath("node_modules/.pnpm/pkg@1/node_modules/code-push/script");
+    try tmp.dir.makePath("node_modules/.pnpm/pkg@1/node_modules/hoist-non-react-statics");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/package.json", "{\"main\":\"CodePush.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/CodePush.js",
+        \\import { AcquisitionManager as Sdk } from "code-push/script/acquisition-sdk";
+        \\import hoistStatics from "hoist-non-react-statics";
+        \\let NativeCodePush = require("react-native").NativeModules.CodePush;
+        \\module.exports = { Sdk, hoistStatics, NativeCodePush };
+    );
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/code-push/package.json", "{\"main\":\"script/acquisition-sdk.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/code-push/script/acquisition-sdk.js", "exports.AcquisitionManager = function AcquisitionManager() {};");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/hoist-non-react-statics/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/hoist-non-react-statics/index.js", "module.exports = function hoist() {};");
+
+    tmp.dir.symLink(
+        "../../../../node_modules/.pnpm/pkg@1/node_modules/@scope/pkg",
+        "apps/app/node_modules/@scope/pkg",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try writeFile(tmp.dir, "apps/app/index.js",
+        \\const CodePush = require("@scope/pkg");
+        \\console.log(CodePush);
+    );
+
+    const entry = try absPath(&tmp, "apps/app/index.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .preserve_symlinks = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"code-push/script/acquisition-sdk\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"hoist-non-react-statics\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NativeCodePush = require(\"react-native\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_code_push") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_hoist_non_react_statics") != null);
+}
+
 test "shimMissingExports: missing export에 shim 변수 생성" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3256,6 +3320,180 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
     defer std.testing.allocator.free(lazy_remote_value);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_remote_value) != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
+}
+
+test "react_native inlineRequires: named re-export initializes canonical source at use site" {
+    // `import { createStackNavigator } from '@react-navigation/stack'` 형태의
+    // named re-export는 barrel 모듈이 아니라 실제 default export source를 실행해야
+    // canonical binding이 undefined로 남지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { createStackNavigator } from './stack';
+        \\globalThis.__zntcStackNavigator = createStackNavigator().ready;
+    );
+    try tmp.dir.makePath("stack");
+    try writeFile(tmp.dir, "stack/index.js",
+        \\export { default as createStackNavigator } from './createStackNavigator';
+    );
+    try writeFile(tmp.dir, "stack/createStackNavigator.js",
+        \\export default function createStackNavigator() {
+        \\  return { ready: 'stack-ready' };
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const barrel = try absPath(&tmp, "stack/index.js");
+    defer std.testing.allocator.free(barrel);
+    const source = try absPath(&tmp, "stack/createStackNavigator.js");
+    defer std.testing.allocator.free(source);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const chained_lazy_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), __zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), createStackNavigator)",
+        .{ barrel, source },
+    );
+    defer std.testing.allocator.free(chained_lazy_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, chained_lazy_init) != null);
+}
+
+test "react_native inlineRequires: named re-export preserves package entry side effects" {
+    // RNFirebase perf 축소 재현:
+    // package entry가 namespace side effect를 등록하고 named modular API를 re-export한다.
+    // canonical source만 init하면 getPerformance 함수는 있어도 getApp().perf가 없다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("perf");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { getPerformance } from './perf';
+        \\globalThis.__zntcPerfResult = getPerformance().dataCollectionEnabled;
+    );
+    try writeFile(tmp.dir, "app.js",
+        \\export function getApp() {
+        \\  return globalThis.__zntcFirebaseApp;
+        \\}
+    );
+    try writeFile(tmp.dir, "perf/index.js",
+        \\import { registerPerf } from './registerPerf';
+        \\registerPerf();
+        \\export * from './modular';
+    );
+    try writeFile(tmp.dir, "perf/registerPerf.js",
+        \\export function registerPerf() {
+        \\  globalThis.__zntcFirebaseApp = {
+        \\    perf() {
+        \\      return { dataCollectionEnabled: 'perf-ready' };
+        \\    },
+        \\  };
+        \\}
+    );
+    try writeFile(tmp.dir, "perf/modular.js",
+        \\import { getApp } from '../app';
+        \\export function getPerformance() {
+        \\  return getApp().perf();
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const package_entry = try absPath(&tmp, "perf/index.js");
+    defer std.testing.allocator.free(package_entry);
+    const modular = try absPath(&tmp, "perf/modular.js");
+    defer std.testing.allocator.free(modular);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const chained_lazy_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), __zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), getPerformance)",
+        .{ package_entry, modular },
+    );
+    defer std.testing.allocator.free(chained_lazy_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, chained_lazy_init) != null);
+}
+
+test "react_native inlineRequires: namespace import from export-star barrel initializes source getters" {
+    // react-native-animatable 축소 재현:
+    // `import * as defs from './definitions'`를 값으로 넘기면 namespace object가
+    // 만들어진다. barrel의 `export *` source를 getter에서 init하지 않으면
+    // Object.keys(defs) 이후 defs[name] 값이 undefined로 남는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("definitions");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ANIMATION_DEFINITIONS from './definitions';
+        \\globalThis.__zntcAnimations = Object.keys(ANIMATION_DEFINITIONS)
+        \\  .map((name) => ANIMATION_DEFINITIONS[name].label)
+        \\  .join(',');
+    );
+    try writeFile(tmp.dir, "definitions/index.js",
+        \\export * from './fading';
+        \\export * from './bouncing';
+    );
+    try writeFile(tmp.dir, "definitions/fading.js",
+        \\export const fadeIn = { label: 'fadeIn' };
+    );
+    try writeFile(tmp.dir, "definitions/bouncing.js",
+        \\export const bounceIn = { label: 'bounceIn' };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const fading = try absPath(&tmp, "definitions/fading.js");
+    defer std.testing.allocator.free(fading);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const getter_with_source_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "get fadeIn() {{ return (__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), fadeIn); }}",
+        .{fading},
+    );
+    defer std.testing.allocator.free(getter_with_source_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, getter_with_source_init) != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get fadeIn() { return fadeIn; }") == null);
 }
 
 test "react_native inlineRequires: keeps default ESM imports eager for provider side effects" {

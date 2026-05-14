@@ -93,19 +93,18 @@ pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemant
     return true;
 }
 
-fn allocLazyEsmImportExpr(self: *const Linker, target_mod: *const Module, target_name: []const u8) ![]const u8 {
-    const sep = if (self.minify_whitespace) "," else ", ";
+fn allocEsmInitExpr(self: *const Linker, target_mod: *const Module) ![]const u8 {
     const guard_close_expr = "})";
     const guard = target_mod.shouldGuard(self.entry_error_guard);
     if (self.dev_mode) {
         if (guard) {
             return try std.fmt.allocPrint(
                 self.allocator,
-                "({s}__zntc_modules[\"{s}\"].fn(){s}{s}{s})",
-                .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, target_mod.dev_id, guard_close_expr, sep, target_name },
+                "{s}__zntc_modules[\"{s}\"].fn(){s}",
+                .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, target_mod.dev_id, guard_close_expr },
             );
         }
-        return try std.fmt.allocPrint(self.allocator, "(__zntc_modules[\"{s}\"].fn(){s}{s})", .{ target_mod.dev_id, sep, target_name });
+        return try std.fmt.allocPrint(self.allocator, "__zntc_modules[\"{s}\"].fn()", .{target_mod.dev_id});
     }
 
     const init_name = try target_mod.allocInitName(self.allocator);
@@ -113,15 +112,42 @@ fn allocLazyEsmImportExpr(self: *const Linker, target_mod: *const Module, target
     if (guard) {
         return try std.fmt.allocPrint(
             self.allocator,
-            "({s}{s}(){s}{s}{s})",
-            .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, init_name, guard_close_expr, sep, target_name },
+            "{s}{s}(){s}",
+            .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, init_name, guard_close_expr },
         );
     }
-    return try std.fmt.allocPrint(
-        self.allocator,
-        "({s}(){s}{s})",
-        .{ init_name, sep, target_name },
-    );
+    return try std.fmt.allocPrint(self.allocator, "{s}()", .{init_name});
+}
+
+fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_mod: *const Module, target_name: []const u8) ![]const u8 {
+    const sep = if (self.minify_whitespace) "," else ", ";
+    const import_init = try allocEsmInitExpr(self, import_mod);
+    defer self.allocator.free(import_init);
+    if (import_mod.index == value_mod.index) {
+        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ import_init, sep, target_name });
+    }
+
+    const value_init = try allocEsmInitExpr(self, value_mod);
+    defer self.allocator.free(value_init);
+    return try std.fmt.allocPrint(self.allocator, "({s}{s}{s}{s}{s})", .{ import_init, sep, value_init, sep, target_name });
+}
+
+fn appendEsmInitCall(self: *const Linker, preamble: anytype, target_mod: *const Module) !void {
+    const is_tla = target_mod.uses_top_level_await;
+    const guard = target_mod.shouldGuard(self.entry_error_guard);
+    if (is_tla) try preamble.write("await ");
+    if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
+    if (self.dev_mode) {
+        try preamble.write("__zntc_modules[\"");
+        try preamble.write(target_mod.dev_id);
+        try preamble.write("\"].fn()");
+    } else {
+        const init_name = try target_mod.allocInitName(self.allocator);
+        defer self.allocator.free(init_name);
+        try preamble.write(init_name);
+        try preamble.write("()");
+    }
+    try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
 }
 
 pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
@@ -514,11 +540,15 @@ pub fn buildMetadataForAst(
                 continue;
             }
 
+            // resolveImports()에서 이미 해결한 바인딩을 조회하거나, 직접 해결
+            const resolved = self.getResolvedBinding(module_index, ib.local_span);
+
             // __esm 래핑 모듈에서 import: init_xxx() 호출을 preamble에 추가.
             // 호이스팅된 함수는 top-level에 있으므로 rename으로 참조 가능.
             // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
             // `entry_error_guard` 활성 시 wrap. TLA 는 await 가 lambda 안에 못 들어가서 제외.
             var lazy_esm_import = false;
+            var lazy_esm_import_mod: ?*const Module = null;
             if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm) {
                 // CJS path 와 동일하게 tree-shake 결과 반영 (#2398). `sideEffects: false`
                 // 인 .esm wrap 모듈이 unused 로 drop 되면 `init_xxx is not defined` 가
@@ -537,6 +567,21 @@ pub fn buildMetadataForAst(
                 // 있지 않다. 그래서 보수적으로 default 만 eager 유지: top-level
                 // provider 등록을 하는 모듈 (예: RNFirebase Firestore) 의 부작용이
                 // lazy 화로 누락되어 Metro 와 다른 초기화 순서가 되는 것을 차단.
+                var value_init_mod = target_mod;
+                var value_init_mod_idx = canonical_mod;
+                if (resolved) |rb| {
+                    const rb_idx = @intFromEnum(rb.canonical.module_index);
+                    if (rb_idx != canonical_mod) {
+                        if (self.graph.getModule(rb.canonical.module_index)) |rb_mod| {
+                            if (rb_mod.wrap_kind == .esm) {
+                                value_init_mod = rb_mod;
+                                value_init_mod_idx = @intCast(rb_idx);
+                            }
+                        }
+                    }
+                }
+                if (self.tree_shaker_active and !value_init_mod.is_included) continue;
+
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
@@ -545,24 +590,18 @@ pub fn buildMetadataForAst(
                     ib.kind == .named and
                     !ib.importsDefault() and
                     !target_mod.uses_top_level_await and
+                    !value_init_mod.uses_top_level_await and
                     !exported_locals.contains(m.importBindingLocalName(ib));
+                if (lazy_esm_import) {
+                    lazy_esm_import_mod = value_init_mod;
+                }
                 if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(@intCast(canonical_mod), {});
-                    const is_tla = target_mod.uses_top_level_await;
-                    const guard = target_mod.shouldGuard(self.entry_error_guard);
-                    if (is_tla) try preamble.write("await ");
-                    if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
-                    if (self.dev_mode) {
-                        try preamble.write("__zntc_modules[\"");
-                        try preamble.write(target_mod.dev_id);
-                        try preamble.write("\"].fn()");
-                    } else {
-                        const init_name = try target_mod.allocInitName(self.allocator);
-                        defer self.allocator.free(init_name);
-                        try preamble.write(init_name);
-                        try preamble.write("()");
-                    }
-                    try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
+                    try appendEsmInitCall(self, &preamble, target_mod);
+                }
+                if (!lazy_esm_import and value_init_mod_idx != canonical_mod and !esm_init_set.contains(@intCast(value_init_mod_idx))) {
+                    try esm_init_set.put(@intCast(value_init_mod_idx), {});
+                    try appendEsmInitCall(self, &preamble, value_init_mod);
                 }
                 // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
             }
@@ -592,9 +631,6 @@ pub fn buildMetadataForAst(
                 );
                 continue;
             }
-
-            // resolveImports()에서 이미 해결한 바인딩을 조회하거나, 직접 해결
-            const resolved = self.getResolvedBinding(module_index, ib.local_span);
 
             // 롤다운 shimMissingExports 호환: 소스 모듈에 해당 export가 없으면
             // strict mode ReferenceError 대신 undefined를 반환하도록 shim 생성.
@@ -702,7 +738,7 @@ pub fn buildMetadataForAst(
             if (!isReservedName(target_name) and target_name.len > 0 and isValidIdentStartByte(target_name[0])) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
                     const rename_value = if (lazy_esm_import)
-                        try allocLazyEsmImportExpr(self, canonical_m_opt.?, target_name)
+                        try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, target_name)
                     else
                         target_name;
                     if (lazy_esm_import) {

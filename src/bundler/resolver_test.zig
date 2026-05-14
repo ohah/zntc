@@ -382,6 +382,11 @@ test "resolve: preserve_symlinks keeps pnpm package imports on logical node_modu
     defer std.testing.allocator.free(package_owned_dep.path);
     defer if (package_owned_dep.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_dep.path, ".pnpm/ui@1_react@18/node_modules/code-push") != null);
+
+    const package_owned_subpath = try logical_resolver.resolve(logical_ui_dir, "code-push/script/acquisition-sdk");
+    defer std.testing.allocator.free(package_owned_subpath.path);
+    defer if (package_owned_subpath.resolve_dir) |dir| std.testing.allocator.free(dir);
+    try std.testing.expect(std.mem.indexOf(u8, package_owned_subpath.path, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js") != null);
 }
 
 test "resolve: bare specifier walk up directories" {

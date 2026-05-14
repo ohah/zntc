@@ -11,6 +11,7 @@ const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleIndex = @import("../types.zig").ModuleIndex;
 const CompiledModule = @import("../compiled_module.zig").CompiledModule;
+const rt = @import("../runtime_helpers.zig");
 const profile = @import("../../profile.zig");
 
 const NsExportPair = Linker.NsExportPair;
@@ -497,7 +498,12 @@ fn buildInlineObjectStr(
                 try buf.appendSlice(self.allocator, exp.exported);
             }
             try buf.appendSlice(self.allocator, "() { return ");
-            try buf.appendSlice(self.allocator, exp.local);
+            if (try allocNamespaceGetterValue(self, exp)) |value| {
+                defer self.allocator.free(value);
+                try buf.appendSlice(self.allocator, value);
+            } else {
+                try buf.appendSlice(self.allocator, exp.local);
+            }
             try buf.appendSlice(self.allocator, "; }");
         }
     }
@@ -513,6 +519,43 @@ fn buildInlineObjectStr(
     }
     try mutable_self.ns_inline_cache.put(self.allocator, target_mod_idx, result);
     return try self.allocator.dupe(u8, result);
+}
+
+fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
+    const init_mod_idx = exp.init_mod orelse return null;
+    const init_mod = self.graph.getModule(@enumFromInt(init_mod_idx)) orelse return null;
+    if (init_mod.wrap_kind != .esm) return null;
+
+    const init_expr = try allocEsmInitExpr(self, init_mod);
+    defer self.allocator.free(init_expr);
+    const sep = if (self.minify_whitespace) "," else ", ";
+    return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ init_expr, sep, exp.local });
+}
+
+fn allocEsmInitExpr(self: *const Linker, target_mod: *const @import("../module.zig").Module) std.mem.Allocator.Error![]const u8 {
+    const guard_close_expr = "})";
+    const guard = target_mod.shouldGuard(self.entry_error_guard);
+    if (self.dev_mode) {
+        if (guard) {
+            return try std.fmt.allocPrint(
+                self.allocator,
+                "{s}__zntc_modules[\"{s}\"].fn(){s}",
+                .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, target_mod.dev_id, guard_close_expr },
+            );
+        }
+        return try std.fmt.allocPrint(self.allocator, "__zntc_modules[\"{s}\"].fn()", .{target_mod.dev_id});
+    }
+
+    const init_name = try target_mod.allocInitName(self.allocator);
+    defer self.allocator.free(init_name);
+    if (guard) {
+        return try std.fmt.allocPrint(
+            self.allocator,
+            "{s}{s}(){s}",
+            .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, init_name, guard_close_expr },
+        );
+    }
+    return try std.fmt.allocPrint(self.allocator, "{s}()", .{init_name});
 }
 
 /// JS 예약어인 export 이름은 프로퍼티 키에 따옴표 필요.
