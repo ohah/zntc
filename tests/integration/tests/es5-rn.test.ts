@@ -326,13 +326,17 @@ describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
     let violations: string[] = [];
     for (const block of esmBlocks) {
       // __export(exports_xxx, ...) 호출은 정상 — 이건 별도 namespace
-      // exports.x=x 또는 module.exports= 가 있으면 위반
+      // exports.x=x, module.exports=, Object.defineProperty(module, "exports", ...)
+      // 가 있으면 위반
       const lines = block.split('\n');
       for (const line of lines) {
         if (line.match(/\bexports\.\w+\s*=/) && !line.includes('__export')) {
           violations.push(line.trim().substring(0, 80));
         }
         if (line.includes('module.exports=') || line.includes('module.exports =')) {
+          violations.push(line.trim().substring(0, 80));
+        }
+        if (line.match(/Object\.defineProperty\(module\s*,\s*["']exports["']/)) {
           violations.push(line.trim().substring(0, 80));
         }
       }

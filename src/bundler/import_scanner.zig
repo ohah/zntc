@@ -15,6 +15,7 @@
 //!   - module.exports = ...              → CJS 신호 (has_module_exports)
 //!   - exports.x = ...                   → CJS 신호 (has_exports_dot)
 //!   - Object.defineProperty(exports, ...) → CJS 신호 (has_exports_dot)
+//!   - Object.defineProperty(module, "exports", ...) → CJS 신호 (has_module_exports)
 //!
 //! AST extra_data 레이아웃:
 //!   - import_declaration:         [specs_start, specs_len, source_node]
@@ -136,8 +137,14 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                         } else if (tryExtractGlob(ast, node)) |record| {
                             try records.append(allocator, record);
                         } else if (classifyObjectDefinePropertyExports(ast, node)) |kind| {
-                            has_exports_dot = true;
-                            if (kind == .esmodule_marker) has_esmodule_marker = true;
+                            switch (kind) {
+                                .module_exports => has_module_exports = true,
+                                .exports_member => has_exports_dot = true,
+                                .esmodule_marker => {
+                                    has_exports_dot = true;
+                                    has_esmodule_marker = true;
+                                },
+                            }
                         }
                     },
                     else => {},
@@ -740,23 +747,13 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
     };
 }
 
-/// `Object.defineProperty(exports, ...)` / `Object.defineProperty(module.exports, ...)`.
+/// `Object.defineProperty(exports, ...)` / `Object.defineProperty(module.exports, ...)`
+/// / `Object.defineProperty(module, "exports", ...)`.
 /// Babel/TS CJS output often declares `__esModule` this way; after transformer pre-pass
 /// rewrites `require()` calls, this may be the remaining CJS signal.
-const DefinePropertyExportsKind = enum { other, esmodule_marker };
+const DefinePropertyExportsKind = enum { exports_member, module_exports, esmodule_marker };
 
 fn classifyObjectDefinePropertyExports(ast: *const Ast, node: Node) ?DefinePropertyExportsKind {
-    const args_start = getObjectDefinePropertyExportsTarget(ast, node) orelse return null;
-    if (ast.hasExtra(args_start, 2)) {
-        const prop_idx = ast.readExtraNode(args_start, 1);
-        if (getStringLiteralText(ast, prop_idx)) |prop| {
-            if (std.mem.eql(u8, prop, ES_MODULE_MARKER)) return .esmodule_marker;
-        }
-    }
-    return .other;
-}
-
-fn getObjectDefinePropertyExportsTarget(ast: *const Ast, node: Node) ?u32 {
     const e = node.data.extra;
     if (!ast.hasExtra(e, 2)) return null;
 
@@ -775,16 +772,36 @@ fn getObjectDefinePropertyExportsTarget(ast: *const Ast, node: Node) ?u32 {
     if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return null;
     const target = ast.getNode(target_idx);
     if (target.tag == .identifier_reference and std.mem.eql(u8, ast.getText(target.span), "exports")) {
-        return args_start;
+        if (isDefinePropertyEsModuleMarker(ast, args_start)) return .esmodule_marker;
+        return .exports_member;
+    }
+    if (target.tag == .identifier_reference and std.mem.eql(u8, ast.getText(target.span), "module")) {
+        if (isDefinePropertyModuleExports(ast, args_start)) return .module_exports;
+        return null;
     }
 
     const target_parts = getStaticMemberParts(ast, target_idx) orelse return null;
     if (std.mem.eql(u8, target_parts.object, "module") and
         std.mem.eql(u8, target_parts.property, "exports"))
     {
-        return args_start;
+        if (isDefinePropertyEsModuleMarker(ast, args_start)) return .esmodule_marker;
+        return .exports_member;
     }
     return null;
+}
+
+fn isDefinePropertyEsModuleMarker(ast: *const Ast, args_start: u32) bool {
+    if (!ast.hasExtra(args_start, 2)) return false;
+    const prop_idx = ast.readExtraNode(args_start, 1);
+    const prop = getStringLiteralText(ast, prop_idx) orelse return false;
+    return std.mem.eql(u8, prop, ES_MODULE_MARKER);
+}
+
+fn isDefinePropertyModuleExports(ast: *const Ast, args_start: u32) bool {
+    if (!ast.hasExtra(args_start, 2)) return false;
+    const prop_idx = ast.readExtraNode(args_start, 1);
+    const prop = getStringLiteralText(ast, prop_idx) orelse return false;
+    return std.mem.eql(u8, prop, "exports");
 }
 
 const MemberParts = struct { object: []const u8, property: []const u8 };
