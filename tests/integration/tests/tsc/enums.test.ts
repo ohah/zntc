@@ -629,4 +629,14 @@ namespace M2 {
     const members = Array.from({ length: 30 }, (_, i) => `    A${i} = 1 << ${i},`).join('\n');
     await expectPass(`export enum E {\n${members}\n}`, []);
   });
+
+  // architectural fix 회귀 가드: identifier LHS 는 literal-LHS 가드를 통과하므로
+  // generic-call speculation 이 한 단계 실제 진입한다. 내부 type-mode 가 다시
+  // expression-mode 로 재진입하지 않도록 `in_type_args_speculation` flag 가
+  // 작동해야 O(2^N) nest 가 안 일어난다. 30개 `a << N` 인 식이 chained 된 경우.
+  test('chained identifier-LHS shifts (architectural speculation guard)', async () => {
+    const a = 'declare const a: number;';
+    const stmts = Array.from({ length: 30 }, (_, i) => `const r${i} = a << ${i};`).join('\n');
+    await expectPass(`${a}\n${stmts}`, []);
+  });
 });

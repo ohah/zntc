@@ -2382,6 +2382,27 @@ class E extends D {
 
 exports[`TSC: classes readonlyInAmbientClass 1`] = `""`;
 
+exports[`TSC: classes readonlyInConstructorParameters 1`] = `
+"class C {
+	constructor(x) {
+		this.x = x;
+	}
+}
+new C(1).x = 2;
+class E {
+	constructor(x) {
+		this.x = x;
+	}
+}
+class F {
+	constructor(x) {
+		this.x = x;
+	}
+}
+new F(1).x;
+"
+`;
+
 exports[`TSC: classes readonlyReadonly 1`] = `
 "class C {
 	x;
@@ -7028,6 +7049,8 @@ exports[`TSC: classes privateNameInLhsReceiverExpression 1`] = `
 "
 `;
 
+exports[`TSC: classes privateNameInObjectLiteral-3 1`] = `""`;
+
 exports[`TSC: classes privateNameJsBadAssignment 1`] = `
 "exports.#nope = 1;
 // Error (outside class body)
@@ -11292,28 +11315,5 @@ class Y {
 	}
 }
 // should error, incompatible with index signature
-"
-`;
-
-exports[`TSC: classes privateNameInObjectLiteral-3 1`] = `""`;
-
-exports[`TSC: classes readonlyInConstructorParameters 1`] = `
-"class C {
-	constructor(x) {
-		this.x = x;
-	}
-}
-new C(1).x = 2;
-class E {
-	constructor(x) {
-		this.x = x;
-	}
-}
-class F {
-	constructor(x) {
-		this.x = x;
-	}
-}
-new F(1).x;
 "
 `;

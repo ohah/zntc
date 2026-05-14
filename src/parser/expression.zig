@@ -992,11 +992,18 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // Speculative parse: try parsing <Type>, check if followed by ( or `
                 // If not, restore state and let binary expression handle < as comparison.
                 //
-                // Literal LHS 는 generic-call target 이 될 수 없다 — speculation 은
-                // 무조건 실패하면서 안쪽에 nested `<<` 가 있으면 각 `<<` 마다 재귀
-                // speculation 이 발화해 O(2^N) 폭주 (TSC conformance
-                // `parserRealSource2.ts` 1<<N enum 멤버 20개+ HANG).
+                // 두 단계 가드:
+                //   1. literal LHS — generic-call target 불가 (TSC 의
+                //      `canTryReparseTypeArguments`). 진입 자체 차단해 일반
+                //      `1 << N` 도 빠르게 통과.
+                //   2. 이미 outer speculation 안 — inner `<T>(x = expr) => R`
+                //      generic function type 의 parameter default 가 다시
+                //      expression-mode 로 재진입한 상황. 그 안의 `<<` 가 또
+                //      speculation 을 발화하면 O(2^N) nest 폭주
+                //      (TSC conformance `parserRealSource2.ts`). esbuild/oxc 는
+                //      inner type-parser 가 expression-mode 로 가지 않게 설계.
                 if (self.ast.getNode(expr).tag.isLiteralTag()) break;
+                if (self.in_type_args_speculation) break;
                 if (!trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression)) break;
             },
             .bang => {
@@ -1034,6 +1041,9 @@ fn trySkipTypeArgsSpeculative(self: *Parser, comptime strict: bool, comptime fol
     const saved_extra_len = self.ast.extra_data.items.len;
     const saved_scratch = self.saveScratch();
     const saved_errors_len = self.errors.items.len;
+    const saved_in_spec = self.in_type_args_speculation;
+    self.in_type_args_speculation = true;
+    defer self.in_type_args_speculation = saved_in_spec;
 
     const type_args_ok = blk: {
         _ = (if (strict) self.parseTypeArgumentsInExpression() else self.parseTypeArguments()) catch {

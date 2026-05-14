@@ -518,62 +518,42 @@ function* mergeStringLists(...strings) {
 exports[`TSC: generators yieldStatementNoAsiAfterTransform 1`] = `
 "function* t1() {
 	yield // comment
-	// comment
-	// comment
 	a;
 }
 function* t2() {
 	yield // comment
-	// comment
-	// comment
 	a + 1;
 }
 function* t3() {
 	yield // comment
-	// comment
-	// comment
 	a ? 0 : 1;
 }
 function* t4() {
 	yield // comment
-	// comment
-	// comment
 	a.b;
 }
 function* t5() {
 	yield // comment
-	// comment
-	// comment
 	a[a];
 }
 function* t6() {
 	yield // comment
-	// comment
-	// comment
 	a();
 }
 function* t7() {
 	yield // comment
-	// comment
-	// comment
 	a\`\`;
 }
 function* t8() {
 	yield // comment
-	// comment
-	// comment
 	a;
 }
 function* t9() {
 	yield // comment
-	// comment
-	// comment
 	a;
 }
 function* t10() {
 	yield // comment
-	// comment
-	// comment
 	a;
 }
 "

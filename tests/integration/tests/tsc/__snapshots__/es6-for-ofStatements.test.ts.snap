@@ -564,12 +564,6 @@ for (let v of v) {
 "
 `;
 
-exports[`TSC: es6/for-ofStatements for-of56 1`] = `
-"for (var let of []) {
-}
-"
-`;
-
 exports[`TSC: es6/for-ofStatements for-of57 1`] = `
 "var iter;
 for (let num of iter) {

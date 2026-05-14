@@ -212,6 +212,14 @@ pub const Parser = struct {
     /// true이면 `(identifier) :` 패턴을 typed arrow로 해석하지 않는다 — `:` 가
     /// ternary separator일 수 있기 때문. `(identifier: Type)` 등 확실한 패턴은 여전히 허용.
     in_ternary_consequent: bool = false,
+    /// `trySkipTypeArgsSpeculative` 안에서 type-args 를 speculative 파싱 중인지.
+    /// inner `parseType` → `<T>(x = expr) => R` 같은 generic function type 의
+    /// parameter default 가 expression-mode 로 재진입하면, 그 안의 `<<` 가 또
+    /// generic-call speculation 을 발화해 O(2^N) nest 폭주 (TSC conformance
+    /// `parserRealSource2.ts`). speculation 안에서는 callable 후보를 더 따질
+    /// 필요가 없으므로 (외부 speculation 의 성공/실패만 남기면 됨) 이 플래그가
+    /// true 일 때 expression 의 generic-call speculation 진입을 차단한다.
+    in_type_args_speculation: bool = false,
 
     // ================================================================
     // Context packed struct 정의
@@ -1465,6 +1473,9 @@ pub const Parser = struct {
         prev_token_kind: Kind,
         template_depth_len: usize,
         line_offsets_len: usize,
+        /// speculative parse 시 스캔된 comment 가 codegen 으로 leak 되지 않도록
+        /// 복원 — 누락 시 같은 comment 가 speculation 횟수만큼 중복 emit.
+        comments_len: usize,
     };
 
     pub fn saveState(self: *const Parser) ScannerState {
@@ -1478,6 +1489,7 @@ pub const Parser = struct {
             .prev_token_kind = self.scanner.prev_token_kind,
             .template_depth_len = self.scanner.template_depth_stack.items.len,
             .line_offsets_len = self.scanner.line_offsets.items.len,
+            .comments_len = self.scanner.comments.items.len,
         };
     }
 
@@ -1490,6 +1502,7 @@ pub const Parser = struct {
         self.scanner.brace_depth = s.brace_depth;
         self.scanner.prev_token_kind = s.prev_token_kind;
         self.scanner.line_offsets.shrinkRetainingCapacity(s.line_offsets_len);
+        self.scanner.comments.shrinkRetainingCapacity(s.comments_len);
         // template_depth_stack은 lookahead 중 push(grow) 또는 pop(shrink) 가능.
         // pop으로 줄어든 경우 saved 길이가 현재보다 크지만, capacity 내이므로
         // items.len 직접 설정으로 안전하게 복구할 수 있다.

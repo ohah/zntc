@@ -860,7 +860,6 @@ var re6 = b << 0;
 var re7 = 0 << b;
 var re8 = b << b;
 // operator >>
-// operator >>
 var rf1 = a >> a;
 var rf2 = a >> b;
 var rf3 = a >> 0;
@@ -1423,10 +1422,8 @@ var r4h6 = f - E.b;
 // operator <<
 var r5a1 = a << a;
 //ok
-//ok
 var r5a2 = a << b;
 var r5a3 = a << c;
-//ok
 //ok
 var r5a4 = a << d;
 var r5a5 = a << e;
@@ -1439,10 +1436,8 @@ var r5b5 = b << e;
 var r5b6 = b << f;
 var r5c1 = c << a;
 //ok
-//ok
 var r5c2 = c << b;
 var r5c3 = c << c;
-//ok
 //ok
 var r5c4 = c << d;
 var r5c5 = c << e;
@@ -1467,10 +1462,8 @@ var r5f5 = f << e;
 var r5f6 = f << f;
 var r5g1 = E.a << a;
 //ok
-//ok
 var r5g2 = E.a << b;
 var r5g3 = E.a << c;
-//ok
 //ok
 var r5g4 = E.a << d;
 var r5g5 = E.a << e;
@@ -1840,7 +1833,6 @@ var r5d1 = true << null;
 var r5d2 = "" << null;
 var r5d3 = {} << null;
 // operator >>
-// operator >>
 var r6a1 = null >> a;
 var r6a2 = null >> b;
 var r6a3 = null >> c;
@@ -1958,7 +1950,6 @@ var re6 = b << null;
 var re7 = 0 << null;
 var re8 = E.b << null;
 // operator >>
-// operator >>
 var rf1 = null >> a;
 var rf2 = null >> b;
 var rf3 = null >> 1;
@@ -2032,7 +2023,6 @@ var re1 = null << null;
 var re2 = null << undefined;
 var re3 = undefined << null;
 var re4 = undefined << undefined;
-// operator >>
 // operator >>
 var rf1 = null >> null;
 var rf2 = null >> undefined;
@@ -2252,7 +2242,6 @@ var r5d1 = true << undefined;
 var r5d2 = "" << undefined;
 var r5d3 = {} << undefined;
 // operator >>
-// operator >>
 var r6a1 = undefined >> a;
 var r6a2 = undefined >> b;
 var r6a3 = undefined >> c;
@@ -2369,7 +2358,6 @@ var re5 = a << undefined;
 var re6 = b << undefined;
 var re7 = 0 << undefined;
 var re8 = E.b << undefined;
-// operator >>
 // operator >>
 var rf1 = undefined >> a;
 var rf2 = undefined >> b;
@@ -3716,7 +3704,6 @@ x > 0;
 x < 0;
 x < 0;
 x < 0;
-// operator >=
 // operator >=
 x >= 0;
 x >= 0;
@@ -8191,13 +8178,6 @@ tempTag2\`\${(x) => {
 "
 `;
 
-exports[`TSC: expressions letIdentifierInElementAccess01 1`] = `
-"// @target: es2015
-var let = {};
-(let[0] = 100);
-"
-`;
-
 exports[`TSC: expressions stringEnumInElementAccess01 1`] = `
 "var E = /* @__PURE__ */ ((E) => {E["A"]="a";E["B"]="b";E["C"]="c";return E;})(E || {});
 const snb = item[e];
@@ -10371,14 +10351,10 @@ foo.m?.();
 foo.m?.();
 /*a1*/
 /*a2*/
-/*a2*/
-/*a2*/
 foo.m?.();
 /*a3*/
 /*a4*/
 /*b1*/
-/*b2*/
-/*b2*/
 /*b2*/
 foo.m?.();
 /*b3*/
@@ -12852,13 +12828,11 @@ function foo3(x) {
 // number
 function foo4(x) {
 	return typeof x === "string" ? x : // string
-	// string
 	((x = 10) && x);
 }
 // number
 function foo5(x) {
 	return typeof x === "string" ? x : // string
-	// string
 	((x = "hello") && x);
 }
 // string
@@ -12871,7 +12845,6 @@ function foo6(x) {
 function foo7(x) {
 	return typeof x === "string" ? x === "hello" : // boolean
 	typeof x === "boolean" ? x : // boolean
-	// boolean
 	x == 10;
 }
 // boolean
@@ -12879,7 +12852,6 @@ function foo8(x) {
 	var b;
 	return typeof x === "string" ? x === "hello" : ((b = x) && //  number | boolean
 	(typeof x === "boolean" ? x : // boolean
-	// boolean
 	x == 10));
 }
 // boolean
@@ -12894,9 +12866,7 @@ function foo10(x) {
 	// Mixing typeguards
 	var b;
 	return typeof x === "string" ? x : // string
-	// string
 	((b = x) && // x is number | boolean
-	// x is number | boolean
 	typeof x === "number" && x.toString());
 }
 // x is number
@@ -12904,11 +12874,8 @@ function foo11(x) {
 	// Mixing typeguards
 	var b;
 	return typeof x === "string" ? x : // string
-	// string
 	((b = x) && // x is number | boolean
-	// x is number | boolean
 	typeof x === "number" && (x = 10) && // assignment to x
-	// assignment to x
 	x);
 }
 // x is number
@@ -12917,7 +12884,6 @@ function foo12(x) {
 	var b;
 	return typeof x === "string" ? ((x = 10) && x.toString().length) : // number
 	((b = x) && // x is number | boolean
-	// x is number | boolean
 	typeof x === "number" && x);
 }
 // x is number
@@ -13172,7 +13138,6 @@ var m;((m) => {var x;let m2;((m2) => {var b = x;// new scope - number | boolean 
 var y;if (typeof x === "string") {
 	y = x;
 } else // string;
-// string;
 {
 	y = typeof x === "boolean" ? x.toString() : // boolean
 	x.toString();
@@ -13182,7 +13147,6 @@ var m1;((m1) => {var x;let m2;((m2) => {let m3;((m3) => {var b = x;// new scope 
 var y;if (typeof x === "string") {
 	y = x;
 } else // string;
-// string;
 {
 	y = typeof x === "boolean" ? x.toString() : // boolean
 	x.toString();
@@ -13337,19 +13301,11 @@ function foo11(x) {
 		var b = x;
 		// number | boolean | string - because below we are changing value of x in if statement
 		return typeof x === "number" ? (// change value of x
-		// change value of x
 		x = 10 && x.toString()) : // number | boolean | string
-		// change value of x
-		// number | boolean | string
 		(// do not change value
-		// do not change value
-		// do not change value
-		// do not change value
 		y = x && x.toString());
 	}
 }
-// number | boolean | string
-// do not change value
 // number | boolean | string
 function foo12(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
@@ -13505,7 +13461,6 @@ function foo6(x) {
 	return typeof x !== "string" && // string | number | boolean
 	(typeof x !== "number" ? // number | boolean
 	x : // boolean
-	// boolean
 	x === 10);
 }
 // number 
@@ -13514,7 +13469,6 @@ function foo7(x) {
 	var z;
 	// Mixing typeguard narrowing
 	return typeof x !== "string" && ((z = x) && // number | boolean
-	// number | boolean
 	(typeof x === "number" ? // change value of x
 	((x = 10) && x.toString()) : // x is number
 	// do not change value
@@ -13561,7 +13515,6 @@ function foo6(x) {
 	return typeof x === "string" || // string | number | boolean
 	(typeof x !== "number" ? // number | boolean
 	x : // boolean
-	// boolean
 	x === 10);
 }
 // number 
@@ -13570,7 +13523,6 @@ function foo7(x) {
 	var z;
 	// Mixing typeguard narrowing
 	return typeof x === "string" || ((z = x) || // number | boolean
-	// number | boolean
 	(typeof x === "number" ? // change value of x
 	((x = 10) && x.toString()) : // number | boolean | string
 	// do not change value
@@ -13747,19 +13699,7 @@ function foo() {
 		v;
 	}
 	// Validator & Partial<OnChanges> & C
-	// Validator & Partial<OnChanges> & C
-	// Validator & Partial<OnChanges> & C
 	v;
-	// Validator & Partial<OnChanges> via subtype reduction
-	// In 4.1, we introduced a change which _fixed_ a bug with CFA
-	// correctly setting this to be the right object. With 4.2,
-	// we reverted that fix in #42231 which brought behavior back to
-	// before 4.1.
-	// Validator & Partial<OnChanges> via subtype reduction
-	// In 4.1, we introduced a change which _fixed_ a bug with CFA
-	// correctly setting this to be the right object. With 4.2,
-	// we reverted that fix in #42231 which brought behavior back to
-	// before 4.1.
 	// Validator & Partial<OnChanges> via subtype reduction
 	// In 4.1, we introduced a change which _fixed_ a bug with CFA
 	// correctly setting this to be the right object. With 4.2,
