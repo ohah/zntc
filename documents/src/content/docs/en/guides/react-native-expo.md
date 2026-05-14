@@ -71,6 +71,156 @@ export default withExpo({
 });
 ```
 
+## Rozenite DevTools
+
+ZNTC's React Native dev server accepts Metro-style `server.enhanceMiddleware`, so Rozenite's Metro adapter can be used directly. The Expo example wraps the `withExpo()` result with `withRozenite()` from `@rozenite/metro`.
+
+Install the packages you need as dev dependencies. Add only the panels you want to `include`.
+
+```bash
+bun add -D @rozenite/metro \
+  @rozenite/controls-plugin \
+  @rozenite/expo-atlas-plugin \
+  @rozenite/network-activity-plugin \
+  @rozenite/react-navigation-plugin \
+  @rozenite/redux-devtools-plugin \
+  @rozenite/require-profiler-plugin \
+  @rozenite/sqlite-plugin \
+  @rozenite/storage-plugin \
+  @rozenite/tanstack-query-plugin
+```
+
+Example `zntc.config.ts`:
+
+```ts
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { withRozenite } from "@rozenite/metro";
+import { withExpo } from "@zntc/react-native";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const rozenitePlugins = [
+  "@rozenite/controls-plugin",
+  "@rozenite/expo-atlas-plugin",
+  "@rozenite/network-activity-plugin",
+  "@rozenite/react-navigation-plugin",
+  "@rozenite/redux-devtools-plugin",
+  "@rozenite/require-profiler-plugin",
+  "@rozenite/sqlite-plugin",
+  "@rozenite/storage-plugin",
+  "@rozenite/tanstack-query-plugin",
+] as const;
+
+const config = withExpo({
+  root: __dirname,
+  projectRoot: __dirname,
+  entry: "index.js",
+  dev: true,
+  minify: false,
+  outDir: join(__dirname, ".zntc"),
+  preserveSymlinks: true,
+  resolveSymlinkSiblings: true,
+  resolver: {
+    sourceExts: [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"],
+    assetExts: [".bmp", ".gif", ".jpg", ".jpeg", ".png", ".webp", ".avif", ".ico", ".svg"],
+    platforms: ["ios", "android", "native"],
+    preferNativePlatform: true,
+    nodeModulesPaths: [join(__dirname, "node_modules"), join(__dirname, "../../node_modules")],
+  },
+  transformer: {
+    minifier: "terser",
+    inlineRequires: false,
+    babel: {},
+  },
+  serializer: {
+    polyfills: [],
+    prelude: [],
+    bundleType: "plain",
+  },
+  server: {
+    port: 8081,
+    host: "localhost",
+    useGlobalHotkey: true,
+    forwardClientLogs: true,
+    verifyConnections: false,
+  },
+});
+
+export default withRozenite(config as any, {
+  enabled: true,
+  include: [...rozenitePlugins],
+  projectType: "expo",
+});
+```
+
+### Code walkthrough
+
+- Call `withExpo()` first. It merges Expo-specific prelude entries, asset extensions, blockList entries, and console-noise filters into the base RN config.
+- `withRozenite()` receives that result and adds Rozenite middleware plus client injection settings. That is why the exported shape is `withRozenite(withExpo(...))`.
+- `rozenitePlugins` lists the Rozenite panels enabled for the app. Do not include plugins you have not installed.
+- `enabled: true` explicitly enables Rozenite for the dev server. In an app config, you can gate this behind `process.env` so it only runs in development.
+- `projectType: "expo"` lets Rozenite choose Expo-aware panel and path handling.
+- `projectRoot` and `root` point at the example app root. In a monorepo, `nodeModulesPaths` can include both the app `node_modules` and the workspace root `node_modules` so hoisted packages resolve.
+- `preserveSymlinks` and `resolveSymlinkSiblings` keep package identity stable in pnpm/yarn berry style workspaces while still falling back to realpaths for sibling dependencies when needed.
+- `transformer.minifier`, `transformer.inlineRequires`, `serializer.bundleType`, and `server.verifyConnections` are Metro-shaped compatibility fields. The ZNTC dev server does not consume some of them yet, so it may warn and ignore them.
+- `serializer.polyfills` / `serializer.prelude` are Metro serializer-compatible fields. They may stay as empty arrays; adapters can append their own entries.
+- `server.forwardClientLogs` forwards app runtime logs to the dev server terminal, which makes it easier to read terminal logs alongside Rozenite panels.
+
+The Rozenite UI is available through React Native DevTools / Fusebox while the dev server is running. ZNTC wires the `/rozenite/*` middleware paths and RN DevTools endpoints in a Metro-compatible shape.
+
+### Using metro.config.js
+
+If you already keep Rozenite or Expo-related settings in `metro.config.js`, load that file from `zntc.config.ts` and then wrap the result with `withExpo()` / `withRozenite()`.
+
+```ts
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { withRozenite } from "@rozenite/metro";
+import { withExpo } from "@zntc/react-native";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const metroConfigModule = await import("./metro.config.js");
+const metroConfigExport = metroConfigModule.default ?? metroConfigModule;
+const metroConfig =
+  typeof metroConfigExport === "function" ? await metroConfigExport() : await metroConfigExport;
+
+const config = withExpo({
+  ...metroConfig,
+  root: __dirname,
+  projectRoot: __dirname,
+  entry: "index.js",
+  outDir: join(__dirname, ".zntc"),
+  resolver: {
+    ...(metroConfig.resolver ?? {}),
+    nodeModulesPaths: [
+      ...(metroConfig.resolver?.nodeModulesPaths ?? []),
+      join(__dirname, "node_modules"),
+      join(__dirname, "../../node_modules"),
+    ],
+  },
+  server: {
+    ...(metroConfig.server ?? {}),
+    port: 8081,
+    host: "localhost",
+    forwardClientLogs: true,
+  },
+});
+
+export default withRozenite(config as any, {
+  enabled: true,
+  include: ["@rozenite/controls-plugin", "@rozenite/require-profiler-plugin"],
+  projectType: "expo",
+});
+```
+
+Call `withRozenite()` last. That attaches Rozenite endpoints after the middleware chain produced by your Metro config and `withExpo()`.
+
 ### What withExpo() adds
 
 It mirrors `@expo/metro-config`'s opt-in pattern. Calling it merges in:
