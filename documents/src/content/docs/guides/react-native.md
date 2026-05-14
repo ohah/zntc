@@ -492,4 +492,5 @@ console.log(`Listening on ${handle.url}`);
 ## 호환성
 
 - RN `>= 0.83` peer optional. `@zntc/react-native` 가 Hermes / RN runtime 의 HMRClient interface 와 sourceMappingURL 라우트 컨벤션 호환.
-- Bun + Node 22+ 에서 동작. dev server lifecycle 은 SIGINT/SIGTERM graceful shutdown 보장.
+- Node.js 24+ 환경에서 동작하며, Bun 1.3+ 에서도 Node-compatible runtime 으로 사용할 수 있습니다.
+- Dev server lifecycle 은 `process` signal handler 기반으로 SIGINT/SIGTERM graceful shutdown 을 처리합니다.
