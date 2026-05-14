@@ -3036,6 +3036,67 @@ test "entry_error_guard #21: silent_console_error_patterns 다중 패턴 — 모
     try std.testing.expect(std.mem.indexOf(u8, result.output, "for (var i = 0; i < IGNORE.length") != null);
 }
 
+test "react_native re-export getters defer ESM source initialization" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { capture } from './browser-index';
+        \\globalThis.__zntcReExportLazyResult = capture();
+    );
+    try writeFile(tmp.dir, "browser-index.js",
+        \\export { capture } from './core';
+        \\export { feedbackAsyncIntegration } from './feedbackAsync';
+    );
+    try writeFile(tmp.dir, "core.js",
+        \\export function capture() { return 'captured'; }
+    );
+    try writeFile(tmp.dir, "feedbackAsync.js",
+        \\import { buildFeedbackIntegration } from './feedback';
+        \\export const feedbackAsyncIntegration = buildFeedbackIntegration();
+    );
+    try writeFile(tmp.dir, "feedback.js",
+        \\const DOCUMENT = globalThis.WINDOW.document;
+        \\export function buildFeedbackIntegration() { return DOCUMENT; }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const feedback_async = try absPath(&tmp, "feedbackAsync.js");
+    defer std.testing.allocator.free(feedback_async);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .dev_mode = true,
+        .entry_error_guard = true,
+        .tree_shaking = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const eager_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}__zntc_modules[\"{s}\"].fn();}});\n",
+        .{ rt.GUARD_LAMBDA_OPEN, feedback_async },
+    );
+    defer std.testing.allocator.free(eager_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, eager_init) == null);
+
+    const lazy_getter = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "({s}__zntc_modules[\"{s}\"].fn()}}), exports_",
+        .{ rt.GUARD_LAMBDA_OPEN, feedback_async },
+    );
+    defer std.testing.allocator.free(lazy_getter);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_getter) != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "feedbackAsyncIntegration") != null);
+}
+
 test "react_native inlineRequires: defer function-only ESM imports across selector cycles" {
     // Payhere mobile-seller 축소 재현:
     // seller selector 가 함수 안에서만 seller module state 를 읽는데, 그 import 를

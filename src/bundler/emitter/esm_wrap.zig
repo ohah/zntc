@@ -451,7 +451,7 @@ pub fn emitEsmWrappedModule(
                         if (std.mem.eql(u8, name, "default")) continue;
                         if (direct_exports.contains(name)) continue;
 
-                        const getter_val = try makeStarGetterValue(allocator, l, src_mod, src_i, name);
+                        const getter_val = try makeStarGetterValue(allocator, l, src_mod, src_i, name, options);
                         try star_owned.append(allocator, getter_val);
                         try star_entries.append(allocator, .{
                             .name = name,
@@ -463,7 +463,7 @@ pub fn emitEsmWrappedModule(
                     // export * as ns from './dep' → namespace re-export
                     // getter는 소스 모듈의 exports 객체 자체를 참조
                     const getter_val = switch (src_mod.wrap_kind) {
-                        .esm, .none => try src_mod.allocExportsName(allocator),
+                        .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options),
                         .cjs => blk: {
                             const rv = try src_mod.allocRequireName(allocator);
                             defer allocator.free(rv);
@@ -539,7 +539,7 @@ pub fn emitEsmWrappedModule(
                                 }
                             }
 
-                            const getter_val = try makeStarGetterValue(allocator, l, src_mod, si, local_name);
+                            const getter_val = try makeStarGetterValue(allocator, l, src_mod, si, local_name, options);
                             try star_owned.append(allocator, getter_val);
                             break :blk getter_val;
                         }
@@ -773,6 +773,7 @@ pub fn emitEsmWrappedModule(
             // tree_shaker_active 게이트 (metadata.zig:408,438 동일 정책).
             if (l.tree_shaker_active and !src_mod_ptr.is_included) continue;
             re_export_inited.put(src_i, {}) catch {};
+            if (shouldLazyReExportInit(options, src_mod_ptr)) continue;
 
             try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options);
         }
@@ -1151,6 +1152,63 @@ fn collectStarExportNames(
     }
 }
 
+fn shouldLazyReExportInit(options: *const EmitOptions, src_mod: *const Module) bool {
+    return options.platform == .react_native and
+        src_mod.wrap_kind != .none and
+        !(src_mod.wrap_kind == .esm and src_mod.uses_top_level_await);
+}
+
+fn makeLazyEsmGetterValue(
+    allocator: std.mem.Allocator,
+    src_mod: *const Module,
+    target: []const u8,
+    options: *const EmitOptions,
+) ![]const u8 {
+    if (!shouldLazyReExportInit(options, src_mod) or src_mod.wrap_kind != .esm) {
+        return try allocator.dupe(u8, target);
+    }
+
+    const init_call = if (options.dev_mode) blk: {
+        break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
+    } else blk: {
+        const iv = try src_mod.allocInitName(allocator);
+        defer allocator.free(iv);
+        break :blk try std.fmt.allocPrint(allocator, "{s}()", .{iv});
+    };
+    defer allocator.free(init_call);
+
+    const init_expr = if (src_mod.shouldGuard(options.entry_error_guard)) blk: {
+        const guard_name: []const u8 = if (options.minify_whitespace) rt.GUARD_FN_NAME_MIN else rt.GUARD_FN_NAME;
+        break :blk try std.fmt.allocPrint(allocator, "{s}(function(){{return {s}}})", .{ guard_name, init_call });
+    } else try allocator.dupe(u8, init_call);
+    defer allocator.free(init_expr);
+
+    return try std.fmt.allocPrint(allocator, "({s}, {s})", .{ init_expr, target });
+}
+
+fn makeEsmExportGetterValue(
+    allocator: std.mem.Allocator,
+    src_mod: *const Module,
+    name: []const u8,
+    options: *const EmitOptions,
+) ![]const u8 {
+    const ev = try src_mod.allocExportsName(allocator);
+    defer allocator.free(ev);
+    const target = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
+    defer allocator.free(target);
+    return makeLazyEsmGetterValue(allocator, src_mod, target, options);
+}
+
+fn makeNamespaceGetterValue(
+    allocator: std.mem.Allocator,
+    src_mod: *const Module,
+    options: *const EmitOptions,
+) ![]const u8 {
+    const ev = try src_mod.allocExportsName(allocator);
+    defer allocator.free(ev);
+    return makeLazyEsmGetterValue(allocator, src_mod, ev, options);
+}
+
 /// star re-export의 getter 값을 소스 모듈 wrap_kind에 따라 생성한다.
 /// - .none (scope-hoisted): canonical 로컬 변수 이름 (linker rename 반영)
 /// - .esm: "exports_source.name" (exports 객체 프로퍼티 접근)
@@ -1161,6 +1219,7 @@ fn makeStarGetterValue(
     src_mod: *const Module,
     src_i: u32,
     name: []const u8,
+    options: *const EmitOptions,
 ) ![]const u8 {
     switch (src_mod.wrap_kind) {
         .none => {
@@ -1199,9 +1258,7 @@ fn makeStarGetterValue(
             return try allocator.dupe(u8, name);
         },
         .esm => {
-            const ev = try src_mod.allocExportsName(allocator);
-            defer allocator.free(ev);
-            return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
+            return makeEsmExportGetterValue(allocator, src_mod, name, options);
         },
         .cjs => {
             const rv = try src_mod.allocRequireName(allocator);
