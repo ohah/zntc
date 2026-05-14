@@ -161,10 +161,14 @@ pub const Parser = struct {
     is_await_using: bool = false,
     /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
     is_strict_mode: bool = false,
-    /// strict mode가 "use strict" directive에 의해 설정되었는지.
-    /// Unambiguous 모드에서 strict 에러 지연 여부 판단에 사용:
-    /// directive에 의한 strict → 항상 에러, module 자동 strict → 지연 가능.
-    strict_from_directive: bool = false,
+    /// strict mode 가 영구적인지 — unambiguous 해소 결과에 좌우되지 않음.
+    /// `true` 인 경우:
+    ///   1) `"use strict"` directive (script/module 둘 다 유효)
+    ///   2) TS spec 의 implicit strict (`.ts/.tsx/.cts` — D16.1, import/export 유무
+    ///      와 무관하게 strict 유지)
+    /// `addStrictModuleErrorCode` 가 unambiguous 모드에서 지연할지 즉시 발화할지 판단,
+    /// 그리고 `resolveModuleKind` 가 script fallback 시 strict 를 해제할지 결정한다.
+    strict_persistent: bool = false,
     /// 루프 안에 있는지 (continue 유효성 검증용)
     in_loop: bool = false,
     /// switch 안에 있는지 (break 유효성 검증용 — break는 loop OR switch에서 허용)
@@ -333,16 +337,20 @@ pub const Parser = struct {
             // .cts 는 Node 입장에선 CJS 지만 tsc 가 ESM 구문을 받아 module.exports 로
             // transpile. parser 레벨에선 module 로 파싱.
             //
-            // D16: TypeScript spec — 모든 TS 모듈은 implicit strict (tsc/babel/swc/oxc/
-            // rolldown 5개 컨센서스). 이전 ZNTC 는 `.ts` 도 unambiguous 로 파싱해 import/
-            // export 없는 파일을 script 로 fallback → strict reserved binding error 가
-            // 폐기되어 `let/yield/private/static` 등이 binding 자리에서 silent accept.
-            // tsc TS1212/TS1100 과 일관되게 항상 module + strict 로 확정 — ts_unambiguous
-            // 인자는 더 이상 TS 분기에서 사용하지 않음 (.js 분기에서만 의미 있음).
+            // D16: TypeScript spec — 모든 TS 파일은 implicit strict (tsc TS1212/TS1100).
+            // strict 는 `strict_persistent=true` 로 영구화 → `let/yield/private/static`
+            // 등 strict reserved 식별자가 즉시 거부된다 (회귀 가드 D16).
+            //
+            // D16.1: `await` 는 strict 와 무관한 module-only reserved word (ECMAScript
+            // 12.1.1). import/export 가 없는 TS 파일은 TS auto module detection 기준
+            // script 라 await 를 식별자로 허용해야 함 (TSC asyncFunctionDeclaration2/4/11,
+            // asyncArrowFunction4/5 conformance). 따라서 module 판정은 `is_unambiguous`
+            // 로 유지하여 module-only 에러는 import/export 유무에 따라 해소한다.
             self.is_module = true;
             self.scanner.is_module = true;
-            self.is_unambiguous = false;
+            self.is_unambiguous = true;
             self.is_strict_mode = true;
+            self.strict_persistent = true;
         } else if (ts_unambiguous and
             (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx")))
         {
@@ -653,7 +661,7 @@ pub const Parser = struct {
     }
 
     pub fn addStrictModuleErrorCode(self: *Parser, span: Span, message: []const u8, code: ?ErrorCode) !void {
-        if (self.is_unambiguous and !self.strict_from_directive) {
+        if (self.is_unambiguous and !self.strict_persistent) {
             try self.deferred_module_errors.append(self.allocator, .{
                 .span = span,
                 .message = message,
@@ -675,8 +683,8 @@ pub const Parser = struct {
         } else {
             self.is_module = false;
             self.scanner.is_module = false;
-            // module 자동 strict 해제 (directive strict는 유지)
-            if (!self.strict_from_directive) {
+            // module 자동 strict 해제 (directive / TS spec strict 는 유지)
+            if (!self.strict_persistent) {
                 self.is_strict_mode = false;
             }
         }
@@ -1327,7 +1335,10 @@ pub const Parser = struct {
                         try self.addErrorCode(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters", .use_strict_non_simple);
                     }
                     self.is_strict_mode = true;
-                    // "use strict" 이전에 octal escape가 있었으면 retroactive 에러
+                    // `strict_persistent` 는 일부러 설정하지 않음 — 함수 스코프 strict
+                    // 는 enterFunctionContext 의 save/restore 가 함수 종료 시 해제하므로
+                    // module/script 결정에 영향을 줄 수 없다. (프로그램 레벨 prologue 의
+                    // strict 는 statement.zig 에서 `strict_persistent=true` 로 처리.)
                     if (has_prologue_octal) {
                         try self.addErrorCode(prologue_octal_span, "Octal escape sequences are not allowed in strict mode", .octal_escape_strict);
                     }

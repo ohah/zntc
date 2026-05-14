@@ -62,7 +62,7 @@ pub fn parse(self: *Parser) !NodeIndex {
         // 실제 변환은 post-parse (tryConvertToDirective) 에서 수행.
         if (in_directive_prologue and self.isUseStrictDirective()) {
             self.is_strict_mode = true;
-            self.strict_from_directive = true;
+            self.strict_persistent = true;
         }
 
         const stmt = try parseStatement(self);

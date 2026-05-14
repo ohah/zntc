@@ -3366,6 +3366,23 @@ test "TS: object literal method shorthand named get/set/async with generics (D17
     try expectNoParseErrorWithExt("class C { async<T>(): Promise<T> { return null as any; } }", ".ts");
 }
 
+test "TS: await as identifier in script-mode TS file (D16.1)" {
+    // ECMAScript 12.1.1: `await` 는 module-only reserved word — strict mode 와 무관.
+    // TS spec: import/export 없는 TS 파일은 script (auto module detection). 따라서
+    // await 는 식별자로 사용 가능. tsc/babel/swc 모두 통과 (asyncFunctionDeclaration2/4/11,
+    // asyncArrowFunction4/5 TSC conformance).
+    //
+    // 회귀 가드: `.ts` 를 module 로 고정 (`is_unambiguous=false`) 하면 await identifier
+    // 가 즉시 거부됨. await 는 module-only 이므로 strict 영구화와 분리해 처리해야 한다.
+    try expectNoParseErrorWithExt("function f(await) {}", ".ts");
+    try expectNoParseErrorWithExt("function await() {}", ".ts");
+    try expectNoParseErrorWithExt("async function await(): Promise<void> {}", ".ts");
+    try expectNoParseErrorWithExt("var await = () => {};", ".ts");
+    try expectNoParseErrorWithExt("var foo = async (await): Promise<void> => {};", ".ts");
+    // import/export 가 있으면 module 확정 → await 거부 (회귀 가드)
+    try expectParseErrorWithExt("export {}; function f(await) {}", ".ts", .{ .message_contains = "await" });
+}
+
 test "TS: numeric literal type accepts all numeric kinds (D15)" {
     // type-fest `numeric.d.ts` 의 `PositiveInfinity = 1e999;` 패턴.
     // parsePrimaryType 의 numeric 분기에 `.positive_exponential` / `.negative_exponential`
