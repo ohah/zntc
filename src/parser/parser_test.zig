@@ -930,6 +930,23 @@ test "Parser: TS non-null assertion" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: TS non-null assertion as assignment target (postfix ++/-- and =)" {
+    // `@jridgewell/gen-mapping` 의 `set-array.ts` 같은 `indexes[k]!--;` 패턴이
+    // `coverExpressionToAssignmentTarget` 가 `ts_non_null_expression` 을 unwrap
+    // 안 해서 "Invalid assignment target" 으로 fail. ts_as/satisfies 처럼 inner
+    // expression 으로 unwrap 해 valid target 인지 검증.
+    try expectNoParseErrorWithExt("let i = 0; let a: any[] = []; a[i]!--;", ".ts");
+    try expectNoParseErrorWithExt("let i = 0; let a: any[] = []; a[i]!++;", ".ts");
+    try expectNoParseErrorWithExt("let x: any = 1; x!--;", ".ts");
+    try expectNoParseErrorWithExt("let x: any = 1; x!++;", ".ts");
+    // assignment 도 같은 path
+    try expectNoParseErrorWithExt("let x: any = 1; x! = 2;", ".ts");
+    try expectNoParseErrorWithExt("let a: any[] = []; a[0]! = 1;", ".ts");
+    // compound assignment 도 동일 cover path
+    try expectNoParseErrorWithExt("let x: any = 1; x! += 1;", ".ts");
+    try expectNoParseErrorWithExt("let a: any[] = []; a[0]! -= 2;", ".ts");
+}
+
 test "Parser: TS non-null assertion followed by division" {
     // non-null assertion `!` 뒤의 `/`가 regex가 아닌 division으로 파싱되어야 한다
     const cases = [_][]const u8{

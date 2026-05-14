@@ -112,6 +112,13 @@ pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: 
             return try self.coverExpressionToAssignmentTarget(inner, is_top);
         },
 
+        // 6c) TS non-null assertion — 같은 원리. `x!--`, `a[i]!++`, `x! = 1` 같은
+        // 패턴이 TS 에선 valid (TS spec: `NonNullExpression` 은 assignment target).
+        .ts_non_null_expression => {
+            const inner = node.data.unary.operand;
+            return try self.coverExpressionToAssignmentTarget(inner, is_top);
+        },
+
         // 7) meta_property (import.meta, new.target) — 절대로 assignment target이 될 수 없음.
         //    is_top 여부와 무관하게 항상 에러. else 분기는 is_top=false일 때 에러를 내지 않으므로
         //    destructuring 내부([import.meta] = arr)에서 잘못 통과하는 것을 방지.
