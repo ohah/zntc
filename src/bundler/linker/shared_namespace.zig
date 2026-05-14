@@ -121,6 +121,18 @@ pub fn registerNamespaceRewrites(
     else
         null;
     defer if (target_init) |expr| self.allocator.free(expr);
+    // barrel re-export (`export { a, b, c } from './x'`) 에서 같은 source_mod_idx 가
+    // export 마다 반복 → 매번 `allocEsmInitExprForModuleIndex` 가 동일한 init 식을 새로
+    // alloc. 호출자가 owned 한 캐시로 1회 alloc + 재사용. null 결과 (source.wrap_kind
+    // != .esm) 도 캐시해 이중 lookup 회피. 같은 패턴: `cjs_var_cache` (metadata.zig).
+    var source_init_cache = std.AutoHashMap(u32, ?[]const u8).init(self.allocator);
+    defer {
+        var it = source_init_cache.valueIterator();
+        while (it.next()) |value_ptr| {
+            if (value_ptr.*) |expr| self.allocator.free(expr);
+        }
+        source_init_cache.deinit();
+    }
     for (cached_exports) |exp| {
         if (hasNestedBinding(self, importer_mod_idx, exp.exported)) {
             has_shadow = true;
@@ -154,7 +166,7 @@ pub fn registerNamespaceRewrites(
             continue;
         }
         if (self.dev_mode) {
-            if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp)) |rewrite_value| {
+            if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, &source_init_cache)) |rewrite_value| {
                 var owned_by_list = false;
                 errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
                 // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
@@ -559,20 +571,27 @@ fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.All
 /// `target_init` 은 호출자가 미리 1회 계산한 target 모듈의 init 식 (예: `init_X()` 또는
 /// `__zntc_modules["..."].fn()`). dev_mode 의 lazy 런타임에서만 호출되며, 비-dev 호출 경로는
 /// caller 에서 차단된다 (top-level `init_X()` preamble 이 init 을 이미 보장).
+///
+/// `source_init_cache` 는 호출자가 owned. 같은 `source_mod_idx` 가 같은
+/// `registerNamespaceRewrites` 호출 안에서 반복되는 barrel re-export 케이스 대비.
 fn allocNamespaceMemberRewriteValue(
     self: *const Linker,
     target_init: ?[]const u8,
     target_mod_idx: u32,
     exp: NsExportPair,
+    source_init_cache: *std.AutoHashMap(u32, ?[]const u8),
 ) std.mem.Allocator.Error!?[]const u8 {
-    const source_init = if (exp.init_mod) |source_mod_idx|
-        if (source_mod_idx != target_mod_idx)
-            try allocEsmInitExprForModuleIndex(self, source_mod_idx)
-        else
-            null
-    else
-        null;
-    defer if (source_init) |expr| self.allocator.free(expr);
+    const source_init: ?[]const u8 = if (exp.init_mod) |source_mod_idx| blk: {
+        if (source_mod_idx == target_mod_idx) break :blk null;
+        const gop = try source_init_cache.getOrPut(source_mod_idx);
+        if (!gop.found_existing) {
+            // alloc 실패 시 entry 의 value_ptr.* 가 undefined 로 남아 defer 가
+            // 잘못 dereference. 미초기화 entry 제거 후 에러 전파.
+            errdefer _ = source_init_cache.remove(source_mod_idx);
+            gop.value_ptr.* = try allocEsmInitExprForModuleIndex(self, source_mod_idx);
+        }
+        break :blk gop.value_ptr.*;
+    } else null;
 
     const sep = if (self.minify_whitespace) "," else ", ";
     if (target_init) |target_expr| {
