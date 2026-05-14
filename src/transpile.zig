@@ -1124,6 +1124,16 @@ pub fn transpileWithCallback(
     );
 }
 
+/// `.d.ts` / `.d.mts` / `.d.cts` 는 declaration-only 파일 — 모든 runtime 의미가
+/// 없는 type-only 컨텐츠라 transpile 결과가 빈 출력. parse/transform/codegen 단계
+/// 자체를 skip 하는 게 정확 (tsc/Babel 동작과 일치). D12 의 parser 측 ambient 면제
+/// 와 별개로, output 차원에서도 ambient declaration 을 emit 하지 않도록 한다.
+fn isDeclarationFile(file_path: []const u8) bool {
+    return std.mem.endsWith(u8, file_path, ".d.ts") or
+        std.mem.endsWith(u8, file_path, ".d.mts") or
+        std.mem.endsWith(u8, file_path, ".d.cts");
+}
+
 fn transpileWithCallbackInternal(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -1132,6 +1142,9 @@ fn transpileWithCallbackInternal(
     on_error: ?ErrorCallback,
     fast_path_disabled: bool,
 ) TranspileError!TranspileResult {
+    // `.d.ts` declaration 파일: 전체 type-only → 빈 출력 (D12.5).
+    if (isDeclarationFile(file_path)) return .{ .code = try allocator.dupe(u8, "") };
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -1974,6 +1987,48 @@ test "TS auto type-only export: declaration merging preserves value binding" {
 // preset-typescript 동작). parser 가 top-level declare 를 strip 해 AST 에 사라지므로
 // markAutoTypeOnlyExportSpecifiers 가 별도 sideband (`ast.declare_only_names`) 에서
 // name 을 조회해야 한다.
+test "Transpile: .d.ts declaration file emits empty output (D12.5)" {
+    // tsc/Babel: `.d.ts` 는 declaration-only 파일이라 transpile 결과가 빈 출력.
+    // 이전 ZNTC 는 ambient const initializer 면제만 처리하고 codegen 단계에서
+    // 그대로 emit 해 `export const x;` 같은 invalid JS 가 나옴.
+    try expectTranspileOutput(
+        \\export const urlAlphabet: string;
+        \\export const nanoid: () => string;
+        \\
+    ,
+        "",
+        "index.d.ts",
+        .{},
+    );
+
+    // `.d.mts` / `.d.cts` 동일 처리
+    try expectTranspileOutput(
+        \\export const x: number;
+    ,
+        "",
+        "lib.d.mts",
+        .{},
+    );
+
+    try expectTranspileOutput(
+        \\export const x: number;
+    ,
+        "",
+        "lib.d.cts",
+        .{},
+    );
+
+    // 일반 `.ts` 는 영향 없음 (regression guard)
+    try expectTranspileOutput(
+        \\export const x = 1;
+        \\
+    ,
+        "export const x = 1;\n",
+        "input.ts",
+        .{},
+    );
+}
+
 test "TS auto type-only export: top-level declare bindings elide rename specifier (D13)" {
     // export declare class — Babel: `export {};` (ZNTC codegen 은 빈 export 통째 drop)
     try expectTranspileOutput(
