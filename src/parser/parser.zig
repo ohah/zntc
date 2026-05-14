@@ -1703,20 +1703,24 @@ pub const Parser = struct {
         return ts.tryParseTypeAnnotation(self);
     }
 
-    /// TS `this: Type` 파라미터 스킵. 함수의 첫 번째 파라미터가 `this`이면
-    /// `this` + `: Type` + 선택적 `,`를 소비하고 파라미터 리스트에 추가하지 않는다.
-    /// TS this parameter: `this: Type` → 스킵 (런타임에 불필요).
-    /// `this:` 패턴만 감지 — bare `this`는 일반 파라미터로 처리.
+    /// TS `this` 파라미터 스킵. 함수의 첫 번째 파라미터가 `this` 면
+    /// `this` (+ 선택적 `: Type`) + 선택적 `,` 를 소비하고 파라미터 리스트에
+    /// 추가하지 않는다 — 런타임에 불필요.
+    /// 다음 토큰이 `:` (`this: Type`), `,` (`this, next`), `)` (`this)` 단독 마지막
+    /// 파라미터) 중 하나면 TS this parameter 로 인식. 그 외 (예: `this.x`,
+    /// `this = ...`) 는 일반 expression context 라 fall-through.
+    /// esbuild/oxc 와 일치 — bare `this` (no type annotation) 도 valid TS.
     pub fn trySkipThisParameter(self: *Parser) ParseError2!void {
-        if (self.current() == .kw_this) {
-            const next = try self.peekNextKind();
-            if (next == .colon) {
-                try self.rejectTypeScriptSyntaxInJavaScript("TypeScript this parameters are not allowed when parsing as JavaScript");
-                try self.advance(); // skip 'this'
-                _ = try self.tryParseTypeAnnotation(); // skip ': Type'
-                _ = try self.eat(.comma);
-            }
+        if (self.current() != .kw_this) return;
+        const next = try self.peekNextKind();
+        switch (next) {
+            .colon, .comma, .r_paren => {},
+            else => return,
         }
+        try self.rejectTypeScriptSyntaxInJavaScript("TypeScript this parameters are not allowed when parsing as JavaScript");
+        try self.advance(); // skip 'this'
+        _ = try self.tryParseTypeAnnotation(); // skip ': Type' 있으면
+        _ = try self.eat(.comma);
     }
 
     pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
