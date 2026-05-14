@@ -721,8 +721,13 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
             try self.advance();
         }
 
-        // name: Type 또는 name?: Type — 이름 뒤에 : 또는 ?: 가 오면 named param
-        if (self.current() == .identifier) {
+        // name: Type 또는 name?: Type — 이름 뒤에 : 또는 ?: 가 오면 named param.
+        // 호출처 `parseParenOrFunctionType` 가 contextual keyword (async/from/of/target/meta/let 등)
+        // 도 named-param 후보로 분류하므로 여기 condition 도 동일하게 받아야 한다 — 더 좁게 받으면
+        // fall-through 후 positional path 가 키워드를 type expression 으로 잘못 파싱해 fail한다.
+        const can_be_param_name = self.current() == .identifier or
+            (self.current().isKeyword() and !self.current().isReservedKeyword());
+        if (can_be_param_name) {
             const next = try self.peekNextKind();
             if (next == .colon or next == .question) {
                 const name_span = self.scanner.token.span;
