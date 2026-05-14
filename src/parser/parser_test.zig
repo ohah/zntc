@@ -3319,6 +3319,28 @@ test "TS: typed arrow with default-value parameters" {
     try expectNoParseErrorWithExt("const f = (x = 0): number => x;", ".ts");
 }
 
+test "TS: numeric literal type accepts all numeric kinds (D15)" {
+    // type-fest `numeric.d.ts` 의 `PositiveInfinity = 1e999;` 패턴.
+    // parsePrimaryType 의 numeric 분기에 `.positive_exponential` / `.negative_exponential`
+    // / `.binary` / `.octal` 누락이 root cause. `isNumericLiteral()` 로 일반화.
+    try expectNoParseErrorWithExt("export type T = 1e3;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 1e999;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 1e-10;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 0b101;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 0o77;", ".ts");
+    // 음수 리터럴 — `-1e999`, `-0b101` 등
+    try expectNoParseErrorWithExt("export type T = -1e999;", ".ts");
+    try expectNoParseErrorWithExt("export type T = -1e-10;", ".ts");
+    try expectNoParseErrorWithExt("export type T = -0b101;", ".ts");
+    try expectNoParseErrorWithExt("export type T = -0o77;", ".ts");
+    // 기존 통과 케이스 회귀 가드
+    try expectNoParseErrorWithExt("export type T = 1;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 1.5;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 0xff;", ".ts");
+    try expectNoParseErrorWithExt("export type T = 1n;", ".ts");
+    try expectNoParseErrorWithExt("export type T = -1;", ".ts");
+}
+
 test "TS: type predicate subject accepts contextual keyword (D14)" {
     // immer `src/utils/common.ts` 의 `(target: any): target is Map<...> => ...` 패턴.
     // `target` 은 ECMAScript contextual keyword (`new.target` 용) 라 `.kw_target` 으로
