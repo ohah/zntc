@@ -121,6 +121,7 @@ const OUTCOMES = [
   "MISMATCH_false_accept",
   "HANG",
   "OK_policy_strict", // ZNTC implicit-module-strict 가 의도적으로 거부 — TSC `@strict: false` fixture
+  "OK_spec_strict", // ECMAScript spec early-error — ZNTC + esbuild + oxc 일치 거부, TSC 만 type-error 격하
 ] as const;
 type Outcome = (typeof OUTCOMES)[number];
 
@@ -137,6 +138,20 @@ const STRICT_ERROR_KEYWORDS = [
   "in module code",
   "in non-async function",
   "not allowed in a module",
+];
+
+/// ECMAScript spec early-error 인 ZNTC 거부 메시지. esbuild + oxc 모두 동일하게
+/// 거부하지만 TSC 만 type-system 진단 (TS2300/TS2339/TS2392/TS2500/TS2699 등)
+/// 으로 격하해 emit 한다. ZNTC 가 industry consensus 따라 spec 준수 거부.
+const SPEC_STRICT_ERROR_KEYWORDS = [
+  // 의도적으로 broad — oracle=accept 이라는 사전 조건이 있어, TSC 의
+  // permissive 가 spec early-error (let/const/class/private 중복) 를
+  // type-error 로 격하한 경우만 매치된다 (TS2300).
+  "has already been declared",
+  "must be declared in an enclosing class", // private name scope (TS2339)
+  "may only have one constructor", // multiple ctor implementations (TS2392)
+  "Static class field cannot be named", // prototype as static (TS2699)
+  "Class field cannot be named", // constructor as field (TS18006)
 ];
 
 interface Fixture {
@@ -277,6 +292,11 @@ function classify(oracle: Oracle, run: ZntcRun, fixtureHead: string): Outcome {
     ) {
       return "OK_policy_strict";
     }
+    // ZNTC 가 ECMAScript spec early-error 로 거부 (esbuild/oxc 일치), TSC 만
+    // type-system 진단으로 격하한 경우. fixture directive 무관.
+    if (SPEC_STRICT_ERROR_KEYWORDS.some((kw) => run.firstError.includes(kw))) {
+      return "OK_spec_strict";
+    }
     return "MISMATCH_false_reject";
   }
   return accepted ? "MISMATCH_false_accept" : "OK_reject";
@@ -390,8 +410,9 @@ async function main() {
   for (const r of results) counts[r.outcome]++;
 
   const total = results.length;
-  // OK_policy_strict 도 의도된 동작이므로 match rate 에 포함.
-  const matched = counts.OK_pass + counts.OK_reject + counts.OK_policy_strict;
+  // OK_policy_strict / OK_spec_strict 도 의도된 동작이므로 match rate 에 포함.
+  const matched =
+    counts.OK_pass + counts.OK_reject + counts.OK_policy_strict + counts.OK_spec_strict;
   const okRate = total > 0 ? ((matched / total) * 100).toFixed(2) : "0";
 
   console.log("\n=== TSC Conformance Audit (single-file) ===");
@@ -402,6 +423,7 @@ async function main() {
   console.log(`false_accept (FA): ${counts.MISMATCH_false_accept}  ← syntax laxness 후보 (P1)`);
   console.log(`HANG:              ${counts.HANG}  ← parser 무한 루프 후보 (P0)`);
   console.log(`OK_policy_strict:     ${counts.OK_policy_strict}  ← TS implicit-strict 의도된 divergence (PR #3180)`);
+  console.log(`OK_spec_strict:       ${counts.OK_spec_strict}  ← spec early-error (esbuild/oxc 일치), TSC type-격하`);
   console.log(`Match rate:        ${okRate}%`);
   console.log(`Elapsed:           ${elapsedSec}s  (zntc timeout per fixture: ${ZNTC_TIMEOUT_MS}ms)`);
 
