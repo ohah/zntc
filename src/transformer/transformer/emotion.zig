@@ -113,6 +113,7 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
     if (!self.options.emotion) return;
 
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
+    if (x.is_type_only) return; // type-only import 는 runtime binding 생성 안 함
     if (x.source.isNone()) return;
     const source_node = self.ast.getNode(x.source);
     if (source_node.tag != .string_literal) return;

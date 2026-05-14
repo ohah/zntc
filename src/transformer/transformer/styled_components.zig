@@ -96,6 +96,7 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     if (!self.options.styled_components) return;
 
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
+    if (x.is_type_only) return; // type-only import 는 runtime binding 생성 안 함
     if (x.source.isNone()) return;
     const source_node = self.ast.getNode(x.source);
     if (source_node.tag != .string_literal) return;
@@ -1537,6 +1538,7 @@ fn collectBindingsFromStatement(
     switch (node.tag) {
         .import_declaration => {
             const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
+            if (x.is_type_only) return; // type-only import 는 runtime binding 등록 안 함
             var i: u32 = 0;
             while (i < x.specs_len) : (i += 1) {
                 const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);

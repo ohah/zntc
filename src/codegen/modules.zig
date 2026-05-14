@@ -12,6 +12,11 @@ pub fn emitImport(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
+    // `import type { ... }` / `import type X from ...` 같은 declaration-level type-only
+    // 는 codegen 단계에서 전체 strip. parser 가 AST 를 보존하는 이유는 semantic 단계의
+    // export 검증 + Phase D 의 type-only elision 정보 통합 — runtime 출력엔 흔적 X.
+    if (x.is_type_only) return;
+
     if (self.options.module_format == .cjs) {
         return emitImportCJS(self, x.source, x.specs_start, x.specs_len);
     }
