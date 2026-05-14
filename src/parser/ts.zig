@@ -601,9 +601,10 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     // asserts 프레디케이트: asserts x, asserts x is Type, asserts this is Type
+    // subject 는 contextual keyword (target/async/...) 도 받는다.
     if (self.current() == .identifier and self.isContextual("asserts")) {
         const next = try self.peekNextKind();
-        if (next == .identifier or next == .kw_this) {
+        if (next.canBeBindingName() or next == .kw_this) {
             try self.advance(); // skip 'asserts'
             const param_name = try parsePredicateSubject(self);
             // 선택적 is Type
@@ -621,8 +622,10 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
     }
 
     // x is Type 또는 this is Type 판별
-    // saveState/restoreState로 speculative 파싱 — 'is' 확인 후 commit 또는 rollback
-    if (self.current() == .identifier or self.current() == .kw_this) {
+    // saveState/restoreState로 speculative 파싱 — 'is' 확인 후 commit 또는 rollback.
+    // contextual keyword (target/async/let/get/set/of/from/...) 도 binding subject 로
+    // 허용 — D14: `(target: any): target is Map<...>` 패턴 (immer common.ts).
+    if (self.current().canBeBindingName() or self.current() == .kw_this) {
         const next = try self.peekNextKind();
         if (next == .identifier) {
             const saved = self.saveState();
@@ -648,7 +651,8 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
     return parseType(self);
 }
 
-/// asserts/is 프레디케이트의 subject 파싱: this 또는 identifier
+/// asserts/is 프레디케이트의 subject 파싱: this 또는 identifier (contextual keyword
+/// 포함 — target/async/let/get/set/of/from/source/... 도 binding 자리에 허용).
 fn parsePredicateSubject(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .kw_this) {
         const this_span = self.currentSpan();
