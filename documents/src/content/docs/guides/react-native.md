@@ -136,6 +136,54 @@ export default {
 };
 ```
 
+### 기존 metro.config.js 재사용
+
+ZNTC 는 `metro.config.js` 를 자동 탐색하지 않습니다. 기존 Metro 설정을 유지하려면 `zntc.config.ts` 에서 직접 import 한 뒤, ZNTC 가 필요한 entry/server 기본값만 덧붙이세요. Metro config 가 객체를 export 해도 되고, async function 을 export 해도 됩니다.
+
+```ts
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const metroConfigModule = await import("./metro.config.js");
+const metroConfigExport = metroConfigModule.default ?? metroConfigModule;
+const metroConfig =
+  typeof metroConfigExport === "function" ? await metroConfigExport() : await metroConfigExport;
+
+export default {
+  ...metroConfig,
+  root: __dirname,
+  projectRoot: __dirname,
+  entry: "index.js",
+  dev: true,
+  minify: false,
+  resolver: {
+    ...(metroConfig.resolver ?? {}),
+    nodeModulesPaths: [...(metroConfig.resolver?.nodeModulesPaths ?? [])],
+  },
+  transformer: {
+    ...(metroConfig.transformer ?? {}),
+    babel: metroConfig.transformer?.babel ?? {},
+  },
+  serializer: {
+    ...(metroConfig.serializer ?? {}),
+    polyfills: metroConfig.serializer?.polyfills ?? [],
+    prelude: metroConfig.serializer?.prelude ?? [],
+  },
+  server: {
+    ...(metroConfig.server ?? {}),
+    port: 8081,
+    host: "localhost",
+    useGlobalHotkey: true,
+    forwardClientLogs: true,
+  },
+};
+```
+
+이 패턴은 Metro config 를 source of truth 로 두면서 ZNTC dev server 를 붙일 때 유용합니다. ZNTC 는 Metro shape 중 `resolver`, `transformer`, `serializer`, `server`, `watchFolders`, `sourcemapSourcesRoot` 를 읽어 RN bundle input 으로 평탄화합니다. 아직 지원하지 않는 Metro 전용 필드는 경고 후 무시될 수 있습니다.
+
 ## 기본 빌드 명령
 
 ```bash
@@ -356,6 +404,37 @@ dev server 가 일부 기능에 lazy load. 미설치 시 graceful skip:
 bun add -D @react-native-community/cli-server-api @react-native/dev-middleware
 ```
 
+### Rozenite DevTools
+
+Rozenite 는 Metro middleware 를 통해 RN DevTools 에 패널을 추가합니다. ZNTC dev server 는 Metro 의 `server.enhanceMiddleware` 호환 경로를 지원하므로 `@rozenite/metro` 의 `withRozenite()` wrapper 를 `zntc.config.ts` 에 그대로 사용할 수 있습니다.
+
+```ts
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { withRozenite } from "@rozenite/metro";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const config = {
+  root: __dirname,
+  entry: "index.js",
+  server: {
+    port: 8081,
+    host: "localhost",
+    forwardClientLogs: true,
+  },
+};
+
+export default withRozenite(config as any, {
+  enabled: true,
+  include: ["@rozenite/controls-plugin", "@rozenite/require-profiler-plugin"],
+});
+```
+
+더 완전한 Expo 예제와 각 옵션 설명은 [React Native + Expo — Rozenite DevTools](/zntc/guides/react-native-expo/#rozenite-devtools) 를 참조하세요.
+
 ### 키보드 단축키
 
 dev server 터미널에서 (Metro 호환):
@@ -413,4 +492,5 @@ console.log(`Listening on ${handle.url}`);
 ## 호환성
 
 - RN `>= 0.83` peer optional. `@zntc/react-native` 가 Hermes / RN runtime 의 HMRClient interface 와 sourceMappingURL 라우트 컨벤션 호환.
-- Bun + Node 22+ 에서 동작. dev server lifecycle 은 SIGINT/SIGTERM graceful shutdown 보장.
+- Node.js 24+ 환경에서 동작하며, Bun 1.3+ 에서도 Node-compatible runtime 으로 사용할 수 있습니다.
+- Dev server lifecycle 은 `process` signal handler 기반으로 SIGINT/SIGTERM graceful shutdown 을 처리합니다.
