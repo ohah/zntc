@@ -613,30 +613,49 @@ fn allocEsmInitExprForModuleIndex(self: *const Linker, mod_idx: u32) std.mem.All
 }
 
 pub fn allocEsmInitExpr(self: *const Linker, target_mod: *const Module) std.mem.Allocator.Error![]const u8 {
-    const guard_close_expr = "})";
     const guard = target_mod.shouldGuard(self.entry_error_guard);
-    if (self.dev_mode) {
-        if (guard) {
-            return try std.fmt.allocPrint(
-                self.allocator,
-                "{s}__zntc_modules[\"{s}\"].fn(){s}",
-                .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, target_mod.dev_id, guard_close_expr },
-            );
-        }
-        return try std.fmt.allocPrint(self.allocator, "__zntc_modules[\"{s}\"].fn()", .{target_mod.dev_id});
-    }
-
-    const init_name = try target_mod.allocInitName(self.allocator);
-    defer self.allocator.free(init_name);
-    if (guard) {
-        return try std.fmt.allocPrint(
-            self.allocator,
-            "{s}{s}(){s}",
-            .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, init_name, guard_close_expr },
-        );
-    }
-    return try std.fmt.allocPrint(self.allocator, "{s}()", .{init_name});
+    // 일반 init 식 길이가 30~90B (`__zntc_modules["..."].fn()` + guard wrap).
+    // 96B 로 1회 alloc 하면 grow realloc 없이 toOwnedSlice 시 trim 만 발생.
+    var buf = try std.ArrayList(u8).initCapacity(self.allocator, 96);
+    errdefer buf.deinit(self.allocator);
+    var adapter = ArrayListWriter{ .buf = &buf, .allocator = self.allocator };
+    try writeEsmInitExprBody(self, &adapter, target_mod, guard);
+    if (guard) try buf.appendSlice(self.allocator, "})");
+    return try buf.toOwnedSlice(self.allocator);
 }
+
+/// `appendEsmInitCall` (statement) / `allocEsmInitExpr` (expression) 의 공통 init 식 본문.
+/// await prefix 와 close 토큰 (statement `;});\n`/`;\n` vs expression `})`/없음) 만
+/// caller 가 결정한다. `guard` 는 양쪽 caller 가 close 토큰 결정 시에도 필요해 외부에서 1회 계산.
+pub fn writeEsmInitExprBody(
+    self: *const Linker,
+    writer: anytype,
+    target_mod: *const Module,
+    guard: bool,
+) !void {
+    if (guard) try writer.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
+    if (self.dev_mode) {
+        try writer.write("__zntc_modules[\"");
+        try writer.write(target_mod.dev_id);
+        try writer.write("\"].fn()");
+    } else {
+        const init_name = try target_mod.allocInitName(self.allocator);
+        defer self.allocator.free(init_name);
+        try writer.write(init_name);
+        try writer.write("()");
+    }
+}
+
+/// anytype 슬롯 어댑터 — PreambleWriter 와 동일한 `.write([]const u8) !void` 인터페이스로
+/// ArrayList 에 모은다. PreambleWriter 직접 사용 시 `toOwned` 가 dupe + deinit 라 alloc 1회
+/// 추가 → toOwnedSlice 이전을 쓰기 위해 별도 어댑터.
+const ArrayListWriter = struct {
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    pub inline fn write(self: *ArrayListWriter, s: []const u8) std.mem.Allocator.Error!void {
+        try self.buf.appendSlice(self.allocator, s);
+    }
+};
 
 /// JS 예약어인 export 이름은 프로퍼티 키에 따옴표 필요.
 fn needsPropertyQuoteForExport(name: []const u8) bool {
