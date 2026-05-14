@@ -373,6 +373,15 @@ pub const Kind = enum(u8) {
         return self.inRange(.kw_true, .kw_null);
     }
 
+    /// binding identifier 자리에 올 수 있는 토큰인지 — `.identifier` 와 contextual /
+    /// strict reserved keyword (async/from/of/let/yield/source/target/meta 등) 까지.
+    /// ES reserved (`await/with/...`) 만 제외. true/false/null literal 도 포함하므로
+    /// strict mode binding (`let true = ...` 같은) 거부가 필요하면 caller 가
+    /// `.isLiteralKeyword()` 도 추가로 검사한다.
+    pub fn canBeBindingName(self: Kind) bool {
+        return self == .identifier or (self.isKeyword() and !self.isReservedKeyword());
+    }
+
     /// 숫자 리터럴인지 (decimal..hex_bigint)
     pub fn isNumericLiteral(self: Kind) bool {
         return self.inRange(.decimal, .hex_bigint);

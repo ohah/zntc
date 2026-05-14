@@ -322,9 +322,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // TS import-equals: import x = require('y') → const x = require('y')
     // import x = Namespace.Member → const x = Namespace.Member
-    if (self.current() == .identifier or
-        (self.current().isKeyword() and !self.current().isReservedKeyword()))
-    {
+    if (self.current().canBeBindingName()) {
         const next = try self.peekNextKind();
         if (next == .eq) {
             self.ast.has_ts_import_equals = true;
@@ -362,9 +360,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // default import: import foo from "module"
     // contextual keyword (get/set/number/string/object/type 등)도 import 이름으로 유효
     var has_default = false;
-    if (self.current() == .identifier or
-        (self.current().isKeyword() and !self.current().isReservedKeyword()))
-    {
+    if (self.current().canBeBindingName()) {
         const next = try self.peekNextKind();
         if (next == .comma or next == .kw_from) {
             const spec_span = self.currentSpan();

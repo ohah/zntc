@@ -1293,11 +1293,10 @@ fn isFunctionTypeParam(self: *Parser) bool {
 }
 
 fn isFunctionTypeParamName(kind: @import("../lexer/token.zig").Kind) bool {
-    return kind == .identifier or
+    return kind.canBeBindingName() or
         kind == .escaped_keyword or
         kind == .escaped_strict_reserved or
-        kind == .kw_this or
-        (kind.isKeyword() and !kind.isReservedKeyword());
+        kind == .kw_this;
 }
 
 /// 함수 타입 파라미터 리스트를 파싱하여 함수 타입 노드 생성

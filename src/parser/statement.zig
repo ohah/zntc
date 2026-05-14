@@ -388,17 +388,16 @@ fn isLetDeclarationStart(self: *Parser) ParseError2!bool {
         return false;
     }
     // 줄바꿈 없이 바로 오는 경우: identifier, [, {, escaped_strict_reserved → LexicalDeclaration
-    return next.kind == .identifier or next.kind == .l_bracket or next.kind == .l_curly or
+    return next.kind == .l_bracket or next.kind == .l_curly or
         next.kind == .escaped_strict_reserved or
-        (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
+        (next.kind.canBeBindingName() and !next.kind.isLiteralKeyword());
 }
 
 /// `using` 뒤에 줄바꿈 없이 identifier가 오면 UsingDeclaration으로 해석한다.
 fn isUsingDeclarationStart(self: *Parser) ParseError2!bool {
     const next = try self.peekNext();
     if (next.has_newline_before) return false;
-    return next.kind == .identifier or
-        (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
+    return next.kind.canBeBindingName() and !next.kind.isLiteralKeyword();
 }
 
 /// `await` + `using` + identifier (줄바꿈 없이) → AwaitUsingDeclaration
@@ -426,10 +425,10 @@ fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
 fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
     // identifier/keyword: statement — labeled statement 판별
     // kw_await/kw_yield도 조건부로 식별자/label 사용 가능 (non-async/non-generator)
-    if (self.current() == .identifier or self.current() == .escaped_keyword or
+    if (self.current() == .escaped_keyword or
         self.current() == .escaped_strict_reserved or
         self.current() == .kw_await or self.current() == .kw_yield or
-        (self.current().isKeyword() and !self.current().isReservedKeyword() and !self.current().isLiteralKeyword()))
+        (self.current().canBeBindingName() and !self.current().isLiteralKeyword()))
     {
         const peek = try self.peekNext();
         if (peek.kind == .colon) {
