@@ -29,7 +29,9 @@ const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
-const allocEsmInitExpr = @import("shared_namespace.zig").allocEsmInitExpr;
+const shared_ns = @import("shared_namespace.zig");
+const allocEsmInitExpr = shared_ns.allocEsmInitExpr;
+const writeEsmInitExprBody = shared_ns.writeEsmInitExprBody;
 
 inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Interop {
     if (self.graph.resolve_cache.platform == .react_native) return .babel;
@@ -111,17 +113,7 @@ fn appendEsmInitCall(self: *const Linker, preamble: anytype, target_mod: *const 
     const is_tla = target_mod.uses_top_level_await;
     const guard = target_mod.shouldGuard(self.entry_error_guard);
     if (is_tla) try preamble.write("await ");
-    if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
-    if (self.dev_mode) {
-        try preamble.write("__zntc_modules[\"");
-        try preamble.write(target_mod.dev_id);
-        try preamble.write("\"].fn()");
-    } else {
-        const init_name = try target_mod.allocInitName(self.allocator);
-        defer self.allocator.free(init_name);
-        try preamble.write(init_name);
-        try preamble.write("()");
-    }
+    try writeEsmInitExprBody(self, preamble, target_mod, guard);
     try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
 }
 
