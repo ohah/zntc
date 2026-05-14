@@ -35,6 +35,29 @@ test "CJS: single CJS module wrapped with __commonJS" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
 }
 
+test "CJS: Object.defineProperty(module, exports) wrapped with __commonJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "const lib = require('./lib.js');\nconsole.log(lib.value);");
+    try writeFile(tmp.dir, "lib.js",
+        \\function getExports() { return { value: 123 }; }
+        \\Object.defineProperty(module, "exports", { enumerable: true, get: getExports });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var require_lib = __commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Object.defineProperty(module, \"exports\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var init_lib = __esm") == null);
+}
+
 test "CJS: ESM imports default from CJS" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

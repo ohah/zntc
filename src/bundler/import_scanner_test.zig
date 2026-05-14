@@ -799,6 +799,18 @@ test "CJS: Object.defineProperty(module.exports) detected" {
     try std.testing.expect(!result.has_esm_syntax);
 }
 
+test "CJS: Object.defineProperty(module, 'exports') detected" {
+    const alloc = std.testing.allocator;
+    const result = try parseAndExtractFull(
+        alloc,
+        "Object.defineProperty(module, 'exports', { enumerable: true, get: getExports });",
+    );
+    defer alloc.free(result.records);
+
+    try std.testing.expect(result.has_module_exports);
+    try std.testing.expect(!result.has_esm_syntax);
+}
+
 test "CJS: ESM syntax flag set" {
     const alloc = std.testing.allocator;
     // is_module=false에서도 ESM 구문 감지 테스트를 위해 parseAndExtract 사용

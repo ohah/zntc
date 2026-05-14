@@ -1834,6 +1834,18 @@ describe('export type/interface + module.exports → CJS 판별 (#713)', () => {
     expect(result.runOutput).toBe('33');
   });
 
+  test('CJS: Object.defineProperty(module, "exports") → __commonJS 래핑', async () => {
+    const result = await bundleAndRun(
+      {
+        'entry.js': `const lib = require("./lib"); console.log(lib.value);`,
+        'lib.js': `function getExports() { return { value: 123 }; }\nObject.defineProperty(module, "exports", { enumerable: true, get: getExports });`,
+      },
+      'entry.js',
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe('123');
+  });
+
   test('TS: export type + export const 혼합 → value export 유지', async () => {
     const result = await bundleAndRun(
       {
