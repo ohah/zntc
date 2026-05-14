@@ -89,7 +89,8 @@ test "view_config_emitter: bubble events → bubblingEventTypes with phasedRegis
     const out = try emitter.emit(shape, std.testing.allocator);
     defer std.testing.allocator.free(out);
 
-    // event 도 validAttributes 에 등록 (Metro 동등).
+    // event validAttributes 는 RN 0.83 codegen 과 동일하게 platform wrapper 로 감싼다.
+    try expectContains(out, "ConditionallyIgnoredEventHandlers({");
     try expectContains(out, "onChange: true");
     try expectContains(out, "bubblingEventTypes: {");
     try expectContains(out, "topChange: { phasedRegistrationNames: { bubbled: 'onChange', captured: 'onChangeCapture' } }");
@@ -124,6 +125,9 @@ test "view_config_emitter: mixed bubble + direct events" {
     try expectContains(out, "topChange:");
     try expectContains(out, "directEventTypes: {");
     try expectContains(out, "topScrollCapture:");
+    try expectContains(out, "ConditionallyIgnoredEventHandlers({");
+    try expectContains(out, "onChange: true");
+    try expectContains(out, "onScrollCapture: true");
 }
 
 test "view_config_emitter: dash-containing key gets quoted" {

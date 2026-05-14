@@ -93,12 +93,15 @@ fn parseKeysFromExpr(
 ) !std.StringArrayHashMapUnmanaged(void) {
     var keys: std.StringArrayHashMapUnmanaged(void) = .{};
     errdefer keys.deinit(alloc);
-    if (body.len < 2) return keys;
+    const trimmed = std.mem.trim(u8, body, " \t\n\r");
+    if (trimmed.len < 2) return keys;
 
-    if (body[0] == '{' and body[body.len - 1] == '}') {
-        try collectKeysIntoSet(alloc, body[1 .. body.len - 1], &keys);
-    } else if (body[0] == '(' and body[body.len - 1] == ')') {
-        try collectFromCallArgs(alloc, body[1 .. body.len - 1], &keys);
+    if (trimmed[0] == '{' and trimmed[trimmed.len - 1] == '}') {
+        try collectKeysIntoSet(alloc, trimmed[1 .. trimmed.len - 1], &keys);
+    } else if (trimmed[0] == '(' and trimmed[trimmed.len - 1] == ')') {
+        try collectFromCallArgs(alloc, trimmed[1 .. trimmed.len - 1], &keys);
+    } else if (isCallLikeExpr(trimmed)) {
+        try collectObjectLiteralsFromExpr(alloc, trimmed, &keys);
     }
     return keys;
 }
@@ -229,6 +232,69 @@ fn maybeFlattenArg(
     try collectKeysIntoSet(alloc, trimmed[1 .. trimmed.len - 1], keys);
 }
 
+fn isCallLikeExpr(expr: []const u8) bool {
+    var i: usize = 0;
+    var in_string: u8 = 0;
+    while (i < expr.len) {
+        const c = expr[i];
+        if (in_string != 0) {
+            if (c == '\' and i + 1 < expr.len) {
+                i += 2;
+                continue;
+            }
+            if (c == in_string) in_string = 0;
+            i += 1;
+            continue;
+        }
+        switch (c) {
+            ''', '"' => {
+                in_string = c;
+                i += 1;
+            },
+            '(' => return true,
+            else => i += 1,
+        }
+    }
+    return false;
+}
+
+fn collectObjectLiteralsFromExpr(
+    alloc: std.mem.Allocator,
+    expr: []const u8,
+    keys: *std.StringArrayHashMapUnmanaged(void),
+) CollectError!void {
+    var i: usize = 0;
+    var in_string: u8 = 0;
+    while (i < expr.len) {
+        const c = expr[i];
+        if (in_string != 0) {
+            if (c == '\' and i + 1 < expr.len) {
+                i += 2;
+                continue;
+            }
+            if (c == in_string) in_string = 0;
+            i += 1;
+            continue;
+        }
+        switch (c) {
+            ''', '"' => {
+                in_string = c;
+                i += 1;
+            },
+            '{' => {
+                const end = skipBalanced(expr, i) orelse expr.len;
+                try collectKeysIntoSet(alloc, expr[i + 1 .. end - 1], keys);
+                i = end;
+            },
+            '[' => {
+                i = skipBalanced(expr, i) orelse expr.len;
+            },
+            '(' => i += 1,
+            else => i += 1,
+        }
+    }
+}
+
 /// `body[start]` 가 여는 괄호 (`{`/`[`/`(`) 일 때, 매칭하는 닫는 괄호 다음 위치 반환.
 /// string literal escape 인식.
 fn skipBalanced(body: []const u8, start: usize) ?usize {
@@ -309,23 +375,31 @@ fn extractSection(body: []const u8, key: []const u8) ?[]const u8 {
                         var v = j + 1;
                         while (v < inner.len and std.ascii.isWhitespace(inner[v])) v += 1;
                         if (v >= inner.len) return null;
-                        // value 가 object literal / array / call 이면 매칭 본체 반환.
-                        // 그 외 (string / ident.member / number) 면 다음 콤마/끝 까지.
-                        if (inner[v] == '{' or inner[v] == '[' or inner[v] == '(') {
-                            const end = skipBalanced(inner, v) orelse return null;
-                            return inner[v..end];
-                        }
                         var k = v;
                         var s: u8 = 0;
-                        while (k < inner.len) : (k += 1) {
+                        while (k < inner.len) {
                             const cc = inner[k];
                             if (s != 0) {
-                                if (cc == '\\' and k + 1 < inner.len) k += 1 else if (cc == s) s = 0;
+                                if (cc == '\' and k + 1 < inner.len) {
+                                    k += 2;
+                                    continue;
+                                }
+                                if (cc == s) s = 0;
+                                k += 1;
                                 continue;
                             }
-                            if (cc == '\'' or cc == '"') s = cc else if (cc == ',') break;
+                            if (cc == ''' or cc == '"') {
+                                s = cc;
+                                k += 1;
+                            } else if (cc == '{' or cc == '[' or cc == '(') {
+                                k = skipBalanced(inner, k) orelse return null;
+                            } else if (cc == ',') {
+                                break;
+                            } else {
+                                k += 1;
+                            }
                         }
-                        return inner[v..k];
+                        return std.mem.trim(u8, inner[v..k], " \t\n\r");
                     }
                 } else {
                     i += 1;

@@ -159,6 +159,8 @@ test "codegen_plugin: Flow nullable DirectEventHandler emits directEventTypes" {
     try expectContains(out, "directEventTypes: {");
     try expectContains(out, "topOrientationChange:");
     try expectContains(out, "registrationName: 'onOrientationChange'");
+    try expectContains(out, "ConditionallyIgnoredEventHandlers({");
+    try expectContains(out, "onOrientationChange: true");
 }
 
 test "codegen_plugin: paperComponentName option → uiViewClassName / nativeComponentName 둘 다 paper 이름" {
