@@ -42,6 +42,32 @@ const DIR_RANK_LIMIT = 15;
 const DEFAULT_CONCURRENCY = 16;
 const HEAD_READ_BYTES = 4_096;
 
+/// TSC 의 일부 TS18xxx 진단은 parser-level 거부 (private name 사용 제약,
+/// `#constructor` 예약어 등). TS1xxx 와 동일하게 "syntax error 기대" 로 친다.
+/// 나머지 TS18xxx (type/config 영역) 는 제외.
+/// 출처: references/typescript/src/compiler/diagnosticMessages.json.
+const TS18_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
+  18006, // Classes may not have a field named 'constructor'
+  18007, // JSX expressions may not use the comma operator
+  18009, // Private identifiers cannot be used as parameters
+  18010, // An accessibility modifier cannot be used with a private identifier
+  18011, // The operand of a 'delete' operator cannot be a private identifier
+  18012, // '#constructor' is a reserved word
+  18016, // Private identifiers are not allowed outside class bodies
+  18019, // modifier cannot be used with a private identifier
+  18024, // An enum member cannot be named with a private identifier
+  18026, // '#!' can only be used at the start of a file
+  18029, // Private identifiers are not allowed in variable declarations
+  18030, // An optional chain cannot contain private identifiers
+  18036, // Class decorators can't be used with static private identifier
+  18037, // 'await' expression cannot be used inside a class static block
+]);
+
+function isSyntaxLevelCode(code: number): boolean {
+  if (code >= 1000 && code < 2000) return true;
+  return TS18_SYNTAX_LEVEL_CODES.has(code);
+}
+
 const OUTCOMES = [
   "OK_pass",
   "OK_reject",
@@ -139,7 +165,7 @@ function loadOracle(base: string, baselineIndex: Map<string, string[]>): Oracle 
     for (const m of txt.matchAll(/error TS(\d+)/g)) codes.add(Number(m[1]));
   }
   const sorted = [...codes].sort((a, b) => a - b);
-  const hasSyntax = sorted.some((c) => c >= 1000 && c < 2000);
+  const hasSyntax = sorted.some(isSyntaxLevelCode);
   return { kind: hasSyntax ? "syntax-error" : "accept", codes: sorted };
 }
 
@@ -321,7 +347,7 @@ async function main() {
       `  ${r.fixture.rel}\n    err: ${r.zntcFirstError}`,
     );
     printSamples("false_accept", results, "MISMATCH_false_accept", (r) => {
-      const codes = r.oracle.codes.filter((c) => c >= 1000 && c < 2000).join(",");
+      const codes = r.oracle.codes.filter(isSyntaxLevelCode).join(",");
       return `  ${r.fixture.rel}  TS:${codes}`;
     });
   }
