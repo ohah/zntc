@@ -73,7 +73,9 @@ const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   2357, // Operand of increment/decrement must be a variable or a property access
   2364, // LHS of an assignment expression must be a variable or a property access
   2398, // 'constructor' cannot be used as a parameter property name
+  2369, // A parameter property is only allowed in a constructor implementation
   2406, // LHS of a 'for...in' must be a variable or a property access
+  2462, // A rest element must be last in a destructuring pattern
   2466, // 'super' cannot be referenced in a computed property name
   2487, // LHS of a 'for...of' must be a variable or a property access
   2523, // 'yield' expressions cannot be used in a parameter initializer
@@ -138,6 +140,7 @@ const STRICT_ERROR_KEYWORDS = [
   "in module code",
   "in non-async function",
   "not allowed in a module",
+  "Duplicate parameter name", // sloppy script 에서만 허용 — strict 시 SyntaxError
 ];
 
 /// ECMAScript spec early-error 인 ZNTC 거부 메시지. esbuild + oxc 모두 동일하게
