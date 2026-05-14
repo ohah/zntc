@@ -1135,6 +1135,7 @@ fn transpileWithCallbackInternal(
 
     var parser = Parser.init(arena_alloc, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
+    parser.configureAmbientFromPath(file_path);
 
     if (parser.source_mode != .ts) {
         if (options.flow) {
@@ -1461,6 +1462,7 @@ fn testTransformPlan(source: []const u8, file_path: []const u8, options: Transpi
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
+    parser.configureAmbientFromPath(file_path);
     if (parser.source_mode != .ts) {
         if (options.flow) {
             parser.is_flow = true;

@@ -360,6 +360,19 @@ pub const Parser = struct {
         }
     }
 
+    /// 파일 경로에서 `.d.ts` / `.d.mts` / `.d.cts` 이중 확장자를 감지하여 ambient
+    /// context 를 설정한다. `.d.ts` 의 모든 declaration 은 implicit `declare` — const
+    /// initializer / function body / class field initializer 강제가 적용되지 않는다.
+    /// `std.fs.path.extension()` 은 `.ts` 만 반환하므로 전체 경로 검사 필요.
+    pub fn configureAmbientFromPath(self: *Parser, file_path: []const u8) void {
+        if (std.mem.endsWith(u8, file_path, ".d.ts") or
+            std.mem.endsWith(u8, file_path, ".d.mts") or
+            std.mem.endsWith(u8, file_path, ".d.cts"))
+        {
+            self.ctx.in_ambient = true;
+        }
+    }
+
     /// 파일 경로에서 .js.flow / .jsx.flow 이중 확장자를 감지하여 Flow 모드를 설정한다.
     /// std.fs.path.extension()은 마지막 확장자(.flow)만 반환하므로
     /// 전체 경로를 확인해야 한다.

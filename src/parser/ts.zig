@@ -294,10 +294,17 @@ fn parseNamespaceBodyInContext(self: *Parser) ParseError2!NodeIndex {
 /// declare var/let/const/function/class/...
 pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip 'declare'
-    // declare global { ... } — 글로벌 augmentation (타입 전용, 완전 제거)
+    // declare global { ... } — 글로벌 augmentation (타입 전용, 완전 제거).
+    // 본체는 ambient — 자식 const/function/class 가 implicit `declare` 처럼 동작
+    // (initializer/body 강제 면제). `declare namespace X { ... }` 와 동일하게
+    // `parseNamespaceBodyInContext` 를 경유해 in_namespace / is_top_level 도 같이
+    // 세팅 — 일반 declare 경로와 컨텍스트 대칭성 유지.
     if (self.current() == .identifier and self.isContextual("global")) {
         try self.advance(); // skip 'global'
-        _ = try parseNamespaceBlock(self);
+        const saved = self.ctx;
+        self.ctx.in_ambient = true;
+        defer self.ctx = saved;
+        _ = try parseNamespaceBodyInContext(self);
         return NodeIndex.none;
     }
     // declare 뒤의 선언은 ambient context — 런타임 코드 없음

@@ -2751,6 +2751,17 @@ fn expectNoParseErrorWithExt(source: []const u8, ext: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 }
 
+fn expectNoParseErrorWithPath(source: []const u8, file_path: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(std.fs.path.extension(file_path));
+    parser.configureAmbientFromPath(file_path);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
 fn expectParseErrorWithExt(source: []const u8, ext: []const u8, check: ErrorCheck) !void {
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
@@ -2837,6 +2848,37 @@ test "declare module: multiple statements in ambient body" {
     try expectNoParseErrorWithExt(
         \\declare module "*.svg" { const src: string; export default src; }
     , ".ts");
+}
+
+test "declare global: ambient const without initializer (D12)" {
+    // ethers `crypto-browser.ts` 의 `declare global { const window: Window; }` 패턴.
+    // `parseTsDeclareStatement` 의 global 분기가 `in_ambient` 를 전파하지 않아 자식
+    // const 가 일반 `const X: T;` 로 해석되어 `Const declarations must be
+    // initialized` 가 잘못 발생하던 회귀.
+    try expectNoParseErrorWithExt(
+        \\declare global {
+        \\  const window: Window;
+        \\  const self: WorkerGlobalScope;
+        \\}
+    , ".ts");
+    // 중첩 namespace 안에서도 동일하게 ambient 전파.
+    try expectNoParseErrorWithExt(
+        \\declare global {
+        \\  namespace NodeJS {
+        \\    const process: { env: { NODE_ENV: string } };
+        \\  }
+        \\}
+    , ".ts");
+}
+
+test ".d.ts: ambient const without initializer (D12)" {
+    // nanoid `index.d.ts` 의 `export const urlAlphabet: string;` 패턴. parser entry
+    // 에서 `.d.ts` 경로를 ambient context 로 분류하지 않아 const initializer 강제가
+    // 적용되던 회귀.
+    try expectNoParseErrorWithPath(
+        \\export const urlAlphabet: string;
+        \\export const nanoid: () => string;
+    , "index.d.ts");
 }
 
 test "declare module: export in bundler mode" {

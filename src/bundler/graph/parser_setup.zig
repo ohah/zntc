@@ -31,6 +31,7 @@ pub fn init(
     parser.* = Parser.init(arena_alloc, scanner);
     const ext = std.fs.path.extension(module.path);
     configureParserForModule(parser, module, ext);
+    parser.configureAmbientFromPath(module.path);
 
     // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
     // TS 와 Flow 는 상호 배타 — TS 파일에서는 Flow 무시
