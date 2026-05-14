@@ -547,6 +547,11 @@ fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.All
 }
 
 fn allocNamespaceMemberRewriteValue(self: *const Linker, target_mod_idx: u32, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
+    // dev_mode 의 `__zntc_modules[...].fn()` lazy 런타임에서만 init wrap 이 필요하다.
+    // 비-dev 빌드는 namespace import 의 top-level `init_X()` preamble 이 init 을 보장하므로
+    // wrap 이 중복이며 `(init_X(), name)` 형태가 직접 치환을 기대하는 호출지점을 깨뜨린다.
+    if (!self.dev_mode) return null;
+
     const target_init = try allocEsmInitExprForModuleIndex(self, target_mod_idx);
     defer if (target_init) |expr| self.allocator.free(expr);
 
