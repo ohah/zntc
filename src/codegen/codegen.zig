@@ -362,6 +362,32 @@ pub const Codegen = struct {
             try self.emitNode(node_idx);
         }
     }
+
+    pub fn emitExpressionList(self: *Codegen, node: Node, sep: []const u8) !void {
+        const list = node.data.list;
+        try self.emitExpressionNodeList(list.start, list.len, sep);
+    }
+
+    pub fn emitExpressionNodeList(self: *Codegen, start: u32, len: u32, sep: []const u8) !void {
+        if (len == 0) return;
+        const indices = self.ast.extra_data.items[start .. start + len];
+        var first = true;
+        for (indices) |raw_idx| {
+            const node_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (node_idx.isNone()) continue;
+            if (self.isSkipped(node_idx)) continue;
+            if (!first) try self.write(sep);
+            first = false;
+            try self.emitExpressionListItem(node_idx);
+        }
+    }
+
+    pub fn emitExpressionListItem(self: *Codegen, node_idx: NodeIndex) !void {
+        const needs_parens = self.ast.getNode(node_idx).tag == .sequence_expression;
+        if (needs_parens) try self.writeByte('(');
+        try self.emitNode(node_idx);
+        if (needs_parens) try self.writeByte(')');
+    }
 };
 
 pub const hasRawPrivateSyntax = @import("../parser/ast_walk.zig").hasRawPrivateSyntax;

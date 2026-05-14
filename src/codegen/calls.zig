@@ -31,7 +31,7 @@ pub fn emitCall(self: anytype, node: Node) !void {
     try self.emitNode(callee);
     if (is_optional) try self.write("?.");
     try self.writeByte('(');
-    try self.emitNodeList(args_start, args_len, self.listSep());
+    try self.emitExpressionNodeList(args_start, args_len, self.listSep());
     try self.writeByte(')');
 }
 
@@ -402,7 +402,7 @@ pub fn emitNew(self: anytype, node: Node) !void {
     try self.emitNode(callee);
     if (needs_parens) try self.writeByte(')');
     try self.writeByte('(');
-    try self.emitNodeList(args_start, args_len, self.listSep());
+    try self.emitExpressionNodeList(args_start, args_len, self.listSep());
     try self.writeByte(')');
 }
 
