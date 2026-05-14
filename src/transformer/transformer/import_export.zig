@@ -53,6 +53,12 @@ pub fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
 
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
+    // `import type { ... }` / `import type X from ...` — declaration 자체가 type-only.
+    // verbatim_module_syntax=true 도 emit 안 함 (TS 도 type-only declaration 은 strip —
+    // TS spec: "always emit type-only imports as elided"). codegen 의 emit 가드와 중복
+    // 이지만 여기서 일찍 .none 반환해 후속 specifier 재구성 비용 절감.
+    if (x.is_type_only) return .none;
+
     // Unused import 제거: 모든 specifier의 reference_count가 0이면 import 전체를 제거.
     // side-effect import는 specifier가 없으면 제거 불가.
     // verbatimModuleSyntax=true면 elision 생략 — 값 import는 그대로 보존.
@@ -75,9 +81,11 @@ pub fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const new_specs = try self.visitExtraList(.{ .start = x.specs_start, .len = x.specs_len });
     const new_source = try self.visitNode(x.source);
     // phase / attributes는 metadata — transform 대상 아님, 그대로 통과.
+    // is_type_only 는 이미 위에서 elide 처리 — 여기 도달하면 항상 false.
+    const packed_phase: u32 = @intFromEnum(x.phase);
     return self.addExtraNode(.import_declaration, node.span, &.{
-        new_specs.start,       new_specs.len, @intFromEnum(new_source),
-        @intFromEnum(x.phase), x.attrs_start, x.attrs_len,
+        new_specs.start, new_specs.len, @intFromEnum(new_source),
+        packed_phase,    x.attrs_start, x.attrs_len,
     });
 }
 

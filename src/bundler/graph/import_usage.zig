@@ -35,6 +35,7 @@ pub fn isImportAllBindingsUnused(self: anytype, module: *const Module, record: t
         const e = n.data.extra;
         if (e + 2 >= ast_ptr.extra_data.items.len) continue;
         const x = module_parser.readImportDeclExtras(ast_ptr, e);
+        if (x.is_type_only) continue; // type-only declaration 은 runtime record 없음
         if (x.source.isNone()) continue;
         const source_node = ast_ptr.getNode(x.source);
         // record.span 이 정확히 source string literal span 이라 start 비교로 unique

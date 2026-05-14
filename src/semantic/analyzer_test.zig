@@ -1010,6 +1010,63 @@ test "Enum: undefined export still errors" {
 }
 
 // ====================================================================
+// D5: import type declaration + 다른 import → export 검증
+// ====================================================================
+// `@expo/log-box` 의 `LogBox.ts` 같은 패턴이 fail 하던 회귀 가드.
+// parser 가 `import type { ... }` 전체 AST 를 drop 하던 게 root cause —
+// declaration 자체에 is_type_only flag 만 두고 specifier 들의 binding 정보는
+// 보존해야 같은 file 안의 다른 (value) import 와 함께 있을 때 export 검증
+// 이 그 binding 을 인식한다.
+
+test "Import: type-only + namespace value from same source — export resolves" {
+    try analyzeNoErrors(
+        \\import type { Foo } from './x';
+        \\import * as ns from './x';
+        \\export { Foo };
+        \\const _ = ns;
+    );
+}
+
+test "Import: type-only + default value from same source — export resolves" {
+    try analyzeNoErrors(
+        \\import type { Foo } from './x';
+        \\import baz from './x';
+        \\export { Foo };
+        \\const _ = baz;
+    );
+}
+
+test "Import: type-only + namespace from different source — export resolves" {
+    try analyzeNoErrors(
+        \\import type { Foo } from './x';
+        \\import * as ns from './y';
+        \\export { Foo };
+        \\const _ = ns;
+    );
+}
+
+test "Import: type-only default declaration — export resolves" {
+    try analyzeNoErrors(
+        \\import type Foo from './x';
+        \\import * as ns from './x';
+        \\export { Foo };
+        \\const _ = ns;
+    );
+}
+
+test "Import: type-only specifier is still a binding (no runtime use enforced here)" {
+    // type-only binding 을 value 로 쓰면 codegen 단계에서 not-defined runtime error 가
+    // 되지만, semantic 단계에선 binding 으로 인정되어 unresolved 가 아니다 — TS 와 동일.
+    // value 검증은 transformer Phase D / linker 가 별도 단계에서 처리.
+    try analyzeNoErrors(
+        \\import type { Foo } from './x';
+        \\import baz from './x';
+        \\const _ = Foo;
+        \\const __ = baz;
+    );
+}
+
+// ====================================================================
 // Private Name 시맨틱 체크
 // ====================================================================
 

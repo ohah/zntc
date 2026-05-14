@@ -378,15 +378,17 @@ fn tryExtractImportDecl(ast: *const Ast, node: Node) ?ImportRecord {
     const e = node.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return null;
 
-    const extras = ast.extra_data.items[e .. e + 3];
-    const specs_start = extras[0];
-    const specs_len = extras[1];
-    const source_idx: NodeIndex = @enumFromInt(extras[2]);
+    const x = @import("../parser/module.zig").readImportDeclExtras(ast, e);
+    const specs_start = x.specs_start;
+    const specs_len = x.specs_len;
+    const source_idx = x.source;
+
+    // declaration-level type-only (`import type { ... }` / `import type X from ...`):
+    // parser 가 AST 를 보존하므로 (semantic 의 export 검증용) scanner 는 record 등록 skip.
+    if (x.is_type_only) return null;
 
     // 모든 spec 이 individual `type` modifier 면 import 자체 elide — `import { type A, type B }
     // from './foo'` 가 babel typescript preset 이 statement 통째 제거하는 것과 동등.
-    // `import type { ... }` (declaration-level type-only) 는 parser 가 이미 NodeIndex.none
-    // 반환 (`module.zig:430`).
     if (specs_len > 0 and allSpecsAreTypeOnly(ast, specs_start, specs_len)) return null;
 
     const specifier = getStringLiteralText(ast, source_idx) orelse return null;

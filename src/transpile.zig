@@ -204,6 +204,7 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) error{OutOfMemor
     for (ast.nodes.items) |import_node| {
         if (import_node.tag != .import_declaration) continue;
         const import_decl = module_parser.readImportDeclExtras(ast, import_node.data.extra);
+        if (import_decl.is_type_only) continue;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
             const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[import_decl.specs_start + i]);
@@ -527,6 +528,7 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     for (ast.nodes.items) |node| {
         if (node.tag != .import_declaration) continue;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import_decl.is_type_only) continue;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
             const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[import_decl.specs_start + i]);

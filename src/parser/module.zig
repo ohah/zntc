@@ -40,25 +40,42 @@ pub const SPEC_FLAG_TYPE_ONLY: u16 = 1;
 
 /// `import_declaration` extra schema의 단일 source of truth.
 /// codegen / transformer 등 read 사이트가 이 헬퍼를 통해서만 슬롯 의미를 알도록 강제.
+/// `phase` 슬롯에 `is_type_only` 도 bit-packing (lower 4-bit = phase, bit 5 = type-only).
 pub const ImportDeclExtras = struct {
     specs_start: u32,
     specs_len: u32,
     source: NodeIndex,
     phase: ImportPhase,
+    /// `import type { ... }` / `import type X from ...` 같은 declaration-level type-only.
+    /// inline `import { type X }` 는 specifier 의 SPEC_FLAG_TYPE_ONLY 로 별도 표현.
+    /// 양쪽 모두 codegen 단계에서 emit 안 함 — specifier 의 모든 binding 이 type-only.
+    is_type_only: bool,
     attrs_start: u32,
     attrs_len: u32,
 };
 
+const PHASE_MASK: u32 = 0xF; // lower 4 bits
+const TYPE_ONLY_BIT: u32 = 1 << 4; // bit 5
+
 pub fn readImportDeclExtras(ast: anytype, e: u32) ImportDeclExtras {
     const slots = ast.extra_data.items[e .. e + 6];
+    const packed_phase = slots[3];
     return .{
         .specs_start = slots[0],
         .specs_len = slots[1],
         .source = @enumFromInt(slots[2]),
-        .phase = @enumFromInt(@as(u4, @truncate(slots[3]))),
+        .phase = @enumFromInt(@as(u4, @truncate(packed_phase & PHASE_MASK))),
+        .is_type_only = (packed_phase & TYPE_ONLY_BIT) != 0,
         .attrs_start = slots[4],
         .attrs_len = slots[5],
     };
+}
+
+/// `import type { ... }` / `import type X from ...` 같은 declaration-level type-only
+/// 인지. true 면 runtime 출력 / import_record 등록 / styled-components 같은 detection
+/// 모두 skip 해야 한다 (TS spec: type-only declaration 은 항상 elided).
+pub inline fn isDeclarationTypeOnly(x: ImportDeclExtras) bool {
+    return x.is_type_only;
 }
 
 fn finalizeImportDeclaration(
@@ -69,12 +86,15 @@ fn finalizeImportDeclaration(
     source_node: NodeIndex,
     phase: ImportPhase,
     attrs: NodeList,
+    is_type_only: bool,
 ) ParseError2!NodeIndex {
+    const packed_phase: u32 = @as(u32, @intFromEnum(phase)) |
+        (if (is_type_only) TYPE_ONLY_BIT else 0);
     const extra_start = try self.ast.addExtras(&.{
         specs_start,
         specs_len,
         @intFromEnum(source_node),
-        @intFromEnum(phase),
+        packed_phase,
         attrs.start,
         attrs.len,
     });
@@ -271,6 +291,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
             source_node,
             phase,
             attrs,
+            is_type_only,
         );
     }
 
@@ -366,13 +387,9 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 const attrs = try parseImportAttributes(self);
                 _ = try self.eat(.semicolon);
 
-                if (is_type_only) {
-                    self.restoreScratch(scratch_top);
-                    return NodeIndex.none;
-                }
-
-                // Inline scan: default-only import
-                if (self.enable_scan and !source_node.isNone()) {
+                // Inline scan: default-only import (type-only 는 graph/linker 가
+                // import_record 의 type-only marker 로 elide — scan 단계에선 record 등록).
+                if (self.enable_scan and !is_type_only and !source_node.isNone()) {
                     const src_node = self.ast.getNode(source_node);
                     const raw = self.ast.source[src_node.span.start..src_node.span.end];
                     const specifier = extractImportSpecifier(self, raw);
@@ -391,6 +408,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     source_node,
                     phase,
                     attrs,
+                    is_type_only,
                 );
             }
         }
@@ -433,13 +451,9 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const attrs = try parseImportAttributes(self);
     _ = try self.eat(.semicolon);
 
-    if (is_type_only) {
-        self.restoreScratch(scratch_top);
-        return NodeIndex.none;
-    }
-
-    // Inline scan: full import (namespace/named/mixed)
-    if (self.enable_scan and !source_node.isNone()) {
+    // Inline scan: full import (namespace/named/mixed). type-only 는 graph/linker
+    // 단계에서 import_record 의 type-only marker 로 elide — scan 단계에선 record 등록.
+    if (self.enable_scan and !is_type_only and !source_node.isNone()) {
         const src_node = self.ast.getNode(source_node);
         const raw = self.ast.source[src_node.span.start..src_node.span.end];
         const spec = extractImportSpecifier(self, raw);
@@ -459,6 +473,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         source_node,
         phase,
         attrs,
+        is_type_only,
     );
 }
 
