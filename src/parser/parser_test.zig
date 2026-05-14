@@ -3150,16 +3150,18 @@ test "Flow: positional function type params" {
     try expectNoParseErrorFlow("type X = ($ReadOnly<{a: number}>, string) => void;");
 }
 
-test "Flow: contextual keyword as function-type param name" {
-    // 호출처 (parseParenOrFunctionType) 가 named-param 후보로 받는 contextual keyword
-    // 들이 parseFunctionTypeParamList 안에서 fall-through 되던 회귀 가드. react-native
-    // codegen 의 TurboModule spec (`+stat: (target: string, callback: (...) => void) => void;`)
-    // 같은 패턴이 영향 받음.
+test "Flow: contextual keywords as function-type param names" {
+    // react-native-blob-util codegenSpecs (`+stat: (target: string, callback: (...) => void) => void;`)
+    // 같은 RN TurboModule spec 패턴이 fail 하던 회귀 가드.
+    // 1번째 param.
     try expectNoParseErrorFlow("type T = (target: string, b: () => void) => void;");
     try expectNoParseErrorFlow("type T = (meta: string, b: () => void) => void;");
     try expectNoParseErrorFlow("type T = (async: string, b: () => void) => void;");
     try expectNoParseErrorFlow("type T = (from: string, b: () => void) => void;");
     try expectNoParseErrorFlow("type T = (of: string, b: () => void) => void;");
+    // 2번째 이후 param 위치 (parseParenOrFunctionType 의 comma-loop 경로).
+    try expectNoParseErrorFlow("type T = (x: string, target: () => void) => void;");
+    try expectNoParseErrorFlow("type T = (x: string, of: number, target: () => void) => void;");
     // interface method 의 nested function-type param (실제 trigger 케이스).
     try expectNoParseErrorFlow(
         \\interface Spec {

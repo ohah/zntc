@@ -584,6 +584,15 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
 // Parenthesized / Function Type
 // ================================================================
 
+/// Flow function-type 의 named-param 이름 자리에 올 수 있는 토큰인지.
+/// `identifier` 와 contextual / strict-reserved keyword (async, from, target,
+/// let, yield 등) 까지 받는다 — type-only context 라 ES reserved (await/with/...)
+/// 만 제외. 호출처는 이 결과로 `(name: T)` named param 인지 `(T)` positional param
+/// 인지 분기하므로 세 호출 사이트가 동일 condition 을 공유해야 한다.
+inline fn canBeFnTypeParamName(kind: @import("../lexer/token.zig").Kind) bool {
+    return kind == .identifier or (kind.isKeyword() and !kind.isReservedKeyword());
+}
+
 /// 괄호 타입 (Type) 또는 함수 타입 (a: Type) => Type (Babel 방식).
 /// 1단계: `()`, `...`, `identifier:` → 확정적 function type
 /// 2단계: 그 외 → grouped type으로 먼저 파싱, `,` 또는 `) =>` 따르면 function type
@@ -604,7 +613,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     // ...rest 또는 identifier: → 확정적 named/rest function param
     const is_definite_fn = blk: {
         if (self.current() == .dot3) break :blk true;
-        if (self.current() == .identifier or (self.current().isKeyword() and !self.current().isReservedKeyword())) {
+        if (canBeFnTypeParamName(self.current())) {
             const next = try self.peekNextKind();
             break :blk (next == .colon or next == .question);
         }
@@ -630,7 +639,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
             const loop_guard_pos = self.scanner.token.span.start;
             if (self.current() == .dot3) try self.advance();
             // named param 감지: identifier + (`:` | `?`)
-            if (self.current() == .identifier or (self.current().isKeyword() and !self.current().isReservedKeyword())) {
+            if (canBeFnTypeParamName(self.current())) {
                 const next = try self.peekNextKind();
                 if (next == .colon or next == .question) {
                     const named = try parseFunctionTypeParamList(self);
@@ -722,12 +731,7 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
         }
 
         // name: Type 또는 name?: Type — 이름 뒤에 : 또는 ?: 가 오면 named param.
-        // 호출처 `parseParenOrFunctionType` 가 contextual keyword (async/from/of/target/meta/let 등)
-        // 도 named-param 후보로 분류하므로 여기 condition 도 동일하게 받아야 한다 — 더 좁게 받으면
-        // fall-through 후 positional path 가 키워드를 type expression 으로 잘못 파싱해 fail한다.
-        const can_be_param_name = self.current() == .identifier or
-            (self.current().isKeyword() and !self.current().isReservedKeyword());
-        if (can_be_param_name) {
+        if (canBeFnTypeParamName(self.current())) {
             const next = try self.peekNextKind();
             if (next == .colon or next == .question) {
                 const name_span = self.scanner.token.span;
