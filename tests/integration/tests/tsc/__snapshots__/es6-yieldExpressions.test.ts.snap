@@ -381,15 +381,6 @@ exports[`TSC: es6/yieldExpressions generatorTypeCheck37 1`] = `
 "
 `;
 
-exports[`TSC: es6/yieldExpressions generatorTypeCheck38 1`] = `
-"var yield;
-function* g() {
-	yield 0;
-	var v;
-}
-"
-`;
-
 exports[`TSC: es6/yieldExpressions generatorTypeCheck4 1`] = `
 "function* g1() {
 }
@@ -805,11 +796,6 @@ exports[`TSC: es6/yieldExpressions generatorTypeCheck9 1`] = `
 "
 `;
 
-exports[`TSC: es6/yieldExpressions YieldExpression1_es6 1`] = `
-"yield;
-"
-`;
-
 exports[`TSC: es6/yieldExpressions YieldExpression10_es6 1`] = `
 "var v = { *foo() {
 	yield (foo);
@@ -881,14 +867,6 @@ exports[`TSC: es6/yieldExpressions YieldExpression7_es6 1`] = `
 "
 `;
 
-exports[`TSC: es6/yieldExpressions YieldExpression8_es6 1`] = `
-"yield(foo);
-function* foo() {
-	yield (foo);
-}
-"
-`;
-
 exports[`TSC: es6/yieldExpressions YieldExpression9_es6 1`] = `
 "var v = function*() {
 	yield (foo);
@@ -910,11 +888,6 @@ function* g() {
 		o = yield* o;
 	}
 }
-"
-`;
-
-exports[`TSC: es6/yieldExpressions YieldStarExpression1_es6 1`] = `
-"yield * [];
 "
 `;
 

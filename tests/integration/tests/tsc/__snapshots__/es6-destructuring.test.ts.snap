@@ -358,10 +358,6 @@ var [[a2], [[a3]]] = undefined;
 // V is an array assignment pattern, S is the type Any or an array-like type (section 3.3.2), and, for each assignment element E in V,
 //      S is a tuple- like type (section 3.3.3) with a property named N of a type that is assignable to the target given in E,
 //        where N is the numeric index of E in the array assignment pattern, or
-// Error
-// V is an array assignment pattern, S is the type Any or an array-like type (section 3.3.2), and, for each assignment element E in V,
-//      S is a tuple- like type (section 3.3.3) with a property named N of a type that is assignable to the target given in E,
-//        where N is the numeric index of E in the array assignment pattern, or
 var [b0, b1, b2] = [1, 2, "string"];
 // Error
 function bar() {
@@ -637,7 +633,6 @@ exports[`TSC: es6/destructuring destructuringObjectBindingPatternAndAssignment4 
 d:d=a, // ok
 e:e=f, // error
 f:f=f } = // error
-// error
 {};
 "
 `;
@@ -708,16 +703,12 @@ exports[`TSC: es6/destructuring destructuringParameterDeclaration10 1`] = `
 	json;
 }
 // string[]
-// string[]
-// string[]
 export function prepareConfigWithoutAnnotation({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
 }
 export const prepareConfigWithContextualSignature = ({ additionalFiles:{ json:json=[] }={} }={}) => {
 	json;
 };
-// string[]
-// string[]
 // string[]
 "
 `;
@@ -1212,8 +1203,6 @@ export function prepareConfig({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
 }
 // string[]
-// string[]
-// string[]
 export function prepareConfigWithoutAnnotation({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
 }
@@ -1223,8 +1212,6 @@ export function prepareConfigWithoutAnnotation({ additionalFiles:{ json:json=[] 
 export const prepareConfigWithContextualSignature = ({ additionalFiles:{ json:json=[] }={} }={}) => {
 	json;
 };
-// string[]
-// string[]
 // string[]
 // Additional repros from https://github.com/microsoft/TypeScript/issues/59936
 /**
