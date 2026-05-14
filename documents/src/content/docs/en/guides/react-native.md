@@ -136,6 +136,54 @@ export default {
 };
 ```
 
+### Reusing an existing metro.config.js
+
+ZNTC does not auto-discover `metro.config.js`. If you already have one, import it from `zntc.config.ts` and add only the entry/server defaults ZNTC needs. The Metro config may export either an object or an async function.
+
+```ts
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const metroConfigModule = await import("./metro.config.js");
+const metroConfigExport = metroConfigModule.default ?? metroConfigModule;
+const metroConfig =
+  typeof metroConfigExport === "function" ? await metroConfigExport() : await metroConfigExport;
+
+export default {
+  ...metroConfig,
+  root: __dirname,
+  projectRoot: __dirname,
+  entry: "index.js",
+  dev: true,
+  minify: false,
+  resolver: {
+    ...(metroConfig.resolver ?? {}),
+    nodeModulesPaths: [...(metroConfig.resolver?.nodeModulesPaths ?? [])],
+  },
+  transformer: {
+    ...(metroConfig.transformer ?? {}),
+    babel: metroConfig.transformer?.babel ?? {},
+  },
+  serializer: {
+    ...(metroConfig.serializer ?? {}),
+    polyfills: metroConfig.serializer?.polyfills ?? [],
+    prelude: metroConfig.serializer?.prelude ?? [],
+  },
+  server: {
+    ...(metroConfig.server ?? {}),
+    port: 8081,
+    host: "localhost",
+    useGlobalHotkey: true,
+    forwardClientLogs: true,
+  },
+};
+```
+
+This keeps Metro config as the source of truth while attaching ZNTC's dev server. ZNTC reads Metro-shaped `resolver`, `transformer`, `serializer`, `server`, `watchFolders`, and `sourcemapSourcesRoot` fields and flattens them into the RN bundle input. Metro-only fields that are not implemented yet may emit a warning and be ignored.
+
 ## Basic build commands
 
 ```bash
@@ -355,6 +403,37 @@ Install (recommended on RN 0.83+):
 ```bash
 bun add -D @react-native-community/cli-server-api @react-native/dev-middleware
 ```
+
+### Rozenite DevTools
+
+Rozenite adds panels to RN DevTools through Metro middleware. ZNTC's dev server supports Metro-compatible `server.enhanceMiddleware`, so you can use the `withRozenite()` wrapper from `@rozenite/metro` directly in `zntc.config.ts`.
+
+```ts
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { withRozenite } from "@rozenite/metro";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const config = {
+  root: __dirname,
+  entry: "index.js",
+  server: {
+    port: 8081,
+    host: "localhost",
+    forwardClientLogs: true,
+  },
+};
+
+export default withRozenite(config as any, {
+  enabled: true,
+  include: ["@rozenite/controls-plugin", "@rozenite/require-profiler-plugin"],
+});
+```
+
+For a complete Expo example and option-by-option explanation, see [React Native + Expo — Rozenite DevTools](/zntc/en/guides/react-native-expo/#rozenite-devtools).
 
 ### Keyboard shortcuts
 

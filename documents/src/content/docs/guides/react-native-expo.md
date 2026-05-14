@@ -71,6 +71,156 @@ export default withExpo({
 });
 ```
 
+## Rozenite DevTools
+
+ZNTC 의 React Native dev server 는 Metro 의 `server.enhanceMiddleware` 형태를 받아들이므로 Rozenite 의 Metro adapter 를 그대로 사용할 수 있습니다. Expo 예제는 `@rozenite/metro` 의 `withRozenite()` 로 `withExpo()` 결과를 한 번 더 감쌉니다.
+
+먼저 필요한 패키지를 dev dependency 로 설치합니다. 사용할 패널만 `include` 에 넣으면 됩니다.
+
+```bash
+bun add -D @rozenite/metro \
+  @rozenite/controls-plugin \
+  @rozenite/expo-atlas-plugin \
+  @rozenite/network-activity-plugin \
+  @rozenite/react-navigation-plugin \
+  @rozenite/redux-devtools-plugin \
+  @rozenite/require-profiler-plugin \
+  @rozenite/sqlite-plugin \
+  @rozenite/storage-plugin \
+  @rozenite/tanstack-query-plugin
+```
+
+`zntc.config.ts` 예제:
+
+```ts
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { withRozenite } from "@rozenite/metro";
+import { withExpo } from "@zntc/react-native";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const rozenitePlugins = [
+  "@rozenite/controls-plugin",
+  "@rozenite/expo-atlas-plugin",
+  "@rozenite/network-activity-plugin",
+  "@rozenite/react-navigation-plugin",
+  "@rozenite/redux-devtools-plugin",
+  "@rozenite/require-profiler-plugin",
+  "@rozenite/sqlite-plugin",
+  "@rozenite/storage-plugin",
+  "@rozenite/tanstack-query-plugin",
+] as const;
+
+const config = withExpo({
+  root: __dirname,
+  projectRoot: __dirname,
+  entry: "index.js",
+  dev: true,
+  minify: false,
+  outDir: join(__dirname, ".zntc"),
+  preserveSymlinks: true,
+  resolveSymlinkSiblings: true,
+  resolver: {
+    sourceExts: [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"],
+    assetExts: [".bmp", ".gif", ".jpg", ".jpeg", ".png", ".webp", ".avif", ".ico", ".svg"],
+    platforms: ["ios", "android", "native"],
+    preferNativePlatform: true,
+    nodeModulesPaths: [join(__dirname, "node_modules"), join(__dirname, "../../node_modules")],
+  },
+  transformer: {
+    minifier: "terser",
+    inlineRequires: false,
+    babel: {},
+  },
+  serializer: {
+    polyfills: [],
+    prelude: [],
+    bundleType: "plain",
+  },
+  server: {
+    port: 8081,
+    host: "localhost",
+    useGlobalHotkey: true,
+    forwardClientLogs: true,
+    verifyConnections: false,
+  },
+});
+
+export default withRozenite(config as any, {
+  enabled: true,
+  include: [...rozenitePlugins],
+  projectType: "expo",
+});
+```
+
+### 예제 코드 해설
+
+- `withExpo()` 를 먼저 호출합니다. Expo 전용 prelude, asset 확장자, blockList, console noise 필터가 기본 RN 설정에 병합됩니다.
+- `withRozenite()` 는 그 결과 config 를 받아 Rozenite middleware 와 클라이언트 주입 설정을 덧붙입니다. 그래서 export 는 `withRozenite(withExpo(...))` 순서가 됩니다.
+- `rozenitePlugins` 는 앱에서 활성화할 Rozenite 패널 목록입니다. 설치하지 않은 플러그인은 `include` 에 넣지 마세요.
+- `enabled: true` 는 dev server 에 Rozenite 를 명시적으로 켭니다. 실제 앱 설정에서는 `process.env` 로 개발 환경에서만 켜도록 분기해도 됩니다.
+- `projectType: "expo"` 는 Rozenite 가 Expo 프로젝트에 맞는 패널/경로 처리를 선택하게 합니다.
+- `projectRoot` 와 `root` 는 예제 앱의 루트를 가리킵니다. monorepo 에서는 `nodeModulesPaths` 에 앱의 `node_modules` 와 workspace 루트 `node_modules` 를 같이 넣으면 hoist 된 패키지도 해석됩니다.
+- `preserveSymlinks` 와 `resolveSymlinkSiblings` 는 pnpm/yarn berry 같은 symlink 기반 workspace 에서 패키지 identity 를 유지하면서, 필요한 경우 sibling dependency 를 realpath 기준으로 보완합니다.
+- `transformer.minifier`, `transformer.inlineRequires`, `serializer.bundleType`, `server.verifyConnections` 는 Metro config 와 형태를 맞추기 위한 호환 필드입니다. ZNTC dev server 는 아직 일부 필드를 직접 사용하지 않으므로 경고 후 무시할 수 있습니다.
+- `serializer.polyfills` / `serializer.prelude` 는 Metro serializer 호환 필드입니다. Rozenite 나 Expo adapter 가 필요한 항목을 병합할 수 있도록 빈 배열로 두어도 됩니다.
+- `server.forwardClientLogs` 를 켜면 앱 런타임 로그가 dev server 터미널로 전달되어 Rozenite 패널과 터미널 로그를 함께 확인하기 쉽습니다.
+
+Rozenite UI 는 dev server 가 실행 중일 때 React Native DevTools / Fusebox 경로를 통해 열립니다. ZNTC 는 `/rozenite/*` middleware 경로와 RN DevTools endpoint 를 Metro 호환 형태로 연결합니다.
+
+### metro.config.js 와 함께 쓰기
+
+이미 `metro.config.js` 에 Rozenite 나 Expo 관련 설정을 모아두었다면, 그 파일을 `zntc.config.ts` 에서 불러와 `withExpo()` / `withRozenite()` 순서로 감쌀 수 있습니다.
+
+```ts
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { withRozenite } from "@rozenite/metro";
+import { withExpo } from "@zntc/react-native";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const metroConfigModule = await import("./metro.config.js");
+const metroConfigExport = metroConfigModule.default ?? metroConfigModule;
+const metroConfig =
+  typeof metroConfigExport === "function" ? await metroConfigExport() : await metroConfigExport;
+
+const config = withExpo({
+  ...metroConfig,
+  root: __dirname,
+  projectRoot: __dirname,
+  entry: "index.js",
+  outDir: join(__dirname, ".zntc"),
+  resolver: {
+    ...(metroConfig.resolver ?? {}),
+    nodeModulesPaths: [
+      ...(metroConfig.resolver?.nodeModulesPaths ?? []),
+      join(__dirname, "node_modules"),
+      join(__dirname, "../../node_modules"),
+    ],
+  },
+  server: {
+    ...(metroConfig.server ?? {}),
+    port: 8081,
+    host: "localhost",
+    forwardClientLogs: true,
+  },
+});
+
+export default withRozenite(config as any, {
+  enabled: true,
+  include: ["@rozenite/controls-plugin", "@rozenite/require-profiler-plugin"],
+  projectType: "expo",
+});
+```
+
+주의할 점은 `withRozenite()` 를 가장 마지막에 호출하는 것입니다. 그래야 Metro config 또는 `withExpo()` 가 만든 middleware chain 위에 Rozenite endpoint 가 최종적으로 붙습니다.
+
 ### withExpo() 가 추가하는 것
 
 `@expo/metro-config` 의 opt-in 패턴을 미러링합니다. 호출 결과로 다음이 자동 병합됩니다.
