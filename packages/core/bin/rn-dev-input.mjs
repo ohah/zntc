@@ -86,6 +86,7 @@ export function buildRnBundleExtra(config, opts = {}) {
     nodeModulesPaths: resolver.nodeModulesPaths ?? undefined,
     sourceExts: opts.rnSourceExts ?? resolver.sourceExts ?? undefined,
     assetExts: resolver.assetExts ?? undefined,
+    platforms: resolver.platforms ?? undefined,
     blockList: resolver.blockList ?? undefined,
     fallback: resolver.extraNodeModules ?? undefined,
     metroResolveRequest: resolver.resolveRequest ?? undefined,

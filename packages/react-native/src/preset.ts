@@ -88,6 +88,15 @@ export interface RnBundleInput {
     sourceExts?: string[];
     /** RN assetExts override (default RN preset). */
     assetExts?: string[];
+    /**
+     * Metro `resolver.platforms` 호환. caller 가 인식 가능한 platform 이름 set.
+     * `rnPlatform` 이 이 list 안에 있어야 하며, list 자체는 prefix 확장에는
+     * 영향 없음 (Metro 동작과 동일 — current platform suffix 만 expand). 이
+     * sugar 는 사용자가 자신의 platform list 를 명시했을 때 `rnPlatform`
+     * 누락을 빌드 직전에 잡는 validation 용. 미래의 platform typing 확장
+     * (e.g. `tvos`/`macos`) 의 placeholder.
+     */
+    platforms?: string[];
     /** 사용자 추가 polyfill (preset 의 RN polyfill 와 concat — Metro `serializer.polyfills` 호환). */
     polyfills?: string[];
     /**
@@ -327,6 +336,12 @@ function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial
  */
 export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   const { entry, projectRoot, rnPlatform, dev, sourcemap, minify, extra } = input;
+
+  if (extra?.platforms && !extra.platforms.includes(rnPlatform)) {
+    throw new Error(
+      `extra.platforms (${JSON.stringify(extra.platforms)}) does not include the active rnPlatform '${rnPlatform}'`,
+    );
+  }
 
   const sourceExts = extra?.sourceExts ?? DEFAULT_SOURCE_EXTS;
   const assetExts = extra?.assetExts ?? DEFAULT_ASSET_EXTS;
