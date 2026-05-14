@@ -1712,6 +1712,26 @@ pub const Parser = struct {
     // TS Arrow Function Detection
     // ================================================================
 
+    /// `(x = default, y: T) =>` 같은 typed arrow detection 중 default value
+    /// expression 을 통과해 다음 param 의 `:` / `?` 까지 진행한다. paren/bracket/brace
+    /// balanced skip 으로 nested call/object/array literal 도 안전하게 통과. 종료 시
+    /// current 토큰은 `,` 또는 `)` (eof 직전 종료).
+    fn skipDefaultValueToCommaOrRParen(self: *Parser) !void {
+        var depth: u32 = 0;
+        while (self.current() != .eof) {
+            switch (self.current()) {
+                .l_paren, .l_bracket, .l_curly => depth += 1,
+                .r_paren, .r_bracket, .r_curly => {
+                    if (depth == 0) return;
+                    depth -= 1;
+                },
+                .comma => if (depth == 0) return,
+                else => {},
+            }
+            try self.advance();
+        }
+    }
+
     /// TS 모드에서 `(identifier:` 또는 `(identifier?` 패턴으로 typed arrow function 감지.
     /// 현재 토큰이 `(` 일 때 호출. 2-token lookahead로 판단.
     pub fn isTypedArrowFunction(self: *Parser) !bool {
@@ -1752,6 +1772,18 @@ pub const Parser = struct {
             }
             // (a?: Type) — optional parameter
             if (self.current() == .question) return true;
+            // (a = default, ...) — 첫 번째 파라미터에 default value 가 있는 경우.
+            // default expression 을 통과한 뒤 typed arrow 후보 검사를 이어간다.
+            if (self.current() == .eq) {
+                try self.advance(); // skip =
+                try self.skipDefaultValueToCommaOrRParen();
+                if (self.current() == .r_paren) {
+                    try self.advance();
+                    return self.current() == .colon and !self.in_ternary_consequent;
+                }
+                // comma → 아래 typed-param 검사 loop 로 fall-through
+            }
+
             // (a, b: Type) => ... — 첫 번째 파라미터에 타입이 없고 뒤에 타입이 있는 경우.
             // `,` 뒤의 파라미터에서 `identifier :` 패턴을 찾으면 typed arrow로 판별.
             // 예: (background, useForeground: boolean) => {}
@@ -1769,6 +1801,16 @@ pub const Parser = struct {
                         if (self.current() == .r_paren) {
                             try self.advance();
                             return self.current() == .colon and !self.in_ternary_consequent;
+                        }
+                        // default value 가 있는 다음 param — expression 통과 후 계속.
+                        if (self.current() == .eq) {
+                            try self.advance(); // skip =
+                            try self.skipDefaultValueToCommaOrRParen();
+                            if (self.current() == .comma) continue;
+                            if (self.current() == .r_paren) {
+                                try self.advance();
+                                return self.current() == .colon and !self.in_ternary_consequent;
+                            }
                         }
                         // 이 파라미터에도 타입이 없으면 다음 파라미터 확인
                     } else {
