@@ -74,7 +74,10 @@ const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   2364, // LHS of an assignment expression must be a variable or a property access
   2398, // 'constructor' cannot be used as a parameter property name
   2406, // LHS of a 'for...in' must be a variable or a property access
+  2466, // 'super' cannot be referenced in a computed property name
   2487, // LHS of a 'for...of' must be a variable or a property access
+  2523, // 'yield' expressions cannot be used in a parameter initializer
+  2528, // A module cannot have multiple default exports
   2701, // Target of object rest assignment must be a variable or a property access
   2777, // Increment/decrement target may not be an optional property access
   2779, // LHS of an assignment expression may not be an optional property access
@@ -83,9 +86,32 @@ const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   // dual-purpose 라 syntax 로 일률 분류 불가.
 ]);
 
+/// TSC 의 TS17xxx 진단 중 spec-level syntax 거부. JSX 구조 (closing tag /
+/// duplicate attribute 등), meta-property (`new.target`) 위치, exponentiation
+/// LHS unary/type-assert 제약, TS 타입 postfix/prefix `!`/`?` 위치 등이 해당.
+const TS17_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
+  17000, // JSX attributes must only be assigned a non-empty 'expression'.
+  17001, // JSX elements cannot have multiple attributes with the same name.
+  17002, // Expected corresponding JSX closing tag for '{0}'.
+  17006, // An unary expression with the '{0}' operator is not allowed in the left-hand side of an exponentiation expression.
+  17007, // A type assertion expression is not allowed in the left-hand side of an exponentiation expression.
+  17008, // JSX element '{0}' has no corresponding closing tag.
+  17012, // '{0}' is not a valid meta-property for keyword '{1}'.
+  17013, // Meta-property '{0}' is only allowed in the body of a function declaration, function expression, or constructor.
+  17014, // JSX fragment has no corresponding closing tag.
+  17015, // Expected corresponding closing tag for JSX fragment.
+  17019, // '{0}' at the end of a type is not valid TypeScript syntax. Did you mean to write '{1}'? (postfix `T!`/`T?` recovery)
+  17020, // '{0}' at the start of a type is not valid TypeScript syntax. Did you mean to write '{1}'? (prefix `?T`/`!T` recovery)
+  17021, // Unicode escape sequence cannot appear here.
+]);
+
 function isSyntaxLevelCode(code: number): boolean {
   if (code >= 1000 && code < 2000) return true;
-  return TS18_SYNTAX_LEVEL_CODES.has(code) || TS2_SYNTAX_LEVEL_CODES.has(code);
+  return (
+    TS2_SYNTAX_LEVEL_CODES.has(code) ||
+    TS17_SYNTAX_LEVEL_CODES.has(code) ||
+    TS18_SYNTAX_LEVEL_CODES.has(code)
+  );
 }
 
 const OUTCOMES = [
