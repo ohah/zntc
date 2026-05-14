@@ -949,4 +949,58 @@ class X {
 }`);
     });
   });
+
+  // stage3 (TC39) 디코레이터 — `--experimental-decorators` 플래그 없이 default 경로.
+  // `memberKeyToStringLiteral` / `extractCleanVarName` 가 `computed_property_key`
+  // 를 만나면 union variant 잘못 읽어 slice panic 으로 크래시했었다.
+  describe('stage3 decorator + computed method name (no --experimental)', () => {
+    async function expectStage3Pass(code: string) {
+      const fixture = await createFixture({ 'input.ts': code });
+      try {
+        const result = await runZntc([`${fixture.dir}/input.ts`]);
+        expect(result.exitCode).toBe(0);
+        expect(result.stderr).not.toContain('fatal');
+        expect(result.stdout).toContain('__esDecorate');
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+
+    test('decoratorOnClassMethod4_stage3 - computed string name', async () => {
+      await expectStage3Pass(`
+declare function dec(target: any, ctx: ClassMethodDecoratorContext): any;
+
+class C {
+    @dec ["method"]() {}
+}`);
+    });
+
+    test('decoratorOnClassMethod5_stage3 - computed name with factory', async () => {
+      await expectStage3Pass(`
+declare function dec(): (target: any, ctx: ClassMethodDecoratorContext) => any;
+
+class C {
+    @dec() ["method"]() {}
+}`);
+    });
+
+    test('decoratorOnClassMethod13_stage3 - two computed names produce distinct deco vars', async () => {
+      await expectStage3Pass(`
+declare function dec(target: any, ctx: ClassMethodDecoratorContext): any;
+
+class C {
+    @dec ["1"]() {}
+    @dec ["b"]() {}
+}`);
+    });
+
+    test('stage3 - computed numeric name', async () => {
+      await expectStage3Pass(`
+declare function dec(target: any, ctx: ClassMethodDecoratorContext): any;
+
+class C {
+    @dec [0]() {}
+}`);
+    });
+  });
 });

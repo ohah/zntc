@@ -75,6 +75,14 @@ pub fn memberKeyToStringLiteral(self: anytype, key: NodeIndex) Error!NodeIndex {
         return wrapInStringLiteral(self, without_n);
     }
 
+    // computed_property_key `[expr]` — inner expression 으로 재귀.
+    // 내부가 string/numeric/bigint literal 이면 정적 이름으로 추출되어 wrap.
+    // 그 외는 다시 떨어져 inner 그대로 반환되어, codegen 이 expression 으로 emit.
+    if (key_node.tag == .computed_property_key) {
+        const inner = key_node.data.unary.operand;
+        if (!inner.isNone()) return memberKeyToStringLiteral(self, inner);
+    }
+
     return key;
 }
 
@@ -912,8 +920,13 @@ pub fn buildSetterMethod(self: anytype, key: NodeIndex, assign_target: NodeIndex
 
 /// 문자열 리터럴 노드에서 JS 변수명으로 사용 가능한 이름 추출.
 /// 따옴표 제거 ("\"foo\"" → "foo") + # 제거 ("#foo" → "foo").
+/// string_literal 이 아닌 노드 (computed expression 의 non-literal inner 등) 는
+/// `data.string_ref` 가 다른 union variant 와 메모리 공유라 garbage span 으로
+/// 읽혀 slice panic 을 일으킨다 → tag guard 로 빈 문자열 반환.
 pub fn extractCleanVarName(self: anytype, name_node_idx: NodeIndex) []const u8 {
+    if (name_node_idx.isNone()) return "";
     const name_node = self.ast.getNode(name_node_idx);
+    if (name_node.tag != .string_literal) return "";
     const raw_name = self.ast.getText(name_node.data.string_ref);
     const clean = if (raw_name.len >= 2 and raw_name[0] == '"')
         raw_name[1 .. raw_name.len - 1]
