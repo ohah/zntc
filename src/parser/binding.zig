@@ -50,9 +50,13 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     {
         const modifier_span = self.currentSpan();
         const next = try self.peekNextKind();
-        // modifier 뒤에 식별자가 오면 parameter property
-        // readonly/override는 identifier로 토큰화되므로 next == .identifier에 포함됨
-        if (next == .identifier or next == .l_bracket or next == .l_curly) {
+        // modifier 뒤에 binding name 이 오면 parameter property — contextual keyword
+        // (`kw_source`/`kw_async`/`kw_from`/`kw_of`/`kw_let` 등) 도 받는다. ES reserved
+        // (await/yield/...) 만 제외 (strict mode binding 규칙). destructuring 패턴
+        // (`{...}` / `[...]`) 도 modifier 뒤에 올 수 있다.
+        const next_is_binding_name = next == .identifier or
+            (next.isKeyword() and !next.isReservedKeyword());
+        if (next_is_binding_name or next == .l_bracket or next == .l_curly) {
             var modifier_flags: u32 = if (is_readonly)
                 0x08
             else if (is_override)
