@@ -4164,3 +4164,19 @@ test "TS enum: 30 left-shift initializers 은 O(2^N) speculation 없이 즉시 �
 test "TS: 30 chained `a << N` 식은 architectural speculation guard 로 즉시 파싱" {
     try assertShiftStressParsesUnder100ms("declare const a: number;\n", "const r{d} = a << {d};\n", "");
 }
+
+// TS bare `this` parameter — `function f(this, n)` / `set x(this, n) {}` 는
+// TSC + esbuild + oxc 모두 valid (type 없이도 `this` parameter strip). ZNTC 의
+// 이전 `trySkipThisParameter` 는 `this:` (with colon) 만 인식해 bare `this` 는
+// reserved-word 에러로 거부했었다 (TSC conformance `thisTypeInAccessors.ts`).
+test "TS: bare `this` parameter without type annotation is stripped" {
+    var r = try parseTs(std.testing.allocator,
+        \\const obj = {
+        \\    set x(this, n) { },
+        \\};
+        \\function f(this, n) {}
+    );
+    defer r.deinit();
+    // 에러 없이 파싱 완료 + `this` 파라미터는 list 에서 제외 (런타임 불필요).
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
