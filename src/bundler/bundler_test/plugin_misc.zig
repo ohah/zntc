@@ -3441,6 +3441,73 @@ test "react_native inlineRequires: named re-export preserves package entry side 
     try std.testing.expect(std.mem.indexOf(u8, result.output, chained_lazy_init) != null);
 }
 
+test "react_native inlineRequires: namespace member rewrite initializes source modules" {
+    // Sentry.init / modalSelectors.getFoo 축소 재현:
+    // `import * as ns` 뒤의 `ns.member` 직접 치환도 namespace object getter와 동일하게
+    // package entry와 canonical export source를 init해야 binding이 undefined로 남지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("sentry");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as Sentry from './sentry';
+        \\import * as selectors from './selectors';
+        \\globalThis.__zntcSelector = selectors.getVisible;
+        \\globalThis.__zntcPromise = Promise.resolve().then(() => Sentry.init());
+    );
+    try writeFile(tmp.dir, "sentry/index.js",
+        \\globalThis.__zntcSentryEntry = true;
+        \\export { init } from './sdk';
+    );
+    try writeFile(tmp.dir, "sentry/sdk.js",
+        \\export function init() {
+        \\  return globalThis.__zntcSentryEntry;
+        \\}
+    );
+    try writeFile(tmp.dir, "selectors.js",
+        \\export const getVisible = (state) => state.visible;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const package_entry = try absPath(&tmp, "sentry/index.js");
+    defer std.testing.allocator.free(package_entry);
+    const sdk = try absPath(&tmp, "sentry/sdk.js");
+    defer std.testing.allocator.free(sdk);
+    const selectors = try absPath(&tmp, "selectors.js");
+    defer std.testing.allocator.free(selectors);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const sentry_member_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), __zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), init)()",
+        .{ package_entry, sdk },
+    );
+    defer std.testing.allocator.free(sentry_member_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, sentry_member_init) != null);
+
+    const selector_member_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}), getVisible)",
+        .{selectors},
+    );
+    defer std.testing.allocator.free(selector_member_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, selector_member_init) != null);
+}
+
 test "react_native inlineRequires: namespace import from export-star barrel initializes source getters" {
     // react-native-animatable 축소 재현:
     // `import * as defs from './definitions'`를 값으로 넘기면 namespace object가

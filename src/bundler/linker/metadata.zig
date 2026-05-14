@@ -622,6 +622,7 @@ pub fn buildMetadataForAst(
                 try self.registerNamespaceRewrites(
                     &ns_rewrite_list,
                     &ns_inline_list,
+                    &owned_nested_renames,
                     &ns_target_to_var,
                     force_inline,
                     module_index,
@@ -684,6 +685,7 @@ pub fn buildMetadataForAst(
                                             try self.registerNamespaceRewrites(
                                                 &ns_rewrite_list,
                                                 &ns_inline_list,
+                                                &owned_nested_renames,
                                                 &ns_target_to_var,
                                                 true,
                                                 module_index,
@@ -713,6 +715,7 @@ pub fn buildMetadataForAst(
                                 try self.registerNamespaceRewrites(
                                     &ns_rewrite_list,
                                     &ns_inline_list,
+                                    &owned_nested_renames,
                                     &ns_target_to_var,
                                     true,
                                     module_index,
