@@ -238,7 +238,7 @@ fn isCallLikeExpr(expr: []const u8) bool {
     while (i < expr.len) {
         const c = expr[i];
         if (in_string != 0) {
-            if (c == '\' and i + 1 < expr.len) {
+            if (c == '\\' and i + 1 < expr.len) {
                 i += 2;
                 continue;
             }
@@ -247,7 +247,7 @@ fn isCallLikeExpr(expr: []const u8) bool {
             continue;
         }
         switch (c) {
-            ''', '"' => {
+            '\'', '"' => {
                 in_string = c;
                 i += 1;
             },
@@ -268,7 +268,7 @@ fn collectObjectLiteralsFromExpr(
     while (i < expr.len) {
         const c = expr[i];
         if (in_string != 0) {
-            if (c == '\' and i + 1 < expr.len) {
+            if (c == '\\' and i + 1 < expr.len) {
                 i += 2;
                 continue;
             }
@@ -277,7 +277,7 @@ fn collectObjectLiteralsFromExpr(
             continue;
         }
         switch (c) {
-            ''', '"' => {
+            '\'', '"' => {
                 in_string = c;
                 i += 1;
             },
@@ -380,7 +380,7 @@ fn extractSection(body: []const u8, key: []const u8) ?[]const u8 {
                         while (k < inner.len) {
                             const cc = inner[k];
                             if (s != 0) {
-                                if (cc == '\' and k + 1 < inner.len) {
+                                if (cc == '\\' and k + 1 < inner.len) {
                                     k += 2;
                                     continue;
                                 }
@@ -388,7 +388,7 @@ fn extractSection(body: []const u8, key: []const u8) ?[]const u8 {
                                 k += 1;
                                 continue;
                             }
-                            if (cc == ''' or cc == '"') {
+                            if (cc == '\'' or cc == '"') {
                                 s = cc;
                                 k += 1;
                             } else if (cc == '{' or cc == '[' or cc == '(') {
