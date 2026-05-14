@@ -3319,6 +3319,24 @@ test "TS: typed arrow with default-value parameters" {
     try expectNoParseErrorWithExt("const f = (x = 0): number => x;", ".ts");
 }
 
+test "TS: type predicate subject accepts contextual keyword (D14)" {
+    // immer `src/utils/common.ts` 의 `(target: any): target is Map<...> => ...` 패턴.
+    // `target` 은 ECMAScript contextual keyword (`new.target` 용) 라 `.kw_target` 으로
+    // 토큰화되어 type predicate 의 subject 진입 조건 (`identifier or kw_this`) 에서
+    // 거부되던 회귀. `canBeBindingName()` 으로 일반화.
+    try expectNoParseErrorWithExt("function f(target: any): target is Map<any, any> { return true; }", ".ts");
+    try expectNoParseErrorWithExt("let f = (target: any): target is Map<any, any> => true;", ".ts");
+    // 다른 contextual keyword (async/from/of/get/set/let/source) 도 subject 로 허용
+    try expectNoParseErrorWithExt("function f(async: any): async is Promise<any> { return true; }", ".ts");
+    try expectNoParseErrorWithExt("function f(of: any): of is number { return true; }", ".ts");
+    // asserts 변형도 동일
+    try expectNoParseErrorWithExt("function f(target: any): asserts target is Map<any, any> {}", ".ts");
+    try expectNoParseErrorWithExt("function f(target: any): asserts target {}", ".ts");
+    // 일반 identifier / this 도 기존대로 동작 (regression guard)
+    try expectNoParseErrorWithExt("function f(x: any): x is any[] { return true; }", ".ts");
+    try expectNoParseErrorWithExt("class C { f(): this is C { return true; } }", ".ts");
+}
+
 test "TS: typed arrow with all untyped params + return type predicate (D11)" {
     // @reduxjs/toolkit listenerMiddleware.test-d.ts 의 패턴 — 모든 파라미터에 타입
     // annotation 이 없고 return type 만 type predicate. `isTypedArrowFunction` 의
