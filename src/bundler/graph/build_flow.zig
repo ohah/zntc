@@ -432,6 +432,7 @@ pub fn buildIncremental(
                 try cache_hit_modules.put(@intCast(i), {});
                 // parse_arena 소유권 이전: store → graph.
                 cached.module.parse_arena = null;
+                cached.module.resolve_dir = null;
                 cached.module.import_records = &.{};
                 cached.module.resolved_deps = .empty;
                 // alias_table 도 동일 패턴: 얕은 복사로 인해 backing 이

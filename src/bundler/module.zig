@@ -41,6 +41,7 @@ pub const CachedResolvedDep = struct {
     kind: types.ImportKind,
     target: Target,
     path: []const u8,
+    resolve_dir: ?[]const u8 = null,
     target_is_module_field: bool = false,
     is_context_dep: bool = false,
 
@@ -133,6 +134,9 @@ pub const Module = struct {
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
+    /// dependency lookup 시작 디렉토리. preserve_symlinks=true 에서 symlink 를 거친
+    /// logical dirname 을 보존한다. null 이면 dirname(path)를 사용.
+    resolve_dir: ?[]const u8 = null,
     /// dev mode 모듈 ID. bundler에서 한 번 계산 (path의 서브슬라이스, 할당 없음).
     dev_id: []const u8 = "",
     /// 소스 코드. parse_arena에서 할당 (Module.arena가 소유).
@@ -533,12 +537,20 @@ pub const Module = struct {
         return if (self.dev_id.len > 0) self.dev_id else std.fs.path.basename(self.path);
     }
 
+    pub fn sourceDir(self: *const Module) []const u8 {
+        return self.resolve_dir orelse std.fs.path.dirname(self.path) orelse ".";
+    }
+
     pub fn deinit(self: *Module, allocator: std.mem.Allocator) void {
         self.dependencies.deinit(allocator);
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
         self.dynamic_importers.deinit(allocator);
-        for (self.resolved_deps.items) |dep| allocator.free(dep.path);
+        if (self.resolve_dir) |dir| allocator.free(dir);
+        for (self.resolved_deps.items) |dep| {
+            allocator.free(dep.path);
+            if (dep.resolve_dir) |dir| allocator.free(dir);
+        }
         self.resolved_deps.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
         // require.context: plugin 이 채운 outer slice + 각 inner string free (#1579 Phase 2).

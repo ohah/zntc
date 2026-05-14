@@ -23,9 +23,12 @@ fn appendResolvedDep(
     const mod_ptr = self.modules.at(mod_idx);
     const path_owned = try self.allocator.dupe(u8, dep.path);
     errdefer self.allocator.free(path_owned);
+    const resolve_dir_owned = if (dep.resolve_dir) |dir| try self.allocator.dupe(u8, dir) else null;
+    errdefer if (resolve_dir_owned) |dir| self.allocator.free(dir);
 
     var owned_dep = dep;
     owned_dep.path = path_owned;
+    owned_dep.resolve_dir = resolve_dir_owned;
     try mod_ptr.resolved_deps.append(self.allocator, owned_dep);
 }
 
@@ -37,7 +40,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
     for (mod_ptr.resolved_deps.items) |dep| {
         switch (dep.target) {
             .file, .virtual => {
-                const dep_idx = try self.addModule(dep.path);
+                const dep_idx = try self.addModuleWithResolveDir(dep.path, dep.resolve_dir);
                 if (dep.target_is_module_field or mod_ptr.is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
                 }
@@ -116,7 +119,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
     if (context_deps.len == 0) return;
 
     const module_path = mod_ptr.path;
-    const source_dir = std.fs.path.dirname(module_path) orelse ".";
+    const source_dir = mod_ptr.sourceDir();
     for (context_deps) |dep| {
         const resolved = self.resolve_cache.resolveThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
             error.ModuleNotFound => {
@@ -135,8 +138,11 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
         };
         if (resolved) |m| switch (m) {
             .file => |f| {
-                defer self.allocator.free(f.path);
-                const dep_idx = try self.addModule(f.path);
+                defer {
+                    self.allocator.free(f.path);
+                    if (f.resolve_dir) |dir| self.allocator.free(dir);
+                }
+                const dep_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
                 _ = try graph_requested_exports.requestAll(self, dep_idx);
                 // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
                 self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
@@ -144,6 +150,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
                     .kind = dep.kind,
                     .target = .file,
                     .path = f.path,
+                    .resolve_dir = f.resolve_dir,
                     .target_is_module_field = f.is_module_field,
                     .is_context_dep = true,
                 });
@@ -249,7 +256,10 @@ pub fn applyResolveResult(
         // virtual/dataurl/external/custom 은 PR 5 plugin layer 도입 시 처리.
         switch (m) {
             .file => |f| {
-                defer self.allocator.free(f.path);
+                defer {
+                    self.allocator.free(f.path);
+                    if (f.resolve_dir) |dir| self.allocator.free(dir);
+                }
 
                 // Worker: 메인 그래프에 모듈로 추가하지 않고 경로만 수집
                 if (record.kind == .worker) {
@@ -264,12 +274,13 @@ pub fn applyResolveResult(
                         .kind = record.kind,
                         .target = .worker,
                         .path = f.path,
+                        .resolve_dir = f.resolve_dir,
                         .target_is_module_field = f.is_module_field,
                     });
                     return;
                 }
 
-                const dep_idx = try self.addModule(f.path);
+                const dep_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
                 if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
                 }
@@ -279,6 +290,7 @@ pub fn applyResolveResult(
                     .kind = record.kind,
                     .target = .file,
                     .path = f.path,
+                    .resolve_dir = f.resolve_dir,
                     .target_is_module_field = f.is_module_field,
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
@@ -356,7 +368,7 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
 
     const mod_ptr = self.modules.at(mod_idx);
     const module_path = mod_ptr.path;
-    const source_dir = std.fs.path.dirname(module_path) orelse ".";
+    const source_dir = mod_ptr.sourceDir();
 
     // Plugin: resolveId 훅용 runner를 루프 밖에서 한 번만 생성
     const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();

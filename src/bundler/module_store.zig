@@ -57,7 +57,11 @@ pub const PersistentModuleStore = struct {
         cached.module.importers.deinit(self.allocator);
         cached.module.dynamic_imports.deinit(self.allocator);
         cached.module.dynamic_importers.deinit(self.allocator);
-        for (cached.module.resolved_deps.items) |dep| self.allocator.free(dep.path);
+        if (cached.module.resolve_dir) |dir| self.allocator.free(dir);
+        for (cached.module.resolved_deps.items) |dep| {
+            self.allocator.free(dep.path);
+            if (dep.resolve_dir) |dir| self.allocator.free(dir);
+        }
         cached.module.resolved_deps.deinit(self.allocator);
         // import_specifiers 해제
         for (cached.import_specifiers) |s| self.allocator.free(s);
@@ -101,6 +105,7 @@ pub const PersistentModuleStore = struct {
         // 그 포인터를 통해 setCanonicalName 이 uaf 쓰기를 해 임의의 heap 영역
         // (특히 nested_name_sets HashMap backing 의 Header.capacity) 을 덮어쓴다.
         module.parse_arena = null;
+        module.resolve_dir = null;
         module.alias_table = null;
         module.import_records = &.{};
         module.resolved_deps = .empty;
@@ -113,14 +118,26 @@ pub const PersistentModuleStore = struct {
                 .import_specifiers = specs,
             }) catch {
                 if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
+                if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
                 if (cached_module.alias_table) |*t| t.deinit();
+                for (cached_module.resolved_deps.items) |dep| {
+                    self.allocator.free(dep.path);
+                    if (dep.resolve_dir) |dir| self.allocator.free(dir);
+                }
+                cached_module.resolved_deps.deinit(self.allocator);
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
                 if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
+                if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
                 if (cached_module.alias_table) |*t| t.deinit();
+                for (cached_module.resolved_deps.items) |dep| {
+                    self.allocator.free(dep.path);
+                    if (dep.resolve_dir) |dir| self.allocator.free(dir);
+                }
+                cached_module.resolved_deps.deinit(self.allocator);
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
                 return;
@@ -133,7 +150,13 @@ pub const PersistentModuleStore = struct {
             }) catch {
                 self.allocator.free(key);
                 if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
+                if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
                 if (cached_module.alias_table) |*t| t.deinit();
+                for (cached_module.resolved_deps.items) |dep| {
+                    self.allocator.free(dep.path);
+                    if (dep.resolve_dir) |dir| self.allocator.free(dir);
+                }
+                cached_module.resolved_deps.deinit(self.allocator);
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
             };

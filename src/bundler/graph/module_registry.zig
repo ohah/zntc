@@ -51,7 +51,10 @@ fn loaderExtensionFor(abs_path: []const u8) []const u8 {
 
 pub fn discardResolvedModule(self: *ModuleGraph, resolved: plugin_mod.ResolvedModule) void {
     switch (resolved) {
-        .file => |f| self.allocator.free(f.path),
+        .file => |f| {
+            self.allocator.free(f.path);
+            if (f.resolve_dir) |dir| self.allocator.free(dir);
+        },
         .disabled => |d| self.allocator.free(d.path),
         .virtual, .dataurl, .external, .custom => {},
     }
@@ -67,16 +70,31 @@ pub fn markRecordLazyResolved(self: *ModuleGraph, mod_idx: usize, rec_i: usize) 
 /// 모듈을 그래프에 추가하고 파싱한다.
 /// 이미 존재하면 기존 인덱스를 반환.
 pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
+    return self.addModuleWithResolveDir(abs_path, null);
+}
+
+pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve_dir: ?[]const u8) !ModuleIndex {
     // 중복 체크
     if (self.path_to_module.get(abs_path)) |existing| {
+        if (resolve_dir) |dir| {
+            const existing_module = self.modules.at(@intFromEnum(existing));
+            if (existing_module.resolve_dir == null) {
+                existing_module.resolve_dir = try self.allocator.dupe(u8, dir);
+            }
+        }
         return existing;
     }
 
     // 새 모듈 슬롯 할당
     const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
+    var ownership_transferred = false;
     const path_owned = try self.allocator.dupe(u8, abs_path);
+    errdefer if (!ownership_transferred) self.allocator.free(path_owned);
+    const resolve_dir_owned = if (resolve_dir) |dir| try self.allocator.dupe(u8, dir) else null;
+    errdefer if (!ownership_transferred) if (resolve_dir_owned) |dir| self.allocator.free(dir);
 
     var module = Module.init(index, path_owned);
+    module.resolve_dir = resolve_dir_owned;
     const ext_for_loader = loaderExtensionFor(abs_path);
     module.module_type = ModuleType.fromExtension(ext_for_loader);
     // 로더 결정: --loader 오버라이드 → 확장자 기본값
@@ -84,6 +102,7 @@ pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
     module.loader = parsed_loader.loader;
     module.module_type = parsed_loader.module_type orelse moduleTypeForLoader(module.module_type, module.loader);
     try self.modules.append(self.allocator, module);
+    ownership_transferred = true;
     try self.path_to_module.put(path_owned, index);
 
     // 신규 모듈 path 의 dir 를 source_read_cache 에 pre-warm — readModuleSource 단계의

@@ -286,6 +286,7 @@ pub const ModuleGraph = struct {
     pub const discardResolvedModule = graph_module_registry.discardResolvedModule;
     pub const markRecordLazyResolved = graph_module_registry.markRecordLazyResolved;
     pub const addModule = graph_module_registry.addModule;
+    pub const addModuleWithResolveDir = graph_module_registry.addModuleWithResolveDir;
     pub const addDisabledModule = graph_module_registry.addDisabledModule;
     pub const addOptionalMissingModule = graph_module_registry.addOptionalMissingModule;
     pub const addExternalModule = graph_module_registry.addExternalModule;

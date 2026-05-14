@@ -342,6 +342,8 @@ test "resolve: preserve_symlinks keeps pnpm package imports on logical node_modu
     try createFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/ui/dist/index.js");
     try writeFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/react/package.json", "{\"main\":\"index.js\"}");
     try createFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/react/index.js");
+    try writeFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/code-push/package.json", "{\"main\":\"script/acquisition-sdk.js\"}");
+    try createFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js");
 
     tmp.dir.symLink("../.pnpm/ui@1_react@18/node_modules/ui", "node_modules/ui", .{ .is_directory = true }) catch |err| switch (err) {
         error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
@@ -365,14 +367,21 @@ test "resolve: preserve_symlinks keeps pnpm package imports on logical node_modu
     logical_resolver.preserve_symlinks = true;
     const logical_ui = try logical_resolver.resolve(root, "ui");
     defer std.testing.allocator.free(logical_ui.path);
-    try std.testing.expect(pathEndsWith(logical_ui.path, "node_modules/ui/dist/index.js"));
-    try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") == null);
+    defer if (logical_ui.resolve_dir) |dir| std.testing.allocator.free(dir);
+    try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") != null);
+    try std.testing.expect(pathEndsWith(logical_ui.resolve_dir.?, "node_modules/ui/dist"));
 
-    const logical_ui_dir = std.fs.path.dirname(logical_ui.path).?;
+    const logical_ui_dir = logical_ui.resolve_dir.?;
     const root_react = try logical_resolver.resolve(logical_ui_dir, "react");
     defer std.testing.allocator.free(root_react.path);
+    defer if (root_react.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(pathEndsWith(root_react.path, "node_modules/react/index.js"));
     try std.testing.expect(std.mem.indexOf(u8, root_react.path, ".pnpm/ui@1_react@18/node_modules/react") == null);
+
+    const package_owned_dep = try logical_resolver.resolve(logical_ui_dir, "code-push");
+    defer std.testing.allocator.free(package_owned_dep.path);
+    defer if (package_owned_dep.resolve_dir) |dir| std.testing.allocator.free(dir);
+    try std.testing.expect(std.mem.indexOf(u8, package_owned_dep.path, ".pnpm/ui@1_react@18/node_modules/code-push") != null);
 }
 
 test "resolve: bare specifier walk up directories" {
