@@ -967,9 +967,16 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .none = 0 },
             });
         },
+        // 모든 numeric literal kind (decimal/float/binary/octal/hex/exponential/bigint)
+        // 를 type literal 위치에서 받는다. D15: `1e999`, `0b101`, `0o77` 등 누락 케이스
+        // 일괄 커버 — type-fest `numeric.d.ts` 의 `PositiveInfinity = 1e999`.
         .decimal,
         .float,
+        .binary,
+        .octal,
         .hex,
+        .positive_exponential,
+        .negative_exponential,
         .string_literal,
         .decimal_bigint,
         .hex_bigint,
@@ -1032,13 +1039,12 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         },
         // import("module").Type
         .kw_import => return try parseImportType(self, span.start),
-        // 음수 리터럴 타입: -1, -2n (oxc L406-418)
+        // 음수 리터럴 타입: -1, -2n, -1e10, -0b101 등 (oxc L406-418).
+        // `isNumericLiteral()` 로 일반화 — D15: `-1e999` 등 exponential / binary / octal
+        // 누락 케이스 일괄 커버.
         .minus => {
             try self.advance(); // skip -
-            if (self.current() == .decimal or self.current() == .float or self.current() == .hex or
-                self.current() == .decimal_bigint or self.current() == .hex_bigint or
-                self.current() == .octal_bigint or self.current() == .binary_bigint)
-            {
+            if (self.current().isNumericLiteral()) {
                 try self.advance();
                 return try self.ast.addNode(.{
                     .tag = .ts_literal_type,
