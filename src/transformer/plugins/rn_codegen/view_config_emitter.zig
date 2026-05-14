@@ -12,9 +12,14 @@
 //!   uiViewClassName: 'ComponentName',
 //!   validAttributes: {
 //!     color: { process: require('react-native/Libraries/StyleSheet/processColor').default },
-//!     onSomeEvent: true,
 //!     ...
 //!   },
+//!   // When events exist:
+//!   validAttributes: Object.assign({
+//!     color: { process: require('react-native/Libraries/StyleSheet/processColor').default },
+//!   }, require('react-native/Libraries/NativeComponent/ViewConfigIgnore').ConditionallyIgnoredEventHandlers({
+//!     onSomeEvent: true,
+//!   })),
 //!   bubblingEventTypes: {
 //!     topSomeEvent: { phasedRegistrationNames: { bubbled: 'onSomeEvent', captured: 'onSomeEventCapture' } }
 //!   },
@@ -48,6 +53,8 @@ const REQUIRE_INSETS_DIFFER =
     "{ diff: require('react-native/Libraries/Utilities/differ/insetsDiffer') }";
 const REQUIRE_PROCESS_COLOR_ARRAY =
     "{ process: require('react-native/Libraries/StyleSheet/processColorArray') }";
+const REQUIRE_CONDITIONALLY_IGNORED_EVENT_HANDLERS =
+    "require('react-native/Libraries/NativeComponent/ViewConfigIgnore').ConditionallyIgnoredEventHandlers";
 
 /// ComponentShape 를 view config JS 문자열로 직렬화.
 /// 반환된 슬라이스는 `alloc` 으로 할당 — caller 가 `alloc.free()` 책임.
@@ -127,7 +134,12 @@ fn emitValidAttributes(
     shape: schema.ComponentShape,
     alloc: std.mem.Allocator,
 ) !void {
-    try buf.appendSlice(alloc, "  validAttributes: {\n");
+    const has_events = shape.events.len > 0;
+    if (has_events) {
+        try buf.appendSlice(alloc, "  validAttributes: Object.assign({\n");
+    } else {
+        try buf.appendSlice(alloc, "  validAttributes: {\n");
+    }
     for (shape.props) |prop| {
         try buf.appendSlice(alloc, "    ");
         try emitKey(buf, prop.name, alloc);
@@ -135,13 +147,22 @@ fn emitValidAttributes(
         try emitAttributeValue(buf, prop.type_annotation, alloc);
         try buf.appendSlice(alloc, ",\n");
     }
-    // 모든 이벤트도 validAttributes 에 `true` 로 등록 (Metro 동일).
-    for (shape.events) |event| {
-        try buf.appendSlice(alloc, "    ");
-        try emitKey(buf, event.name, alloc);
-        try buf.appendSlice(alloc, ": true,\n");
+    // RN codegen 0.83 wraps event props with ConditionallyIgnoredEventHandlers.
+    // On iOS this preserves legacy event validAttributes; on Android it returns
+    // undefined to avoid platform-inconsistent event props in validAttributes.
+    if (has_events) {
+        try buf.appendSlice(alloc, "  }, ");
+        try buf.appendSlice(alloc, REQUIRE_CONDITIONALLY_IGNORED_EVENT_HANDLERS);
+        try buf.appendSlice(alloc, "({\n");
+        for (shape.events) |event| {
+            try buf.appendSlice(alloc, "    ");
+            try emitKey(buf, event.name, alloc);
+            try buf.appendSlice(alloc, ": true,\n");
+        }
+        try buf.appendSlice(alloc, "  })),\n");
+    } else {
+        try buf.appendSlice(alloc, "  },\n");
     }
-    try buf.appendSlice(alloc, "  },\n");
 }
 
 /// prop / event 이름이 식별자로 적합하면 그대로, `aria-label` 같은 dash 포함이면 quote.
