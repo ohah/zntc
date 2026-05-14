@@ -350,25 +350,21 @@ pub const Codegen = struct {
     }
 
     pub fn emitNodeList(self: *Codegen, start: u32, len: u32, sep: []const u8) !void {
-        if (len == 0) return;
-        const indices = self.ast.extra_data.items[start .. start + len];
-        var first = true;
-        for (indices) |raw_idx| {
-            const node_idx: NodeIndex = @enumFromInt(raw_idx);
-            if (node_idx.isNone()) continue;
-            if (self.isSkipped(node_idx)) continue;
-            if (!first) try self.write(sep);
-            first = false;
-            try self.emitNode(node_idx);
-        }
+        try emitNodeListImpl(self, start, len, sep, false);
     }
 
     pub fn emitExpressionList(self: *Codegen, node: Node, sep: []const u8) !void {
         const list = node.data.list;
-        try self.emitExpressionNodeList(list.start, list.len, sep);
+        try emitNodeListImpl(self, list.start, list.len, sep, true);
     }
 
     pub fn emitExpressionNodeList(self: *Codegen, start: u32, len: u32, sep: []const u8) !void {
+        try emitNodeListImpl(self, start, len, sep, true);
+    }
+
+    // `wrap_sequences` 가 true 이면 a, b 형태의 sequence_expression 항목을 괄호로 감싼다.
+    // call/new arg list, array literal 처럼 콤마가 항목 구분자인 컨텍스트에서만 필요.
+    fn emitNodeListImpl(self: *Codegen, start: u32, len: u32, sep: []const u8, comptime wrap_sequences: bool) !void {
         if (len == 0) return;
         const indices = self.ast.extra_data.items[start .. start + len];
         var first = true;
@@ -378,15 +374,11 @@ pub const Codegen = struct {
             if (self.isSkipped(node_idx)) continue;
             if (!first) try self.write(sep);
             first = false;
-            try self.emitExpressionListItem(node_idx);
+            const wrap = wrap_sequences and self.ast.getNode(node_idx).tag == .sequence_expression;
+            if (wrap) try self.writeByte('(');
+            try self.emitNode(node_idx);
+            if (wrap) try self.writeByte(')');
         }
-    }
-
-    pub fn emitExpressionListItem(self: *Codegen, node_idx: NodeIndex) !void {
-        const needs_parens = self.ast.getNode(node_idx).tag == .sequence_expression;
-        if (needs_parens) try self.writeByte('(');
-        try self.emitNode(node_idx);
-        if (needs_parens) try self.writeByte(')');
     }
 };
 
