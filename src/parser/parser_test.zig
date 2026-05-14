@@ -3344,6 +3344,28 @@ test "TS: strict-mode reserved word cannot be used as binding (D16)" {
     try expectParseErrorWithExt("let f = (arguments: any) => true;", ".ts", .{ .message_contains = "arguments" });
 }
 
+test "TS: object literal method shorthand named get/set/async with generics (D17)" {
+    // mobx `src/api/observable.ts` 의 `set<T = any>(...)` 패턴. object literal property
+    // parser 의 get/set/async 분기가 `peek != .l_paren/.colon/.comma/.r_curly` 만 검사 →
+    // 다음 토큰이 `<` 면 accessor 로 lock-in 후 parsePropertyKey 가 `<` 만남 → fail.
+    // setter/getter 는 generic 받을 수 없으므로 (Babel/tsc 동작) `<` 면 일반 method 로
+    // fallback. class member parser 는 동일 disambiguation 이 이미 통과 (regression
+    // 가드 함께).
+    try expectNoParseErrorWithExt("const o = { set<T = any>(x?: T): void {} };", ".ts");
+    try expectNoParseErrorWithExt("const o = { get<T = any>(): T { return null as any; } };", ".ts");
+    try expectNoParseErrorWithExt("const o = { async<T>(): Promise<T> { return null as any; } };", ".ts");
+    // 일반 setter / getter / async 는 그대로 동작 (regression guard)
+    try expectNoParseErrorWithExt("const o = { set foo(v: number) {} };", ".ts");
+    try expectNoParseErrorWithExt("const o = { get foo(): number { return 1; } };", ".ts");
+    try expectNoParseErrorWithExt("const o = { async foo() {} };", ".ts");
+    // setter/getter/async 가 일반 property key 로도 가능 (shorthand)
+    try expectNoParseErrorWithExt("const o = { set: 1, get: 2, async: 3 };", ".ts");
+    // class member 의 동일 패턴 — 이전부터 통과 (회귀 가드)
+    try expectNoParseErrorWithExt("class C { set<T = any>(x?: T): void {} get<T>(): T { return null as any; } }", ".ts");
+    // class 의 async modifier 도 `async<T>()` 면 일반 method (D17 paired fix)
+    try expectNoParseErrorWithExt("class C { async<T>(): Promise<T> { return null as any; } }", ".ts");
+}
+
 test "TS: numeric literal type accepts all numeric kinds (D15)" {
     // type-fest `numeric.d.ts` 의 `PositiveInfinity = 1e999;` 패턴.
     // parsePrimaryType 의 numeric 분기에 `.positive_exponential` / `.negative_exponential`

@@ -633,9 +633,12 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    // async (선택): async [no LineTerminator here] MethodName
-    // 스펙: async와 다음 토큰(*/PropertyName) 사이에 줄바꿈이 없어야 함
+    // async (선택): async [no LineTerminator here] MethodName.
+    // 스펙: async와 다음 토큰(*/PropertyName) 사이에 줄바꿈이 없어야 함.
+    // D17: `async<T>()` 는 'async' 이름의 generic method (async modifier 아님) —
+    // 다음 토큰이 `<` 면 일반 method 로 fallback. object literal 의 동일 fix 와 paired.
     if (self.current() == .kw_async and try self.peekNextKind() != .l_paren and
+        try self.peekNextKind() != .l_angle and
         !(try self.peekNext()).has_newline_before)
     {
         flags |= @intCast(ast_mod.MethodFlags.is_async);
