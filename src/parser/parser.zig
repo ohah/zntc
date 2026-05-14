@@ -1791,6 +1791,13 @@ pub const Parser = struct {
             if (self.current() == .comma) {
                 while (self.current() == .comma) {
                     try self.advance(); // skip ,
+                    // trailing comma 케이스: `(a, b, c,): T => ...` — 마지막 `,` 다음 곧장
+                    // `)`. 모든 파라미터에 type annotation 이 없어도 return type 으로 typed
+                    // arrow 판별 가능. @reduxjs/toolkit listenerMiddleware.test-d.ts.
+                    if (self.current() == .r_paren) {
+                        try self.advance();
+                        return self.current() == .colon and !self.in_ternary_consequent;
+                    }
                     // rest parameter with type
                     if (self.current() == .dot3) return true;
                     // destructuring with type
