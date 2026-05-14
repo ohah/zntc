@@ -621,4 +621,12 @@ namespace M2 {
       [],
     );
   });
+
+  // 회귀 가드: `1 << N` 누적시 generic-args speculation 의 nested `<<` 재귀
+  // backtrack 이 O(2^N) 으로 폭주해 무한 루프처럼 보였던 케이스. expectPass 가
+  // bun 의 기본 30s default-timeout 안에 끝나야 한다.
+  test('parserRealSource2-style bit-mask enum (30 members) finishes promptly', async () => {
+    const members = Array.from({ length: 30 }, (_, i) => `    A${i} = 1 << ${i},`).join('\n');
+    await expectPass(`export enum E {\n${members}\n}`, []);
+  });
 });

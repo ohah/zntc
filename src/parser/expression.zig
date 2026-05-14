@@ -991,6 +991,12 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // TS generic type arguments: foo<Type>() or foo<<T>() => T>()
                 // Speculative parse: try parsing <Type>, check if followed by ( or `
                 // If not, restore state and let binary expression handle < as comparison.
+                //
+                // Literal LHS 는 generic-call target 이 될 수 없다 — speculation 은
+                // 무조건 실패하면서 안쪽에 nested `<<` 가 있으면 각 `<<` 마다 재귀
+                // speculation 이 발화해 O(2^N) 폭주 (TSC conformance
+                // `parserRealSource2.ts` 1<<N enum 멤버 20개+ HANG).
+                if (self.ast.getNode(expr).tag.isLiteralTag()) break;
                 if (!trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression)) break;
             },
             .bang => {

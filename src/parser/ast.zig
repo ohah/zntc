@@ -416,6 +416,23 @@ pub const Node = struct {
         // 합계: 개수는 컴파일 타임에 Tag 필드 수로 자동 검증
         // ==============================================================
 
+        /// 위 Literals 블록의 7개 태그를 한 군데서 판정 — 새 literal 추가시
+        /// silent bypass 차단. generic-args speculation 등 "literal LHS 면
+        /// callable 불가" 분기에서 쓰인다.
+        pub fn isLiteralTag(tag: Tag) bool {
+            return switch (tag) {
+                .boolean_literal,
+                .null_literal,
+                .numeric_literal,
+                .string_literal,
+                .bigint_literal,
+                .regexp_literal,
+                .template_literal,
+                => true,
+                else => false,
+            };
+        }
+
         /// type-only 선언 태그 판별.
         /// export 문에서 이 태그의 decl은 런타임 코드를 생성하지 않으므로
         /// export_named_declaration으로 래핑하지 않아야 함.
