@@ -3277,6 +3277,21 @@ test "TS: typed arrow with default-value parameters" {
     try expectNoParseErrorWithExt("const f = (x = 0): number => x;", ".ts");
 }
 
+test "TS: typed arrow with all untyped params + return type predicate (D11)" {
+    // @reduxjs/toolkit listenerMiddleware.test-d.ts 의 패턴 — 모든 파라미터에 타입
+    // annotation 이 없고 return type 만 type predicate. `isTypedArrowFunction` 의
+    // comma loop 가 trailing comma 후 `)` 를 처리하지 않아 일반 paren expression 으로
+    // 잘못 분기되던 회귀.
+    try expectNoParseErrorWithExt("const f = (a, b, c): a is string => true;", ".ts");
+    // trailing comma 가 핵심 — Babel 도 동일 처리.
+    try expectNoParseErrorWithExt("const f = (a, b, c,): a is string => true;", ".ts");
+    // 일반 return type annotation 도 동일 경로.
+    try expectNoParseErrorWithExt("const f = (a, b, c): number => 0;", ".ts");
+    try expectNoParseErrorWithExt("const f = (a, b, c,): number => 0;", ".ts");
+    // async 도 동일 경로 (expression.zig 의 async-paren 분기가 isTypedArrowFunction 호출).
+    try expectNoParseErrorWithExt("const f = async (a, b, c,): Promise<number> => 0;", ".ts");
+}
+
 test "Flow: nullable return type with arrow" {
     // ?(T) return type이 function type이 아닌 nullable paren type으로 해석되어야 함
     try expectNoParseErrorFlow(
