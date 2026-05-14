@@ -589,6 +589,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         .external_patterns = bundle_opts.external,
         .custom_conditions = bundle_opts.conditions,
         .preserve_symlinks = bundle_opts.preserve_symlinks,
+        .resolve_symlink_siblings = bundle_opts.resolve_symlink_siblings,
         .alias = bundle_opts.alias,
         .fallback = bundle_opts.fallback,
         .resolve_extensions = bundle_opts.resolve_extensions,

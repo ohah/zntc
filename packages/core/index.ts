@@ -754,8 +754,15 @@ interface BuildOptionsCommon {
   outbase?: string;
   /** 모든 bare import를 external 처리 */
   packagesExternal?: boolean;
-  /** symlink를 따라가지 않고 링크 경로로 해석 */
+  /** symlink를 따라가지 않고 링크 경로로 해석 (esbuild/Node 호환) */
   preserveSymlinks?: boolean;
+  /**
+   * 일반 `node_modules` 탐색이 실패하면 `source_dir` 의 realpath 디렉토리에서
+   * 한 번 더 탐색한다. RN/pnpm peer dependency 가 symlink 너머의 sibling
+   * `node_modules` 에만 존재하는 경우 fallback 으로 사용. `preserveSymlinks`
+   * 와 직교한 옵션 — 함께 켜는 것이 일반적이다.
+   */
+  resolveSymlinkSiblings?: boolean;
   /**
    * Metro `resolver.disableHierarchicalLookup` 호환. true 면 entry 디렉토리
    * 외부의 `node_modules` walk-up 탐색을 차단 — monorepo 에서 dependency

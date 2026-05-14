@@ -13,6 +13,10 @@ export default {
   dev: true,
   minify: false,
   outDir: join(__dirname, '.zntc'),
+  // pnpm/yarn berry symlink 레이아웃 — link 경로를 identity 로 쓰고,
+  // sibling dep 이 link 너머에만 있을 때 realpath 로 fallback.
+  preserveSymlinks: true,
+  resolveSymlinkSiblings: true,
   resolver: {
     sourceExts: ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs', '.json', '.svg'],
     assetExts: [

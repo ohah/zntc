@@ -330,7 +330,7 @@ test "resolve: trailing slash bare specifier walks up to workspace root node_mod
     try std.testing.expectEqual(ModuleType.js, result.module_type);
 }
 
-test "resolve: preserve_symlinks keeps pnpm package imports on logical node_modules path" {
+test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link path identity 유지 + realpath sibling fallback" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -365,27 +365,28 @@ test "resolve: preserve_symlinks keeps pnpm package imports on logical node_modu
 
     var logical_resolver = Resolver.init(std.testing.allocator);
     logical_resolver.preserve_symlinks = true;
+    logical_resolver.resolve_symlink_siblings = true;
     const logical_ui = try logical_resolver.resolve(root, "ui");
     defer std.testing.allocator.free(logical_ui.path);
-    defer if (logical_ui.resolve_dir) |dir| std.testing.allocator.free(dir);
-    try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") != null);
-    try std.testing.expect(pathEndsWith(logical_ui.resolve_dir.?, "node_modules/ui/dist"));
+    // preserve_symlinks=true → identity 는 link path. `.pnpm` 미포함, `node_modules/ui` 로 끝남.
+    try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") == null);
+    try std.testing.expect(pathEndsWith(logical_ui.path, "node_modules/ui/dist/index.js"));
 
-    const logical_ui_dir = logical_ui.resolve_dir.?;
+    const logical_ui_dir = std.fs.path.dirname(logical_ui.path).?;
+    // peer dependency dedupe: lookup root 는 link path → walk up 으로 root node_modules/react 도달.
     const root_react = try logical_resolver.resolve(logical_ui_dir, "react");
     defer std.testing.allocator.free(root_react.path);
-    defer if (root_react.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(pathEndsWith(root_react.path, "node_modules/react/index.js"));
     try std.testing.expect(std.mem.indexOf(u8, root_react.path, ".pnpm/ui@1_react@18/node_modules/react") == null);
 
+    // package-private dependency: logical 경로엔 없고 realpath sibling 에만 존재 →
+    // resolve_symlink_siblings fallback 으로 `.pnpm/.../node_modules/code-push` 발견.
     const package_owned_dep = try logical_resolver.resolve(logical_ui_dir, "code-push");
     defer std.testing.allocator.free(package_owned_dep.path);
-    defer if (package_owned_dep.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_dep.path, ".pnpm/ui@1_react@18/node_modules/code-push") != null);
 
     const package_owned_subpath = try logical_resolver.resolve(logical_ui_dir, "code-push/script/acquisition-sdk");
     defer std.testing.allocator.free(package_owned_subpath.path);
-    defer if (package_owned_subpath.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_subpath.path, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js") != null);
 }
 

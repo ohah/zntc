@@ -250,6 +250,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "outExtension", // 출력 확장자 매핑
     "polyfills", // 명시 polyfill 주입
     "preserveSymlinks", // resolver 옵션
+    "resolveSymlinkSiblings", // resolver fallback to realpath sibling node_modules
     "disableHierarchicalLookup", // Metro resolver.disableHierarchicalLookup 호환
     "profile", // 프로파일링 enable
     "profileFormat", // 프로파일 출력 format

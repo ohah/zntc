@@ -79,6 +79,7 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--preserve-modules', target: 'preserveModules' },
   { kind: 'bool', flag: '--inline-dynamic-imports', target: 'inlineDynamicImports' },
   { kind: 'bool', flag: '--preserve-symlinks', target: 'preserveSymlinks' },
+  { kind: 'bool', flag: '--resolve-symlink-siblings', target: 'resolveSymlinkSiblings' },
   { kind: 'bool', flag: '--disable-hierarchical-lookup', target: 'disableHierarchicalLookup' },
   { kind: 'bool', flag: '--jsx-dev', target: 'jsxDev' },
   { kind: 'bool', flag: '--clean', target: 'clean' },

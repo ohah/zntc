@@ -28,6 +28,15 @@ describe('배치 E: S급 BuildOptions - resolution', () => {
     expect(result.errors.length).toBe(0);
   });
 
+  test('resolveSymlinkSiblings: 옵션 파싱 확인', () => {
+    const result = buildSync({
+      entryPoints: [fixture.entry],
+      preserveSymlinks: true,
+      resolveSymlinkSiblings: true,
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
   test('nodePaths: 추가 탐색 경로', () => {
     const vendor = join(fixture.dir, 'vendor');
     mkdirSync(join(vendor, 'pkg'), { recursive: true });
