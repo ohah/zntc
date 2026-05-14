@@ -11,6 +11,7 @@ const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleIndex = @import("../types.zig").ModuleIndex;
 const CompiledModule = @import("../compiled_module.zig").CompiledModule;
+const Module = @import("../module.zig").Module;
 const rt = @import("../runtime_helpers.zig");
 const profile = @import("../../profile.zig");
 
@@ -592,7 +593,7 @@ fn allocEsmInitExprForModuleIndex(self: *const Linker, mod_idx: u32) std.mem.All
     return try allocEsmInitExpr(self, mod);
 }
 
-fn allocEsmInitExpr(self: *const Linker, target_mod: *const @import("../module.zig").Module) std.mem.Allocator.Error![]const u8 {
+pub fn allocEsmInitExpr(self: *const Linker, target_mod: *const Module) std.mem.Allocator.Error![]const u8 {
     const guard_close_expr = "})";
     const guard = target_mod.shouldGuard(self.entry_error_guard);
     if (self.dev_mode) {

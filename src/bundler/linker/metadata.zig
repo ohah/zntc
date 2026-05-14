@@ -29,6 +29,7 @@ const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
+const allocEsmInitExpr = @import("shared_namespace.zig").allocEsmInitExpr;
 
 inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Interop {
     if (self.graph.resolve_cache.platform == .react_native) return .babel;
@@ -91,32 +92,6 @@ pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemant
         if (r.isValueUse()) return false;
     }
     return true;
-}
-
-fn allocEsmInitExpr(self: *const Linker, target_mod: *const Module) ![]const u8 {
-    const guard_close_expr = "})";
-    const guard = target_mod.shouldGuard(self.entry_error_guard);
-    if (self.dev_mode) {
-        if (guard) {
-            return try std.fmt.allocPrint(
-                self.allocator,
-                "{s}__zntc_modules[\"{s}\"].fn(){s}",
-                .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, target_mod.dev_id, guard_close_expr },
-            );
-        }
-        return try std.fmt.allocPrint(self.allocator, "__zntc_modules[\"{s}\"].fn()", .{target_mod.dev_id});
-    }
-
-    const init_name = try target_mod.allocInitName(self.allocator);
-    defer self.allocator.free(init_name);
-    if (guard) {
-        return try std.fmt.allocPrint(
-            self.allocator,
-            "{s}{s}(){s}",
-            .{ if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN, init_name, guard_close_expr },
-        );
-    }
-    return try std.fmt.allocPrint(self.allocator, "{s}()", .{init_name});
 }
 
 fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_mod: *const Module, target_name: []const u8) ![]const u8 {
