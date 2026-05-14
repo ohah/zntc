@@ -3319,6 +3319,31 @@ test "TS: typed arrow with default-value parameters" {
     try expectNoParseErrorWithExt("const f = (x = 0): number => x;", ".ts");
 }
 
+test "TS: strict-mode reserved word cannot be used as binding (D16)" {
+    // TypeScript spec: 모든 TS 모듈/네임스페이스는 implicit strict mode (tsc TS1212 / TS1100).
+    // 5개 도구 (Babel/tsc/swc/oxc/rolldown) 모두 parse-time reject. ZNTC 도 동일해야.
+    // 이전: `.ts` 파일이 is_unambiguous=true 라 strict reserved error 가 deferred →
+    // import/export 없으면 폐기 → ZNTC accept. 회귀.
+    const cases = [_][]const u8{
+        "let f = (let: any) => true;",
+        "let f = (yield: any) => true;",
+        "let f = (private: any) => true;",
+        "let f = (static: any) => true;",
+        "let f = (interface: any) => true;",
+        "function f(let) { return let; }",
+        "function f(private) {}",
+        "var let = 1;",
+        "let private = 1;",
+        "const static = 1;",
+    };
+    for (cases) |src| {
+        try expectParseErrorWithExt(src, ".ts", .{ .message_contains = "strict mode" });
+    }
+    // eval/arguments 도 strict reserved (tsc TS1100)
+    try expectParseErrorWithExt("let f = (eval: any) => true;", ".ts", .{ .message_contains = "eval" });
+    try expectParseErrorWithExt("let f = (arguments: any) => true;", ".ts", .{ .message_contains = "arguments" });
+}
+
 test "TS: numeric literal type accepts all numeric kinds (D15)" {
     // type-fest `numeric.d.ts` 의 `PositiveInfinity = 1e999;` 패턴.
     // parsePrimaryType 의 numeric 분기에 `.positive_exponential` / `.negative_exponential`

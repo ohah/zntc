@@ -127,9 +127,10 @@ test "Codegen formatted: class with method" {
 }
 
 test "Codegen formatted: spaces indent" {
-    var r = try e2eWithOptions(std.testing.allocator, "if (x) { return 1; }", .{ .indent_char = .space, .indent_width = 2 });
+    // D16: top-level return 은 module (TS spec) 에서 invalid — function 안으로 wrap.
+    var r = try e2eWithOptions(std.testing.allocator, "function f(x){if (x) { return 1; }}", .{ .indent_char = .space, .indent_width = 2 });
     defer r.deinit();
-    try std.testing.expectEqualStrings("if (x) {\n  return 1;\n}\n", r.output);
+    try std.testing.expectEqualStrings("function f(x) {\n  if (x) {\n    return 1;\n  }\n}\n", r.output);
 }
 
 // ================================================================
