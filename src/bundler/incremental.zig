@@ -147,6 +147,7 @@ pub const IncrementalBundler = struct {
                 .external_patterns = self.options.external,
                 .custom_conditions = self.options.conditions,
                 .preserve_symlinks = self.options.preserve_symlinks,
+                .resolve_symlink_siblings = self.options.resolve_symlink_siblings,
                 .disable_hierarchical_lookup = self.options.disable_hierarchical_lookup,
                 .alias = self.options.alias,
                 .fallback = self.options.fallback,

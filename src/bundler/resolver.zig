@@ -37,9 +37,10 @@ pub const ResolveResult = struct {
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
-    /// preserve_symlinks=true 에서 모듈 identity 는 realpath 로 dedupe 하되,
-    /// 그 모듈의 dependency lookup 은 symlink 를 거친 logical dirname 에서 시작해야 한다.
-    /// null 이면 dirname(path)를 사용.
+    /// `resolveSymlinkSiblings` fallback 으로 realpath 디렉토리에서 sibling 을 찾은 경우,
+    /// 그 모듈의 후속 dependency lookup 도 realpath 디렉토리에서 시작해야 한다.
+    /// null 이면 dirname(path) 를 사용 — esbuild 호환 `preserveSymlinks` 만 켠 경우
+    /// path 가 이미 link path 이므로 dirname(path) 가 자연스럽게 logical lookup root.
     resolve_dir: ?[]const u8 = null,
 };
 
@@ -300,9 +301,20 @@ pub const Resolver = struct {
     /// ResolveCache.conditionsFor()에서 platform+kind별로 설정.
     /// 기본값은 테스트용 (브라우저 ESM).
     conditions: []const []const u8 = &.{ "import", "module", "browser", "default" },
-    /// symlink를 통해 접근한 package 의 lookup root 를 보존 (--preserve-symlinks).
-    /// module identity 는 항상 realpath 로 canonicalize 해 React 같은 peer singleton 을 dedupe 한다.
+    /// symlink 를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks).
+    /// esbuild/Node `--preserve-symlinks` 호환: makeResult() 에서 realpath 호출을
+    /// skip 하고 link path 를 module identity 로 그대로 사용한다.
+    /// 같은 realpath 라도 link path 가 다르면 별도 모듈 인스턴스로 취급된다 — RN/pnpm
+    /// 처럼 peer-dependency 의 sibling 을 realpath 디렉토리에서 찾고 싶다면
+    /// `resolve_symlink_siblings` 도 함께 켠다.
     preserve_symlinks: bool = false,
+    /// bare specifier 의 일반 (logical) `node_modules` 탐색이 실패한 경우,
+    /// `source_dir` 의 realpath 디렉토리에서 다시 한 번 탐색한다.
+    /// pnpm 처럼 `app/node_modules/pkg` 가 `.pnpm/.../pkg` 로 symlink 된 환경에서,
+    /// `pkg` 의 sibling dependency (예: `code-push`) 가 `.pnpm/.../node_modules/` 에만
+    /// 존재하는 경우 resolve 가 실패하지 않도록 fallback 한다.
+    /// `preserve_symlinks` 와 직교한 옵션이며, 둘은 함께 켜는 것이 일반적이다.
+    resolve_symlink_siblings: bool = false,
     /// `resolveNodeModules` 의 parent dir walk-up 차단 (Metro `resolver.
     /// disableHierarchicalLookup` 호환). monorepo 에서 dependency hoisting
     /// 을 강제하거나, 워크스페이스 루트 외부의 `node_modules` 가 의도치
@@ -461,7 +473,7 @@ pub const Resolver = struct {
         // bare specifier → node_modules 탐색
         if (!isRelativeOrAbsolute(effective_specifier)) {
             return self.resolveNodeModules(source_dir, effective_specifier) catch |err| {
-                if (err == error.ModuleNotFound and self.preserve_symlinks) {
+                if (err == error.ModuleNotFound and self.resolve_symlink_siblings) {
                     if (self.resolveNodeModulesFromRealpath(source_dir, effective_specifier)) |r| return r else |fallback_err| {
                         if (fallback_err != error.ModuleNotFound) return fallback_err;
                     }
@@ -709,19 +721,12 @@ pub const Resolver = struct {
     }
 
     fn resolveNodeModulesFromRealpath(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        // pnpm 처럼 `app/node_modules/pkg` 자체가 symlink 인 경우를 풀어야 한다 —
+        // 디렉토리 단위 realpath 캐시는 dirname/basename 분리로 작동하기 때문에
+        // 마지막 segment 의 symlink 를 따라가지 않는다. 그래서 캐시를 우회하고 full realpath.
         const real_source_dir = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
-            // preserve_symlinks fallback is specifically for a logical node_modules package
-            // directory that may itself be a symlink (pnpm: app/node_modules/pkg -> .pnpm/...).
-            // Dir-level realpath caching realpaths dirname(source_dir) + basename(source_dir),
-            // which does not follow a symlink in the final path segment. Use full realpath here.
-            if (!self.preserve_symlinks) {
-                if (self.realpath_cache) |cache| {
-                    break :blk cache.resolve(source_dir) catch
-                        self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
-                }
-            }
             break :blk fs.realpath(self.allocator, source_dir) catch
                 self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
         };
@@ -837,12 +842,15 @@ pub const Resolver = struct {
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
-        // module identity 는 항상 realpath 로 canonicalize 한다. preserve_symlinks=true 는
-        // canonical path 대신 logical path 를 쓰는 옵션이 아니라, logical resolve root 를
-        // 별도 보존하는 옵션으로 해석한다.
+        // preserve_symlinks=true → realpath 호출 skip, link path 를 그대로 사용 (esbuild/Node).
+        // false → bun(.bun/) / pnpm(.pnpm/) 의 symlink 를 realpath 로 해석해 중첩 node_modules
+        // 탐색이 올바른 계층에서 동작하게 한다.
         const resolved = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
+            if (self.preserve_symlinks) {
+                break :blk self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+            }
             if (self.realpath_cache) |cache| {
                 break :blk cache.resolve(path) catch
                     self.allocator.dupe(u8, path) catch return error.OutOfMemory;
@@ -850,17 +858,10 @@ pub const Resolver = struct {
             break :blk fs.realpath(self.allocator, path) catch
                 self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         };
-        errdefer self.allocator.free(resolved);
-
-        const resolve_dir = if (self.preserve_symlinks and !std.mem.eql(u8, resolved, path)) blk: {
-            const logical_dir = std.fs.path.dirname(path) orelse ".";
-            break :blk self.allocator.dupe(u8, logical_dir) catch return error.OutOfMemory;
-        } else null;
         const ext = std.fs.path.extension(resolved);
         return .{
             .path = resolved,
             .module_type = ModuleType.fromExtension(ext),
-            .resolve_dir = resolve_dir,
         };
     }
 

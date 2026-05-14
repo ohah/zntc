@@ -114,6 +114,8 @@ pub fn printUsage(writer: anytype) !void {
         \\  --main-fields=<fields>            Comma-separated package.json field order (e.g. react-native,browser,main)
         \\  --node-paths=<dirs>               Comma-separated extra bare-specifier search dirs (NODE_PATH-like)
         \\  --preserve-symlinks               Resolve symlinks to the link path itself
+        \\  --resolve-symlink-siblings        On lookup miss, retry from the source_dir realpath
+        \\                                    (RN/pnpm peer sibling fallback)
         \\
         \\Profiling (pipeline timing):
         \\  --profile=<CATS>                  Categories to profile. CSV of:

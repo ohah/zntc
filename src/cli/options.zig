@@ -73,6 +73,9 @@ pub const CliOptions = struct {
     /// 이후 파이프라인 skip → empty output (debug/profile 용).
     core_stop_after: ?lib.transpile.StopAfter = null,
     preserve_symlinks: bool = false,
+    /// `--resolve-symlink-siblings`. 일반 node_modules 탐색 실패 시 source_dir 의
+    /// realpath 디렉토리로 다시 한 번 탐색 (RN/pnpm peer sibling fallback).
+    resolve_symlink_siblings: bool = false,
     /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
     disable_hierarchical_lookup: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
@@ -718,6 +721,8 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             }
         } else if (std.mem.eql(u8, arg, "--preserve-symlinks")) {
             opts.preserve_symlinks = true;
+        } else if (std.mem.eql(u8, arg, "--resolve-symlink-siblings")) {
+            opts.resolve_symlink_siblings = true;
         } else if (std.mem.eql(u8, arg, "--disable-hierarchical-lookup")) {
             opts.disable_hierarchical_lookup = true;
         } else if (std.mem.startsWith(u8, arg, "--alias:")) {

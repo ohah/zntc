@@ -181,6 +181,9 @@ pub const BundleOptions = struct {
     conditions: []const []const u8 = &.{},
     /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks)
     preserve_symlinks: bool = false,
+    /// 일반 node_modules 탐색 실패 시 source_dir 의 realpath 디렉토리로 한 번 더 탐색
+    /// (RN/pnpm peer sibling fallback). `preserve_symlinks` 와 직교.
+    resolve_symlink_siblings: bool = false,
     /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
     /// monorepo 에서 dependency hoisting 강제 또는 워크스페이스 루트 외부의
     /// `node_modules` 가 탐색되는 것을 차단할 때 사용.
@@ -598,6 +601,7 @@ pub const Bundler = struct {
                 .external_patterns = options.external,
                 .custom_conditions = options.conditions,
                 .preserve_symlinks = options.preserve_symlinks,
+                .resolve_symlink_siblings = options.resolve_symlink_siblings,
                 .disable_hierarchical_lookup = options.disable_hierarchical_lookup,
                 .alias = options.alias,
                 .ts_paths = options.ts_paths,

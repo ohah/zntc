@@ -769,6 +769,7 @@ pub fn parseBuildOptions(
         .outbase = outbase,
         .packages_external = getObjectBool(env, opts_obj, "packagesExternal", false),
         .preserve_symlinks = getObjectBool(env, opts_obj, "preserveSymlinks", false),
+        .resolve_symlink_siblings = getObjectBool(env, opts_obj, "resolveSymlinkSiblings", false),
         .ignore_annotations = getObjectBool(env, opts_obj, "ignoreAnnotations", false),
         .jsx_side_effects = getObjectBool(env, opts_obj, "jsxSideEffects", false),
         .analyze = getObjectBool(env, opts_obj, "analyze", false),

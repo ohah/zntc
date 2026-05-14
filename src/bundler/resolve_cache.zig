@@ -206,6 +206,8 @@ pub const ResolveCache = struct {
         external_patterns: []const []const u8 = &.{},
         custom_conditions: []const []const u8 = &.{},
         preserve_symlinks: bool = false,
+        /// 일반 node_modules 탐색 실패 시 source_dir 의 realpath 디렉토리로 한 번 더 탐색.
+        resolve_symlink_siblings: bool = false,
         /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
         disable_hierarchical_lookup: bool = false,
         alias: []const resolver_mod.AliasEntry = &.{},
@@ -234,6 +236,7 @@ pub const ResolveCache = struct {
         const alias = options.alias;
         var r = Resolver.init(allocator);
         r.preserve_symlinks = preserve_symlinks;
+        r.resolve_symlink_siblings = options.resolve_symlink_siblings;
         r.disable_hierarchical_lookup = options.disable_hierarchical_lookup;
         r.alias = alias;
         r.ts_paths = options.ts_paths;

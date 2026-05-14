@@ -1966,6 +1966,7 @@ test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve fr
         .tree_shaking = false,
         .dev_mode = true,
         .preserve_symlinks = true,
+        .resolve_symlink_siblings = true,
     });
     defer b.deinit();
     const result = try b.bundle();
