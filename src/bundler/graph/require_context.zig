@@ -74,7 +74,7 @@ pub fn expandRecords(self: *ModuleGraph, mod_idx: usize) void {
                 // 매치별 abs path resolve 결과를 record.context_resolved_paths 에 1:1 저장.
                 // codegen 이 webpackContext IIFE 의 module wrapper 호출 (`__zntc_modules[<abs>]`) 에 사용.
                 // null 슬롯 = resolve 실패 — codegen 이 throw stub 으로 emit.
-                const source_dir = std.fs.path.dirname(module_path) orelse ".";
+                const source_dir = module.sourceDir();
                 const resolved_paths_opt: ?[]?[]const u8 = arena_alloc.alloc(?[]const u8, m.len) catch null;
                 for (m, 0..) |match_path, i| {
                     const joined = joinContextPath(arena_alloc, record.specifier, match_path) orelse {
@@ -89,6 +89,7 @@ pub fn expandRecords(self: *ModuleGraph, mod_idx: usize) void {
                             .file => |f| {
                                 paths[i] = arena_alloc.dupe(u8, f.path) catch null;
                                 self.allocator.free(f.path);
+                                if (f.resolve_dir) |dir| self.allocator.free(dir);
                             },
                             .disabled => |d| self.allocator.free(d.path),
                             .virtual, .dataurl, .external, .custom => {},

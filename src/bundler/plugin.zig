@@ -132,6 +132,7 @@ pub const ResolvedModule = union(fs.Namespace) {
     /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
     file: struct {
         path: []const u8,
+        resolve_dir: ?[]const u8 = null,
         module_type: ModuleType = .unknown,
         is_module_field: bool = false,
     },

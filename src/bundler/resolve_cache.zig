@@ -283,7 +283,7 @@ pub const ResolveCache = struct {
             while (it.next()) |entry| {
                 self.allocator.free(entry.key_ptr.*);
                 switch (entry.value_ptr.*) {
-                    .resolved => |m| self.allocator.free(cachedPath(m)),
+                    .resolved => |m| self.freeCachedResolvedModule(m),
                     .not_found => {},
                 }
             }
@@ -383,6 +383,7 @@ pub const ResolveCache = struct {
                     .resolved => |m| switch (m) {
                         .file => |f| fileResult(
                             self.allocator.dupe(u8, f.path) catch return error.OutOfMemory,
+                            try self.dupeOptional(f.resolve_dir),
                             f.module_type,
                             f.is_module_field,
                         ),
@@ -479,6 +480,7 @@ pub const ResolveCache = struct {
                 .path = cache_path,
                 .module_type = result.module_type,
             } } }) catch {};
+            if (result.resolve_dir) |dir| self.allocator.free(dir);
             return disabledResult(result.path, result.module_type);
         }
 
@@ -495,6 +497,7 @@ pub const ResolveCache = struct {
                         .path = cache_path,
                         .module_type = result.module_type,
                     } } }) catch {};
+                    if (result.resolve_dir) |dir| self.allocator.free(dir);
                     return disabledResult(result.path, result.module_type);
                 },
                 .remap => |rep| {
@@ -506,25 +509,31 @@ pub const ResolveCache = struct {
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
                             const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                            const cache_resolve_dir = try self.dupeOptional(result.resolve_dir);
                             self.putCache(cache_key, .{ .resolved = .{ .file = .{
                                 .path = cache_path,
+                                .resolve_dir = cache_resolve_dir,
                                 .module_type = result.module_type,
                             } } }) catch {};
-                            return fileResult(result.path, result.module_type, result.is_module_field);
+                            return fileResult(result.path, result.resolve_dir, result.module_type, result.is_module_field);
                         };
                         defer self.allocator.free(spec_buf);
                         if (thread_safe) cache_shard.mutex.unlock();
                         const maybe_replaced = self.resolver.resolve(pkg_root, spec_buf);
                         if (thread_safe) cache_shard.mutex.lock();
                         if (maybe_replaced) |replaced| {
+                            self.allocator.free(result.path);
+                            if (result.resolve_dir) |dir| self.allocator.free(dir);
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
                             const cache_path = self.allocator.dupe(u8, replaced.path) catch return error.OutOfMemory;
+                            const cache_resolve_dir = try self.dupeOptional(replaced.resolve_dir);
                             self.putCache(cache_key, .{ .resolved = .{ .file = .{
                                 .path = cache_path,
+                                .resolve_dir = cache_resolve_dir,
                                 .module_type = replaced.module_type,
                             } } }) catch {};
-                            return fileResult(replaced.path, replaced.module_type, replaced.is_module_field);
+                            return fileResult(replaced.path, replaced.resolve_dir, replaced.module_type, replaced.is_module_field);
                         } else |_| {
                             // fallthrough — replacement 해결 실패 시 원본 사용.
                         }
@@ -538,33 +547,44 @@ pub const ResolveCache = struct {
             var store_scope = profile.begin(.resolve_cache_store);
             defer store_scope.end();
             const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+            const cache_resolve_dir = try self.dupeOptional(result.resolve_dir);
             self.putCache(cache_key, .{ .resolved = .{ .file = .{
                 .path = cache_path,
+                .resolve_dir = cache_resolve_dir,
                 .module_type = result.module_type,
             } } }) catch {};
         }
 
-        return fileResult(result.path, result.module_type, result.is_module_field);
+        return fileResult(result.path, result.resolve_dir, result.module_type, result.is_module_field);
     }
 
     /// path 는 caller 가 이미 dupe 한 것을 전달 — caller 가 메모리 owner.
-    fn fileResult(path: []const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
-        return .{ .file = .{ .path = path, .module_type = module_type, .is_module_field = is_module_field } };
+    fn fileResult(path: []const u8, resolve_dir: ?[]const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
+        return .{ .file = .{
+            .path = path,
+            .resolve_dir = resolve_dir,
+            .module_type = module_type,
+            .is_module_field = is_module_field,
+        } };
     }
 
     fn disabledResult(path: []const u8, module_type: ModuleType) ResolvedModule {
         return .{ .disabled = .{ .path = path, .module_type = module_type } };
     }
 
-    /// CachedResult.resolved (ResolvedModule) 의 path 추출.
-    /// **불변식**: Phase 1 의 cache 는 file/disabled variant 만 저장 (putCache 호출처 검증).
-    /// 다른 variant 도달은 BUG — `else => ""` 는 free no-op safety net.
-    fn cachedPath(m: ResolvedModule) []const u8 {
-        return switch (m) {
-            .file => |f| f.path,
-            .disabled => |d| d.path,
-            else => "",
-        };
+    fn dupeOptional(self: *ResolveCache, value: ?[]const u8) error{OutOfMemory}!?[]const u8 {
+        return if (value) |v| self.allocator.dupe(u8, v) catch return error.OutOfMemory else null;
+    }
+
+    fn freeCachedResolvedModule(self: *ResolveCache, m: ResolvedModule) void {
+        switch (m) {
+            .file => |f| {
+                self.allocator.free(f.path);
+                if (f.resolve_dir) |dir| self.allocator.free(dir);
+            },
+            .disabled => |d| self.allocator.free(d.path),
+            else => {},
+        }
     }
 
     /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
@@ -575,7 +595,7 @@ pub const ResolveCache = struct {
         if (map.fetchRemove(cache_key)) |old| {
             self.allocator.free(old.key);
             switch (old.value) {
-                .resolved => |m| self.allocator.free(cachedPath(m)),
+                .resolved => |m| self.freeCachedResolvedModule(m),
                 .not_found => {},
             }
         }

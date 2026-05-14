@@ -99,7 +99,7 @@ pub fn scanModule(self: *ModuleGraph, idx: ModuleIndex) ScanResult {
     }
 
     const module_path = mod_ptr.path;
-    const source_dir = std.fs.path.dirname(module_path) orelse ".";
+    const source_dir = mod_ptr.sourceDir();
 
     const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 

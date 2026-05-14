@@ -37,6 +37,10 @@ pub const ResolveResult = struct {
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
+    /// preserve_symlinks=true 에서 모듈 identity 는 realpath 로 dedupe 하되,
+    /// 그 모듈의 dependency lookup 은 symlink 를 거친 logical dirname 에서 시작해야 한다.
+    /// null 이면 dirname(path)를 사용.
+    resolve_dir: ?[]const u8 = null,
 };
 
 pub const ResolveError = error{
@@ -296,8 +300,8 @@ pub const Resolver = struct {
     /// ResolveCache.conditionsFor()에서 platform+kind별로 설정.
     /// 기본값은 테스트용 (브라우저 ESM).
     conditions: []const []const u8 = &.{ "import", "module", "browser", "default" },
-    /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks).
-    /// true이면 makeResult()에서 realpathAlloc 대신 allocator.dupe 사용.
+    /// symlink를 통해 접근한 package 의 lookup root 를 보존 (--preserve-symlinks).
+    /// module identity 는 항상 realpath 로 canonicalize 해 React 같은 peer singleton 을 dedupe 한다.
     preserve_symlinks: bool = false,
     /// `resolveNodeModules` 의 parent dir walk-up 차단 (Metro `resolver.
     /// disableHierarchicalLookup` 호환). monorepo 에서 dependency hoisting
@@ -425,6 +429,7 @@ pub const Resolver = struct {
             for (self.block_list) |pat| {
                 if (bl.matches(pat, result.path)) {
                     self.allocator.free(result.path);
+                    if (result.resolve_dir) |dir| self.allocator.free(dir);
                     return error.ModuleNotFound;
                 }
             }
@@ -456,6 +461,11 @@ pub const Resolver = struct {
         // bare specifier → node_modules 탐색
         if (!isRelativeOrAbsolute(effective_specifier)) {
             return self.resolveNodeModules(source_dir, effective_specifier) catch |err| {
+                if (err == error.ModuleNotFound and self.preserve_symlinks) {
+                    if (self.resolveNodeModulesFromRealpath(source_dir, effective_specifier)) |r| return r else |fallback_err| {
+                        if (fallback_err != error.ModuleNotFound) return fallback_err;
+                    }
+                }
                 if (err == error.ModuleNotFound and self.fallback.len > 0) {
                     if (try self.applyFallback(source_dir, effective_specifier)) |r| return r;
                 }
@@ -698,6 +708,22 @@ pub const Resolver = struct {
         return error.ModuleNotFound;
     }
 
+    fn resolveNodeModulesFromRealpath(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        const real_source_dir = blk: {
+            var realpath_scope = profile.begin(.resolve_realpath);
+            defer realpath_scope.end();
+            if (self.realpath_cache) |cache| {
+                break :blk cache.resolve(source_dir) catch
+                    self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
+            }
+            break :blk fs.realpath(self.allocator, source_dir) catch
+                self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
+        };
+        defer self.allocator.free(real_source_dir);
+        if (std.mem.eql(u8, real_source_dir, source_dir)) return error.ModuleNotFound;
+        return self.resolveNodeModules(real_source_dir, specifier);
+    }
+
     /// 패키지 디렉토리에서 엔트리포인트를 해석한다.
     /// 우선순위: exports → module → main → index 파일
     fn resolvePackage(self: *Resolver, pkg_dir_path: []const u8, subpath: []const u8) ResolveError!?ResolveResult {
@@ -805,15 +831,12 @@ pub const Resolver = struct {
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
-        // preserve_symlinks=true이면 symlink를 따라가지 않고 경로 그대로 사용.
-        // 기본(false)이면 bun(.bun/)과 pnpm(.pnpm/)의 symlink를 realpath로 해석하여
-        // 중첩 node_modules 탐색이 올바른 계층에서 동작하도록 한다.
+        // module identity 는 항상 realpath 로 canonicalize 한다. preserve_symlinks=true 는
+        // canonical path 대신 logical path 를 쓰는 옵션이 아니라, logical resolve root 를
+        // 별도 보존하는 옵션으로 해석한다.
         const resolved = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
-            if (self.preserve_symlinks) {
-                break :blk self.allocator.dupe(u8, path) catch return error.OutOfMemory;
-            }
             if (self.realpath_cache) |cache| {
                 break :blk cache.resolve(path) catch
                     self.allocator.dupe(u8, path) catch return error.OutOfMemory;
@@ -821,10 +844,17 @@ pub const Resolver = struct {
             break :blk fs.realpath(self.allocator, path) catch
                 self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         };
+        errdefer self.allocator.free(resolved);
+
+        const resolve_dir = if (self.preserve_symlinks and !std.mem.eql(u8, resolved, path)) blk: {
+            const logical_dir = std.fs.path.dirname(path) orelse ".";
+            break :blk self.allocator.dupe(u8, logical_dir) catch return error.OutOfMemory;
+        } else null;
         const ext = std.fs.path.extension(resolved);
         return .{
             .path = resolved,
             .module_type = ModuleType.fromExtension(ext),
+            .resolve_dir = resolve_dir,
         };
     }
 
