@@ -9320,11 +9320,7 @@ var v3 = f1({ w: (x) => x, r: () => E1.X }, E2.X);
 `;
 
 exports[`TSC: expressions arrowFunctionContexts 1`] = `
-"// Arrow function used in with statement
-with(window) {
-	var p = () => this;
-}
-// Arrow function as argument to super call
+"// Arrow function as argument to super call
 class Base {
 	constructor(n) {
 	}
@@ -9350,10 +9346,7 @@ var E = /* @__PURE__ */ ((E) => {E[E["x"]=() => 4]="x";E[E["y"]=// Error expecte
 // Arrow function as module variable initializer
 var M;((M) => {M.a=(s) => "";var b = (s) => s;})(M || (M = {}));
 // Repeat above for module members that are functions? (necessary to redo all of them?)
-var M2;((M2) => {// Arrow function used in with statement
-with(window) {
-	var p = () => this;
-}// Arrow function as argument to super call
+var M2;((M2) => {// Arrow function as argument to super call
 class Base {
 	constructor(n) {
 	}

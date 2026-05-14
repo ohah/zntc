@@ -8835,7 +8835,8 @@ tempTag2 \`\${ x => { x<number, string>(undefined); return x; } }\${ undefined }
     );
   });
   test('letIdentifierInElementAccess01', async () => {
-    await expectPass(
+    // D16: strict mode reject (was silent-skip 의도) — `var let` reserved
+    await expectError(
       `// @target: es2015
 var let: any = {};
 (let[0] = 100);`,
@@ -10373,13 +10374,10 @@ var v3 = f1({ w: x => x, r: () => E1.X }, E2.X);  // Error
     );
   });
   test('arrowFunctionContexts', async () => {
+    // D16: strict mode 은 `with` 금지 — `with(window){...}` 두 블록은 제거하고
+    // 나머지 valid 패턴(super/enum/namespace 등)만 보존 (was silent-skip 의도)
     await expectPass(
       `
-// Arrow function used in with statement
-with (window) {
-    var p = () => this;
-}
-
 // Arrow function as argument to super call
 class Base {
     constructor(n: any) { }
@@ -10416,11 +10414,6 @@ namespace M {
 
 // Repeat above for module members that are functions? (necessary to redo all of them?)
 namespace M2 {
-    // Arrow function used in with statement
-    with (window) {
-        var p = () => this;
-    }
-
     // Arrow function as argument to super call
     class Base {
         constructor(n: any) { }

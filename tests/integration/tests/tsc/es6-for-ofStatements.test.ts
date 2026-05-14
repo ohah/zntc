@@ -673,7 +673,8 @@ for (let v of v) {
     );
   });
   test('for-of56', async () => {
-    await expectPass(`for (var let of []) {}`, []);
+    // D16: strict mode reject (was silent-skip 의도) — `var let` reserved
+    await expectError(`for (var let of []) {}`, []);
   });
   test('for-of57', async () => {
     await expectPass(

@@ -11294,3 +11294,5 @@ class Y {
 // should error, incompatible with index signature
 "
 `;
+
+exports[`TSC: classes privateNameInObjectLiteral-3 1`] = `""`;

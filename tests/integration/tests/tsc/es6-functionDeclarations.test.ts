@@ -17,7 +17,8 @@ describe('TSC: es6/functionDeclarations', () => {
     );
   });
   test('FunctionDeclaration11_es6', async () => {
-    await expectPass(
+    // D16: strict mode reject (was silent-skip 의도)
+    await expectError(
       `function * yield() {
 }`,
       [],
@@ -37,7 +38,8 @@ describe('TSC: es6/functionDeclarations', () => {
     );
   });
   test('FunctionDeclaration2_es6', async () => {
-    await expectPass(
+    // D16: strict mode reject (was silent-skip 의도)
+    await expectError(
       `function f(yield) {
 }`,
       [],
@@ -51,7 +53,8 @@ describe('TSC: es6/functionDeclarations', () => {
     );
   });
   test('FunctionDeclaration4_es6', async () => {
-    await expectPass(
+    // D16: strict mode reject (was silent-skip 의도)
+    await expectError(
       `function yield() {
 }`,
       [],
@@ -82,7 +85,8 @@ describe('TSC: es6/functionDeclarations', () => {
     );
   });
   test('FunctionDeclaration8_es6', async () => {
-    await expectPass(`var v = { [yield]: foo }`, []);
+    // D16: strict mode reject (was silent-skip 의도)
+    await expectError(`var v = { [yield]: foo }`, []);
   });
   test('FunctionDeclaration9_es6', async () => {
     await expectPass(
