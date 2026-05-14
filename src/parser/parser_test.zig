@@ -4125,3 +4125,34 @@ test "Flow enum: TS mode 에서는 일반 ts_enum_declaration" {
     try std.testing.expectEqual(@as(usize, 1), ts_count);
     try std.testing.expectEqual(@as(usize, 0), flowEnumDeclCount(&r));
 }
+
+// `1 << N` 패턴이 20개 이상 누적되면 generic type-args speculation 이 nested
+// `<<` 마다 재귀 backtrack 해 O(2^N) 으로 폭주 → TSC conformance
+// `parserRealSource2.ts` 무한 루프. 회귀 시 hang 으로 timeout 까지 가지 않고
+// 빠르게 fail 하도록 Timer 로 100ms upper bound 어설션.
+test "TS enum: 30 left-shift initializers 은 O(2^N) speculation 없이 즉시 파싱" {
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "enum E {\n");
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        var line_buf: [64]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buf, "  A{d} = 1 << {d},\n", .{ i, i });
+        try src.appendSlice(std.testing.allocator, line);
+    }
+    try src.appendSlice(std.testing.allocator, "}\n");
+
+    var timer = try std.time.Timer.start();
+    var r = try parseTs(std.testing.allocator, src.items);
+    defer r.deinit();
+    const elapsed_ns = timer.read();
+
+    var enum_count: usize = 0;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag == .ts_enum_declaration) enum_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), enum_count);
+    // 1 << 19 부터 exponential — 정상 경로는 debug 빌드에서도 한자릿수 ms.
+    // 100ms 초과면 speculation 회귀로 본다. CI 노이즈 흡수 위해 여유 마진.
+    try std.testing.expect(elapsed_ns < 100 * std.time.ns_per_ms);
+}

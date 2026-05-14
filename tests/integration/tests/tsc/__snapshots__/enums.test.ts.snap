@@ -56,13 +56,6 @@ var E10 = /* @__PURE__ */ ((E10) => {return E10;})(E10 || {});
 var E11 = /* @__PURE__ */ ((E11) => {E11[E11["A"]=+0]="A";E11[E11["B"]=0]="B";E11[E11["C"]=1]="C";return E11;})(E11 || {});
 var E12 = /* @__PURE__ */ ((E12) => {E12[E12["A"]=1 << 0]="A";E12[E12["B"]=1 << 1]="B";E12[E12["C"]=1 << 2]="C";return E12;})(E12 || {});
 // Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
-// Examples of numeric enum types with constant and computed members
 var E20 = /* @__PURE__ */ ((E20) => {E20[E20["A"]="foo".length]="A";E20[E20["B"]=A + 1]="B";E20[E20["C"]=+"123"]="C";E20[E20["D"]=Math.sin(1)]="D";return E20;})(E20 || {});
 "
 `;
@@ -171,5 +164,10 @@ exports[`TSC: enums enumShadowedInfinityNaN 1`] = `
 	let NaN = {};
 	var En = /* @__PURE__ */ ((En) => {En[En["X"]=NaN]="X";return En;})(En || {});
 }
+"
+`;
+
+exports[`TSC: enums parserRealSource2-style bit-mask enum (30 members) finishes promptly 1`] = `
+"export var E = /* @__PURE__ */ ((E) => {E[E["A0"]=1 << 0]="A0";E[E["A1"]=1 << 1]="A1";E[E["A2"]=1 << 2]="A2";E[E["A3"]=1 << 3]="A3";E[E["A4"]=1 << 4]="A4";E[E["A5"]=1 << 5]="A5";E[E["A6"]=1 << 6]="A6";E[E["A7"]=1 << 7]="A7";E[E["A8"]=1 << 8]="A8";E[E["A9"]=1 << 9]="A9";E[E["A10"]=1 << 10]="A10";E[E["A11"]=1 << 11]="A11";E[E["A12"]=1 << 12]="A12";E[E["A13"]=1 << 13]="A13";E[E["A14"]=1 << 14]="A14";E[E["A15"]=1 << 15]="A15";E[E["A16"]=1 << 16]="A16";E[E["A17"]=1 << 17]="A17";E[E["A18"]=1 << 18]="A18";E[E["A19"]=1 << 19]="A19";E[E["A20"]=1 << 20]="A20";E[E["A21"]=1 << 21]="A21";E[E["A22"]=1 << 22]="A22";E[E["A23"]=1 << 23]="A23";E[E["A24"]=1 << 24]="A24";E[E["A25"]=1 << 25]="A25";E[E["A26"]=1 << 26]="A26";E[E["A27"]=1 << 27]="A27";E[E["A28"]=1 << 28]="A28";E[E["A29"]=1 << 29]="A29";return E;})(E || {});
 "
 `;
