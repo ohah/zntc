@@ -3253,6 +3253,17 @@ test "ES5: async for-in body extracts await into state machine" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
 }
 
+test "ES5: async return sequence stays one generator return value" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\async function setup() {
+        \\  return hook(), { onMessage: 1 };
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,(hook(),{onMessage:1})]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,hook(),{onMessage:1}]") == null);
+}
+
 test "ES5: async switch case block extracts await" {
     var r = try e2eES5Async(std.testing.allocator,
         \\async function requestCamera(result) {

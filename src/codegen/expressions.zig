@@ -215,7 +215,7 @@ pub fn emitYield(self: anytype, node: Node) !void {
 pub fn emitArray(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.writeByte('[');
-    try self.emitList(node, self.listSep());
+    try self.emitExpressionList(node, self.listSep());
     try self.writeByte(']');
 }
 
