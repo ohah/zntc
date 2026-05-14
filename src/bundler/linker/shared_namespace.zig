@@ -42,6 +42,7 @@ pub fn registerNamespaceRewrites(
     self: *const Linker,
     ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
     ns_inline_list: *std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+    owned_rewrite_values: *std.ArrayListUnmanaged([]const u8),
     /// 같은 importer 안에서 여러 namespace import 가 같은 target source 의 inline ns_var
     /// 를 공유하도록 caller 가 owned. `cjs_var_cache` 와 같은 패턴 (`metadata.zig`).
     ns_target_to_var: *std.AutoHashMap(u32, []const u8),
@@ -109,6 +110,8 @@ pub fn registerNamespaceRewrites(
     // hoisted ns_var 를 만들고 inner_map 매핑은 그 변수명으로 둔다 — emitStaticMember
     // 가 access site 마다 객체 literal 을 inline emit 하는 회귀 방지 (#1928).
     var inner_map = std.StringHashMap([]const u8).init(self.allocator);
+    var inner_map_transferred = false;
+    errdefer if (!inner_map_transferred) inner_map.deinit();
     var has_shadow = false;
     for (cached_exports) |exp| {
         if (hasNestedBinding(self, importer_mod_idx, exp.exported)) {
@@ -142,6 +145,16 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(exp.exported, ns_var);
             continue;
         }
+        if (try allocNamespaceMemberRewriteValue(self, target_mod_idx, exp)) |rewrite_value| {
+            var owned_by_list = false;
+            errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
+            // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
+            // LinkingMetadata.owned_rename_values 로 이전해 metadata deinit 에서 해제한다.
+            try owned_rewrite_values.append(self.allocator, rewrite_value);
+            owned_by_list = true;
+            try inner_map.put(exp.exported, rewrite_value);
+            continue;
+        }
         // exp.local 은 owned=true 면 ns_export_cache 가, 아니면 target module 이 소유한다.
         // metadata map 은 값 포인터만 빌린다.
         try inner_map.put(exp.exported, exp.local);
@@ -150,6 +163,7 @@ pub fn registerNamespaceRewrites(
         .symbol_id = symbol_id,
         .map = inner_map,
     });
+    inner_map_transferred = true;
 
     // ns_inline_list 활성화 조건: caller 가 명시 (force_inline) 또는 shadow 충돌 발생.
     // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
@@ -530,6 +544,38 @@ fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.All
     defer self.allocator.free(init_expr);
     const sep = if (self.minify_whitespace) "," else ", ";
     return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ init_expr, sep, exp.local });
+}
+
+fn allocNamespaceMemberRewriteValue(self: *const Linker, target_mod_idx: u32, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
+    const target_init = try allocEsmInitExprForModuleIndex(self, target_mod_idx);
+    defer if (target_init) |expr| self.allocator.free(expr);
+
+    const source_init = if (exp.init_mod) |source_mod_idx|
+        if (source_mod_idx != target_mod_idx)
+            try allocEsmInitExprForModuleIndex(self, source_mod_idx)
+        else
+            null
+    else
+        null;
+    defer if (source_init) |expr| self.allocator.free(expr);
+
+    const sep = if (self.minify_whitespace) "," else ", ";
+    if (target_init) |target_expr| {
+        if (source_init) |source_expr| {
+            return try std.fmt.allocPrint(self.allocator, "({s}{s}{s}{s}{s})", .{ target_expr, sep, source_expr, sep, exp.local });
+        }
+        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ target_expr, sep, exp.local });
+    }
+    if (source_init) |source_expr| {
+        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ source_expr, sep, exp.local });
+    }
+    return null;
+}
+
+fn allocEsmInitExprForModuleIndex(self: *const Linker, mod_idx: u32) std.mem.Allocator.Error!?[]const u8 {
+    const mod = self.graph.getModule(@enumFromInt(mod_idx)) orelse return null;
+    if (mod.wrap_kind != .esm) return null;
+    return try allocEsmInitExpr(self, mod);
 }
 
 fn allocEsmInitExpr(self: *const Linker, target_mod: *const @import("../module.zig").Module) std.mem.Allocator.Error![]const u8 {
