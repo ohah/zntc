@@ -94,8 +94,24 @@ const OUTCOMES = [
   "MISMATCH_false_reject",
   "MISMATCH_false_accept",
   "HANG",
+  "OK_policy_strict", // ZNTC implicit-module-strict 가 의도적으로 거부 — TSC `@strict: false` fixture
 ] as const;
 type Outcome = (typeof OUTCOMES)[number];
+
+/// TSC test directive — `// @strict: false` / `// @alwaysStrict: false`.
+/// 해당 fixture 는 sloppy-mode 동작을 일부러 테스트한다. ZNTC 는 PR #3180
+/// 으로 TS 파일을 implicit module + strict 로 취급 (oxc 일치) 하므로 이 fixture
+/// 들은 의도된 정책 divergence — FR 카운트에서 제외하고 별도 outcome 으로 분류.
+const STRICT_FALSE_DIRECTIVE = /^\s*\/\/\s*@(strict|alwaysStrict)\s*:\s*false\b/im;
+
+/// ZNTC 가 거부한 이유가 strict-mode/module-mode 인지. 거부 메시지에 spec
+/// 관련 keyword 포함 시 정책 divergence 후보.
+const STRICT_ERROR_KEYWORDS = [
+  "in strict mode",
+  "in module code",
+  "in non-async function",
+  "not allowed in a module",
+];
 
 interface Fixture {
   path: string;
@@ -222,10 +238,21 @@ function runZntc(fixturePath: string): Promise<ZntcRun> {
   });
 }
 
-function classify(oracle: Oracle, run: ZntcRun): Outcome {
+function classify(oracle: Oracle, run: ZntcRun, fixtureHead: string): Outcome {
   if (run.hung) return "HANG";
   const accepted = run.exit === 0;
-  if (oracle.kind === "accept") return accepted ? "OK_pass" : "MISMATCH_false_reject";
+  if (oracle.kind === "accept") {
+    if (accepted) return "OK_pass";
+    // fixture 가 명시적으로 strict=false 를 요청 + ZNTC 거부 사유가 strict/module
+    // 관련이면 PR #3180 정책 divergence (의도된) 로 분리.
+    if (
+      STRICT_FALSE_DIRECTIVE.test(fixtureHead) &&
+      STRICT_ERROR_KEYWORDS.some((kw) => run.firstError.includes(kw))
+    ) {
+      return "OK_policy_strict";
+    }
+    return "MISMATCH_false_reject";
+  }
   return accepted ? "MISMATCH_false_accept" : "OK_reject";
 }
 
@@ -320,12 +347,15 @@ async function main() {
   const results = await runChunked(singleFile, concurrency, async (f) => {
     const oracle = loadOracle(f.base, baselineIndex);
     const run = await runZntc(f.path);
+    // strict directive 검사용 head — multifile 검사 때 이미 읽으므로 캐시할
+    // 수도 있지만, 이 함수는 worker pool 안이라 fixture 마다 1 회 read 단순화.
+    const head = readHead(f.path, HEAD_READ_BYTES);
     return {
       fixture: f,
       oracle,
       zntcExit: run.exit,
       zntcFirstError: run.firstError,
-      outcome: classify(oracle, run),
+      outcome: classify(oracle, run, head),
     } satisfies Result;
   });
   const elapsedSec = ((performance.now() - t0) / 1000).toFixed(1);
@@ -334,7 +364,9 @@ async function main() {
   for (const r of results) counts[r.outcome]++;
 
   const total = results.length;
-  const okRate = total > 0 ? (((counts.OK_pass + counts.OK_reject) / total) * 100).toFixed(2) : "0";
+  // OK_policy_strict 도 의도된 동작이므로 match rate 에 포함.
+  const matched = counts.OK_pass + counts.OK_reject + counts.OK_policy_strict;
+  const okRate = total > 0 ? ((matched / total) * 100).toFixed(2) : "0";
 
   console.log("\n=== TSC Conformance Audit (single-file) ===");
   console.log(`Total fixtures:    ${total}`);
@@ -343,6 +375,7 @@ async function main() {
   console.log(`false_reject (FR): ${counts.MISMATCH_false_reject}  ← parser 회귀 후보 (P0)`);
   console.log(`false_accept (FA): ${counts.MISMATCH_false_accept}  ← syntax laxness 후보 (P1)`);
   console.log(`HANG:              ${counts.HANG}  ← parser 무한 루프 후보 (P0)`);
+  console.log(`OK_policy_strict:     ${counts.OK_policy_strict}  ← TS implicit-strict 의도된 divergence (PR #3180)`);
   console.log(`Match rate:        ${okRate}%`);
   console.log(`Elapsed:           ${elapsedSec}s  (zntc timeout per fixture: ${ZNTC_TIMEOUT_MS}ms)`);
 
