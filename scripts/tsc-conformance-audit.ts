@@ -108,20 +108,36 @@ function isMultiFileFixture(path: string): boolean {
   return MULTIFILE_DIRECTIVE.test(readHead(path, HEAD_READ_BYTES));
 }
 
-function indexBaselines(): Set<string> {
-  const out = new Set<string>();
+/// TSC baseline 들을 basename → 파일 경로 리스트 로 인덱싱.
+/// TSC 는 compiler-option matrix 마다 별도 `<basename>(opt=val,...).errors.txt`
+/// 를 생성한다 (예: `decoratorOnClassMethod3(target=es5).errors.txt`).
+/// 동일 basename 의 모든 variant 를 모아 oracle 이 매트릭스 전체를 합산한다.
+function indexBaselines(): Map<string, string[]> {
+  const out = new Map<string, string[]>();
   const suffix = ".errors.txt";
   for (const f of readdirSync(BASELINE_DIR)) {
-    if (f.endsWith(suffix)) out.add(f.slice(0, -suffix.length));
+    if (!f.endsWith(suffix)) continue;
+    const stem = f.slice(0, -suffix.length);
+    const paren = stem.indexOf("(");
+    const base = paren >= 0 ? stem.slice(0, paren) : stem;
+    let list = out.get(base);
+    if (!list) {
+      list = [];
+      out.set(base, list);
+    }
+    list.push(f);
   }
   return out;
 }
 
-function loadOracle(base: string, baselineIndex: Set<string>): Oracle {
-  if (!baselineIndex.has(base)) return { kind: "accept", codes: [] };
-  const txt = readFileSync(join(BASELINE_DIR, `${base}.errors.txt`), "utf8");
+function loadOracle(base: string, baselineIndex: Map<string, string[]>): Oracle {
+  const files = baselineIndex.get(base);
+  if (!files) return { kind: "accept", codes: [] };
   const codes = new Set<number>();
-  for (const m of txt.matchAll(/error TS(\d+)/g)) codes.add(Number(m[1]));
+  for (const f of files) {
+    const txt = readFileSync(join(BASELINE_DIR, f), "utf8");
+    for (const m of txt.matchAll(/error TS(\d+)/g)) codes.add(Number(m[1]));
+  }
   const sorted = [...codes].sort((a, b) => a - b);
   const hasSyntax = sorted.some((c) => c >= 1000 && c < 2000);
   return { kind: hasSyntax ? "syntax-error" : "accept", codes: sorted };
