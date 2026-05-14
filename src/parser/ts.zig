@@ -315,7 +315,83 @@ pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
     // namespace 내부의 declare는 이름을 보존해야 함 (export declare const L1)
     // → codegen이 ns.L1 참조 치환에 사용. 본체는 출력하지 않되 이름만 ns_export_map에 등록.
     if (self.in_namespace) return stmt;
+    // top-level declare 는 strip 되어 AST 에 사라지므로, declare 된 binding name 만
+    // `ast.declare_only_names` 에 미리 등록한다. 이후 transpile.zig 의
+    // markAutoTypeOnlyExportSpecifiers 가 이 set 을 type-only 로 분류해
+    // `export { X as Y };` 의 X 가 declare 만 reference 하는 경우를 자동 elide (D13).
+    try registerDeclareBindingNames(self, stmt);
     return NodeIndex.none;
+}
+
+/// declare 된 statement 의 top-level binding name 을 `ast.declare_only_names` 에 등록.
+/// parseTsDeclareStatement 가 strip 직전 호출.
+fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!void {
+    if (stmt_idx.isNone()) return;
+    if (@intFromEnum(stmt_idx) >= self.ast.nodes.items.len) return;
+    const stmt = self.ast.getNode(stmt_idx);
+    switch (stmt.tag) {
+        // extras[0] = name node idx
+        .function_declaration,
+        .class_declaration,
+        .ts_enum_declaration,
+        .ts_interface_declaration,
+        .ts_type_alias_declaration,
+        => try putAstDeclareName(self, @enumFromInt(self.ast.extra_data.items[stmt.data.extra])),
+
+        // binary.left = name node idx — ts_module_declaration 은 binary layout
+        // (`declare namespace NS {}`, `declare module "name" {}` 모두 동일).
+        // 후자의 left 는 string_literal 이라 식별자가 아니므로 putAstDeclareName 의
+        // `name_text.len == 0` 가드 외에 string_literal 태그 skip.
+        .ts_module_declaration => {
+            const name_idx = stmt.data.binary.left;
+            if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                const name_node = self.ast.getNode(name_idx);
+                if (name_node.tag != .string_literal) {
+                    try putAstDeclareName(self, name_idx);
+                }
+            }
+        },
+
+        // binary.left = name
+        .ts_import_equals_declaration => try putAstDeclareName(self, stmt.data.binary.left),
+
+        // variable_declaration: extras = [kind_flags, list_start, list_len]
+        .variable_declaration => {
+            const list_start = self.ast.extra_data.items[stmt.data.extra + 1];
+            const list_len = self.ast.extra_data.items[stmt.data.extra + 2];
+            var i: u32 = 0;
+            while (i < list_len) : (i += 1) {
+                const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+                if (decl_idx.isNone()) continue;
+                if (@intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                const decl = self.ast.getNode(decl_idx);
+                if (decl.tag != .variable_declarator) continue;
+                // variable_declarator extras[0] = binding pattern
+                try registerDeclareBindingPatternNames(self, @enumFromInt(self.ast.extra_data.items[decl.data.extra]));
+            }
+        },
+
+        else => {},
+    }
+}
+
+fn registerDeclareBindingPatternNames(self: *Parser, idx: NodeIndex) ParseError2!void {
+    if (idx.isNone()) return;
+    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    var it = try @import("ast_walk.zig").bindingIdentifiers(self.allocator, &self.ast, idx, .{ .cover_grammar_assignment = false });
+    defer it.deinit();
+    while (try it.next()) |leaf_idx| {
+        try putAstDeclareName(self, leaf_idx);
+    }
+}
+
+fn putAstDeclareName(self: *Parser, name_idx: NodeIndex) ParseError2!void {
+    if (name_idx.isNone()) return;
+    if (@intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+    const name_node = self.ast.getNode(name_idx);
+    const name_text = self.ast.getText(name_node.span);
+    if (name_text.len == 0) return;
+    try self.ast.declare_only_names.put(self.ast.allocator, name_text, {});
 }
 
 /// abstract class Foo { }
