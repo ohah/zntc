@@ -249,6 +249,9 @@ pub const Linker = struct {
         /// buildInlineObjectStr에서 할당된 문자열인 경우 true.
         /// exports ArrayList 해제 시 owned=true인 local만 free.
         owned: bool = false,
+        /// `import * as ns from './barrel'` 값 사용 시 namespace getter가 실제
+        /// export source 모듈을 lazy init하기 위한 모듈 인덱스.
+        init_mod: ?u32 = null,
         /// re_export_namespace (`export * as Foo from './src'`) / `import * as X; export {X}`
         /// 패턴에서 source 모듈 인덱스. registerNamespaceRewrites 가 이 정보로
         /// hoisted ns_var (예: `Foo_ns`) 를 한 번 declare 하고 inner_map 매핑을
@@ -1687,11 +1690,16 @@ pub const Linker = struct {
             // 만 기록하고 ns_var 등록은 호출 site 가 일임.
             var ns_target_mod: ?u32 = null;
             var owns_actual_local = false;
+            var init_mod: ?u32 = if (m.wrap_kind == .esm) mod_i else null;
             const actual_local = if (eb.kind == .re_export_namespace) blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, eb.import_record_index);
                 break :blk eb_local;
             } else if (eb.kind == .re_export) blk: {
                 if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
+                    init_mod = if (self.graph.getModule(canonical.module_index)) |cmod|
+                        if (cmod.wrap_kind == .esm) @intFromEnum(canonical.module_index) else null
+                    else
+                        null;
                     if (self.graph.getModule(canonical.module_index)) |cmod| {
                         for (cmod.export_bindings) |ceb| {
                             if (ceb.kind.isReExportAll() and
@@ -1707,6 +1715,7 @@ pub const Linker = struct {
                     if (ns_target_mod == null) {
                         if (try self.cjsNamespaceExportAccess(canonical)) |expr| {
                             owns_actual_local = true;
+                            init_mod = null;
                             break :blk expr;
                         }
                         break :blk self.resolveToLocalName(canonical);
@@ -1729,6 +1738,7 @@ pub const Linker = struct {
                 .exported = eb.exported_name,
                 .local = safe_local,
                 .owned = owns_actual_local,
+                .init_mod = init_mod,
                 .ns_target_mod = ns_target_mod,
             });
         }

@@ -712,9 +712,15 @@ pub const Resolver = struct {
         const real_source_dir = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
-            if (self.realpath_cache) |cache| {
-                break :blk cache.resolve(source_dir) catch
-                    self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
+            // preserve_symlinks fallback is specifically for a logical node_modules package
+            // directory that may itself be a symlink (pnpm: app/node_modules/pkg -> .pnpm/...).
+            // Dir-level realpath caching realpaths dirname(source_dir) + basename(source_dir),
+            // which does not follow a symlink in the final path segment. Use full realpath here.
+            if (!self.preserve_symlinks) {
+                if (self.realpath_cache) |cache| {
+                    break :blk cache.resolve(source_dir) catch
+                        self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
+                }
             }
             break :blk fs.realpath(self.allocator, source_dir) catch
                 self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
