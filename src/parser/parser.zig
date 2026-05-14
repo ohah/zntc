@@ -332,9 +332,17 @@ pub const Parser = struct {
         {
             // .cts 는 Node 입장에선 CJS 지만 tsc 가 ESM 구문을 받아 module.exports 로
             // transpile. parser 레벨에선 module 로 파싱.
+            //
+            // D16: TypeScript spec — 모든 TS 모듈은 implicit strict (tsc/babel/swc/oxc/
+            // rolldown 5개 컨센서스). 이전 ZNTC 는 `.ts` 도 unambiguous 로 파싱해 import/
+            // export 없는 파일을 script 로 fallback → strict reserved binding error 가
+            // 폐기되어 `let/yield/private/static` 등이 binding 자리에서 silent accept.
+            // tsc TS1212/TS1100 과 일관되게 항상 module + strict 로 확정 — ts_unambiguous
+            // 인자는 더 이상 TS 분기에서 사용하지 않음 (.js 분기에서만 의미 있음).
             self.is_module = true;
             self.scanner.is_module = true;
-            self.is_unambiguous = ts_unambiguous;
+            self.is_unambiguous = false;
+            self.is_strict_mode = true;
         } else if (ts_unambiguous and
             (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx")))
         {

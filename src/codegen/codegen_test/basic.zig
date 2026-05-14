@@ -34,9 +34,10 @@ test "Codegen: JS with TS stripped" {
 }
 
 test "Codegen: return statement" {
-    var r = try e2e(std.testing.allocator, "return;");
+    // D16: top-level return 은 module (TS spec) 에서 invalid 라 function 안으로 wrap.
+    var r = try e2e(std.testing.allocator, "function f(){return;}");
     defer r.deinit();
-    try std.testing.expectEqualStrings("return;", r.output);
+    try std.testing.expectEqualStrings("function f(){return;}", r.output);
 }
 
 test "Codegen: enum IIFE" {
