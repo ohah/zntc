@@ -43,3 +43,5 @@ exports[`TSC: es6/functionDeclarations FunctionDeclaration9_es6 1`] = `
 }
 "
 `;
+
+exports[`TSC: es6/functionDeclarations FunctionDeclaration3_es6 1`] = `""`;

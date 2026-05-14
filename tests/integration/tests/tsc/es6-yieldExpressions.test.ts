@@ -415,7 +415,8 @@ var f: () => number = () => yield s;`,
     );
   });
   test('generatorTypeCheck38', async () => {
-    await expectPass(
+    // D16: strict mode reject (was silent-skip 의도) — `var yield;`
+    await expectError(
       `var yield;
 function* g() {
     yield 0;
@@ -801,7 +802,8 @@ function* g3(): BadGenerator { }`,
     await expectPass(`function* g3(): void { }`, []);
   });
   test('YieldExpression1_es6', async () => {
-    await expectPass(`yield;`, []);
+    // D16: strict mode reject (was silent-skip 의도)
+    await expectError(`yield;`, []);
   });
   test('YieldExpression10_es6', async () => {
     await expectPass(
@@ -943,7 +945,8 @@ function* test() {
     );
   });
   test('YieldExpression8_es6', async () => {
-    await expectPass(
+    // D16: strict mode reject (was silent-skip 의도) — top-level `yield(foo);`
+    await expectError(
       `yield(foo);
 function* foo() {
   yield(foo);
@@ -979,7 +982,8 @@ function* g() {
     );
   });
   test('YieldStarExpression1_es6', async () => {
-    await expectPass(`yield * [];`, []);
+    // D16: strict mode reject (was silent-skip 의도)
+    await expectError(`yield * [];`, []);
   });
   test('YieldStarExpression2_es6', async () => {
     await expectError(`yield *;`, []);
