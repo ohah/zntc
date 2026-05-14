@@ -1208,6 +1208,13 @@ pub const Ast = struct {
         self.nodes.items[@intFromEnum(index)].tag = new_tag;
     }
 
+    /// `binary` shape 노드 (예: `import_specifier` / `export_specifier`) 의 flags
+    /// bitfield 만 갱신. semantic 단계에서 type-only 같은 후속 정보를 marker 로
+    /// 박을 때 사용 (전체 node 교체 회피).
+    pub fn setBinaryFlags(self: *Ast, index: NodeIndex, new_flags: u16) void {
+        self.nodes.items[@intFromEnum(index)].data.binary.flags = new_flags;
+    }
+
     /// 노드 in-place 교체. 주로 transformer 의 cover-grammar / await→yield rewrite 같이
     /// 하위 트리는 보존하면서 같은 인덱스의 tag/data 만 새 형태로 바꿀 때. span 은 caller 가
     /// 보존하든 변경하든 자유 — 일반적으로는 source 위치 유지를 위해 기존 span 유지.
