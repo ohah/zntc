@@ -4181,6 +4181,21 @@ test "TS: bare `this` parameter without type annotation is stripped" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// `@(inst["foo"]) method() {}` 같은 parenthesized decorator + computed member
+// access 는 `in_decorator` flag 가 안쪽 paren 까지 전파돼 `[` 가 거부되던 버그.
+// (TSC conformance `esDecorators-preservesThis.ts`, `decoratorOnClassMethod12.ts`)
+test "TS: parenthesized decorator allows computed member access inside parens" {
+    var r = try parseTs(std.testing.allocator,
+        \\declare const inst: any;
+        \\class C {
+        \\    @(inst["foo"]) method1() {}
+        \\    @((inst.bar)) method2() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // `if/while/for/with (cond) /regex/.method()` 처럼 control-flow `)` 뒤 statement
 // 가 `/` 로 시작하면 scanner 가 division 으로 잘못 토크나이즈 (TSC conformance
 // `parserRegularExpression5.ts`). statement 시작 `/` 는 항상 regex literal —
