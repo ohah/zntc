@@ -1112,7 +1112,28 @@ pub fn downgradeToVar(ast: *Ast) void {
 
         const e = stmt.data.extra;
         if (e >= ast.extra_data.items.len) continue;
-        ast.extra_data.items[e] = 0; // VariableDeclarationKind.var = 0
+        ast.setVariableDeclarationKind(stmt, .@"var");
+    }
+}
+
+/// `const` → `let` 으로 변환 (전체 AST 순회).
+///
+/// **호출자 계약**: minify_syntax 모드에서만 호출 + `mergeDecls` 직전. *재할당 의미 변경*
+/// (TypeError → silent) 을 허용하므로 minify-only 파이프라인 외에선 호출 금지.
+/// for-loop init / for-of/for-in left binding 의 const 도 let 으로 변환해 동일 (각 iter
+/// 새 binding 의미 유지). esbuild/rolldown/rspack/terser 동일.
+///
+/// **목적**: `mergeDecls` 가 *동일 kind* 만 merge — `const a=1; let b=2; const c=3;` 같은
+/// *섞인 시퀀스* 는 *3 declaration* 으로 남는다. const → let 통일 후 `let a=1,b=2,c=3;`
+/// 로 합쳐져 *2 declaration + 2 byte* 절감.
+pub fn convertConstToLet(ast: *Ast) void {
+    for (ast.nodes.items) |stmt| {
+        if (stmt.tag != .variable_declaration) continue;
+        const e = stmt.data.extra;
+        if (e >= ast.extra_data.items.len) continue;
+        if (ast.extra_data.items[e] == @intFromEnum(VariableDeclarationKind.@"const")) {
+            ast.setVariableDeclarationKind(stmt, .let);
+        }
     }
 }
 

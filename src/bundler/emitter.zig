@@ -1638,6 +1638,14 @@ pub fn emitModule(
         @import("../transformer/minify.zig").downgradeToVar(transformer.ast);
     }
 
+    // S4b: function/class body 안 const → let 변환 (전체 AST). minify_syntax 시
+    // *섞인 const/let 시퀀스* 도 mergeDecls 가 *let 단일 kind* 로 합칠 수 있게 한다.
+    // 재할당 의미 변경 (TypeError → silent) 은 minify-only 모드라 정상 — terser/esbuild/
+    // rolldown/rspack 동일.
+    if (options.minify_syntax) {
+        @import("../transformer/minify.zig").convertConstToLet(transformer.ast);
+    }
+
     // Private field name mangle (#1632 Phase 1) — `#commit_callbacks` 같은 긴 이름을
     // class 별 독립 범위로 `#a`, `#b`, ... 단축. JS 언어 규약상 private name 은 선언된
     // class body 바깥에서 참조 불가 → per-class 안전. minify_identifiers 플래그와 묶음.

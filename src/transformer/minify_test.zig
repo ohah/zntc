@@ -708,6 +708,29 @@ test "merge decls: 다른 kind는 merge 안 함" {
     );
 }
 
+test "S4b: convertConstToLet + mergeDecls — const/let 섞임 → let 합침" {
+    // S4b: minify_syntax 시 const → let 변환 후 mergeDecls 가 동일 kind 로 합침.
+    // 호출자 (transpile.zig / emitter.zig) 가 convertConstToLet 직후 mergeDecls 실행.
+    const a_alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a_alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "const a = 1; let b = 2; const c = 3;");
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    const root = try transformer.transform();
+    var ctx: minify_mod.MinifyCtx = .empty;
+    ctx.allow_top_level_inline = true;
+    minify_mod.minify(transformer.ast, ctx, a, root);
+    minify_mod.convertConstToLet(transformer.ast);
+    minify_mod.mergeDecls(transformer.ast, null);
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{ .minify_whitespace = true, .minify_syntax = true });
+    const result = try cg.generate(root);
+    const trimmed = std.mem.trimRight(u8, result, "\n");
+    try std.testing.expectEqualStrings("let a=1,b=2,c=3;", trimmed);
+}
+
 test "merge decls: const/let 섞임은 merge 안 함" {
     try expectMinify(
         "const a = 1; let b = 2;",
