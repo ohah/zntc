@@ -99,4 +99,24 @@ Effect.runPromise(p).then(r => console.log(r));
     // fix 직전 회귀 213.8KB. fix 후 ~187KB.
     expect(report.bundle_size_bytes).toBeLessThan(195_000);
   });
+
+  // 회귀 방지: Phase B nested mangler 가 cross-module Phase A 의 mangled name 을
+  // reserved 로 잡아 1-char 풀이 막히는 회귀 (rxjs deepEntry: 167KB → 160KB).
+  // 모든 모듈이 CJS/ESM wrapper IIFE 로 격리되므로 cross-module shadow 위험은
+  // 없고, nested 가 outer 의 1-char (a, b, c, ...) 를 자유롭게 재사용 가능해야 한다.
+  // 회귀 발생 시 Phase B 의 base54 1-char 후보가 다른 모듈의 Phase A reserved 와
+  // 충돌해 즉시 2-char 로 fallback → bundle size 가 ~167KB 로 회귀.
+  test('rxjs: Phase B reuses 1-char pool free from cross-module Phase A reserved', () => {
+    const report = bundle(`
+import { of, from, map, filter, scan, take, mergeMap, catchError, throwError, lastValueFrom, toArray, distinct } from 'rxjs';
+(async () => {
+  const a = await lastValueFrom(of(1, 2, 3, 4, 5).pipe(filter((x) => x % 2 === 1), map((x) => x * 10), scan((acc, n) => acc + n, 0), take(3)));
+  const b = await lastValueFrom(from([10, 20, 30]).pipe(mergeMap((n) => of(n + 1)), toArray()));
+  const c = await lastValueFrom(throwError(() => new Error('boom')).pipe(catchError(() => of('caught'))));
+  const d = await lastValueFrom(of(1, 1, 2, 3, 3, 4).pipe(distinct(), toArray()));
+  console.log(JSON.stringify({ a, b, c, d }));
+})();
+    `);
+    expect(report.bundle_size_bytes).toBeLessThan(165_000);
+  });
 });
