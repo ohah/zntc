@@ -24,6 +24,7 @@ const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
 const bundler_symbol = @import("symbol.zig");
 const profile = @import("../profile.zig");
+const debug_log = @import("../debug_log.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const preamble_writer = @import("linker/preamble_writer.zig");
 const namespace_access = @import("linker/namespace_access.zig");
@@ -932,6 +933,32 @@ pub const Linker = struct {
         if (self.mangle_report) |r| {
             r.top_level = result.phase_a;
             r.top_level_reserved_pool = result.phase_a.reserved_size;
+            for (result.phase_b_modules, 0..) |stats, mi| {
+                const m = self.getModule(@intCast(mi)) orelse continue;
+                try r.recordNested(m.path, stats);
+            }
+        }
+
+        if (debug_log.enabled(.mangle_dump)) {
+            debug_log.print(.mangle_dump, "module\tsymbol_id\torig\tmangled\tref_count\tkind\tmod_included\n", .{});
+            for (collected.top_level_candidates) |cand| {
+                const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
+                const mangled = result.renames.get(key) orelse cand.name;
+                const cand_mod = self.getModule(cand.module_index) orelse continue;
+                const sem = cand_mod.semantic orelse continue;
+                if (cand.symbol_id >= sem.symbols.items.len) continue;
+                const sym = &sem.symbols.items[cand.symbol_id];
+                const kind_str = if (sym.synthetic_kind) |sk| @tagName(sk) else "user";
+                debug_log.print(.mangle_dump, "{s}\t{d}\t{s}\t{s}\t{d}\t{s}\t{}\n", .{
+                    cand_mod.path,
+                    cand.symbol_id,
+                    cand.name,
+                    mangled,
+                    cand.ref_count,
+                    kind_str,
+                    cand_mod.is_included,
+                });
+            }
         }
 
         self.unified_result = result;
