@@ -4181,6 +4181,23 @@ test "TS: bare `this` parameter without type annotation is stripped" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// `class C { static public<T>() {} }` 같은 contextual keyword (public/private/
+// readonly/abstract/override/declare/accessor 등) 을 generic method name 으로
+// 쓰는 경우, 이전 isModifierTerminator 는 peek-next 가 `<` 인 경우를 modifier
+// boundary 로 인식 못해 contextual keyword 가 modifier 로 잘못 소비됐다 (TSC
+// conformance `parserAccessibilityAfterStatic14.ts`).
+test "TS: contextual keyword can be generic method name (e.g. `static public<T>()`)" {
+    var r = try parseTs(std.testing.allocator,
+        \\class C {
+        \\    static public<T>() {}
+        \\    static readonly<T>() {}
+        \\    static override<T>() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // `target: break target;` 같은 labeled break/continue 에서 label 이 contextual
 // keyword (target/from/async/set/get/of/using/accessor 등) 이면 ZNTC 가 label
 // 파싱을 `.identifier` 만 검사해 거부했었다 (TSC conformance `parser_breakTarget1.ts`).

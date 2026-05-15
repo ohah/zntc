@@ -37,7 +37,11 @@ fn detectAbstractDeclare(self: *Parser) u16 {
 
 fn isModifierTerminator(kind: Kind) bool {
     return kind == .l_paren or kind == .colon or kind == .eq or
-        kind == .semicolon or kind == .r_curly or kind == .bang or kind == .question;
+        kind == .semicolon or kind == .r_curly or kind == .bang or kind == .question or
+        // `<` / `<<` (re-lex 가능) — `static public<T>() {}` 패턴에서 `public`
+        // 은 modifier 아닌 method name. peek-next 가 `<` 면 generic 시작이므로
+        // 현재 contextual keyword 가 member name 으로 사용된다고 판단.
+        kind == .l_angle or kind == .shift_left;
 }
 
 /// class member key 의 식별자 텍스트를 source 에서 추출.
