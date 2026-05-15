@@ -718,6 +718,8 @@ pub fn emitWithTreeShaking(
     else
         null;
     var rbm_calls_emitted = false;
+    // CJS var wrap 합치기 sequence 추적 (minify 모드, M5).
+    var prev_was_cjs_var_minify = false;
 
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
@@ -787,7 +789,21 @@ pub fn emitWithTreeShaking(
             code_after_rewrite;
 
         if (!skip_bundle_concat) {
-            try module_output.appendSlice(allocator, code_to_append);
+            // Minify 모드 + 직전 module 도 CJS var wrap 이면 `var ` prefix 와 trailing `;`
+            // 를 합쳐 `var X=...,Y=...,Z=...;` single declaration 으로 emit (rolldown 식,
+            // 모듈당 ~3 chars 절약). non-minify 또는 wrap_kind 다르면 sequence 끊기.
+            const is_cjs_var_minify = options.minify_whitespace and m.wrap_kind == .cjs and
+                std.mem.startsWith(u8, code_to_append, "var ") and
+                std.mem.endsWith(u8, code_to_append, ";");
+            if (is_cjs_var_minify and prev_was_cjs_var_minify and module_output.items.len > 0 and
+                module_output.items[module_output.items.len - 1] == ';')
+            {
+                module_output.items[module_output.items.len - 1] = ',';
+                try module_output.appendSlice(allocator, code_to_append[4..]); // skip "var "
+            } else {
+                try module_output.appendSlice(allocator, code_to_append);
+            }
+            prev_was_cjs_var_minify = is_cjs_var_minify;
             module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
             if (!options.minify_whitespace) {
                 try module_output.appendSlice(allocator, "//#endregion\n");
