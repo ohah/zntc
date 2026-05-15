@@ -307,6 +307,11 @@ pub fn emitWithTreeShaking(
     linker: ?*const Linker,
     shaker: ?*const TreeShaker,
 ) !EmitResult {
+    // N RFC (#3267) audit: 빌드 시작 시 누적기 reset, return 직전 dump.
+    // `ZNTC_DEBUG=dead_toplevel_audit` 활성 시 module-level dead candidate count + size 출력.
+    @import("../transformer/minify.zig").resetDeadToplevelAudit();
+    defer @import("../transformer/minify.zig").dumpDeadToplevelAudit();
+
     // 1. JS/JSON 모듈 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
