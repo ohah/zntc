@@ -524,19 +524,23 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
 /// N RFC (#3267) audit 누적기 — `dead_toplevel_audit` 활성 시 minify pass 동안
 /// module-level dead candidate (다른 가드 통과 후 scope_idx==0 으로만 차단된 binding)
 /// 의 개수 + span size 누적. 호출자가 빌드 종료 시 직접 dump 또는 외부 grep.
-var dead_toplevel_count: usize = 0;
-var dead_toplevel_size: usize = 0;
+///
+/// emit_arena 는 chunk 단위 thread pool 로 병렬 호출되므로 audit 카운터는 atomic.
+/// `.monotonic` 으로 충분 — counter 의 정확한 합만 필요하고 다른 메모리 ordering 보장
+/// 의존 없음. 비활성 시엔 increment 자체 호출 안 됨 (caller debug_log.enabled 가드).
+var dead_toplevel_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var dead_toplevel_size: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 
 pub fn resetDeadToplevelAudit() void {
-    dead_toplevel_count = 0;
-    dead_toplevel_size = 0;
+    dead_toplevel_count.store(0, .monotonic);
+    dead_toplevel_size.store(0, .monotonic);
 }
 
 pub fn dumpDeadToplevelAudit() void {
     if (!debug_log.enabled(.dead_toplevel_audit)) return;
     debug_log.print(.dead_toplevel_audit, "module-level dead candidates: count={d} size={d}\n", .{
-        dead_toplevel_count,
-        dead_toplevel_size,
+        dead_toplevel_count.load(.monotonic),
+        dead_toplevel_size.load(.monotonic),
     });
 }
 
@@ -545,8 +549,8 @@ fn tryAuditDeadToplevel(ast: *Ast, ctx: MinifyCtx, sym_id: u32, sym: symbol_mod.
     if (ctx.effectiveRefCount(sym_id) != 0 or sym.write_count != 0) return;
     if (!init_idx.isNone() and !purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
     const size = @as(usize, node.span.end) -| @as(usize, node.span.start);
-    dead_toplevel_count += 1;
-    dead_toplevel_size += size;
+    _ = dead_toplevel_count.fetchAdd(1, .monotonic);
+    _ = dead_toplevel_size.fetchAdd(size, .monotonic);
     // per-binding dump — count+size 만으로는 어떤 declaration 인지 식별 불가.
     // root cause 분석 (mobx error message dict 류 / runtime helper 잔여 / TS-emit
     // temp 등 분류) 에 필요. `sym.nameText(ast.source)` 는 binding identifier span 을
