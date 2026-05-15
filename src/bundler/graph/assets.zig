@@ -160,15 +160,17 @@ pub fn applyAssetNamingPattern(
 /// RN bundle 결과로 expose 되는 asset metadata. strings + scales 는 emit 시
 /// caller 가 전달한 `metadata_alloc` (BundleResult 까지 살아남는 long-lived
 /// allocator) 직접 소유 — clone 단계 없이 그대로 list 에 push 가능.
+///
+/// 노출되는 필드는 `rn-asset-copy` 의 release copy 경로가 실제 읽는 것만 (Metro
+/// `getAssetDestPath{IOS,Android}` 입력). width/height/hash 는 source string 안
+/// `registerAsset({...})` 호출로 RN runtime 에 직접 전달되므로 metadata struct 에
+/// 중복 보관할 필요가 없다.
 pub const RnAssetMetadata = struct {
     http_server_location: []const u8,
     file_system_location: []const u8,
     name: []const u8,
     type_name: []const u8,
-    hash_hex: []const u8,
     scales: []const u32,
-    width: u32,
-    height: u32,
 };
 
 /// `emitAssetRegistryCall` 의 결과. `source` 는 `source_alloc` 소유 (보통 module
@@ -184,7 +186,6 @@ pub fn freeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) 
     allocator.free(meta.file_system_location);
     allocator.free(meta.name);
     allocator.free(meta.type_name);
-    allocator.free(meta.hash_hex);
     allocator.free(meta.scales);
 }
 
@@ -244,14 +245,15 @@ pub fn emitAssetRegistryCall(
     // Metro 호환: asset hash 는 raw bytes 의 MD5 32 hex (Metro `Assets.js` hashFiles).
     // RN 런타임/빌드 시스템이 캐시 키, 디스크 자산명 등에서 32 hex 를 가정하므로
     // 8 byte wyhash 로는 충돌 확률 + Metro 호환성 모두 부족 (#1428).
+    // hash 는 source string 의 `registerAsset({"hash": "..."})` 안에만 들어가고
+    // metadata struct 는 hash 를 노출하지 않으므로 stack 버퍼만으로 충분.
     var md5_digest: [16]u8 = undefined;
     std.crypto.hash.Md5.hash(input.bytes, &md5_digest, .{});
-    const hash_hex_owned = try metadata_alloc.alloc(u8, 32);
-    errdefer metadata_alloc.free(hash_hex_owned);
+    var hash_hex: [32]u8 = undefined;
     const hex_chars = "0123456789abcdef";
     for (md5_digest, 0..) |b, i| {
-        hash_hex_owned[i * 2] = hex_chars[b >> 4];
-        hash_hex_owned[i * 2 + 1] = hex_chars[b & 0x0F];
+        hash_hex[i * 2] = hex_chars[b >> 4];
+        hash_hex[i * 2 + 1] = hex_chars[b & 0x0F];
     }
 
     const scales_owned = try metadata_alloc.dupe(u32, input.scales);
@@ -289,7 +291,7 @@ pub fn emitAssetRegistryCall(
         \\  "type": "{s}",
         \\  "fileSystemLocation": "{s}"
         \\}})
-    , .{ registry_esc, http_loc_esc, width, height, scales_str, hash_hex_owned, name_esc, type_name, fs_dir_esc });
+    , .{ registry_esc, http_loc_esc, width, height, scales_str, &hash_hex, name_esc, type_name, fs_dir_esc });
 
     return .{
         .source = source,
@@ -298,10 +300,7 @@ pub fn emitAssetRegistryCall(
             .file_system_location = fs_dir_owned,
             .name = name_owned,
             .type_name = type_name_owned,
-            .hash_hex = hash_hex_owned,
             .scales = scales_owned,
-            .width = width,
-            .height = height,
         },
     };
 }
