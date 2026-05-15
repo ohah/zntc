@@ -217,9 +217,6 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             common.setStringProp(env, js_m, "fileSystemLocation", m.file_system_location);
             common.setStringProp(env, js_m, "name", m.name);
             common.setStringProp(env, js_m, "type", m.type_name);
-            common.setStringProp(env, js_m, "hash", m.hash_hex);
-            common.setUint32Prop(env, js_m, "width", m.width);
-            common.setUint32Prop(env, js_m, "height", m.height);
 
             var js_scales: c.napi_value = undefined;
             _ = c.napi_create_array_with_length(env, m.scales.len, &js_scales);

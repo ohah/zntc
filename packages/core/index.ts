@@ -104,19 +104,16 @@ interface Diagnostic {
 }
 
 /**
- * RN AssetRegistry.registerAsset 메타데이터 (Metro 호환 shape).
- * `--asset-registry` 사용 시 bundler 가 emit 한 asset 마다 1개. `rn-asset-copy`
- * 가 bundle string 을 파싱하지 않고 직접 받아 release asset 복사에 사용.
+ * RN AssetRegistry.registerAsset 메타데이터 — `rn-asset-copy` 의 release copy
+ * 경로가 실제 읽는 필드만 노출. width/height/hash 는 bundle 안 `registerAsset({...})`
+ * 호출로 RN runtime 에 직접 전달되므로 이 사이드채널에는 중복 보관하지 않는다.
  */
 export interface RnAssetMetadata {
   httpServerLocation: string;
   fileSystemLocation: string;
   name: string;
   type: string;
-  hash: string;
   scales: number[];
-  width: number;
-  height: number;
 }
 
 interface NativeBuildResult {
