@@ -356,11 +356,7 @@ export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
  *
  * @returns 복사된 파일 수.
  */
-export function copyRnAssets({
-  assetsDest,
-  rnPlatform,
-  bundleCode,
-}) {
+export function copyRnAssets({ assetsDest, rnPlatform, bundleCode }) {
   if (!assetsDest) return 0;
   if (typeof bundleCode !== 'string') {
     throw new Error('RN release asset copy requires bundleCode');
