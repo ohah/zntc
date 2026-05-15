@@ -1,11 +1,7 @@
 import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
 import ReactEChartsCore from "echarts-for-react/lib/core";
-import * as echarts from "echarts/core";
-import { TreemapChart, GraphChart } from "echarts/charts";
-import { TooltipComponent, LegendComponent } from "echarts/components";
-import { CanvasRenderer } from "echarts/renderers";
 
-echarts.use([TreemapChart, GraphChart, TooltipComponent, LegendComponent, CanvasRenderer]);
+import { echarts } from "./echarts-setup";
 
 type ImportKind =
   | "import-statement"

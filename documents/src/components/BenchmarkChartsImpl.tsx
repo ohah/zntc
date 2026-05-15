@@ -1,15 +1,10 @@
 import { useMemo } from "react";
 import ReactEChartsCore from "echarts-for-react/lib/core";
-import * as echarts from "echarts/core";
-import { BarChart } from "echarts/charts";
-import { TooltipComponent, GridComponent, LegendComponent } from "echarts/components";
-import { CanvasRenderer } from "echarts/renderers";
 
 import benchmarkData from "../data/benchmark-data.json";
 import { ZIG } from "../styles/brand-tokens";
+import { echarts } from "./echarts-setup";
 import { useStarlightDark } from "./useStarlightDark";
-
-echarts.use([BarChart, TooltipComponent, GridComponent, LegendComponent, CanvasRenderer]);
 
 // ZNTC 만 brand token 사용. 다른 도구 색은 각자의 brand color 라 토큰화 X.
 const SERIES_COLORS: Record<string, string> = {
