@@ -97,7 +97,7 @@ pub const MinifyCtx = struct {
     /// semantic 정보 3축 (symbols / symbol_ids / scopes) 이 모두 채워졌는지 확인.
     /// scopes 누락 시 eval / with 가드가 silent 통과되어 직접 eval 스코프 안의 변수가
     /// 잘못 제거될 수 있으므로, 세 필드 모두 요구하는 all-or-nothing 계약.
-    inline fn hasSemantic(self: MinifyCtx) bool {
+    pub inline fn hasSemantic(self: MinifyCtx) bool {
         return self.symbols.len > 0 and self.symbol_ids.len > 0 and self.scopes.len > 0;
     }
 

@@ -142,12 +142,25 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     } else {
         purity.markUserPureCalls(transformer.ast, self.pure);
     }
+    // prepass minify 의 cascade ref decrement 결과 hydrate 용 (#3267 N-step4b).
+    // minify 안에서 alloc 하던 ref_deltas 를 parse_arena 에 미리 잡아 외부 소유로
+    // 만들어, transform_cache 에 같은 backing 을 store. emitter minify 가 이 결과를
+    // 복사 후 hydrate → prepass 에서 fold 된 dead branch 안 ref 감산이 emitter 의
+    // dead-store pass 에 전파되어 cascade dead binding 도 elide 가능.
+    var prepass_ref_deltas: []u32 = &.{};
     if (self.transform_options_base.minify_syntax) {
         const minify_mod = @import("../../transformer/minify.zig");
-        const ctx: minify_mod.MinifyCtx = if (module.semantic != null)
+        var ctx: minify_mod.MinifyCtx = if (module.semantic != null)
             minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, true)
         else
             .empty;
+        if (ctx.hasSemantic()) {
+            if (arena_alloc.alloc(u32, ctx.symbols.len)) |buf| {
+                @memset(buf, 0);
+                prepass_ref_deltas = buf;
+                ctx.ref_deltas = buf;
+            } else |_| {}
+        }
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
 
@@ -163,6 +176,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .runtime_helpers = transformer.runtime_helpers,
         .symbol_ids = owned_symbol_ids,
         .helper_ref_nodes = owned_helper_ref_nodes,
+        .ref_deltas = prepass_ref_deltas,
     };
 
     _ = parser_node_count;
