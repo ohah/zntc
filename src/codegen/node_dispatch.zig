@@ -14,6 +14,11 @@ const binding_emit = @import("bindings.zig");
 
 const Error = std.mem.Allocator.Error;
 
+/// `"use strict"` directive 의 quote 양쪽 형태. CJS wrap 안에서 elide 시 비교 (chunks.zig
+/// 의 USE_CLIENT_*/USE_SERVER_* 와 같은 패턴).
+const USE_STRICT_DQ = "\"use strict\"";
+const USE_STRICT_SQ = "'use strict'";
+
 pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
     if (idx.isNone()) return;
 
@@ -66,11 +71,11 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .with_statement => try statement_emit.emitWith(self, node),
         .directive => {
             // CJS wrap 모듈 의 `"use strict"` 는 redundant — wrapper IIFE 가 ESM bundle
-            // (format=.esm) 안에서 실행되므로 자동 strict mode (rolldown 식). 다른 directive
+            // (format=.esm) 안에서 실행되므로 자동 strict mode. 다른 directive
             // (`"use server"` 등) 는 의미 보존 위해 유지.
             if (self.options.cjs_wrap_substitute) {
                 const text = self.ast.getText(node.span);
-                if (std.mem.eql(u8, text, "\"use strict\"") or std.mem.eql(u8, text, "'use strict'")) {
+                if (std.mem.eql(u8, text, USE_STRICT_DQ) or std.mem.eql(u8, text, USE_STRICT_SQ)) {
                     return;
                 }
             }
