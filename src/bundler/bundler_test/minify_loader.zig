@@ -3051,8 +3051,9 @@ test "#1621 minify+react-native: configurable __toESM stays ES5 and compact" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "i<keys.length") != null);
 }
 
-test "#1621 minify: __commonJS body uses $r for __require" {
-    // __commonJS 팩토리 내부 `function __require()` 도 축약되어야 함.
+test "#1621 minify: __commonJS body 는 anonymous arrow (named function 제거)" {
+    // 이전 동작: `function $r() {...}` named function expression — stack trace 친화.
+    // 새 동작: anonymous arrow `()=>(...)` — 17 chars 절약 (esbuild/rolldown 식).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeCjsWrapFixture(tmp.dir);
@@ -3072,8 +3073,10 @@ test "#1621 minify: __commonJS body uses $r for __require" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // $cj 팩토리 body: `function $r(){...}` 형태여야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "function $r()") != null);
+    // helper body: arrow expression body — `(cb,mod)=>()=>(mod||cb(...)...)`.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(cb,mod)=>()=>") != null);
+    // 이전 named function 패턴은 더 이상 emit 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function $r()") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__require") == null);
 }
 
