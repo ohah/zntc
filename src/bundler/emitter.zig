@@ -908,8 +908,22 @@ pub fn emitWithTreeShaking(
         try output.insertSlice(allocator, 0, hoisted_directives.items);
     }
 
-    // 모듈 코드 합류
-    try output.appendSlice(allocator, module_output.items);
+    // 모듈 코드 합류 — minify 시 helper 정의 (`var $c=...;`) 와 첫 cjs module
+    // (`var X=$c(...)`) 가 인접하면 single var declaration 으로 합침 (rolldown 식,
+    // ~3 chars 절약 — `;var ` → `,`).
+    const cjs_var_prefix = "var " ++ rt.NAMES.CJS_FACTORY_MIN ++ "=";
+    const can_merge_helper_into_module = options.minify_whitespace and
+        output.items.len > 0 and output.items[output.items.len - 1] == ';' and
+        std.mem.endsWith(u8, output.items[0..output.items.len -| 1], ")") and // helper 끝 `)`
+        std.mem.startsWith(u8, module_output.items, "var ") and
+        std.mem.indexOf(u8, output.items, cjs_var_prefix) != null;
+    if (can_merge_helper_into_module) {
+        // output 끝 `;` → `,`, module_output 의 `var ` (4 chars) 제거 후 append
+        output.items[output.items.len - 1] = ',';
+        try output.appendSlice(allocator, module_output.items[4..]);
+    } else {
+        try output.appendSlice(allocator, module_output.items);
+    }
 
     // Plugin: renderChunk 훅 — 단일 파일 모드에서도 적용
     if (options.plugins.len > 0) {
