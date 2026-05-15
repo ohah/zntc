@@ -808,7 +808,7 @@ async function runRnBundle(opts, config) {
   if (result.errors.length === 0 && !opts.devMode && opts.assetsDest) {
     const assetsDestAbs = resolve(opts.assetsDest);
     try {
-      const copied = copyRnAssets({
+      const copied = await copyRnAssets({
         assetsDest: assetsDestAbs,
         rnPlatform,
         bundleCode: result.outputFiles?.[0]?.text,
