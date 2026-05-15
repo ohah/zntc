@@ -182,6 +182,13 @@ pub const Linker = struct {
     /// false (linker 단독 빌드 / unit test) 면 기존 동작 유지.
     tree_shaker_active: bool = false,
 
+    /// TreeShaker borrowed pointer — `tree_shaker_active=true` 일 때 set. metadata
+    /// builder 의 namespace force_inline 결정이 `isExportUsed(mod, name)` 으로
+    /// transitively used 여부 확인. unused namespace re-export 는 X_ns inline
+    /// literal 생성 skip — namespace-heavy 라이브러리의 dead X_ns 제거.
+    /// bundler 가 tree_shake.analyze() 후 set, deinit 전에 null 로 clear.
+    tree_shaker: ?*const @import("tree_shaker.zig").TreeShaker = null,
+
     /// #1824 IIFE `--globals SPEC=GLOBAL` 매핑 (rollup `output.globals` 호환).
     /// `format == .iife` 일 때만 의미 있음. 매핑된 external specifier 는 UMD/AMD 와
     /// 동일한 factory-param preamble 경로로 처리되고, 매핑 안 된 external 은
@@ -1366,6 +1373,16 @@ pub const Linker = struct {
     /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
     pub fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
         return namespace_access.isNamespaceUsedAsValue(allocator, ast, symbol_ids, ns_sym_id);
+    }
+
+    /// namespace re-export (`import * as X; export { X };`) 가 cross-module 에서
+    /// transitively 사용되는지. metadata.zig 의 force_inline 결정 (3 caller) 이
+    /// 공유 — unused re-export 는 X_ns inline literal 생성 skip → effect 같은
+    /// namespace-heavy 라이브러리에서 dead X_ns elide.
+    /// tree_shaker 미활성 (단위 테스트) 이면 보수적 true (기존 동작 유지).
+    pub fn isNamespaceExportConsumed(self: *const Linker, module_index: u32, local_name: []const u8) bool {
+        const ts = self.tree_shaker orelse return true;
+        return ts.isExportUsed(module_index, local_name);
     }
 
     pub const NamespaceAccess = namespace_access.NamespaceAccess;
