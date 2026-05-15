@@ -11,7 +11,8 @@ const asset_meta = @import("../asset_meta.zig");
 
 /// JS 문자열 리터럴용 이스케이프. \ " \n \r \0 \u2028 \u2029 를 처리한다.
 pub fn escapeJsString(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    // fast path: 이스케이프가 필요한 문자가 없으면 복사만
+    // fast path: 이스케이프가 필요한 문자가 없으면 input 슬라이스 그대로 borrow 반환.
+    // caller 는 결과를 별도 free 하지 말 것 — owned 가 필요하면 명시적 dupe.
     var needs_escape = false;
     for (input) |c| {
         switch (c) {
@@ -26,7 +27,7 @@ pub fn escapeJsString(allocator: std.mem.Allocator, input: []const u8) ![]const 
             else => {},
         }
     }
-    if (!needs_escape) return try allocator.dupe(u8, input);
+    if (!needs_escape) return input;
 
     var buf: std.ArrayList(u8) = .empty;
     try buf.ensureTotalCapacity(allocator, input.len);
@@ -170,6 +171,9 @@ pub const RnAssetMetadata = struct {
     height: u32,
 };
 
+/// `emitAssetRegistryCall` 의 결과. `source` 는 `source_alloc` 소유 (보통 module
+/// parse_arena), `metadata.*` 는 `metadata_alloc` 소유 (long-lived). 두 슬라이스가
+/// 같은 lifetime 아니라는 점에 주의 — 회수 시 각자의 allocator 사용.
 pub const EmittedAsset = struct {
     source: []const u8,
     metadata: RnAssetMetadata,
@@ -185,12 +189,13 @@ pub fn freeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) 
 }
 
 /// Metro AssetRegistry.registerAsset() 호출식 + asset metadata 를 생성.
-/// `source_alloc`: emit JS source (module.source) 의 backing — 보통 module parse_arena.
-/// `metadata_alloc`: metadata struct 의 strings + scales backing — BundleResult 까지
-/// 살아남아야 하므로 graph allocator (long-lived). errdefer 가 partial-alloc leak 방지.
+/// 두 allocator 분리 — fs.RealReadFileCache.readFile 의 `(long, short)` 컨벤션 준수:
+/// `metadata_alloc`: metadata strings + scales backing — BundleResult 까지 살아남는 long-lived.
+/// `source_alloc`: emit JS source (module.source) 의 backing — 보통 module parse_arena (short).
+/// errdefer 가 partial-alloc leak 방지.
 pub fn emitAssetRegistryCall(
-    source_alloc: std.mem.Allocator,
     metadata_alloc: std.mem.Allocator,
+    source_alloc: std.mem.Allocator,
     registry_path: []const u8,
     abs_path: []const u8,
     bytes: []const u8,
@@ -205,21 +210,20 @@ pub fn emitAssetRegistryCall(
     const width = if (dims) |d| d.width else 0;
     const height = if (dims) |d| d.height else 0;
     const asset_type = asset_meta.AssetType.fromExtension(ext);
-    const type_name_borrow = asset_type.typeName(ext);
+    const type_name = asset_type.typeName(ext);
 
-    // Metadata strings 를 metadata_alloc 으로 직접 alloc — 별도 clone 단계 제거.
     // Metro 호환: httpServerLocation = `/assets/` + projectRoot 기준 dirname.
     // RN 런타임이 `<dev-server>:<port><httpServerLocation>/<name>.<hash>.<type>` 형태로
     // URL 을 만들기 때문에 `.` 만 있으면 dev server 가 파일을 찾지 못한다 (#1428).
+    // 임시 `rel` 버퍼는 source_alloc (parse_arena) — graph allocator fragmentation 회피.
     const http_loc_owned = blk: {
         if (project_root.len == 0) {
             const d = std.fs.path.dirname(url) orelse ".";
             break :blk try metadata_alloc.dupe(u8, d);
         }
-        const rel = std.fs.path.relative(metadata_alloc, project_root, abs_path) catch {
+        const rel = std.fs.path.relative(source_alloc, project_root, abs_path) catch {
             break :blk try metadata_alloc.dupe(u8, ".");
         };
-        defer metadata_alloc.free(rel);
         const rel_dir = std.fs.path.dirname(rel) orelse ".";
         break :blk try std.fmt.allocPrint(metadata_alloc, "/assets/{s}", .{rel_dir});
     };
@@ -229,7 +233,7 @@ pub fn emitAssetRegistryCall(
     errdefer metadata_alloc.free(fs_dir_owned);
     const name_owned = try metadata_alloc.dupe(u8, name_without_ext);
     errdefer metadata_alloc.free(name_owned);
-    const type_name_owned = try metadata_alloc.dupe(u8, type_name_borrow);
+    const type_name_owned = try metadata_alloc.dupe(u8, type_name);
     errdefer metadata_alloc.free(type_name_owned);
 
     // Metro 호환: asset hash 는 raw bytes 의 MD5 32 hex (Metro `Assets.js` hashFiles).
@@ -251,7 +255,8 @@ pub fn emitAssetRegistryCall(
     errdefer metadata_alloc.free(scales_owned);
 
     // 사용자 경로/식별자에 따옴표·역슬래시·개행이 포함되면 JSON 파싱이 깨지므로 escape 필수.
-    // escape 결과 strings 는 source 생성에만 필요하므로 source_alloc — module 종료 시 회수.
+    // escapeJsString 은 fast path 에서 input slice 를 borrow 반환 — source 임베드용이라
+    // source_alloc lifetime 만 충족하면 됨 (대다수 케이스에 alloc 0).
     const http_loc_esc = try escapeJsString(source_alloc, http_loc_owned);
     const fs_dir_esc = try escapeJsString(source_alloc, fs_dir_owned);
     const name_esc = try escapeJsString(source_alloc, name_without_ext);
@@ -281,7 +286,7 @@ pub fn emitAssetRegistryCall(
         \\  "type": "{s}",
         \\  "fileSystemLocation": "{s}"
         \\}})
-    , .{ registry_esc, http_loc_esc, width, height, scales_str, hash_hex_owned, name_esc, type_name_borrow, fs_dir_esc });
+    , .{ registry_esc, http_loc_esc, width, height, scales_str, hash_hex_owned, name_esc, type_name, fs_dir_esc });
 
     return .{
         .source = source,

@@ -141,9 +141,9 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                 // loader=.javascript는 호출자의 fall-through 신호.
                 // import_scanner가 source의 require()를 ImportRecord로 추출하고
                 // wrap_kind/exports_kind를 .cjs로 자동 결정한다.
-                // source 는 arena_alloc (module parse_arena), metadata 는 self.allocator
-                // (graph) — emit 가 두 allocator 에 직접 alloc 해 clone 단계 제거.
-                const emitted = emitAssetRegistryCall(arena_alloc, self.allocator, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
+                // 첫 인자가 metadata_alloc (long-lived, graph), 두번째가 source_alloc
+                // (short-lived, parse_arena) — fs.RealReadFileCache.readFile 컨벤션.
+                const emitted = emitAssetRegistryCall(self.allocator, arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
                     module.state = .ready;
                     return;
                 };
