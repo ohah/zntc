@@ -1068,7 +1068,8 @@ pub const Linker = struct {
         const m = self.getModule(module_index).?;
         const local = m.exportBindingLocalName(eb);
         if (eb.kind == .local) {
-            return self.getCanonicalByRef(eb.symbol) orelse local;
+            const canonical = self.getCanonicalByRef(eb.symbol) orelse local;
+            return self.safeIdentifierName(canonical, module_index);
         }
         return self.getCanonicalName(module_index, local) orelse local;
     }

@@ -80,6 +80,17 @@ inline fn resolvedReExportSource(l: *const Linker, m: *const Module, eb: ExportB
     return l.graph.getModule(src_idx);
 }
 
+inline fn shouldSkipTreeShakenReExportSource(l: *const Linker, m: *const Module, eb: ExportBinding) bool {
+    if (!l.tree_shaker_active) return false;
+    const rec_idx = eb.import_record_index orelse return false;
+    if (rec_idx >= m.import_records.len) return false;
+    const src_idx = m.import_records[rec_idx].resolved;
+    if (src_idx.isNone()) return true;
+    if (src_idx == m.index) return false;
+    const src_mod = l.graph.getModule(src_idx) orelse return true;
+    return !src_mod.is_included;
+}
+
 fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
     const id = localAliasId(ref, mod) orelse return null;
     const table = mod.alias_table orelse return null;
@@ -451,7 +462,7 @@ pub fn emitEsmWrappedModule(
                         if (std.mem.eql(u8, name, "default")) continue;
                         if (direct_exports.contains(name)) continue;
 
-                        const getter_val = try makeStarGetterValue(allocator, l, src_mod, src_i, name, options);
+                        const getter_val = (try makeStarGetterValue(allocator, l, src_mod, src_i, name, options)) orelse continue;
                         try star_owned.append(allocator, getter_val);
                         try star_entries.append(allocator, .{
                             .name = name,
@@ -493,16 +504,13 @@ pub fn emitEsmWrappedModule(
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
                     // tree-shake 로 제거된 re-export source 의 getter 는 dangling reference (#2398).
-                    // resolved + non-self-cycle 인 source 가 included=false 면 getter emit 생략.
-                    // 비정상 record (resolved=none / self-cycle) 는 일반 경로가 안전 처리하므로 fall-through.
-                    // dev_mode 등 tree-shaker 미동작 환경은 is_included 비트 자체가 신뢰 불가
-                    // (default false) 라 가드 적용 안 함 — metadata.zig:408,438 동일 정책.
-                    if (eb.kind == .re_export) skip: {
+                    // Tree-shaker가 사용되지 않는 re-export source를 그래프에서 제외하면
+                    // import record의 resolved가 none이 될 수 있다. 이 상태에서 getter를
+                    // 만들면 `export { default as X } from`의 local name인 `default`가
+                    // 값 위치에 남아 Hermes release parse에서 `return default;`가 된다.
+                    if (eb.kind == .re_export or eb.import_record_index != null) skip: {
                         const l = linker orelse break :skip;
-                        if (!l.tree_shaker_active) break :skip;
-                        if (resolvedReExportSource(l, module, eb)) |src_mod| {
-                            if (!src_mod.is_included) continue;
-                        }
+                        if (shouldSkipTreeShakenReExportSource(l, module, eb)) continue;
                     }
                     try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
                         // Symbol table이 단축 경로의 source of truth.
@@ -513,12 +521,12 @@ pub fn emitEsmWrappedModule(
                         if (isSyntheticDefault(eb.symbol, module)) {
                             break :blk if (metadata) |md| md.default_export_name else "_default";
                         }
-                        // source가 __esm/__commonJS 래핑이면 현재 모듈에 변수가 선언되지
-                        // 않아 getter가 source의 exports를 직접 참조해야 한다 (#1425).
+                        // direct re-export는 현재 모듈에 로컬 변수가 선언되지 않으므로
+                        // source module의 getter/value를 직접 참조해야 한다 (#1425).
                         // barrel alias(`import X from './y'; export { X }`)는 binding_scanner가
                         // .re_export + local_name=ib.imported_name으로 정규화하므로(#1321),
                         // 매칭되는 import binding이 있으면 기존 경로로 폴백.
-                        if (eb.kind == .re_export) re_export: {
+                        if (eb.kind == .re_export or eb.import_record_index != null) re_export: {
                             const l = linker orelse break :re_export;
                             const rec_idx = eb.import_record_index orelse break :re_export;
                             if (rec_idx >= module.import_records.len) break :re_export;
@@ -529,7 +537,6 @@ pub fn emitEsmWrappedModule(
                             if (src_idx == module.index) break :re_export;
                             const si = @intFromEnum(src_idx);
                             const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
-                            if (!src_mod.wrap_kind.isWrapped()) break :re_export;
 
                             const local_name = module.exportBindingLocalName(eb);
                             for (module.import_bindings) |ib| {
@@ -539,7 +546,7 @@ pub fn emitEsmWrappedModule(
                                 }
                             }
 
-                            const getter_val = try makeStarGetterValue(allocator, l, src_mod, si, local_name, options);
+                            const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, local_name, options)) orelse continue;
                             try star_owned.append(allocator, getter_val);
                             break :blk getter_val;
                         }
@@ -1220,31 +1227,43 @@ fn makeStarGetterValue(
     src_i: u32,
     name: []const u8,
     options: *const EmitOptions,
-) ![]const u8 {
+) !?[]const u8 {
     switch (src_mod.wrap_kind) {
         .none => {
             // scope-hoisted: export의 local_name을 찾아 canonical name으로 변환
             for (src_mod.export_bindings) |src_eb| {
                 if (std.mem.eql(u8, src_eb.exported_name, name)) {
-                    const local = l.getCanonicalForExport(src_eb, src_i);
-                    return try allocator.dupe(u8, local);
+                    if (src_eb.kind == .re_export or src_eb.import_record_index != null) {
+                        if (shouldSkipTreeShakenReExportSource(l, src_mod, src_eb)) return null;
+                        const rec_idx = src_eb.import_record_index orelse return null;
+                        if (rec_idx >= src_mod.import_records.len) return null;
+                        const target_idx = src_mod.import_records[rec_idx].resolved;
+                        if (target_idx.isNone() or target_idx == src_mod.index) return null;
+                        const target_i = @intFromEnum(target_idx);
+                        const target_mod = l.graph.getModule(target_idx) orelse return null;
+                        const target_name = src_mod.exportBindingLocalName(src_eb);
+                        return try makeStarGetterValue(allocator, l, target_mod, target_i, target_name, options);
+                    } else {
+                        const local = l.getCanonicalForExport(src_eb, src_i);
+                        return try allocator.dupe(u8, local);
+                    }
                 }
             }
             // 직접 export에 없으면 소스의 re_export_all 체인을 따라간다.
             // resolveExportChain으로 canonical 이름을 찾는다.
             if (l.resolveExportChain(@enumFromInt(src_i), name, 0)) |resolved| {
                 const canonical_mod_i = resolved.module_index.toU32();
-                const canonical_mod = l.graph.getModule(resolved.module_index) orelse return try allocator.dupe(u8, name);
+                const canonical_mod = l.graph.getModule(resolved.module_index) orelse return null;
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
                     const ev = try canonical_mod.allocExportsName(allocator);
                     defer allocator.free(ev);
-                    return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
+                    return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, resolved.export_name });
                 }
                 if (canonical_mod.wrap_kind == .cjs) {
                     const rv = try canonical_mod.allocRequireName(allocator);
                     defer allocator.free(rv);
-                    return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
+                    return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, resolved.export_name });
                 }
                 // .none: canonical 로컬 변수
                 for (canonical_mod.export_bindings) |ceb| {
@@ -1254,11 +1273,11 @@ fn makeStarGetterValue(
                     }
                 }
             }
-            // fallback: 이름 그대로 사용
-            return try allocator.dupe(u8, name);
+            // No source export was available. The caller should omit this getter.
+            return null;
         },
         .esm => {
-            return makeEsmExportGetterValue(allocator, src_mod, name, options);
+            return try makeEsmExportGetterValue(allocator, src_mod, name, options);
         },
         .cjs => {
             const rv = try src_mod.allocRequireName(allocator);

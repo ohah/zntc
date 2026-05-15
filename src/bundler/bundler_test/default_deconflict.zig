@@ -270,6 +270,73 @@ test "Default: mixed default + named imports re-exported from single source (#13
     try std.testing.expect(std.mem.indexOf(u8, result.output, "named: () => named") != null);
 }
 
+test "Default: named re-export of default literal emits safe getter" {
+    // uuid/dist/esm-browser 패턴:
+    // `export { default as MAX } from './max.js'` 에서 source default가
+    // literal이면 getter 값 위치에 예약어 `default`를 그대로 쓰면 Hermes가
+    // SyntaxError로 거부한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { MAX } from './index';
+        \\console.log(MAX);
+    );
+    try writeFile(tmp.dir, "index.ts", "export { default as MAX } from './max';");
+    try writeFile(tmp.dir, "max.ts", "export default 'ffffffff-ffff-ffff-ffff-ffffffffffff';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return default;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MAX") != null);
+}
+
+test "Default: namespace use does not emit dangling default re-export getter" {
+    // uuid/dist/esm-browser 패턴의 namespace 사용:
+    // entry가 `uuid.v4()`만 쓰면 tree-shaker가 다른 default re-export source를
+    // 제외할 수 있다. 이때 barrel의 getter가 빠진 source의 `default`를 그대로
+    // 반환하면 Hermes release parse 단계에서 `return default;`가 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as uuid from './index.js';
+        \\console.log(uuid.v4());
+    );
+    try writeFile(tmp.dir, "index.js",
+        \\export { default as MAX } from './max.js';
+        \\export { default as NIL } from './nil.js';
+        \\export { default as v4 } from './v4.js';
+    );
+    try writeFile(tmp.dir, "max.js", "export default 'ffffffff-ffff-ffff-ffff-ffffffffffff';");
+    try writeFile(tmp.dir, "nil.js", "export default '00000000-0000-0000-0000-000000000000';");
+    try writeFile(tmp.dir, "v4.js", "export default function v4() { return 'v4'; }");
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .configurable_exports = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return default;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "v4") != null);
+}
+
 test "Default: Platform.js 패턴 — export default X where X is default-import (#1328)" {
     // RN Platform.js 회귀: `import Platform from './Platform.ios'; export default Platform;`
     // binding_scanner가 .re_export로 분류하지만 codegen은 `_default = Platform` emit함.
