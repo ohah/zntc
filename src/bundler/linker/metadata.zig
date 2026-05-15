@@ -582,10 +582,14 @@ pub fn buildMetadataForAst(
                 const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
                 // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
-                // export { ns } 패턴도 값 사용 — namespace 객체를 preamble 변수로 생성 필요.
+                // export { ns } 패턴은 다른 모듈이 그 namespace 를 *transitively
+                // value 로 사용* 할 때만 inline 객체 필요. tree-shake 가 import
+                // 안 하면 그 X_ns 는 dead — linker.isNamespaceExportConsumed 로
+                // cross-module 사용 여부 확인 (effect 의 60 X_ns 중 34 dead 케이스).
                 // shadow 충돌은 registerNamespaceRewrites 가 자체 감지해 ns_inline_list 활성화.
                 const force_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, ns_sym_id) or
-                    exported_locals.contains(local_name);
+                    (exported_locals.contains(local_name) and
+                        self.isNamespaceExportConsumed(module_index, local_name));
                 try self.registerNamespaceRewrites(
                     &ns_rewrite_list,
                     &ns_inline_list,
@@ -654,7 +658,7 @@ pub fn buildMetadataForAst(
                                                 &ns_inline_list,
                                                 &owned_nested_renames,
                                                 &ns_target_to_var,
-                                                true,
+                                                self.isNamespaceExportConsumed(module_index, ib.local_name),
                                                 module_index,
                                                 @intCast(import_sym_id),
                                                 @intFromEnum(src),
@@ -684,7 +688,7 @@ pub fn buildMetadataForAst(
                                     &ns_inline_list,
                                     &owned_nested_renames,
                                     &ns_target_to_var,
-                                    true,
+                                    self.isNamespaceExportConsumed(module_index, ib.local_name),
                                     module_index,
                                     @intCast(imp_sym),
                                     @intCast(ns_target_mod),

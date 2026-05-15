@@ -1169,7 +1169,17 @@ pub const Bundler = struct {
             }
             break :blk s;
         } else null;
+        // tree_shaker pointer 를 linker 로 전달 — namespace force_inline 결정 (3 caller
+        // in metadata.zig) 이 `isExportUsed` 로 transitively used 검사. unused
+        // namespace re-export 의 X_ns inline literal 생성 skip.
+        // clear defer 가 LIFO 로 shaker.deinit 보다 먼저 실행돼 dangling 방지.
+        defer if (linker) |*l| {
+            l.tree_shaker = null;
+        };
         defer if (shaker) |*s| s.deinit();
+        if (linker) |*l| if (shaker) |*s| {
+            l.tree_shaker = s;
+        };
 
         if (timer) |*t| {
             t_shake = t.read();
