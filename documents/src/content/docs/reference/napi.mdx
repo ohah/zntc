@@ -27,19 +27,20 @@ import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
 
 JS plugin 의 `onResolve` / `onLoad` 등은 native bundler 가 모듈을 만나는 시점마다 NAPI threadsafe function 으로 JS dispatcher 를 깨워 호출 — Zig worker 가 응답을 기다리는 sync 모델 (Promise 결과까지 wait).
 
-## 설치 + 초기화
+## 설치 + 사용
 
 ```bash
 bun add @zntc/core
 ```
 
 ```ts
-import { init, close, transpile, build, watch } from "@zntc/core";
+import { transpile, build, watch } from "@zntc/core";
 
-init();           // NAPI addon 로드 (한 번만)
-// ... 사용 ...
-close();          // 종료 시 cleanup
+// 첫 native 호출 시 addon 자동 로드 — esbuild/swc 와 동일 패턴.
+const result = transpile(source, { jsx: "automatic" });
 ```
+
+`init(addonPath?)` 와 `close()` 도 export — `init` 은 prebuild 경로를 직접 지정하거나 (테스트 / 비표준 설치) addon 로딩 시점을 명시적으로 제어할 때만 호출. 일반 사용은 불필요.
 
 ## `transpile(source, options)`
 

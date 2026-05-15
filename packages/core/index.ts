@@ -329,8 +329,9 @@ export type {
 import type { UserConfigInput } from './src/config-loader.ts';
 
 /**
- * NAPI 모듈을 로드한다.
- * 이미 로드된 경우 무시한다.
+ * NAPI addon 을 로드한다 — `transpile()`/`build()`/`watch()` 등 native API 첫 호출 시
+ * 자동으로 호출되므로 명시 호출은 옵션. addon path override (custom prebuild 등) 가
+ * 필요할 때만 직접 호출. 이미 로드된 경우 no-op.
  */
 export function init(addonPath?: string): void {
   if (native) return;
@@ -338,6 +339,16 @@ export function init(addonPath?: string): void {
   // require shadowing 회피 — findAddon() 참고.
   const nodeRequire = createRequire(import.meta.url);
   native = nodeRequire(path) as NativeModule;
+}
+
+/**
+ * native handle 을 반환. lazy auto-init 의 단일 진입점.
+ * TS 가 module-level mutable `let native` 를 `asserts` 시그니처로도 narrowing 못 해
+ * helper 한 곳에 `!` 를 격리. caller 들은 좁혀진 `NativeModule` 을 그대로 사용.
+ */
+function ensureNative(): NativeModule {
+  init();
+  return native!;
 }
 
 /**
@@ -409,8 +420,7 @@ export class TsconfigCache {
   private readonly _handle: NativeTsconfigCacheHandle;
 
   constructor() {
-    if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
-    this._handle = native.createTsconfigCache();
+    this._handle = ensureNative().createTsconfigCache();
   }
 
   /** 모든 cache entry 와 내부 string 메모리 회수. 인스턴스는 재사용 가능. */
@@ -443,12 +453,11 @@ export function transpile(
   source: string,
   options: TranspileOptions & { cache?: TsconfigCache } = {},
 ): TranspileResult {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   if (!source) throw new Error('@zntc/core: empty source');
   validateTsConfigRaw(options.tsconfigRaw);
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
-  return native.transpile(
+  return ensureNative().transpile(
     source,
     options.filename ?? 'input.js',
     optionsJson,
@@ -457,22 +466,19 @@ export function transpile(
 }
 
 export function tokenize(source: string, options: TokenizeOptions = {}): TokenizeToken[] {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   if (!source) throw new Error('@zntc/core: empty source');
-  return native.tokenize(source, options.filename ?? 'input.js');
+  return ensureNative().tokenize(source, options.filename ?? 'input.js');
 }
 
 export function configureProfile(
   profile: string[],
   level?: 'summary' | 'detailed' | 'per-module' | 'per-pass',
 ): void {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
-  native.configureProfile(profile, level);
+  ensureNative().configureProfile(profile, level);
 }
 
 export function profileReport(format: 'table' | 'tree' | 'json' | 'csv' = 'table'): string {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
-  return native.profileReport(format);
+  return ensureNative().profileReport(format);
 }
 
 // ─── Build API ───
@@ -2156,7 +2162,7 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
  * `closeBundle` 은 write 성공 시에만 호출.
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  const n = ensureNative();
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
 
@@ -2169,7 +2175,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // 위해 writeOutputFiles 다음에 JS layer 가 직접 호출 — native bundle() 끝 시점은 contents
   // 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
   try {
-    const result: BuildResult = wrapOutputFiles(await native.build(napiOptions));
+    const result: BuildResult = wrapOutputFiles(await n.build(napiOptions));
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
@@ -2196,7 +2202,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
  * JS 플러그인은 sync hook만 지원한다. Promise/async hook은 plugin_error로 실패한다.
  */
 export function buildSync(options: BuildOptions): BuildResult {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  const n = ensureNative();
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
 
@@ -2204,7 +2210,7 @@ export function buildSync(options: BuildOptions): BuildResult {
   const dispatcher = resolveDispatcher(options, 'sync');
   if (dispatcher) napiOptions._pluginDispatcherSync = dispatcher;
   try {
-    const result: BuildResult = wrapOutputFiles(native.buildSync(napiOptions));
+    const result: BuildResult = wrapOutputFiles(n.buildSync(napiOptions));
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
@@ -2225,10 +2231,10 @@ export function buildSync(options: BuildOptions): BuildResult {
 }
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  const n = ensureNative();
   const { publicDir, compiler, ...rest } = options;
   return wrapOutputFiles(
-    native.buildAppSync({
+    n.buildAppSync({
       ...rest,
       define: withDefaultAppBuildDefines(options),
       ...(publicDir === false
@@ -2285,9 +2291,9 @@ function buildCompilerNapiFields(compiler: AppBuildOptions['compiler']): Record<
 }
 
 export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPrepareResult {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  const n = ensureNative();
   const { publicDir, ...rest } = options;
-  return native.prepareAppDevSync({
+  return n.prepareAppDevSync({
     ...rest,
     ...(publicDir === false
       ? { disablePublicDir: true }
@@ -2369,14 +2375,13 @@ export interface BenchmarkResult {
  * ```
  */
 export function benchmark(options: BenchmarkOptions): BenchmarkResult {
-  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   if (!options.source && !options.file) {
     throw new Error("@zntc/core.benchmark: 'source' or 'file' is required");
   }
   if (!Array.isArray(options.phases) || options.phases.length === 0) {
     throw new Error("@zntc/core.benchmark: 'phases' must be a non-empty string array");
   }
-  return native.benchmark({
+  return ensureNative().benchmark({
     source: options.source,
     file: options.file,
     filename: options.filename ?? 'input.js',
@@ -2662,7 +2667,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
  * → onReady/onRebuild → closeBundle. closeBundle 은 callback 이 없거나 throw 해도 호출된다.
  */
 export function watch(options: BuildOptions): WatchHandle {
-  if (!native) throw new Error('call init() first');
+  const n = ensureNative();
 
   const { napiOptions: nativeOpts, cleanup } = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options);
@@ -2691,7 +2696,7 @@ export function watch(options: BuildOptions): WatchHandle {
 
   let handle: WatchHandle;
   try {
-    handle = native.watch(nativeOpts);
+    handle = n.watch(nativeOpts);
   } catch (err) {
     cleanup();
     throw err;

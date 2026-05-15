@@ -183,8 +183,7 @@ const myPlugin = {
 ## NAPI 플러그인
 
 ```typescript
-import { init, build, vitePlugin } from "@zntc/core";
-init();
+import { build, vitePlugin } from "@zntc/core";
 
 // esbuild 스타일
 const result = await build({

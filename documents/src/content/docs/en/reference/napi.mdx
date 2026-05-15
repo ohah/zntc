@@ -27,19 +27,20 @@ import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
 
 Plugin hooks like `onResolve` / `onLoad` are awoken via NAPI threadsafe-fn whenever the native bundler needs them — the Zig worker waits synchronously for the JS callback's response (including Promise resolution).
 
-## Install + initialize
+## Install + use
 
 ```bash
 bun add @zntc/core
 ```
 
 ```ts
-import { init, close, transpile, build, watch } from "@zntc/core";
+import { transpile, build, watch } from "@zntc/core";
 
-init();           // load NAPI addon (call once)
-// ... use ...
-close();          // cleanup on shutdown
+// The first native call auto-loads the addon — same pattern as esbuild / swc.
+const result = transpile(source, { jsx: "automatic" });
 ```
+
+`init(addonPath?)` and `close()` are still exported — call `init` only when you need to pin the prebuild path (tests, non-standard install) or want to control when the addon loads. Normal usage doesn't need it.
 
 ## `transpile(source, options)`
 
