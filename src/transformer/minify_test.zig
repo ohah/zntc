@@ -1820,7 +1820,7 @@ test "inline: 식별자 의존 init — pure compound inline (paren wrap)" {
     // paren wrap 으로 precedence 보존 — outer 가 statement-root 라도 conservative.
     try expectMinifyDead(
         "function f(n) { const x = n * 2; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn (n * 2);\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn n * 2;\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -1836,7 +1836,7 @@ test "inline: shorthand property — pure object inline (a 가 immutable param)"
     // { a } 의 value identifier_reference 가 immutable parameter → pure compound inline.
     try expectMinifyDead(
         "function f(a) { const o = { a }; return o; } f(1);",
-        "function run() {\n\tfunction f(a) {\n\t\t;\n\t\treturn ({ a });\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(a) {\n\t\t;\n\t\treturn { a };\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -1951,7 +1951,7 @@ test "inline: computed key — pure object inline (k 가 immutable param)" {
     // [k] 의 k 가 immutable parameter → pure compound inline.
     try expectMinifyDead(
         "function f(k) { const o = { [k]: 1 }; return o; } f('x');",
-        "function run() {\n\tfunction f(k) {\n\t\t;\n\t\treturn ({ [k]: 1 });\n\t}\n\tf(\"x\");\n}\nrun();",
+        "function run() {\n\tfunction f(k) {\n\t\t;\n\t\treturn { [k]: 1 };\n\t}\n\tf(\"x\");\n}\nrun();",
     );
 }
 
@@ -2032,7 +2032,7 @@ test "inline: conditional expression init — pure compound inline" {
     // c 가 immutable parameter → pure compound (paren wrap).
     try expectMinifyDead(
         "function f(c) { const x = c ? 1 : 2; return x; } f(true);",
-        "function run() {\n\tfunction f(c) {\n\t\t;\n\t\treturn (c ? 1 : 2);\n\t}\n\tf(true);\n}\nrun();",
+        "function run() {\n\tfunction f(c) {\n\t\t;\n\t\treturn c ? 1 : 2;\n\t}\n\tf(true);\n}\nrun();",
     );
 }
 
@@ -2040,14 +2040,14 @@ test "inline: binary expression init — pure compound inline (paren wrap)" {
     // n + 1 — n 이 immutable parameter, binary 가 pure → inline.
     try expectMinifyDead(
         "function f(n) { const x = n + 1; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn (n + 1);\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn n + 1;\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
 test "inline: unary expression init — pure compound inline (paren wrap)" {
     try expectMinifyDead(
         "function f(n) { const x = -n; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn (-n);\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn -n;\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -2165,7 +2165,7 @@ test "inline: precedence 보존 — chained binary inline" {
     // 정답: `((x+1)*2)-3`. node 실행: g(2) → 3.
     try expectMinifyDead(
         "function g(x) { const a = x+1; const b = a*2; const c = b-3; return c; } g(2);",
-        "function run() {\n\tfunction g(x) {\n\t\t;\n\t\t;\n\t\t;\n\t\treturn (((x + 1) * 2) - 3);\n\t}\n\tg(2);\n}\nrun();",
+        "function run() {\n\tfunction g(x) {\n\t\t;\n\t\t;\n\t\t;\n\t\treturn ((x + 1) * 2) - 3;\n\t}\n\tg(2);\n}\nrun();",
     );
 }
 
