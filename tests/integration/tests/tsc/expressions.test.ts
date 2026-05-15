@@ -8618,7 +8618,7 @@ var b: {};
     );
   });
   test('parenthesizedContexualTyping1', async () => {
-    await expectError(
+    await expectPass(
       `
 function fun<T>(g: (x: T) => T, x: T): T;
 function fun<T>(g: (x: T) => T, h: (y: T) => T, x: T): T;
@@ -8652,7 +8652,7 @@ var obj2: ObjType = ({ x: x => (x, undefined), y: y => (y, undefined) });`,
     );
   });
   test('parenthesizedContexualTyping2', async () => {
-    await expectError(
+    await expectPass(
       `// These tests ensure that in cases where it may *appear* that a value has a type,
 // they actually are properly being contextually typed. The way we test this is
 // that we invoke contextually typed arguments with type arguments.
