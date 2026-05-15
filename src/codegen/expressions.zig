@@ -81,7 +81,7 @@ pub fn emitBinary(self: anytype, node: Node) !void {
 
 /// unary_expression / update_expression 의 extra = [operand, flags]. flags 의 low byte 가
 /// 연산자 Kind. extra 범위 밖이면 null.
-fn unaryOpKind(self: anytype, extra_base: u32) ?Kind {
+pub fn unaryOpKind(self: anytype, extra_base: u32) ?Kind {
     const extras = self.ast.extra_data.items;
     if (extra_base + 1 >= extras.len) return null;
     return @enumFromInt(@as(u8, @truncate(extras[extra_base + 1])));

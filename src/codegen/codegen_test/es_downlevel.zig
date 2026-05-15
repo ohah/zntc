@@ -235,7 +235,7 @@ test "ES2022: static block with methods preserved" {
 test "ES2017: async function declaration" {
     var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return (yield bar());}).call(this);}", r.output);
+    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return(yield bar());}).call(this);}", r.output);
 }
 
 test "ES2017: async arrow block body" {
@@ -247,7 +247,7 @@ test "ES2017: async arrow block body" {
 test "ES2017: async arrow expression body" {
     var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return (yield x);}).call(this);", r.output);
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return(yield x);}).call(this);", r.output);
 }
 
 test "ES2017: no transform on es2017" {
