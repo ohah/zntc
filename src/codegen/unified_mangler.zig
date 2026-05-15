@@ -146,11 +146,15 @@ pub fn mangleAll(
         for (per_mod_reserved) |*s| s.deinit();
         allocator.free(per_mod_reserved);
     }
-    // global_reserved (runtime helper 등) 는 모든 모듈에 visible 하므로 each module 의
-    // reserved 에도 포함. global_reserved 는 caller 가 borrowed 로 넘기므로 ptr 공유.
-    for (per_mod_reserved) |*s| {
-        for (input.global_reserved) |r| try s.put(r, {});
-    }
+    // K2-perf (#46): global_reserved (runtime helper 등) 는 모든 모듈에 동일하므로 N×G
+    // 알로케이션 (모듈마다 G entries put) 대신 한 번만 build 후 mangler 의 새
+    // `external_reserved_global` 인자로 borrow 로 share. lookup 시 internal/per_mod 와
+    // 함께 검사된다 (`nextNonReservedBase54NameTwo`). per_mod_reserved 는 이제 *Phase A
+    // mangled this-module names + cross-module imports* 만 보유 — 일반적으로 작음.
+    var global_reserved_set: std.StringHashMap(void) = .init(allocator);
+    defer global_reserved_set.deinit();
+    try global_reserved_set.ensureUnusedCapacity(@intCast(input.global_reserved.len));
+    for (input.global_reserved) |r| global_reserved_set.putAssumeCapacity(r, {});
 
     var name_counter: u32 = 0;
     var name_buf: [8]u8 = undefined;
@@ -222,6 +226,7 @@ pub fn mangleAll(
             .source = m.source,
             .skip_symbols = m.module_scope_symbols,
             .external_reserved = &per_mod_reserved[i],
+            .external_reserved_global = &global_reserved_set,
         });
         defer nested.deinit();
         phase_b_stats[i] = nested.stats;

@@ -85,6 +85,12 @@ pub const MangleInput = struct {
     /// #1760 unified 경로: 외부에서 누적된 reserved set. mangle 시작 시
     /// 내부 reserved_names 에 복사된다. borrowed — caller 소유 유지.
     external_reserved: ?*const std.StringHashMap(void) = null,
+    /// 모든 모듈에 공유되는 reserved (runtime helper 등). 매 모듈마다 복제하면
+    /// N×G 알로케이션 — caller 가 한 번만 build 후 borrow 로 share. lookup 시
+    /// internal/external_reserved 와 함께 검사하므로 internal copy 안 함.
+    /// `external_reserved` 가 *per-module* (예: Phase A 의 이 모듈 mangled 이름)
+    /// 라면 본 필드는 *전 모듈 공통* (예: runtime helper 이름) 으로 분리된다.
+    external_reserved_global: ?*const std.StringHashMap(void) = null,
 };
 
 /// Liveness 기반 mangling.
@@ -337,8 +343,16 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     var slot_name_length_sum: usize = 0;
     var reserved_skips_1char: usize = 0;
     for (sorted_slots) |entry| {
-        // 예약어/글로벌 + mangling 제외 심볼의 원본 이름은 건너뜀 (#1609)
-        const name = nextNonReservedBase54Name(&name_counter, &name_buf, &reserved_names, &reserved_skips_1char);
+        // 예약어/글로벌 + mangling 제외 심볼의 원본 이름은 건너뜀 (#1609).
+        // K2-perf (#46): external_reserved_global 은 internal copy 하지 않고 lookup 시 직접
+        // 검사 — caller 가 모듈마다 복제하지 않고 한 번만 build 후 share.
+        const name = nextNonReservedBase54NameTwo(
+            &name_counter,
+            &name_buf,
+            &reserved_names,
+            input.external_reserved_global,
+            &reserved_skips_1char,
+        );
         slot_names[entry.slot_id] = try allocator.dupe(u8, name);
         slot_name_length_sum += name.len;
     }
@@ -631,8 +645,21 @@ pub fn nextNonReservedBase54Name(
     reserved: *const std.StringHashMap(void),
     skips_1char: *usize,
 ) []const u8 {
+    return nextNonReservedBase54NameTwo(counter, buf, reserved, null, skips_1char);
+}
+
+/// `nextNonReservedBase54Name` 의 2-set variant — 추가 reserved set (전 모듈 공유) 도 함께
+/// 검사. caller 가 global set 을 모듈마다 복제하지 않고 한 번만 build 후 share 하는 hot-path
+/// 용 (#1760 K2-perf). 한쪽이 null 이면 1-set 와 동등.
+pub fn nextNonReservedBase54NameTwo(
+    counter: *u32,
+    buf: *[8]u8,
+    reserved_a: *const std.StringHashMap(void),
+    reserved_b: ?*const std.StringHashMap(void),
+    skips_1char: *usize,
+) []const u8 {
     var name = nextBase54Name(counter, buf);
-    while (reserved.contains(name)) {
+    while (reserved_a.contains(name) or (reserved_b != null and reserved_b.?.contains(name))) {
         if (name.len == 1) skips_1char.* += 1;
         name = nextBase54Name(counter, buf);
     }
