@@ -1028,6 +1028,14 @@ test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
 /// `allow_top_level_inline = true` + `minify_whitespace = true` 로 `--minify` CLI
 /// 시나리오를 그대로 재현. emitter/transpile 양쪽 다 같은 ctx 로 호출하는 경로다.
 fn expectMinifyTopLevelInline(input: []const u8, expected: []const u8) !void {
+    return expectMinifyTopLevelInlineOpts(input, expected, .{ .minify_whitespace = true });
+}
+
+fn expectMinifyTopLevelInlineOpts(
+    input: []const u8,
+    expected: []const u8,
+    codegen_opts: @import("../codegen/codegen.zig").CodegenOptions,
+) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -1052,7 +1060,7 @@ fn expectMinifyTopLevelInline(input: []const u8, expected: []const u8) !void {
     minify_mod.minify(transformer.ast, ctx, a, root);
     minify_mod.mergeDecls(transformer.ast, null);
 
-    var cg = Codegen.initWithOptions(a, transformer.ast, .{ .minify_whitespace = true });
+    var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
     const result = try cg.generate(root);
     const trimmed = std.mem.trimRight(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
@@ -2190,7 +2198,7 @@ test "dead-brace: program-root simple expression statement" {
     );
 }
 
-test "dead-brace: multiple braces in sequence (probe11)" {
+test "dead-brace: multiple braces in sequence" {
     try expectMinifyTopLevelInline(
         "if (true) { console.log(\"a\"); }\nif (1 + 1 === 2) { console.log(\"b\"); }",
         "console.log(\"a\");console.log(\"b\");",
@@ -2236,5 +2244,16 @@ test "dead-brace: class declaration with use — abandon (always block-scoped)" 
     try expectMinifyTopLevelInline(
         "if (true) { class C { m() { return 1; } } globalThis.use(new C().m()); }",
         "{class C{m(){return 1;}}globalThis.use(new C().m());}",
+    );
+}
+
+test "dead-brace: var in esm_var_assign_only mode — abandon (hoist scan 미커버)" {
+    // ESM wrap 모드에선 hoist scan (esm_wrap.zig) 이 top-level statement 만
+    // iterate 해서 block 안 var 를 못 잡는다 → unwrap 후 codegen 이 var 키워드
+    // 제거 시 미선언 할당. block 보존되어야.
+    try expectMinifyTopLevelInlineOpts(
+        "if (true) { var x = 1; globalThis.use(x); }",
+        "{var x=1;globalThis.use(x);}",
+        .{ .minify_whitespace = true, .esm_var_assign_only = true },
     );
 }
