@@ -60,7 +60,7 @@ test "isReservedOrGlobal: all #1621 runtime helper short names registered" {
         try std.testing.expect(isReservedOrGlobal(p.short));
     }
     // 경계 케이스: 정확히 일치할 때만 reserved (prefix/suffix, case 구별).
-    try std.testing.expect(!isReservedOrGlobal("$c"));
+    // 주의: `$c` 는 CJS_FACTORY_MIN 이라 reserved (#3256 후 단축).
     try std.testing.expect(!isReservedOrGlobal("$j"));
     try std.testing.expect(!isReservedOrGlobal("$cjq"));
     try std.testing.expect(!isReservedOrGlobal("$te"));

@@ -2717,11 +2717,11 @@ test "#1618 minify: __commonJS → $cj short name" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // minify 모드: preamble이 `var $cj=` 형태로 축약, 호출부는 직접 함수 + callback param
-    // 단축 (`=$cj((e,m)=>`) — body 의 unresolved `exports`/`module` 도 codegen 에서
-    // `e`/`m` 로 substitute (cjs_wrap_substitute).
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$cj((e,m)=>") != null);
+    // minify 모드: preamble이 `var $c=` 형태로 축약 (#3256: $cj → $c 1 char 단축).
+    // 호출부는 직접 함수 + callback param 단축 — body 의 unresolved `exports`/`module`
+    // 도 codegen 에서 `e`/`m` 로 substitute (cjs_wrap_substitute).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $c=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$c((e,m)=>") != null);
     // 원본 `__commonJS` 이름은 나타나지 않아야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
 }
@@ -2745,23 +2745,23 @@ test "#1618 non-minify: __commonJS name preserved" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var __commonJS") != null);
-    // 축약 이름은 나타나지 않아야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") == null);
+    // 축약 이름은 나타나지 않아야 함 (#3256: $cj → $c 단축)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $c=") == null);
 }
 
-// Edge case: 사용자 코드가 `$cj`와 동일한 이름의 로컬(non-exported) const를 선언.
-// mangler가 `$cj`를 reserved로 알고, base54 할당 시에도 skip하므로 사용자 심볼이
-// `$cj`로 emit되지 않아 preamble 정의와 충돌하지 않아야 함.
-// (mangler는 non-exported + len>1 심볼을 rename 대상으로 가져가므로 사용자 `$cj`는
-//  base54 이름으로 rename됨.)
-test "#1618 minify: user-defined `$cj` local const doesn't collide with runtime helper" {
+// Edge case: 사용자 코드가 `$c`와 동일한 이름의 로컬(non-exported) const를 선언.
+// mangler가 `$c`를 reserved로 알고, base54 할당 시에도 skip하므로 사용자 심볼이
+// `$c`로 emit되지 않아 preamble 정의와 충돌하지 않아야 함.
+// (mangler는 non-exported + len>1 심볼을 rename 대상으로 가져가므로 사용자 `$c`는
+//  base54 이름으로 rename됨.) — #3256: $cj → $c 단축 후.
+test "#1618 minify: user-defined `$c` local const doesn't collide with runtime helper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "lib.cjs", "module.exports = { greet: () => \"hi\" };");
     try writeFile(tmp.dir, "entry.ts",
         \\const lib = require('./lib.cjs');
-        \\const $cj = { tag: 42 };
-        \\console.log(lib.greet(), $cj.tag);
+        \\const $c = { tag: 42 };
+        \\console.log(lib.greet(), $c.tag);
     );
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -2780,11 +2780,11 @@ test "#1618 minify: user-defined `$cj` local const doesn't collide with runtime 
 
     try std.testing.expect(!result.hasErrors());
     // preamble: runtime helper 정의 존재
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=(cb,mod)=>") != null);
-    // 사용자 `$cj`는 mangle되어 별도 선언으로 출력되지 않아야 함 —
-    // preamble의 runtime helper 정의가 `var $cj` 유일한 선언이어야 한다
-    // (두 번째 `var $cj` = 충돌, 사용자 값이 runtime helper를 덮어씀).
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var $cj"));
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $c=(cb,mod)=>") != null);
+    // 사용자 `$c`는 mangle되어 별도 선언으로 출력되지 않아야 함 —
+    // preamble의 runtime helper 정의가 `var $c` 유일한 선언이어야 한다
+    // (두 번째 `var $c` = 충돌, 사용자 값이 runtime helper를 덮어씀).
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var $c"));
 }
 
 // Edge case: 사용자 코드가 `$cj` 함수 호출 (`$cj()` 형태)을 사용하지만 정의는 없는 경우.
