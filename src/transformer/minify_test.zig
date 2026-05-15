@@ -708,6 +708,40 @@ test "merge decls: 다른 kind는 merge 안 함" {
     );
 }
 
+test "S6-step1: if-else else=sequence → ternary (paren 보호)" {
+    try expectMinifyFull(
+        \\function f(o) { if (typeof o == "function") o.read = 1; else { o.init = 2; o.read = 3; } return o; }
+    ,
+        \\function f(o){typeof o=="function"?o.read=1:(o.init=2,o.read=3);return o}
+    );
+}
+
+test "S6-step1: if-else then=multi-block, else=single → ternary" {
+    try expectMinifyFull(
+        \\function f(c) { if (c) { a(); b(); } else { x(); } }
+    ,
+        \\function f(c){c?(a(),b()):x()}
+    );
+}
+
+test "S6-step1: if-else 둘 다 single expr → ternary (paren 불필요)" {
+    try expectMinifyFull(
+        \\function f(c) { if (c) a(); else b(); }
+    ,
+        \\function f(c){c?a():b()}
+    );
+}
+
+test "S6-step1: if (no else) multi-stmt block — block 유지 (&& 변환은 별도 step)" {
+    // else 없고 then 이 multi-expr block 이면 `c&&(a,b)` 변환 미지원 (별도 step).
+    // M10/M11 의 multi-expr unwrap 으로 `if(c)a(),b()` 만 — block `{}` 제거.
+    try expectMinifyFull(
+        \\function f(c) { if (c) { a(); b(); } }
+    ,
+        \\function f(c){if(c)a(),b()}
+    );
+}
+
 test "S4b: convertConstToLet + mergeDecls — const/let 섞임 → let 합침" {
     // S4b: minify_syntax 시 const → let 변환 후 mergeDecls 가 동일 kind 로 합침.
     // 호출자 (transpile.zig / emitter.zig) 가 convertConstToLet 직후 mergeDecls 실행.
