@@ -23,6 +23,8 @@ const Platform = @import("resolve_cache.zig").Platform;
 const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
 const OutputFile = emitter.OutputFile;
+const graph_assets = @import("graph/assets.zig");
+pub const RnAssetMetadata = graph_assets.RnAssetMetadata;
 const chunk_mod = @import("chunk.zig");
 const linker_mod = @import("linker.zig");
 const Linker = linker_mod.Linker;
@@ -385,9 +387,9 @@ pub const BundleResult = struct {
     /// JS 청크와 별도로 출력 디렉토리에 복사해야 하는 파일들.
     asset_outputs: ?[]OutputFile = null,
     /// RN AssetRegistry.registerAsset 호출에 emit 된 asset metadata.
-    /// `rn-asset-copy` 가 bundle string 을 hand-rolled 파싱하지 않고 직접 사용.
+    /// `rn-asset-copy` 가 bundle string 파싱 없이 직접 사용.
     /// allocator 소유 (strings + scales slice).
-    rn_asset_metadata: ?[]@import("graph/assets.zig").RnAssetMetadata = null,
+    rn_asset_metadata: ?[]RnAssetMetadata = null,
     /// metafile JSON (--metafile). allocator 소유.
     metafile_json: ?[]const u8 = null,
     /// 파이프라인 단계별 타이밍 (ns). 항상 측정 — 워치 모드 관측성용.
@@ -465,7 +467,6 @@ pub const BundleResult = struct {
             allocator.free(outs);
         }
         if (self.rn_asset_metadata) |metas| {
-            const graph_assets = @import("graph/assets.zig");
             for (metas) |m| graph_assets.freeRnAssetMetadata(allocator, m);
             allocator.free(metas);
         }
@@ -1556,8 +1557,8 @@ pub const Bundler = struct {
         lifecycle_runner.runCloseBundle();
 
         // RN asset metadata ownership 을 graph → BundleResult 로 transfer.
-        // graph.deinit 가 list 만 free 하고 strings 는 BundleResult.deinit 이 회수.
-        const rn_asset_metadata_out: ?[]@import("graph/assets.zig").RnAssetMetadata =
+        // graph.deinit 의 free 루프는 toOwnedSlice 후 비어있는 list 를 만남.
+        const rn_asset_metadata_out: ?[]RnAssetMetadata =
             if (graph.rn_asset_metadata.items.len > 0)
                 try graph.rn_asset_metadata.toOwnedSlice(self.allocator)
             else

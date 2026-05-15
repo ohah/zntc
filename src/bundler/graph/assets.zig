@@ -177,17 +177,29 @@ pub const EmittedAsset = struct {
 
 /// loader arena 소유 metadata 를 long-lived allocator 로 dupe.
 /// BundleResult lifetime 동안 strings 가 살아남도록 graph allocator 에 owned copy 생성.
+/// 중간 dupe 가 OOM 으로 실패해도 앞서 할당한 strings 가 leak 되지 않도록 errdefer 가드.
 pub fn cloneRnAssetMetadata(
     allocator: std.mem.Allocator,
     meta: RnAssetMetadata,
 ) !RnAssetMetadata {
+    const http_loc = try allocator.dupe(u8, meta.http_server_location);
+    errdefer allocator.free(http_loc);
+    const fs_loc = try allocator.dupe(u8, meta.file_system_location);
+    errdefer allocator.free(fs_loc);
+    const name_owned = try allocator.dupe(u8, meta.name);
+    errdefer allocator.free(name_owned);
+    const type_name_owned = try allocator.dupe(u8, meta.type_name);
+    errdefer allocator.free(type_name_owned);
+    const hash_hex_owned = try allocator.dupe(u8, meta.hash_hex);
+    errdefer allocator.free(hash_hex_owned);
+    const scales_owned = try allocator.dupe(u32, meta.scales);
     return .{
-        .http_server_location = try allocator.dupe(u8, meta.http_server_location),
-        .file_system_location = try allocator.dupe(u8, meta.file_system_location),
-        .name = try allocator.dupe(u8, meta.name),
-        .type_name = try allocator.dupe(u8, meta.type_name),
-        .hash_hex = try allocator.dupe(u8, meta.hash_hex),
-        .scales = try allocator.dupe(u32, meta.scales),
+        .http_server_location = http_loc,
+        .file_system_location = fs_loc,
+        .name = name_owned,
+        .type_name = type_name_owned,
+        .hash_hex = hash_hex_owned,
+        .scales = scales_owned,
         .width = meta.width,
         .height = meta.height,
     };

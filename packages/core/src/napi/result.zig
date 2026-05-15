@@ -205,9 +205,7 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
         _ = c.napi_set_named_property(env, js_result, "modulePaths", js_paths);
     }
 
-    // RN AssetRegistry.registerAsset metadata (#3216 후속). bundle string 을
-    // hand-rolled 파싱하던 `rn-asset-copy` 의 `extractRegisteredAssets` 가 이 배열을
-    // 직접 받아 release asset 복사에 사용.
+    // mjs `rn-asset-copy` 가 release asset 복사를 위해 이 배열을 직접 소비.
     if (result.rn_asset_metadata) |metas| {
         var js_metas: c.napi_value = undefined;
         _ = c.napi_create_array_with_length(env, metas.len, &js_metas);
@@ -215,27 +213,13 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             var js_m: c.napi_value = undefined;
             _ = c.napi_create_object(env, &js_m);
 
-            var js_str: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, m.http_server_location.ptr, m.http_server_location.len, &js_str);
-            _ = c.napi_set_named_property(env, js_m, "httpServerLocation", js_str);
-
-            _ = c.napi_create_string_utf8(env, m.file_system_location.ptr, m.file_system_location.len, &js_str);
-            _ = c.napi_set_named_property(env, js_m, "fileSystemLocation", js_str);
-
-            _ = c.napi_create_string_utf8(env, m.name.ptr, m.name.len, &js_str);
-            _ = c.napi_set_named_property(env, js_m, "name", js_str);
-
-            _ = c.napi_create_string_utf8(env, m.type_name.ptr, m.type_name.len, &js_str);
-            _ = c.napi_set_named_property(env, js_m, "type", js_str);
-
-            _ = c.napi_create_string_utf8(env, m.hash_hex.ptr, m.hash_hex.len, &js_str);
-            _ = c.napi_set_named_property(env, js_m, "hash", js_str);
-
-            var js_num: c.napi_value = undefined;
-            _ = c.napi_create_uint32(env, m.width, &js_num);
-            _ = c.napi_set_named_property(env, js_m, "width", js_num);
-            _ = c.napi_create_uint32(env, m.height, &js_num);
-            _ = c.napi_set_named_property(env, js_m, "height", js_num);
+            common.setStringProp(env, js_m, "httpServerLocation", m.http_server_location);
+            common.setStringProp(env, js_m, "fileSystemLocation", m.file_system_location);
+            common.setStringProp(env, js_m, "name", m.name);
+            common.setStringProp(env, js_m, "type", m.type_name);
+            common.setStringProp(env, js_m, "hash", m.hash_hex);
+            common.setUint32Prop(env, js_m, "width", m.width);
+            common.setUint32Prop(env, js_m, "height", m.height);
 
             var js_scales: c.napi_value = undefined;
             _ = c.napi_create_array_with_length(env, m.scales.len, &js_scales);
