@@ -114,6 +114,12 @@ pub const TransformCache = struct {
     /// (sorted, ascending). resync 의 SemanticAnalyzer 가 binary search 로 helper-aware
     /// binding 분기에 사용. 비어있으면 helper-aware path 비활성 (기존 동작 유지).
     helper_ref_nodes: []const u32 = &.{},
+    /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
+    /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify
+    /// 가 fresh ctx 에 hydrate 하여 prepass 에서 fold 된 dead branch 안 ref 감산
+    /// 결과를 인계받고, 그 cascade 로 만들어진 dead binding 을 emitter 의 dead-store
+    /// pass 가 elide 한다. 비어있으면 hydrate 비활성 (기존 동작 유지).
+    ref_deltas: []const u32 = &.{},
 };
 
 /// `Module.parse_arena` 용 ArenaAllocator 를 heap 에 생성. 실패 시 null.

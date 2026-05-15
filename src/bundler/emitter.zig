@@ -1418,6 +1418,21 @@ pub fn emitModule(
         // "drop 가능" 신호가 있을 때만 정밀 DCE 적용. mobx/rxjs/lodash 등 라이브러리는
         // 거의 모두 이 신호를 가지고 있어 mobx 4KB cascade-dead 회수 경로 활성화.
         ctx.allow_top_level_dead = (shaker != null) and module.isUserDeclaredPure();
+        // prepass minify (#3267 N-step4) 가 dead branch 안 ref 감산을 마쳤다면 그 결과를
+        // hydrate — 그렇지 않으면 emitter minify 의 fold pass 는 이미 fold 된 stmt 를
+        // 다시 fold 못 하고 ref 감산도 일어나지 않아 cascade dead binding 이 인식되지 않는다.
+        // ctx.ref_deltas 는 minify 안에서 in-place 갱신되어야 하므로 mutable 복사본을 만든다
+        // (cache 의 backing 은 parse_arena 소유 → 직접 mutate 위험).
+        // 길이 동일성 검사는 resyncAfterAstMutation 가 symbol 수를 변경했을 때 stale
+        // delta 가 잘못된 인덱스 매핑되지 않도록 가드 — 드물지만 hydrate skip 이 안전.
+        if (module.transform_cache) |cache| {
+            if (cache.ref_deltas.len > 0 and ctx.hasSemantic() and cache.ref_deltas.len == ctx.symbols.len) {
+                if (arena_alloc.alloc(u32, cache.ref_deltas.len)) |buf| {
+                    @memcpy(buf, cache.ref_deltas);
+                    ctx.ref_deltas = buf;
+                } else |_| {}
+            }
+        }
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
 
