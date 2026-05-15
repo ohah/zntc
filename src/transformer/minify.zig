@@ -1159,6 +1159,15 @@ fn foldBinary(ast: *Ast, allocator: std.mem.Allocator, node_idx: u32, node: Node
 
     // 비교 연산 (산술보다 먼저 — 숫자 === 숫자도 여기서 처리)
     if (op == .eq3 or op == .neq2) {
+        // typeof X === "undefined" → typeof X > "u", typeof X !== "undefined" → typeof X < "u".
+        // esbuild/rolldown 표준 minify trick. transformer 의 clone 패턴 (binary deep clone, leaf
+        // string_literal share) 때문에 같은 right_ni 를 갖는 binary 가 여러 개 (orphan + clone)
+        // 존재 — `foldTypeofUndefinedComparison` 내부에서 *원본* 과 *이미 short 된 상태* 둘 다
+        // 매치해 모든 share binary 의 flags 가 일관되게 갱신된다.
+        if (foldTypeofUndefinedComparison(ast, node_idx, left, right, right_ni, op)) {
+            changed.* = true;
+            return;
+        }
         // x === true → x, x === false → !x (한쪽만 boolean이면 축약)
         if (simplifyBooleanComparison(ast, node_idx, left, right, left_ni, right_ni, op)) {
             changed.* = true;
@@ -1206,6 +1215,46 @@ fn foldBinary(ast: *Ast, allocator: std.mem.Allocator, node_idx: u32, node: Node
 
 pub fn foldNumericLiteralExpression(ast: *Ast, root: NodeIndex) ?Span {
     return numeric.foldLiteralExpression(ast, root);
+}
+
+/// `typeof X === "undefined"` → `typeof X > "u"`, `typeof X !== "undefined"` → `typeof X < "u"`.
+/// `typeof` 결과 8 종 중 `"undefined"` 만 lexicographically `> "u"` 이고 나머지
+/// (bigint/boolean/function/number/object/string/symbol) 모두 `< "u"`. 의미 동등 +
+/// per-occurrence 8 byte 절감.
+///
+/// transformer 가 binary 를 deep clone 하지만 leaf string_literal 은 share — 같은 right_ni 를
+/// 갖는 binary 가 여러 개 (orphan + clone) 존재. 첫 fold 가 string 을 `"u"` 로 변경하면 후속
+/// binary fold 시 right_text 가 이미 short. 따라서 *원본 ("undefined", len 11)* 과 *이미
+/// short 된 상태 ("u", len 3)* 두 형태 모두 매치해 flags 만 갱신 (string 은 첫 fold 시만 변경).
+/// 이게 없으면 emit 가 사용하는 clone binary 의 flags 가 안 바뀌어 operator 변경이 보이지 않음.
+fn foldTypeofUndefinedComparison(
+    ast: *Ast,
+    node_idx: u32,
+    left: Node,
+    right: Node,
+    right_ni: u32,
+    op: Kind,
+) bool {
+    if (left.tag != .unary_expression) return false;
+    const left_e = left.data.extra;
+    if (left_e + 1 >= ast.extra_data.items.len) return false;
+    const left_op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[left_e + 1])));
+    if (left_op != .kw_typeof) return false;
+
+    if (right.tag != .string_literal) return false;
+    const rt = ast.getText(right.span);
+    const is_undef = rt.len == 11 and (rt[0] == '"' or rt[0] == '\'') and std.mem.eql(u8, rt[1..10], "undefined");
+    const is_short = rt.len == 3 and (rt[0] == '"' or rt[0] == '\'') and rt[1] == 'u' and rt[2] == rt[0];
+    if (!is_undef and !is_short) return false;
+
+    const new_op: Kind = if (op == .neq2) .l_angle else .r_angle;
+    ast.nodes.items[node_idx].data.binary.flags = @intFromEnum(new_op);
+    if (is_undef) {
+        const new_text: []const u8 = if (rt[0] == '"') "\"u\"" else "'u'";
+        const new_span = ast.addString(new_text) catch return true;
+        ast.nodes.items[right_ni].span = new_span;
+    }
+    return true;
 }
 
 fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node, changed: *bool) void {
