@@ -1122,6 +1122,10 @@ fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const flags = ast.readExtra(e, 3);
     if ((flags & ast_mod.CallFlags.optional_chain) != 0) return;
 
+    // IIFE collapse 시도 — `(()=>X)()` / `(()=>{return X})()` → X.
+    // oxc `substitute_iife_call` (substitute_alternate_syntax.rs) 의 최소 스펙.
+    if (tryFoldIife(ast, node_idx, e, changed)) return;
+
     const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
     const callee_ni = @intFromEnum(callee_idx);
     if (callee_ni >= ast.nodes.items.len) return;
@@ -1151,6 +1155,80 @@ fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
             replaceNode(ast, node_idx, bool_node, changed);
         }
     }
+}
+
+/// IIFE collapse — arrow function 만, args/params 0, async 아님, body 가
+/// expression(concise) 또는 single-return statement block 인 케이스. callee 의
+/// return expression 으로 call_expression 노드를 in-place 대체. function expression
+/// 은 `this`/`arguments` 의미가 다르고 hoisted name 도 있어 제외.
+///
+/// 보수 가드: returned expression 이 object/function/class literal 이면 abandon
+/// — codegen 이 statement-context paren wrap 보장 안 함 ('{a:1};' 가 block 으로
+/// 파싱되는 statement-level IIFE 회피). expression context (var initializer 등)
+/// 가 99%지만 statement 단독 IIFE side-effect 패턴도 존재.
+fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
+    const args_len = ast.readExtra(e, 2);
+    if (args_len != 0) return false;
+
+    const callee_raw = ast.readExtra(e, 0);
+    if (callee_raw >= ast.nodes.items.len) return false;
+    const callee = unwrapParens(ast, ast.nodes.items[callee_raw]);
+    if (callee.tag != .arrow_function_expression) return false;
+
+    const arrow_e = callee.data.extra;
+    if (!ast.hasExtra(arrow_e, ast_mod.ArrowExtra.flags)) return false;
+    const arrow_flags = ast.readExtra(arrow_e, ast_mod.ArrowExtra.flags);
+    if ((arrow_flags & ast_mod.ArrowFlags.is_async) != 0) return false;
+
+    if (ast.functionParams(callee).len != 0) return false;
+
+    const body_idx = ast.functionBodyBlock(callee) orelse return false;
+    const body_ni = @intFromEnum(body_idx);
+    if (body_ni >= ast.nodes.items.len) return false;
+    const body = ast.nodes.items[body_ni];
+
+    var return_ni: u32 = undefined;
+    if (body.tag == .block_statement) {
+        const list = body.data.list;
+        if (list.len != 1) return false;
+        if (list.start >= ast.extra_data.items.len) return false;
+        const stmt_raw = ast.extra_data.items[list.start];
+        if (stmt_raw >= ast.nodes.items.len) return false;
+        const stmt = ast.nodes.items[stmt_raw];
+        if (stmt.tag != .return_statement) return false;
+        const arg = stmt.data.unary.operand;
+        if (arg.isNone()) return false;
+        return_ni = @intFromEnum(arg);
+    } else {
+        return_ni = body_ni;
+    }
+
+    if (return_ni >= ast.nodes.items.len) return false;
+    const return_node = ast.nodes.items[return_ni];
+
+    // statement-context 위험한 leading-token 형태 (object/function/class)는
+    // parenthesized_expression 으로 감싸 emit 안전성 확보 — `{a:1};` 가 block 으로
+    // 파싱되는 ASI hazard 회피.
+    //
+    // **span 은 inner 그대로 유지** — string_literal/template_literal 등은 span 이
+    // 곧 source text 위치라 call expression span (`(()=>"hi")()` 전체) 으로 덮으면
+    // emit 시 wrong text 가 출력된다. esbuild/oxc 도 inner span 사용.
+    const needs_paren = switch (return_node.tag) {
+        .object_expression, .function_expression, .class_expression => true,
+        else => false,
+    };
+    if (needs_paren) {
+        const wrapped = ast.addNode(.{
+            .tag = .parenthesized_expression,
+            .span = return_node.span,
+            .data = .{ .unary = .{ .operand = @enumFromInt(return_ni), .flags = 0 } },
+        }) catch return false;
+        ast.nodes.items[node_idx] = ast.nodes.items[@intFromEnum(wrapped)];
+    } else {
+        ast.nodes.items[node_idx] = return_node;
+    }
+    changed.* = true;
+    return true;
 }
 
 /// x === true → x, x === false → !x, x !== true → !x, x !== false → x
