@@ -3,7 +3,7 @@
 // 참조된 asset 만 복사하여 release 산출물을 자동 prune. `runRnBundle` 이
 // dev=false + `--assets-dest` 명시 시 호출.
 
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 /** iOS 가 native 로 인식하는 scale set. 그 외 (`@4x` 등) 는 production bundle 에서 제외. */
@@ -155,9 +155,9 @@ function sourceFileForScale(asset, scale) {
   return join(asset.fileSystemLocation, `${asset.name}${suffix}.${asset.type}`);
 }
 
-function copyRegisteredAssetFile(src, destPath) {
+async function copyRegisteredAssetFile(src, destPath) {
   try {
-    copyFileSync(src, destPath);
+    await copyFile(src, destPath);
   } catch (err) {
     if (err && err.code === 'ENOENT') {
       throw new Error(`registered RN asset file not found: ${src}`);
@@ -166,9 +166,9 @@ function copyRegisteredAssetFile(src, destPath) {
   }
 }
 
-export function copyRegisteredAssetsForIos(assets, assetsDest) {
-  const createdDirs = new Set();
-  let copied = 0;
+export async function copyRegisteredAssetsForIos(assets, assetsDest) {
+  const tasks = [];
+  const dirs = new Set();
   for (const asset of assets) {
     for (const scale of asset.scales) {
       if (!IOS_SCALES.has(scale)) continue;
@@ -178,22 +178,19 @@ export function copyRegisteredAssetsForIos(assets, assetsDest) {
         asset.httpServerLocation.slice(1).replace(/\.\.\//g, '_'),
         basename(src),
       );
-      const targetDir = dirname(destPath);
-      if (!createdDirs.has(targetDir)) {
-        mkdirSync(targetDir, { recursive: true });
-        createdDirs.add(targetDir);
-      }
-      copyRegisteredAssetFile(src, destPath);
-      copied++;
+      dirs.add(dirname(destPath));
+      tasks.push({ src, destPath });
     }
   }
-  return copied;
+  await Promise.all([...dirs].map((d) => mkdir(d, { recursive: true })));
+  await Promise.all(tasks.map(({ src, destPath }) => copyRegisteredAssetFile(src, destPath)));
+  return tasks.length;
 }
 
-export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
+export async function copyRegisteredAssetsForAndroid(assets, assetsDest) {
   const keepRefs = new Set();
-  const createdDirs = new Set();
-  let copied = 0;
+  const dirs = new Set();
+  const tasks = [];
 
   for (const asset of assets) {
     const isDrawable = DRAWABLE_EXT_RE.test(`.${asset.type}`);
@@ -201,29 +198,26 @@ export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
     for (const scale of asset.scales) {
       const folder = isDrawable ? getAndroidDrawableFolder(scale) : 'raw';
       const targetDir = join(assetsDest, folder);
-      if (!createdDirs.has(targetDir)) {
-        mkdirSync(targetDir, { recursive: true });
-        createdDirs.add(targetDir);
-      }
-      copyRegisteredAssetFile(
-        sourceFileForScale(asset, scale),
-        join(targetDir, `${resourceName}.${asset.type}`),
-      );
-      copied++;
+      dirs.add(targetDir);
+      tasks.push({
+        src: sourceFileForScale(asset, scale),
+        destPath: join(targetDir, `${resourceName}.${asset.type}`),
+      });
     }
     keepRefs.add(`@${isDrawable ? 'drawable' : 'raw'}/${resourceName}`);
   }
 
-  if (keepRefs.size > 0) {
-    const keepDir = join(assetsDest, 'raw');
-    if (!createdDirs.has(keepDir)) {
-      mkdirSync(keepDir, { recursive: true });
-      createdDirs.add(keepDir);
-    }
-    writeFileSync(join(keepDir, 'keep.xml'), buildKeepXml([...keepRefs].sort()));
+  const keepDir = keepRefs.size > 0 ? join(assetsDest, 'raw') : null;
+  if (keepDir) dirs.add(keepDir);
+
+  await Promise.all([...dirs].map((d) => mkdir(d, { recursive: true })));
+  await Promise.all(tasks.map(({ src, destPath }) => copyRegisteredAssetFile(src, destPath)));
+
+  if (keepDir) {
+    await writeFile(join(keepDir, 'keep.xml'), buildKeepXml([...keepRefs].sort()));
   }
 
-  return copied;
+  return tasks.length;
 }
 
 /**
@@ -232,7 +226,7 @@ export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
  *
  * @returns 복사된 파일 수.
  */
-export function copyRnAssets({ assetsDest, rnPlatform, bundleCode }) {
+export async function copyRnAssets({ assetsDest, rnPlatform, bundleCode }) {
   if (!assetsDest) return 0;
   if (typeof bundleCode !== 'string') {
     throw new Error('RN release asset copy requires bundleCode');
