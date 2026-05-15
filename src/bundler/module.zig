@@ -273,6 +273,15 @@ pub const Module = struct {
     /// `TreeShaker.analyze` 가 finalize 후 set. 기본 false 라 tree-shaking 비활성 시
     /// 의미 없음 — chunk gen 단계에서도 `m.side_effects or entry_set.isSet` 으로 항상 alive 처리.
     is_included: bool = false,
+    /// 이 모듈의 statement-level reachability bitset. tree_shaker 가 mirror 한 borrowed
+    /// 참조 — owner 는 `TreeShaker.reachable_stmts`. tree_shaker.deinit 후엔 dangling
+    /// 이므로 mangle / link 단계에서만 사용. null 이면 tree-shake 미수행 / 정보 없음.
+    /// `is_included=true` 라도 모듈 내부 statement 의 70~90%가 dead 인 UMD 라이브러리
+    /// (three.module.js 등) 에서 mangle candidate 필터링에 사용.
+    reachable_stmts: ?*const std.DynamicBitSet = null,
+    /// symbol_index → declaration stmt_index 역매핑. tree_shaker 가 mirror 한 borrowed.
+    /// `reachable_stmts` 와 짝. 둘 다 null 또는 둘 다 set.
+    symbol_to_stmt: ?[]const ?u32 = null,
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
@@ -405,6 +414,29 @@ pub const Module = struct {
     pub fn semanticSymbols(self: *const Module) []const Symbol {
         const sem = self.semantic orelse return &.{};
         return sem.symbols.items;
+    }
+
+    /// 이 모듈의 sym_idx binding 의 declaration stmt 가 emit 될 stmt 인지.
+    /// `tree_shaker.reachable_stmts` 정보가 없거나 sym→stmt 매핑이 없으면 conservative
+    /// 하게 true (가드 noop). mangle / namespace getter 가 dead binding 을 candidate
+    /// 또는 dangling getter 로 만들지 않도록 일관 호출. tree_shaker.deinit 후엔
+    /// borrowed pointer 가 dangling — caller 가 lifetime 관리.
+    pub fn isStatementAliveBySym(self: *const Module, sym_idx: usize) bool {
+        const s2s = self.symbol_to_stmt orelse return true;
+        const rs = self.reachable_stmts orelse return true;
+        if (sym_idx >= s2s.len) return true;
+        const stmt_idx = s2s[sym_idx] orelse return true;
+        return stmt_idx >= rs.capacity() or rs.isSet(stmt_idx);
+    }
+
+    /// `local_name` 으로 module-scope binding 을 찾아 declaration stmt reachability
+    /// 검사. semantic / scope_maps 가 없으면 true. namespace getter 빌더 (esm_wrap,
+    /// shared_namespace) 가 사용.
+    pub fn isLocalBindingAlive(self: *const Module, local_name: []const u8) bool {
+        const sem = self.semantic orelse return true;
+        if (sem.scope_maps.len == 0) return true;
+        const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
+        return self.isStatementAliveBySym(sym_idx);
     }
 
     /// exported_name으로 ExportBinding을 찾는다. #1338 Phase 4c-1 Export Registry.

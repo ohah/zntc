@@ -72,4 +72,31 @@ console.log(groupBy, sortBy, uniq);
     // nested 통계가 빈 배열이면 mangle-report.recordNested 회귀 (PR 3228).
     expect(report.nested.length).toBeGreaterThan(0);
   });
+
+  // 회귀 방지: three.module.js 같은 UMD single-file 라이브러리 — module 자체는
+  // included=true 이지만 안의 statement 대다수가 dead. statement-level 가드 +
+  // tree_shaker emit-align reconcile + namespace getter dead-export skip 의
+  // 3종 fix 가 모두 동작해야 candidate 가 줄어든다 (fix 전 1038 → 후 ~170).
+  test('three: statement-level dead bindings excluded from candidate pool', () => {
+    const report = bundle(`
+import { Vector3 } from 'three';
+const v = new Vector3(1, 2, 3);
+console.log(v.length().toFixed(2));
+    `);
+    expect(report.top_level.slot_count).toBeLessThan(300);
+    expect(report.bundle_size_bytes).toBeLessThan(212_000);
+  });
+
+  // 회귀 방지: namespace getter (effect 처럼 ns getter 무거운 라이브러리) 가
+  // dead local export 의 dangling reference 를 만들면 mangle 가드가 long source
+  // name 을 dead 로 잘못 분류해 size 회귀 (effect 의 경우 +12KB 회귀).
+  test('effect: namespace getter excludes dead local exports', () => {
+    const report = bundle(`
+import { Effect, pipe } from 'effect';
+const p = pipe(Effect.succeed(42), Effect.map((n: number) => n + 1));
+Effect.runPromise(p).then(r => console.log(r));
+    `);
+    // fix 직전 회귀 213.8KB. fix 후 ~187KB.
+    expect(report.bundle_size_bytes).toBeLessThan(195_000);
+  });
 });

@@ -507,8 +507,17 @@ fn buildInlineObjectStr(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
     try buf.appendSlice(self.allocator, "{");
-    for (exports.items, 0..) |exp, idx| {
-        if (idx > 0) try buf.appendSlice(self.allocator, ", ");
+    var first = true;
+    for (exports.items) |exp| {
+        // declaration 이 tree-shaken 되어 emit 안 되면 namespace getter 도 skip —
+        // dangling reference 방지. declaration 모듈은 init_mod (lazy init) 있으면
+        // 그쪽, 없으면 target (정적 export).
+        const decl_mod_idx = exp.init_mod orelse target_mod_idx;
+        if (self.graph.getModule(@enumFromInt(decl_mod_idx))) |decl_mod| {
+            if (!decl_mod.isLocalBindingAlive(exp.local)) continue;
+        }
+        if (!first) try buf.appendSlice(self.allocator, ", ");
+        first = false;
         const needs_quote = needsPropertyQuoteForExport(exp.exported);
         // export * as ns 패턴이면 재귀 인라인 (값으로 참조)
         if (ns_re_exports.get(exp.exported)) |src_mod| {

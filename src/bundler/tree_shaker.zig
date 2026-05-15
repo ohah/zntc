@@ -140,6 +140,12 @@ pub const TreeShaker = struct {
     }
 
     pub fn deinit(self: *TreeShaker) void {
+        // Module 에 mirror 한 borrowed pointer 가 dangling 되지 않도록 먼저 null.
+        for (0..self.graph.moduleCount()) |i| {
+            const m = self.moduleAtMut(@intCast(i)) orelse continue;
+            m.reachable_stmts = null;
+            m.symbol_to_stmt = null;
+        }
         var kit = self.used_exports.keyIterator();
         while (kit.next()) |key| self.allocator.free(key.*);
         self.used_exports.deinit();
@@ -593,8 +599,19 @@ pub const TreeShaker = struct {
             }
         }
 
+        // emit-align: emitter (`emitter.zig` dead-stmt skip 경로) 는 reachable_stmts
+        // 가 false 라도 ts_stmt.span 이 transformer-후 AST 에 매칭 안 되면 skip 안 set
+        // → emit. 이 fallback 을 reachable_stmts 에 미리 반영해 진실의 원천을 일원화.
+        // 안 그러면 mangle 이 "unreachable + transformer 가 재작성한 stmt" 의 binding 을
+        // dead 로 잘못 분류해 candidate 제외 → emit 시 long source name 그대로 남음
+        // (effect 라이브러리에서 1900+ binding 이 회귀했던 케이스).
+        try self.reconcileReachableWithTransformedAst();
+
         // ModuleInfo `isIncluded` 노출용 — 최종 included BitSet 을 Module 에 mirror.
         // chunk gen / NAPI 가 BitSet 직접 보유 안 해도 `m.is_included` 로 조회 가능.
+        // 동시에 statement-level reachability (linker.collectUnifiedInput 의 mangle
+        // candidate 필터링용) 도 borrowed pointer 로 mirror — owner 는 self,
+        // 수명은 tree_shaker.deinit 까지.
         {
             var mirror_scope = profile.begin(.shake_mirror);
             defer mirror_scope.end();
@@ -602,6 +619,14 @@ pub const TreeShaker = struct {
             for (0..mod_count) |i| {
                 const m = self.moduleAtMut(@intCast(i)) orelse continue;
                 m.is_included = self.included.isSet(i);
+                m.reachable_stmts = if (i < self.reachable_stmts.len) blk: {
+                    if (self.reachable_stmts[i]) |*rs| break :blk rs;
+                    break :blk null;
+                } else null;
+                m.symbol_to_stmt = if (i < self.module_stmt_infos.len) blk: {
+                    if (self.module_stmt_infos[i]) |infos| break :blk infos.symbol_to_stmt;
+                    break :blk null;
+                } else null;
             }
         }
     }
@@ -610,6 +635,47 @@ pub const TreeShaker = struct {
         if (module_index >= self.reachable_stmts.len) return true;
         const reachable = self.reachable_stmts[module_index] orelse return true;
         return reachable.isSet(stmt_idx);
+    }
+
+    /// reachable_stmts 가 emit 와 어긋나는 케이스를 해소 — emit dead-stmt skip
+    /// (emitter.zig) 은 unreachable 이라도 transformer-후 AST 에 매칭 안 되면 skip 안
+    /// set 한다. 그런 stmt 는 실제로 emit 되므로 reachable 로 보정해 mangle/emit 의
+    /// 진실의 원천을 일원화. analyze() 끝에서 호출.
+    fn reconcileReachableWithTransformedAst(self: *TreeShaker) !void {
+        const mod_count = self.graph.moduleCount();
+        for (0..mod_count) |i| {
+            if (i >= self.reachable_stmts.len or i >= self.module_stmt_infos.len) continue;
+            const reachable_opt: ?*std.DynamicBitSet = if (self.reachable_stmts[i]) |*rs| rs else null;
+            const reachable = reachable_opt orelse continue;
+            const ts_infos = self.module_stmt_infos[i] orelse continue;
+            const m = self.getModule(@intCast(i)) orelse continue;
+            const ast = m.ast orelse continue;
+            if (ast.nodes.items.len == 0) continue;
+            const root = ast.nodes.items[ast.nodes.items.len - 1];
+            if (root.tag != .program) continue;
+            const list = root.data.list;
+            if (list.start + list.len > ast.extra_data.items.len) continue;
+            const stmt_indices = ast.extra_data.items[list.start .. list.start + list.len];
+            for (ts_infos.stmts, 0..) |ts_stmt, si| {
+                if (si >= reachable.capacity()) break;
+                if (reachable.isSet(si)) continue;
+                var matched = false;
+                for (stmt_indices) |raw_ni| {
+                    const ni = @as(usize, raw_ni);
+                    if (ni >= ast.nodes.items.len) continue;
+                    const new_node = ast.nodes.items[ni];
+                    if (new_node.span.start == ts_stmt.span.start and
+                        new_node.span.end == ts_stmt.span.end)
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+                // matched + unreachable → emitter sets skip_nodes (emit X)
+                // unmatched (transformer 가 변경/제거) → emitter 가 skip 안 set (emit O)
+                if (!matched) reachable.set(si);
+            }
+        }
     }
 
     pub fn getModuleStmtInfos(self: *const TreeShaker, module_index: u32) ?StmtInfos {
