@@ -91,12 +91,18 @@ pub fn emitProgram(self: anytype, node: Node) !void {
     try emitComments(self, null);
 }
 
-/// `idx` 가 declaration 을 포함하지 않는 standalone block_statement 면 그 안의
-/// statement indices slice 를 반환. unwrap 시 outer scope 와 의미 동일.
-/// let/const/class/function declaration 은 block scope binding 이라 unwrap
-/// 불가 (outer scope 로 leak). var 는 hoisting 으로 동등하지만 block 안 var
-/// 가 다른 hoist scan 에 안 잡히는 경계 케이스 방어 (singleUnwrappableStmt 와
-/// 동일 정책) — 보수적으로 var 도 거부.
+/// `idx` 가 outer scope 와 의미 동일하게 unwrap 가능한 standalone block_statement
+/// 면 그 안 statement indices 반환.
+///
+/// 차단 조건:
+/// - let/const → block-scoped binding leak. unwrap 시 outer scope 에 노출.
+/// - function_declaration / class_declaration → 동일 (block-scoped function in
+///   strict mode + class always block-scoped).
+/// - var when `esm_var_assign_only` → 일반 모드에선 var hoisting 으로 outer 와
+///   동등 (semantically OK), 그러나 ESM wrap 모드의 hoist scan (`esm_wrap.zig`
+///   의 `hoisted_var_names` 수집) 이 top-level statement 만 iterate 해서 block
+///   안 var 를 못 잡는다 → unwrap 후 codegen 이 var 키워드 제거하면 미선언
+///   할당. `singleUnwrappableStmt` 와 동일 정책.
 fn tryUnwrapStandaloneBlock(self: anytype, idx: NodeIndex) ?[]const u32 {
     const node = self.ast.getNode(idx);
     if (node.tag != .block_statement) return null;
@@ -107,9 +113,11 @@ fn tryUnwrapStandaloneBlock(self: anytype, idx: NodeIndex) ?[]const u32 {
         if (child_idx.isNone()) continue;
         const child = self.ast.getNode(child_idx);
         switch (child.tag) {
-            // let/const 는 block-scoped binding leak 위험, var 는 hoist 경계
-            // 보수적 거부 (singleUnwrappableStmt 와 동일 정책).
-            .variable_declaration => return null,
+            .variable_declaration => {
+                const kind = self.ast.variableDeclarationKind(child);
+                if (kind != .@"var") return null; // let/const → leak
+                if (self.options.esm_var_assign_only) return null; // hoist scan 미커버
+            },
             .function_declaration, .class_declaration => return null,
             else => {},
         }
