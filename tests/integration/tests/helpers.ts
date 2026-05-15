@@ -452,8 +452,10 @@ export async function bundleAndRun(
   files: Record<string, string>,
   entry: string = 'index.ts',
   extraArgs: string[] = [],
+  options: { env?: Record<string, string | undefined> } = {},
 ): Promise<{
   bundleOutput: string;
+  bundleStderr: string;
   runOutput: string;
   runStderr: string;
   exitCode: number;
@@ -463,7 +465,10 @@ export async function bundleAndRun(
   const outFile = join(dir, 'out.js');
 
   try {
-    const bundle = await runZntc(['--bundle', join(dir, entry), '-o', outFile, ...extraArgs]);
+    const bundle = await runZntc(
+      ['--bundle', join(dir, entry), '-o', outFile, ...extraArgs],
+      options.env ? { env: options.env } : undefined,
+    );
 
     if (bundle.exitCode !== 0) {
       throw new Error(`ZNTC bundle failed: ${bundle.stderr}`);
@@ -473,6 +478,7 @@ export async function bundleAndRun(
 
     return {
       bundleOutput: readFileSync(outFile, 'utf-8'),
+      bundleStderr: bundle.stderr,
       runOutput: run.stdout.trim(),
       runStderr: run.stderr,
       exitCode: run.exitCode,
