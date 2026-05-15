@@ -4211,6 +4211,22 @@ test "TS: labeled break/continue accepts contextual keyword as label" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// `tryReinterpretAsTypedArrow` 가 ternary alternate 가 parenthesized arrow 인
+// 경우 `: T => body` typed arrow 인지 speculative 검사하다 ParseError 를 catch
+// 안 해서 caller 로 propagate 했었다 — `true ? (x) : (y => y)` 같은 패턴에서
+// `(y =>` 가 function-type param 으로 잘못 파싱돼 `× )` 거부. SpeculationCheckpoint
+// 기반 rollback 으로 fix. (#3207, #3217)
+test "TS: ternary alternate parenthesized arrow does not consume typed-arrow speculation" {
+    var r = try parseTs(std.testing.allocator,
+        \\declare function fun(a: any): any;
+        \\fun(true ? (x => x) : (y => y));
+        \\fun(true ? (x) : (y => y));
+        \\fun(true ? null : (x => undefined));
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // literal keyword (`true`/`false`/`null`) 는 valid label 이 아님. 이전 widening
 // 으로 `canBeBindingName()` 이 literal keyword 도 포함했었고, 그 결과
 // `break true;` 가 `break true` (labeled) 로 잘못 파싱됐었다 (/simplify 사후
