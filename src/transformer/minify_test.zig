@@ -15,6 +15,13 @@ fn expectMinifySyntax(input: []const u8, expected: []const u8) !void {
     return expectMinifyOpts(input, expected, .{ .minify_syntax = true });
 }
 
+/// minify_syntax + minify_whitespace 모두 활성. fold 가 ctx.allow_top_level_inline
+/// (= minify_syntax flag) 가드를 검사하는 케이스 (e.g. function body trailing return elide,
+/// function expression name elide) 의 회귀 가드용.
+fn expectMinifyFull(input: []const u8, expected: []const u8) !void {
+    return expectMinifyOpts(input, expected, .{ .minify_syntax = true, .minify_whitespace = true });
+}
+
 fn expectMinifyOpts(
     input: []const u8,
     expected: []const u8,
@@ -32,7 +39,9 @@ fn expectMinifyOpts(
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(transformer.ast, .empty, a, root);
+    var ctx: minify_mod.MinifyCtx = .empty;
+    ctx.allow_top_level_inline = codegen_opts.minify_syntax;
+    minify_mod.minify(transformer.ast, ctx, a, root);
     minify_mod.mergeDecls(transformer.ast, null);
 
     var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
@@ -240,6 +249,22 @@ test "minify: typeof boolean literal" {
 
 test "minify: typeof null" {
     try expectMinify("const x = typeof null;", "const x = \"object\";");
+}
+
+test "minify: function body trailing return; → empty (implicit return undefined)" {
+    try expectMinifyFull(
+        \\function f() { foo(); return; }
+    ,
+        \\function f(){foo()}
+    );
+}
+
+test "minify: arrow body trailing return; → empty" {
+    try expectMinifyFull(
+        \\const f = () => { foo(); return; };
+    ,
+        \\let f=()=>{foo()};
+    );
 }
 
 test "minify: strict equality numbers" {

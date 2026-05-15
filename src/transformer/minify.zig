@@ -303,7 +303,14 @@ fn runOnce(
             // 의 name binding 은 *그 함수 body 안에서만* visible (spec) — reference_count == 0
             // 이면 name 안전하게 anonymous. mobx 같은 ES5 class transpile 패턴 큰 영향.
             // debug/stack-trace 식별성을 깨므로 minify_syntax 일 때만 적용 (line 596/753 패턴).
-            .function_expression => if (ctx.hasSemantic() and ctx.allow_top_level_inline) elideUnusedFnExprName(ast, ctx, node, &changed),
+            .function_expression => {
+                if (ctx.hasSemantic() and ctx.allow_top_level_inline) elideUnusedFnExprName(ast, ctx, node, &changed);
+                if (ctx.allow_top_level_inline) elideTrailingEmptyReturn(ast, node, &changed);
+            },
+            // 함수 body 마지막 `return;` (no operand) → empty_statement. implicit return undefined
+            // 와 동등. minify_whitespace 가 empty 자동 elide. arrow body 도 block 일 때만 적용
+            // (concise body 는 expression — functionBodyBlock 가 block 만 반환해 자동 skip).
+            .function_declaration, .function, .arrow_function_expression, .method_definition => if (ctx.allow_top_level_inline) elideTrailingEmptyReturn(ast, node, &changed),
             else => {},
         }
     }
@@ -1127,6 +1134,44 @@ pub fn mergeDecls(ast: *Ast, skip_nodes: ?*const std.DynamicBitSet) void {
 // ================================================================
 // Constant Folding — Binary Expression
 // ================================================================
+
+/// 함수 body 마지막 `return;` (operand 없음) 을 `empty_statement` 로 변환.
+/// implicit `return undefined` 와 의미 동등 — 함수 끝 자연 도달 시 undefined 반환.
+/// emit 시 minify_whitespace 가 empty_statement 자동 elide → ~7 byte 절감.
+/// arrow function 의 concise body (expression) 는 functionBodyBlock 가 block 만 반환해 자동 skip.
+fn elideTrailingEmptyReturn(ast: *Ast, node: Node, changed: *bool) void {
+    const body_idx = ast.functionBodyBlock(node) orelse return;
+    const body_ni = @intFromEnum(body_idx);
+    if (body_ni >= ast.nodes.items.len) return;
+    const body = ast.nodes.items[body_ni];
+    if (body.tag != .block_statement) return;
+    const list = body.data.list;
+    if (list.len == 0) return;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    var last_raw: u32 = 0;
+    var found = false;
+    var k: usize = indices.len;
+    while (k > 0) {
+        k -= 1;
+        const raw = indices[k];
+        if (raw >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[raw].tag == .empty_statement) continue;
+        last_raw = raw;
+        found = true;
+        break;
+    }
+    if (!found) return;
+    const last_node = ast.nodes.items[last_raw];
+    if (last_node.tag != .return_statement) return;
+    if (!last_node.data.unary.operand.isNone()) return;
+    ast.nodes.items[last_raw] = .{
+        .tag = .empty_statement,
+        .span = last_node.span,
+        .data = .{ .none = 0 },
+    };
+    changed.* = true;
+}
 
 /// function expression 의 name 이 self-reference 안 쓰이면 elide (anonymous 화).
 /// `function Name() {...}` (expression context, e.g. `prototype.method = function Name() {}`)
