@@ -103,6 +103,22 @@ interface Diagnostic {
   location?: { file: string; line?: number; column?: number };
 }
 
+/**
+ * RN AssetRegistry.registerAsset 메타데이터 (Metro 호환 shape).
+ * `--asset-registry` 사용 시 bundler 가 emit 한 asset 마다 1개. `rn-asset-copy`
+ * 가 bundle string 을 파싱하지 않고 직접 받아 release asset 복사에 사용.
+ */
+export interface RnAssetMetadata {
+  httpServerLocation: string;
+  fileSystemLocation: string;
+  name: string;
+  type: string;
+  hash: string;
+  scales: number[];
+  width: number;
+  height: number;
+}
+
 interface NativeBuildResult {
   outputFiles: OutputFile[];
   errors: Diagnostic[];
@@ -110,6 +126,7 @@ interface NativeBuildResult {
   metafile?: string;
   moduleCodes?: Array<{ id: string; code: string }>;
   modulePaths?: string[];
+  rnAssetMetadata?: RnAssetMetadata[];
 }
 
 interface NativeWatchHandle {
@@ -1222,6 +1239,7 @@ export interface BuildResult {
   warnings: Diagnostic[];
   metafile?: string;
   outputCount?: number;
+  rnAssetMetadata?: RnAssetMetadata[];
 }
 
 /**

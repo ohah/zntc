@@ -1,7 +1,7 @@
 // RN production bundle 의 asset 복사. Metro saveAssets/getAssetDestPath{IOS,Android}
-// 호환 경로를 사용한다 — bundle 안 `AssetRegistry.registerAsset({...})` 호출에서
-// 참조된 asset 만 복사하여 release 산출물을 자동 prune. `runRnBundle` 이
-// dev=false + `--assets-dest` 명시 시 호출.
+// 호환 경로를 사용한다 — bundler 가 `--asset-registry` 호출 시 emit 한 asset
+// metadata (result.rnAssetMetadata) 를 직접 받아 release 산출물을 자동 prune.
+// `runRnBundle` 이 dev=false + `--assets-dest` 명시 시 호출.
 
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -59,95 +59,6 @@ export function buildKeepXml(drawableNames) {
     `<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="${items}" />`,
     '',
   ].join('\n');
-}
-
-function findMatchingBrace(source, openIndex) {
-  let depth = 0;
-  let quote = '';
-  let escaped = false;
-
-  for (let i = openIndex; i < source.length; i++) {
-    const ch = source[i];
-
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === quote) {
-        quote = '';
-      }
-      continue;
-    }
-
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-
-    if (ch === '{') {
-      depth++;
-      continue;
-    }
-
-    if (ch === '}') {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-
-  return -1;
-}
-
-function isRegisteredAsset(value) {
-  return (
-    value &&
-    value.__packager_asset === true &&
-    typeof value.fileSystemLocation === 'string' &&
-    typeof value.httpServerLocation === 'string' &&
-    typeof value.name === 'string' &&
-    typeof value.type === 'string' &&
-    Array.isArray(value.scales)
-  );
-}
-
-export function extractRegisteredAssets(bundleCode) {
-  if (typeof bundleCode !== 'string' || bundleCode.length === 0) return [];
-
-  const assets = [];
-  let cursor = 0;
-  while (cursor < bundleCode.length) {
-    const callIndex = bundleCode.indexOf('registerAsset(', cursor);
-    if (callIndex === -1) break;
-
-    let argIndex = callIndex + 'registerAsset('.length;
-    while (/\s/.test(bundleCode[argIndex] ?? '')) argIndex++;
-    if (bundleCode[argIndex] !== '{') {
-      cursor = argIndex + 1;
-      continue;
-    }
-
-    const endIndex = findMatchingBrace(bundleCode, argIndex);
-    if (endIndex === -1) break;
-    const objectText = bundleCode.slice(argIndex, endIndex + 1);
-    cursor = endIndex + 1;
-
-    if (!objectText.includes('"__packager_asset"')) continue;
-    try {
-      const asset = JSON.parse(objectText);
-      if (isRegisteredAsset(asset)) {
-        assets.push({
-          ...asset,
-          type: asset.type.toLowerCase(),
-          scales: asset.scales.filter((s) => Number.isFinite(s) && s > 0),
-        });
-      }
-    } catch {
-      // Not a JSON-shaped ZNTC/Metro asset registry call.
-    }
-  }
-
-  return assets;
 }
 
 function sourceFileForScale(asset, scale) {
@@ -222,19 +133,19 @@ export async function copyRegisteredAssetsForAndroid(assets, assetsDest) {
 
 /**
  * Production asset 복사 entry — caller (runRnBundle) 에서 dev=false + assetsDest
- * 명시 시 호출. Metro처럼 bundle 에 등록된 asset 목록만 복사한다.
+ * 명시 시 호출. Bundler 가 emit 한 `result.rnAssetMetadata` 를 그대로 받아
+ * Metro 호환 경로로 복사.
  *
  * @returns 복사된 파일 수.
  */
-export async function copyRnAssets({ assetsDest, rnPlatform, bundleCode }) {
+export async function copyRnAssets({ assetsDest, rnPlatform, assets }) {
   if (!assetsDest) return 0;
-  if (typeof bundleCode !== 'string') {
-    throw new Error('RN release asset copy requires bundleCode');
+  if (!Array.isArray(assets)) {
+    throw new Error('RN release asset copy requires assets metadata array');
   }
-  const registeredAssets = extractRegisteredAssets(bundleCode);
-  if (registeredAssets.length === 0) return 0;
+  if (assets.length === 0) return 0;
   if (rnPlatform === 'android') {
-    return copyRegisteredAssetsForAndroid(registeredAssets, assetsDest);
+    return copyRegisteredAssetsForAndroid(assets, assetsDest);
   }
-  return copyRegisteredAssetsForIos(registeredAssets, assetsDest);
+  return copyRegisteredAssetsForIos(assets, assetsDest);
 }

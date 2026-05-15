@@ -384,6 +384,10 @@ pub const BundleResult = struct {
     /// asset 파일 출력 (file/copy 로더). allocator 소유.
     /// JS 청크와 별도로 출력 디렉토리에 복사해야 하는 파일들.
     asset_outputs: ?[]OutputFile = null,
+    /// RN AssetRegistry.registerAsset 호출에 emit 된 asset metadata.
+    /// `rn-asset-copy` 가 bundle string 을 hand-rolled 파싱하지 않고 직접 사용.
+    /// allocator 소유 (strings + scales slice).
+    rn_asset_metadata: ?[]@import("graph/assets.zig").RnAssetMetadata = null,
     /// metafile JSON (--metafile). allocator 소유.
     metafile_json: ?[]const u8 = null,
     /// 파이프라인 단계별 타이밍 (ns). 항상 측정 — 워치 모드 관측성용.
@@ -459,6 +463,11 @@ pub const BundleResult = struct {
                 allocator.free(o.contents);
             }
             allocator.free(outs);
+        }
+        if (self.rn_asset_metadata) |metas| {
+            const graph_assets = @import("graph/assets.zig");
+            for (metas) |m| graph_assets.freeRnAssetMetadata(allocator, m);
+            allocator.free(metas);
         }
         if (self.metafile_json) |mf| allocator.free(mf);
     }
@@ -1546,6 +1555,14 @@ pub const Bundler = struct {
         lifecycle_runner.runBuildEnd(first_err);
         lifecycle_runner.runCloseBundle();
 
+        // RN asset metadata ownership 을 graph → BundleResult 로 transfer.
+        // graph.deinit 가 list 만 free 하고 strings 는 BundleResult.deinit 이 회수.
+        const rn_asset_metadata_out: ?[]@import("graph/assets.zig").RnAssetMetadata =
+            if (graph.rn_asset_metadata.items.len > 0)
+                try graph.rn_asset_metadata.toOwnedSlice(self.allocator)
+            else
+                null;
+
         return .{
             .output = output,
             .sourcemap = dev_sourcemap,
@@ -1555,6 +1572,7 @@ pub const Bundler = struct {
             .module_paths = module_paths,
             .module_dev_codes = module_dev_codes,
             .asset_outputs = final_asset_outputs,
+            .rn_asset_metadata = rn_asset_metadata_out,
             .metafile_json = metafile_json,
             .timings = .{
                 .graph_ns = t_graph,

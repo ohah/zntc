@@ -156,8 +156,55 @@ pub fn applyAssetNamingPattern(
     return buf.toOwnedSlice(allocator);
 }
 
-/// Metro AssetRegistry.registerAsset() 호출식을 생성.
-/// RN 런타임은 이 객체의 키를 정확히 요구하므로 shape를 Metro 1:1로 맞춘다.
+/// RN bundle 결과로 expose 되는 asset metadata. strings 는 emit 시점에 사용한
+/// allocator (loader 의 module parse_arena) 소유 — caller (graph) 가 long-lived
+/// allocator 로 dupe 해 BundleResult 까지 lifetime 연장.
+pub const RnAssetMetadata = struct {
+    http_server_location: []const u8,
+    file_system_location: []const u8,
+    name: []const u8,
+    type_name: []const u8,
+    hash_hex: []const u8,
+    scales: []const u32,
+    width: u32,
+    height: u32,
+};
+
+pub const EmittedAsset = struct {
+    source: []const u8,
+    metadata: RnAssetMetadata,
+};
+
+/// loader arena 소유 metadata 를 long-lived allocator 로 dupe.
+/// BundleResult lifetime 동안 strings 가 살아남도록 graph allocator 에 owned copy 생성.
+pub fn cloneRnAssetMetadata(
+    allocator: std.mem.Allocator,
+    meta: RnAssetMetadata,
+) !RnAssetMetadata {
+    return .{
+        .http_server_location = try allocator.dupe(u8, meta.http_server_location),
+        .file_system_location = try allocator.dupe(u8, meta.file_system_location),
+        .name = try allocator.dupe(u8, meta.name),
+        .type_name = try allocator.dupe(u8, meta.type_name),
+        .hash_hex = try allocator.dupe(u8, meta.hash_hex),
+        .scales = try allocator.dupe(u32, meta.scales),
+        .width = meta.width,
+        .height = meta.height,
+    };
+}
+
+pub fn freeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) void {
+    allocator.free(meta.http_server_location);
+    allocator.free(meta.file_system_location);
+    allocator.free(meta.name);
+    allocator.free(meta.type_name);
+    allocator.free(meta.hash_hex);
+    allocator.free(meta.scales);
+}
+
+/// Metro AssetRegistry.registerAsset() 호출식 + asset metadata 를 생성.
+/// RN 런타임은 호출식 객체의 키를 정확히 요구하므로 shape 를 Metro 1:1 로 맞춘다.
+/// metadata 는 mjs 측 release asset copy 가 string parse 없이 직접 받기 위한 사이드채널.
 pub fn emitAssetRegistryCall(
     alloc: std.mem.Allocator,
     registry_path: []const u8,
@@ -169,7 +216,7 @@ pub fn emitAssetRegistryCall(
     url: []const u8,
     scales: []const u32,
     project_root: []const u8,
-) ![]const u8 {
+) !EmittedAsset {
     const dims = asset_meta.extractDimensions(bytes);
     const width = if (dims) |d| d.width else 0;
     const height = if (dims) |d| d.height else 0;
@@ -202,7 +249,7 @@ pub fn emitAssetRegistryCall(
     _ = hash;
     var md5_digest: [16]u8 = undefined;
     std.crypto.hash.Md5.hash(bytes, &md5_digest, .{});
-    var hash_hex: [32]u8 = undefined;
+    const hash_hex = try alloc.alloc(u8, 32);
     const hex_chars = "0123456789abcdef";
     for (md5_digest, 0..) |b, i| {
         hash_hex[i * 2] = hex_chars[b >> 4];
@@ -221,7 +268,7 @@ pub fn emitAssetRegistryCall(
     sw.writeByte(']') catch return error.OutOfMemory;
     const scales_str = scales_stream.getWritten();
 
-    return try std.fmt.allocPrint(alloc,
+    const source = try std.fmt.allocPrint(alloc,
         \\module.exports = require("{s}").registerAsset({{
         \\  "__packager_asset": true,
         \\  "httpServerLocation": "{s}",
@@ -233,7 +280,21 @@ pub fn emitAssetRegistryCall(
         \\  "type": "{s}",
         \\  "fileSystemLocation": "{s}"
         \\}})
-    , .{ registry_esc, http_loc, width, height, scales_str, &hash_hex, name_esc, type_name, fs_dir });
+    , .{ registry_esc, http_loc, width, height, scales_str, hash_hex, name_esc, type_name, fs_dir });
+
+    return .{
+        .source = source,
+        .metadata = .{
+            .http_server_location = http_loc_raw,
+            .file_system_location = fs_dir_raw,
+            .name = name_without_ext,
+            .type_name = type_name,
+            .hash_hex = hash_hex,
+            .scales = scales,
+            .width = width,
+            .height = height,
+        },
+    };
 }
 
 pub const ScaleCollection = struct {

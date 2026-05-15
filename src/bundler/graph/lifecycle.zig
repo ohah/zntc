@@ -45,6 +45,11 @@ pub fn deinit(self: *ModuleGraph) void {
         self.allocator.free(we.resolved_path);
     }
     self.worker_entries.deinit(self.allocator);
+    const graph_assets = @import("assets.zig");
+    for (self.rn_asset_metadata.items) |meta| {
+        graph_assets.freeRnAssetMetadata(self.allocator, meta);
+    }
+    self.rn_asset_metadata.deinit(self.allocator);
     if (self.plugins_with_helpers) |p| self.allocator.free(p);
     self.runtime_polyfill_roots.deinit(self.allocator);
 }

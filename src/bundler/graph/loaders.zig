@@ -141,10 +141,21 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                 // loader=.javascript는 호출자의 fall-through 신호.
                 // import_scanner가 source의 require()를 ImportRecord로 추출하고
                 // wrap_kind/exports_kind를 .cjs로 자동 결정한다.
-                module.source = emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
+                const emitted = emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
                     module.state = .ready;
                     return;
                 };
+                module.source = emitted.source;
+                // metadata 를 graph allocator 로 dupe — BundleResult 가 string parse 없이
+                // rn-asset-copy 에 직접 전달 (#3216 후속). loader arena 가 module 종료 시
+                // 회수되어도 BundleResult lifetime 까지 살아남도록.
+                if (graph_assets.cloneRnAssetMetadata(self.allocator, emitted.metadata)) |owned| {
+                    self.rn_asset_metadata_mutex.lock();
+                    self.rn_asset_metadata.append(self.allocator, owned) catch {
+                        graph_assets.freeRnAssetMetadata(self.allocator, owned);
+                    };
+                    self.rn_asset_metadata_mutex.unlock();
+                } else |_| {}
                 module.module_type = .js;
                 module.loader = .javascript;
                 return;
