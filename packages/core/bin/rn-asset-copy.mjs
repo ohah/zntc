@@ -3,11 +3,9 @@
 // 참조된 asset 만 복사하여 release 산출물을 자동 prune. `runRnBundle` 이
 // dev=false + `--assets-dest` 명시 시 호출.
 
-import { copyFileSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join, relative } from 'node:path';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
-/** scale variant naming — `@2x.png` / `@3x.png` 등. capture group 1 이 scale 숫자. */
-export const SCALE_REGEX = /@(\d+(?:\.\d+)?)x/;
 /** iOS 가 native 로 인식하는 scale set. 그 외 (`@4x` 등) 는 production bundle 에서 제외. */
 export const IOS_SCALES = new Set([1, 2, 3]);
 
@@ -21,18 +19,6 @@ const SCALE_TO_DRAWABLE = {
   4: 'xxxhdpi',
 };
 
-const SKIP_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.bungae',
-  'dist',
-  'build',
-  '.next',
-  '.turbo',
-  '.bun',
-  '.DS_Store',
-]);
-
 const DRAWABLE_EXT_RE = /\.(gif|jpeg|jpg|png|webp|xml)$/i;
 
 /**
@@ -43,22 +29,6 @@ export function getAndroidDrawableFolder(scale) {
   if (SCALE_TO_DRAWABLE[scale]) return `drawable-${SCALE_TO_DRAWABLE[scale]}`;
   if (Number.isFinite(scale) && scale > 0) return `drawable-${Math.round(160 * scale)}dpi`;
   return 'drawable-mdpi';
-}
-
-/**
- * Asset 의 base name (scale variant suffix 제거) 과 scale 추출. `foo@2x.png` →
- * `{ baseName: 'foo', scale: 2 }`, `foo.png` → `{ baseName: 'foo', scale: 1 }`.
- */
-export function parseAssetName(filename) {
-  const ext = extname(filename);
-  const stem = basename(filename, ext);
-  const m = stem.match(SCALE_REGEX);
-  if (!m) return { baseName: stem, scale: 1, ext };
-  return {
-    baseName: stem.replace(SCALE_REGEX, ''),
-    scale: Number.parseFloat(m[1]),
-    ext,
-  };
 }
 
 /**
@@ -75,12 +45,6 @@ function metroSanitizeResourceName(rawPath) {
     .replace(/^(?:assets|assetsunstable_path)_/, '');
 }
 
-/** Metro 의 Android filename convention — `<flatRelPath>_<baseName>.<ext>` 형식. */
-export function androidAssetFileName(relDir, baseName, ext) {
-  const sanitized = metroSanitizeResourceName(relDir ? `${relDir}/${baseName}` : baseName);
-  return `${sanitized}${ext.toLowerCase()}`;
-}
-
 export function getAndroidResourceIdentifier(asset) {
   let basePath = asset.httpServerLocation ?? '';
   if (basePath.startsWith('/')) basePath = basePath.slice(1);
@@ -95,46 +59,6 @@ export function buildKeepXml(drawableNames) {
     `<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="${items}" />`,
     '',
   ].join('\n');
-}
-
-/**
- * project 안의 asset 파일 walk + scale variant 수집. 반환:
- * `[{ filePath, baseName, scale, ext, relDir }]`. relDir 은 projectRoot
- * 기준 상대 경로 (POSIX `/`).
- */
-export function discoverAssets(projectRoot, assetExts, sourceExts = []) {
-  const normalizeExt = (e) => (e.startsWith('.') ? e.toLowerCase() : `.${e.toLowerCase()}`);
-  const sourceExtSet = new Set([...sourceExts].map(normalizeExt));
-  const exts = new Set([...assetExts].map(normalizeExt));
-  for (const ext of sourceExtSet) {
-    exts.delete(ext);
-  }
-  const out = [];
-
-  function walk(dir) {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const ext = extname(entry.name).toLowerCase();
-      if (!exts.has(ext)) continue;
-      const parsed = parseAssetName(entry.name);
-      const relDir = relative(projectRoot, dir).replace(/\\/g, '/');
-      out.push({ filePath: full, ...parsed, relDir });
-    }
-  }
-  walk(projectRoot);
-  return out;
 }
 
 function findMatchingBrace(source, openIndex) {
@@ -242,23 +166,6 @@ function copyRegisteredAssetFile(src, destPath) {
   }
 }
 
-/**
- * iOS production 복사 — `<assetsDest>/<relDir>/<file>` 으로. IOS_SCALES (1/2/3) 외
- * scale 은 제외. 같은 baseName 의 scale variant 들은 모두 같은 destDir 에 원래
- * 파일명 그대로.
- */
-export function copyAssetsForIos(assets, assetsDest) {
-  let copied = 0;
-  for (const a of assets) {
-    if (!IOS_SCALES.has(a.scale)) continue;
-    const destDir = a.relDir ? join(assetsDest, a.relDir) : assetsDest;
-    mkdirSync(destDir, { recursive: true });
-    copyFileSync(a.filePath, join(destDir, basename(a.filePath)));
-    copied++;
-  }
-  return copied;
-}
-
 export function copyRegisteredAssetsForIos(assets, assetsDest) {
   const createdDirs = new Set();
   let copied = 0;
@@ -279,37 +186,6 @@ export function copyRegisteredAssetsForIos(assets, assetsDest) {
       copyRegisteredAssetFile(src, destPath);
       copied++;
     }
-  }
-  return copied;
-}
-
-/**
- * Android production 복사 — Metro scale-to-drawable folder + flattened name +
- * keep.xml. drawable resource name (확장자 제거) 을 keepNames 에 누적.
- *
- * `assetsDest` 가 명시되면 그 경로 기준, 미지정 시 `<projectRoot>/android/app/src/main/res`.
- */
-export function copyAssetsForAndroid(assets, assetsDest) {
-  const baseDir = assetsDest;
-  const keepRefs = new Set();
-  let copied = 0;
-  for (const a of assets) {
-    const isDrawable = DRAWABLE_EXT_RE.test(a.ext);
-    const folder = isDrawable ? getAndroidDrawableFolder(a.scale) : 'raw';
-    const targetDir = join(baseDir, folder);
-    mkdirSync(targetDir, { recursive: true });
-    const fileName = androidAssetFileName(a.relDir, a.baseName, a.ext);
-    copyFileSync(a.filePath, join(targetDir, fileName));
-    copied++;
-    const resourceName = fileName.slice(0, fileName.length - extname(fileName).length);
-    keepRefs.add(`@${isDrawable ? 'drawable' : 'raw'}/${resourceName}`);
-  }
-  // keep.xml — `res/raw/keep.xml` 위치. drawable resources 의 ProGuard/R8 미사용
-  // 보장.
-  if (keepRefs.size > 0) {
-    const keepDir = join(baseDir, 'raw');
-    mkdirSync(keepDir, { recursive: true });
-    writeFileSync(join(keepDir, 'keep.xml'), buildKeepXml([...keepRefs].sort()));
   }
   return copied;
 }
