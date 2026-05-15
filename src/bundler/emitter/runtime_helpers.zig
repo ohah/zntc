@@ -36,18 +36,9 @@ pub fn emitBundleRuntimeHelpers(
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // Node ESM 출력에서 *external require 호출* (예: `require("fs")`) 이 bundle 에 emit
         // 되면 그 `require` 가 런타임에 미정의 — `createRequire(import.meta.url)` shim 필요.
-        // 우리 `__commonJS` wrapper 자체는 cb 를 직접 호출하므로 require() 안 씀 (#3252).
-        // 따라서 shim 필요 조건 = `kind=.require and is_external` 한 import_record 가
-        // 어떤 모듈에든 존재. 없으면 84 chars (minify) 절약.
-        const needs_require_shim = if (options.platform == .node and options.format == .esm) blk: {
-            for (sorted_modules) |m| {
-                for (m.import_records) |rec| {
-                    if (rec.kind == .require and rec.is_external) break :blk true;
-                }
-            }
-            break :blk false;
-        } else false;
-        if (needs_require_shim) {
+        // `__commonJS` wrapper 자체는 cb 를 직접 호출하므로 shim 필요 조건은
+        // `kind=.require and is_external` 한 import_record 의 존재로 좁혀진다.
+        if (needsRequireShim(sorted_modules, options)) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
         if (needs_cjs_runtime) {
@@ -172,18 +163,8 @@ pub fn emitChunkRuntimeHelpers(
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
-        // 단일 번들 경로와 동일 정책 — wrapper 자체는 require() 안 호출하므로 (#3252)
-        // *external require call* 이 모듈에 emit 되는 경우만 shim 필요.
-        const needs_require_shim = if (options.platform == .node and options.format == .esm) blk: {
-            for (chunk.modules.items) |mod_idx| {
-                const m = graph.getModule(mod_idx) orelse continue;
-                for (m.import_records) |rec| {
-                    if (rec.kind == .require and rec.is_external) break :blk true;
-                }
-            }
-            break :blk false;
-        } else false;
-        if (needs_require_shim) {
+        // bundle 경로와 동일 정책. chunk 의 module index 들을 graph 로 resolve 후 동일 검사.
+        if (needsRequireShimForChunk(chunk, graph, options)) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
         if (needs_cjs_runtime) {
@@ -204,4 +185,31 @@ pub fn emitChunkRuntimeHelpers(
     // 분배. chunk-level prepend 는 중복 정의를 만들기 때문에 제거.
     _ = collected_helpers;
     try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
+}
+
+/// `kind=.require and is_external` import_record 가 어느 모듈에든 존재하는지 — node ESM
+/// 빌드의 `createRequire` shim 필요성 검사. early-exit on first match.
+fn anyExternalRequire(modules: []const *const Module) bool {
+    for (modules) |m| {
+        for (m.import_records) |rec| {
+            if (rec.kind == .require and rec.is_external) return true;
+        }
+    }
+    return false;
+}
+
+fn needsRequireShim(modules: []const *const Module, options: *const EmitOptions) bool {
+    if (options.platform != .node or options.format != .esm) return false;
+    return anyExternalRequire(modules);
+}
+
+fn needsRequireShimForChunk(chunk: *const Chunk, graph: *const ModuleGraph, options: *const EmitOptions) bool {
+    if (options.platform != .node or options.format != .esm) return false;
+    for (chunk.modules.items) |mod_idx| {
+        const m = graph.getModule(mod_idx) orelse continue;
+        for (m.import_records) |rec| {
+            if (rec.kind == .require and rec.is_external) return true;
+        }
+    }
+    return false;
 }

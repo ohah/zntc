@@ -80,7 +80,7 @@ pub const Codegen = struct {
     has_require_context_records: bool = false,
     /// `cjs_wrap_substitute` 가 active 일 때 module body 에서 unresolved `module` reference 를
     /// 만나 `m` 으로 substitute 한 적이 있는지. emitter 가 wrapper param 결정 시 참조 —
-    /// false 면 `(e)` 1 인자 (rolldown 식), true 면 `(e,m)` 유지.
+    /// false 면 `(e)` 1 인자, true 면 `(e,m)` 유지.
     cjs_wrap_module_used: bool = false,
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
