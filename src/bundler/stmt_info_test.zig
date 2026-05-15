@@ -191,6 +191,88 @@ test "stmt_info: arrow function body references tracked" {
     try std.testing.expect(!reachable.isSet(2)); // fn2 (미도달)
 }
 
+test "stmt_info: var object literal with function value tracks closure refs (mobx-style)" {
+    // mobx error message dict 패턴:
+    //   var ga = {0: "x", 1: function(c){ return c + shared; }};
+    //   function die(c) { return ga[c]; }
+    //   function alive() { return die(0); }
+    //
+    // entry=alive → cascade reachable: alive → die → ga → shared.
+    // entry=∅ → 모두 dead (모든 stmt pure: var/function decl).
+    // 이 cascade 가 가능한 *유일한* 조건은 stmt_info graph 가
+    // (1) var init object literal 의 function value 안 closure ref 를
+    //     enclosing var decl 의 referenced_symbols 로,
+    // (2) function decl body 안 ref 를 enclosing function decl 의
+    //     referenced_symbols 로 귀속하는 것. N RFC #3267 step2 의 graph 검증.
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc,
+        \\const shared = " err";
+        \\var ga = {0: "x", 1: function(c){ return c + shared; }};
+        \\function die(c) { return ga[c]; }
+        \\function alive() { return die(0); }
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), r.infos.stmts.len);
+
+    const shared_sym = r.infos.stmts[0].declared_symbols[0];
+    const ga_sym = r.infos.stmts[1].declared_symbols[0];
+    const die_sym = r.infos.stmts[2].declared_symbols[0];
+    const alive_sym = r.infos.stmts[3].declared_symbols[0];
+
+    // (1) var ga init 안 function value 가 shared 를 ref → stmt 1 의 referenced_symbols 에 shared.
+    var ga_refs_shared = false;
+    for (r.infos.stmts[1].referenced_symbols) |s| {
+        if (s == shared_sym) ga_refs_shared = true;
+    }
+    try std.testing.expect(ga_refs_shared);
+
+    // (2) function die body 가 ga 를 ref → stmt 2 의 referenced_symbols 에 ga.
+    var die_refs_ga = false;
+    for (r.infos.stmts[2].referenced_symbols) |s| {
+        if (s == ga_sym) die_refs_ga = true;
+    }
+    try std.testing.expect(die_refs_ga);
+
+    // (3) function alive body 가 die 를 ref → stmt 3 의 referenced_symbols 에 die.
+    var alive_refs_die = false;
+    for (r.infos.stmts[3].referenced_symbols) |s| {
+        if (s == die_sym) alive_refs_die = true;
+    }
+    try std.testing.expect(alive_refs_die);
+
+    // entry=alive → cascade (alive → die → ga → shared) 모두 reachable.
+    {
+        var reachable = try r.infos.computeReachable(alloc, &.{alive_sym});
+        defer reachable.deinit();
+        try std.testing.expect(reachable.isSet(0)); // shared
+        try std.testing.expect(reachable.isSet(1)); // ga
+        try std.testing.expect(reachable.isSet(2)); // die
+        try std.testing.expect(reachable.isSet(3)); // alive (seed)
+    }
+
+    // entry=∅ + 모든 stmt pure → 아무것도 reachable 아님.
+    {
+        var reachable = try r.infos.computeReachable(alloc, &.{});
+        defer reachable.deinit();
+        try std.testing.expect(!reachable.isSet(0));
+        try std.testing.expect(!reachable.isSet(1));
+        try std.testing.expect(!reachable.isSet(2));
+        try std.testing.expect(!reachable.isSet(3));
+    }
+
+    // entry=die → die → ga → shared. alive 는 unreachable.
+    {
+        var reachable = try r.infos.computeReachable(alloc, &.{die_sym});
+        defer reachable.deinit();
+        try std.testing.expect(reachable.isSet(0)); // shared
+        try std.testing.expect(reachable.isSet(1)); // ga
+        try std.testing.expect(reachable.isSet(2)); // die (seed)
+        try std.testing.expect(!reachable.isSet(3)); // alive
+    }
+}
+
 test "stmt_info: multi-statement module with arrow closures (arktype pattern)" {
     // arktype records.js 패턴: 22개 statement, import가 arrow body에서 참조
     const alloc = std.testing.allocator;
