@@ -294,7 +294,8 @@ fn runOnce(
             // function expression 의 name 이 self-reference 안 쓰면 elide. function expression
             // 의 name binding 은 *그 함수 body 안에서만* visible (spec) — reference_count == 0
             // 이면 name 안전하게 anonymous. mobx 같은 ES5 class transpile 패턴 큰 영향.
-            .function_expression => if (ctx.hasSemantic()) elideUnusedFnExprName(ast, ctx, node, &changed),
+            // debug/stack-trace 식별성을 깨므로 minify_syntax 일 때만 적용 (line 596/753 패턴).
+            .function_expression => if (ctx.hasSemantic() and ctx.allow_top_level_inline) elideUnusedFnExprName(ast, ctx, node, &changed),
             else => {},
         }
     }
