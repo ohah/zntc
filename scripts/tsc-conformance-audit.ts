@@ -146,6 +146,12 @@ type Outcome = (typeof OUTCOMES)[number];
 /// 들은 의도된 정책 divergence — FR 카운트에서 제외하고 별도 outcome 으로 분류.
 const STRICT_FALSE_DIRECTIVE = /^\s*\/\/\s*@(strict|alwaysStrict)\s*:\s*false\b/im;
 
+/// 명시적 `@strict: false` directive 가 없어도, `await` 가 identifier 자리에
+/// 사용된 패턴 (`[await]:` computed key, `(await) =>` arrow param 등) 은
+/// TSC 가 sloppy-mode 에서 의도적으로 accept 하는 conformance 테스트. ZNTC 의
+/// implicit-strict-module 정책 (PR #3180) 과 의도된 divergence.
+const AWAIT_IDENTIFIER_PATTERN = /\[\s*await\s*\]\s*:|\(\s*await\s*\)\s*=>|\bfunction\b[\s\S]{0,80}\(\s*await\b|\bimport\s+await\s*=/;
+
 /// ZNTC 가 거부한 이유가 strict-mode/module-mode 인지. 거부 메시지에 spec
 /// 관련 keyword 포함 시 정책 divergence 후보.
 const STRICT_ERROR_KEYWORDS = [
@@ -308,6 +314,12 @@ function classify(oracle: Oracle, run: ZntcRun, fixtureHead: string): Outcome {
       STRICT_FALSE_DIRECTIVE.test(fixtureHead) &&
       STRICT_ERROR_KEYWORDS.some((kw) => run.firstError.includes(kw))
     ) {
+      return "OK_policy_strict";
+    }
+    // `await` 가 identifier 로 쓰인 패턴은 implicit-strict-module 정책 divergence.
+    // ZNTC 가 `await EXPRESSION` 으로 잘못 파싱해 generic "Expression expected"
+    // 거부 — 메시지 keyword 매치 불가하지만 fixture 패턴으로 의도 식별.
+    if (AWAIT_IDENTIFIER_PATTERN.test(fixtureHead)) {
       return "OK_policy_strict";
     }
     // ZNTC 가 ECMAScript spec early-error 로 거부 (esbuild/oxc 일치), TSC 만
