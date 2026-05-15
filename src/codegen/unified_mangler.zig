@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const mangler = @import("mangler.zig");
+const debug_log = @import("../debug_log.zig");
 const Scope = @import("../semantic/scope.zig").Scope;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
@@ -110,12 +111,10 @@ pub fn mangleAll(
     var name_buf: [8]u8 = undefined;
     var phase_a_slot_name_length_sum: usize = 0;
     var phase_a_renamed: usize = 0;
+    var phase_a_skips_1char: usize = 0;
 
     for (sorted) |cand| {
-        var new_name = mangler.nextBase54Name(&name_counter, &name_buf);
-        while (reserved.contains(new_name)) {
-            new_name = mangler.nextBase54Name(&name_counter, &name_buf);
-        }
+        const new_name = mangler.nextNonReservedBase54Name(&name_counter, &name_buf, &reserved, &phase_a_skips_1char);
         phase_a_slot_name_length_sum += new_name.len;
 
         if (!std.mem.eql(u8, cand.name, new_name)) {
@@ -136,6 +135,7 @@ pub fn mangleAll(
         .name_counter_final = name_counter,
         .reserved_size = reserved.count(),
         .renamed_symbol_count = phase_a_renamed,
+        .reserved_skips_1char = phase_a_skips_1char,
     };
 
     // ================================================================
@@ -185,6 +185,33 @@ pub fn mangleAll(
             reserved.putAssumeCapacity(entry.value_ptr.*, {});
         }
         take.deinit();
+    }
+
+    if (debug_log.enabled(.mangle_audit)) {
+        var sum_b_slots: usize = 0;
+        var sum_b_skips_1char: usize = 0;
+        var sum_b_counter: u32 = 0;
+        for (phase_b_stats) |s| {
+            sum_b_slots += s.slot_count;
+            sum_b_skips_1char += s.reserved_skips_1char;
+            sum_b_counter += s.name_counter_final;
+        }
+        const phase_a_skips: usize = phase_a.name_counter_final - phase_a.slot_count;
+        const sum_b_skips: usize = @as(usize, sum_b_counter) - sum_b_slots;
+        debug_log.print(.mangle_audit, "PhaseA: slot={d} counter={d} skips={d} skips_1char={d} reserved_size={d}\n", .{
+            phase_a.slot_count,
+            phase_a.name_counter_final,
+            phase_a_skips,
+            phase_a.reserved_skips_1char,
+            phase_a.reserved_size,
+        });
+        debug_log.print(.mangle_audit, "PhaseB[total]: modules={d} slot_sum={d} counter_sum={d} skips_sum={d} skips_1char_sum={d}\n", .{
+            phase_b_stats.len,
+            sum_b_slots,
+            sum_b_counter,
+            sum_b_skips,
+            sum_b_skips_1char,
+        });
     }
 
     return .{
