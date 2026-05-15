@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { Mermaid as MermaidApi, MermaidConfig } from "mermaid";
 
+import { SURFACE, ZIG } from "../styles/brand-tokens";
 import { useStarlightDark } from "./useStarlightDark";
 
 interface Props {
@@ -36,21 +37,21 @@ const COMMON_CONFIG: MermaidConfig = {
   },
 };
 
-// ZNTC 브랜드 오렌지 (#f7a41d) 는 양쪽 공통, 면/텍스트만 light↔dark 로 토글.
-// [light, dark] 페어로 묶어 한쪽 키만 추가하는 실수를 방지.
+// ZNTC 브랜드 오렌지 (zig-500) 는 양쪽 공통, 면/텍스트만 light↔dark 로 토글.
+// [light, dark] 페어로 묶어 한쪽 키만 추가하는 실수를 방지. hex 는 brand-tokens 에서.
 const THEME_PAIRS = {
-  primaryColor: ["#fff7ed", "#1c1816"],
-  primaryBorderColor: ["#f7a41d", "#f7a41d"],
-  primaryTextColor: ["#431407", "#fed7aa"],
-  secondaryColor: ["#ffedd5", "#2a2422"],
-  secondaryBorderColor: ["#fb923c", "#fb923c"],
-  tertiaryColor: ["#fafaf9", "#141110"],
-  tertiaryBorderColor: ["#d6d3d1", "#3a3432"],
-  clusterBkg: ["#fafaf9", "#1c1816"],
-  clusterBorder: ["#d6d3d1", "#3a3432"],
-  titleColor: ["#1c1816", "#f5f5f4"],
-  edgeLabelBackground: ["#ffffff", "#141110"],
-  lineColor: ["#9a3412", "#f7a41d"],
+  primaryColor: [ZIG[50], SURFACE[900]],
+  primaryBorderColor: [ZIG[500], ZIG[500]],
+  primaryTextColor: [ZIG[950], ZIG[200]],
+  secondaryColor: [ZIG[100], SURFACE[800]],
+  secondaryBorderColor: [ZIG[400], ZIG[400]],
+  tertiaryColor: [SURFACE[50], SURFACE[950]],
+  tertiaryBorderColor: [SURFACE[300], SURFACE[700]],
+  clusterBkg: [SURFACE[50], SURFACE[900]],
+  clusterBorder: [SURFACE[300], SURFACE[700]],
+  titleColor: [SURFACE[900], SURFACE[100]],
+  edgeLabelBackground: ["#ffffff", SURFACE[950]],
+  lineColor: [ZIG[800], ZIG[500]],
   fontSize: ["15px", "15px"],
 } as const;
 

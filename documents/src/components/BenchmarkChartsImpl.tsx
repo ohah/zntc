@@ -6,12 +6,14 @@ import { TooltipComponent, GridComponent, LegendComponent } from "echarts/compon
 import { CanvasRenderer } from "echarts/renderers";
 
 import benchmarkData from "../data/benchmark-data.json";
+import { ZIG } from "../styles/brand-tokens";
 import { useStarlightDark } from "./useStarlightDark";
 
 echarts.use([BarChart, TooltipComponent, GridComponent, LegendComponent, CanvasRenderer]);
 
+// ZNTC 만 brand token 사용. 다른 도구 색은 각자의 brand color 라 토큰화 X.
 const SERIES_COLORS: Record<string, string> = {
-  ZNTC: "#f7a41d",
+  ZNTC: ZIG[500],
   esbuild: "#2563eb",
   SWC: "#dc2626",
   Bun: "#9333ea",

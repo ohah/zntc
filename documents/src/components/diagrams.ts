@@ -1,7 +1,13 @@
 /**
  * Mermaid diagram source 모음. 한/영 페이지가 동일 다이어그램을 import 해
  * drift 차단. 노드 텍스트는 영어 위주 + 짧은 한글 keyword 만 (locale-neutral).
+ *
+ * classDef 색은 `brand-tokens.ts` 토큰만 사용 (mermaid 가 hex 만 받음).
+ * Mermaid 컴포넌트는 isDark 토글 시 `themeVariables` 도 같이 갱신하므로 light/dark 양쪽에서
+ * 적절한 contrast 가 유지되는 hex (orange tier) 만 classDef 에 박는다.
  */
+
+import { SURFACE, ZIG } from "../styles/brand-tokens";
 
 export const BUNDLER_PIPELINE_CHART = `flowchart TB
     Entry["Entry Points"]
@@ -15,9 +21,9 @@ export const BUNDLER_PIPELINE_CHART = `flowchart TB
 
     Entry --> Resolver --> Graph --> Linker --> Tree --> Chunker --> Emitter --> Output
 
-    classDef entry fill:#fff7ed,stroke:#f7a41d,color:#431407,stroke-width:1.4px;
-    classDef stage fill:#ffedd5,stroke:#fb923c,color:#431407,stroke-width:1.2px;
-    classDef out fill:#f7a41d,stroke:#fed7aa,color:#1c1816,stroke-width:1.6px;
+    classDef entry fill:${ZIG[50]},stroke:${ZIG[500]},color:${ZIG[950]},stroke-width:1.4px;
+    classDef stage fill:${ZIG[100]},stroke:${ZIG[400]},color:${ZIG[950]},stroke-width:1.2px;
+    classDef out fill:${ZIG[500]},stroke:${ZIG[200]},color:${SURFACE[900]},stroke-width:1.6px;
 
     class Entry entry;
     class Resolver,Graph,Linker,Tree,Chunker,Emitter stage;
@@ -31,7 +37,7 @@ export const BUNDLER_CIRCULAR_DEPS_CHART = `flowchart LR
     A -->|"import { B }"| B
     B -->|"import { A }"| A
 
-    classDef mod fill:#ffedd5,stroke:#fb923c,color:#431407,stroke-width:1.2px;
+    classDef mod fill:${ZIG[100]},stroke:${ZIG[400]},color:${ZIG[950]},stroke-width:1.2px;
     class A,B mod;
 `;
 
@@ -47,9 +53,9 @@ export const BUNDLER_CJS_ESM_INTEROP_CHART = `flowchart TD
     Mjs --> NodeMode
     Other --> BabelMode
 
-    classDef decision fill:#fff7ed,stroke:#f7a41d,color:#431407,stroke-width:1.4px;
-    classDef branch fill:#ffedd5,stroke:#fb923c,color:#431407,stroke-width:1.2px;
-    classDef result fill:#f7a41d,stroke:#fed7aa,color:#1c1816,stroke-width:1.6px;
+    classDef decision fill:${ZIG[50]},stroke:${ZIG[500]},color:${ZIG[950]},stroke-width:1.4px;
+    classDef branch fill:${ZIG[100]},stroke:${ZIG[400]},color:${ZIG[950]},stroke-width:1.2px;
+    classDef result fill:${ZIG[500]},stroke:${ZIG[200]},color:${SURFACE[900]},stroke-width:1.6px;
 
     class Start decision;
     class Mjs,Other branch;
@@ -85,10 +91,10 @@ export const NAPI_ARCHITECTURE_CHART = `flowchart TB
     PD -. "threadsafe callback" .-> NAPI
     NAPI --> Frontend
 
-    classDef entry fill:#fff7ed,stroke:#f7a41d,color:#431407,stroke-width:1.4px;
-    classDef js fill:#ffedd5,stroke:#fb923c,color:#431407,stroke-width:1.2px;
-    classDef bridge fill:#f7a41d,stroke:#fed7aa,color:#1c1816,stroke-width:1.6px;
-    classDef native fill:#fafaf9,stroke:#d6d3d1,color:#1c1816,stroke-width:1.2px;
+    classDef entry fill:${ZIG[50]},stroke:${ZIG[500]},color:${ZIG[950]},stroke-width:1.4px;
+    classDef js fill:${ZIG[100]},stroke:${ZIG[400]},color:${ZIG[950]},stroke-width:1.2px;
+    classDef bridge fill:${ZIG[500]},stroke:${ZIG[200]},color:${SURFACE[900]},stroke-width:1.6px;
+    classDef native fill:${SURFACE[50]},stroke:${SURFACE[300]},color:${SURFACE[900]},stroke-width:1.2px;
 
     class UC entry;
     class API,Config,PD js;
