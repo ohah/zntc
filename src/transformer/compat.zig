@@ -281,13 +281,27 @@ pub fn parseBrowserslistEntry(s: []const u8) ?EngineVersion {
     const ver_str = rest[0..ver_end];
 
     // browserslist alias → ZNTC Engine. `Engine.fromString` 이 lowercase 정규화하므로
-    // 비교만 case-insensitive 로.
+    // 비교만 case-insensitive 로. Opera (Blink 15+) 는 Chromium 기반이라 chrome 으로 매핑하고
+    // 버전도 Chromium 으로 변환 — compat_table 에 opera 를 별도 추가하지 않아도 정확한 feature
+    // 매트릭스가 적용됨.
+    const is_opera = std.ascii.eqlIgnoreCase(name_raw, "opera") or std.ascii.eqlIgnoreCase(name_raw, "op_mob");
     const engine_str: []const u8 =
-        if (std.ascii.eqlIgnoreCase(name_raw, "ios_saf")) "ios" else if (std.ascii.eqlIgnoreCase(name_raw, "and_chr")) "chrome" else if (std.ascii.eqlIgnoreCase(name_raw, "and_ff")) "firefox" else if (std.ascii.eqlIgnoreCase(name_raw, "op_mob")) "opera" else name_raw;
+        if (std.ascii.eqlIgnoreCase(name_raw, "ios_saf")) "ios" else if (std.ascii.eqlIgnoreCase(name_raw, "and_chr")) "chrome" else if (std.ascii.eqlIgnoreCase(name_raw, "and_ff")) "firefox" else if (is_opera) "chrome" else name_raw;
     const engine = Engine.fromString(engine_str) orelse return null;
 
     const ver = parseMajorMinor(ver_str) orelse return null;
-    return .{ .engine = engine, .major = ver.major, .minor = ver.minor };
+    const major = if (is_opera) (operaToChromium(ver.major) orelse return null) else ver.major;
+    return .{ .engine = engine, .major = major, .minor = ver.minor };
+}
+
+/// Opera (Blink) major → 대응 Chromium major.
+/// Opera 15+ 는 Blink 엔진으로 전환 — Presto (14 이하) 는 Chrome 매트릭스로 매핑할 수 없어 null.
+/// 정확한 매핑은 Opera changelog 기준이지만 (15→28, 36→49, 60→73, 75→88, 80→94),
+/// 보수적 근사 (Opera + 14) 로 단순화 — 실제 Chromium 버전보다 약간 낮게 잡혀 over-downlevel.
+/// 보수적 over-downlevel 은 안전한 방향 (런타임 미지원 syntax 노출 위험 < 약간의 번들 사이즈).
+fn operaToChromium(opera_major: u16) ?u16 {
+    if (opera_major < 15) return null;
+    return opera_major + 13;
 }
 
 /// "100" / "14.5" / "16.11" → {major, minor}. parseInt 실패 시 null.
@@ -1049,6 +1063,26 @@ test "parseBrowserslistEntry — 미매핑/잘못된 syntax 는 null" {
     try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("defaults"));
     try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("> 0.5%"));
     try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("samsung 14"));
+}
+
+test "parseBrowserslistEntry — opera 는 Chromium alias" {
+    // Opera 80 → Chromium 93 (보수적 +13). chrome 엔진으로 매핑.
+    const ev1 = parseBrowserslistEntry("opera 80").?;
+    try std.testing.expectEqual(Engine.chrome, ev1.engine);
+    try std.testing.expectEqual(@as(u16, 93), ev1.major);
+
+    // op_mob 도 같은 매핑.
+    const ev2 = parseBrowserslistEntry("op_mob 75").?;
+    try std.testing.expectEqual(Engine.chrome, ev2.engine);
+    try std.testing.expectEqual(@as(u16, 88), ev2.major);
+
+    // Opera 15 (Blink 시작) → Chromium 28.
+    const ev3 = parseBrowserslistEntry("opera 15").?;
+    try std.testing.expectEqual(Engine.chrome, ev3.engine);
+    try std.testing.expectEqual(@as(u16, 28), ev3.major);
+
+    // Presto (Opera 14 이하) 는 Chrome 매트릭스로 매핑 불가 → null.
+    try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("opera 12"));
 }
 
 test "browserslistToUnsupported — 다중 엔진 union" {
