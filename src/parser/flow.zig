@@ -980,7 +980,7 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
 // Tuple Type
 // ================================================================
 
-/// 튜플 타입: [T, U]
+/// 튜플 타입: [T, U] / [name: T, name?: U] (Flow 0.212+ labeled tuple element)
 fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '['
@@ -988,6 +988,29 @@ fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
+
+        // Labeled tuple element: `name: T` 또는 `name?: T` (Flow 0.212+).
+        // 라벨은 문서화 메타데이터일 뿐이라 type strip 시 무시하고 type만 보존.
+        // `name?` 다음이 `:`이 아니면 일반 type으로 후퇴해야 안전 (ts.zig 패턴 미러).
+        if (self.current() == .identifier) {
+            const next = try self.peekNextKind();
+            const is_labeled = next == .colon or (next == .question and blk: {
+                const saved = self.saveState();
+                const err_count = self.errors.items.len;
+                self.advance() catch break :blk false;
+                self.advance() catch break :blk false;
+                const after_question = self.current();
+                self.restoreState(saved);
+                self.rollbackErrors(err_count);
+                break :blk after_question == .colon;
+            });
+            if (is_labeled) {
+                try self.advance();
+                _ = try self.eat(.question);
+                try self.expect(.colon);
+            }
+        }
+
         const ty = try parseType(self);
         try self.scratch.append(self.allocator, ty);
         if (!try self.eat(.comma)) break;

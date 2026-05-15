@@ -92,6 +92,39 @@ test "Flow: array type T[] stripped" {
     try std.testing.expectEqualStrings("let x=[];", r.output);
 }
 
+test "Flow: tuple type [T, U] stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: [number, string] = [1, 'a'];");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=[1,\"a\"];", r.output);
+}
+
+test "Flow: labeled tuple element stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type Pair = [first: number, second: string];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: optional labeled tuple element stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T = [name?: string, count: number];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: labeled tuple with generic ReadonlyArray (metro Server.js regression)" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T = ReadonlyArray<[pathnamePrefix: string, normalizedRootDir: string]>;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
 test "Flow: type alias with generic stripped" {
     var r = try e2eFlow(std.testing.allocator, "type List<T> = Array<T>;\nlet x = 1;");
     defer r.deinit();
