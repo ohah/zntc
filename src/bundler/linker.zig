@@ -71,12 +71,17 @@ pub const UnifiedCollect = struct {
     /// reserved 에 들어가야 internal binding 의 mangle 결과가 동일 이름을 받지 않는다.
     /// string 자체는 module source 가 소유 — slice 만 owned.
     reserved_names: [][]const u8,
+    /// `modules[i].cross_module_imports` 의 backing slice 들. modules 가 borrowed
+    /// 라 별도 list 로 보관해 deinit 시 free.
+    import_ref_slices: [][]const @import("../codegen/unified_mangler.zig").ImportRef,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *UnifiedCollect) void {
         self.allocator.free(self.top_level_candidates);
         self.allocator.free(self.modules);
         self.allocator.free(self.reserved_names);
+        for (self.import_ref_slices) |s| self.allocator.free(s);
+        self.allocator.free(self.import_ref_slices);
         for (self.bitsets) |*b| b.deinit();
         self.allocator.free(self.bitsets);
     }
@@ -707,6 +712,14 @@ pub const Linker = struct {
             self.allocator.free(bitsets);
         }
 
+        // modules[i].cross_module_imports 의 backing slice 들. 각 모듈마다 별도
+        // alloc — deinit 시 일괄 free. emptyInput 케이스는 default &.{} 라 미할당.
+        var import_ref_slices: std.ArrayListUnmanaged([]const um.ImportRef) = .empty;
+        errdefer {
+            for (import_ref_slices.items) |s| self.allocator.free(s);
+            import_ref_slices.deinit(self.allocator);
+        }
+
         var candidates: std.ArrayListUnmanaged(um.TopLevelCandidate) = .empty;
         errdefer candidates.deinit(self.allocator);
 
@@ -881,6 +894,23 @@ pub const Linker = struct {
                     }
                 }
 
+                // cross_module_imports: 이 모듈이 import 한 cross-module symbol 의
+                // source 위치. `.semantic` variant 만 — `.alias` 는 re-export chain
+                // 중간 노드라 candidate 풀에 없어 renames lookup 이 무의미.
+                var ir_buf: std.ArrayListUnmanaged(um.ImportRef) = .empty;
+                errdefer ir_buf.deinit(self.allocator);
+                for (m.import_bindings) |ib| {
+                    if (ib.symbol != .semantic) continue;
+                    const sem_ref = ib.symbol.semantic;
+                    if (sem_ref.module.isNone() or sem_ref.symbol.isNone()) continue;
+                    try ir_buf.append(self.allocator, .{
+                        .source_module_index = @intFromEnum(sem_ref.module),
+                        .source_symbol_id = @intFromEnum(sem_ref.symbol),
+                    });
+                }
+                const ir_owned = try ir_buf.toOwnedSlice(self.allocator);
+                try import_ref_slices.append(self.allocator, ir_owned);
+
                 modules[mi] = .{
                     .scopes = sem.scopes,
                     .symbols = sem.symbols.items,
@@ -888,6 +918,7 @@ pub const Linker = struct {
                     .references = sem.references,
                     .source = m.source,
                     .module_scope_symbols = bitsets[mi],
+                    .cross_module_imports = ir_owned,
                 };
             } else {
                 modules[mi] = emptyInput(m.source, bitsets[mi]);
@@ -907,6 +938,7 @@ pub const Linker = struct {
             .modules = modules,
             .bitsets = bitsets,
             .reserved_names = reserved_names,
+            .import_ref_slices = try import_ref_slices.toOwnedSlice(self.allocator),
             .allocator = self.allocator,
         };
     }
@@ -924,11 +956,13 @@ pub const Linker = struct {
         const um = @import("../codegen/unified_mangler.zig");
 
         var collected = try self.collectUnifiedInput();
-        // bitsets 은 linker 로 이관 후 free, candidates/modules/reserved 는 여기서 해제.
+        // bitsets 은 linker 로 이관 후 free, candidates/modules/reserved/import_refs 는 여기서 해제.
         defer {
             self.allocator.free(collected.top_level_candidates);
             self.allocator.free(collected.modules);
             self.allocator.free(collected.reserved_names);
+            for (collected.import_ref_slices) |s| self.allocator.free(s);
+            self.allocator.free(collected.import_ref_slices);
         }
 
         var result = try um.mangleAll(self.allocator, .{

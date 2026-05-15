@@ -27,6 +27,16 @@ pub const ModuleSymKey = struct {
     symbol_id: u32,
 };
 
+/// 이 모듈이 import 한 cross-module symbol 의 source 위치. Phase A → Phase B
+/// 사이에 각 source 의 mangled name 을 이 모듈의 per-mod reserved 에 등록
+/// (selective broadcast) — nested mangle 이 cross-module Phase A 이름과 충돌
+/// 회피. helper module / external 등 source 가 candidate 가 아닌 경우는 renames
+/// 에 없으므로 자동 skip.
+pub const ImportRef = struct {
+    source_module_index: u32,
+    source_symbol_id: u32,
+};
+
 /// Phase B 가 per-module 로 호출하는 mangler 입력. `mangler.MangleInput`
 /// 과 동일한 semantic payload 에 더해, module scope 안의 symbol set 을 함께
 /// 넘긴다 (Phase A 에서 이미 처리된 top-level 심볼을 skip 하기 위함).
@@ -39,6 +49,8 @@ pub const ModuleMangleInput = struct {
     /// scope_maps[0] 의 모든 symbol_id 를 담은 BitSet. `mangle` 이 skip_symbols
     /// 로 그대로 사용한다.
     module_scope_symbols: std.DynamicBitSet,
+    /// 이 모듈이 import 한 cross-module symbol 의 source 위치.
+    cross_module_imports: []const ImportRef = &.{},
 };
 
 /// Phase A 의 mangling 후보. 호출부가 빈도/필터링을 수행해 넘긴다
@@ -107,9 +119,21 @@ pub fn mangleAll(
         }
     }.cmp);
 
-    // Phase B 가 같은 모듈 안 outer Phase A binding 과 shadow 충돌 (#1757) 을 피하려면
-    // Phase A 가 mangle 한 이름을 *그 모듈 단위* 로 reserve 해야 한다. cross-module 끼리는
-    // CJS/ESM wrapper IIFE 로 격리되므로 다른 모듈의 Phase A 이름은 reserve 할 필요 없다.
+    // Phase B 가 outer Phase A binding 과 shadow 충돌 (#1757) 을 피하려면 Phase A 가
+    // mangle 한 이름을 nested mangle 시 reserve 해야 한다.
+    //
+    // **자기 모듈 Phase A**: `per_mod_reserved[cand.module_index]` 에 항상 등록.
+    //
+    // **다른 모듈 Phase A (cross-module)**: 순수 ESM bundle 은 wrapper IIFE 없이 모든 모듈
+    // top-level 이 한 scope — 다른 모듈의 Phase A 이름도 visible 해 nested 가 shadow 가능
+    // (`let n=n(p)` self-init TDZ). Phase B 진입 *전* 에 selective 로 broadcast — 각 모듈
+    // 의 `cross_module_imports` 에 해당하는 source 의 mangled name 만 per-mod reserved 에
+    // 추가 (전역 broadcast 가 아니라 실제 import 한 source 만 — size 회귀 회피).
+    //
+    // 보강 메커니즘 (`mangler.reserveNameFor` 가 import binding 의 `canonical_name` 으로
+    // 자동 reserve) 는 `Symbol.canonical_name` 이 `mangleAll` 반환 *후* 에 linker 가
+    // set 하므로 Phase B 진입 시점에는 빈 상태 — 여기서 명시적 selective broadcast 가 필요.
+    //
     // (`renames` 만으로 derive 못 함 — Phase A 의 no-op rename, 즉 원본 이름과 mangled 이름이
     // 같은 경우도 reserved 에 등록해야 하지만 `renames` 에는 안 들어가기 때문.)
     //
@@ -155,6 +179,18 @@ pub fn mangleAll(
             // 원본과 동일해도 다음 Phase A 후보가 같은 이름을 집지 못하도록 reserved.
             try reserved.put(cand.name, {});
             if (has_mod_slot) try per_mod_reserved[cand.module_index].put(cand.name, {});
+        }
+    }
+
+    // Phase A 완료 후, 각 모듈의 cross-module import 의 source mangled name 을
+    // *그 모듈* 의 per-mod reserved 에 추가. helper module / external 등 candidate
+    // 가 아닌 source 는 `renames.get` 이 null 이라 자동 skip.
+    for (input.modules, 0..) |m, mi| {
+        for (m.cross_module_imports) |ref| {
+            const key: ModuleSymKey = .{ .module_index = ref.source_module_index, .symbol_id = ref.source_symbol_id };
+            if (renames.get(key)) |mangled| {
+                try per_mod_reserved[mi].put(mangled, {});
+            }
         }
     }
 
