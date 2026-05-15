@@ -55,6 +55,12 @@ pub const Category = enum {
     /// `graph.discover` 의 fs IO (특히 `pm.setup.read.open`) 분포 — file size ·
     /// open ns · path 길이. parallel batching/precache 여지 식별. issue #3142.
     graph_io_audit,
+    /// Top-level mangle candidate per-row dump
+    /// (`module\tsymbol_id\torig\tmangled\tref_count\tkind\tmod_included`).
+    /// `--mangle-report` 의 집계만으로는 "1글자 이름 발급 vs 실제 출력 잔존" 격차를 식별
+    /// 불가 — 이 dump 를 외부 grep 으로 bundle 과 대조해 어떤 candidate 가 짧은 이름
+    /// 풀을 잠식하는지 확인. mangle 식별자 풀 미소진 진단.
+    mangle_dump,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
