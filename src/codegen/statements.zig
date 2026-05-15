@@ -67,6 +67,21 @@ pub fn emitProgram(self: anytype, node: Node) !void {
         // skip_nodes된 statement는 emitNode가 early-return하지만 newline은 이미 찍혀
         // 빈 줄이 남는다 (#1602). 사전 체크로 해당 slot 전체를 건너뛴다.
         if (isElidedStmt(self, node_idx)) continue;
+        // minify 시 standalone block_statement (`if(true){...}` fold 잔여 등) 가
+        // declaration 을 가지지 않으면 unwrap — `{f()}` → `f();` (probe11).
+        if (self.options.minify_whitespace) {
+            if (tryUnwrapStandaloneBlock(self, node_idx)) |inner| {
+                for (inner) |inner_raw| {
+                    const inner_idx: NodeIndex = @enumFromInt(inner_raw);
+                    if (inner_idx.isNone()) continue;
+                    if (isElidedStmt(self, inner_idx)) continue;
+                    if (emitted) try writeNewline(self);
+                    try self.emitNode(inner_idx);
+                    emitted = true;
+                }
+                continue;
+            }
+        }
         if (emitted) try writeNewline(self);
         try self.emitNode(node_idx);
         emitted = true;
@@ -74,6 +89,34 @@ pub fn emitProgram(self: anytype, node: Node) !void {
     if (emitted) try writeNewline(self);
     // 파일 끝에 남은 주석들 출력
     try emitComments(self, null);
+}
+
+/// `idx` 가 declaration 을 포함하지 않는 standalone block_statement 면 그 안의
+/// statement indices slice 를 반환. unwrap 시 outer scope 와 의미 동일.
+/// let/const/class/function declaration 은 block scope binding 이라 unwrap
+/// 불가 (outer scope 로 leak). var 는 hoisting 으로 동등하지만 block 안 var
+/// 가 다른 hoist scan 에 안 잡히는 경계 케이스 방어 (singleUnwrappableStmt 와
+/// 동일 정책) — 보수적으로 var 도 거부.
+fn tryUnwrapStandaloneBlock(self: anytype, idx: NodeIndex) ?[]const u32 {
+    const node = self.ast.getNode(idx);
+    if (node.tag != .block_statement) return null;
+    const list = node.data.list;
+    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    for (indices) |raw| {
+        const child_idx: NodeIndex = @enumFromInt(raw);
+        if (child_idx.isNone()) continue;
+        const child = self.ast.getNode(child_idx);
+        switch (child.tag) {
+            .variable_declaration => {
+                const kind = self.ast.variableDeclarationKind(child);
+                if (kind != .@"var") return null; // let/const → block-scoped, leak 위험
+                return null; // var 도 hoist 경계 보수적 거부
+            },
+            .function_declaration, .class_declaration => return null,
+            else => {},
+        }
+    }
+    return indices;
 }
 
 pub fn emitBlock(self: anytype, node: Node) !void {
