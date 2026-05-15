@@ -117,7 +117,7 @@ Options:
 | `--platform=browser\|node\|neutral\|react-native` | Target platform                                                       |
 | `--rn-platform=ios\|android`                      | RN sub-platform (`.ios.*`/`.android.*` extensions)                    |
 | `--target=<spec>`                                 | ES target: `es2015`–`esnext` or engine versions (`chrome80,safari14`) |
-| `--browserslist=<query>`                          | Browserslist query as the ES downlevel target (`"defaults"`, `"last 2 versions, not dead"` — an alternative to `--target`, JS wrapper only) |
+| `--browserslist=<query>`                          | Browserslist query as the ES downlevel target. The Zig CLI accepts only simple engine+version forms (`"chrome >= 87, firefox 78"`); stat-based queries (`"defaults"`, `"last 2 versions"`, `"> 0.5%"`) need caniuse-lite data and work only through the JS wrapper |
 | `--runtime-polyfills=auto\|usage\|entry\|off`     | Inject core-js runtime API polyfills. `auto`/`usage` use graph usage  |
 | `--runtime-target=<query>`                        | core-js polyfill Browserslist target. Repeatable (`ios_saf 12`)       |
 | `--core-js=<version>`                             | core-js version used by core-js-compat                                |

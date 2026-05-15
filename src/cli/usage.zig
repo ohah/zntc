@@ -28,6 +28,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  --minify-syntax                  Apply AST-level syntax minification only
         \\  --keep-names                     Preserve `.name` of fn/class under minification (__name helper)
         \\  --target=<spec>                  ES version or engine matrix (esnext|es2015..|chrome80,safari14,...)
+        \\  --browserslist=<query>           Engine targets in Browserslist syntax ('chrome >= 87, firefox 78'). Stat queries (defaults / last 2 versions) need the JS wrapper.
         \\  --format=esm|cjs|iife|umd|amd    Module format (default: esm)
         \\  --drop=console                   Remove console.* calls
         \\  --drop=debugger                  Remove debugger statements
