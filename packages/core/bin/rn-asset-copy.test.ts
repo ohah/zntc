@@ -210,7 +210,11 @@ describe('copyRnAssets — iOS', () => {
 
   test('asset 0 — copied 0', () => {
     expect(
-      copyRnAssets({ assetsDest: dest, rnPlatform: 'ios', bundleCode: '/* no registered asset */' }),
+      copyRnAssets({
+        assetsDest: dest,
+        rnPlatform: 'ios',
+        bundleCode: '/* no registered asset */',
+      }),
     ).toBe(0);
   });
 });
@@ -258,21 +262,11 @@ describe('copyRnAssets — Android', () => {
     const copied = copyAssetsForAndroid(discoverAssets(dir, ['.yml']), dest);
 
     expect(copied).toBe(1);
+    expect(existsSync(join(dest, 'raw/pods_fooframeworkdsym_contents_resources_foo.yml'))).toBe(
+      true,
+    );
     expect(
-      existsSync(
-        join(
-          dest,
-          'raw/pods_fooframeworkdsym_contents_resources_foo.yml',
-        ),
-      ),
-    ).toBe(true);
-    expect(
-      existsSync(
-        join(
-          dest,
-          'drawable-mdpi/pods_fooframeworkdsym_contents_resources_foo.yml',
-        ),
-      ),
+      existsSync(join(dest, 'drawable-mdpi/pods_fooframeworkdsym_contents_resources_foo.yml')),
     ).toBe(false);
   });
 
@@ -330,8 +324,8 @@ describe('copyRnAssets — guards', () => {
   });
 
   test('bundleCode 없으면 release asset copy 실패', () => {
-    expect(
-      () => copyRnAssets({ assetsDest: dest, rnPlatform: 'ios' } as never),
-    ).toThrow('RN release asset copy requires bundleCode');
+    expect(() => copyRnAssets({ assetsDest: dest, rnPlatform: 'ios' } as never)).toThrow(
+      'RN release asset copy requires bundleCode',
+    );
   });
 });
