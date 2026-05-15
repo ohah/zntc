@@ -60,6 +60,14 @@ pub const MinifyCtx = struct {
     /// Top-level constant inline is a size optimization that can make debug/non-minified
     /// output less readable. Keep it behind minify_syntax.
     allow_top_level_inline: bool = false,
+    /// Module-level dead store removal.
+    ///
+    /// 기본은 false — transpile 단독 경로에선 entry top-level 선언이 사라지면
+    /// 외부 host 의 `import {x} from "./mod"` 가 깨진다. bundle 경로에선 tree-shaker
+    /// 가 cross-module ref 보존을 이미 보장하고, 진짜 dead 인 module-level binding
+    /// (sym.isExported()==false + intra-module ref==0 + pure init) 은 안전하게
+    /// elide 가능. caller (emitter) 가 `shaker != null` 일 때만 true 세팅.
+    allow_top_level_dead: bool = false,
 
     /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
     pub const empty: MinifyCtx = .{
@@ -470,12 +478,17 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     if (sym_id >= ctx.symbols.len) return;
     const sym = ctx.symbols[sym_id];
 
-    // top-level (module scope=0) 는 tree-shaker 영역 — 여기서 지우면 bundle 경로의 entry
-    // top-level 선언이 사라져 fixture 가 깨진다. 함수/블록 local 만 대상.
+    // top-level (module scope=0) 의 dead store 는 기본 보수 보호.
+    // - transpile 단독 경로: cross-module ref 정보가 없어 외부 host 의 `import {x} from
+    //   "./mod"` 가 깨질 수 있다 → 그대로 보존.
+    // - bundle 경로 (`ctx.allow_top_level_dead == true`, emitter 가 tree-shaker active 일
+    //   때 세팅): tree-shaker 가 cross-module ref 보존을 이미 보장한다. 같은 binding 이
+    //   외부에서 쓰이면 `is_exported=true` 가드로 보호되고, 아니면 진짜 dead → elide 안전.
+    //   N RFC (#3267) 의 mobx 4KB cascade-dead 회수 경로.
     const scope_idx = @intFromEnum(sym.scope_id);
-    if (scope_idx == 0) {
-        // N RFC (#3267) audit: 다른 가드 (eval/with/exported/ref/purity) 도 통과한
-        // top-level dead candidate 의 size 추적. 실제로는 elide 안 함 — 측정만.
+    if (scope_idx == 0 and !ctx.allow_top_level_dead) {
+        // audit: 다른 가드 (eval/with/exported/ref/purity) 통과한 candidate 의 size 추적.
+        // bundle 모드 (allow_top_level_dead) 에선 진짜 elide 로 가니 여기 안 옴.
         if (debug_log.enabled(.dead_toplevel_audit)) {
             tryAuditDeadToplevel(ast, ctx, sym_id, sym, node, init_idx);
         }
