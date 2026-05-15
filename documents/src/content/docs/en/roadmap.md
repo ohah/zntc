@@ -120,6 +120,6 @@ When a barrel module mutates an imported binding (some libraries do this — e.g
 
 Only the first resolve walks the array linearly; subsequent resolves hit the resolver cache. No measurable impact at normal project sizes.
 
-### Public WASM API
+### Public WASM AST API
 
-Limited to internal use by the Playground and Metafile Analyze pages. There is no stabilized public API for users to `import` directly yet (see the "Planned" entry above).
+`@zntc/wasm` exposes `transpile()`, `build()`, `buildChunks()`, and `VirtualFileSystem` for user `import`; see the WASM section of [Installation](/zntc/en/guides/installation/) for the usage surface. Direct module-level access to the ESTree-compatible AST from plugins is the remaining gap — see the "Planned / Public WASM AST API" entry above. AST schema stabilization is the prerequisite.

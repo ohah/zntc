@@ -9,12 +9,12 @@ ZNTC stands for **Zig Native Transpiler & Compiler**. It is a native-speed trans
 
 ## Key Features
 
-- **TypeScript/JSX Transpile**: Type stripping, enum conversion, decorators, JSX (classic/automatic)
-- **Bundling**: Tree-shaking, code splitting, preserve-modules
-- **React Native**: Metro-compatible bundling, Flow stripping, Hermes bytecode compatibility
-- **Plugins**: Rollup/Vite-compatible plugin system (C NAPI, in-process)
-- **Dev Server**: HMR, proxy, static file serving
-- **WASM**: Transpile directly in the browser
+- **TypeScript/JSX transpile** — Type stripping, enum conversion, decorators, JSX (classic/automatic). [Transpile overview](/zntc/en/guides/transpile/) · [Native Transforms](/zntc/en/guides/native-transforms/)
+- **Bundling** — Tree-shaking, code splitting, preserve-modules. [Bundling overview](/zntc/en/guides/bundling/) · [Tree-shaking](/zntc/en/guides/tree-shaking/) · [manualChunks](/zntc/en/guides/manual-chunks/)
+- **React Native** — Metro-compatible bundling, Flow stripping, Hermes bytecode compatibility. [React Native guide](/zntc/en/guides/react-native/) · [Expo](/zntc/en/guides/react-native-expo/)
+- **Plugins** — Rollup/Vite-compatible plugin system (C NAPI, in-process). [Plugins guide](/zntc/en/guides/plugins/) · [Vite adapter](/zntc/en/guides/vite/)
+- **Dev Server** — HMR, proxy, static file serving, SSE/MCP. [Dev Server guide](/zntc/en/guides/dev-server/)
+- **WASM** — Transpile and bundle directly in the browser / Edge / WASI. [Installation guide — WASM](/zntc/en/guides/installation/)
 
 ## 1st-party transforms, no Babel
 

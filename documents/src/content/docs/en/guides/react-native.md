@@ -221,6 +221,8 @@ react-native → browser → module → main
 
 `zntc --bundle --platform=react-native` accepts the standard `react-native bundle` (Metro CLI) flags — a dropin layer so you can swap a `react-native bundle ...` call in `package.json` for `zntc --bundle ...`.
 
+### Compatibility flags that do something
+
 | Metro flag | Description |
 |---|---|
 | `--bundle-output <path>` | Bundle output path (treated like `-o`; used as a fallback when `-o` is not given) |
@@ -229,19 +231,24 @@ react-native → browser → module → main
 | `--sourcemap-sources-root <dir>` | Source map `sourceRoot` (same meaning as `--source-root`) |
 | `--sourcemap-use-absolute-path` | Use absolute paths for sources in the source map |
 | `--assets-dest <dir>` | Destination for copied assets (images/fonts) — in production (not `--dev`) builds the asset loader copies there (iOS 1x/2x/3x, Android `res/`) |
-| `--asset-catalog-dest <dir>` | iOS asset catalog destination — **currently ignored** (accepted but no-op, stderr warning) |
 | `--bundle-encoding <utf8\|utf16le\|ascii>` | Bundle file encoding (default `utf-8`) |
 | `--reset-cache` | Invalidate the cache on startup |
 | `--max-workers <n>` | Parallel worker count — alias of `--jobs` |
-| `--unstable-transform-profile <name>` | Hermes transform profile — **currently ignored** (accepted but no-op, stderr warning) |
 | `--no-interactive` | Disable terminal interactive actions (Metro UI compat) |
 | `--watchFolders <a,b>` | Extra watch roots (Metro's camelCase form, comma-separated) — forwarded to the RN preset's watchFolders. Distinct from the native watcher's `--watch-folder` |
 | `--sourceExts <a,b>` | Extra source extensions (Metro's camelCase form, comma-separated) |
 | `--rn-project-root <dir>` | The RN preset's projectRoot. Defaults to cwd; set it for monorepo roots |
-| `--transform-option key=value` | Metro transformer option (repeatable) — **currently ignored** (Metro graph-bundler only; emits an unsupported-stderr warning) |
-| `--resolver-option key=value` | Metro resolver option (repeatable) — **currently ignored** (same) |
 
-> `--transform-option` / `--resolver-option` are accepted for compatibility but have no effect. Customize the Babel transform via `transformer.babel` in `zntc.config.ts`.
+### Compatibility flags accepted but ignored
+
+The parser accepts these so a `react-native bundle` invocation drops in as-is. They map to Metro stages (asset catalog post-processing, Hermes transform profile selection, Babel transformer arguments) that don't apply to ZNTC's graph bundler model. A stderr warning is emitted on use.
+
+| Metro flag | Why it's ignored |
+|---|---|
+| `--asset-catalog-dest <dir>` | iOS asset catalog post-processing is a separate step that ZNTC's bundler doesn't perform |
+| `--unstable-transform-profile <name>` | Hermes transform profile — ZNTC auto-applies the Hermes matrix when `--platform=react-native` is set |
+| `--transform-option key=value` | Metro's Babel transformer arguments — Babel itself is no longer a dependency. Customize transforms via `compiler` or plugins in `zntc.config.ts` |
+| `--resolver-option key=value` | Metro graph-bundler-only resolver arguments — express your intent via ZNTC's resolver options (`resolveExtensions` / `mainFields` / `conditions` / `alias` / `fallback`) |
 
 ## Flow / Hermes / Watch
 

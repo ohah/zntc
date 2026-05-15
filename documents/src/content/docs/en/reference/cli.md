@@ -106,7 +106,7 @@ Options:
 | `-o, --out-file <path>`     | Output file path (the JS wrapper also accepts `--outfile` as alias)      |
 | `--outdir <path>`           | Output directory (required for dir input / splitting / preserve-modules) |
 | `--outbase=<dir>`           | Base dir for computing output paths                                      |
-| `--out-extension:.js=<ext>` | Change output extension (e.g. `.mjs`)                                    |
+| `--out-extension:.js=<ext>` | Change JS output extension (e.g. `.mjs` / `.cjs`). Only the `.js` key is supported — `.css` and others are not (esbuild parity) |
 | `--clean`                   | Clear outdir before building                                             |
 
 ## Format / Platform
@@ -117,7 +117,7 @@ Options:
 | `--platform=browser\|node\|neutral\|react-native` | Target platform                                                       |
 | `--rn-platform=ios\|android`                      | RN sub-platform (`.ios.*`/`.android.*` extensions)                    |
 | `--target=<spec>`                                 | ES target: `es2015`–`esnext` or engine versions (`chrome80,safari14`) |
-| `--browserslist=<query>`                          | Browserslist query as the ES downlevel target (`"defaults"`, `"last 2 versions, not dead"` — an alternative to `--target`) |
+| `--browserslist=<query>`                          | Browserslist query as the ES downlevel target (`"defaults"`, `"last 2 versions, not dead"` — an alternative to `--target`, JS wrapper only) |
 | `--runtime-polyfills=auto\|usage\|entry\|off`     | Inject core-js runtime API polyfills. `auto`/`usage` use graph usage  |
 | `--runtime-target=<query>`                        | core-js polyfill Browserslist target. Repeatable (`ios_saf 12`)       |
 | `--core-js=<version>`                             | core-js version used by core-js-compat                                |
@@ -139,7 +139,8 @@ Options:
 | `--rn-project-root=<dir>` | RN preset projectRoot (defaults to cwd; set for monorepo roots) |
 | `--watchFolders=<a,b>` / `--sourceExts=<a,b>` | Metro camelCase forms — forwarded to the RN preset (distinct from `--watch-folder`) |
 | `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro compat options |
-| `--asset-catalog-dest=<dir>` / `--unstable-transform-profile=<name>` / `--transform-option=<k=v>` / `--resolver-option=<k=v>` | Accepted but **currently ignored** (Metro graph-bundler only) |
+
+These four are accepted for compatibility but ignored at runtime (stderr warning): `--asset-catalog-dest=<dir>` / `--unstable-transform-profile=<name>` / `--transform-option=<k=v>` / `--resolver-option=<k=v>`. Rationale and the recommended replacements live in the [React Native guide — compatibility flags accepted but ignored](/zntc/en/guides/react-native/#compatibility-flags-accepted-but-ignored).
 
 Full table + behavior: [React Native guide](/zntc/en/guides/react-native/#metro--react-native-bundle-compatibility-flags)
 
@@ -342,4 +343,4 @@ zntc bench --phase=parse --compare=baseline.json src/main.ts
 - Visualize `--metafile` output on the [Metafile Analyze](/zntc/analyze/) page.
 - Use `@zntc/vite-plugin` or `vitePlugin()` for the Vite adapter.
 - Use `@zntc/rspack-loader` for the Rspack / Webpack 5 adapter. ([guide](/zntc/en/guides/rspack-loader/))
-- Unsupported options and future plans: [docs/ROADMAP.md](https://github.com/ohah/zntc/blob/main/docs/ROADMAP.md).
+- Unsupported options and future plans: [Roadmap](/zntc/en/roadmap/).

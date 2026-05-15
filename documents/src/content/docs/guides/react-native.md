@@ -221,6 +221,8 @@ react-native → browser → module → main
 
 `zntc --bundle --platform=react-native` 는 `react-native bundle` (Metro CLI) 의 standard flag 를 그대로 받습니다 — `package.json` 의 `react-native bundle ...` 호출을 `zntc --bundle ...` 로 바꿔도 동작하도록 한 dropin layer 입니다.
 
+### 동작하는 호환 옵션
+
 | Metro flag | 설명 |
 |---|---|
 | `--bundle-output <path>` | 번들 출력 경로 (`-o` 와 동일하게 처리, `-o` 미지정 시 fallback) |
@@ -229,19 +231,24 @@ react-native → browser → module → main
 | `--sourcemap-sources-root <dir>` | 소스맵의 `sourceRoot` (`--source-root` 와 동일 의미) |
 | `--sourcemap-use-absolute-path` | 소스맵 내 source 경로를 절대 경로로 |
 | `--assets-dest <dir>` | 이미지/폰트 등 asset 복사 대상 — production (`--dev` 아님) 빌드에서 asset 로더가 해당 디렉토리로 복사 (iOS 는 1x/2x/3x, Android 는 `res/`) |
-| `--asset-catalog-dest <dir>` | iOS asset catalog 대상 — **현재 무시** (받기만 하고 동작 없음, stderr 경고) |
 | `--bundle-encoding <utf8\|utf16le\|ascii>` | 번들 파일 인코딩 (기본 `utf-8`) |
 | `--reset-cache` | 시작 시 캐시 무효화 |
 | `--max-workers <n>` | 병렬 워커 수 — `--jobs` 의 alias |
-| `--unstable-transform-profile <name>` | Hermes transform profile — **현재 무시** (받기만 하고 동작 없음, stderr 경고) |
 | `--no-interactive` | 터미널 인터랙티브 액션 비활성 (Metro UI 호환) |
 | `--watchFolders <a,b>` | 감시 루트 추가 (Metro 의 camelCase 형, comma 구분) — RN preset 의 watchFolders 로 전달. zntc 네이티브 watcher 의 `--watch-folder` 와 별개 |
 | `--sourceExts <a,b>` | 추가 소스 확장자 (Metro 의 camelCase 형, comma 구분) |
 | `--rn-project-root <dir>` | RN preset 의 projectRoot. 기본 cwd, monorepo root 지정 시 사용 |
-| `--transform-option key=value` | Metro transformer 옵션 (반복 가능) — **현재 무시** (Metro graph-bundler 전용, 미지원 stderr 경고만) |
-| `--resolver-option key=value` | Metro resolver 옵션 (반복 가능) — **현재 무시** (위와 동일) |
 
-> `--transform-option` / `--resolver-option` 은 호환을 위해 받기만 하고 동작에 반영하지 않습니다. Babel transform 커스터마이징은 `zntc.config.ts` 의 `transformer.babel` 로 하세요.
+### 받기만 하고 무시되는 호환 flag
+
+`react-native bundle` 호출을 dropin 으로 받기 위해 parser 가 받기만 하고 무시합니다. ZNTC 의 graph bundler 모델과 의미가 맞지 않거나 Metro 의 별도 단계 (asset catalog 후처리, Hermes transform profile 선택, Babel transformer 인자 주입) 가 필요한 옵션입니다. 호출 시 stderr 에 경고가 출력됩니다.
+
+| Metro flag | 무시되는 이유 |
+|---|---|
+| `--asset-catalog-dest <dir>` | iOS asset catalog 후처리는 별도 단계로 ZNTC bundler 에서 수행하지 않음 |
+| `--unstable-transform-profile <name>` | Hermes transform profile — ZNTC 는 `--platform=react-native` 시 Hermes 매트릭스 자동 적용 |
+| `--transform-option key=value` | Metro 의 Babel transformer 인자 — Babel 자체 의존 제거됨. 트랜스폼 커스터마이징은 `zntc.config.ts` 의 `compiler` / plugin |
+| `--resolver-option key=value` | Metro graph-bundler 전용 resolver 인자 — ZNTC resolver 옵션 (`resolveExtensions` / `mainFields` / `conditions` / `alias` / `fallback`) 로 표현 |
 
 ## Flow / Hermes / Watch
 

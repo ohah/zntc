@@ -103,7 +103,7 @@ Options:
 | `-o, --out-file <path>`     | 출력 파일 경로 (JS wrapper 는 `--outfile` alias 도 받음)         |
 | `--outdir <path>`           | 출력 디렉토리 (디렉토리 입력·`--splitting`·`--preserve-modules`) |
 | `--outbase=<dir>`           | 출력 기준 디렉토리 (공통 prefix 계산)                            |
-| `--out-extension:.js=<ext>` | 출력 확장자 변경 (예: `.mjs`)                                    |
+| `--out-extension:.js=<ext>` | JS 출력 확장자 변경 (예: `.mjs` / `.cjs`). 현재 `.js` 키만 지원 — `.css` 등 다른 확장자는 미지원 (esbuild parity) |
 | `--clean`                   | 빌드 전 outdir 비우기                                            |
 
 ## 모듈 포맷 / 플랫폼
@@ -114,7 +114,7 @@ Options:
 | `--platform=browser\|node\|neutral\|react-native` | 타겟 플랫폼                                                        |
 | `--rn-platform=ios\|android`                      | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자)                      |
 | `--target=<spec>`                                 | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
-| `--browserslist=<query>`                          | Browserslist 쿼리로 ES 다운레벨 타겟 지정 (`"defaults"`, `"last 2 versions, not dead"` 등 — `--target` 의 대안) |
+| `--browserslist=<query>`                          | Browserslist 쿼리로 ES 다운레벨 타겟 지정 (`"defaults"`, `"last 2 versions, not dead"` 등 — `--target` 의 대안, JS wrapper 전용) |
 | `--runtime-polyfills=auto\|usage\|entry\|off`     | core-js 런타임 API 폴리필 주입. `auto`/`usage`는 graph usage 기반  |
 | `--runtime-target=<query>`                        | core-js 폴리필 Browserslist 타겟. 반복 가능 (`ios_saf 12`)         |
 | `--core-js=<version>`                             | core-js-compat 계산에 사용할 core-js 버전                          |
@@ -136,7 +136,8 @@ Options:
 | `--rn-project-root=<dir>` | RN preset projectRoot (기본 cwd, monorepo root 지정 시) |
 | `--watchFolders=<a,b>` / `--sourceExts=<a,b>` | Metro camelCase 형 — RN preset 으로 전달 (`--watch-folder` 와 별개) |
 | `--sourcemap-sources-root=<dir>` / `--sourcemap-use-absolute-path` / `--no-interactive` | Metro 호환 옵션 |
-| `--asset-catalog-dest=<dir>` / `--unstable-transform-profile=<name>` / `--transform-option=<k=v>` / `--resolver-option=<k=v>` | 받기만 하고 **현재 무시** (Metro graph-bundler 전용) |
+
+다음 4개는 호환을 위해 받기만 하고 실제로는 무시됩니다 (stderr 경고 출력): `--asset-catalog-dest=<dir>` / `--unstable-transform-profile=<name>` / `--transform-option=<k=v>` / `--resolver-option=<k=v>`. 이유와 권장 대체는 [React Native 가이드 — 받기만 하고 무시되는 호환 flag](/zntc/guides/react-native/#받기만-하고-무시되는-호환-flag) 참조.
 
 전체 표 + 동작 설명: [React Native 가이드](/zntc/guides/react-native/#metro--react-native-bundle-호환-옵션)
 
@@ -338,4 +339,4 @@ zntc bench --phase=parse --compare=baseline.json src/main.ts
 - `--metafile` 결과는 [Metafile 분석](/zntc/analyze/) 페이지에서 시각화할 수 있습니다.
 - Vite 어댑터는 `@zntc/vite-plugin` 또는 `vitePlugin()`으로 사용하세요.
 - Rspack / Webpack 5 어댑터는 `@zntc/rspack-loader` 를 사용하세요. ([가이드](/zntc/guides/rspack-loader/))
-- 미지원 옵션 / 향후 계획은 [docs/ROADMAP.md](https://github.com/ohah/zntc/blob/main/docs/ROADMAP.md) 참고.
+- 미지원 옵션 / 향후 계획은 [로드맵](/zntc/roadmap/) 참고.

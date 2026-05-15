@@ -46,14 +46,16 @@ type ChartDefinition = {
 };
 
 function useIsDark(): boolean {
-  const [isDark, setIsDark] = useState(false);
+  // client:only 컴포넌트라 SSR 없음 — 첫 렌더에 DOM 을 바로 읽어
+  // isDark=false → useEffect → setIsDark(true) 로 인한 두 번째 렌더 (echarts 애니메이션 재생) 회피.
+  const [isDark, setIsDark] = useState(() =>
+    typeof document !== "undefined" && document.documentElement.dataset.theme === "dark",
+  );
 
   useEffect(() => {
-    const check = () => {
+    const observer = new MutationObserver(() => {
       setIsDark(document.documentElement.dataset.theme === "dark");
-    };
-    check();
-    const observer = new MutationObserver(check);
+    });
     observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-theme"],
