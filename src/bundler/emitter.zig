@@ -1746,7 +1746,6 @@ pub fn emitModule(
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
-        const basename = if (options.minify_whitespace) "" else module.wrapperId();
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
         const var_name = try module.allocRequireName(allocator);
@@ -1756,22 +1755,17 @@ pub fn emitModule(
         defer wrapped.deinit(allocator);
 
         if (options.minify_whitespace) {
-            // minify_whitespace 모드는 module path key 를 빈 문자열로 emit —
-            // `{""(exports,module){...}}` (JS 의 string-key method shorthand 합법).
-            // $cj helper 는 `cb[Object.keys(cb)[0]]` 로 첫 key 의 method 추출하므로
-            // key 가 빈 문자열이어도 동작. trade-off: stack trace 의 module path
-            // 정보 손실 — minify 출력은 어차피 디버깅 대상 아니라 ROI 큰 정리.
-            // 대형 라이브러리 (rxjs ~100 모듈) 에서 module path × 길이 만큼 절감.
+            // emit 의 직접 함수 패턴은 `runtime_helpers.zig` 의 `CJS_RUNTIME_*` 가 cb 를
+            // function 으로 받는 것과 한 쌍 — 한쪽만 바꾸면 runtime TypeError.
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"");
-            try wrapped.appendSlice(allocator, basename);
-            try wrapped.appendSlice(allocator, "\"(exports,module){");
+            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             try wrapped.appendSlice(allocator, code);
-            try wrapped.appendSlice(allocator, "}});");
+            try wrapped.appendSlice(allocator, "});");
             if (preamble_lines_out) |out| out.* = 0;
         } else {
+            const basename = module.wrapperId();
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, " = __commonJS({\n\t\"");

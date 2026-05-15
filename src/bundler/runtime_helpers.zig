@@ -43,14 +43,17 @@ pub const PAIRS = names_mod.PAIRS;
 pub const ALL_SHORT_NAMES = names_mod.ALL_SHORT_NAMES;
 pub const helperName = names_mod.helperName;
 
-/// __commonJS 팩토리 함수 (esbuild 호환)
+// non-minify wrapper 는 cb 가 *object* (디버깅 친화 — `{"path"(exports, module){...}}`
+// 의 module path 보존). minify wrapper 는 cb 가 *함수* — emit 도 직접 함수 인자
+// (`$cj((exports,module)=>{...})`) 와 한 쌍. HMR 의 `Object.keys(cb)[0]` module id
+// 추적은 dev_mode 전용 (minify 시 HMR runtime 자체가 emit 안 됨) 이므로 호환.
 pub const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
-pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
+pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||cb((mod={exports:{}}).exports,mod),mod.exports};";
 
-/// __commonJS ES5 호환: arrow → function.
-pub const CJS_RUNTIME_ES5 = "var __commonJS = function(cb, mod) { return function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n}; };\n";
+// __commonJS ES5 호환 (RN/Hermes — `configurable_exports=true`): arrow → function.
 // #1751: trailing `;` — 뒤따르는 `var __xxx=...` 와 문법 구분 필수 (minify 연속 emit).
-pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}};";
+pub const CJS_RUNTIME_ES5 = "var __commonJS = function(cb, mod) { return function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n}; };\n";
+pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||cb((mod={exports:{}}).exports,mod),mod.exports}};";
 
 /// __toESM: CJS 모듈을 ESM namespace로 변환 (rolldown 호환).
 /// isNodeMode=true(--platform=node)이면 항상 default: mod를 설정.

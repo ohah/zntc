@@ -22,9 +22,9 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
         if (minify) {
             try buf.appendSlice(allocator, "var ");
             try buf.appendSlice(allocator, var_name);
-            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"(optional-missing)\"(exports,module){");
+            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{");
             try appendOptionalMissingThrow(allocator, &buf, specifier, true);
-            try buf.appendSlice(allocator, "}});");
+            try buf.appendSlice(allocator, "});");
         } else {
             try buf.appendSlice(allocator, "var ");
             try buf.appendSlice(allocator, var_name);
@@ -38,8 +38,8 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        // #1621: minify 시 __commonJS → $cj 축약 (#1618 follow-up).
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"(disabled)\"(exports,module){}});");
+        // #1621: minify 시 __commonJS → $cj 축약.
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{});");
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
@@ -114,12 +114,10 @@ pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, sourc
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        // #1621: minify 시 __commonJS → $cj 축약 (#1618 follow-up).
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"");
-        try buf.appendSlice(allocator, std.fs.path.basename(module.path));
-        try buf.appendSlice(allocator, "\"(exports,module){module.exports=");
+        // #1621: minify 시 __commonJS → $cj 축약.
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{module.exports=");
         try buf.appendSlice(allocator, source);
-        try buf.appendSlice(allocator, "}});");
+        try buf.appendSlice(allocator, "});");
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
