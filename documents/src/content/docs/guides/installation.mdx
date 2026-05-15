@@ -196,6 +196,24 @@ const result = transpile("const x: number = 1;");
 console.log(result.code); // "const x = 1;"
 ```
 
+번들러 surface 도 같은 패키지에서 노출됩니다. `VirtualFileSystem` 에 소스를 올린 뒤 `initBundler` 로 별도 wasm 을 초기화합니다 — wasm32-wasi+threads 빌드라 브라우저에서 `SharedArrayBuffer` (COOP/COEP) 가 필요합니다.
+
+```typescript
+import { initBundler, build, VirtualFileSystem } from "@zntc/wasm";
+
+const vfs = new VirtualFileSystem();
+vfs.writeFile("/src/index.ts", `import { hello } from "./hello"; hello();`);
+vfs.writeFile("/src/hello.ts", `export const hello = () => console.log("hi");`);
+
+await initBundler(vfs);
+const result = build("/src/index.ts", { format: "esm", minify: true });
+console.log(result?.code);
+```
+
+- `build()` — 단일 번들 산출, code splitting 없음. dynamic import 가 있으면 `inlineDynamicImports` 와 동일 동작
+- `buildChunks()` — `codeSplitting` / `preserveModules` 옵션 시 청크 배열 반환
+- `BundleOptionsInput` 필드는 `format` / `platform` / `external` / `minify*` / `target` / `jsx*` / `flow` / `sourcemap` 등 native bundler 의 부분집합
+
 ## Vite 플러그인
 
 esbuild 자리 대체:

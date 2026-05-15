@@ -120,6 +120,6 @@ barrel 모듈이 imported binding 을 mutate 하는 경우 (lodash-es 등 일부
 
 첫 resolve 만 선형 스캔이고 이후는 resolve 캐시가 흡수합니다. 일반 프로젝트 규모에서는 실측 영향이 없습니다.
 
-### WASM 공개 API
+### WASM 공개 AST API
 
-현재 Playground / Metafile Analyze 내부 사용에 한정합니다. 사용자가 직접 `import` 할 안정화된 공개 API 는 아직 제공하지 않습니다 (위 "예정 기능" 참조).
+`@zntc/wasm` 의 `transpile()` · `build()` · `buildChunks()` · `VirtualFileSystem` 은 사용자 `import` 용으로 제공됩니다. 사용법은 [설치 가이드](/zntc/guides/installation/) 의 WASM 섹션 참조. 모듈 단위 ESTree 호환 AST 를 plugin 에서 직접 읽고 변환하는 surface 는 위 "예정 기능 > WASM 공개 AST API" 항목 — AST 스키마 안정화가 선행됩니다.

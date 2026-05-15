@@ -196,6 +196,24 @@ const result = transpile("const x: number = 1;");
 console.log(result.code); // "const x = 1;"
 ```
 
+The bundler surface ships in the same package. Load sources into a `VirtualFileSystem` and initialize a separate wasm module with `initBundler` — it's a wasm32-wasi+threads build, so the browser must enable `SharedArrayBuffer` (COOP/COEP headers).
+
+```typescript
+import { initBundler, build, VirtualFileSystem } from "@zntc/wasm";
+
+const vfs = new VirtualFileSystem();
+vfs.writeFile("/src/index.ts", `import { hello } from "./hello"; hello();`);
+vfs.writeFile("/src/hello.ts", `export const hello = () => console.log("hi");`);
+
+await initBundler(vfs);
+const result = build("/src/index.ts", { format: "esm", minify: true });
+console.log(result?.code);
+```
+
+- `build()` — single-file bundle, no code splitting. Dynamic imports are inlined (same as `inlineDynamicImports`)
+- `buildChunks()` — returns a chunk array when `codeSplitting` / `preserveModules` is set
+- `BundleOptionsInput` covers `format` / `platform` / `external` / `minify*` / `target` / `jsx*` / `flow` / `sourcemap` — a subset of the native bundler options
+
 ## Vite plugin
 
 Drop-in replacement for esbuild:
