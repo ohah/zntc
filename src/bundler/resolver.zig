@@ -635,6 +635,17 @@ pub const Resolver = struct {
     /// package.json의 main_fields 또는 기본 순서(module → main)로 엔트리포인트를 찾는다.
     /// resolvePackage와 tryDirectoryPackageJson에서 공용.
     fn resolveByMainFields(self: *Resolver, parsed: *pkg_json.ParsedPackageJson, base_dir: []const u8) ResolveError!?ResolveResult {
+        // R-step1 (RFC #3289): mobx-style cjs main shim 검출 — `dist/index.js` 같은 작은
+        // cjs main 이 production conditional require 로 *이미 minified production cjs* 만
+        // require 하면 *그쪽이 module field (full source ESM) 보다 훨씬 작은 결과*. esbuild
+        // --platform=node default (mainFields=["main"]) 가 자동 처리하던 경로 — zntc 의
+        // default (module 우선) 로는 17KB+ 격차 발생 (mobx 71KB vs rolldown 54KB). 검출 시
+        // *main 우선*, 아니면 기존 처리.
+        if (parsed.pkg.module != null and parsed.pkg.main != null) {
+            if (try self.tryCjsMainProductionShim(base_dir, parsed.pkg.main.?)) |result| {
+                return result;
+            }
+        }
         if (self.main_fields.len > 0) {
             const obj = parsed.parsed.value.object;
             for (self.main_fields) |field| {
@@ -672,6 +683,51 @@ pub const Resolver = struct {
         }
 
         return null;
+    }
+
+    /// mobx-style cjs main shim 의 최대 size. 일반적인 production conditional require shim 은
+    /// `if (process.env.NODE_ENV === 'production') module.exports = require(...)` 형태로
+    /// 200 byte 미만. 1KB 면 충분한 여유 — 큰 cjs main (graphql full bundle 등) 즉시 reject.
+    const CJS_SHIM_MAX_SIZE: u64 = 1024;
+
+    /// mobx-style cjs main shim 검출. cjs main file 이 *작고* (< CJS_SHIM_MAX_SIZE)
+    /// `process.env.NODE_ENV` 와 `require(...)` 를 모두 포함하면 production conditional
+    /// require shim 추정 — main 우선. 매치 안 되면 null 반환 → caller 가 기존 default
+    /// (module 우선) fallback. RFC #3289 R-step1 — mobx 17KB 격차 root cause fix.
+    fn tryCjsMainProductionShim(self: *Resolver, base_dir: []const u8, main_field: []const u8) ResolveError!?ResolveResult {
+        const abs_path = std.fs.path.resolve(self.allocator, &.{ base_dir, main_field }) catch
+            return error.OutOfMemory;
+        defer self.allocator.free(abs_path);
+
+        // 확장자 fallback — main 이 `dist/index` 같이 확장자 없으면 `.js` 등으로 probe.
+        // tryExtensions 결과는 *항상 owned path* (별도 alloc) — borrowed_only flag 로 분기 명확화.
+        var resolved_path: []const u8 = abs_path;
+        var ext_owned_path: ?[]const u8 = null;
+        defer if (ext_owned_path) |p| self.allocator.free(p);
+        if (!self.fileExists(abs_path)) {
+            const ext_opt = self.tryExtensions(abs_path) catch return null;
+            const ext_result = ext_opt orelse return null;
+            ext_owned_path = ext_result.path;
+            resolved_path = ext_result.path;
+        }
+
+        // file size 검사 — shim 은 작음. 큰 cjs main (graphql 등 full bundle) 즉시 reject.
+        const file = std.fs.openFileAbsolute(resolved_path, .{}) catch return null;
+        defer file.close();
+        const stat = file.stat() catch return null;
+        if (stat.size > CJS_SHIM_MAX_SIZE) return null;
+
+        // 작은 cjs main read + substring scan. AST parse 대신 비용 최소화.
+        var buf: [CJS_SHIM_MAX_SIZE]u8 = undefined;
+        const read_n = file.readAll(&buf) catch return null;
+        const content = buf[0..read_n];
+
+        // production conditional require shim 패턴: `process.env.NODE_ENV` + `require(` 둘 다 등장.
+        const has_node_env = std.mem.indexOf(u8, content, "process.env.NODE_ENV") != null;
+        const has_require = std.mem.indexOf(u8, content, "require(") != null;
+        if (!has_node_env or !has_require) return null;
+
+        return self.makeResult(resolved_path);
     }
 
     /// bare specifier를 node_modules에서 탐색한다.
