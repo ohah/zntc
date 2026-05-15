@@ -4181,6 +4181,21 @@ test "TS: bare `this` parameter without type annotation is stripped" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// `if/while/for/with (cond) /regex/.method()` 처럼 control-flow `)` 뒤 statement
+// 가 `/` 로 시작하면 scanner 가 division 으로 잘못 토크나이즈 (TSC conformance
+// `parserRegularExpression5.ts`). statement 시작 `/` 는 항상 regex literal —
+// parser 가 expect(.r_paren) 뒤 rescanAsRegexp 호출.
+test "TS: regex literal at start of if/while/for body is reparsed" {
+    // with (...) /regex/ 도 같은 path 지만 strict 거부로 test 어려움 — if/while/for 만 검증.
+    var r = try parseTs(std.testing.allocator,
+        \\if (a) /b/.test(c);
+        \\while (a) /b/.test(c);
+        \\for (;;) /b/.test(c);
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // Stage 3 auto-accessor with computed key + decorator (`@dec accessor ["x"] = ...`)
 // 가 `data.string_ref` 가정 코드에서 garbage span 으로 합성돼 codegen slice panic
 // (TSC conformance `esDecorators-classDeclaration-fields-staticAccessor.ts`).

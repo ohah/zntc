@@ -494,6 +494,7 @@ fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
     try self.expect(.l_paren);
     const obj = try self.parseExpression();
     try self.expect(.r_paren);
+    rescanStatementBodyLeadingSlash(self);
     // with body에서 function declaration은 항상 금지 (Annex B에 with 예외 없음)
     // IsLabelledFunction(Statement) 체크도 필요
     const saved_labelled = self.in_labelled_fn_check;
@@ -639,12 +640,23 @@ fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
+/// `if/while/for/with (cond) <body>` 에서 body 가 `/regex/.test(...)` 처럼 `/` 로
+/// 시작하면 scanner 는 직전 `)` 때문에 `/` 를 division 으로 잘못 토크나이즈한다.
+/// statement 시작 위치의 `/` 는 항상 regex literal (division 의 LHS 가 없음)
+/// 이므로 강제 rescan. esbuild/oxc 와 일치.
+fn rescanStatementBodyLeadingSlash(self: *Parser) void {
+    if (self.scanner.token.kind == .slash or self.scanner.token.kind == .slash_eq) {
+        self.scanner.rescanAsRegexp();
+    }
+}
+
 fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip 'if'
     try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
     try self.expect(.r_paren);
+    rescanStatementBodyLeadingSlash(self);
     const known_scan_condition = self.evalScanCondition(test_expr);
     // ECMAScript 13.6.1: IsLabelledFunction(Statement) → SyntaxError
     const saved_labelled = self.in_labelled_fn_check;
@@ -674,6 +686,7 @@ fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
     try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
     try self.expect(.r_paren);
+    rescanStatementBodyLeadingSlash(self);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
@@ -863,6 +876,7 @@ fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!Nod
         update_expr = try self.parseExpression();
     }
     try self.expect(.r_paren);
+    rescanStatementBodyLeadingSlash(self);
     const body = try self.parseLoopBody();
 
     const extra_start = try self.ast.addExtra(@intFromEnum(init_expr));
@@ -882,6 +896,7 @@ fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex 
     try self.advance(); // skip 'in'
     const right = try self.parseExpression();
     try self.expect(.r_paren);
+    rescanStatementBodyLeadingSlash(self);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
@@ -896,6 +911,7 @@ fn parseForOf(self: *Parser, start: u32, left: NodeIndex, is_await: bool) ParseE
     try self.advance(); // skip 'of'
     const right = try self.parseAssignmentExpression();
     try self.expect(.r_paren);
+    rescanStatementBodyLeadingSlash(self);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
