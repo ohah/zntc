@@ -1,0 +1,27 @@
+{
+  "name": "@zntc/example-react-19-zntc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "bun run --cwd ../../packages/core build:js",
+    "dev": "zntc dev",
+    "prebuild": "bun run --cwd ../../packages/core build:js",
+    "build": "zntc build",
+    "prepreview": "bun run --cwd ../../packages/core build:js",
+    "preview": "zntc preview"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.27.0",
+    "@types/babel__core": "^7.20.5",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@zntc/core": "workspace:*",
+    "babel-plugin-react-compiler": "^19.0.0",
+    "typescript": "^6.0.3"
+  }
+}
