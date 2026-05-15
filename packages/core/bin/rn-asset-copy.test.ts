@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import {
   buildKeepXml,
   copyRnAssets,
-  extractRegisteredAssets,
   getAndroidDrawableFolder,
   getAndroidResourceIdentifier,
   IOS_SCALES,
@@ -66,23 +65,6 @@ describe('Metro registered asset helpers', () => {
       }),
     ).toBe('src_assets_tableorder_imglayoutb');
   });
-
-  test('extractRegisteredAssets — bundle 의 AssetRegistry.registerAsset 목록 추출', () => {
-    const asset = {
-      __packager_asset: true,
-      httpServerLocation: '/assets/src/assets',
-      width: 1,
-      height: 1,
-      scales: [1, 2],
-      hash: 'hash',
-      name: 'logo',
-      type: 'png',
-      fileSystemLocation: join(dir, 'src/assets'),
-    };
-    const bundle = `module.exports = Registry.registerAsset(${JSON.stringify(asset)});`;
-
-    expect(extractRegisteredAssets(bundle)).toEqual([asset]);
-  });
 });
 
 describe('buildKeepXml', () => {
@@ -104,21 +86,21 @@ describe('copyRnAssets — iOS', () => {
     writeFileSync(join(dir, 'src/assets/logo@2x.png'), 'b');
     writeFileSync(join(dir, 'src/assets/logo@3x.png'), 'c');
 
-    const asset = {
-      __packager_asset: true,
-      httpServerLocation: '/assets/src/assets',
-      width: 1,
-      height: 1,
-      scales: [1, 2, 3, 4],
-      hash: 'hash',
-      name: 'logo',
-      type: 'png',
-      fileSystemLocation: join(dir, 'src/assets'),
-    };
     const copied = await copyRnAssets({
       assetsDest: dest,
       rnPlatform: 'ios',
-      bundleCode: `module.exports = Registry.registerAsset(${JSON.stringify(asset)});`,
+      assets: [
+        {
+          httpServerLocation: '/assets/src/assets',
+          width: 1,
+          height: 1,
+          scales: [1, 2, 3, 4],
+          hash: 'hash',
+          name: 'logo',
+          type: 'png',
+          fileSystemLocation: join(dir, 'src/assets'),
+        },
+      ],
     });
 
     // Metro getAssetDestPathIOS — httpServerLocation 기반 `<dest>/assets/src/assets/<file>`.
@@ -134,7 +116,7 @@ describe('copyRnAssets — iOS', () => {
       await copyRnAssets({
         assetsDest: dest,
         rnPlatform: 'ios',
-        bundleCode: '/* no registered asset */',
+        assets: [],
       }),
     ).toBe(0);
   });
@@ -143,36 +125,29 @@ describe('copyRnAssets — iOS', () => {
 describe('copyRnAssets — Android', () => {
   test('등록된 asset 만 Metro scaleToDrawable folder + flat naming + keep.xml 로 복사', async () => {
     mkdirSync(join(dir, 'src/assets'), { recursive: true });
-    mkdirSync(join(dir, 'ios/resigned_payload'), { recursive: true });
-    mkdirSync(join(dir, '.github/workflows'), { recursive: true });
     writeFileSync(join(dir, 'src/assets/logo.png'), 'a');
     writeFileSync(join(dir, 'src/assets/logo@2x.png'), 'b');
-    writeFileSync(join(dir, 'ios/resigned_payload/AppIcon.png'), 'ios');
-    writeFileSync(join(dir, '.github/workflows/ci.yml'), 'ci');
 
-    const asset = {
-      __packager_asset: true,
-      httpServerLocation: '/assets/src/assets',
-      width: 1,
-      height: 1,
-      scales: [1, 2],
-      hash: 'hash',
-      name: 'logo',
-      type: 'png',
-      fileSystemLocation: join(dir, 'src/assets'),
-    };
     const copied = await copyRnAssets({
       assetsDest: dest,
       rnPlatform: 'android',
-      bundleCode: `module.exports = Registry.registerAsset(${JSON.stringify(asset)});`,
+      assets: [
+        {
+          httpServerLocation: '/assets/src/assets',
+          width: 1,
+          height: 1,
+          scales: [1, 2],
+          hash: 'hash',
+          name: 'logo',
+          type: 'png',
+          fileSystemLocation: join(dir, 'src/assets'),
+        },
+      ],
     });
 
     expect(copied).toBe(2);
     expect(existsSync(join(dest, 'drawable-mdpi/src_assets_logo.png'))).toBe(true);
     expect(existsSync(join(dest, 'drawable-xhdpi/src_assets_logo.png'))).toBe(true);
-    // 등록되지 않은 file 은 무시 — projectRoot walk path 잔존 회귀 가드.
-    expect(existsSync(join(dest, 'drawable-mdpi/ios_resigned_payload_appicon.png'))).toBe(false);
-    expect(existsSync(join(dest, 'raw/github_workflows_ci.yml'))).toBe(false);
 
     const xml = readFileSync(join(dest, 'raw/keep.xml'), 'utf-8');
     expect(xml).toContain('@drawable/src_assets_logo');
@@ -182,21 +157,21 @@ describe('copyRnAssets — Android', () => {
     mkdirSync(join(dir, 'fonts'), { recursive: true });
     writeFileSync(join(dir, 'fonts/icomoon.ttf'), 'x');
 
-    const asset = {
-      __packager_asset: true,
-      httpServerLocation: '/assets/fonts',
-      width: 0,
-      height: 0,
-      scales: [1],
-      hash: 'hash',
-      name: 'icomoon',
-      type: 'ttf',
-      fileSystemLocation: join(dir, 'fonts'),
-    };
     await copyRnAssets({
       assetsDest: dest,
       rnPlatform: 'android',
-      bundleCode: `Registry.registerAsset(${JSON.stringify(asset)});`,
+      assets: [
+        {
+          httpServerLocation: '/assets/fonts',
+          width: 0,
+          height: 0,
+          scales: [1],
+          hash: 'hash',
+          name: 'icomoon',
+          type: 'ttf',
+          fileSystemLocation: join(dir, 'fonts'),
+        },
+      ],
     });
 
     expect(existsSync(join(dest, 'raw/fonts_icomoon.ttf'))).toBe(true);
@@ -211,14 +186,14 @@ describe('copyRnAssets — guards', () => {
       await copyRnAssets({
         assetsDest: '',
         rnPlatform: 'ios',
-        bundleCode: '/* no registered asset */',
+        assets: [],
       }),
     ).toBe(0);
   });
 
-  test('bundleCode 없으면 release asset copy 실패', async () => {
+  test('assets 배열 누락 — 실패', async () => {
     await expect(copyRnAssets({ assetsDest: dest, rnPlatform: 'ios' } as never)).rejects.toThrow(
-      'RN release asset copy requires bundleCode',
+      'RN release asset copy requires assets metadata array',
     );
   });
 });

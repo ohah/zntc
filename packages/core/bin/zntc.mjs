@@ -811,7 +811,7 @@ async function runRnBundle(opts, config) {
       const copied = await copyRnAssets({
         assetsDest: assetsDestAbs,
         rnPlatform,
-        bundleCode: result.outputFiles?.[0]?.text,
+        assets: result.rnAssetMetadata ?? [],
       });
       if (opts.logLevel !== 'silent') {
         console.error(`[bundle] copied ${copied} asset(s) to ${assetsDestAbs}`);
