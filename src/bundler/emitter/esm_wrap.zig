@@ -547,6 +547,11 @@ pub fn emitEsmWrappedModule(
                         const l = linker orelse break :skip;
                         if (shouldSkipTreeShakenReExportSource(l, module, eb)) continue;
                     }
+                    // local export 의 declaration 이 tree-shaken 이면 namespace getter
+                    // skip — 안 그러면 dangling reference 가 namespace object 안에 남고,
+                    // 그 binding 은 emit 안 되어 mangle 가드도 함께 long source name 으로
+                    // 남게 되어 size 회귀.
+                    if (eb.kind == .local and !module.isLocalBindingAlive(module.exportBindingLocalName(eb))) continue;
                     try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
                         // Symbol table이 단축 경로의 source of truth.
                         // binding_scanner가 `_default = <expr>`가 실제로 emit되는 default만

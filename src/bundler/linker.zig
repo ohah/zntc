@@ -819,6 +819,10 @@ pub const Linker = struct {
                         // 같은 symbol 을 candidates 에 중복 추가하면
                         // mangleAll 의 renames.put 이 이전 value 를 덮어써 leak.
                         if (sym.synthetic_kind == .default_export) continue;
+                        // statement-level dead 가드 — esbuild Part.IsLive / rolldown
+                        // stmt_info_included 와 동일 효과. tree_shaker reconcile + namespace
+                        // getter dead-export skip 과 같은 진실의 원천.
+                        if (self.tree_shaker_active and !m.isStatementAliveBySym(sym_idx_usize)) continue;
 
                         const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
                         if (key.len <= 1) {
