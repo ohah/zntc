@@ -118,28 +118,28 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             // 복원. 치환 안 일어나는 일반 경로는 names 발행 X (size 폭증 회피, esbuild
             // 동일 정책).
 
+            // 3 substitute path (undefined→void 0, linking_metadata renames, cjs_wrap)
+            // 가 모두 sym_id 를 본다 — 단일 호출로 hoist (per-identifier hot path).
+            const sym_id: ?u32 = if (self.options.linking_metadata) |meta|
+                self.resolveSymbolId(idx, meta)
+            else
+                null;
+
             // Peephole: global `undefined` → `(void 0)` (minify_syntax 활성화 시).
             // 9 bytes → 8 bytes, 1 byte 절감. parens는 member/call/new 등 모든 parent
             // context에서 안전하게 해석되도록 유지 — `undefined.x`/`undefined()` 같은
             // 경로를 간단한 치환으로 깨지 않기 위함 (`void 0.x`는 `void (0.x)`로 오파싱).
             // global binding일 때만 치환 (shadow rebind 드물지만 보호).
-            if (self.options.minify_syntax and node.tag == .identifier_reference) {
+            if (self.options.minify_syntax and node.tag == .identifier_reference and sym_id == null) {
                 const text = self.ast.getText(node.span);
                 if (std.mem.eql(u8, text, "undefined")) {
-                    const is_global = if (self.options.linking_metadata) |meta|
-                        self.resolveSymbolId(idx, meta) == null
-                    else
-                        true;
-                    if (is_global) {
-                        try self.addSourceMapping(node.span);
-                        try self.write("(void 0)");
-                        return;
-                    }
+                    try self.addSourceMapping(node.span);
+                    try self.write("(void 0)");
+                    return;
                 }
             }
 
             if (self.options.linking_metadata) |meta| {
-                const sym_id = self.resolveSymbolId(idx, meta);
                 if (sym_id) |sid| {
                     // 상수 인라인: import symbol이 상수이면 리터럴로 대체
                     if (node.tag == .identifier_reference) {
@@ -181,6 +181,28 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                             return;
                         }
                     }
+                }
+            }
+            // CJS wrap 모듈: unresolved `exports`/`module` reference (= callback param 의
+            // closure capture) 를 짧은 alias `e`/`m` 로 substitute. emitter 의 wrapper
+            // param 변경 (`(e,m)=>{...}`) 과 한 쌍.
+            //
+            // *sym_id 가 null* (= 모듈 안 어떤 binding 도 못 가리키는 reference) 일 때만
+            // substitute. user 가 `function f(exports) {...}` 같이 동명 binding 을 선언한
+            // 케이스는 sym_id 가 있고 wrapper param 이 아닌 user binding 가리키므로 변경 금지.
+            if (self.options.cjs_wrap_substitute and sym_id == null and
+                (node.tag == .identifier_reference or node.tag == .assignment_target_identifier))
+            {
+                const name = self.ast.getText(node.data.string_ref);
+                const alias: ?u8 = switch (name.len) {
+                    7 => if (std.mem.eql(u8, name, "exports")) @as(u8, 'e') else null,
+                    6 => if (std.mem.eql(u8, name, "module")) @as(u8, 'm') else null,
+                    else => null,
+                };
+                if (alias) |c| {
+                    try self.addSourceMappingWithName(node.span, name);
+                    try self.writeByte(c);
+                    return;
                 }
             }
             try self.addSourceMapping(node.span);

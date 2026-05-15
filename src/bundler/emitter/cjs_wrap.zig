@@ -22,7 +22,8 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
         if (minify) {
             try buf.appendSlice(allocator, "var ");
             try buf.appendSlice(allocator, var_name);
-            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{");
+            // body 가 throw 만 — exports/module 참조 없음 → param 인자 0개.
+            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(()=>{");
             try appendOptionalMissingThrow(allocator, &buf, specifier, true);
             try buf.appendSlice(allocator, "});");
         } else {
@@ -38,8 +39,8 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        // #1621: minify 시 __commonJS → $cj 축약.
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{});");
+        // #1621: minify 시 __commonJS → $cj 축약. 빈 body — param 0개.
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(()=>{});");
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
@@ -114,8 +115,9 @@ pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, sourc
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        // #1621: minify 시 __commonJS → $cj 축약.
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{module.exports=");
+        // #1621: minify 시 __commonJS → $cj 축약. body 가 `m.exports=<source>` —
+        // 자체 emit 이라 codegen substitute 안 거치므로 직접 `m` 사용.
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((e,m)=>{m.exports=");
         try buf.appendSlice(allocator, source);
         try buf.appendSlice(allocator, "});");
     } else {

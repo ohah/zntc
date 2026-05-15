@@ -570,7 +570,12 @@ fn reserveNameFor(reserved: *std.StringHashMap(void), sym: Symbol, name: []const
 // ============================================================
 
 pub fn isReservedOrGlobal(name: []const u8) bool {
-    // JS 예약어 + 리터럴 + 글로벌 (길이 2~6만 체크 — 1글자는 충돌 없고 7글자+는 base54에서 도달 어려움)
+    // CJS wrap callback param 단축 이름 (`(e, m) => {...}`) — emitter 의 `cjs_wrap_substitute`
+    // 가 wrapper body 의 unresolved `exports`/`module` 을 `e`/`m` 로 substitute 한다.
+    // mangler 가 다른 binding 에 같은 이름을 부여하면 wrapper param 과 redeclare/shadow.
+    if (name.len == 1 and (name[0] == 'e' or name[0] == 'm')) return true;
+    // JS 예약어 + 리터럴 + 글로벌 (길이 2~6만 체크 — 1글자는 'e'/'m' 외엔 충돌 없고
+    // 7글자+는 base54에서 도달 어려움)
     const reserved = [_][]const u8{
         // 2글자
         "do",     "if",     "in",     "of",
@@ -681,7 +686,8 @@ test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("e", result.renames.get(0).?);
+    // base54 첫 이름 'e' 는 CJS wrap callback param 으로 reserved (다음 후보 't').
+    try std.testing.expectEqualStrings("t", result.renames.get(0).?);
 }
 
 test "markScopeSubtree: declaration scope + 모든 후손 set, sibling/ancestor 는 제외 (#2956)" {
