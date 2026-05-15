@@ -45,12 +45,11 @@ pub const helperName = names_mod.helperName;
 
 // non-minify wrapper 는 cb 가 *object* (디버깅 친화 — `{"path"(exports, module){...}}`
 // 의 module path 보존). minify wrapper 는 cb 가 *함수* — emit 도 직접 함수 인자
-// (`$cj((exports,module)=>{...})`) 와 한 쌍. HMR 의 `Object.keys(cb)[0]` module id
+// (`$c((exports,module)=>{...})`) 와 한 쌍. HMR 의 `Object.keys(cb)[0]` module id
 // 추적은 dev_mode 전용 (minify 시 HMR runtime 자체가 emit 안 됨) 이므로 호환.
 //
-// minify 의 returned function 은 anonymous arrow (esbuild/rolldown 식) — named
-// function expression (`function __require()`) 보다 17 chars 짧다. stack trace 의
-// 함수 이름 손실은 production minify 에서 trade-off 수용.
+// minify 의 returned function 은 anonymous arrow — stack trace 의 함수 이름 손실은
+// production 빌드에서 trade-off 수용.
 pub const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
 pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>()=>(mod||cb((mod={exports:{}}).exports,mod),mod.exports);";
 
