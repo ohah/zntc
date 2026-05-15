@@ -464,11 +464,7 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
 /// between return type annotation and ternary separator.
 /// Returns the arrow node on success, null on failure (state fully restored).
 fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!?NodeIndex {
-    const saved = self.saveState();
-    const errors_before = self.errors.items.len;
-    const saved_scratch = self.saveScratch();
-    const saved_nodes_len = self.ast.nodes.items.len;
-    const saved_extra_len = self.ast.extra_data.items.len;
+    const checkpoint = Parser.SpeculationCheckpoint.save(self);
 
     // Consume `:` (speculatively — might be return type or ternary separator)
     try self.advance(); // skip :
@@ -483,20 +479,15 @@ fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!
     const type_result = self.parseType();
     self.ctx = ctx_saved;
 
-    const rollback_to_caller = type_result == error.OutOfMemory;
-    if (rollback_to_caller) return error.OutOfMemory;
+    if (type_result == error.OutOfMemory) return error.OutOfMemory;
 
     const arrow_ok = (type_result catch null) != null and
         self.current() == .arrow and !self.scanner.token.has_newline_before and
-        self.errors.items.len == errors_before;
+        !checkpoint.errorAdded(self);
 
     if (!arrow_ok) {
         // Not a typed arrow (or parseType errored) — restore and let the caller treat `:` as ternary separator
-        self.rollbackErrors(errors_before);
-        self.ast.nodes.items.len = saved_nodes_len;
-        self.ast.extra_data.items.len = saved_extra_len;
-        self.restoreScratch(saved_scratch);
-        self.restoreState(saved);
+        checkpoint.rollback(self);
         return null;
     }
 
@@ -1050,11 +1041,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
 /// strict=false: parseTypeArguments (optional chaining 등 모호하지 않은 컨텍스트)
 fn trySkipTypeArgsSpeculative(self: *Parser, comptime strict: bool, comptime follow: fn (*const Parser) bool) bool {
     if (!self.isAtOpeningAngleBracket()) return false;
-    const saved_scanner = self.saveState();
-    const saved_nodes_len = self.ast.nodes.items.len;
-    const saved_extra_len = self.ast.extra_data.items.len;
-    const saved_scratch = self.saveScratch();
-    const saved_errors_len = self.errors.items.len;
+    const checkpoint = Parser.SpeculationCheckpoint.save(self);
     const saved_in_spec = self.in_type_args_speculation;
     self.in_type_args_speculation = true;
     defer self.in_type_args_speculation = saved_in_spec;
@@ -1063,16 +1050,15 @@ fn trySkipTypeArgsSpeculative(self: *Parser, comptime strict: bool, comptime fol
         _ = (if (strict) self.parseTypeArgumentsInExpression() else self.parseTypeArguments()) catch {
             break :blk false;
         };
-        if (self.errors.items.len > saved_errors_len) break :blk false;
+        if (checkpoint.errorAdded(self)) break :blk false;
         break :blk follow(self);
     };
 
-    const scanner_after = if (type_args_ok) self.saveState() else saved_scanner;
-    self.ast.nodes.items.len = saved_nodes_len;
-    self.ast.extra_data.items.len = saved_extra_len;
-    self.restoreScratch(saved_scratch);
-    self.rollbackErrors(saved_errors_len);
-    self.restoreState(scanner_after);
+    if (type_args_ok) {
+        checkpoint.rollbackKeepScanner(self);
+    } else {
+        checkpoint.rollback(self);
+    }
     return type_args_ok;
 }
 

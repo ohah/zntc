@@ -442,11 +442,7 @@ pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
     // parseCallExpression의 speculative parse는 `<Type>` 뒤에 `(`이 올 때만 성공하므로
     // decorator에서는 `<Type>` 뒤에 식별자가 올 수 있으므로 여기서 별도 처리
     if (self.isAtOpeningAngleBracket()) {
-        const saved_scanner = self.saveState();
-        const saved_nodes_len = self.ast.nodes.items.len;
-        const saved_extra_len = self.ast.extra_data.items.len;
-        const saved_scratch = self.saveScratch();
-        const saved_errors_len = self.errors.items.len;
+        const checkpoint = Parser.SpeculationCheckpoint.save(self);
 
         const type_args_ok = ta_blk: {
             _ = self.parseTypeArguments() catch {
@@ -455,16 +451,13 @@ pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
             break :ta_blk true;
         };
 
-        // 타입 인자 노드는 스트리핑 — AST에서 제거
-        self.ast.nodes.items.len = saved_nodes_len;
-        self.ast.extra_data.items.len = saved_extra_len;
-        self.restoreScratch(saved_scratch);
-        self.rollbackErrors(saved_errors_len);
-        if (!type_args_ok) {
-            // 파싱 실패 시 상태 복원
-            self.restoreState(saved_scanner);
+        if (type_args_ok) {
+            // 성공: scanner 는 type args 이후로 전진, AST 노드는 strip.
+            checkpoint.rollbackKeepScanner(self);
+        } else {
+            // 실패: 전체 복원.
+            checkpoint.rollback(self);
         }
-        // 성공 시 scanner는 type args 이후를 가리킴 (expr은 type args 없이 유지)
     }
 
     return try self.ast.addNode(.{
