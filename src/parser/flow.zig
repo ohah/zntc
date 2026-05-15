@@ -85,13 +85,23 @@ pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
 /// Flow 타입을 파싱한다.
 /// Babel: flowParseType → flowParseUnionType
 pub fn parseType(self: *Parser) ParseError2!NodeIndex {
+    const enter_allow = self.flow_allow_conditional_type;
     const t = try parseUnionType(self);
 
     // conditional type: T extends X ? Y : Z
-    if (self.current() == .kw_extends) {
-        try self.advance(); // skip 'extends'
-        _ = try parseType(self); // check type
+    // Hermes 와 동일: extends type 안에서는 conditional 금지 — `A extends infer B
+    // extends C ? D : E` 가 `A extends (infer B extends C) ? D : E` 로 결합되도록.
+    if (self.current() == .kw_extends and enter_allow) {
+        try self.advance();
+        {
+            const prev = self.flow_allow_conditional_type;
+            self.flow_allow_conditional_type = false;
+            defer self.flow_allow_conditional_type = prev;
+            _ = try parseUnionType(self); // extends type
+        }
         try self.expect(.question);
+        // true/false branch 는 자체 parseType 진입이 자신의 enter_allow 를 캡처하므로
+        // 여기서 flag 를 만질 필요 없음.
         _ = try parseType(self); // true branch
         try self.expect(.colon);
         _ = try parseType(self); // false branch
@@ -261,10 +271,22 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .identifier and self.isContextual("infer")) {
         try self.advance(); // skip 'infer'
         try self.advance(); // skip type variable name
-        // infer T extends Bound (constrained infer)
+        // infer T extends Bound (constrained infer).
+        // `infer A extends B ?` 일 때 outer 가 conditional 받을 수 있는 상태
+        // (flow_allow_conditional_type=true) 면 `extends B` 는 outer 의 일부 —
+        // backtrack 해서 infer 는 `infer A` 만으로 종료. Hermes 와 동일 (line 3466-3493).
         if (self.current() == .kw_extends) {
+            const cp = Parser.SpeculationCheckpoint.save(self);
             try self.advance();
-            _ = try parseType(self);
+            const prev = self.flow_allow_conditional_type;
+            self.flow_allow_conditional_type = false;
+            defer self.flow_allow_conditional_type = prev;
+            _ = parseUnionType(self) catch {
+                cp.rollback(self);
+            };
+            if (prev and self.current() == .question) {
+                cp.rollback(self);
+            }
         }
         return try self.ast.addNode(.{
             .tag = .flow_literal_type,
@@ -592,6 +614,10 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
 fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '('
+    // 괄호 안은 conditional 항상 가능 — outer context 가 disallow 였더라도 reset.
+    const prev_allow_cond = self.flow_allow_conditional_type;
+    self.flow_allow_conditional_type = true;
+    defer self.flow_allow_conditional_type = prev_allow_cond;
 
     // 빈 괄호: () => Type
     if (self.current() == .r_paren) {

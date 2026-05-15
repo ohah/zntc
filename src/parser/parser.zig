@@ -201,6 +201,11 @@ pub const Parser = struct {
     /// Flow 반환 타입 파싱 중 — shorthand 함수 타입 `Type => Type` 금지.
     /// (): any => {} 에서 any 뒤 =>가 arrow body인지 shorthand인지 구분.
     flow_in_return_type: bool = false,
+    /// Flow conditional type 의 check/extends 타입 파싱 중인지. true 면 outer
+    /// `?` 가 conditional 의 일부이므로, `infer A extends B ?` 같은 모호한
+    /// sequence 에서 `extends B` 를 infer 가 흡수하지 않고 outer 로 양보.
+    /// Hermes 의 `allowConditionalType_` 와 동등. 기본 true.
+    flow_allow_conditional_type: bool = true,
     /// enum 멤버 초기값 파싱 중인지.
     /// true이면 await/yield를 키워드가 아닌 식별자로 취급한다.
     /// (enum 내에서 다른 멤버를 참조: `enum X { await = 1, y = await }`)
