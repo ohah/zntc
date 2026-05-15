@@ -41,4 +41,3 @@ for (const lib of ['metro', 'relay', 'draft-js'] as const) {
     }
   });
 }
-
