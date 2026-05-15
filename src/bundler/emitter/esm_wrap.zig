@@ -80,6 +80,41 @@ inline fn resolvedReExportSource(l: *const Linker, m: *const Module, eb: ExportB
     return l.graph.getModule(src_idx);
 }
 
+/// re-export-like binding 판정. `.re_export` 로 정상 분류된 경우 + barrel alias
+/// (`import X from './y'; export { X }`) 가 binding_scanner 에서 `.local` 로 정규화됐지만
+/// `import_record_index` 가 남아있는 케이스 (#1321) 를 함께 catch. getter emit /
+/// init-call emit / star getter resolution 세 site 에서 일관된 가드.
+inline fn isReExportLike(eb: ExportBinding) bool {
+    return eb.kind == .re_export or eb.import_record_index != null;
+}
+
+/// scope-hoisted re-export 의 target 모듈 + canonical name. tree-shake 로 제거된
+/// source 또는 unresolved record 는 null (caller 가 getter 생략). 데이터만 반환해
+/// `makeStarGetterValue` 의 inferred error set 재귀 cycle 을 회피.
+const ReExportTarget = struct {
+    mod: *const Module,
+    index: u32,
+    name: []const u8,
+};
+
+inline fn resolveReExportTarget(
+    l: *const Linker,
+    src_mod: *const Module,
+    src_eb: ExportBinding,
+) ?ReExportTarget {
+    if (shouldSkipTreeShakenReExportSource(l, src_mod, src_eb)) return null;
+    const rec_idx = src_eb.import_record_index orelse return null;
+    if (rec_idx >= src_mod.import_records.len) return null;
+    const target_idx = src_mod.import_records[rec_idx].resolved;
+    if (target_idx.isNone() or target_idx == src_mod.index) return null;
+    const target_mod = l.graph.getModule(target_idx) orelse return null;
+    return .{
+        .mod = target_mod,
+        .index = @intFromEnum(target_idx),
+        .name = src_mod.exportBindingLocalName(src_eb),
+    };
+}
+
 inline fn shouldSkipTreeShakenReExportSource(l: *const Linker, m: *const Module, eb: ExportBinding) bool {
     if (!l.tree_shaker_active) return false;
     const rec_idx = eb.import_record_index orelse return false;
@@ -508,7 +543,7 @@ pub fn emitEsmWrappedModule(
                     // import record의 resolved가 none이 될 수 있다. 이 상태에서 getter를
                     // 만들면 `export { default as X } from`의 local name인 `default`가
                     // 값 위치에 남아 Hermes release parse에서 `return default;`가 된다.
-                    if (eb.kind == .re_export or eb.import_record_index != null) skip: {
+                    if (isReExportLike(eb)) skip: {
                         const l = linker orelse break :skip;
                         if (shouldSkipTreeShakenReExportSource(l, module, eb)) continue;
                     }
@@ -526,7 +561,7 @@ pub fn emitEsmWrappedModule(
                         // barrel alias(`import X from './y'; export { X }`)는 binding_scanner가
                         // .re_export + local_name=ib.imported_name으로 정규화하므로(#1321),
                         // 매칭되는 import binding이 있으면 기존 경로로 폴백.
-                        if (eb.kind == .re_export or eb.import_record_index != null) re_export: {
+                        if (isReExportLike(eb)) re_export: {
                             const l = linker orelse break :re_export;
                             const rec_idx = eb.import_record_index orelse break :re_export;
                             if (rec_idx >= module.import_records.len) break :re_export;
@@ -1232,22 +1267,13 @@ fn makeStarGetterValue(
         .none => {
             // scope-hoisted: export의 local_name을 찾아 canonical name으로 변환
             for (src_mod.export_bindings) |src_eb| {
-                if (std.mem.eql(u8, src_eb.exported_name, name)) {
-                    if (src_eb.kind == .re_export or src_eb.import_record_index != null) {
-                        if (shouldSkipTreeShakenReExportSource(l, src_mod, src_eb)) return null;
-                        const rec_idx = src_eb.import_record_index orelse return null;
-                        if (rec_idx >= src_mod.import_records.len) return null;
-                        const target_idx = src_mod.import_records[rec_idx].resolved;
-                        if (target_idx.isNone() or target_idx == src_mod.index) return null;
-                        const target_i = @intFromEnum(target_idx);
-                        const target_mod = l.graph.getModule(target_idx) orelse return null;
-                        const target_name = src_mod.exportBindingLocalName(src_eb);
-                        return try makeStarGetterValue(allocator, l, target_mod, target_i, target_name, options);
-                    } else {
-                        const local = l.getCanonicalForExport(src_eb, src_i);
-                        return try allocator.dupe(u8, local);
-                    }
+                if (!std.mem.eql(u8, src_eb.exported_name, name)) continue;
+                if (isReExportLike(src_eb)) {
+                    const target = resolveReExportTarget(l, src_mod, src_eb) orelse return null;
+                    return try makeStarGetterValue(allocator, l, target.mod, target.index, target.name, options);
                 }
+                const local = l.getCanonicalForExport(src_eb, src_i);
+                return try allocator.dupe(u8, local);
             }
             // 직접 export에 없으면 소스의 re_export_all 체인을 따라간다.
             // resolveExportChain으로 canonical 이름을 찾는다.
