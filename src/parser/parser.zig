@@ -735,6 +735,49 @@ pub const Parser = struct {
         self.scratch.shrinkRetainingCapacity(top);
     }
 
+    /// speculative parse 의 5 가지 state (scanner / errors / scratch / ast.nodes /
+    /// ast.extra_data) 를 한 번에 캡처해 실패 시 rollback. 이전엔 호출 사이트
+    /// 마다 5 lines 의 boilerplate 가 중복돼 있었음 (3 곳: trySkipTypeArgs,
+    /// tryReinterpretAsTypedArrow, parseDecorator type-args).
+    pub const SpeculationCheckpoint = struct {
+        scanner: ScannerState,
+        errors_len: usize,
+        scratch_top: usize,
+        nodes_len: usize,
+        extra_len: usize,
+
+        pub fn save(p: *const Parser) SpeculationCheckpoint {
+            return .{
+                .scanner = p.saveState(),
+                .errors_len = p.errors.items.len,
+                .scratch_top = p.saveScratch(),
+                .nodes_len = p.ast.nodes.items.len,
+                .extra_len = p.ast.extra_data.items.len,
+            };
+        }
+
+        /// 전체 복원 — scanner 위치까지 되돌린다.
+        pub fn rollback(self: SpeculationCheckpoint, p: *Parser) void {
+            self.rollbackKeepScanner(p);
+            p.restoreState(self.scanner);
+        }
+
+        /// AST / scratch / errors 만 복원, scanner 는 현재 위치 유지.
+        /// type-args speculation 이 성공하지만 노드는 strip 하고 scanner 만
+        /// 전진된 상태로 두는 케이스 (예: `parseDecorator` 의 `<T>` 인자
+        /// 스트리핑) 에서 사용.
+        pub fn rollbackKeepScanner(self: SpeculationCheckpoint, p: *Parser) void {
+            p.rollbackErrors(self.errors_len);
+            p.ast.nodes.items.len = self.nodes_len;
+            p.ast.extra_data.items.len = self.extra_len;
+            p.restoreScratch(self.scratch_top);
+        }
+
+        pub fn errorAdded(self: SpeculationCheckpoint, p: *const Parser) bool {
+            return p.errors.items.len > self.errors_len;
+        }
+    };
+
     /// rest parameter가 마지막이 아니면 에러. binding.zig 파싱 경로에서 호출되며
     /// 항상 rest_element 태그를 본다 (cover grammar 경로는 정규화 후 별도 검증).
     /// 단, ambient context (declare)에서 trailing comma (,...) → ) 는 허용.
