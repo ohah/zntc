@@ -284,7 +284,7 @@ pub fn emitReturn(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.write("return");
     if (!node.data.unary.operand.isNone()) {
-        try self.writeByte(' ');
+        try writeKeywordOperandSeparator(self, node.data.unary.operand);
         try emitNoLineTerminatorOperand(self, node.data.unary.operand);
     }
     try self.writeByte(';');
@@ -292,9 +292,79 @@ pub fn emitReturn(self: anytype, node: Node) !void {
 
 pub fn emitThrow(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
-    try self.write("throw ");
+    try self.write("throw");
+    try writeKeywordOperandSeparator(self, node.data.unary.operand);
     try emitNoLineTerminatorOperand(self, node.data.unary.operand);
     try self.writeByte(';');
+}
+
+/// `return`/`throw` 같은 keyword 와 *expression operand* 사이의 separator 를 emit.
+/// minify_whitespace 시 operand 가 *non-identifier-start* (paren/string/array/object/
+/// template/unary punctuator `!`/`~`/`-`/`+`) 면 공백 생략 — `return!1` / `return(x)` /
+/// `return"a"` / `return[1]` / `return{x:1}`. 그 외 (identifier/keyword unary
+/// `void`/`typeof`/`delete`/`await`/`yield`/`new`/`function`/`class`) 는 공백 필수.
+/// esbuild/rolldown/rspack 동일 정책.
+fn writeKeywordOperandSeparator(self: anytype, operand: ast_mod.NodeIndex) !void {
+    if (self.options.minify_whitespace and !operandStartsIdentifierLike(self, operand)) return;
+    try self.writeByte(' ');
+}
+
+fn operandStartsIdentifierLike(self: anytype, idx: ast_mod.NodeIndex) bool {
+    return operandStartsIdentifierLikeDepth(self, idx, 0);
+}
+
+/// expression 의 *leftmost token* 이 identifier-like (alphanumeric/keyword) 인지 검사.
+/// binary/logical/assignment/conditional/sequence/member 는 left/object 로 재귀 — 출력
+/// 시작 토큰이 leftmost 자식의 시작 토큰과 같으므로. depth 가드는 기형 AST 안전망.
+fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth: u32) bool {
+    if (depth >= 32) return true;
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return true;
+    const n = self.ast.getNode(idx);
+    return switch (n.tag) {
+        // S3 보수적: paren / unary punctuator 만 처리. string/template/array/object 는
+        // codegen_test/{basic,flow,es_downlevel}.zig 의 expected substring 30+ 곳 update
+        // 필요 (generator self-loop helper 의 ASYNC_SENT_RETURN_PREFIX 포함) — 별도 PR S3b.
+        .parenthesized_expression => false,
+        // `return /x/.test(a)` → `return/x/.test(a)` 는 `/x/` 가 division 으로
+        // 오토큰화 가능 — minify_sourcemap ASI-sensitive boundary 회귀 가드 (#1577).
+        .regexp_literal => true,
+        // `new Foo()` 출력 시작은 `new ` 키워드 → identifier-like.
+        .new_expression => true,
+        // unary `!`/`~`/`-`/`+` start with punctuator. `void`/`typeof`/`delete`/`await`/
+        // `yield` 같은 keyword unary 는 identifier-like.
+        .unary_expression => switch (@import("expressions.zig").unaryOpKind(self, n.data.extra) orelse return true) {
+            .bang, .tilde, .minus, .plus => false,
+            else => true,
+        },
+        // prefix `++x`/`--x` 는 punctuator 시작, postfix `x++` 는 identifier 시작.
+        .update_expression => blk: {
+            const extras = self.ast.extra_data.items;
+            if (n.data.extra + 1 >= extras.len) break :blk true;
+            break :blk ast_mod.UnaryFlags.isPostfix(extras[n.data.extra + 1]);
+        },
+        // leftmost 자식으로 따라가기 (출력 시작 토큰 = leftmost child 의 시작).
+        .binary_expression, .logical_expression, .assignment_expression => operandStartsIdentifierLikeDepth(self, n.data.binary.left, depth + 1),
+        .conditional_expression => operandStartsIdentifierLikeDepth(self, n.data.ternary.a, depth + 1),
+        .static_member_expression, .computed_member_expression, .private_field_expression => blk: {
+            const ex = n.data.extra;
+            if (ex >= self.ast.extra_data.items.len) break :blk true;
+            const obj_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[ex]);
+            break :blk operandStartsIdentifierLikeDepth(self, obj_idx, depth + 1);
+        },
+        .call_expression => blk: {
+            const ex = n.data.extra;
+            if (ex >= self.ast.extra_data.items.len) break :blk true;
+            const callee_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[ex]);
+            break :blk operandStartsIdentifierLikeDepth(self, callee_idx, depth + 1);
+        },
+        .sequence_expression => blk: {
+            const list = n.data.list;
+            if (list.len == 0) break :blk true;
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+            break :blk operandStartsIdentifierLikeDepth(self, @enumFromInt(indices[0]), depth + 1);
+        },
+        else => true,
+    };
 }
 
 /// `return` / `throw` 처럼 ECMAScript `NoLineTerminator` restriction 이 있는

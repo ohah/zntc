@@ -1746,6 +1746,10 @@ pub const MemberFlags = struct {
 /// operator_and_flags: bits [0-7] = operator Kind, bit 8 = postfix, bits [16-31] = 확장 플래그
 pub const UnaryFlags = struct {
     pub const postfix: u32 = 0x100; // x++ / x--
+
+    pub fn isPostfix(flags: u32) bool {
+        return (flags & postfix) != 0;
+    }
 };
 
 /// arrow_function_expression의 flags (D082).

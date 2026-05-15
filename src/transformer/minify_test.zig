@@ -267,6 +267,109 @@ test "minify: arrow body trailing return; → empty" {
     );
 }
 
+// ================================================================
+// S3: return / throw + non-identifier-start operand 공백 제거
+// ================================================================
+
+test "minify_whitespace: return + paren expression — space 제거" {
+    try expectMinifyFull(
+        \\function f() { return (a + b); }
+    ,
+        \\function f(){return(a+b)}
+    );
+}
+
+test "minify_whitespace: return + unary `!` — space 제거" {
+    try expectMinifyFull(
+        \\function f() { return !x; }
+    ,
+        \\function f(){return!x}
+    );
+}
+
+test "minify_whitespace: return + unary `-x` — space 제거 (identifier operand)" {
+    try expectMinifyFull(
+        \\function f(x) { return -x; }
+    ,
+        \\function f(x){return-x}
+    );
+}
+
+test "minify_whitespace: return + numeric literal `-1` — 공백 유지 (parser fold)" {
+    // parser 가 `-1` 을 numeric_literal(-1) 로 fold 하므로 unary_expression 으로 들어오지 않음.
+    // 보수적으로 공백 유지 (literal raw text 첫 char 검사 미적용).
+    try expectMinifyFull(
+        \\function f() { return -1; }
+    ,
+        \\function f(){return -1}
+    );
+}
+
+test "minify_whitespace: return + binary 의 left=paren — recursive 검출" {
+    // `return (1-t)*x;` 의 leftmost 토큰이 `(` 라 공백 불필요.
+    try expectMinifyFull(
+        \\function f(t, x) { return (1 - t) * x; }
+    ,
+        \\function f(t,x){return(1-t)*x}
+    );
+}
+
+test "minify_whitespace: return + identifier — 공백 보존 필수" {
+    try expectMinifyFull(
+        \\function f() { return foo; }
+    ,
+        \\function f(){return foo}
+    );
+}
+
+test "minify_whitespace: return + `void 0` — 공백 보존 필수 (keyword unary)" {
+    try expectMinifyFull(
+        \\function f() { return void 0; }
+    ,
+        \\function f(){return void 0}
+    );
+}
+
+test "minify_whitespace: throw + paren — 공백 제거" {
+    try expectMinifyFull(
+        \\function f() { throw (a + b); }
+    ,
+        \\function f(){throw(a+b)}
+    );
+}
+
+test "minify_whitespace: throw + string literal — 공백 보존 (S3 보수 — string 별도 PR)" {
+    try expectMinifyFull(
+        \\function f() { throw "err"; }
+    ,
+        \\function f(){throw "err"}
+    );
+}
+
+test "minify_whitespace: throw + `new` keyword — 공백 보존 필수" {
+    try expectMinifyFull(
+        \\function f() { throw new Error("x"); }
+    ,
+        \\function f(){throw new Error("x")}
+    );
+}
+
+test "minify_whitespace: return + postfix update `x++` — 공백 보존" {
+    try expectMinifyFull(
+        \\function f(x) { return x++; }
+    ,
+        \\function f(x){return x++}
+    );
+}
+
+test "minify_whitespace: return + prefix update `++x` — 공백 제거" {
+    try expectMinifyFull(
+        \\function f(x) { return ++x; }
+    ,
+        \\function f(x){return++x}
+    );
+}
+
 test "minify: typeof X === \"number\" → typeof X == \"number\" (operator only)" {
     try expectMinify(
         \\const a = typeof v === "number";
