@@ -83,6 +83,7 @@ const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   2528, // A module cannot have multiple default exports
   2701, // Target of object rest assignment must be a variable or a property access
   2777, // Increment/decrement target may not be an optional property access
+  2427, // Interface name cannot be primitive type (TS-extension syntax)
   2779, // LHS of an assignment expression may not be an optional property access
   // 의도적 제외: TS2300 ("Duplicate identifier") 는 JS spec early-error
   // (`let x; let x;`) 와 TS-only semantic (`type X; type X;`) 양쪽에서 발화 —
@@ -108,10 +109,17 @@ const TS17_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   17021, // Unicode escape sequence cannot appear here.
 ]);
 
+/// TSC TS5xxx 는 주로 compiler-option 에러지만 일부는 spec early-error 가 격하
+/// 된 것. 현재는 TS5076 만 해당 (nullish coalescing + 논리연산 mixed without parens).
+const TS5_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
+  5076, // '??' and '||/&&' operations cannot be mixed without parentheses
+]);
+
 function isSyntaxLevelCode(code: number): boolean {
   if (code >= 1000 && code < 2000) return true;
   return (
     TS2_SYNTAX_LEVEL_CODES.has(code) ||
+    TS5_SYNTAX_LEVEL_CODES.has(code) ||
     TS17_SYNTAX_LEVEL_CODES.has(code) ||
     TS18_SYNTAX_LEVEL_CODES.has(code)
   );
@@ -156,6 +164,7 @@ const SPEC_STRICT_ERROR_KEYWORDS = [
   "may only have one constructor", // multiple ctor implementations (TS2392)
   "Static class field cannot be named", // prototype as static (TS2699)
   "Class field cannot be named", // constructor as field (TS18006)
+  "Duplicate parameter name", // destructuring/non-simple params 의 duplicate BoundNames (spec early-error)
 ];
 
 interface Fixture {
