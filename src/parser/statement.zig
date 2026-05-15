@@ -737,8 +737,17 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
     const is_let_as_identifier = self.current() == .kw_let and !self.is_strict_mode and
         (!try isLetDeclarationStart(self) or try self.peekNextKind() == .kw_of);
 
-    if ((self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) and !is_let_as_identifier) {
-        const init_expr = try parseVariableDeclaration(self);
+    // for ( using x ... ) — TC39 Explicit Resource Management.
+    // `using` 뒤에 줄바꿈 없이 identifier 가 오면 UsingDeclaration.
+    const is_using_decl = self.current() == .kw_using and try isUsingDeclarationStart(self);
+    // for ( await using x ... ) — async variant.
+    const is_await_using_decl = self.current() == .kw_await and try isAwaitUsingDeclarationStart(self);
+
+    if ((self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) and !is_let_as_identifier or is_using_decl or is_await_using_decl) {
+        const init_expr = if (is_await_using_decl)
+            try parseAwaitUsingDeclaration(self)
+        else
+            try parseVariableDeclaration(self);
         self.restoreContext(for_saved);
         self.for_loop_init = saved_for_loop_init;
         // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
