@@ -151,6 +151,7 @@ const STRICT_ERROR_KEYWORDS = [
   "in non-async function",
   "not allowed in a module",
   "Duplicate parameter name", // sloppy script 에서만 허용 — strict 시 SyntaxError
+  "\"use strict\" not allowed in function with non-simple parameters", // ES2016+ 만 spec early-error
 ];
 
 /// ECMAScript spec early-error 인 ZNTC 거부 메시지. esbuild + oxc 모두 동일하게
