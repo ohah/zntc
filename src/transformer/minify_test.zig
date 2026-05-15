@@ -242,6 +242,38 @@ test "minify: typeof null" {
     try expectMinify("const x = typeof null;", "const x = \"object\";");
 }
 
+test "minify: typeof X !== \"undefined\" → typeof X < \"u\"" {
+    try expectMinify(
+        \\const a = typeof globalThis !== "undefined";
+    ,
+        \\const a = typeof globalThis < "u";
+    );
+}
+
+test "minify: typeof X === \"undefined\" → typeof X > \"u\"" {
+    try expectMinify(
+        \\const a = typeof globalThis === "undefined";
+    ,
+        \\const a = typeof globalThis > "u";
+    );
+}
+
+test "minify: typeof X === \"number\" → typeof X == \"number\" (operator only)" {
+    try expectMinify(
+        \\const a = typeof v === "number";
+    ,
+        \\const a = typeof v == "number";
+    );
+}
+
+test "minify: typeof X !== \"number\" → typeof X != \"number\" (operator only)" {
+    try expectMinify(
+        \\const a = typeof v !== "number";
+    ,
+        \\const a = typeof v != "number";
+    );
+}
+
 test "minify: strict equality numbers" {
     try expectMinify("const x = 1 === 1;", "const x = true;");
 }
