@@ -100,7 +100,7 @@ test "Minify: preserves ASI-sensitive boundaries inside block" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"use strict\";if") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return /x/.test(a);throw") != null);
-    try std.testing.expect(std.mem.endsWith(u8, r.output, "throw {value:[a]}}"));
+    try std.testing.expect(std.mem.endsWith(u8, r.output, "throw{value:[a]}}"));
 }
 
 test "Minify: omits trailing class field semicolon before class body boundary" {

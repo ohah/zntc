@@ -189,8 +189,8 @@ pub fn e2eES5Async(allocator: std.mem.Allocator, source: []const u8) !TestResult
     return r;
 }
 
-/// `case N:_state.sent();return [3,N]` (await resume 직후 자기 case label 으로 jump = self-loop).
-/// 정상은 forward jump (`[3,M]` with M > N) 또는 end (`[2]`). 모든 `_state.sent();return [3,M]` 출현
+/// `case N:_state.sent();return[3,N]` (await resume 직후 자기 case label 으로 jump = self-loop).
+/// 정상은 forward jump (`[3,M]` with M > N) 또는 end (`[2]`). 모든 `_state.sent();return[3,M]` 출현
 /// 별로 그 직전 `case N:` 를 찾아 N == M 이면 self-loop. case 수 무제한.
 /// (zntc/issues/1887 회귀 방지 — `collectIfOperations` sentinel/fixup 패턴 검증.)
 ///
@@ -219,7 +219,7 @@ pub fn assertNoAsyncSelfLoop(output: []const u8) !void {
             continue;
         };
         if (case_label == target_label) {
-            std.debug.print("\nself-loop detected: case {d} → return [3,{d}] in:\n{s}\n", .{ case_label, target_label, output });
+            std.debug.print("\nself-loop detected: case {d} → return[3,{d}] in:\n{s}\n", .{ case_label, target_label, output });
             return error.AsyncSelfLoopDetected;
         }
         search_start = target_end;
@@ -228,25 +228,27 @@ pub fn assertNoAsyncSelfLoop(output: []const u8) !void {
 
 /// `assertNoAsyncSelfLoop` 가 의존하는 emitter 출력 markers. emitter 변경 시 동반 update.
 /// 출처: `src/transformer/es2015_generator.zig` 의 `__generator` state machine + `_state.sent()`.
-const ASYNC_SENT_RETURN_PREFIX = "_state.sent();return [3,";
+const ASYNC_SENT_RETURN_PREFIX = "_state.sent();return[3,";
 const ASYNC_CASE_PREFIX = "case ";
 
 test "assertNoAsyncSelfLoop: positive control — detect intentional self-loop" {
     // emitter 출력 형식이 silent 하게 변경돼서 assertion 이 false negative 로 통과하는 회귀 방지.
     // 인공 self-loop string → detection 작동 확인.
-    const synthetic = "case 1:_state.sent();return [3,1];case 2:return [2];";
+    // NOTE: synthetic 안의 `return[3,N]` / `return[2]` 는 [[ASYNC_SENT_RETURN_PREFIX]] 와
+    // emitter 의 minify-whitespace 출력 형태 (`return + array literal` 공백 제거) 에 동기화.
+    const synthetic = "case 1:_state.sent();return[3,1];case 2:return[2];";
     try std.testing.expectError(error.AsyncSelfLoopDetected, assertNoAsyncSelfLoop(synthetic));
 }
 
 test "assertNoAsyncSelfLoop: positive control — accept forward jump" {
     // 정상 forward jump (case 1 → label 2) 은 통과해야.
-    const synthetic = "case 1:_state.sent();return [3,2];case 2:return [2];";
+    const synthetic = "case 1:_state.sent();return[3,2];case 2:return[2];";
     try assertNoAsyncSelfLoop(synthetic);
 }
 
 test "assertNoAsyncSelfLoop: positive control — accept multiple cases without self-loop" {
     // 여러 await — 각 case 의 jump target 이 자기보다 큰 label 이면 모두 정상.
-    const synthetic = "case 1:_state.sent();return [3,3];case 2:_state.sent();return [3,5];case 6:return [2];";
+    const synthetic = "case 1:_state.sent();return[3,3];case 2:_state.sent();return[3,5];case 6:return[2];";
     try assertNoAsyncSelfLoop(synthetic);
 }
 

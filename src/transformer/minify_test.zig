@@ -338,11 +338,29 @@ test "minify_whitespace: throw + paren — 공백 제거" {
     );
 }
 
-test "minify_whitespace: throw + string literal — 공백 보존 (S3 보수 — string 별도 PR)" {
+test "minify_whitespace: throw + string literal — 공백 제거 (S3b)" {
     try expectMinifyFull(
         \\function f() { throw "err"; }
     ,
-        \\function f(){throw "err"}
+        \\function f(){throw"err"}
+    );
+}
+
+test "minify_whitespace: return + string/array/object/template — 공백 제거 (S3b)" {
+    try expectMinifyFull(
+        \\function f(a) { return [a, a + 1]; }
+    ,
+        \\function f(a){return[a,a+1]}
+    );
+    try expectMinifyFull(
+        \\function f(a) { return { x: a }; }
+    ,
+        \\function f(a){return{x:a}}
+    );
+    try expectMinifyFull(
+        \\function f(a) { return `t${a}`; }
+    ,
+        "function f(a){return`t${a}`}",
     );
 }
 

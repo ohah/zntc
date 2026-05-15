@@ -75,6 +75,9 @@ pub fn emitWrappedEntryExports(
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
 
+    // `return + object literal` 의 minify-whitespace 정책. AST 기반 emit 가 아닌 순수 text
+    // 합성이라 [[operandStartsIdentifierLikeDepth]] (statements.zig) 와 정책 동기화 필요 —
+    // 변경 시 함께 update.
     try out.appendSlice(allocator, if (minify_whitespace) "return{" else "return {");
     for (entries, 0..) |e, i| {
         if (i > 0) try out.appendSlice(allocator, ",");

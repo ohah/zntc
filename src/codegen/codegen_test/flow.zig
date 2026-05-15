@@ -53,7 +53,7 @@ test "Flow: generic type Array<number> stripped" {
 test "Flow: function param and return type stripped" {
     var r = try e2eFlow(std.testing.allocator, "function f(x: number): string { return ''; }");
     defer r.deinit();
-    try std.testing.expectEqualStrings("function f(x){return \"\";}", r.output);
+    try std.testing.expectEqualStrings("function f(x){return\"\";}", r.output);
 }
 
 test "Flow: type alias declaration stripped" {
