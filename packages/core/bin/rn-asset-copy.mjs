@@ -1,15 +1,9 @@
-// RN production bundle 의 asset 복사. Metro saveAssets/getAssetDestPathAndroid
-// 호환 경로를 사용한다.
-//
-// caller (`runRnBundle`) 가 production (dev=false) + `--assets-dest` 명시 시 호출.
-// 동작:
-//   1. bundle 안의 `AssetRegistry.registerAsset({...})` 를 읽어 참조된 asset만 수집.
-//   2. 각 asset 의 scales 기준으로 원본/`@2x`/`@3x` 파일을 복사.
-//   3. iOS — Metro getAssetDestPathIOS 형식으로 복사.
-//   4. Android — Metro getResourceIdentifier + drawable/raw 분기 + keep.xml 생성.
-//   5. projectRoot walk helper 는 단위 테스트와 저수준 호출용으로만 유지.
+// RN production bundle 의 asset 복사. Metro saveAssets/getAssetDestPath{IOS,Android}
+// 호환 경로를 사용한다 — bundle 안 `AssetRegistry.registerAsset({...})` 호출에서
+// 참조된 asset 만 복사하여 release 산출물을 자동 prune. `runRnBundle` 이
+// dev=false + `--assets-dest` 명시 시 호출.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
 
 /** scale variant naming — `@2x.png` / `@3x.png` 등. capture group 1 이 scale 숫자. */
@@ -68,24 +62,29 @@ export function parseAssetName(filename) {
 }
 
 /**
- * Metro 의 Android filename convention — `<flatRelPath>_<baseName>.<ext>` 형식.
- * `asset.httpServerLocation` 의 `/assets/` prefix 는 resource identifier 에서 제거된다.
+ * Metro Android resource-identifier sanitize — lowercase, `/` → `_`, non-alnum
+ * 제거, `assets_`/`assetsunstable_path_` prefix 제거. `asset.httpServerLocation`
+ * 이 항상 `/assets/...` 또는 `/assetsunstable_path/...` 로 시작하므로 prefix
+ * 제거가 resource identifier 의 일부.
  */
+function metroSanitizeResourceName(rawPath) {
+  return rawPath
+    .toLowerCase()
+    .replace(/\//g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/^(?:assets|assetsunstable_path)_/, '');
+}
+
+/** Metro 의 Android filename convention — `<flatRelPath>_<baseName>.<ext>` 형식. */
 export function androidAssetFileName(relDir, baseName, ext) {
-  const sanitize = (value) => value.toLowerCase().replace(/[^a-z0-9_]/g, '');
-  const flat = sanitize(relDir.replace(/\//g, '_')).replace(/^(?:assets|assetsunstable_path)_/, '');
-  const prefix = flat ? `${flat}_` : '';
-  return `${prefix}${sanitize(baseName)}${ext.toLowerCase()}`;
+  const sanitized = metroSanitizeResourceName(relDir ? `${relDir}/${baseName}` : baseName);
+  return `${sanitized}${ext.toLowerCase()}`;
 }
 
 export function getAndroidResourceIdentifier(asset) {
   let basePath = asset.httpServerLocation ?? '';
   if (basePath.startsWith('/')) basePath = basePath.slice(1);
-  return `${basePath}/${asset.name}`
-    .toLowerCase()
-    .replace(/\//g, '_')
-    .replace(/([^a-z0-9_])/g, '')
-    .replace(/^(?:assets|assetsunstable_path)_/, '');
+  return metroSanitizeResourceName(`${basePath}/${asset.name}`);
 }
 
 /** Android `keep.xml` body — drawable/raw 자원 보존 list. */
@@ -232,6 +231,17 @@ function sourceFileForScale(asset, scale) {
   return join(asset.fileSystemLocation, `${asset.name}${suffix}.${asset.type}`);
 }
 
+function copyRegisteredAssetFile(src, destPath) {
+  try {
+    copyFileSync(src, destPath);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      throw new Error(`registered RN asset file not found: ${src}`);
+    }
+    throw err;
+  }
+}
+
 /**
  * iOS production 복사 — `<assetsDest>/<relDir>/<file>` 으로. IOS_SCALES (1/2/3) 외
  * scale 은 제외. 같은 baseName 의 scale variant 들은 모두 같은 destDir 에 원래
@@ -250,22 +260,23 @@ export function copyAssetsForIos(assets, assetsDest) {
 }
 
 export function copyRegisteredAssetsForIos(assets, assetsDest) {
+  const createdDirs = new Set();
   let copied = 0;
   for (const asset of assets) {
     for (const scale of asset.scales) {
       if (!IOS_SCALES.has(scale)) continue;
       const src = sourceFileForScale(asset, scale);
-      if (!existsSync(src)) {
-        throw new Error(`registered RN asset file not found: ${src}`);
-      }
-      const suffix = scale === 1 ? '' : `@${scale}x`;
       const destPath = join(
         assetsDest,
         asset.httpServerLocation.slice(1).replace(/\.\.\//g, '_'),
-        `${asset.name}${suffix}.${asset.type}`,
+        basename(src),
       );
-      mkdirSync(dirname(destPath), { recursive: true });
-      copyFileSync(src, destPath);
+      const targetDir = dirname(destPath);
+      if (!createdDirs.has(targetDir)) {
+        mkdirSync(targetDir, { recursive: true });
+        createdDirs.add(targetDir);
+      }
+      copyRegisteredAssetFile(src, destPath);
       copied++;
     }
   }
@@ -305,6 +316,7 @@ export function copyAssetsForAndroid(assets, assetsDest) {
 
 export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
   const keepRefs = new Set();
+  const createdDirs = new Set();
   let copied = 0;
 
   for (const asset of assets) {
@@ -312,13 +324,15 @@ export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
     const resourceName = getAndroidResourceIdentifier(asset);
     for (const scale of asset.scales) {
       const folder = isDrawable ? getAndroidDrawableFolder(scale) : 'raw';
-      const src = sourceFileForScale(asset, scale);
-      if (!existsSync(src)) {
-        throw new Error(`registered RN asset file not found: ${src}`);
-      }
       const targetDir = join(assetsDest, folder);
-      mkdirSync(targetDir, { recursive: true });
-      copyFileSync(src, join(targetDir, `${resourceName}.${asset.type}`));
+      if (!createdDirs.has(targetDir)) {
+        mkdirSync(targetDir, { recursive: true });
+        createdDirs.add(targetDir);
+      }
+      copyRegisteredAssetFile(
+        sourceFileForScale(asset, scale),
+        join(targetDir, `${resourceName}.${asset.type}`),
+      );
       copied++;
     }
     keepRefs.add(`@${isDrawable ? 'drawable' : 'raw'}/${resourceName}`);
@@ -326,7 +340,10 @@ export function copyRegisteredAssetsForAndroid(assets, assetsDest) {
 
   if (keepRefs.size > 0) {
     const keepDir = join(assetsDest, 'raw');
-    mkdirSync(keepDir, { recursive: true });
+    if (!createdDirs.has(keepDir)) {
+      mkdirSync(keepDir, { recursive: true });
+      createdDirs.add(keepDir);
+    }
     writeFileSync(join(keepDir, 'keep.xml'), buildKeepXml([...keepRefs].sort()));
   }
 
