@@ -363,26 +363,23 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     // .private_field_expression 태그 필수 — .static_member_expression 으로 만들면
                     // transformer.zig:899 private field WeakMap dispatch 를 못 탐 (Stage 3 출력 재방문 경로에서만
                     // 우연히 동작하던 것을 안정화).
+                    //
+                    // 이전: public accessor 일 때 `data.string_ref` 를 가정하고 새
+                    // identifier_reference 노드를 합성. computed key (`accessor ["x"]`)
+                    // 처럼 다른 union variant (`unary.operand`) 를 가진 key 면
+                    // garbage span 으로 합성돼 codegen 단계에서 slice panic 발화.
+                    // 같은 NodeIndex 를 getter/setter 양쪽에서 공유 — codegen 은
+                    // index 만 보고 emit 하므로 안전 (PR #3190 와 동일 방향).
                     {
                         const return_expr = try makeThisPrivateField(self, storage_span);
-                        const getter_key = if (is_private_accessor) new_key else try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = self.ast.getNode(new_key).data.string_ref,
-                            .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
-                        });
-                        const getter = try self.buildGetterMethod(getter_key, return_expr, is_static, zero_span);
+                        const getter = try self.buildGetterMethod(new_key, return_expr, is_static, zero_span);
                         try new_members.append(self.allocator, getter);
                     }
 
                     // set x(value) { this.#_x_accessor_storage = value; }
                     {
-                        const setter_key = if (is_private_accessor) new_key else try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = self.ast.getNode(new_key).data.string_ref,
-                            .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
-                        });
                         const assign_target = try makeThisPrivateField(self, storage_span);
-                        const setter = try self.buildSetterMethod(setter_key, assign_target, is_static, zero_span);
+                        const setter = try self.buildSetterMethod(new_key, assign_target, is_static, zero_span);
                         try new_members.append(self.allocator, setter);
                     }
                 } else {

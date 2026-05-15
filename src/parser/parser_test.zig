@@ -4181,6 +4181,22 @@ test "TS: bare `this` parameter without type annotation is stripped" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// Stage 3 auto-accessor with computed key + decorator (`@dec accessor ["x"] = ...`)
+// 가 `data.string_ref` 가정 코드에서 garbage span 으로 합성돼 codegen slice panic
+// (TSC conformance `esDecorators-classDeclaration-fields-staticAccessor.ts`).
+// 동일 NodeIndex 를 getter/setter 양쪽 공유로 fix — PR #3190 와 동일 방향.
+test "TS: decorated auto-accessor with computed key does not crash" {
+    var r = try parseTs(std.testing.allocator,
+        \\declare let dec: any;
+        \\class C {
+        \\    @dec accessor ["x"] = 1;
+        \\    @dec static accessor ["y"] = 2;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // TC39 Stage 3 Explicit Resource Management — `for (using x = ...; ...; ...)` /
 // `for (using x of ...)` / `for (await using x of ...)`. 이전 parseForStatement
 // 는 var/let/const 만 declaration 분기로 처리, `using` 은 expression 으로 떨어져
