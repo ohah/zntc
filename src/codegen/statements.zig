@@ -107,11 +107,9 @@ fn tryUnwrapStandaloneBlock(self: anytype, idx: NodeIndex) ?[]const u32 {
         if (child_idx.isNone()) continue;
         const child = self.ast.getNode(child_idx);
         switch (child.tag) {
-            .variable_declaration => {
-                const kind = self.ast.variableDeclarationKind(child);
-                if (kind != .@"var") return null; // let/const → block-scoped, leak 위험
-                return null; // var 도 hoist 경계 보수적 거부
-            },
+            // let/const 는 block-scoped binding leak 위험, var 는 hoist 경계
+            // 보수적 거부 (singleUnwrappableStmt 와 동일 정책).
+            .variable_declaration => return null,
             .function_declaration, .class_declaration => return null,
             else => {},
         }
