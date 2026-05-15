@@ -557,6 +557,27 @@ pub fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) 
     }
 }
 
+/// 각 statement 의 root expression NodeIndex 를 set — `return X;` /
+/// `X;` (expression_statement) / `var x = X;` (variable_declarator init).
+/// pure compound inline 시 이 위치엔 paren wrap 불필요 — caller context 가
+/// statement 라 precedence 무관.
+pub fn markStatementRootExpressions(ast: *const Ast, roots: *std.DynamicBitSet) void {
+    const cap = roots.capacity();
+    for (ast.nodes.items) |node| switch (node.tag) {
+        .return_statement, .expression_statement => {
+            const operand_ni = @intFromEnum(node.data.unary.operand);
+            if (operand_ni < cap) roots.set(operand_ni);
+        },
+        .variable_declarator => {
+            const e = node.data.extra;
+            if (e + 2 >= ast.extra_data.items.len) continue;
+            const init_ni = ast.extra_data.items[e + 2];
+            if (init_ni < cap) roots.set(init_ni);
+        },
+        else => {},
+    };
+}
+
 fn isPrimitiveConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
     const ni = @intFromEnum(idx);
@@ -649,6 +670,14 @@ fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyna
     defer forbidden.deinit();
     markForbiddenInlineSites(ast, &forbidden);
 
+    // statement-root expression 위치 마킹 — `return X;` / `X;` (expression_statement)
+    // / `var x = X;` (variable_declarator init) 의 root X. pure compound inline 시
+    // 이 위치에 read 가 있으면 caller context 가 statement 라 precedence 무관
+    // → paren wrap 불필요 (`return ((x+1)*2)-3` → `return (x+1)*2-3`).
+    var stmt_roots = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch return;
+    defer stmt_roots.deinit();
+    markStatementRootExpressions(ast, &stmt_roots);
+
     // symbol 별 identifier_reference 등장 횟수 + 첫 등장 NodeIndex 를 스캔.
     // 오직 live 영역의 identifier_reference 만 집계한다 — transformer 가 남긴 orphan
     // 을 세면 ref_count 미스매치로 inline 이 어긋난다.
@@ -680,11 +709,11 @@ fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyna
         if (live_nodes) |lives| {
             if (i >= lives.capacity() or !lives.isSet(i)) continue;
         }
-        tryInlineDecl(ast, ctx, counts, first_loc, @intCast(i), node, changed);
+        tryInlineDecl(ast, ctx, counts, first_loc, &stmt_roots, @intCast(i), node, changed);
     }
 }
 
-fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []const u32, decl_stmt_idx: u32, node: Node, changed: *bool) void {
+fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []const u32, stmt_roots: *const std.DynamicBitSet, decl_stmt_idx: u32, node: Node, changed: *bool) void {
     const kind = ast.variableDeclarationKind(node);
     if (kind.isUsing()) return;
     if (kind == .@"var") return;
@@ -793,7 +822,10 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     // `b=x+1*2` (잘못, `1*2` 먼저) 가 되는 회귀 방지. constant / alias 분기는 단일
     // 토큰이라 paren 불필요.
     const pure_compound = alias_sym == null and needs_scope_check;
-    if (pure_compound) {
+    // statement-root 위치 (return/expression_statement/variable_declarator init) 면
+    // caller context 가 statement 라 precedence 무관 → paren skip.
+    const at_stmt_root = read_ni < stmt_roots.capacity() and stmt_roots.isSet(read_ni);
+    if (pure_compound and !at_stmt_root) {
         ast.nodes.items[read_ni] = .{
             .tag = .parenthesized_expression,
             .span = init_node.span,
