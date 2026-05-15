@@ -64,6 +64,10 @@ pub const Category = enum {
     /// Phase A (cross-module top-level) + Phase B (per-module nested) 의 1-char
     /// skip 분포 + slot/counter summary. mangle 식별자 풀 1-char 잠식 진단용.
     mangle_audit,
+    /// `removeDeadStores` 가 module-level scope (scope_idx == 0) 가드로 skip 한
+    /// declaration 의 개수 + size 합. mobx production define 후 dead 가 된 error
+    /// message dict 같은 cascade-dead binding 식별. issue #3267 N RFC.
+    dead_toplevel_audit,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {

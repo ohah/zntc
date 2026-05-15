@@ -32,6 +32,7 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const numeric = @import("minify/numeric.zig");
 const unused_expr = @import("minify/unused_expr.zig");
 const string_escape = @import("../string_escape.zig");
+const debug_log = @import("../debug_log.zig");
 
 /// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
 /// `symbols` 는 read-only 로 사용한다 — 과거엔 `reference_count` 를 직접 감산했지만,
@@ -471,7 +472,14 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     // top-level (module scope=0) 는 tree-shaker 영역 — 여기서 지우면 bundle 경로의 entry
     // top-level 선언이 사라져 fixture 가 깨진다. 함수/블록 local 만 대상.
     const scope_idx = @intFromEnum(sym.scope_id);
-    if (scope_idx == 0) return;
+    if (scope_idx == 0) {
+        // N RFC (#3267) audit: 다른 가드 (eval/with/exported/ref/purity) 도 통과한
+        // top-level dead candidate 의 size 추적. 실제로는 elide 안 함 — 측정만.
+        if (debug_log.enabled(.dead_toplevel_audit)) {
+            tryAuditDeadToplevel(ast, ctx, sym_id, sym, node, init_idx);
+        }
+        return;
+    }
 
     // eval / with 스코프 안의 선언은 동적 lookup 대상이 될 수 있다. mangler 와 동일 보호
     // (Scope.blocksMangling — subtree_has_direct_eval / subtree_has_with).
@@ -497,6 +505,33 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
         .span = node.span,
         .data = .{ .none = 0 },
     }, changed);
+}
+
+/// N RFC (#3267) audit 누적기 — `dead_toplevel_audit` 활성 시 minify pass 동안
+/// module-level dead candidate (다른 가드 통과 후 scope_idx==0 으로만 차단된 binding)
+/// 의 개수 + span size 누적. 호출자가 빌드 종료 시 직접 dump 또는 외부 grep.
+var dead_toplevel_count: usize = 0;
+var dead_toplevel_size: usize = 0;
+
+pub fn resetDeadToplevelAudit() void {
+    dead_toplevel_count = 0;
+    dead_toplevel_size = 0;
+}
+
+pub fn dumpDeadToplevelAudit() void {
+    if (!debug_log.enabled(.dead_toplevel_audit)) return;
+    debug_log.print(.dead_toplevel_audit, "module-level dead candidates: count={d} size={d}\n", .{
+        dead_toplevel_count,
+        dead_toplevel_size,
+    });
+}
+
+fn tryAuditDeadToplevel(ast: *Ast, ctx: MinifyCtx, sym_id: u32, sym: symbol_mod.Symbol, node: Node, init_idx: NodeIndex) void {
+    if (sym.isExported()) return;
+    if (ctx.effectiveRefCount(sym_id) != 0 or sym.write_count != 0) return;
+    if (!init_idx.isNone() and !purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
+    dead_toplevel_count += 1;
+    dead_toplevel_size += @as(usize, node.span.end) -| @as(usize, node.span.start);
 }
 
 /// expression 안의 모든 `identifier_reference` 노드를 찾아, symbol_ids 로 symbol 을
