@@ -980,7 +980,12 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
 // Tuple Type
 // ================================================================
 
-/// 튜플 타입: [T, U] / [name: T, name?: U] (Flow 0.212+ labeled tuple element)
+/// 튜플 타입 (Flow 0.212+):
+///   [T, U]                         일반 type 시퀀스
+///   [name: T, name?: T]            labeled element
+///   [+name: T, -name: T]           variance + label
+///   [readonly name: T, writeonly name: T]
+///   [...T, ...name: T]             rest spread (with optional label)
 fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '['
@@ -988,30 +993,7 @@ fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
-
-        // Labeled tuple element: `name: T` 또는 `name?: T` (Flow 0.212+).
-        // 라벨은 문서화 메타데이터일 뿐이라 type strip 시 무시하고 type만 보존.
-        // `name?` 다음이 `:`이 아니면 일반 type으로 후퇴해야 안전 (ts.zig 패턴 미러).
-        if (self.current() == .identifier) {
-            const next = try self.peekNextKind();
-            const is_labeled = next == .colon or (next == .question and blk: {
-                const saved = self.saveState();
-                const err_count = self.errors.items.len;
-                self.advance() catch break :blk false;
-                self.advance() catch break :blk false;
-                const after_question = self.current();
-                self.restoreState(saved);
-                self.rollbackErrors(err_count);
-                break :blk after_question == .colon;
-            });
-            if (is_labeled) {
-                try self.advance();
-                _ = try self.eat(.question);
-                try self.expect(.colon);
-            }
-        }
-
-        const ty = try parseType(self);
+        const ty = try parseTupleElement(self);
         try self.scratch.append(self.allocator, ty);
         if (!try self.eat(.comma)) break;
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
@@ -1026,6 +1008,59 @@ fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
         .{ .start = start, .end = self.currentSpan().start },
         list,
     );
+}
+
+/// Tuple element 하나를 파싱. Hermes 의 parse-first-then-reinterpret 패턴:
+/// 먼저 type 을 파싱한 뒤 다음 토큰이 `:`/`?:` 이면 그 type 을 라벨로 reinterpret
+/// (라벨은 type strip 컨텍스트에서 메타데이터일 뿐이라 결과 AST 에는 element type 만 보존).
+fn parseTupleElement(self: *Parser) ParseError2!NodeIndex {
+    if (self.current() == .dot3) {
+        try self.advance();
+        const first = try parseType(self);
+        if (try self.eat(.colon)) {
+            return try parseType(self); // 첫 type 은 라벨이었음
+        }
+        return first;
+    }
+
+    // variance 마커가 라벨 없이 끝나면 일반 type 으로 후퇴 — speculative AST node
+    // 까지 정확히 되돌리기 위해 SpeculationCheckpoint 사용.
+    const cp = Parser.SpeculationCheckpoint.save(self);
+    var consumed_variance = false;
+    if (self.current() == .plus or self.current() == .minus) {
+        try self.advance();
+        consumed_variance = true;
+    } else if (self.isContextual("readonly") or self.isContextual("writeonly")) {
+        const next = try self.peekNextKind();
+        if (!rejectsVarianceInterpretation(next)) {
+            try self.advance();
+            consumed_variance = true;
+        }
+    }
+
+    const first = try parseType(self);
+
+    if (self.current() == .colon or self.current() == .question) {
+        _ = try self.eat(.question);
+        try self.expect(.colon);
+        return try parseType(self); // 첫 type 은 라벨이었음
+    }
+
+    if (consumed_variance) {
+        cp.rollback(self);
+        return try parseType(self);
+    }
+
+    return first;
+}
+
+/// `readonly`/`writeonly` 식별자가 variance modifier 가 아니라 일반 type 으로
+/// 해석돼야 함을 가리키는 후행 토큰.
+inline fn rejectsVarianceInterpretation(kind: Kind) bool {
+    return switch (kind) {
+        .colon, .comma, .r_bracket, .eq, .question => true,
+        else => false,
+    };
 }
 
 // ================================================================
