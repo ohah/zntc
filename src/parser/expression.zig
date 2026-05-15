@@ -1368,6 +1368,8 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
         .l_paren => {
             // 괄호 표현식 또는 arrow function 파라미터 리스트.
             // 괄호 안에서는 `in` 연산자가 항상 허용된다 (ECMAScript: [+In] 컨텍스트).
+            // `in_decorator` 도 괄호 안에서는 해제 — `@(inst["foo"])` 같은 패턴에서
+            // 안쪽 computed member access 가 다음 멤버 key 와 혼동될 일 없음.
 
             // TS 모드: `(a: Type, b?: Type) => body` — 타입 어노테이션이 있는 arrow function.
             // lookahead로 감지: `(` 뒤에 identifier + `:` 또는 `?` 패턴이면 speculative 파싱.
@@ -1391,7 +1393,10 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // `(a, ...b) => {}` 형태의 rest 파라미터를 cover grammar으로 지원.
             // `...`는 일반 expression에서는 나올 수 없으므로 arrow 파라미터로만 해석된다.
             const paren_saved = self.enterAllowInContext(true);
+            const saved_in_decorator = self.ctx.in_decorator;
+            self.ctx.in_decorator = false;
             const expr = try parseExpressionOrRest(self);
+            self.ctx.in_decorator = saved_in_decorator;
             self.restoreContext(paren_saved);
 
             // Flow TypeCast: (expr: Type) — 괄호 안에서 expression 뒤에 `: Type`이 오면
