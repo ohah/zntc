@@ -169,6 +169,14 @@ pub fn canEmitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) bool 
 /// declaration 또는 control flow statement 가 끼면 false (block 그대로 emit).
 fn emitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) !bool {
     if (!canEmitMultiExprBlockAsSequence(self, body_idx)) return false;
+    try emitMultiExprBlockSeqInner(self, body_idx);
+    try self.writeByte(';');
+    return true;
+}
+
+/// `canEmitMultiExprBlockAsSequence` 가 true 인 block 의 expr statement 들을
+/// `a,b,c` (trailing `;` 없음) 로 emit. ternary branch 등 `;` 가 부적합한 위치 공유.
+fn emitMultiExprBlockSeqInner(self: anytype, body_idx: NodeIndex) !void {
     const body = self.ast.getNode(body_idx);
     const list = body.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -181,8 +189,28 @@ fn emitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) !bool {
         try self.emitNode(n.data.unary.operand);
         first = false;
     }
-    try self.writeByte(';');
-    return true;
+}
+
+/// `if` branch 가 ternary 의 한 쪽 (`c ? X : Y`) 으로 출력 가능한지 — single
+/// expression statement 또는 multi-expr block (comma sequence) 면 true.
+fn canEmitTernaryBranch(self: anytype, branch_idx: NodeIndex) bool {
+    if (singleExprStmt(self, branch_idx) != null) return true;
+    return canEmitMultiExprBlockAsSequence(self, branch_idx);
+}
+
+/// ternary branch emit. comma sequence (single sequence_expression 또는 multi-expr
+/// block) 는 paren 으로 감싼다 — comma 가 `?:` 보다 우선순위 낮음.
+fn emitTernaryBranch(self: anytype, branch_idx: NodeIndex) !void {
+    if (singleExprStmt(self, branch_idx)) |e| {
+        const seq = self.ast.getNode(e).tag == .sequence_expression;
+        if (seq) try self.writeByte('(');
+        try self.emitNode(e);
+        if (seq) try self.writeByte(')');
+        return;
+    }
+    try self.writeByte('(');
+    try emitMultiExprBlockSeqInner(self, branch_idx);
+    try self.writeByte(')');
 }
 
 /// `body_idx` 가 minify 시 `{}` 를 벗길 수 있는 block 이면 그 안의 단일 statement idx,
@@ -572,10 +600,10 @@ fn isSafeAndOperand(tag: ast_mod.Node.Tag) bool {
 /// minify_syntax 전용. 양쪽 본문이 단일 expression statement 이고 paren-safety 충족 시만.
 fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
     if (!self.options.minify_syntax) return false;
-    const then_expr = singleExprStmt(self, t.b) orelse return false;
     const has_else = !t.c.isNone() and !isElidedAlternate(self, t.c);
     if (!has_else) {
         // `if(c)a();` → `c&&a();` — c 와 a() 둘 다 `&&` 피연산자로 paren 없이 와야 함.
+        const then_expr = singleExprStmt(self, t.b) orelse return false;
         if (!isSafeAndOperand(self.ast.getNode(t.a).tag)) return false;
         if (!isSafeAndOperand(self.ast.getNode(then_expr).tag)) return false;
         try self.emitNode(t.a);
@@ -586,19 +614,20 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
         try self.writeByte(';');
         return true;
     }
-    const else_expr = singleExprStmt(self, t.c) orelse return false;
+    // `if(c){A}else{B}` → `c?A:B;`. A/B 는 single expr statement 또는 multi-expr
+    // block (comma sequence) — 둘 다 ternary branch 로 paren-safe emit (S6).
     if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return false;
-    if (self.ast.getNode(then_expr).tag == .sequence_expression) return false;
-    if (self.ast.getNode(else_expr).tag == .sequence_expression) return false;
+    if (!canEmitTernaryBranch(self, t.b)) return false;
+    if (!canEmitTernaryBranch(self, t.c)) return false;
     try self.emitNode(t.a);
     try writeSpace(self);
     try self.writeByte('?');
     try writeSpace(self);
-    try self.emitNode(then_expr);
+    try emitTernaryBranch(self, t.b);
     try writeSpace(self);
     try self.writeByte(':');
     try writeSpace(self);
-    try self.emitNode(else_expr);
+    try emitTernaryBranch(self, t.c);
     try self.writeByte(';');
     return true;
 }
