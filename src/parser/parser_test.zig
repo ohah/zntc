@@ -4211,6 +4211,21 @@ test "TS: labeled break/continue accepts contextual keyword as label" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// literal keyword (`true`/`false`/`null`) 는 valid label 이 아님. 이전 widening
+// 으로 `canBeBindingName()` 이 literal keyword 도 포함했었고, 그 결과
+// `break true;` 가 `break true` (labeled) 로 잘못 파싱됐었다 (/simplify 사후
+// 리뷰 발견). `isLiteralKeyword()` 가드 추가.
+test "TS: break/continue does not consume literal keyword as label" {
+    var r = try parseTs(std.testing.allocator,
+        \\while (true) break true;
+        \\while (true) continue null;
+    );
+    defer r.deinit();
+    // ASI 가 `break;` / `continue;` 다음에 적용되고 `true;`/`null;` 가 별도
+    // expression-statement 가 된다. parser-level 에러 없음.
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // `@(inst["foo"]) method() {}` 같은 parenthesized decorator + computed member
 // access 는 `in_decorator` flag 가 안쪽 paren 까지 전파돼 `[` 가 거부되던 버그.
 // (TSC conformance `esDecorators-preservesThis.ts`, `decoratorOnClassMethod12.ts`)
@@ -4244,7 +4259,7 @@ test "TS: regex literal at start of if/while/for body is reparsed" {
 // Stage 3 auto-accessor with computed key + decorator (`@dec accessor ["x"] = ...`)
 // 가 `data.string_ref` 가정 코드에서 garbage span 으로 합성돼 codegen slice panic
 // (TSC conformance `esDecorators-classDeclaration-fields-staticAccessor.ts`).
-// 동일 NodeIndex 를 getter/setter 양쪽 공유로 fix — PR #3190 와 동일 방향.
+// 동일 NodeIndex 를 getter/setter 양쪽 공유로 fix.
 test "TS: decorated auto-accessor with computed key does not crash" {
     var r = try parseTs(std.testing.allocator,
         \\declare let dec: any;
