@@ -1427,8 +1427,7 @@ pub fn emitModule(
         // delta 가 잘못된 인덱스 매핑되지 않도록 가드 — 드물지만 hydrate skip 이 안전.
         if (module.transform_cache) |cache| {
             if (cache.ref_deltas.len > 0 and ctx.hasSemantic() and cache.ref_deltas.len == ctx.symbols.len) {
-                if (arena_alloc.alloc(u32, cache.ref_deltas.len)) |buf| {
-                    @memcpy(buf, cache.ref_deltas);
+                if (arena_alloc.dupe(u32, cache.ref_deltas)) |buf| {
                     ctx.ref_deltas = buf;
                 } else |_| {}
             }
