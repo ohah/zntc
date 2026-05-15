@@ -369,7 +369,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     // 처럼 다른 union variant (`unary.operand`) 를 가진 key 면
                     // garbage span 으로 합성돼 codegen 단계에서 slice panic 발화.
                     // 같은 NodeIndex 를 getter/setter 양쪽에서 공유 — codegen 은
-                    // index 만 보고 emit 하므로 안전 (PR #3190 와 동일 방향).
+                    // index 만 보고 emit 하므로 안전 — method-level decorator
+                    // computed key path 와 동일 방향.
                     {
                         const return_expr = try makeThisPrivateField(self, storage_span);
                         const getter = try self.buildGetterMethod(new_key, return_expr, is_static, zero_span);

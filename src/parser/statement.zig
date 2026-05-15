@@ -933,7 +933,8 @@ fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     // `parser_breakTarget1.ts` (`target: break target;`) 등.
     var label = NodeIndex.none;
     if ((tag == .break_statement or tag == .continue_statement) and
-        self.current().canBeBindingName() and !self.scanner.token.has_newline_before)
+        self.current().canBeBindingName() and !self.current().isLiteralKeyword() and
+        !self.scanner.token.has_newline_before)
     {
         label = try self.ast.addNode(.{
             .tag = .identifier_reference,
