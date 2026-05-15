@@ -188,6 +188,19 @@ pub fn freeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) 
     allocator.free(meta.scales);
 }
 
+/// `emitAssetRegistryCall` 의 입력 — caller (loader) 가 module 단위로 모은 값들.
+/// allocator 와 분리해 positional swap 위험 차단 + named field 호출.
+pub const AssetEmitInput = struct {
+    registry_path: []const u8,
+    abs_path: []const u8,
+    bytes: []const u8,
+    ext: []const u8,
+    name_without_ext: []const u8,
+    url: []const u8,
+    scales: []const u32,
+    project_root: []const u8,
+};
+
 /// Metro AssetRegistry.registerAsset() 호출식 + asset metadata 를 생성.
 /// 두 allocator 분리 — fs.RealReadFileCache.readFile 의 `(long, short)` 컨벤션 준수:
 /// `metadata_alloc`: metadata strings + scales backing — BundleResult 까지 살아남는 long-lived.
@@ -196,32 +209,24 @@ pub fn freeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) 
 pub fn emitAssetRegistryCall(
     metadata_alloc: std.mem.Allocator,
     source_alloc: std.mem.Allocator,
-    registry_path: []const u8,
-    abs_path: []const u8,
-    bytes: []const u8,
-    hash: *const [8]u8,
-    ext: []const u8,
-    name_without_ext: []const u8,
-    url: []const u8,
-    scales: []const u32,
-    project_root: []const u8,
+    input: AssetEmitInput,
 ) !EmittedAsset {
-    const dims = asset_meta.extractDimensions(bytes);
+    const dims = asset_meta.extractDimensions(input.bytes);
     const width = if (dims) |d| d.width else 0;
     const height = if (dims) |d| d.height else 0;
-    const asset_type = asset_meta.AssetType.fromExtension(ext);
-    const type_name = asset_type.typeName(ext);
+    const asset_type = asset_meta.AssetType.fromExtension(input.ext);
+    const type_name = asset_type.typeName(input.ext);
 
     // Metro 호환: httpServerLocation = `/assets/` + projectRoot 기준 dirname.
     // RN 런타임이 `<dev-server>:<port><httpServerLocation>/<name>.<hash>.<type>` 형태로
     // URL 을 만들기 때문에 `.` 만 있으면 dev server 가 파일을 찾지 못한다 (#1428).
     // 임시 `rel` 버퍼는 source_alloc (parse_arena) — graph allocator fragmentation 회피.
     const http_loc_owned = blk: {
-        if (project_root.len == 0) {
-            const d = std.fs.path.dirname(url) orelse ".";
+        if (input.project_root.len == 0) {
+            const d = std.fs.path.dirname(input.url) orelse ".";
             break :blk try metadata_alloc.dupe(u8, d);
         }
-        const rel = std.fs.path.relative(source_alloc, project_root, abs_path) catch {
+        const rel = std.fs.path.relative(source_alloc, input.project_root, input.abs_path) catch {
             break :blk try metadata_alloc.dupe(u8, ".");
         };
         const rel_dir = std.fs.path.dirname(rel) orelse ".";
@@ -229,9 +234,9 @@ pub fn emitAssetRegistryCall(
     };
     errdefer metadata_alloc.free(http_loc_owned);
 
-    const fs_dir_owned = try metadata_alloc.dupe(u8, std.fs.path.dirname(abs_path) orelse ".");
+    const fs_dir_owned = try metadata_alloc.dupe(u8, std.fs.path.dirname(input.abs_path) orelse ".");
     errdefer metadata_alloc.free(fs_dir_owned);
-    const name_owned = try metadata_alloc.dupe(u8, name_without_ext);
+    const name_owned = try metadata_alloc.dupe(u8, input.name_without_ext);
     errdefer metadata_alloc.free(name_owned);
     const type_name_owned = try metadata_alloc.dupe(u8, type_name);
     errdefer metadata_alloc.free(type_name_owned);
@@ -239,10 +244,8 @@ pub fn emitAssetRegistryCall(
     // Metro 호환: asset hash 는 raw bytes 의 MD5 32 hex (Metro `Assets.js` hashFiles).
     // RN 런타임/빌드 시스템이 캐시 키, 디스크 자산명 등에서 32 hex 를 가정하므로
     // 8 byte wyhash 로는 충돌 확률 + Metro 호환성 모두 부족 (#1428).
-    // 인자의 hash(`*const [8]u8`) 는 기존 caller 호환을 위해 남겨두지만 미사용.
-    _ = hash;
     var md5_digest: [16]u8 = undefined;
-    std.crypto.hash.Md5.hash(bytes, &md5_digest, .{});
+    std.crypto.hash.Md5.hash(input.bytes, &md5_digest, .{});
     const hash_hex_owned = try metadata_alloc.alloc(u8, 32);
     errdefer metadata_alloc.free(hash_hex_owned);
     const hex_chars = "0123456789abcdef";
@@ -251,7 +254,7 @@ pub fn emitAssetRegistryCall(
         hash_hex_owned[i * 2 + 1] = hex_chars[b & 0x0F];
     }
 
-    const scales_owned = try metadata_alloc.dupe(u32, scales);
+    const scales_owned = try metadata_alloc.dupe(u32, input.scales);
     errdefer metadata_alloc.free(scales_owned);
 
     // 사용자 경로/식별자에 따옴표·역슬래시·개행이 포함되면 JSON 파싱이 깨지므로 escape 필수.
@@ -259,15 +262,15 @@ pub fn emitAssetRegistryCall(
     // source_alloc lifetime 만 충족하면 됨 (대다수 케이스에 alloc 0).
     const http_loc_esc = try escapeJsString(source_alloc, http_loc_owned);
     const fs_dir_esc = try escapeJsString(source_alloc, fs_dir_owned);
-    const name_esc = try escapeJsString(source_alloc, name_without_ext);
-    const registry_esc = try escapeJsString(source_alloc, registry_path);
+    const name_esc = try escapeJsString(source_alloc, input.name_without_ext);
+    const registry_esc = try escapeJsString(source_alloc, input.registry_path);
 
     // scales 배열 직렬화. 일반적으로 [1,2,3] 정도라 스택 버퍼로 충분.
     var scales_stack_buf: [128]u8 = undefined;
     var scales_stream = std.io.fixedBufferStream(&scales_stack_buf);
     const sw = scales_stream.writer();
     sw.writeByte('[') catch return error.OutOfMemory;
-    for (scales, 0..) |s, i| {
+    for (input.scales, 0..) |s, i| {
         if (i > 0) sw.writeAll(", ") catch return error.OutOfMemory;
         std.fmt.format(sw, "{d}", .{s}) catch return error.OutOfMemory;
     }
