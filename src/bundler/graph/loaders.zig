@@ -146,15 +146,15 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                     return;
                 };
                 module.source = emitted.source;
-                // metadata 를 graph allocator 로 dupe — BundleResult 가 string parse 없이
-                // rn-asset-copy 에 직접 전달 (#3216 후속). loader arena 가 module 종료 시
-                // 회수되어도 BundleResult lifetime 까지 살아남도록.
+                // metadata 는 parse_arena borrow — BundleResult lifetime 까지 살리려면
+                // graph allocator 로 owned copy 가 필요. clone OOM 은 다른 emit 실패와
+                // 동일하게 silent skip — release copy 단계에서 누락이 진단으로 가시화.
                 if (graph_assets.cloneRnAssetMetadata(self.allocator, emitted.metadata)) |owned| {
                     self.rn_asset_metadata_mutex.lock();
+                    defer self.rn_asset_metadata_mutex.unlock();
                     self.rn_asset_metadata.append(self.allocator, owned) catch {
                         graph_assets.freeRnAssetMetadata(self.allocator, owned);
                     };
-                    self.rn_asset_metadata_mutex.unlock();
                 } else |_| {}
                 module.module_type = .js;
                 module.loader = .javascript;
