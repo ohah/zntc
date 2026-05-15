@@ -97,6 +97,11 @@ pub const CodegenOptions = struct {
     /// __esm 래핑 모듈: CJS export 출력 억제 (exports.x, module.exports).
     /// __esm 모듈의 export는 emitter의 __export()가 처리하므로 codegen에서 생성하면 안 됨.
     skip_cjs_exports: bool = false,
+    /// CJS wrap 모듈의 callback param `(exports, module)` 을 minify 시 짧은 이름
+    /// (`(e, m)`) 로 단축 — body 안 unresolved `exports`/`module` reference 도
+    /// substitute 한다. emitter 가 `wrap_kind == .cjs and minify_whitespace` 일 때 set.
+    /// reserved set 에 `e`, `m` 도 함께 등록 — mangler 가 다른 binding 에 부여 안 함.
+    cjs_wrap_substitute: bool = false,
     /// JSON을 CJS require()로 소비할 때 synthetic named export declarations를 생략.
     /// default object는 `module.exports = {...}`로 유지한다.
     skip_cjs_named_export_decls: bool = false,

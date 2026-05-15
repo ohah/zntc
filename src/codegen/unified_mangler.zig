@@ -338,9 +338,10 @@ test "mangleAll: Phase B loop runs with empty module (counter carried through)" 
 }
 
 test "mangleAll: identity rename (name already equals base54 head) — no rename entry" {
-    // 원본 이름이 이미 base54 첫 이름("e") 인 심볼은 renames 에 기록하지 않음 (no-op).
+    // 원본 이름이 base54 의 (reserved 'e'/'m' 을 skip 한 후) 첫 이름 "t" 와 같으면
+    // renames 에 기록하지 않음 (no-op).
     const candidates = [_]TopLevelCandidate{
-        .{ .module_index = 0, .symbol_id = 0, .name = "e", .ref_count = 10 },
+        .{ .module_index = 0, .symbol_id = 0, .name = "t", .ref_count = 10 },
     };
 
     var result = try mangleAll(std.testing.allocator, .{

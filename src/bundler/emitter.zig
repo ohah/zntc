@@ -1642,6 +1642,9 @@ pub fn emitModule(
         // __esm 모듈: exports.x/module.exports 생성 억제 (__export()가 대신 처리)
         .skip_cjs_exports = module.wrap_kind == .esm,
         .skip_cjs_named_export_decls = module.module_type == .json and module.wrap_kind == .cjs,
+        // CJS wrap minify: callback param `(exports, module)` → `(e, m)` 단축 +
+        // body 의 unresolved `exports`/`module` reference 도 substitute.
+        .cjs_wrap_substitute = module.wrap_kind == .cjs and options.minify_whitespace,
         // __esm 모듈: const → var (TDZ 방지)
         .use_var_for_imports = module.wrap_kind == .esm,
         // cycle 모듈 의 top-level const/let → var 강등 (#2198, esbuild 호환).
@@ -1757,9 +1760,11 @@ pub fn emitModule(
         if (options.minify_whitespace) {
             // emit 의 직접 함수 패턴은 `runtime_helpers.zig` 의 `CJS_RUNTIME_*` 가 cb 를
             // function 으로 받는 것과 한 쌍 — 한쪽만 바꾸면 runtime TypeError.
+            // callback param `(e, m)` 단축 — body 의 `exports`/`module` reference 도
+            // codegen 의 `cjs_wrap_substitute` 가 `e`/`m` 으로 substitute.
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{");
+            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((e,m)=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "});");

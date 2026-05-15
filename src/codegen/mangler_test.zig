@@ -17,12 +17,14 @@ test "base54: basic encoding" {
     try std.testing.expect(two[0] == 'e');
 }
 
-test "base54: no reserved words in first batch" {
+test "base54: 1글자 'e'/'m' 만 reserved (CJS wrap callback param 충돌 방지)" {
     var buf: [8]u8 = undefined;
-    // 처음 54개 이름 중 예약어가 없는지 확인
+    // base54 첫 54개 (1글자) 중 'e' (idx 0) 와 'm' (idx 14) 만 reserved.
+    // 다른 1글자 이름은 free.
     for (0..54) |i| {
         const name = base54(@intCast(i), &buf);
-        try std.testing.expect(!isReservedOrGlobal(name));
+        const expect_reserved = name.len == 1 and (name[0] == 'e' or name[0] == 'm');
+        try std.testing.expectEqual(expect_reserved, isReservedOrGlobal(name));
     }
 }
 
@@ -41,6 +43,9 @@ test "isReservedOrGlobal" {
     try std.testing.expect(isReservedOrGlobal("return"));
     try std.testing.expect(!isReservedOrGlobal("a"));
     try std.testing.expect(!isReservedOrGlobal("foo"));
+    // 'e', 'm' 은 CJS wrap callback param (`(e, m) => {...}`) 으로 reserved.
+    try std.testing.expect(isReservedOrGlobal("e"));
+    try std.testing.expect(isReservedOrGlobal("m"));
 }
 
 // #1618 / #1621: minify 모드에서 runtime helper 이름이 `$xx` 형태로 축약된다.
