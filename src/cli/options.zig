@@ -279,23 +279,6 @@ fn parseGlobalsArg(opts: *CliOptions, allocator: std.mem.Allocator, val: []const
     }
 }
 
-/// 엔진 타겟 문자열을 파싱. "chrome80,safari14,node16" → UnsupportedFeatures.
-fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.UnsupportedFeatures {
-    const compat = lib.transformer.TransformOptions.compat;
-    var targets: [16]compat.EngineVersion = undefined;
-    var count: usize = 0;
-    var iter = std.mem.splitScalar(u8, val, ',');
-    while (iter.next()) |part| {
-        if (part.len == 0) continue;
-        const ev = compat.EngineVersion.fromString(part) orelse return null;
-        if (count >= targets.len) return null;
-        targets[count] = ev;
-        count += 1;
-    }
-    if (count == 0) return null;
-    return compat.unsupportedFeatures(targets[0..count]);
-}
-
 /// `zntc.config.json`이 cwd에 있으면 파싱해 opts의 defaults를 세팅한다.
 /// CLI 인자가 뒤에서 이 값을 덮어쓴다 → "CLI > config.json".
 ///
@@ -713,12 +696,23 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
                 opts.unsupported = compat.fromESTarget(es);
                 opts.es_target = es;
             } else {
-                // 엔진 버전 파싱 (chrome80,safari14,node16)
-                opts.unsupported = parseEngineTargets(val) orelse {
+                // 엔진 버전 파싱 (chrome80,safari14,node16) — browserslist 쿼리 superset.
+                opts.unsupported = compat.browserslistToUnsupported(val) orelse {
                     try stderr.print("zntc: unknown target '{s}'\n", .{val});
                     std.process.exit(1);
                 };
             }
+        } else if (std.mem.startsWith(u8, arg, "--browserslist=")) {
+            const val = arg["--browserslist=".len..];
+            const compat = lib.transformer.TransformOptions.compat;
+            opts.unsupported = compat.browserslistToUnsupported(val) orelse {
+                try stderr.print(
+                    "zntc: invalid --browserslist='{s}' (expected: 'chrome >= 87, firefox 78'; stat queries like 'defaults' / 'last 2 versions' require the JS wrapper)\n",
+                    .{val},
+                );
+                std.process.exit(1);
+            };
+            opts.target_explicit = true;
         } else if (std.mem.eql(u8, arg, "--preserve-symlinks")) {
             opts.preserve_symlinks = true;
         } else if (std.mem.eql(u8, arg, "--resolve-symlink-siblings")) {

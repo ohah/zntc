@@ -114,7 +114,7 @@ Options:
 | `--platform=browser\|node\|neutral\|react-native` | 타겟 플랫폼                                                        |
 | `--rn-platform=ios\|android`                      | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자)                      |
 | `--target=<spec>`                                 | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
-| `--browserslist=<query>`                          | Browserslist 쿼리로 ES 다운레벨 타겟 지정 (`"defaults"`, `"last 2 versions, not dead"` 등 — `--target` 의 대안, JS wrapper 전용) |
+| `--browserslist=<query>`                          | Browserslist 쿼리로 ES 다운레벨 타겟 지정. Zig CLI 는 단순 engine+version 형식만 받음 (`"chrome >= 87, firefox 78"`). stat 기반 쿼리 (`"defaults"`, `"last 2 versions"`, `"> 0.5%"`) 는 caniuse-lite 데이터가 필요해 JS wrapper 에서만 동작 |
 | `--runtime-polyfills=auto\|usage\|entry\|off`     | core-js 런타임 API 폴리필 주입. `auto`/`usage`는 graph usage 기반  |
 | `--runtime-target=<query>`                        | core-js 폴리필 Browserslist 타겟. 반복 가능 (`ios_saf 12`)         |
 | `--core-js=<version>`                             | core-js-compat 계산에 사용할 core-js 버전                          |

@@ -224,7 +224,6 @@ pub const EngineVersion = struct {
 
     /// "chrome80", "safari14.1", "node16" → EngineVersion.
     pub fn fromString(s: []const u8) ?EngineVersion {
-        // 숫자 시작 위치 찾기
         var digit_start: ?usize = null;
         for (s, 0..) |c, i| {
             if (c >= '0' and c <= '9') {
@@ -235,16 +234,8 @@ pub const EngineVersion = struct {
         const split = digit_start orelse return null;
         if (split == 0) return null;
         const engine = Engine.fromString(s[0..split]) orelse return null;
-        const ver_str = s[split..];
-        var major: u16 = 0;
-        var minor: u16 = 0;
-        if (std.mem.indexOf(u8, ver_str, ".")) |dot| {
-            major = std.fmt.parseInt(u16, ver_str[0..dot], 10) catch return null;
-            minor = std.fmt.parseInt(u16, ver_str[dot + 1 ..], 10) catch return null;
-        } else {
-            major = std.fmt.parseInt(u16, ver_str, 10) catch return null;
-        }
-        return .{ .engine = engine, .major = major, .minor = minor };
+        const ver = parseMajorMinor(s[split..]) orelse return null;
+        return .{ .engine = engine, .major = ver.major, .minor = ver.minor };
     }
 };
 
@@ -252,6 +243,83 @@ pub const EngineVersion = struct {
 fn versionLessThan(a_major: u16, a_minor: u16, b_major: u16, b_minor: u16) bool {
     if (a_major != b_major) return a_major < b_major;
     return a_minor < b_minor;
+}
+
+/// browserslist entry 한 줄 → EngineVersion.
+/// 다음 형식 모두 흡수:
+///   - 표준 출력: "chrome 100", "ios_saf 14.5"
+///   - 사용자 직접 쿼리: "chrome >= 87", "chrome>=87", "chrome 87"
+///   - 공백 없는 형식: "chrome87" (`EngineVersion.fromString` 과 동등)
+/// 매핑 불가능한 엔진 (samsung, kaios 등) 또는 stat 쿼리 (defaults, > 0.5%) 는 null.
+pub fn parseBrowserslistEntry(s: []const u8) ?EngineVersion {
+    const trimmed = std.mem.trim(u8, s, " \t");
+    if (trimmed.len == 0) return null;
+
+    var name_end: usize = 0;
+    while (name_end < trimmed.len) : (name_end += 1) {
+        const c = trimmed[name_end];
+        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_')) break;
+    }
+    if (name_end == 0) return null;
+    const name_raw = trimmed[0..name_end];
+
+    // operator (>=, >, <=, <, =, ~) skip — Zig CLI 가 raw query 도 받음.
+    // browserslist 패키지 표준 출력에는 operator 가 없지만 사용자 직접 입력에는 흔함.
+    var rest = std.mem.trim(u8, trimmed[name_end..], " \t");
+    while (rest.len > 0 and (rest[0] == '>' or rest[0] == '<' or rest[0] == '=' or rest[0] == '~')) {
+        rest = std.mem.trim(u8, rest[1..], " \t");
+    }
+    if (rest.len == 0) return null;
+
+    // range "87-89" 는 좌단만 흡수 — 가장 낮은 버전 기준 보수적 downlevel.
+    var ver_end: usize = 0;
+    while (ver_end < rest.len) : (ver_end += 1) {
+        const c = rest[ver_end];
+        if (!((c >= '0' and c <= '9') or c == '.')) break;
+    }
+    if (ver_end == 0) return null;
+    const ver_str = rest[0..ver_end];
+
+    // browserslist alias → ZNTC Engine. `Engine.fromString` 이 lowercase 정규화하므로
+    // 비교만 case-insensitive 로.
+    const engine_str: []const u8 =
+        if (std.ascii.eqlIgnoreCase(name_raw, "ios_saf")) "ios" else if (std.ascii.eqlIgnoreCase(name_raw, "and_chr")) "chrome" else if (std.ascii.eqlIgnoreCase(name_raw, "and_ff")) "firefox" else if (std.ascii.eqlIgnoreCase(name_raw, "op_mob")) "opera" else name_raw;
+    const engine = Engine.fromString(engine_str) orelse return null;
+
+    const ver = parseMajorMinor(ver_str) orelse return null;
+    return .{ .engine = engine, .major = ver.major, .minor = ver.minor };
+}
+
+/// "100" / "14.5" / "16.11" → {major, minor}. parseInt 실패 시 null.
+fn parseMajorMinor(s: []const u8) ?struct { major: u16, minor: u16 } {
+    if (std.mem.indexOf(u8, s, ".")) |dot| {
+        const major = std.fmt.parseInt(u16, s[0..dot], 10) catch return null;
+        const minor = std.fmt.parseInt(u16, s[dot + 1 ..], 10) catch return null;
+        return .{ .major = major, .minor = minor };
+    }
+    const major = std.fmt.parseInt(u16, s, 10) catch return null;
+    return .{ .major = major, .minor = 0 };
+}
+
+/// browserslist 쿼리 → UnsupportedFeatures bitmask.
+/// comma 로 split 후 각 entry 를 `parseBrowserslistEntry` 로 파싱. 하나라도 실패하면 null.
+/// stat 기반 쿼리 ("defaults", "last 2 versions", "> 0.5%") 는 caniuse-lite 데이터가 필요해
+/// Zig CLI 에서는 미지원 — 호출자가 친절한 에러 메시지로 안내.
+pub fn browserslistToUnsupported(query: []const u8) ?UnsupportedFeatures {
+    // 64 = browserslist 의 "defaults" 도 ~30 entry, 일반 query 의 안전한 상한.
+    var engines: [64]EngineVersion = undefined;
+    var count: usize = 0;
+    var iter = std.mem.splitScalar(u8, query, ',');
+    while (iter.next()) |part| {
+        const trimmed = std.mem.trim(u8, part, " \t");
+        if (trimmed.len == 0) continue;
+        const ev = parseBrowserslistEntry(trimmed) orelse return null;
+        if (count >= engines.len) return null;
+        engines[count] = ev;
+        count += 1;
+    }
+    if (count == 0) return null;
+    return unsupportedFeatures(engines[0..count]);
 }
 
 // ─── Compat Table ───
@@ -945,4 +1013,58 @@ test "EngineVersion.fromString — 에러 케이스" {
     try std.testing.expectEqual(@as(?EngineVersion, null), EngineVersion.fromString("80"));
     try std.testing.expectEqual(@as(?EngineVersion, null), EngineVersion.fromString("chrome"));
     try std.testing.expectEqual(@as(?EngineVersion, null), EngineVersion.fromString("unknown80"));
+}
+
+test "parseBrowserslistEntry — 표준 출력 형식" {
+    const ev1 = parseBrowserslistEntry("chrome 100").?;
+    try std.testing.expectEqual(Engine.chrome, ev1.engine);
+    try std.testing.expectEqual(@as(u16, 100), ev1.major);
+
+    const ev2 = parseBrowserslistEntry("ios_saf 14.5").?;
+    try std.testing.expectEqual(Engine.ios, ev2.engine);
+    try std.testing.expectEqual(@as(u16, 14), ev2.major);
+    try std.testing.expectEqual(@as(u16, 5), ev2.minor);
+
+    const ev3 = parseBrowserslistEntry("and_chr 100").?;
+    try std.testing.expectEqual(Engine.chrome, ev3.engine);
+}
+
+test "parseBrowserslistEntry — operator + 공백" {
+    const ev1 = parseBrowserslistEntry("chrome >= 87").?;
+    try std.testing.expectEqual(Engine.chrome, ev1.engine);
+    try std.testing.expectEqual(@as(u16, 87), ev1.major);
+
+    const ev2 = parseBrowserslistEntry("firefox>78").?;
+    try std.testing.expectEqual(Engine.firefox, ev2.engine);
+    try std.testing.expectEqual(@as(u16, 78), ev2.major);
+
+    // EngineVersion.fromString 호환 (공백/operator 없음)
+    const ev3 = parseBrowserslistEntry("chrome80").?;
+    try std.testing.expectEqual(Engine.chrome, ev3.engine);
+    try std.testing.expectEqual(@as(u16, 80), ev3.major);
+}
+
+test "parseBrowserslistEntry — 미매핑/잘못된 syntax 는 null" {
+    try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry(""));
+    try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("defaults"));
+    try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("> 0.5%"));
+    try std.testing.expectEqual(@as(?EngineVersion, null), parseBrowserslistEntry("samsung 14"));
+}
+
+test "browserslistToUnsupported — 다중 엔진 union" {
+    // chrome 91 + firefox 79: 양쪽 다 optional_chaining 지원, 양쪽 다 logical_assignment 지원
+    const f1 = browserslistToUnsupported("chrome >= 91, firefox 79").?;
+    try std.testing.expect(!f1.optional_chaining);
+    try std.testing.expect(!f1.logical_assignment);
+
+    // chrome 87 + firefox 78: firefox 78 < 79 → logical_assignment 미지원 → union 도 미지원
+    const f2 = browserslistToUnsupported("chrome 87, firefox 78").?;
+    try std.testing.expect(f2.logical_assignment);
+    // chrome 87 < 91 → optional_chaining 미지원
+    try std.testing.expect(f2.optional_chaining);
+}
+
+test "browserslistToUnsupported — stat 쿼리는 null" {
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), browserslistToUnsupported("defaults"));
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), browserslistToUnsupported("last 2 versions"));
 }
