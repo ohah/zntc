@@ -321,10 +321,14 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
     if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return true;
     const n = self.ast.getNode(idx);
     return switch (n.tag) {
-        // S3 보수적: paren / unary punctuator 만 처리. string/template/array/object 는
-        // codegen_test/{basic,flow,es_downlevel}.zig 의 expected substring 30+ 곳 update
-        // 필요 (generator self-loop helper 의 ASYNC_SENT_RETURN_PREFIX 포함) — 별도 PR S3b.
-        .parenthesized_expression => false,
+        // S3 + S3b: paren / string / template / array / object / unary punctuator 처리.
+        // esbuild/rolldown/rspack 동일 정책.
+        .parenthesized_expression,
+        .string_literal,
+        .template_literal,
+        .array_expression,
+        .object_expression,
+        => false,
         // `return /x/.test(a)` → `return/x/.test(a)` 는 `/x/` 가 division 으로
         // 오토큰화 가능 — minify_sourcemap ASI-sensitive boundary 회귀 가드 (#1577).
         .regexp_literal => true,

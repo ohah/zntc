@@ -289,8 +289,8 @@ test "ES5: async try/catch return lowers to generator return op" {
     var r = try e2eTarget(std.testing.allocator, "async function foo(x) { try { if (x) return 1; } catch (e) { return 2; } }", .es5);
     defer r.deinit();
     try expectAsyncStateMachine(r.output);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,2]") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return 1;") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return 2;") == null);
 }
@@ -323,8 +323,8 @@ test "ES5: async sync-return-only catalog — every statement type triggers stat
         var r = try e2eTarget(std.testing.allocator, c.src, .es5);
         defer r.deinit();
         try expectAsyncStateMachine(r.output);
-        // generator instruction `return [2, ...]` (terminate op) 가 emit 되어야 함.
-        try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,") != null);
+        // generator instruction `return[2, ...]` (terminate op) 가 emit 되어야 함.
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,") != null);
         // raw `return X;` 가 generator callback 안에 새지 않았는지 — raw return
         // 패턴 검사는 fixture 마다 다르지만 `[2,` 가 있으면서 raw 식별자 return
         // 만 또 존재하면 누락 신호.
@@ -339,22 +339,22 @@ test "ES5: async control-flow return after await lowers to generator return op" 
     }{
         .{
             .src = "async function f(x) { await a(); switch (x) { case 1: return true; default: return false; } }",
-            .expected = &.{ "return [2,true]", "return [2,false]" },
+            .expected = &.{ "return[2,true]", "return[2,false]" },
             .forbidden = &.{ "return true;", "return false;" },
         },
         .{
             .src = "async function f(xs) { await a(); for (var i = 0; i < xs.length; i++) { if (xs[i]) return 1; } return 0; }",
-            .expected = &.{ "return [2,1]", "return [2,0]" },
+            .expected = &.{ "return[2,1]", "return[2,0]" },
             .forbidden = &.{"return 1;"},
         },
         .{
             .src = "async function f(x) { await a(); while (x) { return 1; } return 0; }",
-            .expected = &.{ "return [2,1]", "return [2,0]" },
+            .expected = &.{ "return[2,1]", "return[2,0]" },
             .forbidden = &.{"return 1;"},
         },
         .{
             .src = "async function f(xs) { await a(); for (var x of xs) { return x; } return null; }",
-            .expected = &.{ "return [2,x]", "return [2,null]" },
+            .expected = &.{ "return[2,x]", "return[2,null]" },
             .forbidden = &.{"return x;"},
         },
     };
@@ -398,13 +398,13 @@ test "ES5: async if-await as last statement — no self-loop in resume case" {
     var r = try e2eTarget(std.testing.allocator, "async function f(x) { if (x) { await a(); } }", .es5);
     defer r.deinit();
     try expectAsyncStateMachine(r.output);
-    // self-loop pattern — `_state.sent()` 직후 `return [3, N]` 의 N 이 자기 case 의 label.
+    // self-loop pattern — `_state.sent()` 직후 `return[3, N]` 의 N 이 자기 case 의 label.
     // 이 함수에서 await yield label 은 1 (label 0 은 시작), end label 은 2 여야 함.
-    // bug 시: `case 1:_state.sent();return [3,1]` (자기 self-jump → 무한 루프).
-    // fix 시: `case 1:_state.sent();return [2]` (end) 또는 `return [3,2]` (forward jump).
+    // bug 시: `case 1:_state.sent();return[3,1]` (자기 self-jump → 무한 루프).
+    // fix 시: `case 1:_state.sent();return[2]` (end) 또는 `return[3,2]` (forward jump).
     // (e2eTarget 은 minify_whitespace=true 라 space 제거된 형태로 검사.)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent();return [3,1]") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent();return [3, 1]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent();return[3,1]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent();return[3, 1]") == null);
 }
 
 test "ES5: async if-await with later statements — case fall-through correctness" {
@@ -416,7 +416,7 @@ test "ES5: async if-await with later statements — case fall-through correctnes
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var y") != null);
 }
 
-// `assertNoAsyncSelfLoop` 가 case-label-aware 라 self-loop (`_state.sent();return [3,N]` 의
+// `assertNoAsyncSelfLoop` 가 case-label-aware 라 self-loop (`_state.sent();return[3,N]` 의
 // N 이 자기 case 의 label) 만 fail. forward jump 는 정상. `e2eES5Async` 가 ES5 transform +
 // state-machine 검증 + self-loop 검사 자동. 25 case = #1887 회귀 + 다른 control-flow generic.
 const AsyncStateMachineCase = struct {
@@ -486,7 +486,7 @@ test "ES5: yield* string wraps with __values (#1910)" {
     defer r.deinit();
     // raw value 직접 op[5] 로 가는 게 아니라 __values() 거쳐야 string/Map/Set 도 처리.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [5,\"abc\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[5,\"abc\"]") == null);
 }
 
 test "ES5: yield* nested generator still works (#1910 regression)" {
@@ -631,7 +631,7 @@ test "ES5: generator with yield in return expression" {
 }
 
 test "ES5: await in object literal" {
-    var r = try e2eTarget(std.testing.allocator, "async function foo() { return {x: await a, y: await b}; }", .es5);
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return{x: await a, y: await b}; }", .es5);
     defer r.deinit();
     try expectAsyncStateMachine(r.output);
 }
@@ -655,7 +655,7 @@ test "ES5: await in member expression (a.b.method(await x))" {
 }
 
 test "ES5: multiple awaits in array literal use temp vars" {
-    var r = try e2eTarget(std.testing.allocator, "async function foo() { return [await a, await b]; }", .es5);
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return[await a, await b]; }", .es5);
     defer r.deinit();
     try expectAsyncStateMachine(r.output);
     // 각 yield 결과가 temp 변수에 저장되어야 함 (직접 _state.sent() 중복 호출 방지)
@@ -690,7 +690,7 @@ test "ES5: class static async method → state machine" {
 }
 
 test "ES5: destructuring default parameter with spread (AnimatedImplementation pattern)" {
-    var r = try e2eTarget(std.testing.allocator, "function foo() { return {...x}; }\nfunction bar({a = 1, b = true} = {}) { return a; }", .es5);
+    var r = try e2eTarget(std.testing.allocator, "function foo() { return{...x}; }\nfunction bar({a = 1, b = true} = {}) { return a; }", .es5);
     defer r.deinit();
     // spread + destructuring default parameter → 크래시 없이 출력
     try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
@@ -1710,23 +1710,23 @@ test "ES2015: basic generator" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){yield 1;yield 2;}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,2]") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") == null);
 }
 
 test "ES2015: generator with return" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){yield 1;return 42;}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,42]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,42]") != null);
 }
 
 test "ES2015: generator with for loop yield" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){for(var i=0;i<3;i++){yield i;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,i]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,i]") != null);
     // 조건 부정: !(i<3)
     try std.testing.expect(std.mem.indexOf(u8, r.output, "!(i<3)") != null or
         std.mem.indexOf(u8, r.output, "!(i < 3)") != null);
@@ -1736,8 +1736,8 @@ test "ES2015: generator with if yield" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(x){if(x){yield 1;}yield 2;}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,2]") != null);
 }
 
 test "ES2015: generator no transform on esnext" {
@@ -1763,21 +1763,21 @@ test "ES2015: generator var hoisting without yield" {
     defer r.deinit();
     // var a가 호이스팅됨, case 안에는 a=1 assignment만
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,a]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,a]") != null);
 }
 
 test "ES2015: generator yield*" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){yield* [1,2];}", .es5);
     defer r.deinit();
-    // (#1910) yield* 가 raw iterable 을 __values() 로 wrap — `return [5, __values([1,2])]`
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [5,__values([1,2])]") != null);
+    // (#1910) yield* 가 raw iterable 을 __values() 로 wrap — `return[5, __values([1,2])]`
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[5,__values([1,2])]") != null);
 }
 
 test "ES2015: generator do-while with yield" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){var i=0;do{yield i;i++;}while(i<3);}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,i]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,i]") != null);
     // do-while: body 먼저, 조건으로 점프
     try std.testing.expect(std.mem.indexOf(u8, r.output, "i<3") != null or
         std.mem.indexOf(u8, r.output, "i < 3") != null);
@@ -1787,7 +1787,7 @@ test "ES2015: generator try/catch with yield" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){try{yield 1;}catch(e){yield e;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.trys.push") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,1]") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
 }
 
@@ -1795,7 +1795,7 @@ test "ES2015: generator try/catch/finally with yield" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){try{yield 1;}catch(e){f(e);}finally{cleanup();}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.trys.push") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [7]") != null); // endfinally
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[7]") != null); // endfinally
     try std.testing.expect(std.mem.indexOf(u8, r.output, "cleanup()") != null);
 }
 
@@ -2270,15 +2270,15 @@ test "ES2015: generator labeled break" {
     var r = try e2eTarget(std.testing.allocator, "function* g(){outer:for(var i=0;i<3;i++){if(i===1)break outer;yield i;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    // break outer → return [3, N] (end label로 점프)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [3,") != null);
+    // break outer → return[3, N] (end label로 점프)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[3,") != null);
 }
 
 test "ES2015: generator labeled continue" {
     var r = try e2eTarget(std.testing.allocator, "function* g(){outer:for(var i=0;i<3;i++){if(i===1)continue outer;yield i;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    // continue outer → return [3, N] (update label로 점프 → i++ 실행)
+    // continue outer → return[3, N] (update label로 점프 → i++ 실행)
     try std.testing.expect(std.mem.indexOf(u8, r.output, "i++") != null);
 }
 
@@ -2290,8 +2290,8 @@ test "ES2015: generator switch with yield" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
     // switch → if-else 체인으로 분해
     try std.testing.expect(std.mem.indexOf(u8, r.output, "x===1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,\"a\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,\"b\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,\"a\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,\"b\"]") != null);
 }
 
 // --- static block ES5 ---
@@ -2474,7 +2474,7 @@ test "ES2015: generator with while yield" {
     var r = try e2eTarget(std.testing.allocator, "function* g(){var i=0;while(i<3){yield i;i++;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,i]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,i]") != null);
 }
 
 test "ES2015: generator expression" {
@@ -2487,8 +2487,8 @@ test "ES2015: generator with multiple return" {
     var r = try e2eTarget(std.testing.allocator, "function* g(x){if(x>0){return 'pos';}yield 0;return 'neg';}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    // yield 0 → [4, 0], return "neg" → [2, "neg"]
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,\"neg\"]") != null);
+    // yield 0 → [4, 0], return"neg" → [2, "neg"]
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,\"neg\"]") != null);
 }
 
 // --- for-of edge cases ---
@@ -2550,7 +2550,7 @@ test "ES2018: for-await-of with break — lowered (#1381)" {
     var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter){if(v)break;g(v);}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
-    // #1480 이후 break는 __generator state machine의 label jump(return [3, N])로 변환됨.
+    // #1480 이후 break는 __generator state machine의 label jump(return[3, N])로 변환됨.
     // iterator.return 호출 (finally 안)로 cleanup 보장.
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".return") != null);
 }
@@ -2793,7 +2793,7 @@ test "ES2020: TS non-null assertion super 의 optional chain — (super!)?.m() (
 
 test "ES2020: wrapped super + 후속 optional chain — (super as any)?.x?.y (#2034)" {
     // ?.x 는 super-base 라 strip 되고 __superGet 으로 lowering, ?.y 는 일반 ternary 로 보존.
-    var r = try e2eTarget(std.testing.allocator, "class B{get nested(){return {y:1}}}class C extends B{m(){return (super as any)?.nested?.y}}", .es5);
+    var r = try e2eTarget(std.testing.allocator, "class B{get nested(){return{y:1}}}class C extends B{m(){return (super as any)?.nested?.y}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"nested\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "==null?void 0") != null);
@@ -3260,8 +3260,8 @@ test "ES5: async return sequence stays one generator return value" {
         \\}
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,(hook(),{onMessage:1})]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,hook(),{onMessage:1}]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,(hook(),{onMessage:1})]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[2,hook(),{onMessage:1}]") == null);
 }
 
 test "ES5: async switch case block extracts await" {

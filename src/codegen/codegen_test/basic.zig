@@ -89,7 +89,7 @@ test "Codegen: TS export = identifier → module.exports = identifier" {
 test "Codegen: TS export = class expression → module.exports = class" {
     var r = try e2e(std.testing.allocator, "export = class Foo { greet() { return 'hi'; } };");
     defer r.deinit();
-    try std.testing.expectEqualStrings("module.exports=class Foo{greet(){return \"hi\";}};", r.output);
+    try std.testing.expectEqualStrings("module.exports=class Foo{greet(){return\"hi\";}};", r.output);
 }
 
 test "Codegen: TS export = function expression → module.exports = function" {
