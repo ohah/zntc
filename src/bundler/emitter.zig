@@ -1412,6 +1412,12 @@ pub fn emitModule(
         // codegen/mangler 도 `transformer.symbol_ids` 를 읽으므로(override_syms → md.symbol_ids)
         // alias inline 의 symbol_id 갱신이 전파됨. 동일 backing 의 mutable view.
         ctx.symbol_ids_mut = transformer.symbol_ids.items;
+        // module-level dead store elide: tree-shaker active + 모듈이 *user-declared pure*
+        // (package.json `"sideEffects": false`) 일 때만 허용. rolldown 의
+        // `DeterminedSideEffects::UserDefined(false)` 와 동일 게이트 — user 가 명시한
+        // "drop 가능" 신호가 있을 때만 정밀 DCE 적용. mobx/rxjs/lodash 등 라이브러리는
+        // 거의 모두 이 신호를 가지고 있어 mobx 4KB cascade-dead 회수 경로 활성화.
+        ctx.allow_top_level_dead = (shaker != null) and module.isUserDeclaredPure();
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
 

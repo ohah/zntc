@@ -463,8 +463,7 @@ pub const TreeShaker = struct {
                 // 있을 때만 정밀 DCE — RN core 처럼 sideEffects 미명시 모듈은 기존 보수 동작 유지.
                 // rolldown 의 `try_extract_lazy_barrel_info` (DeterminedSideEffects::UserDefined(false))
                 // 와 동일 게이트.
-                const is_user_declared_pure = m.side_effects_user_defined and !m.side_effects;
-                if (m.wrap_kind == .esm and !is_user_declared_pure) continue;
+                if (m.wrap_kind == .esm and !m.isUserDeclaredPure()) continue;
 
                 if (m.wrap_kind != .cjs) {
                     if (m.prebuilt_stmt_info) |prebuilt| {

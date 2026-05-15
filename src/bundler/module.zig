@@ -374,6 +374,13 @@ pub const Module = struct {
         return self.cycle_group != 0;
     }
 
+    /// 모듈이 *user-declared pure* — package.json `"sideEffects": false` 가 명시되어
+    /// "drop 가능" 신호를 준 경우. tree-shaker / module-level dead store 등 정밀 DCE
+    /// 게이트가 공유. rolldown 의 `DeterminedSideEffects::UserDefined(false)` 와 동일.
+    pub inline fn isUserDeclaredPure(self: *const Module) bool {
+        return self.side_effects_user_defined and !self.side_effects;
+    }
+
     /// `entry_error_guard` 활성 시 이 모듈의 init 호출을 `__zntc_guarded(...)` 로 wrap 할지 결정.
     /// TLA (`uses_top_level_await`) 인 ESM 모듈은 await 가 lambda 안에 못 들어가므로 wrap 안 함.
     /// `wrap_kind == .none` (래핑 없음) 도 호출할 init 함수 자체가 없어 wrap 무의미.
