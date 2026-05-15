@@ -170,6 +170,82 @@ test "Flow: readonly used as plain type identifier (not variance)" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+// ================================================================
+// Conditional + infer (Hermes parity)
+// ================================================================
+
+test "Flow: simple conditional type stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T<X> = X extends string ? 1 : 0;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: conditional with infer T stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type Unwrap<X> = X extends Array<infer U> ? U : X;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: conditional with infer T extends Bound stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type S<X> = X extends infer Y extends string ? Y : never;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: nested conditional (true branch)" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T<X> = X extends string ? (X extends 'a' ? 1 : 2) : 3;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: nested conditional (false branch)" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T<X> = X extends string ? 1 : X extends number ? 2 : 3;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: parenthesized conditional inside extends type" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T<X> = X extends (Y extends Z ? A : B) ? 1 : 0;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: infer in array element position" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type First<X> = X extends [infer H, ...infer T] ? H : never;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: infer with constrained Bound inside parens" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T<X> = X extends (infer Y extends number) ? Y : 0;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
 test "Flow: type alias with generic stripped" {
     var r = try e2eFlow(std.testing.allocator, "type List<T> = Array<T>;\nlet x = 1;");
     defer r.deinit();
