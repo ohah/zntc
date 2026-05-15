@@ -2717,9 +2717,10 @@ test "#1618 minify: __commonJS → $cj short name" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // minify 모드: preamble이 `var $cj=` 형태로 축약, 호출부도 `=$cj({`
+    // minify 모드: preamble이 `var $cj=` 형태로 축약, 호출부는 직접 함수
+    // (`=$cj((exports,module)=>`) — esbuild 식 cb=function 패턴 (object literal 제거).
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$cj({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$cj((exports,module)=>") != null);
     // 원본 `__commonJS` 이름은 나타나지 않아야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
 }
