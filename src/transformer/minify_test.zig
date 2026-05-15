@@ -1815,11 +1815,12 @@ test "inline: var — 보존 (hoisting 이슈)" {
     );
 }
 
-test "inline: 식별자 의존 init — 보존 (Phase 3 일반 expression 범위 밖)" {
-    // init 에 outer variable 참조 → isConstantExpr false → inline skip.
+test "inline: 식별자 의존 init — pure compound inline (paren wrap)" {
+    // init 이 pure binary 이고 모든 inner reference (n) 가 immutable 이면 inline.
+    // paren wrap 으로 precedence 보존 — outer 가 statement-root 라도 conservative.
     try expectMinifyDead(
         "function f(n) { const x = n * 2; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\tconst x = n * 2;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn (n * 2);\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -1831,11 +1832,11 @@ test "inline: 함수 호출 init — 보존 (pure 확인 불가)" {
     );
 }
 
-test "inline: shorthand property — 보존 (value 가 identifier_reference)" {
-    // { a } 는 value = identifier_reference → constant expr 아님 → inline 불가.
+test "inline: shorthand property — pure object inline (a 가 immutable param)" {
+    // { a } 의 value identifier_reference 가 immutable parameter → pure compound inline.
     try expectMinifyDead(
         "function f(a) { const o = { a }; return o; } f(1);",
-        "function run() {\n\tfunction f(a) {\n\t\tconst o = { a };\n\t\treturn o;\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(a) {\n\t\t;\n\t\treturn ({ a });\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -1946,11 +1947,11 @@ test "inline: object with numeric key — inline" {
     );
 }
 
-test "inline: computed key — 보존" {
-    // [k] 는 expression — constant expr 판정에서 제외.
+test "inline: computed key — pure object inline (k 가 immutable param)" {
+    // [k] 의 k 가 immutable parameter → pure compound inline.
     try expectMinifyDead(
         "function f(k) { const o = { [k]: 1 }; return o; } f('x');",
-        "function run() {\n\tfunction f(k) {\n\t\tconst o = { [k]: 1 };\n\t\treturn o;\n\t}\n\tf(\"x\");\n}\nrun();",
+        "function run() {\n\tfunction f(k) {\n\t\t;\n\t\treturn ({ [k]: 1 });\n\t}\n\tf(\"x\");\n}\nrun();",
     );
 }
 
@@ -2027,25 +2028,26 @@ test "inline: eval 스코프 — 보존 (blocksMangling)" {
     );
 }
 
-test "inline: conditional expression init — 보존 (식별자 의존 가능)" {
+test "inline: conditional expression init — pure compound inline" {
+    // c 가 immutable parameter → pure compound (paren wrap).
     try expectMinifyDead(
         "function f(c) { const x = c ? 1 : 2; return x; } f(true);",
-        "function run() {\n\tfunction f(c) {\n\t\tconst x = c ? 1 : 2;\n\t\treturn x;\n\t}\n\tf(true);\n}\nrun();",
+        "function run() {\n\tfunction f(c) {\n\t\t;\n\t\treturn (c ? 1 : 2);\n\t}\n\tf(true);\n}\nrun();",
     );
 }
 
-test "inline: binary expression init — 보존 (constant fold 이후에도 expr 이면 skip)" {
-    // `n + 1` — fold 후에도 binary 로 남으면 isConstantExpr 에서 제외.
+test "inline: binary expression init — pure compound inline (paren wrap)" {
+    // n + 1 — n 이 immutable parameter, binary 가 pure → inline.
     try expectMinifyDead(
         "function f(n) { const x = n + 1; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\tconst x = n + 1;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn (n + 1);\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
-test "inline: unary expression init — 보존" {
+test "inline: unary expression init — pure compound inline (paren wrap)" {
     try expectMinifyDead(
         "function f(n) { const x = -n; return x; } f(1);",
-        "function run() {\n\tfunction f(n) {\n\t\tconst x = -n;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+        "function run() {\n\tfunction f(n) {\n\t\t;\n\t\treturn (-n);\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -2149,5 +2151,29 @@ test "iife: bare return — abandon (return; with no argument)" {
     try expectMinify(
         "const r = (() => { return; })();",
         "const r = (() => {\n\treturn;\n})();",
+    );
+}
+
+// ================================================================
+// Single-use temp inliner — pure compound expression
+// 회귀 가드: paren wrap 누락 시 precedence 손실로 의미 변경 위험.
+// ================================================================
+
+test "inline: precedence 보존 — chained binary inline" {
+    // const a=x+1; const b=a*2; const c=b-3; return c;
+    // 각 단계 inline 후 paren 누락 시 `x+1*2-3` 가 되어 `x-1` 로 해석 (잘못).
+    // 정답: `((x+1)*2)-3`. node 실행: g(2) → 3.
+    try expectMinifyDead(
+        "function g(x) { const a = x+1; const b = a*2; const c = b-3; return c; } g(2);",
+        "function run() {\n\tfunction g(x) {\n\t\t;\n\t\t;\n\t\t;\n\t\treturn (((x + 1) * 2) - 3);\n\t}\n\tg(2);\n}\nrun();",
+    );
+}
+
+test "inline: mutable referenced symbol — abandon (let)" {
+    // `let x = 1; const a = x + 1; x = 2; ...` — x 가 mutable 이면 inline 후
+    // ordering 변경 위험. allInnerReferencesImmutable 가 false → skip.
+    try expectMinifyDead(
+        "function f() { let x = 1; const a = x + 1; x = 2; return a + x; } f();",
+        "function run() {\n\tfunction f() {\n\t\tlet x = 1;\n\t\tconst a = x + 1;\n\t\tx = 2;\n\t\treturn a + x;\n\t}\n\tf();\n}\nrun();",
     );
 }

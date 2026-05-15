@@ -728,23 +728,29 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     if (init_ni >= ast.nodes.items.len) return;
     const init_node = ast.nodes.items[init_ni];
 
-    // inline 대상 두 종류: ① 식별자 의존 없는 constant expr (mutable state 무관 → 위치 자유),
-    // ② **immutable binding 의 alias** — `const x = foo;` 에서 `foo` 가 재할당 없는 심볼
-    //   (const / import / param / function·class 선언명; write_count == 0). ②는 read 가 `x`
-    //   선언과 **같은 scope** 에 있을 때만 (아래 scope 검사) — 다른 scope 로 ref 를 옮기면
-    //   `foo` 의 이름이 그 scope 의 다른 binding 에 의해 shadow 될 수 있고, mangler 는
-    //   "outer 심볼 ref 가 그 이름을 shadow 하는 inner scope 안에 나타나는" 상황을 가정 안 함
-    //   (특히 1글자 이름은 skip 되어 원본 유지) → collision. 같은 scope 면 `foo` resolve 가
-    //   선언 위치와 동일하므로 그런 상황이 생기지 않음.
+    // inline 대상 세 종류:
+    //   ① constant expr (mutable state 무관 → 위치 자유)
+    //   ② **immutable binding alias** — `const x = foo;` 에서 `foo` 가 write_count==0
+    //   ③ **pure compound expr** — `const x = a+1;` 처럼 binary/unary/conditional/
+    //      member access 등. 안 의 모든 reference 가 immutable 이어야 ordering 안전.
+    // ②/③ 는 read 가 declaration 과 **같은 scope** 일 때만 (아래 scope 검사) —
+    // 다른 scope 로 ref 를 옮기면 mangle/shadow collision 위험.
     var alias_sym: ?u32 = null;
+    var needs_scope_check = false;
     if (!isConstantExpr(ast, init_idx)) {
-        if (ctx.symbol_ids_mut == null) return; // alias inline 은 mutable symbol_ids 필요
-        if (init_node.tag != .identifier_reference) return;
-        if (init_ni >= ctx.symbol_ids.len) return;
-        const s = ctx.symbol_ids[init_ni] orelse return; // unresolved global → 불변성 확인 불가
-        if (s >= ctx.symbols.len or s == sym_id) return; // self-ref(`const x = x;`) 방어
-        if (ctx.symbols[s].write_count != 0) return; // 어딘가 재할당 → 불변 아님
-        alias_sym = s;
+        if (ctx.symbol_ids_mut == null) return; // symbol_ids mutation 필요한 케이스
+        if (init_node.tag == .identifier_reference) {
+            if (init_ni >= ctx.symbol_ids.len) return;
+            const s = ctx.symbol_ids[init_ni] orelse return;
+            if (s == sym_id) return; // self-ref(`const x = x;`) 방어
+            if (!isImmutableSymbol(ctx, s)) return;
+            alias_sym = s;
+        } else {
+            // pure compound expression — 모든 내부 reference 의 referenced symbol 이
+            // immutable(write_count==0) 이어야 inline 후 ordering 보존.
+            if (!allInnerReferencesImmutable(ast, ctx, init_idx, sym_id)) return;
+        }
+        needs_scope_check = true;
     }
     if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
 
@@ -754,10 +760,11 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     const read_ni = first_loc[sym_id];
     if (read_ni == std.math.maxInt(u32) or read_ni >= ast.nodes.items.len) return;
 
-    // alias inline: read 위치가 `x` 선언과 같은 scope 여야 안전 (위 주석). read 의 scope 는
-    // pre-minify `references` 에서 `node_index == read_ni` 인 항목으로 조회 — transformer 가
-    // 노드를 copy 했으면 매칭 실패(orphan) → 안전 보수적 skip.
-    if (alias_sym != null) {
+    // alias / pure compound inline: read 위치가 `x` 선언과 같은 scope 여야 안전 (위
+    // 주석). read 의 scope 는 pre-minify `references` 에서 `node_index == read_ni` 인
+    // 항목으로 조회 — transformer 가 노드를 copy 했으면 매칭 실패(orphan) → 안전
+    // 보수적 skip.
+    if (needs_scope_check) {
         var read_scope_ok = false;
         for (ctx.references) |r| {
             if (@intFromEnum(r.node_index) != read_ni) continue;
@@ -780,11 +787,25 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     // in-place swap: read 위치의 identifier_reference 를 init 의 tag/data 로 덮어쓴다.
     // init 의 자식은 extra_data 공유 → codegen 은 read_ni 에서 init 전체를 출력.
     // span 은 init 의 것을 사용 (source map 에서 inlined 값의 위치 유지).
-    ast.nodes.items[read_ni] = .{
-        .tag = init_node.tag,
-        .span = init_node.span,
-        .data = init_node.data,
-    };
+    //
+    // pure compound expression 은 parenthesized_expression 으로 wrap — codegen 이
+    // precedence-based paren 을 자동 추가하지 않으므로 `const a=x+1; b=a*2;` 가
+    // `b=x+1*2` (잘못, `1*2` 먼저) 가 되는 회귀 방지. constant / alias 분기는 단일
+    // 토큰이라 paren 불필요.
+    const pure_compound = alias_sym == null and needs_scope_check;
+    if (pure_compound) {
+        ast.nodes.items[read_ni] = .{
+            .tag = .parenthesized_expression,
+            .span = init_node.span,
+            .data = .{ .unary = .{ .operand = init_idx, .flags = 0 } },
+        };
+    } else {
+        ast.nodes.items[read_ni] = .{
+            .tag = init_node.tag,
+            .span = init_node.span,
+            .data = init_node.data,
+        };
+    }
     // alias inline: codegen/mangler 의 rename 조회가 symbol_id 기준이므로 read 위치의
     // symbol_id 를 `S` 로 갱신. ref count 는 불변 — init 의 `S`-ref 가 read 위치로 "이동"
     // 하고, decl 제거로 orphan 되는 init 노드가 `reference_count(S)` 를 balance.
@@ -801,6 +822,43 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     }, changed);
     if (sym_id < ctx.ref_deltas.len) ctx.ref_deltas[sym_id] += 1;
     changed.* = true;
+}
+
+/// 심볼이 어디서도 재할당되지 않는지 (`write_count == 0`). out-of-bounds
+/// 보수적 false. alias inline / pure compound inline 양쪽에서 공유.
+inline fn isImmutableSymbol(ctx: MinifyCtx, sid: u32) bool {
+    return sid < ctx.symbols.len and ctx.symbols[sid].write_count == 0;
+}
+
+/// `idx` 안의 모든 identifier_reference 의 referenced symbol 이 immutable 인지
+/// 재귀 판정. self-reference 도 거부 (decl_sym_id 와 같은 symbol → `const x = x;`
+/// 같은 self-cycle 방어). unresolved global 또는 symbol_ids 미매핑이면 보수적
+/// false.
+///
+/// pure compound expression inline 안전성 — `const a = x+1; b = a*2;` 에서
+/// `x` 가 mutable 이면 inline 후 `b = (x+1)*2;` 의 `x` 평가 시점이 declaration
+/// 위치에서 read 위치로 옮겨가 ordering 의미 변경 위험.
+fn allInnerReferencesImmutable(
+    ast: *const Ast,
+    ctx: MinifyCtx,
+    idx: NodeIndex,
+    decl_sym_id: u32,
+) bool {
+    if (idx.isNone()) return true;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return true;
+    const node = ast.nodes.items[ni];
+    if (node.tag == .identifier_reference) {
+        if (ni >= ctx.symbol_ids.len) return false;
+        const sid = ctx.symbol_ids[ni] orelse return false;
+        if (sid == decl_sym_id) return false;
+        if (!isImmutableSymbol(ctx, sid)) return false;
+    }
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child| {
+        if (!allInnerReferencesImmutable(ast, ctx, child, decl_sym_id)) return false;
+    }
+    return true;
 }
 
 /// init 이 식별자 의존성 없는 constant expression 인지 판정.
