@@ -16,7 +16,7 @@ const std = @import("std");
 
 pub const NAMES = struct {
     // bundler interop
-    pub const CJS_FACTORY_MIN = "$cj"; // __commonJS
+    pub const CJS_FACTORY_MIN = "$c"; // __commonJS — 호출 빈도 가장 높음 (모듈 wrapper 마다)
     pub const REQUIRE_MIN = "$r"; // __commonJS body 내부 function __require
     pub const ESM_FACTORY_MIN = "$e"; // __esm
     pub const EXPORT_MIN = "$x"; // __export

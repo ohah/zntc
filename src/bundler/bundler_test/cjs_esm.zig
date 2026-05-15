@@ -243,8 +243,8 @@ test "CJS: minified CJS wrapping" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // #1618: minify 모드에서 CJS 팩토리는 `$cj`로 축약
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cj=") != null);
+    // #1618: minify 모드에서 CJS 팩토리는 `$c`로 축약 (#3256 후 1 char 단축)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c=") != null);
     // 모듈 경계 주석 없음
     try std.testing.expect(std.mem.indexOf(u8, result.output, "// ---") == null);
 }
