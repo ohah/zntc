@@ -270,13 +270,17 @@ describe('Node.js 호환 edge case', () => {
       expect(bundled).not.toContain('createRequire');
     });
 
-    test('code splitting: shim injected in chunk containing CJS wrap', async () => {
+    test('code splitting: shim injected in chunk containing external require', async () => {
+      // shim 필요 조건은 `kind=.require and is_external` 한 import_record 의 존재
+      // (#cbd201f6 — `__commonJS` wrapper 자체는 cb 직접 호출이라 native require 안 씀).
+      // CJS dep 의 `index.cjs` 안에서 builtin `require('node:fs')` 호출 → external
+      // require → 해당 dep 이 들어간 chunk 에 `createRequire(import.meta.url)` shim emit.
       const f = await createFixture({
         'app.ts': `const lazy = import('./lazy');\nlazy.then((m) => console.log(m.run()));`,
-        'lazy.ts': `import dep from 'cjs-dep';\nexport function run() { return dep.x; }`,
+        'lazy.ts': `import dep from 'cjs-dep';\nexport function run() { return dep.has; }`,
         'package.json': `{"type": "module"}`,
         'node_modules/cjs-dep/package.json': `{"name":"cjs-dep","main":"index.cjs"}`,
-        'node_modules/cjs-dep/index.cjs': `module.exports = { x: 42 };`,
+        'node_modules/cjs-dep/index.cjs': `const fs = require('node:fs');\nmodule.exports = { has: typeof fs.readFileSync };`,
       });
       cleanup = f.cleanup;
 
