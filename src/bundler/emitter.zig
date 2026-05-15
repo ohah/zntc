@@ -1760,11 +1760,14 @@ pub fn emitModule(
         if (options.minify_whitespace) {
             // emit 의 직접 함수 패턴은 `runtime_helpers.zig` 의 `CJS_RUNTIME_*` 가 cb 를
             // function 으로 받는 것과 한 쌍 — 한쪽만 바꾸면 runtime TypeError.
-            // callback param `(e, m)` 단축 — body 의 `exports`/`module` reference 도
-            // codegen 의 `cjs_wrap_substitute` 가 `e`/`m` 으로 substitute.
+            // body 가 `module` 안 쓰면 wrapper param 도 `(e)` 1 인자로 단축 (rolldown 식).
+            // codegen 의 `cjs_wrap_module_used` 가 substitute 시점에 set.
+            const param_list = if (cg.cjs_wrap_module_used) "(e,m)" else "(e)";
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((e,m)=>{");
+            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(");
+            try wrapped.appendSlice(allocator, param_list);
+            try wrapped.appendSlice(allocator, "=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "});");

@@ -200,6 +200,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                     else => null,
                 };
                 if (alias) |c| {
+                    if (c == 'm') self.cjs_wrap_module_used = true;
                     try self.addSourceMappingWithName(node.span, name);
                     try self.writeByte(c);
                     return;
