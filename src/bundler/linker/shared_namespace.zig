@@ -14,6 +14,7 @@ const CompiledModule = @import("../compiled_module.zig").CompiledModule;
 const Module = @import("../module.zig").Module;
 const rt = @import("../runtime_helpers.zig");
 const profile = @import("../../profile.zig");
+const debug_log = @import("../../debug_log.zig");
 
 const NsExportPair = Linker.NsExportPair;
 const SharedNsInline = Linker.SharedNsInline;
@@ -301,6 +302,19 @@ pub fn appendSharedNamespacePreambleFiltered(
         try out.appendSlice(self.allocator, " = ");
         try out.appendSlice(self.allocator, entry.object_literal);
         try out.appendSlice(self.allocator, ";\n");
+        // 큰 namespace inline 의 size 영향 측정. `get NAME(){return VAL}` 패턴은
+        // esbuild/rolldown 의 `NAME:()=>VAL` arrow `__export` 보다 per-export ~9 byte 큼
+        // (~9 exports 부터 helper 패턴이 더 짧음). 어느 라이브러리에서 격차가 큰지
+        // 식별용 — export count 는 `get ` prefix 개수로 근사.
+        if (debug_log.enabled(.ns_inline_audit)) {
+            const literal = entry.object_literal;
+            const export_count = std.mem.count(u8, literal, "get ");
+            debug_log.print(.ns_inline_audit, "  - {s}: exports={d} bytes={d}\n", .{
+                entry.var_name,
+                export_count,
+                literal.len,
+            });
+        }
     }
 }
 
