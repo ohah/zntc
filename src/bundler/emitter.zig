@@ -718,7 +718,7 @@ pub fn emitWithTreeShaking(
     else
         null;
     var rbm_calls_emitted = false;
-    // CJS var wrap 합치기 sequence 추적 (minify 모드, M5).
+    // sequential CJS var wrap 합치기를 위한 직전 모듈 상태 추적 (minify only).
     var prev_was_cjs_var_minify = false;
 
     for (sorted.items, 0..) |m, i| {
@@ -789,17 +789,14 @@ pub fn emitWithTreeShaking(
             code_after_rewrite;
 
         if (!skip_bundle_concat) {
-            // Minify 모드 + 직전 module 도 CJS var wrap 이면 `var ` prefix 와 trailing `;`
-            // 를 합쳐 `var X=...,Y=...,Z=...;` single declaration 으로 emit (rolldown 식,
-            // 모듈당 ~3 chars 절약). non-minify 또는 wrap_kind 다르면 sequence 끊기.
+            // sequential CJS var wrap 모듈을 single declaration 으로 합침
+            // (`var X=...;var Y=...;` → `var X=...,Y=...;`).
             const is_cjs_var_minify = options.minify_whitespace and m.wrap_kind == .cjs and
                 std.mem.startsWith(u8, code_to_append, "var ") and
                 std.mem.endsWith(u8, code_to_append, ";");
-            if (is_cjs_var_minify and prev_was_cjs_var_minify and module_output.items.len > 0 and
-                module_output.items[module_output.items.len - 1] == ';')
-            {
-                module_output.items[module_output.items.len - 1] = ',';
-                try module_output.appendSlice(allocator, code_to_append[4..]); // skip "var "
+            if (is_cjs_var_minify and prev_was_cjs_var_minify) {
+                const merged = try tryMergeVarDeclaration(&module_output, allocator, code_to_append);
+                if (!merged) try module_output.appendSlice(allocator, code_to_append);
             } else {
                 try module_output.appendSlice(allocator, code_to_append);
             }
@@ -908,19 +905,18 @@ pub fn emitWithTreeShaking(
         try output.insertSlice(allocator, 0, hoisted_directives.items);
     }
 
-    // 모듈 코드 합류 — minify 시 helper 정의 (`var $c=...;`) 와 첫 cjs module
-    // (`var X=$c(...)`) 가 인접하면 single var declaration 으로 합침 (rolldown 식,
-    // ~3 chars 절약 — `;var ` → `,`).
+    // helper 정의 (`var $c=...;`) 와 첫 cjs module (`var X=$c(...)`) 가 인접하면
+    // single var declaration 으로 합침. 마지막 helper (cjs runtime) 가 `arrow);` 로
+    // 끝나는 패턴 검사 + cjs runtime 이 emit 됐는지 (`var $c=` substring) 확인.
     const cjs_var_prefix = "var " ++ rt.NAMES.CJS_FACTORY_MIN ++ "=";
-    const can_merge_helper_into_module = options.minify_whitespace and
-        output.items.len > 0 and output.items[output.items.len - 1] == ';' and
-        std.mem.endsWith(u8, output.items[0..output.items.len -| 1], ")") and // helper 끝 `)`
-        std.mem.startsWith(u8, module_output.items, "var ") and
+    const can_merge = options.minify_whitespace and
+        output.items.len >= 2 and
+        output.items[output.items.len - 1] == ';' and
+        output.items[output.items.len - 2] == ')' and
         std.mem.indexOf(u8, output.items, cjs_var_prefix) != null;
-    if (can_merge_helper_into_module) {
-        // output 끝 `;` → `,`, module_output 의 `var ` (4 chars) 제거 후 append
-        output.items[output.items.len - 1] = ',';
-        try output.appendSlice(allocator, module_output.items[4..]);
+    if (can_merge) {
+        const merged = try tryMergeVarDeclaration(&output, allocator, module_output.items);
+        if (!merged) try output.appendSlice(allocator, module_output.items);
     } else {
         try output.appendSlice(allocator, module_output.items);
     }
@@ -1243,6 +1239,18 @@ pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.A
         const rbm = graph.findModuleByPath(rbm_path) orelse continue;
         try appendGuardedModuleCall(output, allocator, rbm, options);
     }
+}
+
+/// `out` 의 마지막 statement 가 `var ... ;` 로 끝나고 `next` 가 `var ` 로 시작하면
+/// `;var ` 를 `,` 로 합쳐 single declaration 으로 만든다 — `;` 를 in-place mutate +
+/// `next` 의 `"var "` (4 chars) prefix skip. caller 의 minify path 에서 두 곳 (M5
+/// module-to-module, M8 helper-to-module) 공유.
+fn tryMergeVarDeclaration(out: *std.ArrayList(u8), allocator: std.mem.Allocator, next: []const u8) !bool {
+    if (out.items.len == 0 or out.items[out.items.len - 1] != ';') return false;
+    if (!std.mem.startsWith(u8, next, "var ")) return false;
+    out.items[out.items.len - 1] = ',';
+    try out.appendSlice(allocator, next["var ".len..]);
+    return true;
 }
 
 fn findLastRunBeforeMainPosition(sorted: []const *const Module, run_before_main: []const []const u8) ?usize {
@@ -1790,7 +1798,7 @@ pub fn emitModule(
         if (options.minify_whitespace) {
             // emit 의 직접 함수 패턴은 `runtime_helpers.zig` 의 `CJS_RUNTIME_*` 가 cb 를
             // function 으로 받는 것과 한 쌍 — 한쪽만 바꾸면 runtime TypeError.
-            // body 가 `module` 안 쓰면 wrapper param 도 `(e)` 1 인자로 단축 (rolldown 식).
+            // body 가 `module` 안 쓰면 wrapper param 도 `(e)` 1 인자로 단축.
             // codegen 의 `cjs_wrap_module_used` 가 substitute 시점에 set.
             const param_list = if (cg.cjs_wrap_module_used) "(e,m)" else "(e)";
             try wrapped.appendSlice(allocator, "var ");
