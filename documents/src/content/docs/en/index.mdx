@@ -38,13 +38,7 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
   ]}
   codeFilename="example.ts"
   codeLang="ts"
-  codeExample={`import { transpile } from '@zntc/core';
-
-const { code } = transpile(source, {
-  filename: 'input.tsx',
-  jsx: 'automatic',
-  target: 'es2022',
-});`}
+  codeExample={"import { transpile } from '@zntc/core';\n\nconst { code } = transpile(source, {\n  filename: 'input.tsx',\n  jsx: 'automatic',\n  target: 'es2022',\n});"}
 />
 
 <StatsStrip

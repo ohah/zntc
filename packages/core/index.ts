@@ -6,8 +6,7 @@
  *
  * @example
  * ```ts
- * import { init, transpile } from "@zntc/core";
- * init();
+ * import { transpile } from "@zntc/core";
  * const result = transpile("const x: number = 1;", { filename: "input.ts" });
  * console.log(result.code);
  * ```
@@ -2363,8 +2362,7 @@ export interface BenchmarkResult {
  *
  * @example
  * ```ts
- * import { init, benchmark } from "@zntc/core";
- * init();
+ * import { benchmark } from "@zntc/core";
  *
  * const result = benchmark({
  *   file: "./src/App.tsx",
