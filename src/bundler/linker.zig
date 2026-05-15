@@ -674,6 +674,20 @@ pub const Linker = struct {
     /// caller 가 `deinit` 해야 함.
     pub fn collectUnifiedInput(self: *const Linker) !UnifiedCollect {
         const um = @import("../codegen/unified_mangler.zig");
+        // helper module / dead module / sem-less module 모두 같은 빈 입력으로
+        // Phase B 를 skip 시킨다.
+        const emptyInput = struct {
+            fn make(source: []const u8, bitset: std.DynamicBitSet) um.ModuleMangleInput {
+                return .{
+                    .scopes = &.{},
+                    .symbols = &.{},
+                    .scope_maps = &.{},
+                    .references = &.{},
+                    .source = source,
+                    .module_scope_symbols = bitset,
+                };
+            }
+        }.make;
 
         const mod_count = self.graph.moduleCount();
         const modules = try self.allocator.alloc(um.ModuleMangleInput, mod_count);
@@ -733,6 +747,14 @@ pub const Linker = struct {
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
             created += 1;
 
+            // tree-shake 후 dead 로 판정된 모듈은 후보에서 제외 — 짧은 이름 풀이
+            // emit 안 될 binding 으로 잠식되는 회귀 방지. tree_shaker_active=false
+            // 일 땐 is_included 가 default false 라 잘못 skip 되므로 active 일 때만 가드.
+            if (self.tree_shaker_active and !m.is_included) {
+                modules[mi] = emptyInput(m.source, bitsets[mi]);
+                continue;
+            }
+
             // #1961 PR 1h: ZNTC runtime helper virtual module 의 top-level 식별자
             // (`$aS` / `$gn` 등) 는 transformer 가 이미 축약 이름으로 emit 한 결과.
             // mangler 가 추가 rename 하면 cross-module binding 이 깨진다 (main 의
@@ -760,14 +782,7 @@ pub const Linker = struct {
                         }
                     }
                 }
-                modules[mi] = .{
-                    .scopes = &.{},
-                    .symbols = &.{},
-                    .scope_maps = &.{},
-                    .references = &.{},
-                    .source = m.source,
-                    .module_scope_symbols = bitsets[mi],
-                };
+                modules[mi] = emptyInput(m.source, bitsets[mi]);
                 continue;
             }
 
@@ -829,6 +844,10 @@ pub const Linker = struct {
                         switch (sk) {
                             .default_export, .cjs_exports, .cjs_require, .esm_init => {},
                         }
+                        // default_export 는 wrapper 와 달리 cross-module emit 보장이 없다 —
+                        // ref=0 이면 어디서도 import 하지 않아 codegen 이 binding 을 emit
+                        // 하지 않는다. 그런 candidate 는 mangle 풀에서 제외.
+                        if (sk == .default_export and sym.reference_count == 0) continue;
                         const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
                         if (key.len <= 1) continue;
                         if (exported.contains(key)) continue;
@@ -860,14 +879,7 @@ pub const Linker = struct {
                     .module_scope_symbols = bitsets[mi],
                 };
             } else {
-                modules[mi] = .{
-                    .scopes = &.{},
-                    .symbols = &.{},
-                    .scope_maps = &.{},
-                    .references = &.{},
-                    .source = m.source,
-                    .module_scope_symbols = bitsets[mi],
-                };
+                modules[mi] = emptyInput(m.source, bitsets[mi]);
             }
         }
 

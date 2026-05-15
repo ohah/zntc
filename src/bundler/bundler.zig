@@ -1085,6 +1085,10 @@ pub const Bundler = struct {
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
+        // tree-shaking 이 돌면 mangling 은 tree-shake 이후로 미룬다 — dead 모듈의
+        // binding 이 짧은 이름 풀(54자)을 잠식해 candidate-emit 비율이 떨어지는
+        // 회귀 방지. TreeShaker 생성 조건과 동일 predicate.
+        const will_tree_shake = !self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking;
         var link_scope = profile.begin(.link);
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, &graph, self.options.format, self.options.global_identifiers);
@@ -1107,7 +1111,7 @@ pub const Bundler = struct {
             // SymbolRefCounts (tree-shaking companion metric) 까지 한 번에 묶어 emit.
             try l.finalize(.{
                 .compute_renames = !self.options.code_splitting,
-                .compute_mangling = self.options.minify_identifiers,
+                .compute_mangling = self.options.minify_identifiers and !will_tree_shake,
             });
             break :blk l;
         } else null;
@@ -1122,7 +1126,7 @@ pub const Bundler = struct {
         // 2.5. Tree-shaking (scope_hoist + tree_shaking 둘 다 켜져 있을 때)
         // dev_mode에서는 tree-shaking 스킵 (개발 중 모든 코드 필요)
         var shake_scope = profile.begin(.shake);
-        var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
+        var shaker: ?TreeShaker = if (will_tree_shake) blk: {
             var s = blk_init: {
                 var init_scope = profile.begin(.shake_init);
                 defer init_scope.end();
@@ -1133,7 +1137,17 @@ pub const Bundler = struct {
                 defer analyze_scope.end();
                 try s.analyze(self.options.entry_points);
             }
-            if (s.ast_mutated_after_link and !self.options.code_splitting) {
+            // metadata builder + collectUnifiedInput 가 `Module.is_included` 를 신뢰해
+            // tree-shake 된 모듈의 preamble emit + mangle candidate 를 건너뛸 수 있도록
+            // plug. post-shake finalize 보다 먼저 켜 두어야 collectUnifiedInput 가드가
+            // 활성화된다.
+            if (linker) |*l| l.tree_shaker_active = true;
+
+            // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
+            // tree-shake 결과 (`is_included`) 를 반영해 한 번만 mangle 한다.
+            const need_post_shake_finalize = !self.options.code_splitting and
+                (s.ast_mutated_after_link or will_tree_shake);
+            if (need_post_shake_finalize) {
                 var post_link_scope = profile.begin(.shake_post_link_finalize);
                 defer post_link_scope.end();
                 if (self.options.minify_identifiers) {
@@ -1144,7 +1158,7 @@ pub const Bundler = struct {
                         .clear_first = true,
                         .populate_namespace_accesses = false,
                     });
-                } else {
+                } else if (s.ast_mutated_after_link) {
                     // Tree-shake constant folding only removes/replaces references. Graph
                     // resync preserves existing canonical names, so emit only needs import
                     // and re-export metadata refreshed for the final AST snapshot.
@@ -1153,10 +1167,6 @@ pub const Bundler = struct {
                     l.populateImportSymbols();
                 }
             }
-            // metadata builder 가 `Module.is_included` 비트를 신뢰해 tree-shake 된 target 의
-            // CJS preamble emit 을 건너뛸 수 있도록 plug. analyze() 가 끝난 뒤 mirror 가
-            // 모든 모듈의 `is_included` 비트를 확정해 둔다.
-            if (linker) |*l| l.tree_shaker_active = true;
             break :blk s;
         } else null;
         defer if (shaker) |*s| s.deinit();
