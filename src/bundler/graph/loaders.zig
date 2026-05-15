@@ -141,21 +141,18 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                 // loader=.javascript는 호출자의 fall-through 신호.
                 // import_scanner가 source의 require()를 ImportRecord로 추출하고
                 // wrap_kind/exports_kind를 .cjs로 자동 결정한다.
-                const emitted = emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
+                // source 는 arena_alloc (module parse_arena), metadata 는 self.allocator
+                // (graph) — emit 가 두 allocator 에 직접 alloc 해 clone 단계 제거.
+                const emitted = emitAssetRegistryCall(arena_alloc, self.allocator, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
                     module.state = .ready;
                     return;
                 };
                 module.source = emitted.source;
-                // metadata 는 parse_arena borrow — BundleResult lifetime 까지 살리려면
-                // graph allocator 로 owned copy 가 필요. clone OOM 은 다른 emit 실패와
-                // 동일하게 silent skip — release copy 단계에서 누락이 진단으로 가시화.
-                if (graph_assets.cloneRnAssetMetadata(self.allocator, emitted.metadata)) |owned| {
-                    self.rn_asset_metadata_mutex.lock();
-                    defer self.rn_asset_metadata_mutex.unlock();
-                    self.rn_asset_metadata.append(self.allocator, owned) catch {
-                        graph_assets.freeRnAssetMetadata(self.allocator, owned);
-                    };
-                } else |_| {}
+                self.rn_asset_metadata_mutex.lock();
+                defer self.rn_asset_metadata_mutex.unlock();
+                self.rn_asset_metadata.append(self.allocator, emitted.metadata) catch {
+                    graph_assets.freeRnAssetMetadata(self.allocator, emitted.metadata);
+                };
                 module.module_type = .js;
                 module.loader = .javascript;
                 return;
