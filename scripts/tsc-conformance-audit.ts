@@ -74,11 +74,14 @@ const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   2357, // Operand of increment/decrement must be a variable or a property access
   2364, // LHS of an assignment expression must be a variable or a property access
   2398, // 'constructor' cannot be used as a parameter property name
+  2405, // LHS of for-in must be string|any (TSC type-격하, spec 상 AssignmentTargetType 위반)
   2369, // A parameter property is only allowed in a constructor implementation
   2406, // LHS of a 'for...in' must be a variable or a property access
   2462, // A rest element must be last in a destructuring pattern
   2466, // 'super' cannot be referenced in a computed property name
   2487, // LHS of a 'for...of' must be a variable or a property access
+  2499, // An interface can only extend an identifier/qualified-name (TSC type-격하, spec syntax)
+  2500, // A class can only implement an identifier/qualified-name (TSC type-격하, spec syntax)
   2660, // 'super' can only be referenced in members of derived classes or object literals (decorator position 등)
   2523, // 'yield' expressions cannot be used in a parameter initializer
   2528, // A module cannot have multiple default exports
