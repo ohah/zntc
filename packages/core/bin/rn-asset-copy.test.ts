@@ -6,9 +6,13 @@ import { join } from 'node:path';
 import {
   androidAssetFileName,
   buildKeepXml,
+  copyAssetsForAndroid,
+  copyAssetsForIos,
   copyRnAssets,
   discoverAssets,
+  extractRegisteredAssets,
   getAndroidDrawableFolder,
+  getAndroidResourceIdentifier,
   IOS_SCALES,
   parseAssetName,
   SCALE_REGEX,
@@ -85,16 +89,50 @@ describe('getAndroidDrawableFolder — Metro scaleToDrawable 매핑', () => {
 });
 
 describe('androidAssetFileName — Metro flat naming', () => {
-  test('빈 relDir — `__<baseName><ext>`', () => {
-    expect(androidAssetFileName('', 'logo', '.png')).toBe('___logo.png');
+  test('빈 relDir — `<baseName><ext>`', () => {
+    expect(androidAssetFileName('', 'logo', '.png')).toBe('logo.png');
   });
 
-  test('단순 디렉토리 — `__<dir>_<baseName><ext>`', () => {
-    expect(androidAssetFileName('src/assets', 'logo', '.png')).toBe('__src_assets_logo.png');
+  test('단순 디렉토리 — `<dir>_<baseName><ext>`', () => {
+    expect(androidAssetFileName('src/assets', 'logo', '.png')).toBe('src_assets_logo.png');
   });
 
   test('비-alnum 문자 제거', () => {
-    expect(androidAssetFileName('src/img-foo', 'icon', '.svg')).toBe('__src_imgfoo_icon.svg');
+    expect(androidAssetFileName('src/img-foo', 'icon', '.svg')).toBe('src_imgfoo_icon.svg');
+  });
+
+  test('Android resource 호환을 위해 대문자를 소문자로 정규화', () => {
+    expect(androidAssetFileName('src/assets/tableOrder', 'imgLayoutB', '.PNG')).toBe(
+      'src_assets_tableorder_imglayoutb.png',
+    );
+  });
+});
+
+describe('Metro registered asset helpers', () => {
+  test('getAndroidResourceIdentifier — Metro resource identifier 와 동일', () => {
+    expect(
+      getAndroidResourceIdentifier({
+        httpServerLocation: '/assets/src/assets/tableOrder',
+        name: 'imgLayoutB',
+      }),
+    ).toBe('src_assets_tableorder_imglayoutb');
+  });
+
+  test('extractRegisteredAssets — bundle 의 AssetRegistry.registerAsset 목록 추출', () => {
+    const asset = {
+      __packager_asset: true,
+      httpServerLocation: '/assets/src/assets',
+      width: 1,
+      height: 1,
+      scales: [1, 2],
+      hash: 'hash',
+      name: 'logo',
+      type: 'png',
+      fileSystemLocation: join(dir, 'src/assets'),
+    };
+    const bundle = `module.exports = Registry.registerAsset(${JSON.stringify(asset)});`;
+
+    expect(extractRegisteredAssets(bundle)).toEqual([asset]);
   });
 });
 
@@ -142,6 +180,16 @@ describe('discoverAssets', () => {
     const result = discoverAssets(dir, ['.png']);
     expect(result.length).toBe(1);
   });
+
+  test('sourceExts 와 겹치는 확장자는 asset copy 에서 제외', () => {
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/icon.svg'), '<svg />');
+    writeFileSync(join(dir, 'src/logo.png'), 'png');
+
+    const result = discoverAssets(dir, ['.svg', '.png'], ['.svg']);
+    const names = result.map((r) => r.filePath.replace(`${dir}/`, '')).sort();
+    expect(names).toEqual(['src/logo.png']);
+  });
 });
 
 describe('copyRnAssets — iOS', () => {
@@ -152,12 +200,7 @@ describe('copyRnAssets — iOS', () => {
     writeFileSync(join(dir, 'src/assets/logo@3x.png'), 'c');
     writeFileSync(join(dir, 'src/assets/logo@4x.png'), 'd'); // skip
 
-    const copied = copyRnAssets({
-      projectRoot: dir,
-      assetsDest: dest,
-      rnPlatform: 'ios',
-      assetExts: ['.png'],
-    });
+    const copied = copyAssetsForIos(discoverAssets(dir, ['.png']), dest);
     expect(copied).toBe(3); // 1x/2x/3x 만, 4x 제외
     expect(existsSync(join(dest, 'src/assets/logo.png'))).toBe(true);
     expect(existsSync(join(dest, 'src/assets/logo@2x.png'))).toBe(true);
@@ -167,7 +210,7 @@ describe('copyRnAssets — iOS', () => {
 
   test('asset 0 — copied 0', () => {
     expect(
-      copyRnAssets({ projectRoot: dir, assetsDest: dest, rnPlatform: 'ios', assetExts: ['.png'] }),
+      copyRnAssets({ assetsDest: dest, rnPlatform: 'ios', bundleCode: '/* no registered asset */' }),
     ).toBe(0);
   });
 });
@@ -179,66 +222,116 @@ describe('copyRnAssets — Android', () => {
     writeFileSync(join(dir, 'src/img/logo@2x.png'), 'b');
     writeFileSync(join(dir, 'src/img/logo@3x.png'), 'c');
 
-    const copied = copyRnAssets({
-      projectRoot: dir,
-      assetsDest: dest,
-      rnPlatform: 'android',
-      assetExts: ['.png'],
-    });
+    const copied = copyAssetsForAndroid(discoverAssets(dir, ['.png']), dest);
     expect(copied).toBe(3);
     // 1x → mdpi, 2x → xhdpi, 3x → xxhdpi (Metro 매핑)
-    expect(existsSync(join(dest, 'drawable-mdpi/__src_img_logo.png'))).toBe(true);
-    expect(existsSync(join(dest, 'drawable-xhdpi/__src_img_logo.png'))).toBe(true);
-    expect(existsSync(join(dest, 'drawable-xxhdpi/__src_img_logo.png'))).toBe(true);
+    expect(existsSync(join(dest, 'drawable-mdpi/src_img_logo.png'))).toBe(true);
+    expect(existsSync(join(dest, 'drawable-xhdpi/src_img_logo.png'))).toBe(true);
+    expect(existsSync(join(dest, 'drawable-xxhdpi/src_img_logo.png'))).toBe(true);
     // keep.xml 생성
     const keepPath = join(dest, 'raw/keep.xml');
     expect(existsSync(keepPath)).toBe(true);
     const xml = readFileSync(keepPath, 'utf-8');
-    expect(xml).toContain('@drawable/__src_img_logo');
+    expect(xml).toContain('@drawable/src_img_logo');
   });
 
   test('Android — 4x scale 도 통과 (iOS 와 다름)', () => {
     mkdirSync(join(dir, 'a'), { recursive: true });
     writeFileSync(join(dir, 'a/icon@4x.png'), 'x');
-    const copied = copyRnAssets({
-      projectRoot: dir,
-      assetsDest: dest,
-      rnPlatform: 'android',
-      assetExts: ['.png'],
-    });
+    const copied = copyAssetsForAndroid(discoverAssets(dir, ['.png']), dest);
     expect(copied).toBe(1);
-    expect(existsSync(join(dest, 'drawable-xxxhdpi/__a_icon.png'))).toBe(true);
+    expect(existsSync(join(dest, 'drawable-xxxhdpi/a_icon.png'))).toBe(true);
   });
 
-  test('Non-image asset — keep.xml 의 drawable list 에서 제외', () => {
+  test('Non-image asset — raw resource 로 복사하고 keep.xml 에 raw ref 포함', () => {
     mkdirSync(join(dir, 'a'), { recursive: true });
     writeFileSync(join(dir, 'a/font.ttf'), 'x');
-    copyRnAssets({
-      projectRoot: dir,
+    copyAssetsForAndroid(discoverAssets(dir, ['.ttf']), dest);
+    expect(existsSync(join(dest, 'raw/a_font.ttf'))).toBe(true);
+    const xml = readFileSync(join(dest, 'raw/keep.xml'), 'utf-8');
+    expect(xml).toContain('@raw/a_font');
+  });
+
+  test('Android raw asset — yml 은 drawable 이 아니라 raw 로 복사', () => {
+    mkdirSync(join(dir, 'pods/Foo.framework.dSYM/Contents/Resources'), { recursive: true });
+    writeFileSync(join(dir, 'pods/Foo.framework.dSYM/Contents/Resources/foo.yml'), 'x');
+    const copied = copyAssetsForAndroid(discoverAssets(dir, ['.yml']), dest);
+
+    expect(copied).toBe(1);
+    expect(
+      existsSync(
+        join(
+          dest,
+          'raw/pods_fooframeworkdsym_contents_resources_foo.yml',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      existsSync(
+        join(
+          dest,
+          'drawable-mdpi/pods_fooframeworkdsym_contents_resources_foo.yml',
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  test('sourceExts 와 겹치는 svg 는 Android drawable 로 복사하지 않음', () => {
+    mkdirSync(join(dir, 'src/img'), { recursive: true });
+    writeFileSync(join(dir, 'src/img/icon.svg'), '<svg />');
+    writeFileSync(join(dir, 'src/img/logo.png'), 'png');
+
+    const copied = copyAssetsForAndroid(discoverAssets(dir, ['.svg', '.png'], ['.svg']), dest);
+
+    expect(copied).toBe(1);
+    expect(existsSync(join(dest, 'drawable-mdpi/src_img_icon.svg'))).toBe(false);
+    expect(existsSync(join(dest, 'drawable-mdpi/src_img_logo.png'))).toBe(true);
+  });
+
+  test('bundleCode 가 있으면 등록된 asset 만 Metro naming 으로 복사', () => {
+    mkdirSync(join(dir, 'src/assets'), { recursive: true });
+    mkdirSync(join(dir, 'ios/resigned_payload'), { recursive: true });
+    mkdirSync(join(dir, '.github/workflows'), { recursive: true });
+    writeFileSync(join(dir, 'src/assets/logo.png'), 'a');
+    writeFileSync(join(dir, 'src/assets/logo@2x.png'), 'b');
+    writeFileSync(join(dir, 'ios/resigned_payload/AppIcon.png'), 'ios');
+    writeFileSync(join(dir, '.github/workflows/ci.yml'), 'ci');
+
+    const asset = {
+      __packager_asset: true,
+      httpServerLocation: '/assets/src/assets',
+      width: 1,
+      height: 1,
+      scales: [1, 2],
+      hash: 'hash',
+      name: 'logo',
+      type: 'png',
+      fileSystemLocation: join(dir, 'src/assets'),
+    };
+    const copied = copyRnAssets({
       assetsDest: dest,
       rnPlatform: 'android',
-      assetExts: ['.ttf'],
+      bundleCode: `module.exports = Registry.registerAsset(${JSON.stringify(asset)});`,
     });
-    // ttf 는 drawable 자원 아님 → keep.xml 미생성
-    expect(existsSync(join(dest, 'raw/keep.xml'))).toBe(false);
+
+    expect(copied).toBe(2);
+    expect(existsSync(join(dest, 'drawable-mdpi/src_assets_logo.png'))).toBe(true);
+    expect(existsSync(join(dest, 'drawable-xhdpi/src_assets_logo.png'))).toBe(true);
+    expect(existsSync(join(dest, 'drawable-mdpi/ios_resigned_payload_appicon.png'))).toBe(false);
+    expect(existsSync(join(dest, 'raw/github_workflows_ci.yml'))).toBe(false);
   });
 });
 
 describe('copyRnAssets — guards', () => {
   test('assetsDest falsy — 0 반환', () => {
     expect(
-      copyRnAssets({ projectRoot: dir, assetsDest: '', rnPlatform: 'ios', assetExts: ['.png'] }),
+      copyRnAssets({ assetsDest: '', rnPlatform: 'ios', bundleCode: '/* no registered asset */' }),
     ).toBe(0);
   });
 
-  test('projectRoot 미존재 — 0 반환', () => {
+  test('bundleCode 없으면 release asset copy 실패', () => {
     expect(
-      copyRnAssets({
-        projectRoot: '/__nope__',
-        assetsDest: dest,
-        rnPlatform: 'ios',
-        assetExts: ['.png'],
-      }),
-    ).toBe(0);
+      () => copyRnAssets({ assetsDest: dest, rnPlatform: 'ios' } as never),
+    ).toThrow('RN release asset copy requires bundleCode');
   });
 });

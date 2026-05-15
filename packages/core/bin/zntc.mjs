@@ -760,6 +760,7 @@ async function runRnBundle(opts, config) {
       typeof opts.sourcemapSourcesRoot === 'string' ||
       opts.sourcemapUseAbsolutePath === true);
 
+  const extra = buildRnBundleExtra(cfg, opts);
   const result = await rn.bundleRn({
     entry,
     projectRoot,
@@ -768,7 +769,7 @@ async function runRnBundle(opts, config) {
     sourcemap: wantsSourcemap,
     minify:
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
-    extra: buildRnBundleExtra(cfg, opts),
+    extra,
     override: buildRnBundleOverride({
       config: cfg,
       opts,
@@ -802,23 +803,22 @@ async function runRnBundle(opts, config) {
     }
   }
 
-  // production asset 복사 (`--assets-dest`) — dev=false + 명시 시. iOS 는
-  // `<assetsDest>/<relPath>/<file>`, Android 는 Metro scaleToDrawable folder
-  // + flattened naming + keep.xml. 미지정 시 skip (dev server 가 HTTP 서빙).
+  // production asset 복사 (`--assets-dest`) — dev=false + 명시 시. Metro 처럼
+  // bundle 에 등록된 AssetRegistry asset 만 복사한다. 미지정 시 skip (dev server 가 HTTP 서빙).
   if (result.errors.length === 0 && !opts.devMode && opts.assetsDest) {
     const assetsDestAbs = resolve(opts.assetsDest);
     try {
       const copied = copyRnAssets({
-        projectRoot,
         assetsDest: assetsDestAbs,
         rnPlatform,
-        assetExts: rn.DEFAULT_ASSET_EXTS ?? [],
+        bundleCode: result.outputFiles?.[0]?.text,
       });
       if (opts.logLevel !== 'silent') {
         console.error(`[bundle] copied ${copied} asset(s) to ${assetsDestAbs}`);
       }
     } catch (err) {
       process.stderr.write(`[zntc:rn-bundle] asset copy 실패: ${err?.message ?? err}\n`);
+      throw err;
     }
   }
 
