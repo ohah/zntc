@@ -125,6 +125,51 @@ test "Flow: labeled tuple with generic ReadonlyArray (metro Server.js regression
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: variance +/- labeled tuple stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T = [+a: number, -b: string];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: variance readonly/writeonly labeled tuple stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T = [readonly a: number, writeonly b: string];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: rest tuple element stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T = [number, ...Array<string>];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: rest tuple element with label stripped" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type T = [first: number, ...rest: Array<string>];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: readonly used as plain type identifier (not variance)" {
+    var r = try e2eFlow(
+        std.testing.allocator,
+        "type Readonly = string;\ntype T = [readonly, number];\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
 test "Flow: type alias with generic stripped" {
     var r = try e2eFlow(std.testing.allocator, "type List<T> = Array<T>;\nlet x = 1;");
     defer r.deinit();
