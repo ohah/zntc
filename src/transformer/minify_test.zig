@@ -10,7 +10,7 @@ fn expectMinify(input: []const u8, expected: []const u8) !void {
     return expectMinifyOpts(input, expected, .{});
 }
 
-/// `--minify` 플래그 시 codegen peephole(`true`→`!0`, `undefined`→`(void 0)`)까지 적용된 결과 비교.
+/// `--minify` 플래그 시 codegen peephole(`true`→`!0`, `undefined`→`void 0`)까지 적용된 결과 비교.
 fn expectMinifySyntax(input: []const u8, expected: []const u8) !void {
     return expectMinifyOpts(input, expected, .{ .minify_syntax = true });
 }
@@ -494,34 +494,48 @@ test "minify: comma operator mixed keeps non-literal" {
 }
 
 // ================================================================
-// Peephole: undefined → (void 0) (minify_syntax only, #1552)
+// Peephole: undefined → void 0 (minify_syntax only, #1552 → S1 paren-elision)
 // ================================================================
 
-test "minify_syntax: undefined → (void 0)" {
+test "minify_syntax: undefined → void 0" {
     // #3098: minify_syntax 는 const → let 도 적용 → 출력은 `let`.
-    try expectMinifySyntax("const x = undefined;", "let x = (void 0);");
+    // S1: paren 없이 `void 0` (esbuild/rolldown/rspack 동일).
+    try expectMinifySyntax("const x = undefined;", "let x = void 0;");
 }
 
 test "minify_syntax: undefined 비교" {
     try expectMinifySyntax(
         "const x = a === undefined;",
-        "let x = a === (void 0);",
+        "let x = a === void 0;",
     );
 }
 
-test "minify_syntax: undefined.x 치환 시 parens로 안전 유지" {
-    // `undefined.x`를 bare `void 0.x`로 바꾸면 `void (0.x)`로 오파싱.
-    // `(void 0)` 형태 유지로 member access가 정확히 `(void 0).x`가 된다.
+test "minify_syntax: undefined.x → (void 0).x — member object 슬롯 paren 유지" {
+    // S1: `void 0.x` 가 `void (0.x)` 로 오파싱 → emitStaticMember 가 paren 추가.
     try expectMinifySyntax(
         "const x = undefined.foo;",
         "let x = (void 0).foo;",
     );
 }
 
-test "minify_syntax: undefined() call" {
+test "minify_syntax: undefined[k] — computed member 도 paren" {
+    try expectMinifySyntax(
+        "const x = undefined[k];",
+        "let x = (void 0)[k];",
+    );
+}
+
+test "minify_syntax: undefined() call — callee 슬롯 paren 유지" {
     try expectMinifySyntax(
         "try { undefined(); } catch(e) {}",
         "try {\n\t(void 0)();\n} catch (e) {\n}",
+    );
+}
+
+test "minify_syntax: new undefined() — new callee 슬롯 paren 유지" {
+    try expectMinifySyntax(
+        "try { new undefined(); } catch(e) {}",
+        "try {\n\tnew (void 0)();\n} catch (e) {\n}",
     );
 }
 

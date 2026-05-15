@@ -5,6 +5,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
+const calls = @import("calls.zig");
 
 pub fn emitUnary(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
@@ -383,15 +384,15 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
         }
     }
 
-    try self.emitNode(object);
+    try calls.emitNodeMaybeUndefParen(self, object);
     if (flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     } else {
         try self.writeByte('.');
     }
     // property name 슬롯은 reserved word 도 valid identifier 로 취급되므로 peephole
-    // 치환 (예: `undefined` → `(void 0)`) 이 적용되면 안 된다 — `obj.undefined` 가
-    // `obj.(void 0)` 로 깨지면 SyntaxError. emitNode 우회 시 sourcemap mapping 이
+    // 치환 (예: `undefined` → `void 0`) 이 적용되면 안 된다 — `obj.undefined` 가
+    // `obj.void 0` 로 깨지면 SyntaxError. emitNode 우회 시 sourcemap mapping 이
     // 같이 빠지므로 명시 발행 후 raw span 출력.
     const prop_node = self.ast.getNode(property);
     try self.addSourceMapping(prop_node.span);
@@ -406,7 +407,7 @@ pub fn emitComputedMember(self: anytype, node: Node) !void {
     const property = self.ast.readExtraNode(e, 1);
     const flags = self.ast.readExtra(e, 2);
     const MemberFlags = ast_mod.MemberFlags;
-    try self.emitNode(object);
+    try calls.emitNodeMaybeUndefParen(self, object);
     if (flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     }
