@@ -79,6 +79,7 @@ const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   2462, // A rest element must be last in a destructuring pattern
   2466, // 'super' cannot be referenced in a computed property name
   2487, // LHS of a 'for...of' must be a variable or a property access
+  2660, // 'super' can only be referenced in members of derived classes or object literals (decorator position 등)
   2523, // 'yield' expressions cannot be used in a parameter initializer
   2528, // A module cannot have multiple default exports
   2701, // Target of object rest assignment must be a variable or a property access
