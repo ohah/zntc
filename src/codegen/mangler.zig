@@ -230,7 +230,18 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 // #1757: 원본 이름과 `canonical_name` (top-level mangler rename 결과)
                 // 둘 다 등록해 nested mangler 독립 base54 counter 가 같은 이름 배정 방지.
                 if (shouldSkip(sym, name)) {
-                    try reserveNameFor(&reserved_names, sym, name);
+                    // shouldSkip 의 5 case 분류:
+                    //   1. is_exported            → renames 로 ref, 원본 안 emit → reserve 불필요
+                    //   2. is_import              → mangled source 로 ref, 원본 안 emit → 불필요
+                    //   3. is_class_expr_name     → self-ref 도 mangled → 불필요
+                    //   4. "arguments"            → literal 그대로 emit → reserve 필수
+                    //   5. name.len <= 1          → literal 그대로 emit → base54 충돌 회피 reserve
+                    // 1-3 은 외부 `external_reserved` 가 mangled name 으로 이미 보유 — 추가 안 함.
+                    // (blocksMangling path 는 별도 — direct eval/with 는 모든 이름이 동적 lookup
+                    // 대상이라 full reserve 필요 — 의도적으로 단순화 안 함.)
+                    if (name.len <= 1 or std.mem.eql(u8, name, "arguments")) {
+                        try reserved_names.put(name, {});
+                    }
                     continue;
                 }
                 // direct eval / with 스코프의 바인딩은 mangling 차단 (#1258)
@@ -243,7 +254,13 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 }
                 if (skip_symbols) |ss| {
                     if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) {
-                        try reserveNameFor(&reserved_names, sym, name);
+                        // skip_symbols (module_scope_symbols) path: 이 binding 은 nested
+                        // mangler 가 다루지 않는다 — Phase A 가 mangle 했거나 import binding
+                        // (mangled source name 으로 inline). 양쪽 모두 *원본 이름은 출력에
+                        // 안 남고* mangled name 만 emit 된다. mangled name 은 외부
+                        // `external_reserved` 가 보유 → 여기서 *추가 reserve 불필요*.
+                        // 원본 이름 reserve 를 유지하면 1-char 풀 잠식 (J scope-local mangle
+                        // epic 의 핵심 root cause — mobx 52 skips_1char 의 직접 원인).
                         continue;
                     }
                 }

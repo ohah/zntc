@@ -277,6 +277,21 @@ pub fn mangleAll(
             sum_b_skips,
             sum_b_skips_1char,
         });
+        // per-module breakdown — 1-char 잠식이 가장 큰 모듈 식별. reserved_size 가 큰 모듈은
+        // cross-module imports 다수 (의존성 큰 hub) — scope-local mangle 의 fix 후보.
+        for (phase_b_stats, 0..) |s, i| {
+            if (s.reserved_skips_1char == 0) continue;
+            const xmi: usize = if (i < input.modules.len) input.modules[i].cross_module_imports.len else 0;
+            const scopes_len: usize = if (i < input.modules.len) input.modules[i].scopes.len else 0;
+            debug_log.print(.mangle_audit, "  PhaseB[{d}]: slots={d} skips_1char={d} reserved={d} xmi={d} scopes={d}\n", .{
+                i,
+                s.slot_count,
+                s.reserved_skips_1char,
+                s.reserved_size,
+                xmi,
+                scopes_len,
+            });
+        }
     }
 
     return .{
