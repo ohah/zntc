@@ -139,16 +139,16 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             else
                 null;
 
-            // Peephole: global `undefined` → `(void 0)` (minify_syntax 활성화 시).
-            // 9 bytes → 8 bytes, 1 byte 절감. parens는 member/call/new 등 모든 parent
-            // context에서 안전하게 해석되도록 유지 — `undefined.x`/`undefined()` 같은
-            // 경로를 간단한 치환으로 깨지 않기 위함 (`void 0.x`는 `void (0.x)`로 오파싱).
-            // global binding일 때만 치환 (shadow rebind 드물지만 보호).
+            // Peephole: global `undefined` → `void 0` (minify_syntax 활성화 시).
+            // 9 bytes → 6 bytes, 3 bytes 절감 (esbuild/rolldown/rspack 동일).
+            // call.callee / member.object / new.callee 슬롯에서는 caller 가 paren 추가
+            // (`void 0.x` 가 `void (0.x)` 로 오파싱 되는 위험 회피) — 그 외는 paren 불필요.
+            // global binding 일 때만 치환 (shadow rebind 드물지만 보호).
             if (self.options.minify_syntax and node.tag == .identifier_reference and sym_id == null) {
                 const text = self.ast.getText(node.span);
                 if (std.mem.eql(u8, text, "undefined")) {
                     try self.addSourceMapping(node.span);
-                    try self.write("(void 0)");
+                    try self.write("void 0");
                     return;
                 }
             }

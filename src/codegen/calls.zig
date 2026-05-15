@@ -11,6 +11,31 @@ const ImportRecord = @import("../bundler/types.zig").ImportRecord;
 const IMPORT_META_URL_NODE = "require(\"url\").pathToFileURL(__filename).href";
 const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__dirname,filename:__filename}";
 
+/// `undefined` peephole 의 callee/object/new.callee 슬롯 paren 검사.
+/// node_dispatch.zig 가 `void 0` (no paren) 으로 출력하므로, member/call/new 슬롯의
+/// caller 가 paren 으로 감싸 `void 0.x` → `void (0.x)` 오파싱 방지.
+pub fn isUndefinedPeephole(self: anytype, idx: NodeIndex) bool {
+    if (!self.options.minify_syntax) return false;
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(idx);
+    if (n.tag != .identifier_reference) return false;
+    const sym_id = if (self.options.linking_metadata) |meta|
+        self.resolveSymbolId(idx, meta)
+    else
+        null;
+    if (sym_id != null) return false;
+    return std.mem.eql(u8, self.ast.getText(n.span), "undefined");
+}
+
+/// `void 0` peephole 가 적용될 자식 노드를 paren 으로 감싸 emit. 자식이 그 외엔 그대로 emit.
+/// callee/object/new.callee 슬롯 4곳에서 공유 — 정책은 [[isUndefinedPeephole]].
+pub fn emitNodeMaybeUndefParen(self: anytype, idx: NodeIndex) !void {
+    const need = isUndefinedPeephole(self, idx);
+    if (need) try self.writeByte('(');
+    try self.emitNode(idx);
+    if (need) try self.writeByte(')');
+}
+
 pub fn emitCall(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
@@ -28,7 +53,7 @@ pub fn emitCall(self: anytype, node: Node) !void {
     if (try tryEmitRequireContextObject(self, node)) return;
 
     if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
-    try self.emitNode(callee);
+    try emitNodeMaybeUndefParen(self, callee);
     if (is_optional) try self.write("?.");
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());
@@ -286,7 +311,8 @@ fn newCalleeNeedsParens(self: anytype, idx: NodeIndex) bool {
         const n = self.ast.getNode(cur);
         switch (n.tag) {
             .call_expression => return true,
-            .identifier_reference => return identifierRenameContainsCall(self, cur),
+            // `undefined` 가 `void 0` peephole 적용 후 `new void 0` → `new void (0)` 로 오파싱.
+            .identifier_reference => return identifierRenameContainsCall(self, cur) or isUndefinedPeephole(self, cur),
             .static_member_expression, .computed_member_expression, .private_field_expression => {
                 cur = self.ast.readExtraNode(n.data.extra, 0);
             },
