@@ -1805,7 +1805,9 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN);
             try wrapped.appendSlice(allocator, if (cg.cjs_wrap_module_used) "((e,m)=>{" else "((e)=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
-            try wrapped.appendSlice(allocator, code);
+            // body 의 trailing `;` 제거 — 다음 `})` 가 block close 라 ASI 안전.
+            const body_trimmed = if (code.len > 0 and code[code.len - 1] == ';') code[0 .. code.len - 1] else code;
+            try wrapped.appendSlice(allocator, body_trimmed);
             try wrapped.appendSlice(allocator, "});");
             if (preamble_lines_out) |out| out.* = 0;
         } else {
