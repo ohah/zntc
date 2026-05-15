@@ -3282,6 +3282,201 @@ test "Flow: match expression" {
     );
 }
 
+test "Flow: match literal patterns (null/bool/string/number/bigint)" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  null => 0,
+        \\  true => 1,
+        \\  false => 2,
+        \\  'str' => 3,
+        \\  42 => 4,
+        \\  100n => 5,
+        \\  _ => 6,
+        \\};
+    );
+}
+
+test "Flow: match unary literal patterns (+/-)" {
+    try expectNoParseErrorFlow(
+        \\const r = match (n) {
+        \\  -1 => 'neg',
+        \\  +0 => 'zero',
+        \\  1 => 'pos',
+        \\  _ => 'other',
+        \\};
+    );
+}
+
+test "Flow: match OR pattern" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  1 | 2 | 3 => 'low',
+        \\  4 | 5 => 'mid',
+        \\  _ => 'high',
+        \\};
+    );
+}
+
+test "Flow: match OR pattern with leading pipe" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  | 'a' | 'b' => 1,
+        \\  _ => 0,
+        \\};
+    );
+}
+
+test "Flow: match binding pattern (const/let/var)" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  const x => x,
+        \\  _ => 0,
+        \\};
+    );
+}
+
+test "Flow: match as binding" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  [1, 2] as pair => pair,
+        \\  _ => null,
+        \\};
+    );
+}
+
+test "Flow: match as binding with const" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  {x: 1} as const obj => obj,
+        \\  _ => null,
+        \\};
+    );
+}
+
+test "Flow: match object pattern" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  {type: 'a', value: const x} => x,
+        \\  {type: 'b'} => 0,
+        \\  _ => -1,
+        \\};
+    );
+}
+
+test "Flow: match object pattern with rest" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  {type: 'a', ...const rest} => rest,
+        \\  {...const all} => all,
+        \\  {type: 'b', ...} => 0,
+        \\  _ => null,
+        \\};
+    );
+}
+
+test "Flow: match object shorthand binding" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  {const x, const y} => x,
+        \\  _ => 0,
+        \\};
+    );
+}
+
+test "Flow: match array pattern" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  [] => 'empty',
+        \\  [const x] => 'one',
+        \\  [const a, const b] => 'two',
+        \\  [1, 2, ...const rest] => 'more',
+        \\  _ => 'other',
+        \\};
+    );
+}
+
+test "Flow: match nested object/array pattern" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  {kind: 'point', coords: [const x, const y]} => x,
+        \\  {kind: 'list', items: [const head, ...const tail]} => head,
+        \\  _ => null,
+        \\};
+    );
+}
+
+test "Flow: match member/qualified pattern" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  Status.Active => 1,
+        \\  Status.Inactive => 0,
+        \\  Color['red'] => 2,
+        \\  _ => -1,
+        \\};
+    );
+}
+
+test "Flow: match instance pattern with object fields" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  Point {x: const px, y: const py} => px,
+        \\  _ => 0,
+        \\};
+    );
+}
+
+test "Flow: match case guard" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  const n if (n > 0) => 'pos',
+        \\  const n if (n < 0) => 'neg',
+        \\  _ => 'zero',
+        \\};
+    );
+}
+
+test "Flow: match guard with destructured binding" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  [const x, const y] if (x === y) => 'eq',
+        \\  _ => 'neq',
+        \\};
+    );
+}
+
+test "Flow: match parenthesized pattern" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  (1 | 2 | 3) => 'small',
+        \\  (const x) => x,
+        \\  _ => 0,
+        \\};
+    );
+}
+
+test "Flow: match expression body and trailing comma" {
+    try expectNoParseErrorFlow(
+        \\const r = match (v) {
+        \\  1 => doSomething(),
+        \\  2 => 'b',
+        \\  3 => (a, b),
+        \\  _ => 'c',
+        \\};
+    );
+}
+
+test "Flow: match expression as statement discriminant" {
+    try expectNoParseErrorFlow(
+        \\function classify(p) {
+        \\  return match (p) {
+        \\    {type: 'circle', radius: const r} => 3.14 * r * r,
+        \\    {type: 'rect', w: const w, h: const h} => w * h,
+        \\    _ => 0,
+        \\  };
+        \\}
+    );
+}
+
 test "Flow: match call expression is not match syntax" {
     try expectNoParseErrorFlow("const out = (match(value, callback = /x/));");
     try expectNoParseErrorFlow(

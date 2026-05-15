@@ -1794,8 +1794,12 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 // Flow Match Expression
 // ================================================================
 
-/// Flow match expression: match (expr) { Pattern => body, ... }
-/// discriminant와 arms를 재귀 파싱. transformer에서 if-else IIFE로 변환.
+/// Flow match expression: match (expr) { Pattern [if (guard)] => body, ... }
+/// Hermes parseMatchExpressionFlow / parseMatchPatternFlow (JSParserImpl-flow.cpp
+/// line 1020-1599) 미러. pattern 종류를 정확히 소비 (syntax error 0). AST 는
+/// 기존 expression 노드 재활용 — 단순 literal/identifier pattern 은 transformer
+/// 의 `_m === pattern` 변환이 정확하고, 복합 pattern (object/array/binding/or/as)
+/// 은 소비만 정확하며 정밀 lowering 은 후속 (transformer 무변경).
 pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip 'match'
@@ -1812,23 +1816,16 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
     while (self.current() != .r_curly and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
 
-        // pattern 파싱 — `_ =>` wildcard는 arrow function으로 해석되므로 별도 처리
-        const pattern = blk: {
-            // `_` wildcard: `_ =>` 패턴이면 식별자만 파싱하고 `=>` 는 caller에서 소비
-            if (self.current() == .identifier) {
-                const text = self.ast.source[self.currentSpan().start..self.currentSpan().end];
-                if (std.mem.eql(u8, text, "_")) {
-                    const s = self.currentSpan();
-                    try self.advance();
-                    break :blk try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = s,
-                        .data = .{ .string_ref = s },
-                    });
-                }
-            }
-            break :blk try self.parseAssignmentExpression();
-        };
+        const pattern = try parseMatchPattern(self);
+
+        // case guard: `Pattern if (expr) =>` — 소비만 (transformer 후속).
+        if (self.current() == .kw_if) {
+            try self.advance();
+            try self.expect(.l_paren);
+            _ = try self.parseAssignmentExpression();
+            try self.expect(.r_paren);
+        }
+
         try self.expect(.arrow);
 
         // body: { ... } (block) 또는 expression
@@ -1872,6 +1869,165 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .extra = extra },
     });
+}
+
+/// wildcard `_` placeholder. transformer 가 span 텍스트 `_` 를 보고 else-branch
+/// (무조건 매치) 로 처리하므로 identifier_reference 로 유지해야 한다.
+fn matchWildcard(self: *Parser, span: anytype) ParseError2!NodeIndex {
+    return try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = span,
+        .data = .{ .string_ref = span },
+    });
+}
+
+/// object/array match pattern 의 opaque placeholder. 정밀 lowering 은 후속
+/// (parser-only scope) 이라, transformer 의 `_m === <here>` 가 valid JS 가
+/// 되도록 빈 object expression `{}` 을 emit — `_m==={}` 는 항상 false (객체
+/// 레퍼런스 비교) 이며 codegen 안전. literal 노드는 codegen 이 span 텍스트
+/// (`{`/`[`) 를 그대로 출력해 깨진 JS 가 되므로 tag 기반 emit 노드를 쓴다.
+fn matchOpaquePattern(self: *Parser, span: anytype) ParseError2!NodeIndex {
+    return try self.ast.addNode(.{
+        .tag = .object_expression,
+        .span = span,
+        .data = .{ .list = .{ .start = 0, .len = 0 } },
+    });
+}
+
+/// binding 키워드(`const`/`var`/`let`) 면 소비하고 true. subpattern binding /
+/// object shorthand / rest 에서 공유.
+fn tryConsumeMatchBinding(self: *Parser) ParseError2!bool {
+    switch (self.current()) {
+        .kw_const, .kw_var, .kw_let => {
+            try self.advance();
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// match pattern (top-level). Hermes parseMatchPatternFlow (line 1104) 미러:
+///   [`|`] subpattern (`|` subpattern)*  [`as` (const|var|let)? ident]
+/// OR / as 는 정확히 소비하되 AST 에는 첫 subpattern 만 보존 (transformer 후속).
+fn parseMatchPattern(self: *Parser) ParseError2!NodeIndex {
+    _ = try self.eat(.pipe); // 선행 `|` 허용
+    const first = try parseMatchSubpattern(self);
+    while (self.current() == .pipe) {
+        try self.advance();
+        _ = try parseMatchSubpattern(self);
+    }
+    // `as` binding: `pattern as x`, `pattern as const x`
+    if (self.isContextual("as")) {
+        try self.advance();
+        _ = try tryConsumeMatchBinding(self);
+        _ = try self.parseSimpleIdentifier();
+    }
+    return first;
+}
+
+/// match subpattern. Hermes parseMatchSubpatternFlow (line 1149) 미러.
+/// 모든 종류를 정확히 소비. AST 는 기존 expression 노드 재활용.
+fn parseMatchSubpattern(self: *Parser) ParseError2!NodeIndex {
+    switch (self.current()) {
+        // binding pattern: const x / var x / let x
+        .kw_const, .kw_var, .kw_let => {
+            try self.advance(); // skip const/var/let
+            return try self.parseSimpleIdentifier();
+        },
+        // parenthesized pattern: ( pattern )
+        .l_paren => {
+            try self.advance();
+            const inner = try parseMatchPattern(self);
+            try self.expect(.r_paren);
+            return inner;
+        },
+        // object pattern: { key: pat, const x, ...rest }
+        .l_curly => return try parseMatchObjectPattern(self),
+        // array pattern: [ pat, ...rest ]
+        .l_bracket => return try parseMatchArrayPattern(self),
+        // unary literal pattern: +1, -2.5 — unary expression 으로 정확 파싱
+        // (transformer `_m === -1` 가 정확하게 동작).
+        .plus, .minus => return try self.parseAssignmentExpression(),
+        // identifier: wildcard `_` / binding ident / member / instance pattern
+        .identifier => {
+            const s = self.currentSpan();
+            const text = self.ast.source[s.start..s.end];
+            if (std.mem.eql(u8, text, "_")) {
+                try self.advance();
+                return try matchWildcard(self, s);
+            }
+            // identifier + (.member | [literal])* + optional `{ ... }` instance pattern.
+            // parseAssignmentExpression 이 member chain 까지 정확 소비.
+            const expr = try self.parseAssignmentExpression();
+            if (self.current() == .l_curly) {
+                _ = try parseMatchObjectPattern(self); // instance pattern body
+            }
+            return expr;
+        },
+        // literal pattern (null/true/false/number/string/bigint) — parseAssignmentExpression 재활용
+        else => return try self.parseAssignmentExpression(),
+    }
+}
+
+/// object match pattern: `{ key: pat, const x, ...rest }`. Hermes
+/// parseMatchObjectPatternPropertiesFlow (line 1439) 미러. AST 는 소비 후
+/// wildcard-like placeholder (object pattern 은 transformer 후속).
+fn parseMatchObjectPattern(self: *Parser) ParseError2!NodeIndex {
+    const s = self.currentSpan();
+    try self.expect(.l_curly);
+    while (self.current() != .r_curly and self.current() != .eof) {
+        const guard_pos = self.scanner.token.span.start;
+        if (self.current() == .dot3) {
+            try parseMatchRestPattern(self);
+            break;
+        }
+        if (try tryConsumeMatchBinding(self)) {
+            // shorthand binding: `const x` == `x: const x`
+            _ = try self.parseSimpleIdentifier();
+        } else {
+            // key : subpattern — key 는 identifier/string/number/bigint 만
+            // (Hermes parseMatchObjectPatternPropertiesFlow). parseAssignmentExpression
+            // 은 contextual keyword(`type` 등)에서 오작동하므로 토큰 종류별 소비.
+            const k = self.current();
+            if (k == .identifier or k == .string_literal or k.isNumericLiteral() or k.isBigIntLiteral()) {
+                try self.advance();
+            } else break;
+            try self.expect(.colon);
+            _ = try parseMatchPattern(self);
+        }
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(guard_pos)) break;
+    }
+    try self.expect(.r_curly);
+    return try matchOpaquePattern(self, s);
+}
+
+/// array match pattern: `[ pat, pat, ...rest ]`. Hermes parseMatchArrayPatternFlow
+/// (line 1580) 미러.
+fn parseMatchArrayPattern(self: *Parser) ParseError2!NodeIndex {
+    const s = self.currentSpan();
+    try self.expect(.l_bracket);
+    while (self.current() != .r_bracket and self.current() != .eof) {
+        const guard_pos = self.scanner.token.span.start;
+        if (self.current() == .dot3) {
+            try parseMatchRestPattern(self);
+            break;
+        }
+        _ = try parseMatchPattern(self);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(guard_pos)) break;
+    }
+    try self.expect(.r_bracket);
+    return try matchOpaquePattern(self, s);
+}
+
+/// rest pattern: `... [const|var|let ident]`. Hermes parseMatchRestPatternFlow
+/// (line 1423) 미러. 소비만.
+fn parseMatchRestPattern(self: *Parser) ParseError2!void {
+    try self.expect(.dot3);
+    if (try tryConsumeMatchBinding(self)) {
+        _ = try self.parseSimpleIdentifier();
+    }
 }
 
 // ===== Flow enum (#2401) =====
