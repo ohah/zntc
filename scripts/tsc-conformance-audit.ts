@@ -70,6 +70,7 @@ const TS18_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
 const TS2_SYNTAX_LEVEL_CODES: ReadonlySet<number> = new Set([
   2335, // 'super' can only be referenced in a derived class
   2337, // Super calls are not permitted outside constructors
+  2356, // Arithmetic operand must be 'any'/'number'/'bigint'/'enum' — TSC type-격하, spec 상 AssignmentTargetType 위반 (`++"x"`, `++[0]`)
   2357, // Operand of increment/decrement must be a variable or a property access
   2364, // LHS of an assignment expression must be a variable or a property access
   2398, // 'constructor' cannot be used as a parameter property name
