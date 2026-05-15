@@ -22,8 +22,10 @@ describe('@zntc/core buildSync - TS export equals bundle minify', () => {
       expect(result.errors.length).toBe(0);
       const out = result.outputFiles[0].text;
       // bundle 모드에서는 declaration 과 reference 가 함께 mangle (정합성만 유지하면 OK).
-      expect(out).toMatch(/module\.exports=\w+/);
-      expect(out).toContain('class');
+      // wrapper param 단축 시 `module` → `m` substitute 도 허용.
+      const exportMatch = out.match(/(?:module|m)\.exports=([A-Za-z_$][\w$]*)/);
+      if (!exportMatch) throw new Error(`no module.exports=<id> in output: ${out}`);
+      expect(out).toMatch(new RegExp(`class\\s+${exportMatch[1]}\\b`));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
