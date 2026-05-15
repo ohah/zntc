@@ -107,6 +107,27 @@ pub fn mangleAll(
         }
     }.cmp);
 
+    // Phase B 가 같은 모듈 안 outer Phase A binding 과 shadow 충돌 (#1757) 을 피하려면
+    // Phase A 가 mangle 한 이름을 *그 모듈 단위* 로 reserve 해야 한다. cross-module 끼리는
+    // CJS/ESM wrapper IIFE 로 격리되므로 다른 모듈의 Phase A 이름은 reserve 할 필요 없다.
+    // (`renames` 만으로 derive 못 함 — Phase A 의 no-op rename, 즉 원본 이름과 mangled 이름이
+    // 같은 경우도 reserved 에 등록해야 하지만 `renames` 에는 안 들어가기 때문.)
+    //
+    // init pass 와 seed pass 를 분리 — `StringHashMap.init` 자체는 fail 하지 않으므로
+    // 두 번째 seed loop 의 `put` 이 OOM 해도 모든 entries 가 이미 init 되어 defer 의
+    // `deinit` 이 안전하게 실행된다 (uninit deinit UB 없음).
+    var per_mod_reserved = try allocator.alloc(std.StringHashMap(void), input.modules.len);
+    for (per_mod_reserved) |*s| s.* = std.StringHashMap(void).init(allocator);
+    defer {
+        for (per_mod_reserved) |*s| s.deinit();
+        allocator.free(per_mod_reserved);
+    }
+    // global_reserved (runtime helper 등) 는 모든 모듈에 visible 하므로 each module 의
+    // reserved 에도 포함. global_reserved 는 caller 가 borrowed 로 넘기므로 ptr 공유.
+    for (per_mod_reserved) |*s| {
+        for (input.global_reserved) |r| try s.put(r, {});
+    }
+
     var name_counter: u32 = 0;
     var name_buf: [8]u8 = undefined;
     var phase_a_slot_name_length_sum: usize = 0;
@@ -117,15 +138,23 @@ pub fn mangleAll(
         const new_name = mangler.nextNonReservedBase54Name(&name_counter, &name_buf, &reserved, &phase_a_skips_1char);
         phase_a_slot_name_length_sum += new_name.len;
 
+        // 일반적으로 production caller (linker.collectUnifiedInput) 는 candidate 의
+        // module_index 가 input.modules.len 미만임을 보장한다. 단위 테스트는 candidate 만
+        // 두고 modules 를 비울 수 있어 (Phase A 만 검증), 그 경우 per_mod_reserved 갱신은
+        // 의미 없으므로 skip — 그 module 에 Phase B 호출 자체가 없어 shadow 도 발생 불가.
+        const has_mod_slot = cand.module_index < per_mod_reserved.len;
+
         if (!std.mem.eql(u8, cand.name, new_name)) {
             const duped = try allocator.dupe(u8, new_name);
             errdefer allocator.free(duped);
             try renames.put(.{ .module_index = cand.module_index, .symbol_id = cand.symbol_id }, duped);
             try reserved.put(duped, {});
+            if (has_mod_slot) try per_mod_reserved[cand.module_index].put(duped, {});
             phase_a_renamed += 1;
         } else {
             // 원본과 동일해도 다음 Phase A 후보가 같은 이름을 집지 못하도록 reserved.
             try reserved.put(cand.name, {});
+            if (has_mod_slot) try per_mod_reserved[cand.module_index].put(cand.name, {});
         }
     }
 
@@ -144,14 +173,11 @@ pub fn mangleAll(
     const phase_b_stats = try allocator.alloc(mangler.ManglerStats, input.modules.len);
     errdefer allocator.free(phase_b_stats);
 
+    // Phase B 는 *이 모듈* 의 Phase A mangled name 만 reserved 로 받는다 (per_mod_reserved).
+    // 다른 모듈의 Phase A 이름은 wrapper IIFE 격리로 nested 에서 직접 보이지 않으므로
+    // ban 하지 않아도 안전. cross-module reference 는 모두 import binding (module-scope,
+    // mangler 내부 reserveNameFor 가 자동 reserve) 또는 wrapper symbol 호출로만 접근.
     for (input.modules, 0..) |m, i| {
-        // Phase B 는 per-module 독립 counter 지만 external_reserved 로 전역
-        // `reserved` 를 그대로 전달한다 (#2956). 다른 모듈의 Phase A mangled
-        // 이름이 이 모듈의 nested binding 과 충돌하면 cross-module shadow 가
-        // 발생 (date-fns: outer constructDateFrom='t' 와 다른 모듈 addDays 의
-        // inner const _date='t' 가 자기참조 ReferenceError). 자기 모듈의
-        // top-scope binding 은 Phase A 에서 이미 reserved 에 등록되어 있으므로
-        // 별도 module_reserved 를 만들지 않아도 된다.
         var nested = try mangler.mangle(allocator, .{
             .scopes = m.scopes,
             .symbols = m.symbols,
@@ -159,7 +185,7 @@ pub fn mangleAll(
             .references = m.references,
             .source = m.source,
             .skip_symbols = m.module_scope_symbols,
-            .external_reserved = &reserved,
+            .external_reserved = &per_mod_reserved[i],
         });
         defer nested.deinit();
         phase_b_stats[i] = nested.stats;
@@ -175,14 +201,12 @@ pub fn mangleAll(
             take.deinit();
         }
         try renames.ensureUnusedCapacity(take_count);
-        try reserved.ensureUnusedCapacity(take_count);
 
         var it = take.iterator();
         const mod_idx: u32 = @intCast(i);
         while (it.next()) |entry| {
             const key: ModuleSymKey = .{ .module_index = mod_idx, .symbol_id = entry.key_ptr.* };
             renames.putAssumeCapacity(key, entry.value_ptr.*);
-            reserved.putAssumeCapacity(entry.value_ptr.*, {});
         }
         take.deinit();
     }
