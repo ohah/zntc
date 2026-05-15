@@ -34,9 +34,20 @@ pub fn emitBundleRuntimeHelpers(
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
-        // Node ESM 출력에 CJS wrapper가 섞이면 wrapper 내부 `require()`가 런타임에 미정의.
-        // createRequire shim은 runtime helper 정의보다 먼저 와야 `__commonJS` 래퍼가 참조 가능 (#1456).
-        if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
+        // Node ESM 출력에서 *external require 호출* (예: `require("fs")`) 이 bundle 에 emit
+        // 되면 그 `require` 가 런타임에 미정의 — `createRequire(import.meta.url)` shim 필요.
+        // 우리 `__commonJS` wrapper 자체는 cb 를 직접 호출하므로 require() 안 씀 (#3252).
+        // 따라서 shim 필요 조건 = `kind=.require and is_external` 한 import_record 가
+        // 어떤 모듈에든 존재. 없으면 84 chars (minify) 절약.
+        const needs_require_shim = if (options.platform == .node and options.format == .esm) blk: {
+            for (sorted_modules) |m| {
+                for (m.import_records) |rec| {
+                    if (rec.kind == .require and rec.is_external) break :blk true;
+                }
+            }
+            break :blk false;
+        } else false;
+        if (needs_require_shim) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
         if (needs_cjs_runtime) {
@@ -161,8 +172,18 @@ pub fn emitChunkRuntimeHelpers(
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
-        // 단일 번들 경로와 동일: Node ESM + CJS wrap이면 createRequire shim 필요 (#1456)
-        if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
+        // 단일 번들 경로와 동일 정책 — wrapper 자체는 require() 안 호출하므로 (#3252)
+        // *external require call* 이 모듈에 emit 되는 경우만 shim 필요.
+        const needs_require_shim = if (options.platform == .node and options.format == .esm) blk: {
+            for (chunk.modules.items) |mod_idx| {
+                const m = graph.getModule(mod_idx) orelse continue;
+                for (m.import_records) |rec| {
+                    if (rec.kind == .require and rec.is_external) break :blk true;
+                }
+            }
+            break :blk false;
+        } else false;
+        if (needs_require_shim) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
         if (needs_cjs_runtime) {
