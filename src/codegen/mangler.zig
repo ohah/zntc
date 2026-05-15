@@ -62,6 +62,10 @@ pub const ManglerStats = struct {
     reserved_size: usize = 0,
     /// Phase 5 후 renames 에 기록된 심볼 수 (원본과 동일하면 skip 되므로 slot_count 와 다를 수 있음).
     renamed_symbol_count: usize = 0,
+    /// Phase 4 base54 발급 루프에서 reserved/global 충돌로 skip 된 1글자 후보 수.
+    /// 총 skip 수는 `name_counter_final - starting_name_counter - slot_count` 로 derivable
+    /// 이지만, 1-char skip 은 카운터 분포를 모르면 알 수 없어 별도 측정.
+    reserved_skips_1char: usize = 0,
 };
 
 /// mangle() 입력 데이터.
@@ -331,14 +335,10 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     var name_counter: u32 = input.starting_name_counter;
     var name_buf: [8]u8 = undefined;
     var slot_name_length_sum: usize = 0;
+    var reserved_skips_1char: usize = 0;
     for (sorted_slots) |entry| {
         // 예약어/글로벌 + mangling 제외 심볼의 원본 이름은 건너뜀 (#1609)
-        var name = base54(name_counter, &name_buf);
-        name_counter += 1;
-        while (isReservedOrGlobal(name) or reserved_names.contains(name)) {
-            name = base54(name_counter, &name_buf);
-            name_counter += 1;
-        }
+        const name = nextNonReservedBase54Name(&name_counter, &name_buf, &reserved_names, &reserved_skips_1char);
         slot_names[entry.slot_id] = try allocator.dupe(u8, name);
         slot_name_length_sum += name.len;
     }
@@ -386,6 +386,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
             .name_counter_final = name_counter,
             .reserved_size = reserved_names.count(),
             .renamed_symbol_count = renames.count(),
+            .reserved_skips_1char = reserved_skips_1char,
         },
     };
 }
@@ -613,6 +614,22 @@ pub fn nextBase54Name(counter: *u32, buf: *[8]u8) []const u8 {
     while (isReservedOrGlobal(name)) {
         name = base54(counter.*, buf);
         counter.* += 1;
+    }
+    return name;
+}
+
+/// `nextBase54Name` + 외부 reserved set 충돌까지 함께 skip. skip 시 1글자 후보였던
+/// 횟수만 `skips_1char` 에 누적 (총 skip 수는 counter 차로 derivable).
+pub fn nextNonReservedBase54Name(
+    counter: *u32,
+    buf: *[8]u8,
+    reserved: *const std.StringHashMap(void),
+    skips_1char: *usize,
+) []const u8 {
+    var name = nextBase54Name(counter, buf);
+    while (reserved.contains(name)) {
+        if (name.len == 1) skips_1char.* += 1;
+        name = nextBase54Name(counter, buf);
     }
     return name;
 }

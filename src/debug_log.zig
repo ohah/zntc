@@ -61,6 +61,9 @@ pub const Category = enum {
     /// 불가 — 이 dump 를 외부 grep 으로 bundle 과 대조해 어떤 candidate 가 짧은 이름
     /// 풀을 잠식하는지 확인. mangle 식별자 풀 미소진 진단.
     mangle_dump,
+    /// Phase A (cross-module top-level) + Phase B (per-module nested) 의 1-char
+    /// skip 분포 + slot/counter summary. mangle 식별자 풀 1-char 잠식 진단용.
+    mangle_audit,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
