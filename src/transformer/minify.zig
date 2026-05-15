@@ -530,8 +530,20 @@ fn tryAuditDeadToplevel(ast: *Ast, ctx: MinifyCtx, sym_id: u32, sym: symbol_mod.
     if (sym.isExported()) return;
     if (ctx.effectiveRefCount(sym_id) != 0 or sym.write_count != 0) return;
     if (!init_idx.isNone() and !purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
+    const size = @as(usize, node.span.end) -| @as(usize, node.span.start);
     dead_toplevel_count += 1;
-    dead_toplevel_size += @as(usize, node.span.end) -| @as(usize, node.span.start);
+    dead_toplevel_size += size;
+    // per-binding dump — count+size 만으로는 어떤 declaration 인지 식별 불가.
+    // root cause 분석 (mobx error message dict 류 / runtime helper 잔여 / TS-emit
+    // temp 등 분류) 에 필요. `sym.nameText(ast.source)` 는 binding identifier span 을
+    // 원본 source 에서 가져오므로 transform 후에도 정확. synthetic 심볼은 합성 이름 반환.
+    const name = sym.nameText(ast.source);
+    debug_log.print(.dead_toplevel_audit, "  - {s}  size={d}  span={d}..{d}\n", .{
+        name,
+        size,
+        node.span.start,
+        node.span.end,
+    });
 }
 
 /// expression 안의 모든 `identifier_reference` 노드를 찾아, symbol_ids 로 symbol 을
