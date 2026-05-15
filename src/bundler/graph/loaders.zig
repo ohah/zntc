@@ -143,7 +143,16 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                 // wrap_kind/exports_kind를 .cjs로 자동 결정한다.
                 // 첫 인자가 metadata_alloc (long-lived, graph), 두번째가 source_alloc
                 // (short-lived, parse_arena) — fs.RealReadFileCache.readFile 컨벤션.
-                const emitted = emitAssetRegistryCall(self.allocator, arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
+                const emitted = emitAssetRegistryCall(self.allocator, arena_alloc, .{
+                    .registry_path = registry_path,
+                    .abs_path = module.path,
+                    .bytes = raw,
+                    .ext = ext,
+                    .name_without_ext = name_without_ext,
+                    .url = url,
+                    .scales = scales_result.scales,
+                    .project_root = self.project_root,
+                }) catch {
                     module.state = .ready;
                     return;
                 };
