@@ -1255,6 +1255,10 @@ pub const Ast = struct {
         return VariableDeclarationKind.fromU32(self.extra_data.items[node.data.extra]);
     }
 
+    pub inline fn setVariableDeclarationKind(self: *Ast, node: Node, kind: VariableDeclarationKind) void {
+        self.extra_data.items[node.data.extra] = @intFromEnum(kind);
+    }
+
     /// `formal_parameters` 노드를 생성한다. transformer가 function/method를 새로 만들 때
     /// slot 1(arrow는 slot 0)에 넣을 NodeIndex를 반환 — caller는 `@intFromEnum(...)` 으로 extras에 기록.
     pub fn addFormalParameters(self: *Ast, list: NodeList, span: Span) !NodeIndex {
