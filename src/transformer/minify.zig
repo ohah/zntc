@@ -1213,6 +1213,12 @@ fn foldBinary(ast: *Ast, allocator: std.mem.Allocator, node_idx: u32, node: Node
             changed.* = true;
             return;
         }
+        // typeof X === "string-literal" → `==`, `!==` → `!=` (per-occurrence 1B 절감).
+        // typeof 결과는 항상 string 이므로 양쪽 type 보장 → `==` 의 type coercion 안전.
+        if (foldTypeofStringComparison(ast, node_idx, left, right, op)) {
+            changed.* = true;
+            return;
+        }
         // x === true → x, x === false → !x (한쪽만 boolean이면 축약)
         if (simplifyBooleanComparison(ast, node_idx, left, right, left_ni, right_ni, op)) {
             changed.* = true;
@@ -1299,6 +1305,28 @@ fn foldTypeofUndefinedComparison(
         const new_span = ast.addString(new_text) catch return true;
         ast.nodes.items[right_ni].span = new_span;
     }
+    return true;
+}
+
+/// `typeof X === "literal"` → `typeof X == "literal"`, `typeof X !== "literal"` → `typeof X != "literal"`.
+/// `typeof` 결과는 항상 string 이므로 right 가 string literal 이면 양쪽 type 보장 — `===`/`!==`
+/// 의 strict 검사가 `==`/`!=` 의 abstract 검사와 동일 결과 (type coercion 안 일어남).
+/// per-occurrence 1 byte 절감. operator 만 변경 — leaf node 무관, share binary 모두 자연 갱신.
+fn foldTypeofStringComparison(
+    ast: *Ast,
+    node_idx: u32,
+    left: Node,
+    right: Node,
+    op: Kind,
+) bool {
+    if (left.tag != .unary_expression) return false;
+    const left_e = left.data.extra;
+    if (left_e + 1 >= ast.extra_data.items.len) return false;
+    const left_op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[left_e + 1])));
+    if (left_op != .kw_typeof) return false;
+    if (right.tag != .string_literal) return false;
+    const new_op: Kind = if (op == .neq2) .neq else .eq2;
+    ast.nodes.items[node_idx].data.binary.flags = @intFromEnum(new_op);
     return true;
 }
 
