@@ -4180,3 +4180,21 @@ test "TS: bare `this` parameter without type annotation is stripped" {
     // 에러 없이 파싱 완료 + `this` 파라미터는 list 에서 제외 (런타임 불필요).
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
+
+// TC39 Stage 3 Explicit Resource Management — `for (using x = ...; ...; ...)` /
+// `for (using x of ...)` / `for (await using x of ...)`. 이전 parseForStatement
+// 는 var/let/const 만 declaration 분기로 처리, `using` 은 expression 으로 떨어져
+// `× ;` parse error (TSC conformance `usingDeclarationsInFor.ts` 등 9 케이스).
+test "TS: for header allows `using` and `await using` declarations" {
+    var r = try parseTs(std.testing.allocator,
+        \\async function f() {
+        \\    for (using x = null;;) {}
+        \\    for (await using y = null;;) {}
+        \\    for (using x of [null]) {}
+        \\    for (await using y of [null]) {}
+        \\    for await (using z of [null]) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
