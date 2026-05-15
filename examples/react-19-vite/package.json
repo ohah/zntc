@@ -1,0 +1,28 @@
+{
+  "name": "@zntc/example-react-19-vite",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "bun run --cwd ../../packages/core build:js",
+    "dev": "vite",
+    "prebuild": "bun run --cwd ../../packages/core build:js",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.27.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@zntc/core": "workspace:*",
+    "@zntc/vite-plugin": "workspace:*",
+    "babel-plugin-react-compiler": "^19.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^6.0.0"
+  }
+}
