@@ -466,22 +466,36 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
 fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!?NodeIndex {
     const saved = self.saveState();
     const errors_before = self.errors.items.len;
+    const saved_scratch = self.saveScratch();
+    const saved_nodes_len = self.ast.nodes.items.len;
+    const saved_extra_len = self.ast.extra_data.items.len;
 
     // Consume `:` (speculatively — might be return type or ternary separator)
     try self.advance(); // skip :
 
     // Parse the return type. Use disallow_conditional_types to prevent the type
     // parser from consuming `?` that belongs to an outer ternary.
+    // parseType 가 ParseError 를 throw 하면 catch — speculative 이므로 caller
+    // 로 propagate 시키면 안 된다 (예: `a ? (x) : (y => y)` 에서 `(y =>` 가
+    // function type param 파싱 실패).
     const ctx_saved = self.ctx;
     self.ctx.disallow_conditional_types = true;
-    const type_node = try self.parseType();
-    _ = type_node;
+    const type_result = self.parseType();
     self.ctx = ctx_saved;
 
-    // Check for `=>` — if present, this is a typed arrow function
-    if (self.current() != .arrow or self.scanner.token.has_newline_before) {
-        // Not a typed arrow — restore and let the caller treat `:` as ternary separator
+    const rollback_to_caller = type_result == error.OutOfMemory;
+    if (rollback_to_caller) return error.OutOfMemory;
+
+    const arrow_ok = (type_result catch null) != null and
+        self.current() == .arrow and !self.scanner.token.has_newline_before and
+        self.errors.items.len == errors_before;
+
+    if (!arrow_ok) {
+        // Not a typed arrow (or parseType errored) — restore and let the caller treat `:` as ternary separator
         self.rollbackErrors(errors_before);
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.items.len = saved_extra_len;
+        self.restoreScratch(saved_scratch);
         self.restoreState(saved);
         return null;
     }
