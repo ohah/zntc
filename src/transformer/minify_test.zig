@@ -1692,10 +1692,13 @@ test "unused: (class X{})(); — class callee 도 paren 유지" {
     );
 }
 
-test "unused: (() => 1)(); — arrow callee 도 paren 유지" {
+test "unused: (() => 1)(); — IIFE collapse → unused-expr 제거" {
+    // IIFE collapse (`tryFoldIife`) 가 call 을 `1` 로 대체, 그 뒤
+    // simplifyUnusedExprStmt 가 numeric literal-only expression statement 를
+    // empty statement 로 정리.
     try expectMinifyDead(
         "(() => 1)();",
-        "function run() {\n\t(() => 1)();\n}\nrun();",
+        "function run() {\n\t;\n}\nrun();",
     );
 }
 
@@ -2074,5 +2077,77 @@ test "inline: 배열 안에 object — inline" {
     try expectMinifyDead(
         "const data = [{ id: 1 }, { id: 2 }]; console.log(data);",
         "function run() {\n\t;\n\tconsole.log([{ id: 1 }, { id: 2 }]);\n}\nrun();",
+    );
+}
+
+// ================================================================
+// IIFE collapse — `(()=>X)()` / `(()=>{return X})()` → X
+// ================================================================
+
+test "iife: concise expression body" {
+    try expectMinify("const x = (() => 1 + 2)();", "const x = 3;");
+}
+
+test "iife: single return statement body" {
+    try expectMinify("const x = (() => { return 42; })();", "const x = 42;");
+}
+
+test "iife: returning call expression" {
+    try expectMinify(
+        "function f(x) { return x * 2; } const r = (() => f(10))();",
+        "function f(x) {\n\treturn x * 2;\n}\nconst r = f(10);",
+    );
+}
+
+test "iife: returning object — paren-wrapped to keep statement-context safe" {
+    try expectMinify(
+        "const o = (() => { return { value: 3 }; })();",
+        "const o = ({ value: 3 });",
+    );
+}
+
+test "iife: returning paren-wrapped object — paren preserved (codegen lifts later)" {
+    // concise body 가 `({value:3})` parenthesized_expression — collapse 시 paren
+    // 그대로 유지. var initializer 위치라 paren 자체는 무해, codegen 의 paren
+    // simplification 이 별도로 lift 가능.
+    try expectMinify(
+        "const o = (() => ({ value: 3 }))();",
+        "const o = ({ value: 3 });",
+    );
+}
+
+test "iife: with parameter — abandon (not zero-arg arrow)" {
+    // arrow 가 인자 받으면 IIFE 가 아닌 일반 callback 일 가능성. 보수적으로 skip.
+    try expectMinify(
+        "const r = ((x) => x + 1)(5);",
+        "const r = ((x) => x + 1)(5);",
+    );
+}
+
+test "iife: function expression — abandon (this/arguments semantics differ)" {
+    try expectMinify(
+        "const r = (function() { return 7; })();",
+        "const r = (function() {\n\treturn 7;\n})();",
+    );
+}
+
+test "iife: async arrow — abandon (await/promise semantics)" {
+    try expectMinify(
+        "const r = (async () => 5)();",
+        "const r = (async () => 5)();",
+    );
+}
+
+test "iife: multi-statement body — abandon (block has more than 1 statement)" {
+    try expectMinify(
+        "const r = (() => { console.log('side'); return 1; })();",
+        "const r = (() => {\n\tconsole.log(\"side\");\n\treturn 1;\n})();",
+    );
+}
+
+test "iife: bare return — abandon (return; with no argument)" {
+    try expectMinify(
+        "const r = (() => { return; })();",
+        "const r = (() => {\n\treturn;\n})();",
     );
 }
