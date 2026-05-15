@@ -246,6 +246,196 @@ test "Flow: infer with constrained Bound inside parens" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+// ================================================================
+// declare export dispatch (Hermes parseDeclareExportFlow parity)
+// 모듈 컨텍스트에서만 valid 하므로 e2eFlowModule 사용.
+// ================================================================
+
+test "Flow: declare export opaque type stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export opaque type ID: string;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export class stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export class Foo<T> { bar(x: T): void; }\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export function stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export function f(x: number): string;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export var stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export var foo: number;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export interface stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export interface IFoo { bar: string; }\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export default class stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export default class Foo { bar(): void; }\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export default function stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export default function f(): string;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export default type expression stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export default Array<string>;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export named re-export stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export { Foo, Bar };\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export named re-export with from stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export { Foo } from \"./bar\";\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export star from stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export * from \"./bar\";\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export component stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export component Foo(name: string);\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export hook stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export hook useFoo(name: string): number;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: mixed declare export sequence stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        \\declare export type A = string;
+        \\declare export class B { f(): void; }
+        \\declare export function c(): A;
+        \\declare export default A;
+        \\let x = 1;
+        ,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export enum stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export enum Color { Red, Green, Blue }\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export let stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export let foo: number;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export const stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export const foo: number;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export default async function stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export default async function f(): Promise<string>;\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export type star from stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export type * from \"./bar\";\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export type named re-export from stripped" {
+    var r = try e2eFlowModule(
+        std.testing.allocator,
+        "declare export type { Foo } from \"./bar\";\nlet x = 1;",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
 test "Flow: type alias with generic stripped" {
     var r = try e2eFlow(std.testing.allocator, "type List<T> = Array<T>;\nlet x = 1;");
     defer r.deinit();

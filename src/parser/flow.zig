@@ -1150,8 +1150,17 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
         supertype = try parseType(self);
     }
 
-    try self.expect(.eq);
-    const value = try parseType(self);
+    // ambient context (declare [export] opaque type) 에서는 `= value` 가 없을 수 있음.
+    // Hermes parseDeclareOpaqueTypeFlow 와 일치 — declare context 면 value 생략 허용.
+    var value: NodeIndex = .none;
+    if (self.ctx.in_ambient) {
+        if (try self.eat(.eq)) {
+            value = try parseType(self);
+        }
+    } else {
+        try self.expect(.eq);
+        value = try parseType(self);
+    }
     _ = try self.eat(.semicolon);
 
     const extra = try self.ast.addExtras(&.{
@@ -1536,8 +1545,128 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
 
 /// declare class/function/var/type/opaque type/module/module.exports/export
 /// 타입 스트리핑에서는 전체를 제거하므로 내부를 파싱한 뒤 NodeIndex.none을 반환한다.
+/// `declare [export] component Foo(...): R;` / `declare [export] hook useFoo(...): R;` 시그너처
+/// 스킵 — caller 가 cursor 를 `component`/`hook` 키워드에 두고 호출. 다음 토큰부터 끝까지
+/// (`name <T>? (...) : ReturnType renders? ;`) 모두 소비.
+fn skipDeclareComponentOrHookSignature(self: *Parser) ParseError2!void {
+    try self.advance(); // skip 'component'/'hook'
+    if (self.current() == .identifier) try self.advance(); // skip name
+    if (self.isAtOpeningAngleBracket()) {
+        _ = try parseTypeParameterDeclaration(self);
+    }
+    try skipBalancedParens(self);
+    if (try self.eat(.colon)) {
+        _ = try parseType(self);
+    }
+    try trySkipRendersClause(self);
+    _ = try self.eat(.semicolon);
+}
+
+/// `declare export ...` 의 sub-form 디스패치. Hermes parseDeclareExportFlow (line 2576+) 미러.
+/// caller 가 `kw_declare` advance 후 `kw_export` 토큰 cursor 에서 호출.
+/// 모든 sub-form 을 ambient context 에서 처리하고 항상 `.none` 반환 (declare 는 type-strip).
+fn parseFlowDeclareExport(self: *Parser) ParseError2!NodeIndex {
+    try self.advance(); // skip 'export'
+
+    // declare export default ...
+    if (try self.eat(.kw_default)) {
+        return try parseFlowDeclareExportDefault(self);
+    }
+
+    // declare export * from "..."
+    if (self.current() == .star) {
+        try self.advance();
+        if (try self.eat(.kw_from)) {
+            try self.expect(.string_literal);
+        }
+        _ = try self.eat(.semicolon);
+        return NodeIndex.none;
+    }
+
+    // declare export { Foo, Bar } [from "..."]
+    if (self.current() == .l_curly) {
+        try skipBalanced(self, .l_curly, .r_curly);
+        if (try self.eat(.kw_from)) {
+            try self.expect(.string_literal);
+        }
+        _ = try self.eat(.semicolon);
+        return NodeIndex.none;
+    }
+
+    // declare export opaque type Foo = ...
+    if (self.isContextual("opaque")) {
+        _ = try parseFlowOpaqueType(self);
+        return NodeIndex.none;
+    }
+
+    // declare export type ... — 다음 토큰에 따라 분기:
+    //   type Foo = ...        → type alias
+    //   type * from "..."     → type-only star re-export
+    //   type { Foo } [from "..."] → type-only named re-export
+    if (self.isContextual("type")) {
+        const next = try self.peekNextKind();
+        if (next == .star) {
+            try self.advance(); // skip 'type'
+            try self.advance(); // skip '*'
+            if (try self.eat(.kw_from)) try self.expect(.string_literal);
+            _ = try self.eat(.semicolon);
+            return NodeIndex.none;
+        }
+        if (next == .l_curly) {
+            try self.advance(); // skip 'type'
+            try skipBalanced(self, .l_curly, .r_curly);
+            if (try self.eat(.kw_from)) try self.expect(.string_literal);
+            _ = try self.eat(.semicolon);
+            return NodeIndex.none;
+        }
+        _ = try parseFlowTypeAliasDeclaration(self);
+        return NodeIndex.none;
+    }
+
+    // declare export component/hook Foo(...): T;
+    if (self.isContextual("component") or self.isContextual("hook")) {
+        const next = try self.peekNextKind();
+        if (next == .identifier) {
+            try skipDeclareComponentOrHookSignature(self);
+            return NodeIndex.none;
+        }
+    }
+
+    // declare export class / function / interface / var / let / const / enum
+    // → ambient context (caller 가 이미 set) 에서 일반 statement 로 처리.
+    _ = try self.parseStatement();
+    return NodeIndex.none;
+}
+
+/// `declare export default ...` sub-form 처리.
+/// caller 가 `kw_default` eat 후 호출. function/class/component/hook 또는 type 표현 허용.
+fn parseFlowDeclareExportDefault(self: *Parser) ParseError2!NodeIndex {
+    // declare export default function foo(): T;
+    // declare export default class Foo {}
+    if (self.current() == .kw_function or self.current() == .kw_class) {
+        _ = try self.parseStatement();
+        return NodeIndex.none;
+    }
+
+    // declare export default component/hook ...
+    if (self.isContextual("component") or self.isContextual("hook")) {
+        try skipDeclareComponentOrHookSignature(self);
+        return NodeIndex.none;
+    }
+
+    // declare export default Type — bare type expression
+    _ = try parseType(self);
+    _ = try self.eat(.semicolon);
+    return NodeIndex.none;
+}
+
 pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip 'declare'
+
+    // declare 진입 직후 ambient = true. 모든 sub-form 이 ambient context 에서 처리되도록.
+    const saved_ambient = self.ctx;
+    self.ctx.in_ambient = true;
+    defer self.ctx = saved_ambient;
 
     // declare module.exports: Type — Flow CJS 모듈 타입 선언
     if (self.current() == .identifier and self.isContextual("module")) {
@@ -1576,31 +1705,18 @@ pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    // declare export — Flow 전용 (declare export type, declare export class 등)
+    // declare export — Hermes parseDeclareExportFlow (line 2576+) 의 디스패치를 미러.
+    // export 뒤 sub-form: default / `*` / `{...}` / opaque type / type / class /
+    // function / interface / var / enum / component / hook.
     if (self.current() == .kw_export) {
-        try self.advance(); // skip 'export'
-        // declare export default — skip to semicolon
-        if (try self.eat(.kw_default)) {
-            _ = try parseType(self);
-            _ = try self.eat(.semicolon);
-            return NodeIndex.none;
-        }
+        return try parseFlowDeclareExport(self);
     }
 
     // declare component/hook — 선언만 있고 body 없음, 전체 스킵
-    if (self.current() == .identifier and
-        (self.isContextual("component") or self.isContextual("hook")))
-    {
+    if (self.isContextual("component") or self.isContextual("hook")) {
         const next_comp = try self.peekNextKind();
         if (next_comp == .identifier) {
-            try self.advance(); // skip 'component'/'hook'
-            try self.advance(); // skip name
-            if (self.isAtOpeningAngleBracket()) {
-                _ = try parseTypeParameterDeclaration(self);
-            }
-            try skipBalancedParens(self);
-            try trySkipRendersClause(self);
-            _ = try self.eat(.semicolon);
+            try skipDeclareComponentOrHookSignature(self);
             return NodeIndex.none;
         }
     }
@@ -1613,10 +1729,7 @@ pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
 
     // declare type/class/function/var/interface — 공통 처리
     // 내부 선언을 파싱 (AST 노드 생성됨)하지만 반환값은 .none (전체 제거)
-    const saved_ambient = self.ctx;
-    self.ctx.in_ambient = true;
     _ = try self.parseStatement();
-    self.ctx = saved_ambient;
     return NodeIndex.none;
 }
 
