@@ -716,10 +716,20 @@ test "Codegen #3107: 본문이 logical expr + else 없음 은 && 변환 안 함"
     try std.testing.expectEqualStrings("if(c)a||b;", r.output);
 }
 
-test "Codegen #3107: 2개 statement 면 변환 안 함" {
+test "Codegen #3107: 2개 expression statement block — sequence 로 unwrap" {
+    // minify_syntax 활성 시 block 안 모두 expression statement 면 comma operator
+    // sequence 로 합치고 block `{}` 제거. single-stmt unwrap 의 자연 확장.
     var r = try e2eMinAll(std.testing.allocator, "if (c) { a(); b(); } else { x(); }");
     defer r.deinit();
-    try std.testing.expectEqualStrings("if(c){a();b()}else x();", r.output);
+    try std.testing.expectEqualStrings("if(c)a(),b();else x();", r.output);
+}
+
+test "Codegen: do-while 본문 multi-expr block — sequence unwrap + 키워드 spacing" {
+    // do-while 도 emits_braces 체크에 multi-expr unwrap 가드 — 안 하면 `dof(),g();while`
+    // 처럼 `do` 와 첫 식별자가 fuse → 미선언 변수 호출 (회귀 #M11).
+    var r = try e2eMinAll(std.testing.allocator, "do { f(); g(); } while (c);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("do f(),g();while(c);", r.output);
 }
 
 test "Codegen #3107: else-if 체인 — 안쪽부터 부분 적용" {

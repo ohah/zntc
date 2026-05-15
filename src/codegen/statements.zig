@@ -138,7 +138,51 @@ pub fn emitStatementBody(self: anytype, body_idx: NodeIndex) !void {
         try self.emitNode(inner);
         return;
     }
+    if (try emitMultiExprBlockAsSequence(self, body_idx)) return;
     try self.emitNode(body_idx);
+}
+
+/// `body_idx` 가 block 이고 unwrap as sequence 가능한지만 check (emit 안 함).
+/// emitIfVerbatim 의 `else` 키워드 직후 spacing 결정에 사용.
+pub fn canEmitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) bool {
+    if (!self.options.minify_whitespace) return false;
+    if (!self.options.minify_syntax) return false;
+    if (body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement) return false;
+    const list = body.data.list;
+    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    var count: usize = 0;
+    for (indices) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        if (isElidedStmt(self, idx)) continue;
+        const n = self.ast.getNode(idx);
+        if (n.tag != .expression_statement) return false;
+        count += 1;
+    }
+    return count >= 2;
+}
+
+/// minify 시 block 안 모든 statement 가 expression_statement 이고 2개 이상이면
+/// `{stmt1; stmt2; ...}` → `stmt1, stmt2, ...;` 로 emit (block + 각 `;` 제거,
+/// comma operator sequence). `if/while/for` body 등 의 size 절약.
+/// declaration 또는 control flow statement 가 끼면 false (block 그대로 emit).
+fn emitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) !bool {
+    if (!canEmitMultiExprBlockAsSequence(self, body_idx)) return false;
+    const body = self.ast.getNode(body_idx);
+    const list = body.data.list;
+    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    var first = true;
+    for (indices) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        if (isElidedStmt(self, idx)) continue;
+        if (!first) try self.writeByte(',');
+        const n = self.ast.getNode(idx);
+        try self.emitNode(n.data.unary.operand);
+        first = false;
+    }
+    try self.writeByte(';');
+    return true;
 }
 
 /// `body_idx` 가 minify 시 `{}` 를 벗길 수 있는 block 이면 그 안의 단일 statement idx,
@@ -499,9 +543,10 @@ fn emitIfVerbatim(self: anytype, t: anytype) !void {
         if (isElidedAlternate(self, t.c)) return;
         if (self.options.minify_whitespace) {
             // else 분기가 `{...}` 로 출력되면 `else{`, 아니면(bare statement 또는
-            // #3094 로 `{}` 가 벗겨지는 block) 키워드 뒤 공백 필수.
+            // single-stmt / multi-expr block unwrap) 키워드 뒤 공백 필수.
             const emits_braces = self.ast.getNode(t.c).tag == .block_statement and
-                unwrappedStatementBody(self, t.c) == null;
+                unwrappedStatementBody(self, t.c) == null and
+                !canEmitMultiExprBlockAsSequence(self, t.c);
             try self.write(if (emits_braces) "else" else "else ");
         } else {
             try self.write(" else ");
@@ -668,7 +713,8 @@ pub fn emitDoWhile(self: anytype, node: Node) !void {
     // block body 면 emitBracedList 가 `{` 앞 공백을 관리. non-block(또는 #3094 로 `{}` 가
     // 벗겨질 block)은 키워드 뒤 공백 필수 (`dox++` 방지).
     const body_is_braces = !body.isNone() and self.ast.getNode(body).tag == .block_statement and
-        unwrappedStatementBody(self, body) == null;
+        unwrappedStatementBody(self, body) == null and
+        !canEmitMultiExprBlockAsSequence(self, body);
     if (!body_is_braces) try self.writeByte(' ');
     try emitStatementBody(self, body);
     if (self.options.minify_whitespace) try self.write("while(") else try self.write(" while (");
