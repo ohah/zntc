@@ -68,6 +68,11 @@ pub const Category = enum {
     /// declaration 의 개수 + size 합. mobx production define 후 dead 가 된 error
     /// message dict 같은 cascade-dead binding 식별. issue #3267 N RFC.
     dead_toplevel_audit,
+    /// shared namespace preamble (`var foo_ns = {get a(){return a}, ...};`) per-entry
+    /// dump — var name · export count · object literal bytes. zntc 의 inline `get`
+    /// 패턴 vs esbuild/rolldown 의 arrow `__export(ns, {name:()=>val})` 패턴 격차
+    /// 식별용. 큰 namespace 일수록 zntc 가 손해.
+    ns_inline_audit,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
