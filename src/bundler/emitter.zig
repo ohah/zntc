@@ -1746,7 +1746,7 @@ pub fn emitModule(
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
-        const basename = module.wrapperId();
+        const basename = if (options.minify_whitespace) "" else module.wrapperId();
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
         const var_name = try module.allocRequireName(allocator);
@@ -1756,6 +1756,12 @@ pub fn emitModule(
         defer wrapped.deinit(allocator);
 
         if (options.minify_whitespace) {
+            // minify_whitespace 모드는 module path key 를 빈 문자열로 emit —
+            // `{""(exports,module){...}}` (JS 의 string-key method shorthand 합법).
+            // $cj helper 는 `cb[Object.keys(cb)[0]]` 로 첫 key 의 method 추출하므로
+            // key 가 빈 문자열이어도 동작. trade-off: stack trace 의 module path
+            // 정보 손실 — minify 출력은 어차피 디버깅 대상 아니라 ROI 큰 정리.
+            // 대형 라이브러리 (rxjs ~100 모듈) 에서 module path × 길이 만큼 절감.
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"");
