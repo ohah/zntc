@@ -283,12 +283,12 @@ fn runOnce(
         const node = ast.nodes.items[i];
         switch (node.tag) {
             .binary_expression => foldBinary(ast, scratch, i, node, &changed),
-            .logical_expression => foldLogical(ast, i, node, &changed),
+            .logical_expression => foldLogical(ast, ctx, i, node, &changed),
             .unary_expression => foldUnary(ast, i, node, &changed),
             .call_expression => foldCall(ast, i, node, &changed),
-            .conditional_expression => foldConditional(ast, i, node, &changed),
-            .if_statement => foldIf(ast, i, node, &changed),
-            .while_statement => foldWhile(ast, i, node, &changed),
+            .conditional_expression => foldConditional(ast, ctx, i, node, &changed),
+            .if_statement => foldIf(ast, ctx, i, node, &changed),
+            .while_statement => foldWhile(ast, ctx, i, node, &changed),
             .sequence_expression => {
                 // bitset alloc 실패 시 보수적으로 모든 sequence 를 protected 로 — `(0,eval)()` 같은
                 // callee 자리 sequence 를 잘못 unwrap 해서 indirect→direct eval 로 의미 바꾸느니
@@ -564,6 +564,20 @@ fn tryAuditDeadToplevel(ast: *Ast, ctx: MinifyCtx, sym_id: u32, sym: symbol_mod.
 /// 역매핑해 `reference_count` 를 1 감산한다. init expression 은 RHS 이므로
 /// assignment_target_identifier 는 등장하지 않아 read 경로만 처리.
 pub fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
+    decrementRefsImpl(ast, ctx, idx, false);
+}
+
+/// `decrementRefsInExpr` 의 cascade 안전 variant — function/class declaration/expression
+/// 의 body 는 walk 하지 않는다. `if (false) f();` 같은 dead branch 안 statement 의 ref 를
+/// 감산해 cascade dead 를 발견할 때 쓰인다. branch 안에 `function foo() { return bar; }` 가
+/// 있어도 그 함수가 *다른 곳* 에서 호출 가능하므로 body 안 `bar` 의 ref 는 보존해야 한다
+/// — full walk 시 over-decrement → bar 가 사실은 살아있는데 dead 마크되어 회귀
+/// (RN codegen snapshot 24 fail 확인 후 도입).
+pub fn decrementRefsShallow(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
+    decrementRefsImpl(ast, ctx, idx, true);
+}
+
+fn decrementRefsImpl(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex, comptime skip_fn_body: bool) void {
     if (idx.isNone()) return;
     const ni = @intFromEnum(idx);
     if (ni >= ast.nodes.items.len) return;
@@ -580,9 +594,21 @@ pub fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void
         return;
     }
 
+    if (skip_fn_body) switch (node.tag) {
+        // 함수/클래스 body 는 호출/인스턴스화 시점에 평가. dead branch 안에 함수
+        // declaration 이 있어도 그 함수가 외부 ref 면 body 안 read 는 살아 있음.
+        .function_declaration,
+        .function_expression,
+        .arrow_function_expression,
+        .class_declaration,
+        .class_expression,
+        => return,
+        else => {},
+    };
+
     var it = ast_walk.children(ast, node);
     while (it.next()) |child| {
-        decrementRefsInExpr(ast, ctx, child);
+        decrementRefsImpl(ast, ctx, child, skip_fn_body);
     }
 }
 
@@ -1640,42 +1666,51 @@ fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
 // Phase 2: Dead Code Elimination
 // ================================================================
 
-/// conditional_expression: false ? a : b → b, true ? a : b → a
-fn foldConditional(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+/// conditional_expression: false ? a : b → b, true ? a : b → a.
+///
+/// dead 분기 안 ref 는 `decrementRefsShallow` 로 감산 — function/class body 는 호출 시점
+/// 평가라 skip (over-decrement 회피, #3267 N-step4).
+fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @intFromEnum(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
     const truthy = evalTruthiness(ast, cond) orelse return;
-    // 조건이 상수이면 선택된 분기로 교체
     const kept = if (truthy) node.data.ternary.b else node.data.ternary.c;
+    const dropped = if (truthy) node.data.ternary.c else node.data.ternary.b;
     const kept_ni = @intFromEnum(kept);
     if (kept_ni >= ast.nodes.items.len) return;
+    if (ctx.hasSemantic() and !dropped.isNone()) decrementRefsShallow(ast, ctx, dropped);
     replaceNode(ast, node_idx, ast.nodes.items[kept_ni], changed);
 }
 
-/// if_statement: if (false) { A } else { B } → B, if (true) { A } → A
-fn foldIf(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+/// if_statement: if (false) { A } else { B } → B, if (true) { A } → A.
+/// dead 분기의 cascade decrement (#3267 N-step4).
+fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @intFromEnum(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
     const truthy = evalTruthiness(ast, cond) orelse return;
+    const semantic = ctx.hasSemantic();
     if (truthy) {
-        // if (true) { A } → A (then 분기)
+        // if (true) { A } else { B } → A. else (B) 분기 cascade.
         const then_ni = @intFromEnum(node.data.ternary.b);
         if (then_ni >= ast.nodes.items.len) return;
         if (ast.nodes.items[then_ni].tag == .function_declaration) return;
+        if (semantic and !node.data.ternary.c.isNone()) decrementRefsShallow(ast, ctx, node.data.ternary.c);
         replaceNode(ast, node_idx, ast.nodes.items[then_ni], changed);
     } else {
-        // if (false) { A } else { B } → B (else 분기가 있으면)
         if (!node.data.ternary.c.isNone()) {
+            // if (false) { A } else { B } → B. then (A) 분기 cascade.
             const else_ni = @intFromEnum(node.data.ternary.c);
             if (else_ni >= ast.nodes.items.len) return;
             if (ast.nodes.items[else_ni].tag == .function_declaration) return;
+            if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
             replaceNode(ast, node_idx, ast.nodes.items[else_ni], changed);
         } else {
-            // if (false) { A } → empty_statement
+            // if (false) { A } → empty_statement. then (A) 분기 cascade.
+            if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
             replaceNode(ast, node_idx, .{
                 .tag = .empty_statement,
                 .span = node.span,
@@ -1685,14 +1720,15 @@ fn foldIf(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     }
 }
 
-/// while (false) { ... } → empty_statement
-fn foldWhile(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+/// while (false) { ... } → empty_statement. body cascade (#3267 N-step4).
+fn foldWhile(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @intFromEnum(node.data.binary.left);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
     const truthy = evalTruthiness(ast, cond) orelse return;
     if (!truthy) {
+        if (ctx.hasSemantic()) decrementRefsShallow(ast, ctx, node.data.binary.right);
         replaceNode(ast, node_idx, .{
             .tag = .empty_statement,
             .span = node.span,
@@ -1701,33 +1737,37 @@ fn foldWhile(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     }
 }
 
-/// logical_expression: true && x → x, false && x → false, true || x → true, false || x → x
-fn foldLogical(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+/// logical_expression: true && x → x, false && x → false, true || x → true, false || x → x.
+/// dropped side 의 cascade decrement (#3267 N-step4).
+fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const left_ni = @intFromEnum(node.data.binary.left);
     if (left_ni >= ast.nodes.items.len) return;
     const left = ast.nodes.items[left_ni];
     const op: Kind = @enumFromInt(node.data.binary.flags);
 
     const truthy = evalTruthiness(ast, left) orelse return;
+    const semantic = ctx.hasSemantic();
 
     switch (op) {
         .amp2 => { // &&
             if (truthy) {
-                // true && x → x
+                // true && x → x (left literal — 영향 0)
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
                 replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
             } else {
-                // false && x → false (left 값 유지)
+                // false && x → false. right (x) drop → cascade.
+                if (semantic) decrementRefsShallow(ast, ctx, node.data.binary.right);
                 replaceNode(ast, node_idx, left, changed);
             }
         },
         .pipe2 => { // ||
             if (truthy) {
-                // true || x → true (left 값 유지)
+                // true || x → true. right (x) drop → cascade.
+                if (semantic) decrementRefsShallow(ast, ctx, node.data.binary.right);
                 replaceNode(ast, node_idx, left, changed);
             } else {
-                // false || x → x
+                // false || x → x (left literal — 영향 0)
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
                 replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
