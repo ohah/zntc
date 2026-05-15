@@ -59,11 +59,9 @@ npx zntc --bundle index.js --platform=react-native --rn-platform=ios -o bundle.j
 ### `@zntc/core` JS / NAPI API
 
 ```ts
-import { init, transpile, build } from "@zntc/core";
+import { transpile, build } from "@zntc/core";
 
-init(); // NAPI 바인딩 한 번만
-
-// 단일 파일 트랜스파일
+// 단일 파일 트랜스파일 — NAPI 바인딩은 첫 호출 시 자동 로드
 const { code, map } = transpile(source, {
   filename: "input.ts",
   jsx: "automatic",

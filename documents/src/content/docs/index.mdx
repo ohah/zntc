@@ -38,9 +38,7 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
   ]}
   codeFilename="example.ts"
   codeLang="ts"
-  codeExample={`import { init, transpile } from '@zntc/core';
-
-init();
+  codeExample={`import { transpile } from '@zntc/core';
 
 const { code } = transpile(source, {
   filename: 'input.tsx',

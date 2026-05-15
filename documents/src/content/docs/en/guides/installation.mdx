@@ -102,9 +102,7 @@ deno run -A npm:@zntc/core --bundle src/index.ts -o dist/bundle.js
 JS API:
 
 ```typescript
-import { init, transpile, build, buildSync, vitePlugin } from "@zntc/core";
-
-init();
+import { transpile, build, buildSync, vitePlugin } from "@zntc/core";
 
 // Transpile
 const { code } = transpile("const x: number = 1;");
