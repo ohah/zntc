@@ -927,10 +927,13 @@ fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     const start = keyword_span.start;
     try self.advance(); // skip break/continue/debugger
 
-    // break/continue 뒤에 줄바꿈 없이 identifier가 오면 label로 소비
+    // break/continue 뒤에 줄바꿈 없이 identifier-like 토큰이 오면 label 로 소비.
+    // contextual keyword (`target`, `from`, `async`, `set`, `get`, `of`, `using`,
+    // `accessor` 등) 도 label 자리에서는 valid identifier 라서 허용 — TSC conformance
+    // `parser_breakTarget1.ts` (`target: break target;`) 등.
     var label = NodeIndex.none;
     if ((tag == .break_statement or tag == .continue_statement) and
-        self.current() == .identifier and !self.scanner.token.has_newline_before)
+        self.current().canBeBindingName() and !self.scanner.token.has_newline_before)
     {
         label = try self.ast.addNode(.{
             .tag = .identifier_reference,

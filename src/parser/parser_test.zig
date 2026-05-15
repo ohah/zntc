@@ -4181,6 +4181,19 @@ test "TS: bare `this` parameter without type annotation is stripped" {
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
+// `target: break target;` 같은 labeled break/continue 에서 label 이 contextual
+// keyword (target/from/async/set/get/of/using/accessor 등) 이면 ZNTC 가 label
+// 파싱을 `.identifier` 만 검사해 거부했었다 (TSC conformance `parser_breakTarget1.ts`).
+test "TS: labeled break/continue accepts contextual keyword as label" {
+    var r = try parseTs(std.testing.allocator,
+        \\target: break target;
+        \\from: while (true) continue from;
+        \\of: for (;;) break of;
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+}
+
 // `@(inst["foo"]) method() {}` 같은 parenthesized decorator + computed member
 // access 는 `in_decorator` flag 가 안쪽 paren 까지 전파돼 `[` 가 거부되던 버그.
 // (TSC conformance `esDecorators-preservesThis.ts`, `decoratorOnClassMethod12.ts`)
