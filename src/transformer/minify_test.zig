@@ -2177,3 +2177,64 @@ test "inline: mutable referenced symbol — abandon (let)" {
         "function run() {\n\tfunction f() {\n\t\tlet x = 1;\n\t\tconst a = x + 1;\n\t\tx = 2;\n\t\treturn a + x;\n\t}\n\tf();\n}\nrun();",
     );
 }
+
+// ================================================================
+// Dead brace unwrap (program-root standalone block_statement)
+// `if (true) { f() }` → fold → `{ f() }` → unwrap → `f();`
+// ================================================================
+
+test "dead-brace: program-root simple expression statement" {
+    try expectMinifyTopLevelInline(
+        "if (true) { console.log(\"a\"); }",
+        "console.log(\"a\");",
+    );
+}
+
+test "dead-brace: multiple braces in sequence (probe11)" {
+    try expectMinifyTopLevelInline(
+        "if (true) { console.log(\"a\"); }\nif (1 + 1 === 2) { console.log(\"b\"); }",
+        "console.log(\"a\");console.log(\"b\");",
+    );
+}
+
+test "dead-brace: var declaration (regular mode) — unwrap OK" {
+    // 일반 모드에선 var hoisting 으로 outer scope 와 동등 → unwrap 안전.
+    try expectMinifyTopLevelInline(
+        "if (true) { var x = 1; console.log(x); }",
+        "var x=1;console.log(x);",
+    );
+}
+
+test "dead-brace: let declaration with write — abandon (block-scoped leak risk)" {
+    // y++ 로 write_count>0 → single-use inline 차단 → declaration 보존 →
+    // block 보존되어야 (outer 로 leak 시 outer scope 의 다른 binding 과 충돌).
+    try expectMinifyTopLevelInline(
+        "if (true) { let y = 2; y++; globalThis.use(y); }",
+        "{let y=2;y++;globalThis.use(y);}",
+    );
+}
+
+test "dead-brace: const with property mutation — abandon" {
+    // const + property mutation 으로 alias inline 차단 → declaration 보존.
+    try expectMinifyTopLevelInline(
+        "if (true) { const obj = { v: 1 }; obj.v = 2; globalThis.use(obj); }",
+        "{const obj={v:1};obj.v=2;globalThis.use(obj);}",
+    );
+}
+
+test "dead-brace: function declaration multi-use — abandon (block-scoped in strict)" {
+    // function declaration 은 strict mode 에서 block-scoped. 두 번 호출되어
+    // inline 불가 → declaration 보존 → block 보존되어야.
+    try expectMinifyTopLevelInline(
+        "if (true) { function f(x) { return x + 1; } globalThis.use(f(1), f(2)); }",
+        "{function f(x){return x+1;}globalThis.use(f(1),f(2));}",
+    );
+}
+
+test "dead-brace: class declaration with use — abandon (always block-scoped)" {
+    // class 는 항상 block-scoped. inline 불가 → declaration 보존 → block 보존.
+    try expectMinifyTopLevelInline(
+        "if (true) { class C { m() { return 1; } } globalThis.use(new C().m()); }",
+        "{class C{m(){return 1;}}globalThis.use(new C().m());}",
+    );
+}
