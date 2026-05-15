@@ -290,6 +290,10 @@ fn runOnce(
             // PR1.5 (a): unused expression statement 축약 — semantic 정보 있을 때만
             // (symbol_ids 가 없으면 identifier local binding 판정 불가)
             .expression_statement => if (ctx.hasSemantic()) unused_expr.simplifyUnusedExprStmt(ast, ctx, i, node, &changed),
+            // function expression 의 name 이 self-reference 안 쓰면 elide. function expression
+            // 의 name binding 은 *그 함수 body 안에서만* visible (spec) — reference_count == 0
+            // 이면 name 안전하게 anonymous. mobx 같은 ES5 class transpile 패턴 큰 영향.
+            .function_expression => if (ctx.hasSemantic()) elideUnusedFnExprName(ast, ctx, node, &changed),
             else => {},
         }
     }
@@ -1032,6 +1036,26 @@ pub fn mergeDecls(ast: *Ast, skip_nodes: ?*const std.DynamicBitSet) void {
 // ================================================================
 // Constant Folding — Binary Expression
 // ================================================================
+
+/// function expression 의 name 이 self-reference 안 쓰이면 elide (anonymous 화).
+/// `function Name() {...}` (expression context, e.g. `prototype.method = function Name() {}`)
+/// 의 Name 은 spec 상 *그 함수 body 안에서만* visible — reference_count == 0 이면
+/// 외부에서 안 보이고 self-ref 도 없음. AST mutate (extra[0] → NodeIndex.none).
+/// mobx 같은 ES5 transpile class 패턴 큰 영향 (모든 prototype method 의 name elide).
+fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, node: Node, changed: *bool) void {
+    const e = node.data.extra;
+    if (e + 4 > ast.extra_data.items.len) return;
+    const name_raw = ast.extra_data.items[e];
+    const name_idx: NodeIndex = @enumFromInt(name_raw);
+    if (name_idx.isNone()) return;
+    const name_ni = @intFromEnum(name_idx);
+    if (name_ni >= ctx.symbol_ids.len) return;
+    const sym_id = ctx.symbol_ids[name_ni] orelse return;
+    if (sym_id >= ctx.symbols.len) return;
+    if (ctx.symbols[sym_id].reference_count != 0) return;
+    ast.extra_data.items[e] = @intFromEnum(NodeIndex.none);
+    changed.* = true;
+}
 
 fn foldBinary(ast: *Ast, allocator: std.mem.Allocator, node_idx: u32, node: Node, changed: *bool) void {
     const left_ni = @intFromEnum(node.data.binary.left);
