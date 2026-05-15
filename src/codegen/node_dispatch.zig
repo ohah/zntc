@@ -65,6 +65,15 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .labeled_statement => try statement_emit.emitLabeled(self, node),
         .with_statement => try statement_emit.emitWith(self, node),
         .directive => {
+            // CJS wrap 모듈 의 `"use strict"` 는 redundant — wrapper IIFE 가 ESM bundle
+            // (format=.esm) 안에서 실행되므로 자동 strict mode (rolldown 식). 다른 directive
+            // (`"use server"` 등) 는 의미 보존 위해 유지.
+            if (self.options.cjs_wrap_substitute) {
+                const text = self.ast.getText(node.span);
+                if (std.mem.eql(u8, text, "\"use strict\"") or std.mem.eql(u8, text, "'use strict'")) {
+                    return;
+                }
+            }
             try self.addSourceMapping(node.span);
             // span 은 문자열 리터럴 범위 (따옴표 포함). quote_style 정규화를 적용해
             // `'use server'` → `"use server"` 같은 변환이 일반 string_literal 과 동일하게
