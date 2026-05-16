@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { createFixture } from './helpers';
+import { createFixture, writeOutputs, runNode } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 import type { ManualChunksModuleInfo } from '../../../packages/core/index';
 
@@ -1097,5 +1097,72 @@ describe('manualChunks NAPI bridge', () => {
     expect(entryInfo!.syn).toBe(false);
     expect(entryInfo!.before).toEqual([]);
     expect(entryInfo!.after).toEqual([]);
+  });
+
+  // 버그픽스: manualChunks 가 동적 import 대상을 importer 청크에 병합하면
+  // (정적 import 도 같이 있어 same-chunk 가 됨) `import("./page")` 가
+  // 미재작성된 raw specifier 로 남아 런타임 ERR_MODULE_NOT_FOUND (별도
+  // 파일 없음). same-chunk 동적 import 는 inline_dynamic_imports 무관 항상
+  // namespace 스냅샷으로 재작성돼야 한다.
+  test('버그픽스: manualChunks 병합된 동적 import 대상은 namespace 스냅샷으로 재작성', async () => {
+    const fixture = await createFixture({
+      'page.ts': `export function fp(){ return "FP"; }\nexport const pv = "PV";`,
+      'index.ts':
+        'import { fp } from "./page";\n' +
+        'async function main(){ const p = await import("./page"); console.log(p.fp(), p.pv, fp()); }\n' +
+        'main();',
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+      manualChunks: (id: string) => (id.includes('page') || id.includes('index') ? 'main' : null),
+    });
+    const outs = result.outputFiles!;
+    const entry = outs.find((o) => /main|index/.test(o.path) && o.path.endsWith('.js'))!;
+    expect(entry).toBeDefined();
+    // raw `import("./page")` (확장자/파일 없는 source specifier) 가 남으면 안 됨
+    expect(entry.text).not.toMatch(/import\(["']\.\/page["']\)/);
+    expect(entry.text).toContain('Promise.resolve().then(');
+    writeOutputs(fixture.dir, outs);
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('FP PV FP');
+  });
+
+  // /simplify #2c 가드: 병합된 동적 대상이 *타 청크* 심볼을 re-export 하면
+  // namespace 스냅샷에 넣을 수 없다(이 청크에 로컬 식별자 미바인딩 →
+  // ReferenceError). re-export 계열은 스냅샷에서 제외(문서화된 한계) —
+  // .local export 는 정상, 크래시 없음.
+  test('버그픽스: 병합된 동적 대상의 타-청크 re-export 는 크래시 없이 제외(.local 정상)', async () => {
+    const fixture = await createFixture({
+      'inner.ts': `export const rx = "RX";`,
+      'page.ts': `export { rx } from "./inner";\nexport const pv = "PV";`,
+      'index.ts':
+        'import { pv } from "./page";\n' +
+        'async function main(){ const p = await import("./page"); console.log(p.pv, pv, typeof p.rx); }\n' +
+        'main();',
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+      // page+index → main 병합. inner 는 별도 청크로 강제(타 청크 re-export).
+      manualChunks: (id: string) =>
+        id.includes('inner')
+          ? 'innerchunk'
+          : id.includes('page') || id.includes('index')
+            ? 'main'
+            : null,
+    });
+    const outs = result.outputFiles!;
+    const entry = outs.find((o) => /main|index/.test(o.path) && o.path.endsWith('.js'))!;
+    expect(entry).toBeDefined();
+    expect(entry.text).not.toMatch(/import\(["']\.\/page["']\)/);
+    writeOutputs(fixture.dir, outs);
+    // ReferenceError 없이 실행, .local(pv) 정상, 타-청크 re-export(rx)는 제외
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('PV PV undefined');
   });
 });
