@@ -221,4 +221,45 @@ describe('CSS code splitting (per-chunk CSS)', () => {
 
     expect(pa).not.toBe(pb);
   });
+
+  // P0-3②: 동적 import 된 청크는 자기 CSS 를 런타임 <link> 로 주입한다.
+  test('동적 청크 JS 에 CSS <link> 주입 prologue 가 들어간다', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `
+        export async function load() {
+          return (await import('./route-a')).default;
+        }
+      `,
+      'route-a.ts': `import './a.css';\nexport default "ROUTE_A_MARKER";`,
+      'a.css': `.route-a { color: crimson; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.ts')],
+      splitting: true,
+    });
+
+    const outs = result.outputFiles!;
+    const aCss = outs.find((o) => o.path.endsWith('.css') && o.text.includes('crimson'))!;
+    expect(aCss).toBeDefined();
+    const cssBase = aCss.path.split('/').pop()!;
+
+    // route-a 모듈을 담은 JS 청크에 link 주입 prologue + 정확한 CSS basename
+    const routeChunk = outs.find(
+      (o) => o.path.endsWith('.js') && o.text.includes('ROUTE_A_MARKER'),
+    )!;
+    expect(routeChunk).toBeDefined();
+    expect(routeChunk.text).toContain('document.createElement("link")');
+    expect(routeChunk.text).toContain('rel="stylesheet"');
+    expect(routeChunk.text).toContain(`new URL("./${cssBase}",import.meta.url)`);
+    expect(routeChunk.text).toContain('typeof document!=="undefined"');
+
+    // entry 청크(자기 CSS 없음)에는 주입이 없어야 함
+    const entryChunk = outs.find(
+      (o) => o.path.endsWith('.js') && o.text.includes('async function load'),
+    )!;
+    expect(entryChunk).toBeDefined();
+    expect(entryChunk.text).not.toContain('document.createElement("link")');
+  });
 });

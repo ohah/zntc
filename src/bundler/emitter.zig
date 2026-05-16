@@ -129,6 +129,10 @@ pub const EmitOptions = struct {
     globals: []const types.GlobalEntry = &.{},
     /// 출력 파일 확장자 오버라이드 (.mjs, .cjs 등)
     out_extension_js: ?[]const u8 = null,
+    /// 청크 인덱스 → 해당 청크의 CSS href(basename). non-null 인 청크는
+    /// 동적 로드 시 자기 CSS 를 `<link>` 로 주입하는 prologue 를 emit 한다.
+    /// content-hash 계산 전에 주입되어 JS 청크 해시 무결성을 유지한다.
+    chunk_css_hrefs: ?[]const ?[]const u8 = null,
     /// 출력 파일명 (소스맵 참조용, 예: "out.js")
     output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력

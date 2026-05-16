@@ -187,8 +187,40 @@ pub fn planCssChunks(
     return out_list.toOwnedSlice(allocator);
 }
 
+/// `plan` 의 path/contents 소유권을 OutputFile 로 이전한다(plan 컨테이너는
+/// caller 가 해제). 실패 시 아직 이전 안 된 항목을 해제한다.
+pub fn planToOutputFiles(
+    allocator: std.mem.Allocator,
+    plan: []const CssChunkPlanEntry,
+) ![]OutputFile {
+    const files = allocator.alloc(OutputFile, plan.len) catch |err| {
+        for (plan) |e| {
+            allocator.free(e.path);
+            allocator.free(e.contents);
+        }
+        return err;
+    };
+    for (plan, 0..) |e, i| files[i] = .{ .path = e.path, .contents = e.contents };
+    return files;
+}
+
+/// 청크 인덱스 → CSS href(basename) 배열(길이 `n_chunks`). 값은 plan 의
+/// path 를 빌려온 slice — `plan` 이 살아있는 동안만 유효. 동적 import 된
+/// 청크가 자기 CSS 를 런타임 `<link>` 로 로드하도록 emitChunks 에 전달한다.
+pub fn planChunkHrefs(
+    allocator: std.mem.Allocator,
+    plan: []const CssChunkPlanEntry,
+    n_chunks: usize,
+) ![]?[]const u8 {
+    const hrefs = try allocator.alloc(?[]const u8, n_chunks);
+    @memset(hrefs, null);
+    for (plan) |e| {
+        if (e.chunk_index < n_chunks) hrefs[e.chunk_index] = std.fs.path.basename(e.path);
+    }
+    return hrefs;
+}
+
 /// `planCssChunks` 결과를 OutputFile 목록으로 변환한다(기존 호출부 호환).
-/// path/contents 소유권은 OutputFile 로 이전되고, plan 컨테이너만 해제한다.
 pub fn emitCssChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -196,14 +228,8 @@ pub fn emitCssChunks(
     css_names: []const u8,
 ) ![]OutputFile {
     const plan = try planCssChunks(allocator, graph, chunk_graph, css_names);
-    errdefer for (plan) |e| {
-        allocator.free(e.path);
-        allocator.free(e.contents);
-    };
     defer allocator.free(plan);
-    const files = try allocator.alloc(OutputFile, plan.len);
-    for (plan, 0..) |e, i| files[i] = .{ .path = e.path, .contents = e.contents };
-    return files;
+    return planToOutputFiles(allocator, plan);
 }
 
 /// CSS 서브그래프를 DFS 하며 각 CSS 모듈의 귀속 청크를 최소 rank 로 갱신한다.
