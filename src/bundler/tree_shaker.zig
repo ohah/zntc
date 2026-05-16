@@ -1531,7 +1531,24 @@ pub const TreeShaker = struct {
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
             const target = @intFromEnum(rec.resolved);
-            if (self.graph.getModule(rec.resolved) == null) continue;
+            const target_module = self.graph.getModule(rec.resolved) orelse continue;
+
+            if (target_module.wrap_kind == .cjs) {
+                if (ib.kind == .namespace) {
+                    try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+                } else if (ib.kind == .default) {
+                    if (ib.namespace_used_properties) |props| {
+                        for (props) |prop_name| {
+                            try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
+                        }
+                    } else {
+                        try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+                    }
+                } else {
+                    try self.seedCjsExportOrAll(@intCast(target), ib.imported_name, queue, module_stmt_infos, reachable_stmts);
+                }
+                continue;
+            }
 
             if (ib.kind == .namespace) {
                 if (ib.namespace_used_properties) |props| {

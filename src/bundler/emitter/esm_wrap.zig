@@ -139,7 +139,8 @@ pub const EsmEmitResult = struct {
     /// codegen builder 의 names 배열 (mangler rename 발생 시 원본 식별자 이름).
     /// `mappings[i].name_index` 가 가리키는 module-local 인덱스.
     names: []const []const u8 = &.{},
-    /// `CompiledModule.entry_chain` 참조. emitter 로 전달되는 unroll 버퍼.
+    /// `CompiledModule.entry_chain` 참조. runBeforeMain은 parent emitter가 module
+    /// output 앞쪽에 직접 emit하므로 현재는 일반적으로 null이다.
     entry_chain: ?[]const u8 = null,
 };
 
@@ -848,23 +849,12 @@ pub fn emitEsmWrappedModule(
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
-    // 엔트리 모듈이 __esm 래핑된 경우(RN), run-before-main 호출을 body 맨 앞에 삽입.
-    // InitializeCore 등이 의존 모듈보다 먼저 실행되어야 하므로 preamble보다 앞에 위치.
-    var rbm_code: std.ArrayList(u8) = .empty;
-    defer rbm_code.deinit(allocator);
-    if (module.is_entry_point and options.run_before_main.len > 0) {
-        if (linker) |l| {
-            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main, options);
-        }
-    }
-
     const is_async = module.uses_top_level_await;
 
-    // entry+entry_error_guard 활성 시 runBeforeMain만 entry trigger 위치로 분리한다.
-    // Metro는 runBeforeMainModule을 entry `__r(entry)`와 별도 top-level `__r(...)`로
-    // 실행하지만, entry dependency chain은 entry factory 안의 nested require로 남긴다.
+    // entry dependency chain은 entry factory 안의 nested require로 남긴다.
     // dependency를 top-level 개별 guard로 풀면 ErrorUtils 설치 후 throw가 swallow되어
-    // entry 평가가 계속 진행된다.
+    // entry 평가가 계속 진행된다. runBeforeMain은 single-file/chunk emitter가
+    // Metro append script와 같이 user module 실행 전 top-level에서 별도로 호출한다.
     const unroll_run_before_main = module.is_entry_point and options.entry_error_guard;
     var entry_chain_buf: std.ArrayList(u8) = .empty;
     errdefer entry_chain_buf.deinit(allocator);
@@ -893,7 +883,6 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, " \"+id)};");
             try wrapped.appendSlice(allocator, "__zntc_g.$RefreshSig$=function(){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
-        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_run_before_main, false);
         if (func_code.len > 0) {
             func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
             try wrapped.appendSlice(allocator, func_code);
@@ -939,7 +928,6 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, "\t\treturn function(t) { return t; };\n");
             try wrapped.appendSlice(allocator, "\t};\n");
         }
-        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_run_before_main, true);
         // func_code를 preamble 앞에 배치: 순환 참조에서 preamble이 의존 모듈을 init할 때
         // 이 모듈의 함수가 이미 할당된 상태여야 한다. (#1092)
         if (func_code.len > 0) {

@@ -39,6 +39,35 @@ test "TreeShaking CJS: named import prunes unused exports dot assignment" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_EXPORT_MARKER") == null);
 }
 
+test "TreeShaking CJS: react_native named import keeps used exports dot assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\'use strict';
+        \\var used = () => "RN_USED_MARKER";
+        \\var unused = () => "RN_UNUSED_EXPORT_MARKER";
+        \\exports.used = used;
+        \\exports.unused = unused;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "RN_USED_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.used = used") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "RN_UNUSED_EXPORT_MARKER") == null);
+}
+
 test "TreeShaking CJS: named import prunes unused module exports dot assignment" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

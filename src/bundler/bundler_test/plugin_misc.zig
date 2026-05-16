@@ -2614,7 +2614,7 @@ test "entry_error_guard #5: 다중 chain entry — import init 은 entry guard �
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_c") == null);
 }
 
-test "entry_error_guard #5b: runBeforeMain 만 entry 앞에 분리하고 entry import 는 중첩 유지" {
+test "entry_error_guard #5b: runBeforeMain 을 module output 앞쪽에 분리하고 entry import 는 중첩 유지" {
     // 재현 최소 케이스: runBeforeMain이 ErrorUtils를 설치한 뒤 entry dependency가 throw.
     // Metro에서는 entry outer guard가 그 throw를 report하고 entry factory를 중단하므로
     // 뒤 import/entry body가 실행되지 않는다. zntc가 entry import를 top-level 개별 guard로
@@ -2649,13 +2649,92 @@ test "entry_error_guard #5b: runBeforeMain 만 entry 앞에 분리하고 entry i
     const marker = "//#endregion\n";
     const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
     const top_level = result.output[top_start..];
-    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_setup") != null);
+    const setup_call = "__zntc_guarded(init_setup);";
+    _ = std.mem.indexOf(u8, result.output, setup_call) orelse return error.SetupCallMissing;
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_setup") == null);
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_entry") != null);
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_boom") == null);
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_after") == null);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return init_boom();});") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return init_after();});") != null);
+}
+
+test "entry_error_guard #5c: runBeforeMain 이 scope-hoisted user module 보다 먼저 실행" {
+    // RN Release 에서는 일부 ESM 이 scope-hoisted body 로 직접 emit 된다. Metro 의
+    // runBeforeMainModule(InitializeCore) 동작과 맞추려면 entry trigger 직전이 아니라,
+    // runBeforeMain 정의 직후 첫 user module body 전에 실행되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "setup.js", "globalThis.setupReady = true;\n");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json", "{\"name\":\"pkg\",\"main\":\"index.js\",\"sideEffects\":false}");
+    try writeFile(tmp.dir, "node_modules/pkg/index.js", "export const plain = 1;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { plain } from 'pkg';
+        \\globalThis.entryValue = plain;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const setup = try absPath(&tmp, "setup.js");
+    defer std.testing.allocator.free(setup);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+        .run_before_main = &.{setup},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const setup_call_idx = std.mem.indexOf(u8, result.output, "__zntc_guarded(init_setup);") orelse return error.SetupCallMissing;
+    const scope_module_idx = std.mem.indexOf(u8, result.output, "//#region index.js") orelse return error.ScopeModuleMissing;
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_index") == null);
+    try std.testing.expect(setup_call_idx < scope_module_idx);
+}
+
+test "entry_error_guard #5d: scope-hoisted named import from ESM wrap keeps live binding rename" {
+    // RN Release 재현: sideEffects 패턴으로 target(utils)은 __esm wrap 되고,
+    // consumer(pressable)는 scope-hoisted 된다. import binding rename 이 self
+    // canonical rename 으로 덮이면 `isTestEnv$N()` 같은 미정의 로컬 호출이 남는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{"name":"pkg","main":"pressable.js","sideEffects":["./utils.js"]}
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/utils.js",
+        \\export function isTestEnv() { return false; }
+        \\export const INT32_MAX = 2147483647;
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/pressable.js",
+        \\import { INT32_MAX, isTestEnv } from './utils.js';
+        \\export const IS_TEST_ENV = isTestEnv();
+        \\export const MAX = INT32_MAX;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { IS_TEST_ENV, MAX } from 'pkg';
+        \\globalThis.result = [IS_TEST_ENV, MAX];
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "IS_TEST_ENV = isTestEnv()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "isTestEnv$") == null);
 }
 
 test "entry_error_guard #6: side-effect import — wrap 적용 + 평가 시점 보존" {

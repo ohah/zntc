@@ -479,11 +479,7 @@ pub fn emitChunks(
             .entry_point => |info| @intFromEnum(info.module),
             .common, .manual => null,
         };
-        const entry_is_esm_wrapped = if (entry_mod_idx) |ei| blk: {
-            const entry_mod = graph.getModule(ModuleIndex.fromUsize(@intCast(ei))) orelse break :blk false;
-            break :blk entry_mod.wrap_kind == .esm;
-        } else false;
-        const emit_top_level_rbm = chunk_is_user_entry and options.run_before_main.len > 0 and !entry_is_esm_wrapped;
+        const emit_top_level_rbm = chunk_is_user_entry and options.run_before_main.len > 0;
         const rbm_insert_after_pos = if (emit_top_level_rbm)
             findLastRunBeforeMainPosition(graph, sorted_mods, options.run_before_main)
         else
@@ -598,6 +594,7 @@ pub fn emitChunks(
             const before_len = chunk_output.items.len;
             try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
             if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
+            rbm_calls_emitted = true;
         }
 
         // RSC 디렉티브 충돌 검증 (Next.js 스펙).

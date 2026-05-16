@@ -24,9 +24,8 @@ pub const CompiledModule = struct {
     preamble_lines: u32 = 0,
     /// per-source function map JSON. null = 비활성/함수 없음.
     fn_map_json: ?[]const u8 = null,
-    /// `entry_error_guard` 활성 + entry 모듈의 runBeforeMain 호출을 factory body 와
-    /// 분리해 emitter 가 별 top-level statement 로 unroll. entry dependency chain은
-    /// Metro처럼 entry factory 내부 nested require로 남겨 throw 전파를 보존한다.
+    /// entry 모듈의 추가 top-level chain. runBeforeMain은 Metro와 같은 순서를 위해
+    /// parent emitter가 첫 user module 실행 전에 직접 emit하므로 현재는 보통 null.
     entry_chain: ?[]const u8 = null,
     /// 이 module code 가 참조하는 shared namespace object 선언 목록.
     /// compiled output cache hit 시 linker 의 bundle preamble registry 를 복원하는 데 사용.

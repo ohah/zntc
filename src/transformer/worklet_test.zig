@@ -155,6 +155,28 @@ test "Worklet: globals are excluded from closure vars" {
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
 }
 
+test "Worklet: react-native-worklets default globals are excluded from closure vars" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function anim() {
+        \\  "worklet";
+        \\  return [
+        \\    decodeURI, decodeURIComponent, encodeURI, encodeURIComponent, escape, unescape,
+        \\    Function, AggregateError, EvalError, RangeError, ReferenceError, SyntaxError,
+        \\    TypeError, URIError, InternalError, BigInt, Uint8ClampedArray, Atomics,
+        \\    WeakRef, FinalizationRegistry, Iterator, AsyncIterator, GeneratorFunction,
+        \\    AsyncGeneratorFunction, Generator, AsyncGenerator, AsyncFunction, performance,
+        \\    setImmediate, clearImmediate, HermesInternal, _WORKLET, _IS_FABRIC,
+        \\  ];
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // react-native-worklets Babel plugin의 notCapturedIdentifiers와 맞춰 closure에 넣지 않는다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "performance: performance") == null);
+}
+
 test "Worklet: worklet transform disabled when no plugins" {
     // plugins 없이 변환하면 worklet 처리 안 됨
     var r = try parseAndTransformWithOptions(
