@@ -205,6 +205,9 @@ pub const CliOptions = struct {
     /// 사용자가 `inline_dynamic_imports` 를 명시했는지. true / false 둘 다 추적 —
     /// 명시 false + single-file output 일 때 자동 승격을 막아야 의도가 보존됨 (#2209).
     inline_dynamic_imports_explicit: bool = false,
+    /// minChunkSize: 작은 common 청크 자동 병합 임계(바이트). 0=비활성.
+    /// CLI: `--min-chunk-size=<n>` / config.json: `minChunkSize`.
+    min_chunk_size: usize = 0,
 
     const RnPlatform = enum {
         none,
@@ -370,6 +373,7 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         opts.inline_dynamic_imports = v;
         opts.inline_dynamic_imports_explicit = true;
     }
+    if (dto.minChunkSize) |v| opts.min_chunk_size = @as(usize, v);
     // manualChunks: record form 매핑 — `[{name, patterns}]`. function form 은 JS-only.
     if (dto.manualChunks) |list| for (list) |e| {
         const patterns = try allocator.alloc([]const u8, e.patterns.len);
@@ -620,6 +624,8 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             // 선택을 요구.
             opts.inline_dynamic_imports = false;
             opts.inline_dynamic_imports_explicit = true;
+        } else if (std.mem.startsWith(u8, arg, "--min-chunk-size=")) {
+            opts.min_chunk_size = std.fmt.parseInt(usize, arg["--min-chunk-size=".len..], 10) catch 0;
         } else if (std.mem.eql(u8, arg, "--external")) {
             if (i + 1 < args.len) {
                 i += 1;

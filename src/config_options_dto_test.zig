@@ -52,6 +52,7 @@ const bundler_only_fields = [_][]const u8{
     "preserveModules",
     "preserveModulesRoot",
     "inlineDynamicImports",
+    "minChunkSize",
     "manualChunks",
     "sourcemapMode",
     "outputExports",

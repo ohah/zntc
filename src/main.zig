@@ -693,6 +693,7 @@ pub fn main() !void {
             .preserve_modules = opts.preserve_modules,
             .preserve_modules_root = opts.preserve_modules_root,
             .inline_dynamic_imports = opts.inline_dynamic_imports,
+            .min_chunk_size = opts.min_chunk_size,
             .dev_mode = opts.dev,
             .react_refresh = opts.dev,
             .root_dir = if (opts.dev or opts.sourcemap) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
