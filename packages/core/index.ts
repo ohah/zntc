@@ -637,6 +637,10 @@ interface BuildOptionsCommon {
    * - live binding (모듈이 `export let` 을 mutate 하면 caller 측에서도 반영)
    */
   inlineDynamicImports?: boolean;
+  /** Rollup `output.experimentalMinChunkSize` 류 — 모듈 source 합(추정)이 이
+   * 바이트 미만인 작은 common 청크를, 도달성이 상위집합인(over-fetch 없는)
+   * 청크로 자동 병합. entry/manual/dynamic 청크는 보존. 0/미지정 = 비활성. */
+  minChunkSize?: number;
   sourcemap?: boolean;
   /**
    * sourcemap 출력 형식 (`sourcemap: true` 일 때만 의미). esbuild / rolldown 호환 (#2152).

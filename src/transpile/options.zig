@@ -161,6 +161,7 @@ pub const ConfigOptionsDto = struct {
     preserveModules: ?bool = null,
     preserveModulesRoot: ?[]const u8 = null,
     inlineDynamicImports: ?bool = null,
+    minChunkSize: ?u32 = null,
     manualChunks: ?[]const ManualChunkDto = null,
 };
 

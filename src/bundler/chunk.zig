@@ -122,6 +122,20 @@ pub const BitSet = struct {
         return std.mem.eql(u8, self.entries, other.entries);
     }
 
+    /// self 의 모든 set 비트가 other 에도 set 인지 (self ⊆ other).
+    /// 청크 병합 안전성: src ⊆ dst 면 dst 가 로드될 때 항상 src 도 로드되므로
+    /// src 모듈을 dst 로 옮겨도 어떤 entry 도 불필요 코드를 받지 않는다.
+    pub fn isSubsetOf(self: BitSet, other: BitSet) bool {
+        const len = @min(self.entries.len, other.entries.len);
+        for (self.entries[0..len], other.entries[0..len]) |a, b| {
+            if (a & ~b != 0) return false;
+        }
+        if (self.entries.len > len) for (self.entries[len..]) |a| {
+            if (a != 0) return false;
+        };
+        return true;
+    }
+
     /// 해시값을 계산한다 (HashMap 키로 사용).
     pub fn hash(self: BitSet) u64 {
         return wyhash.hashU64(self.entries);
@@ -365,6 +379,58 @@ pub const GenerateOptions = struct {
     /// Rollup `output.inlineDynamicImports` — dynamic import target 을 importer 의 chunk 로 흡수.
     inline_dynamic_imports: bool = false,
 };
+
+/// 너무 작은 `common` 청크를, 그 청크가 도달 가능한 모든 entry 가 항상 함께
+/// 로드하는(= src.bits ⊆ dst.bits) 다른 청크로 병합한다 — 어떤 entry 도 불필요
+/// 코드를 받지 않음(over-fetch 없음). entry/manual/dynamic 청크는 보존(사용자가
+/// 요청한 출력/명시 의도/지연 로딩). Rollup `output.experimentalMinChunkSize` 류.
+/// 크기는 모듈 source 길이 합(minify 전 추정) — 작은 청크 판별엔 충분.
+/// `computeCrossChunkLinks` *전* 에 호출해야 cross-chunk import 가 병합 후
+/// 기준으로 정확히 재계산된다(빈 청크는 emit 단계가 skip).
+/// side-effect 순서: src.bits ⊆ dst.bits 이므로 src 를 import 하는 모든 모듈이
+/// dst 가 로드되는 entry 집합에 포함 → src side-effect 가 dst 의 일부로 그대로
+/// 실행되어 순서 보존. single-pass(cascade 없음) — A→B 후 B 는 재검사 안 함.
+pub fn mergeSmallChunks(
+    chunk_graph: *ChunkGraph,
+    graph: *const ModuleGraph,
+    min_size: usize,
+) void {
+    if (min_size == 0) return;
+    const n = chunk_graph.chunks.items.len;
+    if (n < 2) return;
+
+    for (0..n) |si| {
+        const src = &chunk_graph.chunks.items[si];
+        if (src.modules.items.len == 0) continue; // 이미 병합돼 빈 청크
+        if (src.kind != .common) continue; // entry/manual/dynamic 보존
+        var size: usize = 0;
+        for (src.modules.items) |mi| {
+            if (graph.getModule(mi)) |m| size += m.source.len;
+        }
+        if (size >= min_size) continue;
+
+        // src.bits ⊆ dst.bits 인 비어있지 않은 다른 청크 중 첫째(결정적).
+        var target: ?usize = null;
+        for (0..n) |ti| {
+            if (ti == si) continue;
+            const t = &chunk_graph.chunks.items[ti];
+            if (t.modules.items.len == 0) continue;
+            if (!src.bits.isSubsetOf(t.bits)) continue;
+            target = ti;
+            break;
+        }
+        const ti = target orelse continue;
+        const dst = &chunk_graph.chunks.items[ti];
+        const dst_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ti)));
+        // 사전 예약 → 루프 중 append 실패로 부분 병합/매핑 불일치 없음(원자적).
+        dst.modules.ensureUnusedCapacity(chunk_graph.allocator, src.modules.items.len) catch continue;
+        for (src.modules.items) |mi| {
+            dst.modules.appendAssumeCapacity(mi);
+            chunk_graph.assignModuleToChunk(mi, dst_idx); // 경계검사 포함 기존 헬퍼
+        }
+        src.modules.clearRetainingCapacity(); // 빈 청크 — emitChunks 가 skip
+    }
+}
 
 pub fn generateChunks(
     allocator: std.mem.Allocator,

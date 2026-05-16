@@ -110,6 +110,10 @@ pub const BundleOptions = struct {
     /// 보존 보장: namespace identity (`(await import(x)) === (await import(x))`),
     /// top-level side effect 1회 실행, live binding.
     inline_dynamic_imports: bool = false,
+    /// 작은 common 청크 자동 병합 임계(바이트, 모듈 source 합 추정). 0=비활성.
+    /// Rollup `output.experimentalMinChunkSize` 류. src.bits⊆dst.bits 인 경우만
+    /// 병합해 over-fetch 없음. entry/manual/dynamic 청크는 보존.
+    min_chunk_size: usize = 0,
     /// 사용자 정의 청크 분할 (Rollup `manualChunks` 호환 Phase 1 / #1027).
     /// code_splitting=true 일 때만 동작. 매칭된 모듈은 pseudo-entry 로 BFS 에 참여
     /// → transitive dependency 도 같은 청크로, dynamic import target 도 manual 우선.
@@ -1355,6 +1359,12 @@ pub const Bundler = struct {
                     .inline_dynamic_imports = self.options.inline_dynamic_imports,
                 });
             defer chunk_graph.deinit();
+
+            // 작은 common 청크 병합 (Rollup experimentalMinChunkSize 류).
+            // computeCrossChunkLinks *전* — cross-chunk import 가 병합 후 기준 재계산.
+            if (!self.options.preserve_modules and self.options.min_chunk_size > 0) {
+                chunk_mod.mergeSmallChunks(&chunk_graph, &graph, self.options.min_chunk_size);
+            }
 
             try chunk_mod.computeCrossChunkLinks(&chunk_graph, &graph, self.allocator, if (linker) |*l| l else null);
 

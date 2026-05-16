@@ -722,6 +722,7 @@ pub fn parseBuildOptions(
         .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
         .code_splitting = getObjectBool(env, opts_obj, "splitting", false),
         .inline_dynamic_imports = getObjectBool(env, opts_obj, "inlineDynamicImports", false),
+        .min_chunk_size = @as(usize, getObjectUint32(env, opts_obj, "minChunkSize", 0)),
         .sourcemap = .{
             .enable = getObjectBool(env, opts_obj, "sourcemap", false),
             .mode = parseSourceMapMode(env, opts_obj),

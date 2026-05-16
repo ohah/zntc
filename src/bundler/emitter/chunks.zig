@@ -112,6 +112,8 @@ pub fn emitChunks(
 
     for (sorted_indices) |ci| {
         const chunk = &chunk_graph.chunks.items[ci];
+        // mergeSmallChunks 로 비워진 청크는 출력하지 않는다(entry 는 비지 않음).
+        if (chunk.modules.items.len == 0) continue;
 
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
