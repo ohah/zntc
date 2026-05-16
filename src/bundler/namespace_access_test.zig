@@ -210,3 +210,42 @@ test "analyzeNamespaceAccess: 함수 내부 로컬 변수 shadowing" {
     defer h.deinit(std.testing.allocator);
     try expectMembers(&h.access, &.{"foo"});
 }
+
+// ============================================================
+// Default-import member 분석 (PR-1 contract).
+// `populateNamespaceAccesses` 가 ESM wrapper-barrel default binding 을
+// 이 symbol-aware 분석으로 라우팅한다 — wrapper-barrel 정밀 lazy 의
+// 입력(소비자 사용 prop / escape 시 opaque)을 제공.
+// ============================================================
+
+test "analyzeNamespaceAccess: default import member-only" {
+    var h = try runAccess(std.testing.allocator,
+        \\import _ from './mod';
+        \\_.foo();
+        \\_.bar;
+    , "_");
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{ "foo", "bar" });
+}
+
+test "analyzeNamespaceAccess: default import 값 전달 → opaque" {
+    var h = try runAccess(std.testing.allocator,
+        \\import _ from './mod';
+        \\function sink(o) { return o.bar(); }
+        \\_.foo();
+        \\sink(_);
+    , "_");
+    defer h.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
+}
+
+test "analyzeNamespaceAccess: default import computed access → opaque" {
+    var h = try runAccess(std.testing.allocator,
+        \\import _ from './mod';
+        \\const k = globalThis.x ? 'bar' : 'baz';
+        \\_.foo();
+        \\_[k]();
+    , "_");
+    defer h.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
+}

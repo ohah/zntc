@@ -29,6 +29,7 @@ const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const preamble_writer = @import("linker/preamble_writer.zig");
 const namespace_access = @import("linker/namespace_access.zig");
 const shared_namespace = @import("linker/shared_namespace.zig");
+const graph_requested_exports = @import("graph/requested_exports.zig");
 pub const PreambleWriter = preamble_writer.PreambleWriter;
 pub const cjsImportNeedsToEsmInterop = preamble_writer.cjsImportNeedsToEsmInterop;
 pub const LinkingMetadata = @import("linker/metadata_types.zig").LinkingMetadata;
@@ -372,13 +373,30 @@ pub const Linker = struct {
         return self.graph.moduleAtMut(ModuleIndex.fromUsize(idx));
     }
 
+    /// importer 의 import_record 가 가리키는 resolved source 모듈. 인덱스
+    /// 범위 밖이거나 미해결이면 null.
+    fn importedModule(self: *const Linker, importer: *const Module, record_idx: u32) ?*const Module {
+        if (record_idx >= importer.import_records.len) return null;
+        const src_idx = importer.import_records[record_idx].resolved;
+        if (src_idx.isNone()) return null;
+        return self.graph.getModule(src_idx);
+    }
+
     fn isCjsDefaultBinding(self: *const Linker, importer: *const Module, ib: ImportBinding) bool {
         if (ib.kind != .default) return false;
-        if (ib.import_record_index >= importer.import_records.len) return false;
-        const src_idx = importer.import_records[ib.import_record_index].resolved;
-        if (src_idx.isNone()) return false;
-        const src = self.graph.getModule(src_idx) orelse return false;
+        const src = self.importedModule(importer, ib.import_record_index) orelse return false;
         return src.wrap_kind == .cjs;
+    }
+
+    /// `import _ from './w'; _.foo()` 에서 source 가 wrapper-barrel
+    /// (`BASE.PROP = importLocal; export default BASE`, lodash-es lodash.default.js)
+    /// 인 default binding. CJS default 와 동일하게 scope-aware member 분석으로
+    /// `namespace_used_properties` 를 채워, wrapper-barrel 의 prop 단위 정밀
+    /// lazy 링크가 소비자 사용 prop 집합을 알 수 있게 한다.
+    fn isEsmWrapperDefaultBinding(self: *const Linker, importer: *const Module, ib: ImportBinding) bool {
+        if (ib.kind != .default) return false;
+        const src = self.importedModule(importer, ib.import_record_index) orelse return false;
+        return graph_requested_exports.isWrapperBarrel(self.graph, src);
     }
 
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
@@ -1712,6 +1730,7 @@ pub const Linker = struct {
                     if (ib.kind == .namespace) break :blk true;
                     if (ib.kind == .named and ib.namespace_used_properties == null) break :blk true;
                     if (self.isCjsDefaultBinding(importer, ib)) break :blk true;
+                    if (self.isEsmWrapperDefaultBinding(importer, ib)) break :blk true;
                 }
                 break :blk false;
             };
@@ -1737,7 +1756,12 @@ pub const Linker = struct {
                 if (source_mod_idx.isNone()) continue;
                 const source = self.graph.getModule(source_mod_idx) orelse continue;
                 const is_cjs_default_candidate = ib.kind == .default and source.wrap_kind == .cjs;
-                if (!is_namespace and !is_named_candidate and !is_cjs_default_candidate) continue;
+                const is_esm_wrapper_default_candidate = ib.kind == .default and
+                    !is_cjs_default_candidate and
+                    graph_requested_exports.isWrapperBarrel(self.graph, source);
+                const should_analyze_binding = is_namespace or is_named_candidate or
+                    is_cjs_default_candidate or is_esm_wrapper_default_candidate;
+                if (!should_analyze_binding) continue;
 
                 // `.named` 경로는 virtual namespace (re_export_namespace 타겟)일 때만 처리.
                 // `.namespace`/CJS default는 항상 scope-aware 재평가 대상 — member-only
@@ -1768,10 +1792,11 @@ pub const Linker = struct {
                 defer access.deinit(self.allocator);
 
                 if (access.kind == .@"opaque") {
-                    // `.namespace`와 CJS default는 text-based 결과를 신뢰하지 않음 —
-                    // null로 덮어써 전체 namespace/default fallback. `.named` virtual ns는
-                    // null 유지(기존 동작).
-                    if (is_namespace or is_cjs_default_candidate) {
+                    // `.namespace`/CJS default/ESM wrapper default 는 opaque(동적
+                    // 접근·escape) 시 null 로 덮어써 전체 fallback — wrapper-barrel
+                    // 정밀 lazy 가 보수적(전체 링크)으로 떨어지는 안전 경로.
+                    // `.named` virtual ns 는 null 유지(기존 동작).
+                    if (is_namespace or is_cjs_default_candidate or is_esm_wrapper_default_candidate) {
                         ib.namespace_used_properties = null;
                         ib.namespace_used_property_stmts = null;
                     }
