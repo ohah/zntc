@@ -305,6 +305,12 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
 
         module.prebuilt_stmt_info = null;
         if (analyzer.stmt_info_count > 0) {
+            // 주의: package sideEffects 는 이 시점(parseModule 내부 prepass)
+            // **이후** applySideEffectsFromPackageJson 으로 적용되므로 여기서는
+            // isUserDeclaredPure() 가 거의 항상 false → 게이트 off. 실제 게이트
+            // 적용은 tree_shaker 가 정확한 side-effect 상태로 재빌드할 때 일어난다.
+            const gate_member_augment =
+                module.memberAugmentGate(self.transform_options_base.minify_syntax);
             module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
                 arena_alloc,
                 ast,
@@ -313,6 +319,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 analyzer.references.items,
                 if (module.semantic) |*s| &s.unresolved_references else null,
                 false,
+                gate_member_augment,
             );
         }
     }

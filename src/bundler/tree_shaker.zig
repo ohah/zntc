@@ -465,7 +465,39 @@ pub const TreeShaker = struct {
                 // 와 동일 게이트.
                 if (m.wrap_kind == .esm and !m.isUserDeclaredPure()) continue;
 
+                // package sideEffects 는 transform_prepass(=prebuilt_stmt_info
+                // 생성 시점) **이후**에 applySideEffectsFromPackageJson 으로
+                // 적용되므로, prebuilt 은 항상 gate=false 로 만들어진다. 게이트가
+                // 성립하는 (pure + minify) 모듈은 prebuilt 을 버리고 여기서
+                // buildFromSemantic (prebuilt 과 동일 알고리즘) 으로 정확한
+                // side-effect 상태 + 게이트 ON 으로 재빌드한다. build() (span 기반
+                // 휴리스틱) 으로 바꾸면 down-level 된 AST (es2021 private-field 등)
+                // 에서 stmt↔symbol 매핑이 어긋나 과도 shake 회귀가 난다 — 반드시
+                // prebuilt 과 같은 references 기반 buildFromSemantic 을 쓴다.
+                const gate_member_augment =
+                    m.memberAugmentGate(self.graph.transform_options_base.minify_syntax);
+
                 if (m.wrap_kind != .cjs) {
+                    if (gate_member_augment) {
+                        if (m.semantic) |*sem| {
+                            if (m.ast) |*ast| {
+                                if (stmt_info_mod.buildFromSemantic(
+                                    self.allocator,
+                                    ast,
+                                    sem.symbols.items,
+                                    sem.scopes,
+                                    sem.references,
+                                    &sem.unresolved_references,
+                                    false,
+                                    true,
+                                ) catch null) |rebuilt| {
+                                    module_stmt_infos[i] = rebuilt;
+                                    continue;
+                                }
+                            }
+                        }
+                        // 재빌드 실패 → prebuilt fallback (게이트 미적용, 안전).
+                    }
                     if (m.prebuilt_stmt_info) |prebuilt| {
                         module_stmt_infos[i] = prebuilt;
                         prebuilt_mask.set(i);
@@ -482,6 +514,7 @@ pub const TreeShaker = struct {
                     sem.symbol_ids,
                     &sem.unresolved_references,
                     m.wrap_kind == .cjs,
+                    gate_member_augment,
                 ) catch null;
             }
         }

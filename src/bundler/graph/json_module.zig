@@ -61,6 +61,8 @@ pub fn parse(self: *ModuleGraph, module: *Module) void {
                 analyzer.references.items,
                 if (module.semantic) |*s| &s.unresolved_references else null,
                 false,
+                // JSON 모듈엔 member-augment 패턴 없음 — 게이트 off.
+                false,
             ) catch null;
         }
     } else |_| {}

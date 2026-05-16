@@ -1582,7 +1582,10 @@ pub fn emitModule(
                             }
                         } else {
                             // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                            if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references, module.wrap_kind == .cjs)) |maybe_infos| {
+                            // member-augment 귀속은 tree-shaker BFS 경로 전용
+                            // (X→stmt writer 엣지가 cross-module reachability 에서만
+                            // 의미). non-tree-shaker fallback 은 게이트 off.
+                            if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references, module.wrap_kind == .cjs, false)) |maybe_infos| {
                                 if (maybe_infos) |infos| {
                                     var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                                     defer used_sym_buf.deinit(arena_alloc);

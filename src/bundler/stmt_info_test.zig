@@ -35,6 +35,7 @@ fn buildTestInfos(allocator: std.mem.Allocator, source: []const u8) !struct {
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         false,
+        false,
     )) orelse return error.NullResult;
 
     return .{ .infos = infos, .arena = arena };
@@ -342,6 +343,7 @@ fn buildTestInfosWithCjs(allocator: std.mem.Allocator, source: []const u8) !stru
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         true,
+        false,
     )) orelse return error.NullResult;
 
     return .{ .infos = infos, .arena = arena };
