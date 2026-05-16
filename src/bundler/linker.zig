@@ -173,6 +173,9 @@ pub const Linker = struct {
     /// 를 linker 생성 직후 설정한다. dev_mode 에서는 `__zntc_g.__xxx` 경로를
     /// 사용하므로 이 플래그는 무시된다.
     minify_whitespace: bool = false,
+    /// RN/Hermes: defineProperty 에 configurable:true 필요. G1-step2 의 ns arrow
+    /// `__export` helper 변형 선택에 사용 (minify_whitespace 와 동일하게 생성 직후 set).
+    configurable_exports: bool = false,
 
     /// --shim-missing-exports: missing export에 대해 `var xxx = void 0;` shim 생성.
     shim_missing_exports: bool = false,
