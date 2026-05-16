@@ -147,6 +147,14 @@ fn evalConstEnumExpr(
     ctx: ConstEnumEvalCtx,
 ) Error!?ConstEnumValue {
     const node = self.ast.getNode(expr_idx);
+    // 괄호 + TS/Flow 타입 wrapper — 값엔 영향 없으니 inner 만 평가 (#2193, #3129).
+    // 누락 시 `Blue = "B" as any` 같은 cast 멤버 하나로 collectConstEnum 의
+    // `orelse return` 이 enum 전체 등록을 실패시켜 ReferenceError 가 된다.
+    if (Tag.isTransparentWrapper(node.tag)) {
+        const inner = node.data.unary.operand;
+        if (inner.isNone()) return null;
+        return evalConstEnumExpr(self, inner, ctx);
+    }
     switch (node.tag) {
         .numeric_literal => {
             const text = self.ast.getText(node.span);
@@ -165,27 +173,6 @@ fn evalConstEnumExpr(
         .boolean_literal => {
             // ECMAScript: true=1, false=0 (Number 변환).
             return .{ .number = if (node.data.none == 1) 1 else 0 };
-        },
-        .parenthesized_expression => {
-            const inner = node.data.unary.operand;
-            if (inner.isNone()) return null;
-            return evalConstEnumExpr(self, inner, ctx);
-        },
-        // TS / Flow 타입 wrapper — 값에는 영향 없으니 inner 만 평가 (#2193).
-        // 누락 시 `Blue = "B" as any` 같은 cast 가 들어간 멤버 한 개 때문에
-        // collectConstEnum 의 `orelse return` 으로 enum 전체 등록이 실패하고,
-        // declaration 은 transformer 가 drop 한 상태로 참조만 남아 ReferenceError.
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_non_null_expression,
-        .ts_type_assertion,
-        .ts_instantiation_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => {
-            const inner = node.data.unary.operand;
-            if (inner.isNone()) return null;
-            return evalConstEnumExpr(self, inner, ctx);
         },
         .unary_expression => {
             const ue = node.data.extra;

@@ -1509,14 +1509,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // TS/Flow 타입 wrapper 는 런타임상 noop 이므로 통과한다. 그러지 않으면 타입 스트립
             // 이후 `(await x) as T` 가 추출되지 못한 raw `(yield x)` 로 남는다.
-            if (node.tag == .ts_as_expression or
-                node.tag == .ts_satisfies_expression or
-                node.tag == .ts_non_null_expression or
-                node.tag == .ts_type_assertion or
-                node.tag == .ts_instantiation_expression or
-                node.tag == .flow_as_expression or
-                node.tag == .flow_type_cast_expression)
-            {
+            if (Tag.isTransparentTypeWrapper(node.tag)) {
                 return visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
             }
 

@@ -1252,6 +1252,13 @@ pub const SemanticAnalyzer = struct {
         if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
 
         const node = self.ast.getNode(idx);
+        // TS/Flow 타입 wrapper: 값(operand)만 순회, 타입 부분 스킵 (#3129 단일 source).
+        // as/satisfies 는 binary(left=expr,right=type) 이나 extern union 이라
+        // unary.operand == binary.left — 값 부분만 방문된다.
+        if (Tag.isTransparentTypeWrapper(node.tag)) {
+            try self.visitNode(node.data.unary.operand);
+            return;
+        }
         switch (node.tag) {
             // ---- 스코프 생성 노드 ----
             .program => try self.visitProgram(node),
@@ -1634,21 +1641,7 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(node.data.unary.operand);
             },
 
-            // ---- TS expression: 값 부분만 순회, 타입 부분은 스킵 ----
-            // ts_as_expression, ts_satisfies_expression은 binary(left=expr, right=type)이지만
-            // extern union이므로 unary.operand == binary.left — 값(expr) 부분만 방문한다.
-            // ts_non_null_expression은 unary(operand=expr).
-            // ts_type_assertion, ts_instantiation_expression은 현재 파서가 생성하지 않지만 안전을 위해 포함.
-            .ts_as_expression,
-            .ts_satisfies_expression,
-            .ts_non_null_expression,
-            .ts_type_assertion,
-            .ts_instantiation_expression,
-            .flow_type_cast_expression,
-            .flow_as_expression,
-            => {
-                try self.visitNode(node.data.unary.operand);
-            },
+            // (TS/Flow type wrapper 는 switch 진입 전 #3129 single-source 처리)
 
             // destructuring assignment targets — 이전에는 else 케이스로 skip되어
             // 내부 식별자의 write 참조가 카운트되지 않는 analysis gap이 있었다 (#1608 follow-up).

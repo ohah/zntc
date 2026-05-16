@@ -479,6 +479,30 @@ pub const Node = struct {
             };
         }
 
+        /// TS/Flow runtime-transparent type wrapper 태그 (괄호 제외).
+        /// 모두 `data.unary.operand` 로 안쪽 값 노드에 접근 가능하며 런타임상
+        /// noop — 타입 스트립 후 operand 만 남는다. 새 wrapper 태그 추가 시
+        /// 이 함수만 갱신하면 코드베이스 전 분기가 따라온다 (#3129).
+        pub fn isTransparentTypeWrapper(tag: Tag) bool {
+            return switch (tag) {
+                .ts_as_expression,
+                .ts_satisfies_expression,
+                .ts_non_null_expression,
+                .ts_type_assertion,
+                .ts_instantiation_expression,
+                .flow_as_expression,
+                .flow_type_cast_expression,
+                => true,
+                else => false,
+            };
+        }
+
+        /// `isTransparentTypeWrapper` + `parenthesized_expression`.
+        /// `unwrapTransparentWrappers` 처럼 괄호까지 통과해야 하는 곳에서 사용.
+        pub fn isTransparentWrapper(tag: Tag) bool {
+            return tag == .parenthesized_expression or isTransparentTypeWrapper(tag);
+        }
+
         /// 노드 데이터의 종류. AST 워커가 자식 노드를 일관되게 탐색하기 위해 사용.
         pub const DataKind = enum {
             /// 리프 노드: 자식 없음 (none, string_ref, number_bytes)
