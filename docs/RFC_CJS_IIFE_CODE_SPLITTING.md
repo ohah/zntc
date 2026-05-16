@@ -132,7 +132,8 @@ P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), 
 |---|---|---|
 | **P3-B PR1** | 하위 인프라만 — `module_id.zig`(relative-path 안정 ID) + `runtime_helpers.zig` 레지스트리 상수(`__zntc_mods`/`__zntc_require`/`__zntc_register`/`__zntc_load_chunk`, normal+min). 유닛테스트. emit 미연결·가드 불변(무동작 회귀 0). **MF §4.1 공유 계층** | 본 PR |
 | **P3-B PR2** | emit 연결(CJS) — 가드 완화(`format==.cjs`+splitting), cross-chunk static→`const{x}=require("./chunk.js")`, common 청크 CJS `exports.x`(emitCjsEntryExports 미도달 보완), `import()`→`Promise.resolve().then(()=>require("./chunk.js"))`. **CJS/Node 는 네이티브 require 가 곧 레지스트리**(RFC §4.3) — PR1 의 `__zntc_*` 레지스트리는 IIFE/MF 추상 로더 계층(PR3)으로 미사용 대기. Node 실행 검증(통합 테스트), pm_cjs/ESM/smoke 무회귀 | **완료** |
-| **P3-B PR3** | IIFE/UMD: `__zntc_*` 레지스트리 활성화 + self-register wrapper + 브라우저 청크 로더(script 주입/조건부 import()). cjs 의 native-require 가 없는 환경 | 후속 |
+| **P3-B PR3** | **IIFE** splitting: PR1 `__zntc_*` 레지스트리 활성화 — 자기설치형 `__zntc_register`(모든 청크 멱등 prelude) + entry 전용 해석 계층(`__zntc_require`+브라우저 `<script>` 로더+`__zntc_public_path`) + 청크별 self-register factory(안정 모듈 ID 키, common 은 청크 stem) + cross-chunk static→`const{x}=__zntc_require("<id>")` + `import()`→`__zntc_load_chunk("<f>").then(()=>__zntc_require("<id>"))`. entry/dynamic 청크는 emitCjsEntryExports(factory-bound, default/__esModule). 브라우저 시뮬 Node 실행 검증. esm/cjs/pm/smoke 무회귀 | **완료** |
+| **P3-B PR4** | UMD/AMD splitting + 비-DOM(worker/Deno) 로더 폴백 + RSC 디렉티브×IIFE-factory + CSP nonce/public-path 옵션. (PR3 한계 §7) | 후속 |
 
 ---
 
@@ -145,13 +146,18 @@ P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), 
 **결과: PASS (2026-05-16).** Node 24 CJS 에서 (1) 런타임 레지스트리·캐시, (2) 정적 cross-chunk require, (3) 동적 청크 로드(`__zntc_load_chunk`→`Promise.resolve().then(()=>require(static))`), (4) 동적 로드 청크의 shared 모듈 캐시 재사용(상태 보존 count 1→2→3) 모두 동작 확인.
 **스파이크가 잡은 설계 제약**: 모듈 factory 의 `require` 인자는 `__zntc_require`(모듈ID 레지스트리)다. sibling 청크 *파일* eager 로드는 청크 **최상위**에서 Node `require("./chunk.js")`(정적 string)로 해야 한다 — 청크파일 로드 ≠ 모듈ID require. PR2 의 정적 cross-chunk 재작성은 이 분리를 따른다(§4.2 의도와 일치).
 
+**IIFE 브라우저 스파이크: PASS (2026-05-16).** `<script>` 주입 로더 + self-register factory 청크 2개를 동기 `document` 스텁으로 시뮬레이션 → (1) 레지스트리/캐시 (2) 정적 cross-chunk `__zntc_require` (3) `<script>` 주입 동적 로드 (4) 동적 청크가 common 캐시 재사용(상태 보존 count 1→2→3) 모두 동작.
+**IIFE 스파이크가 잡은 설계 제약**: 정적 dep 청크가 entry(레지스트리 코어)보다 먼저 평가되면 `__zntc_register` 미존재로 실패. → **등록/해석 계층 분리**: `__zntc_register` 는 **자기설치형**(`g.__zntc_register||(g.__zntc_register=function(map){...g.__zntc_mods...})`, mods 맵만 필요, 모든 청크가 멱등 prelude 로 보유), `__zntc_require`+로더는 entry 전용(멱등). 그러면 load-order 요구가 "entry 가 정적 dep 들 뒤(마지막) 평가" 하나로 축소된다(호스트 책임 — RFC §5/§7 한계 기록). PR3 의 self-register wrapper·레지스트리 코어는 이 분리를 따른다.
+
 ---
 
 ## 7. 미해결 / 결정 필요
 
 - **[결정됨 2026-05-16] 모듈 ID 스킴 = relative-path 기반.** content-hash·숫자 인덱스 대비: 디버깅/스택트레이스 가독성, MF expose 키 자연 호환, 빌드 결정성, 내용 변경에도 ID 불변(MF 계약 핀 안정). MF RFC §4.1/§6.1(모듈 안정 런타임 ID) 과 **공동 결정** — 동일 `module_id.zig` 공유. (트레이드오프: 소스 디렉터리 구조가 ID 로 노출 — 수용.)
-- IIFE 동적 로더의 브라우저 청크 fetch 방식(script 주입 vs 조건부 import()) — public_path/CSP 영향. (P3-B PR2 이후 IIFE 단계에서 결정.)
+- **[결정됨 2026-05-16] IIFE 브라우저 동적 로더 = `<script>` 주입** (webpack jsonp 방식): `document.createElement("script")`+onload/onerror Promise, src=`__zntc_public_path`+청크파일. self-register payload 라 평가만 하면 `__zntc_register` 호출. 조건부 import() 대비: 클래식 스크립트 환경 포함 최대 호환, IIFE 포맷과 무충돌, public_path 자연 연동. (트레이드오프: CSP `script-src` 영향 — public_path/nonce 는 후속 옵션.) worker/Deno 등 non-DOM 폴백은 PR3 범위 외(필요 시 후속).
 - preserve-modules CJS 의 Node `__esModule`/interop 경계(default/namespace).
+- **[PR3 한계, 문서화]** IIFE 정적 cross-chunk 는 dep 청크 `<script>` 가 entry 보다 먼저 평가돼야 함(`__zntc_require`가 동기) — 호스트가 dep 스크립트를 entry 앞에 배치하거나 동적 `import()`(로드 await)만 사용. self-installing register 로 load-order 요구는 "entry 마지막" 하나로 축소(RFC §6). umd/amd·preserve-modules+iife·비-DOM 로더·RSC 디렉티브×factory·CSP nonce 는 PR4 후속.
+- **[선재 한계, cjs/iife 공통]** entry 모듈이 `wrap_kind==.cjs`(자체 CJS 모듈)면 emitModule 이 final_exports 블록 전에 early-return → `iife_split_factory`/cjs entry-export 경로 미적용(factory-bound exports 누락 가능). PR2/PR3 공통, 신규 회귀 아님. 후속.
 - **[선재 한계, P3-B 비회귀]** cross-chunk re-export(`export { x } from "./y"` 에서 y 가 별도 청크)는 splitting 파이프라인에서 깨짐 — referrer 가 side-effect import 만 받고 심볼 미바인딩(ReferenceError). **ESM splitting 도 동일하게 깨짐**(P3-B 가 그 동작을 충실히 미러). P3-B 도입 버그 아님 — splitting linker 의 re-export forwarding 갭. cjs/esm 공통 후속 과제(별도 이슈). P3-B CJS 범위 = ESM splitting 패리티(정적 cross-chunk 심볼 import·default/named 동적 import 는 Node 실행 검증됨).
 - P3-A 가치 대비 비용: esbuild 미지원 영역. 수요(누가 CJS/IIFE+splitting 을 원하나) 확인 후 P3-B 착수 여부 게이트.
 

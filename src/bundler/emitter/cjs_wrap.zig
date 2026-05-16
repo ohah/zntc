@@ -74,7 +74,7 @@ fn appendOptionalMissingThrow(
     try buf.appendSlice(allocator, " + \"\\\"\");\n\t\te.code = \"MODULE_NOT_FOUND\";\n\t\tthrow e;\n");
 }
 
-fn appendJsStringLiteral(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
+pub fn appendJsStringLiteral(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
     const hex = "0123456789abcdef";
     try buf.append(allocator, '"');
     for (value) |c| {

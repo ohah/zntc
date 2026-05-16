@@ -194,6 +194,11 @@ pub const EmitOptions = struct {
     /// `entry_error_guard` 와 직교 — consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
     /// vanilla RN CLI 빌드는 비어있어 dead code 0.
     silent_console_error_patterns: []const []const u8 = &.{},
+    /// IIFE splitting(P3-B PR3): entry 모듈이 self-register factory 안에서
+    /// emit 됨 → emitWrappedEntryExports 의 `return {...}` 는 레지스트리가
+    /// 버리므로 억제. export 노출은 청크-레벨 factory-bound `exports.x=`
+    /// (chunks.zig xchunk_exports). emitChunks 가 emitModule 호출 시 set.
+    iife_split_factory: bool = false,
     /// preserve-modules: 모듈 1개 = 출력 파일 1개
     preserve_modules: bool = false,
     /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로
@@ -1882,7 +1887,11 @@ pub fn emitModule(
     defer if (final_exports_buf) |buf| allocator.free(buf);
 
     const final_exports = if (final_export_entries) |entries| blk: {
-        if (options.format.isWrappedFormat()) {
+        // IIFE splitting: 청크 factory 가 `exports`/`module`/`require` 를 주므로
+        // CJS 와 동일 모델 — wrapped `return{}`(레지스트리가 버림) 대신 아래
+        // emitCjsEntryExports 경로로 factory-bound exports(default/__esModule
+        // interop 포함)를 emit. global_name 은 chunks.zig bootstrap 이 처리.
+        if (options.format.isWrappedFormat() and !options.iife_split_factory) {
             if (options.format != .iife or options.global_name != null) {
                 final_exports_buf = try emitWrappedEntryExports(allocator, entries, options.minify_whitespace);
                 break :blk final_exports_buf;
@@ -1890,7 +1899,7 @@ pub fn emitModule(
             // 래핑 포맷 (globalName 없음, IIFE): export는 syntax error이므로 제거
             break :blk @as(?[]const u8, null);
         }
-        if (options.format == .cjs) {
+        if (options.format == .cjs or options.iife_split_factory) {
             // mode (auto/named/default_/none) 별 emit 분기는 emitCjsEntryExports 에서 결정.
             final_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports) catch |err| switch (err) {
                 error.OutputExportsDefaultRequiresSingleDefault => {
@@ -1942,6 +1951,7 @@ const cjs_wrap = @import("emitter/cjs_wrap.zig");
 const emitDisabledModule = cjs_wrap.emitDisabledModule;
 const emitAssetModule = cjs_wrap.emitAssetModule;
 pub const emitCjsWrapper = cjs_wrap.emitCjsWrapper;
+pub const appendJsStringLiteral = cjs_wrap.appendJsStringLiteral;
 
 /// 런타임 헬퍼 문자열을 ArrayList에 주입한다 (re-export for backward compat).
 pub const appendRuntimeHelpers = rt.appendRuntimeHelpers;

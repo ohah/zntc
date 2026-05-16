@@ -217,6 +217,77 @@ pub fn appendZntcRegistry(buf: *std.ArrayList(u8), allocator: std.mem.Allocator,
     try buf.appendSlice(allocator, if (minify) ZNTC_REGISTRY_RUNTIME_MIN else ZNTC_REGISTRY_RUNTIME);
 }
 
+// ============================================================
+// IIFE code splitting 런타임 (P3-B PR3)
+// ============================================================
+//
+// IIFE/브라우저는 네이티브 require 가 없어 PR1 레지스트리를 *활성화*한다.
+// 디리스크 스파이크(RFC §6 IIFE)가 잡은 제약: 정적 dep 청크가 entry(해석
+// 계층)보다 먼저 평가되면 `__zntc_register` 미존재로 실패. → **등록/해석
+// 분리**:
+//  - 등록(`__zntc_register`)은 **자기설치형** — 모든 청크 wrapper 가 멱등
+//    prelude 로 보유, `g.__zntc_mods` 맵만 건드림. 코어보다 먼저여도 안전.
+//  - 해석(`__zntc_require` + 브라우저 `<script>` 로더)은 entry 전용·멱등.
+// load-order 요구는 "entry 가 정적 dep 들 뒤에 평가" 하나로 축소(호스트
+// 책임 — RFC §5/§7). 이름은 cross-file 계약이라 mangle 금지(리터럴 emit).
+
+/// 모든 IIFE 청크 wrapper 가 보유하는 자기설치형 register 식.
+/// 사용: `(function(g){` ++ THIS ++ `({"<id>":function(exports,module,require){`
+///       ++ <hoisted body+exports> ++ `}});})(typeof globalThis...)`
+pub const ZNTC_REGISTER_INSTALL =
+    "(g.__zntc_register||(g.__zntc_register=function(map){var M=g.__zntc_mods||(g.__zntc_mods={});for(var k in map)M[k]=map[k];}))";
+
+pub const ZNTC_IIFE_GLOBAL = "(typeof globalThis!==\"undefined\"?globalThis:this)";
+
+/// entry 청크 전용 해석 계층 — `__zntc_require`(모듈ID→factory, 캐시) +
+/// 브라우저 `<script>` 주입 동적 로더(`__zntc_load_chunk`, public_path 기반,
+/// Promise 캐시). `if(!g.__zntc_require)` 멱등 가드. 스파이크 검증 형태.
+///
+/// TODO(P3-C): `__zntc_require`/캐시 코어가 PR1 `ZNTC_REGISTRY_RUNTIME`
+/// (현재 dormant, CJS-Node 로더 바인딩) 과 의도상 동일. MF P1 수렴 시
+/// 코어를 공유 fragment 로 분해해 CJS-Node·IIFE-`<script>` 로더가 합성하도록
+/// 통일(중복 spell 제거). PR3 에서는 PR1 테스트 안정성 위해 분리 유지.
+pub const ZNTC_IIFE_RESOLVE_BROWSER =
+    \\(function (g) {
+    \\  if (g.__zntc_require) return;
+    \\  var __zntc_cache = {};
+    \\  var __zntc_cs = {};
+    \\  g.__zntc_require = function (id) {
+    \\    var c = __zntc_cache[id];
+    \\    if (c) return c.exports;
+    \\    var m = { exports: {} };
+    \\    __zntc_cache[id] = m;
+    \\    (0, g.__zntc_mods[id])(m.exports, m, g.__zntc_require);
+    \\    return m.exports;
+    \\  };
+    \\  g.__zntc_load_chunk = function (spec) {
+    \\    if (__zntc_cs[spec]) return __zntc_cs[spec];
+    \\    return (__zntc_cs[spec] = new Promise(function (res, rej) {
+    \\      var s = document.createElement("script");
+    \\      s.src = (g.__zntc_public_path || "") + spec;
+    \\      s.onload = function () { res(); };
+    \\      s.onerror = function () { rej(new Error("chunk load failed: " + spec)); };
+    \\      document.head.appendChild(s);
+    \\    }));
+    \\  };
+    \\})(typeof globalThis !== "undefined" ? globalThis : this);
+    \\
+;
+pub const ZNTC_IIFE_RESOLVE_BROWSER_MIN =
+    "(function(g){if(g.__zntc_require)return;var __zntc_cache={},__zntc_cs={};" ++
+    "g.__zntc_require=function(id){var c=__zntc_cache[id];if(c)return c.exports;" ++
+    "var m={exports:{}};__zntc_cache[id]=m;(0,g.__zntc_mods[id])(m.exports,m,g.__zntc_require);return m.exports};" ++
+    "g.__zntc_load_chunk=function(spec){if(__zntc_cs[spec])return __zntc_cs[spec];" ++
+    "return __zntc_cs[spec]=new Promise(function(res,rej){var s=document.createElement(\"script\");" ++
+    "s.src=(g.__zntc_public_path||\"\")+spec;s.onload=function(){res()};" ++
+    "s.onerror=function(){rej(new Error(\"chunk load failed: \"+spec))};document.head.appendChild(s)})};" ++
+    "})(typeof globalThis!==\"undefined\"?globalThis:this);";
+
+/// entry 청크에 해석 계층(브라우저)을 1회 주입.
+pub fn appendZntcResolveBrowser(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
+    try buf.appendSlice(allocator, if (minify) ZNTC_IIFE_RESOLVE_BROWSER_MIN else ZNTC_IIFE_RESOLVE_BROWSER);
+}
+
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
 /// var foo_exports = {}; __export(foo_exports, { greet: () => greet });
 /// __defProp은 __toESM 런타임에 이미 정의됨.
