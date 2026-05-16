@@ -1053,6 +1053,36 @@ test "Export: undefined name still errors (D20 negative guard)" {
     try expectAnalyzeError(&r, "totallyMissing");
 }
 
+test "Import: redeclared with let/const/function/class is error (D20 PR-2 spec-correct)" {
+    // RFC #3310 정공법: analyzer 가 import 를 1st-pass hoisted symbol 로 정식
+    // 등록하면서 `import {x}; let x` 류 ECMAScript LexicallyDeclaredNames 위반을
+    // spec-correct 하게 검출 (Babel/tsc/swc/rollup/webpack 모두 Duplicate
+    // declaration). #3311 read-only side-table 방식은 symbol 미생성이라 이 케이스를
+    // 못 잡았는데, PR-1 정공법이 개선. 이 회귀 가드는 PR-3 (side-table 제거) 후에도
+    // 정공법 symbol 경로로 유지되어야 한다.
+    try analyzeHasError(
+        \\import { x } from './m';
+        \\let x = 1;
+    , "already been declared");
+    try analyzeHasError(
+        \\import x from './m';
+        \\const x = 1;
+    , "already been declared");
+    try analyzeHasError(
+        \\import * as x from './m';
+        \\function x() {}
+    , "already been declared");
+    try analyzeHasError(
+        \\import { x } from './m';
+        \\class x {}
+    , "already been declared");
+    // 역방향 (binding 이 import 보다 앞) 도 대칭으로 검출
+    try analyzeHasError(
+        \\let x = 1;
+        \\import { x } from './m';
+    , "already been declared");
+}
+
 test "Import: type-only + namespace value from same source — export resolves" {
     try analyzeNoErrors(
         \\import type { Foo } from './x';
