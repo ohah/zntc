@@ -134,10 +134,37 @@ pub fn attachRootScopeSymbolByName(self: anytype, node_idx: NodeIndex, name: []c
 /// 단항 노드: operand를 재귀 방문 후 복사.
 pub fn visitUnaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
-    const old_operand = node.data.unary.operand;
+    var old_operand = node.data.unary.operand;
+
+    // statement context(`this.#x++;`)는 postfix 반환값이 폐기되므로 prefix 와
+    // 의미 동일. private-field 다운레벨이 활성일 때 postfix→prefix 정규화하면
+    // `(_t=get(),set(_t+1),_t)` 3-part 시퀀스 대신 compact `set(get()+1)` 로
+    // lowering (lru-cache@es2021 등 private-heavy es2021 size 회수, 의미 보존).
+    if (node.tag == .expression_statement and
+        (self.options.unsupported.class or self.options.unsupported.class_private_field))
+    {
+        const opn = self.ast.getNode(old_operand);
+        if (opn.tag == .update_expression) {
+            const ue = opn.data.extra;
+            if (ue + 1 < self.ast.extra_data.items.len) {
+                const inner_idx = readNodeIdx(self, ue, 0);
+                const op_flags = readU32(self, ue, 1);
+                if ((op_flags & ast_mod.UnaryFlags.postfix) != 0 and
+                    self.ast.getNode(inner_idx).tag == .private_field_expression)
+                {
+                    old_operand = try addExtraNode(self, .update_expression, opn.span, &.{
+                        @intFromEnum(inner_idx),
+                        op_flags & ~ast_mod.UnaryFlags.postfix,
+                    });
+                }
+            }
+        }
+    }
+
     const new_operand = try self.visitNode(old_operand);
-    // 자식 unchanged -> 부모도 identity. ast.addNode 호출 제거.
-    if (new_operand == old_operand) return idx;
+    // 자식 unchanged -> 부모도 identity. 단 위에서 operand 를 재작성했으면
+    // (old_operand != 원본) 반드시 새 노드로 재구성 (early-return 시 원본 operand 유지 버그).
+    if (new_operand == old_operand and old_operand == node.data.unary.operand) return idx;
     return self.ast.addNode(.{
         .tag = node.tag,
         .span = node.span,
