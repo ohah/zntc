@@ -907,34 +907,52 @@ pub const Linker = struct {
                 // 대상 아님 → skip 안전.
                 var ir_buf: std.ArrayListUnmanaged(um.ImportRef) = .empty;
                 errdefer ir_buf.deinit(self.allocator);
+                const appendSem = struct {
+                    fn f(la: std.mem.Allocator, buf: *std.ArrayListUnmanaged(um.ImportRef), sr: bundler_symbol.SymbolRef) !void {
+                        if (sr != .semantic) return;
+                        const s = sr.semantic;
+                        if (s.module.isNone() or s.symbol.isNone()) return;
+                        try buf.append(la, .{
+                            .source_module_index = @intFromEnum(s.module),
+                            .source_symbol_id = @intFromEnum(s.symbol),
+                        });
+                    }
+                }.f;
                 for (m.import_bindings) |ib| {
+                    if (ib.kind == .namespace) {
+                        // import * as ns: codegen 이 ns.<prop> 를 target export 의
+                        // canonical 직접 참조로 rewrite (ns_member_rewrites). 그
+                        // source top-level 의 mangled 이름이 importer per_mod_reserved
+                        // 에 없으면 nested 가 재사용 → silent-broken (`.alias` 와
+                        // 평행, RFC #3288). namespace_used_properties 로 정밀 좁히고
+                        // null(동적 접근/탈출) 은 보수적 전체 export.
+                        if (ib.import_record_index >= m.import_records.len) continue;
+                        const tgt = m.import_records[ib.import_record_index].resolved;
+                        if (tgt.isNone()) continue;
+                        const tm = self.getModule(@intFromEnum(tgt)) orelse continue;
+                        if (ib.namespace_used_properties) |props| {
+                            for (props) |p| {
+                                if (self.resolveSemanticExportSource(tgt, p)) |sr|
+                                    try appendSem(self.allocator, &ir_buf, sr);
+                            }
+                        } else {
+                            for (tm.export_bindings) |eb| {
+                                if (self.resolveSemanticExportSource(tgt, eb.exported_name)) |sr|
+                                    try appendSem(self.allocator, &ir_buf, sr);
+                            }
+                        }
+                        continue;
+                    }
+                    // .alias 는 re-export chain 중간 노드 → 궁극 `.semantic` 도출.
+                    // 미해결/순환/non-semantic 은 외부·shim → skip 안전.
                     const sr: bundler_symbol.SymbolRef = switch (ib.symbol) {
                         .semantic => ib.symbol,
                         .alias => |a| blk: {
                             if (a.module.isNone()) continue;
-                            // resolveExportChain → (chain.module, export_name).
-                            // 그 declaring 모듈의 export_bindings 에서 exported_name
-                            // 매칭으로 궁극 `.semantic` 도출. chain 미해결/순환/
-                            // non-semantic 은 외부·shim → skip 안전.
-                            const chain = self.resolveExportChain(a.module, ib.imported_name, 0) orelse continue;
-                            const cm = self.getModule(@intFromEnum(chain.module_index)) orelse continue;
-                            var resolved: ?bundler_symbol.SymbolRef = null;
-                            for (cm.export_bindings) |eb| {
-                                if (std.mem.eql(u8, eb.exported_name, chain.export_name)) {
-                                    resolved = eb.symbol;
-                                    break;
-                                }
-                            }
-                            break :blk resolved orelse continue;
+                            break :blk self.resolveSemanticExportSource(a.module, ib.imported_name) orelse continue;
                         },
                     };
-                    if (sr != .semantic) continue;
-                    const sem_ref = sr.semantic;
-                    if (sem_ref.module.isNone() or sem_ref.symbol.isNone()) continue;
-                    try ir_buf.append(self.allocator, .{
-                        .source_module_index = @intFromEnum(sem_ref.module),
-                        .source_symbol_id = @intFromEnum(sem_ref.symbol),
-                    });
+                    try appendSem(self.allocator, &ir_buf, sr);
                 }
                 const ir_owned = try ir_buf.toOwnedSlice(self.allocator);
                 try import_ref_slices.append(self.allocator, ir_owned);
@@ -1299,6 +1317,22 @@ pub const Linker = struct {
 
     /// re-export 체인을 따라가서 canonical export를 찾는다.
     /// 깊이 제한 100 (순환 re-export 방지).
+    /// `(module, export_name)` → 그 export 가 궁극적으로 가리키는 declaring
+    /// 모듈의 `.semantic` SymbolRef. resolveExportChain 으로 re-export chain 을
+    /// 끝까지 따라간 뒤 declaring 모듈 export_bindings 에서 exported_name 매칭.
+    /// chain 미해결 / 매칭 없음 / non-semantic(외부·shim) 은 null.
+    /// `.alias` import 와 namespace member 접근이 공유하는 source 도출 (RFC #3288).
+    fn resolveSemanticExportSource(self: *const Linker, module_idx: ModuleIndex, name: []const u8) ?bundler_symbol.SymbolRef {
+        const chain = self.resolveExportChain(module_idx, name, 0) orelse return null;
+        const cm = self.getModule(@intFromEnum(chain.module_index)) orelse return null;
+        for (cm.export_bindings) |eb| {
+            if (std.mem.eql(u8, eb.exported_name, chain.export_name)) {
+                return if (eb.symbol == .semantic) eb.symbol else null;
+            }
+        }
+        return null;
+    }
+
     pub fn resolveExportChain(
         self: *const Linker,
         module_idx: ModuleIndex,
