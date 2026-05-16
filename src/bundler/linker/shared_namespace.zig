@@ -292,11 +292,42 @@ pub fn appendSharedNamespacePreambleFiltered(
     };
     std.mem.sort(u32, sorted_targets, SortCtx{ .linker = self }, SortCtx.lessThan);
 
+    // G1-step2: 첫 arrow 변환 entry 직전에 helper 를 같은 buffer (preamble) 맨 앞쪽에
+    // lazy emit — `$x(V,{...})` 사용처보다 물리적으로 먼저 정의되어 emit-order 무관.
+    // helper 본문은 canonical `rt.EXPORT_RUNTIME_*_MIN` 재사용 (3rd copy drift 방지) +
+    // configurable variant 로 RN/Hermes 의 `configurable:true` 보존. `$x`/`$dp` 는
+    // NAMES 등록 이름이라 mangler-safe; esm-wrap 가 같은 variant 를 정의해도 `var`
+    // 재선언 + 동일 본문이라 무해.
+    var helper_emitted = false;
     for (sorted_targets) |target_mod_idx| {
         if (target_filter) |f| {
             if (!f.contains(target_mod_idx)) continue;
         }
         const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
+        if (self.minify_whitespace) {
+            if (try tryRewriteGetterObjToArrowExport(self.allocator, entry.object_literal)) |arrow_map| {
+                defer self.allocator.free(arrow_map);
+                if (!helper_emitted) {
+                    try out.appendSlice(self.allocator, "var " ++ rt.NAMES.DEF_PROP_MIN ++ "=Object.defineProperty;");
+                    try out.appendSlice(self.allocator, if (self.configurable_exports)
+                        rt.EXPORT_RUNTIME_CONFIGURABLE_MIN
+                    else
+                        rt.EXPORT_RUNTIME_MIN);
+                    try out.appendSlice(self.allocator, "\n");
+                    helper_emitted = true;
+                }
+                try out.appendSlice(self.allocator, "var ");
+                try out.appendSlice(self.allocator, entry.var_name);
+                try out.appendSlice(self.allocator, "={};");
+                try out.appendSlice(self.allocator, rt.NAMES.EXPORT_MIN);
+                try out.appendSlice(self.allocator, "(");
+                try out.appendSlice(self.allocator, entry.var_name);
+                try out.appendSlice(self.allocator, ",");
+                try out.appendSlice(self.allocator, arrow_map);
+                try out.appendSlice(self.allocator, ");\n");
+                continue;
+            }
+        }
         try out.appendSlice(self.allocator, "var ");
         try out.appendSlice(self.allocator, entry.var_name);
         try out.appendSlice(self.allocator, " = ");
@@ -316,6 +347,104 @@ pub fn appendSharedNamespacePreambleFiltered(
             });
         }
     }
+}
+
+/// G1-step2: export 개수 임계 — 미만이면 helper 고정비용(~84B)이 절감을 못 넘는다.
+const ARROW_EXPORT_MIN = 9;
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+/// minify_whitespace getter object `{get a(){return x},get "b"(){return f(y)}}`
+/// → arrow export map `{a:()=>x,"b":()=>f(y)}` (caller 가 `var V={};$x(V,<map>)`).
+/// 순수 getter object (모든 멤버 `get NAME(){return VAL}`) + export ≥ ARROW_EXPORT_MIN
+/// 일 때만 성공. nested re-export (`NAME:{...}`) 등 다른 형태 1개라도 섞이면 null
+/// (getter object 유지). 우리 codegen 이 생성한 deterministic 형식 전제 — VAL 안의
+/// string/template 만 상태 추적, 그 외는 depth-balance (zod 검증).
+fn tryRewriteGetterObjToArrowExport(
+    allocator: std.mem.Allocator,
+    obj: []const u8,
+) std.mem.Allocator.Error!?[]const u8 {
+    if (obj.len < 2 or obj[0] != '{' or obj[obj.len - 1] != '}') return null;
+    var result: std.ArrayList(u8) = .empty;
+    // `return null` 과 error(`try`) 양쪽 모두 ok=false 상태 → 단일 defer 로 정리.
+    // 성공 시에만 ok=true 로 소유권 이전 (toOwnedSlice).
+    var ok = false;
+    defer if (!ok) result.deinit(allocator);
+    try result.append(allocator, '{');
+    var i: usize = 1;
+    var count: usize = 0;
+    const end = obj.len - 1; // 마지막 `}` 제외
+    while (i < end) {
+        if (!std.mem.startsWith(u8, obj[i..], "get ")) return null;
+        i += 4;
+        const name_start = i;
+        if (i < end and obj[i] == '"') {
+            i += 1;
+            while (i < end and obj[i] != '"') : (i += 1) {
+                if (obj[i] == '\\') i += 1;
+            }
+            if (i >= end) return null;
+            i += 1; // closing "
+        } else {
+            while (i < end and isIdentChar(obj[i])) : (i += 1) {}
+        }
+        if (i == name_start) return null;
+        const name = obj[name_start..i];
+        if (!std.mem.startsWith(u8, obj[i..], "(){return ")) return null;
+        i += 10;
+        const val_start = i;
+        var depth: usize = 0;
+        var in_str: u8 = 0;
+        while (i < obj.len) : (i += 1) {
+            const c = obj[i];
+            if (in_str != 0) {
+                if (c == '\\') {
+                    i += 1;
+                } else if (c == in_str) {
+                    in_str = 0;
+                }
+                continue;
+            }
+            switch (c) {
+                '"', '\'', '`' => in_str = c,
+                '(', '[', '{' => depth += 1,
+                ')', ']' => {
+                    if (depth == 0) return null;
+                    depth -= 1;
+                },
+                '}' => {
+                    if (depth == 0) break;
+                    depth -= 1;
+                },
+                else => {},
+            }
+        }
+        if (i >= obj.len or obj[i] != '}') return null;
+        const val = obj[val_start..i];
+        if (val.len == 0) return null;
+        i += 1; // skip getter close `}`
+        if (count > 0) try result.append(allocator, ',');
+        try result.appendSlice(allocator, name);
+        try result.appendSlice(allocator, ":()=>");
+        // VAL 이 `{` 로 시작하면 arrow body 가 block 으로 오파싱 (`()=>{k:1}` 은
+        // label statement). object literal 반환은 paren 필수 — `()=>({k:1})`.
+        const wrap_obj = val[0] == '{';
+        if (wrap_obj) try result.append(allocator, '(');
+        try result.appendSlice(allocator, val);
+        if (wrap_obj) try result.append(allocator, ')');
+        count += 1;
+        if (i < end) {
+            if (obj[i] != ',') return null;
+            i += 1;
+        }
+    }
+    if (count < ARROW_EXPORT_MIN) return null;
+    try result.append(allocator, '}');
+    ok = true;
+    return try result.toOwnedSlice(allocator);
 }
 
 pub fn restoreSharedNamespaceDecls(self: *const Linker, decls: []const CompiledModule.SharedNsDecl) std.mem.Allocator.Error!void {
@@ -705,4 +834,53 @@ fn needsPropertyQuoteForExport(name: []const u8) bool {
     if (name[0] >= '0' and name[0] <= '9') return true;
     if (name[0] != '_' and name[0] != '$' and !(name[0] >= 'a' and name[0] <= 'z') and !(name[0] >= 'A' and name[0] <= 'Z')) return true;
     return false;
+}
+
+// ================================================================
+// G1-step2: tryRewriteGetterObjToArrowExport 회귀 가드
+// ================================================================
+
+test "G1-step2: 순수 getter object ≥9 → arrow map 변환" {
+    const a = std.testing.allocator;
+    // 9 getter (= ARROW_EXPORT_MIN), 모두 단순 identifier value
+    const obj = "{get a(){return x},get b(){return y},get c(){return z}," ++
+        "get d(){return p},get e(){return q},get f(){return r}," ++
+        "get g(){return s},get h(){return t},get i(){return u}}";
+    const got = (try tryRewriteGetterObjToArrowExport(a, obj)).?;
+    defer a.free(got);
+    try std.testing.expectEqualStrings(
+        "{a:()=>x,b:()=>y,c:()=>z,d:()=>p,e:()=>q,f:()=>r,g:()=>s,h:()=>t,i:()=>u}",
+        got,
+    );
+}
+
+test "G1-step2: export < 9 → null (helper 고정비용 미회수)" {
+    const a = std.testing.allocator;
+    const obj = "{get a(){return x},get b(){return y}}";
+    try std.testing.expect((try tryRewriteGetterObjToArrowExport(a, obj)) == null);
+}
+
+test "G1-step2: nested re-export (non-getter prop) 섞이면 null" {
+    const a = std.testing.allocator;
+    // 8 getter + 1 nested `ns:{...}` → 순수 getter object 아님 → null
+    const obj = "{get a(){return x},get b(){return y},get c(){return z}," ++
+        "get d(){return p},get e(){return q},get f(){return r}," ++
+        "get g(){return s},get h(){return t},ns:{get k(){return w}}}";
+    try std.testing.expect((try tryRewriteGetterObjToArrowExport(a, obj)) == null);
+}
+
+test "G1-step2: 복잡 VAL (call/string/depth) depth-track 보존" {
+    const a = std.testing.allocator;
+    // VAL 안에 (), {}, string literal 의 `}` `,` 가 있어도 정확히 분리
+    const obj = "{get a(){return f(p,q)},get b(){return {k:1}}," ++
+        "get c(){return \"a,b}c\"},get d(){return r},get e(){return s}," ++
+        "get f(){return t},get g(){return u},get h(){return v}," ++
+        "get \"q-x\"(){return w}}";
+    const got = (try tryRewriteGetterObjToArrowExport(a, obj)).?;
+    defer a.free(got);
+    try std.testing.expectEqualStrings(
+        "{a:()=>f(p,q),b:()=>({k:1}),c:()=>\"a,b}c\",d:()=>r,e:()=>s," ++
+            "f:()=>t,g:()=>u,h:()=>v,\"q-x\":()=>w}",
+        got,
+    );
 }
