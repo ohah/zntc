@@ -81,22 +81,32 @@ fn appendCssModules(
     }
 }
 
-/// code splitting 시 JS 청크별로 CSS 를 분리하여 OutputFile 목록을 생성한다.
+/// 청크별 CSS 계획 항목. `path`/`contents` 는 `allocator` 소유.
+/// `chunk_index` 로 동적 import 재작성 시점에 chunk→css href 를 연결한다(P0-3).
+pub const CssChunkPlanEntry = struct {
+    chunk_index: u32,
+    path: []const u8,
+    contents: []const u8,
+};
+
+/// code splitting 시 JS 청크별로 분리할 CSS 를 계획한다(파일명/내용 확정).
+/// emitChunks 의 content-hash 계산 *전* 에 호출 가능해야 chunk→css href 를
+/// 청크 prologue 에 주입할 수 있다. CSS 파일명은 CSS 내용 해시 기반이라 JS
+/// 청크 해시와 독립적으로 이 시점에 확정된다.
 ///
 /// 각 CSS 모듈은 그것을 import 하는 JS 모듈이 속한 청크 중
 /// `(chunk.exec_order, importer.exec_index)` 가 가장 앞서는 단 하나의 청크에
 /// 귀속된다(전역 dedup — 공유 CSS 가 여러 청크에 복제되지 않음).
 /// CSS→CSS(@import) 의존은 같은 귀속 청크로 함께 묶인다.
-/// 반환 슬라이스와 각 OutputFile 의 path/contents 는 모두 `allocator` 소유.
-/// 분리할 CSS 가 없으면 길이 0 슬라이스를 반환한다.
-pub fn emitCssChunks(
+/// 반환 슬라이스/각 항목의 path/contents 는 모두 `allocator` 소유.
+pub fn planCssChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
     css_names: []const u8,
-) ![]OutputFile {
+) ![]CssChunkPlanEntry {
     const n_chunks = chunk_graph.chunkCount();
-    if (n_chunks == 0) return allocator.alloc(OutputFile, 0);
+    if (n_chunks == 0) return allocator.alloc(CssChunkPlanEntry, 0);
 
     // 1패스: CSS 모듈 → 귀속 청크(최소 rank 우승). owner_rank/visited 는 DFS 중에만 필요.
     var owner = std.AutoHashMap(ModuleIndex, ChunkIndex).init(allocator);
@@ -119,7 +129,7 @@ pub fn emitCssChunks(
         }
     }
 
-    if (owner.count() == 0) return allocator.alloc(OutputFile, 0);
+    if (owner.count() == 0) return allocator.alloc(CssChunkPlanEntry, 0);
 
     // owner 를 청크별 역색인으로 1회 변환 (청크마다 owner 전체를 재스캔하지 않도록).
     var chunk_mods = std.AutoHashMap(u32, std.ArrayListUnmanaged(*const Module)).init(allocator);
@@ -137,7 +147,7 @@ pub fn emitCssChunks(
         try gop.value_ptr.append(allocator, mm);
     }
 
-    var out_list: std.ArrayListUnmanaged(OutputFile) = .empty;
+    var out_list: std.ArrayListUnmanaged(CssChunkPlanEntry) = .empty;
     errdefer {
         for (out_list.items) |o| {
             allocator.free(o.path);
@@ -167,10 +177,33 @@ pub fn emitCssChunks(
         const css_path = try cssPathForChunk(allocator, chunk_graph.getChunk(cidx), css_names, buf.items);
         errdefer allocator.free(css_path);
         const contents = try buf.toOwnedSlice(allocator);
-        try out_list.append(allocator, .{ .path = css_path, .contents = contents });
+        try out_list.append(allocator, .{
+            .chunk_index = @intCast(chunk_idx),
+            .path = css_path,
+            .contents = contents,
+        });
     }
 
     return out_list.toOwnedSlice(allocator);
+}
+
+/// `planCssChunks` 결과를 OutputFile 목록으로 변환한다(기존 호출부 호환).
+/// path/contents 소유권은 OutputFile 로 이전되고, plan 컨테이너만 해제한다.
+pub fn emitCssChunks(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    css_names: []const u8,
+) ![]OutputFile {
+    const plan = try planCssChunks(allocator, graph, chunk_graph, css_names);
+    errdefer for (plan) |e| {
+        allocator.free(e.path);
+        allocator.free(e.contents);
+    };
+    defer allocator.free(plan);
+    const files = try allocator.alloc(OutputFile, plan.len);
+    for (plan, 0..) |e, i| files[i] = .{ .path = e.path, .contents = e.contents };
+    return files;
 }
 
 /// CSS 서브그래프를 DFS 하며 각 CSS 모듈의 귀속 청크를 최소 rank 로 갱신한다.
