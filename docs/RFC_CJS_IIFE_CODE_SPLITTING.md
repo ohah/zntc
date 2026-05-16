@@ -158,7 +158,8 @@ P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), 
 - preserve-modules CJS 의 Node `__esModule`/interop 경계(default/namespace).
 - **[PR3 한계, 문서화]** IIFE 정적 cross-chunk 는 dep 청크 `<script>` 가 entry 보다 먼저 평가돼야 함(`__zntc_require`가 동기) — 호스트가 dep 스크립트를 entry 앞에 배치하거나 동적 `import()`(로드 await)만 사용. self-installing register 로 load-order 요구는 "entry 마지막" 하나로 축소(RFC §6). umd/amd·preserve-modules+iife·비-DOM 로더·RSC 디렉티브×factory·CSP nonce 는 PR4 후속.
 - **[선재 한계, cjs/iife 공통]** entry 모듈이 `wrap_kind==.cjs`(자체 CJS 모듈)면 emitModule 이 final_exports 블록 전에 early-return → `iife_split_factory`/cjs entry-export 경로 미적용(factory-bound exports 누락 가능). PR2/PR3 공통, 신규 회귀 아님. 후속.
-- **[선재 한계, P3-B 비회귀]** cross-chunk re-export(`export { x } from "./y"` 에서 y 가 별도 청크)는 splitting 파이프라인에서 깨짐 — referrer 가 side-effect import 만 받고 심볼 미바인딩(ReferenceError). **ESM splitting 도 동일하게 깨짐**(P3-B 가 그 동작을 충실히 미러). P3-B 도입 버그 아님 — splitting linker 의 re-export forwarding 갭. cjs/esm 공통 후속 과제(별도 이슈). P3-B CJS 범위 = ESM splitting 패리티(정적 cross-chunk 심볼 import·default/named 동적 import 는 Node 실행 검증됨).
+- **[수정됨 2026-05-16]** cross-chunk re-export(`export {x} from "./y"`, y 별도 청크) → 심볼 미바인딩 ReferenceError. 근본원인 (a) `computeCrossChunkLinks` 가 re-export `export_bindings` 미처리 (b) 심볼 canonical 청크가 직접 의존이 아니면 `cross_chunk_imports` 누락 → emitter named import 못 냄. 둘 다 수정(esm/cjs/iife, Node 실행 검증). star/namespace re-export(`export *`/`export * as ns`)는 별도 후속.
+- **[선재 한계, 별개 버그 B]** ESM 에서 한 심볼이 *동시에* (re-export 됨 + 정적 cross-chunk import 됨) 이고 그 청크가 *동적 entry* 이기도 하면 `export {}` 중복(xchunk_exports + entry-final-exports) → `Duplicate export` SyntaxError. cjs/iife 는 `entry_mod_idx != null` break 로 회피하나 ESM 은 게이트 없음. re-export 픽스와 무관한 ESM entry/xchunk export dedup 이슈 — 별도 후속(PR4 후보).
 - P3-A 가치 대비 비용: esbuild 미지원 영역. 수요(누가 CJS/IIFE+splitting 을 원하나) 확인 후 P3-B 착수 여부 게이트.
 
 ---
