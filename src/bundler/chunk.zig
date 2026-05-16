@@ -1130,6 +1130,10 @@ fn linkNamespaceCrossChunk(
     if (tgt_chunk.isNone()) return;
     if (tgt_chunk == chunk.index) return; // 같은 청크 → 배선 불필요
 
+    // cross-chunk 확정 — registerNamespaceRewrites 가 shared 경로를 쓰도록
+    // 마킹. same-chunk(여기 도달 안 함)는 비-shared self-contained 경로 (#3367).
+    try @constCast(lnk).markNsCrossChunk(target);
+
     // computeCrossChunkLinks 가 namespace 메타데이터보다 먼저 도는 timing
     // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
     const ns_var = try lnk.ensureSharedNsVar(target);

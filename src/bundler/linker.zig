@@ -237,7 +237,20 @@ pub const Linker = struct {
     ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .{},
     ns_shared_inline_order: std.ArrayListUnmanaged(u32) = .empty,
     ns_shared_var_names: std.StringHashMapUnmanaged(void) = .{},
+    /// computeCrossChunkLinks(메타데이터 前 실행, chunk graph 보유)가 채우는
+    /// "정의자 청크가 다른" namespace re-export target 집합. registerNamespace
+    /// Rewrites 는 metadata 시점에 chunk 정보가 없으므로 이 집합으로 shared
+    /// (cross-chunk, #3366) vs 비-shared(same-chunk self-contained, 타이밍
+    /// 무관) inline 경로를 가른다 (#3367). 비어 있으면(splitting off 등)
+    /// 전부 비-shared — 기존 단일번들 동작 유지.
+    ns_cross_chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .{},
     use_shared_ns_preamble: bool = false,
+    /// chunked(splitting) emit 경로 여부. 이 경로는 shared ns preamble 을
+    /// per-module metadata **이전**에 emit 하므로, same-chunk target 은 정의자
+    /// 청크 pre-materialize(#3366)가 닿지 않아 shared 가 타이밍상 빈다(#3367).
+    /// 단일번들 경로(metadata 後 emit)는 무관해 false. useSharedNsInline 이 이
+    /// 플래그로 경로를 가른다.
+    ns_preamble_chunked: bool = false,
     /// ns_export_cache / ns_inline_cache 동시 접근 보호.
     /// emitter 가 `emitModuleThread` 로 buildMetadataForAst 를 병렬 호출하므로 필수.
     /// Fast path (get) → unlock → compute → lock → double-check → put 패턴으로
@@ -342,6 +355,7 @@ pub const Linker = struct {
         self.ns_shared_inline_cache.deinit(self.allocator);
         self.ns_shared_inline_order.deinit(self.allocator);
         self.ns_shared_var_names.deinit(self.allocator);
+        self.ns_cross_chunk_targets.deinit(self.allocator);
         // #1791 fatal diag message 해제 (allocPrint owned)
         for (self.fatal_diagnostics.items) |d| self.allocator.free(d.message);
         self.fatal_diagnostics.deinit(self.allocator);
@@ -1793,6 +1807,26 @@ pub const Linker = struct {
 
     pub const registerNamespaceRewrites = shared_namespace.registerNamespaceRewrites;
     pub const ensureSharedNsVar = shared_namespace.ensureSharedNsVar;
+
+    /// computeCrossChunkLinks 가 cross-chunk namespace re-export target 마킹
+    /// (#3367). metadata 시점엔 chunk 정보 부재 — registerNamespaceRewrites 가
+    /// 이 마킹으로 shared(cross-chunk) vs 비-shared(same-chunk) 경로 선택.
+    /// **불변식**: computeCrossChunkLinks(단일스레드, emitChunks 前 완료)에서만
+    /// write. 이후 병렬 metadata 가 read-only 로 본다 — 그 뒤 write 시 데이터
+    /// 레이스.
+    pub fn markNsCrossChunk(self: *Linker, target: ModuleIndex) std.mem.Allocator.Error!void {
+        try self.ns_cross_chunk_targets.put(self.allocator, target.toU32(), {});
+    }
+
+    /// shared(정의자 청크 preamble) vs 비-shared(모듈 self-preamble) namespace
+    /// inline 경로 결정. 단일번들(metadata 後 emit, 다중 importer dedup #1940)·
+    /// chunked-cross-chunk(#3366)는 shared. chunked-same-chunk 만 비-shared
+    /// self-contained — chunked preamble 이 metadata 前이라 same-chunk
+    /// pre-materialize 부재(#3367).
+    pub fn useSharedNsInline(self: *const Linker, target_mod_idx: u32) bool {
+        return self.use_shared_ns_preamble and
+            (!self.ns_preamble_chunked or self.ns_cross_chunk_targets.contains(target_mod_idx));
+    }
     pub const appendSharedNamespacePreamble = shared_namespace.appendSharedNamespacePreamble;
     pub const appendSharedNamespacePreambleFiltered = shared_namespace.appendSharedNamespacePreambleFiltered;
     pub const restoreSharedNamespaceDecls = shared_namespace.restoreSharedNamespaceDecls;
