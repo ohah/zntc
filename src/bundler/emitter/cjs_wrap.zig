@@ -11,10 +11,11 @@ const Module = module_mod.Module;
 const EmitOptions = @import("../emitter.zig").EmitOptions;
 
 /// Disabled 모듈: platform=browser에서 Node 빌트인 모듈을 빈 __commonJS wrapper로 출력.
-/// esbuild 호환 형식: `var require_util = __commonJS({ "(disabled)"(exports, module) {} });`
+/// wrapper key는 dev/HMR registry 조회와 일치해야 하므로 module.wrapperId()를 쓴다.
 pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool) !?[]const u8 {
     const var_name = try module.allocRequireName(allocator);
     defer allocator.free(var_name);
+    const wrapper_id = module.wrapperId();
 
     var buf: std.ArrayList(u8) = .empty;
     if (module.disabled_throw_on_require) {
@@ -29,7 +30,10 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
         } else {
             try buf.appendSlice(allocator, "var ");
             try buf.appendSlice(allocator, var_name);
-            try buf.appendSlice(allocator, " = __commonJS({\n\t\"(optional-missing)\"(exports, module) {\n\t\t");
+            try buf.appendSlice(allocator, " = __commonJS({\n\t");
+            try buf.append(allocator, '"');
+            try buf.appendSlice(allocator, wrapper_id);
+            try buf.appendSlice(allocator, "\"(exports, module) {\n\t\t");
             try appendOptionalMissingThrow(allocator, &buf, specifier, false);
             try buf.appendSlice(allocator, "\t}\n});\n");
         }
@@ -44,7 +48,9 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, " = __commonJS({\n\t\"(disabled)\"(exports, module) {\n\t}\n});\n");
+        try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
+        try buf.appendSlice(allocator, wrapper_id);
+        try buf.appendSlice(allocator, "\"(exports, module) {\n\t}\n});\n");
     }
     return try buf.toOwnedSlice(allocator);
 }

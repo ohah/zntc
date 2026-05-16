@@ -38,6 +38,20 @@ inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Int
     return if (importer.def_format.isEsm()) .node else .babel;
 }
 
+fn getOrCreateCjsRequireRef(
+    self: *const Linker,
+    cache: *std.AutoHashMap(u32, []const u8),
+    mod_idx: u32,
+) ![]const u8 {
+    if (!self.dev_mode) return getOrCreateRequireVar(self, cache, mod_idx);
+    if (cache.get(mod_idx)) |cached| return cached;
+
+    const target_mod = self.getModule(mod_idx).?;
+    const ref = try std.fmt.allocPrint(self.allocator, "__zntc_modules[\"{s}\"].fn", .{target_mod.dev_id});
+    try cache.put(mod_idx, ref);
+    return ref;
+}
+
 /// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 있는지 조회.
 /// analyzer 가 각 Reference 에 `type_context` / `value_as_type` flag 를 기록하므로,
 /// symbol 의 Reference 들 중 **순수 value read** 가 하나라도 있으면 false. 하나도 없으면
@@ -450,7 +464,7 @@ pub fn buildMetadataForAst(
                 (canonical_m_opt.?.wrap_kind == .cjs or canonical_mod == module_index))
             {
                 if (canonical_m_opt.?.wrap_kind == .cjs) {
-                    const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
+                    const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(canonical_mod));
                     if (ib.kind == .named and !std.mem.eql(u8, ib.imported_name, "default")) {
                         if (ib.local_symbol.semanticIndex()) |sym_idx| {
                             const direct_access = try std.fmt.allocPrint(self.allocator, "{s}" ++ EXPR_RENAME_MARKER ++ "{s}", .{ req_var, ib.imported_name });
@@ -488,7 +502,7 @@ pub fn buildMetadataForAst(
                 // 면 `is_included` 비트가 신뢰할 수 없으므로 가드를 적용하지 않는다.
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
-                const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
+                const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(canonical_mod));
                 const interop_mode = cjsInteropMode(self, &m);
                 // ESM-wrapped + helper binding: top-level 에 이미 var 선언됨 (esm_wrap) → 할당만
                 if (is_helper_binding and m.wrap_kind == .esm) {
@@ -624,7 +638,7 @@ pub fn buildMetadataForAst(
                 const cjs_mod_opt = self.graph.getModule(rb.canonical.module_index);
                 if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
                     const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
-                    const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
+                    const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, cjs_mod);
                     const interop_mode2 = cjsInteropMode(self, &m);
                     const effective_name = rb.canonical.export_name;
                     if (std.mem.eql(u8, effective_name, "default") and m.canUseDirectCjsDefaultImport(cjs_mod_opt.?)) {
@@ -826,7 +840,7 @@ pub fn buildMetadataForAst(
             switch (target_mod.wrap_kind) {
                 .none => {},
                 .cjs => {
-                    const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(@intFromEnum(rec.resolved)));
+                    const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(@intFromEnum(rec.resolved)));
                     try preamble.write(req_var);
                     try preamble.write("();\n");
                 },
@@ -989,8 +1003,11 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            const var_name = try target_mod.allocRequireName(self.allocator);
-            try require_rewrites.put(self.allocator, rec.specifier, var_name);
+            const req_ref = if (self.dev_mode)
+                try std.fmt.allocPrint(self.allocator, "(__zntc_modules[\"{s}\"].fn())", .{target_mod.dev_id})
+            else
+                try target_mod.allocRequireName(self.allocator);
+            try require_rewrites.put(self.allocator, rec.specifier, req_ref);
         } else if (target_mod.wrap_kind == .esm) {
             // ESM 타겟: require("spec") → (init_xxx(), __toCommonJS(exports_xxx))
             if (require_rewrites.get(rec.specifier)) |old| {

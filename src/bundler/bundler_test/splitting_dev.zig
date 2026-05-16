@@ -1793,11 +1793,10 @@ test "Bundler: dev mode named imports from multiple modules are not mixed" {
     try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
-test "Bundler: dev mode ESM→CJS named import uses direct property access" {
+test "Bundler: dev mode ESM→CJS named import uses HMR-safe property access" {
     // dev 모드에서 CJS 모듈의 named import는 별도 top-level var를 만들지 않고
-    // require 결과의 property access로 직접 치환한다. Metro는 module factory로 격리하고,
-    // webpack scope-hoisting도 CJS named import를 property access로 남겨 불필요한
-    // 번들 스코프 binding 생성을 피한다.
+    // require 결과의 property access로 직접 치환한다. HMR eval은 번들 로컬
+    // `require_xxx` 이름을 볼 수 없으므로 dev 모드에서는 registry lookup을 사용한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "react.js", "module.exports = { useState: function(v) { return [v, function(){}]; }, useEffect: function(f) { f(); } };");
@@ -1829,11 +1828,100 @@ test "Bundler: dev mode ESM→CJS named import uses direct property access" {
     try std.testing.expect(std.mem.indexOf(u8, output, "var useState, useEffect") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "useState = require_react().useState;") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "useEffect = require_react().useEffect;") == null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "require_react().useState(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "require_react().useEffect(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "require_react().useState(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "require_react().useEffect(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"].fn().useState(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"].fn().useEffect(") != null);
     // 구조분해 패턴 없음 (({useState:...} = ...) 형태가 아님)
     try std.testing.expect(std.mem.indexOf(u8, output, "{useState") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "({useState") == null);
+}
+
+test "Bundler: dev mode HMR module code rewrites CJS require to registry lookup" {
+    // RN HMR은 globalEvalWithSourceUrl로 update.code를 평가한다. 전체 번들 스코프의
+    // `require_react` 같은 로컬 함수명은 보이지 않으므로 CJS require rewrite도
+    // __zntc_modules registry 경유여야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "react.js", "module.exports = { useState: function() { return 1; } };");
+    try writeFile(tmp.dir, "LogBox.js",
+        \\const React = require('./react');
+        \\exports.value = React.useState();
+    );
+    try writeFile(tmp.dir, "index.ts", "import './LogBox';");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    var saw_logbox = false;
+    for (codes) |c| {
+        if (std.mem.indexOf(u8, c.id, "LogBox.js") == null) continue;
+        saw_logbox = true;
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require_react()") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "__zntc_modules[") != null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "\"].fn())") != null);
+    }
+    try std.testing.expect(saw_logbox);
+}
+
+test "Bundler: dev mode HMR registry uses stable ids for disabled CJS shims" {
+    // Disabled/optional-missing modules are still CJS wrappers. Their wrapper key
+    // must match the dev_id used by HMR-safe require rewrites, otherwise startup
+    // fails with `__zntc_modules[id].fn` on undefined.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js",
+        \\const stream = require('stream');
+        \\let optional = 'fallback';
+        \\try {
+        \\  optional = require('missing-peer');
+        \\} catch (e) {}
+        \\module.exports = { stream, optional };
+    );
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"(disabled):stream\"(exports, module)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"(optional-missing):missing-peer\"(exports, module)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[\"(disabled):stream\"].fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[\"(optional-missing):missing-peer\"].fn()") != null);
+
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    var saw_entry = false;
+    for (codes) |c| {
+        if (std.mem.indexOf(u8, c.id, "index.js") == null) continue;
+        saw_entry = true;
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require__disabled") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require__optional_missing") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "__zntc_modules[\"(disabled):stream\"].fn()") != null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "__zntc_modules[\"(optional-missing):missing-peer\"].fn()") != null);
+    }
+    try std.testing.expect(saw_entry);
 }
 
 test "Bundler: dev mode CJS named import does not allocate colliding hoisted binding" {
@@ -1878,7 +1966,7 @@ test "Bundler: dev mode CJS named import does not allocate colliding hoisted bin
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    try std.testing.expect(std.mem.indexOf(u8, output, "return require_rn().Text;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "].fn().Text;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "NativeText = require_rn().Text;") == null);
 }
 
@@ -2033,8 +2121,9 @@ test "Bundler: dev mode new expression wraps renamed CJS member callee" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated.Value)(0)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.Value(0)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "].fn().Animated.Value)(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new __zntc_modules[") == null);
 }
 
 test "Bundler: dev mode new expression wraps renamed CJS deep member callee" {
@@ -2067,8 +2156,9 @@ test "Bundler: dev mode new expression wraps renamed CJS deep member callee" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated.nodes.Value)(0)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.nodes.Value(0)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "].fn().Animated.nodes.Value)(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new __zntc_modules[") == null);
 }
 
 test "Bundler: dev mode new expression wraps renamed CJS computed member callee" {
@@ -2100,8 +2190,9 @@ test "Bundler: dev mode new expression wraps renamed CJS computed member callee"
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated[\"Value\"])(0)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated[\"Value\"](0)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "].fn().Animated[\"Value\"])(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new __zntc_modules[") == null);
 }
 
 test "Bundler: dev mode new expression keeps plain ESM import callee unwrapped" {
@@ -2168,8 +2259,9 @@ test "Bundler: dev mode new expression keeps parens after minify syntax strips o
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated.Value)(0)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.Value(0)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "].fn().Animated.Value)(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new __zntc_modules[") == null);
 }
 
 test "Profile: pipeline stage timing (dev only, not for CI)" {

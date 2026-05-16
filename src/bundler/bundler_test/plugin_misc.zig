@@ -2696,6 +2696,43 @@ test "entry_error_guard #5c: runBeforeMain 이 scope-hoisted user module 보다 
     try std.testing.expect(setup_call_idx < scope_module_idx);
 }
 
+test "react_native dev auto InitializeCore: preserve_symlinks logical runBeforeMain 중복 주입 방지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("app/node_modules");
+    try writeFile(tmp.dir, ".pnpm/react-native@1/node_modules/react-native/Libraries/Core/InitializeCore.js",
+        \\globalThis.initCoreCount = (globalThis.initCoreCount || 0) + 1;
+    );
+    tmp.dir.symLink("../../.pnpm/react-native@1/node_modules/react-native", "app/node_modules/react-native", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try writeFile(tmp.dir, "app/index.js", "globalThis.entryRan = true;\n");
+
+    const entry = try absPath(&tmp, "app/index.js");
+    defer std.testing.allocator.free(entry);
+    const init_core = try absPath(&tmp, "app/node_modules/react-native/Libraries/Core/InitializeCore.js");
+    defer std.testing.allocator.free(init_core);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .dev_mode = true,
+        .react_refresh = true,
+        .preserve_symlinks = true,
+        .run_before_main = &.{init_core},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "app/node_modules/react-native/Libraries/Core/InitializeCore.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".pnpm/react-native@1/node_modules/react-native/Libraries/Core/InitializeCore.js") == null);
+}
+
 test "entry_error_guard #5d: scope-hoisted named import from ESM wrap keeps live binding rename" {
     // RN Release 재현: sideEffects 패턴으로 target(utils)은 __esm wrap 되고,
     // consumer(pressable)는 scope-hoisted 된다. import binding rename 이 self

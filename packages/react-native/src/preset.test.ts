@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -299,6 +299,17 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     expect(opts.runBeforeMain).toBeUndefined();
   });
 
+  test('runBeforeMain — InitializeCore 는 react-native singleton logical path 로 고정', () => {
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+
+    const opts = buildRnBundleOptions(baseInput());
+    expect(opts.runBeforeMain).toEqual([
+      join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'),
+    ]);
+  });
+
   test('extra.prelude — 사용자 prelude 가 projectRoot 기준 절대화 + runBeforeMain 에 append', () => {
     const opts = buildRnBundleOptions(
       baseInput({ extra: { prelude: ['./shims/extra-prelude.js'] } }),
@@ -455,9 +466,19 @@ describe('buildRnBundleOptions — extra (watchFolders / blockList / fallback)',
     expect(opts.preserveSymlinks).toBe(true);
   });
 
+  test('resolveSymlinkSiblings — pnpm real package 옆 peer/sibling deps fallback 활성화', () => {
+    const opts = buildRnBundleOptions(baseInput({}));
+    expect(opts.resolveSymlinkSiblings).toBe(true);
+  });
+
   test('preserveSymlinks — 사용자 override 는 마지막에 적용', () => {
     const opts = buildRnBundleOptions(baseInput({ override: { preserveSymlinks: false } }));
     expect(opts.preserveSymlinks).toBe(false);
+  });
+
+  test('resolveSymlinkSiblings — 사용자 override 는 마지막에 적용', () => {
+    const opts = buildRnBundleOptions(baseInput({ override: { resolveSymlinkSiblings: false } }));
+    expect(opts.resolveSymlinkSiblings).toBe(false);
   });
 
   test('blockList — 빈 배열은 미설정', () => {
@@ -520,6 +541,28 @@ describe('buildRnBundleOptions — loader / alias', () => {
   test('alias — 빈 객체 (asset registry self-cycle 회피, comment 참조)', () => {
     const opts = buildRnBundleOptions(baseInput());
     expect(opts.alias).toEqual({});
+  });
+
+  test('alias — RN singleton package 는 projectRoot node_modules logical path 로 고정', () => {
+    mkdirSync(join(dir, 'node_modules/react'), { recursive: true });
+    mkdirSync(join(dir, 'node_modules/react-native'), { recursive: true });
+    mkdirSync(join(dir, 'node_modules/react-native-safe-area-context'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react/package.json'), '{"name":"react"}');
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(
+      join(dir, 'node_modules/react-native-safe-area-context/package.json'),
+      '{"name":"react-native-safe-area-context"}',
+    );
+
+    const opts = buildRnBundleOptions(baseInput());
+    expect(opts.alias).toMatchObject({
+      react: join(dir, 'node_modules/react'),
+      'react-native': join(dir, 'node_modules/react-native'),
+      'react-native-safe-area-context': join(
+        dir,
+        'node_modules/react-native-safe-area-context',
+      ),
+    });
   });
 });
 

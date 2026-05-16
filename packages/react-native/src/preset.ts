@@ -14,7 +14,8 @@
 // caller (번개 / RN 사용자) 가 input 으로 base config 전달 → preset 이 BuildOptions
 // 빌드 → 마지막에 input.override 로 사용자 override 가능.
 
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 import {
   build,
@@ -223,6 +224,43 @@ function buildAssetLoaders(assetExts: readonly string[]): Record<string, string>
   return loaders;
 }
 
+const RN_SINGLETON_PACKAGES = [
+  'react',
+  'react-native',
+  'react-native-safe-area-context',
+] as const;
+
+function tryResolvePackageRoot(packageName: string, projectRoot: string): string | null {
+  const logicalRoot = resolve(projectRoot, 'node_modules', packageName);
+  if (existsSync(resolve(logicalRoot, 'package.json'))) return logicalRoot;
+
+  const pkgJson = tryResolve(`${packageName}/package.json`, projectRoot);
+  return pkgJson ? dirname(pkgJson) : null;
+}
+
+function tryResolvePackageFile(
+  packageName: string,
+  relativePath: string,
+  projectRoot: string,
+): string | null {
+  const packageRoot = tryResolvePackageRoot(packageName, projectRoot);
+  if (packageRoot) {
+    const file = resolve(packageRoot, relativePath);
+    if (existsSync(file)) return file;
+  }
+
+  return tryResolve(`${packageName}/${relativePath}`, projectRoot);
+}
+
+function buildRnSingletonAliases(projectRoot: string): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  for (const packageName of RN_SINGLETON_PACKAGES) {
+    const packageRoot = tryResolvePackageRoot(packageName, projectRoot);
+    if (packageRoot) aliases[packageName] = packageRoot;
+  }
+  return aliases;
+}
+
 /**
  * prelude 가 이미 declare 한 식별자 — Hermes strict 모드에서 var 재선언 시
  * SyntaxError. caller 가 prelude 식별자를 override 할 의도면 `define` 사용.
@@ -394,7 +432,11 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     for (const p of extra.polyfills) polyfills.push(resolve(projectRoot, p));
   }
   const runBeforeMain: string[] = [];
-  const initCore = tryResolve('react-native/Libraries/Core/InitializeCore', projectRoot);
+  const initCore = tryResolvePackageFile(
+    'react-native',
+    'Libraries/Core/InitializeCore.js',
+    projectRoot,
+  );
   if (initCore) runBeforeMain.push(initCore);
   if (extra?.prelude && extra.prelude.length > 0) {
     // 사용자 추가 prelude — InitializeCore 이후에 실행. 절대/상대 모두 projectRoot
@@ -434,11 +476,18 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     resolveExtensions: buildResolveExtensions(rnPlatform),
     mainFields: ['react-native', 'browser', 'main'],
     loader: baseLoader,
-    alias: {},
+    // RN core packages must be singletons. pnpm exposes peer folders such as
+    // `.pnpm/<dep>/node_modules/react-native`; resolving those as separate module
+    // IDs re-runs InitializeCore/DevTools and breaks Fabric.
+    alias: buildRnSingletonAliases(projectRoot),
     // Metro resolves dependencies from the logical node_modules symlink path.
     // With pnpm, realpathing a package before resolving its bare imports exposes
     // the package's peer farm and can pull a second React copy into RN bundles.
     preserveSymlinks: true,
+    // preserveSymlinks keeps the module identity on the Metro-style logical path,
+    // while this fallback resolves package-private/peer deps that only exist next
+    // to the real pnpm package directory.
+    resolveSymlinkSiblings: true,
     define,
     banner: buildPrelude(input),
     globalIdentifiers: [...RN_GLOBAL_IDENTIFIERS],
