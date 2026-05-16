@@ -773,6 +773,18 @@ pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]co
     return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn(), __toCommonJS(__zntc_modules[\"{s}\"].exports))", .{ dev_id, dev_id });
 }
 
+/// dev mode: `__zntc_modules["<dev_id>"].fn` — factory function reference (호출 없음).
+/// callee 자리에 그대로 끼워 넣을 때 사용 (e.g. `<ref>().Animated.Value`).
+pub fn fmtDevRequireRef(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn", .{dev_id});
+}
+
+/// dev mode: `(__zntc_modules["<dev_id>"].fn())` — paren-wrapped call expression.
+/// require_rewrites 등 expression 위치에 직접 치환할 때 사용.
+pub fn fmtDevRequireCallExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn())", .{dev_id});
+}
+
 /// npm 패키지 specifier를 UMD/AMD factory 매개변수명으로 변환.
 /// "react" → "React", "react-dom" → "ReactDOM", "lodash/fp" → "LodashFp"
 /// PascalCase 변환 + 특수문자 제거. 호출자가 반환값을 소유.

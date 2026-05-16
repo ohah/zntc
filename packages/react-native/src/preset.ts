@@ -39,7 +39,12 @@ import {
 } from './plugins/metro-resolve-request.ts';
 import { createRequireContextPlugin } from './plugins/require-context.ts';
 import type { InlineBabelConfig } from './plugins/types.ts';
-import { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from './rn-constants.ts';
+import {
+  resolveRnPolyfills,
+  RN_GLOBAL_IDENTIFIERS,
+  RN_SINGLETON_PACKAGES,
+  tryResolve,
+} from './rn-constants.ts';
 
 export interface RnBundleInput {
   /** 절대 경로 entry. */
@@ -223,12 +228,6 @@ function buildAssetLoaders(assetExts: readonly string[]): Record<string, string>
   }
   return loaders;
 }
-
-const RN_SINGLETON_PACKAGES = [
-  'react',
-  'react-native',
-  'react-native-safe-area-context',
-] as const;
 
 function tryResolvePackageRoot(packageName: string, projectRoot: string): string | null {
   const logicalRoot = resolve(projectRoot, 'node_modules', packageName);

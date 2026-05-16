@@ -140,7 +140,7 @@ pub const EsmEmitResult = struct {
     /// `mappings[i].name_index` 가 가리키는 module-local 인덱스.
     names: []const []const u8 = &.{},
     /// `CompiledModule.entry_chain` 참조. runBeforeMain은 parent emitter가 module
-    /// output 앞쪽에 직접 emit하므로 현재는 일반적으로 null이다.
+    /// output 앞쪽에 직접 emit하므로 ESM-wrap 본문에는 넣지 않는다 (#3345).
     entry_chain: ?[]const u8 = null,
 };
 
