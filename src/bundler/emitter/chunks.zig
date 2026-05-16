@@ -29,6 +29,7 @@ const ALL_EXPORTS_SENTINEL = tree_shaker_mod.ALL_EXPORTS_SENTINEL;
 const statement_shaker = @import("../statement_shaker.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const parent = @import("../emitter.zig");
+const format_wrapper = @import("format_wrapper.zig");
 const plugin_mod = @import("../plugin.zig");
 const external_imports = @import("external_imports.zig");
 const EmitOptions = parent.EmitOptions;
@@ -71,8 +72,10 @@ pub fn emitChunks(
     // - UMD/AMD: 아직 미지원(레지스트리 부트스트랩 상이 — 후속).
     if (options.format != .esm) {
         const cjs_ok = options.format == .cjs;
-        const iife_ok = options.format == .iife and !options.preserve_modules;
-        if (!cjs_ok and !iife_ok) {
+        // iife/umd/amd 모두 동일 레지스트리 기계(PR3) + entry 만 보편 wrapper
+        // (umd/amd, PR4). preserve-modules 와는 비호환.
+        const reg_ok = (options.format == .iife or options.format == .umd or options.format == .amd) and !options.preserve_modules;
+        if (!cjs_ok and !reg_ok) {
             return if (options.preserve_modules)
                 error.PreserveModulesRequiresESM
             else
@@ -106,10 +109,10 @@ pub fn emitChunks(
     // IIFE splitting(P3-B PR3): 런타임 레지스트리 활성화. 안정 모듈 ID 의
     // root = preserve_modules_root ?? 모든 entry-point 청크 모듈 절대경로의
     // 공통 조상(module_id, 결정적). 루프 1회 전 계산해 모든 청크가 공유.
-    const iife_split = options.format == .iife and !options.preserve_modules;
+    const reg_split = (options.format == .iife or options.format == .umd or options.format == .amd) and !options.preserve_modules;
     var iife_id_root: ?[]const u8 = null;
     defer if (iife_id_root) |r| allocator.free(r);
-    if (iife_split) {
+    if (reg_split) {
         if (options.preserve_modules_root) |r| {
             iife_id_root = try allocator.dupe(u8, r);
         } else {
@@ -138,7 +141,7 @@ pub fn emitChunks(
     }
     // iife_split_factory 만 다른 EmitOptions — 빌드당 1회(모듈 루프 밖).
     var iife_emit_opts: EmitOptions = undefined;
-    if (iife_split) {
+    if (reg_split) {
         reg_ids = try allocator.alloc([]const u8, chunk_graph.chunkCount());
         for (chunk_graph.chunks.items, 0..) |*c, i|
             reg_ids[i] = try chunkRegistryId(allocator, c, graph, iife_id_root, options);
@@ -211,11 +214,20 @@ pub fn emitChunks(
         // prefix 를 여기서(모듈 루프 전) eager emit → sourcemap module_line
         // base offset 이 자연히 정확(insertSlice 회피, RFC §6 IIFE 스파이크
         // 검증 모델: 자기설치형 register + entry 전용 해석 계층).
-        if (iife_split) {
+        if (reg_split) {
             const id = reg_ids[ci]; // borrow (빌드-1회 캐시)
             const min = options.minify_whitespace;
 
             if (chunk_is_user_entry) {
+                // UMD/AMD(PR4): entry 청크를 보편 wrapper 로 감싼다. factory()
+                // 반환값(= bootstrap 의 `return __zntc_require(entryId)`)을
+                // CJS module.exports / AMD define / global root.X 로 노출.
+                // prologue 를 여기서(module_line newline-count 초기화 전, eager)
+                // emit → 소스맵 base offset 자연 정확(PR3 eager-prefix 모델).
+                // 비-entry 청크·iife 는 wrapper 없음(기존). externals 는 split
+                // 에서 wrapper 시그니처에 미연결(빈 리스트, 문서화 한계).
+                if (options.format == .umd or options.format == .amd)
+                    try format_wrapper.emitFormatPrologue(&chunk_output, allocator, options.format, options.global_name, "", &.{}, &.{});
                 // public_path 는 동적 청크 <script> src 접두사(런타임). 결정적
                 // JSON 문자열(따옴표/역슬래시/개행 이스케이프).
                 try chunk_output.appendSlice(allocator, "globalThis.__zntc_public_path=");
@@ -347,10 +359,10 @@ pub fn emitChunks(
 
             // IIFE splitting: 청크 경계는 레지스트리 — 경로 대신 dep 청크의
             // 레지스트리 ID 로 `__zntc_require("<id>")`. resolved_path 불필요.
-            const dep_id = if (iife_split) reg_ids[@intFromEnum(dep_chunk_idx)] else "";
+            const dep_id = if (reg_split) reg_ids[@intFromEnum(dep_chunk_idx)] else "";
 
             // import 경로 결정: preserve-modules면 상대 경로, 아니면 "./{stem}{ext}"
-            const resolved_path = if (iife_split)
+            const resolved_path = if (reg_split)
                 try allocator.dupe(u8, "")
             else if (options.preserve_modules) blk: {
                 const src_path = chunk.rel_dir orelse "./";
@@ -362,9 +374,9 @@ pub fn emitChunks(
             // 청크 경계 결합 형태: esm `import{}from""` / cjs `const{}=require("")`
             // / iife `const{}=__zntc_require("<id>")`. brace·alias 표기는 cjs 와
             // iife 가 동일(`const {` / `name: alias`) — reg_like 로 공유.
-            const reg_like = cjs_require or iife_split;
+            const reg_like = cjs_require or reg_split;
             // iife 의 결합 인자는 dep_id, 그 외는 resolved_path.
-            const bind_arg = if (iife_split) dep_id else resolved_path;
+            const bind_arg = if (reg_split) dep_id else resolved_path;
 
             // imports_from에서 이 청크→dep_chunk로 가져오는 심볼 목록 조회
             const symbols = chunk.imports_from.get(dep_ci);
@@ -403,7 +415,7 @@ pub fn emitChunks(
                     }
                 }
                 // 결합 open: iife=`__zntc_require("`, cjs=`require("`, esm=`from"`
-                const sym_open = if (iife_split)
+                const sym_open = if (reg_split)
                     (if (options.minify_whitespace) "}=__zntc_require(\"" else " } = __zntc_require(\"")
                 else if (cjs_require)
                     (if (options.minify_whitespace) "}=require(\"" else " } = require(\"")
@@ -418,7 +430,7 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, sym_close);
             } else {
                 // 심볼 정보 없음 → side-effect (실행/등록 순서 보장용)
-                const se_open = if (iife_split)
+                const se_open = if (reg_split)
                     "__zntc_require(\""
                 else if (cjs_require)
                     "require(\""
@@ -514,7 +526,7 @@ pub fn emitChunks(
             const raw_code = try emitModule(
                 allocator,
                 m,
-                if (iife_split) &iife_emit_opts else options,
+                if (reg_split) &iife_emit_opts else options,
                 linker,
                 is_entry,
                 null,
@@ -643,13 +655,13 @@ pub fn emitChunks(
             //    require 로 읽음 → 여기서 또 emit 하면 이중정의·module.exports=
             //    재대입 손상·re-export local 미바인딩(ReferenceError). 따라서
             //    **emit 생략**(emitCjsEntryExports 에 일임)이 정확.
-            //  - IIFE(iife_split): factory 가 `exports`/`module`/`require`
+            //  - IIFE(reg_split): factory 가 `exports`/`module`/`require`
             //    파라미터를 주므로 CJS 와 동일 모델. entry/dynamic 청크는
             //    emitCjsEntryExports(emitter 가 iife_split_factory 시 CJS 경로로
             //    라우팅 — Edit 9)가 factory-bound exports 를 깔고, common/manual
             //    은 이 경로가 cross-chunk `exports.x=local;`. → cjs 와 동일하게
             //    entry 청크는 break(이중정의·module.exports= 손상 방지).
-            const reg_fmt = options.format == .cjs or iife_split;
+            const reg_fmt = options.format == .cjs or reg_split;
             if (reg_fmt and entry_mod_idx != null) break :xchunk_exports;
             const cjs_x = reg_fmt;
 
@@ -756,25 +768,39 @@ pub fn emitChunks(
         // prefix `(function(g){<INSTALL>({"id":function(exports,module,require){`
         // 의 짝: factory fn `}` + 객체 `}` + register 호출 `)` + `;` + wrapper
         // fn `}` + wrapper 호출 `)` + GLOBAL + `;`.
-        if (iife_split) {
+        if (reg_split) {
             const min = options.minify_whitespace;
             try chunk_output.appendSlice(allocator, if (min) "}});})" else "\n}});})");
             try chunk_output.appendSlice(allocator, rt.ZNTC_IIFE_GLOBAL);
             try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
             if (chunk_is_user_entry) {
                 // entry 모듈은 정적 dep 들 뒤에 평가 → bootstrap 으로 실행 개시.
-                // global_name 지정 시 그 결과를 전역 var 로 노출(emitter 의
-                // wrapped-return 은 PR3 가 억제 — Edit 8).
-                if (options.global_name) |gn| {
-                    try chunk_output.appendSlice(allocator, "var ");
-                    try chunk_output.appendSlice(allocator, gn);
-                    try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                const umd_amd = options.format == .umd or options.format == .amd;
+                if (umd_amd) {
+                    // UMD/AMD: factory() 반환값 = entry exports. 보편 wrapper 가
+                    // module.exports/define/root.X 로 노출(global_name 도 wrapper
+                    // 가 처리 — 별도 var 금지). `return` 은 Edit 3 의 prologue
+                    // 함수 안이라 합법.
+                    try chunk_output.appendSlice(allocator, "return globalThis.__zntc_require(\"");
+                } else {
+                    // iife: global_name 지정 시 결과를 전역 var 로 노출(기존).
+                    if (options.global_name) |gn| {
+                        try chunk_output.appendSlice(allocator, "var ");
+                        try chunk_output.appendSlice(allocator, gn);
+                        try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                    }
+                    try chunk_output.appendSlice(allocator, "globalThis.__zntc_require(\"");
                 }
-                try chunk_output.appendSlice(allocator, "globalThis.__zntc_require(\"");
                 try chunk_output.appendSlice(allocator, reg_ids[ci]);
                 try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
             }
         }
+
+        // UMD/AMD(PR4): entry 청크 보편 wrapper 닫기(Edit 3 prologue 의 짝).
+        // 비-entry/iife 는 prologue 없으므로 epilogue 도 없음(불균형 금지).
+        if (reg_split and chunk_is_user_entry and
+            (options.format == .umd or options.format == .amd))
+            try format_wrapper.emitFormatEpilogue(&chunk_output, allocator, options.format, &.{});
 
         // Plugin: renderChunk 훅 — 청크 완성 후, footer 전
         if (options.plugins.len > 0) {
@@ -1311,8 +1337,8 @@ fn rewriteDynamicImports(
         // 청크파일은 bare(접두 ./ 없음) — 로더가 __zntc_public_path 접두.
         // 대상 청크는 dynamic entry → id = entry 모듈 안정 모듈 ID. require
         // 캐시가 상태 보존(스파이크 검증). RFC §4.3 + PR3 결정(<script>).
-        const iife_split = emit_options.format == .iife and !emit_options.preserve_modules;
-        if (iife_split) {
+        const reg_split = (emit_options.format == .iife or emit_options.format == .umd or emit_options.format == .amd) and !emit_options.preserve_modules;
+        if (reg_split) {
             const target_id = reg_ids[@intFromEnum(target_chunk_idx)]; // borrow
             const chunkfile = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, out_ext });
             defer allocator.free(chunkfile);
