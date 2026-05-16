@@ -357,4 +357,48 @@ describe('mangler --minify 회귀', () => {
     expect(result.transpileExitCode).toBe(0);
     expect(result.runOutput).toBe('8');
   });
+
+  // 회귀 가드: Phase B 가 1-char binding 을 literal 로 보존하는데, bare scope-hoist
+  // 단일 scope 에서 *nested* 1-char local (`for (let i=0;...)`) 이 그 위치에서
+  // free-ref 되는 Phase A top-level 과 같은 이름이면 shadow → 잘못된 binding.
+  // effect 재현: `pipe`→`i` 가 Hash.js `for(let i)` 안에서 shadow → `i is not
+  // a function`. 기존 #2965 처리가 module-scope 1-char 만 reserved 등록해
+  // nested 를 놓친 것이 root cause. 다수 top-level 함수로 Phase A short-name
+  // 압력을 만들고, 다른 모듈 nested for-loop(`let i`) 안에서 그 함수를 호출 →
+  // --minify-identifiers 에서 수치가 정확해야 (shadow 시 TypeError/오값).
+  test('nested 1-char loop var 가 cross-module Phase A top-level 을 shadow 하지 않는다 (effect pipe/Hash.js 회귀)', async () => {
+    const fns = Array.from(
+      { length: 12 },
+      (_, k) =>
+        `export function comb${k}(a: number, b: number): number { return (a * 53) ^ (b + ${k}); }`,
+    ).join('\n');
+    const result = await bundleAndRun(
+      {
+        'fns.ts': fns,
+        'hash.ts': [
+          "import { comb0, comb1, comb2, comb3, comb4, comb5, comb6, comb7, comb8, comb9, comb10, comb11 } from './fns';",
+          'const all = [comb0, comb1, comb2, comb3, comb4, comb5, comb6, comb7, comb8, comb9, comb10, comb11];',
+          'export function hashArr(arr: number[]): number {',
+          '  let h = 6151;',
+          '  for (let i = 0; i < arr.length; i++) {',
+          '    h = all[i % all.length](h, arr[i]);', // top-level fn ref inside nested `let i` loop
+          '  }',
+          '  return h >>> 0;',
+          '}',
+        ].join('\n'),
+        'index.ts': [
+          "import { hashArr } from './hash';",
+          'console.log(hashArr([1, 2, 3, 4, 5, 6, 7, 8]));',
+        ].join('\n'),
+      },
+      'index.ts',
+      ['--minify-identifiers', '--platform=node'],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.runStderr).not.toContain('is not a function');
+    expect(result.exitCode).toBe(0);
+    // 비-minify 기준값과 동일해야 (shadow 시 값이 달라지거나 throw).
+    expect(result.runOutput).toBe('610012807');
+  });
 });
