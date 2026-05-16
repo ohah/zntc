@@ -64,21 +64,51 @@ pub fn emitCssBundle(
 
 /// 정렬된 CSS 모듈들을 @import strip 후 줄바꿈 구분하여 buf 에 이어붙인다.
 /// emitCssBundle(단일) / emitCssChunks(청크별) 가 공유.
+fn appendCssModule(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    mod: *const Module,
+) !void {
+    const strip_end: u32 = if (mod.css_data) |cd| cd.strip_end else 0;
+    const stripped = if (strip_end > 0 and strip_end < mod.source.len) mod.source[strip_end..] else mod.source;
+    const trimmed = std.mem.trim(u8, stripped, " \t\n\r");
+    if (trimmed.len == 0) return;
+    try buf.appendSlice(allocator, stripped);
+    if (stripped.len > 0 and stripped[stripped.len - 1] != '\n') {
+        try buf.append(allocator, '\n');
+    }
+}
+
 fn appendCssModules(
     allocator: std.mem.Allocator,
     buf: *std.ArrayListUnmanaged(u8),
     css_modules: []const *const Module,
 ) !void {
-    for (css_modules) |mod| {
-        const strip_end: u32 = if (mod.css_data) |cd| cd.strip_end else 0;
-        const stripped = if (strip_end > 0 and strip_end < mod.source.len) mod.source[strip_end..] else mod.source;
-        const trimmed = std.mem.trim(u8, stripped, " \t\n\r");
-        if (trimmed.len == 0) continue;
-        try buf.appendSlice(allocator, stripped);
-        if (stripped.len > 0 and stripped[stripped.len - 1] != '\n') {
-            try buf.append(allocator, '\n');
+    for (css_modules) |mod| try appendCssModule(allocator, buf, mod);
+}
+
+/// 한 CSS 모듈을 그 @import(css→css) 의존을 먼저 인라인한 뒤 emit 한다.
+/// `visited` 는 *청크 단위* — 같은 청크 안에서만 dedup(여러 owned CSS 가 같은
+/// shared 를 @import 해도 1회), 청크 간에는 복제(@import 는 쓰는 곳마다 존재).
+/// deps-before-importer 순서로 @import 인라인 의미를 보존(순환은 visited 로 차단).
+fn emitCssModuleTree(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    idx: ModuleIndex,
+    buf: *std.ArrayListUnmanaged(u8),
+    visited: *std.AutoHashMap(ModuleIndex, void),
+) !void {
+    if (idx.isNone()) return;
+    if (visited.contains(idx)) return;
+    visited.put(idx, {}) catch return;
+    const mod = graph.getModule(idx) orelse return;
+    if (mod.module_type != .css) return;
+    for (mod.dependencies.items) |dep| {
+        if (graph.getModule(dep)) |dm| {
+            if (dm.module_type == .css) try emitCssModuleTree(allocator, graph, dep, buf, visited);
         }
     }
+    try appendCssModule(allocator, buf, mod);
 }
 
 /// 청크별 CSS 계획 항목. `path`/`contents` 는 `allocator` 소유.
@@ -156,6 +186,10 @@ pub fn planCssChunks(
         out_list.deinit(allocator);
     }
 
+    // @import 인라인 dedup 용 — 청크마다 clear (청크 간엔 복제 허용).
+    var emit_visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
+    defer emit_visited.deinit();
+
     // 청크 인덱스 순회 → 출력 순서가 결정적(HashMap 순회 순서와 무관).
     var chunk_idx: usize = 0;
     while (chunk_idx < n_chunks) : (chunk_idx += 1) {
@@ -170,7 +204,10 @@ pub fn planCssChunks(
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(allocator);
-        try appendCssModules(allocator, &buf, list.items);
+        emit_visited.clearRetainingCapacity();
+        for (list.items) |mod| {
+            try emitCssModuleTree(allocator, graph, mod.index, &buf, &emit_visited);
+        }
         if (buf.items.len == 0) continue;
 
         const cidx: ChunkIndex = @enumFromInt(@as(u32, @intCast(chunk_idx)));
@@ -257,14 +294,13 @@ fn walkCssOwner(
     const mod = graph.getModule(idx) orelse return;
 
     if (mod.module_type == .css) {
+        // JS 가 import 한 CSS 만 소유(min-rank 단일 소유 = dedup). 그 CSS 가
+        // @import 한 CSS 는 여기서 소유하지 않는다 — emit 시 청크별로 인라인
+        // 복제(@import 의미: 쓰는 곳마다 존재)되어야 하므로(#3321 P0-4).
         const better = if (owner_rank.get(idx)) |r| rank < r else true;
         if (better) {
             owner.put(idx, ci) catch return;
             owner_rank.put(idx, rank) catch return;
-        }
-        // CSS→CSS(@import) 체인
-        for (mod.dependencies.items) |dep| {
-            walkCssOwner(graph, chunk_graph, dep, ci, rank, owner, owner_rank, visited);
         }
         return;
     }
