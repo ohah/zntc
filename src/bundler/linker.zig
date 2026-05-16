@@ -760,6 +760,24 @@ pub const Linker = struct {
                     try exported.put(local_name, {});
                 }
             }
+            // Phase B 는 1-char binding 을 literal 로 보존한다 (mangler.zig
+            // shouldSkip `name.len <= 1`). bare scope-hoist 는 전 모듈이 한 scope
+            // 라, *nested* scope 의 1-char local (예: `for (let i=0; ...)`) 도
+            // 그 위치에서 free-ref 되는 Phase A top-level 이름과 같으면 shadow
+            // → 잘못된 binding 참조 (effect: `pipe`→`i` 가 Hash.js `for(let i)`
+            // 안에서 shadow → `i is not a function`). 기존 #2965 처리는
+            // module scope(scope_maps[0]) 1-char 만 reserved 에 넣어 nested 를
+            // 놓쳤다. 모든 scope 의 1-char 식별자를 Phase A reserved 에 등록해
+            // Phase A 가 그 이름을 다른 top-level 에 부여하지 못하게 한다.
+            // bounded: 1-char 이름은 최대 ~64종.
+            if (m.semantic) |sem| {
+                for (sem.scope_maps) |smap| {
+                    var sm_it = smap.iterator();
+                    while (sm_it.next()) |e| {
+                        if (e.key_ptr.len <= 1) try reserved.put(e.key_ptr.*, {});
+                    }
+                }
+            }
         }
 
         const helper_modules = @import("../runtime_helper_modules.zig");
