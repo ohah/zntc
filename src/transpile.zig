@@ -718,21 +718,28 @@ fn collectAutoTypeOnlyDeclNames(
                 if (spec_idx.isNone()) continue;
                 if (@intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
                 const spec = ast.getNode(spec_idx);
-                const local_idx: ast_mod.NodeIndex = switch (spec.tag) {
+                switch (spec.tag) {
                     // import_specifier: binary { left=imported, right=local }
-                    .import_specifier => spec.data.binary.right,
-                    // import_default_specifier / import_namespace_specifier: extras[0] = local
-                    .import_default_specifier, .import_namespace_specifier => blk: {
-                        if (spec.data.extra >= ast.extra_data.items.len) break :blk .none;
-                        break :blk @enumFromInt(ast.extra_data.items[spec.data.extra]);
+                    .import_specifier => {
+                        const local_idx = spec.data.binary.right;
+                        if (local_idx.isNone()) continue;
+                        const is_type_only = decl.is_type_only or
+                            (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0;
+                        const bucket = if (is_type_only) type_only_names else value_names;
+                        try putNodeIdName(allocator, ast, local_idx, bucket);
                     },
-                    else => .none,
-                };
-                if (local_idx.isNone()) continue;
-                const is_type_only = decl.is_type_only or
-                    (spec.tag == .import_specifier and (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0);
-                const bucket = if (is_type_only) type_only_names else value_names;
-                try putNodeIdName(allocator, ast, local_idx, bucket);
+                    // import_default_specifier / import_namespace_specifier: 파서가 local
+                    // 이름을 spec_node.span (string_ref) 에 직접 저장 — 별도 name 노드
+                    // 없음 (module.zig parseImportClause). codegen/analyzer 와 동일하게
+                    // span 텍스트로 읽는다 (D13 layout: 이전엔 extra_data 인덱스로 오독).
+                    .import_default_specifier, .import_namespace_specifier => {
+                        const name_text = ast.getText(spec.span);
+                        if (name_text.len == 0) continue;
+                        const bucket = if (decl.is_type_only) type_only_names else value_names;
+                        try bucket.put(allocator, name_text, {});
+                    },
+                    else => {},
+                }
             }
         },
 
@@ -2026,6 +2033,62 @@ test "Transpile: .d.ts declaration file emits empty output (D12.5)" {
         \\
     ,
         "export const x = 1;\n",
+        "input.ts",
+        .{},
+    );
+}
+
+test "TS auto type-only export: default/namespace import + type alias mixed export (D13 layout)" {
+    // collectAutoTypeOnlyDeclNames 가 default/namespace import specifier 의 local
+    // 이름을 `extra_data[spec.data.extra]` 로 잘못 읽던 layout 버그 (D13 회귀).
+    // 실제 layout 은 spec_node.span (string_ref) — 파서가 별도 name 노드 없이
+    // 직접 저장 (codegen/analyzer 와 동일). 오독 시 default/namespace import 가
+    // value_names 에 미등록 → markAutoTypeOnlyExportSpecifiers 가 같은 export
+    // 블록의 type alias 와 함께 잘못 처리 → `Export 'T' is not defined` (ZNTC1201).
+    //
+    // 주의: D20 (forward `export {}; import default/namespace`) 은 별개 — analyzer
+    // 의 import predeclare 가 필요해 bundler runtime-helper scope 모델 재설계 RFC.
+    // 이 fix 는 layout 오독만 해결 (import 가 export 보다 *뒤* 인 forward 케이스는
+    // 여전히 ZNTC1201 — RFC 범위).
+    try expectTranspileOutput(
+        \\import Foo from './foo';
+        \\type T = number;
+        \\export { Foo, T };
+        \\
+    ,
+        \\import Foo from "./foo";
+        \\export { Foo };
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // namespace import + type alias mixed
+    try expectTranspileOutput(
+        \\import * as ns from './mod';
+        \\type T = number;
+        \\export { ns, T };
+        \\
+    ,
+        \\import * as ns from "./mod";
+        \\export { ns };
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+
+    // default import alone, exported — value 보존 (회귀 가드)
+    try expectTranspileOutput(
+        \\import Foo from './foo';
+        \\export { Foo };
+        \\
+    ,
+        \\import Foo from "./foo";
+        \\export { Foo };
+        \\
+    ,
         "input.ts",
         .{},
     );
