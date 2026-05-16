@@ -1383,7 +1383,15 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             const paren_saved = self.enterAllowInContext(true);
             const saved_in_decorator = self.ctx.in_decorator;
             self.ctx.in_decorator = false;
+            // D22: parenthesized expression 안은 새 expression 컨텍스트 — 바깥
+            // ternary separator 무관 (oxc allow_return_type 복원). isTypedArrowFunction
+            // 이 false 라 여기 도달했으므로 이 `(`는 arrow params 가 아님. 안의
+            // `((b): T => b)` 같은 inner arrow 가 D22 commit gate 에 잘못 걸리지
+            // 않도록 reset.
+            const saved_paren_ternary = self.in_ternary_consequent;
+            self.in_ternary_consequent = false;
             const expr = try parseExpressionOrRest(self);
+            self.in_ternary_consequent = saved_paren_ternary;
             self.ctx.in_decorator = saved_in_decorator;
             self.restoreContext(paren_saved);
 
@@ -1617,8 +1625,13 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
 
     while (true) {
         // expression inside ${} — `in` 연산자 항상 허용 (ECMAScript: TemplateMiddleList[+In])
+        // D22: template substitution 도 새 expression 컨텍스트 — 바깥 ternary
+        // separator 무관 (oxc allow_return_type 복원).
         const tmpl_saved = self.enterAllowInContext(true);
+        const saved_tmpl_ternary = self.in_ternary_consequent;
+        self.in_ternary_consequent = false;
         const expr = try parseExpression(self);
+        self.in_ternary_consequent = saved_tmpl_ternary;
         self.restoreContext(tmpl_saved);
         try self.scratch.append(self.allocator, expr);
 
@@ -1666,6 +1679,13 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
 fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip [
+
+    // D22: array element 는 새 expression 컨텍스트 — 바깥 ternary separator `:`
+    // 무관 (oxc allow_return_type 복원). `cond ? [(b): T => b] : 0` 의 element
+    // arrow 가 D22 commit gate 에 잘못 걸리지 않도록 reset (call-args/paren 과 동일).
+    const saved_in_ternary = self.in_ternary_consequent;
+    self.in_ternary_consequent = false;
+    defer self.in_ternary_consequent = saved_in_ternary;
 
     var elements: std.ArrayList(NodeIndex) = .empty;
     defer elements.deinit(self.allocator);
@@ -1827,6 +1847,15 @@ fn parseHex4(s: []const u8) ?u16 {
 /// 여는 괄호 `(`는 이미 소비된 상태에서 호출.
 /// 닫는 괄호 `)`까지 소비한다.
 fn parseArgumentList(self: *Parser) ParseError2!NodeList {
+    // D22: call/new argument 는 새 expression 컨텍스트 — 바깥 ternary 의 separator
+    // `:` 영향을 받지 않는다 (oxc allow_return_type_in_arrow_function 복원).
+    // `cond ? f((b): T => b) : 0` 에서 인자 arrow 의 `: T` 는 return type 이고
+    // body 다음은 `)` 이므로, in_ternary_consequent 를 reset 하지 않으면 D22
+    // commit gate 가 잘못 rollback 한다.
+    const saved_in_ternary = self.in_ternary_consequent;
+    self.in_ternary_consequent = false;
+    defer self.in_ternary_consequent = saved_in_ternary;
+
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const arg = try parseSpreadOrAssignment(self);
