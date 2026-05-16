@@ -922,6 +922,7 @@ pub const Linker = struct {
                     .source = m.source,
                     .module_scope_symbols = bitsets[mi],
                     .cross_module_imports = ir_owned,
+                    .wrapper_isolated = m.wrap_kind.isWrapped(),
                 };
             } else {
                 modules[mi] = emptyInput(m.source, bitsets[mi]);
