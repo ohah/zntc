@@ -357,7 +357,7 @@ const projects: ProjectConfig[] = [
   {
     name: 'lodash-es',
     pkg: 'lodash-es',
-    entry: `import { groupBy, sortBy, uniq } from 'lodash-es';\nconsole.log(groupBy, sortBy, uniq);`,
+    entry: `import { groupBy, sortBy, uniq } from 'lodash-es';\nconsole.log(JSON.stringify(groupBy([{ c: 'a', n: 1 }, { c: 'b', n: 2 }, { c: 'a', n: 3 }], 'c')), JSON.stringify(sortBy([{ n: 3 }, { n: 1 }, { n: 2 }], 'n')), JSON.stringify(uniq([1, 2, 2, 3, 3, 3])));`,
     deepEntry: `import { groupBy, sortBy, uniq, chunk, flatMap, keyBy, mapValues, pick, omit, debounce } from 'lodash-es';
 const arr = [{ c: 'a', n: 1 }, { c: 'b', n: 2 }, { c: 'a', n: 3 }, { c: 'b', n: 4 }, { c: 'a', n: 5 }];
 const grouped = groupBy(arr, 'c');
@@ -386,7 +386,7 @@ console.log(JSON.stringify({
   {
     name: 'preact',
     pkg: 'preact',
-    entry: `import { h, render } from 'preact';\nconsole.log(h, render);`,
+    entry: `import { h, render } from 'preact';\nconst v = h('div', { id: 't' }, 'x');\nconsole.log(v.type, JSON.stringify(v.props), typeof render);`,
     deepEntry: `import { h, Fragment, Component, cloneElement, createRef, createContext, options } from 'preact';
 const el = h('div', { id: 't' }, h('span', null, 'a'), h('span', null, 'b'));
 const cloned = cloneElement(el, { 'data-x': '1' });
@@ -1745,7 +1745,7 @@ console.log(JSON.stringify({
   {
     name: 'lodash-es@chrome80',
     pkg: 'lodash-es',
-    entry: `import { groupBy, sortBy, uniq } from 'lodash-es';\nconsole.log(groupBy, sortBy, uniq);`,
+    entry: `import { groupBy, sortBy, uniq } from 'lodash-es';\nconsole.log(JSON.stringify(groupBy([{ c: 'a', n: 1 }, { c: 'b', n: 2 }, { c: 'a', n: 3 }], 'c')), JSON.stringify(sortBy([{ n: 3 }, { n: 1 }, { n: 2 }], 'n')), JSON.stringify(uniq([1, 2, 2, 3, 3, 3])));`,
     target: 'chrome80',
   },
   {
@@ -1763,7 +1763,7 @@ console.log(JSON.stringify({
   {
     name: 'nanoid@node16',
     pkg: 'nanoid',
-    entry: `import { nanoid } from 'nanoid';\nconsole.log(nanoid());`,
+    entry: `import { nanoid } from 'nanoid';\nconst id = nanoid();\nconsole.log(typeof id, id.length, /^[A-Za-z0-9_-]+$/.test(id));`,
     target: 'node16',
     platform: 'node',
   },
