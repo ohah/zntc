@@ -159,32 +159,10 @@ describe('CSS code splitting (per-chunk CSS)', () => {
     expect(vendorCss!.text).not.toContain('.app');
   });
 
-  // P0-2: 청크 CSS 는 자기 content-hash 를 가져야 한다 (JS 해시 종속 X).
-  test('청크 CSS 파일명에 content-hash 가 붙는다', async () => {
-    const fixture = await createFixture({
-      'entry.ts': `
-        export async function load() {
-          return (await import('./route-a')).default;
-        }
-      `,
-      'route-a.ts': `import './a.css';\nexport default 1;`,
-      'a.css': `.route-a { color: red; }`,
-    });
-    cleanup = fixture.cleanup;
-
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'entry.ts')],
-      splitting: true,
-    });
-
-    const css = cssFiles(result.outputFiles!);
-    const aCss = css.find((c) => c.text.includes('color: red'))!;
-    expect(aCss).toBeDefined();
-    // <stem>-<8 hex>.css 형태
-    expect(aCss.path).toMatch(/-[0-9a-f]{8}\.css$/);
-  });
-
-  test('동일 입력 재빌드 시 청크 CSS 파일명(해시)이 결정적', async () => {
+  // P0-2: css_names 패턴 충실 적용. 기본 "[name]" 은 안정 파일명(강제 hash
+  // 없음 — app-builder HTML link rewrite 호환). [hash] 동작은 css_emitter.zig
+  // applyCssChunkName 단위테스트가 커버 (build() JS API 에 cssNames 미노출).
+  test('동일 입력 재빌드 시 청크 CSS 파일명이 결정적', async () => {
     const files = {
       'entry.ts': `export async function load(){ return (await import('./r')).default; }`,
       'r.ts': `import './s.css';\nexport default 1;`,
@@ -201,25 +179,6 @@ describe('CSS code splitting (per-chunk CSS)', () => {
     const p2 = cssFiles(r2.outputFiles!).find((c) => c.text.includes('teal'))!.path;
 
     expect(p1).toBe(p2);
-  });
-
-  test('CSS 내용이 다르면 해시가 다르다', async () => {
-    const mk = (rule: string) => ({
-      'entry.ts': `export async function load(){ return (await import('./r')).default; }`,
-      'r.ts': `import './s.css';\nexport default 1;`,
-      's.css': rule,
-    });
-    const fa = await createFixture(mk('.s { color: red; }'));
-    const ra = await build({ entryPoints: [join(fa.dir, 'entry.ts')], splitting: true });
-    const pa = cssFiles(ra.outputFiles!).find((c) => c.text.includes('color'))!.path;
-    await fa.cleanup();
-
-    const fb = await createFixture(mk('.s { color: blue; }'));
-    cleanup = fb.cleanup;
-    const rb = await build({ entryPoints: [join(fb.dir, 'entry.ts')], splitting: true });
-    const pb = cssFiles(rb.outputFiles!).find((c) => c.text.includes('color'))!.path;
-
-    expect(pa).not.toBe(pb);
   });
 
   // P0-3②: 동적 import 된 청크는 자기 CSS 를 런타임 <link> 로 주입한다.
