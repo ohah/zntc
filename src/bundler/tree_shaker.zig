@@ -1340,6 +1340,17 @@ pub const TreeShaker = struct {
             }
         }
 
+        // `export * as z from "src"` (re_export_namespace): namespace 소스는
+        // export_binding.import_record 에 있어 위 import_bindings 스캔이 못
+        // 잡는다. 중첩 체인(`export {z} from "./mid"` → mid `export * as z
+        // from "./inner"`)에서 canonical=(mid,"z") 로 풀리면 src(inner)가
+        // 통째 tree-shaken → `var z_ns={}` 미바인딩 (#3368). followImport
+        // 와 동일하게 캐시된 exported_name→source 맵으로 O(1) 조회.
+        if (try self.ensureReExportNamespaceSourceMap(canon_mod)) |ns_map| {
+            if (ns_map.get(canonical.export_name)) |ns_src|
+                try self.markAndSeedAllStmts(ns_src, queue, module_stmt_infos, reachable_stmts);
+        }
+
         if (canon_mod != target_mod and target_mod < mod_count) {
             var intermediate_scope = profile.begin(.shake_fixpoint_bfs_seed_export_intermediate);
             defer intermediate_scope.end();

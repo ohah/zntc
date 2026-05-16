@@ -359,13 +359,13 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
   // [추적 — 별개 선재 이슈, #3368] 이번/이전 cross-chunk 배선과 무관한
   // 다른 서브시스템(tree-shaker) 버그. 루트커즈 규명 완료. 수정/회귀 시
   // loud 하도록 skip 유지.
-  //  중첩 ns re-export 체인: `export {inner} from "./mid"` + mid
-  //  `export * as inner from "./inner"`. 루트커즈 — cross-chunk 배선 이전
-  //  단계의 tree-shaker 가 inner/mid 모듈을 통째 dead 로 제거(멤버 접근
-  //  elision + 동적만 사용 → live export 0 으로 오판) → 청킹 시점에 대상
-  //  모듈 부재라 ns 객체 materialize 불가. namespace re-export 체인의
-  //  tree-shake over-elimination (#3368, cross-chunk 무관).
-  test.skip('[PREEXISTING] 중첩 ns re-export 체인 tree-shake 제거', () =>
+  // 중첩 ns re-export 체인: `export {inner} from "./mid"` + mid
+  // `export * as inner from "./inner"`. seedExport 가 `import * as z;
+  // export {z}`(import_binding) 만 소스 시드하고 `export * as z from`
+  // (re_export_namespace, export_binding) 은 미처리 → resolveExportChain
+  // canonical=(mid,"inner") 에서 inner.ts 가 통째 tree-shaken 되던 버그.
+  // seedExport 에 re_export_namespace 소스 시드 추가로 해소 (#3368).
+  test('중첩 ns re-export 체인 (#3368)', () =>
     runNsSplit(
       {
         'inner.ts': `export const a = "A";`,
