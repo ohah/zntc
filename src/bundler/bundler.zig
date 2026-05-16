@@ -893,20 +893,50 @@ pub const Bundler = struct {
             const init_core_rel = "node_modules/react-native/Libraries/Core/InitializeCore.js";
 
             auto_init_core_path = blk: {
-                // entry_dir 기준 탐색 → fs.realpath 통과 (#1885: VirtualFS 호환)
                 const full = std.fs.path.join(self.allocator, &.{ entry_dir, init_core_rel }) catch break :blk null;
-                defer self.allocator.free(full);
-                if (fs.realpath(self.allocator, full)) |real| break :blk real else |_| {}
+                // preserve_symlinks=true 에서는 runBeforeMain 도 Metro-style logical path 를
+                // 써야 한다. 여기서 realpath 로 주입하면 entry/import 경로의 logical
+                // react-native 와 별도 module id 가 되어 InitializeCore 가 중복 실행된다.
+                if (self.options.preserve_symlinks) {
+                    if (fs.statFile(full)) |stat| {
+                        if (stat.kind == .file) break :blk full;
+                    } else |_| {}
+                }
+                // 기본 경로는 fs.realpath 통과 (#1885: VirtualFS 호환).
+                if (fs.realpath(self.allocator, full)) |real| {
+                    self.allocator.free(full);
+                    break :blk real;
+                } else |_| {}
+                self.allocator.free(full);
                 // CWD 기준 탐색
+                if (self.options.preserve_symlinks) {
+                    if (fs.statFile(init_core_rel)) |stat| {
+                        if (stat.kind == .file) {
+                            break :blk self.allocator.dupe(u8, init_core_rel) catch break :blk null;
+                        }
+                    } else |_| {}
+                }
                 break :blk fs.realpath(self.allocator, init_core_rel) catch null;
             };
 
             if (auto_init_core_path) |init_path| {
                 var already_present = false;
+                const init_path_real = fs.realpath(self.allocator, init_path) catch null;
+                defer if (init_path_real) |p| self.allocator.free(p);
                 for (self.options.run_before_main) |rbm| {
                     if (std.mem.eql(u8, rbm, init_path)) {
                         already_present = true;
                         break;
+                    }
+                    if (init_path_real) |real| {
+                        const rbm_real = fs.realpath(self.allocator, rbm) catch null;
+                        defer if (rbm_real) |p| self.allocator.free(p);
+                        if (rbm_real) |p| {
+                            if (std.mem.eql(u8, p, real)) {
+                                already_present = true;
+                                break;
+                            }
+                        }
                     }
                 }
                 if (!already_present) {
