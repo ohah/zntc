@@ -507,6 +507,52 @@ test "minify: if false no else becomes empty" {
 }
 
 // ================================================================
+// nullish check fold: X===null||X===void 0 → X==null (terser/esbuild 표준)
+// ================================================================
+
+test "minify: X===null||X===void 0 → X==null" {
+    try expectMinify(
+        "const r = n === null || n === void 0 ? 1 : n.x;",
+        "const r = n == null ? 1 : n.x;",
+    );
+}
+
+test "minify: X!==null&&X!==void 0 → X!=null" {
+    try expectMinify(
+        "const r = t !== null && t !== void 0 ? t : 0;",
+        "const r = t != null ? t : 0;",
+    );
+}
+
+test "minify: X===void 0||X===null → X==null (순서 무관)" {
+    try expectMinify(
+        "const r = n === void 0 || n === null ? 1 : 2;",
+        "const r = n == null ? 1 : 2;",
+    );
+}
+
+test "minify: X===undefined||X===null → X==null (undefined 식별자)" {
+    try expectMinify(
+        "const r = n === undefined || n === null ? 1 : 2;",
+        "const r = n == null ? 1 : 2;",
+    );
+}
+
+test "minify: 다른 식별자면 fold 안 함 (a===null||b===void 0)" {
+    try expectMinify(
+        "const r = a === null || b === void 0 ? 1 : 2;",
+        "const r = a === null || b === void 0 ? 1 : 2;",
+    );
+}
+
+test "minify: (null,null) 쌍은 fold 안 함" {
+    try expectMinify(
+        "const r = a === null || a === null ? 1 : 2;",
+        "const r = a === null || a === null ? 1 : 2;",
+    );
+}
+
+// ================================================================
 // Phase 3: Boolean Simplification
 // ================================================================
 
