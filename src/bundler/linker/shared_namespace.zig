@@ -143,9 +143,7 @@ pub fn registerNamespaceRewrites(
             const ns_var = if (ns_target_to_var.get(target)) |cached|
                 cached
             else blk: {
-                // splitting 시엔 referrer 청크 self-preamble 대신 정의자 청크 preamble 에
-                // namespace 가 위치하도록 shared cache 경유.
-                if (self.use_shared_ns_preamble) {
+                if (self.useSharedNsInline(target)) {
                     const ns_var_name = try appendSharedNsInlineEntry(self, ns_inline_list, null, target, &seen_exports);
                     try ns_target_to_var.put(target, ns_var_name);
                     break :blk ns_var_name;
@@ -191,7 +189,7 @@ pub fn registerNamespaceRewrites(
     // ns_inline_list 활성화 조건: caller 가 명시 (force_inline) 또는 shadow 충돌 발생.
     // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
     if (force_inline or has_shadow) {
-        if (self.use_shared_ns_preamble) {
+        if (self.useSharedNsInline(target_mod_idx)) {
             _ = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports);
         } else {
             const obj_str = try buildInlineObjectStr(self, target_mod_idx, 0);

@@ -339,17 +339,13 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       'A PV B',
     ));
 
-  // [추적 — 별개 선재 이슈, #3321 후속] 아래 둘은 이번 cross-chunk 배선과
-  // 무관한, 다른 서브시스템의 선재 버그. 루트커즈 규명 완료. 수정/회귀 시
-  // loud 하도록 skip 유지.
-  //  (1) 단일번들 namespace whole-value: 동적 import 없어 split 미발생 →
-  //      단일 청크. `export * as ns` 직접형을 whole-value(`Object.keys(ns)`)
-  //      로 쓰면 ns_inline rewrite(`ns`→`ns_var`)는 적용되나 비-shared
-  //      ns_inline **선언(`var ns_var={...}`)이 importer preamble 에 미emit**
-  //      → ReferenceError. 실제 split 발생 시는 cross-chunk 경로가 정의자
-  //      청크에 객체를 materialize 하므로 정상(검증됨). 단일번들 ns preamble
-  //      emission 버그 (별개 후속, cross-chunk 무관).
-  test.skip('[PREEXISTING] 단일번들 export * as ns whole-value 미합성', () =>
+  // splitting:true 인데 동적 import 가 없어 단일 청크가 되는 경우 `export *
+  // as ns` 를 whole-value(`Object.keys(ns)`)로 쓰면, chunked emit 의 shared
+  // preamble 이 per-module metadata 보다 먼저 돌아 same-chunk ns 객체가
+  // 미materialize 되던 버그(#3367). registerNamespaceRewrites 가
+  // ns_preamble_chunked+isNsCrossChunk 로 same-chunk 는 비-shared
+  // self-contained 경로(모듈 preamble 직접 emit) 선택 → 해소.
+  test('export * as ns whole-value 단일청크 (#3367)', () =>
     runNsSplit(
       {
         'inner.ts': `export const a = "A";\nexport const b = "B";`,
@@ -359,12 +355,16 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       { format: 'esm' },
       'a,b',
     ));
-  //  (2) 중첩 ns re-export 체인: `export {inner} from "./mid"` + mid
-  //      `export * as inner from "./inner"`. 루트커즈 — cross-chunk 배선
-  //      이전 단계의 tree-shaker 가 inner/mid 모듈을 통째 dead 로 제거(멤버
-  //      접근 elision + 동적만 사용 → live export 0 으로 오판) → 청킹 시점에
-  //      대상 모듈 부재라 ns 객체 materialize 불가. namespace re-export 체인의
-  //      tree-shake over-elimination (별개 후속, cross-chunk 무관).
+
+  // [추적 — 별개 선재 이슈, #3368] 이번/이전 cross-chunk 배선과 무관한
+  // 다른 서브시스템(tree-shaker) 버그. 루트커즈 규명 완료. 수정/회귀 시
+  // loud 하도록 skip 유지.
+  //  중첩 ns re-export 체인: `export {inner} from "./mid"` + mid
+  //  `export * as inner from "./inner"`. 루트커즈 — cross-chunk 배선 이전
+  //  단계의 tree-shaker 가 inner/mid 모듈을 통째 dead 로 제거(멤버 접근
+  //  elision + 동적만 사용 → live export 0 으로 오판) → 청킹 시점에 대상
+  //  모듈 부재라 ns 객체 materialize 불가. namespace re-export 체인의
+  //  tree-shake over-elimination (#3368, cross-chunk 무관).
   test.skip('[PREEXISTING] 중첩 ns re-export 체인 tree-shake 제거', () =>
     runNsSplit(
       {

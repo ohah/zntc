@@ -89,7 +89,10 @@ pub fn emitChunks(
     // finalizeNamespaceData 가 referrer 측 object_literal 을 빈 문자열로 두고,
     // linker 의 ns_shared_inline_cache 에 정의자 mod_idx + 실 object_literal 저장
     // — 청크 emit 시 정의자 모듈이 속한 청크 preamble 에서 inline.
-    if (linker) |l| @constCast(l).use_shared_ns_preamble = true;
+    if (linker) |l| {
+        @constCast(l).use_shared_ns_preamble = true;
+        @constCast(l).ns_preamble_chunked = true;
+    }
 
     var outputs: std.ArrayList(OutputFile) = .empty;
     errdefer {
