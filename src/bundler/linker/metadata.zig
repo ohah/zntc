@@ -796,8 +796,9 @@ pub fn buildMetadataForAst(
         while (sit.next()) |scope_entry| {
             const sym_name = scope_entry.key_ptr.*;
             if (self.getCanonicalName(module_index, sym_name)) |renamed| {
-                if (!export_getter_overrides.contains(sym_name)) {
-                    try putOwnedRename(self, &renames, &owned_nested_renames, @intCast(scope_entry.value_ptr.*), renamed);
+                const sym_idx: u32 = @intCast(scope_entry.value_ptr.*);
+                if (!export_getter_overrides.contains(sym_name) and !renames.contains(sym_idx)) {
+                    try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, renamed);
                 }
             }
         }

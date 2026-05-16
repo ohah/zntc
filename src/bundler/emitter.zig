@@ -715,13 +715,7 @@ pub fn emitWithTreeShaking(
         module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
     };
 
-    const entry_is_esm_wrapped = if (entry_idx) |ei| blk: {
-        for (sorted.items) |m| {
-            if (m.index.toU32() == ei) break :blk m.wrap_kind == .esm;
-        }
-        break :blk false;
-    } else false;
-    const emit_top_level_rbm = options.run_before_main.len > 0 and !entry_is_esm_wrapped;
+    const emit_top_level_rbm = options.run_before_main.len > 0;
     const rbm_insert_after_pos = if (emit_top_level_rbm)
         findLastRunBeforeMainPosition(sorted.items, options.run_before_main)
     else
@@ -896,6 +890,7 @@ pub fn emitWithTreeShaking(
         const before_len = module_output.items.len;
         try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
         module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
+        rbm_calls_emitted = true;
     }
 
     // #1961 PR 1h: RuntimeHelpers 비트맵 기반 ES2015 런타임 헬퍼는 transformer 가 graph
@@ -954,7 +949,9 @@ pub fn emitWithTreeShaking(
         for (sorted.items, 0..) |em, ei_idx| {
             if (em.index.toU32() == ei and em.wrap_kind.isWrapped()) {
                 if (results[ei_idx].entry_chain) |chain| {
-                    try output.appendSlice(allocator, chain);
+                    if (!rbm_calls_emitted) {
+                        try output.appendSlice(allocator, chain);
+                    }
                 }
                 try appendGuardedModuleCall(&output, allocator, em, options);
                 break;
