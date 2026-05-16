@@ -280,4 +280,86 @@ describe('iife + code splitting (P3-B PR3)', () => {
     expect(single.text).not.toContain('__zntc_register');
     expect(single.text).not.toContain('__zntc_load_chunk');
   });
+
+  // PR4: 비-DOM 로더 폴백. PR3 로더는 `document.createElement` 만 써
+  // worker/Deno/Node-ESM 에서 `document is not defined`. 환경 감지로
+  // worker→importScripts, 그 외→`import(url)` 폴백 추가.
+  const splitFx = {
+    'shared.ts': `let n=0;\nexport function tick(){ return ++n; }\nexport const lbl="L";`,
+    'page.ts': `import { tick, lbl } from "./shared";\nexport function render(){ return lbl + tick(); }`,
+    'index.ts': `
+      import { tick } from "./shared";
+      async function main(){ tick(); const p = await import("./page"); console.log("R:" + p.render()); }
+      main();
+    `,
+  };
+
+  test('비-DOM: Web Worker(importScripts) 환경에서 동적 청크 로드', async () => {
+    const fixture = await createFixture(splitFx);
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'iife',
+      splitting: true,
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const others = jsOf(outs).filter((p) => p !== entry.path);
+    // document 없음 + importScripts 만 정의 → 폴백이 importScripts 분기 사용.
+    const drv = join(fixture.dir, '__wkr.cjs');
+    writeFileSync(
+      drv,
+      `const fs=require("fs"),path=require("path");const here=${JSON.stringify(fixture.dir)};
+function ev(f){(0,eval)(fs.readFileSync(path.isAbsolute(f)?f:path.join(here,f),"utf8"));}
+globalThis.importScripts=function(u){ev(u);};
+${others.map((f) => `ev(${JSON.stringify(f)});`).join('\n')}
+ev(${JSON.stringify(entry.path)});
+`,
+    );
+    const { stdout } = await runNode(drv);
+    expect(stdout).toBe('R:L2');
+  });
+
+  test('비-DOM: document/importScripts 없음 → 동적 import(url) 폴백', async () => {
+    const fixture = await createFixture(splitFx);
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'iife',
+      splitting: true,
+      // import() 는 해석 가능한 URL 필요 — file:// public path 베이크.
+      publicPath: `file://${fixture.dir}/`,
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const others = jsOf(outs).filter((p) => p !== entry.path);
+    // document 도 importScripts 도 없음 → import(file://...) 분기.
+    const drv = join(fixture.dir, '__nd.cjs');
+    writeFileSync(
+      drv,
+      `const fs=require("fs"),path=require("path");const here=${JSON.stringify(fixture.dir)};
+function ev(f){(0,eval)(fs.readFileSync(path.join(here,f),"utf8"));}
+${others.map((f) => `ev(${JSON.stringify(f)});`).join('\n')}
+ev(${JSON.stringify(entry.path)});
+`,
+    );
+    const { stdout } = await runNode(drv);
+    expect(stdout).toBe('R:L2');
+  });
+
+  test('구조: 로더가 환경 3분기(document / importScripts / import) 포함', async () => {
+    const fixture = await createFixture(splitFx);
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'iife',
+      splitting: true,
+    });
+    const entry = byContent(result.outputFiles!, '__zntc_load_chunk')!;
+    expect(entry.text).toMatch(/typeof document\s*!==\s*["']undefined["']/);
+    expect(entry.text).toMatch(/typeof importScripts\s*===\s*["']function["']/);
+    expect(entry.text).toMatch(/import\(url\)/);
+  });
 });
