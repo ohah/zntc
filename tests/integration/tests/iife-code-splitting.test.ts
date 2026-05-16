@@ -324,4 +324,45 @@ describe('iife + code splitting (P3-B PR3)', () => {
     expect(entry.text).toMatch(/typeof importScripts\s*===\s*["']function["']/);
     expect(entry.text).toMatch(/import\(url\)/);
   });
+
+  // PR4 CSP: strict `script-src 'nonce-..'` 에서 동적 주입 `<script>` 가
+  // 차단됨. 호스트가 globalThis.__zntc_nonce 설정 → 로더가 주입 script 에
+  // nonce 부여(webpack __webpack_nonce__ 대응, 빌드 옵션 불필요). 검증은
+  // writeIifeDriver 의 dom 스텁(setAttribute("nonce") → NONCE:<v> 기록).
+  test('CSP nonce: __zntc_nonce 설정 시 주입 script 에 nonce 부여 + 동적 로드 정상', async () => {
+    const fixture = await createFixture(splitFx);
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'iife',
+      splitting: true,
+    });
+    const outs = result.outputFiles!;
+    // 구조: 로더에 nonce 분기 존재
+    const entry0 = byContent(outs, '__zntc_load_chunk')!;
+    expect(entry0.text).toMatch(/if\s*\(g\.__zntc_nonce\)\s*s\.setAttribute\(["']nonce["']/);
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const drv = writeIifeDriver(fixture.dir, entry.path, jsOf(outs), 'dom', 'tok-9');
+    const { stdout } = await runNode(drv);
+    expect(stdout).toContain('NONCE:tok-9'); // 주입 script 에 nonce 적용됨
+    expect(stdout).toContain('R:L2'); // 동적 청크 정상 로드
+  });
+
+  test('CSP nonce: __zntc_nonce 미설정 시 nonce 부여 안 함(회귀)', async () => {
+    const fixture = await createFixture(splitFx);
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'iife',
+      splitting: true,
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const drv = writeIifeDriver(fixture.dir, entry.path, jsOf(outs), 'dom', null);
+    const { stdout } = await runNode(drv);
+    expect(stdout).not.toContain('NONCE:'); // setAttribute("nonce") 미호출
+    expect(stdout).toContain('R:L2');
+  });
 });
