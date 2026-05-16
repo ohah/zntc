@@ -68,11 +68,54 @@ pub const TopLevelCandidate = struct {
     ref_count: u32,
 };
 
+/// bundle-wide frequency 정렬 비교자. ref_count 내림차순, 동률은 name →
+/// module_index → symbol_id (병렬 파싱 비결정 회피 — name 은 computeRenames
+/// 이후 bundle-wide 유일하므로 결정적). Phase A 정렬과 buildGlobalFrequencyRank
+/// 가 공유 (동일 우선순위 보장).
+fn candidateLessThan(_: void, a: TopLevelCandidate, b: TopLevelCandidate) bool {
+    if (a.ref_count != b.ref_count) return a.ref_count > b.ref_count;
+    const name_order = std.mem.order(u8, a.name, b.name);
+    if (name_order != .eq) return name_order == .lt;
+    if (a.module_index != b.module_index) return a.module_index < b.module_index;
+    return a.symbol_id < b.symbol_id;
+}
+
+/// RFC #3288 M2: bundle-wide frequency rank 맵 (key=ModuleSymKey, value=rank;
+/// rank 0 = 최다 참조 = 최우선 1-char 후보). Phase A 의 *전역 frequency-sort*
+/// (load-bearing — c2 가 이를 상실해 +61KB 회귀) 를 Phase B slot 발급
+/// 우선순위로 보존하기 위한 자료구조. PR-1 inert (미연결); PR-2+ 가 소비.
+/// caller 가 deinit 소유.
+pub fn buildGlobalFrequencyRank(
+    allocator: std.mem.Allocator,
+    candidates: []const TopLevelCandidate,
+) !std.AutoHashMap(ModuleSymKey, u32) {
+    const sorted = try allocator.alloc(TopLevelCandidate, candidates.len);
+    defer allocator.free(sorted);
+    @memcpy(sorted, candidates);
+    std.mem.sortUnstable(TopLevelCandidate, sorted, {}, candidateLessThan);
+
+    var rank = std.AutoHashMap(ModuleSymKey, u32).init(allocator);
+    errdefer rank.deinit();
+    try rank.ensureUnusedCapacity(@intCast(sorted.len));
+    for (sorted, 0..) |c, i| {
+        // 같은 (module,symbol) 중복 candidate 는 첫(최우선) rank 유지.
+        const gop = rank.getOrPutAssumeCapacity(.{ .module_index = c.module_index, .symbol_id = c.symbol_id });
+        if (!gop.found_existing) gop.value_ptr.* = @intCast(i);
+    }
+    return rank;
+}
+
 pub const UnifiedMangleInput = struct {
     modules: []const ModuleMangleInput,
     top_level_candidates: []const TopLevelCandidate,
     /// 런타임 헬퍼 이름 등 외부 예약어. Phase A 초기 reserved set 에 포함.
     global_reserved: []const []const u8 = &.{},
+    /// RFC #3288 M2: true 면 Phase A candidate 를 즉시 base54 발급하지 않고
+    /// Phase B slot pool 에 bundle-wide frequency 우선순위로 합류 (frequency
+    /// 보존 + slot 공유). PR-1 inert (default false → 기존 Phase A 경로 100%
+    /// 보존, byte-identical); PR-3 가 소비. c2(+61KB) 회귀를 frequency 보존
+    /// 으로 정면 회피하는 경로의 게이트.
+    enable_shared_slot_pool: bool = false,
 };
 
 pub const UnifiedMangleResult = struct {
@@ -115,15 +158,7 @@ pub fn mangleAll(
     // Tie-breaker 는 name 우선 — `module_index`/`symbol_id` 는 병렬 파싱으로
     // run 마다 다를 수 있어 non-deterministic 결과를 유발. 이름은
     // `computeRenames` 이후 bundle-wide 로 유일하므로 결정적 정렬 보장.
-    std.mem.sortUnstable(TopLevelCandidate, sorted, {}, struct {
-        fn cmp(_: void, a: TopLevelCandidate, b: TopLevelCandidate) bool {
-            if (a.ref_count != b.ref_count) return a.ref_count > b.ref_count;
-            const name_order = std.mem.order(u8, a.name, b.name);
-            if (name_order != .eq) return name_order == .lt;
-            if (a.module_index != b.module_index) return a.module_index < b.module_index;
-            return a.symbol_id < b.symbol_id;
-        }
-    }.cmp);
+    std.mem.sortUnstable(TopLevelCandidate, sorted, {}, candidateLessThan);
 
     // Phase B 가 outer Phase A binding 과 shadow 충돌 (#1757) 을 피하려면 Phase A 가
     // mangle 한 이름을 nested mangle 시 reserve 해야 한다.
@@ -469,4 +504,39 @@ test "mangleAll: identity rename (name already equals base54 head) — no rename
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(result.renames.count())));
     try std.testing.expectEqual(@as(usize, 1), result.phase_a.slot_count);
     try std.testing.expectEqual(@as(usize, 0), result.phase_a.renamed_symbol_count);
+}
+
+test "buildGlobalFrequencyRank: ref_count 내림차순 + 결정적 tie-break" {
+    const allocator = std.testing.allocator;
+    // ref_count: c=9, a=5, b=5(name tie → 'a'<'b'), d=5(mod tie-break), e=1
+    const cands = [_]TopLevelCandidate{
+        .{ .module_index = 0, .symbol_id = 10, .name = "bb", .ref_count = 5 },
+        .{ .module_index = 0, .symbol_id = 11, .name = "aa", .ref_count = 5 },
+        .{ .module_index = 0, .symbol_id = 12, .name = "zz", .ref_count = 9 },
+        .{ .module_index = 2, .symbol_id = 13, .name = "aa", .ref_count = 5 },
+        .{ .module_index = 0, .symbol_id = 14, .name = "qq", .ref_count = 1 },
+    };
+    var rank = try buildGlobalFrequencyRank(allocator, &cands);
+    defer rank.deinit();
+
+    // zz(rc9)=0; aa@mod0(rc5)=1; aa@mod2(rc5,mod tie)=2; bb(rc5)=3; qq(rc1)=4
+    try std.testing.expectEqual(@as(u32, 0), rank.get(.{ .module_index = 0, .symbol_id = 12 }).?);
+    try std.testing.expectEqual(@as(u32, 1), rank.get(.{ .module_index = 0, .symbol_id = 11 }).?);
+    try std.testing.expectEqual(@as(u32, 2), rank.get(.{ .module_index = 2, .symbol_id = 13 }).?);
+    try std.testing.expectEqual(@as(u32, 3), rank.get(.{ .module_index = 0, .symbol_id = 10 }).?);
+    try std.testing.expectEqual(@as(u32, 4), rank.get(.{ .module_index = 0, .symbol_id = 14 }).?);
+}
+
+test "buildGlobalFrequencyRank: 중복 (module,symbol) 은 최우선 rank 유지" {
+    const allocator = std.testing.allocator;
+    const cands = [_]TopLevelCandidate{
+        .{ .module_index = 1, .symbol_id = 7, .name = "xx", .ref_count = 2 },
+        .{ .module_index = 0, .symbol_id = 3, .name = "yy", .ref_count = 8 }, // 최다 → rank 0
+        .{ .module_index = 1, .symbol_id = 7, .name = "xx", .ref_count = 2 }, // 중복
+    };
+    var rank = try buildGlobalFrequencyRank(allocator, &cands);
+    defer rank.deinit();
+    try std.testing.expectEqual(@as(u32, 0), rank.get(.{ .module_index = 0, .symbol_id = 3 }).?);
+    try std.testing.expectEqual(@as(u32, 1), rank.get(.{ .module_index = 1, .symbol_id = 7 }).?);
+    try std.testing.expectEqual(@as(u32, 2), rank.count());
 }
