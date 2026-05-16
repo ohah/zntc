@@ -58,13 +58,19 @@ pub inline fn refreshEnabled(self: *const Transformer) bool {
 /// 함수 노드에서 이름 텍스트를 추출한다.
 /// function_declaration의 extra[0]이 binding_identifier.
 /// ast의 extra_data에서 읽음 (visitFunction이 이미 노드를 생성했으므로).
-pub fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
+fn getFunctionNameIndex(self: *Transformer, func_node: Node) ?NodeIndex {
     const e = func_node.data.extra;
     if (e >= self.ast.extra_data.items.len) return null;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     if (name_idx.isNone()) return null;
     const name_node = self.ast.getNode(name_idx);
     if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return null;
+    return name_idx;
+}
+
+pub fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
+    const name_idx = getFunctionNameIndex(self, func_node) orelse return null;
+    const name_node = self.ast.getNode(name_idx);
     return self.ast.getText(name_node.data.string_ref);
 }
 
@@ -78,10 +84,12 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
     // function_expression의 이름은 함수 내부 스코프에서만 접근 가능하므로
     // 외부에서 $RefreshReg$에 등록하면 ReferenceError 발생
     if (func_node.tag == .function_expression) return;
-    const name = self.getFunctionName(func_node) orelse return;
+    const name_idx = getFunctionNameIndex(self, func_node) orelse return;
+    const name_node = self.ast.getNode(name_idx);
+    const name = self.ast.getText(name_node.data.string_ref);
     if (!isComponentName(name)) return;
 
-    try appendRefreshRegistration(self, name);
+    try appendRefreshRegistration(self, name, name_idx);
 }
 
 /// 변수 binding 기반 컴포넌트 등록 — `const Foo = () => ...` / `const Foo = function() {...}`
@@ -90,6 +98,7 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
 pub fn maybeRegisterRefreshComponentByBinding(
     self: *Transformer,
     init_idx: NodeIndex,
+    binding_idx: NodeIndex,
     binding_name: []const u8,
 ) Error!void {
     if (!refreshEnabled(self)) return;
@@ -103,13 +112,14 @@ pub fn maybeRegisterRefreshComponentByBinding(
         init_tag == .function;
     if (!is_target) return;
 
-    try appendRefreshRegistration(self, binding_name);
+    try appendRefreshRegistration(self, binding_name, binding_idx);
 }
 
-fn appendRefreshRegistration(self: *Transformer, name: []const u8) Error!void {
+fn appendRefreshRegistration(self: *Transformer, name: []const u8, component_idx: NodeIndex) Error!void {
     const handle_span = try self.makeRefreshHandle();
     try self.plugins.refresh.registrations.append(self.allocator, .{
         .handle_span = handle_span,
+        .component_idx = component_idx,
         .name = name,
     });
 }
@@ -187,11 +197,17 @@ pub fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Erro
         .span = reg.handle_span,
         .data = .{ .string_ref = reg.handle_span },
     });
+    const comp_span = try self.ast.addString(reg.name);
     const comp_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
-        .span = zero_span,
-        .data = .{ .string_ref = try self.ast.addString(reg.name) },
+        .span = comp_span,
+        .data = .{ .string_ref = comp_span },
     });
+    if (!reg.component_idx.isNone()) {
+        self.copySymbolId(reg.component_idx, comp_ref);
+    } else {
+        self.attachRootScopeSymbolByName(comp_ref, reg.name);
+    }
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,

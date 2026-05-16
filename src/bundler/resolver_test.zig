@@ -614,6 +614,48 @@ test "resolve.alias — multiple entries first match wins" {
     try std.testing.expectEqualStrings("preact/compat", result.?);
 }
 
+test "resolve.alias — symlink package root resolves package entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/src");
+    try tmp.dir.makePath("apps/app/node_modules");
+    try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/index.js", "exports.version = 'test';\n");
+    tmp.dir.symLink(
+        "../../../node_modules/.pnpm/react@1/node_modules/react",
+        "apps/app/node_modules/react",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const source_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "apps/app/src" });
+    defer std.testing.allocator.free(source_dir);
+    const react_root = try std.fs.path.join(std.testing.allocator, &.{ root, "apps/app/node_modules/react" });
+    defer std.testing.allocator.free(react_root);
+
+    var cache = DirEntryCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = react_root },
+    };
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.dir_cache = &cache;
+    resolver.preserve_symlinks = true;
+    resolver.alias = aliases;
+
+    const result = try resolver.resolve(source_dir, "react");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "apps/app/node_modules/react/index.js"));
+    try std.testing.expect(!pathEndsWith(result.path, "apps/app/node_modules/react"));
+}
+
 // ============================================================
 // DirEntryCache
 // ============================================================

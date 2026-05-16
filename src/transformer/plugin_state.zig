@@ -37,6 +37,9 @@ pub const WorkletState = struct {
 pub const RefreshRegistration = struct {
     /// _c / _c2 핸들 변수의 string_table Span (재사용)
     handle_span: Span,
+    /// 등록 대상 컴포넌트 binding node. linker rename 이 Refresh assignment 에도
+    /// 적용되도록 symbol_id 를 이 노드에서 복사한다.
+    component_idx: NodeIndex = .none,
     /// 컴포넌트 이름 (문자열)
     name: []const u8,
 };

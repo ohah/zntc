@@ -20,6 +20,15 @@ describe('React Refresh: transpile() single-file path', () => {
     expect(code).toContain('$RefreshReg$(_c, "MyArrow")');
   });
 
+  test('ES5 lowering 경로에서도 arrow assignment 컴포넌트를 등록', () => {
+    const code = transpileReactRefreshCode(
+      `const PermissionDialog = () => <div />;\nexport default PermissionDialog;`,
+      { target: 'es5', reactRefresh: true },
+    );
+    expect(code).toContain('_c = PermissionDialog');
+    expect(code).toContain('$RefreshReg$(_c, "PermissionDialog")');
+  });
+
   test('function expression assignment 컴포넌트도 binding 이름으로 등록', () => {
     const code = transpileReactRefreshCode(
       `const MyFE = function() { return null; };\nexport default MyFE;`,

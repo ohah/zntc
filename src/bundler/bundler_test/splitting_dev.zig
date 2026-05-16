@@ -4,6 +4,7 @@ const types = @import("../types.zig");
 const emitter = @import("../emitter.zig");
 const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
+const compat = @import("../../transformer/compat.zig");
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -1704,6 +1705,80 @@ test "Bundler: refresh — user-land .tsx still registers (positive control)" {
     try std.testing.expect(!result.hasErrors());
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$(_c, \"MyComp\"") != null);
+}
+
+test "Bundler: refresh — ES5 lexical lowering preserves arrow component registration" {
+    // RN/Hermes 하위 타겟처럼 const/arrow lowering 이 켜져도, variable declarator
+    // 후처리(React Refresh registration)가 누락되면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "PermissionDialog.tsx",
+        \\const PermissionDialog = () => null;
+        \\export default PermissionDialog;
+    );
+
+    const entry = try absPath(&tmp, "PermissionDialog.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_c = PermissionDialog") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$(_c, \"PermissionDialog\"") != null);
+}
+
+test "Bundler: refresh — registration follows linker rename through barrel export" {
+    // `const Component = () => {}; export default Component;` 모듈을 barrel 이
+    // 같은 이름으로 re-export 하면 linker 가 한쪽을 `Component$1` 로 rename 한다.
+    // Refresh 등록용 `_c = Component` 참조도 같은 symbol_id 를 따라가야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import './shadow';
+        \\import { EquipmentSearchBody } from './EquipmentSearch';
+        \\console.log(EquipmentSearchBody);
+    );
+    try writeFile(tmp.dir, "shadow.ts",
+        \\const EquipmentSearchBody = 'shadow';
+        \\console.log(EquipmentSearchBody);
+    );
+    try writeFile(tmp.dir, "EquipmentSearch.ts",
+        \\import EquipmentSearchBody from './EquipmentSearchBody';
+        \\export { EquipmentSearchBody };
+    );
+    try writeFile(tmp.dir, "EquipmentSearchBody.tsx",
+        \\const EquipmentSearchBody = () => null;
+        \\EquipmentSearchBody.propTypes = {};
+        \\export default EquipmentSearchBody;
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "= EquipmentSearchBody$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "= EquipmentSearchBody;\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$(_c, \"EquipmentSearchBody\"") != null);
 }
 
 test "Bundler: dev mode ES5 runtime helpers injected globally" {
