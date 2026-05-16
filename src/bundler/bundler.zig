@@ -1381,7 +1381,7 @@ pub const Bundler = struct {
             // chunk_graph 가 살아있는 이 시점에서만 수집 가능. CSS 실패는
             // 번들 실패로 번지지 않게 흡수(기존 css emit 의 관용과 동일).
             if (!self.options.preserve_modules) {
-                css_chunk_files = @import("css_emitter.zig").emitCssChunks(self.allocator, &graph, &chunk_graph) catch null;
+                css_chunk_files = @import("css_emitter.zig").emitCssChunks(self.allocator, &graph, &chunk_graph, self.options.css_names) catch null;
             }
 
             // output은 빈 문자열 — code splitting 시 outputs를 사용
