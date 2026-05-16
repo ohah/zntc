@@ -1018,6 +1018,41 @@ test "Enum: undefined export still errors" {
 // 보존해야 같은 file 안의 다른 (value) import 와 함께 있을 때 export 검증
 // 이 그 binding 을 인식한다.
 
+test "Export: forward ref to default/namespace import binding (D20 #3310)" {
+    // @grpc/grpc-js src/index.ts 패턴 — `export { X };` 가 X 를 바인딩하는
+    // default/namespace import 보다 소스상 앞. ECMAScript: import 는 module top
+    // hoist 라 valid (webpack/rollup/babel/tsc/swc 통과). 단일 패스 analyzer 가
+    // forward import 를 못 찾아 ZNTC1201 오진단하던 회귀.
+    try analyzeNoErrors(
+        \\export { Deadline };
+        \\import Deadline from './deadline';
+    );
+    try analyzeNoErrors(
+        \\export { ns };
+        \\import * as ns from './mod';
+    );
+    // default + named 혼재 forward
+    try analyzeNoErrors(
+        \\export { a, b };
+        \\import a from './a';
+        \\import { b } from './b';
+    );
+    // 정상 순서 (import 가 export 앞) — regression guard
+    try analyzeNoErrors(
+        \\import Deadline from './deadline';
+        \\export { Deadline };
+    );
+}
+
+test "Export: undefined name still errors (D20 negative guard)" {
+    // side-table fallback 이 진짜 미정의 export 까지 통과시키면 안 됨.
+    var r = try analyzeModule(
+        \\export { totallyMissing };
+    );
+    defer r.deinit();
+    try expectAnalyzeError(&r, "totallyMissing");
+}
+
 test "Import: type-only + namespace value from same source — export resolves" {
     try analyzeNoErrors(
         \\import type { Foo } from './x';

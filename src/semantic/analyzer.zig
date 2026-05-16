@@ -33,6 +33,7 @@ const checker = @import("checker.zig");
 const diagnostic = @import("../diagnostic.zig");
 pub const Diagnostic = diagnostic.Diagnostic;
 const ErrorCode = @import("../error_codes.zig").Code;
+const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 
 const AllocError = std.mem.Allocator.Error;
 
@@ -150,6 +151,16 @@ pub const SemanticAnalyzer = struct {
     /// scope_maps 가 아닌 이 풀에서만 lookup.
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
 
+    /// RFC #3310 (D20): forward `export { X }; import X from './x'` 지원용 read-only
+    /// side-table. key = top-level default/namespace import 의 local name.
+    /// ECMAScript 상 import 는 module top 으로 hoist 되므로 export 가 import 보다
+    /// 소스상 앞이어도 valid. 단일 패스 analyzer 가 forward import symbol 을 못 찾을
+    /// 때 `checkExportBinding` 의 fallback 으로만 참조 — **symbol/scope 선언을 절대
+    /// 하지 않는다**. helper import 는 항상 named import_specifier 이고 default/
+    /// namespace 만 기록하므로 helper local 이 구조적으로 섞이지 않는다 (runtime
+    /// helper scope isolation 모델 무침범).
+    forward_import_names: std.StringHashMapUnmanaged(void) = .empty,
+
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
@@ -259,6 +270,7 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.helper_scope_map.deinit(self.allocator);
+        self.forward_import_names.deinit(self.allocator);
         self.references.deinit(self.allocator);
         self.numeric_const_texts.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
@@ -1889,6 +1901,9 @@ pub const SemanticAnalyzer = struct {
                 .function_declaration => try self.predeclareFuncDecl(node),
                 .class_declaration => try self.predeclareClassDecl(node),
                 .ts_enum_declaration => try self.predeclareEnumDecl(node),
+                // RFC #3310 (D20): forward `export {}; import default/namespace`.
+                // local name 만 side-table 에 기록 — symbol/scope 선언 절대 안 함.
+                .import_declaration => try self.recordForwardImportNames(node),
                 .export_named_declaration => {
                     // export const x = ..., export function f() {}, export class C {}
                     const extra_start = node.data.extra;
@@ -2132,6 +2147,64 @@ pub const SemanticAnalyzer = struct {
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+        }
+    }
+
+    /// RFC #3310 (D20): top-level import declaration 의 모든 specifier (default/
+    /// namespace/named) local name 을 `forward_import_names` side-table 에 기록한다.
+    /// 절대 symbol/scope/helper_scope_map 을 건드리지 않는다 — `checkExportBinding`
+    /// 의 read-only fallback 전용.
+    ///
+    /// helper 배제: runtime helper import 는 항상 `\x00zntc:runtime/...` virtual
+    /// source 이므로 source guard 가 helper import declaration 을 **통째로** skip
+    /// 한다. helper 는 Pass 1 (user source only) 엔 아예 없고, Pass 2 (helper 주입
+    /// 후) 엔 virtual source 로 배제되므로 helper local (`__extends` 등) 이 side-table
+    /// 에 구조적으로 섞이지 않는다. side-table 은 symbol 선언을 하지 않아 helper/
+    /// user scope isolation 모델 (helper_scope_map / canonical name) 무침범.
+    /// grpc-js src/index.ts 는 default+named forward 혼재라 named 도 기록해야 완전
+    /// 해결 (full semantic 경로에선 named forward 도 ZNTC1201 노출).
+    fn recordForwardImportNames(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        // import_declaration extra: [specs_start, specs_len, source, ...]
+        if (extra_start + 2 >= extras.len) return;
+        const specs_start = extras[extra_start];
+        const specs_len = extras[extra_start + 1];
+        if (specs_len == 0) return; // side-effect import
+        if (specs_start + specs_len > extras.len) return;
+
+        // 방어: helper virtual module (`\x00zntc:runtime/...`) import 는 skip.
+        // source 노드 텍스트는 따옴표 포함 (`"\x00zntc:runtime/extends"`).
+        const source_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+        if (!source_idx.isNone() and @intFromEnum(source_idx) < self.ast.nodes.items.len) {
+            const raw = self.ast.getText(self.ast.getNode(source_idx).span);
+            const unquoted = if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"' or raw[0] == '`'))
+                raw[1 .. raw.len - 1]
+            else
+                raw;
+            if (runtime_helper_modules.isVirtualId(unquoted)) return;
+        }
+
+        for (extras[specs_start .. specs_start + specs_len]) |raw_idx| {
+            const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (spec_idx.isNone()) continue;
+            if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+            const spec_node = self.ast.getNode(spec_idx);
+            // local name span: default/namespace 는 spec.span (string_ref, 별도 name
+            // 노드 없음), named 는 binary.right (= local) 노드의 span.
+            const name_span: Span = switch (spec_node.tag) {
+                .import_default_specifier, .import_namespace_specifier => spec_node.span,
+                .import_specifier => blk: {
+                    const local_idx = spec_node.data.binary.right;
+                    if (local_idx.isNone()) continue;
+                    if (@intFromEnum(local_idx) >= self.ast.nodes.items.len) continue;
+                    break :blk self.ast.getNode(local_idx).span;
+                },
+                else => continue,
+            };
+            if (self.ast.getText(name_span).len == 0) continue;
+            const stable = try self.ast.getTextStable(self.allocator, name_span);
+            try self.forward_import_names.put(self.allocator, stable, {});
         }
     }
 
@@ -3491,6 +3564,10 @@ pub const SemanticAnalyzer = struct {
             const sym_name = self.ast.getText(sym.name);
             if (std.mem.eql(u8, sym_name, name)) return; // 존재
         }
+        // RFC #3310 (D20): forward `export { X }; import X from './x'` — import 는
+        // module top hoist 라 valid. 단일 패스라 X import symbol 이 아직 안 보이면
+        // side-table fallback (recordForwardImportNames 가 1st pass 에 채움).
+        if (self.forward_import_names.contains(name)) return;
         // 찾지 못함 → 에러
         try self.addErrorMsgCode(span, try std.fmt.allocPrint(
             self.allocator,
