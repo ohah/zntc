@@ -1289,6 +1289,16 @@ pub const Bundler = struct {
         var output_scope = profile.begin(.emit_output);
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
+        // code splitting 경로에서 청크별로 분리 emit 한 CSS (null = 비-splitting,
+        // 이 경우 아래에서 entry 당 단일 CSS 로 fallback). 소비 후 null 로 되돌린다.
+        var css_chunk_files: ?[]OutputFile = null;
+        errdefer if (css_chunk_files) |f| {
+            for (f) |o| {
+                self.allocator.free(o.path);
+                self.allocator.free(o.contents);
+            }
+            self.allocator.free(f);
+        };
 
         // dev mode용 per-module codes + sourcemap
         var module_dev_codes_from_emit: ?[]const types.ModuleDevCode = null;
@@ -1366,6 +1376,13 @@ pub const Bundler = struct {
                 }
                 self.allocator.free(outs);
             };
+
+            // code splitting (preserve-modules 제외): JS 청크별로 CSS 분리.
+            // chunk_graph 가 살아있는 이 시점에서만 수집 가능. CSS 실패는
+            // 번들 실패로 번지지 않게 흡수(기존 css emit 의 관용과 동일).
+            if (!self.options.preserve_modules) {
+                css_chunk_files = @import("css_emitter.zig").emitCssChunks(self.allocator, &graph, &chunk_graph) catch null;
+            }
 
             // output은 빈 문자열 — code splitting 시 outputs를 사용
             output = try self.allocator.dupe(u8, "");
@@ -1497,11 +1514,23 @@ pub const Bundler = struct {
         defer css_output_files.deinit(self.allocator);
         {
             const css_emit = @import("css_emitter.zig");
-            for (self.options.entry_points) |ep| {
-                // 엔트리 경로 → 모듈 인덱스 찾기
-                const resolved = graph.path_to_module.get(ep) orelse continue;
-                if (css_emit.emitCssBundle(self.allocator, &graph, resolved, self.options.css_names)) |css_out| {
-                    css_output_files.append(self.allocator, css_out) catch {};
+            if (css_chunk_files) |files| {
+                // code splitting: 청크별 CSS 를 그대로 사용 (소유권 이전).
+                for (files) |f| {
+                    css_output_files.append(self.allocator, f) catch {
+                        self.allocator.free(f.path);
+                        self.allocator.free(f.contents);
+                    };
+                }
+                self.allocator.free(files);
+                css_chunk_files = null;
+            } else {
+                // 비-splitting / preserve-modules: entry 당 단일 CSS (기존 동작).
+                for (self.options.entry_points) |ep| {
+                    const resolved = graph.path_to_module.get(ep) orelse continue;
+                    if (css_emit.emitCssBundle(self.allocator, &graph, resolved, self.options.css_names)) |css_out| {
+                        css_output_files.append(self.allocator, css_out) catch {};
+                    }
                 }
             }
         }
