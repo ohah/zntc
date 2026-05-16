@@ -423,13 +423,20 @@ pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const 
 /// derived class constructor 의 super() 직후에 this.x = x; 문들을 삽입한다.
 /// (kept-class 경로 — visitMethodDefinition. ES5 lowering 은 postProcessDerivedConstructorBody 사용).
 pub fn insertParameterPropertyAssignmentsAfterSuper(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
+    // `buildParameterPropertyStatements` 가 생성한 statement 인덱스를
+    // `extra_data` (stable offset) 에 보관한다. 여기서 곧바로 `self.scratch` 로
+    // 복사해 그 슬라이스를 `insertStatementsAfterSuper` 에 넘기면, 그 함수가
+    // 다시 `self.scratch.append` 로 scratch 를 키우다 realloc 이 일어나는 순간
+    // 넘긴 슬라이스(= 옛 backing buffer 포인터)가 무효화돼 freed 메모리
+    // (0xAAAAAAAA) 를 읽는다 (#D23). 따라서 scratch 와 aliasing 되지 않는
+    // 별도 힙 버퍼로 복사해 전달한다. extra_data 자체는 stable 하므로
+    // 그 슬라이스를 직접 dup 해서 쓰는 것으로 충분하다.
     const pp_list = try self.buildParameterPropertyStatements(prop_names);
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    for (self.ast.extra_data.items[pp_list.start .. pp_list.start + pp_list.len]) |raw_idx| {
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-    }
-    return self.insertStatementsAfterSuper(body_idx, self.scratch.items[scratch_top..]);
+    const pp_raw = self.ast.extra_data.items[pp_list.start .. pp_list.start + pp_list.len];
+    const stmts = try self.allocator.alloc(NodeIndex, pp_raw.len);
+    defer self.allocator.free(stmts);
+    for (pp_raw, 0..) |raw_idx, i| stmts[i] = @enumFromInt(raw_idx);
+    return self.insertStatementsAfterSuper(body_idx, stmts);
 }
 
 /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다 (base class ctor 용).
