@@ -558,10 +558,7 @@ describe('buildRnBundleOptions — loader / alias', () => {
     expect(opts.alias).toMatchObject({
       react: join(dir, 'node_modules/react'),
       'react-native': join(dir, 'node_modules/react-native'),
-      'react-native-safe-area-context': join(
-        dir,
-        'node_modules/react-native-safe-area-context',
-      ),
+      'react-native-safe-area-context': join(dir, 'node_modules/react-native-safe-area-context'),
     });
   });
 });
