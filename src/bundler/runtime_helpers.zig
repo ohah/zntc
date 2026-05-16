@@ -807,7 +807,9 @@ pub const PRIVATE_METHOD_INIT_RUNTIME =
     \\};
     \\
 ;
-pub const PRIVATE_METHOD_INIT_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_INIT_MIN ++ "=function(obj,privateSet){if(privateSet.has(obj))throw new TypeError(\"Cannot initialize the same private elements twice on an object\");privateSet.add(obj)};";
+// MIN 변형은 진단 메시지 축약 (esbuild/terser 관행 — TypeError 타입·throw
+// 조건 동일, message 텍스트는 비계약. dev 변형은 descriptive 유지).
+pub const PRIVATE_METHOD_INIT_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_INIT_MIN ++ "=function(obj,privateSet){if(privateSet.has(obj))throw new TypeError(\"private re-init\");privateSet.add(obj)};";
 
 /// __classPrivateMethodGet: brand check + private method 접근 (SWC 호환).
 /// this.#method() 호출 시 brand check 후 함수 참조 반환.
@@ -819,7 +821,7 @@ pub const PRIVATE_METHOD_GET_RUNTIME =
     \\
 ;
 // #1751: trailing `;` — 뒤따르는 `var __xxx=...` 와 문법 구분 필수.
-pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_GET_MIN ++ "=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn};";
+pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_GET_MIN ++ "=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"private brand\");return fn};";
 
 // ============================================================
 // Static Private Field (ES2022 downlevel)
@@ -860,8 +862,8 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME =
     \\
 ;
 pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN =
-    "var " ++ NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"Private static access of wrong provenance\")};" ++
-    "var " ++ NAMES.STATIC_PRIVATE_DESC_MIN ++ "=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"attempted to \"+action+\" private static field before its declaration\")};" ++
+    "var " ++ NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"private static\")};" ++
+    "var " ++ NAMES.STATIC_PRIVATE_DESC_MIN ++ "=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"private static \"+action)};" ++
     "var " ++ NAMES.STATIC_PRIVATE_GET_MIN ++ "=function(receiver,classConstructor,descriptor){" ++
     NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "(receiver,classConstructor);" ++
     NAMES.STATIC_PRIVATE_DESC_MIN ++ "(descriptor,\"get\");" ++
