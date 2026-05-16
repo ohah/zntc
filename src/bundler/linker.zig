@@ -898,13 +898,38 @@ pub const Linker = struct {
                 }
 
                 // cross_module_imports: 이 모듈이 import 한 cross-module symbol 의
-                // source 위치. `.semantic` variant 만 — `.alias` 는 re-export chain
-                // 중간 노드라 candidate 풀에 없어 renames lookup 이 무의미.
+                // source 위치 (= per_mod_reserved 에 broadcast → Phase B nested 가
+                // 그 mangled 이름 회피). RFC #3288 (b): `.alias` (re-export chain
+                // 중간 노드) 도 resolveExportChain 으로 궁극 `.semantic` source 를
+                // 도출해 포함 — 누락 시 bare scope-hoist 후 nested 가 re-export
+                // source 이름을 재사용해 silent-broken (PR (a) collision assert 가
+                // 이 누락을 잡도록 설계됨). 미해결/순환은 외부·shim 이라 mangle
+                // 대상 아님 → skip 안전.
                 var ir_buf: std.ArrayListUnmanaged(um.ImportRef) = .empty;
                 errdefer ir_buf.deinit(self.allocator);
                 for (m.import_bindings) |ib| {
-                    if (ib.symbol != .semantic) continue;
-                    const sem_ref = ib.symbol.semantic;
+                    const sr: bundler_symbol.SymbolRef = switch (ib.symbol) {
+                        .semantic => ib.symbol,
+                        .alias => |a| blk: {
+                            if (a.module.isNone()) continue;
+                            // resolveExportChain → (chain.module, export_name).
+                            // 그 declaring 모듈의 export_bindings 에서 exported_name
+                            // 매칭으로 궁극 `.semantic` 도출. chain 미해결/순환/
+                            // non-semantic 은 외부·shim → skip 안전.
+                            const chain = self.resolveExportChain(a.module, ib.imported_name, 0) orelse continue;
+                            const cm = self.getModule(@intFromEnum(chain.module_index)) orelse continue;
+                            var resolved: ?bundler_symbol.SymbolRef = null;
+                            for (cm.export_bindings) |eb| {
+                                if (std.mem.eql(u8, eb.exported_name, chain.export_name)) {
+                                    resolved = eb.symbol;
+                                    break;
+                                }
+                            }
+                            break :blk resolved orelse continue;
+                        },
+                    };
+                    if (sr != .semantic) continue;
+                    const sem_ref = sr.semantic;
                     if (sem_ref.module.isNone() or sem_ref.symbol.isNone()) continue;
                     try ir_buf.append(self.allocator, .{
                         .source_module_index = @intFromEnum(sem_ref.module),
