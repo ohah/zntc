@@ -203,11 +203,7 @@ pub fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Erro
         .span = comp_span,
         .data = .{ .string_ref = comp_span },
     });
-    if (!reg.component_idx.isNone()) {
-        self.copySymbolId(reg.component_idx, comp_ref);
-    } else {
-        self.attachRootScopeSymbolByName(comp_ref, reg.name);
-    }
+    self.copySymbolId(reg.component_idx, comp_ref);
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
