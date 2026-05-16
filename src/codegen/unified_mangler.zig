@@ -156,13 +156,42 @@ pub fn mangleAll(
     try global_reserved_set.ensureUnusedCapacity(@intCast(input.global_reserved.len));
     for (input.global_reserved) |r| global_reserved_set.putAssumeCapacity(r, {});
 
+    // J-step2a (RFC #3288): cross-module ref 인 candidate 분류 — 진단 전용.
+    // `cross_module_imports` source 집합. 여기 속하면 다른 모듈이 직접 참조 →
+    // globally unique 필수. 속하지 않으면 module-internal (per-module pool 후보).
+    // 본 step 은 *측정만* — mangle 로직 무변경 (회귀 0). per-module counter 실제
+    // 적용은 후속 step (bare scope-hoist vs wrapper 격리 분류 정확성 선결 필요).
+    // mangle_audit 비활성 시 set build + per-candidate lookup 전부 skip
+    // (production hot path 낭비 회피).
+    const audit_enabled = debug_log.enabled(.mangle_audit);
+    var cross_module_ref_set = std.AutoHashMap(ModuleSymKey, void).init(allocator);
+    defer cross_module_ref_set.deinit();
+    if (audit_enabled) {
+        for (input.modules) |m| {
+            for (m.cross_module_imports) |ref| {
+                try cross_module_ref_set.put(.{
+                    .module_index = ref.source_module_index,
+                    .symbol_id = ref.source_symbol_id,
+                }, {});
+            }
+        }
+    }
+
     var name_counter: u32 = 0;
     var name_buf: [8]u8 = undefined;
     var phase_a_slot_name_length_sum: usize = 0;
     var phase_a_renamed: usize = 0;
     var phase_a_skips_1char: usize = 0;
+    var phase_a_cross_module: usize = 0;
+    var phase_a_internal: usize = 0;
 
     for (sorted) |cand| {
+        if (audit_enabled) {
+            if (cross_module_ref_set.contains(.{ .module_index = cand.module_index, .symbol_id = cand.symbol_id }))
+                phase_a_cross_module += 1
+            else
+                phase_a_internal += 1;
+        }
         const new_name = mangler.nextNonReservedBase54Name(&name_counter, &name_buf, &reserved, &phase_a_skips_1char);
         phase_a_slot_name_length_sum += new_name.len;
 
@@ -263,12 +292,14 @@ pub fn mangleAll(
         }
         const phase_a_skips: usize = phase_a.name_counter_final - phase_a.slot_count;
         const sum_b_skips: usize = @as(usize, sum_b_counter) - sum_b_slots;
-        debug_log.print(.mangle_audit, "PhaseA: slot={d} counter={d} skips={d} skips_1char={d} reserved_size={d}\n", .{
+        debug_log.print(.mangle_audit, "PhaseA: slot={d} counter={d} skips={d} skips_1char={d} reserved_size={d} cross_module={d} internal={d}\n", .{
             phase_a.slot_count,
             phase_a.name_counter_final,
             phase_a_skips,
             phase_a.reserved_skips_1char,
             phase_a.reserved_size,
+            phase_a_cross_module,
+            phase_a_internal,
         });
         debug_log.print(.mangle_audit, "PhaseB[total]: modules={d} slot_sum={d} counter_sum={d} skips_sum={d} skips_1char_sum={d}\n", .{
             phase_b_stats.len,
