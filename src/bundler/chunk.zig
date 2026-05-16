@@ -999,6 +999,144 @@ fn linkReExportName(
     try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, canon.export_name);
 }
 
+/// `mod_idx` 의 `export_name` 이 namespace re-export 인지 판정하고, 맞으면
+/// namespace 대상(소스) 모듈을 반환. 두 형태 모두 인식:
+///  - `export * as X from "m"` (re_export_namespace)
+///  - `import * as X from "m"; export { X }` (namespace import 후 named export)
+///  - `export { X } from "m"` 가 m 에서 위 둘 중 하나면 체인을 따라간다
+///    (중첩 re-export, bounded depth).
+/// namespace 가 아니면 null.
+pub fn nsReExportTarget(
+    graph: *const ModuleGraph,
+    mod_idx: ModuleIndex,
+    export_name: []const u8,
+) ?ModuleIndex {
+    return nsReExportTargetDepth(graph, mod_idx, export_name, 0);
+}
+
+/// namespace re-export 체인(`export {X} from`) 추적 최대 깊이. linker
+/// resolveExportChain/collectExportsRecursive 의 max_chain_depth(100) 와
+/// 동일 성격 — 실세계 barrel 깊이를 넘는 cycle 방어용 상한.
+const ns_chain_max_depth = 100;
+
+fn nsReExportTargetDepth(
+    graph: *const ModuleGraph,
+    mod_idx: ModuleIndex,
+    export_name: []const u8,
+    depth: u8,
+) ?ModuleIndex {
+    if (depth > ns_chain_max_depth) return null;
+    const m = graph.getModule(mod_idx) orelse return null;
+    for (m.export_bindings) |eb| {
+        if (!std.mem.eql(u8, eb.exported_name, export_name)) continue;
+        if (eb.kind == .re_export_namespace) {
+            if (eb.import_record_index) |rec| {
+                if (rec < m.import_records.len) {
+                    const src = m.import_records[rec].resolved;
+                    if (!src.isNone()) return src;
+                }
+            }
+            return null;
+        }
+        // 중첩 re-export: `export { X } from "m"` 가 m 에서 다시 namespace
+        // re-export 면 체인을 따라간다. m 측 이름은 eb.local_name.
+        if (eb.kind == .re_export) {
+            if (eb.import_record_index) |rec| {
+                if (rec < m.import_records.len) {
+                    const src = m.import_records[rec].resolved;
+                    if (!src.isNone())
+                        return nsReExportTargetDepth(graph, src, m.exportBindingLocalName(eb), depth + 1);
+                }
+            }
+            return null;
+        }
+        // namespace import 를 그대로 named export: local 이 `import * as` 바인딩.
+        const local = m.exportBindingLocalName(eb);
+        for (m.import_bindings) |ib| {
+            if (ib.kind != .namespace) continue;
+            if (!std.mem.eql(u8, ib.local_name, local)) continue;
+            if (ib.import_record_index < m.import_records.len) {
+                const src = m.import_records[ib.import_record_index].resolved;
+                if (!src.isNone()) return src;
+            }
+            return null;
+        }
+        return null;
+    }
+    return null;
+}
+
+/// `src_mod` 의 effective export(nested export*/diamond/체인 평탄화)를 전부
+/// 열거해 canonical 이 다른 청크면 named cross-chunk 바인딩+재노출. `export *`
+/// (star) 와 namespace re-export 가 공유 — 둘 다 소스 전체 export 를 importer
+/// 청크에 노출해야 미바인딩 link error 를 막는다.
+fn fanOutModuleExports(
+    allocator: std.mem.Allocator,
+    chunk_graph: *ChunkGraph,
+    chunk: *Chunk,
+    seen_static: *std.AutoHashMapUnmanaged(u32, void),
+    lnk: *const Linker,
+    src_mod: ModuleIndex,
+    module_count: usize,
+) !void {
+    // collectExportsRecursive 는 lnk.allocator 로 append. OOM 은 named 루프와
+    // 일관되게 전파(silent partial-link 방지).
+    var exps: std.ArrayList(Linker.NsExportPair) = .empty;
+    var seen_e = std.StringHashMap(void).init(lnk.allocator);
+    var visited_e = std.AutoHashMap(u32, void).init(lnk.allocator);
+    defer {
+        for (exps.items) |e| if (e.owned) lnk.allocator.free(e.local);
+        exps.deinit(lnk.allocator);
+        seen_e.deinit();
+        visited_e.deinit();
+    }
+    try lnk.collectExportsRecursive(&exps, &seen_e, &visited_e, src_mod, 0);
+    for (exps.items) |e|
+        try linkReExportName(allocator, chunk_graph, chunk, seen_static, lnk, src_mod, e.exported, module_count);
+}
+
+/// `linkNamespaceCrossChunk` 의 청크-단위 dedup 래퍼. 3경로(consumer
+/// import_binding/import_record, re-exporter export_binding)에서 같은 target
+/// 재발견 시 DFS·할당 반복을 막는다.
+fn linkNamespaceCrossChunkOnce(
+    allocator: std.mem.Allocator,
+    chunk_graph: *ChunkGraph,
+    chunk: *Chunk,
+    seen_static: *std.AutoHashMapUnmanaged(u32, void),
+    seen_ns_target: *std.AutoHashMapUnmanaged(u32, void),
+    lnk: *const Linker,
+    target: ModuleIndex,
+    module_count: usize,
+) !void {
+    const gop = try seen_ns_target.getOrPut(allocator, @intFromEnum(target));
+    if (gop.found_existing) return;
+    try linkNamespaceCrossChunk(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
+}
+
+/// namespace re-export 대상 `target` 을 cross-chunk 로 배선. 정의자 청크가
+/// 다르면 합성 ns 객체 변수 + target 의 effective export(정적 멤버 elision
+/// 로컬)를 정의자 청크 export → `chunk` import 1급 심볼로 등록 — 값/동적
+/// re-import/정적 멤버 경로를 한 번에 커버 (#3321 후속).
+fn linkNamespaceCrossChunk(
+    allocator: std.mem.Allocator,
+    chunk_graph: *ChunkGraph,
+    chunk: *Chunk,
+    seen_static: *std.AutoHashMapUnmanaged(u32, void),
+    lnk: *const Linker,
+    target: ModuleIndex,
+    module_count: usize,
+) !void {
+    const tgt_chunk = chunk_graph.getModuleChunk(target);
+    if (tgt_chunk.isNone()) return;
+    if (tgt_chunk == chunk.index) return; // 같은 청크 → 배선 불필요
+
+    // computeCrossChunkLinks 가 namespace 메타데이터보다 먼저 도는 timing
+    // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
+    const ns_var = try lnk.ensureSharedNsVar(target);
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, tgt_chunk, ns_var);
+    try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
+}
+
 pub fn computeCrossChunkLinks(
     chunk_graph: *ChunkGraph,
     graph: *const ModuleGraph,
@@ -1025,6 +1163,12 @@ pub fn computeCrossChunkLinks(
         defer seen_static.deinit(allocator);
         var seen_dynamic: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer seen_dynamic.deinit(allocator);
+        // namespace re-export fan-out 은 consumer(import_binding/import_record)·
+        // re-exporter(export_binding) 3경로에서 같은 target 을 중복 발견할 수
+        // 있다. ensureSharedNsVar/addCrossChunkSymbol 은 멱등이나 DFS·할당
+        // churn 을 피하려 청크 단위로 target dedup.
+        var seen_ns_target: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer seen_ns_target.deinit(allocator);
 
         for (chunk.modules.items) |mod_idx| {
             // 청크에 포함된 모듈은 반드시 graph 범위 내에 있어야 함
@@ -1060,6 +1204,12 @@ pub fn computeCrossChunkLinks(
                     if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
 
                     try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, rb.canonical.export_name);
+
+                    // canonical 이 namespace re-export 면 그 이름만 가져와선
+                    // 안 된다 — 정적 멤버는 정의자 export 로 elision, 값/동적은
+                    // 합성 ns 객체 필요. 대상 모듈을 cross-chunk fan-out.
+                    if (nsReExportTarget(graph, rb.canonical.module_index, rb.canonical.export_name)) |ns_target|
+                        try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
                 }
 
                 // named re-export (`export { x } from "./y"`): import_binding 이
@@ -1072,6 +1222,31 @@ pub fn computeCrossChunkLinks(
                 for (m.export_bindings) |eb| {
                     if (eb.kind != .re_export) continue;
                     try linkReExportName(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, eb.exported_name, module_count);
+                }
+
+                // re-exporter 측: 이 모듈이 namespace 를 re-export 하면 동적
+                // re-import·재노출을 위해 자기 청크가 합성 ns 객체 + 대상
+                // export 를 가져와야 한다. import_binding 없어 위 루프가 놓침.
+                // .local/.re_export(_namespace) 만 namespace 후보 — kind gate 로
+                // barrel 의 대다수 binding 에서 nsReExportTarget 스캔 회피.
+                for (m.export_bindings) |eb| {
+                    switch (eb.kind) {
+                        .local, .re_export, .re_export_namespace => {},
+                        else => continue,
+                    }
+                    const ns_target = nsReExportTarget(graph, mod_idx, eb.exported_name) orelse continue;
+                    try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
+                }
+
+                // consumer 측 (import_record 기반, getResolvedBinding 비의존):
+                // namespace import 는 binding 이 안 잡혀 위 import_bindings
+                // 루프가 놓치는 케이스 보완.
+                for (m.import_bindings) |ib| {
+                    if (ib.import_record_index >= m.import_records.len) continue;
+                    const src_mod = m.import_records[ib.import_record_index].resolved;
+                    if (src_mod.isNone()) continue;
+                    const ns_target = nsReExportTarget(graph, src_mod, ib.imported_name) orelse continue;
+                    try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
                 }
 
                 // `export * from "./y"` (re_export_star, y 별도 청크): 위 named
@@ -1089,24 +1264,8 @@ pub fn computeCrossChunkLinks(
                         break;
                     }
                 }
-                if (has_star) {
-                    var exps: std.ArrayList(Linker.NsExportPair) = .empty;
-                    var seen_e = std.StringHashMap(void).init(lnk.allocator);
-                    var visited_e = std.AutoHashMap(u32, void).init(lnk.allocator);
-                    defer {
-                        for (exps.items) |e| if (e.owned) lnk.allocator.free(e.local);
-                        exps.deinit(lnk.allocator);
-                        seen_e.deinit();
-                        visited_e.deinit();
-                    }
-                    // collectExportsRecursive 는 lnk.allocator 로 append (소스
-                    // shared_namespace.zig 패턴과 동일). OOM 은 named 루프와
-                    // 일관되게 전파(silent partial-link 방지). 모듈은 단일
-                    // 청크 소속이라 빌드당 1회 — ns_export_cache 미사용 의도적.
-                    try lnk.collectExportsRecursive(&exps, &seen_e, &visited_e, mod_idx, 0);
-                    for (exps.items) |e|
-                        try linkReExportName(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, e.exported, module_count);
-                }
+                if (has_star)
+                    try fanOutModuleExports(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, module_count);
             }
 
             // 동적 의존성 → cross_chunk_dynamic_imports

@@ -110,6 +110,22 @@ pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemant
     return true;
 }
 
+/// namespace re-export consumer 의 force_inline 결정. 멤버 접근
+/// (isNamespaceExportConsumed) 뿐 아니라 whole-value 사용
+/// (`Object.keys(ns)` 등, isNamespaceUsedAsValue)도 ns 객체 합성을 깨워야
+/// 한다 — 안 그러면 단일번들 직접형 `export * as ns` 미합성 (#3321 후속).
+fn nsForceInline(
+    self: *const Linker,
+    ast: *const Ast,
+    symbol_ids: []const ?u32,
+    sym_id: u32,
+    module_index: u32,
+    local_name: []const u8,
+) bool {
+    return isNamespaceUsedAsValue(self.allocator, ast, symbol_ids, sym_id) or
+        self.isNamespaceExportConsumed(module_index, local_name);
+}
+
 fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_mod: *const Module, target_name: []const u8) ![]const u8 {
     const sep = if (self.minify_whitespace) "," else ", ";
     const import_init = try allocEsmInitExpr(self, import_mod);
@@ -672,7 +688,7 @@ pub fn buildMetadataForAst(
                                                 &ns_inline_list,
                                                 &owned_nested_renames,
                                                 &ns_target_to_var,
-                                                self.isNamespaceExportConsumed(module_index, ib.local_name),
+                                                nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(import_sym_id), module_index, ib.local_name),
                                                 module_index,
                                                 @intCast(import_sym_id),
                                                 @intFromEnum(src),
@@ -702,7 +718,7 @@ pub fn buildMetadataForAst(
                                     &ns_inline_list,
                                     &owned_nested_renames,
                                     &ns_target_to_var,
-                                    self.isNamespaceExportConsumed(module_index, ib.local_name),
+                                    nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(imp_sym), module_index, ib.local_name),
                                     module_index,
                                     @intCast(imp_sym),
                                     @intCast(ns_target_mod),
@@ -1083,6 +1099,19 @@ pub fn buildFinalExports(
         // owned=true 는 buildInlineObjectStr 가 만든 namespace inline literal.
         // ownership 을 caller 의 owned_rename_values 로 이전해 LinkingMetadata.deinit
         // 시 free 되도록 — entries 의 .local 은 그 slice 를 borrow.
+        // splitting: namespace re-export(`export * as X` / `import * as X;
+        // export {X}`)의 entry-export local 은 정의자 청크에 materialize 된
+        // shared ns 객체 변수여야 한다. 기본 local 은 로컬 심볼이 없거나
+        // (직접형) elided 라 dangling `export { X }` → ReferenceError.
+        // ns_var 은 ns_shared_inline_cache 가 소유(linker deinit 까지 유효) —
+        // entries 는 borrow, owned_strings 불필요 (#3321 후속).
+        if (self.use_shared_ns_preamble) {
+            if (p.ns_target_mod) |nt| {
+                const ns_var = try self.ensureSharedNsVar(@enumFromInt(nt));
+                entries.appendAssumeCapacity(.{ .local = ns_var, .exported = p.exported });
+                continue;
+            }
+        }
         if (p.owned) {
             try owned_strings.append(self.allocator, p.local);
             p.owned = false;
