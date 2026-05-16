@@ -24,6 +24,49 @@ inline fn isBindingPattern(self: *const Transformer, idx: NodeIndex) bool {
     return tag == .object_pattern or tag == .array_pattern;
 }
 
+fn postProcessVariableDeclaratorInit(
+    self: *Transformer,
+    new_name: NodeIndex,
+    new_init: NodeIndex,
+) Error!NodeIndex {
+    var init = new_init;
+
+    // styled-components: tag 를 `.withConfig({displayName})` 로 wrap. fast-path 로 1) 옵션,
+    // 2) binding 감지, 3) init.tag == tagged_template_expression 을 사전 거른 뒤에만
+    // 본 helper 호출. var_name 은 block-scoping rename 후 안전하도록 new_name 에서 읽음.
+    if (!new_name.isNone() and styled_components_mod.shouldAttemptWrap(self, init)) {
+        const new_name_node = self.ast.getNode(new_name);
+        if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
+            const var_name = self.ast.getText(new_name_node.data.string_ref);
+            init = try styled_components_mod.wrapStyledTagInExpr(self, init, var_name);
+        }
+    }
+    // emotion autoLabel: const X = css`...` → css`label:X;...`
+    if (self.options.emotion and !new_name.isNone() and !init.isNone()) {
+        const new_name_node = self.ast.getNode(new_name);
+        if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
+            const var_name = self.ast.getText(new_name_node.data.string_ref);
+            init = try emotion_mod.maybeTransformEmotionTemplate(self, init, var_name);
+        }
+    }
+    // styled-components named helper minify: const X = css`...` / keyframes`...` 등.
+    // helper 는 컴포넌트가 아니라 CSS 조각이라 displayName/componentId 는 안 붙임.
+    if (self.options.styled_components and !init.isNone()) {
+        init = try styled_components_mod.maybeMinifyHelperTemplate(self, init);
+    }
+    // React Fast Refresh: `const Foo = () => ...` / `const Foo = function() {...}` 등록
+    // (function declaration 은 visitFunction 단계에서 자체 이름으로 등록됨).
+    if (!new_name.isNone() and !init.isNone()) {
+        const name_node = self.ast.getNode(new_name);
+        if (name_node.tag == .binding_identifier) {
+            const binding_text = self.ast.getText(name_node.data.string_ref);
+            try self.maybeRegisterRefreshComponentByBinding(init, new_name, binding_text);
+        }
+    }
+
+    return init;
+}
+
 pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     // ES2015: destructuring pattern → 개별 declarator로 분해
     // ES2018: object rest (...rest) → __rest 호출 (target < es2018)
@@ -96,7 +139,8 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, init_node });
                 try self.scratch.append(self.allocator, new_decl);
             } else {
-                const new_init = try self.visitNode(init_idx);
+                var new_init = try self.visitNode(init_idx);
+                new_init = try postProcessVariableDeclaratorInit(self, new_name, new_init);
                 const none = @intFromEnum(NodeIndex.none);
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
                 try self.scratch.append(self.allocator, new_decl);
@@ -116,38 +160,7 @@ pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
     var new_init = try self.visitNode(self.readNodeIdx(e, 2));
-    // styled-components: tag 를 `.withConfig({displayName})` 로 wrap. fast-path 로 1) 옵션,
-    // 2) binding 감지, 3) init.tag == tagged_template_expression 을 사전 거른 뒤에만
-    // 본 helper 호출. var_name 은 block-scoping rename 후 안전하도록 new_name 에서 읽음.
-    if (!new_name.isNone() and styled_components_mod.shouldAttemptWrap(self, new_init)) {
-        const new_name_node = self.ast.getNode(new_name);
-        if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
-            const var_name = self.ast.getText(new_name_node.data.string_ref);
-            new_init = try styled_components_mod.wrapStyledTagInExpr(self, new_init, var_name);
-        }
-    }
-    // emotion autoLabel: const X = css`...` → css`label:X;...`
-    if (self.options.emotion and !new_name.isNone() and !new_init.isNone()) {
-        const new_name_node = self.ast.getNode(new_name);
-        if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
-            const var_name = self.ast.getText(new_name_node.data.string_ref);
-            new_init = try emotion_mod.maybeTransformEmotionTemplate(self, new_init, var_name);
-        }
-    }
-    // styled-components named helper minify: const X = css`...` / keyframes`...` 등.
-    // helper 는 컴포넌트가 아니라 CSS 조각이라 displayName/componentId 는 안 붙임.
-    if (self.options.styled_components and !new_init.isNone()) {
-        new_init = try styled_components_mod.maybeMinifyHelperTemplate(self, new_init);
-    }
-    // React Fast Refresh: `const Foo = () => ...` / `const Foo = function() {...}` 등록
-    // (function declaration 은 visitFunction 단계에서 자체 이름으로 등록됨).
-    if (!new_name.isNone() and !new_init.isNone()) {
-        const name_node = self.ast.getNode(new_name);
-        if (name_node.tag == .binding_identifier) {
-            const binding_text = self.ast.getText(name_node.data.string_ref);
-            try self.maybeRegisterRefreshComponentByBinding(new_init, binding_text);
-        }
-    }
+    new_init = try postProcessVariableDeclaratorInit(self, new_name, new_init);
     const none = @intFromEnum(NodeIndex.none);
     return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
 }

@@ -1980,6 +1980,53 @@ test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve fr
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_hoist_non_react_statics") != null);
 }
 
+test "preserve_symlinks: alias to pnpm symlink package root bundles package entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/node_modules");
+    try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/index.js", "exports.version = 'test';\n");
+    tmp.dir.symLink(
+        "../../../node_modules/.pnpm/react@1/node_modules/react",
+        "apps/app/node_modules/react",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try writeFile(tmp.dir, "apps/app/index.js",
+        \\const React = require("react");
+        \\console.log(React.version);
+    );
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const entry = try absPath(&tmp, "apps/app/index.js");
+    defer std.testing.allocator.free(entry);
+    const react_root = try std.fs.path.join(std.testing.allocator, &.{ root, "apps/app/node_modules/react" });
+    defer std.testing.allocator.free(react_root);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .format = .iife,
+        .tree_shaking = false,
+        .metafile = true,
+        .preserve_symlinks = true,
+        .alias = &.{.{ .from = "react", .to = react_root }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const metafile = result.metafile_json orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, metafile, "apps/app/node_modules/react/index.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metafile, "apps/app/node_modules/react\"") == null);
+}
+
 test "shimMissingExports: missing export에 shim 변수 생성" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

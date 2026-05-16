@@ -424,13 +424,27 @@ pub const Resolver = struct {
         return null;
     }
 
-    /// 절대 경로 1 개에 대해 파일 존재 → 확장자 → TS 매핑 → index 순으로 resolve 시도.
-    /// `resolveInner` 의 pass #1–#4 와 동일 로직을 독립 함수로 추출한 것.
+    /// 절대 경로 1 개에 대해 `resolveInner` 의 pass #1–#4 와 동일 로직으로 resolve 시도.
     fn tryResolveAbsolutePath(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
-        if (self.fileExists(abs_path)) return (try self.makeResult(abs_path));
-        if (try self.tryExtensions(abs_path)) |r| return r;
-        if (try self.tryTsExtensionMapping(abs_path)) |r| return r;
-        if (try self.tryDirectoryIndex(abs_path)) |r| return r;
+        return self.tryResolvePathLike(abs_path);
+    }
+
+    fn tryResolvePathLike(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
+        const maybe_dir = self.dirExists(abs_path);
+        if (maybe_dir) {
+            // DirEntryCache 는 symlink target 을 readdir 만으로 알 수 없어 file+dir
+            // 양쪽에 등록한다. pnpm package symlink root 를 alias 로 직접 가리키면
+            // fileExists 가 먼저 true 가 되어 package entry(index/main/exports)를 건너뛰므로,
+            // ambiguous directory 후보는 package/directory resolve 를 먼저 시도한다.
+            if (try self.tryDirectoryIndex(abs_path)) |result| return result;
+        }
+
+        if (self.fileExists(abs_path)) return try self.makeResult(abs_path);
+        if (try self.tryExtensions(abs_path)) |result| return result;
+        if (try self.tryTsExtensionMapping(abs_path)) |result| return result;
+        if (!maybe_dir) {
+            if (try self.tryDirectoryIndex(abs_path)) |result| return result;
+        }
         return null;
     }
 
@@ -494,25 +508,7 @@ pub const Resolver = struct {
         };
         defer self.allocator.free(joined);
 
-        // 1. 정확한 경로가 파일로 존재하는지
-        if (self.fileExists(joined)) {
-            return (try self.makeResult(joined)).?;
-        }
-
-        // 2. 확장자 추가 탐색 (.ts, .tsx, .js, .jsx, .json)
-        if (try self.tryExtensions(joined)) |result| {
-            return result;
-        }
-
-        // 3. TS 확장자 매핑 (./foo.js → ./foo.ts, ./foo.tsx)
-        if (try self.tryTsExtensionMapping(joined)) |result| {
-            return result;
-        }
-
-        // 4. 디렉토리 index 탐색 (./dir → ./dir/index.ts)
-        if (try self.tryDirectoryIndex(joined)) |result| {
-            return result;
-        }
+        if (try self.tryResolvePathLike(joined)) |result| return result;
 
         return error.ModuleNotFound;
     }
