@@ -656,6 +656,39 @@ pub fn emitChunks(
             if (reg_fmt and entry_mod_idx != null) break :xchunk_exports;
             const cjs_x = reg_fmt;
 
+            // 버그 B (#3321 후속): ESM entry/dynamic 청크는 codegen 이 entry
+            // 모듈의 소스 `export { ... }`(=그 모듈이 노출하는 모든 export 이름,
+            // re-export 포함 — cross-chunk 바인딩으로 로컬화됨)를 //#region 안에
+            // 이미 emit 한다. 이 xchunk 블록이 그중 한 이름이라도 또 내면
+            // `Duplicate export` SyntaxError (cjs/iife 는 위 break 로 회피, ESM
+            // 은 게이트 없음). → ESM 일 때 entry 모듈이 export 하는 이름(kind
+            // 무관: .local·.re_export 모두 codegen 이 냄)을 xchunk 에서 제거.
+            // entry 모듈 export 가 아닌 cross-chunk 심볼(예: 호이스팅된 다른
+            // 모듈 심볼)만 남겨 합집합을 정확히 1회 emit. 전부 제거 시 블록 생략.
+            // cross-chunk 소비자는 codegen 이 낸 동일 `export {}` 로 바인딩.
+            if (!cjs_x) {
+                if (entry_mod_idx) |ei| {
+                    if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| {
+                        var w: usize = 0;
+                        for (export_names.items) |nm| {
+                            var entry_exported = false;
+                            for (em.export_bindings) |eb| {
+                                if (std.mem.eql(u8, eb.exported_name, nm)) {
+                                    entry_exported = true;
+                                    break;
+                                }
+                            }
+                            if (!entry_exported) {
+                                export_names.items[w] = nm;
+                                w += 1;
+                            }
+                        }
+                        export_names.shrinkRetainingCapacity(w);
+                    }
+                }
+                if (export_names.items.len == 0) break :xchunk_exports;
+            }
+
             if (!cjs_x) {
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, "export { ");

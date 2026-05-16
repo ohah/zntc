@@ -139,4 +139,60 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     const { stdout } = await runNode(join(fixture.dir, out[0].path));
     expect(stdout).toBe('k:K');
   });
+
+  // 버그 B (PR4): ESM 에서 한 심볼이 (re-export + 정적 cross-import) 이고
+  // 그 청크가 *동적 entry* 이기도 하면 xchunk_exports 와 entry-final-exports
+  // 가 같은 이름을 둘 다 `export {}` → `Duplicate export` SyntaxError.
+  // ESM entry/dynamic 청크에서 entry 모듈 .local export 와 겹치는 이름을
+  // xchunk 에서 제거(emitEsm 담당)하여 정확히 1회 emit.
+  test('버그 B: ESM 동적-entry + 정적 cross-import + re-export 중복 export 없음', async () => {
+    const fixture = await createFixture({
+      'inner.ts': `export const v = "INNER";`,
+      'page.ts': `export { v } from "./inner";\nexport const pg = "PAGE";`,
+      'a.ts': `import { v } from "./page";\nexport function useA(){ return "uA:" + v; }`,
+      'index.ts': `
+        import { useA } from "./a";
+        import { pg } from "./page";
+        const dyn = import("./page");
+        console.log(useA() + " " + pg, !!dyn);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+    });
+    const outs = result.outputFiles!;
+    const page = outs.find((o) => o.path.includes('page') && o.path.endsWith('.js'))!;
+    expect(page).toBeDefined();
+    // page 청크에 `export {` 가 정확히 1개(중복 export 문 금지).
+    const exportStmts = page.text.match(/(^|\n)\s*export\s*\{/g) ?? [];
+    expect(exportStmts.length).toBe(1);
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('uA:INNER PAGE true');
+  });
+
+  test('버그 B 회귀: 일반 ESM 동적 import 청크 export 정상(단일)', async () => {
+    const fixture = await createFixture({
+      'dyn.ts': `export const a = 1;\nexport const b = 2;`,
+      'index.ts': `async function m(){ const d = await import("./dyn"); console.log(d.a + d.b); }\nm();`,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+    });
+    const outs = result.outputFiles!;
+    const dyn = outs.find((o) => o.path.includes('dyn') && o.path.endsWith('.js'))!;
+    const exportStmts = dyn.text.match(/(^|\n)\s*export\s*\{/g) ?? [];
+    expect(exportStmts.length).toBeLessThanOrEqual(1);
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('3');
+  });
 });
