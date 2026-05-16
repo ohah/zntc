@@ -30,6 +30,7 @@ pub const statement_shaker = @import("statement_shaker.zig");
 pub const purity = @import("purity.zig");
 pub const stmt_info = @import("stmt_info.zig");
 pub const chunk = @import("chunk.zig");
+pub const module_id = @import("module_id.zig");
 pub const runtime_helpers = @import("runtime_helpers.zig");
 pub const runtime_polyfills = @import("runtime_polyfills.zig");
 pub const bundler_core = @import("bundler.zig");
@@ -99,6 +100,7 @@ test {
     _ = purity;
     _ = stmt_info;
     _ = chunk;
+    _ = module_id;
     _ = runtime_helpers;
     _ = runtime_polyfills;
     _ = bundler_core;
