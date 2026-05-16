@@ -33,7 +33,7 @@ ZNTC 플러그인은 Rollup/Vite 호환 인터페이스로, `@zntc/core`의 NAPI
 | Plugin context `this.addWatchFile()` | ➖ no-op | 호출 가능하지만 native watcher 에 전파 X (SFC `<style src="..."/>` 외부 dep stale 가능) |
 | Plugin context `this.resolve()` / `this.emitFile()` | ❌ 미지원 | 호출 시 informative Error throw — graph mutation surface 부재 |
 | **프레임워크 SFC** (`.vue` / `.svelte`) | ❌ 미지원 | virtual module ID + `?vue&type=style&lang.css` query sub-import 인식 필요 — [자세히 + 대안 →](/zntc/guides/plugin-recipes/#프레임워크-sfc-vue--svelte--현재-미지원) |
-| `buildSync()` + JS plugin | ❌ 미지원 | async `build()` / `watch()` 사용 |
+| `buildSync()` + async JS 훅 | ❌ 미지원 (sync 훅은 동작) | async 훅이 필요하면 `build()` / `watch()` |
 
 ZNTC native worker는 module을 만날 때 NAPI threadsafe function으로 JS hook을 호출하고 응답을 기다립니다. 따라서 hook filter를 좁게 잡고, 단순 확장자 처리는 `loader` 옵션을 먼저 쓰는 편이 빠릅니다.
 
@@ -214,7 +214,7 @@ const result2 = await build({
 });
 ```
 
-> **참고**: `buildSync()`에서는 JS 플러그인을 사용할 수 없습니다 (메인 스레드 데드락). `build()` (async)에서만 지원됩니다.
+> **참고**: `buildSync()`에서는 **async 플러그인 훅**이 동작하지 않습니다 (메인 스레드 데드락). sync 훅은 그대로 동작하며, async 훅이 필요하면 `build()` / `watch()`를 사용하세요.
 
 ## 설정 파일
 
