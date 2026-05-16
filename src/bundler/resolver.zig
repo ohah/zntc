@@ -418,17 +418,15 @@ pub const Resolver = struct {
                 defer self.allocator.free(raw);
                 const candidate = try std.fs.path.resolve(self.allocator, &.{raw});
                 defer self.allocator.free(candidate);
-                if (try self.tryResolveAbsolutePath(candidate)) |r| return r;
+                if (try self.tryResolvePathLike(candidate)) |r| return r;
             }
         }
         return null;
     }
 
     /// 절대 경로 1 개에 대해 `resolveInner` 의 pass #1–#4 와 동일 로직으로 resolve 시도.
-    fn tryResolveAbsolutePath(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
-        return self.tryResolvePathLike(abs_path);
-    }
-
+    /// pnpm symlink package root alias 처럼 file 과 dir 양쪽으로 보이는 경우는
+    /// `tryDirectoryIndex` 를 먼저 시도해 package entry(index/main/exports) 로 간다.
     fn tryResolvePathLike(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
         const maybe_dir = self.dirExists(abs_path);
         if (maybe_dir) {
