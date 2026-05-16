@@ -323,8 +323,26 @@ pub const CjsExportFact = struct {
 ## Code splitting 전략
 - 동적 import (`import('./page')`) 기준 청크 분할
 - 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
+- 작은 common 청크 자동 병합: `minChunkSize` (Rollup `experimentalMinChunkSize` 류).
+  `src.bits ⊆ dst.bits`(over-fetch 없음)인 경우만 병합, entry/manual/dynamic 보존
 - 순환 참조: 같은 청크로 묶기
 - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
+
+### 동적 import specifier 정책 (literal-only)
+
+**지원**: `import("./page.js")` 처럼 **문자열 리터럴** specifier 만 정적 분석되어
+청크 경계로 인식·분할된다.
+
+**한계**: 변수 / 템플릿 리터럴 / 문자열 연결 등 **비-리터럴 specifier**
+(`import(name)`, `` import(`./m-${n}.js`) ``, `import("./a"+b)`) 는 정적 분석
+범위 밖이라 **코드 분할 대상이 아니다**. 해당 호출은 변형 없이 네이티브 런타임
+`import()` 로 그대로 남아 브라우저/런타임이 처리한다(번들에 미수집·미인라인,
+별도 진단 없음).
+
+**원리**: 어떤 모듈이 로드될지 빌드 타임에 알 수 없으면 안전한 청크 그래프를
+구성할 수 없다. 무분별한 디렉터리 통째 번들링(over-bundling)을 피하기 위한
+의도된 제약이며 esbuild/Rollup 과 동일한 경계다. 디렉터리 단위 동적 로딩이
+필요하면 `require.context`(Metro/webpack 호환, 인자 전부 리터럴)를 쓴다.
 
 ## 테스트 전략 (TDD)
 - **원칙**: 버그 하나 = 테스트 하나. 이슈 재현 테스트 먼저 → 수정 → 같은 버그 재발 방지
