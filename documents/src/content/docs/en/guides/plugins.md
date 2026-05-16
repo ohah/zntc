@@ -33,7 +33,7 @@ Sorted by status: ✅ Supported → ⚠️ Partial → ➖ no-op → ❌ Unsuppo
 | Plugin context `this.addWatchFile()` | ➖ no-op | Callable but not propagated to the native watcher (SFC `<style src="..."/>` external dep may go stale) |
 | Plugin context `this.resolve()` / `this.emitFile()` | ❌ Unsupported | Throws an informative Error — graph mutation surface is missing |
 | **Framework SFC** (`.vue` / `.svelte`) | ❌ Unsupported | Requires recognising virtual module IDs and `?vue&type=style&lang.css` query sub-imports — [details + workarounds →](/zntc/en/guides/plugin-recipes/#framework-sfc-vue--svelte--currently-unsupported) |
-| `buildSync()` + JS plugins | ❌ Unsupported | use async `build()` / `watch()` |
+| `buildSync()` + async JS hooks | ❌ Unsupported (sync hooks work) | use `build()` / `watch()` for async hooks |
 
 The native ZNTC worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
 
