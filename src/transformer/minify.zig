@@ -283,7 +283,10 @@ fn runOnce(
         const node = ast.nodes.items[i];
         switch (node.tag) {
             .binary_expression => foldBinary(ast, scratch, i, node, &changed),
-            .logical_expression => foldLogical(ast, ctx, i, node, &changed),
+            .logical_expression => {
+                if (!foldNullishCheck(ast, ctx, i, node, &changed))
+                    foldLogical(ast, ctx, i, node, &changed);
+            },
             .unary_expression => foldUnary(ast, i, node, &changed),
             .call_expression => foldCall(ast, i, node, &changed),
             .conditional_expression => foldConditional(ast, ctx, i, node, &changed),
@@ -1882,6 +1885,99 @@ fn foldWhile(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *boo
             .data = .{ .none = 0 },
         }, changed);
     }
+}
+
+/// `X` 가 side-effect-free identifier 이고 `undefined`(예약어 식별자)가 아니면 텍스트.
+/// member (`a.b`) 는 의도적으로 제외 — getter side-effect 시 2회→1회 평가가
+/// observable behavior 변경 (folding 으로 getter 호출 횟수 감소). identifier 만 안전.
+fn simpleIdentText(ast: *const Ast, idx: ast_mod.NodeIndex) ?[]const u8 {
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return null;
+    const n = ast.nodes.items[ni];
+    if (n.tag != .identifier_reference) return null;
+    const t = ast.getText(n.span);
+    if (std.mem.eql(u8, t, "undefined")) return null;
+    return t;
+}
+
+/// `null` literal 또는 `undefined`(식별자)/`void <expr>` 인지.
+fn isNullOrUndefinedLit(ast: *const Ast, idx: ast_mod.NodeIndex) enum { null_lit, undef, no } {
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return .no;
+    const n = ast.nodes.items[ni];
+    switch (n.tag) {
+        .null_literal => return .null_lit,
+        .identifier_reference => {
+            if (std.mem.eql(u8, ast.getText(n.span), "undefined")) return .undef;
+            return .no;
+        },
+        .unary_expression => {
+            // `void <expr>` 는 operand 무관하게 항상 undefined — `void g()` 도 .undef.
+            // (dropped 시 decrementRefsShallow 가 operand subtree ref 정확 처리.)
+            const e = n.data.extra;
+            if (e + 1 >= ast.extra_data.items.len) return .no;
+            const op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
+            return if (op == .kw_void) .undef else .no;
+        },
+        else => return .no,
+    }
+}
+
+/// `X===null||X===void 0` → `X==null`, `X!==null&&X!==void 0` → `X!=null`
+/// (terser/esbuild 표준). X 는 side-effect-free identifier (1회 평가 — 2회→1회
+/// 안전). ECMAScript: `X==null` ⟺ X is null 또는 undefined. 매칭 시 true 반환
+/// (이 경우 foldLogical skip), 아니면 false.
+fn foldNullishCheck(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) bool {
+    const op: Kind = @enumFromInt(node.data.binary.flags);
+    // || → 양쪽 `===`, 결과 `==` / && → 양쪽 `!==`, 결과 `!=`
+    const want_cmp: Kind = switch (op) {
+        .pipe2 => .eq3,
+        .amp2 => .neq2,
+        else => return false,
+    };
+    const result_op: Kind = if (op == .pipe2) .eq2 else .neq;
+
+    const lni = @intFromEnum(node.data.binary.left);
+    const rni = @intFromEnum(node.data.binary.right);
+    if (lni >= ast.nodes.items.len or rni >= ast.nodes.items.len) return false;
+    const L = ast.nodes.items[lni];
+    const R = ast.nodes.items[rni];
+    if (L.tag != .binary_expression or R.tag != .binary_expression) return false;
+    if (@as(Kind, @enumFromInt(L.data.binary.flags)) != want_cmp) return false;
+    if (@as(Kind, @enumFromInt(R.data.binary.flags)) != want_cmp) return false;
+
+    const lx = simpleIdentText(ast, L.data.binary.left) orelse return false;
+    const rx = simpleIdentText(ast, R.data.binary.left) orelse return false;
+    if (!std.mem.eql(u8, lx, rx)) return false;
+
+    const lkind = isNullOrUndefinedLit(ast, L.data.binary.right);
+    const rkind = isNullOrUndefinedLit(ast, R.data.binary.right);
+    // {null, undefined} 한 쌍이어야 — (null,null)/(undef,undef) 등은 다른 의미.
+    if (!((lkind == .null_lit and rkind == .undef) or (lkind == .undef and rkind == .null_lit)))
+        return false;
+
+    // 최종: binary(result_op, X=L.left, null_node). null literal 노드 재사용.
+    const keep_null: ast_mod.NodeIndex = if (lkind == .null_lit) L.data.binary.right else R.data.binary.right;
+    const keep_x = L.data.binary.left;
+
+    // dropped (semantic 시 cascade): X 중복 ref(R.left) + undefined-side 노드.
+    if (ctx.hasSemantic()) {
+        decrementRefsShallow(ast, ctx, R.data.binary.left);
+        const undef_side = if (lkind == .undef) L.data.binary.right else R.data.binary.right;
+        decrementRefsShallow(ast, ctx, undef_side);
+    }
+
+    ast.nodes.items[node_idx] = .{
+        .tag = .binary_expression,
+        .span = node.span,
+        .data = .{ .binary = .{
+            .left = keep_x,
+            .right = keep_null,
+            .flags = @intFromEnum(result_op),
+        } },
+    };
+    changed.* = true;
+    return true;
 }
 
 /// logical_expression: true && x → x, false && x → false, true || x → true, false || x → x.
