@@ -380,7 +380,12 @@ test "PreserveModules: CJS format succeeds with require()/exports (P3-A #3321)" 
     try std.testing.expect(has_exports);
 }
 
-test "PreserveModules: IIFE format still returns PreserveModulesRequiresESM" {
+// preserve-modules+iife/umd/amd 는 의도적 non-goal(스코프 아웃, RFC §7):
+// preserve-modules 는 모듈 1:1 파일을 소비자 모듈 시스템이 배선하는
+// 라이브러리-저작 기능 — iife/umd/amd 는 per-file 모듈 시스템이 없어
+// 개념상 무의미(P3-A 의 CJS 는 Node native require 로 가능했음). esbuild
+// 미지원·실수요 0. 이 가드(PreserveModulesRequiresESM)가 정답.
+test "PreserveModules: IIFE format returns PreserveModulesRequiresESM (intentional non-goal)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "export const x = 1;");

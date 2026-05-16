@@ -365,4 +365,46 @@ describe('iife + code splitting (P3-B PR3)', () => {
     expect(stdout).not.toContain('NONCE:'); // setAttribute("nonce") 미호출
     expect(stdout).toContain('R:L2');
   });
+
+  // PR4: RSC `"use client"`/`"use server"` 디렉티브는 모듈 byte 0 이어야
+  // RSC 툴링(Next 등)이 인식. iife/umd-split 의 factory wrapper(또는 UMD
+  // 보편 prologue)가 디렉티브를 함수 안에 가두면 안 됨 — 기존
+  // hoisted_directives 기계가 wrapper 위로 호이스트함을 검증·고정(12-PR
+  // 레지스트리 표면 회귀 가드). entry + 동적 청크 양쪽.
+  const rscFx = {
+    'client.ts': `"use client";\nexport function Widget(){ return "W"; }`,
+    'index.ts': `"use client";\nimport { Widget } from "./client";\nexport function App(){ return Widget(); }\nexport function load(){ return import("./client").then(m=>m.Widget()); }`,
+  };
+
+  for (const format of ['iife', 'umd'] as const) {
+    test(`RSC: "use client" 가 ${format}-split 모든 청크 byte 0 (factory wrapper 위)`, async () => {
+      const fixture = await createFixture(rscFx);
+      cleanup = fixture.cleanup;
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'index.ts')],
+        format,
+        splitting: true,
+        globalName: 'App',
+      });
+      const js = result.outputFiles!.filter((o) => o.path.endsWith('.js'));
+      expect(js.length).toBeGreaterThanOrEqual(2); // index + client(동적)
+      for (const o of js) {
+        // 디렉티브가 정확히 첫 바이트 — registry/factory/UMD prologue 보다 앞.
+        expect(o.text.startsWith('"use client";')).toBe(true);
+        const afterDirective = o.text.slice('"use client";'.length).trimStart();
+        // 디렉티브 바로 뒤가 wrapper/registry (디렉티브가 함수 안에 갇히지 않음)
+        expect(afterDirective).toMatch(/^(\(function|globalThis\.__zntc|define\()/);
+      }
+      writeOutputs(fixture.dir, result.outputFiles!);
+      const entry = js.find((o) => o.path.includes('index'))!;
+      const drv = writeIifeDriver(
+        fixture.dir,
+        entry.path,
+        js.map((o) => o.path),
+        'dom',
+      );
+      const { stdout } = await runNode(drv);
+      expect(stdout).toBe(''); // 부작용 없음(실행만 — 디렉티브는 무해)
+    });
+  }
 });
