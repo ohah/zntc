@@ -13,6 +13,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const TokenKind = @import("../lexer/token.zig").Kind;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const scope_mod = @import("../semantic/scope.zig");
@@ -1040,6 +1041,93 @@ fn finalizeBucket(
     return try allocator.dupe(u32, bucket.items[0..out_len]);
 }
 
+/// 멤버-증강 귀속 (gated, #1577 semantic-preserving).
+///
+/// side-effects-free 로 user 가 선언한(`sideEffects:false`) 모듈에서 다음 형태의
+/// top-level 문장:
+///
+///     X.member = pureRHS;            // X = 이 모듈의 top-level 로컬 바인딩
+///
+/// 을 ESM 의미상 무조건적 부작용으로 시드하지 않고 "심볼 X 의 augmentation" 으로
+/// 귀속한다 (X 가 live 면 reachable, X 가 dead 면 stmt + cascade 제거).
+///
+/// 매칭 시 base object 의 심볼 인덱스 X 를 반환. 호출자는
+///   (1) 해당 stmt 의 has_side_effects 를 false 로 두고
+///   (2) stmt 를 X 의 writer bucket 에 추가 (X live ⇒ stmt reachable 의 X→stmt 방향)
+/// 한다.
+///
+/// 엄격 게이트 (모두 만족 시에만 반환):
+///   - 호출자 게이트: module.side_effects == false && side_effects_user_defined == true
+///     (`gate` 파라미터로 전달).
+///   - stmt = expression_statement → assignment_expression (`=` 단순 대입).
+///   - LHS = static_member_expression, base object = 단일 identifier_reference.
+///   - base 가 이 모듈 top-level (scope_id == 0) 비-import 로컬 심볼 X.
+///   - RHS 가 purity.isExprPure (PURE 주석 존중).
+/// 구조적 매칭만 수행 (심볼 해석 제외) — 매칭 시 base object 의 identifier
+/// NodeIndex 를 반환. 호출자가 symbol_ids (build) 또는 references
+/// (buildFromSemantic) 로 심볼을 해석하고 scope_id==0 + 비-import 를 검증한다.
+fn gatedMemberAugmentObjectNode(
+    ast: *const Ast,
+    stmt_node: Node,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) ?NodeIndex {
+    if (stmt_node.tag != .expression_statement) return null;
+    const expr_idx = stmt_node.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .assignment_expression) return null;
+
+    // `=` (단순 대입) 만. `+=` 등 compound 는 X.member 를 read+write 하므로
+    // X dead 여도 단순 drop 이 안전하지 않아 제외 (assignment_expression 의
+    // operator 는 binary.flags 에 토큰 Kind 로 저장됨 — import_scanner 와 동일).
+    const op: TokenKind = @enumFromInt(expr.data.binary.flags);
+    if (op != .eq) return null;
+
+    const left_idx = expr.data.binary.left;
+    const right_idx = expr.data.binary.right;
+    if (left_idx.isNone() or @intFromEnum(left_idx) >= ast.nodes.items.len) return null;
+
+    // LHS = static_member_expression (computed / private / 중첩 멤버 제외).
+    const parts = staticMemberParts(ast, left_idx) orelse return null;
+    const obj = ast.nodes.items[@intFromEnum(parts.object)];
+    if (obj.tag != .identifier_reference) return null;
+
+    // base 가 unresolved global (`window.x = ...`) 이면 글로벌 변이 — 제외.
+    if (unresolved_globals) |globals| {
+        if (globals.contains(ast.getText(obj.span))) return null;
+    }
+
+    // RHS 순수성 (three 의 mergeUniforms 는 /*@__PURE__*/ 주석으로 pure 판정).
+    if (!purity.isExprPure(ast, right_idx, unresolved_globals)) return null;
+
+    return parts.object;
+}
+
+/// base identifier 심볼 X 가 이 모듈 top-level (scope_id==0) 비-import 로컬인지
+/// 검증해 X 의 심볼 인덱스를 반환. 아니면 null.
+fn validateMemberAugmentBaseSymbol(symbols: []const Symbol, x_sym: u32) ?u32 {
+    if (x_sym >= symbols.len) return null;
+    const sym = &symbols[x_sym];
+    if (@intFromEnum(sym.scope_id) != 0) return null;
+    if (sym.decl_flags.is_import) return null;
+    return x_sym;
+}
+
+/// `build` (symbol_ids 보유) 경로용 thin wrapper.
+fn gatedMemberAugmentSymbol(
+    ast: *const Ast,
+    stmt_node: Node,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) ?u32 {
+    const obj_node = gatedMemberAugmentObjectNode(ast, stmt_node, unresolved_globals) orelse return null;
+    const obj_node_i = @intFromEnum(obj_node);
+    if (obj_node_i >= symbol_ids.len) return null;
+    const x_sym = symbol_ids[obj_node_i] orelse return null;
+    return validateMemberAugmentBaseSymbol(symbols, x_sym);
+}
+
 /// 두 builder (buildFromSemantic / build) 의 per-stmt Phase 1 본체.
 /// stmt 노드에서 cjs_export_facts 를 추가하고 side_effects 를 결정해 StmtInfo
 /// 슬롯을 만든다. `symbol_ids` 가 있으면 rhs_symbol 도 채움 (build), null 이면
@@ -1121,6 +1209,10 @@ pub fn buildFromSemantic(
     references: []const Reference,
     unresolved_globals: ?*const purity.GlobalRefSet,
     collect_cjs_exports: bool,
+    /// member-augment 귀속 게이트. `build` 의 동명 파라미터와 동일 의미 —
+    /// 호출자가 Module.memberAugmentGate() 로 판정해 전달. ESM 프리빌드
+    /// 경로(transform_prepass)가 이 함수를 쓰므로 실제 효과는 여기서 발생한다.
+    gate_member_augment: bool,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)에서 top-level statement 인덱스 추출
     if (ast.nodes.items.len == 0) return null;
@@ -1150,6 +1242,11 @@ pub fn buildFromSemantic(
     var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
     errdefer deinitCjsExportFactsBuf(allocator, &cjs_export_facts_buf);
 
+    // 게이트 통과한 member-augment 문장: object identifier NodeIndex → stmt_idx.
+    // references 패스에서 이 노드의 symbol_id 를 해석해 writer bucket 에 귀속.
+    var member_augment_obj_to_stmt: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer member_augment_obj_to_stmt.deinit(allocator);
+
     // Pass 1: span + side-effect 결정. declared/referenced 는 빈 상태로 초기화.
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
@@ -1164,6 +1261,18 @@ pub fn buildFromSemantic(
             &cjs_export_facts_buf,
             null,
         );
+
+        if (gate_member_augment and stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
+            if (gatedMemberAugmentObjectNode(
+                ast,
+                ast.nodes.items[ni],
+                unresolved_globals,
+            )) |obj_node| {
+                // has_side_effects 해제는 base 가 top-level 로컬임을 references
+                // 패스에서 확정한 뒤에 한다 (조건부). 우선 후보로만 등록.
+                try member_augment_obj_to_stmt.put(allocator, @intFromEnum(obj_node), @intCast(stmt_i));
+            }
+        }
     }
 
     // Pass 2: references → declared/referenced per-stmt bucket 분배.
@@ -1196,6 +1305,18 @@ pub fn buildFromSemantic(
         if (r.stmt_idx >= stmt_count) continue;
         const sym_u32: u32 = @intFromEnum(r.symbol_id);
         if (sym_u32 >= symbols.len) continue;
+
+        // member-augment 귀속: 이 ref 가 게이트 통과 stmt 의 base object
+        // identifier 면 X = sym_u32 가 top-level 로컬인지 확정. 맞으면
+        // stmt 의 has_side_effects 를 해제하고 X 의 writer bucket 에 등록한다.
+        if (member_augment_obj_to_stmt.fetchRemove(@intFromEnum(r.node_index))) |kv| {
+            const aug_stmt = kv.value;
+            if (validateMemberAugmentBaseSymbol(symbols, sym_u32)) |x_sym| {
+                stmts[aug_stmt].has_side_effects = false;
+                try writer_buckets[x_sym].append(allocator, aug_stmt);
+            }
+        }
+
         if (r.flags.declare) {
             // #1669: analyzer 가 모든 scope 선언에 declare ref 를 남기므로 top-level (scope_id==0)
             // 만 bucket 분배. 함수/블록 내부 declare ref 는 `scope_stmt_idx` 와 함께 references
@@ -1294,6 +1415,12 @@ pub fn build(
     symbol_ids: []const ?u32,
     unresolved_globals: ?*const purity.GlobalRefSet,
     collect_cjs_exports: bool,
+    /// member-augment 귀속 게이트. 호출자가 Module.memberAugmentGate()
+    /// (side_effects==false && side_effects_user_defined==true && minify_syntax)
+    /// 로 판정해 전달. true 이면 top-level `X.member = pureRHS`
+    /// (X = 이 모듈 top-level 로컬) 를 무조건 side-effect 시드 대신
+    /// X 의 augmentation 으로 귀속한다.
+    gate_member_augment: bool,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)
     if (ast.nodes.items.len == 0) return null;
@@ -1327,6 +1454,12 @@ pub fn build(
     var stmt_spans = try allocator.alloc(Span, stmt_count);
     defer allocator.free(stmt_spans);
 
+    // 게이트 통과한 member-augment 문장 → 귀속 대상 심볼 X. Phase 2 의
+    // writer_bufs 채우기 직전에 X 의 writer bucket 에 추가한다 (X live ⇒
+    // stmt reachable, X dead ⇒ stmt + cascade drop). (stmt_i, x_sym) 쌍.
+    var member_augment_pairs: std.ArrayListUnmanaged([2]u32) = .empty;
+    defer member_augment_pairs.deinit(allocator);
+
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
         const ni = @intFromEnum(idx);
@@ -1341,6 +1474,22 @@ pub fn build(
             symbol_ids,
         );
         stmt_spans[stmt_i] = stmts[stmt_i].span;
+
+        // member-augment 귀속: 게이트 ON + has_side_effects 로 분류된
+        // top-level `X.member = pureRHS` 만 대상. CJS export fact 로 이미
+        // 안전 처리된 stmt (has_side_effects=false) 는 건드리지 않는다.
+        if (gate_member_augment and stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
+            if (gatedMemberAugmentSymbol(
+                ast,
+                ast.nodes.items[ni],
+                symbol_ids,
+                symbols,
+                unresolved_globals,
+            )) |x_sym| {
+                stmts[stmt_i].has_side_effects = false;
+                try member_augment_pairs.append(allocator, .{ @intCast(stmt_i), x_sym });
+            }
+        }
     }
 
     // Phase 2: 모든 AST 노드를 단일 패스로 순회하며 심볼 수집 — O(N log S)
@@ -1414,6 +1563,20 @@ pub fn build(
         }
         if (referenced_bufs[stmt_i].items.len > 0) {
             stmt.referenced_symbols = try referenced_bufs[stmt_i].toOwnedSlice(allocator);
+        }
+    }
+
+    // member-augment 귀속: 게이트 통과한 `X.member = pureRHS` 를 X 의 writer
+    // bucket 에 등록 → tree_shaker 가 X 가 live 가 되면 enqueueSymbolLiveStatements
+    // / referenced_symbols→writerStmts 경로로 이 stmt 를 reachable 시킨다.
+    // X 가 끝까지 dead 면 stmt 는 has_side_effects=false 라 seed 되지 않고
+    // RHS cascade (three 의 ShaderChunk/GLSL) 까지 함께 제거된다.
+    for (member_augment_pairs.items) |pair| {
+        const stmt_i_u32 = pair[0];
+        const x_sym = pair[1];
+        if (x_sym >= writer_bufs.len) continue;
+        if (std.mem.indexOfScalar(u32, writer_bufs[x_sym].items, stmt_i_u32) == null) {
+            try writer_bufs[x_sym].append(allocator, stmt_i_u32);
         }
     }
 

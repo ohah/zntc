@@ -387,6 +387,13 @@ pub const Module = struct {
         return self.side_effects_user_defined and !self.side_effects;
     }
 
+    /// member-augment 귀속 게이트: user-declared pure 모듈이고 크기 최적화
+    /// (minify_syntax) 일 때만 top-level `X.member = pureRHS` 를 X 의
+    /// augmentation 으로 귀속한다 (dev/non-minify 회귀 방지).
+    pub inline fn memberAugmentGate(self: *const Module, minify_syntax: bool) bool {
+        return self.isUserDeclaredPure() and minify_syntax;
+    }
+
     /// `entry_error_guard` 활성 시 이 모듈의 init 호출을 `__zntc_guarded(...)` 로 wrap 할지 결정.
     /// TLA (`uses_top_level_await`) 인 ESM 모듈은 await 가 lambda 안에 못 들어가므로 wrap 안 함.
     /// `wrap_kind == .none` (래핑 없음) 도 호출할 init 함수 자체가 없어 wrap 무의미.

@@ -201,6 +201,12 @@ pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
             // Semantic Analyzer에서 사전 수집한 stmt↔symbol 매핑으로 StmtInfo 구축.
             // tree_shaker가 AST를 다시 순회하지 않아도 된다 (Phase 2 최적화).
             if (analyzer.stmt_info_count > 0) {
+                // 파싱 시점엔 package sideEffects 가 아직 resolve 안 됐을 수
+                // 있어 isUserDeclaredPure() 가 false 면 게이트 off — 이 경우
+                // transform_prepass resync 가 정확한 게이트로 재빌드한다
+                // (minify_identifiers 시 shouldRun=true).
+                const gate_member_augment =
+                    module.memberAugmentGate(self.transform_options_base.minify_syntax);
                 module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
                     arena_alloc,
                     &parser.ast,
@@ -209,6 +215,7 @@ pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
                     analyzer.references.items,
                     if (module.semantic) |*s| &s.unresolved_references else null,
                     false,
+                    gate_member_augment,
                 ) catch null;
             }
         }
