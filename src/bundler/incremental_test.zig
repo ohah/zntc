@@ -174,7 +174,11 @@ test "IncrementalBundler: changed module code keeps bundle require rewrites" {
                 try std.testing.expect(std.mem.indexOf(u8, m.code, "require(\"./icon.png\")") == null);
                 try std.testing.expect(std.mem.indexOf(u8, m.code, "require('./dep')") == null);
                 try std.testing.expect(std.mem.indexOf(u8, m.code, "require(\"./dep\")") == null);
-                try std.testing.expect(std.mem.indexOf(u8, m.code, "require_icon()") != null);
+                // dev 모드 HMR module code 는 bundle-local `require_icon` 가 보이지 않으므로
+                // CJS require rewrite 도 `__zntc_modules["..."].fn()` registry lookup 형태.
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require_icon()") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "__zntc_modules[") != null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "icon.png\"].fn()") != null);
             }
             try std.testing.expect(saw_index);
         },
