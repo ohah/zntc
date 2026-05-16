@@ -107,10 +107,12 @@ __zntc_load_chunk("chunk-<hash>.js").then(function(){ return __zntc_require("<en
 - **IIFE/브라우저**: `<script>` 주입 또는 `import()`(가능 시) — 페이로드는 self-register 라 평가만 하면 등록됨
 - **MF/RN**: ScriptManager 등 별도 구현이 같은 인터페이스로 주입(§3 표)
 
-### 4.4 안정 모듈 ID (G3)
+### 4.4 안정 모듈 ID (G3) — **확정: relative-path 기반**
 
-- 청크 경계/preserve-modules 모듈에만 결정적 ID 부여(content/relative-path 기반, 빌드 결정성 보장). 내부 호이스팅 모듈은 ID 없음.
+- 청크 경계/preserve-modules 모듈에만 결정적 ID 부여. 내부 호이스팅 모듈은 ID 없음.
+- **스킴 확정(§7): relative-path 기반** — root(공통 조상 또는 preserve-modules-root) 상대경로, posix 정규화, 소스 확장자→논리 `.js` 치환(출력 포맷/확장자 무관 안정 → MF 계약 핀 안정). content-hash 대비 디버깅·스택트레이스 가독성·MF expose 키 자연 호환 우위.
 - **MF RFC §4.1 "연합 경계 안정 모듈 ID"와 동일 메커니즘** — 한 번 구현해 양쪽이 사용.
+- **구현: `src/bundler/module_id.zig`** (P3-B PR1, emit 비의존 하위 인프라). `moduleId(abs_path, root)` + `commonAncestorDir(paths)`. MF P1 container 가 이 위에 얹힌다(중복 구현 금지).
 
 ---
 
@@ -124,6 +126,13 @@ __zntc_load_chunk("chunk-<hash>.js").then(function(){ return __zntc_require("<en
 
 P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), P3-B/C 는 MF P1 과 보조 맞춰 진행.
 
+**P3-B PR 분해(워크플로 "1 PR=1 기능"):**
+
+| PR | 내용 | 상태 |
+|---|---|---|
+| **P3-B PR1** | 하위 인프라만 — `module_id.zig`(relative-path 안정 ID) + `runtime_helpers.zig` 레지스트리 상수(`__zntc_mods`/`__zntc_require`/`__zntc_register`/`__zntc_load_chunk`, normal+min). 유닛테스트. emit 미연결·가드 불변(무동작 회귀 0). **MF §4.1 공유 계층** | 본 PR |
+| **P3-B PR2** | emit 연결 — 가드 완화(`format==.cjs`+splitting), 비-엔트리 청크 self-register wrapper, cross-chunk static require 재작성, `import()`→`__zntc_load_chunk(...).then(()=>__zntc_require(id))`, 엔트리 레지스트리 프렐류드 주입. integration/e2e/smoke | 후속 |
+
 ---
 
 ## 6. 디리스크 스파이크
@@ -132,13 +141,16 @@ P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), 
 
 (P0-3 스파이크 0 패턴과 동일 — 위험한 5% 먼저 증명.)
 
+**결과: PASS (2026-05-16).** Node 24 CJS 에서 (1) 런타임 레지스트리·캐시, (2) 정적 cross-chunk require, (3) 동적 청크 로드(`__zntc_load_chunk`→`Promise.resolve().then(()=>require(static))`), (4) 동적 로드 청크의 shared 모듈 캐시 재사용(상태 보존 count 1→2→3) 모두 동작 확인.
+**스파이크가 잡은 설계 제약**: 모듈 factory 의 `require` 인자는 `__zntc_require`(모듈ID 레지스트리)다. sibling 청크 *파일* eager 로드는 청크 **최상위**에서 Node `require("./chunk.js")`(정적 string)로 해야 한다 — 청크파일 로드 ≠ 모듈ID require. PR2 의 정적 cross-chunk 재작성은 이 분리를 따른다(§4.2 의도와 일치).
+
 ---
 
 ## 7. 미해결 / 결정 필요
 
-- IIFE 동적 로더의 브라우저 청크 fetch 방식(script 주입 vs 조건부 import()) — public_path/CSP 영향.
+- **[결정됨 2026-05-16] 모듈 ID 스킴 = relative-path 기반.** content-hash·숫자 인덱스 대비: 디버깅/스택트레이스 가독성, MF expose 키 자연 호환, 빌드 결정성, 내용 변경에도 ID 불변(MF 계약 핀 안정). MF RFC §4.1/§6.1(모듈 안정 런타임 ID) 과 **공동 결정** — 동일 `module_id.zig` 공유. (트레이드오프: 소스 디렉터리 구조가 ID 로 노출 — 수용.)
+- IIFE 동적 로더의 브라우저 청크 fetch 방식(script 주입 vs 조건부 import()) — public_path/CSP 영향. (P3-B PR2 이후 IIFE 단계에서 결정.)
 - preserve-modules CJS 의 Node `__esModule`/interop 경계(default/namespace).
-- 모듈 ID 스킴: content-hash vs relative-path(결정성·디버깅·MF 계약 호환 trade-off) — MF RFC §9 의 모듈 ID 미해결과 **공동 결정**.
 - P3-A 가치 대비 비용: esbuild 미지원 영역. 수요(누가 CJS/IIFE+splitting 을 원하나) 확인 후 P3-B 착수 여부 게이트.
 
 ---

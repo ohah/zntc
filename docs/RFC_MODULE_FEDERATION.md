@@ -151,8 +151,8 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 | public_path 주입 | ✅ `src/bundler/emitter/chunks.zig:1029-1035` | **재사용** (remote 청크 URL 주입) |
 | cross-chunk import 생성 | ✅ `src/bundler/emitter/chunks.zig:230-301` (심볼 기반 + deconfliction) | **재사용** |
 | metafile JSON | ✅ `src/bundler/bundler.zig:1612-1677` (esbuild 호환, bytes만) | **확장**: `OutputFile.content_hash` 필드 + 청크→모듈 매핑. 침습성 낮음(시그니처 변경 불필요, `multi_outputs` 이미 존재) |
-| 모듈 안정 런타임 ID | ❌ 스코프 호이스팅으로 소거 — `src/bundler/module.zig`에 `module_id` 없음, linker는 symbol-level | **신규(핵심)**: 연합 경계 모듈에만 안정 ID 부여 단계 |
-| module registry / container 런타임 | ❌ `runtime_helpers.zig`/`runtime_helper_modules.zig`에 `__commonJS`/`__toESM`/`__esm`만, 청크 로더/registry 없음 | **신규**: MF2 호환 container/registry 헬퍼 |
+| 모듈 안정 런타임 ID | ⚙️ **P3-B PR1 에서 하위 인프라 구현됨** — `src/bundler/module_id.zig`(relative-path 스킴 확정, RFC_CJS §4.4/§7). 스코프 호이스팅 소거는 여전 → 경계 모듈에만 적용 | **재사용**: P1 은 이 `module_id.zig` 를 그대로 씀(중복 구현 금지) |
+| module registry / container 런타임 | ⚙️ **P3-B PR1 에서 최소 레지스트리 구현됨** — `runtime_helpers.zig` `ZNTC_REGISTRY_RUNTIME`(`__zntc_mods`/`__zntc_require`/`__zntc_register`/`__zntc_load_chunk`) | **상위 확장**: MF2 호환 container/shared scope 를 이 레지스트리 위에 얹음 |
 | 서명/무결성 인프라 | ❌ content hash(Wyhash)만. sha256/SRI/JWT 전무 | **신규**: SHA-256 + RS256 JWT 서명/검증 |
 
 ### 6.2 RN / 네이티브 측

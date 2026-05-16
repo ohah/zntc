@@ -157,6 +157,66 @@ pub const ESM_RUNTIME_ES5 = "var __esm = function(fn, res) { return function __i
 // #1751: trailing `;` — 뒤따르는 `var __xxx=...` 와 문법 구분 필수.
 pub const ESM_RUNTIME_ES5_MIN = "var " ++ NAMES.ESM_FACTORY_MIN ++ "=function(fn,res){return function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res}};";
 
+// ============================================================
+// CJS/IIFE code splitting — 런타임 require 레지스트리 (P3-B)
+// ============================================================
+//
+// RFC docs/RFC_CJS_IIFE_CODE_SPLITTING.md §4.1. **MF RFC §4.1 과 공유하는
+// 하위 인프라** — P3(CJS/IIFE splitting)·MF P1(container/shared scope)·
+// P3-C(수렴)가 같은 레지스트리를 쓴다. 중복 구현 금지.
+//
+// 청크 파일은 각자 별도 Node 모듈 스코프라, 레지스트리는 **globalThis 바인딩**
+// 으로 공유돼야 self-register 청크가 `__zntc_register`/`__zntc_require` 에
+// 도달한다(디리스크 스파이크가 증명). `if (g.__zntc_require) return;` 로
+// 멱등 — 엔트리 청크 1회 주입이지만 다중 주입에도 안전.
+//
+// 이름(`__zntc_*`)은 **cross-file 런타임 계약**이라 mangle 금지 — emit 시
+// 리터럴 텍스트로만 출력(transformer 심볼 테이블 비경유)되므로 mangler 가
+// 건드리지 않는다. `__zntc_load_chunk` 의 `require` 는 엔트리 청크의 Node
+// require(정적 string OK) — 동적 청크는 self-register payload 라 평가만 하면
+// 등록된다(스파이크 §4.3).
+pub const ZNTC_REGISTRY_RUNTIME =
+    \\(function (g) {
+    \\  if (g.__zntc_require) return;
+    \\  var __zntc_mods = {};
+    \\  var __zntc_cache = {};
+    \\  function __zntc_require(id) {
+    \\    var c = __zntc_cache[id];
+    \\    if (c) return c.exports;
+    \\    var m = { exports: {} };
+    \\    __zntc_cache[id] = m;
+    \\    (0, __zntc_mods[id])(m.exports, m, __zntc_require);
+    \\    return m.exports;
+    \\  }
+    \\  function __zntc_register(map) {
+    \\    for (var k in map) __zntc_mods[k] = map[k];
+    \\  }
+    \\  function __zntc_load_chunk(spec) {
+    \\    return Promise.resolve().then(function () { require(spec); });
+    \\  }
+    \\  g.__zntc_require = __zntc_require;
+    \\  g.__zntc_register = __zntc_register;
+    \\  g.__zntc_load_chunk = __zntc_load_chunk;
+    \\})(typeof globalThis !== "undefined" ? globalThis : this);
+    \\
+;
+pub const ZNTC_REGISTRY_RUNTIME_MIN =
+    "(function(g){if(g.__zntc_require)return;" ++
+    "var __zntc_mods={},__zntc_cache={};" ++
+    "function __zntc_require(id){var c=__zntc_cache[id];if(c)return c.exports;" ++
+    "var m={exports:{}};__zntc_cache[id]=m;(0,__zntc_mods[id])(m.exports,m,__zntc_require);return m.exports}" ++
+    "function __zntc_register(map){for(var k in map)__zntc_mods[k]=map[k]}" ++
+    "function __zntc_load_chunk(spec){return Promise.resolve().then(function(){require(spec)})}" ++
+    "g.__zntc_require=__zntc_require;g.__zntc_register=__zntc_register;g.__zntc_load_chunk=__zntc_load_chunk;" ++
+    "})(typeof globalThis!==\"undefined\"?globalThis:this);";
+
+/// 런타임 require 레지스트리(`__zntc_mods`/`__zntc_require`/`__zntc_register`/
+/// `__zntc_load_chunk`)를 buf 에 1회 주입. CJS/IIFE code splitting 의 엔트리
+/// 청크 프렐류드용(P3-B). 멱등 가드 내장 — 호출부 중복 방지 부담 없음.
+pub fn appendZntcRegistry(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
+    try buf.appendSlice(allocator, if (minify) ZNTC_REGISTRY_RUNTIME_MIN else ZNTC_REGISTRY_RUNTIME);
+}
+
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
 /// var foo_exports = {}; __export(foo_exports, { greet: () => greet });
 /// __defProp은 __toESM 런타임에 이미 정의됨.
@@ -1423,4 +1483,52 @@ pub fn appendHmrRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, m
     } else {
         try buf.appendSlice(allocator, HMR_RUNTIME);
     }
+}
+
+// ============================================================
+// Tests — P3-B 레지스트리 런타임 구조 불변식
+// ============================================================
+// (행동 검증은 PR2 integration/e2e + 디리스크 스파이크가 Node CJS 에서 증명.
+//  여기선 cross-file 계약·멱등·minify 구조 불변식만.)
+
+const testing = std.testing;
+
+test "ZNTC_REGISTRY_RUNTIME: cross-file 계약 이름 + globalThis 바인딩" {
+    // normal/min 모두에 byte-동일하게 나타나는 토큰만 검사(spaced/unspaced
+    // OR 분기 제거 — 둘 다 충족해야 통과 → 계약 드리프트·normal↔min 양쪽 포착).
+    inline for (.{ ZNTC_REGISTRY_RUNTIME, ZNTC_REGISTRY_RUNTIME_MIN }) |src| {
+        // 3개 계약 함수 정의 (선언부는 min 도 공백 없음 → 양쪽 동일)
+        try testing.expect(std.mem.indexOf(u8, src, "function __zntc_require(id)") != null);
+        try testing.expect(std.mem.indexOf(u8, src, "function __zntc_register(map)") != null);
+        try testing.expect(std.mem.indexOf(u8, src, "function __zntc_load_chunk(spec)") != null);
+        // globalThis 노출 (g.__zntc_X 다음이 '=' → assignment, 양쪽 공통 substring)
+        try testing.expect(std.mem.indexOf(u8, src, "g.__zntc_require=") != null or
+            std.mem.indexOf(u8, src, "g.__zntc_require =") != null);
+        try testing.expect(std.mem.indexOf(u8, src, "g.__zntc_register") != null);
+        try testing.expect(std.mem.indexOf(u8, src, "g.__zntc_load_chunk") != null);
+        // 멱등 가드 — `g.__zntc_require)` 는 가드에만 존재(assignment 는 '=' 가
+        // 뒤따름), normal/min 양쪽 byte-동일 → 가드 정확히 핀.
+        try testing.expect(std.mem.indexOf(u8, src, "g.__zntc_require)") != null);
+        // self-register 청크가 도달할 globalThis 폴백
+        try testing.expect(std.mem.indexOf(u8, src, "globalThis") != null);
+        // require 캐시(상태 보존) — 스파이크가 count 1→2→3 으로 증명한 경로
+        try testing.expect(std.mem.indexOf(u8, src, "__zntc_cache[id]") != null);
+    }
+}
+
+test "ZNTC_REGISTRY_RUNTIME_MIN: 개행 없음(연속 emit 안전)" {
+    try testing.expect(std.mem.indexOfScalar(u8, ZNTC_REGISTRY_RUNTIME_MIN, '\n') == null);
+    // 후행 ';' — 뒤따르는 청크 코드와 문법 경계(다른 *_MIN 런타임 규약과 동일)
+    try testing.expectEqual(@as(u8, ';'), ZNTC_REGISTRY_RUNTIME_MIN[ZNTC_REGISTRY_RUNTIME_MIN.len - 1]);
+}
+
+test "appendZntcRegistry: minify 분기" {
+    const a = testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(a);
+    try appendZntcRegistry(&buf, a, false);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "\n") != null); // normal=다행
+    buf.clearRetainingCapacity();
+    try appendZntcRegistry(&buf, a, true);
+    try testing.expect(std.mem.indexOfScalar(u8, buf.items, '\n') == null); // min=1행
 }
