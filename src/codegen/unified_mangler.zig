@@ -16,6 +16,7 @@
 //!   4. 구 API / Symbol.canonical_name 제거
 
 const std = @import("std");
+const builtin = @import("builtin");
 const mangler = @import("mangler.zig");
 const debug_log = @import("../debug_log.zig");
 const Scope = @import("../semantic/scope.zig").Scope;
@@ -286,6 +287,22 @@ pub fn mangleAll(
         var it = take.iterator();
         const mod_idx: u32 = @intCast(i);
         while (it.next()) |entry| {
+            // RFC #3288 (a) collision invariant: Phase B 가 발급한 nested 이름은
+            // per_mod_reserved[i] (= Phase A this-module + cross-module import
+            // source mangled 이름 = 그 모듈에서 회피해야 할 외부 top-level 집합)
+            // 와 절대 겹치면 안 된다. nextNonReservedBase54Name 의 회피 로직이
+            // 이를 보장하므로 정상 경로에선 fire 0. fire 하면 bare scope-hoist
+            // 후 같은 top-level scope 에서 동일 이름 → silent broken (예: `.alias`
+            // re-export source 가 per_mod_reserved 누락 시). debug 빌드 안전망 —
+            // (c) 코어 통합이 1-char 압력을 키우기 전에 정합성을 기계 증명.
+            if (builtin.mode == .Debug) {
+                if (per_mod_reserved[i].contains(entry.value_ptr.*)) {
+                    std.debug.panic(
+                        "RFC#3288 collision: module {d} nested '{s}' shadows reserved top-level name (silent-broken)",
+                        .{ mod_idx, entry.value_ptr.* },
+                    );
+                }
+            }
             const key: ModuleSymKey = .{ .module_index = mod_idx, .symbol_id = entry.key_ptr.* };
             renames.putAssumeCapacity(key, entry.value_ptr.*);
         }
