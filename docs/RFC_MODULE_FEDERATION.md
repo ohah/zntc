@@ -186,6 +186,11 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 
 웹(P1~P3)을 RN(P4~)에 블로킹하지 않는다.
 
+> **P3(CJS/IIFE code splitting, 백로그 #3321)과의 통합**: `docs/RFC_CJS_IIFE_CODE_SPLITTING.md` 가
+> 요구하는 런타임 require 레지스트리·안정 모듈 ID 는 본 RFC §4.1 의 "연합 경계 안정 모듈 ID +
+> registry/container" 와 **같은 하위 인프라**다. **MF P1 착수 시 별도 구현 금지** — 그 RFC 의
+> P3-A(최소 require 레지스트리)를 하위 계층으로, MF container 를 상위 계층으로 수렴시킨다.
+
 ---
 
 ## 8. 디리스크: 스파이크 0 (RN 최우선 검증)
