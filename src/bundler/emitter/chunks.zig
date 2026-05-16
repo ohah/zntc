@@ -534,7 +534,7 @@ pub fn emitChunks(
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-            const code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids);
+            const code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker);
             defer allocator.free(code);
 
             // entry 모듈(또는 preserve-modules의 단일 모듈)의 directive prologue 추출.
@@ -1182,6 +1182,7 @@ fn rewriteDynamicImports(
     out_ext: []const u8,
     emit_options: *const EmitOptions,
     reg_ids: []const []const u8,
+    linker: ?*const Linker,
 ) ![]const u8 {
     // dynamic import가 없으면 그대로 복사해서 반환
     if (module.import_records.len == 0) {
@@ -1220,10 +1221,23 @@ fn rewriteDynamicImports(
 
         const same_chunk = source_chunk_idx != .none and target_chunk_idx == source_chunk_idx;
 
-        // inlineDynamicImports + same-chunk: `import("./x")` 호출을 wrap factory 호출로
-        // 재작성. ESM 래핑은 `(init_x(), exports_x)`, CJS 는 `require_x()` 패턴.
-        if (same_chunk and graph.inline_dynamic_imports) {
+        // same-chunk: 대상이 이 청크에 병합됨(manualChunks/auto/inline) → 별도
+        // 청크 파일이 없다. raw `import("./x")` 를 그대로 두면 런타임에
+        // ERR_MODULE_NOT_FOUND (`./x` 파일 부재) — inline_dynamic_imports 여부와
+        // 무관하게 *항상* 깨지므로 항상 재작성한다(기존 `inline_dynamic_imports`
+        // 게이트는 manualChunks 병합 시 same-chunk 동적 import 를 깨뜨리는
+        // 잠재 버그였음). 대상 wrap_kind 별:
+        //  .esm → Promise.resolve().then(()=>(init(),exports))
+        //  .cjs → Promise.resolve().then(()=>require_x())
+        //  .none(스코프 호이스팅) → 대상의 `.local` export 만 namespace 객체로
+        //    스냅샷(esbuild 동일 — 같은 청크 동적 import 는 값 복사, live-binding
+        //    아님). re-export 계열(.re_export/.star/.namespace)은 제외: 그 심볼은
+        //    이 청크에 로컬 식별자로 바인딩됐다는 보장이 없어(타 청크 binding 을
+        //    cross-chunk import 배선으로 참조) 객체에 넣으면 ReferenceError. 키가
+        //    JS 식별자가 아니면(ES2022 string export) quote.
+        if (same_chunk) {
             const target_mod = graph.getModule(rec.resolved) orelse continue;
+            const tmi: u32 = rec.resolved.toU32();
             const replacement_expr = switch (target_mod.wrap_kind) {
                 .esm => blk: {
                     const init_name = try target_mod.allocInitName(allocator);
@@ -1237,7 +1251,36 @@ fn rewriteDynamicImports(
                     defer allocator.free(require_name);
                     break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
                 },
-                .none => continue,
+                .none => blk: {
+                    // namespace 객체 합성: { <exported>: <청크-로컬 이름>, ... }
+                    // 청크-로컬 이름은 linker.getCanonicalForExport(kind-aware,
+                    // .local 은 symbol-ref→safeIdentifierName) 로 해석.
+                    var ns: std.ArrayList(u8) = .empty;
+                    errdefer ns.deinit(allocator);
+                    try ns.appendSlice(allocator, "Promise.resolve().then(()=>({");
+                    var n: usize = 0;
+                    for (target_mod.export_bindings) |eb| {
+                        if (eb.kind != .local) continue; // re-export 계열 제외(상단 주석)
+                        const exported = eb.exported_name;
+                        const local = if (linker) |l|
+                            l.getCanonicalForExport(eb, tmi)
+                        else
+                            target_mod.exportBindingLocalName(eb);
+                        if (n > 0) try ns.append(allocator, ',');
+                        if (isAsciiJsIdent(exported)) {
+                            try ns.appendSlice(allocator, exported);
+                        } else {
+                            // ES2022 string export 등 비식별자 → quote(객체 키로
+                            // 항상 합법). parent.appendJsStringLiteral 재사용.
+                            try parent.appendJsStringLiteral(allocator, &ns, exported);
+                        }
+                        try ns.append(allocator, ':');
+                        try ns.appendSlice(allocator, local);
+                        n += 1;
+                    }
+                    try ns.appendSlice(allocator, "}))");
+                    break :blk try ns.toOwnedSlice(allocator);
+                },
             };
             defer allocator.free(replacement_expr);
 
@@ -1248,9 +1291,6 @@ fn rewriteDynamicImports(
             }
             continue;
         }
-
-        // 그 외 same-chunk 는 specifier 그대로 (런타임 위임 — A 범위 잔여 동작)
-        if (same_chunk) continue;
 
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
@@ -1546,6 +1586,19 @@ fn buildPlaceholder(chunk: *const Chunk, ph: *[HASH_PLACEHOLDER_PREFIX.len + HAS
     @memcpy(ph[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
     const idx_hash = chunkIndexHash(chunk);
     _ = std.fmt.bufPrint(ph[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
+}
+
+/// ASCII JS 식별자 여부(보수적: 비-ASCII 는 false → 호출부가 quote, 객체
+/// 키로 항상 합법이라 안전). 빈 문자열 false.
+fn isAsciiJsIdent(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s, 0..) |c, i| {
+        const ok = (c == '_' or c == '$' or
+            (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or
+            (i > 0 and c >= '0' and c <= '9'));
+        if (!ok) return false;
+    }
+    return true;
 }
 
 /// IIFE splitting 의 청크 레지스트리 키(allocator 소유).
