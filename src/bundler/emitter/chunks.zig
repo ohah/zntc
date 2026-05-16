@@ -62,14 +62,16 @@ pub fn emitChunks(
     linker: ?*Linker,
 ) ![]OutputFile {
     const module_count = graph.moduleCount();
-    // Code splitting / preserve-modules 모두 ESM 출력만 지원 — CJS/IIFE 에는 네이티브
-    // import() 가 없다. 두 경로가 같은 제약을 공유하지만 caller 가 켠 옵션에 맞는 error
-    // name 으로 분기 — preserveModules 만 켠 사용자에게 "CodeSplitting..." 에러는 misleading.
+    // code splitting 은 ESM 전용(네이티브 import() 필요). preserve-modules 는
+    // 모듈 1:1 파일이라 CJS 도 가능(Node 네이티브 require 가 경로로 해석, P3-A
+    // #3321). IIFE/UMD/AMD 는 아직 미지원.
     if (options.format != .esm) {
-        return if (options.preserve_modules)
-            error.PreserveModulesRequiresESM
-        else
-            error.CodeSplittingRequiresESM;
+        // emitChunks 내: preserve_modules=false → code splitting 경로(ESM 전용),
+        // preserve_modules=true → 모듈 1:1 파일(CJS 도 가능, 그 외 포맷 불가).
+        if (!options.preserve_modules)
+            return error.CodeSplittingRequiresESM;
+        if (options.format != .cjs)
+            return error.PreserveModulesRequiresESM;
     }
 
     // splitting / manualChunks 모드에서도 namespace import 의 object literal 을
@@ -247,6 +249,11 @@ pub fn emitChunks(
             alias_strs.deinit(allocator);
         }
 
+        // preserve-modules + CJS (P3-A): cross-module 결합을 ESM import 대신
+        // `const {x}=require("...")` / `require("...")` 로 (codegen 이 export 측은
+        // 이미 exports.x 로 CJS 화). 내부 모듈 본문은 그대로.
+        const pm_cjs = options.preserve_modules and options.format == .cjs;
+
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
             var dep_buf: [128]u8 = undefined;
@@ -267,9 +274,9 @@ pub fn emitChunks(
             if (symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, "import { ");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "const { " else "import { ");
                 } else {
-                    try chunk_output.appendSlice(allocator, "import{");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "const{" else "import{");
                 }
                 // 결정론적 출력을 위해 심볼명 정렬
                 std.mem.sort([]const u8, symbols.?.items, {}, types.stringLessThan);
@@ -284,7 +291,7 @@ pub fn emitChunks(
                         const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ name, seen });
                         try alias_strs.append(allocator, alias);
                         try chunk_output.appendSlice(allocator, name);
-                        try chunk_output.appendSlice(allocator, " as ");
+                        try chunk_output.appendSlice(allocator, if (pm_cjs) ": " else " as ");
                         try chunk_output.appendSlice(allocator, alias);
                     } else {
                         try chunk_output.appendSlice(allocator, name);
@@ -298,24 +305,24 @@ pub fn emitChunks(
                     }
                 }
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, " } from \"");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) " } = require(\"" else " } from \"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, "\";\n");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");\n" else "\";\n");
                 } else {
-                    try chunk_output.appendSlice(allocator, "}from\"");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "}=require(\"" else "}from\"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, "\";");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");" else "\";");
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, "import \"");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "require(\"" else "import \"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, "\";\n");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");\n" else "\";\n");
                 } else {
-                    try chunk_output.appendSlice(allocator, "import\"");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "require(\"" else "import\"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, "\";");
+                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");" else "\";");
                 }
             }
         }
