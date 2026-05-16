@@ -382,6 +382,14 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
     for (records, 0..) |record, rec_i| {
         if (record.kind == .glob) continue;
         if (record.kind == .require_context) continue;
+        if (record.kind == .dynamic_import) {
+            if (record.dynamic_invalid_reason) |reason| {
+                // 비-literal dynamic import: warning 후 resolved=.none 유지 →
+                // chunk/codegen 무시(원본 import() 네이티브 passthrough).
+                self.addDiag(.unresolved_import, .warning, module_path, record.span, .resolve, reason, null);
+                continue;
+            }
+        }
         if (record.resolved != .none or record.is_external) continue;
         const should_link = graph_requested_exports.shouldLinkResolvedRecordForModule(self, mod_idx, rec_i, record);
 

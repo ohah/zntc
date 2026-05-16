@@ -460,7 +460,16 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
     if (arg_idx.isNone()) return null;
 
     const arg_node = ast.getNode(arg_idx);
-    if (arg_node.tag != .string_literal) return null;
+    if (arg_node.tag != .string_literal) {
+        // 비-literal specifier: record(빈 specifier + reason). resolve 단계가
+        // warning 후 resolved=.none 유지 → chunk/codegen 무시(native passthrough).
+        return .{
+            .specifier = "",
+            .kind = .dynamic_import,
+            .span = arg_node.span,
+            .dynamic_invalid_reason = scan_results.dynamic_import_non_literal_reason,
+        };
+    }
 
     const specifier = stripQuotes(ast.getText(arg_node.span)) orelse return null;
 

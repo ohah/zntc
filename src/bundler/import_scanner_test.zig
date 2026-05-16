@@ -239,11 +239,31 @@ test "dynamic import (string literal)" {
     try std.testing.expectEqual(ImportKind.dynamic_import, records[0].kind);
 }
 
-test "dynamic import (computed) — not extracted" {
+test "dynamic import (computed) — marked invalid (not code-split, native passthrough)" {
     const alloc = std.testing.allocator;
     const records = try parseAndExtract(alloc, "const m = import(foo);");
     defer alloc.free(records);
-    try std.testing.expectEqual(@as(usize, 0), records.len);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqual(ImportKind.dynamic_import, records[0].kind);
+    try std.testing.expectEqualStrings("", records[0].specifier);
+    try std.testing.expect(records[0].dynamic_invalid_reason != null);
+}
+
+test "dynamic import (template literal) — marked invalid" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc, "const m = import(`./m-${n}.js`);");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].dynamic_invalid_reason != null);
+    try std.testing.expectEqualStrings("", records[0].specifier);
+}
+
+test "dynamic import (string literal) — not marked invalid" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc, "const m = import('./lazy');");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].dynamic_invalid_reason == null);
 }
 
 test "multiple imports" {

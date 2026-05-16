@@ -40,6 +40,10 @@ pub const DefineEntry = struct {
 };
 
 /// 파서가 수집하는 import 레코드. bundler ImportRecord의 경량 버전.
+/// 비-literal dynamic import() specifier 경고 메시지 (parser/scanner 공용).
+pub const dynamic_import_non_literal_reason =
+    "dynamic import() requires a string literal specifier; non-literal (variable/template/concatenated) specifiers are left as native runtime import() and not code-split";
+
 pub const ScanImportRecord = struct {
     /// 원본 import 경로 (따옴표 제거됨, 소스 코드 참조)
     specifier: []const u8,
@@ -63,6 +67,9 @@ pub const ScanImportRecord = struct {
     context_mode: RequireContextMode = .sync,
     /// require.context: invalid 인자 reason (graph 가 BundlerDiagnostic 으로 변환)
     context_invalid_reason: ?[]const u8 = null,
+    /// dynamic import(): 비-literal specifier reason. graph resolve 가 warning
+    /// 으로 변환, record 는 resolved=.none 유지 → native import() passthrough.
+    dynamic_invalid_reason: ?[]const u8 = null,
 };
 
 /// import 바인딩 종류.

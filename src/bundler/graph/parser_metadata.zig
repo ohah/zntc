@@ -47,6 +47,7 @@ pub fn materialize(
                 .context_filter_flags = sr.context_filter_flags,
                 .context_mode = ctx_mode,
                 .context_invalid_reason = sr.context_invalid_reason,
+                .dynamic_invalid_reason = sr.dynamic_invalid_reason,
             };
         }
         module.import_records = records;
