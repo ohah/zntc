@@ -47,7 +47,7 @@ fn getOrCreateCjsRequireRef(
     if (cache.get(mod_idx)) |cached| return cached;
 
     const target_mod = self.getModule(mod_idx).?;
-    const ref = try std.fmt.allocPrint(self.allocator, "__zntc_modules[\"{s}\"].fn", .{target_mod.dev_id});
+    const ref = try types.fmtDevRequireRef(self.allocator, target_mod.dev_id);
     try cache.put(mod_idx, ref);
     return ref;
 }
@@ -1004,7 +1004,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
                 self.allocator.free(old);
             }
             const req_ref = if (self.dev_mode)
-                try std.fmt.allocPrint(self.allocator, "(__zntc_modules[\"{s}\"].fn())", .{target_mod.dev_id})
+                try types.fmtDevRequireCallExpr(self.allocator, target_mod.dev_id)
             else
                 try target_mod.allocRequireName(self.allocator);
             try require_rewrites.put(self.allocator, rec.specifier, req_ref);

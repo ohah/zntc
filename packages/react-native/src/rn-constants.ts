@@ -38,6 +38,18 @@ export function resolveRnPolyfills(projectRoot: string): string[] {
 }
 
 /**
+ * RN core packages — Metro/RN 은 이 패키지들의 인스턴스가 번들에 단 하나만
+ * 존재한다고 가정한다 (InitializeCore / DevTools / Fabric singleton). pnpm 처럼
+ * `.pnpm/<dep>/node_modules/react-native` 같은 peer farm 이 노출되면 동일 패키지의
+ * 별도 module id 가 만들어져 InitializeCore 가 두 번 실행될 수 있다 → alias 로 강제.
+ */
+export const RN_SINGLETON_PACKAGES = [
+  'react',
+  'react-native',
+  'react-native-safe-area-context',
+] as const;
+
+/**
  * RN reserved global identifiers (RN 0.83 기준 — minor 마다 변할 수 있어 audit 필요).
  * `polyfillGlobal()` 로 등록되는 native global — scope hoisting 시 shadowing 회피.
  */
