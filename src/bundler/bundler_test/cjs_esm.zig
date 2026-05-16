@@ -1973,9 +1973,9 @@ test "CJS: ESM-wrapped named import from CJS — namespace rename must survive c
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry, Handle}=") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry}=") == null);
 
-    // 올바른 형태: CJS named import는 별도 top-level var를 만들지 않고
-    // require 결과의 property access를 직접 참조한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib().Registry.getEnforcing(") != null);
+    // 올바른 형태: dev 모드 CJS named import는 별도 top-level var를 만들지 않고
+    // HMR-safe registry lookup (`__zntc_modules["..."].fn()`) 의 property access 를 직접 참조한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"].fn().Registry.getEnforcing(") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Registry.getEnforcing(") != null);
 }
 
@@ -2017,8 +2017,10 @@ test "CJS: ESM-wrapped named import from CJS barrel with getter re-exports stays
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_index().Stack.Screen") != null);
+    // dev 모드 CJS named import 는 HMR-safe `__zntc_modules["..."].fn().Stack.Screen` 형태.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"].fn().Stack.Screen") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Stack = require_index().Stack;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Stack = __zntc_modules[") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_index()).Stack") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({Stack}") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__ns_") == null);
@@ -2045,7 +2047,9 @@ test "CJS: ESM-wrapped default import from CJS gets preamble assignment" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = require_lib();") != null);
+    // dev 모드 ESM-wrapped default import 는 `value = __zntc_modules["..."].fn();` 형태.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = __zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"].fn();") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "value = __toESM(require_lib()).default;") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({value}") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "value;") != null);
