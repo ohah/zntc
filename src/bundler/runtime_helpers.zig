@@ -240,8 +240,15 @@ pub const ZNTC_REGISTER_INSTALL =
 pub const ZNTC_IIFE_GLOBAL = "(typeof globalThis!==\"undefined\"?globalThis:this)";
 
 /// entry 청크 전용 해석 계층 — `__zntc_require`(모듈ID→factory, 캐시) +
-/// 브라우저 `<script>` 주입 동적 로더(`__zntc_load_chunk`, public_path 기반,
-/// Promise 캐시). `if(!g.__zntc_require)` 멱등 가드. 스파이크 검증 형태.
+/// 환경 감지 동적 로더(`__zntc_load_chunk`, public_path 기반, Promise 캐시):
+/// DOM → `<script>` 주입 / Web Worker(`importScripts`) → importScripts /
+/// 그 외(Deno·Node-ESM·번들 eval) → 동적 `import(url)`. self-register
+/// payload 라 평가만 되면 됨. `if(!g.__zntc_require)` 멱등 가드. (PR4 비-DOM
+/// 폴백 — 기존 DOM 전용은 worker/Deno 에서 `document is not defined`.)
+/// 베이스라인: 동적 `import()` 지원(code-splitting 가능한 모든 현대 엔진의
+/// 공통 전제 — webpack/rollup/esbuild splitting 런타임과 동일하게 리터럴
+/// emit; eval/Function 우회는 CSP 적대적이라 미채택). 비-DOM 분기는 url 이
+/// 해석 가능해야 함 → public_path 를 절대/URL 로 설정(호스트 책임).
 ///
 /// TODO(P3-C): `__zntc_require`/캐시 코어가 PR1 `ZNTC_REGISTRY_RUNTIME`
 /// (현재 dormant, CJS-Node 로더 바인딩) 과 의도상 동일. MF P1 수렴 시
@@ -262,12 +269,19 @@ pub const ZNTC_IIFE_RESOLVE_BROWSER =
     \\  };
     \\  g.__zntc_load_chunk = function (spec) {
     \\    if (__zntc_cs[spec]) return __zntc_cs[spec];
+    \\    var url = (g.__zntc_public_path || "") + spec;
     \\    return (__zntc_cs[spec] = new Promise(function (res, rej) {
-    \\      var s = document.createElement("script");
-    \\      s.src = (g.__zntc_public_path || "") + spec;
-    \\      s.onload = function () { res(); };
-    \\      s.onerror = function () { rej(new Error("chunk load failed: " + spec)); };
-    \\      document.head.appendChild(s);
+    \\      if (typeof document !== "undefined" && document.createElement) {
+    \\        var s = document.createElement("script");
+    \\        s.src = url;
+    \\        s.onload = function () { res(); };
+    \\        s.onerror = function () { rej(new Error("chunk load failed: " + spec)); };
+    \\        document.head.appendChild(s);
+    \\      } else if (typeof importScripts === "function") {
+    \\        try { importScripts(url); res(); } catch (e) { rej(e); }
+    \\      } else {
+    \\        Promise.resolve().then(function () { return import(url); }).then(function () { res(); }, rej);
+    \\      }
     \\    }));
     \\  };
     \\})(typeof globalThis !== "undefined" ? globalThis : this);
@@ -278,9 +292,13 @@ pub const ZNTC_IIFE_RESOLVE_BROWSER_MIN =
     "g.__zntc_require=function(id){var c=__zntc_cache[id];if(c)return c.exports;" ++
     "var m={exports:{}};__zntc_cache[id]=m;(0,g.__zntc_mods[id])(m.exports,m,g.__zntc_require);return m.exports};" ++
     "g.__zntc_load_chunk=function(spec){if(__zntc_cs[spec])return __zntc_cs[spec];" ++
-    "return __zntc_cs[spec]=new Promise(function(res,rej){var s=document.createElement(\"script\");" ++
-    "s.src=(g.__zntc_public_path||\"\")+spec;s.onload=function(){res()};" ++
-    "s.onerror=function(){rej(new Error(\"chunk load failed: \"+spec))};document.head.appendChild(s)})};" ++
+    "var url=(g.__zntc_public_path||\"\")+spec;" ++
+    "return __zntc_cs[spec]=new Promise(function(res,rej){" ++
+    "if(typeof document!==\"undefined\"&&document.createElement){var s=document.createElement(\"script\");" ++
+    "s.src=url;s.onload=function(){res()};" ++
+    "s.onerror=function(){rej(new Error(\"chunk load failed: \"+spec))};document.head.appendChild(s)}" ++
+    "else if(typeof importScripts===\"function\"){try{importScripts(url);res()}catch(e){rej(e)}}" ++
+    "else{Promise.resolve().then(function(){return import(url)}).then(function(){res()},rej)}})};" ++
     "})(typeof globalThis!==\"undefined\"?globalThis:this);";
 
 /// entry 청크에 해석 계층(브라우저)을 1회 주입.
