@@ -253,4 +253,32 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     const { stdout } = await runNode(join(fixture.dir, entry.path));
     expect(stdout).toBe('K1 AV PG');
   });
+
+  // [알려진 한계 — 깊은 후속, RFC §7] `export * as ns from "./y"`(y 별도
+  // 청크) + `import { ns } from` cross-chunk 소비. 단일번들은 ns 객체를
+  // 합성하지 않고 `ns.a`→`a` 멤버접근 elision 으로 동작 — cross-chunk 에선
+  // importer 청크에 멤버 `a` 가 미바인딩(computeCrossChunkLinks 가
+  // namespace-멤버-접근 resolution 을 소비 안 함) → link 실패. 다른 4개
+  // re-export-family 버그(#3350/#3354/#3351/#3353)와 달리 bounded 아님 —
+  // linker static-member resolution 연계 깊은 seam 필요. 수정/회귀 시
+  // skip 해제하면 loud(추적용).
+  test.skip('[KNOWN-LIMITATION] export * as ns cross-chunk → namespace 멤버 미바인딩', async () => {
+    const fixture = await createFixture({
+      'inner.ts': `export const a = "A";\nexport const b = "B";`,
+      'page.ts': `export * as inner from "./inner";\nexport const pv = "PV";`,
+      'index.ts': `import { inner, pv } from "./page";\nasync function m(){ const d = await import("./page"); console.log(inner.a + " " + pv + " " + d.inner.b); }\nm();`,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+    });
+    writeOutputs(fixture.dir, result.outputFiles!);
+    const entry = result.outputFiles!.find(
+      (o) => o.path.includes('index') && o.path.endsWith('.js'),
+    )!;
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('A PV B'); // 현재 실패(link error) — 수정 시 통과
+  });
 });
