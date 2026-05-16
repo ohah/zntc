@@ -91,6 +91,18 @@ pub const MangleInput = struct {
     /// `external_reserved` 가 *per-module* (예: Phase A 의 이 모듈 mangled 이름)
     /// 라면 본 필드는 *전 모듈 공통* (예: runtime helper 이름) 으로 분리된다.
     external_reserved_global: ?*const std.StringHashMap(void) = null,
+    /// RFC #3288 c2 인프라: set 된 symbol 은 liveness 초기화를 *선언 scope
+    /// 단독* 으로 한다 (`markScopeSubtree` 대신). references 의 ancestor-path
+    /// 마킹은 그대로라, 결과 liveness = 선언 scope + 실제 참조 경로 (reference-
+    /// precise). 이를 통해 그 symbol 을 free-ref 하지 않는 nested scope 가 같은
+    /// slot(1-char) 을 안전하게 재사용 — esbuild/oxc top-level↔nested 공유 모델.
+    ///
+    /// **정확성 불변식**: 이 집합의 symbol 은 *모든 사용처* 가 `references` 에
+    /// 등장해야 한다 (누락 시 under-mark → nested 가 잘못 재사용 → silent
+    /// broken). top-level (scope 0) 처럼 subtree 가 모듈 전체라 항상 disjoint
+    /// 실패하던 binding 을 reference 기반으로 정밀화하는 용도. caller 소유 유지.
+    /// default=null → 전 symbol `markScopeSubtree` (기존 동작 byte-identical).
+    precise_liveness: ?*const std.DynamicBitSet = null,
 };
 
 /// Liveness 기반 mangling.
@@ -157,7 +169,20 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     // scope 가 같아 이미 충돌 (intersect) 처리되므로 영향 없음.
     for (symbols, 0..) |sym, i| {
         if (!sym.scope_id.isNone() and sym.scope_id.toIndex() < scope_count) {
-            markScopeSubtree(&symbol_liveness[i], children, sym.scope_id.toIndex());
+            const decl_idx = sym.scope_id.toIndex();
+            const precise = if (input.precise_liveness) |pl|
+                i < pl.capacity() and pl.isSet(i)
+            else
+                false;
+            if (precise) {
+                // 선언 scope 단독 — subtree 생략. references 의 ancestor-path
+                // 마킹(아래)이 실제 사용 scope 만 정밀 추가 → free-ref 없는
+                // nested 가 slot 재사용 가능. 불변식: 사용처가 references 에
+                // 완전히 등장해야 함 (MangleInput.precise_liveness 주석 참조).
+                symbol_liveness[i].set(decl_idx);
+            } else {
+                markScopeSubtree(&symbol_liveness[i], children, decl_idx);
+            }
         }
     }
 
@@ -782,4 +807,143 @@ test "markScopeSubtree: leaf scope 은 자기 자신만 set" {
     markScopeSubtree(&liveness, children, 1);
     try std.testing.expect(liveness.isSet(1));
     try std.testing.expect(!liveness.isSet(0));
+}
+
+test "precise_liveness: free-ref 없는 nested 가 top-level slot 재사용 (RFC #3288 c2 인프라)" {
+    const allocator = std.testing.allocator;
+
+    // scope tree:  0(global) ├─ 1(fn, aa 참조)  └─ 2(fn, bb 선언·참조, aa 미참조)
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+    };
+    const stb: u32 = 0x80000000;
+    const symbols = [_]Symbol{
+        .{ // 0: aa — top-level (scope 0). subtree=모듈전체라 기존엔 항상 disjoint 실패
+            .name = .{ .start = stb, .end = stb + 2 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = Span{ .start = stb, .end = stb + 2 },
+            .reference_count = 1,
+            .synthetic_name = "aa",
+        },
+        .{ // 1: bb — scope 2 nested. aa 를 free-ref 안 함
+            .name = .{ .start = stb, .end = stb + 2 },
+            .scope_id = @enumFromInt(2),
+            .origin_scope = @enumFromInt(2),
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = Span{ .start = stb, .end = stb + 2 },
+            .reference_count = 1,
+            .synthetic_name = "bb",
+        },
+    };
+    var s0 = std.StringHashMap(usize).init(allocator);
+    defer s0.deinit();
+    try s0.put("aa", 0);
+    var s1 = std.StringHashMap(usize).init(allocator);
+    defer s1.deinit();
+    var s2 = std.StringHashMap(usize).init(allocator);
+    defer s2.deinit();
+    try s2.put("bb", 1);
+    const scope_maps = [_]std.StringHashMap(usize){ s0, s1, s2 };
+    const refs = [_]Reference{
+        .{ .node_index = @enumFromInt(0), .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = @enumFromInt(1), .scope_id = @enumFromInt(2), .symbol_id = @enumFromInt(1), .flags = .{ .read = true } },
+    };
+
+    // (1) precise_liveness=null → aa subtree(0)={0,1,2} ∩ bb subtree(2)={2} ≠ ∅
+    //     → 다른 slot → 다른 이름 (기존 동작, 회귀 0 보장).
+    var r_def = try mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &refs,
+        .source = "",
+    });
+    defer r_def.deinit();
+    try std.testing.expect(!std.mem.eql(u8, r_def.renames.get(0).?, r_def.renames.get(1).?));
+
+    // (2) precise_liveness={0} → aa={0}∪path(1→0)={0,1} ∩ bb subtree(2)={2} = ∅
+    //     → 같은 slot 재사용 → 같은 이름 (esbuild/oxc top-level↔nested 공유).
+    var pl = try std.DynamicBitSet.initEmpty(allocator, symbols.len);
+    defer pl.deinit();
+    pl.set(0);
+    var r_pre = try mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &refs,
+        .source = "",
+        .precise_liveness = &pl,
+    });
+    defer r_pre.deinit();
+    try std.testing.expectEqualStrings(r_pre.renames.get(0).?, r_pre.renames.get(1).?);
+}
+
+test "precise_liveness: 참조되는 scope 의 nested 와는 여전히 slot 분리 (shadow-safety, silent-broken 방지)" {
+    const allocator = std.testing.allocator;
+
+    // 위와 동일 tree, 단 aa 가 scope 2 에서도 참조됨 → bb 와 같은 이름이면
+    // scope 2 에서 aa 가 bb 에 가려져 silent broken. precise 라도 분리돼야 함.
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+    };
+    const stb: u32 = 0x80000000;
+    const symbols = [_]Symbol{
+        .{
+            .name = .{ .start = stb, .end = stb + 2 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = Span{ .start = stb, .end = stb + 2 },
+            .reference_count = 2,
+            .synthetic_name = "aa",
+        },
+        .{
+            .name = .{ .start = stb, .end = stb + 2 },
+            .scope_id = @enumFromInt(2),
+            .origin_scope = @enumFromInt(2),
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = Span{ .start = stb, .end = stb + 2 },
+            .reference_count = 1,
+            .synthetic_name = "bb",
+        },
+    };
+    var s0 = std.StringHashMap(usize).init(allocator);
+    defer s0.deinit();
+    try s0.put("aa", 0);
+    var s1 = std.StringHashMap(usize).init(allocator);
+    defer s1.deinit();
+    var s2 = std.StringHashMap(usize).init(allocator);
+    defer s2.deinit();
+    try s2.put("bb", 1);
+    const scope_maps = [_]std.StringHashMap(usize){ s0, s1, s2 };
+    const refs = [_]Reference{
+        .{ .node_index = @enumFromInt(0), .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = @enumFromInt(2), .scope_id = @enumFromInt(2), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = @enumFromInt(1), .scope_id = @enumFromInt(2), .symbol_id = @enumFromInt(1), .flags = .{ .read = true } },
+    };
+
+    var pl = try std.DynamicBitSet.initEmpty(allocator, symbols.len);
+    defer pl.deinit();
+    pl.set(0);
+    var r = try mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &refs,
+        .source = "",
+        .precise_liveness = &pl,
+    });
+    defer r.deinit();
+    // aa={0}∪path(1→0)∪path(2→0)={0,1,2} ∩ bb subtree(2)={2} ≠ ∅ → 다른 이름.
+    try std.testing.expect(!std.mem.eql(u8, r.renames.get(0).?, r.renames.get(1).?));
 }
