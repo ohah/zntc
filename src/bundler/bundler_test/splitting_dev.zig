@@ -262,7 +262,50 @@ test "CodeSplitting: CJS format succeeds — cross-chunk require + 동적 requir
     try std.testing.expect(has_dyn_require);
 }
 
-test "CodeSplitting: IIFE format still returns CodeSplittingRequiresESM" {
+test "CodeSplitting: IIFE format succeeds — 레지스트리 + self-register factory (P3-B PR3 #3321)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts", "export const s = 'S';");
+    try writeFile(tmp.dir, "lazy.ts", "import { s } from './shared';\nexport const lazy = s;");
+    try writeFile(tmp.dir, "entry.ts", "import { s } from './shared';\nconst x = import('./lazy');\nconsole.log(s, x);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    // PR3: iife + code_splitting 은 더 이상 에러 아님 — 런타임 레지스트리
+    // (`__zntc_*`) + self-register factory + `<script>` 로더(RFC §4.1/§4.3).
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    var has_register = false;
+    var has_require = false;
+    var has_loader = false;
+    var has_factory = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "__zntc_register") != null) has_register = true;
+        if (std.mem.indexOf(u8, o.contents, "__zntc_require(\"") != null) has_require = true;
+        if (std.mem.indexOf(u8, o.contents, "__zntc_load_chunk(\"") != null) has_loader = true;
+        if (std.mem.indexOf(u8, o.contents, "function(exports, module, require)") != null or
+            std.mem.indexOf(u8, o.contents, "function(exports,module,require)") != null) has_factory = true;
+        // IIFE 청크에 ESM import/export 누출 금지.
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\nexport {") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\nimport {") == null);
+    }
+    try std.testing.expect(has_register);
+    try std.testing.expect(has_require);
+    try std.testing.expect(has_loader);
+    try std.testing.expect(has_factory);
+}
+
+test "CodeSplitting: UMD format still returns CodeSplittingRequiresESM" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const x = import('./lazy');\nconsole.log(x);");
@@ -274,10 +317,10 @@ test "CodeSplitting: IIFE format still returns CodeSplittingRequiresESM" {
     var bnd = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .code_splitting = true,
-        .format = .iife,
+        .format = .umd,
     });
     defer bnd.deinit();
-    // iife/umd/amd 는 네이티브 require/import 없음 → PR3 까지 미지원(가드 유지).
+    // umd/amd 는 레지스트리 부트스트랩 상이 → 아직 미지원(후속).
     const result = bnd.bundle();
     try std.testing.expect(result == error.CodeSplittingRequiresESM);
 }
