@@ -103,6 +103,14 @@ pub const MangleInput = struct {
     /// 실패하던 binding 을 reference 기반으로 정밀화하는 용도. caller 소유 유지.
     /// default=null → 전 symbol `markScopeSubtree` (기존 동작 byte-identical).
     precise_liveness: ?*const std.DynamicBitSet = null,
+    /// RFC #3288 M2: per-module `sym_idx → bundle-wide frequency rank`
+    /// (rank 0 = 번들 최다 참조 = 최단 이름 우선). 주어지면 slot 정렬이
+    /// rank 보유 slot 을 먼저(rank 오름차순), 그 다음 기존 total_refs
+    /// 내림차순. Phase A 의 load-bearing 전역 frequency 를 slot 공유
+    /// 모델에서 보존 (c2 +61KB 회귀 정면 회피). null → 기존 total_refs
+    /// 정렬 그대로 (byte-identical). caller 소유. PR-2 inert (미연결);
+    /// PR-3 가 unified_mangler 에서 buildGlobalFrequencyRank 결과 주입.
+    global_freq_rank: ?*const std.AutoHashMap(u32, u32) = null,
 };
 
 /// Liveness 기반 mangling.
@@ -356,7 +364,8 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         };
     }
 
-    // slot 정렬: total_refs 내림차순, 동률이면 slot_id 오름차순
+    // slot 정렬: (M2) rank 보유 slot 먼저 rank 오름차순, 그 다음 기존
+    // total_refs 내림차순, 동률이면 slot_id 오름차순.
     const sorted_slots = try allocator.alloc(SlotSortEntry, slot_count);
     defer allocator.free(sorted_slots);
     for (sorted_slots, 0..) |*entry, i| {
@@ -365,8 +374,26 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
             .total_refs = slots.items[i].total_refs,
         };
     }
+    // 각 slot 의 최소 rank 산출 (slot 은 liveness-disjoint 여러 symbol 공유
+    // 가능 — 그 중 가장 우선순위 높은(rank 작은) symbol 이 slot 우선순위
+    // 결정: 그 symbol 이 최단 이름을 원함). global_freq_rank null 이면 전부
+    // null 유지 → 정렬이 기존과 byte-identical.
+    if (input.global_freq_rank) |gr| {
+        for (0..symbol_count) |si| {
+            const slot_id = symbol_to_slot[si] orelse continue;
+            const r = gr.get(@intCast(si)) orelse continue;
+            const cur = &sorted_slots[slot_id].global_rank;
+            if (cur.* == null or r < cur.*.?) cur.* = r;
+        }
+    }
     std.mem.sortUnstable(SlotSortEntry, sorted_slots, {}, struct {
         fn cmp(_: void, a: SlotSortEntry, b: SlotSortEntry) bool {
+            // rank 보유 slot 이 무rank 보다 항상 먼저, 동시 보유면 rank 오름차순.
+            if (a.global_rank != null and b.global_rank == null) return true;
+            if (a.global_rank == null and b.global_rank != null) return false;
+            if (a.global_rank) |ar| {
+                if (ar != b.global_rank.?) return ar < b.global_rank.?;
+            }
             if (a.total_refs != b.total_refs) return a.total_refs > b.total_refs;
             return a.slot_id < b.slot_id;
         }
@@ -592,6 +619,10 @@ const SymBinding = struct {
 const SlotSortEntry = struct {
     slot_id: u32,
     total_refs: u32,
+    /// RFC #3288 M2: 이 slot 에 속한 symbol 중 최소(최우선) bundle-wide
+    /// frequency rank. null = rank 없는 slot (nested 등) → 기존 total_refs
+    /// 기준. 전 slot null 이면 정렬이 기존과 동일 (byte-identical).
+    global_rank: ?u32 = null,
 };
 
 // ============================================================
@@ -946,4 +977,53 @@ test "precise_liveness: 참조되는 scope 의 nested 와는 여전히 slot 분�
     defer r.deinit();
     // aa={0}∪path(1→0)∪path(2→0)={0,1,2} ∩ bb subtree(2)={2} ≠ ∅ → 다른 이름.
     try std.testing.expect(!std.mem.eql(u8, r.renames.get(0).?, r.renames.get(1).?));
+}
+
+test "global_freq_rank: rank 보유 symbol 이 더 짧은 이름 우선 (RFC #3288 M2 PR-2)" {
+    const allocator = std.testing.allocator;
+    // scope tree: 0(global) ├─ 1(fn)  symbols: aa(rc1, rank0) / bb(rc99, rank없음)
+    // bb 가 total_refs 압도적이나 aa 가 rank 0 → aa 가 먼저(짧은) 이름.
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+    };
+    const stb: u32 = 0x80000000;
+    const symbols = [_]Symbol{
+        .{ .name = .{ .start = stb, .end = stb + 2 }, .scope_id = @enumFromInt(0), .origin_scope = @enumFromInt(0), .kind = .variable_var, .decl_flags = SymbolKind.variable_var.declFlags(), .declaration_span = Span{ .start = stb, .end = stb + 2 }, .reference_count = 1, .synthetic_name = "aa" },
+        .{ .name = .{ .start = stb, .end = stb + 2 }, .scope_id = @enumFromInt(1), .origin_scope = @enumFromInt(1), .kind = .variable_var, .decl_flags = SymbolKind.variable_var.declFlags(), .declaration_span = Span{ .start = stb, .end = stb + 2 }, .reference_count = 99, .synthetic_name = "bb" },
+    };
+    var s0 = std.StringHashMap(usize).init(allocator);
+    defer s0.deinit();
+    try s0.put("aa", 0);
+    var s1 = std.StringHashMap(usize).init(allocator);
+    defer s1.deinit();
+    try s1.put("bb", 1);
+    const scope_maps = [_]std.StringHashMap(usize){ s0, s1 };
+    const refs = [_]Reference{
+        .{ .node_index = @enumFromInt(0), .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = @enumFromInt(1), .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(1), .flags = .{ .read = true } },
+    };
+
+    // rank 없이: bb(rc99) 가 먼저 → 첫 base54, aa 는 다음.
+    var r0 = try mangle(allocator, .{ .scopes = &scopes, .symbols = &symbols, .scope_maps = &scope_maps, .references = &refs, .source = "" });
+    defer r0.deinit();
+    const bb0 = r0.renames.get(1).?;
+    const aa0 = r0.renames.get(0).?;
+
+    // aa 에 rank 0 부여 → aa 가 bb 보다 먼저(같거나 더 짧은) 이름.
+    var gr = std.AutoHashMap(u32, u32).init(allocator);
+    defer gr.deinit();
+    try gr.put(0, 0); // sym 0 (aa) = rank 0
+    var r1 = try mangle(allocator, .{ .scopes = &scopes, .symbols = &symbols, .scope_maps = &scope_maps, .references = &refs, .source = "", .global_freq_rank = &gr });
+    defer r1.deinit();
+    const aa1 = r1.renames.get(0).?;
+    const bb1 = r1.renames.get(1).?;
+
+    // 우선순위 역전의 정밀 증명 (base54 절대값 무관):
+    // 무rank → bb(rc99) 가 최우선 → 첫 발급 이름 N0 = bb0, aa0 = N1.
+    // rank0(aa) → aa 슬롯이 무rank bb 슬롯보다 먼저 → aa1 = N0, bb1 = N1.
+    // 따라서 aa1==bb0 (aa 가 우선 이름 차지) & bb1==aa0 (bb 강등) & aa 이동.
+    try std.testing.expectEqualStrings(bb0, aa1);
+    try std.testing.expectEqualStrings(aa0, bb1);
+    try std.testing.expect(!std.mem.eql(u8, aa0, aa1));
 }
