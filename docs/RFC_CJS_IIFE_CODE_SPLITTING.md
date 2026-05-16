@@ -131,7 +131,8 @@ P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), 
 | PR | 내용 | 상태 |
 |---|---|---|
 | **P3-B PR1** | 하위 인프라만 — `module_id.zig`(relative-path 안정 ID) + `runtime_helpers.zig` 레지스트리 상수(`__zntc_mods`/`__zntc_require`/`__zntc_register`/`__zntc_load_chunk`, normal+min). 유닛테스트. emit 미연결·가드 불변(무동작 회귀 0). **MF §4.1 공유 계층** | 본 PR |
-| **P3-B PR2** | emit 연결 — 가드 완화(`format==.cjs`+splitting), 비-엔트리 청크 self-register wrapper, cross-chunk static require 재작성, `import()`→`__zntc_load_chunk(...).then(()=>__zntc_require(id))`, 엔트리 레지스트리 프렐류드 주입. integration/e2e/smoke | 후속 |
+| **P3-B PR2** | emit 연결(CJS) — 가드 완화(`format==.cjs`+splitting), cross-chunk static→`const{x}=require("./chunk.js")`, common 청크 CJS `exports.x`(emitCjsEntryExports 미도달 보완), `import()`→`Promise.resolve().then(()=>require("./chunk.js"))`. **CJS/Node 는 네이티브 require 가 곧 레지스트리**(RFC §4.3) — PR1 의 `__zntc_*` 레지스트리는 IIFE/MF 추상 로더 계층(PR3)으로 미사용 대기. Node 실행 검증(통합 테스트), pm_cjs/ESM/smoke 무회귀 | **완료** |
+| **P3-B PR3** | IIFE/UMD: `__zntc_*` 레지스트리 활성화 + self-register wrapper + 브라우저 청크 로더(script 주입/조건부 import()). cjs 의 native-require 가 없는 환경 | 후속 |
 
 ---
 
@@ -151,6 +152,7 @@ P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), 
 - **[결정됨 2026-05-16] 모듈 ID 스킴 = relative-path 기반.** content-hash·숫자 인덱스 대비: 디버깅/스택트레이스 가독성, MF expose 키 자연 호환, 빌드 결정성, 내용 변경에도 ID 불변(MF 계약 핀 안정). MF RFC §4.1/§6.1(모듈 안정 런타임 ID) 과 **공동 결정** — 동일 `module_id.zig` 공유. (트레이드오프: 소스 디렉터리 구조가 ID 로 노출 — 수용.)
 - IIFE 동적 로더의 브라우저 청크 fetch 방식(script 주입 vs 조건부 import()) — public_path/CSP 영향. (P3-B PR2 이후 IIFE 단계에서 결정.)
 - preserve-modules CJS 의 Node `__esModule`/interop 경계(default/namespace).
+- **[선재 한계, P3-B 비회귀]** cross-chunk re-export(`export { x } from "./y"` 에서 y 가 별도 청크)는 splitting 파이프라인에서 깨짐 — referrer 가 side-effect import 만 받고 심볼 미바인딩(ReferenceError). **ESM splitting 도 동일하게 깨짐**(P3-B 가 그 동작을 충실히 미러). P3-B 도입 버그 아님 — splitting linker 의 re-export forwarding 갭. cjs/esm 공통 후속 과제(별도 이슈). P3-B CJS 범위 = ESM splitting 패리티(정적 cross-chunk 심볼 import·default/named 동적 import 는 Node 실행 검증됨).
 - P3-A 가치 대비 비용: esbuild 미지원 영역. 수요(누가 CJS/IIFE+splitting 을 원하나) 확인 후 P3-B 착수 여부 게이트.
 
 ---

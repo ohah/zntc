@@ -1,15 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { createFixture } from './helpers';
+import { createFixture, byContent } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
 // P3-A (#3321): preserve-modules + format=cjs — 모듈 1:1 파일, cross-module
 // 결합은 require()/module.exports (Node 네이티브 require 가 경로로 해석).
 // code splitting 없음(전부 빌드타임 known). ESM preserve-modules / 단일
 // CJS 번들 경로는 불변(회귀).
-
-const byContent = (outs: { path: string; text: string }[], needle: string) =>
-  outs.find((o) => o.text.includes(needle));
 
 describe('preserve-modules + cjs (P3-A)', () => {
   let cleanup: (() => Promise<void>) | undefined;
