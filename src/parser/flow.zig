@@ -1836,14 +1836,14 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
 
         try self.expect(.arrow);
 
-        // body: { ... } (block) 또는 expression
+        // body: { ... } (block) 또는 expression. 둘 다 trailing comma optional.
         var body: NodeIndex = .none;
         if (self.current() == .l_curly) {
             body = try self.parseBlockStatement();
         } else {
             body = try self.parseAssignmentExpression();
-            _ = try self.eat(.comma);
         }
+        _ = try self.eat(.comma);
 
         // arm: binary { left=pattern, right=body }. 별도 tag (`flow_match_arm`)
         // 로 outer `flow_match_expression` (extra layout) 과 분리 — 이전엔 tag
@@ -2004,8 +2004,15 @@ fn parseMatchSubpattern(self: *Parser) ParseError2!NodeIndex {
             // chain 까지 소비하고 binary(`|`)/optional-`{` 는 안 먹는다.
             const expr = try self.parseUnaryExpression();
             if (self.current() == .l_curly) {
-                _ = try parseMatchObjectPattern(self); // instance body 소비
-                return try matchOpaquePattern(self, s); // instance = opaque (후속)
+                // instance pattern `Ctor { ... }`
+                const obj = try parseMatchObjectPattern(self);
+                return try self.ast.addBinaryNode(
+                    .flow_match_instance_pattern,
+                    .{ .start = s.start, .end = self.currentSpan().start },
+                    expr,
+                    obj,
+                    0,
+                );
             }
             return expr; // member/identifier value compare (`_m === expr`)
         },
@@ -2015,65 +2022,96 @@ fn parseMatchSubpattern(self: *Parser) ParseError2!NodeIndex {
     }
 }
 
-/// object match pattern: `{ key: pat, const x, ...rest }`. Hermes
-/// parseMatchObjectPatternPropertiesFlow (line 1439) 미러. AST 는 소비 후
-/// wildcard-like placeholder (object pattern 은 transformer 후속).
+/// object match pattern: `{ key: pat, const x, ...rest }`.
+/// list = [flow_match_object_prop... , flow_match_rest?]
 fn parseMatchObjectPattern(self: *Parser) ParseError2!NodeIndex {
     const s = self.currentSpan();
     try self.expect(.l_curly);
+    const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
         const guard_pos = self.scanner.token.span.start;
         if (self.current() == .dot3) {
-            try parseMatchRestPattern(self);
+            try self.scratch.append(self.allocator, try parseMatchRestPattern(self));
             break;
         }
+        const prop_start = self.currentSpan().start;
+        var key: NodeIndex = .none;
+        var value: NodeIndex = .none;
         if (try tryConsumeMatchBinding(self)) {
-            // shorthand binding: `const x` == `x: const x`
+            // shorthand `const x` == `x: const x`
+            const id_span = self.currentSpan();
             _ = try self.parseSimpleIdentifier();
+            key = try self.ast.addNode(.{ .tag = .identifier_reference, .span = id_span, .data = .{ .string_ref = id_span } });
+            value = try self.ast.addNode(.{ .tag = .flow_match_binding_pattern, .span = id_span, .data = .{ .none = 0 } });
         } else {
-            // key : subpattern — key 는 identifier/string/number/bigint 만
-            // (Hermes parseMatchObjectPatternPropertiesFlow). parseAssignmentExpression
-            // 은 contextual keyword(`type` 등)에서 오작동하므로 토큰 종류별 소비.
+            // key : subpattern — key 는 identifier/string/number/bigint
             const k = self.current();
+            const key_span = self.currentSpan();
             if (k == .identifier or k == .string_literal or k.isNumericLiteral() or k.isBigIntLiteral()) {
                 try self.advance();
             } else break;
+            const key_tag: Tag = if (k == .string_literal) .string_literal else .identifier_reference;
+            key = try self.ast.addNode(.{ .tag = key_tag, .span = key_span, .data = .{ .string_ref = key_span } });
             try self.expect(.colon);
-            _ = try parseMatchPattern(self);
+            value = try parseMatchPattern(self);
         }
+        try self.scratch.append(self.allocator, try self.ast.addBinaryNode(
+            .flow_match_object_prop,
+            .{ .start = prop_start, .end = self.currentSpan().start },
+            key,
+            value,
+            0,
+        ));
         if (!try self.eat(.comma)) break;
         if (try self.ensureLoopProgress(guard_pos)) break;
     }
     try self.expect(.r_curly);
-    return try matchOpaquePattern(self, s);
+    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.scratch.shrinkRetainingCapacity(scratch_top);
+    return try self.ast.addListNode(
+        .flow_match_object_pattern,
+        .{ .start = s.start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
-/// array match pattern: `[ pat, pat, ...rest ]`. Hermes parseMatchArrayPatternFlow
-/// (line 1580) 미러.
+/// array match pattern: `[ pat, pat, ...rest ]`.
+/// list = [pattern... , flow_match_rest?]
 fn parseMatchArrayPattern(self: *Parser) ParseError2!NodeIndex {
     const s = self.currentSpan();
     try self.expect(.l_bracket);
+    const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
         const guard_pos = self.scanner.token.span.start;
         if (self.current() == .dot3) {
-            try parseMatchRestPattern(self);
+            try self.scratch.append(self.allocator, try parseMatchRestPattern(self));
             break;
         }
-        _ = try parseMatchPattern(self);
+        try self.scratch.append(self.allocator, try parseMatchPattern(self));
         if (!try self.eat(.comma)) break;
         if (try self.ensureLoopProgress(guard_pos)) break;
     }
     try self.expect(.r_bracket);
-    return try matchOpaquePattern(self, s);
+    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.scratch.shrinkRetainingCapacity(scratch_top);
+    return try self.ast.addListNode(
+        .flow_match_array_pattern,
+        .{ .start = s.start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
-/// rest pattern: `... [const|var|let ident]`. Hermes parseMatchRestPatternFlow
-/// (line 1423) 미러. 소비만.
-fn parseMatchRestPattern(self: *Parser) ParseError2!void {
+/// rest pattern: `...` / `...const x`. flow_match_rest — data.none=1(binding,
+/// span=식별자) / 0(inexact marker, 수집 안 함).
+fn parseMatchRestPattern(self: *Parser) ParseError2!NodeIndex {
+    const s = self.currentSpan();
     try self.expect(.dot3);
     if (try tryConsumeMatchBinding(self)) {
+        const id_span = self.currentSpan();
         _ = try self.parseSimpleIdentifier();
+        return try self.ast.addNode(.{ .tag = .flow_match_rest, .span = id_span, .data = .{ .none = 1 } });
     }
+    return try self.ast.addNode(.{ .tag = .flow_match_rest, .span = s, .data = .{ .none = 0 } });
 }
 
 // ===== Flow enum (#2401) =====

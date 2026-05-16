@@ -889,14 +889,75 @@ test "Flow match: nested OR in parens ((1|2)|3)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "===3") != null);
 }
 
-test "Flow match: object/array pattern → opaque (valid, dead arm DCE)" {
+test "Flow match: object pattern → typeof guard + key in + value" {
     var r = try e2eFlow(std.testing.allocator,
-        \\const r = match (v) { {a:1} => "o", [1] => "a", _ => "w" };
+        \\const r = match (v) { {a: 1} => "o", _ => "w" };
     );
     defer r.deinit();
-    // 정밀 구조분해는 후속 — opaque arm 은 `if(false)` 로 lower 되어 DCE 됨.
-    // 동작: object/array discriminant 도 wildcard 로 fall (valid, 보수적).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return\"w\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"o\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"a\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!=null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"object\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"a\" in") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\"a\"]===1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return\"o\"") != null);
+}
+
+test "Flow match: object shorthand binding → let from member" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { {const x} => x, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"x\" in") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let x=") != null);
+}
+
+test "Flow match: object rest → Object.assign + delete" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { {a: 1, ...const rest} => rest, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "delete ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let rest=") != null);
+}
+
+test "Flow match: array pattern → Array.isArray + length + index" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { [1, const x] => x, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Array.isArray(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".length===2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]===1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let x=") != null);
+}
+
+test "Flow match: array rest → length >= N + slice" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { [1, ...const t] => t, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".length>=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".slice(1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let t=") != null);
+}
+
+test "Flow match: instance pattern → S instanceof Ctor && body" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { Point {x: const px} => px, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "instanceof Point") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let px=") != null);
+}
+
+test "Flow match: nested object/array binding" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { {pt: [const x, const y]} => x + y, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"pt\" in") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Array.isArray(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let x=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let y=") != null);
 }
