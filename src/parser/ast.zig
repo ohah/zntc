@@ -397,6 +397,21 @@ pub const Node = struct {
         /// right=body }. `visitFlowMatch` 가 arms list 를 iterate 하며 각 arm 의
         /// binary.left/right 를 읽는다. `#1822` 에서 outer expr 와 tag 분리.
         flow_match_arm,
+        /// OR pattern `p1 | p2 | ...` — list = subpatterns. 매치 = 하나라도 매치.
+        /// Flow spec 상 OR 내부 binding 금지 (transformer 가 binding 무시).
+        flow_match_or_pattern,
+        /// binding pattern `const x` (let/var 도 문법상 허용). leaf, span = 식별자.
+        /// 항상 매치하고 식별자를 discriminant 로 바인딩.
+        flow_match_binding_pattern,
+        /// as pattern `pattern as x` / `pattern as const x`.
+        /// binary = { left=inner pattern, right=binding identifier }.
+        flow_match_as_pattern,
+        /// guarded pattern `pattern if (cond)`. binary = { left=inner pattern,
+        /// right=guard expression }. transformer 가 inner 매치 && guard 로 변환.
+        flow_match_guard_pattern,
+        /// object/array match pattern 의 opaque placeholder (정밀 lowering 후속).
+        /// transformer 가 `false` 로 lower — 해당 arm 은 매치 안 됨 (valid JS).
+        flow_match_opaque_pattern,
         /// Flow component with ref → React.forwardRef wrapper
         /// extra = [func_decl, const_decl]
         /// func_decl: function Name_withRef({...props}, ref) { body }
@@ -542,6 +557,10 @@ pub const Node = struct {
                 // 실체가 leaf 이며 codegen 이 data 를 읽지 않음 (TS/Flow strip 대상).
                 .ts_literal_type,
                 .flow_literal_type,
+                // flow_match_binding_pattern: leaf, span = 식별자
+                .flow_match_binding_pattern,
+                // flow_match_opaque_pattern: leaf, opaque (transformer 가 false 로 lower)
+                .flow_match_opaque_pattern,
                 => .{ .kind = .leaf },
 
                 // === unary ===
@@ -626,6 +645,10 @@ pub const Node = struct {
                 // flow_match_arm: binary = { left=pattern, right=body, flags }
                 // outer flow_match_expression (extra layout) 의 arms list 구성원.
                 .flow_match_arm,
+                // flow_match_as_pattern: binary = { left=inner, right=binding id }
+                .flow_match_as_pattern,
+                // flow_match_guard_pattern: binary = { left=inner, right=guard expr }
+                .flow_match_guard_pattern,
                 => .{ .kind = .binary },
 
                 // === ternary ===
@@ -667,6 +690,8 @@ pub const Node = struct {
                 .flow_exact_object_type,
                 .flow_type_parameter_declaration,
                 .flow_type_parameter_instantiation,
+                // flow_match_or_pattern: list = subpatterns
+                .flow_match_or_pattern,
                 => .{ .kind = .list },
 
                 // === extra: 태그별 NodeIndex 오프셋 명시 ===

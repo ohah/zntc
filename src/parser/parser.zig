@@ -206,6 +206,9 @@ pub const Parser = struct {
     /// sequence 에서 `extends B` 를 infer 가 흡수하지 않고 outer 로 양보.
     /// Hermes 의 `allowConditionalType_` 와 동등. 기본 true.
     flow_allow_conditional_type: bool = true,
+    /// Flow match pattern 파싱 중인지. true 면 postfix `as` 를 type-cast 가
+    /// 아니라 match `as`-binding 구분자로 남긴다 (`1 as x` 의 `as` 는 binding).
+    flow_in_match_pattern: bool = false,
     /// enum 멤버 초기값 파싱 중인지.
     /// true이면 await/yield를 키워드가 아닌 식별자로 취급한다.
     /// (enum 내에서 다른 멤버를 참조: `enum X { await = 1, y = await }`)
@@ -1625,6 +1628,12 @@ pub const Parser = struct {
 
     pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         return expression.parseAssignmentExpression(self);
+    }
+
+    /// unary + postfix 까지만 (binary 없음). Flow match subpattern 에서 `|`
+    /// 를 OR-pattern 구분자로 남기려면 binary 를 흡수하면 안 된다.
+    pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
+        return expression.parseUnaryExpression(self);
     }
 
     pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {

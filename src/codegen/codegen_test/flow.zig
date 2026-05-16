@@ -790,3 +790,113 @@ test "Flow enum: usage — member access / cast helper 호출 정합" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const x=Color.Red") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const y=Color.cast(\"red\")") != null);
 }
+
+// ================================================================
+// Match expression — 정밀 lowering 동작 검증 (substring)
+// ================================================================
+
+test "Flow match: literal + wildcard → if (_m===lit) / catch-all" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { 1 => "a", _ => "b" };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return\"b\"") != null);
+}
+
+test "Flow match: OR pattern → t1 || t2" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { 1 | 2 | 3 => "x", _ => "y" };
+    );
+    defer r.deinit();
+    // 1|2|3 이 bitwise 가 아니라 === OR 체인으로 lower 되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===1||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===2||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===3") != null);
+}
+
+test "Flow match: binding pattern → let x = _m" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { const x => x };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let x=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return x") != null);
+}
+
+test "Flow match: guard → binding 후 if (cond)" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { const n if (n > 10) => n, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let n=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "n>10") != null);
+}
+
+test "Flow match: as pattern → 추가 binding" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { 1 as one => one, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let one=") != null);
+}
+
+test "Flow match: member pattern → _m === Member" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { Status.Active => 1, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===Status.Active") != null);
+}
+
+test "Flow match: null/true literal pattern → _m === lit" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { null => "n", true => "t", _ => "w" };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===true") != null);
+}
+
+test "Flow match: negative unary in OR (-1 | -2) keeps | as separator" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { -1 | -2 => "neg", _ => "o" };
+    );
+    defer r.deinit();
+    // `-1 | -2` 가 bitwise 가 아니라 `_m===-1 || _m===-2` 로 lower.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=== -1||") != null or
+        std.mem.indexOf(u8, r.output, "===-1||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "-2") != null);
+}
+
+test "Flow match: as-binding wrapping OR ((1|2) as x)" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { (1 | 2) as x => x, _ => 0 };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===1||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let x=") != null);
+}
+
+test "Flow match: nested OR in parens ((1|2)|3)" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { (1 | 2) | 3 => "x", _ => "y" };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===1||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===3") != null);
+}
+
+test "Flow match: object/array pattern → opaque (valid, dead arm DCE)" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\const r = match (v) { {a:1} => "o", [1] => "a", _ => "w" };
+    );
+    defer r.deinit();
+    // 정밀 구조분해는 후속 — opaque arm 은 `if(false)` 로 lower 되어 DCE 됨.
+    // 동작: object/array discriminant 도 wildcard 로 fall (valid, 보수적).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return\"w\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"o\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"a\"") == null);
+}

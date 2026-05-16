@@ -752,6 +752,19 @@ pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: S
     });
 }
 
+/// boolean literal 노드 생성. codegen(node_dispatch) 와 DCE 가 boolean_literal
+/// 을 `.data` flag 가 아니라 **span 텍스트**로 읽으므로, span 은 반드시 실제
+/// "true"/"false" 문자열을 가리켜야 한다 (addString). 이 footgun 을 호출처에
+/// 노출하지 않도록 여기서 addString 까지 묶는다.
+pub fn makeBoolLiteral(self: anytype, val: bool) !NodeIndex {
+    const s = try self.ast.addString(if (val) "true" else "false");
+    return self.ast.addNode(.{
+        .tag = .boolean_literal,
+        .span = s,
+        .data = .{ .none = if (val) 1 else 0 },
+    });
+}
+
 /// binding_identifier 노드 생성 (변수 바인딩용).
 /// span은 이미 addString된 이름 span.
 pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
