@@ -125,7 +125,7 @@ pub fn planCssChunks(
         const rank: u64 = (@as(u64, ch.exec_order) << 32) | @as(u64, m.exec_index);
         visited.clearRetainingCapacity();
         for (m.dependencies.items) |dep| {
-            walkCssOwner(graph, dep, ci, rank, &owner, &owner_rank, &visited);
+            walkCssOwner(graph, chunk_graph, dep, ci, rank, &owner, &owner_rank, &visited);
         }
     }
 
@@ -233,12 +233,17 @@ pub fn emitCssChunks(
 }
 
 /// CSS 서브그래프를 DFS 하며 각 CSS 모듈의 귀속 청크를 최소 rank 로 갱신한다.
-/// JS 모듈은 따라가지 않는다(각 JS 모듈은 호출부에서 개별 처리).
+/// 자체 chunk 를 가진 JS 모듈은 멈춘다(호출부 개별 순회가 처리 — 과귀속 방지).
+/// 단 chunk 미할당 JS(= tree-shaken 된 `.css.js` 류 side-effect proxy: Sass/CSS
+/// Modules 가 `import "./x.scss"` → proxy → `import "./x.css"` 로 생성)는 통과해
+/// 그 너머 CSS 를 현재 청크에 귀속한다 — 통과 안 하면 splitting 경로에서 CSS 가
+/// 통째로 누락된다(#3330).
 /// `visited` 는 JS 모듈(루트)마다 clear 되며 `rank` 는 한 루트 안에서 불변 →
 /// 같은 루트 내 재방문은 정보가 없어 skip 해도 안전하고, 다른 루트(다른 rank)
 /// 에서는 visited 가 비워져 재평가되므로 최소 rank 가 누락되지 않는다.
 fn walkCssOwner(
     graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
     idx: ModuleIndex,
     ci: ChunkIndex,
     rank: u64,
@@ -250,15 +255,25 @@ fn walkCssOwner(
     if (visited.contains(idx)) return;
     visited.put(idx, {}) catch return;
     const mod = graph.getModule(idx) orelse return;
-    if (mod.module_type != .css) return;
 
-    const better = if (owner_rank.get(idx)) |r| rank < r else true;
-    if (better) {
-        owner.put(idx, ci) catch return;
-        owner_rank.put(idx, rank) catch return;
+    if (mod.module_type == .css) {
+        const better = if (owner_rank.get(idx)) |r| rank < r else true;
+        if (better) {
+            owner.put(idx, ci) catch return;
+            owner_rank.put(idx, rank) catch return;
+        }
+        // CSS→CSS(@import) 체인
+        for (mod.dependencies.items) |dep| {
+            walkCssOwner(graph, chunk_graph, dep, ci, rank, owner, owner_rank, visited);
+        }
+        return;
     }
+
+    // 비-CSS(JS 등): 자체 chunk 가 있으면 호출부 개별 순회가 담당하므로 멈춘다.
+    // chunk 미할당(tree-shaken side-effect proxy)만 통과해 너머 CSS 를 찾는다.
+    if (!chunk_graph.getModuleChunk(mod.index).isNone()) return;
     for (mod.dependencies.items) |dep| {
-        walkCssOwner(graph, dep, ci, rank, owner, owner_rank, visited);
+        walkCssOwner(graph, chunk_graph, dep, ci, rank, owner, owner_rank, visited);
     }
 }
 
