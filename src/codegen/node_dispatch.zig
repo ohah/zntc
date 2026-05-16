@@ -38,6 +38,10 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
     // 컨테이너 노드 (program, block_statement, function_body, class_body, static_block,
     // switch_statement, try_statement) 는 자식이 매핑하므로 자체 발행 안 함.
 
+    // TS/Flow type wrapper: operand 만 출력 (type 스트리핑, #3129 단일 source).
+    // pre-visit body codegen 시 TS/Flow 노드가 남아있을 수 있어 명시 처리.
+    if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.emitNode(node.data.unary.operand);
+
     switch (node.tag) {
         .program => try statement_emit.emitProgram(self, node),
         .block_statement => try statement_emit.emitBlock(self, node),
@@ -345,16 +349,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         // init expression 이 없으면 base_type 에 따라 default value (string/number/...).
         .flow_enum_declaration => try type_runtime_emit.emitFlowEnum(self, node),
 
-        // TS/Flow expression 노드: operand만 출력 (type 부분 스트리핑).
-        // pre-visit body를 codegen할 때 (e.g. worklet __initData.code) TS/Flow 노드가 남아있을 수 있음.
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_non_null_expression,
-        .ts_type_assertion,
-        .ts_instantiation_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => try self.emitNode(node.data.unary.operand),
+        // (TS/Flow type wrapper 는 switch 진입 전 #3129 single-source 처리)
 
         // TS 타입 전용 노드: 출력 안 함
         .ts_type_alias_declaration,

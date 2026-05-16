@@ -292,22 +292,9 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
 
 /// `parenthesized_expression` + 모든 type assertion 류 — 공통적으로 unary { operand, flags }
 /// 데이터 변형. wrapStyledTagInExpr 와 isWrappableExpr 가 이 set 을 공유.
-///
-/// 주의: codegen / semantic / worklet 등 다른 pass 도 비슷한 set 을 가짐. 향후 cross-cutting
-/// refactor 로 es_helpers 의 `TRANSPARENT_WRAPPER_TAGS` 같은 단일 source 화 권장 (별도 PR).
+/// 단일 source: `ast.Node.Tag.isTransparentWrapper` (#3129).
 fn isUnaryWrapperTag(tag: ast_mod.Node.Tag) bool {
-    return switch (tag) {
-        .parenthesized_expression,
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_type_assertion,
-        .ts_non_null_expression,
-        .ts_instantiation_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => true,
-        else => false,
-    };
+    return ast_mod.Node.Tag.isTransparentWrapper(tag);
 }
 
 /// 표현식이 styled tagged template 을 (직접 / wrapper 안에) 포함하면 wrap.

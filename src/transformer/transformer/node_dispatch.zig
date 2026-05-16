@@ -64,16 +64,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     // --------------------------------------------------------
     // 4단계: 태그별 분기 (switch 기반 visitor)
     // --------------------------------------------------------
+    // TS/Flow type wrapper: 타입 부분만 제거, 값 보존 (#3129 단일 source).
+    if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.visitTsExpression(idx);
+
     return switch (node.tag) {
-        // === TS expressions: 타입 부분만 제거, 값 보존 ===
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_non_null_expression,
-        .ts_type_assertion,
-        .ts_instantiation_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => self.visitTsExpression(idx),
 
         .flow_match_expression => self.visitFlowMatch(node),
 

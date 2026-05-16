@@ -132,18 +132,10 @@ pub fn unwrapTransparentWrappersAst(ast: *const @import("../parser/ast.zig").Ast
     while (true) {
         if (cur.isNone()) return cur;
         const node = ast.getNode(cur);
-        switch (node.tag) {
-            .parenthesized_expression,
-            .ts_as_expression,
-            .ts_satisfies_expression,
-            .ts_type_assertion,
-            .ts_instantiation_expression,
-            .ts_non_null_expression,
-            .flow_as_expression,
-            .flow_type_cast_expression,
-            => cur = node.data.unary.operand,
-            else => return cur,
-        }
+        // 단일 source: ast.Node.Tag.isTransparentWrapper (paren + type wrapper, #3129).
+        if (@import("../parser/ast.zig").Node.Tag.isTransparentWrapper(node.tag)) {
+            cur = node.data.unary.operand;
+        } else return cur;
     }
 }
 
