@@ -122,7 +122,7 @@ __zntc_load_chunk("chunk-<hash>.js").then(function(){ return __zntc_require("<en
 |---|---|---|
 | **P3-A** | preserve-modules + CJS 만: 파일=모듈ID(결정적), self-register wrapper, `__zntc_require`. 동적 로더 불필요(전부 빌드타임 known). 최소·저위험 진입 | 레지스트리 하위 계층 = MF P1 의 토대 |
 | **P3-B** | CJS/IIFE + code splitting: 동적 청크 + `__zntc_load_chunk` 추상 로더, cross-chunk require 재작성 | 로더 인터페이스 = MF/RN 과 공유 |
-| **P3-C** | MF P1 과 레지스트리 통합 — container/shared scope 가 P3 레지스트리 위에 얹히도록 인터페이스 수렴 | **MF RFC §7 P1 과 합류** |
+| **P3-C** | ✅ 코어 수렴 완료 — PR1 dormant 중복 레지스트리(`ZNTC_REGISTRY_RUNTIME`, 실호출 0) 제거, `ZNTC_REGISTER_INSTALL`+`ZNTC_IIFE_RESOLVE_BROWSER` 가 단일 canonical 코어. MF P1 container/shared scope 가 그 위에 얹힘(MF RFC §6.1 갱신, 중복 구현 금지) | **MF RFC §7 P1 과 합류** |
 
 P3-A 를 먼저(작고 안전, esbuild 도 안 하는 영역의 최소 가치), P3-B/C 는 MF P1 과 보조 맞춰 진행.
 
