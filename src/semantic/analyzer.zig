@@ -151,16 +151,6 @@ pub const SemanticAnalyzer = struct {
     /// scope_maps 가 아닌 이 풀에서만 lookup.
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
 
-    /// RFC #3310 (D20): forward `export { X }; import X from './x'` 지원용 read-only
-    /// side-table. key = top-level default/namespace import 의 local name.
-    /// ECMAScript 상 import 는 module top 으로 hoist 되므로 export 가 import 보다
-    /// 소스상 앞이어도 valid. 단일 패스 analyzer 가 forward import symbol 을 못 찾을
-    /// 때 `checkExportBinding` 의 fallback 으로만 참조 — **symbol/scope 선언을 절대
-    /// 하지 않는다**. helper import 는 항상 named import_specifier 이고 default/
-    /// namespace 만 기록하므로 helper local 이 구조적으로 섞이지 않는다 (runtime
-    /// helper scope isolation 모델 무침범).
-    forward_import_names: std.StringHashMapUnmanaged(void) = .empty,
-
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
@@ -270,7 +260,6 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.helper_scope_map.deinit(self.allocator);
-        self.forward_import_names.deinit(self.allocator);
         self.references.deinit(self.allocator);
         self.numeric_const_texts.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
@@ -2150,24 +2139,11 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    /// RFC #3310 (D20): top-level import declaration 의 모든 specifier (default/
-    /// namespace/named) local name 을 `forward_import_names` side-table 에 기록한다.
-    /// 절대 symbol/scope/helper_scope_map 을 건드리지 않는다 — `checkExportBinding`
-    /// 의 read-only fallback 전용.
-    ///
-    /// helper 배제: runtime helper import 는 항상 `\x00zntc:runtime/...` virtual
-    /// source 이므로 source guard 가 helper import declaration 을 **통째로** skip
-    /// 한다. helper 는 Pass 1 (user source only) 엔 아예 없고, Pass 2 (helper 주입
-    /// 후) 엔 virtual source 로 배제되므로 helper local (`__extends` 등) 이 side-table
-    /// 에 구조적으로 섞이지 않는다. side-table 은 symbol 선언을 하지 않아 helper/
-    /// user scope isolation 모델 (helper_scope_map / canonical name) 무침범.
-    /// grpc-js src/index.ts 는 default+named forward 혼재라 named 도 기록해야 완전
-    /// 해결 (full semantic 경로에선 named forward 도 ZNTC1201 노출).
     /// RFC #3310 (D20) 완전 근본 해결 — top-level import 의 user binding 을 1st-pass
     /// 에서 진짜 `.import_binding` symbol 로 등록 (var/func/class predeclare 와 동일
     /// 패턴). ECMAScript: import 는 module top hoist 라 forward `export {}` / forward
-    /// value use 모두 valid. `forward_import_names` side-table 도 병존 유지 (PR-1
-    /// fallback — 정공법 회귀 시 격리, PR-3 에서 제거 예정).
+    /// value use 모두 valid. (#3311 의 read-only side-table 은 PR-3 에서 제거됨 —
+    /// 정공법 symbol 등록이 모든 경로를 커버.)
     ///
     /// helper 배제 3중 방어 (이전 11 회귀 무재발):
     ///   1. virtual-source guard: `\x00zntc:runtime/...` import declaration 통째 skip
@@ -2224,10 +2200,6 @@ pub const SemanticAnalyzer = struct {
             // checkStrictBindingName 은 2nd-pass visitImportDeclaration 가 수행
             // (predeclare* 들은 declare 만 하고 strict 검증은 visit 단계 — 일관).
             try self.declareSymbolWithNode(name_span, .import_binding, spec_node.span, @intFromEnum(local_idx));
-
-            // PR-1 fallback 병존: side-table 도 채워 정공법 회귀 시 격리 (PR-3 제거).
-            const stable = try self.ast.getTextStable(self.allocator, name_span);
-            try self.forward_import_names.put(self.allocator, stable, {});
         }
     }
 
@@ -3592,15 +3564,15 @@ pub const SemanticAnalyzer = struct {
     /// export { x } (without from) — x가 선언된 바인딩인지 검증한다.
     /// module scope에서 VarDeclaredNames + LexicallyDeclaredNames에 없으면 에러.
     fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
-        // 현재 module scope에서 해당 이름의 심볼을 찾는다
+        // 현재 module scope에서 해당 이름의 심볼을 찾는다. RFC #3310 (D20): import 는
+        // module top hoist 라 forward `export { X }; import X` 도 valid —
+        // predeclareImportDecl 가 1st-pass 에서 user import 를 진짜 .import_binding
+        // symbol 로 등록하므로 이 symbol scan 이 forward import 도 hit (별도 fallback
+        // 불필요; PR-3 에서 read-only side-table 제거).
         for (self.symbols.items) |sym| {
             const sym_name = self.ast.getText(sym.name);
             if (std.mem.eql(u8, sym_name, name)) return; // 존재
         }
-        // RFC #3310 (D20): forward `export { X }; import X from './x'` — import 는
-        // module top hoist 라 valid. 단일 패스라 X import symbol 이 아직 안 보이면
-        // side-table fallback (recordForwardImportNames 가 1st pass 에 채움).
-        if (self.forward_import_names.contains(name)) return;
         // 찾지 못함 → 에러
         try self.addErrorMsgCode(span, try std.fmt.allocPrint(
             self.allocator,
