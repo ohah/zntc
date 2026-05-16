@@ -942,6 +942,41 @@ fn removeModuleFromList(list: *std.ArrayListUnmanaged(ModuleIndex), target: Modu
 /// linker가 null이면 청크 수준 의존성만 계산 (side-effect import).
 ///
 /// 이 함수는 generateChunks 이후에 호출한다.
+/// cross-chunk 심볼(src 청크 + export 이름)을 chunk.imports_from +
+/// src.exports_to + chunk.cross_chunk_imports 에 등록. import_bindings 경로와
+/// re-export 경로가 **동일 로직**을 쓰도록 단일화 — 두 경로 divergence 가 곧
+/// 이 버그였다(#3321 후속). `seen_static` 로 cross_chunk_imports dedup.
+/// imports_from 중복 검사는 O(n) 선형(소스별 심볼 수 작음, import_bindings
+/// 기존 패턴과 동일 — 프로파일 시 set 전환은 양 경로 공동 과제).
+fn addCrossChunkSymbol(
+    allocator: std.mem.Allocator,
+    chunk_graph: *ChunkGraph,
+    chunk: *Chunk,
+    seen_static: *std.AutoHashMapUnmanaged(u32, void),
+    src_chunk_idx: ChunkIndex,
+    export_name: []const u8,
+) !void {
+    const src_ci = @intFromEnum(src_chunk_idx);
+
+    // 심볼의 canonical 청크가 *직접 의존*이 아닐 수 있다(re-export 체인
+    // importer→page→inner: importer 는 inner 를 직접 의존 안 함). emitter 는
+    // cross_chunk_imports 를 순회하며 imports_from 을 조회하므로, canonical
+    // 청크가 거기 없으면 named import 누락 → 심볼 미바인딩(ReferenceError).
+    const gop = try seen_static.getOrPut(allocator, src_ci);
+    if (!gop.found_existing)
+        try chunk.cross_chunk_imports.append(allocator, src_chunk_idx);
+
+    const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
+    if (!ifgop.found_existing) ifgop.value_ptr.* = .empty;
+    for (ifgop.value_ptr.items) |existing| {
+        if (std.mem.eql(u8, existing, export_name)) break;
+    } else {
+        try ifgop.value_ptr.append(allocator, export_name);
+    }
+
+    try chunk_graph.chunks.items[src_ci].exports_to.put(allocator, export_name, {});
+}
+
 pub fn computeCrossChunkLinks(
     chunk_graph: *ChunkGraph,
     graph: *const ModuleGraph,
@@ -1002,29 +1037,25 @@ pub fn computeCrossChunkLinks(
                     if (src_chunk_idx.isNone()) continue;
                     if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
 
-                    const src_ci = @intFromEnum(src_chunk_idx);
-                    const export_name = rb.canonical.export_name;
+                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, rb.canonical.export_name);
+                }
 
-                    // imports_from에 심볼 이름 추가 (중복 방지)
-                    const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
-                    if (!ifgop.found_existing) {
-                        ifgop.value_ptr.* = .empty;
-                    }
-                    // 이미 추가된 이름인지 확인
-                    var already = false;
-                    for (ifgop.value_ptr.items) |existing| {
-                        if (std.mem.eql(u8, existing, export_name)) {
-                            already = true;
-                            break;
-                        }
-                    }
-                    if (!already) {
-                        try ifgop.value_ptr.append(allocator, export_name);
-                    }
-
-                    // 소스 청크의 exports_to에 심볼 이름 추가
-                    const src_chunk = &chunk_graph.chunks.items[src_ci];
-                    try src_chunk.exports_to.put(allocator, export_name, {});
+                // named re-export (`export { x } from "./y"`): import_binding 이
+                // 없어(P 가 x 를 *사용*하지 않고 *전달*만 함) 위 루프가 놓친다.
+                // canonical 이 다른 청크면 P 의 청크가 named 로 가져와야 (a) P 가
+                // `exports.x=x`/`export {x}` 의 로컬 x 를 바인딩하고 (b) 소스
+                // 청크가 x 를 노출한다. 없으면 side-effect import 만 나와
+                // ReferenceError (#3321 후속, esm/cjs/iife 공통 선재 버그).
+                // star/namespace re-export 는 별도 케이스 — 후속.
+                for (m.export_bindings) |eb| {
+                    if (eb.kind != .re_export) continue;
+                    const canon = lnk.resolveExportChain(mod_idx, eb.exported_name, 0) orelse continue;
+                    const canon_mi = @intFromEnum(canon.module_index);
+                    if (canon_mi >= module_count) continue;
+                    const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
+                    if (src_chunk_idx.isNone()) continue;
+                    if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
+                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, canon.export_name);
                 }
             }
 
