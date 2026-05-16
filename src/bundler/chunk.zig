@@ -1043,3 +1043,56 @@ pub fn computeCrossChunkLinks(
         }
     }
 }
+
+test "BitSet.isSubsetOf: empty is subset of anything; self is subset of self" {
+    const a = std.testing.allocator;
+    var s = try BitSet.init(a, 8);
+    defer s.deinit(a);
+    var t = try BitSet.init(a, 8);
+    defer t.deinit(a);
+    // 둘 다 빈 BitSet: ∅ ⊆ ∅
+    try std.testing.expect(s.isSubsetOf(t));
+    t.setBit(1);
+    t.setBit(3);
+    // ∅ ⊆ {1,3}
+    try std.testing.expect(s.isSubsetOf(t));
+    // {1,3} ⊆ {1,3}
+    try std.testing.expect(t.isSubsetOf(t));
+    // {1,3} ⊄ ∅
+    try std.testing.expect(!t.isSubsetOf(s));
+}
+
+test "BitSet.isSubsetOf: proper subset true, extra bit false" {
+    const a = std.testing.allocator;
+    var sub = try BitSet.init(a, 16);
+    defer sub.deinit(a);
+    var sup = try BitSet.init(a, 16);
+    defer sup.deinit(a);
+    sub.setBit(2);
+    sub.setBit(9);
+    sup.setBit(2);
+    sup.setBit(9);
+    sup.setBit(12);
+    // {2,9} ⊆ {2,9,12}
+    try std.testing.expect(sub.isSubsetOf(sup));
+    // {2,9,12} ⊄ {2,9}
+    try std.testing.expect(!sup.isSubsetOf(sub));
+    sub.setBit(5); // {2,5,9} — 5 not in sup
+    try std.testing.expect(!sub.isSubsetOf(sup));
+}
+
+test "BitSet.isSubsetOf: differing entries length safe" {
+    const a = std.testing.allocator;
+    var short = try BitSet.init(a, 4); // 1 byte
+    defer short.deinit(a);
+    var long = try BitSet.init(a, 64); // 8 bytes
+    defer long.deinit(a);
+    short.setBit(1);
+    long.setBit(1);
+    // {1}(short) ⊆ {1}(long) — 길이 달라도 안전
+    try std.testing.expect(short.isSubsetOf(long));
+    long.setBit(40); // long 의 초과 바이트 비트
+    try std.testing.expect(short.isSubsetOf(long));
+    // long 의 set 비트가 short 범위 밖이면 long ⊄ short
+    try std.testing.expect(!long.isSubsetOf(short));
+}

@@ -82,4 +82,37 @@ describe('minChunkSize (small common chunk merging)', () => {
     // 빈 청크가 OutputFile 로 새지 않음 (병합된 src 는 emit 안 됨)
     expect(outs.every((o) => o.text.trim().length > 0)).toBe(true);
   });
+
+  test('minChunkSize + sourcemap: 병합 후 dangling/빈 청크 참조 없음', async () => {
+    const fixture = await createFixture(fixtureFiles);
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: entryPoints(fixture.dir),
+      splitting: true,
+      minChunkSize: 100000,
+      sourcemap: true,
+    });
+    const outs = result.outputFiles!;
+    // 모든 출력 비어있지 않음
+    expect(outs.every((o) => o.text.trim().length > 0)).toBe(true);
+    const allFull = new Set(outs.map((o) => o.path));
+    // 각 .map 은 대응 출력이 실제 존재 (병합돼 사라진 청크용 .map 잔존 금지)
+    for (const o of outs) {
+      if (o.path.endsWith('.map')) {
+        expect(allFull.has(o.path.replace(/\.map$/, ''))).toBe(true);
+      }
+    }
+    // cross-chunk import 가 사라진(빈) 청크 파일을 가리키지 않음
+    const allPaths = new Set(
+      outs.map((o) => o.path.split('/').pop()).filter((p): p is string => !!p),
+    );
+    for (const o of outs) {
+      if (!o.path.endsWith('.js')) continue;
+      const specs = [...o.text.matchAll(/from\s*["']\.\/([^"']+)["']/g)].map((m) => m[1]);
+      for (const s of specs) {
+        if (s.endsWith('.js')) expect(allPaths.has(s)).toBe(true);
+      }
+    }
+    for (const m of ['E1', 'E2', 'E3']) expect(outs.some((o) => o.text.includes(m))).toBe(true);
+  });
 });

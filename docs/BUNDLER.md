@@ -325,6 +325,11 @@ pub const CjsExportFact = struct {
 - 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
 - 작은 common 청크 자동 병합: `minChunkSize` (Rollup `experimentalMinChunkSize` 류).
   `src.bits ⊆ dst.bits`(over-fetch 없음)인 경우만 병합, entry/manual/dynamic 보존
+- CSS 청크: JS 청크별 CSS 분리, CSS→CSS `@import` 는 쓰는 청크마다 인라인,
+  동적 청크는 런타임 `<link>` 자동 주입. **알려진 한계**: `css_names` 가
+  디렉터리를 포함(`assets/[name]`)하면 동적 청크의 런타임 `<link>` href 는
+  basename 만 사용(평면 출력 가정) → JS 청크와 다른 디렉터리에 CSS 가 놓이면
+  경로가 어긋남. 평면(default `[name]`) 출력에서는 정상. 비평면은 후속 과제
 - 순환 참조: 같은 청크로 묶기
 - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
 

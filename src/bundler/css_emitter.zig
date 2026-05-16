@@ -468,6 +468,17 @@ test "applyCssChunkName: explicit .css extension not doubled, dir preserved" {
     try std.testing.expectEqualStrings(expect, r);
 }
 
+test "applyCssChunkName: multiple [hash] all replaced (no leftover token)" {
+    const a = std.testing.allocator;
+    const h = wyhash.hashHex8("c");
+    const expect = try std.fmt.allocPrint(a, "x-{s}-{s}.css", .{ h, h });
+    defer a.free(expect);
+    const r = try applyCssChunkName(a, "x-[hash]-[hash]", "n", "c");
+    defer a.free(r);
+    try std.testing.expectEqualStrings(expect, r);
+    try std.testing.expect(std.mem.indexOf(u8, r, "[hash]") == null);
+}
+
 test "applyCssChunkName: hash depends only on contents (determinism + sensitivity)" {
     const a = std.testing.allocator;
     const r1 = try applyCssChunkName(a, "[name]-[hash]", "s", ".s{color:red}");
