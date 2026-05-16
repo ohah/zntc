@@ -68,7 +68,6 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.visitTsExpression(idx);
 
     return switch (node.tag) {
-
         .flow_match_expression => self.visitFlowMatch(node),
 
         // Flow component with ref → function Name_withRef + const Name = React.forwardRef(...)
