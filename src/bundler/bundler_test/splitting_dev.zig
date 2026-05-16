@@ -225,7 +225,44 @@ test "CodeSplitting: multiple common chunks have unique filenames" {
     }
 }
 
-test "CodeSplitting: CJS format returns error" {
+test "CodeSplitting: CJS format succeeds — cross-chunk require + 동적 require (P3-B #3321)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // entry 가 lazy 를 동적 import → 별도 청크. shared 는 정적 cross-chunk.
+    try writeFile(tmp.dir, "shared.ts", "export const s = 'S';");
+    try writeFile(tmp.dir, "lazy.ts", "import { s } from './shared';\nexport const lazy = s;");
+    try writeFile(tmp.dir, "entry.ts", "import { s } from './shared';\nconst x = import('./lazy');\nconsole.log(s, x);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .format = .cjs,
+    });
+    defer bnd.deinit();
+    // P3-B: CJS + code_splitting 은 더 이상 에러 아님 — 네이티브 require 가
+    // 청크 경계 해석(RFC §4.3). 옛 동작("returns error") 무효화.
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    var has_xchunk_require = false;
+    var has_dyn_require = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "= require(\"") != null) has_xchunk_require = true;
+        if (std.mem.indexOf(u8, o.contents, "Promise.resolve().then(()=>require(\"") != null) has_dyn_require = true;
+        // CJS 청크에 ESM import/export 누출 금지(Node 가 .js 를 CJS 로 로드).
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\nexport {") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\nimport {") == null);
+    }
+    try std.testing.expect(has_xchunk_require);
+    try std.testing.expect(has_dyn_require);
+}
+
+test "CodeSplitting: IIFE format still returns CodeSplittingRequiresESM" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const x = import('./lazy');\nconsole.log(x);");
@@ -237,10 +274,10 @@ test "CodeSplitting: CJS format returns error" {
     var bnd = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .code_splitting = true,
-        .format = .cjs,
+        .format = .iife,
     });
     defer bnd.deinit();
-    // CJS + code_splitting은 에러
+    // iife/umd/amd 는 네이티브 require/import 없음 → PR3 까지 미지원(가드 유지).
     const result = bnd.bundle();
     try std.testing.expect(result == error.CodeSplittingRequiresESM);
 }

@@ -66,12 +66,16 @@ pub fn emitChunks(
     // 모듈 1:1 파일이라 CJS 도 가능(Node 네이티브 require 가 경로로 해석, P3-A
     // #3321). IIFE/UMD/AMD 는 아직 미지원.
     if (options.format != .esm) {
-        // emitChunks 내: preserve_modules=false → code splitting 경로(ESM 전용),
-        // preserve_modules=true → 모듈 1:1 파일(CJS 도 가능, 그 외 포맷 불가).
-        if (!options.preserve_modules)
-            return error.CodeSplittingRequiresESM;
-        if (options.format != .cjs)
-            return error.PreserveModulesRequiresESM;
+        // ESM: 네이티브 import() 로 청크 경계 해석.
+        // CJS: P3-A=preserve-modules(모듈 1:1 파일), P3-B=splitting(네이티브
+        //   require 가 청크 경계 해석 — RFC_CJS_IIFE_CODE_SPLITTING.md §4.3).
+        // IIFE/UMD/AMD: 아직 미지원(네이티브 require/import 없음 — PR3).
+        if (options.format != .cjs) {
+            return if (options.preserve_modules)
+                error.PreserveModulesRequiresESM
+            else
+                error.CodeSplittingRequiresESM;
+        }
     }
 
     // splitting / manualChunks 모드에서도 namespace import 의 object literal 을
@@ -249,10 +253,15 @@ pub fn emitChunks(
             alias_strs.deinit(allocator);
         }
 
-        // preserve-modules + CJS (P3-A): cross-module 결합을 ESM import 대신
-        // `const {x}=require("...")` / `require("...")` 로 (codegen 이 export 측은
-        // 이미 exports.x 로 CJS 화). 내부 모듈 본문은 그대로.
+        // CJS 청크 경계 결합을 ESM import 대신 `const {x}=require("...")` /
+        // `require("...")` 로 (export 측은 P3-A=모듈별 exports.x / P3-B=Edit 3
+        // 의 cross-chunk exports.x). 내부 모듈 본문은 호이스팅 그대로.
+        // - pm_cjs (P3-A): preserve-modules+cjs, resolved_path=상대경로
+        // - cjs_split (P3-B): cjs+splitting, resolved_path=청크 stem
+        //   (둘 다 Node 네이티브 require 가 정적 string 으로 해석).
         const pm_cjs = options.preserve_modules and options.format == .cjs;
+        const cjs_split = options.format == .cjs and !options.preserve_modules;
+        const cjs_require = pm_cjs or cjs_split;
 
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
@@ -274,9 +283,9 @@ pub fn emitChunks(
             if (symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "const { " else "import { ");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "const { " else "import { ");
                 } else {
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "const{" else "import{");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "const{" else "import{");
                 }
                 // 결정론적 출력을 위해 심볼명 정렬
                 std.mem.sort([]const u8, symbols.?.items, {}, types.stringLessThan);
@@ -291,7 +300,7 @@ pub fn emitChunks(
                         const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ name, seen });
                         try alias_strs.append(allocator, alias);
                         try chunk_output.appendSlice(allocator, name);
-                        try chunk_output.appendSlice(allocator, if (pm_cjs) ": " else " as ");
+                        try chunk_output.appendSlice(allocator, if (cjs_require) ": " else " as ");
                         try chunk_output.appendSlice(allocator, alias);
                     } else {
                         try chunk_output.appendSlice(allocator, name);
@@ -305,24 +314,24 @@ pub fn emitChunks(
                     }
                 }
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) " } = require(\"" else " } from \"");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) " } = require(\"" else " } from \"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");\n" else "\";\n");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "\");\n" else "\";\n");
                 } else {
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "}=require(\"" else "}from\"");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "}=require(\"" else "}from\"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");" else "\";");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "\");" else "\";");
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "require(\"" else "import \"");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "require(\"" else "import \"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");\n" else "\";\n");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "\");\n" else "\";\n");
                 } else {
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "require(\"" else "import\"");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "require(\"" else "import\"");
                     try chunk_output.appendSlice(allocator, resolved_path);
-                    try chunk_output.appendSlice(allocator, if (pm_cjs) "\");" else "\";");
+                    try chunk_output.appendSlice(allocator, if (cjs_require) "\");" else "\";");
                 }
             }
         }
@@ -514,7 +523,7 @@ pub fn emitChunks(
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
         // preserve-modules에서는 모듈 자체의 export가 유지되므로 cross-chunk export 불필요.
         // linker가 심볼을 rename한 경우 export { local_name as export_name } 형태로 출력.
-        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0) and !options.preserve_modules) {
+        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0) and !options.preserve_modules) xchunk_exports: {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
             defer export_names.deinit(allocator);
@@ -527,10 +536,26 @@ pub fn emitChunks(
             }
             std.mem.sort([]const u8, export_names.items, {}, types.stringLessThan);
 
-            if (!options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, "export { ");
-            } else {
-                try chunk_output.appendSlice(allocator, "export{");
+            // cjs(P3-A pm / P3-B splitting): 청크가 .js 로 require 되므로
+            // ESM `export {}` 를 emit 하면 Node 가 CJS 로 로드 → SyntaxError.
+            //  - common/manual 청크(entry 모듈 없음): emitCjsEntryExports 가
+            //    안 도므로 cross-chunk 노출 수단이 이 경로뿐 → `exports.x=local;`.
+            //  - entry/dynamic 청크(entry_mod_idx != null): entry 모듈 exports
+            //    를 emitCjsEntryExports 가 이미 `exports.x`(default/__esModule
+            //    interop 포함)로 깔며, cross-chunk 소비자도 그 동일 객체를
+            //    require 로 읽음 → 여기서 또 emit 하면 이중정의·module.exports=
+            //    재대입 손상·re-export local 미바인딩(ReferenceError). 따라서
+            //    **emit 생략**(emitCjsEntryExports 에 일임)이 정확.
+            const cjs_fmt = options.format == .cjs;
+            if (cjs_fmt and entry_mod_idx != null) break :xchunk_exports;
+            const cjs_x = cjs_fmt;
+
+            if (!cjs_x) {
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, "export { ");
+                } else {
+                    try chunk_output.appendSlice(allocator, "export{");
+                }
             }
             for (export_names.items, 0..) |name, ni| {
                 // export_name의 원본 심볼이 이 청크에서 rename되었는지 확인.
@@ -558,6 +583,16 @@ pub fn emitChunks(
                     break :blk found_local orelse name;
                 } else name;
 
+                if (cjs_x) {
+                    // exports.<name> = <local>;  (min: 공백 제거, 형태 동일)
+                    try chunk_output.appendSlice(allocator, "exports.");
+                    try chunk_output.appendSlice(allocator, name);
+                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
+                    try chunk_output.appendSlice(allocator, local_name);
+                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
+                    continue;
+                }
+
                 try chunk_output.appendSlice(allocator, local_name);
                 // local_name과 export_name이 다르면 as 절 추가
                 if (!std.mem.eql(u8, local_name, name)) {
@@ -572,10 +607,12 @@ pub fn emitChunks(
                     }
                 }
             }
-            if (!options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, " };\n");
-            } else {
-                try chunk_output.appendSlice(allocator, "};");
+            if (!cjs_x) {
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, " };\n");
+                } else {
+                    try chunk_output.appendSlice(allocator, "};");
+                }
             }
         }
 
@@ -1061,6 +1098,23 @@ fn rewriteDynamicImports(
         else
             try std.fmt.allocPrint(allocator, "./{s}{s}", .{ stem, out_ext });
         defer allocator.free(replacement);
+
+        // cjs+splitting(P3-B): 네이티브 import() 가 없으므로 호출 전체를
+        //   Promise.resolve().then(()=>require("./chunk.js"))
+        // 로 재작성(RFC §4.3, 디리스크 스파이크 검증). 대상 청크는 dynamic
+        // entry 라 emitCjsEntryExports 가 exports.x 를 깔아둠 → require() 결과가
+        // 곧 namespace. require 캐시가 재호출 시 상태 보존(스파이크 count 검증).
+        // ESM 은 specifier 만 청크 파일명으로 치환(네이티브 import() 유지).
+        const cjs_split = emit_options.format == .cjs and !emit_options.preserve_modules;
+        if (cjs_split) {
+            const wrapper = try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>require(\"{s}\"))", .{replacement});
+            defer allocator.free(wrapper);
+            if (try rewriteImportCallToWrapper(allocator, result, rec.specifier, wrapper)) |new_result| {
+                allocator.free(result);
+                result = new_result;
+            }
+            continue;
+        }
 
         // 코드에서 원본 specifier를 찾아 교체
         if (std.mem.indexOf(u8, result, rec.specifier)) |pos| {

@@ -1,6 +1,6 @@
 import { spawn } from 'bun';
 import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from 'node:fs/promises';
-import { readFileSync, statSync, openSync, closeSync } from 'node:fs';
+import { readFileSync, statSync, openSync, closeSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 
@@ -487,5 +487,21 @@ export async function bundleAndRun(
   } catch (e) {
     await cleanup();
     throw e;
+  }
+}
+
+// ─── outputFiles 검사/기록 공용 헬퍼 ───
+
+/** outputFiles 에서 특정 문자열을 포함하는 첫 산출물. */
+export const byContent = <T extends { text: string }>(outs: T[], needle: string): T | undefined =>
+  outs.find((o) => o.text.includes(needle));
+
+/** outputFiles 를 dir 에 경로 보존(중첩 디렉터리 생성)하여 기록. 멀티-청크
+ *  번들을 `runNode` 로 실제 실행 검증할 때 사용. */
+export function writeOutputs(dir: string, outs: { path: string; text: string }[]): void {
+  for (const o of outs) {
+    const abs = join(dir, o.path);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, o.text);
   }
 }
