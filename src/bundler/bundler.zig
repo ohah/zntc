@@ -1362,6 +1362,30 @@ pub const Bundler = struct {
             emit_opts.preserve_modules = self.options.preserve_modules;
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;
             emit_opts.worker_map_per_module = &worker_map_per_module;
+
+            // CSS 코드스플리팅 계획을 emitChunks *전* 에 세워, 동적 청크가
+            // 자기 CSS 를 런타임 <link> 로 로드하는 prologue 를 content-hash
+            // 계산 전에 주입한다(JS 청크 해시 무결성). CSS 실패는 번들 실패로
+            // 번지지 않게 흡수(기존 css emit 의 관용과 동일).
+            const css_emit = @import("css_emitter.zig");
+            var css_plan: ?[]css_emit.CssChunkPlanEntry = null;
+            errdefer if (css_plan) |p| {
+                for (p) |e| {
+                    self.allocator.free(e.path);
+                    self.allocator.free(e.contents);
+                }
+                self.allocator.free(p);
+            };
+            var css_hrefs: ?[]?[]const u8 = null;
+            errdefer if (css_hrefs) |h| self.allocator.free(h);
+            if (!self.options.preserve_modules) {
+                css_plan = css_emit.planCssChunks(self.allocator, &graph, &chunk_graph, self.options.css_names) catch null;
+                if (css_plan) |p| {
+                    css_hrefs = css_emit.planChunkHrefs(self.allocator, p, chunk_graph.chunkCount()) catch null;
+                    emit_opts.chunk_css_hrefs = css_hrefs;
+                }
+            }
+
             outputs = try emitter.emitChunks(
                 self.allocator,
                 &graph,
@@ -1377,11 +1401,16 @@ pub const Bundler = struct {
                 self.allocator.free(outs);
             };
 
-            // code splitting (preserve-modules 제외): JS 청크별로 CSS 분리.
-            // chunk_graph 가 살아있는 이 시점에서만 수집 가능. CSS 실패는
-            // 번들 실패로 번지지 않게 흡수(기존 css emit 의 관용과 동일).
-            if (!self.options.preserve_modules) {
-                css_chunk_files = @import("css_emitter.zig").emitCssChunks(self.allocator, &graph, &chunk_graph, self.options.css_names) catch null;
+            // emitChunks 가 href 를 청크 내용으로 복사 완료 → 이제 plan 의
+            // path/contents 소유권을 OutputFile 로 이전(plan 컨테이너만 해제).
+            if (css_plan) |p| {
+                css_chunk_files = css_emit.planToOutputFiles(self.allocator, p) catch null;
+                self.allocator.free(p);
+                css_plan = null;
+            }
+            if (css_hrefs) |h| {
+                self.allocator.free(h);
+                css_hrefs = null;
             }
 
             // output은 빈 문자열 — code splitting 시 outputs를 사용
