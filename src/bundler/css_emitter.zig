@@ -280,37 +280,34 @@ fn cssPathForChunk(
     return applyCssChunkName(allocator, css_names, idx_name, contents);
 }
 
-/// `css_names` 패턴의 `[name]`/`[hash]` 를 치환한다. `.css` 확장자를 보장하고,
-/// 패턴에 `[hash]` 가 없으면 확장자 앞에 `-<hash>` 를 강제 삽입한다(청크 캐시 안전).
-/// chunks.zig 의 `applyNamingPattern` 과 분리 유지 — 그쪽은 buffer 기반·[ext] 처리
-/// 이고 여기는 CSS 전용(강제 hash + .css 보장)이라 의미가 다르다.
+/// `css_names` 패턴의 `[name]`/`[hash]` 를 충실히 치환하고 `.css` 확장자를
+/// 보장한다. `[hash]`(= CSS 내용 wyhash) 는 패턴에 명시됐을 때만 삽입한다 —
+/// 강제 삽입은 app-builder 의 안정 파일명(`[name]`→`main.css`, HTML link
+/// rewrite) 기대를 깨므로 하지 않는다. 캐시 버스팅이 필요하면 css_names 에
+/// `[hash]` 를 넣는다(JS 청크의 entry_names/chunk_names 와 동일 계약).
+/// chunks.zig 의 `applyNamingPattern` 과 분리 유지 — 그쪽은 buffer 기반·[ext]
+/// 처리이고 여기는 CSS 전용(.css 보장)이라 의미가 다르다.
 fn applyCssChunkName(
     allocator: std.mem.Allocator,
     pattern: []const u8,
     stem: []const u8,
     contents: []const u8,
 ) ![]const u8 {
-    const h = wyhash.hashHex8(contents);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
-    var had_hash = false;
     var i: usize = 0;
     while (i < pattern.len) {
         if (std.mem.startsWith(u8, pattern[i..], "[name]")) {
             try out.appendSlice(allocator, stem);
             i += "[name]".len;
         } else if (std.mem.startsWith(u8, pattern[i..], "[hash]")) {
+            const h = wyhash.hashHex8(contents);
             try out.appendSlice(allocator, &h);
-            had_hash = true;
             i += "[hash]".len;
         } else {
             try out.append(allocator, pattern[i]);
             i += 1;
         }
-    }
-    if (!had_hash) {
-        try out.append(allocator, '-');
-        try out.appendSlice(allocator, &h);
     }
     if (!std.mem.endsWith(u8, out.items, ".css")) {
         try out.appendSlice(allocator, ".css");
@@ -379,34 +376,25 @@ test "applyCssNamingPattern: custom pattern" {
     try std.testing.expectEqualStrings("styles/main.css", result);
 }
 
-test "applyCssChunkName: empty stem still produces -hash.css" {
+test "applyCssChunkName: empty stem → just .css (no forced hash)" {
     const a = std.testing.allocator;
-    const h = wyhash.hashHex8(".");
-    const expect = try std.fmt.allocPrint(a, "-{s}.css", .{h});
-    defer a.free(expect);
     const r = try applyCssChunkName(a, "[name]", "", ".");
     defer a.free(r);
-    try std.testing.expectEqualStrings(expect, r);
+    try std.testing.expectEqualStrings(".css", r);
 }
 
-test "applyCssChunkName: pattern with no placeholders forces -hash" {
+test "applyCssChunkName: pattern with no placeholders → literal + .css (no forced hash)" {
     const a = std.testing.allocator;
-    const h = wyhash.hashHex8("x");
-    const expect = try std.fmt.allocPrint(a, "styles/main-{s}.css", .{h});
-    defer a.free(expect);
     const r = try applyCssChunkName(a, "styles/main", "idx", "x");
     defer a.free(r);
-    try std.testing.expectEqualStrings(expect, r);
+    try std.testing.expectEqualStrings("styles/main.css", r);
 }
 
-test "applyCssChunkName: [name] only forces -hash before .css" {
+test "applyCssChunkName: [name] only → stem.css (no forced hash — app-builder 안정 파일명)" {
     const a = std.testing.allocator;
-    const h = wyhash.hashHex8(".x{}");
-    const expect = try std.fmt.allocPrint(a, "route-a-{s}.css", .{h});
-    defer a.free(expect);
     const r = try applyCssChunkName(a, "[name]", "route-a", ".x{}");
     defer a.free(r);
-    try std.testing.expectEqualStrings(expect, r);
+    try std.testing.expectEqualStrings("route-a.css", r);
 }
 
 test "applyCssChunkName: explicit [hash] not duplicated" {
@@ -447,7 +435,18 @@ test "applyCssChunkName: hash depends only on contents (determinism + sensitivit
     try std.testing.expect(std.mem.indexOf(u8, r4, &h) != null);
 }
 
-test "cssPathForChunk: uses chunk.name + content hash" {
+test "cssPathForChunk: [name] → chunk.name.css (안정 파일명, 강제 hash 없음)" {
+    const a = std.testing.allocator;
+    const bits = try chunk_mod.BitSet.init(a, 1);
+    var ch = Chunk.init(@enumFromInt(0), .common, bits);
+    defer ch.deinit(a);
+    ch.name = "vendor";
+    const r = try cssPathForChunk(a, &ch, "[name]", ".v{}");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("vendor.css", r);
+}
+
+test "cssPathForChunk: [name]-[hash] → chunk.name + content hash" {
     const a = std.testing.allocator;
     const bits = try chunk_mod.BitSet.init(a, 1);
     var ch = Chunk.init(@enumFromInt(0), .common, bits);
@@ -456,7 +455,7 @@ test "cssPathForChunk: uses chunk.name + content hash" {
     const h = wyhash.hashHex8(".v{}");
     const expect = try std.fmt.allocPrint(a, "vendor-{s}.css", .{h});
     defer a.free(expect);
-    const r = try cssPathForChunk(a, &ch, "[name]", ".v{}");
+    const r = try cssPathForChunk(a, &ch, "[name]-[hash]", ".v{}");
     defer a.free(r);
     try std.testing.expectEqualStrings(expect, r);
 }
