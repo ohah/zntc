@@ -1903,7 +1903,7 @@ pub const SemanticAnalyzer = struct {
                 .ts_enum_declaration => try self.predeclareEnumDecl(node),
                 // RFC #3310 (D20): forward `export {}; import default/namespace`.
                 // local name 만 side-table 에 기록 — symbol/scope 선언 절대 안 함.
-                .import_declaration => try self.recordForwardImportNames(node),
+                .import_declaration => try self.predeclareImportDecl(node),
                 .export_named_declaration => {
                     // export const x = ..., export function f() {}, export class C {}
                     const extra_start = node.data.extra;
@@ -2163,7 +2163,21 @@ pub const SemanticAnalyzer = struct {
     /// user scope isolation 모델 (helper_scope_map / canonical name) 무침범.
     /// grpc-js src/index.ts 는 default+named forward 혼재라 named 도 기록해야 완전
     /// 해결 (full semantic 경로에선 named forward 도 ZNTC1201 노출).
-    fn recordForwardImportNames(self: *SemanticAnalyzer, node: Node) AllocError!void {
+    /// RFC #3310 (D20) 완전 근본 해결 — top-level import 의 user binding 을 1st-pass
+    /// 에서 진짜 `.import_binding` symbol 로 등록 (var/func/class predeclare 와 동일
+    /// 패턴). ECMAScript: import 는 module top hoist 라 forward `export {}` / forward
+    /// value use 모두 valid. `forward_import_names` side-table 도 병존 유지 (PR-1
+    /// fallback — 정공법 회귀 시 격리, PR-3 에서 제거 예정).
+    ///
+    /// helper 배제 3중 방어 (이전 11 회귀 무재발):
+    ///   1. virtual-source guard: `\x00zntc:runtime/...` import declaration 통째 skip
+    ///      (AST 구조적, Pass1/Pass2 불변). Pass2 helper isolation 1차 방어선.
+    ///   2. per-spec helper-marker guard: `isHelperRefNode(local_idx)` 면 그 spec
+    ///      skip (Pass2 marker 보강; Pass1 은 marker empty + helper AST 부재라 무영향).
+    ///   3. helper 는 2nd-pass `visitImportDeclaration` 의 `declareHelperImportSpec`
+    ///      정규 격리 경로 (helper_scope_map) 에 위임 — predeclare 가 user scope 에
+    ///      등록하지 않으므로 canonical name / shadow 모델 무침범.
+    fn predeclareImportDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         // import_declaration extra: [specs_start, specs_len, source, ...]
@@ -2173,7 +2187,7 @@ pub const SemanticAnalyzer = struct {
         if (specs_len == 0) return; // side-effect import
         if (specs_start + specs_len > extras.len) return;
 
-        // 방어: helper virtual module (`\x00zntc:runtime/...`) import 는 skip.
+        // 방어선 1: helper virtual module (`\x00zntc:runtime/...`) import 통째 skip.
         // source 노드 텍스트는 따옴표 포함 (`"\x00zntc:runtime/extends"`).
         const source_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
         if (!source_idx.isNone() and @intFromEnum(source_idx) < self.ast.nodes.items.len) {
@@ -2190,19 +2204,28 @@ pub const SemanticAnalyzer = struct {
             if (spec_idx.isNone()) continue;
             if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
             const spec_node = self.ast.getNode(spec_idx);
-            // local name span: default/namespace 는 spec.span (string_ref, 별도 name
-            // 노드 없음), named 는 binary.right (= local) 노드의 span.
-            const name_span: Span = switch (spec_node.tag) {
-                .import_default_specifier, .import_namespace_specifier => spec_node.span,
+            // local: default/namespace 는 spec 노드 자체 (별도 name 노드 없음, 이름은
+            // spec.span string_ref), named 는 binary.right (= local) 노드.
+            const local_idx: NodeIndex, const name_span: Span = switch (spec_node.tag) {
+                .import_default_specifier, .import_namespace_specifier => .{ spec_idx, spec_node.span },
                 .import_specifier => blk: {
-                    const local_idx = spec_node.data.binary.right;
-                    if (local_idx.isNone()) continue;
-                    if (@intFromEnum(local_idx) >= self.ast.nodes.items.len) continue;
-                    break :blk self.ast.getNode(local_idx).span;
+                    const li = spec_node.data.binary.right;
+                    if (li.isNone()) continue;
+                    if (@intFromEnum(li) >= self.ast.nodes.items.len) continue;
+                    break :blk .{ li, self.ast.getNode(li).span };
                 },
                 else => continue,
             };
+            // 방어선 2: helper marker spec skip (2nd-pass declareHelperImportSpec 위임).
+            if (self.isHelperRefNode(local_idx)) continue;
             if (self.ast.getText(name_span).len == 0) continue;
+
+            // 정공법: user import 를 진짜 import_binding symbol 로 등록.
+            // checkStrictBindingName 은 2nd-pass visitImportDeclaration 가 수행
+            // (predeclare* 들은 declare 만 하고 strict 검증은 visit 단계 — 일관).
+            try self.declareSymbolWithNode(name_span, .import_binding, spec_node.span, @intFromEnum(local_idx));
+
+            // PR-1 fallback 병존: side-table 도 채워 정공법 회귀 시 격리 (PR-3 제거).
             const stable = try self.ast.getTextStable(self.allocator, name_span);
             try self.forward_import_names.put(self.allocator, stable, {});
         }
@@ -3108,10 +3131,16 @@ pub const SemanticAnalyzer = struct {
             switch (spec_node.tag) {
                 .import_default_specifier => {
                     try self.checkStrictBindingName(spec_node.span);
+                    // D20: predeclareImportDecl 가 1st-pass 에 user import 를 이미
+                    // .import_binding symbol 로 등록 — 중복 declare 방지 (func/var
+                    // predeclare-skip 패턴과 동일). default/namespace 는 helper 가
+                    // 아니므로 (helper 는 named only) predeclare 가 항상 처리.
+                    if (self.isInPredeclaredScope()) continue;
                     try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
                 },
                 .import_namespace_specifier => {
                     try self.checkStrictBindingName(spec_node.span);
+                    if (self.isInPredeclaredScope()) continue;
                     try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
                 },
                 .import_specifier => {
@@ -3123,9 +3152,13 @@ pub const SemanticAnalyzer = struct {
                         // 격리된 helper_scope_map 으로 등록. marker 는 transformer 의 의도
                         // 를 직접 표현하므로 source string 패턴 매칭보다 권위적 — `\x00zntc:`
                         // 가상 모듈 표기가 미래에 바뀌어도 marker 만 따라가면 정확.
+                        // helper 는 predeclareImportDecl 가 skip 하므로 2nd-pass 의 이
+                        // 정규 격리 경로가 helper_scope_map 등록을 전담 (D20 무침범).
                         if (self.isHelperRefNode(local_idx)) {
                             try self.declareHelperImportSpec(local_node.span, spec_node.span, @intFromEnum(local_idx));
-                        } else {
+                        } else if (!self.isInPredeclaredScope()) {
+                            // user named import — predeclareImportDecl 미등록 시에만
+                            // (nested import 등 비-top-level; ESM 상 드묾) 직접 declare.
                             try self.declareSymbolWithNode(local_node.span, .import_binding, spec_node.span, @intFromEnum(local_idx));
                         }
                     }
