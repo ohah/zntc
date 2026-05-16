@@ -977,6 +977,28 @@ fn addCrossChunkSymbol(
     try chunk_graph.chunks.items[src_ci].exports_to.put(allocator, export_name, {});
 }
 
+/// re-export 이름의 canonical 을 resolveExportChain 으로 추적해, canonical 이
+/// 다른 청크면 cross-chunk named 바인딩을 등록. named(`export {x} from`)·
+/// star(`export *`) 루프 공용 — 두 경로가 같은 해석을 쓰도록 단일화(#3321
+/// 후속; #3350 의 addCrossChunkSymbol 추출 규율 연장).
+fn linkReExportName(
+    allocator: std.mem.Allocator,
+    chunk_graph: *ChunkGraph,
+    chunk: *Chunk,
+    seen_static: *std.AutoHashMapUnmanaged(u32, void),
+    lnk: *const Linker,
+    mod_idx: ModuleIndex,
+    name: []const u8,
+    module_count: usize,
+) !void {
+    const canon = lnk.resolveExportChain(mod_idx, name, 0) orelse return;
+    if (@intFromEnum(canon.module_index) >= module_count) return;
+    const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
+    if (src_chunk_idx.isNone()) return;
+    if (src_chunk_idx == chunk.index) return; // 같은 청크 → 스킵
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, canon.export_name);
+}
+
 pub fn computeCrossChunkLinks(
     chunk_graph: *ChunkGraph,
     graph: *const ModuleGraph,
@@ -1049,13 +1071,41 @@ pub fn computeCrossChunkLinks(
                 // star/namespace re-export 는 별도 케이스 — 후속.
                 for (m.export_bindings) |eb| {
                     if (eb.kind != .re_export) continue;
-                    const canon = lnk.resolveExportChain(mod_idx, eb.exported_name, 0) orelse continue;
-                    const canon_mi = @intFromEnum(canon.module_index);
-                    if (canon_mi >= module_count) continue;
-                    const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
-                    if (src_chunk_idx.isNone()) continue;
-                    if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
-                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, canon.export_name);
+                    try linkReExportName(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, eb.exported_name, module_count);
+                }
+
+                // `export * from "./y"` (re_export_star, y 별도 청크): 위 named
+                // 루프는 `.re_export` 만 본다 — star 는 소스 전체 export 를
+                // 열거해야 하므로 누락(재-exporter 가 side-effect import 만 받아
+                // 미바인딩 link error). collectExportsRecursive 로 m 의 effective
+                // export(nested export */diamond 포함)를 전부 열거, canonical 이
+                // 다른 청크인 이름마다 addCrossChunkSymbol 로 named 바인딩+재노출
+                // (#3350 named 의 star 버전). `.re_export_namespace`(export * as
+                // ns — namespace 객체 합성)는 emit-side 별도 후속(미처리).
+                var has_star = false;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind == .re_export_star) {
+                        has_star = true;
+                        break;
+                    }
+                }
+                if (has_star) {
+                    var exps: std.ArrayList(Linker.NsExportPair) = .empty;
+                    var seen_e = std.StringHashMap(void).init(lnk.allocator);
+                    var visited_e = std.AutoHashMap(u32, void).init(lnk.allocator);
+                    defer {
+                        for (exps.items) |e| if (e.owned) lnk.allocator.free(e.local);
+                        exps.deinit(lnk.allocator);
+                        seen_e.deinit();
+                        visited_e.deinit();
+                    }
+                    // collectExportsRecursive 는 lnk.allocator 로 append (소스
+                    // shared_namespace.zig 패턴과 동일). OOM 은 named 루프와
+                    // 일관되게 전파(silent partial-link 방지). 모듈은 단일
+                    // 청크 소속이라 빌드당 1회 — ns_export_cache 미사용 의도적.
+                    try lnk.collectExportsRecursive(&exps, &seen_e, &visited_e, mod_idx, 0);
+                    for (exps.items) |e|
+                        try linkReExportName(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, e.exported, module_count);
                 }
             }
 

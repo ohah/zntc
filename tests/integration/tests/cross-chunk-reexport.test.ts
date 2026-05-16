@@ -195,4 +195,62 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     const { stdout } = await runNode(join(fixture.dir, entry.path));
     expect(stdout).toBe('3');
   });
+
+  // 후속: `export * from "./y"` (star) — y 별도 청크. #3350 은 named
+  // re-export 만 처리했고 star 는 미처리였음(소스 전체 export 미열거 →
+  // 재-exporter 가 side-effect import 만 받아 미바인딩 link error).
+  for (const format of ['esm', 'cjs'] as const) {
+    test(`${format}: export * from (star) cross-chunk — 전체 재-export 바인딩 + Node 실행`, async () => {
+      const fixture = await createFixture({
+        'inner.ts': `export const ia = "IA";\nexport const ib = "IB";`,
+        'page.ts': `export * from "./inner";\nexport const pv = "PV";`,
+        'index.ts': `
+          import { ia, pv } from "./page";
+          async function main(){
+            const m = await import("./page");
+            console.log(ia + " " + pv + " " + m.ib + " " + m.ia);
+          }
+          main();
+        `,
+      });
+      cleanup = fixture.cleanup;
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'index.ts')],
+        format,
+        splitting: true,
+        platform: 'node',
+      });
+      const outs = result.outputFiles!;
+      writeOutputs(fixture.dir, outs);
+      const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+      const { stdout } = await runNode(join(fixture.dir, entry.path));
+      expect(stdout).toBe('IA PV IB IA');
+    });
+  }
+
+  test('star re-export: 체인 re-export(export {k1} from "./page") + manualChunks 분리 가드', async () => {
+    // a 가 page 의 star-re-export 이름 k1 을 다시 re-export(import_binding
+    // 없음). page 가 inner 의 `export *` 를 cross-chunk 바인딩·재노출하지
+    // 못하면 a 의 k1 해석이 깨진다 → star 열거 경로 가드. manualChunks 로
+    // inner/page 분리 강제. (namespace 객체 경로는 별도 후속 — 미사용.)
+    const fixture = await createFixture({
+      'inner.ts': `export const k1 = "K1";\nexport const k2 = "K2";`,
+      'page.ts': `export * from "./inner";\nexport const pg = "PG";`,
+      'a.ts': `export { k1 } from "./page";\nexport const av = "AV";`,
+      'index.ts': `import { k1, av } from "./a";\nimport { pg } from "./page";\nconsole.log(k1 + " " + av + " " + pg);`,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+      manualChunks: (id: string) =>
+        id.includes('inner') ? 'innerc' : id.includes('page') ? 'pagec' : null,
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('K1 AV PG');
+  });
 });
