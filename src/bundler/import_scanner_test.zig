@@ -258,6 +258,49 @@ test "dynamic import (template literal) — marked invalid" {
     try std.testing.expectEqualStrings("", records[0].specifier);
 }
 
+test "dynamic import (string concat) — marked invalid" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc, "const m = import('./a' + x);");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].dynamic_invalid_reason != null);
+    try std.testing.expectEqualStrings("", records[0].specifier);
+}
+
+test "dynamic import (ternary) — marked invalid" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc, "const m = import(c ? './a' : './b');");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].dynamic_invalid_reason != null);
+}
+
+test "dynamic import (call expression) — marked invalid" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc, "const m = import(resolve('x'));");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].dynamic_invalid_reason != null);
+}
+
+test "dynamic import (literal + non-literal mixed) — only non-literal marked" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc, "import('./ok');\nimport(bad);");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 2), records.len);
+    var lit_ok = false;
+    var nonlit_marked = false;
+    for (records) |r| {
+        if (std.mem.eql(u8, r.specifier, "./ok")) {
+            lit_ok = r.dynamic_invalid_reason == null;
+        } else if (r.dynamic_invalid_reason != null) {
+            nonlit_marked = true;
+        }
+    }
+    try std.testing.expect(lit_ok);
+    try std.testing.expect(nonlit_marked);
+}
+
 test "dynamic import (string literal) — not marked invalid" {
     const alloc = std.testing.allocator;
     const records = try parseAndExtract(alloc, "const m = import('./lazy');");

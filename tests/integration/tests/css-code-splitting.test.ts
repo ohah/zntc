@@ -129,6 +129,52 @@ describe('CSS code splitting (per-chunk CSS)', () => {
     expect(bCss.text).not.toContain('@import');
   });
 
+  test('순환 @import (a↔b): 무한루프 없이 양쪽 규칙 1회씩 인라인', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `import './a.css';\nconsole.log("x");`,
+      'a.css': `@import "./b.css";\n.ca { color: red; }`,
+      'b.css': `@import "./a.css";\n.cb { color: blue; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.ts')],
+      splitting: true,
+    });
+
+    const css = cssFiles(result.outputFiles!);
+    expect(css.length).toBe(1);
+    const t = css[0].text;
+    expect(t).toContain('.ca');
+    expect(t).toContain('.cb');
+    expect(t).not.toContain('@import');
+    // 순환이어도 각 규칙 정확히 1회 (중복 emit 없음)
+    const ca = t.match(/\.ca\b/g);
+    const cb = t.match(/\.cb\b/g);
+    expect(ca).not.toBeNull();
+    expect(cb).not.toBeNull();
+    expect(ca!.length).toBe(1);
+    expect(cb!.length).toBe(1);
+  });
+
+  test('@import 전용 CSS(규칙 없음): 대상 CSS 가 인라인된다', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `import './imports.css';\nconsole.log("x");`,
+      'imports.css': `@import "./actual.css";\n/* only a comment */`,
+      'actual.css': `.real { color: teal; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.ts')],
+      splitting: true,
+    });
+
+    const css = cssFiles(result.outputFiles!);
+    expect(css.some((c) => c.text.includes('color: teal'))).toBe(true);
+    expect(css.every((c) => !c.text.includes('@import'))).toBe(true);
+  });
+
   test('CSS 없는 청크는 CSS 파일을 만들지 않는다', async () => {
     const fixture = await createFixture({
       'entry.ts': `
