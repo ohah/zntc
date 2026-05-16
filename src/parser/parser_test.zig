@@ -3539,6 +3539,28 @@ test "TS: strict-mode reserved word cannot be used as binding (D16)" {
     try expectParseErrorWithExt("let f = (arguments: any) => true;", ".ts", .{ .message_contains = "arguments" });
 }
 
+test "TS: class field named get/set (D21 — effect internal/ref.ts)" {
+    // effect `internal/ref.ts:29` 등 5파일 — 클래스 멤버 이름이 `get`/`set` 인
+    // 필드 (`get: T`, `readonly get: T`, `get?: T`, `get!: T`). parseClassMember
+    // 의 `is_accessor_target` 검사가 `.colon`/`.question`/`.bang` 누락 → `get`/`set`
+    // 다음이 `:` 면 무조건 accessor 로 파싱해 `Property key expected [ZNTC0608]`.
+    // ECMAScript MethodDefinition 문법상 get/set 은 contextual keyword — 다음
+    // 토큰이 PropertyName 이 아니면 일반 멤버 (Babel/tsc/swc/oxc 동일).
+    try expectNoParseErrorWithExt("class C { get: number = 1 }", ".ts");
+    try expectNoParseErrorWithExt("class C { set: number = 2 }", ".ts");
+    try expectNoParseErrorWithExt("class C { readonly get: number = 1 }", ".ts");
+    try expectNoParseErrorWithExt("class C { get?: number }", ".ts");
+    try expectNoParseErrorWithExt("class C { set?: number }", ".ts");
+    try expectNoParseErrorWithExt("class C { get!: number }", ".ts");
+    try expectNoParseErrorWithExt("class C { static get: number = 1 }", ".ts");
+    try expectNoParseErrorWithExt("class C { get; set; }", ".ts");
+    try expectNoParseErrorWithExt("class C { get = 1; set = 2; }", ".ts");
+    // 진짜 accessor / 메서드 는 그대로 (regression guard)
+    try expectNoParseErrorWithExt("class C { get foo() { return 1; } set foo(v) {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { get() {} set() {} }", ".ts");
+    try expectNoParseErrorWithExt("class C { get [k]() { return 1; } }", ".ts");
+}
+
 test "TS: object literal method shorthand named get/set/async with generics (D17)" {
     // mobx `src/api/observable.ts` 의 `set<T = any>(...)` 패턴. object literal property
     // parser 의 get/set/async 분기가 `peek != .l_paren/.colon/.comma/.r_curly` 만 검사 →

@@ -625,9 +625,14 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         // class body에서 get\nx()는 accessor (줄바꿈 있어도). 단, get\n*x()는 ASI.
         // TypeScript PR#60225: newline은 * 앞에서만 ASI 유발
         // `get<T>()` / `set<T>()`는 TS generic method 이름이지 accessor가 아니다.
+        // D21: `get`/`set` 이 필드 이름인 경우 — `get: T` / `get?: T` (optional) /
+        // `get!: T` (definite assignment) 도 accessor 가 아닌 일반 필드 (effect
+        // internal/ref.ts). ECMAScript MethodDefinition contextual keyword 규칙.
         const is_accessor_target = next_tok.kind != .l_paren and
             next_tok.kind != .l_angle and
             next_tok.kind != .semicolon and next_tok.kind != .eq and
+            next_tok.kind != .colon and next_tok.kind != .question and
+            next_tok.kind != .bang and
             next_tok.kind != .r_curly and next_tok.kind != .eof;
         const newline_blocks = next_tok.has_newline_before and
             (next_tok.kind == .star or next_tok.kind == .kw_async);
