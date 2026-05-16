@@ -155,6 +155,10 @@ modified_body가 있으면 result 노드 패치
 trailing_nodes가 있으면 함수 뒤에 삽입
 ```
 
+> 참고: 내장 Zig 플러그인 중 `onFunction`(AST 훅)을 쓰는 것은 `worklet_plugin`
+> 하나뿐이다. `rn_codegen_plugin` 은 `.transform`(string 훅)만 사용하므로
+> 위 AST 훅 흐름과는 별개 경로다.
+
 ## 내장 플러그인 추가 방법
 
 1. `src/transformer/plugins/my_plugin.zig` 생성

@@ -109,7 +109,7 @@ const result = await build({
 });
 ```
 
-**제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` / `watch()`에서 사용 가능.
+**제한사항**: `buildSync()`에서는 **async 플러그인 훅**이 미지원 (메인 스레드 데드락). sync 훅은 sync dispatcher 로 동작한다. async 훅이 필요하면 `build()` / `watch()`를 사용.
 
 ### 4단계: Vite/Rollup 호환 어댑터 ✅ 완료 (#992, #1004, #1007)
 - `vitePlugin()` 함수로 Rollup 스타일 플러그인을 ZNTC 플러그인으로 변환
@@ -191,19 +191,25 @@ pub const Plugin = struct {
 - lifecycle: `buildStart → buildEnd → closeBundle` 순서로 모두 실행. `buildEnd` / `closeBundle` 에러는 본 build 결과를 가리지 않도록 swallow
 - watch lifecycle: `buildStart → buildEnd → onReady/onRebuild → closeBundle` 순서로 초기 build와 매 rebuild마다 실행
 
-## Builtin 플러그인 (Zig 구현)
+## Builtin 처리 (Zig 구현)
+
+> 아래는 독립 `Plugin` struct 가 아니라 graph 의 **loader/codegen 경로**로
+> 네이티브 구현된 기능이다 ("플러그인"이라는 명칭은 역할상 분류일 뿐).
+
 ```
 ┌────────────────────────┬───────────────────────────────────────┐
-│ 플러그인               │ 기능                                   │
+│ 기능                   │ 동작                                   │
 ├────────────────────────┼───────────────────────────────────────┤
 │ json                   │ JSON → export default + named exports  │
 │ asset                  │ 이미지/폰트 → 해시 파일명 + URL export │
 │ text                   │ 텍스트 파일 → 문자열 export            │
 │ glob-import            │ import.meta.glob(...) 처리             │
-│ dynamic-import-vars    │ import(`./pages/${name}.ts`) 처리     │
-│ wasm                   │ WASM 파일 로딩                         │
+│ require context        │ require(`./pages/` + name) webpack식 확장 │
 └────────────────────────┴───────────────────────────────────────┘
 ```
+
+> 미구현: Vite 식 dynamic-import-vars (`import(\`./x/${n}.ts\`)`), `.wasm`
+> 모듈 로더. (`Loader` enum 에 wasm 없음 — ROADMAP 미지원 참조)
 
 ## Vite 호환 확장 (4단계)
 - resolveId / load / transform — Rollup 호환 (어댑터로 변환)
@@ -296,8 +302,12 @@ const modules = import.meta.glob(['./src/**/*.ts', '!**/*.test.ts'])
 
 ### Dynamic Import Variables
 ```typescript
-import(`./pages/${name}.ts`)
-// → glob 패턴으로 확대하여 가능한 모듈 전부 번들에 포함
+// 현재 지원: webpack 식 require context
+require(`./pages/` + name)
+// → 디렉토리 스캔으로 가능한 모듈 전부 번들에 포함
+
+// 미구현: Vite 식 변수 동적 import
+// import(`./pages/${name}.ts`)
 ```
 
 ### Web Workers
@@ -336,10 +346,10 @@ new Worker(new URL('./worker.ts', import.meta.url))
 ### CLI에 노출됨
 
 - `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
-
-### 아직 CLI에 미노출
 - `--conditions`, `--node-paths` — resolver 조건/추가 탐색 경로
 - `--ignore-annotations`, `--jsx-side-effects`
+
+### 아직 CLI에 미노출
 - `--mangle-props`, `--mangle-cache`, `--reserve-props`
 - `--log-override`
 - CORS 설정
