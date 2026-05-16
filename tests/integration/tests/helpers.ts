@@ -505,3 +505,37 @@ export function writeOutputs(dir: string, outs: { path: string; text: string }[]
     writeFileSync(abs, o.text);
   }
 }
+
+/** IIFE-split 산출물을 시뮬레이션 환경에서 실행하는 `.cjs` 드라이버 기록.
+ *  비-entry 청크를 먼저 eval(자기설치형 register, load-order=entry 마지막),
+ *  그 다음 entry. `env` 별 동적 로더 분기 스텁:
+ *  - `'dom'`: `document` 스텁 — `<script>` 주입을 동기 eval+onload 로.
+ *  - `'worker'`: `globalThis.importScripts` 스텁(document 없음 → importScripts 분기).
+ *  - `'nondom'`: 스텁 없음 — 로더가 동적 `import(url)` 폴백 사용(호출부가
+ *    `publicPath: file://<dir>/` 로 빌드해야 url 해석 가능).
+ *  반환: 드라이버 절대경로(`runNode` 로 실행). */
+export function writeIifeDriver(
+  dir: string,
+  entryFile: string,
+  allJs: string[],
+  env: 'dom' | 'worker' | 'nondom',
+): string {
+  const others = allJs.filter((p) => p !== entryFile);
+  const stub =
+    env === 'dom'
+      ? 'globalThis.__zntc_public_path="";globalThis.document={createElement(){return {};},head:{appendChild(s){try{ev(s.src);if(s.onload)s.onload();}catch(e){if(s.onerror)s.onerror(e);}}}};'
+      : env === 'worker'
+        ? 'globalThis.importScripts=function(u){ev(u);};'
+        : ''; // nondom: 스텁 없음, import(url) 폴백
+  const driver = join(dir, `__iife_${env}.cjs`);
+  writeFileSync(
+    driver,
+    `const fs=require("fs"),path=require("path");const here=${JSON.stringify(dir)};
+function ev(f){(0,eval)(fs.readFileSync(path.isAbsolute(f)?f:path.join(here,f),"utf8"));}
+${stub}
+${others.map((f) => `ev(${JSON.stringify(f)});`).join('\n')}
+ev(${JSON.stringify(entryFile)});
+`,
+  );
+  return driver;
+}
