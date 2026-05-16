@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
-import { createFixture, runNode, byContent, writeOutputs } from './helpers';
+import { createFixture, runNode, byContent, writeOutputs, writeIifeDriver } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
 // P3-B PR3 (#3321): format=iife + splitting=true — 런타임 require 레지스트리
@@ -9,27 +8,9 @@ import { init, close, build } from '../../../packages/core/index';
 // 디리스크 스파이크(RFC §6 IIFE)가 브라우저 시뮬레이션으로 증명한 행동을
 // 빌더 산출물로 영구화. ESM/CJS splitting·단일 IIFE 번들은 불변(회귀).
 
-/**
- * 브라우저 시뮬레이션 드라이버를 dir 에 기록. <script> 주입을 동기 eval+onload
- * 로 스텁(스파이크 검증 모델). 정적 cross-chunk 는 dep 가 entry 보다 먼저
- * 평가돼야 하므로 entry 외 모든 청크를 먼저 eval, 그 다음 entry. 동적
- * __zntc_load_chunk 는 document.head.appendChild 경유 재-eval(멱등 register).
- */
-function writeBrowserDriver(dir: string, entryFile: string, allJs: string[]): string {
-  const others = allJs.filter((p) => p !== entryFile);
-  const driver = join(dir, '__driver.cjs');
-  writeFileSync(
-    driver,
-    `const fs=require("fs"),path=require("path");const here=${JSON.stringify(dir)};
-function ev(f){(0,eval)(fs.readFileSync(path.join(here,f),"utf8"));}
-globalThis.__zntc_public_path="";
-globalThis.document={createElement(){return {};},head:{appendChild(s){try{ev(s.src);if(s.onload)s.onload();}catch(e){if(s.onerror)s.onerror(e);}}}};
-${others.map((f) => `ev(${JSON.stringify(f)});`).join('\n')}
-ev(${JSON.stringify(entryFile)});
-`,
-  );
-  return driver;
-}
+// 드라이버 헬퍼는 helpers.ts 의 writeIifeDriver(dir, entry, allJs, env) 로 공용화.
+const writeBrowserDriver = (dir: string, entryFile: string, allJs: string[]): string =>
+  writeIifeDriver(dir, entryFile, allJs, 'dom');
 
 const jsOf = (outs: { path: string }[]) =>
   outs.filter((o) => o.path.endsWith('.js')).map((o) => o.path);
@@ -305,18 +286,8 @@ describe('iife + code splitting (P3-B PR3)', () => {
     const outs = result.outputFiles!;
     writeOutputs(fixture.dir, outs);
     const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
-    const others = jsOf(outs).filter((p) => p !== entry.path);
-    // document 없음 + importScripts 만 정의 → 폴백이 importScripts 분기 사용.
-    const drv = join(fixture.dir, '__wkr.cjs');
-    writeFileSync(
-      drv,
-      `const fs=require("fs"),path=require("path");const here=${JSON.stringify(fixture.dir)};
-function ev(f){(0,eval)(fs.readFileSync(path.isAbsolute(f)?f:path.join(here,f),"utf8"));}
-globalThis.importScripts=function(u){ev(u);};
-${others.map((f) => `ev(${JSON.stringify(f)});`).join('\n')}
-ev(${JSON.stringify(entry.path)});
-`,
-    );
+    // document 없음 + importScripts 만 정의 → 로더가 importScripts 분기 사용.
+    const drv = writeIifeDriver(fixture.dir, entry.path, jsOf(outs), 'worker');
     const { stdout } = await runNode(drv);
     expect(stdout).toBe('R:L2');
   });
@@ -334,17 +305,8 @@ ev(${JSON.stringify(entry.path)});
     const outs = result.outputFiles!;
     writeOutputs(fixture.dir, outs);
     const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
-    const others = jsOf(outs).filter((p) => p !== entry.path);
-    // document 도 importScripts 도 없음 → import(file://...) 분기.
-    const drv = join(fixture.dir, '__nd.cjs');
-    writeFileSync(
-      drv,
-      `const fs=require("fs"),path=require("path");const here=${JSON.stringify(fixture.dir)};
-function ev(f){(0,eval)(fs.readFileSync(path.join(here,f),"utf8"));}
-${others.map((f) => `ev(${JSON.stringify(f)});`).join('\n')}
-ev(${JSON.stringify(entry.path)});
-`,
-    );
+    // document 도 importScripts 도 없음 → 로더가 import(file://...) 분기.
+    const drv = writeIifeDriver(fixture.dir, entry.path, jsOf(outs), 'nondom');
     const { stdout } = await runNode(drv);
     expect(stdout).toBe('R:L2');
   });
