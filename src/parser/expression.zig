@@ -605,7 +605,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
     return left;
 }
 
-fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
+pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
     const kind = self.current();
     switch (kind) {
         .bang, .tilde, .minus, .plus, .kw_typeof, .kw_void, .kw_delete => {
@@ -761,6 +761,8 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
     while (self.current() == .identifier and !self.scanner.token.has_newline_before) {
         const text = self.tokenText();
         const is_as = std.mem.eql(u8, text, "as");
+        // match pattern 안의 `as` 는 type-cast 가 아니라 binding 구분자.
+        if (is_as and self.flow_in_match_pattern) break;
         const is_satisfies = !is_as and !self.is_flow and std.mem.eql(u8, text, "satisfies");
         if (!is_as and !is_satisfies) break;
         const expr_start = self.ast.getNode(expr).span.start;

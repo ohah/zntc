@@ -1816,14 +1816,22 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
     while (self.current() != .r_curly and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
 
-        const pattern = try parseMatchPattern(self);
+        var pattern = try parseMatchPattern(self);
 
-        // case guard: `Pattern if (expr) =>` — 소비만 (transformer 후속).
+        // case guard: `Pattern if (expr) =>` → flow_match_guard_pattern 으로 wrap.
         if (self.current() == .kw_if) {
+            const g_start = self.currentSpan().start;
             try self.advance();
             try self.expect(.l_paren);
-            _ = try self.parseAssignmentExpression();
+            const guard_expr = try self.parseAssignmentExpression();
             try self.expect(.r_paren);
+            pattern = try self.ast.addBinaryNode(
+                .flow_match_guard_pattern,
+                .{ .start = g_start, .end = self.currentSpan().start },
+                pattern,
+                guard_expr,
+                0,
+            );
         }
 
         try self.expect(.arrow);
@@ -1881,16 +1889,14 @@ fn matchWildcard(self: *Parser, span: anytype) ParseError2!NodeIndex {
     });
 }
 
-/// object/array match pattern 의 opaque placeholder. 정밀 lowering 은 후속
-/// (parser-only scope) 이라, transformer 의 `_m === <here>` 가 valid JS 가
-/// 되도록 빈 object expression `{}` 을 emit — `_m==={}` 는 항상 false (객체
-/// 레퍼런스 비교) 이며 codegen 안전. literal 노드는 codegen 이 span 텍스트
-/// (`{`/`[`) 를 그대로 출력해 깨진 JS 가 되므로 tag 기반 emit 노드를 쓴다.
+/// object/array/instance match pattern 의 opaque placeholder. 정밀 구조분해
+/// lowering 은 후속 PR — 이번엔 transformer 가 `false` 로 lower 해 해당 arm 을
+/// 매치 안 시킴 (valid JS, 동작은 보수적).
 fn matchOpaquePattern(self: *Parser, span: anytype) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
-        .tag = .object_expression,
+        .tag = .flow_match_opaque_pattern,
         .span = span,
-        .data = .{ .list = .{ .start = 0, .len = 0 } },
+        .data = .{ .none = 0 },
     });
 }
 
@@ -1908,31 +1914,69 @@ fn tryConsumeMatchBinding(self: *Parser) ParseError2!bool {
 
 /// match pattern (top-level). Hermes parseMatchPatternFlow (line 1104) 미러:
 ///   [`|`] subpattern (`|` subpattern)*  [`as` (const|var|let)? ident]
-/// OR / as 는 정확히 소비하되 AST 에는 첫 subpattern 만 보존 (transformer 후속).
+/// OR → flow_match_or_pattern, as → flow_match_as_pattern 으로 구조 보존.
 fn parseMatchPattern(self: *Parser) ParseError2!NodeIndex {
+    const prev_in_match = self.flow_in_match_pattern;
+    self.flow_in_match_pattern = true;
+    defer self.flow_in_match_pattern = prev_in_match;
+
+    const start = self.currentSpan().start;
     _ = try self.eat(.pipe); // 선행 `|` 허용
     const first = try parseMatchSubpattern(self);
-    while (self.current() == .pipe) {
-        try self.advance();
-        _ = try parseMatchSubpattern(self);
+
+    var pat = first;
+    if (self.current() == .pipe) {
+        const scratch_top = self.saveScratch();
+        try self.scratch.append(self.allocator, first);
+        while (self.current() == .pipe) {
+            try self.advance();
+            try self.scratch.append(self.allocator, try parseMatchSubpattern(self));
+        }
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.scratch.shrinkRetainingCapacity(scratch_top);
+        pat = try self.ast.addListNode(
+            .flow_match_or_pattern,
+            .{ .start = start, .end = self.currentSpan().start },
+            list,
+        );
     }
+
     // `as` binding: `pattern as x`, `pattern as const x`
     if (self.isContextual("as")) {
         try self.advance();
         _ = try tryConsumeMatchBinding(self);
+        const id_span = self.currentSpan();
         _ = try self.parseSimpleIdentifier();
+        const id = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = id_span,
+            .data = .{ .string_ref = id_span },
+        });
+        pat = try self.ast.addBinaryNode(
+            .flow_match_as_pattern,
+            .{ .start = start, .end = self.currentSpan().start },
+            pat,
+            id,
+            0,
+        );
     }
-    return first;
+    return pat;
 }
 
 /// match subpattern. Hermes parseMatchSubpatternFlow (line 1149) 미러.
 /// 모든 종류를 정확히 소비. AST 는 기존 expression 노드 재활용.
 fn parseMatchSubpattern(self: *Parser) ParseError2!NodeIndex {
     switch (self.current()) {
-        // binding pattern: const x / var x / let x
+        // binding pattern: const x / var x / let x → flow_match_binding_pattern
         .kw_const, .kw_var, .kw_let => {
             try self.advance(); // skip const/var/let
-            return try self.parseSimpleIdentifier();
+            const id_span = self.currentSpan();
+            _ = try self.parseSimpleIdentifier(); // 소비 + 검증
+            return try self.ast.addNode(.{
+                .tag = .flow_match_binding_pattern,
+                .span = id_span,
+                .data = .{ .none = 0 },
+            });
         },
         // parenthesized pattern: ( pattern )
         .l_paren => {
@@ -1945,10 +1989,10 @@ fn parseMatchSubpattern(self: *Parser) ParseError2!NodeIndex {
         .l_curly => return try parseMatchObjectPattern(self),
         // array pattern: [ pat, ...rest ]
         .l_bracket => return try parseMatchArrayPattern(self),
-        // unary literal pattern: +1, -2.5 — unary expression 으로 정확 파싱
-        // (transformer `_m === -1` 가 정확하게 동작).
-        .plus, .minus => return try self.parseAssignmentExpression(),
-        // identifier: wildcard `_` / binding ident / member / instance pattern
+        // unary literal pattern: +1, -2.5 — parseUnaryExpression 으로 파싱해
+        // `|` 가 binary 로 흡수되지 않게 (OR-pattern 구분자로 남김).
+        .plus, .minus => return try self.parseUnaryExpression(),
+        // identifier: wildcard `_` / member / instance pattern
         .identifier => {
             const s = self.currentSpan();
             const text = self.ast.source[s.start..s.end];
@@ -1956,16 +2000,18 @@ fn parseMatchSubpattern(self: *Parser) ParseError2!NodeIndex {
                 try self.advance();
                 return try matchWildcard(self, s);
             }
-            // identifier + (.member | [literal])* + optional `{ ... }` instance pattern.
-            // parseAssignmentExpression 이 member chain 까지 정확 소비.
-            const expr = try self.parseAssignmentExpression();
+            // identifier + (.member | [literal])* — parseUnaryExpression 이 member
+            // chain 까지 소비하고 binary(`|`)/optional-`{` 는 안 먹는다.
+            const expr = try self.parseUnaryExpression();
             if (self.current() == .l_curly) {
-                _ = try parseMatchObjectPattern(self); // instance pattern body
+                _ = try parseMatchObjectPattern(self); // instance body 소비
+                return try matchOpaquePattern(self, s); // instance = opaque (후속)
             }
-            return expr;
+            return expr; // member/identifier value compare (`_m === expr`)
         },
-        // literal pattern (null/true/false/number/string/bigint) — parseAssignmentExpression 재활용
-        else => return try self.parseAssignmentExpression(),
+        // literal pattern (null/true/false/number/string/bigint) —
+        // parseUnaryExpression 으로 단일 리터럴만 (binary `|` 미흡수).
+        else => return try self.parseUnaryExpression(),
     }
 }
 
