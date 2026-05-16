@@ -181,6 +181,45 @@ describe('CSS code splitting (per-chunk CSS)', () => {
     expect(p1).toBe(p2);
   });
 
+  // #3330: Sass/CSS Modules 는 `import "./x.scss"` 를 `.css.js` proxy
+  // (`import "./x.css"` 한 줄) 로 rewrite 한다. proxy JS 모듈은 tree-shake
+  // 되어 chunk 미할당이 되는데, splitting 경로가 그 너머 CSS 를 놓치면 안 됨.
+  test('side-effect proxy(.css.js) 체인 너머 CSS 도 분리 emit 된다', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `import './style.css.js';\nconsole.log("x");`,
+      'style.css.js': `import './style.css';`,
+      'style.css': `.proxied { color: rebeccapurple; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.ts')],
+      splitting: true,
+    });
+
+    const css = cssFiles(result.outputFiles!);
+    expect(css.length).toBeGreaterThanOrEqual(1);
+    expect(css.some((c) => c.text.includes('rebeccapurple'))).toBe(true);
+  });
+
+  test('다단계 proxy 체인(JS→JS→CSS) 너머 CSS 도 수집된다', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `import './p1.js';\nconsole.log("x");`,
+      'p1.js': `import './p2.js';`,
+      'p2.js': `import './deep.css';`,
+      'deep.css': `.deep { color: seagreen; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.ts')],
+      splitting: true,
+    });
+
+    const css = cssFiles(result.outputFiles!);
+    expect(css.some((c) => c.text.includes('seagreen'))).toBe(true);
+  });
+
   // P0-3②: 동적 import 된 청크는 자기 CSS 를 런타임 <link> 로 주입한다.
   test('동적 청크 JS 에 CSS <link> 주입 prologue 가 들어간다', async () => {
     const fixture = await createFixture({
