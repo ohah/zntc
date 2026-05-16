@@ -92,6 +92,43 @@ describe('CSS code splitting (per-chunk CSS)', () => {
     expect(sharedHits.length).toBe(1);
   });
 
+  // P0-4 (#3321): 서로 다른 청크의 CSS 가 같은 CSS 를 @import 하면, 그
+  // 공유 CSS 는 각 청크에 모두 존재해야 한다 (한 청크에만 inline 되면
+  // 다른 라우트 로드 시 스타일 누락).
+  test('cross-chunk @import: 공유 CSS 가 양쪽 청크에 모두 들어간다', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `
+        export async function load(which: string) {
+          if (which === 'a') return (await import('./route-a')).default;
+          return (await import('./route-b')).default;
+        }
+      `,
+      'route-a.ts': `import './a.css';\nexport default "A";`,
+      'route-b.ts': `import './b.css';\nexport default "B";`,
+      'a.css': `@import "./shared.css";\n.a { color: red; }`,
+      'b.css': `@import "./shared.css";\n.b { color: blue; }`,
+      'shared.css': `.shared { color: gold; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.ts')],
+      splitting: true,
+    });
+
+    const css = cssFiles(result.outputFiles!);
+    const aCss = css.find((c) => c.text.includes('color: red'))!;
+    const bCss = css.find((c) => c.text.includes('color: blue'))!;
+    expect(aCss).toBeDefined();
+    expect(bCss).toBeDefined();
+    // 두 라우트 청크 모두 @import 한 shared 규칙을 포함해야 함
+    expect(aCss.text).toContain('.shared');
+    expect(bCss.text).toContain('.shared');
+    // @import 규칙 자체는 제거(인라인)
+    expect(aCss.text).not.toContain('@import');
+    expect(bCss.text).not.toContain('@import');
+  });
+
   test('CSS 없는 청크는 CSS 파일을 만들지 않는다', async () => {
     const fixture = await createFixture({
       'entry.ts': `
