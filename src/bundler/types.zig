@@ -623,6 +623,11 @@ pub const ImportRecord = struct {
     /// require.context: invalid arguments 발견 시 reason. graph 단계에서 BundlerDiagnostic 으로
     /// 변환되어 사용자에게 표시. null 이면 valid.
     context_invalid_reason: ?[]const u8 = null,
+    /// dynamic import(): specifier 가 비-literal(변수/템플릿/연결)이라 정적 분석
+    /// 불가 시 reason. graph resolve 단계에서 warning diagnostic 으로 변환.
+    /// 이 record 는 resolved=.none 유지 → chunk/codegen 이 무시(원본 import()
+    /// 가 네이티브 런타임 import() 로 그대로 passthrough). null = literal/valid.
+    dynamic_invalid_reason: ?[]const u8 = null,
     /// require.context: 매칭된 파일 목록. host plugin (`resolveContext`) 또는 내장 fallback 이
     /// graph 단계에서 채운다. codegen 이 이 목록을 보고 webpackContext 함수를 emit (Phase 3).
     /// null = 아직 평가 안 됨, &.{} = 매칭 0개 (empty context).

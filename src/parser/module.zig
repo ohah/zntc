@@ -178,6 +178,14 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
             const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
             const spec = extractImportSpecifier(self, raw);
             _ = appendImportRecord(self, spec, .dynamic_import, arg_node.span);
+        } else {
+            // 비-literal specifier: record(빈 specifier + reason). graph resolve
+            // 가 warning 후 resolved=.none 유지 → 원본 import() 네이티브 passthrough.
+            const idx = appendImportRecord(self, "", .dynamic_import, arg_node.span);
+            if (idx < self.scan_import_records.items.len) {
+                self.scan_import_records.items[idx].dynamic_invalid_reason =
+                    scan_results_mod.dynamic_import_non_literal_reason;
+            }
         }
     }
 
