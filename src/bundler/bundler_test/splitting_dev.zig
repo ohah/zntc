@@ -247,7 +247,39 @@ test "CodeSplitting: CJS format returns error" {
 
 // preserveModules + non-ESM 은 별도 error name 으로 — code_splitting 미설정 사용자에게
 // "CodeSplittingRequiresESM" 가 misleading 이라 분기.
-test "PreserveModules: CJS format returns PreserveModulesRequiresESM" {
+test "PreserveModules: CJS format succeeds with require()/exports (P3-A #3321)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const dep = 1;");
+    try writeFile(tmp.dir, "entry.ts", "import { dep } from './dep';\nexport const x = dep;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .preserve_modules = true,
+        .format = .cjs,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // cross-module 결합은 ESM import 아닌 require(), export 는 exports.x
+    var has_require = false;
+    var has_exports = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "require(\"") != null or
+            std.mem.indexOf(u8, o.contents, "require('") != null) has_require = true;
+        if (std.mem.indexOf(u8, o.contents, "exports.") != null) has_exports = true;
+    }
+    try std.testing.expect(has_require);
+    try std.testing.expect(has_exports);
+}
+
+test "PreserveModules: IIFE format still returns PreserveModulesRequiresESM" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "export const x = 1;");
@@ -258,7 +290,7 @@ test "PreserveModules: CJS format returns PreserveModulesRequiresESM" {
     var bnd = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .preserve_modules = true,
-        .format = .cjs,
+        .format = .iife,
     });
     defer bnd.deinit();
     const result = bnd.bundle();
