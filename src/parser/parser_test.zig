@@ -3671,6 +3671,37 @@ test "Flow: typed arrow in ternary consequent" {
     try expectNoParseErrorFlow("const x = true ? (): void => { return; } : null;");
     // typeof도 type keyword로 감지
     try expectNoParseErrorFlow("const x = true ? (): typeof a => { return a; } : null;");
+    // D22: 무타입 param + return-type annotation arrow (Flow parity)
+    try expectNoParseErrorFlow("const x = c ? (b): T => b : 0;");
+}
+
+test "TS: untyped-param arrow with return type in ternary consequent (D22 — effect core.ts)" {
+    // effect `internal/core.ts:988` / `Schema.ts:10519` —
+    // `cond ? flatMap(self, (b): Effect<A,E,R> => x) : y`. isTypedArrowFunction
+    // 의 `!in_ternary_consequent` 가드가 무타입 param + return-type annotation
+    // 화살표의 `:` 를 ternary separator 로 오인 → `× )`. param 에 타입이 있으면
+    // typed-arrow 일찍 확정돼 우회됨. oxc 방식: shape 로 detect 후 commit 을
+    // ternary-separator 규칙으로 gate (param 타입 유무 무관 일관 처리).
+    try expectNoParseErrorWithExt("const x = c ? ((b): T => b) : 0;", ".ts");
+    try expectNoParseErrorWithExt("const x = c ? f((b): T => b) : 0;", ".ts");
+    try expectNoParseErrorWithExt("const x = c ? (b): T => b : 0;", ".ts");
+    try expectNoParseErrorWithExt("const x = true ? f((b): b is T => true) : 0;", ".ts");
+    try expectNoParseErrorWithExt("const x = c ? g(1, (b): T => b) : 0;", ".ts");
+    // array element / template substitution sub-expr (oxc allow_return_type 복원)
+    try expectNoParseErrorWithExt("const x = c ? [(b): T => b] : 0;", ".ts");
+    try expectNoParseErrorWithExt("const x = c ? `${(b): T => b}` : 0;", ".ts");
+    // 중첩 effect-style
+    try expectNoParseErrorWithExt(
+        "const r = isEffect(self) ? flatMap(self, (b): Effect<A1, E1, R1> => (b ? a() : c())) : zip(self);",
+        ".ts",
+    );
+    // param 에 타입 있는 경우 (이전부터 통과) — regression guard
+    try expectNoParseErrorWithExt("const x = c ? f((b: number): T => b) : 0;", ".ts");
+    // 진짜 ternary — typed-arrow 로 오인해 `: y` 삼키면 안 됨 (regression guard)
+    try expectNoParseErrorWithExt("const y = cond ? (x) : y;", ".ts");
+    try expectNoParseErrorWithExt("const y = cond ? (x) : (y);", ".ts");
+    try expectNoParseErrorWithExt("const y = cond ? x ? a : b : c;", ".ts");
+    try expectNoParseErrorWithExt("const y = cond ? <T>(v: T) => v : null;", ".ts");
 }
 
 test "Flow: single type param generic arrow in JSX mode" {

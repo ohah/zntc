@@ -1847,19 +1847,13 @@ pub const Parser = struct {
 
         try self.advance(); // skip (
 
-        // (): Type => ... — 빈 파라미터 + 리턴 타입
+        // (): Type => ... — 빈 파라미터 + 리턴 타입.
+        // D22: ternary consequent 가드는 detection 에서 제거 — shape 로만 판정
+        // (oxc Tristate). 진짜 ternary `cond ? (x): y` 와의 모호성은
+        // `parseTypedArrowParams` 가 commit 직전 ternary-separator 규칙으로 gate.
         if (self.current() == .r_paren) {
             try self.advance();
-            if (self.current() != .colon) return false;
-            // ternary consequent 안에서는 `:` 가 ternary separator일 수 있다.
-            if (!self.in_ternary_consequent) return true;
-            // Flow: `:` 뒤에 type keyword가 오면 return type annotation 확정.
-            // void, number 등은 expression start로 사용되지 않으므로 ternary `:` 와 구분 가능.
-            if (self.is_flow) {
-                const after = try self.peekNextKind();
-                if (after == .kw_void or after == .kw_typeof) return true;
-            }
-            return false;
+            return self.current() == .colon;
         }
 
         // (...rest: Type) => ... — rest parameter with type
@@ -1874,7 +1868,7 @@ pub const Parser = struct {
             // ternary consequent 안에서는 `:` 가 ternary separator일 수 있으므로 여기서 판단하지 않는다.
             if (self.current() == .r_paren) {
                 try self.advance();
-                return self.current() == .colon and !self.in_ternary_consequent;
+                return self.current() == .colon;
             }
             // (a?: Type) — optional parameter
             if (self.current() == .question) return true;
@@ -1885,7 +1879,7 @@ pub const Parser = struct {
                 try self.skipDefaultValueToCommaOrRParen();
                 if (self.current() == .r_paren) {
                     try self.advance();
-                    return self.current() == .colon and !self.in_ternary_consequent;
+                    return self.current() == .colon;
                 }
                 // comma → 아래 typed-param 검사 loop 로 fall-through
             }
@@ -1902,7 +1896,7 @@ pub const Parser = struct {
                     // arrow 판별 가능. @reduxjs/toolkit listenerMiddleware.test-d.ts.
                     if (self.current() == .r_paren) {
                         try self.advance();
-                        return self.current() == .colon and !self.in_ternary_consequent;
+                        return self.current() == .colon;
                     }
                     // rest parameter with type
                     if (self.current() == .dot3) return true;
@@ -1913,7 +1907,7 @@ pub const Parser = struct {
                         if (self.current() == .colon or self.current() == .question) return true;
                         if (self.current() == .r_paren) {
                             try self.advance();
-                            return self.current() == .colon and !self.in_ternary_consequent;
+                            return self.current() == .colon;
                         }
                         // default value 가 있는 다음 param — expression 통과 후 계속.
                         if (self.current() == .eq) {
@@ -1922,7 +1916,7 @@ pub const Parser = struct {
                             if (self.current() == .comma) continue;
                             if (self.current() == .r_paren) {
                                 try self.advance();
-                                return self.current() == .colon and !self.in_ternary_consequent;
+                                return self.current() == .colon;
                             }
                         }
                         // 이 파라미터에도 타입이 없으면 다음 파라미터 확인
@@ -1973,12 +1967,13 @@ pub const Parser = struct {
 
         // return type annotation: ): Type =>
         // Flow: shorthand 함수 타입 금지 — (): any => {} 에서 =>는 arrow body
-        {
+        const had_return_type = blk: {
             const saved_flow_flag = self.flow_in_return_type;
             self.flow_in_return_type = true;
             defer self.flow_in_return_type = saved_flow_flag;
-            _ = try self.tryParseReturnType();
-        }
+            const rt = try self.tryParseReturnType();
+            break :blk !rt.isNone();
+        };
 
         // => 확인
         if (self.current() != .arrow or self.scanner.token.has_newline_before) {
@@ -2002,6 +1997,20 @@ pub const Parser = struct {
 
         try self.advance(); // skip =>
         const body = try expression.parseArrowBody(self, is_async, params_node);
+
+        // D22 (oxc arrow.rs:380-393): ternary consequent 에서 return type 을 소비한
+        // arrow 는 진짜 ternary `cond ? (x): T : y` 와 모호하다. arrow body 직후
+        // 토큰이 ternary separator `:` 일 때만 commit — 아니면 rollback 해 호출부가
+        // paren-expr 로 재파싱 (bare second `:` 가 없으면 어차피 JS syntax error
+        // 이므로 `:` 존재가 arrow 의도를 증명). 진짜 ternary 는 `=>` 가 없어 위
+        // 검사에서 이미 걸러지므로 had_return_type 케이스만 추가 확인.
+        if (self.in_ternary_consequent and had_return_type and self.current() != .colon) {
+            self.restoreScratch(scratch_top);
+            self.rollbackErrors(errors_before);
+            self.restoreState(saved);
+            return null;
+        }
+
         const flags: u32 = if (is_async) 0x01 else 0;
         const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), flags });
         return try self.ast.addNode(.{
