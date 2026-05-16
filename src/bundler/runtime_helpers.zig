@@ -249,6 +249,10 @@ pub const ZNTC_IIFE_GLOBAL = "(typeof globalThis!==\"undefined\"?globalThis:this
 /// 공통 전제 — webpack/rollup/esbuild splitting 런타임과 동일하게 리터럴
 /// emit; eval/Function 우회는 CSP 적대적이라 미채택). 비-DOM 분기는 url 이
 /// 해석 가능해야 함 → public_path 를 절대/URL 로 설정(호스트 책임).
+/// CSP: strict `script-src 'nonce-..'` 환경에선 호스트가
+/// `globalThis.__zntc_nonce` 를 설정 → 주입 `<script>` 에 `nonce` 부여
+/// (webpack `__webpack_nonce__` 대응; `__zntc_public_path` 와 동일하게
+/// 호스트-set 런타임 변수, 빌드 옵션 불필요).
 ///
 /// TODO(P3-C): `__zntc_require`/캐시 코어가 PR1 `ZNTC_REGISTRY_RUNTIME`
 /// (현재 dormant, CJS-Node 로더 바인딩) 과 의도상 동일. MF P1 수렴 시
@@ -274,6 +278,7 @@ pub const ZNTC_IIFE_RESOLVE_BROWSER =
     \\      if (typeof document !== "undefined" && document.createElement) {
     \\        var s = document.createElement("script");
     \\        s.src = url;
+    \\        if (g.__zntc_nonce) s.setAttribute("nonce", g.__zntc_nonce);
     \\        s.onload = function () { res(); };
     \\        s.onerror = function () { rej(new Error("chunk load failed: " + spec)); };
     \\        document.head.appendChild(s);
@@ -295,7 +300,7 @@ pub const ZNTC_IIFE_RESOLVE_BROWSER_MIN =
     "var url=(g.__zntc_public_path||\"\")+spec;" ++
     "return __zntc_cs[spec]=new Promise(function(res,rej){" ++
     "if(typeof document!==\"undefined\"&&document.createElement){var s=document.createElement(\"script\");" ++
-    "s.src=url;s.onload=function(){res()};" ++
+    "s.src=url;if(g.__zntc_nonce)s.setAttribute(\"nonce\",g.__zntc_nonce);s.onload=function(){res()};" ++
     "s.onerror=function(){rej(new Error(\"chunk load failed: \"+spec))};document.head.appendChild(s)}" ++
     "else if(typeof importScripts===\"function\"){try{importScripts(url);res()}catch(e){rej(e)}}" ++
     "else{Promise.resolve().then(function(){return import(url)}).then(function(){res()},rej)}})};" ++

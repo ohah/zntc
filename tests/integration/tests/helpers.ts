@@ -513,21 +513,29 @@ export function writeOutputs(dir: string, outs: { path: string; text: string }[]
  *  - `'worker'`: `globalThis.importScripts` 스텁(document 없음 → importScripts 분기).
  *  - `'nondom'`: 스텁 없음 — 로더가 동적 `import(url)` 폴백 사용(호출부가
  *    `publicPath: file://<dir>/` 로 빌드해야 url 해석 가능).
- *  반환: 드라이버 절대경로(`runNode` 로 실행). */
+ *  `nonce`(dom 전용): 지정 시 `globalThis.__zntc_nonce` 설정 → 로더가 주입
+ *  `<script>` 에 nonce 부여. dom `createElement` 스텁은 `setAttribute("nonce")`
+ *  를 `NONCE:<v>` 로 stdout 기록(미지정 시 미호출 → 무출력). 반환: 드라이버
+ *  절대경로(`runNode` 로 실행). */
 export function writeIifeDriver(
   dir: string,
   entryFile: string,
   allJs: string[],
   env: 'dom' | 'worker' | 'nondom',
+  nonce?: string | null,
 ): string {
   const others = allJs.filter((p) => p !== entryFile);
+  // dom createElement 스텁은 setAttribute 기록기 포함 — __zntc_nonce 설정 시
+  // 로더가 s.setAttribute("nonce",..) 호출(없으면 미호출). 빈 객체 `{}` 면
+  // nonce 설정 시 setAttribute 부재로 crash → 항상 recorder 객체 반환.
+  const noncePrefix = nonce ? `globalThis.__zntc_nonce=${JSON.stringify(nonce)};` : '';
   const stub =
     env === 'dom'
-      ? 'globalThis.__zntc_public_path="";globalThis.document={createElement(){return {};},head:{appendChild(s){try{ev(s.src);if(s.onload)s.onload();}catch(e){if(s.onerror)s.onerror(e);}}}};'
+      ? `${noncePrefix}globalThis.__zntc_public_path="";globalThis.document={createElement(){return {setAttribute(k,v){if(k==="nonce")console.log("NONCE:"+v);}};},head:{appendChild(s){try{ev(s.src);if(s.onload)s.onload();}catch(e){if(s.onerror)s.onerror(e);}}}};`
       : env === 'worker'
         ? 'globalThis.importScripts=function(u){ev(u);};'
         : ''; // nondom: 스텁 없음, import(url) 폴백
-  const driver = join(dir, `__iife_${env}.cjs`);
+  const driver = join(dir, `__iife_${env}${nonce ? '_nonce' : ''}.cjs`);
   writeFileSync(
     driver,
     `const fs=require("fs"),path=require("path");const here=${JSON.stringify(dir)};
