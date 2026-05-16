@@ -1890,8 +1890,8 @@ pub const SemanticAnalyzer = struct {
                 .function_declaration => try self.predeclareFuncDecl(node),
                 .class_declaration => try self.predeclareClassDecl(node),
                 .ts_enum_declaration => try self.predeclareEnumDecl(node),
-                // RFC #3310 (D20): forward `export {}; import default/namespace`.
-                // local name 만 side-table 에 기록 — symbol/scope 선언 절대 안 함.
+                // RFC #3310 (D20): import 는 module top hoist — user binding 을
+                // .import_binding symbol 로 1st-pass 등록 (forward export/value use).
                 .import_declaration => try self.predeclareImportDecl(node),
                 .export_named_declaration => {
                     // export const x = ..., export function f() {}, export class C {}
@@ -2142,8 +2142,7 @@ pub const SemanticAnalyzer = struct {
     /// RFC #3310 (D20) 완전 근본 해결 — top-level import 의 user binding 을 1st-pass
     /// 에서 진짜 `.import_binding` symbol 로 등록 (var/func/class predeclare 와 동일
     /// 패턴). ECMAScript: import 는 module top hoist 라 forward `export {}` / forward
-    /// value use 모두 valid. (#3311 의 read-only side-table 은 PR-3 에서 제거됨 —
-    /// 정공법 symbol 등록이 모든 경로를 커버.)
+    /// value use 모두 valid.
     ///
     /// helper 배제 3중 방어 (이전 11 회귀 무재발):
     ///   1. virtual-source guard: `\x00zntc:runtime/...` import declaration 통째 skip
@@ -3564,11 +3563,9 @@ pub const SemanticAnalyzer = struct {
     /// export { x } (without from) — x가 선언된 바인딩인지 검증한다.
     /// module scope에서 VarDeclaredNames + LexicallyDeclaredNames에 없으면 에러.
     fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
-        // 현재 module scope에서 해당 이름의 심볼을 찾는다. RFC #3310 (D20): import 는
-        // module top hoist 라 forward `export { X }; import X` 도 valid —
-        // predeclareImportDecl 가 1st-pass 에서 user import 를 진짜 .import_binding
-        // symbol 로 등록하므로 이 symbol scan 이 forward import 도 hit (별도 fallback
-        // 불필요; PR-3 에서 read-only side-table 제거).
+        // RFC #3310 (D20): import 는 module top hoist 라 forward `export { X };
+        // import X` 도 valid — predeclareImportDecl 가 1st-pass 에서 user import 를
+        // .import_binding symbol 로 등록하므로 이 symbol scan 이 forward import 도 hit.
         for (self.symbols.items) |sym| {
             const sym_name = self.ast.getText(sym.name);
             if (std.mem.eql(u8, sym_name, name)) return; // 존재

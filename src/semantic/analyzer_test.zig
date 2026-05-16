@@ -1045,12 +1045,31 @@ test "Export: forward ref to default/namespace import binding (D20 #3310)" {
 }
 
 test "Export: undefined name still errors (D20 negative guard)" {
-    // side-table fallback 이 진짜 미정의 export 까지 통과시키면 안 됨.
+    // 정공법 symbol 등록이 진짜 미정의 export 까지 통과시키면 안 됨.
     var r = try analyzeModule(
         \\export { totallyMissing };
     );
     defer r.deinit();
     try expectAnalyzeError(&r, "totallyMissing");
+}
+
+test "Import: forward value use resolves to hoisted import binding (D20)" {
+    // RFC #3310 정공법 고유 범위 — analyzer 가 import 를 1st-pass hoisted symbol
+    // 로 등록하므로 forward `export {}` 뿐 아니라 import 보다 소스상 앞선 value
+    // use 도 resolve (이전 read-only side-table 은 export specifier 만 커버했음).
+    // ECMAScript: import 는 module top hoist 라 valid.
+    try analyzeNoErrors(
+        \\console.log(foo);
+        \\import foo from './foo';
+    );
+    try analyzeNoErrors(
+        \\const x = ns.y;
+        \\import * as ns from './m';
+    );
+    try analyzeNoErrors(
+        \\export default function () { return helper(); }
+        \\import { helper } from './h';
+    );
 }
 
 test "Import: redeclared with let/const/function/class is error (D20 PR-2 spec-correct)" {
