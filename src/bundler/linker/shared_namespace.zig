@@ -205,6 +205,45 @@ pub fn registerNamespaceRewrites(
     }
 }
 
+/// cross-chunk namespace re-export 배선용: target 의 shared ns 객체 변수를
+/// **선제 materialize**하고 이름을 반환. computeCrossChunkLinks 가 namespace
+/// 메타데이터(registerNamespaceRewrites)보다 먼저 도므로, 그 시점엔 shared
+/// 캐시가 비어 ns-var 이름을 알 수 없다(#3321 후속 timing seam). 여기서
+/// 캐시·ns_shared_inline_order 를 채우면 (1) appendSharedNamespacePreambleFiltered
+/// 가 정의자 청크에 `var <ns_var>={...}` 를 emit 하고 (2) 이후 metadata 의
+/// getOrCreateSharedNamespaceVar 가 cache-hit 으로 같은 이름을 재사용한다.
+/// idempotent — 같은 target 재호출은 캐시 반환.
+pub fn ensureSharedNsVar(
+    self: *const Linker,
+    target: ModuleIndex,
+) std.mem.Allocator.Error![]const u8 {
+    const target_mod_idx = target.toU32();
+    // 캐시 fast-path: computeCrossChunkLinks/emit 의 청크×모듈 루프에서
+    // 같은 target 이 반복 호출된다. 히트 시 DFS·seen_exports 빌드를 통째로
+    // 생략 (getOrCreateSharedNamespaceVar 는 seen_exports 를 신규 이름
+    // 발급에만 쓰므로 캐시 히트면 불필요).
+    {
+        const mutable_self = @constCast(self);
+        mutable_self.ns_cache_mutex.lock();
+        defer mutable_self.ns_cache_mutex.unlock();
+        if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached| return cached.var_name;
+    }
+    var exports: std.ArrayList(NsExportPair) = .empty;
+    var seen = std.StringHashMap(void).init(self.allocator);
+    var visited = std.AutoHashMap(u32, void).init(self.allocator);
+    defer {
+        for (exports.items) |e| if (e.owned) self.allocator.free(e.local);
+        exports.deinit(self.allocator);
+        seen.deinit();
+        visited.deinit();
+    }
+    try self.collectExportsRecursive(&exports, &seen, &visited, target, 0);
+    var seen_exports = std.StringHashMap(void).init(self.allocator);
+    defer seen_exports.deinit();
+    for (exports.items) |e| try seen_exports.put(e.exported, {});
+    return getOrCreateSharedNamespaceVar(self, target_mod_idx, &seen_exports);
+}
+
 /// shared namespace cache 에 declaration-only entry 추가. `getOrCreateSharedNamespaceVar`
 /// 로 청크-glob 한 var name 발급 + ns_inline_list 에 빈 object_literal 로 등록 (실 literal
 /// 은 ns_shared_inline_cache 가 보유, 청크 emit 단계가 정의자 청크 preamble 로 inline).

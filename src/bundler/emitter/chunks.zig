@@ -716,6 +716,20 @@ pub fn emitChunks(
                     for (sorted_mods) |mod_idx| {
                         const mi = @intFromEnum(mod_idx);
                         if (mi >= module_count) continue;
+                        // namespace re-export(`export * as X` / `import * as X;
+                        // export {X}`)는 로컬 심볼이 없거나 elided 라 canonical
+                        // 조회가 빗나간다. 대상 청크에 materialize 된 shared ns
+                        // 객체 변수가 곧 X 의 실제 값 — cross-chunk import 로
+                        // 이 청크에 바인딩돼 있으므로 그 이름으로 export
+                        // (`export { inner_ns as X }`) (#3321 후속).
+                        if (chunk_mod.nsReExportTarget(graph, mod_idx, name)) |ns_t| {
+                            // else |_|: ensureSharedNsVar OOM 은 canonical
+                            // fallback 으로 진행 (getCanonicalName 패턴과 일관).
+                            if (l.ensureSharedNsVar(ns_t)) |ns_var| {
+                                found_local = ns_var;
+                                break;
+                            } else |_| {}
+                        }
                         if (l.getCanonicalName(@intCast(mi), name)) |renamed| {
                             found_local = renamed;
                             break;

@@ -254,31 +254,126 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     expect(stdout).toBe('K1 AV PG');
   });
 
-  // [알려진 한계 — 깊은 후속, RFC §7] `export * as ns from "./y"`(y 별도
-  // 청크) + `import { ns } from` cross-chunk 소비. 단일번들은 ns 객체를
-  // 합성하지 않고 `ns.a`→`a` 멤버접근 elision 으로 동작 — cross-chunk 에선
-  // importer 청크에 멤버 `a` 가 미바인딩(computeCrossChunkLinks 가
-  // namespace-멤버-접근 resolution 을 소비 안 함) → link 실패. 다른 4개
-  // re-export-family 버그(#3350/#3354/#3351/#3353)와 달리 bounded 아님 —
-  // linker static-member resolution 연계 깊은 seam 필요. 수정/회귀 시
-  // skip 해제하면 loud(추적용).
-  test.skip('[KNOWN-LIMITATION] export * as ns cross-chunk → namespace 멤버 미바인딩', async () => {
-    const fixture = await createFixture({
-      'inner.ts': `export const a = "A";\nexport const b = "B";`,
-      'page.ts': `export * as inner from "./inner";\nexport const pv = "PV";`,
-      'index.ts': `import { inner, pv } from "./page";\nasync function m(){ const d = await import("./page"); console.log(inner.a + " " + pv + " " + d.inner.b); }\nm();`,
-    });
+  // `export * as ns` / `import * as ns; export {ns}` cross-chunk (#3321 후속).
+  // 정의자 청크에 shared ns 객체를 선제 materialize(computeCrossChunkLinks 가
+  // namespace 메타데이터보다 먼저 도는 timing seam 해결) + 멤버/객체를 정의자
+  // 청크 export → 참조 청크 import 1급 심볼로 fan-out. entry/dynamic 청크는
+  // buildFinalExports 가 ns_target_mod pair 의 local 을 ns_var 로 치환.
+  async function runNsSplit(
+    files: Record<string, string>,
+    opts: Record<string, unknown>,
+    expected: string,
+  ) {
+    const fixture = await createFixture(files);
     cleanup = fixture.cleanup;
     const result = await build({
       entryPoints: [join(fixture.dir, 'index.ts')],
-      format: 'esm',
       splitting: true,
+      ...opts,
     });
     writeOutputs(fixture.dir, result.outputFiles!);
     const entry = result.outputFiles!.find(
       (o) => o.path.includes('index') && o.path.endsWith('.js'),
     )!;
     const { stdout } = await runNode(join(fixture.dir, entry.path));
-    expect(stdout).toBe('A PV B'); // 현재 실패(link error) — 수정 시 통과
-  });
+    expect(stdout).toBe(expected);
+  }
+
+  test('export * as ns 직접형 — 정적 멤버 + 동적 re-import cross-chunk', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";\nexport const b = "B";`,
+        'page.ts': `export * as inner from "./inner";\nexport const pv = "PV";`,
+        'index.ts': `import { inner, pv } from "./page";\nasync function m(){ const d = await import("./page"); console.log(inner.a + " " + pv + " " + d.inner.b); }\nm();`,
+      },
+      { format: 'esm' },
+      'A PV B',
+    ));
+
+  test('import * as ns; export {ns} — 정적 + 동적 cross-chunk', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";\nexport const b = "B";`,
+        'page.ts': `import * as inner from "./inner";\nexport { inner };\nexport const pv = "PV";`,
+        'index.ts': `import { inner, pv } from "./page";\nasync function m(){ const d = await import("./page"); console.log(inner.a + " " + pv + " " + d.inner.b); }\nm();`,
+      },
+      { format: 'esm' },
+      'A PV B',
+    ));
+
+  test('export * as ns — 두 consumer 별도 청크', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";`,
+        'page.ts': `export * as inner from "./inner";\nexport const pv = "PV";`,
+        'c1.ts': `import { inner } from "./page";\nexport const r1 = () => inner.a;`,
+        'index.ts': `import { r1 } from "./c1";\nimport { inner } from "./page";\nasync function m(){ const d = await import("./c1"); console.log(r1() + " " + inner.a + " " + d.r1()); }\nm();`,
+      },
+      { format: 'esm' },
+      'A A A',
+    ));
+
+  test('export * as ns — manualChunks 강제 분리', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";\nexport const b = "B";`,
+        'page.ts': `export * as inner from "./inner";\nexport const pv = "PV";`,
+        'index.ts': `import { inner, pv } from "./page";\nconsole.log(inner.a + inner.b + pv);`,
+      },
+      {
+        format: 'esm',
+        manualChunks: (id: string) =>
+          id.includes('inner') ? 'innerc' : id.includes('page') ? 'pagec' : null,
+      },
+      'ABPV',
+    ));
+
+  test('export * as ns — cjs format cross-chunk', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";\nexport const b = "B";`,
+        'page.ts': `export * as inner from "./inner";\nexport const pv = "PV";`,
+        'index.ts': `import { inner, pv } from "./page";\nasync function m(){ const d = await import("./page"); console.log(inner.a + " " + pv + " " + d.inner.b); }\nm();`,
+      },
+      { format: 'cjs' },
+      'A PV B',
+    ));
+
+  // [추적 — 별개 선재 이슈, #3321 후속] 아래 둘은 이번 cross-chunk 배선과
+  // 무관한, 다른 서브시스템의 선재 버그. 루트커즈 규명 완료. 수정/회귀 시
+  // loud 하도록 skip 유지.
+  //  (1) 단일번들 namespace whole-value: 동적 import 없어 split 미발생 →
+  //      단일 청크. `export * as ns` 직접형을 whole-value(`Object.keys(ns)`)
+  //      로 쓰면 ns_inline rewrite(`ns`→`ns_var`)는 적용되나 비-shared
+  //      ns_inline **선언(`var ns_var={...}`)이 importer preamble 에 미emit**
+  //      → ReferenceError. 실제 split 발생 시는 cross-chunk 경로가 정의자
+  //      청크에 객체를 materialize 하므로 정상(검증됨). 단일번들 ns preamble
+  //      emission 버그 (별개 후속, cross-chunk 무관).
+  test.skip('[PREEXISTING] 단일번들 export * as ns whole-value 미합성', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";\nexport const b = "B";`,
+        'page.ts': `export * as inner from "./inner";`,
+        'index.ts': `import { inner } from "./page";\nconsole.log(Object.keys(inner).sort().join(","));`,
+      },
+      { format: 'esm' },
+      'a,b',
+    ));
+  //  (2) 중첩 ns re-export 체인: `export {inner} from "./mid"` + mid
+  //      `export * as inner from "./inner"`. 루트커즈 — cross-chunk 배선
+  //      이전 단계의 tree-shaker 가 inner/mid 모듈을 통째 dead 로 제거(멤버
+  //      접근 elision + 동적만 사용 → live export 0 으로 오판) → 청킹 시점에
+  //      대상 모듈 부재라 ns 객체 materialize 불가. namespace re-export 체인의
+  //      tree-shake over-elimination (별개 후속, cross-chunk 무관).
+  test.skip('[PREEXISTING] 중첩 ns re-export 체인 tree-shake 제거', () =>
+    runNsSplit(
+      {
+        'inner.ts': `export const a = "A";`,
+        'mid.ts': `export * as inner from "./inner";`,
+        'page.ts': `export { inner } from "./mid";\nexport const pv = "PV";`,
+        'index.ts': `import { inner, pv } from "./page";\nasync function m(){ const d = await import("./page"); console.log(inner.a + pv + d.inner.a); }\nm();`,
+      },
+      { format: 'esm' },
+      'APVA',
+    ));
 });
