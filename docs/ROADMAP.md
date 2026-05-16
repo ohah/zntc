@@ -188,7 +188,7 @@ esbuild / rolldown / rspack 기준으로 ZNTC에 빠진 기능 목록.
   `--asset-names`, `--public-path` 지원.
 
 - ~~**플러그인 API**~~ — ✅ 완료 ([PLUGINS.md](./PLUGINS.md) 참조)
-  - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅 (worklet/refresh 등 내부 전용)
+  - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 string 훅 + onFunction AST 훅. 내장 AST 플러그인 프리셋(`builtin.zig`)에 등록된 것은 `worklet` 하나뿐 — refresh/styled/emotion 등은 별도 graph-level transform 플래그(`transformer/options.zig`)이지 onFunction 내장 플러그인이 아님
   - ~~2단계: JS 플러그인 subprocess~~ — ❌ D101로 제거. NAPI(3단계)가 기본 경로
   - 3단계: ✅ N-API .node addon — in-process 호출, TSFN 기반 async 브릿지 (기본 JS 플러그인 경로)
   - 4단계: ✅ Vite/Rollup 어댑터 — vitePlugin() + async 훅 + renderChunk/generateBundle + lifecycle/watch
