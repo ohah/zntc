@@ -246,6 +246,29 @@ fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeInde
     return .{ .object = obj_idx, .property = prop_idx };
 }
 
+/// top-level `BASE.PROP = RHS;` (단순 `=` 대입, LHS 정적 멤버, BASE 단일
+/// identifier) 의 base identifier / rhs 노드. 아니면 null.
+/// `gatedMemberAugmentObjectNode` 가 RHS 순수성·글로벌 검사를 덧붙이는
+/// 공통 구조 추출 코어 (#3359 중복 제거).
+fn memberAssignTargetParts(
+    ast: *const Ast,
+    stmt_node: Node,
+) ?struct { base: NodeIndex, rhs: NodeIndex } {
+    if (stmt_node.tag != .expression_statement) return null;
+    const expr_idx = stmt_node.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .assignment_expression) return null;
+    // `=` (단순 대입) 만. `+=` 등 compound 는 read+write 라 dead 여도 단순
+    // drop 이 안전하지 않아 제외 (operator 는 binary.flags 에 토큰 Kind).
+    const op: TokenKind = @enumFromInt(expr.data.binary.flags);
+    if (op != .eq) return null;
+    const parts = staticMemberParts(ast, expr.data.binary.left) orelse return null;
+    const obj = ast.nodes.items[@intFromEnum(parts.object)];
+    if (obj.tag != .identifier_reference) return null;
+    return .{ .base = parts.object, .rhs = expr.data.binary.right };
+}
+
 fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
     const parts = staticMemberParts(ast, lhs) orelse return false;
     const obj = ast.nodes.items[@intFromEnum(parts.object)];
@@ -1071,26 +1094,8 @@ fn gatedMemberAugmentObjectNode(
     stmt_node: Node,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?NodeIndex {
-    if (stmt_node.tag != .expression_statement) return null;
-    const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
-    if (expr.tag != .assignment_expression) return null;
-
-    // `=` (단순 대입) 만. `+=` 등 compound 는 X.member 를 read+write 하므로
-    // X dead 여도 단순 drop 이 안전하지 않아 제외 (assignment_expression 의
-    // operator 는 binary.flags 에 토큰 Kind 로 저장됨 — import_scanner 와 동일).
-    const op: TokenKind = @enumFromInt(expr.data.binary.flags);
-    if (op != .eq) return null;
-
-    const left_idx = expr.data.binary.left;
-    const right_idx = expr.data.binary.right;
-    if (left_idx.isNone() or @intFromEnum(left_idx) >= ast.nodes.items.len) return null;
-
-    // LHS = static_member_expression (computed / private / 중첩 멤버 제외).
-    const parts = staticMemberParts(ast, left_idx) orelse return null;
-    const obj = ast.nodes.items[@intFromEnum(parts.object)];
-    if (obj.tag != .identifier_reference) return null;
+    const m = memberAssignTargetParts(ast, stmt_node) orelse return null;
+    const obj = ast.nodes.items[@intFromEnum(m.base)];
 
     // base 가 unresolved global (`window.x = ...`) 이면 글로벌 변이 — 제외.
     if (unresolved_globals) |globals| {
@@ -1098,9 +1103,9 @@ fn gatedMemberAugmentObjectNode(
     }
 
     // RHS 순수성 (three 의 mergeUniforms 는 /*@__PURE__*/ 주석으로 pure 판정).
-    if (!purity.isExprPure(ast, right_idx, unresolved_globals)) return null;
+    if (!purity.isExprPure(ast, m.rhs, unresolved_globals)) return null;
 
-    return parts.object;
+    return m.base;
 }
 
 /// base identifier 심볼 X 가 이 모듈 top-level (scope_id==0) 비-import 로컬인지
