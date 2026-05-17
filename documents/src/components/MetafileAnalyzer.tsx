@@ -2,6 +2,7 @@ import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
 import ReactEChartsCore from "echarts-for-react/lib/core";
 
 import { echarts } from "./echarts-setup";
+import { formatBytes } from "./format";
 
 type ImportKind =
   | "import-statement"
@@ -95,13 +96,6 @@ const sampleMetafile = JSON.stringify(
 );
 
 const nf = new Intl.NumberFormat("en-US");
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
 
 function parseMetafile(text: string): { meta?: Metafile; error?: string } {
   try {
