@@ -100,6 +100,15 @@ pub const CodegenOptions = struct {
     /// JSON을 CJS require()로 소비할 때 synthetic named export declarations를 생략.
     /// default object는 `module.exports = {...}`로 유지한다.
     skip_cjs_named_export_decls: bool = false,
+    /// CJS wrapper 본문의 `exports`/`module` 식별자 이름. `exports`/`module`
+    /// 은 `__commonJS` wrapper 의 arrow 파라미터(`(exports,module)=>{...}`)라
+    /// 순수 함수 지역 바인딩 — 호출자(`cb((mod={exports:{}}).exports,mod)`)
+    /// 와 무관해 이름만 바꿔도 의미 불변. 기본값은 원본 그대로라 옵션 미주입
+    /// 시 바이트 동일(회귀 0). emitter 가 wrapper 파라미터와 같은 값을 주입해
+    /// codegen 합성 구문(`exports.x=`, `module.exports=`)과 본문 free 참조를
+    /// 단일 소스로 동기화한다.
+    cjs_exports_name: []const u8 = "exports",
+    cjs_module_name: []const u8 = "module",
     /// 번들 모드에서 ESM이 아닐 때 import.meta -> {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
