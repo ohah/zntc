@@ -1739,10 +1739,6 @@ pub fn emitModule(
         // __esm 모듈: exports.x/module.exports 생성 억제 (__export()가 대신 처리)
         .skip_cjs_exports = module.wrap_kind == .esm,
         .skip_cjs_named_export_decls = module.module_type == .json and module.wrap_kind == .cjs,
-        // CJS wrap은 minify에서도 Node/Metro의 `(exports, module)` 이름을 유지한다.
-        // 고정 alias `(e, m)` 는 이미 minify된 dependency의 top-level `var e`/`var m`
-        // 과 같은 함수 스코프에서 충돌해 exports 객체를 잃을 수 있다.
-        .cjs_wrap_substitute = false,
         // __esm 모듈: const → var (TDZ 방지)
         .use_var_for_imports = module.wrap_kind == .esm,
         // cycle 모듈 의 top-level const/let → var 강등 (#2198, esbuild 호환).

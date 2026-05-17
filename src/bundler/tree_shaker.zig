@@ -1253,7 +1253,7 @@ pub const TreeShaker = struct {
             var enqueue_scope = profile.begin(.shake_fixpoint_bfs_seed_export_enqueue_symbol);
             defer enqueue_scope.end();
 
-            try self.seedEvaluatedModuleSideEffectStmts(target_u32, target_infos, queue, reachable_stmts);
+            try self.seedSideEffectStmts(target_u32, target_infos, queue, reachable_stmts);
             try self.enqueueSymbolLiveStatements(target_u32, target_infos, direct_sym, reachable_stmts, queue);
         }
 
@@ -1359,7 +1359,7 @@ pub const TreeShaker = struct {
             try self.markExportUsed(@intCast(target_mod), imported_name);
             self.included.set(target_mod);
             if (module_stmt_infos[target_mod]) |mid_infos| {
-                try self.seedEvaluatedModuleSideEffectStmts(@intCast(target_mod), mid_infos, queue, reachable_stmts);
+                try self.seedSideEffectStmts(@intCast(target_mod), mid_infos, queue, reachable_stmts);
             }
             // 중간 모듈의 export 선언 statement도 reachable로 마킹
             const mid_module = self.getModule(@intCast(target_mod)).?.*;
@@ -1414,7 +1414,7 @@ pub const TreeShaker = struct {
             // A live ESM export means this module is evaluated. `sideEffects:false`
             // can drop unused modules, but it must not remove observable
             // top-level initialization inside an evaluated module.
-            try self.seedEvaluatedModuleSideEffectStmts(@intCast(canon_mod), target_infos, queue, reachable_stmts);
+            try self.seedSideEffectStmts(@intCast(canon_mod), target_infos, queue, reachable_stmts);
             try self.enqueueSymbolLiveStatements(@intCast(canon_mod), target_infos, @intCast(sym_idx), reachable_stmts, queue);
         }
 
@@ -1721,24 +1721,10 @@ pub const TreeShaker = struct {
         try self.seedModuleExportsRequireProxyTargetsAll(mod_idx, queue, module_stmt_infos, reachable_stmts);
     }
 
+    /// 평가되는 모듈의 top-level side-effect statement 를 seed. `export_all_declaration`
+    /// 은 re-export 알고리즘이 별도 처리하므로 여기서는 제외 (CJS 컨텍스트에는 등장하지
+    /// 않아 no-op).
     fn seedSideEffectStmts(
-        self: *TreeShaker,
-        mod_idx: u32,
-        infos: StmtInfos,
-        queue: *std.ArrayListUnmanaged(BfsItem),
-        reachable_stmts: []?std.DynamicBitSet,
-    ) std.mem.Allocator.Error!void {
-        self.included.set(mod_idx);
-        if (reachable_stmts[mod_idx] == null) {
-            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
-        }
-        for (infos.stmts, 0..) |stmt, si| {
-            if (!stmt.has_side_effects) continue;
-            try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
-        }
-    }
-
-    fn seedEvaluatedModuleSideEffectStmts(
         self: *TreeShaker,
         mod_idx: u32,
         infos: StmtInfos,

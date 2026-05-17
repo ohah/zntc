@@ -14,11 +14,6 @@ const binding_emit = @import("bindings.zig");
 
 const Error = std.mem.Allocator.Error;
 
-/// `"use strict"` directive 의 quote 양쪽 형태. CJS wrap 안에서 elide 시 비교 (chunks.zig
-/// 의 USE_CLIENT_*/USE_SERVER_* 와 같은 패턴).
-const USE_STRICT_DQ = "\"use strict\"";
-const USE_STRICT_SQ = "'use strict'";
-
 pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
     if (idx.isNone()) return;
 
@@ -74,15 +69,6 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
         .labeled_statement => try statement_emit.emitLabeled(self, node),
         .with_statement => try statement_emit.emitWith(self, node),
         .directive => {
-            // CJS wrap 모듈 의 `"use strict"` 는 redundant — wrapper IIFE 가 ESM bundle
-            // (format=.esm) 안에서 실행되므로 자동 strict mode. 다른 directive
-            // (`"use server"` 등) 는 의미 보존 위해 유지.
-            if (self.options.cjs_wrap_substitute) {
-                const text = self.ast.getText(node.span);
-                if (std.mem.eql(u8, text, USE_STRICT_DQ) or std.mem.eql(u8, text, USE_STRICT_SQ)) {
-                    return;
-                }
-            }
             try self.addSourceMapping(node.span);
             // span 은 문자열 리터럴 범위 (따옴표 포함). quote_style 정규화를 적용해
             // `'use server'` → `"use server"` 같은 변환이 일반 string_literal 과 동일하게
@@ -199,29 +185,6 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                             return;
                         }
                     }
-                }
-            }
-            // Legacy CJS wrap alias path: unresolved `exports`/`module` reference
-            // (= callback param 의 closure capture) 를 짧은 alias 로 substitute.
-            // Bundler 기본 경로는 minify에서도 `(exports, module)` 을 유지한다.
-            //
-            // *sym_id 가 null* (= 모듈 안 어떤 binding 도 못 가리키는 reference) 일 때만
-            // substitute. user 가 `function f(exports) {...}` 같이 동명 binding 을 선언한
-            // 케이스는 sym_id 가 있고 wrapper param 이 아닌 user binding 가리키므로 변경 금지.
-            if (self.options.cjs_wrap_substitute and sym_id == null and
-                (node.tag == .identifier_reference or node.tag == .assignment_target_identifier))
-            {
-                const name = self.ast.getText(node.data.string_ref);
-                const alias: ?u8 = switch (name.len) {
-                    7 => if (std.mem.eql(u8, name, "exports")) @as(u8, 'e') else null,
-                    6 => if (std.mem.eql(u8, name, "module")) @as(u8, 'm') else null,
-                    else => null,
-                };
-                if (alias) |c| {
-                    if (c == 'm') self.cjs_wrap_module_used = true;
-                    try self.addSourceMappingWithName(node.span, name);
-                    try self.writeByte(c);
-                    return;
                 }
             }
             try self.addSourceMapping(node.span);

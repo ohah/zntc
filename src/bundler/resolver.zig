@@ -486,7 +486,7 @@ pub const Resolver = struct {
 
         // bare specifier → node_modules 탐색
         if (!isRelativeOrAbsolute(effective_specifier)) {
-            return self.resolveNodeModules(source_dir, effective_specifier, false) catch |err| {
+            return self.resolveNodeModules(source_dir, effective_specifier) catch |err| {
                 if (err == error.ModuleNotFound and self.resolve_symlink_siblings) {
                     if (self.resolveNodeModulesFromRealpath(source_dir, effective_specifier)) |r| return r else |fallback_err| {
                         if (fallback_err != error.ModuleNotFound) return fallback_err;
@@ -733,7 +733,10 @@ pub const Resolver = struct {
 
     /// bare specifier를 node_modules에서 탐색한다.
     /// source_dir에서 시작하여 상위 디렉토리로 올라가며 node_modules/<pkg>를 찾는다.
-    fn resolveNodeModules(self: *Resolver, source_dir: []const u8, specifier: []const u8, include_node_paths: bool) ResolveError!ResolveResult {
+    /// NODE_PATH 폴백은 caller (`resolveNodeModulesFromNodePaths`) 가 실패 후 별도로
+    /// 실행한다 — `resolve_symlink_siblings` 보다 나중에 동작해 real package 옆
+    /// peer dependency 가 전역 .pnpm/node_modules 의 다른 버전보다 우선되게 한다.
+    fn resolveNodeModules(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         // 패키지 이름과 서브패스 분리: "@scope/pkg/utils" → ("@scope/pkg", "./utils")
         const split = splitBareSpecifier(specifier);
         const pkg_name = split.pkg_name;
@@ -761,13 +764,7 @@ pub const Resolver = struct {
             current_dir = parent;
         }
 
-        if (!include_node_paths) return error.ModuleNotFound;
-
-        // NODE_PATH 폴백: --node-paths로 지정된 추가 경로에서 탐색.
-        // 일반 bare lookup 실패 후, resolve_symlink_siblings 보다 나중에 실행되어야 한다.
-        // pnpm/RN 에서는 real package 옆 peer dependency 가 전역 .pnpm/node_modules 의
-        // 다른 버전보다 우선되어야 Metro/Node 의 package-local 해상도와 맞는다.
-        return self.resolveNodeModulesInNodePaths(pkg_name, subpath);
+        return error.ModuleNotFound;
     }
 
     fn resolveNodeModulesFromNodePaths(self: *Resolver, specifier: []const u8) ResolveError!ResolveResult {
@@ -803,7 +800,7 @@ pub const Resolver = struct {
         };
         defer self.allocator.free(real_source_dir);
         if (std.mem.eql(u8, real_source_dir, source_dir)) return error.ModuleNotFound;
-        return self.resolveNodeModules(real_source_dir, specifier, false);
+        return self.resolveNodeModules(real_source_dir, specifier);
     }
 
     /// 패키지 디렉토리에서 엔트리포인트를 해석한다.
