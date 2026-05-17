@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createDevHttpServer } from './http-server.ts';
 import { buildRnDevServerOptions } from './options.ts';
+import { createPlatformStateRegistry, waitForBuild } from './platform-state.ts';
 import { serveRn } from './serve.ts';
 
 let dir: string;
@@ -78,5 +80,47 @@ describe('serveRn — lifecycle', () => {
     expect(handle.platforms.platforms.size).toBe(1);
     await handle.stop();
     expect(handle.platforms.platforms.size).toBe(0);
+  });
+});
+
+describe('serveRn — sourcemap lifecycle', () => {
+  test('bundle sourcemap remains available after dev HMR rebuild', async () => {
+    let resolveRebuild: (() => void) | null = null;
+    const rebuilt = new Promise<void>((resolve) => {
+      resolveRebuild = resolve;
+    });
+    const options = buildRnDevServerOptions({
+      bundle: { entry: entryPath, projectRoot: dir, rnPlatform: 'ios', dev: true },
+      port: 0,
+      terminalActions: false,
+    });
+    const platforms = createPlatformStateRegistry(options, {
+      onRebuild(_state, event) {
+        if (event.success) resolveRebuild?.();
+      },
+    });
+    const http = await createDevHttpServer(options, { broadcast: () => {}, platforms });
+    try {
+      const state = platforms.getOrCreate('ios');
+      await waitForBuild(state);
+      const addr = http.server.address();
+      if (typeof addr === 'string' || !addr) throw new Error('no address');
+      const base = `http://localhost:${addr.port}`;
+
+      const initialMap = await fetch(`${base}/index.map?platform=ios&dev=true`);
+      expect(initialMap.status).toBe(200);
+
+      writeFileSync(entryPath, 'console.log("hi after hmr");\n');
+      await Promise.race([
+        rebuilt,
+        new Promise((_resolve, reject) => setTimeout(() => reject(new Error('rebuild timeout')), 5000)),
+      ]);
+
+      const afterHmrMap = await fetch(`${base}/index.map?platform=ios&dev=true`);
+      expect(afterHmrMap.status).toBe(200);
+    } finally {
+      await http.stop();
+      await platforms.stopAll();
+    }
   });
 });

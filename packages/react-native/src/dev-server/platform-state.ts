@@ -55,6 +55,10 @@ function getBundleText(result: Awaited<ReturnType<typeof bundleRn>>): string {
   return jsFile.text.replace(SOURCE_MAPPING_URL_RE, '');
 }
 
+function getBundleSourceMapText(result: Awaited<ReturnType<typeof bundleRn>>): string | null {
+  return result.outputFiles.find((file) => file.path.endsWith('.map'))?.text ?? null;
+}
+
 /**
  * platform 별 watch + state 생성. 첫 build 는 비동기 — caller 가
  * `waitForBuild(state)` 로 대기. RN runtime 이 ios+android 동시 요청 시
@@ -95,6 +99,8 @@ export function createPlatformState(
     refreshPromise = bundleRn(platformBundle)
       .then((result) => {
         state.bundle = getBundleText(result);
+        const sourceMap = getBundleSourceMapText(result);
+        state.sourceMapCache = sourceMap ? postProcessSourceMap(sourceMap) : null;
         state.buildError = null;
         state.bundleStale = false;
       })
