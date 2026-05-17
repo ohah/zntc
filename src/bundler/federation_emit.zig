@@ -20,6 +20,7 @@ const federation = @import("federation.zig");
 const rt = @import("runtime_helpers.zig");
 const emitter = @import("emitter.zig");
 const mf_contract = @import("mf_contract.zig"); // P3-1 계약 검증 토대(P3-0)
+const semver = @import("semver.zig"); // P3-2 shared 버전 호환 단일 소스
 
 /// 부트스트랩 호출(=entry 청크 식별 앵커). cross-chunk/동적 wrapper 의
 /// `__zntc_require("` 와 달리 `globalThis.` 접두가 붙는 건 부트스트랩뿐
@@ -30,7 +31,7 @@ const MfEmitError = error{RemoteEntryAnchorMissing};
 
 const MF_RUNTIME_GLOBAL = federation.MF_RUNTIME_GLOBAL; // 단일 소스
 
-/// 동적 import 어휘 앵커 — emitHostInit(재작성)·verifyHostExposes(P3-1
+/// 동적 import 어휘 앵커 — emitHostInit(재작성)·verifyHostContract(P3-1
 /// 계약 검증)가 같은 스캐너를 공유(단일 소스).
 const IMPORT_NEEDLE = "import(";
 
@@ -91,7 +92,7 @@ pub fn emitHostInit(
     //    appendSlice 청크 복사(바이트별 append 회피 — 출력크기 비례 O(n),
     //    wrapContainer splice 와 동일 관례). `import(` 만 교체, 따옴표·
     //    specifier·잔여(2nd-arg/attributes 포함)는 그대로 보존. 스캔은
-    //    nextRemoteImport 단일 소스(verifyHostExposes 와 규칙 공유). ──
+    //    nextRemoteImport 단일 소스(verifyHostContract 와 규칙 공유). ──
     var last: usize = 0;
     var i: usize = 0;
     while (nextRemoteImport(src, mf, &i)) |h| {
@@ -109,7 +110,7 @@ const RemoteImportHit = struct { p: usize, spec: []const u8 };
 /// federation.matchesRemoteSpec 단일 규칙(런타임 external 판정과 동일).
 /// `i` 는 진행점(in/out) — 다음 호출이 그 뒤부터. 비원격/식별자경계
 /// (`xfoo import(` 의 `myimport(`)·따옴표 없는 동적 import 는 내부에서
-/// skip, 원격 매칭만 반환. emitHostInit(재작성)·verifyHostExposes(P3-1
+/// skip, 원격 매칭만 반환. emitHostInit(재작성)·verifyHostContract(P3-1
 /// 계약 검증) 공용 → 스캔·매칭 중복 파서 금지(단일 소스).
 fn nextRemoteImport(src: []const u8, mf: *const types.MfBundleConfig, i: *usize) ?RemoteImportHit {
     var k = i.*;
@@ -156,16 +157,44 @@ fn exposeListed(exposes: []const []const u8, spec: []const u8, key: []const u8) 
     return false;
 }
 
-/// P3-1 (#3436): 빌드타임 expose 계약 검증. host 가 `import("<remote>/
-/// <subpath>")` 하는 expose 가 그 remote 가 게시한 mf-manifest.json 의
-/// exposes 에 **부재**면 빌드 fail-fast(`error.MfHostExposeMissing`) —
-/// 런타임이 깨지는 게 아니라 빌드 단계에서 차단(스파이크 S6). manifest 를
-/// 로컬 resolve 불가(http=네트워크 비-목표 P4 / 부재 / 파싱불가)면
+/// host↔remote shared 1쌍 판정(순수 — IO·로그 없음, 단위테스트 가능).
+const SharedVerdict = enum {
+    ok, // 호환(또는 검증 불가 = 정밀 fail-fast 로 통과)
+    singleton_conflict, // singleton 불일치 — 결정적, 인스턴스 분열 → fail-fast
+    version_warn, // host range 가 remote concrete version 불만족 → 경고(비차단)
+};
+
+/// host shared 선언 vs remote 가 게시한 shared. singleton 불일치는
+/// 버전과 무관한 **결정적** 위반(런타임 인스턴스 분열 보장) → fail-fast.
+/// 버전은 host required_version(range) 가 remote 의 concrete version 을
+/// 만족하나 — semver.satisfies 가 `null`(remote.version 비-concrete:
+/// zntc P2-0 는 version=range 대용 / range 지원밖)이면 **판정 불가 →
+/// ok**(정밀 fail-fast: 거짓 경고 금지). `false` 일 때만 version_warn.
+fn sharedVerdict(host: types.MfBundleConfig.SharedEntry, remote: mf_contract.SharedContract) SharedVerdict {
+    if (host.singleton != remote.singleton) return .singleton_conflict;
+    const hr = host.required_version orelse return .ok; // host 무제약 → 버전 검사 없음
+    const sat = semver.satisfies(hr, remote.version) orelse return .ok; // 판정 불가 → 통과
+    return if (sat) .ok else .version_warn;
+}
+
+/// P3-1 (#3436) expose + P3-2 (#3437) shared: 빌드타임 host 계약 검증.
+/// host 가 `import("<remote>/<subpath>")` 하는 각 remote 의 게시
+/// mf-manifest.json 을 1회 로드(P3-0 mf_contract 토대)해:
+///   - **expose 부재** → fail-fast `error.MfHostExposeMissing`(S6 — 런타임
+///     깨짐이 아니라 빌드 차단).
+///   - **shared singleton 불일치** → fail-fast
+///     `error.MfSharedSingletonConflict`(결정적, react 등 인스턴스 분열).
+///   - **shared 버전 비호환**(host range ⊅ remote concrete version) →
+///     **경고**(std.log.warn, 비차단) — D3 빌드타임 가시성. 판정 불가
+///     (remote.version 비-concrete=zntc P2-0 / range 지원밖)는 skip.
+/// manifest 로컬 resolve 불가(http=네트워크 비-목표 P4 / 부재 / 파싱불가)면
 /// **검증 불가 ≠ 위반** → skip(정밀 fail-fast — 거짓 빌드중단 방지,
-/// http remote·미산출 sibling 의 기존 동작 불변). 검증만 — emit/재작성
-/// 부작용 없음(P3-0 mf_contract 토대 소비, 중복 파서 없음). emitHostInit
-/// 게이트(remotes>0·단일출력)와 동일 적용점에서 emit *전* 호출.
-pub fn verifyHostExposes(
+/// http remote·미산출 sibling 기존 동작 불변). 검증만 — emit/재작성
+/// 부작용 없음(중복 파서 없음, nextRemoteImport·matchesRemoteSpec 단일
+/// 소스 재사용). emitHostInit 게이트(remotes>0·단일출력)와 동일 적용점
+/// 에서 emit *전* 호출. 같은 remote 다중 import 시 경고 중복 가능(소규모
+/// — P3-1 선례대로 허용, dedup 은 후속).
+pub fn verifyHostContract(
     allocator: std.mem.Allocator,
     src: []const u8,
     mf: *const types.MfBundleConfig,
@@ -184,12 +213,33 @@ pub fn verifyHostExposes(
             else => continue,
         };
         defer rc.deinit();
+        // P3-1: expose 존재
         if (!exposeListed(rc.exposes, h.spec, kv.key)) {
             std.log.err(
                 "zntc: MF expose 계약 위반 — host import \"{s}\" 가 remote \"{s}\" 의 mf-manifest.json exposes 에 없음 (빌드 차단; remote 재배포 또는 스펙 정렬 필요)",
                 .{ h.spec, kv.key },
             );
             return error.MfHostExposeMissing;
+        }
+        // P3-2: 양쪽이 선언한 shared 패키지의 singleton·버전 호환
+        for (mf.shared) |hs| {
+            for (rc.shared) |rs| {
+                if (!std.mem.eql(u8, hs.name, rs.name)) continue;
+                switch (sharedVerdict(hs, rs)) {
+                    .ok => {},
+                    .singleton_conflict => {
+                        std.log.err(
+                            "zntc: MF shared singleton 충돌 — '{s}' 가 host(singleton={}) ↔ remote \"{s}\"(singleton={}) 불일치 (빌드 차단; 인스턴스 분열 — 양측 shareConfig.singleton 정렬 필요)",
+                            .{ hs.name, hs.singleton, kv.key, rs.singleton },
+                        );
+                        return error.MfSharedSingletonConflict;
+                    },
+                    .version_warn => std.log.warn(
+                        "zntc: MF shared 버전 경고 — host requiredVersion '{s}' 가 remote \"{s}\" 의 '{s}' 게시버전 '{s}' 을 불만족 (런타임 버전협상 시 폴백 가능; 계약 정렬 권장)",
+                        .{ hs.required_version orelse "", kv.key, rs.name, rs.version },
+                    ),
+                }
+            }
         }
     }
 }
@@ -567,4 +617,34 @@ test "emitHostInit 회귀: 원격 동적 import → loadRemote, 비원격 보존
     try std.testing.expect(std.mem.indexOf(u8, out, "globalThis." ++ MF_RUNTIME_GLOBAL ++ ".loadRemote(\"app/W\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "import(\"lodash\")") != null); // 비원격 불변
     try std.testing.expect(std.mem.indexOf(u8, out, ".init({\"name\":\"host\"") != null); // prelude
+}
+
+test "sharedVerdict: singleton 충돌 fail-fast / 버전 경고 / 판정불가 ok" {
+    const SE = types.MfBundleConfig.SharedEntry;
+    const SC = mf_contract.SharedContract;
+    // singleton 불일치 → 결정적 충돌(버전 무관)
+    try std.testing.expectEqual(SharedVerdict.singleton_conflict, sharedVerdict(
+        .{ .name = "react", .singleton = true, .required_version = "^19" },
+        .{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = false },
+    ));
+    // singleton 일치 + host range 가 remote concrete version 불만족 → 경고
+    try std.testing.expectEqual(SharedVerdict.version_warn, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = "^18" },
+        SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = true },
+    ));
+    // 호환 → ok
+    try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = "^19" },
+        SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = true },
+    ));
+    // remote.version 비-concrete(zntc P2-0 version=range 대용) → 판정 불가 → ok
+    try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = "^19" },
+        SC{ .name = "react", .version = "^19", .required_version = "^19", .singleton = true },
+    ));
+    // host 무제약(required_version=null) → singleton 일치면 ok
+    try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
+        SE{ .name = "react", .singleton = false, .required_version = null },
+        SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = false },
+    ));
 }
