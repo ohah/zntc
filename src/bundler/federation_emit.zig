@@ -35,6 +35,24 @@ const MF_RUNTIME_GLOBAL = federation.MF_RUNTIME_GLOBAL; // 단일 소스
 /// 계약 검증)가 같은 스캐너를 공유(단일 소스).
 const IMPORT_NEEDLE = "import(";
 
+/// P3-5 (#3440): 런타임 가드. host 의 `import("remote/x")` 는
+/// `<MF_GUARDED>(...)` 로 치환되고, prelude 가 이 글로벌을 정의 —
+/// `loadRemote` 를 감싸 **거부 시 graceful 폴백**(셸 크래시 방지).
+/// D3 "빌드 핀 + 런타임 가드"의 런타임 절반: P3-1/2/3 은 manifest 가
+/// 로컬 resolve 가능할 때만 빌드 차단(http remote·배포후 drift 는
+/// 검증 불가→skip) → 그 사각을 런타임 가드가 메움. 성공 경로는 불변
+/// (loadRemote 결과 passthrough → S3/S4/P2-5 interop 보존), 거부만
+/// catch. 폴백은 silent 아님: console.error + `__mfUnavailable:true`
+/// (관측가능·비-차단). loadRemote 인자 그대로 forward(`arguments`).
+const MF_GUARDED = "globalThis.__mfGuardedLoad";
+const GUARD_DEF = MF_GUARDED ++ "=function(){var RR=globalThis." ++ MF_RUNTIME_GLOBAL ++
+    ",a=arguments,id=a[0];function F(){return{default:function(){return null;},__mfUnavailable:true};}" ++
+    "try{return Promise.resolve(RR.loadRemote.apply(RR,a)).catch(function(e){" ++
+    "console.error(\"[mf] runtime guard: remote '\"+id+\"' failed to load (contract drift or unreachable; " ++
+    "build-time P3 verification applies only when the manifest is locally resolvable). Rendering fallback.\",e);" ++
+    "return F();});}catch(e){console.error(\"[mf] runtime guard: remote '\"+id+\"' sync error.\",e);" ++
+    "return Promise.resolve(F());}};";
+
 /// `mf.remotes` KV.value(`<name>@<entry>`) → (name, entry). `@` 첫 등장
 /// split. name 부분 비면 KV.key fallback. `@` 없으면 value 전체=entry.
 /// 한계: scoped-like value(`@scope/x@url`)는 첫 `@`(idx 0) split →
@@ -57,12 +75,13 @@ fn isRemoteSpec(spec: []const u8, mf: *const types.MfBundleConfig) bool {
 
 /// P1-6 host emit: 스펙 `@module-federation/runtime` 재사용(D1 — 자체
 /// 재구현 금지). src 앞에 init prelude(`globalThis.__mf_runtime.init({name,
-/// remotes})`)를 prepend + 원격 동적 `import("remote/x")` 를
-/// `globalThis.__mf_runtime.loadRemote("remote/x")` 로 치환. runtime 은
-/// applyMfRemotesSeam 이 external+글로벌(__mf_runtime) 처리 → host 환경이
-/// 그 글로벌로 스펙 런타임 제공(P1-2/P1-3 글로벌-seam 모델 일관, iife/umd/
-/// amd valid). 반환 = 새 owned 문자열(caller 가 기존 src free). 정적
-/// `import X from "remote/x"` 는 비-목표(async 강등 필요 — 후속).
+/// remotes})`)를 prepend + 런타임 가드(`__mfGuardedLoad`, P3-5) 정의 +
+/// 원격 동적 `import("remote/x")` 를 `globalThis.__mfGuardedLoad(
+/// "remote/x")` 로 치환(가드가 내부에서 `loadRemote` 호출 + 거부 폴백).
+/// runtime 은 applyMfRemotesSeam 이 external+글로벌(__mf_runtime) 처리 →
+/// host 환경이 그 글로벌로 스펙 런타임 제공(P1-2/P1-3 글로벌-seam 모델
+/// 일관, iife/umd/amd valid). 반환 = 새 owned 문자열(caller 가 기존 src
+/// free). 정적 `import X from "remote/x"` 는 비-목표(async 강등 — 후속).
 pub fn emitHostInit(
     allocator: std.mem.Allocator,
     src: []const u8,
@@ -70,9 +89,8 @@ pub fn emitHostInit(
 ) ![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
-    const w = out.writer(allocator);
 
-    // ── init prelude (멱등: runtime.init 자체 멱등) ──
+    // ── init prelude (멱등: runtime.init 자체 멱등) + 런타임 가드 정의 ──
     try out.appendSlice(allocator, "(function(){var R=globalThis." ++ MF_RUNTIME_GLOBAL ++ ";if(R&&R.init)R.init({\"name\":");
     try emitter.appendJsonString(&out, allocator, mf.name orelse "host");
     try out.appendSlice(allocator, ",\"remotes\":[");
@@ -85,19 +103,21 @@ pub fn emitHostInit(
         try emitter.appendJsonString(&out, allocator, r.entry);
         try out.append(allocator, '}');
     }
-    try out.appendSlice(allocator, "]});})();");
+    // P3-5: init 후 가드 정의(글로벌 — 모듈 스코프 재작성 코드가 호출).
+    try out.appendSlice(allocator, "]});" ++ GUARD_DEF ++ "})();");
 
     // ── 원격 동적 import 재작성: `import(<q><remote>...)` →
-    //    `globalThis.__mf_runtime.loadRemote(<q><remote>...)`. 매칭 외 구간은
-    //    appendSlice 청크 복사(바이트별 append 회피 — 출력크기 비례 O(n),
-    //    wrapContainer splice 와 동일 관례). `import(` 만 교체, 따옴표·
-    //    specifier·잔여(2nd-arg/attributes 포함)는 그대로 보존. 스캔은
+    //    `globalThis.__mfGuardedLoad(<q><remote>...)`(P3-5 가드 경유 —
+    //    내부서 loadRemote + 거부 폴백). 매칭 외 구간은 appendSlice 청크
+    //    복사(바이트별 append 회피, wrapContainer splice 관례). `import(`
+    //    만 교체 — 따옴표·specifier·잔여(2nd-arg/attributes)·닫는 괄호는
+    //    그대로 보존(가드가 인자 forward → 닫는 괄호 추적 불요). 스캔은
     //    nextRemoteImport 단일 소스(verifyHostContract 와 규칙 공유). ──
     var last: usize = 0;
     var i: usize = 0;
     while (nextRemoteImport(src, mf, &i)) |h| {
         try out.appendSlice(allocator, src[last..h.p]);
-        try w.print("globalThis.{s}.loadRemote(", .{MF_RUNTIME_GLOBAL});
+        try out.appendSlice(allocator, MF_GUARDED ++ "(");
         last = h.p + IMPORT_NEEDLE.len; // 따옴표부터는 다음 flush 가 보존
     }
     try out.appendSlice(allocator, src[last..]);
@@ -630,14 +650,19 @@ test "exposeListed: ./ 정규화·정확매칭·부재·중첩·bare key" {
     try std.testing.expect(!exposeListed(&exposes, "app", "app")); // 기본 expose 미게시
 }
 
-test "emitHostInit 회귀: 원격 동적 import → loadRemote, 비원격 보존" {
+test "emitHostInit 회귀: 원격 import → __mfGuardedLoad(P3-5), 가드 정의, 비원격 보존" {
     const a = std.testing.allocator;
     const remotes = [_]types.MfBundleConfig.KV{.{ .key = "app", .value = "app@http://x/r.js" }};
     const mf = tMf(&remotes);
     const src = "const x=import(\"app/W\");const y=import(\"lodash\");";
     const out = try emitHostInit(a, src, &mf);
     defer a.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "globalThis." ++ MF_RUNTIME_GLOBAL ++ ".loadRemote(\"app/W\")") != null);
+    // P3-5: 원격 동적 import 가 가드 경유(인자=specifier 그대로 forward)
+    try std.testing.expect(std.mem.indexOf(u8, out, MF_GUARDED ++ "(\"app/W\")") != null);
+    // 가드 정의(prelude) + 내부서 표준 loadRemote 호출(interop 보존)
+    try std.testing.expect(std.mem.indexOf(u8, out, MF_GUARDED ++ "=function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "RR.loadRemote.apply(RR,a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "__mfUnavailable:true") != null); // 폴백
     try std.testing.expect(std.mem.indexOf(u8, out, "import(\"lodash\")") != null); // 비원격 불변
     try std.testing.expect(std.mem.indexOf(u8, out, ".init({\"name\":\"host\"") != null); // prelude
 }
