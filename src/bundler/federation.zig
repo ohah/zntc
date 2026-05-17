@@ -12,10 +12,21 @@
 //! ~ link 전 단일스레드 분석 패스(다른 build 패스와 동일 위치·동시성 모델).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const module_id = @import("module_id.zig");
 const resolve_cache = @import("resolve_cache.zig");
+
+/// cwd 절대경로(realpath). **WASI 는 realpath 미지원** — `std.fs.cwd().
+/// realpathAlloc` 는 wasm32-wasi 에서 `@compileError`(runtime catch 무관,
+/// 참조 자체가 컴파일 실패). comptime os 분기로 비-WASI 만 realpath, WASI
+/// 는 null(MF 는 web/native 기능 — wasm-bundler 경로 매칭은 비정규화
+/// fallback 으로 충분). 비-WASI 동작 불변.
+pub fn cwdRealpath(allocator: std.mem.Allocator) ?[]const u8 {
+    if (comptime builtin.os.tag == .wasi) return null;
+    return std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+}
 
 /// 경계 식별 + 표시 + 안정 ID 부여. `mf` 비면 호출 안 됨(caller gate).
 /// `entry_points`/`preserve_root` 는 `module_id` root 도출용.
@@ -37,7 +48,7 @@ pub fn markBoundary(
     defer if (preserve_root == null) if (root) |r| allocator.free(r);
 
     // ── exposes: config 값(cwd 상대 가능)을 abs 로 정규화해 모듈과 매칭 ──
-    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+    const cwd = cwdRealpath(allocator);
     defer if (cwd) |c| allocator.free(c);
     for (mf.exposes) |kv| {
         const abs = resolveAbs(allocator, cwd, kv.value) catch continue;
@@ -123,7 +134,7 @@ pub fn entryWithExposes(
     mf: *const types.MfBundleConfig,
     entries: []const []const u8,
 ) ![][]const u8 {
-    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+    const cwd = cwdRealpath(allocator);
     defer if (cwd) |c| allocator.free(c);
     var list: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
@@ -160,6 +171,8 @@ pub fn resolveAbs(allocator: std.mem.Allocator, cwd: ?[]const u8, value: []const
     const base = cwd orelse ".";
     const joined = try std.fs.path.resolve(allocator, &.{ base, value });
     defer allocator.free(joined);
+    // WASI 는 realpath @compileError → comptime 분기(비-WASI 동작 불변).
+    if (comptime builtin.os.tag == .wasi) return allocator.dupe(u8, joined);
     return std.fs.cwd().realpathAlloc(allocator, joined) catch allocator.dupe(u8, joined);
 }
 
