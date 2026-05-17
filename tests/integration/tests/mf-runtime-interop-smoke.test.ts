@@ -234,14 +234,13 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(ab.id).toBe('app:a/B'); // './' 만 제거(중첩 경로 보존)
   });
 
-  // P1 알려진 한계 가드(레퍼런스 generateSnapshotFromManifest 대비): zntc
-  // 는 mf.shared 가 있어도 mf-manifest.json 의 shared/remotes 를 항상 빈
-  // 배열로 emit(federation_emit.zig buildManifest). runtime 의 필수키
-  // *존재* assert 는 통과(거부 안 됨)하나, manifest-driven host 는 zntc
-  // remote 의 shared 요구를 manifest 로 알 수 없음 — shared 협상은 글로벌
-  // -seam(P1-2/4)으로만. shared manifest 정밀화는 RFC §7 P2 범위. 이
-  // 가드는 그 한계를 박제(P2 구현 시 의도적으로 갱신).
-  test('알려진 한계: mf.shared 있어도 manifest.shared/remotes = [] (P2 범위)', async () => {
+  // P2-0 (#3420): manifest.shared 정밀. mf.shared → ManifestShared
+  // (@module-federation/sdk: id/name/version/singleton/requiredVersion/
+  // hash/assets). 표준 generateSnapshotFromManifest 가 name/version 으로
+  // 버전협상 — P1 한계(#3419 가드 shared==[]) 해소. remotes 는 P2-1 까지
+  // [] 유지(host 경로, scope 분리). version 은 requiredVersion 대용
+  // (SharedEntry 에 설치버전 없음 — 정밀해석 P2 비-목표).
+  test('P2-0 manifest.shared 정밀: SharedEntry → ManifestShared', async () => {
     const fx = await createFixture({
       'Widget.ts': `import { useState } from "react";\nexport default () => typeof useState;`,
       'index.ts': `export const sentinel = "re";`,
@@ -249,7 +248,10 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
         mf: {
           name: 'app',
           exposes: { './Widget': './Widget.ts' },
-          shared: { react: { singleton: true, requiredVersion: '^19' } },
+          shared: {
+            react: { singleton: true, requiredVersion: '^19' },
+            'react-dom': {},
+          },
         },
       }),
     });
@@ -264,9 +266,25 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     ]);
     expect(b.exitCode).toBe(0);
     const mani = JSON.parse(await readFile(join(dist, 'mf-manifest.json'), 'utf8'));
-    // 현재 한계: shared 설정돼도 manifest 에는 비어있음. runtime presence
-    // assert 는 통과(배열 존재). P2 에서 shared 정밀 emit 시 이 단언 갱신.
-    expect(mani.shared).toEqual([]);
+    expect(Array.isArray(mani.shared)).toBe(true);
+    expect(mani.shared.length).toBe(2);
+    const r = mani.shared.find((s: { name: string }) => s.name === 'react');
+    expect(r.id).toBe('app:react');
+    expect(r.singleton).toBe(true);
+    expect(r.requiredVersion).toBe('^19');
+    expect(r.version).toBe('^19'); // requiredVersion 대용(P2 경계)
+    expect(r.hash).toBe(''); // 무결성=P2-2
+    // ManifestShared 필수 7필드 전부 + StatsAssets 형태(seam 처리 → 빈)
+    expect(r.assets).toEqual({
+      js: { sync: [], async: [] },
+      css: { sync: [], async: [] },
+    });
+    const rd = mani.shared.find((s: { name: string }) => s.name === 'react-dom');
+    expect(rd.id).toBe('app:react-dom');
+    expect(rd.singleton).toBe(false); // 미지정 → false
+    expect(rd.requiredVersion).toBe(''); // 미지정 → 빈
+    expect(rd.version).toBe(''); // version=requiredVersion 경계(값 없음 쪽도 박제)
+    // remotes 는 P2-1 범위 — 아직 []
     expect(mani.remotes).toEqual([]);
     expect(Array.isArray(mani.exposes) && mani.exposes.length).toBe(1);
   });

@@ -326,7 +326,7 @@ pub fn wrapContainer(
         o.contents = owned;
         // mf-manifest.json (S4 박제 스키마 — runtime SnapshotHandler 가
         // metaData/exposes/shared 필수). 같은 시점이라 모든 해시 확정.
-        return try buildManifest(allocator, name, exposes, remote_entry, public_path);
+        return try buildManifest(allocator, name, mf, exposes, remote_entry, public_path);
     }
     // mf 빌드인데 reg_split 부트스트랩이 없음 = 잘못된 구성(format/splitting).
     // 조용한 오작동(container 없는 산출) 금지 — federation.zig 진단 관례.
@@ -350,6 +350,7 @@ const appendJsonStr = emitter.appendJsonString;
 fn buildManifest(
     allocator: std.mem.Allocator,
     name: []const u8,
+    mf: *const types.MfBundleConfig,
     exposes: []const ExposeInfo,
     remote_entry: []const u8,
     public_path: []const u8,
@@ -375,7 +376,31 @@ fn buildManifest(
     try appendJsonStr(&b, allocator, name);
     try b.appendSlice(allocator, ",\"pluginVersion\":\"0.1.0\",\"publicPath\":");
     try appendJsonStr(&b, allocator, pp);
-    try b.appendSlice(allocator, "},\"shared\":[],\"remotes\":[],\"exposes\":[");
+    // P2-0 (#3420): manifest.shared 정밀. `@module-federation/sdk`
+    // ManifestShared = {id,name,version,singleton,requiredVersion,hash,
+    // assets}. version 은 SharedEntry 에 설치버전이 없어(external+글로벌
+    // seam 처리) requiredVersion 대용 — 정밀 버전 해석은 P2 비-목표(과설계
+    // 경계). assets 빈(seam 이 로딩 담당, generateSnapshotFromManifest 가
+    // name/version 으로 버전협상). hash=""(무결성=P2-2). remotes 는 P2-1.
+    try b.appendSlice(allocator, "},\"shared\":[");
+    for (mf.shared, 0..) |se, si| {
+        if (si > 0) try b.append(allocator, ',');
+        const rv = se.required_version orelse "";
+        try b.appendSlice(allocator, "{\"id\":");
+        const sid = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ name, se.name });
+        defer allocator.free(sid);
+        try appendJsonStr(&b, allocator, sid);
+        try b.appendSlice(allocator, ",\"name\":");
+        try appendJsonStr(&b, allocator, se.name);
+        try b.appendSlice(allocator, ",\"version\":");
+        try appendJsonStr(&b, allocator, rv);
+        try b.appendSlice(allocator, ",\"singleton\":");
+        try b.appendSlice(allocator, if (se.singleton) "true" else "false");
+        try b.appendSlice(allocator, ",\"requiredVersion\":");
+        try appendJsonStr(&b, allocator, rv);
+        try b.appendSlice(allocator, ",\"hash\":\"\",\"assets\":{\"js\":{\"sync\":[],\"async\":[]},\"css\":{\"sync\":[],\"async\":[]}}}");
+    }
+    try b.appendSlice(allocator, "],\"remotes\":[],\"exposes\":[");
     for (exposes, 0..) |ex, ei| {
         if (ei > 0) try b.append(allocator, ',');
         // id = "<name>:<expose키에서 './' 제거>" (MF 규약, 예 app:Widget).
