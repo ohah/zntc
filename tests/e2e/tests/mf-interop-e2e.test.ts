@@ -535,11 +535,16 @@ test('P3-5 런타임-가드(실브라우저): 도달불가 remote → 폴백 렌
     // http 도달불가 remote(port 1=connection refused). http → P3-1/2/3
     // 빌드타임 검증 skip(검증 불가 ≠ 위반) → 빌드 성공 → 런타임 가드
     // 가 유일 안전망. m.__mfUnavailable 폴백 감지 → 셸 생존.
+    // 폴백 모듈(F())의 default 를 **실제 호출** — noop 이 throw 없이
+    // null 반환해야 실사용 셸 생존(GUARD_DEF default:()=>null 계약 회귀
+    // 방어: __mfUnavailable 만 보면 default() 회귀를 못 잡음).
     await writeFile(
       join(hostDir, 'index.ts'),
       `async function main(){ const m = await import("app/Widget");` +
-        ` document.getElementById("out").textContent = (m && m.__mfUnavailable)` +
-        ` ? "GUARD-OK" : ("NO-GUARD:" + String(m && (m.default || m)));` +
+        ` const v = (m && (m.default || m))();` +
+        ` document.getElementById("out").textContent =` +
+        ` (m && m.__mfUnavailable && v === null) ? "GUARD-OK"` +
+        ` : ("NO-GUARD:" + String(m && m.__mfUnavailable) + ":" + String(v));` +
         ` window.__done = true; }\n` +
         `main().catch((e) => { window.__err = String((e && e.stack) || e); window.__done = true; });`,
     );
@@ -596,6 +601,113 @@ test('P3-5 런타임-가드(실브라우저): 도달불가 remote → 폴백 렌
     expect(pageErrors, `pageerror: ${pageErrors.join(', ')}`).toHaveLength(0);
   } finally {
     if (hostSrv) await closeServer(hostSrv.server);
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
+
+// P3-5 보강: 런타임 가드는 **네트워크 거부만이 아니라 모든 loadRemote
+// 거부**(expose 런타임 부재 등)를 흡수해야 한다. reachable zntc remote
+// (./Widget)를 http 서빙하되 host 는 부재 expose `app/Missing` import →
+// http remote 라 빌드타임 P3-1 skip(빌드 성공) → 표준 runtime
+// loadRemote 가 expose-missing 으로 reject → 가드 폴백 → 셸 생존.
+test('P3-5 런타임-가드(실브라우저): 도달가능 remote의 런타임 expose 부재 → 폴백', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const remoteDir = await mkdtemp(join(tmpdir(), 'zntc-p35rg2-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-p35rg2-host-'));
+  let remoteSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const remoteDist = join(remoteDir, 'dist');
+    await mkdir(remoteDist, { recursive: true });
+    remoteSrv = await serve(remoteDist, { 'Access-Control-Allow-Origin': '*' });
+    const rOrigin = `http://localhost:${remoteSrv.port}`;
+    await writeFile(join(remoteDir, 'Widget.ts'), `export default () => "REAL";`);
+    await writeFile(join(remoteDir, 'index.ts'), `export const sentinel = "re";`);
+    await writeFile(
+      join(remoteDir, 'zntc.config.json'),
+      JSON.stringify({ mf: { name: 'app', exposes: { './Widget': './Widget.ts' } } }),
+    );
+    const rb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(remoteDir, 'index.ts'),
+        '--outdir',
+        remoteDist,
+        '--format=iife',
+        '--platform=browser',
+        `--public-path=${rOrigin}/`,
+      ],
+      { cwd: remoteDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(rb.status, `remote build: ${rb.stderr?.toString().slice(0, 400)}`).toBe(0);
+
+    // host 는 **존재하지 않는** expose import. http manifest entry →
+    // 빌드타임 P3-1 검증 skip(네트워크=비-목표) → 빌드 성공.
+    await writeFile(
+      join(hostDir, 'index.ts'),
+      `async function main(){ const m = await import("app/Missing");` +
+        ` const v = (m && (m.default || m))();` +
+        ` document.getElementById("out").textContent =` +
+        ` (m && m.__mfUnavailable && v === null) ? "GUARD-OK"` +
+        ` : ("NO-GUARD:" + String(m && m.__mfUnavailable) + ":" + String(v));` +
+        ` window.__done = true; }\n` +
+        `main().catch((e) => { window.__err = String((e && e.stack) || e); window.__done = true; });`,
+    );
+    await writeFile(
+      join(hostDir, 'zntc.config.json'),
+      JSON.stringify({
+        mf: { name: 'host', remotes: { app: `app@${rOrigin}/mf-manifest.json` } },
+      }),
+    );
+    const hb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(hostDir, 'index.ts'),
+        '-o',
+        join(hostDir, 'host.js'),
+        '--format=iife',
+        '--platform=browser',
+      ],
+      { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(hb.status, `host build: ${hb.stderr?.toString().slice(0, 500)}`).toBe(0);
+
+    await buildGlue(hostDir);
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script></head><body><div id="out">pending</div>` +
+        `<script src="./host.js"></script></body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    const consoleErrs: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrs.push(msg.text());
+    });
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 20000,
+    });
+
+    expect(await page.evaluate(() => (window as { __err?: string }).__err)).toBeFalsy();
+    // expose-missing reject(네트워크 아님) 도 가드가 흡수 → 폴백 noop=null
+    expect(await page.locator('#out').textContent()).toBe('GUARD-OK');
+    expect(
+      consoleErrs.some((t) => t.includes('[mf] runtime guard')),
+      `console errors: ${consoleErrs.join(' | ')}`,
+    ).toBe(true);
+    expect(pageErrors, `pageerror: ${pageErrors.join(', ')}`).toHaveLength(0);
+  } finally {
+    if (remoteSrv) await closeServer(remoteSrv.server);
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(remoteDir, { recursive: true, force: true });
     await rm(hostDir, { recursive: true, force: true });
   }
 });
