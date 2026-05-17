@@ -17,11 +17,14 @@ import { createFixture, runZntcInDir, runNode } from './helpers';
 // 전체 브라우저 Playwright interop CI(S4 역방향 포함)는 P1-7.
 describe('MF P1-3: 실 @module-federation/runtime interop (S3)', () => {
   let server: Server | undefined;
+  let server2: Server | undefined; // 다중-remote(P0) — 두 번째 origin
   let cleanup: (() => Promise<void>) | undefined;
   let driverPath: string | undefined;
   afterEach(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()));
+    await new Promise<void>((r) => (server2 ? server2.close(() => r()) : r()));
     server = undefined;
+    server2 = undefined;
     if (driverPath) {
       rmSync(driverPath, { force: true });
       driverPath = undefined;
@@ -231,6 +234,43 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(ab.id).toBe('app:a/B'); // './' 만 제거(중첩 경로 보존)
   });
 
+  // P1 알려진 한계 가드(레퍼런스 generateSnapshotFromManifest 대비): zntc
+  // 는 mf.shared 가 있어도 mf-manifest.json 의 shared/remotes 를 항상 빈
+  // 배열로 emit(federation_emit.zig buildManifest). runtime 의 필수키
+  // *존재* assert 는 통과(거부 안 됨)하나, manifest-driven host 는 zntc
+  // remote 의 shared 요구를 manifest 로 알 수 없음 — shared 협상은 글로벌
+  // -seam(P1-2/4)으로만. shared manifest 정밀화는 RFC §7 P2 범위. 이
+  // 가드는 그 한계를 박제(P2 구현 시 의도적으로 갱신).
+  test('알려진 한계: mf.shared 있어도 manifest.shared/remotes = [] (P2 범위)', async () => {
+    const fx = await createFixture({
+      'Widget.ts': `import { useState } from "react";\nexport default () => typeof useState;`,
+      'index.ts': `export const sentinel = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+    const b = await runZntcInDir(fx.dir, [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+    ]);
+    expect(b.exitCode).toBe(0);
+    const mani = JSON.parse(await readFile(join(dist, 'mf-manifest.json'), 'utf8'));
+    // 현재 한계: shared 설정돼도 manifest 에는 비어있음. runtime presence
+    // assert 는 통과(배열 존재). P2 에서 shared 정밀 emit 시 이 단언 갱신.
+    expect(mani.shared).toEqual([]);
+    expect(mani.remotes).toEqual([]);
+    expect(Array.isArray(mani.exposes) && mani.exposes.length).toBe(1);
+  });
+
   // P1-6 (#3388): zntc-빌드 host 가 실 @module-federation/runtime 로 remote
   // 소비. zntc 가 emit 한 init prelude + `import("remote/x")`→loadRemote
   // 재작성 코드가 **실 스펙 런타임**으로 동작(host-emit 검증, D1 — 자체
@@ -318,6 +358,146 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     const { stdout, stderr } = await runNode(driverPath);
     expect(stdout).toContain('HOST=HOST-CONSUMED-OK'); // zntc host→실 runtime→zntc remote
     expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"/);
+  }, 30000);
+
+  // 갭 보강(레퍼런스 module-federation/core 대비). zntc remote dir 빌드 +
+  // .js entry http 서빙(S3/host-emit 검증 형태, Node-safe — chunk=file://).
+  async function buildZntcRemote(
+    name: string,
+    expose: string,
+    src: string,
+    srv: 'a' | 'b',
+  ): Promise<number> {
+    const fx = await createFixture({
+      [`${expose}.ts`]: src,
+      'index.ts': `export const sentinel = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name, exposes: { [`./${expose}`]: `./${expose}.ts` } },
+      }),
+    });
+    const dist = join(fx.dir, 'dist');
+    const b = await runZntcInDir(fx.dir, [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+      `--public-path=file://${dist}/`,
+    ]);
+    expect(b.exitCode, `build ${name}: ${b.stderr?.slice(0, 300)}`).toBe(0);
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await fx.cleanup();
+    };
+    const s = createServer(async (req, res) => {
+      try {
+        const u = req.url === '/' ? '/index.js' : req.url!;
+        res.writeHead(200, {
+          'content-type': u.endsWith('.json') ? 'application/json' : 'application/javascript',
+        });
+        res.end(await readFile(join(dist, u)));
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    if (srv === 'a') server = s;
+    else server2 = s;
+    await new Promise<void>((r) => s.listen(0, r));
+    return (s.address() as { port: number }).port;
+  }
+
+  // P0: 다중 remote — emitHostInit/isRemoteSpec 가 2+ remote 를 prelude
+  // 배열·loadRemote 재작성 양쪽에서 정확히 처리(레퍼런스 load-remote.spec
+  // /snapshot.spec 가 2 remote 테스트, zntc 는 단일만 검증돼 있었음).
+  test('P0 다중 remote: zntc host 가 2개 zntc remote 동시 소비', async () => {
+    const pa = await buildZntcRemote('appA', 'X', `export default () => "X-OK";`, 'a');
+    const pb = await buildZntcRemote('appB', 'Y', `export default () => "Y-OK";`, 'b');
+    const hostFx = await createFixture({
+      'index.ts':
+        `async function main(){` +
+        ` const a = await import("appA/X"); const b = await import("appB/Y");` +
+        ` console.log("MR=" + (a.default ?? a)() + "," + (b.default ?? b)()); }\nmain();`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'host',
+          remotes: {
+            appA: `appA@http://localhost:${pa}/index.js`,
+            appB: `appB@http://localhost:${pb}/index.js`,
+          },
+        },
+      }),
+    });
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await hostFx.cleanup();
+    };
+    const hostOut = join(hostFx.dir, 'host.js');
+    const hb = await runZntcInDir(hostFx.dir, [
+      '--bundle',
+      join(hostFx.dir, 'index.ts'),
+      '-o',
+      hostOut,
+      '--format=iife',
+    ]);
+    expect(hb.exitCode).toBe(0);
+    const hostSrc = readFileSyncSafe(hostOut);
+    // prelude remotes 배열에 두 remote 모두 + 각각 loadRemote 재작성
+    expect(hostSrc).toMatch(/"name":"appA","entry":"http:\/\/localhost:\d+\/index\.js"/);
+    expect(hostSrc).toMatch(/"name":"appB","entry":"http:\/\/localhost:\d+\/index\.js"/);
+    expect(hostSrc).toContain('globalThis.__mf_runtime.loadRemote("appA/X")');
+    expect(hostSrc).toContain('globalThis.__mf_runtime.loadRemote("appB/Y")');
+
+    const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
+    driverPath = join(hostFx.dir, 'mr-driver.mjs');
+    writeFileSync(
+      driverPath,
+      `import mf from ${JSON.stringify('file://' + mfRuntime)};\n` +
+        `globalThis.__mf_runtime = mf;\n` +
+        `await import(${JSON.stringify('file://' + hostOut)});\n` +
+        `await new Promise(r => setTimeout(r, 700));\n`,
+    );
+    const { stdout, stderr } = await runNode(driverPath);
+    expect(stdout).toContain('MR=X-OK,Y-OK'); // 두 remote 동시 소비
+    expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"/);
+  }, 40000);
+
+  // P0: negative 계약 — 없는 expose 는 container throw("does not exist in
+  // container <name>"), 없는 remote 는 RUNTIME 에러(무한대기 아님). 기존
+  // 테스트는 happy-path 의 RUNTIME-00x *부재*만 봤음.
+  test('P0 negative: 없는 expose/remote 가 명확히 실패', async () => {
+    const p = await buildZntcRemote('app', 'Widget', `export default () => "OK";`, 'a');
+    const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
+    const fx = await createFixture({ 'noop.txt': '' });
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await fx.cleanup();
+    };
+    driverPath = join(fx.dir, 'neg-driver.mjs');
+    writeFileSync(
+      driverPath,
+      `import mf from ${JSON.stringify('file://' + mfRuntime)};\n` +
+        `const { init, loadRemote } = mf;\n` +
+        `init({ name: "neg", remotes: [{ name: "app", entry: "http://localhost:${p}/index.js" }] });\n` +
+        `try { await loadRemote("app/Missing"); console.log("EXP=NOFAIL"); }\n` +
+        `catch (e) { console.log("EXP=" + (e && (e.message || e))); }\n` +
+        `try { await Promise.race([loadRemote("nope/Z"),` +
+        ` new Promise((_, j) => setTimeout(() => j(new Error("TIMEOUT")), 5000))]);` +
+        ` console.log("REM=NOFAIL"); }\n` +
+        `catch (e) { console.log("REM=" + (e && (e.message || e))); }\n`,
+    );
+    const { stdout } = await runNode(driverPath);
+    // 없는 expose → zntc container 의 throw 메시지(실 runtime 통과).
+    // 성공-우회(NOFAIL) 명시 배제로 거짓통과 차단.
+    expect(stdout).not.toContain('EXP=NOFAIL');
+    expect(stdout).toContain('does not exist in container app');
+    // 없는 remote → 에러로 귀결: 무한대기(TIMEOUT)·조용한 성공(NOFAIL) 아님
+    // + 실제 에러 문자열 존재(분리 단언으로 lookahead 우회 여지 제거).
+    expect(stdout).not.toContain('REM=NOFAIL');
+    expect(stdout).not.toContain('REM=TIMEOUT');
+    expect(stdout).toMatch(/REM=\S/);
   }, 30000);
 });
 
