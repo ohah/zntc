@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -90,14 +90,26 @@ describe('createAssetPlugin', () => {
     }
   });
 
-  test('내장 SVG component transformer — 사용자 babelTransformerPath 가 있으면 등록하지 않음', () => {
+  test('내장 SVG component transformer — 사용자 babelTransformerPath 가 있어도 SVG는 ZNTC가 처리', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-rn-svg-builtin-with-custom-'));
+    const svgPath = join(dir, 'custom.svg');
+    writeFileSync(svgPath, '<svg viewBox="0 0 1 1"/>');
     const handlers = captureHandlers({
       ...baseConfig,
+      projectRoot: dir,
       sourceExts: ['.ts', '.tsx', '.js', '.jsx', '.svg'],
       babelTransformerPath: 'react-native-svg-transformer',
     });
-    expect(handlers.length).toBe(2);
-    expect(handlers[1]!.filter.test('/abs/icon.svg')).toBe(true);
+    try {
+      expect(handlers.length).toBe(2);
+      const svgHandler = handlers[1]!;
+      expect(svgHandler.filter.test(svgPath)).toBe(true);
+      const result = await svgHandler.handler({ path: svgPath });
+      expect(result?.contents).toContain('function SvgCustom(props)');
+      expect(result?.contents).toContain('export default SvgCustom');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('createSvgComponentModule — JS identifier 로 안전한 component name 생성', () => {
@@ -115,7 +127,7 @@ describe('createAssetPlugin', () => {
     expect(handlers.length).toBe(1);
   });
 
-  test('babelTransformerPath + customExts (.svg) — 두 번째 onLoad 등록', () => {
+  test('babelTransformerPath + .svg sourceExt — SVG는 내장 onLoad 만 등록', () => {
     const handlers = captureHandlers({
       ...baseConfig,
       sourceExts: ['.ts', '.tsx', '.js', '.jsx', '.svg'],
@@ -127,14 +139,59 @@ describe('createAssetPlugin', () => {
     expect(customHandler.filter.test('/abs/foo.ts')).toBe(false);
   });
 
+  test('babelTransformerPath transformer — non-SVG customExt 에 Metro projectRoot/dev 옵션 전달', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-rn-custom-transformer-'));
+    try {
+      writeFileSync(join(dir, 'package.json'), '{"name":"fixture","private":true}');
+      mkdirSync(join(dir, 'node_modules', 'fake-transformer'), { recursive: true });
+      mkdirSync(join(dir, 'node_modules', '@babel', 'core'), { recursive: true });
+      writeFileSync(
+        join(dir, 'node_modules', 'fake-transformer', 'package.json'),
+        '{"name":"fake-transformer","main":"index.js"}',
+      );
+      writeFileSync(
+        join(dir, 'node_modules', 'fake-transformer', 'index.js'),
+        `
+module.exports.transform = ({ options }) => {
+  if (options.projectRoot !== ${JSON.stringify(dir)}) {
+    throw new Error('missing projectRoot');
+  }
+  if (options.dev !== false || options.hot !== false) {
+    throw new Error('dev flag was not forwarded');
+  }
+  return { code: 'export default "ok";' };
+};
+`,
+      );
+      writeFileSync(
+        join(dir, 'node_modules', '@babel', 'core', 'index.js'),
+        `throw new Error('Babel should not be loaded for code-returning custom transformers');`,
+      );
+      const customPath = join(dir, 'query.graphql');
+      writeFileSync(customPath, 'query Example { id }');
+
+      const handlers = captureHandlers({
+        ...baseConfig,
+        projectRoot: dir,
+        dev: false,
+        sourceExts: ['.ts', '.tsx', '.js', '.jsx', '.graphql'],
+        babelTransformerPath: 'fake-transformer',
+      });
+      const result = await handlers[1]!.handler({ path: customPath });
+      expect(result?.contents).toBe('export default "ok";');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('customExts 패턴 — JS/TS/JSON 표준 확장자 제외', () => {
     const handlers = captureHandlers({
       ...baseConfig,
       sourceExts: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.svg', '.graphql'],
       babelTransformerPath: 'any-transformer',
     });
-    const customHandler = handlers[1]!;
-    expect(customHandler.filter.test('/abs/x.svg')).toBe(true);
+    const customHandler = handlers[2]!;
+    expect(customHandler.filter.test('/abs/x.svg')).toBe(false);
     expect(customHandler.filter.test('/abs/x.graphql')).toBe(true);
     expect(customHandler.filter.test('/abs/x.ts')).toBe(false);
     expect(customHandler.filter.test('/abs/x.json')).toBe(false);

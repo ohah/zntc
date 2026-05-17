@@ -390,6 +390,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       projectRoot,
       assetExts,
       rnPlatform,
+      dev,
       sourceExts,
       babelTransformerPath: extra?.babelTransformerPath,
     }),
