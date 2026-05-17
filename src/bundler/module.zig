@@ -301,6 +301,15 @@ pub const Module = struct {
     /// esbuild의 entryPointKind과 동일 — 정렬 순서나 exec_index와 무관하게
     /// 엔트리를 100% 정확히 식별한다.
     is_entry_point: bool = false,
+    /// Module Federation 연합 경계 모듈 (#3318 P1-1). `mf.exposes` 타겟 ∪
+    /// `mf.shared` ∪ shared 전방-의존 폐포. P1-1 은 **표시·안정 ID 계산만**
+    /// (분석) — 스코프 호이스팅 소거 제외 *enforcement*·container/manifest
+    /// emit 은 P1-2+ 가 이 플래그/ID 를 소비. mf 미지정 시 항상 false →
+    /// 비-MF 빌드 영향 0(구성상 회귀 없음).
+    is_federation_boundary: bool = false,
+    /// 경계 모듈의 안정 ID(`module_id.zig`, relative-path). is_federation_
+    /// boundary=true 일 때만 set. graph allocator 소유. (#3318 P1-1)
+    federation_id: ?[]const u8 = null,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
     exec_index: u32,

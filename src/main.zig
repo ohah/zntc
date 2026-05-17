@@ -614,6 +614,7 @@ pub fn main() !void {
             .format = opts.bundle_format,
             .platform = opts.platform,
             .external = opts.external_list.items,
+            .mf = opts.mf, // Module Federation (#3318 P1-1). null=비-MF.
             .minify_whitespace = opts.minify_whitespace,
             .minify_identifiers = opts.minify_identifiers,
             .minify_syntax = opts.minify_syntax,

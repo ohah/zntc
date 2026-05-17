@@ -39,6 +39,22 @@ pub const ModuleDevCode = struct {
 
 /// 모듈 그래프에서 모듈을 식별하는 인덱스.
 /// NodeIndex, SymbolId, ScopeId와 동일한 u32 enum 패턴.
+/// Module Federation 번들 옵션 (#3318 P1-1). zntc.config `mf` 블록의
+/// 해석본 — exposes/remotes 는 [{key,value}] 평탄화, shared 는 패키지명만
+/// (P1-1 은 경계 식별·표시·안정 ID 만 소비). emit/container 는 P1-2+.
+/// `types.zig` 에 둠 — federation.zig·bundler.zig 양쪽 공통(circular 회피).
+pub const MfBundleConfig = struct {
+    pub const KV = struct { key: []const u8, value: []const u8 };
+    name: ?[]const u8 = null,
+    /// `{ "./Widget": "./src/Widget.tsx" }` → [{"./Widget","./src/Widget.tsx"}]
+    exposes: []const KV = &.{},
+    /// `{ remoteA: "remoteA@url" }`
+    remotes: []const KV = &.{},
+    /// shared 패키지명 (`["react","react-dom"]`)
+    shared: []const []const u8 = &.{},
+    share_scope: []const u8 = "default",
+};
+
 pub const ModuleIndex = enum(u32) {
     none = std.math.maxInt(u32),
     _,
