@@ -514,6 +514,17 @@ test "ES5: async generator with await wraps via __await (#1911)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__await(") != null);
 }
 
+test "ES5: async generator state temps are not redeclared inside callback (#1911)" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* g() { yield 1; await Promise.resolve(); yield 2; } async function f(){ for await (var v of g()) {} }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator(this,arguments,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_state){{var _a") == null);
+}
+
 test "ES5: regular async function still uses __async (not __asyncGenerator) (#1911 regression)" {
     // is_async + !is_generator 케이스가 새 분기로 잘못 빠지지 않게 회귀 방지.
     var r = try e2eTarget(std.testing.allocator, "async function f() { return await Promise.resolve(1); }", .es5);
@@ -3261,6 +3272,7 @@ test "ES5: for-await-of hoists loop var to function top (#1901)" {
         std.mem.indexOf(u8, r.output, ",v=") != null or
         std.mem.indexOf(u8, r.output, ",v,") != null;
     try std.testing.expect(has_v_decl);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_state){{var _a") == null);
 }
 
 test "ES5: async for-in body extracts await into state machine" {

@@ -361,6 +361,7 @@ pub const Transformer = struct {
     pub const buildUniqueName = lists_mod.buildUniqueName;
     pub const buildVarDecl = lists_mod.buildVarDecl;
     pub const hoistTempVars = lists_mod.hoistTempVars;
+    pub const hoistTempVarsSkippingSpans = lists_mod.hoistTempVarsSkippingSpans;
 
     // ================================================================
     // Flow syntax 변환 — transformer/flow.zig로 위임

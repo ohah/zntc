@@ -119,6 +119,7 @@ pub fn Methods(comptime Transformer: type) type {
                     defer es_helpers.popArrowEnv(self, arrow_env);
 
                     const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+                    defer self.generator_temp_var_spans.clearRetainingCapacity();
                     if (!sm_result.body.isNone()) {
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen_call, span);
