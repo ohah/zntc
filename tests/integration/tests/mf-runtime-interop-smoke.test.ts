@@ -1,7 +1,8 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { createServer, type Server } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
-import { writeFileSync, rmSync } from 'node:fs';
+import { writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createFixture, runZntcInDir, runNode } from './helpers';
@@ -273,7 +274,10 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(r.singleton).toBe(true);
     expect(r.requiredVersion).toBe('^19');
     expect(r.version).toBe('^19'); // requiredVersion 대용(P2 경계)
-    expect(r.hash).toBe(''); // 무결성=P2-2
+    // ManifestShared.hash 는 runtime 미소비(generateSnapshotFromManifest
+    // 가 안 읽음) → 의도적 빈값 유지. 무결성은 별도 sidecar(P2-2,
+    // mf-manifest.json.integrity.json) — 표준 schema 불침습.
+    expect(r.hash).toBe('');
     // ManifestShared 필수 7필드 전부 + StatsAssets 형태(seam 처리 → 빈)
     expect(r.assets).toEqual({
       js: { sync: [], async: [] },
@@ -339,6 +343,69 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     // P2-0 무회귀: shared 도 정밀 유지
     expect(Array.isArray(mani.shared) && mani.shared.length).toBe(0);
     expect(mani.exposes.length).toBe(1);
+  });
+
+  // P2-2 (#3422): SHA-256 무결성 sidecar. 파일명 content-hash 는 Wyhash
+  // 불변(§9), 무결성만 SHA-256. 표준 schema 불침습(별도 파일, runtime
+  // 미fetch — S3/S4 interop 무영향). P2-3 RS256 서명의 토대. 런타임 강제
+  // verify=P3/P4(비-목표) — 여기선 산출·정확성·결정성·변조탐지 박제.
+  test('P2-2 SHA-256 무결성 sidecar: 정확성·결정성·변조탐지', async () => {
+    const files = {
+      'W.ts': `export default () => "W";`,
+      'index.ts': `export const sentinel = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './W': './W.ts' }, shared: { react: { singleton: true } } },
+      }),
+    };
+    const fx = await createFixture(files);
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+    const args = ['--bundle', join(fx.dir, 'index.ts'), '--outdir', dist, '--format=iife'];
+    expect((await runZntcInDir(fx.dir, args)).exitCode).toBe(0);
+
+    const dir = await readdir(dist);
+    expect(dir).toContain('mf-manifest.json.integrity.json');
+    const sc = JSON.parse(await readFile(join(dist, 'mf-manifest.json.integrity.json'), 'utf8'));
+    expect(sc.version).toBe(1);
+    expect(sc.algorithm).toBe('sha256');
+    // manifest + 모든 JS 출력 청크 무결성(파일명 정렬·SRI 형식)
+    const sri = (f: string) =>
+      'sha256-' +
+      createHash('sha256')
+        .update(readFileSync(join(dist, f)))
+        .digest('base64');
+    const jsFiles = dir.filter((f) => f.endsWith('.js'));
+    for (const f of [...jsFiles, 'mf-manifest.json']) {
+      expect(sc.files[f]).toMatch(/^sha256-[A-Za-z0-9+/]+=*$/);
+      // Zig SHA-256 ≡ Node crypto (정확성 교차검증)
+      expect(sc.files[f], `integrity ${f}`).toBe(sri(f));
+    }
+    // 결정성: 동일 fixture 재빌드 → sidecar byte-동일
+    const fx2 = await createFixture(files);
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await fx2.cleanup();
+    };
+    const dist2 = join(fx2.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(fx2.dir, [
+          '--bundle',
+          join(fx2.dir, 'index.ts'),
+          '--outdir',
+          dist2,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const sc2 = await readFile(join(dist2, 'mf-manifest.json.integrity.json'), 'utf8');
+    expect(sc2).toBe(await readFile(join(dist, 'mf-manifest.json.integrity.json'), 'utf8'));
+
+    // 변조탐지: 청크 1바이트 수정 → 재계산 SRI ≠ sidecar(P3/P4 검증 토대)
+    const chunk = jsFiles[0];
+    writeFileSync(join(dist, chunk), readFileSync(join(dist, chunk), 'utf8') + '//x');
+    expect(sri(chunk)).not.toBe(sc.files[chunk]);
   });
 
   // P1-6 (#3388): zntc-빌드 host 가 실 @module-federation/runtime 로 remote
