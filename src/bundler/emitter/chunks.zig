@@ -240,6 +240,8 @@ pub fn emitChunks(
                 try rt.appendZntcResolveBrowser(&chunk_output, allocator, min);
             }
             // self-register factory prefix (모든 청크). 본문·exports 가 안에.
+            // ⚠ federation_emit.zig(P1-3)가 `({"<reg_id>"` 부분문자열로 expose
+            // 청크를 식별 — 이 prefix 형태 변경 시 동반 수정 필요.
             try chunk_output.appendSlice(allocator, "(function(g){");
             try chunk_output.appendSlice(allocator, rt.ZNTC_REGISTER_INSTALL);
             try chunk_output.appendSlice(allocator, "({\"");
@@ -792,6 +794,9 @@ pub fn emitChunks(
             try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
             if (chunk_is_user_entry) {
                 // entry 모듈은 정적 dep 들 뒤에 평가 → bootstrap 으로 실행 개시.
+                // ⚠ federation_emit.bootstrapSpan(P1-3)이 아래 두 형태(`return
+                // globalThis.__zntc_require("` / `[var <gn> [ ]=[ ]]globalThis.
+                // __zntc_require("`)에 강결합 — 변경 시 동반 수정 필요.
                 const umd_amd = options.format == .umd or options.format == .amd;
                 if (umd_amd) {
                     // UMD/AMD: factory() 반환값 = entry exports. 보편 wrapper 가

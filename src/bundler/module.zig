@@ -310,6 +310,11 @@ pub const Module = struct {
     /// 경계 모듈의 안정 ID(`module_id.zig`, relative-path). is_federation_
     /// boundary=true 일 때만 set. graph allocator 소유. (#3318 P1-1)
     federation_id: ?[]const u8 = null,
+    /// `mf.exposes` 타깃(shared-폐포 제외). P1-3: expose 모듈을 동적-import
+    /// 타깃과 동일하게 자기 lazy 청크로 분리 → reg_id=federation_id 가 되어
+    /// container.get 이 `__zntc_load_chunk().then(()=>__zntc_require(id))`
+    /// (동적 wrapper) 재사용. boundary ⊇ expose (shared 는 expose 아님).
+    is_federation_expose: bool = false,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
     exec_index: u32,
@@ -614,6 +619,7 @@ pub const Module = struct {
         self.dynamic_imports.deinit(allocator);
         self.dynamic_importers.deinit(allocator);
         if (self.resolve_dir) |dir| allocator.free(dir);
+        if (self.federation_id) |id| allocator.free(id); // #3318 P1-1 (setBoundary alloc)
         for (self.resolved_deps.items) |dep| {
             allocator.free(dep.path);
             if (dep.resolve_dir) |dir| allocator.free(dir);

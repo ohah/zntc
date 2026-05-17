@@ -263,6 +263,8 @@ pub const CliOptions = struct {
         self.watch_include_list.deinit(alloc);
         self.watch_exclude_list.deinit(alloc);
         self.globals_list.deinit(alloc);
+        // #3318 mf: 해제는 freeMfBundle 단일 소스(mfBundleFromDto errdefer 와 공유).
+        if (self.mf) |mfb| freeMfBundle(alloc, mfb);
     }
 };
 
@@ -403,7 +405,15 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         // (IIFE/UMD/AMD 글로벌-파라미터 seam) 로 합친다. 스파이크 S2 가
         // `--external pkg --globals pkg=__mf_shared_pkg` 로 검증한 기계를
         // 그대로 재사용 — bundler/emitter/codegen 무변경.
-        if (opts.mf) |mfb| try applyMfSharedSeam(allocator, opts, mfb.shared);
+        if (opts.mf) |mfb| {
+            try applyMfSharedSeam(allocator, opts, mfb.shared);
+            // P1-3 (#3385): exposes 있는 mf = remote → container/exposes 는
+            // reg_split 다중-청크(chunk.zig 가 expose→lazy 청크) 위에 얹으므로
+            // splitting 필수(부트스트랩은 format=iife/umd/amd 필요 — 없으면
+            // wrapContainer fail-fast). exposes 없는 host(shared/remotes-only)
+            // 는 강제 안 함 — P1-2 단일파일 seam 경로 불변.
+            if (mfb.exposes.len > 0) opts.splitting = true;
+        }
     }
 }
 
@@ -491,20 +501,50 @@ fn dupeKvMap(
     return list;
 }
 
+/// mfBundleFromDto 가 allocator-dup 한 것 일괄 해제. CliOptions.deinit 과
+/// mfBundleFromDto 의 errdefer 가 **공유**(해제 모델 단일 소스 — 부분
+/// 실패/정상 종료 대칭). len>0 가드: exposes/remotes/shared default 는
+/// static `&.{}` (오해제 방지, chunks.zig reg_ids 와 동일 관용). name 은
+/// set 시 항상 dup, share_scope 는 항상 dup(아래 통일). **불변: mf 는
+/// mfBundleFromDto 로만 생성**(외부 생성 시 share_scope 리터럴 free 위험).
+fn freeMfBundle(alloc: std.mem.Allocator, mfb: lib.bundler.MfBundleConfig) void {
+    if (mfb.name) |n| alloc.free(n);
+    alloc.free(mfb.share_scope);
+    for (mfb.exposes) |kv| {
+        alloc.free(kv.key);
+        alloc.free(kv.value);
+    }
+    if (mfb.exposes.len > 0) alloc.free(mfb.exposes);
+    for (mfb.remotes) |kv| {
+        alloc.free(kv.key);
+        alloc.free(kv.value);
+    }
+    if (mfb.remotes.len > 0) alloc.free(mfb.remotes);
+    for (mfb.shared) |s| alloc.free(s);
+    if (mfb.shared.len > 0) alloc.free(mfb.shared);
+}
+
 fn mfBundleFromDto(
     allocator: std.mem.Allocator,
     dto: *const lib.transpile.MfConfigDto,
 ) !lib.bundler.MfBundleConfig {
     var out: lib.bundler.MfBundleConfig = .{};
+    // 부분 dup 후 실패 시 누수 방지 — deinit 과 동일 해제로 대칭.
+    // out.shared 는 루프 완료 후에야 대입 → 진행 중 list 는 블록 errdefer 가.
+    errdefer freeMfBundle(allocator, out);
     if (dto.name) |n| out.name = try allocator.dupe(u8, n);
-    if (dto.shareScope) |s| out.share_scope = try allocator.dupe(u8, s);
+    // share_scope 는 항상 owned(default 도 dup) — deinit 해제 대칭(리터럴/
+    // owned 혼재 회피).
+    out.share_scope = try allocator.dupe(u8, dto.shareScope orelse "default");
 
     if (dto.exposes) |e| out.exposes = try dupeKvMap(allocator, &e.map);
     if (dto.remotes) |r| out.remotes = try dupeKvMap(allocator, &r.map);
     if (dto.shared) |sh| {
-        var list = try allocator.alloc([]const u8, sh.map.count());
+        const list = try allocator.alloc([]const u8, sh.map.count());
+        errdefer allocator.free(list);
         var it = sh.map.iterator();
         var i: usize = 0;
+        errdefer for (list[0..i]) |s| allocator.free(s);
         while (it.next()) |kv| : (i += 1) list[i] = try allocator.dupe(u8, kv.key_ptr.*);
         out.shared = list;
     }

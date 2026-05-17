@@ -52,6 +52,7 @@ pub fn markBoundary(
             const m = graph.moduleAtMut(idx) orelse continue;
             if (std.mem.eql(u8, m.path, abs)) {
                 try setBoundary(allocator, m, root);
+                m.is_federation_expose = true; // P1-3: expose→자기 lazy 청크
                 matched = true;
                 break;
             }
@@ -112,8 +113,49 @@ fn setBoundary(allocator: std.mem.Allocator, m: anytype, root: ?[]const u8) !voi
     m.federation_id = try module_id.moduleId(allocator, m.path, root);
 }
 
+/// graph.build 루트 = user entry ∪ exposes. P1-3: exposes 는 user entry
+/// 에서 도달 안 될 수 있는 **독립 루트**(webpack 동일) — 그래프에 없으면
+/// markBoundary 가 매칭 실패. 반환 slice 의 모든 원소 allocator-dup(소유
+/// 명확) → `freeStrList` 로 해제. chunk gen 의 entry_points 는 불변(exposes
+/// 는 is_federation_expose → 동적 lazy 청크, user-entry 아님).
+pub fn entryWithExposes(
+    allocator: std.mem.Allocator,
+    mf: *const types.MfBundleConfig,
+    entries: []const []const u8,
+) ![][]const u8 {
+    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+    defer if (cwd) |c| allocator.free(c);
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (list.items) |s| allocator.free(s);
+        list.deinit(allocator);
+    }
+    for (entries) |e| try list.append(allocator, try allocator.dupe(u8, e));
+    for (mf.exposes) |kv| {
+        const abs = resolveAbs(allocator, cwd, kv.value) catch continue;
+        var seen = false;
+        for (list.items) |s| {
+            if (std.mem.eql(u8, s, abs)) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) {
+            allocator.free(abs);
+            continue;
+        }
+        try list.append(allocator, abs);
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+pub fn freeStrList(allocator: std.mem.Allocator, list: [][]const u8) void {
+    for (list) |s| allocator.free(s);
+    allocator.free(list);
+}
+
 /// cwd(또는 null) 기준 상대경로를 abs 로. realpath 실패 시 resolve 결과 사용.
-fn resolveAbs(allocator: std.mem.Allocator, cwd: ?[]const u8, value: []const u8) ![]const u8 {
+pub fn resolveAbs(allocator: std.mem.Allocator, cwd: ?[]const u8, value: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(value)) return allocator.dupe(u8, value);
     const base = cwd orelse ".";
     const joined = try std.fs.path.resolve(allocator, &.{ base, value });
@@ -138,6 +180,7 @@ test "markBoundary: shared 시드 + 전방-의존 폐포 표시, 무관 모듈 �
         dependencies: std.ArrayList(ModuleIndex) = .empty,
         is_federation_boundary: bool = false,
         federation_id: ?[]const u8 = null,
+        is_federation_expose: bool = false, // P1-3 — Module 미러
     };
     // 0=app(entry, 비경계) 1=node_modules/react/index.js(shared seed)
     // 2=node_modules/react/jsx.js(react 전방-의존, 폐포로 표시돼야)
