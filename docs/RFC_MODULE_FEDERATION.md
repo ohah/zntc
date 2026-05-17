@@ -245,6 +245,25 @@ origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_pub
 
 통과 시 §8.1 산출이 P1 이슈 분해를 직접 결정(스파이크가 잡은 제약 → PR 분해, P3-B 와 동일 흐름).
 
+**스파이크 진행 결과 (2026-05, Node-first + S0 실브라우저)**
+
+- **S0 PASS** — 실 Chrome + 실 CSP `script-src 'nonce-…'`, IIFE 동적청크 `<script>` 주입 nonce 허용·실행. 영구 e2e 박제(PR #3377).
+- **S1 PASS** — zntc 스코프 호이스팅 IIFE 출력을 손수 MF2 container 계약(`init(shareScope)`/`get(expose)=>()=>Module`)으로 감싸 host 가 로드·get·실행. **레지스트리 코어가 MF container substrate 로 성립.**
+- **S2 PASS** (가장 치명 미지수 #1/#2) — host 가 shared 인스턴스 소유·shareScope 등록 → `container.init(shareScope)` 가 widget eval *전* 글로벌 seam 채움 → **독립 스코프 호이스팅 빌드 양측이 shared 인스턴스 1개**(host 2회 bump→remote 3·4, identity 일치). 스코프 호이스팅×연합 경계 정체성 충돌이 seam 으로 해소됨 → **D1 가정 성립.**
+- **S5 PASS** — 미변경 모듈의 content-hash 청크가 독립 재빌드에서 **byte-동일**(`core-98588766.js` 불변), 변경 widget 청크만 새 hash+새 코드. 부분 재배포(가치 A)·cross-build 결정성(리스크 #5) 검증.
+- **S3·S4 (interop)** — `@module-federation/enhanced` devDep 설치 필요(외부 의존성, 사용자 확인 게이트). S1/S2/S5 가 핵심 구조 미지수를 이미 해소했으므로 S3/S4 는 "표준과 맞물림" 최종 확증 단계.
+- **S6** — zntc 빌드타임 계약 검증은 P3 기능(현재 전무) → RFC 대로 P1 비차단, P3 로 이월.
+
+**스파이크가 잡은 P1-결정 제약** (P3-B 선례 — 제약이 PR 분해를 결정):
+
+1. **zntc IIFE 는 bare external import emit 불가**("no require/import in factory scope") → MF emit 은 모든 `shared`/`remote` 의존을 **`--globals` 식 글로벌-파라미터 seam 으로 자동 생성**해야 함(container 가 글로벌명 소유·주입). P1 의 핵심 emit 작업.
+2. **순서 제약**: `container.init(shareScope)` 가 shared 글로벌을 exposed 번들 eval *전*에 설치해야 함 — MF2 `init`-before-`get` 계약과 일치(우리 모델 호환).
+3. zntc 는 shared 멤버를 module-init 에 destructure(`var x = G.x`) — object/function namespace(react 등)는 live ref 로 OK, 재대입 바인딩은 snapshot(실 shared 는 namespace 라 무해, 문서화).
+4. content-hash 청크는 미변경 모듈에 cross-build 결정적 → 부분 재배포 가능. 단 규모 확대 시 비결정 소스(해시맵 순회·임시명) 지속 감사 필요.
+5. 단일-엔트리 번들은 stdout 출력(`--splitting` 시 파일) — MF emit 이 출력 경로 제어하므로 영향 없음(하네스 노트).
+
+→ S1/S2/S5 PASS 로 **레지스트리/스코프 호이스팅 코어가 MF 의 viable substrate 임이 실증**. S3/S4(생태계 interop) 만 남음.
+
 ### 8.2 RN 스파이크 0 (P4 게이트 — 웹 P1~P3 후, D6)
 
 > 버리는 TurboModule 하나 — 로컬 파일을 JSI `evaluateJavaScript`로 살아있는 런타임에 주입해 federated 모듈이 등록·렌더되는지를 **(a) JS 소스 (b) 사전컴파일 .hbc** 두 경우로, **New Arch + Hermes**에서 증명.
