@@ -16,13 +16,24 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-export function serve(dir: string): Promise<{ server: Server; port: number }> {
+/**
+ * `headers`: 모든 200 응답에 추가할 헤더(예: 실 `Content-Security-Policy`,
+ * cross-origin remote 로딩용 `Access-Control-Allow-Origin`). 미지정 시 기존
+ * 동작과 동일 — 기존 호출부 영향 없음(하위호환).
+ */
+export function serve(
+  dir: string,
+  headers?: Record<string, string>,
+): Promise<{ server: Server; port: number }> {
   return new Promise((res) => {
     const server = createServer(async (req, resp) => {
       const filePath = join(dir, req.url === '/' ? 'index.html' : req.url!);
       try {
         const data = await readFile(filePath);
-        resp.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'text/plain' });
+        resp.writeHead(200, {
+          'Content-Type': MIME[extname(filePath)] ?? 'text/plain',
+          ...headers,
+        });
         resp.end(data);
       } catch {
         resp.writeHead(404);
