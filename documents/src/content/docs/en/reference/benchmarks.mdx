@@ -15,7 +15,7 @@ ZNTC compares transpile and bundle performance — and final bundle size (tree-s
 - **NAPI / WASM / CLI**: `napi-bench.ts`, 3 warmups + 10-run median
 - **Bundle perf**: `bundle-perf.ts`, 5 warmups + 20-run median, CI-style same-run ZNTC/Rolldown/Rspack comparison
 - **Pipeline**: `pipeline.ts`, 5-run median, profile total
-- **Bundle size**: `smoke.ts --minify-all`, 2026-05-17, 9 real npm libraries bundled + minified, raw output bytes
+- **Bundle size**: `smoke.ts --minify-all`, 2026-05-17, 9 real npm libraries bundled + minified, raw output bytes. All 4 tools strip license comments (`--legal-comments=none`) for a fair comparison
 
 For time charts, lower is faster (bar label = median wall time). For the bundle-size chart, lower is smaller (bar label = raw bytes).
 

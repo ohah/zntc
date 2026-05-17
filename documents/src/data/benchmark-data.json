@@ -116,8 +116,8 @@
       { "tool": "rolldown", "scale": "preact", "bytes": 10290 },
       { "tool": "rspack", "scale": "preact", "bytes": 10405 },
 
-      { "tool": "ZNTC", "scale": "lodash-es", "bytes": 19587 },
-      { "tool": "esbuild", "scale": "lodash-es", "bytes": 20661 },
+      { "tool": "ZNTC", "scale": "lodash-es", "bytes": 19186 },
+      { "tool": "esbuild", "scale": "lodash-es", "bytes": 20185 },
       { "tool": "rolldown", "scale": "lodash-es", "bytes": 18419 },
       { "tool": "rspack", "scale": "lodash-es", "bytes": 17654 },
 
@@ -155,8 +155,8 @@
   "sizeBenchmark": {
     "date": "2026-05-17",
     "platform": "darwin arm64",
-    "mode": "--minify-all (production minify + tree-shake)",
+    "mode": "--minify-all --legal-comments=none (production minify + tree-shake, 라이선스 주석 4툴 공통 제거)",
     "libraries": 9,
-    "note": "실제 npm 라이브러리를 동일 입력으로 번들 + minify 한 최종 출력 크기 (raw bytes). 낮을수록 작음."
+    "note": "실제 npm 라이브러리를 동일 입력으로 번들 + minify 한 최종 출력 크기 (raw bytes). 4툴 모두 legal-comment 제거로 공정 비교. 낮을수록 작음."
   }
 }

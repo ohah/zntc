@@ -205,7 +205,9 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
     const zntcFormatArgs = format === 'cjs' ? ['--format=cjs'] : [];
     const zntcTsconfigArgs = p.tsconfig ? ['-p', tsconfigFile] : [];
     const zntcTargetArgs = p.target ? [`--target=${p.target}`] : [];
-    const zntcMinifyArgs = minify ? ['--minify'] : [];
+    // legal-comments=none 으로 4툴 균일: ZNTC/esbuild 는 기본 보존, rolldown/rspack
+    // 은 기본 제거 → 미통일 시 ZNTC 만 라이선스 주석 바이트 핸디캡 (불공정 비교).
+    const zntcMinifyArgs = minify ? ['--minify', '--legal-comments=none'] : [];
     const zntcDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
     result.zntc = bundleAndRun(
       ZNTC_BIN,
@@ -233,7 +235,7 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
       const esExternalArgs = ext.flatMap((e) => [`--external:${e}`]);
       const esFormatArgs = format === 'esm' ? [`--format=esm`] : [];
       const esTargetArgs = p.target ? [`--target=${p.target}`] : [];
-      const esMinifyArgs = minify ? ['--minify'] : [];
+      const esMinifyArgs = minify ? ['--minify', '--legal-comments=none'] : [];
       const esDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
       result.esbuild = bundleAndRun(
         ESBUILD_BIN,
