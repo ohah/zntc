@@ -40,10 +40,10 @@ const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const cg_options = @import("../codegen/options.zig");
 const SourceMap = @import("../codegen/sourcemap.zig");
 
-/// kill-switch (RFC PR-3, 기본 OFF). set 일 때만 CJS wrapper 의
-/// `exports`/`module` arrow 파라미터·본문 free 참조를 짧은 이름으로
-/// mangle. unset 시 codegen 옵션·wrapper 모두 default → 출력 무변경.
-const cjs_wrap_mangle_env = @import("../env_flag.zig").Once("ZNTC_CJS_WRAP_MANGLE");
+/// kill-switch (RFC PR-4, 기본 ON — measure-first 게이트 통과: 144-lib
+/// −25,694B 회귀0·런타임 MATCH 전수). set 시 CJS wrapper exports/module
+/// mangle 비활성화 → codegen 옵션·wrapper 모두 default 로 복귀.
+const cjs_wrap_mangle_disabled = @import("../env_flag.zig").Once("ZNTC_NO_CJS_WRAP_MANGLE");
 
 /// CJS wrapper mangle 시 사용할 모듈-로컬 2글자 이름. arrow 파라미터라
 /// 모듈 스코프에 격리(타 모듈/top-level 빈도풀 무관) — codegen 합성·free
@@ -1742,11 +1742,15 @@ pub fn emitModule(
     }
 
     // Codegen: AST → JS 문자열
-    // CJS wrapper exports/module mangle (RFC PR-3): kill-switch + CJS wrap
-    // + minify 일 때만. codegen 합성/free-ref 와 wrapper 파라미터가 같은
-    // 이름을 써야 하므로 단일 소스로 계산. 비활성 시 default → 무변경.
-    const cjs_mangle = cjs_wrap_mangle_env.enabled() and
-        module.wrap_kind == .cjs and options.minify_whitespace;
+    // CJS wrapper exports/module mangle (RFC PR-4, 기본 ON): CJS wrap +
+    // minify 일 때 적용. codegen 합성/free-ref 와 wrapper 파라미터가 같은
+    // 이름을 써야 하므로 단일 소스로 계산. kill-switch 시 default → 무변경.
+    // react_native 제외: Metro serializer/require 시스템이 CJS wrapper
+    // 파라미터 이름(`exports`/`module`)을 가정하므로 RN 빌드는 보존 필수
+    // (semantic-preserving — RN 은 이 레버 포기, 정확성 우선).
+    const cjs_mangle = !cjs_wrap_mangle_disabled.enabled() and
+        module.wrap_kind == .cjs and options.minify_whitespace and
+        options.platform != .react_native;
     const cjs_ex_name = if (cjs_mangle) CJS_MANGLE_EXPORTS else cg_options.default_cjs_exports_name;
     const cjs_mod_name = if (cjs_mangle) CJS_MANGLE_MODULE else cg_options.default_cjs_module_name;
 
