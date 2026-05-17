@@ -18,6 +18,8 @@ export interface BabelInstance {
 }
 
 export interface BabelTransformOptions {
+  cwd?: string;
+  root?: string;
   filename?: string;
   presets?: unknown[];
   plugins?: unknown[];
