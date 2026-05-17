@@ -30,12 +30,12 @@ const installManualChunksResolver = plugin_bridge.installManualChunksResolver;
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
 /// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
 /// - watch_debounce_ms: 첫 이벤트 이후 정적(idle) 구간 — 연속 저장 병합 윈도우.
-///   debounce loop 첫 iteration 이 kqueue/inotify 에서 최소 이 시간만큼 블로킹되므로
-///   HMR detect 페이즈에 그대로 더해진다. 25ms 는 VS Code / vim 의 atomic save
-///   (rename + write) 사이 간격(5-15ms)을 여전히 흡수하면서 detect 비용을 절반으로.
+///   phase1c 의 공개 계약은 50ms 내 연속 저장 병합이다. macOS kqueue 는 CI 부하에 따라
+///   같은 파일의 후속 NOTE_WRITE 전달이 25ms idle 뒤에 도착할 수 있으므로, idle window 를
+///   계약값인 50ms 로 맞춰 빠른 저장을 한 rebuild 로 안정적으로 합친다.
 /// - watch_debounce_max_ms: 디바운스 최대 대기 시간 — 지속 변경되는 파일에 의한 기아 방지.
 const watch_poll_timeout_ms: u32 = 200;
-const watch_debounce_ms: u32 = 25;
+const watch_debounce_ms: u32 = 50;
 const watch_debounce_max_ms: u64 = 500;
 
 /// 파일 내용 해시 상한 (#1233). RN 등 대형 프로젝트의 vendor 번들/asset catalog/locale
