@@ -113,6 +113,10 @@ pub const CliOptions = struct {
     metafile_path: ?[]const u8 = null,
     /// --mangle-report=<path>: mangler property 측정 JSON 저장 (#1760).
     mangle_report_path: ?[]const u8 = null,
+    /// --mf-sign-key=<path>: MF 무결성 sidecar Ed25519 서명 키(raw 32B
+    /// seed base64). 미지정 시 `.sig` 미산출(opt-in). argv 슬라이스 borrow
+    /// — free 불요(metafile_path/mangle_report_path 동일 관례) (#3423).
+    mf_sign_key_path: ?[]const u8 = null,
     analyze: bool = false,
     legal_comments: @import("zntc_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
@@ -990,6 +994,8 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             opts.metafile_path = "meta.json";
         } else if (std.mem.startsWith(u8, arg, "--mangle-report=")) {
             opts.mangle_report_path = arg["--mangle-report=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--mf-sign-key=")) {
+            opts.mf_sign_key_path = arg["--mf-sign-key=".len..];
         } else if (std.mem.eql(u8, arg, "--analyze")) {
             opts.analyze = true;
         } else if (std.mem.eql(u8, arg, "--keep-names")) {

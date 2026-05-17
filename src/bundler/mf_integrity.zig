@@ -72,6 +72,68 @@ pub fn buildSidecar(
     return b.toOwnedSlice(allocator);
 }
 
+/// P2-3 (#3423): P2-2 sidecar 를 **Ed25519** 서명. RS256 비채택 — Zig
+/// 0.15.2 std.crypto 에 RSA 서명 부재(crypto.zig:174-176: sign 은 Ed25519/
+/// ecdsa 만; Certificate.rsa 는 X.509 *검증* 전용). 표준 @module-federation
+/// 에 서명 부재(zntc 고유, RFC §5.4 RS256 은 예시일 뿐) → 알고리즘 선택
+/// 자유, alg 필드는 실제(`ed25519`) 정직 표기. seed=raw 32B(KeyPair.
+/// generateDeterministic). 서명 결정적(sign(msg,null)) → sidecar 결정성
+/// (P2-2)과 합쳐 `.sig` byte-재현. 별도 `.sig` 파일(자기참조 순환 회피 —
+/// sidecar 불변). 반환 = `.sig` JSON(owned).
+pub fn signSidecar(
+    allocator: std.mem.Allocator,
+    sidecar_bytes: []const u8,
+    seed: [32]u8,
+) ![]const u8 {
+    const Ed = std.crypto.sign.Ed25519;
+    const kp = Ed.KeyPair.generateDeterministic(seed) catch return error.MfSignKeyInvalid;
+    const sig = kp.sign(sidecar_bytes, null) catch return error.MfSignFailed;
+    const sig_bytes = sig.toBytes(); // 64B
+    const pk_bytes = kp.public_key.toBytes(); // 32B
+    const Enc = std.base64.standard.Encoder;
+    const sig64 = try allocator.alloc(u8, Enc.calcSize(sig_bytes.len));
+    defer allocator.free(sig64);
+    _ = Enc.encode(sig64, &sig_bytes);
+    const pk64 = try allocator.alloc(u8, Enc.calcSize(pk_bytes.len));
+    defer allocator.free(pk64);
+    _ = Enc.encode(pk64, &pk_bytes);
+    var b: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer b.deinit(allocator);
+    try b.appendSlice(allocator, "{\"version\":1,\"alg\":\"ed25519\",\"signature\":");
+    try emitter.appendJsonString(&b, allocator, sig64);
+    try b.appendSlice(allocator, ",\"publicKey\":");
+    try emitter.appendJsonString(&b, allocator, pk64);
+    try b.append(allocator, '}');
+    return b.toOwnedSlice(allocator);
+}
+
+/// `.sig` JSON 으로 sidecar 무결성 서명 검증(round-trip/변조탐지). 런타임
+/// 강제 verify 는 비-목표(P3/P4) — 인프라+테스트용. 실패 시 명확한 error.
+pub fn verifySidecar(
+    allocator: std.mem.Allocator,
+    sidecar_bytes: []const u8,
+    sig_json: []const u8,
+) !void {
+    const Sig = struct { alg: []const u8, signature: []const u8, publicKey: []const u8 };
+    const parsed = std.json.parseFromSlice(Sig, allocator, sig_json, .{
+        .ignore_unknown_fields = true,
+    }) catch return error.MfSigMalformed;
+    defer parsed.deinit();
+    if (!std.mem.eql(u8, parsed.value.alg, "ed25519")) return error.MfSigUnsupportedAlg;
+    const Ed = std.crypto.sign.Ed25519;
+    const Dec = std.base64.standard.Decoder;
+    var sigb: [Ed.Signature.encoded_length]u8 = undefined; // 64
+    if ((Dec.calcSizeForSlice(parsed.value.signature) catch return error.MfSigMalformed) != sigb.len)
+        return error.MfSigMalformed;
+    Dec.decode(&sigb, parsed.value.signature) catch return error.MfSigMalformed;
+    var pkb: [Ed.PublicKey.encoded_length]u8 = undefined; // 32
+    if ((Dec.calcSizeForSlice(parsed.value.publicKey) catch return error.MfSigMalformed) != pkb.len)
+        return error.MfSigMalformed;
+    Dec.decode(&pkb, parsed.value.publicKey) catch return error.MfSigMalformed;
+    const pk = Ed.PublicKey.fromBytes(pkb) catch return error.MfSigMalformed;
+    Ed.Signature.fromBytes(sigb).verify(sidecar_bytes, pk) catch return error.MfSigMismatch;
+}
+
 test "computeSri: SHA-256 SRI 결정성·정확성" {
     const a = std.testing.allocator;
     // 빈 입력의 SHA-256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -85,4 +147,22 @@ test "computeSri: SHA-256 SRI 결정성·정확성" {
     defer a.free(s3);
     try std.testing.expectEqualStrings(s2, s3); // 결정성
     try std.testing.expect(!std.mem.eql(u8, s1, s2)); // 입력 다르면 다름
+}
+
+test "signSidecar/verifySidecar: round-trip·변조탐지·결정성" {
+    const a = std.testing.allocator;
+    var seed: [32]u8 = undefined;
+    for (&seed, 0..) |*x, i| x.* = @intCast(i); // 결정적 테스트 seed
+    const payload = "{\"version\":1,\"algorithm\":\"sha256\",\"files\":{}}";
+    const sig1 = try signSidecar(a, payload, seed);
+    defer a.free(sig1);
+    const sig2 = try signSidecar(a, payload, seed);
+    defer a.free(sig2);
+    try std.testing.expectEqualStrings(sig1, sig2); // 결정적 서명
+    try std.testing.expect(std.mem.indexOf(u8, sig1, "\"alg\":\"ed25519\"") != null);
+    try verifySidecar(a, payload, sig1); // round-trip OK
+    // 변조: payload 1바이트 변경 → 불일치
+    try std.testing.expectError(error.MfSigMismatch, verifySidecar(a, payload[0 .. payload.len - 1], sig1));
+    // 깨진 sig JSON
+    try std.testing.expectError(error.MfSigMalformed, verifySidecar(a, payload, "{not json"));
 }
