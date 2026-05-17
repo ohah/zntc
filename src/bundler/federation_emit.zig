@@ -143,10 +143,34 @@ pub fn wrapContainer(
         "}};if(!M[e])throw new Error(\"Module \\\"\"+e+\"\\\" does not exist in container {s}.\");return M[e]()}},",
         .{name},
     );
-    // init: P1-3 은 init-before-get 가드만(shared 글로벌 채움은 P1-4).
-    // runtime 은 init(shareScope, initScope, remoteEntryInitOptions) 로 호출
-    // (s,i 외 무시).
-    try buf.appendSlice(allocator, "init:function(s,i){if(g.__zntc_mf_inited)return;g.__zntc_mf_inited=true;}};");
+    // init(P1-4): runtime 은 `init(shareScope, initScope, remoteEntryInit
+    // Options)` 로 호출하며 **반환값을 await**(@module-federation/runtime-core
+    // module/index.js:73) → init 을 async(Promise 반환) 로 만들어 shared
+    // 해석을 끝낸 *후* host 가 get() 호출(init-before-get). 멱등: 같은
+    // Promise 재반환. 인자 `s` = host 의 해당 scope 객체(shareScopeMap 전체
+    // 아님 — runtime-core 가 scope 만 전달). 버전 satisfy/singleton 판정은
+    // host runtime(getRegisteredShare) 책임 → container 는 scope[pkg] 의
+    // 가용 버전 1개를 취해 글로벌 seam 에 대입만(과설계 금지).
+    try buf.appendSlice(allocator, "init:function(s,i){if(g.__zntc_mf_inited)return g.__zntc_mf_inited;g.__zntc_mf_inited=(async function(){");
+    for (mf.shared) |se| {
+        const glob = se.global_seam; // borrow (mfBundleFromDto 1회 생성·소유)
+        // scope[pkg] = { "<ver>": { lib?, get?:()=>Promise<factory|module> } }.
+        // eager=lib(모듈|팩토리), lazy=get→factory thunk(우리 get 과 동형) |
+        // 직접 모듈. 두 형태 모두 흡수(host 등록형은 PR-B 실 runtime 검증).
+        // K[0] = 첫 버전 채택 — 버전 satisfy/다중버전 선택은 host runtime
+        // (getRegisteredShare) 책임이라 scope 에 이미 해소된 버전만 옴(P1-4
+        // 비-목표, P1-6 다중-remote 에서 정밀화). se.name 은 JS 문자열에 raw
+        // 삽입 — npm 패키지명은 `"`/제어문자 불가라 escape 불요(mf.name 은
+        // 임의값 가능해 appendJsStringLiteral, pkg 명은 규약상 안전).
+        try w.print(
+            "if(s&&s[\"{s}\"]){{var V=s[\"{s}\"],K=Object.keys(V);if(K.length){{var e=V[K[0]],L;" ++
+                "if(e){{if(e.lib){{L=(typeof e.lib===\"function\")?e.lib():e.lib;}}" ++
+                "else if(e.get){{var f=await e.get();L=(typeof f===\"function\")?f():f;}}}}" ++
+                "if(L)g.{s}=L;}}}}",
+            .{ se.name, se.name, glob },
+        );
+    }
+    try buf.appendSlice(allocator, "return true;})();return g.__zntc_mf_inited;}};");
     // MF2 계약: @module-federation/runtime 은 container 를
     // `globalThis["__FEDERATION_<name>:custom__"]` 에서 읽는다(getRemote
     // EntryExports default key, rspack/webpack MF 산출과 동일). 추가로

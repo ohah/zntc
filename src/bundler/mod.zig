@@ -69,6 +69,7 @@ pub const ChunkGraph = chunk.ChunkGraph;
 pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const MfBundleConfig = types.MfBundleConfig; // #3318 P1-1
+pub const federation = @import("federation.zig"); // #3318 (mfSharedGlobalName 단일 소스)
 pub const OutputExports = bundler_core.OutputExports;
 pub const BundleResult = bundler_core.BundleResult;
 pub const RN_BOOL_PRESET = bundler_core.RN_BOOL_PRESET;

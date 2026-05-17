@@ -46,15 +46,21 @@ const SpecifierGroup = struct {
     }
 };
 
-/// chunk 단위 ESM external import 구문 emit. format == .esm 이 아니면 no-op.
+/// chunk 단위 ESM external import 구문 emit. **`is_esm` 아니면 no-op
+/// (함수가 자체 강제)** — iife/umd/amd 는 external 이 metadata IIFE-mapped
+/// seam·factory-param 으로 완결되므로 ESM `import` 를 더하면 (a) reg_split
+/// factory 본문 내 `import` = JS SyntaxError (b) seam 과 이중 처리. 호출자
+/// 게이트 의존 금지 — 여기서 단일 강제(향후 호출자 misuse 회귀 방지).
 /// modules 는 chunk 가 포함하는 모듈 슬라이스 (단일 bundle 모드는 sorted 전체).
 pub fn emitChunkExternalImports(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
+    is_esm: bool,
     modules: []const *const Module,
     linker: ?*const Linker,
     minify_whitespace: bool,
 ) !void {
+    if (!is_esm) return;
     // specifier → group. ArrayHashMap 으로 첫 등장 순서 유지 → 결정론적 출력.
     var per_spec: std.StringArrayHashMapUnmanaged(SpecifierGroup) = .empty;
     defer {

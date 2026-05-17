@@ -510,16 +510,16 @@ pub fn emitWithTreeShaking(
 
     // ESM 출력 + external (#1962): esbuild/rolldown 동등하게 chunk top 에 ESM `import`
     // 구문 그대로 보존. specifier 별로 dedup + canonical rename 적용.
-    // CJS/IIFE/UMD/AMD 는 위쪽 prologue/factory-param 경로에서 처리됨.
-    if (options.format == .esm) {
-        try external_imports.emitChunkExternalImports(
-            &output,
-            allocator,
-            sorted.items,
-            linker,
-            options.minify_whitespace,
-        );
-    }
+    // CJS/IIFE/UMD/AMD 는 위쪽 prologue/factory-param 경로에서 처리됨
+    // (emitChunkExternalImports 가 `is_esm` 아니면 자체 no-op — 단일 강제).
+    try external_imports.emitChunkExternalImports(
+        &output,
+        allocator,
+        options.format == .esm,
+        sorted.items,
+        linker,
+        options.minify_whitespace,
+    );
 
     // 런타임 헬퍼 수집: 모듈별 transform에서 실제 사용된 헬퍼만 추적
     var collected_helpers: RuntimeHelpers = .{};

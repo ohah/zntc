@@ -94,4 +94,77 @@ console.log('AFTER=' + !!globalThis.__w_eval);
     expect(stdout).toContain('AFTER=true');
     expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"/);
   }, 30000);
+
+  // P1-4 (#3386) S2: host 가 자기 react 를 shareScope 에 등록 → zntc remote
+  // (shared:{react}) 가 container.init 의 글로벌 seam 해석으로 **host 와 동일
+  // react 인스턴스** 사용(singleton, useState identity). RFC §8.1 S2.
+  test('S2: shared react 단일 인스턴스 — host↔zntc remote identity', async () => {
+    const fx = await createFixture({
+      // react external(P1-2 seam) → __mf_shared_react. usedHook 으로 host 의
+      // useState 와 identity 비교.
+      'Widget.ts':
+        `import { useState } from "react";\n` +
+        `export const usedHook = useState;\n` +
+        `export default function Widget() { return typeof useState === "function" ? "S2-OK" : "S2-NO"; }`,
+      'index.ts': `export const sentinel = "remote-entry";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+
+    const b = await runZntcInDir(fx.dir, [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+      `--public-path=file://${dist}/`,
+    ]);
+    expect(b.exitCode).toBe(0);
+
+    server = createServer(async (req, res) => {
+      try {
+        const f = join(dist, req.url === '/' ? '/index.js' : req.url!);
+        res.writeHead(200, { 'content-type': 'application/javascript' });
+        res.end(await readFile(f));
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((r) => server!.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+
+    const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
+    const reactPath = createRequire(import.meta.url).resolve('react');
+    driverPath = join(fx.dir, 'rt-driver.mjs');
+    writeFileSync(
+      driverPath,
+      `import mf from ${JSON.stringify('file://' + mfRuntime)};
+import * as hostReact from ${JSON.stringify('file://' + reactPath)};
+const { init, loadRemote } = mf;
+// host 가 자기 react 를 shareScope 에 등록(MF2 표준 init({shared})).
+init({
+  name: 'host-mf2',
+  remotes: [{ name: 'app', entry: 'http://localhost:${port}/index.js' }],
+  shared: { react: { version: '19.2.4', lib: () => hostReact, shareConfig: { singleton: true, requiredVersion: '^19' } } },
+});
+const m = await loadRemote('app/Widget');
+const W = m && (m.default ?? m);
+console.log('RENDER=' + (typeof W === 'function' ? W() : 'no'));
+// zntc remote 의 useState ≡ host 의 useState (단일 인스턴스)
+console.log('SAME=' + (m && m.usedHook === hostReact.useState));
+`,
+    );
+    const { stdout, stderr } = await runNode(driverPath);
+
+    expect(stdout).toContain('RENDER=S2-OK'); // seam 글로벌 채워짐(init→eval 순서)
+    expect(stdout).toContain('SAME=true'); // host↔remote 동일 react 인스턴스
+    expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"|eager consumption/);
+  }, 30000);
 });

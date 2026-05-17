@@ -420,17 +420,6 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
 /// mf.shared 패키지명 → 결정적 container-소유 글로벌 식별자.
 /// 비-식별자(`@ / - .`) → `_`. react→`__mf_shared_react`,
 /// react-dom→`__mf_shared_react_dom`, @scope/pkg→`__mf_shared__scope_pkg`.
-fn mfSharedGlobalName(allocator: std.mem.Allocator, pkg: []const u8) ![]const u8 {
-    const prefix = "__mf_shared_";
-    var buf = try allocator.alloc(u8, prefix.len + pkg.len);
-    @memcpy(buf[0..prefix.len], prefix);
-    for (pkg, 0..) |c, i| buf[prefix.len + i] = switch (c) {
-        '@', '/', '-', '.' => '_',
-        else => c,
-    };
-    return buf;
-}
-
 /// mf.shared → external_list + globals_list 파생.
 ///
 /// **호출 순서 불변조건**: applyZntcConfigJson(config defaults)은 CLI arg
@@ -440,37 +429,21 @@ fn mfSharedGlobalName(allocator: std.mem.Allocator, pkg: []const u8) ![]const u8
 /// container 계약이라 mf-파생이 authoritative(RFC §8.1 #1) — 이 순서가 그
 /// 의미를 자연히 만든다(별도 prepend 불요).
 ///
-/// 메모리: `pkg` 는 `opts.mf`(CliOptions 수명, mfBundleFromDto 가 dupe) 를
-/// borrow — specifier/external 은 재-dupe 안 함(parseGlobalsArg 의 borrow
-/// 모델과 일관). `global_name` 만 신규 alloc(프로세스 1회 수명; deinit
-/// container-only 미해제는 external_list config 경로(#2105)와 동일 기성
-/// 패턴 — 신규 회귀 아님).
+/// 메모리: name·global_seam 모두 `opts.mf`(CliOptions 수명, mfBundleFromDto
+/// 가 1회 생성·소유, freeMfBundle 해제) 를 **borrow** — 여기서 재-alloc 0,
+/// 누수 0(P1-4 에서 global_seam 을 SharedEntry 로 끌어올려 P1-2 의 per-call
+/// alloc 누수 제거). parseGlobalsArg 의 borrow 모델과 일관.
 fn applyMfSharedSeam(
     allocator: std.mem.Allocator,
     opts: *CliOptions,
-    shared: []const []const u8,
+    shared: []const lib.bundler.MfBundleConfig.SharedEntry,
 ) !void {
-    for (shared) |pkg| {
-        try opts.external_list.append(allocator, pkg); // borrow (opts.mf 소유)
+    for (shared) |s| {
+        try opts.external_list.append(allocator, s.name); // borrow (opts.mf 소유)
         try opts.globals_list.append(allocator, .{
-            .specifier = pkg, // borrow
-            .global_name = try mfSharedGlobalName(allocator, pkg),
+            .specifier = s.name, // borrow
+            .global_name = s.global_seam, // borrow (mfBundleFromDto 가 1회 생성·소유)
         });
-    }
-}
-
-test "mfSharedGlobalName: 결정적 식별자 변환" {
-    const a = std.testing.allocator;
-    const cases = [_]struct { in: []const u8, want: []const u8 }{
-        .{ .in = "react", .want = "__mf_shared_react" },
-        .{ .in = "react-dom", .want = "__mf_shared_react_dom" },
-        .{ .in = "@scope/pkg", .want = "__mf_shared__scope_pkg" },
-        .{ .in = "lodash.merge", .want = "__mf_shared_lodash_merge" },
-    };
-    for (cases) |c| {
-        const got = try mfSharedGlobalName(a, c.in);
-        defer a.free(got);
-        try std.testing.expectEqualStrings(c.want, got);
     }
 }
 
@@ -520,7 +493,11 @@ fn freeMfBundle(alloc: std.mem.Allocator, mfb: lib.bundler.MfBundleConfig) void 
         alloc.free(kv.value);
     }
     if (mfb.remotes.len > 0) alloc.free(mfb.remotes);
-    for (mfb.shared) |s| alloc.free(s);
+    for (mfb.shared) |s| {
+        alloc.free(s.name);
+        if (s.required_version) |rv| alloc.free(rv);
+        if (s.global_seam.len > 0) alloc.free(s.global_seam);
+    }
     if (mfb.shared.len > 0) alloc.free(mfb.shared);
 }
 
@@ -540,12 +517,32 @@ fn mfBundleFromDto(
     if (dto.exposes) |e| out.exposes = try dupeKvMap(allocator, &e.map);
     if (dto.remotes) |r| out.remotes = try dupeKvMap(allocator, &r.map);
     if (dto.shared) |sh| {
-        const list = try allocator.alloc([]const u8, sh.map.count());
+        const SE = lib.bundler.MfBundleConfig.SharedEntry;
+        const list = try allocator.alloc(SE, sh.map.count());
         errdefer allocator.free(list);
         var it = sh.map.iterator();
         var i: usize = 0;
-        errdefer for (list[0..i]) |s| allocator.free(s);
-        while (it.next()) |kv| : (i += 1) list[i] = try allocator.dupe(u8, kv.key_ptr.*);
+        // 부분 실패 시: 이미 채운 항목 전체 해제(freeMfBundle 와 대칭).
+        errdefer for (list[0..i]) |s| {
+            allocator.free(s.name);
+            if (s.required_version) |rv| allocator.free(rv);
+            if (s.global_seam.len > 0) allocator.free(s.global_seam);
+        };
+        while (it.next()) |kv| : (i += 1) {
+            const c = kv.value_ptr.*; // MfSharedDto (P1-0 파싱, 여기서 소비)
+            const nm = try allocator.dupe(u8, kv.key_ptr.*);
+            errdefer allocator.free(nm);
+            const rv = if (c.requiredVersion) |v| try allocator.dupe(u8, v) else null;
+            errdefer if (rv) |r| allocator.free(r);
+            list[i] = .{
+                .name = nm,
+                .singleton = c.singleton orelse false,
+                .required_version = rv,
+                .eager = c.eager orelse false,
+                // 글로벌명 1회 생성·소유(seam·init borrow). 단일 규칙.
+                .global_seam = try lib.bundler.federation.mfSharedGlobalName(allocator, nm),
+            };
+        }
         out.shared = list;
     }
     return out;

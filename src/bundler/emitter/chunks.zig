@@ -262,8 +262,10 @@ pub fn emitChunks(
         // 청크별 런타임 헬퍼 주입
         try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, linker, options, null);
 
-        // ESM external imports (#1962): chunk 모듈들이 보유한 external import 를
-        // dedup 후 chunk top 에 단일 `import` 구문으로 prepend. emitChunks 는 ESM 전용 (line 46).
+        // ESM external imports (#1962): chunk 모듈들의 external import 를 dedup
+        // 후 chunk top 에 단일 `import` 로 prepend. emitChunkExternalImports
+        // 가 `is_esm` 아니면 자체 no-op(iife/umd/amd 는 seam·factory-param 으로
+        // 완결 — ESM import 추가 시 reg_split factory 내 SyntaxError + 이중처리).
         {
             var chunk_mods: std.ArrayListUnmanaged(*const Module) = .empty;
             defer chunk_mods.deinit(allocator);
@@ -274,6 +276,7 @@ pub fn emitChunks(
             try external_imports.emitChunkExternalImports(
                 &chunk_output,
                 allocator,
+                options.format == .esm,
                 chunk_mods.items,
                 linker,
                 options.minify_whitespace,
