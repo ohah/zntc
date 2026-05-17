@@ -386,7 +386,8 @@ pub fn emitExportNamedCJS(self: anytype, decl: NodeIndex, specs_start: u32, spec
             const exported_text = self.ast.getText(self.ast.getNode(exported_idx).span);
             const local_text = self.ast.getText(self.ast.getNode(local_idx).span);
 
-            try self.write("exports.");
+            try self.write(self.options.cjs_exports_name);
+            try self.writeByte('.');
             try self.write(exported_text);
             try self.writeByte('=');
             if (has_source) {
@@ -426,7 +427,8 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
                             name
                     else
                         name;
-                    try self.write("exports.");
+                    try self.write(self.options.cjs_exports_name);
+                    try self.writeByte('.');
                     try self.write(name);
                     try self.writeByte('=');
                     try self.write(ref_name);
@@ -447,7 +449,8 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
                         name
                 else
                     name;
-                try self.write("exports.");
+                try self.write(self.options.cjs_exports_name);
+                try self.writeByte('.');
                 try self.write(name);
                 try self.writeByte('=');
                 try self.write(ref_name);
@@ -497,7 +500,8 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
             }
             return;
         }
-        try self.write("module.exports=");
+        try self.write(self.options.cjs_module_name);
+        try self.write(".exports=");
         try self.emitNode(node.data.unary.operand);
         try self.writeByte(';');
         return;
@@ -593,7 +597,9 @@ pub fn emitExportAll(self: anytype, node: Node) !void {
     const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
     if (self.options.module_format == .cjs) {
         // export * from './bar' → Object.assign(exports,require('./bar'));
-        try self.write("Object.assign(exports,require(");
+        try self.write("Object.assign(");
+        try self.write(self.options.cjs_exports_name);
+        try self.write(",require(");
         try self.emitNode(x.source);
         try self.write("));");
         return;
