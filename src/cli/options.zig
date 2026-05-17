@@ -85,6 +85,10 @@ pub const CliOptions = struct {
     /// `zntc.config.json` 의 `manualChunks` (record form: `[{name, patterns}]`) 매핑.
     /// CLI flag 없음 — config.json 만. function form 은 JS-only 라 NAPI 경유.
     manual_chunks_list: std.ArrayList(ManualChunkEntry) = .empty,
+    /// Module Federation (#3318 P1-1). zntc.config `mf` 해석본 — allocator
+    /// 소유(applyZntcConfigJson 에서 deep-dupe). null = 비-MF. P1-1 은
+    /// 경계 식별·표시 소비. CLI flag 없음(config 전용, #3382).
+    mf: ?lib.bundler.MfBundleConfig = null,
     /// --block-list=PATTERN (반복). Metro resolver.blockList 호환.
     /// JS regex source 스타일 문자열 (`\/ios\/`, `\.bak$` 등).
     block_list: std.ArrayList([]const u8) = .empty,
@@ -386,10 +390,62 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     // Module Federation (#3318 P1-0): 구조 검증만. emit 은 P1-1+ 가 소비 —
     // 아직 CliOptions 에 저장 안 함(consumer 없음, arena 수명 deep-dupe 불요).
     // 검증 실패는 caller 가 `[zntc] zntc.config.json load failed: …` 로 표면화.
-    // ⚠️ 검증은 이 Zig CLI 의 zntc.config.json 경로 한정 — build()/NAPI
+    // ⚠️ 검증·해석은 이 Zig CLI 의 zntc.config.json 경로 한정 — build()/NAPI
     // (`packages/core/src/napi/options.zig`)는 아직 mf 키를 추출조차 안 함.
     // P1-1+ 에서 NAPI mf 추출 + validateMf 연결 필수(silent drift 주의).
-    if (dto.mf) |*mf| try lib.transpile.validateMf(mf);
+    if (dto.mf) |*mf| {
+        try lib.transpile.validateMf(mf);
+        // P1-1 소비자(federation.markBoundary) 용 해석본을 allocator(=CliOptions
+        // 수명) 으로 deep-dupe. dto 는 arena(이 함수 종료 시 해제) 라 borrow 불가.
+        opts.mf = try mfBundleFromDto(allocator, mf);
+    }
+}
+
+/// `MfConfigDto`(arena, record) → `MfBundleConfig`(CliOptions 수명, 평탄화).
+/// exposes/remotes record → []KV, shared record → 패키지명 []. 모든 문자열
+/// `allocator.dupe` (외부 mf list/main.zig 가 build 끝까지 참조).
+/// JSON record(`std.json.ArrayHashMap`)→`[]KV` deep-dupe. exposes/remotes
+/// 공용(DRY). 중간 OOM 시 이미 dup 한 항목+list 해제(errdefer).
+fn dupeKvMap(
+    allocator: std.mem.Allocator,
+    map: anytype,
+) ![]const lib.bundler.MfBundleConfig.KV {
+    const KV = lib.bundler.MfBundleConfig.KV;
+    const list = try allocator.alloc(KV, map.count());
+    var done: usize = 0;
+    errdefer {
+        for (list[0..done]) |kv| {
+            allocator.free(kv.key);
+            allocator.free(kv.value);
+        }
+        allocator.free(list);
+    }
+    var it = map.iterator();
+    while (it.next()) |kv| : (done += 1) list[done] = .{
+        .key = try allocator.dupe(u8, kv.key_ptr.*),
+        .value = try allocator.dupe(u8, kv.value_ptr.*),
+    };
+    return list;
+}
+
+fn mfBundleFromDto(
+    allocator: std.mem.Allocator,
+    dto: *const lib.transpile.MfConfigDto,
+) !lib.bundler.MfBundleConfig {
+    var out: lib.bundler.MfBundleConfig = .{};
+    if (dto.name) |n| out.name = try allocator.dupe(u8, n);
+    if (dto.shareScope) |s| out.share_scope = try allocator.dupe(u8, s);
+
+    if (dto.exposes) |e| out.exposes = try dupeKvMap(allocator, &e.map);
+    if (dto.remotes) |r| out.remotes = try dupeKvMap(allocator, &r.map);
+    if (dto.shared) |sh| {
+        var list = try allocator.alloc([]const u8, sh.map.count());
+        var it = sh.map.iterator();
+        var i: usize = 0;
+        while (it.next()) |kv| : (i += 1) list[i] = try allocator.dupe(u8, kv.key_ptr.*);
+        out.shared = list;
+    }
+    return out;
 }
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.

@@ -89,11 +89,17 @@ pub const OutputExports = enum {
     }
 };
 
+/// Module Federation 번들 옵션 (#3318 P1-1). 정의는 `types.zig`
+/// (federation.zig ↔ bundler.zig circular import 회피, types 는 양쪽 공통).
+pub const MfBundleConfig = types.MfBundleConfig;
+
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
     format: EmitOptions.Format = .esm,
     platform: Platform = .browser,
     external: []const []const u8 = &.{},
+    /// Module Federation (#3318 P1-1). null = 비-MF 빌드(영향 0).
+    mf: ?MfBundleConfig = null,
     minify_whitespace: bool = false,
     minify_identifiers: bool = false,
     minify_syntax: bool = false,
@@ -1048,6 +1054,18 @@ pub const Bundler = struct {
             } else {
                 try graph.build(self.options.entry_points);
             }
+        }
+
+        // Module Federation 연합 경계 식별 (#3318 P1-1). mf!=null 일 때만 —
+        // 비-MF 빌드 영향 0. 표시·안정 ID 만(분석); wrap_kind/출력 불변.
+        if (self.options.mf) |*mf| {
+            try @import("federation.zig").markBoundary(
+                &graph,
+                mf,
+                self.allocator,
+                self.options.entry_points,
+                self.options.preserve_modules_root,
+            );
         }
 
         if (graph.runtime_polyfill_roots.items.len > 0) {
