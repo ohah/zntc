@@ -78,9 +78,6 @@ pub const Codegen = struct {
     /// 모든 call expression 에 대해 호출되므로, 해당 종류의 record 가 없으면 O(1) 로 빠짐.
     has_glob_records: bool = false,
     has_require_context_records: bool = false,
-    /// Legacy `cjs_wrap_substitute` path 에서 module body 의 unresolved `module`
-    /// reference 를 substitute 한 적이 있는지 추적.
-    cjs_wrap_module_used: bool = false,
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }

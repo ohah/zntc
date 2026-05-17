@@ -269,6 +269,12 @@ fn memberAssignTargetParts(
     return .{ .base = parts.object, .property = parts.property, .rhs = expr.data.binary.right };
 }
 
+/// Reanimated/react-native-worklets Babel plugin 이 worklet 함수에 부착하는
+/// 메타데이터 프로퍼티. ZNTC native worklet 변환 (`transformer/worklet.zig`) 은
+/// 앞 3 개 (`__workletHash`, `__closure`, `__initData`) 만 emit 하고, 나머지는
+/// 외부 Babel plugin 산출물을 인식해 base symbol augmentation 으로 함께 tree-shake
+/// 하기 위해 reserve 한 이름들이다. `__bundleData` 는 react-native-worklets 의
+/// bundle worklet (worklet body 가 별도 번들로 빌드되는 모드) 출력.
 fn isWorkletMetadataProperty(name: []const u8) bool {
     return std.mem.eql(u8, name, "__workletHash") or
         std.mem.eql(u8, name, "__closure") or
