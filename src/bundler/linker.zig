@@ -1173,7 +1173,8 @@ pub const Linker = struct {
     /// 모듈의 중첩 스코프 (비-모듈 스코프) 에 해당 이름이 존재하는지 확인.
     /// esbuild/rolldown/rollup 과 동일하게 semantic.scope_maps 직접 scan — scope 깊이는
     /// 보통 1~10 정도라 별도 cache 없이 충분.
-    fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
+    // pub: shared_namespace.zig (RFC #3399 PR-2) 가 동일 scan 을 재사용 (단일 소스 — 복제 제거).
+    pub fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
         const m = self.getModule(module_index) orelse return false;
         const sem = m.semantic orelse return false;
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
@@ -1181,6 +1182,22 @@ pub const Linker = struct {
             if (scope_map.get(name) != null) return true;
         }
         return false;
+    }
+
+    /// RFC #3399 PR-2: namespace `X.member` → exp.local 직접 재작성(ns-object
+    /// 제거) 이 shadow-safe 한 빌드 경로인가. 안전성은 측정 우연이 아니라
+    /// **mangler invariant**: `collectUnifiedInput` 이 namespace target export
+    /// 를 항상 importer 의 cross_module_imports 로 등록 → `unified_mangler` 가
+    /// 그 mangled 이름을 importer per-module reserved 에 넣어 nested local 이
+    /// 절대 같은 이름을 받지 않음 (Debug panic 으로 기계 증명). 단 이는
+    /// mangle 활성 시에만 성립 — 비-minify/dev/preserve-modules 는 exp.local
+    /// 이 source 이름 그대로라 importer nested binding 과 자기-shadow 충돌
+    /// 실재 → 보수적 shadow-skip 유지. 세 플래그 모두 graph 단일 출처에서
+    /// 읽어 dev_mode 출처 혼용을 방지한다.
+    pub fn nsMemberRewriteSafe(self: *const Linker) bool {
+        return self.graph.minify_identifiers and
+            !self.graph.preserve_modules and
+            !self.graph.dev_mode;
     }
 
     /// ECMAScript 예약어 + CJS 런타임 + 브라우저/Node 주요 글로벌인지 확인.
