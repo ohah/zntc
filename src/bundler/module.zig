@@ -265,6 +265,12 @@ pub const Module = struct {
     /// 순수 re-export barrel 이 아니므로 `isLazyBarrelCandidate` 에서 제외 (body 가 import 참조).
     /// `is_wrapper_barrel` 과 같은 패스에서 채워지는 hot-path 캐시.
     has_local_export: bool = false,
+    /// `export default <named-local>` (예: `var lib={}; ...; export default lib`,
+    /// lodash-es lodash.default.js) — default export 가 합성 `_default` 표현식이
+    /// 아니라 이름 있는 로컬 바인딩. wrapper-barrel mutation 정밀 lazy 의
+    /// 소비자 `_.foo` 접근 분석 게이트 (linker `isEsmWrapperDefaultBinding`).
+    /// `is_wrapper_barrel`(=`export {default} from` 형) 과 다른 패턴이라 별도 캐시.
+    default_export_named_local: bool = false,
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,

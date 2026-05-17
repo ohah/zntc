@@ -29,7 +29,6 @@ const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const preamble_writer = @import("linker/preamble_writer.zig");
 const namespace_access = @import("linker/namespace_access.zig");
 const shared_namespace = @import("linker/shared_namespace.zig");
-const graph_requested_exports = @import("graph/requested_exports.zig");
 pub const PreambleWriter = preamble_writer.PreambleWriter;
 pub const cjsImportNeedsToEsmInterop = preamble_writer.cjsImportNeedsToEsmInterop;
 pub const LinkingMetadata = @import("linker/metadata_types.zig").LinkingMetadata;
@@ -388,15 +387,20 @@ pub const Linker = struct {
         return src.wrap_kind == .cjs;
     }
 
-    /// `import _ from './w'; _.foo()` 에서 source 가 wrapper-barrel
-    /// (`BASE.PROP = importLocal; export default BASE`, lodash-es lodash.default.js)
-    /// 인 default binding. CJS default 와 동일하게 scope-aware member 분석으로
-    /// `namespace_used_properties` 를 채워, wrapper-barrel 의 prop 단위 정밀
-    /// lazy 링크가 소비자 사용 prop 집합을 알 수 있게 한다.
+    /// `import _ from './w'; _.foo()` 에서 source 가 `export default <named-local>`
+    /// (예: `var lib={}; lib.foo=…; export default lib`, lodash-es lodash.default.js)
+    /// 인 ESM default binding. CJS default 와 동일하게 scope-aware member 분석으로
+    /// `namespace_used_properties` 를 채워, wrapper-barrel mutation 의 prop 단위
+    /// 정밀 lazy 가 소비자 사용 prop 집합을 알 수 있게 한다.
+    ///
+    /// `is_wrapper_barrel` (=`export {default} from` re-export 형) 이 아니라
+    /// `default_export_named_local` 를 본다 — 실제 mutation 패턴은 default 가
+    /// 로컬 객체이고 `.local` export 라 `is_wrapper_barrel`/`isLazyBarrelCandidate`
+    /// 가 false 이기 때문 (실측 확정).
     fn isEsmWrapperDefaultBinding(self: *const Linker, importer: *const Module, ib: ImportBinding) bool {
         if (ib.kind != .default) return false;
         const src = self.importedModule(importer, ib.import_record_index) orelse return false;
-        return graph_requested_exports.isWrapperBarrel(self.graph, src);
+        return src.wrap_kind != .cjs and src.default_export_named_local;
     }
 
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
@@ -1758,7 +1762,7 @@ pub const Linker = struct {
                 const is_cjs_default_candidate = ib.kind == .default and source.wrap_kind == .cjs;
                 const is_esm_wrapper_default_candidate = ib.kind == .default and
                     !is_cjs_default_candidate and
-                    graph_requested_exports.isWrapperBarrel(self.graph, source);
+                    source.default_export_named_local;
                 const should_analyze_binding = is_namespace or is_named_candidate or
                     is_cjs_default_candidate or is_esm_wrapper_default_candidate;
                 if (!should_analyze_binding) continue;

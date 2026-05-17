@@ -118,6 +118,16 @@ pub const ExportBinding = struct {
             std.mem.eql(u8, self.local_name, "default");
     }
 
+    /// `export default <named-local>` (예: `var lib={}; export default lib`,
+    /// lodash-es lodash.default.js) — default 가 이름 있는 로컬 바인딩.
+    /// 표현식 default 는 binding_scanner 가 합성 `_default` 를 local_name 으로
+    /// 쓰므로 제외. `isDefaultDirectReExport`(re-export 형) 와 상보적.
+    pub fn isNamedLocalDefault(self: ExportBinding) bool {
+        return self.kind == .local and
+            std.mem.eql(u8, self.exported_name, "default") and
+            !std.mem.eql(u8, self.local_name, "_default");
+    }
+
     /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
     /// #1338 Phase 4e-2d-a: synthetic_default는 항상 semantic 공간에 등록됨.
     pub fn hasSyntheticDefault(
