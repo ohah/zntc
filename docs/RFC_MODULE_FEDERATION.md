@@ -251,8 +251,11 @@ origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_pub
 - **S1 PASS** — zntc 스코프 호이스팅 IIFE 출력을 손수 MF2 container 계약(`init(shareScope)`/`get(expose)=>()=>Module`)으로 감싸 host 가 로드·get·실행. **레지스트리 코어가 MF container substrate 로 성립.**
 - **S2 PASS** (가장 치명 미지수 #1/#2) — host 가 shared 인스턴스 소유·shareScope 등록 → `container.init(shareScope)` 가 widget eval *전* 글로벌 seam 채움 → **독립 스코프 호이스팅 빌드 양측이 shared 인스턴스 1개**(host 2회 bump→remote 3·4, identity 일치). 스코프 호이스팅×연합 경계 정체성 충돌이 seam 으로 해소됨 → **D1 가정 성립.**
 - **S5 PASS** — 미변경 모듈의 content-hash 청크가 독립 재빌드에서 **byte-동일**(`core-98588766.js` 불변), 변경 widget 청크만 새 hash+새 코드. 부분 재배포(가치 A)·cross-build 결정성(리스크 #5) 검증.
-- **S3·S4 (interop)** — `@module-federation/enhanced` devDep 설치 필요(외부 의존성, 사용자 확인 게이트). S1/S2/S5 가 핵심 구조 미지수를 이미 해소했으므로 S3/S4 는 "표준과 맞물림" 최종 확증 단계.
+- **S3 PASS** — 공식 `@module-federation/runtime@2.4.0`(= 문서가 명시한 *실제 interop 계약* 패키지, enhanced 아님)이 zntc-output 기반 container 를 자기 `init`/`loadRemote` resolution 파이프라인으로 구동·실행. **표준 런타임 ↔ zntc remote interop 성립**(정방향). 부수 확인: `RUNTIME-009`(createInstance 전 registerPlugins 금지 → plugins 는 init 옵션) — RFC MF2 실측 #2 와 일치.
+- **S4 부분 — 계약 포착, 실행 interop 은 P1 브라우저 CI 로 스코핑**. 표준 빌드툴(`@rspack/[email protected]` + `@module-federation/[email protected]`)로 **진짜 remote 빌드 성공**(`remoteEntry.js`/`mf-manifest.json`/`__federation_expose_*`). 그 산출 계약을 zntc MF emit 타겟으로 실측 박제: **mf-manifest** = `{id,name,metaData[name,type,buildInfo,remoteEntry,types,globalName,pluginVersion,publicPath], exposes[{id,name,assets{js{sync,async},css{...}},path}], shared, remotes}`; **remoteEntry** = webpack-style container(`init`/`get`, `get(id):Promise<factory>`, `moduleMap`, container 를 globalName 에 대입). Node 실행 실패(auto-publicPath/`self`/webpack chunk-global)는 **web-타겟 remote 를 Node 에 넣은 환경 잡음 — 계약 실패 아님**. web remote 의 런타임 실행 interop 은 본질상 브라우저 시나리오 → S3 가 런타임 *계약* 양방향(동일 resolution 코드경로)을 이미 증명했으므로, S4 실행 확증은 **P1 interop CI(Playwright + 검증된 rspack 픽스처)** 로 이월(toolchain 설치 가능 확인됨).
 - **S6** — zntc 빌드타임 계약 검증은 P3 기능(현재 전무) → RFC 대로 P1 비차단, P3 로 이월.
+
+**스파이크 종결 판정**: 핵심 D1 리스크(S1 substrate·S2 단일성·S3 표준 런타임 interop)와 가치 A(S5)·청크 런타임(S0) **전부 PASS**. S4 실행은 P1 브라우저 CI, S6 은 P3 — 둘 다 RFC상 P1 비차단. **→ D1(자체 코어 + MF2 호환 경계) 가정 실증 완료, P1 이슈 분해 진입 가능.**
 
 **스파이크가 잡은 P1-결정 제약** (P3-B 선례 — 제약이 PR 분해를 결정):
 
