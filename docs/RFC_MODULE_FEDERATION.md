@@ -213,6 +213,18 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 
 origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_public_path`/MF `publicPath` 로 remote URL 주입.
 
+**MF2 계약 실측** (docs.module-federation.io 정독 — 계약/제약 페이지 한정; 빌드툴별 플러그인 내부·framework bridge 는 우리 계약과 무관해 제외):
+
+- **interop 타겟 = `@module-federation/runtime`** (스펙·번들러 무관, 독립 동작). `@module-federation/enhanced` = webpack/rspack *빌드 플러그인* + 런타임 → 우리는 enhanced 를 **표준 host/remote 테스트 피어**로만 쓰고, emit 은 `@module-federation/runtime` 계약을 타겟(D1 정밀화).
+- **container 계약**: `init(shareScope, shareScopeObject)` + `get(expose) => () => Module` — RFC §4.1 과 일치(실측 확인).
+- **shareScopeMap 정확 스키마**(우리 shared scope 가 emit·유지해야 할 in-memory 구조): `scope → pkgName → version → { get, loaded, from, shareConfig }`. named scope 다중 지원 필요(default 만으론 부족 — gradual upgrade/도메인 격리).
+- **치명 제약**: shared 로 지정된 모듈은 **비동기 모듈로 강등** → entry 가 async 거나 `eager:true` 여야 함. 아니면 `"Shared module is not available for eager consumption"`. singleton 위반 = React 중복 인스턴스(hook 깨짐). init 순서 위반(RUNTIME-009). cross-origin CORS/credential.
+- **shared-tree-shaking 은 cross-build DCE 아님**(공식 명시): server-calc = CI 가 각 빌드 `usedExports` 수집→합집합→shared 2차 빌드(우리 D3/빌드타임 철학과 정합, 흡수 대상). runtime-infer = 런타임 hit+full fallback, **singleton 과 충돌(인스턴스 분열)**.
+- **type-hinting**: `.d.ts`→CDN 런타임 fetch(`@mf-types`), staleness/silent-fail — 우리 **D3 빌드타임 계약 검증이 정당한 차별화**(실측으로 약점 확인).
+- **CSS**: MF2 는 런타임 CSS 격리를 **의도적으로 안 함**(shared 와 충돌). producer-side 격리(CSS Modules/BEM) 권장 → zntc 의 기존 CSS 코드스플리팅+`<link>` 주입과 호환. **federation 런타임 CSS 샌드박싱을 만들지 말 것**(over-engineering 금지).
+- **RN/Metro MF 는 experimental**, 네이티브 로딩 메커니즘 문서 미명시·Re.Pack 무언급 → D4(자체 C/JSI 로더)와 **충돌 없음**, §8.2 가 여전 RN 게이트.
+- **data-fetch**: 컴포넌트 단위 data loader 만, shared store/server-state 의견 없음(RSC "탐색 중") → RFC §3(상태 소유권 설계)은 MF2 대비 **앞선 차별화**(갭 아님).
+
 **검증 단계 & 통과 기준**
 
 > **청크 실브라우저 e2e 통합(S0)**: 현재 청크 동적 로더(JS `<script>` 주입·CSP nonce·Worker `importScripts`·`import(url)`)는 통합테스트에서 **Node `document`/`importScripts` 스텁(시뮬)** 으로만 검증되고, 실브라우저 e2e 는 CSS `<link>` 1개뿐(JS 동적 청크/CSP 실 정책 갭). 스파이크 하네스가 실 Playwright + 다중 origin + 실 CSP 헤더를 어차피 요구하므로, 이 갭을 **S0 로 흡수**해 한 번에 메운다 — S0 통과분은 chunk e2e + MF 하네스 양쪽으로 박제.
@@ -220,8 +232,8 @@ origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_pub
 | # | 무엇 | 환경 | PASS 기준 |
 |---|---|---|---|
 | **S0** | **청크 런타임 실브라우저 기준선**(MF 무관, 순수 코드스플리팅): 동적 `import()` 청크가 실 `<script>` 주입으로 로드·실행, CSP `script-src 'nonce-…'` 정책 하에서 nonce 스크립트 **브라우저가 실제 허용**, Worker `importScripts`/`import(url)` 분기 | **실 Playwright** + 정적서버(실 `Content-Security-Policy` 헤더) | 동적 청크 코드 실행·DOM 반영, CSP 위반 0(블록된 스크립트 없음), worker 경로 로드 — Node 스텁이 못 잡던 실브라우저 동작 증명 |
-| S1 | `host-zntc` 가 `remote-a/Widget` 정적 + `remote-b/Card` 동적 로드·렌더 | Node + Playwright(headless) | DOM 에 두 컴포넌트 렌더, 콘솔 에러 0 |
-| S2 | `react` shared 단일 인스턴스 | 위와 동일 | `useState`/Context 가 host↔remote 경계 넘어 동작(인스턴스 1개 단언 — `React` 식별자 동일성/Context 값 전파) |
+| S1 | `host-zntc` 가 `remote-a/Widget` 정적 + `remote-b/Card` 동적 로드·렌더. **shared→async 강등 처리**(entry async/`eager` 경로) + `init(shareScope)`/`get(expose)` 계약 + `shareScopeMap` 스키마 emit | Node + Playwright(headless) | DOM 에 두 컴포넌트 렌더, 콘솔 에러 0, `"eager consumption"`/RUNTIME-009 0 |
+| S2 | `react` shared 단일 인스턴스 — **(a) 일반 (b) shared-tree-shaking(runtime-infer) 켠 상태** 둘 다 | 위와 동일 | `useState`/Context 가 경계 넘어 동작(인스턴스 1개). (b) 에서도 singleton 유지(tree-shaking×singleton 분열 회피 확인 — 안 되면 우리도 동일 제약 명시) |
 | S3 | **interop 정방향**: `host-mf2`(enhanced) 가 zntc `remote-a` 로드 | Node + Playwright | 표준 host 에서 zntc remote 렌더, MF2 런타임 계약 위반 0 |
 | S4 | **interop 역방향**: `host-zntc` 가 `remote-mf2` 로드 | 〃 | 우리 host 가 표준 remote 렌더 |
 | S5 | **부분 재배포(엔드유저 가치 A)**: `remote-a/Widget` 만 수정 후 재빌드·재배포, `host-zntc` 무수정 | Node | 바뀐 content-hash 청크만 교체, host 청크 해시 불변, 갱신된 Widget 렌더 |
