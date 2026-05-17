@@ -66,6 +66,12 @@ pub const JsxRuntime = enum {
     }
 };
 
+/// CJS wrapper `exports`/`module` 식별자 기본 이름. 옵션 default 와 PR-2
+/// free-ref 가드의 "기본값이면 no-op(회귀 0)" 판정이 이 단일 소스를 공유 —
+/// 리터럴 중복 시 default 변경이 회귀 0 불변식을 silent 로 깨므로 const 화.
+pub const default_cjs_exports_name = "exports";
+pub const default_cjs_module_name = "module";
+
 pub const CodegenOptions = struct {
     module_format: ModuleFormat = .esm,
     /// 문자열 따옴표 스타일 (기본: 쌍따옴표, esbuild/oxc 호환)
@@ -107,8 +113,8 @@ pub const CodegenOptions = struct {
     /// 시 바이트 동일(회귀 0). emitter 가 wrapper 파라미터와 같은 값을 주입해
     /// codegen 합성 구문(`exports.x=`, `module.exports=`)과 본문 free 참조를
     /// 단일 소스로 동기화한다.
-    cjs_exports_name: []const u8 = "exports",
-    cjs_module_name: []const u8 = "module",
+    cjs_exports_name: []const u8 = default_cjs_exports_name,
+    cjs_module_name: []const u8 = default_cjs_module_name,
     /// 번들 모드에서 ESM이 아닐 때 import.meta -> {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
