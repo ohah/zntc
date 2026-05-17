@@ -45,6 +45,7 @@ test {
     _ = server;
     _ = app;
     _ = @import("test_arena.zig");
+    _ = @import("env_flag.zig");
     _ = util.wyhash;
 
     // diagnostic system

@@ -115,3 +115,12 @@ ZNTC 는 `isNamespaceUsedAsValue`(값-escape) 만 보고, esbuild 의 **"실 use
 ## 8. 결론
 
 minify 잔존 레버 중 member-augment(#3359) 이후 처음으로 **측정·코드근거·scoped·prior-메모리 미배제**. esbuild `StarNameLoc=nil` gate 의 직접 이식이며 M 규모. effect-cohort 집중이라 corpus 효과는 modest 하나 ROI-per-effort 가 명확하고, PR-1 의 measure-first kill-switch 가 nested-renamer 식 과대평가를 구조적으로 차단한다.
+
+## 9. 실행 결과 (epic 기록)
+
+- **PR-1 (gate)**: `has_shadow` access-aware 억제. kill-switch **NO-GO** — `analyzeNamespaceAccess` liveness-blind 라 dead 도 member-access=true → effect 0% 회수. 폐기.
+- **루트커즈 정정 (직접 빌드파일 diff)**: effect `ZNTC 160,811 vs rolldown 125,417` 격차의 **105%(37KB)가 `var X_ns={};augment(...)` 스캐폴드 43개**. competitor 는 gate 아닌 **`X.member`→직접심볼 전면 재작성**으로 객체 제거. RFC §2~§6 초안(gate/force_inline)은 계측·직접측정으로 반증 — 상단 정정 박스 + 본 절이 권위.
+- **PR-2 (rewrite, GO·머지)** #3407: `Linker.nsMemberRewriteSafe()` (mangle-safe) 일 때 `hasNestedBinding` shadow-skip 비활성 → `X.member`→exp.local 재작성. **effect 160,811→127,765 (−20.6%)**, 전수 144-lib build/runtime MATCH 회귀 0·size 증가 0. 안전성=mangler invariant(`collectUnifiedInput` ns target 항상 cross_module reserve, Debug panic 증명). `ZNTC_NO_NS_REWRITE` kill-switch(force-ON 미제공). 비-minify/dev/preserve-modules 는 보수적 shadow-skip 유지.
+- **PR-3 (cleanup)**: env-presence flag 중복 boilerplate → `src/env_flag.zig` `Once()` 제너릭 단일화 (transpile fast-path + ns-rewrite kill-switch). byte-identical.
+- **순효과**: corpus −0.65% (effect/@effect/fp-ts cohort 집중 — zod/three 등 ns-barrel 없는 lib 불변). member-augment 이후 첫 진짜 size win. RN production minify 는 144-lib smoke 미포함(invariant 상 안전, 실측 외).
+- **메타**: bounded *gate*(PR-1·prior NO-GO)만 재시도 금지, *rewrite*(PR-2·GO)는 competitor 실기법으로 유효 — 별개. 근본 규명 결정타 = 내부 추정 아닌 **직접 빌드파일 diff**.

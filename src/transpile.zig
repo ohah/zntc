@@ -9,7 +9,6 @@
 //!   - 향후 NAPI 바인딩의 단일 파일 API
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Scanner = @import("lexer/mod.zig").Scanner;
 const Parser = @import("parser/parser.zig").Parser;
 const ast_mod = @import("parser/ast.zig");
@@ -137,20 +136,11 @@ fn prependImportLine(allocator: std.mem.Allocator, prefix: ?[]const u8, body: []
     return combined.items;
 }
 
-var fast_path_disabled_once = std.once(computeFastPathDisabledByEnv);
-var fast_path_disabled_value: bool = false;
-
-fn computeFastPathDisabledByEnv() void {
-    if (comptime builtin.os.tag == .wasi and !builtin.link_libc) {
-        fast_path_disabled_value = false;
-        return;
-    }
-    fast_path_disabled_value = std.process.hasEnvVarConstant("ZNTC_DISABLE_TRANSPILE_FAST_PATH");
-}
+// env-presence flag — 공용 제너릭 (RFC #3399 PR-3: 중복 boilerplate 통합).
+const fast_path_disabled_env = @import("env_flag.zig").Once("ZNTC_DISABLE_TRANSPILE_FAST_PATH");
 
 fn transpileFastPathDisabledByEnv() bool {
-    fast_path_disabled_once.call();
-    return fast_path_disabled_value;
+    return fast_path_disabled_env.enabled();
 }
 
 fn collectAstFacts(ast: *const Ast) AstFacts {
