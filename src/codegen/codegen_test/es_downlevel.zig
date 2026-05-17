@@ -2915,6 +2915,20 @@ test "ES2020: temp var hoisted for ?? in preserved class method" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=options.queryHash)") != null);
 }
 
+test "ES2020: temp var hoisted inside async state machine" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(context){return context.fetchOptions?.meta;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_state){{var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=context.fetchOptions)") != null);
+}
+
+test "ES2020: temp var hoisted inside generator state machine" {
+    var r = try e2eTarget(std.testing.allocator, "function* f(context){yield 1;return context.fetchOptions?.meta;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_state){{var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=context.fetchOptions)") != null);
+}
+
 test "ES2020: temp var hoisted for ?. in function" {
     var r = try e2eTarget(std.testing.allocator, "function f(){return foo()?.bar;}", .es2019);
     defer r.deinit();
