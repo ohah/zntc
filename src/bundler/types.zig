@@ -45,13 +45,25 @@ pub const ModuleDevCode = struct {
 /// `types.zig` 에 둠 — federation.zig·bundler.zig 양쪽 공통(circular 회피).
 pub const MfBundleConfig = struct {
     pub const KV = struct { key: []const u8, value: []const u8 };
+    pub const SharedEntry = struct {
+        name: []const u8,
+        singleton: bool = false,
+        required_version: ?[]const u8 = null,
+        eager: bool = false,
+        /// container 소유 글로벌 식별자(`__mf_shared_<name>`). mfBundleFromDto
+        /// 가 1회 생성·소유(freeMfBundle 해제) → P1-2 seam·P1-4 init 은
+        /// borrow(재-alloc 0, 누수 0). 단일 규칙=federation.mfSharedGlobalName.
+        global_seam: []const u8 = "",
+    };
     name: ?[]const u8 = null,
     /// `{ "./Widget": "./src/Widget.tsx" }` → [{"./Widget","./src/Widget.tsx"}]
     exposes: []const KV = &.{},
     /// `{ remoteA: "remoteA@url" }`
     remotes: []const KV = &.{},
-    /// shared 패키지명 (`["react","react-dom"]`)
-    shared: []const []const u8 = &.{},
+    /// `{ "react": { singleton, requiredVersion, eager } }` → []SharedEntry.
+    /// container.init(P1-4)이 host shareScope 에서 이 pkg 를 해석해 글로벌
+    /// seam(`__mf_shared_<pkg>`) 채움. 버전 satisfy 판정은 host runtime 책임.
+    shared: []const SharedEntry = &.{},
     share_scope: []const u8 = "default",
 };
 
