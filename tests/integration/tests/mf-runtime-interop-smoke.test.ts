@@ -789,6 +789,80 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect((await buildHost('app/Whatever', noMani)).exitCode).toBe(0);
   }, 30000);
 
+  // P3-2 (#3437): 빌드타임 shared 버전 호환 검증(D3). host 가 import 하는
+  // remote 의 게시 shared 와 host shared 선언이: singleton 불일치 →
+  // **빌드 fail-fast**(결정적·인스턴스 분열); 버전 비호환 → 경고(비차단,
+  // semver). remote.version 이 비-concrete(zntc P2-0 = version=range 대용)
+  // 면 판정 불가 → 통과(정밀 fail-fast — 거짓 빌드중단 금지).
+  test('P3-2 shared 호환: singleton 불일치 → 빌드 fail-fast; 일치·무선언 통과', async () => {
+    // zntc remote: ./Widget expose + shared react(singleton:true,^19).
+    // manifest.shared = [{react, version:"^19"(P2-0 range 대용), singleton:true}]
+    const remoteFx = await createFixture({
+      'Widget.ts': `import { useState } from "react";\nexport default function W(){ return typeof useState; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    });
+    const rdist = join(remoteFx.dir, 'dist');
+    const rb = await runZntcInDir(remoteFx.dir, [
+      '--bundle',
+      join(remoteFx.dir, 'index.ts'),
+      '--outdir',
+      rdist,
+      '--format=iife',
+    ]);
+    expect(rb.exitCode).toBe(0);
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await remoteFx.cleanup();
+    };
+
+    // host 빌드 — shared 선언 가변(undefined=무선언). import("app/Widget")
+    // 로 verifyHostContract 의 loadContract 패스 트리거.
+    const buildHost = async (sharedCfg: unknown) => {
+      const mf: Record<string, unknown> = {
+        name: 'host',
+        remotes: { app: `app@${manifestAbs}` },
+      };
+      if (sharedCfg !== undefined) mf.shared = sharedCfg;
+      const hostFx = await createFixture({
+        'index.ts': `async function m(){ const x = await import("app/Widget"); console.log(x); }\nm();`,
+        'zntc.config.json': JSON.stringify({ mf }),
+      });
+      const r = await runZntcInDir(hostFx.dir, [
+        '--bundle',
+        join(hostFx.dir, 'index.ts'),
+        '-o',
+        join(hostFx.dir, 'host.js'),
+        '--format=iife',
+      ]);
+      await hostFx.cleanup();
+      return r;
+    };
+
+    // ① singleton 불일치(host:false ↔ remote:true) → 빌드 fail-fast.
+    //    성공-우회 명시 배제(거짓통과 차단).
+    const conflict = await buildHost({ react: { singleton: false, requiredVersion: '^19' } });
+    expect(conflict.exitCode).not.toBe(0);
+    expect(conflict.stderr).toContain('MF shared singleton 충돌');
+
+    // ② singleton 일치 → 통과(remote.version="^19" 비-concrete → 버전
+    //    판정 불가 → 정밀 fail-fast 로 경고 없이 통과).
+    expect((await buildHost({ react: { singleton: true, requiredVersion: '^19' } })).exitCode).toBe(
+      0,
+    );
+
+    // ③ host shared 무선언 → 페어링 없음 → 통과(expose 는 존재).
+    expect((await buildHost(undefined)).exitCode).toBe(0);
+  }, 30000);
+
   // 갭 보강(레퍼런스 module-federation/core 대비). zntc remote dir 빌드 +
   // .js entry http 서빙(S3/host-emit 검증 형태, Node-safe — chunk=file://).
   async function buildZntcRemote(
