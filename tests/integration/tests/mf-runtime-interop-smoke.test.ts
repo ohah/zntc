@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { writeFileSync, rmSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createFixture, runZntcInDir, runNode } from './helpers';
 

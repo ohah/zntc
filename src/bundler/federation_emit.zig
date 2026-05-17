@@ -107,7 +107,7 @@ pub fn wrapContainer(
     if (mf.exposes.len == 0) return; // host(shared/remotes-only) = container 아님
     const name = mf.name orelse return; // remote 는 P1-0 검증이 name 강제
 
-    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+    const cwd = federation.cwdRealpath(allocator); // WASI-safe(comptime 분기)
     defer if (cwd) |c| allocator.free(c);
 
     // ── container 객체 문자열 빌드(min-무관 compact, 유효 JS) ──
