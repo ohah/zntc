@@ -203,6 +203,13 @@ pub const Linker = struct {
     /// 기존 IIFE unresolved 에러 경로를 탄다. bundler 가 init 후 설정 — borrowed.
     iife_globals: []const types.GlobalEntry = &.{},
 
+    /// PR-1 (#3459): MF host `mf.remotes` KV. 정적 `import X from
+    /// "remote/x"` 의 unresolved external 을 metadata.zig 가 per-spec
+    /// seam 글로벌(`__mf_remote_<san>`)로 매핑해 IIFE 에러를 회피.
+    /// bundler 가 init 후 설정 — borrowed(opts.mf 소유). 비-MF 빌드는
+    /// 빈 슬라이스 → 동작·출력 불변(무회귀).
+    mf_remotes: []const types.MfBundleConfig.KV = &.{},
+
     /// --mangle-report 수집기 (#1760). `null` 이면 instrumentation skip.
     /// Bundler 가 생성 및 소유. Linker 는 참조만 보유.
     mangle_report: ?*MangleReportCollector = null,

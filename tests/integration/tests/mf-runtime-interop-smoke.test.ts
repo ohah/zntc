@@ -1183,6 +1183,66 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     // 내부의 store 생성은 RFC §7.3 ②(외부/완전 데이터플로 미탐지 =
     // 문서화된 휴리스틱 한계, 비-목표) — expose 경계 모듈만 린트 대상.
   }, 30000);
+
+  // PR-1 (#3459): 정적 `import X from "remote/x"` seam 인프라(토대).
+  // 기존엔 `unresolved import ... IIFE format` 빌드 에러 → 이제 per-spec
+  // seam 글로벌(`__mf_remote_<san>`)로 binding 재작성, 빌드 성공.
+  // **런타임 값은 PR-2 async preload-gate 가 채움**(현재 미정의 —
+  // P3-0 "토대, 검증 없음" 방식: 빌드/emit 형태만 박제, 실행 아님).
+  test('PR-1 정적 import seam: 빌드 에러 소멸 + 3형태 seam 글로벌 재작성', async () => {
+    const rfx = await createFixture({
+      'Widget.ts': `export default function W(){ return "S-OK"; }\nexport const meta = "m";`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const rdist = join(rfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(rfx.dir, [
+          '--bundle',
+          join(rfx.dir, 'index.ts'),
+          '--outdir',
+          rdist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const hfx = await createFixture({
+      // default · named · namespace 3형태
+      'index.ts': `import W from "app/Widget";\nimport { meta } from "app/Widget";\nimport * as NS from "app/Widget";\nglobalThis.__r = [typeof W, meta, typeof NS];`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'host', remotes: { app: `app@${manifestAbs}` } },
+      }),
+    });
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await rfx.cleanup();
+      await hfx.cleanup();
+    };
+    const hostOut = join(hfx.dir, 'host.js');
+    const hb = await runZntcInDir(hfx.dir, [
+      '--bundle',
+      join(hfx.dir, 'index.ts'),
+      '-o',
+      hostOut,
+      '--format=iife',
+      '--platform=browser',
+    ]);
+    // 빌드 에러 소멸(P1 IIFE bare-external 거부 우회)
+    expect(hb.exitCode, hb.stderr).toBe(0);
+    expect(hb.stderr).not.toContain('cannot be emitted in IIFE');
+    const src = readFileSync(hostOut, 'utf8');
+    // 3형태 → per-spec seam 글로벌 binding(런타임은 PR-2 가 채움)
+    expect(src).toContain('var W = __mf_remote_app_Widget;'); // default
+    expect(src).toContain('var meta = __mf_remote_app_Widget.meta;'); // named
+    expect(src).toContain('var NS = __mf_remote_app_Widget;'); // namespace
+    // 정적 import 구문은 IIFE 출력에 잔존하지 않음(codegen elide)
+    expect(src).not.toMatch(/(^|\n)\s*import\b.*["']app\/Widget["']/);
+  }, 30000);
 });
 
 function readFileSyncSafe(p: string): string {

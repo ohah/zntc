@@ -49,10 +49,25 @@ pub fn cwdRealpath(allocator: std.mem.Allocator) ?[]const u8 {
 /// (cli/options.zig P1-2 도 이걸 호출). 비식별자(`@/-.`)→`_`, 소문자/scope
 /// 보존(react→__mf_shared_react, @scope/pkg→__mf_shared__scope_pkg).
 pub fn mfSharedGlobalName(allocator: std.mem.Allocator, pkg: []const u8) ![]const u8 {
-    const prefix = "__mf_shared_";
-    var buf = try allocator.alloc(u8, prefix.len + pkg.len);
+    return mfSeamName(allocator, "__mf_shared_", pkg);
+}
+
+/// specifier → host 정적 import seam 글로벌(`__mf_remote_<sanitized>`).
+/// PR-1(#3459): 정적 `import X from "remoteA/Widget"` 의 binding 을 이
+/// 글로벌 참조로 재작성(metadata.zig IIFE mapped 경로 재사용 → 에러
+/// 회피). per-spec(subpath 포함) 단위 — `remoteA/Widget`·`remoteA/Btn`
+/// 가 서로 다른 글로벌. PR-2 의 async preload-gate 가 `loadRemote` 결과로
+/// 채움. sanitize 규칙은 mfSharedGlobalName 과 **단일 소스**(mfSeamName).
+pub fn mfRemoteGlobalName(allocator: std.mem.Allocator, spec: []const u8) ![]const u8 {
+    return mfSeamName(allocator, "__mf_remote_", spec);
+}
+
+/// `<prefix><sanitized name>` — 비식별자(`@/-.`)→`_`, 그 외 보존.
+/// mfShared/mfRemote 글로벌명 단일 sanitize 규칙(두 seam 일관 필수).
+fn mfSeamName(allocator: std.mem.Allocator, prefix: []const u8, name: []const u8) ![]const u8 {
+    var buf = try allocator.alloc(u8, prefix.len + name.len);
     @memcpy(buf[0..prefix.len], prefix);
-    for (pkg, 0..) |c, i| buf[prefix.len + i] = switch (c) {
+    for (name, 0..) |c, i| buf[prefix.len + i] = switch (c) {
         '@', '/', '-', '.' => '_',
         else => c,
     };
@@ -72,6 +87,25 @@ test "mfSharedGlobalName: 결정적 식별자 변환" {
         defer a.free(got);
         try std.testing.expectEqualStrings(c.want, got);
     }
+}
+
+test "mfRemoteGlobalName: per-spec 결정적 변환(subpath 포함, shared 와 sanitize 일관)" {
+    const a = std.testing.allocator;
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        .{ .in = "remoteA", .want = "__mf_remote_remoteA" },
+        .{ .in = "remoteA/Widget", .want = "__mf_remote_remoteA_Widget" },
+        .{ .in = "remoteA/Btn", .want = "__mf_remote_remoteA_Btn" }, // subpath 별 구분
+        .{ .in = "@scope/app/X", .want = "__mf_remote__scope_app_X" },
+    };
+    for (cases) |c| {
+        const got = try mfRemoteGlobalName(a, c.in);
+        defer a.free(got);
+        try std.testing.expectEqualStrings(c.want, got);
+    }
+    // shared 와 동일 sanitize 규칙(prefix 만 차이) — 단일소스 mfSeamName 보장
+    const r = try mfRemoteGlobalName(a, "react-dom");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("__mf_remote_react_dom", r);
 }
 
 /// 경계 식별 + 표시 + 안정 ID 부여. `mf` 비면 호출 안 됨(caller gate).

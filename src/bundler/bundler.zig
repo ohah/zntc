@@ -826,6 +826,7 @@ pub const Bundler = struct {
         worker_linker.minify_whitespace = self.options.minify_whitespace;
         worker_linker.configurable_exports = self.options.configurable_exports;
         worker_linker.inline_requires = self.options.platform == .react_native;
+        if (self.options.mf) |*m| worker_linker.mf_remotes = m.remotes; // PR-1 (#3459) 일관
         try worker_linker.link();
         try worker_linker.finalize(.{
             .compute_renames = true,
@@ -1175,6 +1176,8 @@ pub const Bundler = struct {
             l.verbatim_module_syntax = self.options.verbatim_module_syntax;
             // #1824: IIFE external globals 매핑 — linker 가 매핑 유무로 preamble 경로 분기.
             l.iife_globals = self.options.globals;
+            // PR-1 (#3459): 정적 remote import → seam 글로벌 매핑용 KV.
+            if (self.options.mf) |*m| l.mf_remotes = m.remotes;
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
             // Phase 3b (#1328): populateReExportAliases 가 canonical_name 을 채우려면

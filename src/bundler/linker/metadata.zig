@@ -12,6 +12,7 @@ const Span = @import("../../lexer/token.zig").Span;
 const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const Ast = @import("../../parser/ast.zig").Ast;
 const semantic_symbol = @import("../../semantic/symbol.zig");
+const federation = @import("../federation.zig"); // PR-1 (#3459) mfRemoteGlobalName/matchesRemoteSpec 단일소스
 const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
@@ -451,7 +452,23 @@ pub fn buildMetadataForAst(
                     // 에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨 (esm_wrap). init 함수
                     // 본문에서 `var` 로 재선언하면 outer scope 를 shadow → #1209.
                     const is_helper_esm = ib.is_helper and m.wrap_kind == .esm;
-                    const mapped_param = try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator);
+                    const mapped_param = blk: {
+                        if (try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator)) |mp|
+                            break :blk mp;
+                        // PR-1 (#3459): 정적 `import X from "remote/x"` 의
+                        // unresolved external 을 per-spec seam 글로벌
+                        // (`__mf_remote_<san>`)로 합성 → 아래 mapped 경로
+                        // 재사용(IIFE 에러 회피, GlobalEntry.lookup 무변경
+                        // = shared/일반 external 무회귀). 런타임 값은 PR-2
+                        // async preload-gate 가 채움(현재는 미정의).
+                        if (self.format == .iife and rec.is_external) {
+                            for (self.mf_remotes) |kv| {
+                                if (federation.matchesRemoteSpec(rec.specifier, kv.key))
+                                    break :blk try federation.mfRemoteGlobalName(self.allocator, rec.specifier);
+                            }
+                        }
+                        break :blk null;
+                    };
                     if (mapped_param) |param_name| {
                         defer self.allocator.free(param_name);
                         // IIFE/UMD/AMD: factory 매개변수에서 직접 참조. emitter 의 wrapper
