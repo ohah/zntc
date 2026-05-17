@@ -6,7 +6,6 @@
 //! resolution and symbol population.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
@@ -26,22 +25,11 @@ const max_chain_depth = 100;
 // 측정). force-ON 은 *제공하지 않는다* — 비-minify 강제 ON 은 의도적으로
 // 깨진 출력(자기-shadow 무한재귀)을 만들 수 있어 footgun. 활성 여부는
 // `Linker.nsMemberRewriteSafe()` (mangler invariant 기반) 가 단독 결정하고
-// 이 env 는 그것을 덮어 끄기만 한다. transpile.zig fast-path 와 동일 관례
-// (std.once thread-safe 캐시, WASI 가드).
-var ns_rewrite_disabled_once = std.once(computeNsRewriteDisabled);
-var ns_rewrite_disabled_value: bool = false;
-
-fn computeNsRewriteDisabled() void {
-    if (comptime builtin.os.tag == .wasi and !builtin.link_libc) {
-        ns_rewrite_disabled_value = false;
-        return;
-    }
-    ns_rewrite_disabled_value = std.process.hasEnvVarConstant("ZNTC_NO_NS_REWRITE");
-}
+// 이 env 는 그것을 덮어 끄기만 한다.
+const ns_rewrite_disabled_env = @import("../../env_flag.zig").Once("ZNTC_NO_NS_REWRITE");
 
 pub fn nsRewriteDisabled() bool {
-    ns_rewrite_disabled_once.call();
-    return ns_rewrite_disabled_value;
+    return ns_rewrite_disabled_env.enabled();
 }
 
 /// ESM namespace import를 위한 namespace 객체 preamble 생성.
