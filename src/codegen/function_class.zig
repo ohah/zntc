@@ -7,6 +7,18 @@ const NodeIndex = ast_mod.NodeIndex;
 const debug_metadata = @import("debug_metadata.zig");
 const statement_emit = @import("statements.zig");
 
+fn emitNestedExecutionBody(self: anytype, body: NodeIndex) !void {
+    const saved_for_init = self.in_for_init;
+    const saved_skip_var_init = self.skip_var_init;
+    self.in_for_init = false;
+    self.skip_var_init = false;
+    defer {
+        self.in_for_init = saved_for_init;
+        self.skip_var_init = saved_skip_var_init;
+    }
+    try self.emitNode(body);
+}
+
 /// keepNames: name 노드가 rename되었으면 (original_name, new_name) 쌍을 수집.
 /// emitter가 코드젠 완료 후 __name(newName, "originalName") 호출을 append.
 fn collectKeepNameEntry(self: anytype, name_idx: NodeIndex) void {
@@ -119,7 +131,7 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     try self.writeByte('(');
     try self.emitNodeList(params_start, params_len, ",");
     try self.writeByte(')');
-    try self.emitNode(body);
+    try emitNestedExecutionBody(self, body);
 
     // #1751: assignment 로 변환된 form 은 expression statement 라서 `;` 종결 필요.
     // 다음 statement 가 directive ("use strict") 처럼 ASI 로 구분 안 되는 경우
@@ -178,7 +190,7 @@ pub fn emitArrow(self: anytype, node: Node) !void {
     // expression (member/binary/conditional 의 left chain) 을 검사.
     const needs_paren = !is_block_body and !body.isNone() and expressionStartsWithBrace(self, body);
     if (needs_paren) try self.writeByte('(');
-    try self.emitNode(body);
+    try emitNestedExecutionBody(self, body);
     if (needs_paren) try self.writeByte(')');
 }
 
@@ -310,7 +322,7 @@ pub fn emitClass(self: anytype, node: Node) !void {
         try self.write(" extends ");
         try self.emitNode(super_class);
     }
-    try self.emitNode(body);
+    try emitNestedExecutionBody(self, body);
 
     if (convert_to_assign or convert_to_var_class_expr) {
         try self.writeByte(';');
@@ -338,7 +350,7 @@ pub fn emitStaticBlock(self: anytype, node: Node) !void {
     }
     try self.write("static");
     try self.writeSpace();
-    try self.emitNode(node.data.unary.operand);
+    try emitNestedExecutionBody(self, node.data.unary.operand);
 }
 
 pub fn emitMethodDef(self: anytype, node: Node) !void {
@@ -379,7 +391,7 @@ pub fn emitMethodDef(self: anytype, node: Node) !void {
     try self.writeByte('(');
     try self.emitNodeList(params_start, params_len, ",");
     try self.writeByte(')');
-    try self.emitNode(body);
+    try emitNestedExecutionBody(self, body);
 }
 
 pub fn emitPropertyDef(self: anytype, node: Node) !void {

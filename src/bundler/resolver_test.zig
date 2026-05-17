@@ -368,9 +368,12 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
     logical_resolver.resolve_symlink_siblings = true;
     const logical_ui = try logical_resolver.resolve(root, "ui");
     defer std.testing.allocator.free(logical_ui.path);
+    defer if (logical_ui.resolve_dir) |dir| std.testing.allocator.free(dir);
     // preserve_symlinks=true → identity 는 link path. `.pnpm` 미포함, `node_modules/ui` 로 끝남.
     try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") == null);
     try std.testing.expect(pathEndsWith(logical_ui.path, "node_modules/ui/dist/index.js"));
+    try std.testing.expect(logical_ui.resolve_dir != null);
+    try std.testing.expect(std.mem.indexOf(u8, logical_ui.resolve_dir.?, ".pnpm/ui@1_react@18/node_modules/ui/dist") != null);
 
     const logical_ui_dir = std.fs.path.dirname(logical_ui.path).?;
     // peer dependency dedupe: lookup root 는 link path → walk up 으로 root node_modules/react 도달.
@@ -383,11 +386,112 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
     // resolve_symlink_siblings fallback 으로 `.pnpm/.../node_modules/code-push` 발견.
     const package_owned_dep = try logical_resolver.resolve(logical_ui_dir, "code-push");
     defer std.testing.allocator.free(package_owned_dep.path);
+    defer if (package_owned_dep.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_dep.path, ".pnpm/ui@1_react@18/node_modules/code-push") != null);
 
     const package_owned_subpath = try logical_resolver.resolve(logical_ui_dir, "code-push/script/acquisition-sdk");
     defer std.testing.allocator.free(package_owned_subpath.path);
+    defer if (package_owned_subpath.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_subpath.path, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js") != null);
+}
+
+test "resolve: preserve_symlinks sibling fallback beats global node_paths version" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/node_modules/@scope");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/package.json", "{\"main\":\"dist/index.js\"}");
+    try createFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/dist/index.js");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/dep/index.js");
+    try writeFile(tmp.dir, "node_modules/.pnpm/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, "node_modules/.pnpm/node_modules/dep/index.js");
+
+    tmp.dir.symLink(
+        "../../../../node_modules/.pnpm/pkg@1/node_modules/@scope/pkg",
+        "apps/app/node_modules/@scope/pkg",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "apps/app");
+    defer std.testing.allocator.free(app_root);
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const pnpm_global = try std.fs.path.resolve(std.testing.allocator, &.{ root, "node_modules/.pnpm/node_modules" });
+    defer std.testing.allocator.free(pnpm_global);
+    const node_paths = [_][]const u8{pnpm_global};
+
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.preserve_symlinks = true;
+    resolver.resolve_symlink_siblings = true;
+    resolver.node_paths = &node_paths;
+
+    const pkg = try resolver.resolve(app_root, "@scope/pkg");
+    defer std.testing.allocator.free(pkg.path);
+    defer if (pkg.resolve_dir) |dir| std.testing.allocator.free(dir);
+    try std.testing.expect(pathEndsWith(pkg.path, "apps/app/node_modules/@scope/pkg/dist/index.js"));
+
+    const pkg_dir = std.fs.path.dirname(pkg.path).?;
+    const dep = try resolver.resolve(pkg_dir, "dep");
+    defer std.testing.allocator.free(dep.path);
+    defer if (dep.resolve_dir) |dir| std.testing.allocator.free(dir);
+    try std.testing.expect(std.mem.indexOf(u8, dep.path, ".pnpm/pkg@1/node_modules/dep/index.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dep.path, ".pnpm/node_modules/dep/index.js") == null);
+}
+
+test "resolve: global node_paths symlink records real resolve_dir before hoisted dependency" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app");
+    try tmp.dir.makePath("node_modules/.pnpm/node_modules");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/pkg/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/pkg/index.js", "exports.value = require('dep').value;");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/dep/index.js", "exports.value = 'local';");
+    try writeFile(tmp.dir, "node_modules/.pnpm/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/node_modules/dep/index.js", "exports.value = 'global';");
+
+    tmp.dir.symLink(
+        "../pkg@1/node_modules/pkg",
+        "node_modules/.pnpm/node_modules/pkg",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "apps/app");
+    defer std.testing.allocator.free(app_root);
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const pnpm_global = try std.fs.path.resolve(std.testing.allocator, &.{ root, "node_modules/.pnpm/node_modules" });
+    defer std.testing.allocator.free(pnpm_global);
+    const node_paths = [_][]const u8{pnpm_global};
+
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.preserve_symlinks = true;
+    resolver.resolve_symlink_siblings = true;
+    resolver.node_paths = &node_paths;
+
+    const pkg = try resolver.resolve(app_root, "pkg");
+    defer std.testing.allocator.free(pkg.path);
+    defer if (pkg.resolve_dir) |dir| std.testing.allocator.free(dir);
+
+    try std.testing.expect(std.mem.indexOf(u8, pkg.path, "node_modules/.pnpm/node_modules/pkg/index.js") != null);
+    try std.testing.expect(pkg.resolve_dir != null);
+    try std.testing.expect(std.mem.indexOf(u8, pkg.resolve_dir.?, "node_modules/.pnpm/pkg@1/node_modules/pkg") != null);
+
+    const dep_source_dir = pkg.resolve_dir orelse std.fs.path.dirname(pkg.path).?;
+    const dep = try resolver.resolve(dep_source_dir, "dep");
+    defer std.testing.allocator.free(dep.path);
+    defer if (dep.resolve_dir) |dir| std.testing.allocator.free(dir);
+
+    try std.testing.expect(std.mem.indexOf(u8, dep.path, "node_modules/.pnpm/pkg@1/node_modules/dep/index.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dep.path, "node_modules/.pnpm/node_modules/dep/index.js") == null);
 }
 
 test "resolve: bare specifier walk up directories" {

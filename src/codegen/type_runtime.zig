@@ -105,7 +105,7 @@ pub fn emitEnumIIFE(self: anytype, node: Node) !void {
     // esm_var_assign_only: var 선언은 이미 __esm 밖 top-level에 hoisted.
     // factory 안에서는 할당만 출력.
     if (!self.options.esm_var_assign_only) try self.write("var ");
-    try self.write(name_text);
+    try self.emitNode(name_idx);
     try self.write(" = /* @__PURE__ */ ((");
     try self.write(param_name);
     try self.write(") => {");
@@ -196,7 +196,7 @@ pub fn emitEnumIIFE(self: anytype, node: Node) !void {
     try self.write("return ");
     try self.write(param_name);
     try self.write(";})(");
-    try self.write(name_text);
+    try self.emitNode(name_idx);
     try self.write(" || {});");
 }
 

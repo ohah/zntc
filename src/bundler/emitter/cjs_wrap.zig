@@ -112,9 +112,9 @@ pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, sourc
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        // #1621: minify 시 __commonJS → $cj 축약. body 가 `m.exports=<source>` —
-        // 자체 emit 이라 codegen substitute 안 거치므로 직접 `m` 사용.
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((e,m)=>{m.exports=");
+        // #1621: minify 시 __commonJS → $cj 축약. callback parameter 는 Node/Metro
+        // 호환성을 위해 `exports, module` 유지.
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{module.exports=");
         try buf.appendSlice(allocator, source);
         try buf.appendSlice(allocator, "});");
     } else {

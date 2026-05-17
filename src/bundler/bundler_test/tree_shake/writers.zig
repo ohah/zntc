@@ -192,3 +192,179 @@ test "TreeShaking: compound/update writers inside function body are not writer-e
     try std.testing.expect(std.mem.indexOf(u8, result.output, "dead_inc") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "COMPOUND_WRITER_DROP_MARKER") == null);
 }
+
+test "TreeShaking: unused worklet metadata assignments do not keep pure modules live" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './node_modules/worklet-pkg/lib';
+        \\console.log('WORKLET_METADATA_ENTRY');
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/package.json",
+        \\{"name":"worklet-pkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/lib.ts",
+        \\export {};
+        \\class ReanimatedError extends Error {}
+        \\function validateAnimatedStyles(styles) {
+        \\  if (typeof styles !== 'object') throw new ReanimatedError('bad');
+        \\}
+        \\validateAnimatedStyles.__workletHash = 4291796598;
+        \\validateAnimatedStyles.__closure = {
+        \\  ReanimatedError,
+        \\  ReanimatedError__classFactory: ReanimatedError.classFactory,
+        \\};
+        \\validateAnimatedStyles.__initData = { code: 'function validateAnimatedStyles(){}' };
+        \\validateAnimatedStyles.__stackDetails = [new global.Error(), -3, -27];
+        \\validateAnimatedStyles.__pluginVersion = '0.7.2';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "WORKLET_METADATA_ENTRY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "validateAnimatedStyles") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__workletHash") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ReanimatedError") == null);
+}
+
+test "TreeShaking: unused worklet metadata assignments are dropped when sibling exports stay live" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { useAnimatedStyle } from './node_modules/worklet-pkg/useAnimatedStyle';
+        \\console.log(useAnimatedStyle({ onFrame: true }));
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/package.json",
+        \\{"name":"worklet-pkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/utils.ts",
+        \\class ReanimatedError extends Error {}
+        \\export function isAnimated(prop) {
+        \\  return !!prop.onFrame;
+        \\}
+        \\isAnimated.__workletHash = 125899194;
+        \\isAnimated.__closure = {};
+        \\export function shallowEqual(a, b) {
+        \\  return Object.keys(a).length === Object.keys(b).length;
+        \\}
+        \\shallowEqual.__workletHash = 125899195;
+        \\shallowEqual.__closure = {};
+        \\export function validateAnimatedStyles(styles) {
+        \\  throw new ReanimatedError('VALIDATE_ANIMATED_STYLES_MARKER');
+        \\}
+        \\validateAnimatedStyles.__workletHash = 4291796598;
+        \\validateAnimatedStyles.__closure = {
+        \\  ReanimatedError,
+        \\  ReanimatedError__classFactory: ReanimatedError.classFactory,
+        \\};
+        \\validateAnimatedStyles.__initData = { code: 'function validateAnimatedStyles(){}' };
+        \\validateAnimatedStyles.__stackDetails = [new global.Error(), -3, -27];
+        \\validateAnimatedStyles.__pluginVersion = '0.7.2';
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/useAnimatedStyle.ts",
+        \\import { isAnimated, shallowEqual, validateAnimatedStyles } from './utils';
+        \\export function useAnimatedStyle(style) {
+        \\  if (__DEV__) {
+        \\    validateAnimatedStyles(style);
+        \\  }
+        \\  return isAnimated(style) && shallowEqual({ a: 1 }, { a: 1 });
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .platform = .react_native,
+        .define = &.{.{ .key = "__DEV__", .value = "false" }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "onFrame") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "shallowEqual") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "validateAnimatedStyles") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "4291796598") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "VALIDATE_ANIMATED_STYLES_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ReanimatedError") == null);
+}
+
+test "TreeShaking: native worklet transform does not leave metadata for dead dev-only export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { useAnimatedStyle } from './node_modules/worklet-pkg/useAnimatedStyle';
+        \\console.log(useAnimatedStyle({ onFrame: true }));
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/package.json",
+        \\{"name":"worklet-pkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/utils.ts",
+        \\class ReanimatedError extends Error {}
+        \\export function isAnimated(prop) {
+        \\  'worklet';
+        \\  return !!prop.onFrame;
+        \\}
+        \\export function shallowEqual(a, b) {
+        \\  'worklet';
+        \\  return Object.keys(a).length === Object.keys(b).length;
+        \\}
+        \\export function validateAnimatedStyles(styles) {
+        \\  'worklet';
+        \\  throw new ReanimatedError('VALIDATE_ANIMATED_STYLES_MARKER');
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/worklet-pkg/useAnimatedStyle.ts",
+        \\import { isAnimated, shallowEqual, validateAnimatedStyles } from './utils';
+        \\export function useAnimatedStyle(style) {
+        \\  if (__DEV__) {
+        \\    validateAnimatedStyles(style);
+        \\  }
+        \\  return isAnimated(style) && shallowEqual({ a: 1 }, { a: 1 });
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .platform = .react_native,
+        .worklet_transform = true,
+        .define = &.{.{ .key = "__DEV__", .value = "false" }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "onFrame") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "validateAnimatedStyles") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "VALIDATE_ANIMATED_STYLES_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ReanimatedError") == null);
+}
