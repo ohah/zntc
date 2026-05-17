@@ -75,12 +75,15 @@ pub fn isWrapperBarrel(self: anytype, m: *const Module) bool {
 pub fn computeBarrelFlags(m: *Module) void {
     var is_wrapper = false;
     var has_local = false;
+    var default_named_local = false;
     for (m.export_bindings) |eb| {
         if (eb.isDefaultDirectReExport()) is_wrapper = true;
         if (eb.kind == .local) has_local = true;
+        if (eb.isNamedLocalDefault()) default_named_local = true;
     }
     m.is_wrapper_barrel = is_wrapper;
     m.has_local_export = has_local;
+    m.default_export_named_local = default_named_local;
 }
 
 pub fn nameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {
