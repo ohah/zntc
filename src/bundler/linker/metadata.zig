@@ -176,6 +176,57 @@ pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_import
     return skip_nodes;
 }
 
+fn importDeclarationHasNamespaceSpecifier(ast: *const Ast, import_decl: *const @import("../../parser/ast.zig").Node) bool {
+    const ie = import_decl.data.extra;
+    if (ie + 2 >= ast.extra_data.items.len) return false;
+    const specs_start = ast.extra_data.items[ie];
+    const specs_len = ast.extra_data.items[ie + 1];
+    if (specs_len == 0) return false;
+    if (specs_start + specs_len > ast.extra_data.items.len) return false;
+
+    for (ast.extra_data.items[specs_start .. specs_start + specs_len]) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[raw_idx].tag == .import_namespace_specifier) return true;
+    }
+    return false;
+}
+
+fn markReactNativeWrappedBindingImports(
+    self: *const Linker,
+    ast: *const Ast,
+    module: *const Module,
+    skip_nodes: *std.DynamicBitSet,
+) !void {
+    if (self.graph.resolve_cache.platform != .react_native) return;
+    if (!module.wrap_kind.isWrapped()) return;
+
+    var linked_specifiers = std.StringHashMap(void).init(self.allocator);
+    defer linked_specifiers.deinit();
+    for (module.import_records) |rec| {
+        try linked_specifiers.put(rec.specifier, {});
+    }
+    if (linked_specifiers.count() == 0) return;
+
+    for (ast.nodes.items, 0..) |inode, inode_idx| {
+        if (inode.tag != .import_declaration) continue;
+        const ie = inode.data.extra;
+        if (ie + 3 > ast.extra_data.items.len) continue;
+        const specs_len = ast.extra_data.items[ie + 1];
+        if (specs_len == 0) continue;
+        if (importDeclarationHasNamespaceSpecifier(ast, &inode)) continue;
+
+        const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[ie + 2]);
+        if (source_idx.isNone()) continue;
+        const src_node = ast.getNode(source_idx);
+        if (src_node.tag != .string_literal) continue;
+        const raw = ast.getText(src_node.data.string_ref);
+        const spec = Ast.stripStringQuotes(raw);
+        if (linked_specifiers.contains(spec)) {
+            skip_nodes.set(inode_idx);
+        }
+    }
+}
+
 /// rename 문자열을 dupe 해서 metadata 가 소유하도록 저장 (#2429). canonical_strings /
 /// unified_result 의 borrowed slice 는 per-chunk recompute 또는 deinit 시 freed →
 /// 0xAA UAF 발생. dupe + owned 추적으로 회피.
@@ -250,8 +301,11 @@ pub fn buildMetadataForAst(
     // scope hoisted ESM 타겟에 대한 rename/preamble도 생성.
     if (m.wrap_kind.isWrapped() and m.semantic == null) {
         const node_count = ast.nodes.items.len;
+        var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        errdefer skip_nodes.deinit();
+        try markReactNativeWrappedBindingImports(self, ast, &m, &skip_nodes);
         return .{
-            .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
+            .skip_nodes = skip_nodes,
             .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
             .final_exports = null,
             .symbol_ids = &.{},
@@ -273,6 +327,7 @@ pub fn buildMetadataForAst(
         break :blk result;
     };
     errdefer skip_nodes.deinit();
+    try markReactNativeWrappedBindingImports(self, ast, &m, &skip_nodes);
 
     var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
     errdefer renames.deinit();
@@ -771,7 +826,10 @@ pub fn buildMetadataForAst(
         if (m.wrap_kind.isWrapped()) {
             var hoisted_specifiers = std.StringHashMap(void).init(self.allocator);
             defer hoisted_specifiers.deinit();
+            var linked_specifiers = std.StringHashMap(void).init(self.allocator);
+            defer linked_specifiers.deinit();
             for (m.import_records, 0..) |rec, rec_i| {
+                try linked_specifiers.put(rec.specifier, {});
                 if (rec.resolved.isNone()) {
                     // Lazy barrel tree-shaking can intentionally leave unrequested
                     // static import records unresolved. The source AST still has
@@ -814,11 +872,12 @@ pub fn buildMetadataForAst(
                 }
             }
             // AST에서 해당 specifier의 import_declaration 노드를 skip
-            if (hoisted_specifiers.count() > 0) {
+            if (hoisted_specifiers.count() > 0 or linked_specifiers.count() > 0) {
                 for (ast.nodes.items, 0..) |inode, inode_idx| {
                     if (inode.tag != .import_declaration) continue;
                     const ie = inode.data.extra;
                     if (ie + 3 > ast.extra_data.items.len) continue;
+                    const specs_len = ast.extra_data.items[ie + 1];
                     const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[ie + 2]);
                     if (source_idx.isNone()) continue;
                     const src_node = ast.getNode(source_idx);
@@ -826,6 +885,25 @@ pub fn buildMetadataForAst(
                     const raw = ast.getText(src_node.data.string_ref);
                     const spec = Ast.stripStringQuotes(raw);
                     if (hoisted_specifiers.contains(spec)) {
+                        skip_nodes.set(inode_idx);
+                    } else if (specs_len > 0 and linked_specifiers.contains(spec) and !importDeclarationHasNamespaceSpecifier(ast, &inode)) {
+                        // Wrapped ESM lowers retained import declarations as CJS
+                        // assignments in the factory body. For named/default
+                        // imports, linker metadata already represents the value
+                        // through canonical renames or preamble/init calls. If a
+                        // binding import declaration reaches body codegen here,
+                        // React Native IIFE has no global require and crashes.
+                        // Namespace imports are the exception: body codegen may
+                        // need to assign the namespace object value, so keep them
+                        // unless the target-specific branch above marked them.
+                        skip_nodes.set(inode_idx);
+                    } else if (specs_len > 0 and !linked_specifiers.contains(spec)) {
+                        // Tree-shaking can remove an unrequested barrel import
+                        // record while the transformed AST still contains the
+                        // original import declaration. Wrapped module codegen
+                        // lowers remaining import declarations to require().
+                        // React Native has no global require in that factory
+                        // scope, so orphaned binding imports must be elided here.
                         skip_nodes.set(inode_idx);
                     }
                 }

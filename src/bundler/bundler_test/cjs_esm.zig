@@ -2310,6 +2310,127 @@ test "ESM wrapped static import under strict order does not emit raw require" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./queryOptions.js\")") == null);
 }
 
+test "ESM wrapped barrel namespace import under strict order does not emit raw require" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("node_modules/@tanstack/react-query/build/modern");
+    try tmp.dir.makePath("node_modules/@tanstack/query-core/build/modern");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ReactQuery from '@tanstack/react-query';
+        \\console.log(ReactQuery.useQueries(), ReactQuery.QueryClientProvider());
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/package.json",
+        \\{
+        \\  "name": "@tanstack/react-query",
+        \\  "type": "module",
+        \\  "main": "build/legacy/index.cjs",
+        \\  "module": "build/legacy/index.js",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": { "default": "./build/modern/index.js" },
+        \\      "require": { "default": "./build/modern/index.cjs" }
+        \\    }
+        \\  },
+        \\  "sideEffects": false
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/query-core/package.json",
+        \\{
+        \\  "name": "@tanstack/query-core",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": { "import": { "default": "./build/modern/index.js" } }
+        \\  },
+        \\  "sideEffects": false
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/query-core/build/modern/index.js",
+        \\export const QueryClient = 'core-client';
+        \\export const skipToken = 'skip-token';
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/types.js",
+        \\export {};
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/index.js",
+        \\export * from "@tanstack/query-core";
+        \\export * from "./types.js";
+        \\import { useQueries } from './useQueries.js';
+        \\import { useQuery } from './useQuery.js';
+        \\import { useMutation } from './useMutation.js';
+        \\import { QueryClientProvider, useQueryClient } from './QueryClientProvider.js';
+        \\import { HydrationBoundary } from './HydrationBoundary.js';
+        \\import { QueryErrorResetBoundary, useQueryErrorResetBoundary } from './QueryErrorResetBoundary.js';
+        \\export {
+        \\  useQueries,
+        \\  useQuery,
+        \\  useMutation,
+        \\  QueryClientProvider,
+        \\  useQueryClient,
+        \\  HydrationBoundary,
+        \\  QueryErrorResetBoundary,
+        \\  useQueryErrorResetBoundary,
+        \\};
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/useQueries.js",
+        \\export function useQueries() {
+        \\  return 'queries';
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/useQuery.js",
+        \\export function useQuery() {
+        \\  return 'query';
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/useMutation.js",
+        \\export function useMutation() {
+        \\  return 'mutation';
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js",
+        \\export function QueryClientProvider() {
+        \\  return 'provider';
+        \\}
+        \\export function useQueryClient() {
+        \\  return 'client';
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/HydrationBoundary.js",
+        \\export function HydrationBoundary() {
+        \\  return 'hydration';
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/@tanstack/react-query/build/modern/QueryErrorResetBoundary.js",
+        \\export function QueryErrorResetBoundary() {
+        \\  return 'boundary';
+        \\}
+        \\export function useQueryErrorResetBoundary() {
+        \\  return 'reset';
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "queries") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "provider") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./useQueries.js\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./QueryClientProvider.js\")") == null);
+}
+
 // ============================================================
 // `.cjs` / `.cts` 는 Node CommonJS 컨벤션상 ESM 구문 (`import`/`export`) 거부.
 // 이전엔 graph/parser_setup.zig 가 모든 모듈을 is_module=true 로 promote 해서
