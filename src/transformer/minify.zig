@@ -33,6 +33,44 @@ const numeric = @import("minify/numeric.zig");
 const unused_expr = @import("minify/unused_expr.zig");
 const string_escape = @import("../string_escape.zig");
 const debug_log = @import("../debug_log.zig");
+const module_parser = @import("../parser/module.zig");
+
+// RFC #3411 PR-1: bundle-context `export const X=...` 는 codegen 이 bare
+// `const X=...` 로 출력하나 AST tag 는 `.export_named_declaration` 으로 남아
+// 기존 decl-coalescing(tryMergeWithPrev, `.variable_declaration` 만)에서
+// 원천 제외된다 (effect 841 미병합). 이제 export-wrapper 도 병합 후보로
+// 인식 — `export const a=1,b=2;` 는 ESM 어디서나 valid 하고 export↔
+// non-export 혼합 가드(resolveMergeableVarDecl.is_export 동치)가 intrinsic
+// 이라 build-mode 무관 안전. 측정: effect −2.0%, 전수 144-lib 회귀 0,
+// 27 lib 개선. `ZNTC_NO_DECL_COALESCE` 는 kill-switch (회귀 시 강제 비활성
+// → pre-PR byte-identical). force-ON 미제공 (footgun 회피).
+const decl_coalesce_disabled = @import("../env_flag.zig").Once("ZNTC_NO_DECL_COALESCE");
+
+/// statement 노드를 "병합 가능한 내부 variable_declaration + export 여부" 로
+/// 해석. plain `.variable_declaration` → {ni, is_export=false}. flag on 시
+/// `.export_named_declaration` 중 *specifier/source/attrs 없는 local
+/// `export const/let/var X=...`* → {inner_decl_ni, is_export=true}.
+/// 그 외 (export {a} from / export * / export default / specifier-only) →
+/// null (비대상 — 안전 우선).
+const MergeableDecl = struct { vardecl_ni: u32, is_export: bool };
+
+fn resolveMergeableVarDecl(ast: *const Ast, ni: u32) ?MergeableDecl {
+    if (ni >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[ni];
+    if (node.tag == .variable_declaration) return .{ .vardecl_ni = ni, .is_export = false };
+    if (decl_coalesce_disabled.enabled()) return null;
+    if (node.tag != .export_named_declaration) return null;
+    // 방어: 파서 불변상 export_named_declaration 은 항상 6슬롯이나, 코드베이스
+    // 관례(metadata.zig/binding_scanner.zig 의 `e+N >= len` 가드)와 일치시켜
+    // extras read 전 바운드 확인 (transformer 가 이 tag 를 생성하진 않음).
+    if (@as(usize, node.data.extra) + 6 > ast.extra_data.items.len) return null;
+    const x = module_parser.readExportNamedExtras(ast, node.data.extra);
+    if (x.decl.isNone() or x.specs_len != 0 or !x.source.isNone() or x.attrs_len != 0) return null;
+    const decl_ni: u32 = @intFromEnum(x.decl);
+    if (decl_ni >= ast.nodes.items.len) return null;
+    if (ast.nodes.items[decl_ni].tag != .variable_declaration) return null;
+    return .{ .vardecl_ni = decl_ni, .is_export = true };
+}
 
 /// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
 /// `symbols` 는 read-only 로 사용한다 — 과거엔 `reference_count` 를 직접 감산했지만,
@@ -2095,8 +2133,7 @@ fn mergeAdjacentDecls(ast: *Ast, node_idx: u32, node: Node, skip_nodes: ?*const 
 fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes: ?*const std.DynamicBitSet) bool {
     if (accumulated.len == 0) return false;
     if (cur_ni >= ast.nodes.items.len) return false;
-    const cur = ast.nodes.items[cur_ni];
-    if (cur.tag != .variable_declaration) return false;
+    const cur_info = resolveMergeableVarDecl(ast, cur_ni) orelse return false;
 
     // prev 탐색 시 skip_nodes 마킹된 항목은 건너뜀 — 이들은 codegen에서도 출력 안 되므로
     // 인접성 기준으로 삼으면 tree-shake 결과와 어긋날 수 있다.
@@ -2115,17 +2152,27 @@ fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes
     if (!found_prev) return false;
 
     if (prev_ni >= ast.nodes.items.len) return false;
-    const prev = ast.nodes.items[prev_ni];
-    if (prev.tag != .variable_declaration) return false;
+    const prev_info = resolveMergeableVarDecl(ast, prev_ni) orelse return false;
 
-    const kind_prev = ast.variableDeclarationKind(prev);
-    const kind_cur = ast.variableDeclarationKind(cur);
+    // correctness 핵심: export↔non-export 혼합 금지. `export const a=1; const b=2;`
+    // 를 한 선언으로 합치면 b 가 잘못 export 되거나 a 가 un-export 됨. 둘 다
+    // plain 이거나 둘 다 export-wrapper 일 때만 병합 (단일파일·번들 양쪽 안전).
+    if (prev_info.is_export != cur_info.is_export) return false;
+
+    const prev_vd = ast.nodes.items[prev_info.vardecl_ni];
+    const cur_vd = ast.nodes.items[cur_info.vardecl_ni];
+    const kind_prev = ast.variableDeclarationKind(prev_vd);
+    const kind_cur = ast.variableDeclarationKind(cur_vd);
     if (kind_prev != kind_cur) return false;
     // `using`/`await using`: declarator 좌→우로 dispose 스택에 push되고 block 끝에서
     // LIFO로 pop되므로, 개별 선언과 merged 선언의 dispose 순서가 동일 → 안전하게 merge.
 
-    const pe = prev.data.extra;
-    const ce = cur.data.extra;
+    // 병합은 *내부* variable_declaration 의 declarator list 에 수행. export-wrapper
+    // 의 경우 prev 의 inner vardecl 에 cur 의 inner declarator 를 이어붙이고 prev
+    // wrapper 는 그대로 두면 emit 시 `export const a=1,b=2;` (또는 번들 ctx 에선
+    // `const a=1,b=2;`) 로 정상. cur (외곽 노드) 은 아래에서 empty_statement 치환.
+    const pe = prev_vd.data.extra;
+    const ce = cur_vd.data.extra;
     if (pe + 2 >= ast.extra_data.items.len) return false;
     if (ce + 2 >= ast.extra_data.items.len) return false;
 
