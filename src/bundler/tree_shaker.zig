@@ -732,6 +732,11 @@ pub const TreeShaker = struct {
     /// (#2683 PR β-2) RN core `module.exports = { get DevSettings() { require('./X') } }`
     /// 같은 single-statement object literal 의 sub-unit 단위 reachability.
     fn lazyRequireMatchedExportUsed(self: *const TreeShaker, mod_idx: u32, rec_span: Span) bool {
+        // `require("./cjs")` returns the whole CJS namespace. If that namespace is
+        // marked live with the "*" sentinel, every lazy getter is observable even
+        // when no individual getter export was recorded as used yet.
+        if (self.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL)) return true;
+
         const m = self.getModule(mod_idx) orelse return true;
         const ast = &(m.ast orelse return true);
         if (mod_idx >= self.module_stmt_infos.len) return true;

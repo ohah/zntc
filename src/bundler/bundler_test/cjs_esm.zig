@@ -1788,6 +1788,70 @@ test "ESM re-export: named re-export from CJS binds via require getter (#1425)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_registry().getAssetByID") != null);
 }
 
+test "CJS raw require namespace keeps lazy getter require target" {
+    // ReactNativePrivateInterface pattern: a CJS namespace is read through raw
+    // require(), then one getter property lazily requires another module. The
+    // namespace read makes every getter observable, including Flow-typed getter
+    // bodies that have no direct named export use yet.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "rn-private.js",
+        \\// @flow strict-local
+        \\import typeof ReactFiberErrorDialog from './dialog.js';
+        \\
+        \\module.exports = {
+        \\  get ReactFiberErrorDialog(): ReactFiberErrorDialog {
+        \\    return require('./dialog.js').default;
+        \\  },
+        \\};
+    );
+    try writeFile(tmp.dir, "dialog.js",
+        \\// @flow strict-local
+        \\export type CapturedError = {
+        \\  +componentStack: string,
+        \\  +error: mixed,
+        \\};
+        \\
+        \\const ReactFiberErrorDialog = {
+        \\  showErrorDialog(_capturedError: CapturedError): boolean {
+        \\    return false;
+        \\  },
+        \\};
+        \\export default ReactFiberErrorDialog;
+    );
+    try writeFile(tmp.dir, "renderer.js",
+        \\const iface = require('./rn-private.js');
+        \\if (typeof iface.ReactFiberErrorDialog.showErrorDialog !== 'function') {
+        \\  throw new Error('missing dialog');
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\require('./renderer.js');
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .flow = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "showErrorDialog") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "missing dialog") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return !1") != null or
+        std.mem.indexOf(u8, result.output, "return!1") != null);
+}
+
 test "ESM namespace import: CJS named re-export member binds via require getter" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
