@@ -4,6 +4,7 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
+const cg_options = @import("options.zig");
 const statement_emit = @import("statements.zig");
 const module_emit = @import("modules.zig");
 const type_runtime_emit = @import("type_runtime.zig");
@@ -185,6 +186,31 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                             return;
                         }
                     }
+                }
+            }
+            // CJS wrapper free `exports`/`module` 참조 치환 (RFC PR-2). wrapper
+            // 파라미터를 짧은 이름으로 바꿀 때 본문 자유참조도 동기화한다.
+            // sym_id == null = 모듈 내 로컬 선언 없음 = __commonJS arrow 파라미터
+            // 를 가리킴 → 사용자 shadow(`var exports`)는 sym_id 가 잡혀 이 분기에
+            // 도달하지 않으므로 자동 제외. property key(`obj.exports`)·string·
+            // computed 는 다른 노드 태그라 미해당. 기본 이름이면 no-op (회귀 0).
+            if (self.options.module_format == .cjs and sym_id == null and
+                (node.tag == .identifier_reference or node.tag == .assignment_target_identifier))
+            {
+                const ident = self.ast.getText(node.data.string_ref);
+                const repl: ?[]const u8 =
+                    if (std.mem.eql(u8, ident, "exports") and
+                    !std.mem.eql(u8, self.options.cjs_exports_name, cg_options.default_cjs_exports_name))
+                        self.options.cjs_exports_name
+                    else if (std.mem.eql(u8, ident, "module") and
+                    !std.mem.eql(u8, self.options.cjs_module_name, cg_options.default_cjs_module_name))
+                        self.options.cjs_module_name
+                    else
+                        null;
+                if (repl) |name| {
+                    try self.addSourceMappingWithName(node.span, ident);
+                    try self.write(name);
+                    return;
                 }
             }
             try self.addSourceMapping(node.span);
