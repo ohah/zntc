@@ -478,14 +478,15 @@ fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
 // Children 역산 (parent -> children adjacency list)
 // ============================================================
 
-const ChildrenList = struct {
+// pub: nested_slots.zig (RFC #3391) 가 parent-only scope tree 의 children 역산에 재사용.
+pub const ChildrenList = struct {
     /// offsets[scope_id] = children_list 내 시작 인덱스. 길이 = scope_count + 1.
     offsets: []u32,
     /// flat children 배열.
     list: []u32,
 };
 
-fn buildChildrenList(allocator: std.mem.Allocator, scopes: []const Scope) !ChildrenList {
+pub fn buildChildrenList(allocator: std.mem.Allocator, scopes: []const Scope) !ChildrenList {
     const n = scopes.len;
 
     // Pass 1: 각 scope의 children 수 카운트
@@ -573,7 +574,8 @@ const SlotSortEntry = struct {
 // mangling 제외 판정
 // ============================================================
 
-fn shouldSkip(sym: Symbol, name: []const u8) bool {
+// pub: nested_slots.zig (RFC #3391) 가 slot namespace 분류에 재사용 (단일 소스).
+pub fn shouldSkip(sym: Symbol, name: []const u8) bool {
     if (sym.isExported()) return true;
     if (sym.decl_flags.is_import) return true;
     // `const Foo = class Bar {}` 의 inner `Bar` (#2197). mangle 시 `.name` 프로퍼티도
