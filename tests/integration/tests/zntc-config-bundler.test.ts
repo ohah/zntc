@@ -298,4 +298,66 @@ describe('Zig CLI: zntc.config.json bundler-only 옵션 (#2105)', () => {
     expect(r.exitCode).toBe(0);
     expect(readFileSync(r.outFile!, 'utf8')).toContain('TSCONFIG_OK');
   });
+
+  // ─── Module Federation config 블록 (#3318 P1-0) ──────────────────────────
+  // P1-0 은 파싱·검증만 — emit 미연결. 유효 mf 는 빌드 정상(출력 불변),
+  // 무효 mf 는 config 검증 경고가 stderr 로 표면화(기존 config-error 정책:
+  // non-fatal warn). emit/소비는 P1-1+. mf 는 **record 형태**(public TS
+  // 타입·MF2 생태계와 동일, define/alias 의 array 관례와 다름) — zntc DTO
+  // 가 std.json.ArrayHashMap 으로 직접 파싱, 변환 계층 없음. 사용자가
+  // 문서/타입대로 쓰는 그 경로를 그대로 검증.
+
+  test('mf: 유효 config 블록(name/exposes/remotes/shared/shareScope) 파싱 성공', async () => {
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `console.log("mf-ok");`,
+        'zntc.config.json': JSON.stringify({
+          mf: {
+            name: 'app',
+            exposes: { './Widget': './widget.ts' },
+            remotes: { remoteA: 'remoteA@http://localhost/mf-manifest.json' },
+            shared: { react: { singleton: true, requiredVersion: '^18' } },
+            shareScope: 'default',
+          },
+        }),
+      },
+    });
+    cleanup = r.cleanup;
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).not.toContain('load failed');
+    // emit 미연결 — 출력은 일반 번들 그대로
+    expect(readFileSync(r.outFile!, 'utf8')).toContain('mf-ok');
+  });
+
+  test('mf: exposes 인데 name 없으면 검증 경고(MfNameRequired) 표면화', async () => {
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `console.log("mf-bad");`,
+        'zntc.config.json': JSON.stringify({
+          mf: { exposes: { './Widget': './widget.ts' } },
+        }),
+      },
+    });
+    cleanup = r.cleanup;
+
+    // 기존 config-error 정책상 non-fatal warn — stderr 로 검증 실패 표면화
+    expect(r.stderr).toContain('load failed');
+    expect(r.stderr).toContain('MfNameRequired');
+  });
+
+  test('mf: shared-only(host) 는 name 없이도 유효', async () => {
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `console.log("host");`,
+        'zntc.config.json': JSON.stringify({
+          mf: { shared: { react: { singleton: true } } },
+        }),
+      },
+    });
+    cleanup = r.cleanup;
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).not.toContain('load failed');
+  });
 });

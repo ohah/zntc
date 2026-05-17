@@ -56,6 +56,7 @@ const bundler_only_fields = [_][]const u8{
     "manualChunks",
     "sourcemapMode",
     "outputExports",
+    "mf", // Module Federation config 블록 (#3318 P1-0)
 };
 
 /// TS interface 본문에서 필드명을 추출한다. 간단 파서: `interface <name> {` 블록

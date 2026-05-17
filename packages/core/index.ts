@@ -618,6 +618,33 @@ type BuildTarget = import('../shared/index').Target | (string & {});
  * Common build options shared by all platforms.
  * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
  */
+/** Module Federation `shared` 의존 옵션 (MF2 `SharedConfig` 부분집합, #3318). */
+export interface MfSharedConfig {
+  singleton?: boolean;
+  requiredVersion?: string;
+  strictVersion?: boolean;
+  eager?: boolean;
+}
+
+/** Module Federation config 블록 (#3318 P1-0). webpack/rspack
+ * `ModuleFederationPlugin` 과 동형 record 형태 — `@module-federation/runtime`
+ * 계약 타겟. **P1-0 은 zntc.config 파싱·검증만**(emit 미연결, P1-1+ 소비;
+ * build()/NAPI mf 추출도 P1-1+). `shared` array/boolean shorthand 는
+ * P1-1+ — P1-0 은 record-of-object 만. */
+export interface ModuleFederationConfig {
+  /** remote 식별자. `exposes`/`remotes` 사용 시 필수. */
+  name?: string;
+  /** 노출 모듈: `{ "./Widget": "./src/Widget.tsx" }`. */
+  exposes?: Record<string, string>;
+  /** 소비 remote: `{ remoteA: "remoteA@https://…/mf-manifest.json" }`. */
+  remotes?: Record<string, string>;
+  /** 공유 의존: `{ react: { singleton: true, requiredVersion: "^18" } }`.
+   * (P1-0: record-of-object 만. boolean/array shorthand 는 P1-1+.) */
+  shared?: Record<string, MfSharedConfig>;
+  /** share scope 이름 (기본 `"default"`). */
+  shareScope?: string;
+}
+
 interface BuildOptionsCommon {
   entryPoints: string[];
   format?: 'esm' | 'cjs' | 'iife' | 'umd' | 'amd';
@@ -641,6 +668,10 @@ interface BuildOptionsCommon {
    * 바이트 미만인 작은 common 청크를, 도달성이 상위집합인(over-fetch 없는)
    * 청크로 자동 병합. entry/manual/dynamic 청크는 보존. 0/미지정 = 비활성. */
   minChunkSize?: number;
+  /** Module Federation 설정 (#3318 P1-0). 파싱·검증만 — emit 은 후속(P1-1+).
+   * nested 객체라 config/`build()` 전용(CLI flag 없음 — 생태계 전부
+   * config-driven). MF2 계약(`name`/`exposes`/`remotes`/`shared`/`shareScope`). */
+  mf?: ModuleFederationConfig;
   sourcemap?: boolean;
   /**
    * sourcemap 출력 형식 (`sourcemap: true` 일 때만 의미). esbuild / rolldown 호환 (#2152).

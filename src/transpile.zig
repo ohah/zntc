@@ -38,6 +38,8 @@ pub const TranspileOptionsDto = transpile_options.TranspileOptionsDto;
 pub const AliasDto = transpile_options.AliasDto;
 pub const ManualChunkDto = transpile_options.ManualChunkDto;
 pub const LoaderDto = transpile_options.LoaderDto;
+pub const MfConfigDto = transpile_options.MfConfigDto;
+pub const validateMf = transpile_options.validateMf;
 pub const applyTranspileSharedFields = transpile_options.applyTranspileSharedFields;
 pub const optionsFromJson = transpile_options.optionsFromJson;
 
