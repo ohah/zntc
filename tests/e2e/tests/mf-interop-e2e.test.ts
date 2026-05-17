@@ -17,9 +17,11 @@ import { serve, closeServer } from './serve';
  * 실브라우저에서 닫는다: **mf-manifest.json entry + http(cross-origin) chunk**
  * 전체경로(P1-5/P1-6 주석이 "P1-7" 로 명시한 갭).
  *
- * S4 역방향(zntc host → 표준 rspack+@module-federation/enhanced remote)은
- * RFC §8.1 상 P1-비차단(S3 가 양방향 *계약* 증명 + Node host-emit 스모크가
- * zntc-host 로직 박제) → 별도 후속 이슈.
+ * S4 역방향(#3415): zntc-emit host(P1-6) 가 실 @module-federation/runtime
+ * 으로 **표준 rspack+@module-federation/[email protected] remote**(remoteEntry.js
+ * +mf-manifest.json)를 manifest-driven 소비. rspack remote 는 테스트 런타임
+ * spawnSync 빌드(temp fixture, abs-path 로 cli/enhanced 해소 — 산출은
+ * throwaway, 동작만 영구 박제). S3+S4 = 실브라우저 양방향 interop.
  */
 const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
 
@@ -31,6 +33,45 @@ function runtimeEsmEntry(): string {
   const pkgJson = req.resolve('@module-federation/runtime/package.json');
   const pkg = req(pkgJson) as { module?: string; main: string };
   return resolve(dirname(pkgJson), pkg.module ?? pkg.main);
+}
+
+// @rspack/cli 실행 bin 절대경로(e2e devDep). temp fixture 라 bare resolve
+// 불가 → 워크스페이스에서 abs 해소 후 `node <bin>` 실행(rspack 은 자기 위치
+// 기준으로 @rspack/core·loader 해소 — temp dir node_modules 불요).
+function rspackBin(): string {
+  const req = createRequire(join(__dirname, 'noop.js'));
+  const cliPkg = req.resolve('@rspack/cli/package.json');
+  const cli = req(cliPkg) as { bin: string | Record<string, string> };
+  return resolve(dirname(cliPkg), typeof cli.bin === 'string' ? cli.bin : cli.bin.rspack);
+}
+
+// @module-federation/enhanced 의 rspack ModuleFederationPlugin 진입 abs
+// (rspack.config.cjs 가 abs require — temp fixture 에 node_modules 없음).
+function enhancedRspackPath(): string {
+  return createRequire(join(__dirname, 'noop.js')).resolve('@module-federation/enhanced/rspack');
+}
+
+// zntc 로 표준 @module-federation/runtime(ESM, bare nested deps)을 iife glue
+// 로 번들 → host 페이지가 <script> 로 먼저 로드해 globalThis.__mf_runtime
+// 제공(P1-6 글로벌-seam 짝). S3/S4 공용.
+async function buildGlue(hostDir: string): Promise<void> {
+  await writeFile(
+    join(hostDir, 'glue.ts'),
+    `import * as mf from ${JSON.stringify(runtimeEsmEntry())};\nglobalThis.__mf_runtime = mf;`,
+  );
+  const gb = spawnSync(
+    ZNTC_BIN,
+    [
+      '--bundle',
+      join(hostDir, 'glue.ts'),
+      '-o',
+      join(hostDir, 'glue.js'),
+      '--format=iife',
+      '--platform=browser',
+    ],
+    { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+  );
+  expect(gb.status, `zntc glue build: ${gb.stderr?.toString().slice(0, 500)}`).toBe(0);
 }
 
 test('S3 정방향: 표준 @module-federation/runtime(실브라우저) 가 zntc remote 를 manifest-driven 소비', async ({
@@ -78,25 +119,7 @@ test('S3 정방향: 표준 @module-federation/runtime(실브라우저) 가 zntc 
     );
     expect(rb.status, `zntc remote build: ${rb.stderr?.toString().slice(0, 500)}`).toBe(0);
 
-    // zntc 로 표준 runtime → iife glue 번들(globalThis.__mf_runtime 제공).
-    await writeFile(
-      join(hostDir, 'glue.ts'),
-      `import * as mf from ${JSON.stringify(runtimeEsmEntry())};\n` +
-        `globalThis.__mf_runtime = mf;`,
-    );
-    const gb = spawnSync(
-      ZNTC_BIN,
-      [
-        '--bundle',
-        join(hostDir, 'glue.ts'),
-        '-o',
-        join(hostDir, 'glue.js'),
-        '--format=iife',
-        '--platform=browser',
-      ],
-      { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
-    );
-    expect(gb.status, `zntc glue build: ${gb.stderr?.toString().slice(0, 500)}`).toBe(0);
+    await buildGlue(hostDir);
 
     // host 페이지: glue 먼저 → 표준 runtime init/loadRemote(manifest entry).
     await writeFile(
@@ -158,6 +181,129 @@ test('S3 정방향: 표준 @module-federation/runtime(실브라우저) 가 zntc 
     if (remoteSrv) await closeServer(remoteSrv.server);
     if (hostSrv) await closeServer(hostSrv.server);
     await rm(remoteDir, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
+
+test('S4 역방향: zntc host(실브라우저) 가 표준 rspack+@module-federation/enhanced remote 소비', async ({
+  page,
+}) => {
+  // rspack remote 빌드 1회(cold, 네이티브 binding 첫 로드 — CI 느림) +
+  // zntc 빌드 2회(host/glue) + wait. CI cold 마진 확보 위해 180s.
+  test.setTimeout(180_000);
+  const rspackDir = await mkdtemp(join(tmpdir(), 'rspack-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-host-'));
+  let remoteSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const rspackDist = join(rspackDir, 'dist');
+    await mkdir(join(rspackDir, 'src'), { recursive: true });
+    remoteSrv = await serve(rspackDist, { 'Access-Control-Allow-Origin': '*' });
+    const rOrigin = `http://localhost:${remoteSrv.port}`;
+
+    // 표준 rspack+enhanced remote fixture. `.mjs` = 모호성 없는 ESM(rspack
+    // 이 type 추론 불요). config 는 require → `.cjs`, enhanced 는 abs.
+    // @module-federation/manifest StatsManager.getBuildInfo 가 package.json
+    // `name` 을 읽음 → 없으면 crash. 최소 매니페스트 제공.
+    await writeFile(
+      join(rspackDir, 'package.json'),
+      JSON.stringify({ name: 'rspack-remote', version: '1.0.0', private: true }),
+    );
+    await writeFile(
+      join(rspackDir, 'src', 'Card.mjs'),
+      `export default function Card() { return "RSPACK-REMOTE-OK"; }`,
+    );
+    await writeFile(join(rspackDir, 'src', 'index.mjs'), `export const sentinel = 1;`);
+    await writeFile(
+      join(rspackDir, 'rspack.config.cjs'),
+      `const { ModuleFederationPlugin } = require(${JSON.stringify(enhancedRspackPath())});\n` +
+        `module.exports = { mode: 'production', devtool: false, target: 'web',\n` +
+        `  entry: ${JSON.stringify(join(rspackDir, 'src', 'index.mjs'))},\n` +
+        `  output: { path: ${JSON.stringify(rspackDist)}, publicPath: ${JSON.stringify(
+          `${rOrigin}/`,
+        )}, clean: true },\n` +
+        `  plugins: [ new ModuleFederationPlugin({ name: 'remote_mf2',` +
+        ` filename: 'remoteEntry.js',` +
+        ` exposes: { './Card': ${JSON.stringify(join(rspackDir, 'src', 'Card.mjs'))} } }) ] };`,
+    );
+    const rs = spawnSync(
+      process.execPath,
+      [rspackBin(), 'build', '-c', join(rspackDir, 'rspack.config.cjs')],
+      { cwd: rspackDir, stdio: 'pipe', timeout: 100000 },
+    );
+    expect(
+      rs.status,
+      `rspack remote build: ${rs.stderr?.toString().slice(0, 600)}${rs.stdout
+        ?.toString()
+        .slice(0, 400)}`,
+    ).toBe(0);
+    // 표준 remote 산출 계약(P1-5 가 zntc 측으로 박제한 것의 표준 원본)
+    expect((await readFile(join(rspackDist, 'mf-manifest.json'), 'utf8')).length).toBeGreaterThan(
+      0,
+    );
+
+    // zntc host: P1-6 emit(init prelude + import("remote/x")→loadRemote).
+    await writeFile(
+      join(hostDir, 'index.ts'),
+      `async function main(){ const m = await import("remote_mf2/Card");` +
+        ` document.getElementById("out").textContent = (m && (m.default || m))();` +
+        ` window.__done = true; }\n` +
+        `main().catch((e) => { window.__err = String((e && e.stack) || e); window.__done = true; });`,
+    );
+    await writeFile(
+      join(hostDir, 'zntc.config.json'),
+      JSON.stringify({
+        mf: { name: 'host', remotes: { remote_mf2: `remote_mf2@${rOrigin}/mf-manifest.json` } },
+      }),
+    );
+    const hb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(hostDir, 'index.ts'),
+        '-o',
+        join(hostDir, 'host.js'),
+        '--format=iife',
+        '--platform=browser',
+      ],
+      { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(hb.status, `zntc host build: ${hb.stderr?.toString().slice(0, 500)}`).toBe(0);
+
+    await buildGlue(hostDir);
+    // glue(__mf_runtime) → zntc host(prelude init + loadRemote 재작성).
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script></head><body><div id="out">pending</div>` +
+        `<script src="./host.js"></script></body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    // manifest-driven 증명(S3 대칭): runtime 이 rspack remote 의
+    // mf-manifest.json 을 cross-origin http 로 실제 fetch.
+    const seen: Record<string, number> = {};
+    page.on('response', (r) => {
+      if (r.url() === `${rOrigin}/mf-manifest.json`) seen.manifest = r.status();
+    });
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 15000,
+    });
+
+    const err = await page.evaluate(() => (window as { __err?: string }).__err);
+    expect(err, `zntc host runtime error: ${err}`).toBeFalsy();
+    // zntc-emit host 가 실 @module-federation/runtime 으로 표준 rspack
+    // remote 의 expose 를 manifest-driven 소비·렌더
+    expect(await page.locator('#out').textContent()).toBe('RSPACK-REMOTE-OK');
+    expect(seen.manifest, 'rspack remote mf-manifest.json fetched').toBe(200);
+    expect(errors, `browser errors: ${errors.join(', ')}`).toHaveLength(0);
+  } finally {
+    if (remoteSrv) await closeServer(remoteSrv.server);
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(rspackDir, { recursive: true, force: true });
     await rm(hostDir, { recursive: true, force: true });
   }
 });
