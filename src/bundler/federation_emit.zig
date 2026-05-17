@@ -213,6 +213,29 @@ pub fn verifyHostContract(
             else => continue,
         };
         defer rc.deinit();
+        // P3-3: 무결성 — sidecar(P2-2 SHA-256)/`.sig`(P2-3 Ed25519)와
+        // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임
+        // 절반). sidecar/sig 부재·malformed = 검증 불가 ≠ 위반 → expose/
+        // shared 로 진행(continue 아님 — 무결성 미검증이 P3-1/2 를 건너뛰면
+        // 안 됨). 정밀 fail-fast: 확정 변조만 차단.
+        mf_contract.verifyIntegrity(allocator, cwd, r.entry) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.MfIntegrityMismatch => {
+                std.log.err(
+                    "zntc: MF 무결성 위반 — remote \"{s}\" 의 mf-manifest.json 이 sidecar(.integrity.json) SHA-256 과 불일치 (stale 또는 변조; 빌드 차단 — remote 재배포 필요)",
+                    .{kv.key},
+                );
+                return error.MfIntegrityMismatch;
+            },
+            error.MfIntegritySignatureInvalid => {
+                std.log.err(
+                    "zntc: MF 서명 위반 — remote \"{s}\" 의 sidecar Ed25519 `.sig` 검증 실패 (변조 또는 잘못된 키; 빌드 차단)",
+                    .{kv.key},
+                );
+                return error.MfIntegritySignatureInvalid;
+            },
+            else => {}, // 검증 불가(sidecar 부재/malformed/network) → 진행
+        };
         // P3-1: expose 존재
         if (!exposeListed(rc.exposes, h.spec, kv.key)) {
             std.log.err(
