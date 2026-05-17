@@ -24,6 +24,7 @@ pub const FunctionMapBuilder = function_map.FunctionMapBuilder;
 pub const mangler = @import("mangler.zig");
 pub const unified_mangler = @import("unified_mangler.zig");
 pub const nested_slots = @import("nested_slots.zig");
+pub const minify_renamer = @import("minify_renamer.zig");
 
 test {
     _ = codegen;
@@ -33,6 +34,7 @@ test {
     _ = mangler;
     _ = unified_mangler;
     _ = nested_slots;
+    _ = minify_renamer;
 
     // test files
     _ = @import("codegen_test.zig");

@@ -18,6 +18,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mangler = @import("mangler.zig");
+const minify_renamer = @import("minify_renamer.zig");
 const debug_log = @import("../debug_log.zig");
 const Scope = @import("../semantic/scope.zig").Scope;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
@@ -71,7 +72,8 @@ pub const TopLevelCandidate = struct {
 /// Phase A 빈도순 정렬 비교자. ref_count 내림차순, 동률은 name →
 /// module_index → symbol_id (병렬 파싱 비결정 회피 — name 은 computeRenames
 /// 이후 bundle-wide 유일하므로 결정적).
-fn candidateLessThan(_: void, a: TopLevelCandidate, b: TopLevelCandidate) bool {
+// pub: minify_renamer.zig (RFC #3391 PR-2) 가 동일 결정적 정렬을 재사용 (단일 소스).
+pub fn candidateLessThan(_: void, a: TopLevelCandidate, b: TopLevelCandidate) bool {
     if (a.ref_count != b.ref_count) return a.ref_count > b.ref_count;
     const name_order = std.mem.order(u8, a.name, b.name);
     if (name_order != .eq) return name_order == .lt;
@@ -106,6 +108,11 @@ pub fn mangleAll(
     allocator: std.mem.Allocator,
     input: UnifiedMangleInput,
 ) !UnifiedMangleResult {
+    // RFC #3391 PR-2: env `ZNTC_NESTED_SLOTS=1` 일 때만 nested-slot 경로로
+    // dispatch. default(off) 는 아래 기존 Phase A/B 그대로 → behavior 무변경.
+    // flag on 전수 smoke + 압축률 게이트는 PR-3.
+    if (minify_renamer.enabled()) return minify_renamer.mangleAllNested(allocator, input);
+
     var renames: std.AutoHashMap(ModuleSymKey, []const u8) = .init(allocator);
     errdefer {
         var vit = renames.valueIterator();
