@@ -648,6 +648,7 @@
       "name": "@zntc/e2e",
       "version": "0.1.0",
       "devDependencies": {
+        "@module-federation/runtime": "2.4.0",
         "@playwright/test": "^1.50.0",
       },
     },

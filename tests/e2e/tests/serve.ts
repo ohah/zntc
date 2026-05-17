@@ -14,6 +14,7 @@ const MIME: Record<string, string> = {
   '.js': 'application/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.json': 'application/json; charset=utf-8', // #3318 P1-7: mf-manifest.json
 };
 
 /**
