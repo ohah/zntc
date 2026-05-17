@@ -360,4 +360,28 @@ describe('Zig CLI: zntc.config.json bundler-only 옵션 (#2105)', () => {
     expect(r.exitCode).toBe(0);
     expect(r.stderr).not.toContain('load failed');
   });
+
+  // P1-2 (#3384): mf.shared → external + 글로벌-파라미터 seam 자동 emit.
+  // --external/--globals 플래그 없이 config 만으로 스파이크 S2 메커니즘.
+  test('mf.shared: IIFE 글로벌 seam 자동 emit + shared 비번들', async () => {
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `import { useState } from "react";\nexport function App() { return useState(0); }`,
+        'zntc.config.json': JSON.stringify({
+          mf: { name: 'app', shared: { react: { singleton: true } } },
+        }),
+      },
+      args: ['--format=iife', '--global-name=__app'],
+    });
+    cleanup = r.cleanup;
+
+    expect(r.exitCode).toBe(0);
+    const out = readFileSync(r.outFile!, 'utf8');
+    // container-소유 글로벌 파라미터 seam (P1-3 가 shareScope→이 글로벌 주입)
+    expect(out).toContain('((__mf_shared_react) => {');
+    expect(out).toContain(')(__mf_shared_react);');
+    expect(out).toContain('__mf_shared_react.useState');
+    // react 는 번들에 인라인되지 않음(external — shareScope 에서 옴)
+    expect(out).not.toMatch(/react\/cjs|node_modules[\\/]react/);
+  });
 });
