@@ -19,6 +19,7 @@ const types = @import("types.zig");
 const federation = @import("federation.zig");
 const rt = @import("runtime_helpers.zig");
 const emitter = @import("emitter.zig");
+const mf_contract = @import("mf_contract.zig"); // P3-1 계약 검증 토대(P3-0)
 
 /// 부트스트랩 호출(=entry 청크 식별 앵커). cross-chunk/동적 wrapper 의
 /// `__zntc_require("` 와 달리 `globalThis.` 접두가 붙는 건 부트스트랩뿐
@@ -28,6 +29,10 @@ const BOOTSTRAP_ANCHOR = "globalThis.__zntc_require(\"";
 const MfEmitError = error{RemoteEntryAnchorMissing};
 
 const MF_RUNTIME_GLOBAL = federation.MF_RUNTIME_GLOBAL; // 단일 소스
+
+/// 동적 import 어휘 앵커 — emitHostInit(재작성)·verifyHostExposes(P3-1
+/// 계약 검증)가 같은 스캐너를 공유(단일 소스).
+const IMPORT_NEEDLE = "import(";
 
 /// `mf.remotes` KV.value(`<name>@<entry>`) → (name, entry). `@` 첫 등장
 /// split. name 부분 비면 KV.key fallback. `@` 없으면 value 전체=entry.
@@ -85,35 +90,108 @@ pub fn emitHostInit(
     //    `globalThis.__mf_runtime.loadRemote(<q><remote>...)`. 매칭 외 구간은
     //    appendSlice 청크 복사(바이트별 append 회피 — 출력크기 비례 O(n),
     //    wrapContainer splice 와 동일 관례). `import(` 만 교체, 따옴표·
-    //    specifier·잔여(2nd-arg/attributes 포함)는 그대로 보존. ──
-    const NEEDLE = "import(";
+    //    specifier·잔여(2nd-arg/attributes 포함)는 그대로 보존. 스캔은
+    //    nextRemoteImport 단일 소스(verifyHostExposes 와 규칙 공유). ──
     var last: usize = 0;
     var i: usize = 0;
-    while (std.mem.indexOfPos(u8, src, i, NEEDLE)) |p| {
-        // 식별자 경계 — `myimport(`/`Reimport(` 부분일치 배제.
-        if (p > 0 and isIdentChar(src[p - 1])) {
-            i = p + NEEDLE.len;
+    while (nextRemoteImport(src, mf, &i)) |h| {
+        try out.appendSlice(allocator, src[last..h.p]);
+        try w.print("globalThis.{s}.loadRemote(", .{MF_RUNTIME_GLOBAL});
+        last = h.p + IMPORT_NEEDLE.len; // 따옴표부터는 다음 flush 가 보존
+    }
+    try out.appendSlice(allocator, src[last..]);
+    return out.toOwnedSlice(allocator);
+}
+
+const RemoteImportHit = struct { p: usize, spec: []const u8 };
+
+/// host src 의 다음 **원격** 동적 import. `import(` 어휘 스캔 +
+/// federation.matchesRemoteSpec 단일 규칙(런타임 external 판정과 동일).
+/// `i` 는 진행점(in/out) — 다음 호출이 그 뒤부터. 비원격/식별자경계
+/// (`xfoo import(` 의 `myimport(`)·따옴표 없는 동적 import 는 내부에서
+/// skip, 원격 매칭만 반환. emitHostInit(재작성)·verifyHostExposes(P3-1
+/// 계약 검증) 공용 → 스캔·매칭 중복 파서 금지(단일 소스).
+fn nextRemoteImport(src: []const u8, mf: *const types.MfBundleConfig, i: *usize) ?RemoteImportHit {
+    var k = i.*;
+    while (std.mem.indexOfPos(u8, src, k, IMPORT_NEEDLE)) |p| {
+        if (p > 0 and isIdentChar(src[p - 1])) { // `myimport(` 부분일치 배제
+            k = p + IMPORT_NEEDLE.len;
             continue;
         }
-        var j = p + NEEDLE.len;
+        var j = p + IMPORT_NEEDLE.len;
         while (j < src.len and (src[j] == ' ' or src[j] == '\t')) j += 1;
         if (j < src.len and (src[j] == '"' or src[j] == '\'')) {
             const q = src[j];
             const s0 = j + 1;
             if (std.mem.indexOfScalarPos(u8, src, s0, q)) |s1| {
                 if (isRemoteSpec(src[s0..s1], mf)) {
-                    try out.appendSlice(allocator, src[last..p]);
-                    try w.print("globalThis.{s}.loadRemote(", .{MF_RUNTIME_GLOBAL});
-                    last = p + NEEDLE.len; // 따옴표부터는 다음 flush 가 보존
-                    i = last;
-                    continue;
+                    i.* = p + IMPORT_NEEDLE.len;
+                    return .{ .p = p, .spec = src[s0..s1] };
                 }
             }
         }
-        i = p + NEEDLE.len;
+        k = p + IMPORT_NEEDLE.len;
     }
-    try out.appendSlice(allocator, src[last..]);
-    return out.toOwnedSlice(allocator);
+    i.* = k;
+    return null;
+}
+
+fn stripDotSlash(s: []const u8) []const u8 {
+    return if (std.mem.startsWith(u8, s, "./")) s[2..] else s;
+}
+
+/// host import spec(매칭 remote `key`)이 가리키는 expose 가 remote 가
+/// 게시한 계약(`exposes`)에 존재하나. spec==key → 컨테이너 기본 expose
+/// "."(드묾), 아니면 `key/<rest>`. manifest expose 는 mf.exposes 키 그대로
+/// (관례 "./Widget") — 양쪽 선행 "./" 1회 정규화 후 정확 비교.
+fn exposeListed(exposes: []const []const u8, spec: []const u8, key: []const u8) bool {
+    const sub: []const u8 = if (std.mem.eql(u8, spec, key))
+        "."
+    else if (spec.len > key.len + 1 and std.mem.startsWith(u8, spec, key) and spec[key.len] == '/')
+        spec[key.len + 1 ..]
+    else
+        spec; // 방어(matchesRemoteSpec 통과면 위 둘 중 하나)
+    const sn = stripDotSlash(sub);
+    for (exposes) |e| if (std.mem.eql(u8, stripDotSlash(e), sn)) return true;
+    return false;
+}
+
+/// P3-1 (#3436): 빌드타임 expose 계약 검증. host 가 `import("<remote>/
+/// <subpath>")` 하는 expose 가 그 remote 가 게시한 mf-manifest.json 의
+/// exposes 에 **부재**면 빌드 fail-fast(`error.MfHostExposeMissing`) —
+/// 런타임이 깨지는 게 아니라 빌드 단계에서 차단(스파이크 S6). manifest 를
+/// 로컬 resolve 불가(http=네트워크 비-목표 P4 / 부재 / 파싱불가)면
+/// **검증 불가 ≠ 위반** → skip(정밀 fail-fast — 거짓 빌드중단 방지,
+/// http remote·미산출 sibling 의 기존 동작 불변). 검증만 — emit/재작성
+/// 부작용 없음(P3-0 mf_contract 토대 소비, 중복 파서 없음). emitHostInit
+/// 게이트(remotes>0·단일출력)와 동일 적용점에서 emit *전* 호출.
+pub fn verifyHostExposes(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    mf: *const types.MfBundleConfig,
+    cwd: ?[]const u8,
+) !void {
+    var i: usize = 0;
+    while (nextRemoteImport(src, mf, &i)) |h| {
+        const kv = for (mf.remotes) |kv| {
+            if (federation.matchesRemoteSpec(h.spec, kv.key)) break kv;
+        } else continue;
+        const r = parseRemote(kv);
+        // 검증 불가(http=P4 / 부재 / 파싱불가) = 위반 아님 → skip(정밀
+        // fail-fast). 단 OOM 은 빌드 자원 문제 → silent skip 금지, 전파.
+        var rc = mf_contract.loadContract(allocator, cwd, r.entry) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        defer rc.deinit();
+        if (!exposeListed(rc.exposes, h.spec, kv.key)) {
+            std.log.err(
+                "zntc: MF expose 계약 위반 — host import \"{s}\" 가 remote \"{s}\" 의 mf-manifest.json exposes 에 없음 (빌드 차단; remote 재배포 또는 스펙 정렬 필요)",
+                .{ h.spec, kv.key },
+            );
+            return error.MfHostExposeMissing;
+        }
+    }
 }
 
 fn isIdentChar(c: u8) bool {
@@ -445,4 +523,48 @@ pub fn buildManifest(
     }
     try b.appendSlice(allocator, "]}");
     return b.toOwnedSlice(allocator);
+}
+
+// ── P3-1 inline tests (스캔·매칭 순수 로직 — 계약 IO 는 통합테스트) ──
+
+fn tMf(remotes: []const types.MfBundleConfig.KV) types.MfBundleConfig {
+    return .{ .name = "host", .remotes = remotes };
+}
+
+test "nextRemoteImport: 원격만 추출 — 비원격/식별자경계/따옴표없음 skip" {
+    const remotes = [_]types.MfBundleConfig.KV{.{ .key = "app", .value = "app@./r/mf-manifest.json" }};
+    const mf = tMf(&remotes);
+    const src =
+        "var a=import('app/Widget');myimport('app/X');import('lodash');" ++
+        "import(\"app/B\");import(dyn);";
+    var i: usize = 0;
+    const h1 = nextRemoteImport(src, &mf, &i).?;
+    try std.testing.expectEqualStrings("app/Widget", h1.spec);
+    try std.testing.expectEqual(@as(u8, 'i'), src[h1.p]); // p = `import(` 시작
+    const h2 = nextRemoteImport(src, &mf, &i).?;
+    try std.testing.expectEqualStrings("app/B", h2.spec); // myimport/lodash skip
+    try std.testing.expect(nextRemoteImport(src, &mf, &i) == null); // import(dyn) skip
+}
+
+test "exposeListed: ./ 정규화·정확매칭·부재·중첩·bare key" {
+    const exposes = [_][]const u8{ "./Widget", "./a/B" };
+    try std.testing.expect(exposeListed(&exposes, "app/Widget", "app")); // ./Widget ↔ Widget
+    try std.testing.expect(exposeListed(&exposes, "app/a/B", "app")); // 중첩 보존
+    try std.testing.expect(!exposeListed(&exposes, "app/Missing", "app")); // 부재
+    try std.testing.expect(!exposeListed(&exposes, "app/widget", "app")); // 대소문자 구분
+    const def = [_][]const u8{"."};
+    try std.testing.expect(exposeListed(&def, "app", "app")); // spec==key → "."
+    try std.testing.expect(!exposeListed(&exposes, "app", "app")); // 기본 expose 미게시
+}
+
+test "emitHostInit 회귀: 원격 동적 import → loadRemote, 비원격 보존" {
+    const a = std.testing.allocator;
+    const remotes = [_]types.MfBundleConfig.KV{.{ .key = "app", .value = "app@http://x/r.js" }};
+    const mf = tMf(&remotes);
+    const src = "const x=import(\"app/W\");const y=import(\"lodash\");";
+    const out = try emitHostInit(a, src, &mf);
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "globalThis." ++ MF_RUNTIME_GLOBAL ++ ".loadRemote(\"app/W\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "import(\"lodash\")") != null); // 비원격 불변
+    try std.testing.expect(std.mem.indexOf(u8, out, ".init({\"name\":\"host\"") != null); // prelude
 }

@@ -720,6 +720,75 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"/);
   }, 30000);
 
+  // P3-1 (#3436): 빌드타임 expose 계약 검증(D3, 스파이크 S6). host import
+  // 가 remote 의 게시 mf-manifest.json exposes 에 **없으면 빌드 fail-fast**
+  // (런타임 깨짐 아님 — MF2 의 stale 런타임-실패 대비 차별화). resolve
+  // 불가 remote(http=네트워크 비-목표 P4 / 로컬 부재)는 검증 불가 ≠ 위반
+  // → skip(정밀 fail-fast, 기존 http host interop 무회귀 보장).
+  test('P3-1 expose 계약: 부재 expose → 빌드 fail-fast(S6); 존재·http·부재manifest 통과', async () => {
+    // zntc remote 빌드 → rdist/mf-manifest.json (exposes name "./Widget")
+    const remoteFx = await createFixture({
+      'Widget.ts': `export default function W(){ return "OK"; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const rdist = join(remoteFx.dir, 'dist');
+    const rb = await runZntcInDir(remoteFx.dir, [
+      '--bundle',
+      join(remoteFx.dir, 'index.ts'),
+      '--outdir',
+      rdist,
+      '--format=iife',
+    ]);
+    expect(rb.exitCode).toBe(0);
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await remoteFx.cleanup();
+    };
+
+    // host 빌드 헬퍼 — 동적 import spec·remote entry 가변(단일파일 iife,
+    // host-emit 게이트 동일: app=external 라 split 없음 → output.len>0).
+    const buildHost = async (spec: string, entry: string) => {
+      const hostFx = await createFixture({
+        'index.ts': `async function m(){ const x = await import(${JSON.stringify(spec)}); console.log(x); }\nm();`,
+        'zntc.config.json': JSON.stringify({
+          mf: { name: 'host', remotes: { app: `app@${entry}` } },
+        }),
+      });
+      const r = await runZntcInDir(hostFx.dir, [
+        '--bundle',
+        join(hostFx.dir, 'index.ts'),
+        '-o',
+        join(hostFx.dir, 'host.js'),
+        '--format=iife',
+      ]);
+      await hostFx.cleanup();
+      return r;
+    };
+
+    // ① 존재 expose → 빌드 성공
+    expect((await buildHost('app/Widget', manifestAbs)).exitCode).toBe(0);
+
+    // ② 부재 expose → 빌드 fail-fast(런타임 아님) + 명확한 메시지.
+    //    성공-우회 명시 배제(거짓통과 차단).
+    const bad = await buildHost('app/Missing', manifestAbs);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain('MF expose 계약 위반');
+    expect(bad.stderr).toContain('mf-manifest.json exposes');
+
+    // ③ http remote(네트워크 비-목표) → 검증 불가 ≠ 위반 → 빌드 통과
+    //    (정밀 fail-fast: 기존 http host interop 무회귀).
+    expect((await buildHost('app/Whatever', 'http://localhost:9/index.js')).exitCode).toBe(0);
+
+    // ④ 로컬 manifest 부재(네트워크 아님) → 검증 불가 → 통과(부재 ≠ 위반)
+    const noMani = join(remoteFx.dir, 'nope', 'mf-manifest.json');
+    expect((await buildHost('app/Whatever', noMani)).exitCode).toBe(0);
+  }, 30000);
+
   // 갭 보강(레퍼런스 module-federation/core 대비). zntc remote dir 빌드 +
   // .js entry http 서빙(S3/host-emit 검증 형태, Node-safe — chunk=file://).
   async function buildZntcRemote(
