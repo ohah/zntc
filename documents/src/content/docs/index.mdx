@@ -87,6 +87,45 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
   </div>
 </Section>
 
+<Section padding="py-16">
+  <div class="not-content mx-auto max-w-5xl">
+    <h2 class="mb-2 text-center text-2xl font-bold sm:text-3xl">번들 크기 비교 — Tree-shake + Minify</h2>
+    <p class="mb-8 text-center text-sm text-[color:var(--sl-color-gray-3)]">
+      속도뿐 아니라 출력 크기도 중요합니다. 실제 npm 라이브러리를 동일 입력으로 번들 + minify 한 raw 크기 (낮을수록 작음).
+    </p>
+
+    <BenchmarkHighlight chartKey="bundleSize" client:only="react" />
+
+    <div class="mt-6 grid gap-4 text-sm sm:grid-cols-3">
+      <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">three</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">35 KB</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
+        <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
+          esbuild 217 KB · rspack 136 KB 대비 <strong>6.2× 작음</strong> (tree-shaking)
+        </div>
+      </div>
+      <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">effect</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">122 KB</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
+        <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
+          esbuild 191 KB · rspack 142 KB 대비 <strong>1.16–1.56× 작음</strong>
+        </div>
+      </div>
+      <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
+        <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">zod · mobx · preact</div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">±10%</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">parity</span></div>
+        <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
+          esbuild / rolldown / rspack 와 사실상 동급 크기
+        </div>
+      </div>
+    </div>
+
+    <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
+      2026-05-17 · darwin arm64 · 9개 실제 npm 라이브러리 · <code>--minify-all</code> (자세히는 <a href="/zntc/reference/benchmarks/" class="text-zig-400 hover:underline">전체 벤치마크 →</a>)
+    </p>
+  </div>
+</Section>
+
 <FeatureGrid
   heading="왜 ZNTC 인가"
   subheading="기존 도구의 장점을 조합한 JavaScript/TypeScript 툴체인."

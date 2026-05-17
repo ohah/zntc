@@ -4,6 +4,7 @@ import ReactEChartsCore from "echarts-for-react/lib/core";
 import benchmarkData from "../data/benchmark-data.json";
 import { ZIG } from "../styles/brand-tokens";
 import { echarts } from "./echarts-setup";
+import { formatBytes } from "./format";
 import { useStarlightDark } from "./useStarlightDark";
 
 // ZNTC 만 brand token 사용. 다른 도구 색은 각자의 brand color 라 토큰화 X.
@@ -31,17 +32,29 @@ const SERIES_COLORS: Record<string, string> = {
 type BenchEntry = {
   tool: string;
   scale: string;
-  medianMs: number;
+  medianMs?: number;
   minMs?: number;
   maxMs?: number;
   p95Ms?: number;
+  bytes?: number;
 };
+
+type ChartMetric = "ms" | "bytes";
 
 type ChartDefinition = {
   title: string;
   description: string;
   entries: BenchEntry[];
 };
+
+/** entry 모양으로 단위를 추론 — `bytes` 가 있으면 크기 차트, 아니면 시간 차트. */
+function metricOf(entries: BenchEntry[]): ChartMetric {
+  return entries.some((e) => typeof e.bytes === "number") ? "bytes" : "ms";
+}
+
+function valueOf(entry: BenchEntry, metric: ChartMetric): number | undefined {
+  return metric === "bytes" ? entry.bytes : entry.medianMs;
+}
 
 function uniqueInOrder(values: string[]): string[] {
   return [...new Set(values)];
@@ -59,6 +72,10 @@ function formatMs(value: number): string {
   return `${value.toFixed(0)}ms`;
 }
 
+function formatValue(value: number, metric: ChartMetric): string {
+  return metric === "bytes" ? formatBytes(value) : formatMs(value);
+}
+
 export const MIN_CHART_HEIGHT = 320;
 
 export function chartHeight(entries: BenchEntry[]): number {
@@ -68,6 +85,7 @@ export function chartHeight(entries: BenchEntry[]): number {
 }
 
 function buildHorizontalBarOption(entries: BenchEntry[], isDark: boolean) {
+  const metric = metricOf(entries);
   const scales = uniqueInOrder(entries.map((entry) => entry.scale));
   const tools = uniqueInOrder(entries.map((entry) => entry.tool));
 
@@ -91,11 +109,12 @@ function buildHorizontalBarOption(entries: BenchEntry[], isDark: boolean) {
       color: textColor,
       fontSize: 11,
       formatter: ({ value }: { value: number | null }) =>
-        typeof value === "number" ? formatMs(value) : "",
+        typeof value === "number" ? formatValue(value, metric) : "",
     },
     data: scales.map((scale) => {
       const entry = entries.find((item) => item.tool === tool && item.scale === scale);
-      return entry ? Number(entry.medianMs.toFixed(4)) : null;
+      const value = entry ? valueOf(entry, metric) : undefined;
+      return typeof value === "number" ? Number(value.toFixed(4)) : null;
     }),
   }));
 
@@ -114,17 +133,30 @@ function buildHorizontalBarOption(entries: BenchEntry[], isDark: boolean) {
         }>,
       ) => {
         let html = `<strong>${params[0]?.axisValue ?? ""}</strong><br/>`;
+        const zntcEntry = entries.find(
+          (item) => item.tool === "ZNTC" && item.scale === params[0]?.axisValue,
+        );
+        const zntcValue = zntcEntry ? valueOf(zntcEntry, metric) : undefined;
         for (const param of params) {
           if (typeof param.value !== "number") continue;
           const entry = entries.find(
             (item) => item.tool === param.seriesName && item.scale === param.axisValue,
           );
-          html += `${param.marker} ${param.seriesName}: <strong>${formatMs(param.value)}</strong>`;
+          html += `${param.marker} ${param.seriesName}: <strong>${formatValue(param.value, metric)}</strong>`;
           if (entry?.minMs !== undefined && entry.maxMs !== undefined) {
             html += ` <span style="color:#8a8580">(${formatMs(entry.minMs)}-${formatMs(entry.maxMs)})</span>`;
           }
           if (entry?.p95Ms !== undefined) {
             html += ` <span style="color:#8a8580">p95 ${formatMs(entry.p95Ms)}</span>`;
+          }
+          if (
+            metric === "bytes" &&
+            param.seriesName !== "ZNTC" &&
+            typeof zntcValue === "number" &&
+            zntcValue > 0
+          ) {
+            const ratio = param.value / zntcValue;
+            html += ` <span style="color:#8a8580">ZNTC ${ratio >= 1 ? `${ratio.toFixed(2)}x smaller` : `${(1 / ratio).toFixed(2)}x larger`}</span>`;
           }
           html += "<br/>";
         }
@@ -149,13 +181,13 @@ function buildHorizontalBarOption(entries: BenchEntry[], isDark: boolean) {
     },
     xAxis: {
       type: "value" as const,
-      name: "median wall time",
+      name: metric === "bytes" ? "bundle size (raw)" : "median wall time",
       nameLocation: "middle" as const,
       nameGap: 28,
       nameTextStyle: { color: textColor, fontSize: 11 },
       axisLabel: {
         color: textColor,
-        formatter: (value: number) => formatMs(value),
+        formatter: (value: number) => formatValue(value, metric),
       },
       axisLine: { lineStyle: { color: axisLineColor } },
       splitLine: { lineStyle: { color: gridLineColor } },
@@ -238,6 +270,12 @@ export default function BenchmarkCharts() {
       entries: benchmarkData.results.bundleCli,
     },
     {
+      title: "Bundle Size — Tree-shake + Minify",
+      description:
+        "Real npm libraries bundled and minified with the same input. Raw output bytes — lower is better. Tree-shaking + minifier quality, not speed.",
+      entries: benchmarkData.results.bundleSize,
+    },
+    {
       title: "NAPI vs WASM vs CLI",
       description: "Public in-process bindings compared with subprocess CLI startup cost.",
       entries: benchmarkData.results.napiWasmCli,
@@ -259,6 +297,8 @@ export default function BenchmarkCharts() {
       <div className="rounded-lg border border-surface-200 bg-white px-4 py-3 text-sm leading-6 text-neutral-700 shadow-sm dark:border-surface-800 dark:bg-surface-950/70 dark:text-neutral-300">
         <strong className="text-neutral-900 dark:text-neutral-100">Measurement:</strong> {benchmarkData.platform}, {benchmarkData.date}.
         CLI charts use median wall time. Lower is better.
+        <br />
+        <strong className="text-neutral-900 dark:text-neutral-100">Bundle Size:</strong> {benchmarkData.sizeBenchmark.libraries} real npm libraries, {benchmarkData.sizeBenchmark.date}, {benchmarkData.sizeBenchmark.mode}. {benchmarkData.sizeBenchmark.note}
       </div>
       {charts.map((chart) => (
         <ChartPanel key={chart.title} chart={chart} isDark={isDark} />

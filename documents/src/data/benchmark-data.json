@@ -104,6 +104,59 @@
       { "tool": "string", "scale": "50K lines", "medianMs": 24.6 },
       { "tool": "object", "scale": "50K lines", "medianMs": 44.0 },
       { "tool": "react", "scale": "50K lines", "medianMs": 75.2 }
+    ],
+    "bundleSize": [
+      { "tool": "ZNTC", "scale": "immer", "bytes": 8963 },
+      { "tool": "esbuild", "scale": "immer", "bytes": 8074 },
+      { "tool": "rolldown", "scale": "immer", "bytes": 8023 },
+      { "tool": "rspack", "scale": "immer", "bytes": 7850 },
+
+      { "tool": "ZNTC", "scale": "preact", "bytes": 10415 },
+      { "tool": "esbuild", "scale": "preact", "bytes": 10434 },
+      { "tool": "rolldown", "scale": "preact", "bytes": 10290 },
+      { "tool": "rspack", "scale": "preact", "bytes": 10405 },
+
+      { "tool": "ZNTC", "scale": "lodash-es", "bytes": 19587 },
+      { "tool": "esbuild", "scale": "lodash-es", "bytes": 20661 },
+      { "tool": "rolldown", "scale": "lodash-es", "bytes": 18419 },
+      { "tool": "rspack", "scale": "lodash-es", "bytes": 17654 },
+
+      { "tool": "ZNTC", "scale": "date-fns", "bytes": 19957 },
+      { "tool": "esbuild", "scale": "date-fns", "bytes": 19989 },
+      { "tool": "rolldown", "scale": "date-fns", "bytes": 19411 },
+      { "tool": "rspack", "scale": "date-fns", "bytes": 18540 },
+
+      { "tool": "ZNTC", "scale": "three", "bytes": 36047 },
+      { "tool": "esbuild", "scale": "three", "bytes": 222275 },
+      { "tool": "rolldown", "scale": "three", "bytes": 220177 },
+      { "tool": "rspack", "scale": "three", "bytes": 139674 },
+
+      { "tool": "ZNTC", "scale": "mobx", "bytes": 55975 },
+      { "tool": "esbuild", "scale": "mobx", "bytes": 55532 },
+      { "tool": "rolldown", "scale": "mobx", "bytes": 53877 },
+      { "tool": "rspack", "scale": "mobx", "bytes": 53967 },
+
+      { "tool": "ZNTC", "scale": "zod", "bytes": 63826 },
+      { "tool": "esbuild", "scale": "zod", "bytes": 59586 },
+      { "tool": "rolldown", "scale": "zod", "bytes": 56428 },
+      { "tool": "rspack", "scale": "zod", "bytes": 56403 },
+
+      { "tool": "ZNTC", "scale": "effect", "bytes": 125330 },
+      { "tool": "esbuild", "scale": "effect", "bytes": 196059 },
+      { "tool": "rolldown", "scale": "effect", "bytes": 125426 },
+      { "tool": "rspack", "scale": "effect", "bytes": 145559 },
+
+      { "tool": "ZNTC", "scale": "rxjs", "bytes": 157131 },
+      { "tool": "esbuild", "scale": "rxjs", "bytes": 146677 },
+      { "tool": "rolldown", "scale": "rxjs", "bytes": 136800 },
+      { "tool": "rspack", "scale": "rxjs", "bytes": 141278 }
     ]
+  },
+  "sizeBenchmark": {
+    "date": "2026-05-17",
+    "platform": "darwin arm64",
+    "mode": "--minify-all (production minify + tree-shake)",
+    "libraries": 9,
+    "note": "실제 npm 라이브러리를 동일 입력으로 번들 + minify 한 최종 출력 크기 (raw bytes). 낮을수록 작음."
   }
 }
