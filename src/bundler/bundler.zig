@@ -1645,7 +1645,8 @@ pub const Bundler = struct {
         const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null or css_output_files.items.len > 0 or mf_manifest != null) blk: {
             const existing = if (asset_outputs) |a| a.len else 0;
             const mf_n: usize = if (mf_manifest != null) 1 else 0;
-            const total = existing + worker_output_files.items.len + css_output_files.items.len + mf_n;
+            // P2-2 (#3422): manifest 산출 시 SHA-256 무결성 sidecar 도 1개.
+            const total = existing + worker_output_files.items.len + css_output_files.items.len + mf_n * 2;
             const merged = try self.allocator.alloc(OutputFile, total);
             if (asset_outputs) |a| {
                 @memcpy(merged[0..a.len], a);
@@ -1659,12 +1660,25 @@ pub const Bundler = struct {
                 merged[css_start + i] = cf;
             }
             if (mf_manifest) |m| {
-                // path dup 먼저(실패해도 errdefer 가 m 해제). 성공 후 소유권
-                // 이전 + mf_manifest=null(errdefer 이중해제 방지). deinit 이
-                // asset_outputs path/contents 해제 — 소유 일관.
-                const p = try self.allocator.dupe(u8, "mf-manifest.json");
-                merged[css_start + css_output_files.items.len] = .{ .path = p, .contents = m };
-                mf_manifest = null;
+                const slot = css_start + css_output_files.items.len;
+                // P2-2: manifest + 모든 JS 출력 청크의 SHA-256 SRI sidecar.
+                // m(아직 살아있음) + outputs(최종 바이트, placeholder 치환
+                // 완료) 입력. sidecar 자신·서명은 미포함(P2-3 서명 자기참조
+                // 순환 회피). 컴퓨트→dup 순서 + errdefer 로 부분실패 누수 차단
+                // (성공 전 mf_manifest 가 m 소유 → 이중해제 없음).
+                const sidecar = try @import("mf_integrity.zig").buildSidecar(
+                    self.allocator,
+                    "mf-manifest.json",
+                    m,
+                    outputs orelse &.{},
+                );
+                errdefer self.allocator.free(sidecar);
+                const pm = try self.allocator.dupe(u8, "mf-manifest.json");
+                errdefer self.allocator.free(pm);
+                const ps = try self.allocator.dupe(u8, "mf-manifest.json.integrity.json");
+                merged[slot] = .{ .path = pm, .contents = m };
+                merged[slot + 1] = .{ .path = ps, .contents = sidecar };
+                mf_manifest = null; // 소유권 이전 — errdefer(:1356) 이중해제 방지
             }
             break :blk merged;
         } else asset_outputs;
