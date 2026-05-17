@@ -1788,6 +1788,48 @@ test "ESM re-export: named re-export from CJS binds via require getter (#1425)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_registry().getAssetByID") != null);
 }
 
+test "ESM re-export: CJS require member access keeps re-export source body" {
+    // RN asset loader pattern: generated asset modules call
+    // `require("AssetRegistry").registerAsset(...)`. The raw require observes
+    // the ESM facade namespace, so the facade's CJS re-export source must also
+    // keep the actual export fact body.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\const assets = [];
+        \\function registerAsset(asset) { assets.push(asset); return assets.length; }
+        \\function getAssetByID(id) { return assets[id - 1]; }
+        \\module.exports = { registerAsset, getAssetByID };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset, getAssetByID } from './registry.js';
+    );
+    try writeFile(tmp.dir, "asset.js",
+        \\module.exports = require('./AssetRegistry.js').registerAsset({ name: 'test' });
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const asset = require('./asset.js');
+        \\globalThis.asset = asset;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "registerAsset(asset)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = { registerAsset, getAssetByID }") != null);
+}
+
 test "ESM namespace import: CJS named re-export member binds via require getter" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
