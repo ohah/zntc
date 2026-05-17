@@ -327,7 +327,9 @@ pub fn buildMetadataForAst(
         break :blk result;
     };
     errdefer skip_nodes.deinit();
-    try markReactNativeWrappedBindingImports(self, ast, &m, &skip_nodes);
+    // wrap_kind.isWrapped() 인 경우 아래 본 분기 (`if (m.wrap_kind.isWrapped())`)
+    // 가 같은 노드를 idempotent 하게 set 하므로 RN 헬퍼 호출은 early-return path
+    // (semantic == null) 에서만 필요하다.
 
     var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
     errdefer renames.deinit();
