@@ -1966,6 +1966,28 @@ const emitAssetModule = cjs_wrap.emitAssetModule;
 pub const emitCjsWrapper = cjs_wrap.emitCjsWrapper;
 pub const appendJsStringLiteral = cjs_wrap.appendJsStringLiteral;
 
+/// JSON 문자열 리터럴 emit (metafile + mf-manifest 단일 소스). JSON spec:
+/// C0 control(0x00–0x1F) 은 전부 escape — 전용 escape 가 있는 \t(0x09)\n
+/// (0x0A)\r(0x0D) 외 **0x08(\b)·0x0C(\f) 포함** 누락 시 raw 출력 →
+/// JSON.parse "Bad control character" reject(ZNTC virtual specifier 의
+/// raw NUL 등). `*std.ArrayList(u8)` = Zig 0.15.2 에선 Unmanaged 와 동일.
+pub fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    try buf.append(allocator, '"');
+    for (s) |c| switch (c) {
+        '"' => try buf.appendSlice(allocator, "\\\""),
+        '\\' => try buf.appendSlice(allocator, "\\\\"),
+        '\n' => try buf.appendSlice(allocator, "\\n"),
+        '\r' => try buf.appendSlice(allocator, "\\r"),
+        '\t' => try buf.appendSlice(allocator, "\\t"),
+        0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
+            const hex = "0123456789abcdef";
+            try buf.appendSlice(allocator, &[_]u8{ '\\', 'u', '0', '0', hex[(c >> 4) & 0xF], hex[c & 0xF] });
+        },
+        else => try buf.append(allocator, c),
+    };
+    try buf.append(allocator, '"');
+}
+
 /// 런타임 헬퍼 문자열을 ArrayList에 주입한다 (re-export for backward compat).
 pub const appendRuntimeHelpers = rt.appendRuntimeHelpers;
 

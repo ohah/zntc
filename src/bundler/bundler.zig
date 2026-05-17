@@ -1350,6 +1350,10 @@ pub const Bundler = struct {
         var output_scope = profile.begin(.emit_output);
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
+        // #3318 P1-5: MF remote 의 mf-manifest.json (wrapContainer 산출,
+        // asset_outputs 로 편입). errdefer 로 부분실패 누수 방지.
+        var mf_manifest: ?[]const u8 = null;
+        errdefer if (mf_manifest) |m| self.allocator.free(m);
         // code splitting 경로에서 청크별로 분리 emit 한 CSS (null = 비-splitting,
         // 이 경우 아래에서 entry 당 단일 CSS 로 fallback). 소비 후 null 로 되돌린다.
         var css_chunk_files: ?[]OutputFile = null;
@@ -1472,7 +1476,7 @@ pub const Bundler = struct {
             // webpack-style container(init/get, globalName 대입)로 후처리
             // wrap. 게이트는 markBoundary(graph.build 후)와 동일 관례.
             if (self.options.mf) |*mf|
-                try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, &graph);
+                mf_manifest = try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, &graph, self.options.public_path);
 
             // emitChunks 가 href 를 청크 내용으로 복사 완료 → 이제 plan 의
             // path/contents 소유권을 OutputFile 로 이전(plan 컨테이너만 해제).
@@ -1637,10 +1641,11 @@ pub const Bundler = struct {
             }
         }
 
-        // Worker + CSS 출력 파일을 asset_outputs에 합침
-        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null or css_output_files.items.len > 0) blk: {
+        // Worker + CSS + mf-manifest 출력 파일을 asset_outputs에 합침
+        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null or css_output_files.items.len > 0 or mf_manifest != null) blk: {
             const existing = if (asset_outputs) |a| a.len else 0;
-            const total = existing + worker_output_files.items.len + css_output_files.items.len;
+            const mf_n: usize = if (mf_manifest != null) 1 else 0;
+            const total = existing + worker_output_files.items.len + css_output_files.items.len + mf_n;
             const merged = try self.allocator.alloc(OutputFile, total);
             if (asset_outputs) |a| {
                 @memcpy(merged[0..a.len], a);
@@ -1652,6 +1657,14 @@ pub const Bundler = struct {
             const css_start = existing + worker_output_files.items.len;
             for (css_output_files.items, 0..) |cf, i| {
                 merged[css_start + i] = cf;
+            }
+            if (mf_manifest) |m| {
+                // path dup 먼저(실패해도 errdefer 가 m 해제). 성공 후 소유권
+                // 이전 + mf_manifest=null(errdefer 이중해제 방지). deinit 이
+                // asset_outputs path/contents 해제 — 소유 일관.
+                const p = try self.allocator.dupe(u8, "mf-manifest.json");
+                merged[css_start + css_output_files.items.len] = .{ .path = p, .contents = m };
+                mf_manifest = null;
             }
             break :blk merged;
         } else asset_outputs;
@@ -1807,30 +1820,10 @@ fn generateMetafileJson(
     return buf.toOwnedSlice(allocator);
 }
 
-fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    try buf.append(allocator, '"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try buf.appendSlice(allocator, "\\\""),
-            '\\' => try buf.appendSlice(allocator, "\\\\"),
-            '\n' => try buf.appendSlice(allocator, "\\n"),
-            '\r' => try buf.appendSlice(allocator, "\\r"),
-            '\t' => try buf.appendSlice(allocator, "\\t"),
-            // JSON spec: 0x00–0x1F 모든 control char 는 반드시 escape.
-            // ZNTC virtual specifier (NUL+"zntc:runtime/...") 등이 raw NUL 그대로
-            // 들어가면 JSON.parse 가 "Bad control character" 로 reject.
-            0x00...0x07, 0x0B, 0x0E...0x1F => {
-                var tmp: [6]u8 = .{ '\\', 'u', '0', '0', 0, 0 };
-                const hex = "0123456789abcdef";
-                tmp[4] = hex[(c >> 4) & 0xF];
-                tmp[5] = hex[c & 0xF];
-                try buf.appendSlice(allocator, &tmp);
-            },
-            else => try buf.append(allocator, c),
-        }
-    }
-    try buf.append(allocator, '"');
-}
+// JSON 문자열 리터럴 단일 소스(metafile + mf-manifest 공유). emitter.zig
+// 가 정본 — 양쪽이 import 하는 중립 모듈(circular import 회피, types.zig
+// 패턴과 동일 규율).
+const appendJsonString = emitter.appendJsonString;
 
 fn appendInt(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, val: usize) !void {
     var tmp: [20]u8 = undefined;
