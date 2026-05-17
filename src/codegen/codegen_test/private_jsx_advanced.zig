@@ -58,6 +58,37 @@ test "private method: es5 → WeakSet + function + prototype" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet(this,_bar,_bar_fn).call(this)") != null);
 }
 
+test "private method: nullish temp is hoisted into standalone function" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #compute(options) {
+        \\    return options.value ?? false;
+        \\  }
+        \\  method(options) { return this.#compute(options); }
+        \\}
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _compute_fn(options){var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=options.value)") != null);
+}
+
+test "private method: conditional nullish temp is hoisted into standalone function" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #compute() {
+        \\    return (typeof this.options.refetchInterval === "function"
+        \\      ? this.options.refetchInterval(this.query)
+        \\      : this.options.refetchInterval) ?? false;
+        \\  }
+        \\  method() { return this.#compute(); }
+        \\}
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _compute_fn(){var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=(typeof this.options.refetchInterval===\"function\"") != null or
+        std.mem.indexOf(u8, r.output, "(_a=(typeof this.options.refetchInterval==\"function\"") != null);
+}
+
 test "private method: multiple methods" {
     var r = try e2eTarget(std.testing.allocator,
         \\class Foo {

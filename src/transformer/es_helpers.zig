@@ -1306,6 +1306,8 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const arrow_env = pushArrowEnv(self);
     defer popArrowEnv(self, arrow_env);
 
+    const saved_temp_counter = self.temp_var_counter;
+
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
     var new_body = try self.visitNode(body_idx);
@@ -1316,6 +1318,10 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         const capture_count = try fillThisArgumentsCaptures(self, &capture_stmts, span);
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
+    if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
+        new_body = try self.hoistTempVars(new_body, saved_temp_counter, span);
+    }
+    self.temp_var_counter = saved_temp_counter;
 
     const name_span = try self.ast.addString(name);
     const name_node = try makeBindingIdentifier(self, name_span);
