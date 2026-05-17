@@ -1,6 +1,7 @@
 import { spawn } from 'bun';
-import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, symlink, realpath } from 'node:fs/promises';
 import { readFileSync, statSync, openSync, closeSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 
@@ -12,15 +13,21 @@ export const ZNTC_JS_CLI = join(PROJECT_ROOT, 'packages/core/bin/zntc.mjs');
 const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, '../node_modules');
 const LOOKUP_ROOTS = [join(PROJECT_ROOT, 'node_modules'), INTEGRATION_NODE_MODULES];
 
+/// linkNodeModules 가 helper 레벨에서 해석 못 한 패키지 — 프로세스당 1회만 경고.
+const warnedUnresolved = new Set<string>();
+
+function hasPackageJson(dir: string): boolean {
+  try {
+    statSync(join(dir, 'package.json'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /// PROJECT_ROOT/node_modules 우선, tests/integration/node_modules fallback으로 패키지 존재 검사.
 export function hasPackage(name: string): boolean {
-  for (const root of LOOKUP_ROOTS) {
-    try {
-      statSync(join(root, name, 'package.json'));
-      return true;
-    } catch {}
-  }
-  return false;
+  return LOOKUP_ROOTS.some((root) => hasPackageJson(join(root, name)));
 }
 
 export async function createFixture(
@@ -162,22 +169,78 @@ export async function linkNodeModules(
   await mkdir(nmDir, { recursive: true });
   const scopes = new Set(packages.filter((p) => p.startsWith('@')).map((p) => p.split('/')[0]));
   await Promise.all([...scopes].map((s) => mkdir(join(nmDir, s), { recursive: true })));
-  await Promise.all(
-    packages.map(async (pkg) => {
-      for (const root of roots) {
-        const target = join(root, pkg);
-        try {
-          await stat(join(target, 'package.json'));
-        } catch {
-          continue;
-        }
-        try {
-          await symlink(target, join(nmDir, pkg));
-          return;
-        } catch {}
+
+  // 순차 처리 필수 — 이미 해석된 패키지 실경로를 그 transitive dep 의 해석 기점으로
+  // 재사용하므로(resolvePackageDir 3단계). 해석 실패 시 throw 하지 않고 스킵하는 것은
+  // 의도된 tolerant 계약(번들러 store 해석에 위임; styled-components 의 tslib 등).
+  const resolvedDirs: string[] = [];
+  for (const pkg of packages) {
+    const target = await resolvePackageDir(pkg, roots, resolvedDirs);
+    if (!target) {
+      if (!warnedUnresolved.has(pkg)) {
+        warnedUnresolved.add(pkg);
+        console.warn(
+          `[linkNodeModules] '${pkg}' 미해석 — 심링크 스킵 (번들러 store 해석에 위임). ` +
+            `CI/OS 별 resolve 차이로 깨질 수 있으니 루트 워크스페이스 설치 여부 확인.`,
+        );
       }
-    }),
-  );
+      continue;
+    }
+    resolvedDirs.push(target);
+    try {
+      await symlink(target, join(nmDir, pkg));
+    } catch (e) {
+      // 동일 scope 내 중복 등으로 이미 존재하면 무시 (멱등).
+      if ((e as NodeJS.ErrnoException)?.code !== 'EEXIST') throw e;
+    }
+  }
+}
+
+/// 패키지의 실제 디렉터리를 해석한다.
+/// 1) LOOKUP_ROOTS 의 top-level `<root>/<pkg>/package.json`
+/// 2) 각 root 기준 Node 모듈 해석 (`<pkg>/package.json` exports → 없으면 entry 에서 상위 탐색)
+/// 3) 이미 해석된 패키지 디렉터리 기준 Node 해석 (transitive dep — store-nested sibling 포함)
+async function resolvePackageDir(
+  pkg: string,
+  roots: string[],
+  resolvedDirs: string[],
+): Promise<string | null> {
+  for (const root of roots) {
+    const target = join(root, pkg);
+    if (!hasPackageJson(target)) continue;
+    // 심링크(PROJECT_ROOT/node_modules/@tanstack/react-query → bun store)를 realpath
+    // 정규화. 미정규화 시 이 dir 기점 transitive 해석(query-core)이 심링크 traversal
+    // 동작에 의존해 OS/실행순서마다 달라진다 — CI(ubuntu) 비결정 깨짐의 근인.
+    return await realpath(target);
+  }
+  const bases = [
+    ...roots.map((r) => join(r, 'index.js')),
+    ...resolvedDirs.map((d) => join(d, 'package.json')),
+  ];
+  for (const base of bases) {
+    const dir = resolveViaNode(pkg, base);
+    if (dir) return dir;
+  }
+  return null;
+}
+
+function resolveViaNode(pkg: string, fromFile: string): string | null {
+  const req = createRequire(fromFile);
+  try {
+    return dirname(req.resolve(`${pkg}/package.json`));
+  } catch {}
+  // exports 가 `./package.json` 을 막는 패키지: entry 를 해석한 뒤 package.json 까지
+  // 상위 탐색 (파일시스템 루트 도달 시 종료).
+  try {
+    let cur = dirname(req.resolve(pkg));
+    for (;;) {
+      if (hasPackageJson(cur)) return cur;
+      const parent = dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  } catch {}
+  return null;
 }
 
 /// emotion v10 격리 fixture (`tests/integration/fixtures/emotion-v10/node_modules`).
