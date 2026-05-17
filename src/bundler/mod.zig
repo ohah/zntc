@@ -123,6 +123,7 @@ test {
     _ = @import("emitter_test.zig");
     _ = @import("chunk_test.zig");
     _ = @import("mf_integrity.zig"); // #3422 inline test (computeSri)
+    _ = @import("mf_contract.zig"); // #3435 P3-0 inline test (parseContract)
     _ = @import("statement_shaker_test.zig");
     _ = @import("graph_test.zig");
     _ = @import("graph/project_root.zig");

@@ -188,7 +188,9 @@ fn bootstrapSpan(text: []const u8) ?struct { start: usize, end: usize } {
 /// expose 명·federation_id·lazy 청크 파일명 묶음. 모두 borrow
 /// (name=mf.exposes KV, fed_id=graph 모듈, chunk_file=outputs[].path basename)
 /// — wrapContainer 수명 동안 mf/graph/outputs 생존. 슬라이스만 caller free.
-const ExposeInfo = struct { name: []const u8, fed_id: []const u8, chunk_file: []const u8 };
+// pub: P3-0 mf_contract.zig 의 emit↔parse 라운드트립 테스트가 스키마
+// 단일 소스 박제를 위해 buildManifest 와 함께 소비(RFC §7.3).
+pub const ExposeInfo = struct { name: []const u8, fed_id: []const u8, chunk_file: []const u8 };
 
 /// exposes → (명, fed_id, lazy 청크 파일) 수집. container.get 맵과
 /// mf-manifest 가 **동일 스캔**을 쓰므로 단일 소스(exposeFedId/
@@ -347,7 +349,7 @@ const appendJsonStr = emitter.appendJsonString;
 /// 식별/캐시 힌트로만 쓰고 의미 검증 안 함(generateSnapshotFromManifest)
 /// — lockstep 패키지 버전 추적은 불필요(P1-6 비-목표). build-time 주입은
 /// 후속 백로그.
-fn buildManifest(
+pub fn buildManifest(
     allocator: std.mem.Allocator,
     name: []const u8,
     mf: *const types.MfBundleConfig,
