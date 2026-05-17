@@ -653,6 +653,7 @@
         "@playwright/test": "^1.50.0",
         "@rspack/cli": "2.0.1",
         "@rspack/core": "2.0.1",
+        "react": "19.2.4",
       },
     },
     "tests/integration": {
