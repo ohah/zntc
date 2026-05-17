@@ -1796,7 +1796,7 @@ pub const TreeShaker = struct {
             const src_idx = m.import_records[rec_idx].resolved;
             const src_module = self.graph.getModule(src_idx) orelse continue;
             const src = @intFromEnum(src_idx);
-            if (eb.kind == .re_export_star or eb.kind.isReExportAll()) {
+            if (eb.kind.isReExportAll()) {
                 try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
             } else if (src_module.wrap_kind == .cjs) {
                 try self.seedCjsExportOrAll(@intCast(src), m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
