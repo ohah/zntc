@@ -2718,10 +2718,10 @@ test "#1618 minify: __commonJS → $cj short name" {
 
     try std.testing.expect(!result.hasErrors());
     // minify 모드: preamble이 `var $c=` 형태로 축약 (#3256: $cj → $c 1 char 단축).
-    // 호출부는 직접 함수 + callback param 단축 — body 의 unresolved `exports`/`module`
-    // 도 codegen 에서 `e`/`m` 로 substitute (cjs_wrap_substitute).
+    // 호출부는 직접 함수 패턴을 쓰되 callback param 은 Node/Metro 호환성을 위해
+    // minify에서도 `exports, module` 을 유지.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var $c=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$c((e,m)=>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$c((exports,module)=>") != null);
     // 원본 `__commonJS` 이름은 나타나지 않아야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
 }

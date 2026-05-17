@@ -201,9 +201,9 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
                     }
                 }
             }
-            // CJS wrap 모듈: unresolved `exports`/`module` reference (= callback param 의
-            // closure capture) 를 짧은 alias `e`/`m` 로 substitute. emitter 의 wrapper
-            // param 변경 (`(e,m)=>{...}`) 과 한 쌍.
+            // Legacy CJS wrap alias path: unresolved `exports`/`module` reference
+            // (= callback param 의 closure capture) 를 짧은 alias 로 substitute.
+            // Bundler 기본 경로는 minify에서도 `(exports, module)` 을 유지한다.
             //
             // *sym_id 가 null* (= 모듈 안 어떤 binding 도 못 가리키는 reference) 일 때만
             // substitute. user 가 `function f(exports) {...}` 같이 동명 binding 을 선언한

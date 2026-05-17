@@ -601,9 +601,9 @@ fn reserveNameFor(reserved: *std.StringHashMap(void), sym: Symbol, name: []const
 // ============================================================
 
 pub fn isReservedOrGlobal(name: []const u8) bool {
-    // CJS wrap callback param 단축 이름 (`(e, m) => {...}`) — emitter 의 `cjs_wrap_substitute`
-    // 가 wrapper body 의 unresolved `exports`/`module` 을 `e`/`m` 로 substitute 한다.
-    // mangler 가 다른 binding 에 같은 이름을 부여하면 wrapper param 과 redeclare/shadow.
+    // Legacy CJS wrap alias path 의 단축 이름 (`e`, `m`). Bundler 기본 경로는
+    // Node/Metro 호환성을 위해 `(exports, module)` 을 유지하지만, 별도 alias 경로가
+    // 켜질 때 mangler 가 같은 이름을 부여하지 않도록 보존한다.
     if (name.len == 1 and (name[0] == 'e' or name[0] == 'm')) return true;
     // JS 예약어 + 리터럴 + 글로벌 (길이 2~6만 체크 — 1글자는 'e'/'m' 외엔 충돌 없고
     // 7글자+는 base54에서 도달 어려움)
@@ -730,7 +730,7 @@ test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
     });
     defer result.deinit();
 
-    // base54 첫 이름 'e' 는 CJS wrap callback param 으로 reserved (다음 후보 't').
+    // base54 첫 이름 'e' 는 legacy CJS wrap alias 용으로 reserved (다음 후보 't').
     try std.testing.expectEqualStrings("t", result.renames.get(0).?);
 }
 

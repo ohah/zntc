@@ -1541,7 +1541,24 @@ pub fn emitModule(
                                         const new_stmt_indices = transformer.ast.extra_data.items[new_list.start .. new_list.start + new_list.len];
                                         for (ts_infos.stmts, 0..) |ts_stmt, si| {
                                             if (s.isStmtReachable(mod_idx, @intCast(si))) continue;
-                                            // 변환 후 top-level statement만 스캔 (O(stmts) not O(nodes))
+                                            // 변환 후 AST와 StmtInfo가 같은 snapshot이면 node_idx가 가장
+                                            // 정확하다. 플러그인이 생성한 top-level 문장은 span이 0인
+                                            // 경우가 많아 span fallback만 쓰면 첫 zero-span stmt를
+                                            // 반복해서 매칭한다.
+                                            var matched = false;
+                                            if (ts_stmt.node_idx < transformer.ast.nodes.items.len) {
+                                                for (new_stmt_indices) |raw_ni| {
+                                                    if (raw_ni == ts_stmt.node_idx) {
+                                                        md.skip_nodes.set(ts_stmt.node_idx);
+                                                        matched = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if (matched) continue;
+
+                                            // legacy/re-transform 경로에서는 statement node가 새로 만들어질
+                                            // 수 있으므로 span fallback 유지 (O(stmts) not O(nodes)).
                                             for (new_stmt_indices) |raw_ni| {
                                                 const ni = @as(usize, raw_ni);
                                                 if (ni >= transformer.ast.nodes.items.len) continue;
@@ -1722,9 +1739,10 @@ pub fn emitModule(
         // __esm 모듈: exports.x/module.exports 생성 억제 (__export()가 대신 처리)
         .skip_cjs_exports = module.wrap_kind == .esm,
         .skip_cjs_named_export_decls = module.module_type == .json and module.wrap_kind == .cjs,
-        // CJS wrap minify: callback param `(exports, module)` → `(e, m)` 단축 +
-        // body 의 unresolved `exports`/`module` reference 도 substitute.
-        .cjs_wrap_substitute = module.wrap_kind == .cjs and options.minify_whitespace,
+        // CJS wrap은 minify에서도 Node/Metro의 `(exports, module)` 이름을 유지한다.
+        // 고정 alias `(e, m)` 는 이미 minify된 dependency의 top-level `var e`/`var m`
+        // 과 같은 함수 스코프에서 충돌해 exports 객체를 잃을 수 있다.
+        .cjs_wrap_substitute = false,
         // __esm 모듈: const → var (TDZ 방지)
         .use_var_for_imports = module.wrap_kind == .esm,
         // cycle 모듈 의 top-level const/let → var 강등 (#2198, esbuild 호환).
@@ -1840,12 +1858,11 @@ pub fn emitModule(
         if (options.minify_whitespace) {
             // emit 의 직접 함수 패턴은 `runtime_helpers.zig` 의 `CJS_RUNTIME_*` 가 cb 를
             // function 으로 받는 것과 한 쌍 — 한쪽만 바꾸면 runtime TypeError.
-            // body 가 `module` 안 쓰면 wrapper param 도 `(e)` 1 인자로 단축.
-            // codegen 의 `cjs_wrap_module_used` 가 substitute 시점에 set.
+            // param 이름은 Node/Metro 호환성을 위해 minify에서도 `exports, module` 유지.
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN);
-            try wrapped.appendSlice(allocator, if (cg.cjs_wrap_module_used) "((e,m)=>{" else "((e)=>{");
+            try wrapped.appendSlice(allocator, "((exports,module)=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             // body 의 trailing `;` 제거 — 다음 `})` 가 block close 라 ASI 안전.
             const body_trimmed = if (code.len > 0 and code[code.len - 1] == ';') code[0 .. code.len - 1] else code;

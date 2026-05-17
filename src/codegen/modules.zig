@@ -497,7 +497,12 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
             }
             return;
         }
-        try self.write("module.exports=");
+        if (self.options.cjs_wrap_substitute) {
+            self.cjs_wrap_module_used = true;
+            try self.write("m.exports=");
+        } else {
+            try self.write("module.exports=");
+        }
         try self.emitNode(node.data.unary.operand);
         try self.writeByte(';');
         return;

@@ -150,8 +150,13 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var prepass_ref_deltas: []u32 = &.{};
     if (self.transform_options_base.minify_syntax) {
         const minify_mod = @import("../../transformer/minify.zig");
+        // This flag controls top-level constant/function inlining, not
+        // module-level dead-store removal. `MinifyCtx.allow_top_level_dead`
+        // remains false here; top-level pruning is owned by the resynced
+        // tree-shaker/emitter path.
+        const allow_top_level_inline = true;
         var ctx: minify_mod.MinifyCtx = if (module.semantic != null)
-            minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, true)
+            minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, allow_top_level_inline)
         else
             .empty;
         if (ctx.hasSemantic()) {

@@ -8,6 +8,14 @@ const e2eWithOptions = helpers.e2eWithOptions;
 const e2eSourceMap = helpers.e2eSourceMap;
 const TransformOptions = helpers.TransformOptions;
 const CodegenOptions = helpers.CodegenOptions;
+const Scanner = helpers.Scanner;
+const Parser = helpers.Parser;
+const Transformer = helpers.Transformer;
+const Codegen = helpers.Codegen;
+const TestResult = helpers.TestResult;
+const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
+const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+const LinkingMetadata = @import("../../bundler/linker.zig").LinkingMetadata;
 
 test "Codegen: empty program" {
     var r = try e2e(std.testing.allocator, "");
@@ -137,6 +145,73 @@ test "Codegen: enum with initializer" {
     );
 }
 
+fn e2eEnumWithRename(backing_allocator: std.mem.Allocator, source: []const u8, renamed: []const u8) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    analyzer.is_flow = parser.is_flow;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    const root = try transformer.transform();
+
+    const root_node = transformer.ast.getNode(root);
+    const list = root_node.data.list;
+    var enum_name_idx: NodeIndex = .none;
+    for (transformer.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
+        const stmt_idx: NodeIndex = @enumFromInt(raw_idx);
+        const stmt = transformer.ast.getNode(stmt_idx);
+        if (stmt.tag == .ts_enum_declaration) {
+            enum_name_idx = @enumFromInt(transformer.ast.extra_data.items[stmt.data.extra]);
+            break;
+        }
+    }
+    if (enum_name_idx.isNone()) return error.MissingEnumDeclaration;
+    const enum_symbol_id = transformer.symbol_ids.items[@intFromEnum(enum_name_idx)] orelse return error.MissingEnumSymbol;
+
+    const skip = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len);
+    var renames = std.AutoHashMap(u32, []const u8).init(allocator);
+    try renames.put(enum_symbol_id, renamed);
+    var md: LinkingMetadata = .{
+        .skip_nodes = skip,
+        .renames = renames,
+        .final_exports = null,
+        .symbol_ids = transformer.symbol_ids.items,
+        .allocator = allocator,
+    };
+    defer md.deinit();
+
+    var cg = Codegen.initWithOptions(allocator, transformer.ast, .{
+        .minify_whitespace = true,
+        .esm_var_assign_only = true,
+        .linking_metadata = &md,
+    });
+    const output = try cg.generate(root);
+    return .{ .output = output, .arena = arena };
+}
+
+test "Codegen: enum IIFE uses renamed binding in esm assignment mode" {
+    var r = try e2eEnumWithRename(std.testing.allocator, "enum RuntimeKind { ReactNative = 1, UI = 2 }", "Tv");
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Tv = /* @__PURE__ */") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ")(Tv || {});") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "RuntimeKind = /* @__PURE__ */") == null);
+}
+
 test "Codegen: const enum removed" {
     var r = try e2e(std.testing.allocator, "const enum Dir { Up, Down }");
     defer r.deinit();
@@ -238,6 +313,17 @@ test "Codegen #1564: for-of inside outer for-init preserves in_for_init" {
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
+}
+
+test "Codegen: for-init context does not leak into nested function body" {
+    var r = try e2eWithOptions(
+        std.testing.allocator,
+        "for (var a = function () { var b = g(); if (Object(b) === b) { return b; } return this; }, i = 0; i < 1; i++) {}",
+        .{ .minify_whitespace = true, .minify_syntax = true },
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "g()return") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var b=g();return") != null);
 }
 
 test "Codegen #1564: let/const mixed with nested for-in" {

@@ -57,6 +57,42 @@ inline fn isElidedStmt(self: anytype, idx: NodeIndex) bool {
     return self.ast.nodes.items[ni].tag == .empty_statement;
 }
 
+fn lastNonElidedStmt(self: anytype, indices: []const u32) ?NodeIndex {
+    var i = indices.len;
+    while (i > 0) {
+        i -= 1;
+        const idx: NodeIndex = @enumFromInt(indices[i]);
+        if (idx.isNone()) continue;
+        if (isElidedStmt(self, idx)) continue;
+        return idx;
+    }
+    return null;
+}
+
+fn stmtNeedsTrailingSemicolonBeforeBlockClose(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone()) return false;
+    const node = self.ast.getNode(idx);
+    return switch (node.tag) {
+        .for_statement => blk: {
+            const e = node.data.extra;
+            if (e + 3 >= self.ast.extra_data.items.len) break :blk false;
+            break :blk stmtNeedsTrailingSemicolonBeforeBlockClose(self, @enumFromInt(self.ast.extra_data.items[e + 3]));
+        },
+        .for_in_statement, .for_of_statement, .for_await_of_statement => stmtNeedsTrailingSemicolonBeforeBlockClose(self, node.data.ternary.c),
+        .while_statement => stmtNeedsTrailingSemicolonBeforeBlockClose(self, node.data.binary.right),
+        .if_statement => blk: {
+            const t = node.data.ternary;
+            if (!t.c.isNone() and !isElidedAlternate(self, t.c)) {
+                break :blk stmtNeedsTrailingSemicolonBeforeBlockClose(self, t.c);
+            }
+            break :blk stmtNeedsTrailingSemicolonBeforeBlockClose(self, t.b);
+        },
+        .labeled_statement, .with_statement => stmtNeedsTrailingSemicolonBeforeBlockClose(self, node.data.binary.right),
+        .empty_statement => true,
+        else => false,
+    };
+}
+
 pub fn emitProgram(self: anytype, node: Node) !void {
     const list = node.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -296,7 +332,11 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
         }
         self.indent_level -= 1;
     }
-    trimTrailingSemicolonBeforeMinifyBoundary(self);
+    if (lastNonElidedStmt(self, indices)) |last_stmt| {
+        if (!stmtNeedsTrailingSemicolonBeforeBlockClose(self, last_stmt)) {
+            trimTrailingSemicolonBeforeMinifyBoundary(self);
+        }
+    }
     try writeNewline(self);
     try writeIndent(self);
     try self.writeByte('}');

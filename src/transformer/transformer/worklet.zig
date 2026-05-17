@@ -561,7 +561,7 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
-        .data = .{ .binary = .{ .left = member, .right = value, .flags = 0 } },
+        .data = .{ .binary = .{ .left = member, .right = value, .flags = @intFromEnum(token_mod.Kind.eq) } },
     });
 
     // expression statement wrapper

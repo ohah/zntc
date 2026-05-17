@@ -17,7 +17,7 @@ test "base54: basic encoding" {
     try std.testing.expect(two[0] == 'e');
 }
 
-test "base54: 1글자 'e'/'m' 만 reserved (CJS wrap callback param 충돌 방지)" {
+test "base54: 1글자 'e'/'m' 만 reserved (legacy CJS alias 충돌 방지)" {
     var buf: [8]u8 = undefined;
     // base54 첫 54개 (1글자) 중 'e' (idx 0) 와 'm' (idx 14) 만 reserved.
     // 다른 1글자 이름은 free.
@@ -43,7 +43,7 @@ test "isReservedOrGlobal" {
     try std.testing.expect(isReservedOrGlobal("return"));
     try std.testing.expect(!isReservedOrGlobal("a"));
     try std.testing.expect(!isReservedOrGlobal("foo"));
-    // 'e', 'm' 은 CJS wrap callback param (`(e, m) => {...}`) 으로 reserved.
+    // 'e', 'm' 은 legacy CJS alias path 용으로 reserved.
     try std.testing.expect(isReservedOrGlobal("e"));
     try std.testing.expect(isReservedOrGlobal("m"));
 }

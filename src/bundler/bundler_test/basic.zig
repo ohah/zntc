@@ -174,6 +174,131 @@ test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
+test "Bundler: RN minified require(JSON) rewrites CJS module param" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const colors = require('./colors.json');
+        \\console.log(colors.black);
+    );
+    try writeFile(tmp.dir, "colors.json",
+        \\{"black":"#000000","white":"#ffffff"}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((exports,module)=>{module.exports={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((e)=>{module.exports") == null);
+}
+
+test "Bundler: RN minified CJS wrapper keeps Node parameter names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const styled = require('./styled.cjs').default;
+        \\console.log(typeof styled);
+    );
+    try writeFile(tmp.dir, "styled.cjs",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\var e = require("./dep.cjs");
+        \\exports.default = function styled(component) {
+        \\  return function template() {
+        \\    return e.value + component;
+        \\  };
+        \\};
+    );
+    try writeFile(tmp.dir, "dep.cjs",
+        \\exports.value = "ok";
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((exports,module)=>{Object.defineProperty(exports") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((e)=>{Object.defineProperty(e") == null);
+}
+
+test "Bundler: RN minified keeps computed global assignment side effect" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import { HeaderShownContext } from 'nav-elements';
+        \\console.log(HeaderShownContext);
+    );
+    try writeFile(tmp.dir, "node_modules/nav-elements/package.json",
+        \\{"name":"nav-elements","main":"index.js","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/nav-elements/index.js",
+        \\export { default as HeaderShownContext } from './HeaderShownContext.js';
+    );
+    try writeFile(tmp.dir, "node_modules/nav-elements/HeaderShownContext.js",
+        \\import getNamedContext from './getNamedContext.js';
+        \\const HeaderShownContext = getNamedContext('HeaderShownContext', false);
+        \\export default HeaderShownContext;
+    );
+    try writeFile(tmp.dir, "node_modules/nav-elements/getNamedContext.js",
+        \\const contexts = '__react_navigation__elements_contexts';
+        \\global[contexts] = global[contexts] ?? new Map();
+        \\
+        \\export default function getNamedContext(name, initialValue) {
+        \\  let context = global[contexts].get(name);
+        \\  if (context) {
+        \\    return context;
+        \\  }
+        \\  context = { name, initialValue };
+        \\  global[contexts].set(name, context);
+        \\  return context;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Map") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".get(") != null);
+}
+
 test "Bundler: define으로 죽은 require 분기는 그래프에 포함하지 않음" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

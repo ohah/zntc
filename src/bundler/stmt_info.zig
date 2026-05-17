@@ -247,13 +247,13 @@ fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeInde
 }
 
 /// top-level `BASE.PROP = RHS;` (단순 `=` 대입, LHS 정적 멤버, BASE 단일
-/// identifier) 의 base identifier / rhs 노드. 아니면 null.
+/// identifier) 의 base/property identifier / rhs 노드. 아니면 null.
 /// `gatedMemberAugmentObjectNode` 가 RHS 순수성·글로벌 검사를 덧붙이는
 /// 공통 구조 추출 코어 (#3359 중복 제거).
 fn memberAssignTargetParts(
     ast: *const Ast,
     stmt_node: Node,
-) ?struct { base: NodeIndex, rhs: NodeIndex } {
+) ?struct { base: NodeIndex, property: NodeIndex, rhs: NodeIndex } {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
     if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
@@ -266,7 +266,34 @@ fn memberAssignTargetParts(
     const parts = staticMemberParts(ast, expr.data.binary.left) orelse return null;
     const obj = ast.nodes.items[@intFromEnum(parts.object)];
     if (obj.tag != .identifier_reference) return null;
-    return .{ .base = parts.object, .rhs = expr.data.binary.right };
+    return .{ .base = parts.object, .property = parts.property, .rhs = expr.data.binary.right };
+}
+
+fn isWorkletMetadataProperty(name: []const u8) bool {
+    return std.mem.eql(u8, name, "__workletHash") or
+        std.mem.eql(u8, name, "__closure") or
+        std.mem.eql(u8, name, "__initData") or
+        std.mem.eql(u8, name, "__stackDetails") or
+        std.mem.eql(u8, name, "__pluginVersion") or
+        std.mem.eql(u8, name, "__bundleData");
+}
+
+fn workletMetadataObjectNode(
+    ast: *const Ast,
+    stmt_node: Node,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) ?NodeIndex {
+    const m = memberAssignTargetParts(ast, stmt_node) orelse return null;
+    const obj = ast.nodes.items[@intFromEnum(m.base)];
+
+    if (unresolved_globals) |globals| {
+        if (globals.contains(ast.getText(obj.span))) return null;
+    }
+
+    const prop = ast.nodes.items[@intFromEnum(m.property)];
+    if (prop.tag != .identifier_reference) return null;
+    if (!isWorkletMetadataProperty(ast.getText(prop.span))) return null;
+    return m.base;
 }
 
 fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
@@ -1086,6 +1113,9 @@ fn finalizeBucket(
 ///   - LHS = static_member_expression, base object = 단일 identifier_reference.
 ///   - base 가 이 모듈 top-level (scope_id == 0) 비-import 로컬 심볼 X.
 ///   - RHS 가 purity.isExprPure (PURE 주석 존중).
+///   - 예외: Reanimated/Babel worklet metadata (`X.__workletHash`,
+///     `X.__closure` 등)는 synthetic 함수 부속 데이터라 RHS 가 class static read 를
+///     포함해 일반 purity 를 통과하지 못해도 X 의 augmentation 으로 귀속한다.
 /// 구조적 매칭만 수행 (심볼 해석 제외) — 매칭 시 base object 의 identifier
 /// NodeIndex 를 반환. 호출자가 symbol_ids (build) 또는 references
 /// (buildFromSemantic) 로 심볼을 해석하고 scope_id==0 + 비-import 를 검증한다.
@@ -1100,6 +1130,11 @@ fn gatedMemberAugmentObjectNode(
     // base 가 unresolved global (`window.x = ...`) 이면 글로벌 변이 — 제외.
     if (unresolved_globals) |globals| {
         if (globals.contains(ast.getText(obj.span))) return null;
+    }
+
+    const prop = ast.nodes.items[@intFromEnum(m.property)];
+    if (prop.tag == .identifier_reference and isWorkletMetadataProperty(ast.getText(prop.span))) {
+        return m.base;
     }
 
     // RHS 순수성 (three 의 mergeUniforms 는 /*@__PURE__*/ 주석으로 pure 판정).
@@ -1118,6 +1153,36 @@ fn validateMemberAugmentBaseSymbol(symbols: []const Symbol, x_sym: u32) ?u32 {
     return x_sym;
 }
 
+fn findUniqueTopLevelLocalSymbolByName(ast: *const Ast, symbols: []const Symbol, name: []const u8) ?u32 {
+    var found: ?u32 = null;
+    for (symbols, 0..) |*sym, sym_idx| {
+        if (@intFromEnum(sym.scope_id) != 0) continue;
+        if (sym.decl_flags.is_import) continue;
+        if (!std.mem.eql(u8, sym.nameText(ast.source), name)) continue;
+        if (found != null) return null;
+        found = @intCast(sym_idx);
+    }
+    return found;
+}
+
+fn memberAugmentSymbolFromObjectNode(
+    ast: *const Ast,
+    obj_node: NodeIndex,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+) ?u32 {
+    const obj_node_i = @intFromEnum(obj_node);
+    if (obj_node_i < symbol_ids.len) {
+        if (symbol_ids[obj_node_i]) |x_sym| {
+            return validateMemberAugmentBaseSymbol(symbols, x_sym);
+        }
+    }
+    if (obj_node_i >= ast.nodes.items.len) return null;
+    const obj = ast.nodes.items[obj_node_i];
+    if (obj.tag != .identifier_reference) return null;
+    return findUniqueTopLevelLocalSymbolByName(ast, symbols, ast.getText(obj.span));
+}
+
 /// `build` (symbol_ids 보유) 경로용 thin wrapper.
 fn gatedMemberAugmentSymbol(
     ast: *const Ast,
@@ -1127,10 +1192,18 @@ fn gatedMemberAugmentSymbol(
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?u32 {
     const obj_node = gatedMemberAugmentObjectNode(ast, stmt_node, unresolved_globals) orelse return null;
-    const obj_node_i = @intFromEnum(obj_node);
-    if (obj_node_i >= symbol_ids.len) return null;
-    const x_sym = symbol_ids[obj_node_i] orelse return null;
-    return validateMemberAugmentBaseSymbol(symbols, x_sym);
+    return memberAugmentSymbolFromObjectNode(ast, obj_node, symbol_ids, symbols);
+}
+
+fn workletMetadataSymbol(
+    ast: *const Ast,
+    stmt_node: Node,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) ?u32 {
+    const obj_node = workletMetadataObjectNode(ast, stmt_node, unresolved_globals) orelse return null;
+    return memberAugmentSymbolFromObjectNode(ast, obj_node, symbol_ids, symbols);
 }
 
 /// 두 builder (buildFromSemantic / build) 의 per-stmt Phase 1 본체.
@@ -1267,12 +1340,16 @@ pub fn buildFromSemantic(
             null,
         );
 
-        if (gate_member_augment and stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
-            if (gatedMemberAugmentObjectNode(
-                ast,
-                ast.nodes.items[ni],
-                unresolved_globals,
-            )) |obj_node| {
+        if (stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
+            const stmt_node = ast.nodes.items[ni];
+            const augment_obj_node =
+                workletMetadataObjectNode(ast, stmt_node, unresolved_globals) orelse
+                if (gate_member_augment)
+                    gatedMemberAugmentObjectNode(ast, stmt_node, unresolved_globals)
+                else
+                    null;
+
+            if (augment_obj_node) |obj_node| {
                 // has_side_effects 해제는 base 가 top-level 로컬임을 references
                 // 패스에서 확정한 뒤에 한다 (조건부). 우선 후보로만 등록.
                 try member_augment_obj_to_stmt.put(allocator, @intFromEnum(obj_node), @intCast(stmt_i));
@@ -1338,6 +1415,23 @@ pub fn buildFromSemantic(
                 try writer_buckets[sym_u32].append(allocator, r.stmt_idx);
             }
         }
+    }
+
+    // Transformer/plugin generated nodes can be appended after the first semantic
+    // pass. A later resync normally records references for them, but generated
+    // string-table identifiers are still allowed to miss the reference pass in
+    // older plugin paths. Resolve remaining member-augment candidates by name,
+    // but only when the name maps to one unique top-level local binding.
+    var remaining_augment_it = member_augment_obj_to_stmt.iterator();
+    while (remaining_augment_it.next()) |entry| {
+        const obj_idx: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        if (@intFromEnum(obj_idx) >= ast.nodes.items.len) continue;
+        const obj = ast.nodes.items[@intFromEnum(obj_idx)];
+        if (obj.tag != .identifier_reference) continue;
+        const x_sym = findUniqueTopLevelLocalSymbolByName(ast, symbols, ast.getText(obj.span)) orelse continue;
+        const aug_stmt = entry.value_ptr.*;
+        stmts[aug_stmt].has_side_effects = false;
+        try writer_buckets[x_sym].append(allocator, aug_stmt);
     }
 
     // Pass 3a: declared bucket → sort + dedupe → stmts[i].declared_symbols + sym_to_stmt 역매핑.
@@ -1483,16 +1577,18 @@ pub fn build(
         // member-augment 귀속: 게이트 ON + has_side_effects 로 분류된
         // top-level `X.member = pureRHS` 만 대상. CJS export fact 로 이미
         // 안전 처리된 stmt (has_side_effects=false) 는 건드리지 않는다.
-        if (gate_member_augment and stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
-            if (gatedMemberAugmentSymbol(
-                ast,
-                ast.nodes.items[ni],
-                symbol_ids,
-                symbols,
-                unresolved_globals,
-            )) |x_sym| {
+        if (stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
+            const stmt_node = ast.nodes.items[ni];
+            const x_sym =
+                workletMetadataSymbol(ast, stmt_node, symbol_ids, symbols, unresolved_globals) orelse
+                if (gate_member_augment)
+                    gatedMemberAugmentSymbol(ast, stmt_node, symbol_ids, symbols, unresolved_globals)
+                else
+                    null;
+
+            if (x_sym) |sym| {
                 stmts[stmt_i].has_side_effects = false;
-                try member_augment_pairs.append(allocator, .{ @intCast(stmt_i), x_sym });
+                try member_augment_pairs.append(allocator, .{ @intCast(stmt_i), sym });
             }
         }
     }

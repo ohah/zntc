@@ -82,6 +82,18 @@ test "Minify: omits trailing semicolon before block boundary" {
     try std.testing.expectEqualStrings("function f(){let x=1;x++}f();", r.output);
 }
 
+test "Minify: keeps empty for body semicolon before block boundary" {
+    var r = try e2eWithOptions(std.testing.allocator, "function f() { try { for (; a; b++); } catch (e) {} }", .{ .minify_whitespace = true, .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(;a;b++);}") != null);
+}
+
+test "Minify: keeps nested empty for body semicolon before block boundary" {
+    var r = try e2eWithOptions(std.testing.allocator, "function f() { try { if (a) b(); else for (; c; d++); } catch (e) {} }", .{ .minify_whitespace = true, .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "else for(;c;d++);}") != null);
+}
+
 test "Minify: keeps semicolon between adjacent block statements" {
     var r = try e2eWithOptions(std.testing.allocator, "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }", .{ .minify_whitespace = true, .minify_syntax = true });
     defer r.deinit();

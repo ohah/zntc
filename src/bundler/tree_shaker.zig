@@ -1253,6 +1253,7 @@ pub const TreeShaker = struct {
             var enqueue_scope = profile.begin(.shake_fixpoint_bfs_seed_export_enqueue_symbol);
             defer enqueue_scope.end();
 
+            try self.seedEvaluatedModuleSideEffectStmts(target_u32, target_infos, queue, reachable_stmts);
             try self.enqueueSymbolLiveStatements(target_u32, target_infos, direct_sym, reachable_stmts, queue);
         }
 
@@ -1357,6 +1358,9 @@ pub const TreeShaker = struct {
 
             try self.markExportUsed(@intCast(target_mod), imported_name);
             self.included.set(target_mod);
+            if (module_stmt_infos[target_mod]) |mid_infos| {
+                try self.seedEvaluatedModuleSideEffectStmts(@intCast(target_mod), mid_infos, queue, reachable_stmts);
+            }
             // 중간 모듈의 export 선언 statement도 reachable로 마킹
             const mid_module = self.getModule(@intCast(target_mod)).?.*;
             if (mid_module.semantic) |mid_sem| {
@@ -1407,10 +1411,14 @@ pub const TreeShaker = struct {
             var enqueue_scope = profile.begin(.shake_fixpoint_bfs_seed_export_enqueue_symbol);
             defer enqueue_scope.end();
 
+            // A live ESM export means this module is evaluated. `sideEffects:false`
+            // can drop unused modules, but it must not remove observable
+            // top-level initialization inside an evaluated module.
+            try self.seedEvaluatedModuleSideEffectStmts(@intCast(canon_mod), target_infos, queue, reachable_stmts);
             try self.enqueueSymbolLiveStatements(@intCast(canon_mod), target_infos, @intCast(sym_idx), reachable_stmts, queue);
         }
 
-        // side-effect statement는 enqueueStmt에서 lazy 시드됨
+        // Symbol-attached side-effect statements are also lazily seeded by enqueue().
     }
 
     fn seedCjsExportOrAll(
@@ -1726,6 +1734,35 @@ pub const TreeShaker = struct {
         }
         for (infos.stmts, 0..) |stmt, si| {
             if (!stmt.has_side_effects) continue;
+            try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
+        }
+    }
+
+    fn seedEvaluatedModuleSideEffectStmts(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        self.included.set(mod_idx);
+        if (reachable_stmts[mod_idx] == null) {
+            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+        }
+
+        const m = self.getModule(mod_idx);
+        const ast = if (m) |module| module.ast else null;
+        for (infos.stmts, 0..) |stmt, si| {
+            if (!stmt.has_side_effects) continue;
+            if (ast) |module_ast| {
+                const ni: usize = stmt.node_idx;
+                if (ni < module_ast.nodes.items.len) {
+                    switch (module_ast.nodes.items[ni].tag) {
+                        .export_all_declaration => continue,
+                        else => {},
+                    }
+                }
+            }
             try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
         }
     }
