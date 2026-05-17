@@ -1029,6 +1029,95 @@ test "merge decls: skip_nodes가 kind 차이가 있는 경계에서는 merge 차
 }
 
 // ================================================================
+// RFC #3411 export-wrapper 병합 — 버그 경계 빡센 회귀 (correctness-critical)
+// ================================================================
+
+test "RFC#3411: export const 3개 연속 → 하나로 병합" {
+    try expectMinify(
+        "export const a = 1; export const b = 2; export const c = 3;",
+        "export const a = 1,b = 2,c = 3;",
+    );
+}
+
+test "RFC#3411: export var 연속 병합 / export const+export var 는 kind 차단" {
+    try expectMinify(
+        "export var a = 1; export var b = 2;",
+        "export var a = 1,b = 2;",
+    );
+    try expectMinify(
+        "export const a = 1; export var b = 2;",
+        "export const a = 1;\nexport var b = 2;",
+    );
+}
+
+test "RFC#3411: export const + export let 는 kind 차단 (둘 다 export 라도)" {
+    try expectMinify(
+        "export const a = 1; export let b = 2;",
+        "export const a = 1;\nexport let b = 2;",
+    );
+}
+
+test "RFC#3411: export run 과 plain 은 경계에서 분리 (is_export 혼합 금지)" {
+    // 앞 export 2개 병합, 이후 plain const 는 별도. 양방향.
+    try expectMinify(
+        "export const a = 1; export const b = 2; const c = 3;",
+        "export const a = 1,b = 2;\nconst c = 3;",
+    );
+    try expectMinify(
+        "const a = 1; export const b = 2; export const c = 3;",
+        "const a = 1;\nexport const b = 2,c = 3;",
+    );
+    // plain run + export 단독: plain 끼리만 병합.
+    try expectMinify(
+        "const a = 1; const b = 2; export const c = 3;",
+        "const a = 1,b = 2;\nexport const c = 3;",
+    );
+}
+
+test "RFC#3411: export const destructuring 병합" {
+    try expectMinify(
+        "export const { x } = o; export const { y } = p;",
+        "export const { x:x } = o,{ y:y } = p;",
+    );
+}
+
+test "RFC#3411: export {b} specifier-only 는 병합 비대상 (specs_len!=0)" {
+    try expectMinify(
+        "const b = 9; export const a = 1; export { b };",
+        "const b = 9;\nexport const a = 1;\nexport { b };",
+    );
+}
+
+test "RFC#3411: export default / export function / export class 는 병합 비대상" {
+    try expectMinify(
+        "export const a = 1; export default 2;",
+        "export const a = 1;\nexport default 2;",
+    );
+    try expectMinify(
+        "export const a = 1; export function f() {}",
+        "export const a = 1;\nexport function f() {\n}",
+    );
+    try expectMinify(
+        "export const a = 1; export class C {}",
+        "export const a = 1;\nexport class C {\n}",
+    );
+}
+
+test "RFC#3411: export const 병합 idempotent (2회 호출 안정)" {
+    try expectMergeIdempotent(
+        "export const a = 1; export const b = 2;",
+        "export const a = 1,b = 2;",
+    );
+}
+
+test "RFC#3411: export const 중간 비-선언 statement 가 인접성 차단" {
+    try expectMinify(
+        "export const a = 1; sideEffect(); export const b = 2;",
+        "export const a = 1;\nsideEffect();\nexport const b = 2;",
+    );
+}
+
+// ================================================================
 // Dead Store Elimination — Unused Declaration (#1644 PR1)
 // ================================================================
 
