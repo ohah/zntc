@@ -70,6 +70,11 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
             params_span = pnode.span;
         }
     }
+    // Method params/body are a function scope. Temps produced by transforms such
+    // as `foo() ?? bar` must be declared inside the method body, not at the
+    // class/module scope.
+    const saved_temp_counter = self.temp_var_counter;
+
     var pp = try self.visitParamsCollectProperties(params_list_old);
     defer pp.prop_names.deinit(self.allocator);
 
@@ -134,6 +139,11 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
 
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
+
+    if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
+        new_body = try self.hoistTempVars(new_body, saved_temp_counter, node.span);
+    }
+    self.temp_var_counter = saved_temp_counter;
 
     self.arrow_this_depth = saved_arrow_depth;
     self.needs_this_var = saved_needs_this;
