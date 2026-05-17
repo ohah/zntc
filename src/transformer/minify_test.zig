@@ -832,10 +832,23 @@ test "merge decls: function 선언으로 중단, 이후 재개" {
     );
 }
 
-test "merge decls: export const는 merge 안 함 (export 구문 보존)" {
+test "merge decls: 인접 export const merge (RFC #3411 — export const a=1,b=2 는 valid ESM)" {
+    // 과거엔 보수적으로 분리 유지했으나, `export const a=1,b=2;` 는 ESM 에서
+    // valid 하고 esbuild/terser 도 병합. export↔non-export 혼합만 금지.
     try expectMinify(
         "export const a = 1; export const b = 2;",
-        "export const a = 1;\nexport const b = 2;",
+        "export const a = 1,b = 2;",
+    );
+}
+
+test "merge decls: export 와 non-export 는 섞어 merge 안 함 (export 의미 보존)" {
+    try expectMinify(
+        "export const a = 1; const b = 2;",
+        "export const a = 1;\nconst b = 2;",
+    );
+    try expectMinify(
+        "const a = 1; export const b = 2;",
+        "const a = 1;\nexport const b = 2;",
     );
 }
 

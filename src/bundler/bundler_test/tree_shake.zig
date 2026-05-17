@@ -85,9 +85,9 @@ test "TreeShaking: entry point exports preserved in bundle" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 진입점의 모든 export가 출력에 존재
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const a = 1;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const b = 2;") != null);
+    // 진입점의 모든 export가 출력에 존재 (RFC #3411: 인접 병합 가능 → 키워드/`;` 제외)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "a = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "b = 2") != null);
 }
 
 test "TreeShaking: only used exports from dependency" {
