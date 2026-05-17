@@ -238,6 +238,11 @@ export function createBabelTransformer(
     babelOptions = {
       presets: customPresets,
       plugins: customPlugins,
+      // Babel plugin 들은 기본적으로 process.cwd() 기준으로 project-relative path 를
+      // 계산한다. ZNTC CLI/server cwd 가 app root 밖이면 root-import 류 plugin 이
+      // 잘못된 상대경로를 만들므로 Metro 처럼 app projectRoot 를 기준으로 고정한다.
+      cwd: projectRoot,
+      root: projectRoot,
       babelrc: false,
       configFile: false,
       compact: false,
