@@ -107,4 +107,50 @@ describe('MF P1-3: webpack-style container emit', () => {
     expect(stdout).toContain('RESULT=WIDGET-42');
     expect(stdout).toContain('EVALUATED=true');
   });
+
+  // 갭 보강(레퍼런스 api.spec 'same name → same instance' 대비): container
+  // init 멱등(`__zntc_mf_inited` Promise-cache) — 재호출 시 같은 Promise,
+  // 부수효과 1회. 반복 get 도 동일 모듈. 기존 테스트는 init/get 1회씩만.
+  test('멱등: init 2회=같은 Promise, get 2회=동일 모듈, 부수효과 1회', async () => {
+    const r = await runConfigBundle({
+      files: {
+        'Widget.ts':
+          `globalThis.__evN = (globalThis.__evN || 0) + 1;\n` +
+          `export default function Widget() { return "W"; }`,
+        'index.ts': `export const sentinel = "remote-entry";`,
+        'zntc.config.json': JSON.stringify({
+          mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+        }),
+      },
+      args: ['--format=iife'],
+      outDir: 'out',
+    });
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    const outs = readdirSync(r.outDir!).map((f) => ({
+      path: f,
+      text: readFileSync(join(r.outDir!, f), 'utf8'),
+    }));
+    writeOutputs(r.dir, outs);
+    const entryFile = outs.find((o) => o.text.includes('__zntc_mf_container'))!.path;
+    const driver = `
+      await import(${JSON.stringify('file://' + join(r.dir, entryFile))});
+      globalThis.__zntc_public_path = ${JSON.stringify('file://' + r.dir + '/')};
+      const c = globalThis.app;
+      const p1 = c.init({}); const p2 = c.init({});
+      console.log('INIT_SAME=' + (p1 === p2));   // 같은 Promise 재반환(멱등)
+      await p1;
+      const m1 = (await c.get('./Widget'))();
+      const m2 = (await c.get('./Widget'))();
+      console.log('GET_SAME=' + (m1 === m2 || m1.default === m2.default));
+      console.log('SIDE_EFFECT=' + globalThis.__evN); // factory 1회만 평가
+    `;
+    const driverPath = join(r.dir, 'driver.mjs');
+    require('node:fs').writeFileSync(driverPath, driver);
+    const { stdout, stderr } = await runNode(driverPath);
+    expect(stderr).toBe('');
+    expect(stdout).toContain('INIT_SAME=true');
+    expect(stdout).toContain('GET_SAME=true');
+    expect(stdout).toContain('SIDE_EFFECT=1');
+  });
 });
