@@ -473,3 +473,129 @@ test('P2-5 shared singleton(실브라우저): host react ≡ zntc remote react',
     await rm(hostDir, { recursive: true, force: true });
   }
 });
+
+// P3-5 (#3440): D3 "빌드 핀 + 런타임 가드" 양쪽을 영구 박제.
+// (A) 빌드-핀: 로컬 resolve 가능 remote 의 부재 expose import → 빌드
+//     fail-fast(S6, P3-1). (B) 런타임-가드: http/도달불가 remote(빌드타임
+//     검증 불가→skip)가 런타임에 거부 → __mfGuardedLoad 가 폴백, 셸
+//     생존(white-screen 아님). 표준 @module-federation/[email protected].
+test('P3-5 빌드-핀(S6): 로컬 remote 부재 expose import → 빌드 fail-fast', async () => {
+  test.setTimeout(90_000);
+  const remoteDir = await mkdtemp(join(tmpdir(), 'zntc-p35bf-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-p35bf-host-'));
+  try {
+    const remoteDist = join(remoteDir, 'dist');
+    await mkdir(remoteDist, { recursive: true });
+    await writeFile(join(remoteDir, 'Widget.ts'), `export default () => "OK";`);
+    await writeFile(join(remoteDir, 'index.ts'), `export const s = "re";`);
+    await writeFile(
+      join(remoteDir, 'zntc.config.json'),
+      JSON.stringify({ mf: { name: 'app', exposes: { './Widget': './Widget.ts' } } }),
+    );
+    const rb = spawnSync(
+      ZNTC_BIN,
+      ['--bundle', join(remoteDir, 'index.ts'), '--outdir', remoteDist, '--format=iife'],
+      { cwd: remoteDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(rb.status, `remote build: ${rb.stderr?.toString().slice(0, 400)}`).toBe(0);
+    const manifestAbs = join(remoteDist, 'mf-manifest.json');
+
+    const buildHost = async (spec: string) => {
+      await writeFile(
+        join(hostDir, 'index.ts'),
+        `async function m(){ const x = await import(${JSON.stringify(spec)}); console.log(x); }\nm();`,
+      );
+      await writeFile(
+        join(hostDir, 'zntc.config.json'),
+        JSON.stringify({ mf: { name: 'host', remotes: { app: `app@${manifestAbs}` } } }),
+      );
+      return spawnSync(
+        ZNTC_BIN,
+        ['--bundle', join(hostDir, 'index.ts'), '-o', join(hostDir, 'host.js'), '--format=iife'],
+        { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+      );
+    };
+    // 존재 expose → 빌드 성공(정밀 fail-fast: blanket 아님)
+    expect((await buildHost('app/Widget')).status).toBe(0);
+    // 부재 expose → 빌드 fail-fast(런타임 깨짐 아님)
+    const bad = await buildHost('app/Missing');
+    expect(bad.status).not.toBe(0);
+    expect(bad.stderr?.toString()).toContain('MF expose 계약 위반');
+  } finally {
+    await rm(remoteDir, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
+
+test('P3-5 런타임-가드(실브라우저): 도달불가 remote → 폴백 렌더, 셸 생존', async ({ page }) => {
+  test.setTimeout(90_000);
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-p35rg-host-'));
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    // http 도달불가 remote(port 1=connection refused). http → P3-1/2/3
+    // 빌드타임 검증 skip(검증 불가 ≠ 위반) → 빌드 성공 → 런타임 가드
+    // 가 유일 안전망. m.__mfUnavailable 폴백 감지 → 셸 생존.
+    await writeFile(
+      join(hostDir, 'index.ts'),
+      `async function main(){ const m = await import("app/Widget");` +
+        ` document.getElementById("out").textContent = (m && m.__mfUnavailable)` +
+        ` ? "GUARD-OK" : ("NO-GUARD:" + String(m && (m.default || m)));` +
+        ` window.__done = true; }\n` +
+        `main().catch((e) => { window.__err = String((e && e.stack) || e); window.__done = true; });`,
+    );
+    await writeFile(
+      join(hostDir, 'zntc.config.json'),
+      JSON.stringify({
+        mf: { name: 'host', remotes: { app: 'app@http://127.0.0.1:1/mf-manifest.json' } },
+      }),
+    );
+    const hb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(hostDir, 'index.ts'),
+        '-o',
+        join(hostDir, 'host.js'),
+        '--format=iife',
+        '--platform=browser',
+      ],
+      { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+    );
+    // http remote 라 빌드타임 검증 skip → 빌드 성공(런타임 가드 시나리오)
+    expect(hb.status, `zntc host build: ${hb.stderr?.toString().slice(0, 500)}`).toBe(0);
+
+    await buildGlue(hostDir);
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script></head><body><div id="out">pending</div>` +
+        `<script src="./host.js"></script></body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    const consoleErrs: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrs.push(msg.text());
+    });
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 20000,
+    });
+
+    // 가드가 거부를 catch → main() 정상 완료(throw 아님), 셸 생존
+    expect(await page.evaluate(() => (window as { __err?: string }).__err)).toBeFalsy();
+    expect(await page.locator('#out').textContent()).toBe('GUARD-OK');
+    // 폴백은 silent 아님 — 관측가능한 console.error
+    expect(
+      consoleErrs.some((t) => t.includes('[mf] runtime guard')),
+      `console errors: ${consoleErrs.join(' | ')}`,
+    ).toBe(true);
+    // unhandled pageerror 없음(가드가 흡수 — white-screen 방지)
+    expect(pageErrors, `pageerror: ${pageErrors.join(', ')}`).toHaveLength(0);
+  } finally {
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});

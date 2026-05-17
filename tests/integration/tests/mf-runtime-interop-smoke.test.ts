@@ -702,8 +702,11 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(hostSrc).toContain(
       'R.init({"name":"host","remotes":[{"name":"remoteA","entry":"http://localhost:',
     );
-    // 원격 동적 import 재작성
-    expect(hostSrc).toContain('globalThis.__mf_runtime.loadRemote("remoteA/Widget")');
+    // 원격 동적 import 재작성 — P3-5 런타임 가드 경유(인자 그대로
+    // forward) + 가드 정의(내부서 표준 loadRemote 호출 = interop 보존)
+    expect(hostSrc).toContain('globalThis.__mfGuardedLoad("remoteA/Widget")');
+    expect(hostSrc).toContain('globalThis.__mfGuardedLoad=function(');
+    expect(hostSrc).toContain('RR.loadRemote.apply(RR,a)');
 
     // 3) 실 @module-federation/runtime 을 글로벌로 제공 후 host 번들 실행
     const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
@@ -1062,8 +1065,8 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     // prelude remotes 배열에 두 remote 모두 + 각각 loadRemote 재작성
     expect(hostSrc).toMatch(/"name":"appA","entry":"http:\/\/localhost:\d+\/index\.js"/);
     expect(hostSrc).toMatch(/"name":"appB","entry":"http:\/\/localhost:\d+\/index\.js"/);
-    expect(hostSrc).toContain('globalThis.__mf_runtime.loadRemote("appA/X")');
-    expect(hostSrc).toContain('globalThis.__mf_runtime.loadRemote("appB/Y")');
+    expect(hostSrc).toContain('globalThis.__mfGuardedLoad("appA/X")'); // P3-5 가드 경유
+    expect(hostSrc).toContain('globalThis.__mfGuardedLoad("appB/Y")');
 
     const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
     driverPath = join(hostFx.dir, 'mr-driver.mjs');
