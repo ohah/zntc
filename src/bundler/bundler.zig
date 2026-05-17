@@ -1730,6 +1730,18 @@ pub const Bundler = struct {
             else
                 null;
 
+        // #3318 P1-6: host(mf.remotes) — 단일파일 출력에 init prelude +
+        // 원격 동적 import→loadRemote 재작성. split 경로(output="" — host
+        // 가 동시에 remote 인 niche)는 후속(follow-up). 게이트 = wrapContainer
+        // 와 동일 관례(markBoundary).
+        if (self.options.mf) |*mf| {
+            if (mf.remotes.len > 0 and output.len > 0) {
+                const host_out = try @import("federation_emit.zig").emitHostInit(self.allocator, output, mf);
+                self.allocator.free(output);
+                output = host_out;
+            }
+        }
+
         return .{
             .output = output,
             .sourcemap = dev_sourcemap,

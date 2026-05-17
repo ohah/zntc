@@ -18,6 +18,20 @@ const ModuleIndex = types.ModuleIndex;
 const module_id = @import("module_id.zig");
 const resolve_cache = @import("resolve_cache.zig");
 
+/// P1-6 host: 스펙 런타임 패키지(자체 재구현 금지=D1) 및 그 글로벌 seam.
+/// **단일 소스** — applyMfRemotesSeam(cli/options.zig)이 external+글로벌로
+/// 걸고 emitHostInit(federation_emit.zig)이 그 글로벌로 init/loadRemote
+/// 배선. 두 곳이 반드시 일치해야 동작(mfSharedGlobalName 단일소스 선례).
+pub const MF_RUNTIME_PKG = "@module-federation/runtime";
+pub const MF_RUNTIME_GLOBAL = "__mf_runtime";
+
+/// specifier 가 원격(`<key>` 정확 또는 `<key>/...` sub-path)인가.
+/// resolve_cache.matchPackageSubPath 재사용 — host 치환 판정과 런타임
+/// external 판정이 **동일 규칙**(분기 시 `react/*` 류 key 에서 불일치).
+pub fn matchesRemoteSpec(spec: []const u8, key: []const u8) bool {
+    return std.mem.eql(u8, spec, key) or resolve_cache.matchPackageSubPath(key, spec);
+}
+
 /// cwd 절대경로(realpath). **WASI 는 realpath 미지원** — `std.fs.cwd().
 /// realpathAlloc` 는 wasm32-wasi 에서 `@compileError`(runtime catch 무관,
 /// 참조 자체가 컴파일 실패). comptime os 분기로 비-WASI 만 realpath, WASI

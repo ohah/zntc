@@ -230,6 +230,95 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     const ab = mani.exposes.find((e: { name: string }) => e.name === './a/B');
     expect(ab.id).toBe('app:a/B'); // './' 만 제거(중첩 경로 보존)
   });
+
+  // P1-6 (#3388): zntc-빌드 host 가 실 @module-federation/runtime 로 remote
+  // 소비. zntc 가 emit 한 init prelude + `import("remote/x")`→loadRemote
+  // 재작성 코드가 **실 스펙 런타임**으로 동작(host-emit 검증, D1 — 자체
+  // 재구현 안 함). remote=zntc(P1-3/5 container+mf-manifest). 정적 import
+  // async 강등·split-host·실브라우저 = P1-7/후속.
+  test('host-emit: zntc host 가 실 runtime 으로 zntc remote 소비', async () => {
+    // 1) zntc remote 빌드(container+mf-manifest, chunk publicPath=file://)
+    const remoteFx = await createFixture({
+      'Widget.ts': `export default function Widget() { return "HOST-CONSUMED-OK"; }`,
+      'index.ts': `export const sentinel = "remote-entry";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const rdist = join(remoteFx.dir, 'dist');
+    const rb = await runZntcInDir(remoteFx.dir, [
+      '--bundle',
+      join(remoteFx.dir, 'index.ts'),
+      '--outdir',
+      rdist,
+      '--format=iife',
+      `--public-path=file://${rdist}/`,
+    ]);
+    expect(rb.exitCode).toBe(0);
+
+    // remote dist http 서빙(.json→application/json — runtime manifest 감지)
+    server = createServer(async (req, res) => {
+      try {
+        const u = req.url === '/' ? '/index.js' : req.url!;
+        const ct = u.endsWith('.json') ? 'application/json' : 'application/javascript';
+        res.writeHead(200, { 'content-type': ct });
+        res.end(await readFile(join(rdist, u)));
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((r) => server!.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+
+    // 2) zntc host 빌드(단일파일 iife). mf.remotes → init prelude +
+    //    import("remoteA/Widget")→globalThis.__mf_runtime.loadRemote 재작성.
+    const hostFx = await createFixture({
+      'index.ts':
+        `async function main(){ const m = await import("remoteA/Widget");` +
+        ` console.log("HOST=" + (m.default ?? m)()); }\nmain();`,
+      // 직접 remoteEntry(.js) — runtime 이 http fetch(S3 검증 형태). manifest
+      // (.json) entry 는 publicPath-derived chunk 가 Node http import 불가
+      // (P1-5 분석) → P1-7 Playwright. remote 는 chunk publicPath=file://.
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'host', remotes: { remoteA: `remoteA@http://localhost:${port}/index.js` } },
+      }),
+    });
+    cleanup = async () => {
+      await hostFx.cleanup();
+      await remoteFx.cleanup();
+    };
+    const hostOut = join(hostFx.dir, 'host.js');
+    const hb = await runZntcInDir(hostFx.dir, [
+      '--bundle',
+      join(hostFx.dir, 'index.ts'),
+      '-o',
+      hostOut,
+      '--format=iife',
+    ]);
+    expect(hb.exitCode).toBe(0);
+    const hostSrc = readFileSyncSafe(hostOut);
+    // init prelude: var R=globalThis.__mf_runtime;if(R&&R.init)R.init({...})
+    expect(hostSrc).toContain('var R=globalThis.__mf_runtime');
+    expect(hostSrc).toContain(
+      'R.init({"name":"host","remotes":[{"name":"remoteA","entry":"http://localhost:',
+    );
+    // 원격 동적 import 재작성
+    expect(hostSrc).toContain('globalThis.__mf_runtime.loadRemote("remoteA/Widget")');
+
+    // 3) 실 @module-federation/runtime 을 글로벌로 제공 후 host 번들 실행
+    const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
+    driverPath = join(hostFx.dir, 'host-driver.mjs');
+    writeFileSync(
+      driverPath,
+      `import mf from ${JSON.stringify('file://' + mfRuntime)};\n` +
+        `globalThis.__mf_runtime = mf;\n` +
+        `await import(${JSON.stringify('file://' + hostOut)});\n` +
+        `await new Promise(r => setTimeout(r, 500));\n`,
+    );
+    const { stdout, stderr } = await runNode(driverPath);
+    expect(stdout).toContain('HOST=HOST-CONSUMED-OK'); // zntc host→실 runtime→zntc remote
+    expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"/);
+  }, 30000);
 });
 
 function readFileSyncSafe(p: string): string {

@@ -27,6 +27,95 @@ const BOOTSTRAP_ANCHOR = "globalThis.__zntc_require(\"";
 
 const MfEmitError = error{RemoteEntryAnchorMissing};
 
+const MF_RUNTIME_GLOBAL = federation.MF_RUNTIME_GLOBAL; // 단일 소스
+
+/// `mf.remotes` KV.value(`<name>@<entry>`) → (name, entry). `@` 첫 등장
+/// split. name 부분 비면 KV.key fallback. `@` 없으면 value 전체=entry.
+/// 한계: scoped-like value(`@scope/x@url`)는 첫 `@`(idx 0) split →
+/// name="" → key fallback, entry 는 `@` 손실(`scope/x@url`). MF remote
+/// value 관례는 `bareName@url` 라 비규약 입력 — 비지원(문서화).
+fn parseRemote(kv: types.MfBundleConfig.KV) struct { name: []const u8, entry: []const u8 } {
+    if (std.mem.indexOfScalar(u8, kv.value, '@')) |at| {
+        const nm = kv.value[0..at];
+        return .{ .name = if (nm.len > 0) nm else kv.key, .entry = kv.value[at + 1 ..] };
+    }
+    return .{ .name = kv.key, .entry = kv.value };
+}
+
+/// specifier 가 어떤 remote(`<key>`/`<key>/...`)에 매칭 — 판정 규칙은
+/// federation.matchesRemoteSpec 단일 소스(런타임 external 판정과 동일).
+fn isRemoteSpec(spec: []const u8, mf: *const types.MfBundleConfig) bool {
+    for (mf.remotes) |kv| if (federation.matchesRemoteSpec(spec, kv.key)) return true;
+    return false;
+}
+
+/// P1-6 host emit: 스펙 `@module-federation/runtime` 재사용(D1 — 자체
+/// 재구현 금지). src 앞에 init prelude(`globalThis.__mf_runtime.init({name,
+/// remotes})`)를 prepend + 원격 동적 `import("remote/x")` 를
+/// `globalThis.__mf_runtime.loadRemote("remote/x")` 로 치환. runtime 은
+/// applyMfRemotesSeam 이 external+글로벌(__mf_runtime) 처리 → host 환경이
+/// 그 글로벌로 스펙 런타임 제공(P1-2/P1-3 글로벌-seam 모델 일관, iife/umd/
+/// amd valid). 반환 = 새 owned 문자열(caller 가 기존 src free). 정적
+/// `import X from "remote/x"` 는 비-목표(async 강등 필요 — 후속).
+pub fn emitHostInit(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    mf: *const types.MfBundleConfig,
+) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const w = out.writer(allocator);
+
+    // ── init prelude (멱등: runtime.init 자체 멱등) ──
+    try out.appendSlice(allocator, "(function(){var R=globalThis." ++ MF_RUNTIME_GLOBAL ++ ";if(R&&R.init)R.init({\"name\":");
+    try emitter.appendJsonString(&out, allocator, mf.name orelse "host");
+    try out.appendSlice(allocator, ",\"remotes\":[");
+    for (mf.remotes, 0..) |kv, i| {
+        if (i > 0) try out.append(allocator, ',');
+        const r = parseRemote(kv);
+        try out.appendSlice(allocator, "{\"name\":");
+        try emitter.appendJsonString(&out, allocator, r.name);
+        try out.appendSlice(allocator, ",\"entry\":");
+        try emitter.appendJsonString(&out, allocator, r.entry);
+        try out.append(allocator, '}');
+    }
+    try out.appendSlice(allocator, "]});})();");
+
+    // ── 원격 동적 import 재작성: `import(<q><remote>...)` →
+    //    `globalThis.__mf_runtime.loadRemote(<q><remote>...)`. 매칭 외 구간은
+    //    appendSlice 청크 복사(바이트별 append 회피 — 출력크기 비례 O(n),
+    //    wrapContainer splice 와 동일 관례). `import(` 만 교체, 따옴표·
+    //    specifier·잔여(2nd-arg/attributes 포함)는 그대로 보존. ──
+    const NEEDLE = "import(";
+    var last: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, src, i, NEEDLE)) |p| {
+        // 식별자 경계 — `myimport(`/`Reimport(` 부분일치 배제.
+        if (p > 0 and isIdentChar(src[p - 1])) {
+            i = p + NEEDLE.len;
+            continue;
+        }
+        var j = p + NEEDLE.len;
+        while (j < src.len and (src[j] == ' ' or src[j] == '\t')) j += 1;
+        if (j < src.len and (src[j] == '"' or src[j] == '\'')) {
+            const q = src[j];
+            const s0 = j + 1;
+            if (std.mem.indexOfScalarPos(u8, src, s0, q)) |s1| {
+                if (isRemoteSpec(src[s0..s1], mf)) {
+                    try out.appendSlice(allocator, src[last..p]);
+                    try w.print("globalThis.{s}.loadRemote(", .{MF_RUNTIME_GLOBAL});
+                    last = p + NEEDLE.len; // 따옴표부터는 다음 flush 가 보존
+                    i = last;
+                    continue;
+                }
+            }
+        }
+        i = p + NEEDLE.len;
+    }
+    try out.appendSlice(allocator, src[last..]);
+    return out.toOwnedSlice(allocator);
+}
+
 fn isIdentChar(c: u8) bool {
     return c == '_' or c == '$' or std.ascii.isAlphanumeric(c);
 }

@@ -407,6 +407,11 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         // 그대로 재사용 — bundler/emitter/codegen 무변경.
         if (opts.mf) |mfb| {
             try applyMfSharedSeam(allocator, opts, mfb.shared);
+            // P1-6 (#3388): host = remotes 소비자. 원격 specifier(`remoteA`,
+            // `remoteA/...`)와 `@module-federation/runtime`(스펙 런타임, 자체
+            // 재구현 금지=D1) 를 external + 글로벌 seam(P1-2 와 동일 기계) 로.
+            // emitHostInit 이 `__mf_runtime.init/loadRemote` 로 배선.
+            if (mfb.remotes.len > 0) try applyMfRemotesSeam(allocator, opts, mfb.remotes);
             // P1-3 (#3385): exposes 있는 mf = remote → container/exposes 는
             // reg_split 다중-청크(chunk.zig 가 expose→lazy 청크) 위에 얹으므로
             // splitting 필수(부트스트랩은 format=iife/umd/amd 필요 — 없으면
@@ -445,6 +450,32 @@ fn applyMfSharedSeam(
             .global_name = s.global_seam, // borrow (mfBundleFromDto 가 1회 생성·소유)
         });
     }
+}
+
+/// 스펙 런타임 pkg/글로벌 — federation.zig 단일 소스 재노출(emitHostInit
+/// 과 반드시 일치). 고정 상수라 alloc/소유 무관(static literal).
+const MF_RUNTIME_PKG = lib.bundler.federation.MF_RUNTIME_PKG;
+const MF_RUNTIME_GLOBAL = lib.bundler.federation.MF_RUNTIME_GLOBAL;
+
+/// mf.remotes → host 소비 seam. 원격 specifier(KV.key, 예 `remoteA`)는
+/// external — resolve_cache sub-path 매칭이 `remoteA/Widget` 도 자동 external
+/// (esbuild 동등). `@module-federation/runtime` 도 external + 글로벌
+/// (`__mf_runtime`) — host 가 그 글로벌로 스펙 런타임 제공(P1-2 와 동일
+/// 기계, container 글로벌 소비 모델과 일관). emitHostInit 이 init/loadRemote
+/// 를 그 글로벌로 배선. 모든 문자열 borrow(opts.mf KV / static literal).
+fn applyMfRemotesSeam(
+    allocator: std.mem.Allocator,
+    opts: *CliOptions,
+    remotes: []const lib.bundler.MfBundleConfig.KV,
+) !void {
+    for (remotes) |kv| {
+        try opts.external_list.append(allocator, kv.key); // borrow (opts.mf 소유)
+    }
+    try opts.external_list.append(allocator, MF_RUNTIME_PKG);
+    try opts.globals_list.append(allocator, .{
+        .specifier = MF_RUNTIME_PKG,
+        .global_name = MF_RUNTIME_GLOBAL,
+    });
 }
 
 /// `MfConfigDto`(arena, record) → `MfBundleConfig`(CliOptions 수명, 평탄화).
