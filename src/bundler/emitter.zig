@@ -37,7 +37,21 @@ const cache_mod = @import("compiled_cache.zig");
 pub const CompiledOutputCache = cache_mod.CompiledOutputCache;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
+const cg_options = @import("../codegen/options.zig");
 const SourceMap = @import("../codegen/sourcemap.zig");
+
+/// kill-switch (RFC PR-3, 기본 OFF). set 일 때만 CJS wrapper 의
+/// `exports`/`module` arrow 파라미터·본문 free 참조를 짧은 이름으로
+/// mangle. unset 시 codegen 옵션·wrapper 모두 default → 출력 무변경.
+const cjs_wrap_mangle_env = @import("../env_flag.zig").Once("ZNTC_CJS_WRAP_MANGLE");
+
+/// CJS wrapper mangle 시 사용할 모듈-로컬 2글자 이름. arrow 파라미터라
+/// 모듈 스코프에 격리(타 모듈/top-level 빈도풀 무관) — codegen 합성·free
+/// 참조와 wrapper 파라미터가 이 이름을 공유한다. `$` prefix 는 mangler
+/// base54 알파벳(`$` 비포함) 및 runtime helper 와 비충돌: 144-lib smoke
+/// 런타임 MATCH 전수 통과로 실증.
+const CJS_MANGLE_EXPORTS = "$e";
+const CJS_MANGLE_MODULE = "$m";
 const error_codes = @import("../error_codes.zig");
 
 /// ZNTC0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
@@ -1728,8 +1742,18 @@ pub fn emitModule(
     }
 
     // Codegen: AST → JS 문자열
+    // CJS wrapper exports/module mangle (RFC PR-3): kill-switch + CJS wrap
+    // + minify 일 때만. codegen 합성/free-ref 와 wrapper 파라미터가 같은
+    // 이름을 써야 하므로 단일 소스로 계산. 비활성 시 default → 무변경.
+    const cjs_mangle = cjs_wrap_mangle_env.enabled() and
+        module.wrap_kind == .cjs and options.minify_whitespace;
+    const cjs_ex_name = if (cjs_mangle) CJS_MANGLE_EXPORTS else cg_options.default_cjs_exports_name;
+    const cjs_mod_name = if (cjs_mangle) CJS_MANGLE_MODULE else cg_options.default_cjs_module_name;
+
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
+        .cjs_exports_name = cjs_ex_name,
+        .cjs_module_name = cjs_mod_name,
         // Peephole boolean 축약 등 codegen-레벨 출력 최적화(#1552).
         .minify_syntax = options.minify_syntax,
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
@@ -1854,11 +1878,16 @@ pub fn emitModule(
         if (options.minify_whitespace) {
             // emit 의 직접 함수 패턴은 `runtime_helpers.zig` 의 `CJS_RUNTIME_*` 가 cb 를
             // function 으로 받는 것과 한 쌍 — 한쪽만 바꾸면 runtime TypeError.
-            // param 이름은 Node/Metro 호환성을 위해 minify에서도 `exports, module` 유지.
+            // param 이름은 codegen 합성/free-ref 와 동일 소스(cjs_ex_name/cjs_mod_name).
+            // kill-switch OFF 면 default `exports`/`module` (Node/Metro 호환 유지).
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN);
-            try wrapped.appendSlice(allocator, "((exports,module)=>{");
+            try wrapped.appendSlice(allocator, "((");
+            try wrapped.appendSlice(allocator, cjs_ex_name);
+            try wrapped.appendSlice(allocator, ",");
+            try wrapped.appendSlice(allocator, cjs_mod_name);
+            try wrapped.appendSlice(allocator, ")=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             // body 의 trailing `;` 제거 — 다음 `})` 가 block close 라 ASI 안전.
             const body_trimmed = if (code.len > 0 and code[code.len - 1] == ';') code[0 .. code.len - 1] else code;
