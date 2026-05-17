@@ -25,12 +25,13 @@ import { serve, closeServer } from './serve';
  */
 const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
 
-// 표준 runtime 의 ESM 진입(package.json `module`) 절대경로. e2e 워크스페이스
-// (tests/e2e/package.json devDep)에서 resolve — zntc 가 이걸 iife glue 로
-// 번들(bare nested deps 포함)해 `globalThis.__mf_runtime` 제공(P1-6 seam 짝).
-function runtimeEsmEntry(): string {
+// 패키지의 진입(package.json `module`||`main`) 절대경로. e2e 워크스페이스
+// (tests/e2e/package.json devDep)에서 resolve — zntc 가 iife glue 로 번들
+// (bare nested deps 포함). runtime=`__mf_runtime` seam(P1-6), react=공유
+// 인스턴스 제공(P2-5).
+function pkgEntry(spec: string): string {
   const req = createRequire(join(__dirname, 'noop.js'));
-  const pkgJson = req.resolve('@module-federation/runtime/package.json');
+  const pkgJson = req.resolve(`${spec}/package.json`);
   const pkg = req(pkgJson) as { module?: string; main: string };
   return resolve(dirname(pkgJson), pkg.module ?? pkg.main);
 }
@@ -51,27 +52,31 @@ function enhancedRspackPath(): string {
   return createRequire(join(__dirname, 'noop.js')).resolve('@module-federation/enhanced/rspack');
 }
 
-// zntc 로 표준 @module-federation/runtime(ESM, bare nested deps)을 iife glue
-// 로 번들 → host 페이지가 <script> 로 먼저 로드해 globalThis.__mf_runtime
-// 제공(P1-6 글로벌-seam 짝). S3/S4 공용.
-async function buildGlue(hostDir: string): Promise<void> {
-  await writeFile(
-    join(hostDir, 'glue.ts'),
-    `import * as mf from ${JSON.stringify(runtimeEsmEntry())};\nglobalThis.__mf_runtime = mf;`,
-  );
-  const gb = spawnSync(
+// zntc 로 pkg 를 iife glue 로 번들 → host 페이지가 <script> 로 먼저 로드.
+// `<srcTs>` 내용을 zntc 빌드해 `<outJs>` 산출. S3/S4/P2-5 공용 단일 소스.
+async function buildIifeGlue(
+  dir: string,
+  srcTs: string,
+  outJs: string,
+  source: string,
+): Promise<void> {
+  await writeFile(join(dir, srcTs), source);
+  const b = spawnSync(
     ZNTC_BIN,
-    [
-      '--bundle',
-      join(hostDir, 'glue.ts'),
-      '-o',
-      join(hostDir, 'glue.js'),
-      '--format=iife',
-      '--platform=browser',
-    ],
-    { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+    ['--bundle', join(dir, srcTs), '-o', join(dir, outJs), '--format=iife', '--platform=browser'],
+    { cwd: dir, stdio: 'pipe', timeout: 20000 },
   );
-  expect(gb.status, `zntc glue build: ${gb.stderr?.toString().slice(0, 500)}`).toBe(0);
+  expect(b.status, `zntc glue build (${outJs}): ${b.stderr?.toString().slice(0, 500)}`).toBe(0);
+}
+
+// 표준 @module-federation/runtime → globalThis.__mf_runtime(P1-6 seam 짝).
+async function buildGlue(hostDir: string): Promise<void> {
+  await buildIifeGlue(
+    hostDir,
+    'glue.ts',
+    'glue.js',
+    `import * as mf from ${JSON.stringify(pkgEntry('@module-federation/runtime'))};\nglobalThis.__mf_runtime = mf;`,
+  );
 }
 
 test('S3 정방향: 표준 @module-federation/runtime(실브라우저) 가 zntc remote 를 manifest-driven 소비', async ({
@@ -304,6 +309,167 @@ test('S4 역방향: zntc host(실브라우저) 가 표준 rspack+@module-federat
     if (remoteSrv) await closeServer(remoteSrv.server);
     if (hostSrv) await closeServer(hostSrv.server);
     await rm(rspackDir, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
+
+test('P2-5 다중 expose: 표준 runtime 이 zntc remote 의 2 expose 동시 로드', async ({ page }) => {
+  test.setTimeout(90_000);
+  const remoteDir = await mkdtemp(join(tmpdir(), 'zntc-mx-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-mx-host-'));
+  let remoteSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const remoteDist = join(remoteDir, 'dist');
+    await mkdir(remoteDist, { recursive: true });
+    remoteSrv = await serve(remoteDist, { 'Access-Control-Allow-Origin': '*' });
+    const rOrigin = `http://localhost:${remoteSrv.port}`;
+    await writeFile(join(remoteDir, 'A.ts'), `export default () => "A-OK";`);
+    await writeFile(join(remoteDir, 'B.ts'), `export default () => "B-OK";`);
+    await writeFile(join(remoteDir, 'index.ts'), `export const sentinel = "re";`);
+    await writeFile(
+      join(remoteDir, 'zntc.config.json'),
+      JSON.stringify({ mf: { name: 'app', exposes: { './A': './A.ts', './B': './B.ts' } } }),
+    );
+    const rb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(remoteDir, 'index.ts'),
+        '--outdir',
+        remoteDist,
+        '--format=iife',
+        '--platform=browser',
+        `--public-path=${rOrigin}/`,
+      ],
+      { cwd: remoteDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(rb.status, `build: ${rb.stderr?.toString().slice(0, 400)}`).toBe(0);
+    // manifest 가 2 expose 정밀(P1-5/P2-0 동형)
+    const mani = JSON.parse(await readFile(join(remoteDist, 'mf-manifest.json'), 'utf8'));
+    expect(mani.exposes.length).toBe(2);
+
+    await buildGlue(hostDir);
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script></head><body><div id="out">pending</div>` +
+        `<script>(async()=>{try{var R=globalThis.__mf_runtime;` +
+        `R.init({name:"h",remotes:[{name:"app",entry:${JSON.stringify(`${rOrigin}/mf-manifest.json`)}}]});` +
+        `var a=await R.loadRemote("app/A");var b=await R.loadRemote("app/B");` +
+        `document.getElementById("out").textContent=((a.default||a)())+","+((b.default||b)());` +
+        `window.__done=true;}catch(e){window.__err=String(e&&e.stack||e);window.__done=true;}})();` +
+        `</script></body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 15000,
+    });
+    expect(await page.evaluate(() => (window as { __err?: string }).__err)).toBeFalsy();
+    expect(await page.locator('#out').textContent()).toBe('A-OK,B-OK'); // 2 expose 동시
+    expect(errors, errors.join(', ')).toHaveLength(0);
+  } finally {
+    if (remoteSrv) await closeServer(remoteSrv.server);
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(remoteDir, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
+
+test('P2-5 shared singleton(실브라우저): host react ≡ zntc remote react', async ({ page }) => {
+  // P1-4 shareScope→글로벌 seam 을 실 Chromium + manifest-driven + http
+  // chunk 로 확증(Node S2 의 브라우저판 — P1-7 가 shared 는 이월했던 경로).
+  // 빌드 3회(remote+glue+react-glue, react CJS 번들이 최중량) — CI cold
+  // 마진 위해 120s(S4 동형).
+  test.setTimeout(120_000);
+  const remoteDir = await mkdtemp(join(tmpdir(), 'zntc-sh-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-sh-host-'));
+  let remoteSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const remoteDist = join(remoteDir, 'dist');
+    await mkdir(remoteDist, { recursive: true });
+    remoteSrv = await serve(remoteDist, { 'Access-Control-Allow-Origin': '*' });
+    const rOrigin = `http://localhost:${remoteSrv.port}`;
+    await writeFile(
+      join(remoteDir, 'Widget.ts'),
+      `import { useState } from "react";\n` +
+        `export const usedHook = useState;\n` +
+        `export default () => (typeof useState === "function" ? "SH-OK" : "SH-NO");`,
+    );
+    await writeFile(join(remoteDir, 'index.ts'), `export const sentinel = "re";`);
+    await writeFile(
+      join(remoteDir, 'zntc.config.json'),
+      JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    );
+    const rb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(remoteDir, 'index.ts'),
+        '--outdir',
+        remoteDist,
+        '--format=iife',
+        '--platform=browser',
+        `--public-path=${rOrigin}/`,
+      ],
+      { cwd: remoteDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(rb.status, `build: ${rb.stderr?.toString().slice(0, 400)}`).toBe(0);
+
+    await buildGlue(hostDir); // __mf_runtime
+    // host 가 자기 react 를 글로벌로 제공(P1-2 seam 의 host 책임)
+    await buildIifeGlue(
+      hostDir,
+      'react-glue.ts',
+      'react-glue.js',
+      `import * as R from ${JSON.stringify(pkgEntry('react'))};\nglobalThis.__host_react = R.default || R;`,
+    );
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script><script src="./react-glue.js"></script>` +
+        `</head><body><div id="out">pending</div><script>(async()=>{try{` +
+        `var R=globalThis.__mf_runtime, HR=globalThis.__host_react;` +
+        `R.init({name:"h",remotes:[{name:"app",entry:${JSON.stringify(`${rOrigin}/mf-manifest.json`)}}],` +
+        `shared:{react:{version:"19.2.4",lib:function(){return HR;},` +
+        `shareConfig:{singleton:true,requiredVersion:"^19"}}}});` +
+        `var m=await R.loadRemote("app/Widget");var W=(m&&(m.default||m));` +
+        `document.getElementById("out").textContent=(typeof W==="function"?W():"NOFN");` +
+        `window.__same=(m&&m.usedHook===HR.useState);window.__done=true;` +
+        `}catch(e){window.__err=String(e&&e.stack||e);window.__done=true;}})();</script>` +
+        `</body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    const seen: Record<string, number> = {};
+    page.on('response', (r) => {
+      if (r.url().includes('mf-manifest.json')) seen.manifest = r.status();
+    });
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 15000,
+    });
+    expect(await page.evaluate(() => (window as { __err?: string }).__err)).toBeFalsy();
+    expect(await page.locator('#out').textContent()).toBe('SH-OK'); // seam 채워짐
+    // host react ≡ zntc remote react (singleton, 실브라우저 + http chunk)
+    expect(await page.evaluate(() => (window as { __same?: boolean }).__same)).toBe(true);
+    expect(seen.manifest, 'manifest fetched').toBe(200);
+    expect(errors, errors.join(', ')).toHaveLength(0);
+  } finally {
+    if (remoteSrv) await closeServer(remoteSrv.server);
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(remoteDir, { recursive: true, force: true });
     await rm(hostDir, { recursive: true, force: true });
   }
 });
