@@ -284,9 +284,61 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(rd.singleton).toBe(false); // 미지정 → false
     expect(rd.requiredVersion).toBe(''); // 미지정 → 빈
     expect(rd.version).toBe(''); // version=requiredVersion 경계(값 없음 쪽도 박제)
-    // remotes 는 P2-1 범위 — 아직 []
+    // remotes 미선언 → [] (P2-1 은 remotes 선언 시 채움 — 별 테스트)
     expect(mani.remotes).toEqual([]);
     expect(Array.isArray(mani.exposes) && mani.exposes.length).toBe(1);
+  });
+
+  // P2-1 (#3421): exposes 있는 remote 가 remotes 도 선언 → manifest.remotes
+  // = ManifestRemote[](Omit<RemoteWithEntry,'name'> & {federationContainer
+  // Name,moduleName,alias}). 표준 generateSnapshotFromManifest 가
+  // federationContainerName+entry 로 transitive remote 인지. host-only
+  // (exposes 0)는 manifest 미산출(표준 일치 — manifest=remote-producer 산출).
+  test('P2-1 manifest.remotes 정밀: mf.remotes → ManifestRemote', async () => {
+    const fx = await createFixture({
+      'W.ts': `export default () => "W";`,
+      'index.ts': `export const sentinel = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'mid',
+          exposes: { './W': './W.ts' },
+          remotes: {
+            up: 'up_ctr@http://localhost:9/mf-manifest.json',
+            bare: 'http://localhost:8/remoteEntry.js', // @ 없음 → name=key
+          },
+        },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+    const b = await runZntcInDir(fx.dir, [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+    ]);
+    expect(b.exitCode).toBe(0);
+    const mani = JSON.parse(await readFile(join(dist, 'mf-manifest.json'), 'utf8'));
+    expect(Array.isArray(mani.remotes)).toBe(true);
+    expect(mani.remotes.length).toBe(2);
+    const up = mani.remotes.find((r: { alias: string }) => r.alias === 'up');
+    expect(up.entry).toBe('http://localhost:9/mf-manifest.json');
+    expect(up.federationContainerName).toBe('up_ctr'); // <name>@<entry> 의 name
+    expect(up.moduleName).toBe('up_ctr');
+    // ManifestRemote 4필드 전부(name 은 Omit)
+    expect(Object.keys(up).sort()).toEqual([
+      'alias',
+      'entry',
+      'federationContainerName',
+      'moduleName',
+    ]);
+    const bare = mani.remotes.find((r: { alias: string }) => r.alias === 'bare');
+    expect(bare.entry).toBe('http://localhost:8/remoteEntry.js');
+    expect(bare.federationContainerName).toBe('bare'); // @ 없음 → KV.key fallback
+    // P2-0 무회귀: shared 도 정밀 유지
+    expect(Array.isArray(mani.shared) && mani.shared.length).toBe(0);
+    expect(mani.exposes.length).toBe(1);
   });
 
   // P1-6 (#3388): zntc-빌드 host 가 실 @module-federation/runtime 로 remote

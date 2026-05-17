@@ -400,7 +400,30 @@ fn buildManifest(
         try appendJsonStr(&b, allocator, rv);
         try b.appendSlice(allocator, ",\"hash\":\"\",\"assets\":{\"js\":{\"sync\":[],\"async\":[]},\"css\":{\"sync\":[],\"async\":[]}}}");
     }
-    try b.appendSlice(allocator, "],\"remotes\":[],\"exposes\":[");
+    // P2-1 (#3421): manifest.remotes 정밀. exposes 있는 remote 가 다른
+    // remote 도 소비하면 그 의존을 manifest 로 기술(표준 contract — host 가
+    // 이 remote 로드 시 transitive deps 인지). `@module-federation/sdk`
+    // ManifestRemote = Omit<RemoteWithEntry,'name'> & {federationContainer
+    // Name,moduleName,alias} = {entry,federationContainerName,moduleName,
+    // alias}. generateSnapshotFromManifest 가 federationContainerName(키)+
+    // entry 소비. parseRemote(emitHostInit 공용) 재사용. host-only(exposes
+    // 0)는 wrapContainer null → manifest 미산출(표준 일치 — manifest 는
+    // remote-producer 산출물).
+    try b.appendSlice(allocator, "],\"remotes\":[");
+    for (mf.remotes, 0..) |kv, ri| {
+        if (ri > 0) try b.append(allocator, ',');
+        const r = parseRemote(kv); // {name=container, entry}
+        try b.appendSlice(allocator, "{\"entry\":");
+        try appendJsonStr(&b, allocator, r.entry);
+        try b.appendSlice(allocator, ",\"federationContainerName\":");
+        try appendJsonStr(&b, allocator, r.name);
+        try b.appendSlice(allocator, ",\"moduleName\":");
+        try appendJsonStr(&b, allocator, r.name);
+        try b.appendSlice(allocator, ",\"alias\":");
+        try appendJsonStr(&b, allocator, kv.key); // 로컬 참조 alias
+        try b.append(allocator, '}');
+    }
+    try b.appendSlice(allocator, "],\"exposes\":[");
     for (exposes, 0..) |ex, ei| {
         if (ei > 0) try b.append(allocator, ',');
         // id = "<name>:<expose키에서 './' 제거>" (MF 규약, 예 app:Widget).
