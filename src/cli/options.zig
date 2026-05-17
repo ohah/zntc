@@ -398,6 +398,69 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         // P1-1 소비자(federation.markBoundary) 용 해석본을 allocator(=CliOptions
         // 수명) 으로 deep-dupe. dto 는 arena(이 함수 종료 시 해제) 라 borrow 불가.
         opts.mf = try mfBundleFromDto(allocator, mf);
+        // P1-2 (#3384): shared 글로벌 seam 자동 파생. mf.shared 패키지를
+        // external(번들 제외 — shared 는 shareScope 에서 옴) + GlobalEntry
+        // (IIFE/UMD/AMD 글로벌-파라미터 seam) 로 합친다. 스파이크 S2 가
+        // `--external pkg --globals pkg=__mf_shared_pkg` 로 검증한 기계를
+        // 그대로 재사용 — bundler/emitter/codegen 무변경.
+        if (opts.mf) |mfb| try applyMfSharedSeam(allocator, opts, mfb.shared);
+    }
+}
+
+/// mf.shared 패키지명 → 결정적 container-소유 글로벌 식별자.
+/// 비-식별자(`@ / - .`) → `_`. react→`__mf_shared_react`,
+/// react-dom→`__mf_shared_react_dom`, @scope/pkg→`__mf_shared__scope_pkg`.
+fn mfSharedGlobalName(allocator: std.mem.Allocator, pkg: []const u8) ![]const u8 {
+    const prefix = "__mf_shared_";
+    var buf = try allocator.alloc(u8, prefix.len + pkg.len);
+    @memcpy(buf[0..prefix.len], prefix);
+    for (pkg, 0..) |c, i| buf[prefix.len + i] = switch (c) {
+        '@', '/', '-', '.' => '_',
+        else => c,
+    };
+    return buf;
+}
+
+/// mf.shared → external_list + globals_list 파생.
+///
+/// **호출 순서 불변조건**: applyZntcConfigJson(config defaults)은 CLI arg
+/// 루프(`--globals`/`--external` 파싱)보다 *먼저* 돈다. 따라서 여기서 append
+/// 한 mf-파생 GlobalEntry 가 사용자 `--globals` 보다 list **앞**에 온다 →
+/// `GlobalEntry.lookup`(first-match) 이 mf-파생을 채택. shared 의 글로벌명은
+/// container 계약이라 mf-파생이 authoritative(RFC §8.1 #1) — 이 순서가 그
+/// 의미를 자연히 만든다(별도 prepend 불요).
+///
+/// 메모리: `pkg` 는 `opts.mf`(CliOptions 수명, mfBundleFromDto 가 dupe) 를
+/// borrow — specifier/external 은 재-dupe 안 함(parseGlobalsArg 의 borrow
+/// 모델과 일관). `global_name` 만 신규 alloc(프로세스 1회 수명; deinit
+/// container-only 미해제는 external_list config 경로(#2105)와 동일 기성
+/// 패턴 — 신규 회귀 아님).
+fn applyMfSharedSeam(
+    allocator: std.mem.Allocator,
+    opts: *CliOptions,
+    shared: []const []const u8,
+) !void {
+    for (shared) |pkg| {
+        try opts.external_list.append(allocator, pkg); // borrow (opts.mf 소유)
+        try opts.globals_list.append(allocator, .{
+            .specifier = pkg, // borrow
+            .global_name = try mfSharedGlobalName(allocator, pkg),
+        });
+    }
+}
+
+test "mfSharedGlobalName: 결정적 식별자 변환" {
+    const a = std.testing.allocator;
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        .{ .in = "react", .want = "__mf_shared_react" },
+        .{ .in = "react-dom", .want = "__mf_shared_react_dom" },
+        .{ .in = "@scope/pkg", .want = "__mf_shared__scope_pkg" },
+        .{ .in = "lodash.merge", .want = "__mf_shared_lodash_merge" },
+    };
+    for (cases) |c| {
+        const got = try mfSharedGlobalName(a, c.in);
+        defer a.free(got);
+        try std.testing.expectEqualStrings(c.want, got);
     }
 }
 
