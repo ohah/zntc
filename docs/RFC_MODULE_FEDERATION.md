@@ -186,6 +186,23 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 
 웹(P1~P3)을 RN(P4~)에 블로킹하지 않는다. **P1 은 §8.1 웹 스파이크 통과가 선행 게이트**(스파이크 산출이 P1 이슈 분해를 결정), P4 는 §8.2 RN 스파이크 0 통과가 선행 게이트.
 
+### 7.1 P1 PR 분해 (스파이크 종결 → 인프라-우선, P3-B 흐름)
+
+스파이크가 D1 실증·제약 5건 포착(§8.1) → 그 제약이 분해를 결정. 각 PR = 한 기능, 독립 테스트 가능, TDD·전체 `zig build test`·app-builder CLI·smoke·`/simplify` 3-agent·rebase auto-merge. 하위 인프라 먼저, emit 은 위에 쌓는다(P3-A/B/C 선례). 재사용: `module_id.zig`(P3-B relative-path 안정 ID), `__zntc_*` 레지스트리 코어(`ZNTC_REGISTER_INSTALL`+`ZNTC_IIFE_RESOLVE_BROWSER`), content-hash 청크, `--external`/`--globals`, `format_wrapper`. **MF2 호환 경계만 — 코어 재구현 금지**(§6.1).
+
+| PR | 내용 | 근거(스파이크/실측) | 의존 |
+|---|---|---|---|
+| **P1-0** | `mf` config 표면: `zntc.config` MF 블록(`name`/`exposes`/`remotes`/`shared`/`shareScope`) + CLI. emit 없음 | MF2 config 계약 | — |
+| **P1-1** | 연합 경계 모듈 식별 + de-opt: `exposes ∪ shared ∪ shared-transitive-폐포` 를 boundary 로 표시 → 스코프 호이스팅 소거 제외·`module_id.zig` 안정 ID 부여. 분석만(emit 없음) | 제약 #1 토대, 스코프호이스팅×경계정체성(S2) | P1-0 |
+| **P1-2** | `shared` seam emit: boundary shared 의존을 글로벌-파라미터 seam 자동생성(`--globals` 기계 재사용). container 가 글로벌명 소유 | 제약 #1·#3 (S2 검증 메커니즘) | P1-1 |
+| **P1-3** | container emit: `remoteEntry` — 레지스트리 출력을 webpack-style container(`init(shareScope,initScope)`/`get(id):Promise<factory>`, container 를 globalName 대입)로 wrap. init-before-get 강제 | 제약 #2, S1/S3 형태 | P1-2 |
+| **P1-4** | `shareScopeMap` 런타임: `scope→pkg→ver→{get,loaded,from,shareConfig}` 유지 + singleton/버전 해석 MF2 시맨틱 + shared→async 강등(entry async/`eager`) | S2, MF2 실측(shareScopeMap·async) | P1-3 |
+| **P1-5** | `mf-manifest.json` + `remoteEntry` 에미터: S4 실측 스키마(`id,name,metaData[…],exposes[{id,name,assets{js/css sync/async},path}],shared,remotes`) + content-hash assets 배선 | S4 계약 포착, S5 content-hash 재사용 | P1-3 |
+| **P1-6** | host 통합: D1 하이브리드 — host 런타임은 **`@module-federation/runtime`(스펙) 타겟 재사용**(S3 가 공식 런타임이 우리 container 구동 증명 → host 측 자체 재구현 불필요·interop 보장). config→`init` 배선 | S3 PASS, interop 타겟=runtime | P1-4,P1-5 |
+| **P1-7** | interop CI 박제: Playwright + `rspack`/`enhanced` 픽스처 — S3 정방향 + **S4 역방향(스파이크 이월분)** 실브라우저 영구 CI | S4 → P1 CI(§8.1) | P1-6 |
+
+분해 트래커: GitHub 이슈 #3318 하위.
+
 > **P3(CJS/IIFE code splitting, 백로그 #3321)과의 통합**: `docs/RFC_CJS_IIFE_CODE_SPLITTING.md` 가
 > 요구하는 런타임 require 레지스트리·안정 모듈 ID 는 본 RFC §4.1 의 "연합 경계 안정 모듈 ID +
 > registry/container" 와 **같은 하위 인프라**다. **MF P1 착수 시 별도 구현 금지** — 그 RFC 의
