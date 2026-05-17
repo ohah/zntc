@@ -264,8 +264,12 @@ pub fn ES2017(comptime Transformer: type) type {
             // 같은 이름을 다시 hoist 하지 않도록 한다.
             const saved_temp_counter = self.temp_var_counter;
 
-            const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
+            if (self.temp_var_counter > saved_temp_counter) {
+                sm_result.body = try self.hoistTempVars(sm_result.body, saved_temp_counter, span);
+            }
+            self.temp_var_counter = saved_temp_counter;
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
@@ -292,16 +296,11 @@ pub fn ES2017(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, return_stmt);
                 break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             };
-            var wrapper_body = try self.ast.addNode(.{
+            const wrapper_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
             });
-
-            if (self.temp_var_counter > saved_temp_counter) {
-                wrapper_body = try self.hoistTempVars(wrapper_body, saved_temp_counter, span);
-            }
-            self.temp_var_counter = saved_temp_counter;
 
             // 일반 function으로 변환 (async + generator 플래그 모두 제거)
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
@@ -332,6 +331,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
 
+            const saved_temp_counter = self.temp_var_counter;
+
             const lowered = blk: {
                 // Async arrow skips ES2015Arrow.lowerArrowFunction(), so enter
                 // the arrow lexical environment while visiting params/body.
@@ -343,8 +344,12 @@ pub fn ES2017(comptime Transformer: type) type {
                 break :blk .{ .params_list = params_list, .sm_result = sm_result };
             };
             const params_list = lowered.params_list;
-            const sm_result = lowered.sm_result;
+            var sm_result = lowered.sm_result;
             if (sm_result.body.isNone()) return .none;
+            if (self.temp_var_counter > saved_temp_counter) {
+                sm_result.body = try self.hoistTempVars(sm_result.body, saved_temp_counter, span);
+            }
+            self.temp_var_counter = saved_temp_counter;
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
