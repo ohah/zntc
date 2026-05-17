@@ -432,6 +432,29 @@ pub fn mergeSmallChunks(
     }
 }
 
+/// 모듈 `idx` 를 동적(lazy) entry 로 등록 — external 제외, `dynamic_seen`
+/// 멱등, 이미 user-entry(non-dynamic)면 skip. Phase 1b 동적-import 블록과
+/// P1-3 (#3385) federation-expose 블록이 **공유**(dedup/append 규칙 단일
+/// 소스 — 한쪽만 바뀌어 규칙 드리프트 방지).
+fn addDynamicEntry(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(EntryInfo),
+    dynamic_seen: *std.AutoHashMap(u32, void),
+    graph: *const ModuleGraph,
+    idx: ModuleIndex,
+) !void {
+    if (graph.getModule(idx)) |m| {
+        if (m.is_external) return; // external phantom 은 async chunk 불요(번들 외부)
+    }
+    const di = @intFromEnum(idx);
+    const gop = try dynamic_seen.getOrPut(di);
+    if (gop.found_existing) return;
+    for (entries.items) |e| {
+        if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) return; // 이미 user entry
+    }
+    try entries.append(allocator, .{ .module_idx = idx, .is_dynamic = true });
+}
+
 pub fn generateChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -480,30 +503,24 @@ pub fn generateChunks(
     if (!inline_dynamic_imports) {
         var it = graph.modulesIterator();
         while (it.next()) |m| {
-            for (m.dynamic_imports.items) |dyn_idx| {
-                const di = @intFromEnum(dyn_idx);
-                // External phantom 이 dyn-imported 면 async chunk 만들 필요 없음 (번들 외부)
-                if (graph.getModule(dyn_idx)) |dyn_mod| {
-                    if (dyn_mod.is_external) continue;
-                }
-                const gop = try dynamic_seen.getOrPut(di);
-                if (!gop.found_existing) {
-                    // 이미 유저 엔트리로 등록된 모듈인지 확인
-                    var is_user_entry = false;
-                    for (entries.items) |e| {
-                        if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) {
-                            is_user_entry = true;
-                            break;
-                        }
-                    }
-                    if (!is_user_entry) {
-                        try entries.append(allocator, .{
-                            .module_idx = dyn_idx,
-                            .is_dynamic = true,
-                        });
-                    }
-                }
-            }
+            for (m.dynamic_imports.items) |dyn_idx|
+                try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, dyn_idx);
+        }
+    }
+
+    // P1-3 (#3385): MF expose 타깃 → 동적-import 타깃과 동일한 lazy 청크.
+    // entry 모듈 reg_id = module_id.moduleId(path, root) = federation_id 가
+    // 되어 container.get 이 `__zntc_load_chunk().then(()=>__zntc_require(id))`
+    // (동적 wrapper) 를 그대로 재사용. inline_dynamic_imports 와 무관 —
+    // 연합 경계는 항상 분리(아니면 container 가 expose 에 도달 불가).
+    // dedup/append 은 addDynamicEntry 공유(위 동적 블록과 동일 규칙).
+    {
+        var mi: usize = 0;
+        while (mi < module_count) : (mi += 1) {
+            const fidx = ModuleIndex.fromUsize(mi);
+            const fm = graph.getModule(fidx) orelse continue;
+            if (!fm.is_federation_expose) continue;
+            try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, fidx);
         }
     }
 

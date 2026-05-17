@@ -307,14 +307,16 @@ describe('Zig CLI: zntc.config.json bundler-only 옵션 (#2105)', () => {
   // 가 std.json.ArrayHashMap 으로 직접 파싱, 변환 계층 없음. 사용자가
   // 문서/타입대로 쓰는 그 경로를 그대로 검증.
 
-  test('mf: 유효 config 블록(name/exposes/remotes/shared/shareScope) 파싱 성공', async () => {
+  // exposes 동작(container emit)은 P1-3 부터라 mf-container-emit.test.ts 가
+  // 전담. 여기선 비-remote 필드(name/remotes/shared/shareScope) 파싱 +
+  // host 빌드 출력 불변만(exposes 넣으면 remote→container 경로로 빠짐).
+  test('mf: 유효 config 블록(name/remotes/shared/shareScope) 파싱 성공', async () => {
     const r = await runConfigBundle({
       files: {
         'index.ts': `console.log("mf-ok");`,
         'zntc.config.json': JSON.stringify({
           mf: {
             name: 'app',
-            exposes: { './Widget': './widget.ts' },
             remotes: { remoteA: 'remoteA@http://localhost/mf-manifest.json' },
             shared: { react: { singleton: true, requiredVersion: '^18' } },
             shareScope: 'default',
@@ -326,7 +328,7 @@ describe('Zig CLI: zntc.config.json bundler-only 옵션 (#2105)', () => {
 
     expect(r.exitCode).toBe(0);
     expect(r.stderr).not.toContain('load failed');
-    // emit 미연결 — 출력은 일반 번들 그대로
+    // exposes 없음(host) — 출력은 일반 번들 그대로
     expect(readFileSync(r.outFile!, 'utf8')).toContain('mf-ok');
   });
 

@@ -1051,6 +1051,15 @@ pub const Bundler = struct {
                     reparsed_paths_out = list;
                 }
                 self.allocator.free(inc_result.reparsed_indices);
+            } else if (if (self.options.mf) |*mf| mf.exposes.len > 0 else false) {
+                // P1-3: exposes 있는 remote → exposes 를 그래프 루트에 합류
+                // (독립 루트). chunk gen entry_points 는 불변(exposes 는
+                // 동적 lazy 청크로만). host(exposes 없음)는 경로 불변.
+                const fed = @import("federation.zig");
+                const mf = &self.options.mf.?;
+                const be = try fed.entryWithExposes(self.allocator, mf, self.options.entry_points);
+                defer fed.freeStrList(self.allocator, be);
+                try graph.build(be);
             } else {
                 try graph.build(self.options.entry_points);
             }
@@ -1458,6 +1467,12 @@ pub const Bundler = struct {
                 }
                 self.allocator.free(outs);
             };
+
+            // P1-3 (#3385): MF container emit — entry 청크 부트스트랩을
+            // webpack-style container(init/get, globalName 대입)로 후처리
+            // wrap. 게이트는 markBoundary(graph.build 후)와 동일 관례.
+            if (self.options.mf) |*mf|
+                try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, &graph);
 
             // emitChunks 가 href 를 청크 내용으로 복사 완료 → 이제 plan 의
             // path/contents 소유권을 OutputFile 로 이전(plan 컨테이너만 해제).
