@@ -742,8 +742,10 @@ test "Re-export: export all (export * from)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const a = 1;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const b = 2;") != null);
+    // RFC #3411: 인접 동종 선언 병합으로 `const a = 1,b = 2;` 가능 — liveness
+    // 의도(a,b 번들 존재) 보존, 키워드/`;` 제외로 병합-robust.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "a = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "b = 2") != null);
 }
 
 test "Re-export: chained re-export (A→B→C)" {
@@ -902,9 +904,10 @@ test "Scope hoisting: multiple named imports from one module" {
     // import 문 제거됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") == null);
     // 모든 값 유지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const foo = 1;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const bar = 2;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const baz = 3;") != null);
+    // RFC #3411: 인접 동종 선언 병합 가능 — 키워드/`;` 제외로 병합-robust.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "foo = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "bar = 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "baz = 3") != null);
 }
 
 test "Scope hoisting: import used in expression" {
