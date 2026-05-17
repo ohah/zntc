@@ -259,15 +259,18 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
             // visitFunctionLike 를 거치지 않으므로 임시 변수 카운터를 직접 관리한다 (#1960).
-            // state machine 안에서 destructuring lowering 이 만든 _a 등을 outer wrapper body 에
-            // hoist 하고 함수 스코프 종료 시 카운터를 복원해 outer scope 의 hoistTempVars 가
-            // 같은 이름을 다시 hoist 하지 않도록 한다.
+            // state machine 안에서 optional chaining/nullish/destructuring lowering 이 만든
+            // callback-local temp 는 __generator callback 안에 hoist 하고, for-await/yield
+            // extraction 이 만든 state temp 는 sm_result.var_decl 로 wrapper top 에만 둔다.
+            // 함수 스코프 종료 시 카운터를 복원해 outer scope 의 hoistTempVars 가 같은 이름을
+            // 다시 hoist 하지 않도록 한다.
             const saved_temp_counter = self.temp_var_counter;
 
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             if (self.temp_var_counter > saved_temp_counter) {
-                sm_result.body = try self.hoistTempVars(sm_result.body, saved_temp_counter, span);
+                sm_result.body = try self.hoistTempVarsSkippingSpans(sm_result.body, saved_temp_counter, span, self.generator_temp_var_spans.items);
             }
             self.temp_var_counter = saved_temp_counter;
 
@@ -345,9 +348,10 @@ pub fn ES2017(comptime Transformer: type) type {
             };
             const params_list = lowered.params_list;
             var sm_result = lowered.sm_result;
+            defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             if (self.temp_var_counter > saved_temp_counter) {
-                sm_result.body = try self.hoistTempVars(sm_result.body, saved_temp_counter, span);
+                sm_result.body = try self.hoistTempVarsSkippingSpans(sm_result.body, saved_temp_counter, span, self.generator_temp_var_spans.items);
             }
             self.temp_var_counter = saved_temp_counter;
 

@@ -99,10 +99,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const saved_temp_counter = self.temp_var_counter;
 
             const sm_result = try buildStateMachine(self, body_idx, span);
+            defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             var sm_body = sm_result.body;
             if (self.temp_var_counter > saved_temp_counter) {
-                sm_body = try self.hoistTempVars(sm_body, saved_temp_counter, span);
+                sm_body = try self.hoistTempVarsSkippingSpans(sm_body, saved_temp_counter, span, self.generator_temp_var_spans.items);
             }
             self.temp_var_counter = saved_temp_counter;
 
@@ -226,7 +227,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
             }
-            self.generator_temp_var_spans.clearRetainingCapacity();
             return es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
         }
 

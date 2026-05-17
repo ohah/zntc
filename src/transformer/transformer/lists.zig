@@ -283,6 +283,21 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
 /// 처럼 declaration 형태로 직접 emit 하는 패스가 있어 mergeAdjacentDecls 가 `var _a, _a = init, ...`
 /// 같은 어색한 출력을 만드는 회귀 방지 (#1960).
 pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+    return hoistTempVarsSkippingSpans(self, body_idx, saved_counter, span, &.{});
+}
+
+/// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
+/// `skip_spans`에 들어있는 synthetic temp 이름은 선언하지 않는다.
+///
+/// generator state machine은 두 종류의 temp를 동시에 만든다.
+/// - generator_temp_var_spans: for-await/yield extraction처럼 resume 사이에 값이 유지돼야 하는
+///   state temp. wrapper function top에만 선언해야 한다.
+/// - temp_var_counter-only: optional chaining/nullish/destructuring lowering처럼 callback 한 번의
+///   평가 안에서만 쓰이는 expression temp. __generator callback 안에 선언해야 한다.
+///
+/// 이 helper는 state-machine callback-local hoist가 state temp를 다시 선언해 shadowing하지
+/// 않도록 skip 목록을 받는다.
+pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, skip_spans: []const Span) Error!NodeIndex {
     const count = self.temp_var_counter - saved_counter;
     if (count == 0) return body_idx;
 
@@ -299,6 +314,7 @@ pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32
     while (i < self.temp_var_counter) : (i += 1) {
         var buf: [16]u8 = undefined;
         const name = es_helpers.tempVarName(i, &buf);
+        if (tempNameInSpans(self, name, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
         const name_span = try self.ast.addString(name);
         const binding = try self.ast.addNode(.{
@@ -323,6 +339,13 @@ pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32
     });
 
     return self.prependStatementsToBody(body_idx, &.{var_decl});
+}
+
+fn tempNameInSpans(self: *const Transformer, name: []const u8, spans: []const Span) bool {
+    for (spans) |sp| {
+        if (std.mem.eql(u8, self.ast.getText(sp), name)) return true;
+    }
+    return false;
 }
 
 /// body (block_statement / program / function_body) 의 top-level var declaration 에서
