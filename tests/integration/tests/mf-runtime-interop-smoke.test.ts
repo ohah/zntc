@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { createServer, type Server } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -167,4 +167,75 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(stdout).toContain('SAME=true'); // host↔remote 동일 react 인스턴스
     expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"|eager consumption/);
   }, 30000);
+
+  // P1-5 (#3387): mf-manifest.json 에미터. webpack/rspack MF 호환 스키마
+  // (@module-federation/sdk@2.4.0 Manifest 타입 + runtime-core
+  // SnapshotHandler:161 필수키 metaData/exposes/shared). content-hash
+  // 청크 배선(S5 재사용). manifest-driven 실브라우저 loadRemote 전체 실행
+  // 은 P1-7(Playwright — Node 는 http chunk import 미지원). 여기선
+  // 결정적 스키마 + 실제 산출 파일명 배선 검증.
+  test('mf-manifest.json: S4 스키마 + content-hash 청크 배선', async () => {
+    const fx = await createFixture({
+      'Widget.ts': `export default function Widget() { return "M-OK"; }`,
+      'index.ts': `export const sentinel = "remote-entry";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts', './a/B': './Widget.ts' } },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+    const b = await runZntcInDir(fx.dir, [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+    ]);
+    expect(b.exitCode).toBe(0);
+
+    const files = await readdir(dist);
+    expect(files).toContain('mf-manifest.json');
+    const mani = JSON.parse(await readFile(join(dist, 'mf-manifest.json'), 'utf8'));
+
+    // runtime-core SnapshotHandler:161 필수키(없으면 assert throw)
+    expect(mani.metaData).toBeDefined();
+    expect(Array.isArray(mani.exposes)).toBe(true);
+    expect(Array.isArray(mani.shared)).toBe(true);
+    expect(Array.isArray(mani.remotes)).toBe(true);
+    // top-level + metaData (S4 박제)
+    expect(mani.id).toBe('app');
+    expect(mani.name).toBe('app');
+    expect(mani.metaData.globalName).toBe('app');
+    expect(mani.metaData.type).toBe('app');
+    expect(mani.metaData.remoteEntry.type).toBe('global');
+    expect(mani.metaData.publicPath).toBe('auto'); // --public-path 미지정 → runtime 추론
+    expect(mani.metaData.buildInfo.buildVersion).toBeTruthy();
+    // remoteEntry.name == 실제 산출된 entry 청크 파일명
+    const entryFile = files.find(
+      (f) =>
+        f.endsWith('.js') &&
+        f !== 'mf-manifest.json' &&
+        readFileSyncSafe(join(dist, f)).includes('__zntc_mf_container'),
+    );
+    expect(mani.metaData.remoteEntry.name).toBe(entryFile);
+    // exposes: id="app:<short>", name=키, assets.js.async=실제 lazy 청크
+    expect(mani.exposes.length).toBe(2);
+    const w = mani.exposes.find((e: { name: string }) => e.name === './Widget');
+    expect(w.id).toBe('app:Widget');
+    expect(w.path).toBe('./Widget');
+    expect(w.assets.js.sync).toEqual([]);
+    expect(w.assets.js.async.length).toBe(1);
+    expect(files).toContain(w.assets.js.async[0]); // 매니페스트가 가리키는 청크 실재
+    expect(w.assets.css).toEqual({ sync: [], async: [] });
+    const ab = mani.exposes.find((e: { name: string }) => e.name === './a/B');
+    expect(ab.id).toBe('app:a/B'); // './' 만 제거(중첩 경로 보존)
+  });
 });
+
+function readFileSyncSafe(p: string): string {
+  try {
+    return require('node:fs').readFileSync(p, 'utf8');
+  } catch {
+    return '';
+  }
+}

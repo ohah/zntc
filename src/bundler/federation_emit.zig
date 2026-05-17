@@ -96,27 +96,23 @@ fn bootstrapSpan(text: []const u8) ?struct { start: usize, end: usize } {
     return .{ .start = s, .end = end };
 }
 
-/// emitChunks 산출을 in-place 로 container 화. 게이트는 호출부
-/// (`if (options.mf) |mf|`, bundler.zig — markBoundary 와 동일 관례).
-pub fn wrapContainer(
+/// expose 명·federation_id·lazy 청크 파일명 묶음. 모두 borrow
+/// (name=mf.exposes KV, fed_id=graph 모듈, chunk_file=outputs[].path basename)
+/// — wrapContainer 수명 동안 mf/graph/outputs 생존. 슬라이스만 caller free.
+const ExposeInfo = struct { name: []const u8, fed_id: []const u8, chunk_file: []const u8 };
+
+/// exposes → (명, fed_id, lazy 청크 파일) 수집. container.get 맵과
+/// mf-manifest 가 **동일 스캔**을 쓰므로 단일 소스(exposeFedId/
+/// exposeChunkFile 재사용). 미해결 expose 는 warn 후 skip(부분 산출).
+fn collectExposes(
     allocator: std.mem.Allocator,
-    outputs: []emitter.OutputFile,
+    outputs: []const emitter.OutputFile,
     mf: *const types.MfBundleConfig,
     graph: anytype,
-) !void {
-    if (mf.exposes.len == 0) return; // host(shared/remotes-only) = container 아님
-    const name = mf.name orelse return; // remote 는 P1-0 검증이 name 강제
-
-    const cwd = federation.cwdRealpath(allocator); // WASI-safe(comptime 분기)
-    defer if (cwd) |c| allocator.free(c);
-
-    // ── container 객체 문자열 빌드(min-무관 compact, 유효 JS) ──
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    defer buf.deinit(allocator);
-    const w = buf.writer(allocator);
-
-    try buf.appendSlice(allocator, "(function(g){var __zntc_mf_container={get:function(e){var M={");
-    var first = true;
+    cwd: ?[]const u8,
+) ![]ExposeInfo {
+    var list: std.ArrayListUnmanaged(ExposeInfo) = .empty;
+    errdefer list.deinit(allocator);
     for (mf.exposes) |kv| {
         const abs = federation.resolveAbs(allocator, cwd, kv.value) catch continue;
         defer allocator.free(abs);
@@ -128,15 +124,45 @@ pub fn wrapContainer(
             std.log.warn("[mf] expose '{s}' 청크 산출 없음 — container.get 누락", .{kv.key});
             continue;
         };
-        if (!first) try buf.appendSlice(allocator, ",");
-        first = false;
+        try list.append(allocator, .{ .name = kv.key, .fed_id = fed_id, .chunk_file = file });
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+/// emitChunks 산출을 in-place 로 container 화 + mf-manifest.json 산출.
+/// 반환: manifest JSON(allocator 소유, caller=bundler.zig 가 asset_outputs
+/// 로 편입·해제). host(exposes 없음)면 null. 게이트는 호출부
+/// (`if (options.mf) |mf|`, bundler.zig — markBoundary 와 동일 관례).
+pub fn wrapContainer(
+    allocator: std.mem.Allocator,
+    outputs: []emitter.OutputFile,
+    mf: *const types.MfBundleConfig,
+    graph: anytype,
+    public_path: []const u8,
+) !?[]const u8 {
+    if (mf.exposes.len == 0) return null; // host(shared/remotes-only) = container 아님
+    const name = mf.name orelse return null; // remote 는 P1-0 검증이 name 강제
+
+    const cwd = federation.cwdRealpath(allocator); // WASI-safe(comptime 분기)
+    defer if (cwd) |c| allocator.free(c);
+
+    const exposes = try collectExposes(allocator, outputs, mf, graph, cwd);
+    defer allocator.free(exposes);
+
+    // ── container 객체 문자열 빌드(min-무관 compact, 유효 JS) ──
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    try buf.appendSlice(allocator, "(function(g){var __zntc_mf_container={get:function(e){var M={");
+    for (exposes, 0..) |ex, ei| {
+        if (ei > 0) try buf.appendSlice(allocator, ",");
         // MF2 계약: get(expose) ⇒ Promise<factory>, factory() ⇒ Module
         // (webpack remoteEntry: `.then(()=>()=>require(id))`). 모듈 자체가
         // 아니라 thunk resolve — factory() 호출 전엔 미평가(추가 lazy).
-        // "<expose>":function(){return __zntc_load_chunk("<file>").then(function(){return function(){return __zntc_require("<fed_id>")}})}
         try w.print(
             "\"{s}\":function(){{return __zntc_load_chunk(\"{s}\").then(function(){{return function(){{return __zntc_require(\"{s}\")}}}})}}",
-            .{ kv.key, file, fed_id },
+            .{ ex.name, ex.chunk_file, ex.fed_id },
         );
     }
     try w.print(
@@ -195,6 +221,9 @@ pub fn wrapContainer(
     // ── remoteEntry(부트스트랩 보유 청크) 의 bootstrap 을 container 로 치환 ──
     for (outputs) |*o| {
         const span = bootstrapSpan(o.contents) orelse continue;
+        // entry 청크 = remoteEntry. o.path 는 splice 후에도 불변(해시 확정)
+        // → basename = manifest.metaData.remoteEntry.name.
+        const remote_entry = std.fs.path.basename(o.path);
         var next: std.ArrayListUnmanaged(u8) = .empty;
         errdefer next.deinit(allocator);
         try next.appendSlice(allocator, o.contents[0..span.start]);
@@ -206,10 +235,75 @@ pub fn wrapContainer(
         const owned = try next.toOwnedSlice(allocator);
         allocator.free(o.contents);
         o.contents = owned;
-        return;
+        // mf-manifest.json (S4 박제 스키마 — runtime SnapshotHandler 가
+        // metaData/exposes/shared 필수). 같은 시점이라 모든 해시 확정.
+        return try buildManifest(allocator, name, exposes, remote_entry, public_path);
     }
     // mf 빌드인데 reg_split 부트스트랩이 없음 = 잘못된 구성(format/splitting).
     // 조용한 오작동(container 없는 산출) 금지 — federation.zig 진단 관례.
     std.log.err("[mf] remoteEntry 부트스트랩 앵커 없음 — mf 빌드는 --format=iife/umd/amd + splitting 필요", .{});
     return MfEmitError.RemoteEntryAnchorMissing;
+}
+
+/// JSON 문자열 리터럴 — emitter.zig 단일 소스(metafile 과 공유, 0x08/
+/// 0x0C 포함 C0 전체 escape). 중립 모듈이라 circular import 없음.
+const appendJsonStr = emitter.appendJsonString;
+
+/// mf-manifest.json (webpack/rspack MF 호환, `@module-federation/sdk@2.4.0`
+/// Manifest 타입 + runtime-core SnapshotHandler:161 필수필드 실측).
+/// runtime 동작필수: metaData(remoteEntry/buildInfo/globalName/publicPath)·
+/// exposes·shared(빈 배열 OK)·remotes. types/.d.ts·shared 정밀화는 비-목표
+/// (P3/P1-6). public_path 비면 "auto"(runtime 이 manifestUrl 에서 추론).
+/// buildVersion/pluginVersion="0.1.0" 박제: runtime 은 이 값을 snapshot
+/// 식별/캐시 힌트로만 쓰고 의미 검증 안 함(generateSnapshotFromManifest)
+/// — lockstep 패키지 버전 추적은 불필요(P1-6 비-목표). build-time 주입은
+/// 후속 백로그.
+fn buildManifest(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    exposes: []const ExposeInfo,
+    remote_entry: []const u8,
+    public_path: []const u8,
+) ![]const u8 {
+    var b: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer b.deinit(allocator);
+    const pp = if (public_path.len > 0) public_path else "auto";
+
+    try b.appendSlice(allocator, "{\"id\":");
+    try appendJsonStr(&b, allocator, name);
+    try b.appendSlice(allocator, ",\"name\":");
+    try appendJsonStr(&b, allocator, name);
+    try b.appendSlice(allocator, ",\"metaData\":{\"name\":");
+    try appendJsonStr(&b, allocator, name);
+    // type:"app"(MFModuleType.APP — remote 도 app). remoteEntry.type:"global"
+    // (P1-3 가 globalName 전역 노출 = webpack global 라이브러리). path:""→
+    // runtime simpleJoinRemoteEntry 가 name 만 → publicPath+name URL 합성.
+    try b.appendSlice(allocator, ",\"type\":\"app\",\"buildInfo\":{\"buildVersion\":\"0.1.0\",\"buildName\":");
+    try appendJsonStr(&b, allocator, name);
+    try b.appendSlice(allocator, "},\"remoteEntry\":{\"name\":");
+    try appendJsonStr(&b, allocator, remote_entry);
+    try b.appendSlice(allocator, ",\"path\":\"\",\"type\":\"global\"},\"types\":{\"path\":\"\",\"name\":\"\",\"zip\":\"\",\"api\":\"\"},\"globalName\":");
+    try appendJsonStr(&b, allocator, name);
+    try b.appendSlice(allocator, ",\"pluginVersion\":\"0.1.0\",\"publicPath\":");
+    try appendJsonStr(&b, allocator, pp);
+    try b.appendSlice(allocator, "},\"shared\":[],\"remotes\":[],\"exposes\":[");
+    for (exposes, 0..) |ex, ei| {
+        if (ei > 0) try b.append(allocator, ',');
+        // id = "<name>:<expose키에서 './' 제거>" (MF 규약, 예 app:Widget).
+        const short = if (std.mem.startsWith(u8, ex.name, "./")) ex.name[2..] else ex.name;
+        try b.appendSlice(allocator, "{\"id\":");
+        const id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ name, short });
+        defer allocator.free(id);
+        try appendJsonStr(&b, allocator, id);
+        try b.appendSlice(allocator, ",\"name\":");
+        try appendJsonStr(&b, allocator, ex.name);
+        try b.appendSlice(allocator, ",\"path\":");
+        try appendJsonStr(&b, allocator, ex.name);
+        // expose 는 자기 lazy 청크 → js.async=[청크], sync=[]. css 는 비-목표.
+        try b.appendSlice(allocator, ",\"assets\":{\"js\":{\"sync\":[],\"async\":[");
+        try appendJsonStr(&b, allocator, ex.chunk_file);
+        try b.appendSlice(allocator, "]},\"css\":{\"sync\":[],\"async\":[]}}}");
+    }
+    try b.appendSlice(allocator, "]}");
+    return b.toOwnedSlice(allocator);
 }
