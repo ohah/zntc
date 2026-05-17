@@ -208,6 +208,33 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 > registry/container" 와 **같은 하위 인프라**다. **MF P1 착수 시 별도 구현 금지** — 그 RFC 의
 > P3-A(최소 require 레지스트리)를 하위 계층으로, MF container 를 상위 계층으로 수렴시킨다.
 
+### 7.2 P2 PR 분해 (웹 MF MVP — 인프라-우선, §7.1 답습)
+
+P1(#3382~#3389)이 MF2 호환 container/registry substrate 를 박제. P2 는 그 위에
+**표준 host 가 zntc remote 와 버전 협상**하게 하는 데이터 정합(manifest.shared)·
+무결성/서명·관측성(metafile)·interop 확대를 쌓는다. 각 PR = 한 기능, 독립 테스트,
+`/simplify` 3-agent, MF 코어 재구현 금지(D1, §6.1).
+
+| PR | 내용 | 근거(RFC/레퍼런스) | 의존 |
+|---|---|---|---|
+| **P2-0** | manifest.shared 정밀: `buildManifest.shared` 를 `mf.shared`(SharedEntry)→`ManifestShared`(`@module-federation/sdk` manifest 타입) 로 채움. seam 정합(assets 빈 — external+글로벌 seam 이 로딩 담당). #3419 한계 가드 갱신 | §7 "shared scope", #3419 갭, sdk `ManifestShared`/`generateSnapshotFromManifest` | — |
+| **P2-1** | host manifest.remotes 반영 (`ManifestRemote`) | §7, sdk manifest 타입 | P2-0 |
+| **P2-2** | SHA-256 무결성 다이제스트 인프라 (파일명 Wyhash 불변 — §9 "파일명 Wyhash, 무결성만 SHA-256") | §4.1·§6.1·§9 | P2-0 |
+| **P2-3** | RS256 서명 에미터 + verify (manifest 무결성 한정, 표준 부재 → zntc 고유·D3 인접; 런타임 강제 verify 는 P4) | §4.1·§5.4·§9 | P2-2 |
+| **P2-4** | metafile MF 산출 표식 확장 (additive only — esbuild 호환 불변) | §6.1 | P2-0 |
+| **P2-5** | enhanced interop 확대: shared singleton×표준 rspack remote, 다중 expose, 버전충돌 e2e | §7 "@module-federation/enhanced interop 검증" | P2-0,P2-1 |
+
+인프라-우선: P2-0(데이터 정합) → P2-2(해시) → P2-3(서명, 해시 위에). P2-4/P2-5 는
+P2-0 후 병렬. 분해 트래커: GitHub 이슈 #3318 하위 (P1 #3382~#3389 선례).
+
+> **P2 난점·경계**: ① `ManifestShared.version` 출처 — `SharedEntry` 에 실제 설치
+> 버전 없음(external+seam 처리). P2-0 은 `required_version` 대용(과설계 회피),
+> 정밀 버전 해석(package.json)은 비-목표/후속. ② 서명 표준 부재 —
+> `@module-federation/*` 에 sign/verify 없음. P2-3 = manifest 무결성 다이제스트
+> 서명까지(표준 host 는 무시), 런타임 강제 verify·remoteEntry 본문 서명은 P4(RN
+> 보안 모델). ③ D3 빌드타임 계약 검증·tree-shaking server-calc·named-scope 다중·
+> RN 은 P2 비-목표(P3/P4).
+
 ---
 
 ## 8. 디리스크 스파이크
