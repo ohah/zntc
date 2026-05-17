@@ -111,10 +111,17 @@ describe('serveRn — sourcemap lifecycle', () => {
       expect(initialMap.status).toBe(200);
 
       writeFileSync(entryPath, 'console.log("hi after hmr");\n');
-      await Promise.race([
-        rebuilt,
-        new Promise((_resolve, reject) => setTimeout(() => reject(new Error('rebuild timeout')), 5000)),
-      ]);
+      let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          rebuilt,
+          new Promise((_resolve, reject) => {
+            rebuildTimer = setTimeout(() => reject(new Error('rebuild timeout')), 5000);
+          }),
+        ]);
+      } finally {
+        if (rebuildTimer) clearTimeout(rebuildTimer);
+      }
 
       const afterHmrMap = await fetch(`${base}/index.map?platform=ios&dev=true`);
       expect(afterHmrMap.status).toBe(200);
