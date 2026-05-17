@@ -383,6 +383,13 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
             .patterns = patterns,
         });
     };
+    // Module Federation (#3318 P1-0): 구조 검증만. emit 은 P1-1+ 가 소비 —
+    // 아직 CliOptions 에 저장 안 함(consumer 없음, arena 수명 deep-dupe 불요).
+    // 검증 실패는 caller 가 `[zntc] zntc.config.json load failed: …` 로 표면화.
+    // ⚠️ 검증은 이 Zig CLI 의 zntc.config.json 경로 한정 — build()/NAPI
+    // (`packages/core/src/napi/options.zig`)는 아직 mf 키를 추출조차 안 함.
+    // P1-1+ 에서 NAPI mf 추출 + validateMf 연결 필수(silent drift 주의).
+    if (dto.mf) |*mf| try lib.transpile.validateMf(mf);
 }
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.

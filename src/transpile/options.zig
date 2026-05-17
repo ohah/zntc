@@ -163,7 +163,106 @@ pub const ConfigOptionsDto = struct {
     inlineDynamicImports: ?bool = null,
     minChunkSize: ?u32 = null,
     manualChunks: ?[]const ManualChunkDto = null,
+    /// Module Federation (#3318 P1-0). **파싱·검증만 — emit 미연결**(P1-1+
+    /// 가 소비). MF2 생태계·public TS 타입과 동일하게 **record 형태** 직접
+    /// 파싱(define/alias 의 array-of-entry 관례와 다름 — MF config 는
+    /// webpack/rspack/vite 전부 record `{ "./W": "./w" }` 라 그에 맞춤,
+    /// 이원성·wrapper 변환 없음). **검증은 Zig CLI 의 zntc.config.json 경로
+    /// 한정** — build()/NAPI(`packages/core/src/napi/options.zig`)의 mf
+    /// 추출+검증은 P1-1+ 에서 연결(현재 미지원, 아래 주석 참조). nested
+    /// 객체라 CLI flag 없음(생태계 전부 config-driven, #3382 스코프).
+    mf: ?MfConfigDto = null,
 };
+
+/// MF config 블록 DTO. MF2 `ModuleFederationPlugin` 과 동형 record 형태로
+/// **직접 파싱**(`std.json.ArrayHashMap`). public 타입
+/// `packages/core/index.ts:ModuleFederationConfig` 와 1:1 — 변환 계층 없음.
+/// P1-0 은 record-of-object `shared` 만(`{react:{singleton:true}}`).
+/// array/boolean shorthand(`shared:['react']`/`{react:true}`)는 P1-1+.
+pub const MfConfigDto = struct {
+    name: ?[]const u8 = null,
+    /// `{ "./Widget": "./src/Widget.tsx" }` (exported name → 소스 경로)
+    exposes: ?std.json.ArrayHashMap([]const u8) = null,
+    /// `{ "remoteA": "remoteA@http://…/mf-manifest.json" }`
+    remotes: ?std.json.ArrayHashMap([]const u8) = null,
+    /// `{ "react": { singleton:true, requiredVersion:"^18" } }`
+    shared: ?std.json.ArrayHashMap(MfSharedDto) = null,
+    shareScope: ?[]const u8 = null,
+};
+
+pub const MfSharedDto = struct {
+    singleton: ?bool = null,
+    requiredVersion: ?[]const u8 = null,
+    strictVersion: ?bool = null,
+    eager: ?bool = null,
+};
+
+pub const MfValidationError = error{
+    MfNameRequired,
+    MfExposeEmptyPath,
+    MfRemoteEmptyEntry,
+};
+
+/// MF config 구조 검증 (P1-0 — emit 없음, 구조 sanity 만). exposes/remotes 가
+/// 비어있지 않으면 name 필수(MF2: remote 식별자). 빈 경로/엔트리 거부.
+/// (빈 record `{}` 는 "미선언" 취급 — count()==0.)
+pub fn validateMf(mf: *const MfConfigDto) MfValidationError!void {
+    const has_exposes = if (mf.exposes) |e| e.map.count() > 0 else false;
+    const has_remotes = if (mf.remotes) |r| r.map.count() > 0 else false;
+    if (has_exposes or has_remotes) {
+        const name = mf.name orelse return error.MfNameRequired;
+        if (name.len == 0) return error.MfNameRequired;
+    }
+    if (mf.exposes) |e| {
+        var it = e.map.iterator();
+        while (it.next()) |kv| if (kv.value_ptr.*.len == 0) return error.MfExposeEmptyPath;
+    }
+    if (mf.remotes) |r| {
+        var it = r.map.iterator();
+        while (it.next()) |kv| if (kv.value_ptr.*.len == 0) return error.MfRemoteEmptyEntry;
+    }
+}
+
+test "validateMf: record 형태 + exposes/remotes 있으면 name 필수" {
+    const a = std.testing.allocator;
+    const J = struct {
+        fn p(alloc: std.mem.Allocator, s: []const u8) !std.json.Parsed(MfConfigDto) {
+            return std.json.parseFromSlice(MfConfigDto, alloc, s, .{ .ignore_unknown_fields = true });
+        }
+    };
+
+    {
+        const v = try J.p(a, "{\"name\":\"app\",\"exposes\":{\"./W\":\"./w.ts\"}}");
+        defer v.deinit();
+        try validateMf(&v.value);
+    }
+    {
+        const v = try J.p(a, "{\"exposes\":{\"./W\":\"./w.ts\"}}");
+        defer v.deinit();
+        try std.testing.expectError(error.MfNameRequired, validateMf(&v.value));
+    }
+    {
+        const v = try J.p(a, "{\"name\":\"app\",\"exposes\":{\"./W\":\"\"}}");
+        defer v.deinit();
+        try std.testing.expectError(error.MfExposeEmptyPath, validateMf(&v.value));
+    }
+    {
+        const v = try J.p(a, "{\"name\":\"app\",\"remotes\":{\"r\":\"\"}}");
+        defer v.deinit();
+        try std.testing.expectError(error.MfRemoteEmptyEntry, validateMf(&v.value));
+    }
+    { // shared-only(host) 는 name 불요
+        const v = try J.p(a, "{\"shared\":{\"react\":{\"singleton\":true}}}");
+        defer v.deinit();
+        try validateMf(&v.value);
+        try std.testing.expect(v.value.shared.?.map.get("react").?.singleton.?);
+    }
+    { // 빈 record = 미선언
+        const v = try J.p(a, "{\"exposes\":{}}");
+        defer v.deinit();
+        try validateMf(&v.value);
+    }
+}
 
 pub const TranspileOptionsDto = ConfigOptionsDto;
 
