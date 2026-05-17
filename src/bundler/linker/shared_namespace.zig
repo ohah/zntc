@@ -6,6 +6,7 @@
 //! resolution and symbol population.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
@@ -20,16 +21,27 @@ const NsExportPair = Linker.NsExportPair;
 const SharedNsInline = Linker.SharedNsInline;
 const max_chain_depth = 100;
 
-/// 모듈의 중첩 스코프 (비-모듈 스코프) 에 해당 이름이 존재하는지 확인.
-/// linker.zig 의 method 와 동일.
-fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
-    const m = self.getModule(module_index) orelse return false;
-    const sem = m.semantic orelse return false;
-    for (sem.scope_maps, 0..) |scope_map, scope_idx| {
-        if (scope_idx == 0) continue;
-        if (scope_map.get(name) != null) return true;
+// RFC PR-2 (#3399) kill-switch: env `ZNTC_NO_NS_REWRITE` presence → namespace
+// member-rewrite 강제 비활성 (회귀 시 운영 비상 차단 + measure-first OFF
+// 측정). force-ON 은 *제공하지 않는다* — 비-minify 강제 ON 은 의도적으로
+// 깨진 출력(자기-shadow 무한재귀)을 만들 수 있어 footgun. 활성 여부는
+// `Linker.nsMemberRewriteSafe()` (mangler invariant 기반) 가 단독 결정하고
+// 이 env 는 그것을 덮어 끄기만 한다. transpile.zig fast-path 와 동일 관례
+// (std.once thread-safe 캐시, WASI 가드).
+var ns_rewrite_disabled_once = std.once(computeNsRewriteDisabled);
+var ns_rewrite_disabled_value: bool = false;
+
+fn computeNsRewriteDisabled() void {
+    if (comptime builtin.os.tag == .wasi and !builtin.link_libc) {
+        ns_rewrite_disabled_value = false;
+        return;
     }
-    return false;
+    ns_rewrite_disabled_value = std.process.hasEnvVarConstant("ZNTC_NO_NS_REWRITE");
+}
+
+pub fn nsRewriteDisabled() bool {
+    ns_rewrite_disabled_once.call();
+    return ns_rewrite_disabled_value;
 }
 
 /// ESM namespace import를 위한 namespace 객체 preamble 생성.
@@ -134,8 +146,14 @@ pub fn registerNamespaceRewrites(
         }
         source_init_cache.deinit();
     }
+    // RFC PR-2 (#3399): mangle-safe 경로면 shadow-skip 을 끄고 멤버를 inner_map
+    // 에 등록 → `emitStaticMember` 가 `X.member`→exp.local 직접 재작성 →
+    // ns-object 불요 (effect −20.6%). 안전성 근거·스코핑은
+    // `Linker.nsMemberRewriteSafe` docstring. `ZNTC_NO_NS_REWRITE` 는 회귀 시
+    // 강제 비활성(kill-switch) — 안전 경로에서도 끌 수만 있고 켤 수는 없다.
+    const ns_rewrite = !nsRewriteDisabled() and self.nsMemberRewriteSafe();
     for (cached_exports) |exp| {
-        if (hasNestedBinding(self, importer_mod_idx, exp.exported)) {
+        if (!ns_rewrite and self.hasNestedBinding(importer_mod_idx, exp.exported)) {
             has_shadow = true;
             continue;
         }
