@@ -261,6 +261,93 @@ describe('createBabelTransformer — project root 기준 Babel cwd', () => {
       rmSync(foreignCwd, { recursive: true, force: true });
     }
   });
+
+  test('babel-plugin-root-import 처럼 module load 시 process.cwd() 를 캡처하는 plugin 에 root 옵션을 주입', () => {
+    const originalCwd = process.cwd();
+    const foreignCwd = mkdtempSync(join(tmpdir(), 'zntc-rn-root-import-cwd-'));
+
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'root-import-test' }));
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      mkdirSync(join(dir, 'node_modules/@babel/core'), { recursive: true });
+      writeFileSync(
+        join(dir, 'node_modules/@babel/core/package.json'),
+        JSON.stringify({ name: '@babel/core', main: 'index.js' }),
+      );
+      writeFileSync(
+        join(dir, 'node_modules/@babel/core/index.js'),
+        `
+          module.exports = {
+            transformSync(code, options) {
+              const entry = options.plugins[0];
+              const pluginPath = Array.isArray(entry) ? entry[0] : entry;
+              const pluginOptions = Array.isArray(entry) ? entry[1] || {} : {};
+              const plugin = require(pluginPath)({
+                types: {
+                  stringLiteral(value) {
+                    return { value };
+                  },
+                },
+              });
+              const importPath = { node: { source: { value: '~/App' } } };
+              plugin.visitor.ImportDeclaration(importPath, {
+                filename: options.filename,
+                file: { opts: options },
+                opts: pluginOptions,
+              });
+              return {
+                code: 'import App from "' + importPath.node.source.value + '";\\nexport default App;',
+              };
+            },
+          };
+        `,
+      );
+      mkdirSync(join(dir, 'node_modules/babel-plugin-root-import'), { recursive: true });
+      writeFileSync(
+        join(dir, 'node_modules/babel-plugin-root-import/package.json'),
+        JSON.stringify({ name: 'babel-plugin-root-import', main: 'index.js' }),
+      );
+      writeFileSync(
+        join(dir, 'node_modules/babel-plugin-root-import/index.js'),
+        `
+          const path = require('node:path');
+          const defaultRoot = process.cwd();
+          module.exports = function rootImportLike({ types: t }) {
+            return {
+              visitor: {
+                ImportDeclaration(importPath, state) {
+                  const source = importPath.node.source.value;
+                  if (!source.startsWith('~/')) return;
+                  const root = state.opts.root || defaultRoot;
+                  const target = path.join(root, state.opts.rootPathSuffix || './', source.slice(2));
+                  let relative = path.relative(path.dirname(state.filename), target).replace(/\\\\/g, '/');
+                  if (!relative.startsWith('.')) relative = './' + relative;
+                  importPath.node.source = t.stringLiteral(relative);
+                },
+              },
+            };
+          };
+        `,
+      );
+      writeFileSync(
+        join(dir, 'babel.config.js'),
+        `module.exports = { plugins: [['babel-plugin-root-import', { rootPathPrefix: '~/', rootPathSuffix: './src' }]] };`,
+      );
+
+      process.chdir(foreignCwd);
+      const transformer = createBabelTransformer(dir);
+      const transformed = transformer(
+        `import App from '~/App';\nexport default App;\n`,
+        join(dir, 'src/index.js'),
+      );
+
+      expect(transformed).toContain('from "./App"');
+      expect(transformed).not.toContain('zntc-rn-root-import-cwd-');
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(foreignCwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ZNTC_NATIVE_PLUGIN_PATTERNS', () => {

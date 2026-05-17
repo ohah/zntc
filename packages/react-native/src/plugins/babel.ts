@@ -116,6 +116,40 @@ function parserPluginsFor(filename: string): string[] {
   return ['jsx'];
 }
 
+function isRootImportPluginName(name: string): boolean {
+  const normalized = name.replace(/\\/g, '/');
+  return (
+    normalized === 'root-import' ||
+    normalized === 'babel-plugin-root-import' ||
+    normalized.endsWith('/babel-plugin-root-import') ||
+    normalized.includes('/babel-plugin-root-import/')
+  );
+}
+
+function injectRootImportRootOption(
+  options: Record<string, unknown> | undefined,
+  projectRoot: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = options ? { ...options } : {};
+  const paths = next.paths;
+
+  if (Array.isArray(paths)) {
+    next.paths = paths.map((pathOption) => {
+      if (!pathOption || typeof pathOption !== 'object' || Array.isArray(pathOption)) {
+        return pathOption;
+      }
+      const record = pathOption as Record<string, unknown>;
+      return 'root' in record ? record : { ...record, root: projectRoot };
+    });
+  } else if (paths && typeof paths === 'object') {
+    const record = paths as Record<string, unknown>;
+    next.paths = 'root' in record ? record : { ...record, root: projectRoot };
+  }
+
+  if (!('root' in next)) next.root = projectRoot;
+  return next;
+}
+
 /**
  * Babel pass 가 필요한지 판정. (a) babel.config.js 의 plugins 또는 (b) inline
  * config (zntc.config.ts `transformer.babel`) 중 하나라도 ZNTC native list 외
@@ -188,14 +222,33 @@ export function createBabelTransformer(
     function resolveEntry(entry: BabelEntry): unknown {
       if (Array.isArray(entry)) {
         try {
+          const resolvedPath = resolvePluginPath(entry[0]);
+          const shouldInjectRoot =
+            isRootImportPluginName(entry[0]) ||
+            isRootImportPluginName(applyBabelPluginPrefix(entry[0])) ||
+            isRootImportPluginName(resolvedPath);
+          if (shouldInjectRoot) {
+            return [
+              resolvedPath,
+              injectRootImportRootOption(entry[1], projectRoot),
+              ...entry.slice(2),
+            ];
+          }
           // 2nd/3rd 요소 (options + instanceName) 그대로 보존 — slice spread.
-          return [resolvePluginPath(entry[0]), ...entry.slice(1)];
+          return [resolvedPath, ...entry.slice(1)];
         } catch {
           return entry;
         }
       }
       try {
-        return resolvePluginPath(entry);
+        const resolvedPath = resolvePluginPath(entry);
+        const shouldInjectRoot =
+          isRootImportPluginName(entry) ||
+          isRootImportPluginName(applyBabelPluginPrefix(entry)) ||
+          isRootImportPluginName(resolvedPath);
+        return shouldInjectRoot
+          ? [resolvedPath, injectRootImportRootOption(undefined, projectRoot)]
+          : resolvedPath;
       } catch {
         return entry;
       }
