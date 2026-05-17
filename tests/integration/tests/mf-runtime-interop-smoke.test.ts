@@ -529,6 +529,108 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     ).not.toBe(0);
   });
 
+  // P2-4 (#3424): metafile MF 산출 표식. esbuild 메타파일 스키마
+  // ({inputs,outputs}) 불변 — additive 최상위 `zntcMf` 키(분석기 무시).
+  // 산출 파일명 결정적 상수(P1-5/P2-2/P2-3) 포인터 + config 메타. 非-MF
+  // 빌드엔 zntcMf 부재(호환 회귀 가드).
+  test('P2-4 metafile zntcMf 표식: additive·esbuild 호환 불변', async () => {
+    const keyName = 'mfk';
+    const fx = await createFixture({
+      'W.ts': `export default () => "W";`,
+      'index.ts': `export const sentinel = "re";`,
+      [keyName]: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './W': './W.ts' },
+          shared: { react: { singleton: true } },
+          remotes: { up: 'u@http://h/mf-manifest.json' },
+        },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const meta = join(fx.dir, 'meta.json');
+    expect(
+      (
+        await runZntcInDir(fx.dir, [
+          '--bundle',
+          join(fx.dir, 'index.ts'),
+          '--outdir',
+          join(fx.dir, 'dist'),
+          '--format=iife',
+          `--metafile=${meta}`,
+          `--mf-sign-key=${join(fx.dir, keyName)}`,
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const m = JSON.parse(await readFile(meta, 'utf8'));
+    // esbuild 스키마 불변
+    expect(m.inputs).toBeDefined();
+    expect(m.outputs).toBeDefined();
+    // additive zntcMf
+    expect(m.zntcMf).toEqual({
+      name: 'app',
+      manifest: 'mf-manifest.json',
+      integrity: 'mf-manifest.json.integrity.json',
+      signature: 'mf-manifest.json.integrity.json.sig', // 키 지정 → .sig
+      exposes: ['./W'],
+      shared: ['react'],
+      remotes: ['up'],
+    });
+
+    // 키 미지정 → signature:null
+    const fx2 = await createFixture({
+      'W.ts': `export default () => "W";`,
+      'index.ts': `export const sentinel = "re";`,
+      'zntc.config.json': JSON.stringify({ mf: { name: 'app', exposes: { './W': './W.ts' } } }),
+    });
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await fx2.cleanup();
+    };
+    const meta2 = join(fx2.dir, 'meta.json');
+    expect(
+      (
+        await runZntcInDir(fx2.dir, [
+          '--bundle',
+          join(fx2.dir, 'index.ts'),
+          '--outdir',
+          join(fx2.dir, 'dist'),
+          '--format=iife',
+          `--metafile=${meta2}`,
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const m2 = JSON.parse(await readFile(meta2, 'utf8'));
+    expect(m2.zntcMf.signature).toBe(null);
+    expect(m2.zntcMf.shared).toEqual([]);
+    expect(m2.zntcMf.remotes).toEqual([]);
+
+    // 非-MF 빌드: zntcMf 부재(esbuild 호환 회귀 가드)
+    const fx3 = await createFixture({ 'p.ts': `export const s = 1;\nconsole.log(s);` });
+    const prev3 = cleanup;
+    cleanup = async () => {
+      await prev3?.();
+      await fx3.cleanup();
+    };
+    const meta3 = join(fx3.dir, 'meta.json');
+    expect(
+      (
+        await runZntcInDir(fx3.dir, [
+          '--bundle',
+          join(fx3.dir, 'p.ts'),
+          '-o',
+          join(fx3.dir, 'o.js'),
+          `--metafile=${meta3}`,
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const m3 = JSON.parse(await readFile(meta3, 'utf8'));
+    expect(m3.inputs).toBeDefined();
+    expect(m3.zntcMf).toBeUndefined();
+  });
+
   // P1-6 (#3388): zntc-빌드 host 가 실 @module-federation/runtime 로 remote
   // 소비. zntc 가 emit 한 init prelude + `import("remote/x")`→loadRemote
   // 재작성 코드가 **실 스펙 런타임**으로 동작(host-emit 검증, D1 — 자체

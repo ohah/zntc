@@ -1601,7 +1601,14 @@ pub const Bundler = struct {
         // 7. Metafile JSON 생성 (--metafile / --analyze)
         var metafile_scope = profile.begin(.emit_metafile);
         const metafile_json: ?[]const u8 = if (self.options.metafile or self.options.analyze)
-            try generateMetafileJson(self.allocator, &graph, output, outputs)
+            try generateMetafileJson(
+                self.allocator,
+                &graph,
+                output,
+                outputs,
+                if (self.options.mf) |*mf| mf else null,
+                self.options.mf_sign_key_path != null,
+            )
         else
             null;
         metafile_scope.end();
@@ -1818,6 +1825,8 @@ fn generateMetafileJson(
     graph: *const @import("graph.zig").ModuleGraph,
     single_output: []const u8,
     multi_outputs: ?[]const OutputFile,
+    mf: ?*const MfBundleConfig,
+    mf_signed: bool,
 ) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
@@ -1873,7 +1882,42 @@ fn generateMetafileJson(
         try buf.appendSlice(allocator, " }");
     }
 
-    try buf.appendSlice(allocator, "\n  }\n}\n");
+    try buf.appendSlice(allocator, "\n  }");
+    // P2-4 (#3424): MF 산출 표식 — additive 최상위 `zntcMf` 키(esbuild
+    // 메타파일 스키마는 {inputs,outputs}; 알 수 없는 키는 분석기가 무시 →
+    // 호환 불변). exposes>0(=remote-producer, manifest/integrity/sig 산출
+    // 시점)일 때만. 산출 파일명은 결정적 상수(P1-5/P2-2/P2-3) — 청크별
+    // 매핑은 mf-manifest.json 본문이라 metafile 은 포인터/마커만(중복 회피).
+    if (mf) |m| {
+        if (m.exposes.len > 0) {
+            try buf.appendSlice(allocator, ",\n  \"zntcMf\": { \"name\": ");
+            // P1-0 validateMf 가 exposes>0 ⟹ name 강제 → orelse 는 도달
+            // 불가 방어(wrapContainer 게이트와 동치).
+            try appendJsonString(&buf, allocator, m.name orelse "");
+            try buf.appendSlice(allocator, ", \"manifest\": \"mf-manifest.json\", \"integrity\": \"mf-manifest.json.integrity.json\", \"signature\": ");
+            if (mf_signed)
+                try buf.appendSlice(allocator, "\"mf-manifest.json.integrity.json.sig\"")
+            else
+                try buf.appendSlice(allocator, "null");
+            try buf.appendSlice(allocator, ", \"exposes\": [");
+            for (m.exposes, 0..) |kv, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                try appendJsonString(&buf, allocator, kv.key);
+            }
+            try buf.appendSlice(allocator, "], \"shared\": [");
+            for (m.shared, 0..) |se, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                try appendJsonString(&buf, allocator, se.name);
+            }
+            try buf.appendSlice(allocator, "], \"remotes\": [");
+            for (m.remotes, 0..) |kv, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                try appendJsonString(&buf, allocator, kv.key);
+            }
+            try buf.appendSlice(allocator, "] }");
+        }
+    }
+    try buf.appendSlice(allocator, "\n}\n");
     return buf.toOwnedSlice(allocator);
 }
 
