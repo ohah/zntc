@@ -1178,6 +1178,10 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     ]);
     expect(ok.exitCode).toBe(0);
     expect(ok.stderr).not.toContain('소유권 경계');
+    // 주: shared 패키지는 seam 으로 external 화 → 그 모듈은 graph 에
+    // 없어 lintOwnershipBoundary(graph 순회) 대상이 아님. external dep
+    // 내부의 store 생성은 RFC §7.3 ②(외부/완전 데이터플로 미탐지 =
+    // 문서화된 휴리스틱 한계, 비-목표) — expose 경계 모듈만 린트 대상.
   }, 30000);
 });
 

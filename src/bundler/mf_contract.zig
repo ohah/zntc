@@ -361,3 +361,21 @@ test "sidecarFileSri: 변조 manifest → SRI 불일치 탐지" {
     defer a.free(tampered);
     try std.testing.expect(!std.mem.eql(u8, expected, tampered)); // verifyIntegrity 의 mismatch 핵심
 }
+
+test "loadContract: 부재 → MfContractManifestNotFound, 디렉터리(IsDir) → MfContractMalformed" {
+    const a = std.testing.allocator;
+    // 부재(절대 .json) → 부재 ≠ 결함(P3-1 이 구분해 fail-fast 메시지)
+    try std.testing.expectError(
+        error.MfContractManifestNotFound,
+        loadContract(a, null, "/zntc-nonexistent-xyzzy/mf-manifest.json"),
+    );
+    // read-fail(권한/IO 류) — 디렉터리를 manifest 경로로 → IsDir → 결함
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try td.dir.makeDir("d.json");
+    const base = try td.dir.realpathAlloc(a, ".");
+    defer a.free(base);
+    const dirpath = try std.fs.path.join(a, &.{ base, "d.json" });
+    defer a.free(dirpath);
+    try std.testing.expectError(error.MfContractMalformed, loadContract(a, null, dirpath));
+}
