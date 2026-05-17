@@ -452,30 +452,62 @@ pub fn buildMetadataForAst(
                     // 에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨 (esm_wrap). init 함수
                     // 본문에서 `var` 로 재선언하면 outer scope 를 shadow → #1209.
                     const is_helper_esm = ib.is_helper and m.wrap_kind == .esm;
-                    const mapped_param = blk: {
+                    const Mapped = struct { name: []const u8, remote: bool };
+                    const mapped: ?Mapped = blk: {
                         if (try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator)) |mp|
-                            break :blk mp;
-                        // PR-1 (#3459): 정적 `import X from "remote/x"` 의
-                        // unresolved external 을 per-spec seam 글로벌
-                        // (`__mf_remote_<san>`)로 합성 → 아래 mapped 경로
-                        // 재사용(IIFE 에러 회피, GlobalEntry.lookup 무변경
-                        // = shared/일반 external 무회귀). 런타임 값은 PR-2
-                        // async preload-gate 가 채움(현재는 미정의).
+                            break :blk .{ .name = mp, .remote = false };
+                        // PR-1/PR-2 (#3459): 정적 `import X from "remote/x"`
+                        // 의 unresolved external 을 per-spec seam 글로벌
+                        // (`__mf_remote_<san>`)로 합성 → mapped 경로 재사용
+                        // (IIFE 에러 회피, GlobalEntry.lookup 무변경 =
+                        // shared/일반 external 무회귀). spec 을 수집기에
+                        // append(emitHostInit async preload-gate 가 그 spec
+                        // 들을 __mfGuardedLoad 로 미리 로드 후 seam 글로벌
+                        // 대입). remote=true → default import 는 ESM
+                        // namespace 의 `.default`(아래).
                         if (self.format == .iife and rec.is_external) {
                             for (self.mf_remotes) |kv| {
-                                if (federation.matchesRemoteSpec(rec.specifier, kv.key))
-                                    break :blk try federation.mfRemoteGlobalName(self.allocator, rec.specifier);
+                                if (federation.matchesRemoteSpec(rec.specifier, kv.key)) {
+                                    if (self.mf_static_remotes) |c|
+                                        try c.add(self.allocator, rec.specifier);
+                                    break :blk .{
+                                        .name = try federation.mfRemoteGlobalName(self.allocator, rec.specifier),
+                                        .remote = true,
+                                    };
+                                }
                             }
                         }
                         break :blk null;
                     };
-                    if (mapped_param) |param_name| {
+                    if (mapped) |mp| {
+                        const param_name = mp.name;
                         defer self.allocator.free(param_name);
                         // IIFE/UMD/AMD: factory 매개변수에서 직접 참조. emitter 의 wrapper
                         // factory 시그니처와 동일 이름 (rollup `output.globals` 호환).
-                        if (ib.kind == .namespace or ib.importsDefault()) {
-                            // import * as React / import React → factory param 직접 사용
+                        if (ib.kind == .namespace) {
+                            // import * as NS → 네임스페이스 객체 전체(UMD 글로벌 ≅
+                            // remote loadRemote ns). 동일 이름이면 재선언 생략.
                             if (!std.mem.eql(u8, preamble_name, param_name)) {
+                                try preamble.write("var ");
+                                try preamble.write(preamble_name);
+                                try preamble.write(" = ");
+                                try preamble.write(param_name);
+                                try preamble.write(";\n");
+                            }
+                        } else if (ib.importsDefault()) {
+                            if (mp.remote) {
+                                // remote seam: loadRemote 결과는 ESM namespace
+                                // → default = `.default`(동적경로 `m.default`
+                                // 와 일관). 이름이 seam 글로벌과 항상 달라
+                                // self-assign 가드 불필요.
+                                try preamble.write("var ");
+                                try preamble.write(preamble_name);
+                                try preamble.write(" = ");
+                                try preamble.write(param_name);
+                                try preamble.write(".default;\n");
+                            } else if (!std.mem.eql(u8, preamble_name, param_name)) {
+                                // import X → UMD: 글로벌 자체가 default. 동일
+                                // 이름이면 self-assign 생략(기존 동작 보존).
                                 try preamble.write("var ");
                                 try preamble.write(preamble_name);
                                 try preamble.write(" = ");

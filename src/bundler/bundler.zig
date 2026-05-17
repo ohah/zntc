@@ -969,6 +969,11 @@ pub const Bundler = struct {
         const mangle_report_enabled = self.options.mangle_report_path != null;
         defer if (mangle_report_enabled) mangle_collector.deinit();
 
+        // PR-2 (#3459): 정적 remote import specifier 수집(metadata.zig 가
+        // remote seam 합성 시 append) → emitHostInit async preload-gate.
+        var mf_static_remotes: @import("federation.zig").MfStaticRemotes = .{};
+        defer mf_static_remotes.deinit(self.allocator);
+
         // 1. 모듈 그래프 구축
         var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
@@ -1176,8 +1181,12 @@ pub const Bundler = struct {
             l.verbatim_module_syntax = self.options.verbatim_module_syntax;
             // #1824: IIFE external globals 매핑 — linker 가 매핑 유무로 preamble 경로 분기.
             l.iife_globals = self.options.globals;
-            // PR-1 (#3459): 정적 remote import → seam 글로벌 매핑용 KV.
-            if (self.options.mf) |*m| l.mf_remotes = m.remotes;
+            // PR-1/PR-2 (#3459): 정적 remote import → seam 글로벌 매핑용
+            // KV + 발견 specifier 수집기(emitHostInit preload-gate 용).
+            if (self.options.mf) |*m| {
+                l.mf_remotes = m.remotes;
+                l.mf_static_remotes = &mf_static_remotes;
+            }
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
             // Phase 3b (#1328): populateReExportAliases 가 canonical_name 을 채우려면
@@ -1803,7 +1812,7 @@ pub const Bundler = struct {
                 const fe = @import("federation_emit.zig");
                 const cwd: ?[]const u8 = if (self.options.project_root.len > 0) self.options.project_root else null;
                 try fe.verifyHostContract(self.allocator, output, mf, cwd);
-                const host_out = try fe.emitHostInit(self.allocator, output, mf);
+                const host_out = try fe.emitHostInit(self.allocator, output, mf, mf_static_remotes.keys());
                 self.allocator.free(output);
                 output = host_out;
             }
