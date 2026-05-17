@@ -690,6 +690,46 @@ test "Expression: nullish coalescing across modules" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default\"") != null);
 }
 
+test "Expression: imported class method nullish temp is method scoped for ES5" {
+    const compat = @import("../../transformer/compat.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { C } from './dep';
+        \\function hash(x) { return x; }
+        \\function get(x) { return x; }
+        \\console.log(new C().m({ queryKey: 1 }, hash, get));
+    );
+    try writeFile(tmp.dir, "dep.ts",
+        \\export class C {
+        \\  m(options, hash, get) {
+        \\    var queryKey = options.queryKey;
+        \\    var queryHash = options.queryHash ?? hash(queryKey);
+        \\    var query = get(queryHash);
+        \\    return query;
+        \\  }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function(options,hash,get) {\n\t\tvar _a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(_a = options.queryHash)") != null or
+        std.mem.indexOf(u8, result.output, "(_a=options.queryHash)") != null);
+}
+
 test "Expression: logical assignment across modules" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

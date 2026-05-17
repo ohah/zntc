@@ -197,6 +197,8 @@ pub fn Constructors(comptime Transformer: type) type {
             if (nt_ctx) |ctx| self.new_target_ctx = ctx;
             defer self.new_target_ctx = saved_nt;
 
+            const saved_temp_counter = self.temp_var_counter;
+
             var new_body = try self.visitNode(body_idx);
 
             // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
@@ -228,6 +230,11 @@ pub fn Constructors(comptime Transformer: type) type {
 
                 new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
             }
+
+            if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
+                new_body = try self.hoistTempVars(new_body, saved_temp_counter, span);
+            }
+            self.temp_var_counter = saved_temp_counter;
 
             self.arrow_this_depth = saved_arrow_depth;
             self.needs_this_var = saved_needs_this;

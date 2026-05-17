@@ -2901,6 +2901,20 @@ test "ES2020: temp var hoisted for ?? in function" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=foo()") != null);
 }
 
+test "ES2020: temp var hoisted for ?? in class method" {
+    var r = try e2eTarget(std.testing.allocator, "class C{m(options){var queryHash=options.queryHash??hash(options.queryKey);return queryHash;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:function(options){var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=options.queryHash)") != null);
+}
+
+test "ES2020: temp var hoisted for ?? in preserved class method" {
+    var r = try e2eTarget(std.testing.allocator, "class C{m(options){return options.queryHash??hash(options.queryKey);}}", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "m(options){var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=options.queryHash)") != null);
+}
+
 test "ES2020: temp var hoisted for ?. in function" {
     var r = try e2eTarget(std.testing.allocator, "function f(){return foo()?.bar;}", .es2019);
     defer r.deinit();
