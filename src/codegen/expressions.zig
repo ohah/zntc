@@ -5,7 +5,28 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
+const unicode = @import("../lexer/unicode.zig");
 const calls = @import("calls.zig");
+
+/// minify_syntax 시 string_literal 객체 키를 따옴표 없이 emit 가능한지.
+/// `raw` 는 따옴표 포함 리터럴 텍스트. escape 없는 단순 리터럴이고 valid ES
+/// IdentifierName 이며 `__proto__` 가 아닐 때만 true. 객체 키는 reserved
+/// word 도 valid 라 reserved 검사 불필요; `{"__proto__":v}` 는 일반 프로퍼티,
+/// `{__proto__:v}` 는 proto setter 라 semantic 이 달라져 반드시 제외.
+fn objectKeyUnquotable(raw: []const u8) bool {
+    if (raw.len < 2) return false;
+    const q = raw[0];
+    if ((q != '"' and q != '\'') or raw[raw.len - 1] != q) return false;
+    const s = raw[1 .. raw.len - 1];
+    if (s.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, s, '\\') != null) return false;
+    if (std.mem.eql(u8, s, "__proto__")) return false;
+    if (!unicode.isIdentifierStart(s[0])) return false;
+    for (s[1..]) |c| {
+        if (!unicode.isIdentifierContinue(c)) return false;
+    }
+    return true;
+}
 
 pub fn emitUnary(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
@@ -260,6 +281,13 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
         const key_node = self.ast.getNode(key);
         if (key_node.tag == .identifier_reference) {
             try self.writeSpan(key_node.data.string_ref);
+        } else if (key_node.tag == .string_literal and self.options.minify_syntax) {
+            const raw = self.ast.getText(key_node.span);
+            if (objectKeyUnquotable(raw)) {
+                try self.write(ast_mod.Ast.stripStringQuotes(raw));
+            } else {
+                try self.emitNode(key);
+            }
         } else {
             try self.emitNode(key);
         }
@@ -414,4 +442,27 @@ pub fn emitComputedMember(self: anytype, node: Node) !void {
     try self.writeByte('[');
     try self.emitNode(property);
     try self.writeByte(']');
+}
+
+test "objectKeyUnquotable: valid IdentifierName 만 unquote (semantic-preserving)" {
+    const t = std.testing;
+    // valid: 따옴표 벗겨도 동일 — reserved word 도 객체 키로는 valid
+    try t.expect(objectKeyUnquotable("\"source\""));
+    try t.expect(objectKeyUnquotable("\"extensions\""));
+    try t.expect(objectKeyUnquotable("'compressible'"));
+    try t.expect(objectKeyUnquotable("\"_x\""));
+    try t.expect(objectKeyUnquotable("\"$a\""));
+    try t.expect(objectKeyUnquotable("\"a1\""));
+    try t.expect(objectKeyUnquotable("\"if\"")); // reserved word: {if:1} 은 valid JS
+    // invalid: quote 유지해야 정확성 보존
+    try t.expect(!objectKeyUnquotable("\"\"")); // 빈 키
+    try t.expect(!objectKeyUnquotable("\"1a\"")); // 숫자 시작
+    try t.expect(!objectKeyUnquotable("\"a-b\"")); // 하이픈
+    try t.expect(!objectKeyUnquotable("\"application/json\"")); // 슬래시
+    try t.expect(!objectKeyUnquotable("\"a b\"")); // 공백
+    try t.expect(!objectKeyUnquotable("\"a\\nb\"")); // escape — 디코드 회피(보수적)
+    try t.expect(!objectKeyUnquotable("\"__proto__\"")); // proto setter semantic 보존
+    try t.expect(!objectKeyUnquotable("source")); // 따옴표 없는 raw 는 대상 아님
+    try t.expect(!objectKeyUnquotable("\"")); // 길이 부족
+    try t.expect(!objectKeyUnquotable("\"a'")); // quote 불일치
 }
