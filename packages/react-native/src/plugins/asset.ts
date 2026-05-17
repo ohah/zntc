@@ -1,8 +1,7 @@
 // React Native runtime injection plugin — Metro 의 HMRClient.js 를 ZNTC HMR
-// runtime (`runtime/zntc-hmr-client.js`) 으로 교체 + 사용자 babelTransformerPath
-// (예: react-native-svg-transformer) 통합. Asset registry / scale variant 처리는
-// ZNTC 코어가 직접 (preset 의 assetRegistry/loader/alias 옵션) — 이 plugin 의
-// 책임 아님.
+// runtime (`runtime/zntc-hmr-client.js`) 으로 교체 + RN source asset transformer
+// 통합. Asset registry / scale variant 처리는 ZNTC 코어가 직접 (preset 의
+// assetRegistry/loader/alias 옵션) 처리한다.
 
 import { readFileSync } from 'node:fs';
 import { basename, extname } from 'node:path';
@@ -11,7 +10,7 @@ import type { ZntcPlugin } from '@zntc/core';
 
 import { HMR_CLIENT_SUFFIX, ZNTC_HMR_CLIENT_CODE } from '../runtime-loader.ts';
 import { escapeRegex } from './escape-regex.ts';
-import { type BabelInstance, getErrorMessage, normalizeExt, requireFromCli } from './internal.ts';
+import { getErrorMessage, normalizeExt, requireFromCli } from './internal.ts';
 import type { PluginConfig } from './types.ts';
 
 interface MetroTransformerResult {
@@ -23,7 +22,12 @@ interface MetroTransformer {
   transform(args: {
     src: string;
     filename: string;
-    options: { platform: 'ios' | 'android'; dev: boolean };
+    options: {
+      platform: 'ios' | 'android';
+      dev: boolean;
+      hot: boolean;
+      projectRoot: string;
+    };
   }): Promise<MetroTransformerResult> | MetroTransformerResult;
 }
 
@@ -60,9 +64,9 @@ export function createSvgComponentModule(svg: string, filePath: string): string 
 /**
  * RN runtime 통합 plugin:
  * - Metro HMRClient.js path → ZNTC HMR runtime (`runtime/zntc-hmr-client.js`) 교체
- * - 사용자 babelTransformerPath (예: react-native-svg-transformer) — Metro
- *   호환 시그니처 (`transform({src, filename, options})` → `{code}` or `{ast}`)
- *   로 호출, AST 반환 시 babel.transformFromAstSync 로 generate.
+ * - `.svg` sourceExt 는 ZNTC 내장 transformer 로 직접 JS module 생성
+ * - 사용자 babelTransformerPath 는 ZNTC 내장 transformer 가 처리하지 않는 custom
+ *   sourceExt 에만 적용한다. Babel AST 반환은 처리하지 않는다.
  */
 export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
   return {
@@ -75,7 +79,7 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
       }));
 
       const hasSvgSource = config.sourceExts.some((e) => normalizeExt(e).toLowerCase() === '.svg');
-      if (!config.babelTransformerPath && hasSvgSource) {
+      if (hasSvgSource) {
         build.onLoad({ filter: /\.svg$/i }, (args) => ({
           contents: createSvgComponentModule(readFileSync(args.path, 'utf8'), args.path),
         }));
@@ -83,14 +87,14 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
 
       if (config.babelTransformerPath) {
         let customTransformer: MetroTransformer | null = null;
-        let babel: BabelInstance | null = null;
         const transformerPath = config.babelTransformerPath;
+        const dev = config.dev ?? true;
 
         // 사용자 transformer 적용 대상 — sourceExts 중 ts/tsx/js/jsx/mjs/cjs/json
-        // 외 (RN-specific 확장자, 예: .svg). 표준 JS/TS 는 ZNTC 가 처리하므로 제외.
+        // 외 확장자. `.svg` 는 위의 ZNTC 내장 transformer 가 처리하므로 제외.
         const customExts = config.sourceExts
           .map((e) => normalizeExt(e).slice(1))
-          .filter((e) => !/^(tsx?|jsx?|mjs|cjs|json)$/.test(e))
+          .filter((e) => !/^(tsx?|jsx?|mjs|cjs|json|svg)$/.test(e))
           .join('|');
 
         if (customExts) {
@@ -102,28 +106,28 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
                   requireFromCli.resolve(transformerPath, { paths: [config.projectRoot] }),
                 ) as MetroTransformer;
               }
-              if (!babel) {
-                babel = requireFromCli('@babel/core') as BabelInstance;
-              }
               const src = readFileSync(args.path, 'utf8');
               const result = await customTransformer.transform({
                 src,
                 filename: args.path,
-                options: { platform: config.rnPlatform, dev: true },
+                options: {
+                  platform: config.rnPlatform,
+                  dev,
+                  hot: dev,
+                  projectRoot: config.projectRoot,
+                },
               });
               if (result?.code) return { contents: result.code };
               if (result?.ast) {
-                const generated = babel.transformFromAstSync?.(result.ast, undefined, {
-                  filename: args.path,
-                  babelrc: false,
-                  configFile: false,
-                });
-                if (generated?.code) return { contents: generated.code };
+                throw new Error(
+                  `${transformerPath} returned a Babel AST for ${args.path}. ZNTC custom source transformers must return code; use a ZNTC native transformer for this extension.`,
+                );
               }
             } catch (err: unknown) {
               process.stderr.write(
                 `[zntc:transformer] ${args.path.split('/').pop()}: ${getErrorMessage(err)}\n`,
               );
+              throw err;
             }
             return null;
           });

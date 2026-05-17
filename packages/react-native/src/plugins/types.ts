@@ -14,6 +14,8 @@ export interface PluginConfig {
   assetExts: string[];
   /** RN runtime platform — codegen / asset 의 platform 분기. */
   rnPlatform: 'ios' | 'android';
+  /** Metro transformer dev flag. 미지정 시 기존 dev-server 기본값인 true. */
+  dev?: boolean;
   /** Source 확장자 (`.ts` / `.tsx` / `.js` / `.jsx` / `.svg` 등). */
   sourceExts: string[];
   /** Metro 호환 custom file transformer path (예: react-native-svg-transformer). */
