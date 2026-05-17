@@ -242,6 +242,26 @@ pub const ConstValue = struct {
     }
 };
 
+/// Mangler slot namespace (esbuild `ast.SlotNamespace` 1:1).
+///
+/// 식별자는 namespace 별로 독립된 slot 공간을 가진다 — 같은 slot 번호라도
+/// namespace 가 다르면 충돌하지 않는다 (label `x:` 와 변수 `x` 는 별개 문법
+/// 위치). `must_not_be_renamed` 는 slot 을 받지 않는 sentinel (예약/외부/이미
+/// 1글자 등). ZNTC 는 현재 label/private 필드를 심볼로 모델링하지 않으므로
+/// 실제로는 `default` / `must_not_be_renamed` 만 등장한다 (RFC #3391 / #3392 —
+/// label·private 은 후속 PR 에서 심볼화 시 자연히 채워짐). 이 enum 을 semantic
+/// 에 두는 이유: Symbol 이 codegen 을 import 하면 레이어 역전 (mangler 가
+/// runtime_helper_names 를 공용 모듈로 분리한 것과 동일 원칙).
+pub const SlotNamespace = enum(u8) {
+    default = 0,
+    label = 1,
+    private_name = 2,
+    must_not_be_renamed = 3,
+
+    /// slot 카운터를 가지는 namespace 수 (`must_not_be_renamed` 은 sentinel 이라 제외).
+    pub const indexable_count = 3;
+};
+
 /// 심볼 하나의 데이터.
 /// symbols[symbol_id]로 접근.
 pub const Symbol = struct {
@@ -293,6 +313,21 @@ pub const Symbol = struct {
     /// 미지정 (원본 이름 유지). 소유권은 linker (`canonical_strings` ArrayList)
     /// — Symbol은 non-owning slice만 보유. linker가 살아있는 동안만 유효.
     canonical_name: []const u8 = "",
+
+    /// Mangler slot namespace (RFC #3391 / #3392 — nested-scope renamer port).
+    /// `assignNestedScopeSlots` (codegen/nested_slots.zig) 가 walk 중 계산해
+    /// 채운다. PR-1 시점엔 파이프라인 미연결이라 동작 무변경. 캐시 보유 vs
+    /// 매번 재계산(esbuild 는 `Symbol.SlotNamespace()` 메서드)의 트레이드오프
+    /// 는 PR-2 이름 발급 연결 시 확정한다.
+    slot_namespace: SlotNamespace = .default,
+
+    /// Nested-scope slot 번호. null = 미할당 (esbuild `ast.Index32{}` 의 invalid
+    /// 대응). top-level 심볼은 nested slot 을 받지 않으므로 walk 후 항상 null.
+    /// 형제 scope 끼리 같은 번호를 재사용하고 자식 scope 는 부모 카운트 *이후*
+    /// 부터 부여되어, closure-capture 된 outer 이름과 구성적으로 충돌 불가
+    /// (esbuild renamer.go 의 핵심 안전 불변식). PR-1: 필드만 추가 — 아직
+    /// mangler 가 소비하지 않음 (behavior 무변경).
+    nested_scope_slot: ?u32 = null,
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
