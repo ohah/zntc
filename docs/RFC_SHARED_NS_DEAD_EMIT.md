@@ -1,7 +1,36 @@
 # RFC: Shared-Namespace Dead-Emit Gate (esbuild `StarNameLoc=nil` 1:1)
 
-상태: **Draft** · 분류: M (XL 아님) · 선행: 없음
+상태: **Draft (§2/§3/§6 계측 정정 — 2026-05-17)** · 분류: M (XL 아님) · 선행: 없음
 관련: `project_shared_ns_dead_emit_lever` · nested-scope-renamer epic NO-GO 후속 차순위 레버
+
+> **⚠️ 계측 정정 (instrumented, RFC 초안 루트커즈 반증)**: 초안 §2/§3/§6 의
+> "force_inline / `isNamespaceExportConsumed`(`ts.isExportUsed`) 과대보고가
+> 원인, 수정 지점 = `metadata.zig:620-622` force_inline 강화" 는 **계측으로
+> 거짓 확정**. effect 399 namespace 사이트 전수 `force_inline=false,
+> isNamespaceUsedAsValue=false, isNamespaceExportConsumed=false` — tree-shaker
+> 정확, RFC 가 강화하려던 gate 는 이미 올바르게 false (RFC 대로 고치면 효과 0).
+>
+> **진짜 루트커즈**: 초안이 누락한 4번째 경로 — `shared_namespace.zig:191`
+> `if (force_inline or has_shadow)` 의 **`has_shadow` 우항**. `hasNestedBinding`
+> (`shared_namespace.zig:25-33`)이 importer 의 nested scope 에 export 명과 같은
+> 바인딩(effect 배럴의 `map`/`patch`/`empty`/`head` 등 초범용 nested local)을
+> 발견하면 `has_shadow=true` → getter 테이블 **전체** materialize. effect
+> dead 141건 중 140건이 이 경로 (force_inline 아님). 27 fully-dead 블록은
+> 출력에 `X_ns.member` 접근 0개 → shadow fallback 의 보호 명분(shadow 된 멤버
+> 접근을 객체로 보존) 자체가 무의미, 순수 dead weight.
+>
+> **정정된 수정 지점**: `shared_namespace.zig:191` 의 `has_shadow` 항을
+> **access-aware** 로. 단 `inner_map.count()>0` 만으로는 불충분(모든 accessed
+> 멤버가 shadow 되면 inner_map 비어도 객체 필요 → silent-broken). 올바른
+> 판별 = namespace 심볼이 importer 에서 실 참조(value-escape 또는
+> member-access) **0건** 인지 (27 dead = 순수 passthrough 0참조 ↔
+> all-shadowed-but-accessed = ≥1 member). `isNamespaceUsedAsValue` +
+> `analyzeNamespaceAccess` 멤버 유무의 교집합 `has_shadow AND 실access==0`
+> 만 제거. **blanket `has_shadow=false` 절대 금지** (~113 live 블록 보존).
+> 효과(effect 27 dead / −16.6%)·M 규모·prior-메모리 미저촉 결론은 유지.
+> cross-chunk 는 effect single-chunk 라 미발동(`chunk.zig:1131` early-return)
+> 이나 §4 불변식(`ns_cross_chunk_targets` 보존)은 code-split 위해 유지 필수.
+> 이하 §2/§3/§6 본문은 초안 원문(반증된 가설) — 본 박스가 정정 권위.
 
 ## 1. 문제 (실측 확정 — C 천장 스파이크)
 
