@@ -982,20 +982,31 @@ pub const TreeShaker = struct {
                             if (!try import_records.importRecordBelongsToStmt(self, @intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
                             const target_mod_idx = @intFromEnum(rec.resolved);
                             const target_module = self.graph.getModule(rec.resolved) orelse continue;
-                            if (target_module.wrap_kind != .cjs) continue;
-                            if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
-                                !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
-                                self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
-                                cjs_patterns.moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
-                            {
-                                const target_infos = module_stmt_infos[target_mod_idx] orelse {
-                                    try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                            if (target_module.wrap_kind == .cjs) {
+                                if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
+                                    !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
+                                    self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
+                                    cjs_patterns.moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
+                                {
+                                    const target_infos = module_stmt_infos[target_mod_idx] orelse {
+                                        try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                                        continue;
+                                    };
+                                    try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
                                     continue;
-                                };
-                                try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
+                                }
+                                try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                                 continue;
                             }
-                            try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                            if (target_module.wrap_kind.isWrapped()) {
+                                // `require()` observes the module namespace. For an
+                                // ESM facade, the facade body alone is not enough:
+                                // its re-export sources contain the actual CJS
+                                // export facts used by generated RN asset modules
+                                // such as `require(AssetRegistry).registerAsset(...)`.
+                                try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                                try self.seedReExportSourcesForRequireNamespace(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                            }
                         }
                     }
                 }
@@ -1768,6 +1779,31 @@ pub const TreeShaker = struct {
         try self.markAllExportsUsed(mod_idx);
         self.included.set(mod_idx);
         try self.seedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
+    }
+
+    fn seedReExportSourcesForRequireNamespace(
+        self: *TreeShaker,
+        mod_idx: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        const m = self.getModule(mod_idx) orelse return;
+        for (m.export_bindings) |eb| {
+            if (!eb.kind.isAnyReExport()) continue;
+            const rec_idx = eb.import_record_index orelse continue;
+            if (rec_idx >= m.import_records.len) continue;
+            const src_idx = m.import_records[rec_idx].resolved;
+            const src_module = self.graph.getModule(src_idx) orelse continue;
+            const src = @intFromEnum(src_idx);
+            if (eb.kind == .re_export_star or eb.kind.isReExportAll()) {
+                try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
+            } else if (src_module.wrap_kind == .cjs) {
+                try self.seedCjsExportOrAll(@intCast(src), m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
+            } else {
+                try self.seedExport(src, m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
+            }
+        }
     }
 
     fn seedModuleExportsRequireProxyTargetsAll(
