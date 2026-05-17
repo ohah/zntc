@@ -1788,7 +1788,13 @@ pub const Bundler = struct {
         // 와 동일 관례(markBoundary).
         if (self.options.mf) |*mf| {
             if (mf.remotes.len > 0 and output.len > 0) {
-                const host_out = try @import("federation_emit.zig").emitHostInit(self.allocator, output, mf);
+                // P3-1 (#3436): emit 전 expose 계약 빌드타임 검증 — host
+                // import 가 remote manifest 에 없으면 fail-fast(S6, 런타임
+                // 깨짐 아님). resolve 불가 remote 는 skip(정밀 fail-fast).
+                const fe = @import("federation_emit.zig");
+                const cwd: ?[]const u8 = if (self.options.project_root.len > 0) self.options.project_root else null;
+                try fe.verifyHostExposes(self.allocator, output, mf, cwd);
+                const host_out = try fe.emitHostInit(self.allocator, output, mf);
                 self.allocator.free(output);
                 output = host_out;
             }
