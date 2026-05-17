@@ -215,8 +215,11 @@ origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_pub
 
 **검증 단계 & 통과 기준**
 
+> **청크 실브라우저 e2e 통합(S0)**: 현재 청크 동적 로더(JS `<script>` 주입·CSP nonce·Worker `importScripts`·`import(url)`)는 통합테스트에서 **Node `document`/`importScripts` 스텁(시뮬)** 으로만 검증되고, 실브라우저 e2e 는 CSS `<link>` 1개뿐(JS 동적 청크/CSP 실 정책 갭). 스파이크 하네스가 실 Playwright + 다중 origin + 실 CSP 헤더를 어차피 요구하므로, 이 갭을 **S0 로 흡수**해 한 번에 메운다 — S0 통과분은 chunk e2e + MF 하네스 양쪽으로 박제.
+
 | # | 무엇 | 환경 | PASS 기준 |
 |---|---|---|---|
+| **S0** | **청크 런타임 실브라우저 기준선**(MF 무관, 순수 코드스플리팅): 동적 `import()` 청크가 실 `<script>` 주입으로 로드·실행, CSP `script-src 'nonce-…'` 정책 하에서 nonce 스크립트 **브라우저가 실제 허용**, Worker `importScripts`/`import(url)` 분기 | **실 Playwright** + 정적서버(실 `Content-Security-Policy` 헤더) | 동적 청크 코드 실행·DOM 반영, CSP 위반 0(블록된 스크립트 없음), worker 경로 로드 — Node 스텁이 못 잡던 실브라우저 동작 증명 |
 | S1 | `host-zntc` 가 `remote-a/Widget` 정적 + `remote-b/Card` 동적 로드·렌더 | Node + Playwright(headless) | DOM 에 두 컴포넌트 렌더, 콘솔 에러 0 |
 | S2 | `react` shared 단일 인스턴스 | 위와 동일 | `useState`/Context 가 host↔remote 경계 넘어 동작(인스턴스 1개 단언 — `React` 식별자 동일성/Context 값 전파) |
 | S3 | **interop 정방향**: `host-mf2`(enhanced) 가 zntc `remote-a` 로드 | Node + Playwright | 표준 host 에서 zntc remote 렌더, MF2 런타임 계약 위반 0 |
@@ -224,9 +227,9 @@ origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_pub
 | S5 | **부분 재배포(엔드유저 가치 A)**: `remote-a/Widget` 만 수정 후 재빌드·재배포, `host-zntc` 무수정 | Node | 바뀐 content-hash 청크만 교체, host 청크 해시 불변, 갱신된 Widget 렌더 |
 | S6 | 빌드타임 계약 불일치(D3 맛보기): `remote-a` export 시그니처 변경 후 `host-zntc` 재빌드 | `zig build` | 빌드 fail-fast(런타임 깨짐 아님) |
 
-S1·S2 실패 → 레지스트리 코어/공유 스코프 설계 결함(P3-C 수렴 가정 재검토). **S3·S4 실패 → D1 재논의(가장 치명적, "진짜 된다"의 핵심 증거).** S5 실패 → 청크/해시 경계 설계 결함. S6 는 P3 기능 선검증(실패해도 P1 진입 가능, P3 범위로 이월).
+**S0 실패 → 청크 동적 로더/CSP 실브라우저 회귀(MF 무관, 즉시 수정 — P1 진입 전 차단).** S1·S2 실패 → 레지스트리 코어/공유 스코프 설계 결함(P3-C 수렴 가정 재검토). **S3·S4 실패 → D1 재논의(가장 치명적, "진짜 된다"의 핵심 증거).** S5 실패 → 청크/해시 경계 설계 결함. S6 는 P3 기능 선검증(실패해도 P1 진입 가능, P3 범위로 이월).
 
-**산출물 위치/정리**: `tests/benchmark/_mf_web_spike/` (untracked, oxfmt pre-push 오염 방지 위해 검증 후 `rm`). 통과한 S1·S2·S5 는 `tests/integration/tests/mf-web-*.test.ts`, 브라우저 경로(S1·S3·S4)는 Playwright `tests/e2e/` 로 **영구 박제**(P3-B 스파이크→통합테스트 박제 선례). `@module-federation/enhanced` 는 devDependency 로 **버전 핀 고정**(생태계 변동 추적, RFC §9).
+**산출물 위치/정리**: `tests/benchmark/_mf_web_spike/` (untracked, oxfmt pre-push 오염 방지 위해 검증 후 `rm`). 박제: **S0 → `tests/e2e/` 실브라우저 청크 e2e(JS 동적청크+CSP, 기존 css-code-splitting-e2e 와 나란히 — 청크 갭 영구 메움)**, S1·S2·S5 → `tests/integration/tests/mf-web-*.test.ts`, 브라우저 경로(S1·S3·S4) → Playwright `tests/e2e/` (P3-B 스파이크→테스트 박제 선례). `@module-federation/enhanced` 는 devDependency 로 **버전 핀 고정**(생태계 변동 추적, RFC §9).
 
 통과 시 §8.1 산출이 P1 이슈 분해를 직접 결정(스파이크가 잡은 제약 → PR 분해, P3-B 와 동일 흐름).
 
