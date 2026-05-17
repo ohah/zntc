@@ -1748,9 +1748,21 @@ pub fn emitModule(
     // react_native 제외: Metro serializer/require 시스템이 CJS wrapper
     // 파라미터 이름(`exports`/`module`)을 가정하므로 RN 빌드는 보존 필수
     // (semantic-preserving — RN 은 이 레버 포기, 정확성 우선).
+    //
+    // eval/with 가드: direct `eval(...)`/`with` 가 있으면 식별자가 동적
+    // 으로 참조될 수 있어(eval 문자열·with scope 는 AST 치환 비대상),
+    // wrapper 파라미터를 `$e`/`$m` 로 바꾸면 eval 내부 `exports` 참조와
+    // 불일치 → ReferenceError. analyzer 가 `markScopeFieldToRoot` 로
+    // root(scope 0)에 전파하므로 root.blocksMangling() 으로 모듈 전체
+    // 판정 (linker.zig Phase B 와 동일 관용구). semantic 부재 또는
+    // scope 부재(판정 불가) 는 보수적으로 mangle 차단(정확성 우선).
+    const mangle_blocked = if (module.semantic) |sem|
+        (sem.scopes.len == 0 or sem.scopes[0].blocksMangling())
+    else
+        true;
     const cjs_mangle = !cjs_wrap_mangle_disabled.enabled() and
         module.wrap_kind == .cjs and options.minify_whitespace and
-        options.platform != .react_native;
+        options.platform != .react_native and !mangle_blocked;
     const cjs_ex_name = if (cjs_mangle) CJS_MANGLE_EXPORTS else cg_options.default_cjs_exports_name;
     const cjs_mod_name = if (cjs_mangle) CJS_MANGLE_MODULE else cg_options.default_cjs_module_name;
 
