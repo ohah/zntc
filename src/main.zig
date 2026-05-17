@@ -648,6 +648,7 @@ pub fn main() !void {
             .loader_overrides = opts.loader_list.items,
             .metafile = opts.metafile_path != null or opts.analyze,
             .mangle_report_path = opts.mangle_report_path,
+            .mf_sign_key_path = opts.mf_sign_key_path,
             .analyze = opts.analyze,
             .legal_comments = opts.legal_comments,
             .inject = opts.inject_list.items,

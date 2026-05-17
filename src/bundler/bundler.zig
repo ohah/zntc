@@ -258,6 +258,9 @@ pub const BundleOptions = struct {
     /// `--mangle-report=<path>` — mangler property 측정 JSON 저장 (#1760).
     /// `minify_identifiers=true` 일 때만 의미 있음 (그 외에는 빈 report).
     mangle_report_path: ?[]const u8 = null,
+    /// #3423 P2-3: MF 무결성 sidecar Ed25519 서명 키(raw 32B seed base64
+    /// 파일). null=서명 미산출(opt-in).
+    mf_sign_key_path: ?[]const u8 = null,
     /// 번들 분석 출력 (--analyze). metafile을 내부적으로 강제 활성화.
     analyze: bool = false,
     /// 모든 모듈에 자동 import (--inject:./file.js). 절대 경로 목록.
@@ -1646,7 +1649,9 @@ pub const Bundler = struct {
             const existing = if (asset_outputs) |a| a.len else 0;
             const mf_n: usize = if (mf_manifest != null) 1 else 0;
             // P2-2 (#3422): manifest 산출 시 SHA-256 무결성 sidecar 도 1개.
-            const total = existing + worker_output_files.items.len + css_output_files.items.len + mf_n * 2;
+            // P2-3 (#3423): + 키 지정 시 Ed25519 `.sig` 1개 (opt-in).
+            const sig_n: usize = if (mf_n == 1 and self.options.mf_sign_key_path != null) 1 else 0;
+            const total = existing + worker_output_files.items.len + css_output_files.items.len + mf_n * 2 + sig_n;
             const merged = try self.allocator.alloc(OutputFile, total);
             if (asset_outputs) |a| {
                 @memcpy(merged[0..a.len], a);
@@ -1676,8 +1681,34 @@ pub const Bundler = struct {
                 const pm = try self.allocator.dupe(u8, "mf-manifest.json");
                 errdefer self.allocator.free(pm);
                 const ps = try self.allocator.dupe(u8, "mf-manifest.json.integrity.json");
+                errdefer self.allocator.free(ps);
+                // P2-3: 키 지정 시 sidecar 를 Ed25519 서명 → 별도 `.sig`
+                // (자기참조 순환 회피 — sidecar 불변). 키 오류=fail-fast
+                // (보안 의도라 silent skip 금지). 부분실패 누수는 errdefer.
+                var sig_json: ?[]const u8 = null;
+                errdefer if (sig_json) |s| self.allocator.free(s);
+                var psig: ?[]const u8 = null;
+                errdefer if (psig) |p| self.allocator.free(p);
+                if (self.options.mf_sign_key_path) |keypath| {
+                    const key_txt = std.fs.cwd().readFileAlloc(self.allocator, keypath, 4096) catch
+                        return error.MfSignKeyRead;
+                    defer self.allocator.free(key_txt);
+                    const trimmed = std.mem.trim(u8, key_txt, " \t\r\n");
+                    const Dec = std.base64.standard.Decoder;
+                    var seed: [32]u8 = undefined;
+                    if ((Dec.calcSizeForSlice(trimmed) catch return error.MfSignKeyInvalid) != seed.len)
+                        return error.MfSignKeyInvalid;
+                    Dec.decode(&seed, trimmed) catch return error.MfSignKeyInvalid;
+                    sig_json = try @import("mf_integrity.zig").signSidecar(self.allocator, sidecar, seed);
+                    psig = try self.allocator.dupe(u8, "mf-manifest.json.integrity.json.sig");
+                }
                 merged[slot] = .{ .path = pm, .contents = m };
                 merged[slot + 1] = .{ .path = ps, .contents = sidecar };
+                if (sig_json) |s| {
+                    merged[slot + 2] = .{ .path = psig.?, .contents = s };
+                    sig_json = null; // 소유권 이전
+                    psig = null;
+                }
                 mf_manifest = null; // 소유권 이전 — errdefer(:1356) 이중해제 방지
             }
             break :blk merged;

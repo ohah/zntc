@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { createServer, type Server } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
 import { writeFileSync, rmSync, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createFixture, runZntcInDir, runNode } from './helpers';
@@ -406,6 +406,127 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     const chunk = jsFiles[0];
     writeFileSync(join(dist, chunk), readFileSync(join(dist, chunk), 'utf8') + '//x');
     expect(sri(chunk)).not.toBe(sc.files[chunk]);
+  });
+
+  // P2-3 (#3423): Ed25519 서명 에미터. P2-2 sidecar 를 서명한 별도 .sig
+  // (자기참조 순환 회피). RS256 비채택(Zig std RSA 부재) — alg="ed25519"
+  // 정직 표기. opt-in(--mf-sign-key). 런타임 강제 verify=P3/P4(비-목표).
+  // raw 32B ed25519 pubkey → SPKI DER 래핑(prefix 302a300506032b6570032100).
+  const SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex');
+  const edPub = (b64: string) =>
+    createPublicKey({
+      key: Buffer.concat([SPKI_ED25519, Buffer.from(b64, 'base64')]),
+      format: 'der',
+      type: 'spki',
+    });
+  test('P2-3 Ed25519 서명: opt-in·round-trip·변조탐지·결정성·fail-fast', async () => {
+    const files = {
+      'W.ts': `export default () => "W";`,
+      'index.ts': `export const sentinel = "re";`,
+      'zntc.config.json': JSON.stringify({ mf: { name: 'app', exposes: { './W': './W.ts' } } }),
+    };
+    // (1) opt-in off — 키 없으면 .sig 미산출
+    const off = await createFixture(files);
+    cleanup = off.cleanup;
+    const offDist = join(off.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(off.dir, [
+          '--bundle',
+          join(off.dir, 'index.ts'),
+          '--outdir',
+          offDist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    expect(await readdir(offDist)).not.toContain('mf-manifest.json.integrity.json.sig');
+
+    // (2) 서명 산출 + Node Ed25519 교차검증
+    const fx = await createFixture(files);
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await fx.cleanup();
+    };
+    const keyPath = join(fx.dir, 'sign.key');
+    writeFileSync(keyPath, randomBytes(32).toString('base64'));
+    const dist = join(fx.dir, 'dist');
+    const args = [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+      `--mf-sign-key=${keyPath}`,
+    ];
+    expect((await runZntcInDir(fx.dir, args)).exitCode).toBe(0);
+    const sidecarBytes = readFileSync(join(dist, 'mf-manifest.json.integrity.json'));
+    const sig = JSON.parse(
+      await readFile(join(dist, 'mf-manifest.json.integrity.json.sig'), 'utf8'),
+    );
+    expect(sig.version).toBe(1);
+    expect(sig.alg).toBe('ed25519');
+    // Zig Ed25519 ≡ Node crypto verify (정확성 교차검증)
+    expect(
+      cryptoVerify(null, sidecarBytes, edPub(sig.publicKey), Buffer.from(sig.signature, 'base64')),
+    ).toBe(true);
+    // 변조: sidecar 1바이트 → 검증 실패
+    expect(
+      cryptoVerify(
+        null,
+        Buffer.concat([sidecarBytes, Buffer.from('x')]),
+        edPub(sig.publicKey),
+        Buffer.from(sig.signature, 'base64'),
+      ),
+    ).toBe(false);
+
+    // (3) 결정성: 동일 fixture+키 재빌드 → .sig byte-동일(결정적 서명)
+    const fx2 = await createFixture(files);
+    const prev2 = cleanup;
+    cleanup = async () => {
+      await prev2?.();
+      await fx2.cleanup();
+    };
+    const kp2 = join(fx2.dir, 'sign.key');
+    writeFileSync(kp2, readFileSync(keyPath)); // 동일 키
+    const dist2 = join(fx2.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(fx2.dir, [
+          '--bundle',
+          join(fx2.dir, 'index.ts'),
+          '--outdir',
+          dist2,
+          '--format=iife',
+          `--mf-sign-key=${kp2}`,
+        ])
+      ).exitCode,
+    ).toBe(0);
+    expect(await readFile(join(dist2, 'mf-manifest.json.integrity.json.sig'), 'utf8')).toBe(
+      await readFile(join(dist, 'mf-manifest.json.integrity.json.sig'), 'utf8'),
+    );
+
+    // (4) fail-fast: 잘못된 키(짧음/비-base64) → 빌드 실패
+    const bad = await createFixture(files);
+    const prev3 = cleanup;
+    cleanup = async () => {
+      await prev3?.();
+      await bad.cleanup();
+    };
+    writeFileSync(join(bad.dir, 'bad.key'), 'not-a-valid-32byte-seed');
+    expect(
+      (
+        await runZntcInDir(bad.dir, [
+          '--bundle',
+          join(bad.dir, 'index.ts'),
+          '--outdir',
+          join(bad.dir, 'dist'),
+          '--format=iife',
+          `--mf-sign-key=${join(bad.dir, 'bad.key')}`,
+        ])
+      ).exitCode,
+    ).not.toBe(0);
   });
 
   // P1-6 (#3388): zntc-빌드 host 가 실 @module-federation/runtime 로 remote
