@@ -772,7 +772,19 @@ pub fn buildMetadataForAst(
             var hoisted_specifiers = std.StringHashMap(void).init(self.allocator);
             defer hoisted_specifiers.deinit();
             for (m.import_records, 0..) |rec, rec_i| {
-                if (rec.resolved.isNone()) continue;
+                if (rec.resolved.isNone()) {
+                    // Lazy barrel tree-shaking can intentionally leave unrequested
+                    // static import records unresolved. The source AST still has
+                    // the original import declaration, and wrapped IIFE/CJS
+                    // codegen would lower it to a raw `require("...")`. React
+                    // Native does not provide a global require there, so skip the
+                    // original import node when graph linking also decided not to
+                    // resolve this record.
+                    if (!self.graph.shouldLinkResolvedRecordForModule(module_index, rec_i, rec)) {
+                        try hoisted_specifiers.put(rec.specifier, {});
+                    }
+                    continue;
+                }
                 const tidx = @intFromEnum(rec.resolved);
                 const tmod = self.graph.getModule(rec.resolved) orelse continue;
                 if (tmod.wrap_kind == .none) {
