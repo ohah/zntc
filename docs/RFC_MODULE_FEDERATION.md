@@ -184,7 +184,7 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 | **P4** | RN: `packages/rn-federation-loader` — Zig 코어 + JSI(TurboModule) + iOS/Android shim. build.zig iOS/Android 타겟 | **C/JSI** |
 | **P5** | Hermes .hbc 세그먼트 emit + bytecode 버전 검증 | 코어 확장 |
 
-웹(P1~P3)을 RN(P4~)에 블로킹하지 않는다.
+웹(P1~P3)을 RN(P4~)에 블로킹하지 않는다. **P1 은 §8.1 웹 스파이크 통과가 선행 게이트**(스파이크 산출이 P1 이슈 분해를 결정), P4 는 §8.2 RN 스파이크 0 통과가 선행 게이트.
 
 > **P3(CJS/IIFE code splitting, 백로그 #3321)과의 통합**: `docs/RFC_CJS_IIFE_CODE_SPLITTING.md` 가
 > 요구하는 런타임 require 레지스트리·안정 모듈 ID 는 본 RFC §4.1 의 "연합 경계 안정 모듈 ID +
@@ -193,13 +193,48 @@ stock RN/Metro: `import()`는 네트워크 청크를 안 만들고 단일 번들
 
 ---
 
-## 8. 디리스크: 스파이크 0 (RN 최우선 검증)
+## 8. 디리스크 스파이크
 
-전체의 95%를 짓기 전에 위험한 5%부터:
+전체의 95%를 짓기 전에 위험한 5%부터. 두 스파이크는 각 페이즈의 **go/no-go 게이트** — 통과 못 하면 그 페이즈 진입 금지(P3-B 디리스크 패턴 답습: 손수 픽스처 + 최소 런타임으로 Node/브라우저 증명 → 검증 후 산출물 폐기, 동작은 영구 테스트로 박제).
+
+### 8.1 웹 스파이크 (P1 게이트 — 지금 수행, D6: 웹 먼저)
+
+**증명 대상(가장 불확실한 5%)**: P3-B 가 만든 `__zntc_*` 레지스트리 코어 위에 얹을 MF2 호환 경계가 **실제 `@module-federation/enhanced` 와 양방향으로 맞물리고, shared 단일성·부분 재배포가 성립하는가.** 깨지면 D1(MF2 호환 경계)·D2(shared 핀) 재논의 — P1 한 줄 짜기 전에 본다.
+
+**픽스처 (손수 작성, 버리는 코드)**
+
+| 이름 | 역할 | 비고 |
+|---|---|---|
+| `remote-a` | zntc 빌드. `./Widget` 1개 expose, `react` shared | zntc emit: `remoteEntry` + `mf-manifest.json` + content-hash 청크 |
+| `remote-b` | zntc 빌드. `./Card` expose, `react` shared(같은 버전 핀) | 두 remote 가 react 단일 인스턴스 공유 검증용 |
+| `host-zntc` | zntc 빌드. `remote-a`·`remote-b` 소비 (정적 + 동적 `import("remote-a/Widget")`) | 우리 host |
+| `host-mf2` | **`@module-federation/enhanced` (webpack/rspack)** host. `remote-a` 소비 | interop — 표준 host 가 우리 remote 를 먹나 |
+| `remote-mf2` | `@module-federation/enhanced` remote. `host-zntc` 가 소비 | interop 역방향 — 우리 host 가 표준 remote 를 먹나 |
+
+origin 분리는 로컬 정적 서버 N개(포트 다름)로 시뮬, `__zntc_public_path`/MF `publicPath` 로 remote URL 주입.
+
+**검증 단계 & 통과 기준**
+
+| # | 무엇 | 환경 | PASS 기준 |
+|---|---|---|---|
+| S1 | `host-zntc` 가 `remote-a/Widget` 정적 + `remote-b/Card` 동적 로드·렌더 | Node + Playwright(headless) | DOM 에 두 컴포넌트 렌더, 콘솔 에러 0 |
+| S2 | `react` shared 단일 인스턴스 | 위와 동일 | `useState`/Context 가 host↔remote 경계 넘어 동작(인스턴스 1개 단언 — `React` 식별자 동일성/Context 값 전파) |
+| S3 | **interop 정방향**: `host-mf2`(enhanced) 가 zntc `remote-a` 로드 | Node + Playwright | 표준 host 에서 zntc remote 렌더, MF2 런타임 계약 위반 0 |
+| S4 | **interop 역방향**: `host-zntc` 가 `remote-mf2` 로드 | 〃 | 우리 host 가 표준 remote 렌더 |
+| S5 | **부분 재배포(엔드유저 가치 A)**: `remote-a/Widget` 만 수정 후 재빌드·재배포, `host-zntc` 무수정 | Node | 바뀐 content-hash 청크만 교체, host 청크 해시 불변, 갱신된 Widget 렌더 |
+| S6 | 빌드타임 계약 불일치(D3 맛보기): `remote-a` export 시그니처 변경 후 `host-zntc` 재빌드 | `zig build` | 빌드 fail-fast(런타임 깨짐 아님) |
+
+S1·S2 실패 → 레지스트리 코어/공유 스코프 설계 결함(P3-C 수렴 가정 재검토). **S3·S4 실패 → D1 재논의(가장 치명적, "진짜 된다"의 핵심 증거).** S5 실패 → 청크/해시 경계 설계 결함. S6 는 P3 기능 선검증(실패해도 P1 진입 가능, P3 범위로 이월).
+
+**산출물 위치/정리**: `tests/benchmark/_mf_web_spike/` (untracked, oxfmt pre-push 오염 방지 위해 검증 후 `rm`). 통과한 S1·S2·S5 는 `tests/integration/tests/mf-web-*.test.ts`, 브라우저 경로(S1·S3·S4)는 Playwright `tests/e2e/` 로 **영구 박제**(P3-B 스파이크→통합테스트 박제 선례). `@module-federation/enhanced` 는 devDependency 로 **버전 핀 고정**(생태계 변동 추적, RFC §9).
+
+통과 시 §8.1 산출이 P1 이슈 분해를 직접 결정(스파이크가 잡은 제약 → PR 분해, P3-B 와 동일 흐름).
+
+### 8.2 RN 스파이크 0 (P4 게이트 — 웹 P1~P3 후, D6)
 
 > 버리는 TurboModule 하나 — 로컬 파일을 JSI `evaluateJavaScript`로 살아있는 런타임에 주입해 federated 모듈이 등록·렌더되는지를 **(a) JS 소스 (b) 사전컴파일 .hbc** 두 경우로, **New Arch + Hermes**에서 증명.
 
-통과 시 나머지(Zig 코어, HTTP shim, 캐시, 서명)는 위험도 낮은 정공법. 실패 시 D4(자체 로더) 재검토.
+통과 시 나머지(Zig 코어, HTTP shim, 캐시, 서명)는 위험도 낮은 정공법. 실패 시 D4(자체 로더) 재검토. **이게 RN 전체의 go/no-go** — 웹(P1~P3)을 블로킹하지 않음(D6).
 
 ---
 
