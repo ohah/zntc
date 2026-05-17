@@ -723,6 +723,91 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"/);
   }, 30000);
 
+  // PR-2 (#3459): 정적 `import X from "remote/x"` 가 표준
+  // @module-federation/[email protected] 으로 **실제 동작**. emitHostInit
+  // async preload-gate(Promise.all([__mfGuardedLoad]).then(seam 대입)
+  // .then(body)) — 정적 import 구문은 PR-1 이 elide·seam binding 만
+  // 남기고, gate 가 loadRemote 결과를 seam 글로벌에 채운 뒤 body 실행.
+  // default→`.default`·named→`.x`·namespace→whole(PR-2 metadata).
+  test('PR-2 정적 import: default/named/namespace 3형태 표준 runtime 실행', async () => {
+    const remoteFx = await createFixture({
+      'Widget.ts': `export default function W(){ return "DEF-OK"; }\nexport const meta = "MET-OK";`,
+      'index.ts': `export const sentinel = "remote-entry";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const rdist = join(remoteFx.dir, 'dist');
+    const rb = await runZntcInDir(remoteFx.dir, [
+      '--bundle',
+      join(remoteFx.dir, 'index.ts'),
+      '--outdir',
+      rdist,
+      '--format=iife',
+      `--public-path=file://${rdist}/`,
+    ]);
+    expect(rb.exitCode).toBe(0);
+    server = createServer(async (req, res) => {
+      try {
+        const u = req.url === '/' ? '/index.js' : req.url!;
+        const ct = u.endsWith('.json') ? 'application/json' : 'application/javascript';
+        res.writeHead(200, { 'content-type': ct });
+        res.end(await readFile(join(rdist, u)));
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((r) => server!.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+
+    const hostFx = await createFixture({
+      // 정적 3형태 — PR-1 이 import 구문 elide, PR-2 gate 가 런타임 채움
+      'index.ts':
+        `import W from "remoteA/Widget";\n` +
+        `import { meta } from "remoteA/Widget";\n` +
+        `import * as NS from "remoteA/Widget";\n` +
+        `console.log("PR2=" + W() + "|" + meta + "|" + (typeof NS.default) + "|" + NS.meta);`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'host', remotes: { remoteA: `remoteA@http://localhost:${port}/index.js` } },
+      }),
+    });
+    cleanup = async () => {
+      await hostFx.cleanup();
+      await remoteFx.cleanup();
+    };
+    const hostOut = join(hostFx.dir, 'host.js');
+    const hb = await runZntcInDir(hostFx.dir, [
+      '--bundle',
+      join(hostFx.dir, 'index.ts'),
+      '-o',
+      hostOut,
+      '--format=iife',
+    ]);
+    expect(hb.exitCode, hb.stderr).toBe(0);
+    const hostSrc = readFileSyncSafe(hostOut);
+    // 게이트 형태: 3 정적 import → 1 spec dedupe + seam 대입 + body deferral
+    expect(hostSrc).toContain('Promise.all([globalThis.__mfGuardedLoad("remoteA/Widget")])');
+    expect(hostSrc).toContain('globalThis.__mf_remote_remoteA_Widget=__mfm[0];');
+    expect(hostSrc).toContain('}).then(function(){');
+    expect(hostSrc).toContain('var W = __mf_remote_remoteA_Widget.default;'); // default→.default
+    expect(hostSrc).toContain('var meta = __mf_remote_remoteA_Widget.meta;'); // named→.x
+    expect(hostSrc).toContain('var NS = __mf_remote_remoteA_Widget;'); // namespace→whole
+
+    const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
+    driverPath = join(hostFx.dir, 'pr2-driver.mjs');
+    writeFileSync(
+      driverPath,
+      `import mf from ${JSON.stringify('file://' + mfRuntime)};\n` +
+        `globalThis.__mf_runtime = mf;\n` +
+        `await import(${JSON.stringify('file://' + hostOut)});\n` +
+        `await new Promise(r => setTimeout(r, 600));\n`,
+    );
+    const { stdout, stderr } = await runNode(driverPath);
+    // 성공 경로: gate→loadRemote→seam→body. default/named/namespace 정확.
+    expect(stdout).toContain('PR2=DEF-OK|MET-OK|function|MET-OK');
+    expect(stderr).not.toMatch(/RUNTIME-00\d|runtime guard|does not contain "init"/);
+  }, 30000);
+
   // P3-1 (#3436): 빌드타임 expose 계약 검증(D3, 스파이크 S6). host import
   // 가 remote 의 게시 mf-manifest.json exposes 에 **없으면 빌드 fail-fast**
   // (런타임 깨짐 아님 — MF2 의 stale 런타임-실패 대비 차별화). resolve
@@ -1236,10 +1321,15 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(hb.exitCode, hb.stderr).toBe(0);
     expect(hb.stderr).not.toContain('cannot be emitted in IIFE');
     const src = readFileSync(hostOut, 'utf8');
-    // 3형태 → per-spec seam 글로벌 binding(런타임은 PR-2 가 채움)
-    expect(src).toContain('var W = __mf_remote_app_Widget;'); // default
+    // 3형태 → per-spec seam 글로벌 binding + PR-2 async preload-gate.
+    // remote=ESM namespace 라 default→`.default`(PR-2 metadata 정정 —
+    // 동적경로 `m.default` 와 일관), named→`.x`, namespace→whole.
+    expect(src).toContain('var W = __mf_remote_app_Widget.default;'); // default→.default
     expect(src).toContain('var meta = __mf_remote_app_Widget.meta;'); // named
     expect(src).toContain('var NS = __mf_remote_app_Widget;'); // namespace
+    // PR-2: 정적 import 발견 → async preload-gate emit(seam 채움 후 body)
+    expect(src).toContain('Promise.all([globalThis.__mfGuardedLoad("app/Widget")])');
+    expect(src).toContain('globalThis.__mf_remote_app_Widget=__mfm[0];');
     // 정적 import 구문은 IIFE 출력에 잔존하지 않음(codegen elide)
     expect(src).not.toMatch(/(^|\n)\s*import\b.*["']app\/Widget["']/);
   }, 30000);

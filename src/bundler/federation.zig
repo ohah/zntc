@@ -18,6 +18,32 @@ const ModuleIndex = types.ModuleIndex;
 const module_id = @import("module_id.zig");
 const resolve_cache = @import("resolve_cache.zig");
 
+/// PR-2 (#3459): 링킹 중 발견된 **정적** `import … from "remote/x"`
+/// specifier 집합(삽입순·중복제거). 정적 import 구문은 codegen 이
+/// elide(PR-1)하므로 emitHostInit 가 출력만으로 어떤 remote 를
+/// 정적-import 했는지 복원 불가(sanitize lossy) → metadata.zig 가
+/// 여기 수집, bundler 가 emitHostInit 에 전달해 async preload-gate
+/// emit. bundler 소유(`mangle_report` 선례 — Linker 는 `?*` 참조만,
+/// const-self 라도 pointee 변경). 키는 dupe(import_records 수명 무관
+/// — link 후 emit 까지 생존).
+pub const MfStaticRemotes = struct {
+    specs: std.StringArrayHashMapUnmanaged(void) = .empty,
+
+    pub fn add(self: *MfStaticRemotes, allocator: std.mem.Allocator, spec: []const u8) !void {
+        if (self.specs.contains(spec)) return;
+        try self.specs.put(allocator, try allocator.dupe(u8, spec), {});
+    }
+
+    pub fn keys(self: *const MfStaticRemotes) []const []const u8 {
+        return self.specs.keys();
+    }
+
+    pub fn deinit(self: *MfStaticRemotes, allocator: std.mem.Allocator) void {
+        for (self.specs.keys()) |k| allocator.free(k);
+        self.specs.deinit(allocator);
+    }
+};
+
 /// P1-6 host: 스펙 런타임 패키지(자체 재구현 금지=D1) 및 그 글로벌 seam.
 /// **단일 소스** — applyMfRemotesSeam(cli/options.zig)이 external+글로벌로
 /// 걸고 emitHostInit(federation_emit.zig)이 그 글로벌로 init/loadRemote

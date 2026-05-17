@@ -33,6 +33,7 @@ pub const PreambleWriter = preamble_writer.PreambleWriter;
 pub const cjsImportNeedsToEsmInterop = preamble_writer.cjsImportNeedsToEsmInterop;
 pub const LinkingMetadata = @import("linker/metadata_types.zig").LinkingMetadata;
 pub const MangleReportCollector = @import("linker/mangle_report.zig").MangleReportCollector;
+pub const MfStaticRemotes = @import("federation.zig").MfStaticRemotes;
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -213,6 +214,12 @@ pub const Linker = struct {
     /// --mangle-report 수집기 (#1760). `null` 이면 instrumentation skip.
     /// Bundler 가 생성 및 소유. Linker 는 참조만 보유.
     mangle_report: ?*MangleReportCollector = null,
+
+    /// PR-2 (#3459): 정적 remote import specifier 수집기. metadata.zig
+    /// 가 remote seam 합성 시 append → bundler 가 emitHostInit 에 전달.
+    /// Bundler 소유, Linker 는 `?*` 참조(const-self 라도 pointee 변경 —
+    /// mangle_report 선례). null=비-MF/비수집(동작 불변).
+    mf_static_remotes: ?*MfStaticRemotes = null,
 
     /// #1760 Step 3c: `computeMangling` 이 mangleAll 결과 전체를 보관.
     /// `metadata.buildMetadataForAst` 이 현 모듈의 Phase B rename 을 여기서 조회.
