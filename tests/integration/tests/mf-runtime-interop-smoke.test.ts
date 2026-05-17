@@ -1115,6 +1115,67 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(stdout).not.toContain('REM=TIMEOUT');
     expect(stdout).toMatch(/REM=\S/);
   }, 30000);
+
+  // P3-4 (#3439): 소유권 경계 린트. 연합 경계 모듈(expose/shared 폐포)
+  // 이 host-owned store/Provider 를 자체 생성하면 **비-차단 빌드 경고**
+  // (#3336 진단 선례 미러 — 탐지→경고, 빌드 실패 아님). 휴리스틱이라
+  // FP 가능(RFC §7.3 ②): store *생성* 심볼만 매칭, 주입·소비(createSlice
+  // /useSelector/atom)는 비매칭. 경계 모듈만 — 비-경계는 무경고.
+  test('P3-4 소유권 경계: 경계 모듈 store 자체생성 → 비-차단 경고; 주입·비경계 무경고', async () => {
+    // 로컬 stub node_modules(@reduxjs/toolkit) — bare import 가 resolve
+    // 되어 IIFE 번들에 포함(P1 제약: 미해결 bare external 은 IIFE emit
+    // 불가). 린트는 import 바인딩(specifier+심볼)만 보므로 stub 으로 충분.
+    const rtkStub = {
+      'node_modules/@reduxjs/toolkit/package.json': '{"name":"@reduxjs/toolkit","main":"index.js"}',
+      'node_modules/@reduxjs/toolkit/index.js':
+        'export const configureStore=()=>({});\nexport const createSlice=()=>({});',
+    };
+
+    // ① 경계(expose) 모듈이 configureStore 자체 생성 → 경고 + 빌드 성공
+    const fxBad = await createFixture({
+      ...rtkStub,
+      'Widget.ts': `import { configureStore } from "@reduxjs/toolkit";\nexport default function W(){ return typeof configureStore; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    cleanup = fxBad.cleanup;
+    const bad = await runZntcInDir(fxBad.dir, [
+      '--bundle',
+      join(fxBad.dir, 'index.ts'),
+      '--outdir',
+      join(fxBad.dir, 'dist'),
+      '--format=iife',
+    ]);
+    expect(bad.exitCode).toBe(0); // 경고는 비-차단(빌드 성공)
+    expect(bad.stderr).toContain('소유권 경계');
+    expect(bad.stderr).toContain('Redux configureStore');
+    await fxBad.cleanup();
+    cleanup = undefined;
+
+    // ② GOOD 패턴(경계는 createSlice 주입) + 비-경계 entry 의
+    //    configureStore → 경고 없음(휴리스틱 정밀: 생성 심볼만·경계만).
+    const fxOk = await createFixture({
+      ...rtkStub,
+      'Widget.ts': `import { createSlice } from "@reduxjs/toolkit";\nexport default function W(){ return typeof createSlice; }`,
+      // index.ts(비-경계 entry)는 configureStore 써도 무경고(경계 아님)
+      'index.ts': `import { configureStore } from "@reduxjs/toolkit";\nexport const store = configureStore;`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    cleanup = fxOk.cleanup;
+    const ok = await runZntcInDir(fxOk.dir, [
+      '--bundle',
+      join(fxOk.dir, 'index.ts'),
+      '--outdir',
+      join(fxOk.dir, 'dist'),
+      '--format=iife',
+    ]);
+    expect(ok.exitCode).toBe(0);
+    expect(ok.stderr).not.toContain('소유권 경계');
+  }, 30000);
 });
 
 function readFileSyncSafe(p: string): string {

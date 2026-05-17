@@ -1071,13 +1071,18 @@ pub const Bundler = struct {
         // Module Federation 연합 경계 식별 (#3318 P1-1). mf!=null 일 때만 —
         // 비-MF 빌드 영향 0. 표시·안정 ID 만(분석); wrap_kind/출력 불변.
         if (self.options.mf) |*mf| {
-            try @import("federation.zig").markBoundary(
+            const fed = @import("federation.zig");
+            try fed.markBoundary(
                 &graph,
                 mf,
                 self.allocator,
                 self.options.entry_points,
                 self.options.preserve_modules_root,
             );
+            // P3-4 (#3439): 소유권 경계 린트 — 경계 모듈이 host-owned
+            // store/Provider 자체 생성 시 비-차단 경고. markBoundary 직후
+            // (경계 플래그 완료, 동일 graph 순회). 빌드 영향 0(경고만).
+            fed.lintOwnershipBoundary(&graph);
         }
 
         if (graph.runtime_polyfill_roots.items.len > 0) {

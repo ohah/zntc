@@ -170,6 +170,85 @@ fn setBoundary(allocator: std.mem.Allocator, m: anytype, root: ?[]const u8) !voi
     m.federation_id = try module_id.moduleId(allocator, m.path, root);
 }
 
+/// specifier 가 패키지 `pkg` 또는 그 subpath(`pkg/...`)인가.
+fn pkgMatch(spec: []const u8, pkg: []const u8) bool {
+    return std.mem.eql(u8, spec, pkg) or
+        (spec.len > pkg.len and std.mem.startsWith(u8, spec, pkg) and spec[pkg.len] == '/');
+}
+
+/// (import 패키지, import 심볼명) 이 host-owned **store/Provider 생성**
+/// API 인가 → 사람이 읽는 라벨, 아니면 null. **정밀 휴리스틱**: store
+/// *생성* 팩토리 심볼만 매칭 — `createSlice`/`useSelector`/`atom`/
+/// `useStore`(주입·소비 = GOOD 패턴)는 비매칭(낮은 false-positive).
+/// AST 미보존이라 호출 여부는 못 봄 → 심볼 import 자체를 신호로 사용
+/// (그 심볼을 import 하면 호출 의도). RFC §3.2(host 단일 store, remote
+/// 는 주입) · §7.3 ②(휴리스틱, FP 가능 — 경고는 "확인 권고").
+/// **알려진 한계**(false-negative, RFC §7.3 ② 완전 데이터플로 비-목표):
+/// namespace import(`import * as RTK; RTK.configureStore()` → imported_
+/// name="*") · 재export 경유는 미탐지. 직접 명명 import 만 신호.
+fn prohibitedStoreFactory(specifier: []const u8, name: []const u8) ?[]const u8 {
+    const eq = std.mem.eql;
+    if (pkgMatch(specifier, "@reduxjs/toolkit")) {
+        if (eq(u8, name, "configureStore")) return "Redux configureStore";
+    } else if (pkgMatch(specifier, "redux")) {
+        if (eq(u8, name, "createStore") or eq(u8, name, "legacy_createStore")) return "Redux createStore";
+    } else if (pkgMatch(specifier, "zustand")) {
+        // zustand: named {create,createStore} 또는 default export(=create).
+        if (eq(u8, name, "create") or eq(u8, name, "createStore") or eq(u8, name, "default"))
+            return "Zustand store";
+    } else if (pkgMatch(specifier, "jotai")) {
+        if (eq(u8, name, "createStore")) return "Jotai createStore";
+    } else if (pkgMatch(specifier, "react-redux")) {
+        if (eq(u8, name, "Provider")) return "react-redux Provider";
+    }
+    return null;
+}
+
+/// P3-4 (#3439): 소유권 경계 린트. 연합 경계 모듈(exposes ∪ shared
+/// 폐포)이 host-owned store/Provider 생성 심볼을 import 하면 **비-차단
+/// 빌드 경고**(std.log.warn — P3-2 선례, 빌드 실패 아님 · #3336
+/// non-literal dynamic import 진단 선례 미러: 탐지→비-차단 경고).
+/// markBoundary 직후 호출(경계 플래그 설정 완료 — 동일 단일소스 순회,
+/// emit/검증 부작용 0). 휴리스틱이라 false-positive 가능(RFC §7.3 ②) —
+/// 메시지가 "의도된 격리면 무시"를 명시. 경고는 절대 빌드를 막지 않음.
+pub fn lintOwnershipBoundary(graph: anytype) void {
+    const count = graph.moduleCount();
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+        const m = graph.getModule(idx) orelse continue;
+        if (!m.is_federation_boundary) continue;
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const spec = m.import_records[ib.import_record_index].specifier;
+            const label = prohibitedStoreFactory(spec, ib.imported_name) orelse continue;
+            std.log.warn(
+                "[mf] 소유권 경계 — 연합 경계 모듈 '{s}' 이 host-owned {s} 을(를) 자체 생성(import '{s}' from '{s}'). remote 는 host store 에 slice/reducer 를 주입하세요(RFC §3.2). 비-차단 — 의도된 격리면 무시.",
+                .{ m.federation_id orelse m.path, label, ib.imported_name, spec },
+            );
+        }
+    }
+}
+
+test "prohibitedStoreFactory: store-생성 심볼만 매칭(주입·소비는 비매칭)" {
+    // 매칭(자체 store/Provider 생성 정황)
+    try std.testing.expect(prohibitedStoreFactory("@reduxjs/toolkit", "configureStore") != null);
+    try std.testing.expect(prohibitedStoreFactory("redux", "createStore") != null);
+    try std.testing.expect(prohibitedStoreFactory("zustand", "create") != null);
+    try std.testing.expect(prohibitedStoreFactory("zustand/vanilla", "createStore") != null); // subpath
+    try std.testing.expect(prohibitedStoreFactory("zustand", "default") != null); // default=create
+    try std.testing.expect(prohibitedStoreFactory("jotai", "createStore") != null);
+    try std.testing.expect(prohibitedStoreFactory("react-redux", "Provider") != null);
+    // 비매칭 — 주입·소비(GOOD 패턴) → false-positive 회피
+    try std.testing.expect(prohibitedStoreFactory("@reduxjs/toolkit", "createSlice") == null);
+    try std.testing.expect(prohibitedStoreFactory("react-redux", "useSelector") == null);
+    try std.testing.expect(prohibitedStoreFactory("react-redux", "useDispatch") == null);
+    try std.testing.expect(prohibitedStoreFactory("jotai", "atom") == null);
+    try std.testing.expect(prohibitedStoreFactory("zustand", "useStore") == null);
+    try std.testing.expect(prohibitedStoreFactory("react", "useState") == null); // 무관 패키지
+    try std.testing.expect(prohibitedStoreFactory("jotai", "createStoreX") == null); // 부분일치 아님
+}
+
 /// graph.build 루트 = user entry ∪ exposes. P1-3: exposes 는 user entry
 /// 에서 도달 안 될 수 있는 **독립 루트**(webpack 동일) — 그래프에 없으면
 /// markBoundary 가 매칭 실패. 반환 slice 의 모든 원소 allocator-dup(소유
