@@ -863,6 +863,119 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect((await buildHost(undefined)).exitCode).toBe(0);
   }, 30000);
 
+  // P3-3 (#3438): 빌드타임 무결성 검증(D3 런타임가드의 빌드타임 절반).
+  // host 가 소비하는 remote 의 게시 manifest 가 sidecar(P2-2 SHA-256)/
+  // `.sig`(P2-3 Ed25519)와 불일치(stale/변조)면 **빌드 fail-fast**.
+  // sidecar/sig 부재 = 검증 불가 ≠ 위반 → 통과(비-zntc·미서명 무회귀).
+  test('P3-3 무결성: 변조 manifest·서명 → 빌드 fail-fast; 정상·sidecar부재 통과', async () => {
+    const buildHost = async (manifestAbs: string) => {
+      const hostFx = await createFixture({
+        'index.ts': `async function m(){ const x = await import("app/Widget"); console.log(x); }\nm();`,
+        'zntc.config.json': JSON.stringify({
+          mf: { name: 'host', remotes: { app: `app@${manifestAbs}` } },
+        }),
+      });
+      const r = await runZntcInDir(hostFx.dir, [
+        '--bundle',
+        join(hostFx.dir, 'index.ts'),
+        '-o',
+        join(hostFx.dir, 'host.js'),
+        '--format=iife',
+      ]);
+      await hostFx.cleanup();
+      return r;
+    };
+
+    // ── SHA-256 sidecar (서명 없음, 항상 산출) ──
+    const rfx = await createFixture({
+      'Widget.ts': `export default function W(){ return "OK"; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const rdist = join(rfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(rfx.dir, [
+          '--bundle',
+          join(rfx.dir, 'index.ts'),
+          '--outdir',
+          rdist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const sidecarAbs = join(rdist, 'mf-manifest.json.integrity.json');
+    const orig = readFileSync(manifestAbs);
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await rfx.cleanup();
+    };
+
+    // ① 정상 → 통과
+    expect((await buildHost(manifestAbs)).exitCode).toBe(0);
+
+    // ② manifest 변조(유효 JSON 유지 — loadContract 는 통과하되 바이트가
+    //    달라 sidecar SHA 불일치) → 무결성 fail-fast.
+    const t = JSON.parse(orig.toString());
+    t.__tampered = true; // unknown 키(parseContract 는 무시) — 바이트만 변경
+    writeFileSync(manifestAbs, JSON.stringify(t));
+    const tampered = await buildHost(manifestAbs);
+    expect(tampered.exitCode).not.toBe(0);
+    expect(tampered.stderr).toContain('MF 무결성 위반');
+    writeFileSync(manifestAbs, orig); // 복원
+
+    // ③ sidecar 부재 → 검증 불가 ≠ 위반 → 통과(비-zntc remote 무회귀)
+    rmSync(sidecarAbs, { force: true });
+    expect((await buildHost(manifestAbs)).exitCode).toBe(0);
+
+    // ── Ed25519 `.sig` (P2-3 opt-in) ──
+    const sfx = await createFixture({
+      'Widget.ts': `export default function W(){ return "OK"; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const prev2 = cleanup;
+    cleanup = async () => {
+      await prev2?.();
+      await sfx.cleanup();
+    };
+    const keyPath = join(sfx.dir, 'sign.key');
+    writeFileSync(keyPath, randomBytes(32).toString('base64'));
+    const sdist = join(sfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(sfx.dir, [
+          '--bundle',
+          join(sfx.dir, 'index.ts'),
+          '--outdir',
+          sdist,
+          '--format=iife',
+          `--mf-sign-key=${keyPath}`,
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const sManifest = join(sdist, 'mf-manifest.json');
+    const sigAbs = join(sdist, 'mf-manifest.json.integrity.json.sig');
+
+    // ④ 정상 서명 → 통과(SHA + Ed25519 모두 일치)
+    expect((await buildHost(sManifest)).exitCode).toBe(0);
+
+    // ⑤ `.sig` 변조(sidecar 는 그대로 → SHA 통과 후 서명 검증 실패) →
+    //    빌드 fail-fast.
+    const sigJson = JSON.parse(readFileSync(sigAbs, 'utf8'));
+    sigJson.signature = Buffer.from(randomBytes(64)).toString('base64'); // 무효 서명
+    writeFileSync(sigAbs, JSON.stringify(sigJson));
+    const badSig = await buildHost(sManifest);
+    expect(badSig.exitCode).not.toBe(0);
+    expect(badSig.stderr).toContain('MF 서명 위반');
+  }, 30000);
+
   // 갭 보강(레퍼런스 module-federation/core 대비). zntc remote dir 빌드 +
   // .js entry http 서빙(S3/host-emit 검증 형태, Node-safe — chunk=file://).
   async function buildZntcRemote(
