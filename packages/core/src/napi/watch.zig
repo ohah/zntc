@@ -138,9 +138,7 @@ const LazySourceMapCache = struct {
     /// 현재 캐시된 bundle + module builder 들을 모두 free + 맵 clear. 내부에서 lock
     /// 하지 않으므로 caller 가 `mutex` 를 이미 잡았거나 (stop 경로처럼) 동시 접근이
     /// 없음을 보장해야 한다.
-    fn clear(self: *LazySourceMapCache, allocator: std.mem.Allocator) void {
-        if (self.bundle) |sm| sm.destroy(allocator);
-        self.bundle = null;
+    fn clearModules(self: *LazySourceMapCache, allocator: std.mem.Allocator) void {
         var it = self.modules.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
@@ -149,8 +147,19 @@ const LazySourceMapCache = struct {
         self.modules.clearRetainingCapacity();
     }
 
+    fn clear(self: *LazySourceMapCache, allocator: std.mem.Allocator) void {
+        if (self.bundle) |sm| sm.destroy(allocator);
+        self.bundle = null;
+        self.clearModules(allocator);
+    }
+
     /// rebuild 완료 후 builder 들을 swap. 이전 builder 는 free. **내부에서 `mutex` 를
     /// 직접 acquire** — caller 는 추가 lock 불필요.
+    ///
+    /// Dev HMR rebuild 는 full bundle output 을 생략할 수 있어 `new_bundle == null`
+    /// 로 들어온다. 이때 기존 full-bundle sourcemap 을 지우면 `/index.map` 이 첫 HMR
+    /// 이후 404 가 되므로, null 은 "bundle map unchanged" 로 처리하고 module map 만
+    /// 최신 rebuild 결과로 교체한다.
     ///
     /// Side effect: `module_codes` 의 각 엔트리 `.sm_builder` 를 null 로 되돌린다
     /// (소유권 이전). 이후 `ModuleDevCode.freeAll` 이 double-free 없이 나머지 필드만 정리.
@@ -162,8 +171,11 @@ const LazySourceMapCache = struct {
     ) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        self.clear(allocator);
-        self.bundle = new_bundle;
+        if (new_bundle) |sm| {
+            if (self.bundle) |old| old.destroy(allocator);
+            self.bundle = sm;
+        }
+        self.clearModules(allocator);
         for (module_codes) |*mc| {
             const builder = mc.sm_builder orelse continue;
             const id_copy = allocator.dupe(u8, mc.id) catch {
