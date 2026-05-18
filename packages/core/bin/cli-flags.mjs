@@ -41,6 +41,13 @@
 export const FLAG_REGISTRY = [
   // ─── kind=bool — boolean toggle ───
   { kind: 'bool', flag: '--help', target: 'help', aliases: ['-h'] },
+  // 버전 출력 후 즉시 종료 (config/NAPI 로드 불필요 — main 에서 early dispatch).
+  { kind: 'bool', flag: '--version', target: 'version', aliases: ['-v'] },
+  // config 파일 자동 탐색·로드 우회 (CLI flag 만으로 빌드 — 재현/테스트). --config 보다 우선.
+  { kind: 'bool', flag: '--no-config', target: 'noConfig' },
+  // 색상 출력 강제/억제. 미지정 시 NO_COLOR/FORCE_COLOR env + TTY 자동 판정.
+  { kind: 'bool', flag: '--color', target: 'color' },
+  { kind: 'bool', flag: '--no-color', target: 'color', value: false },
   { kind: 'bool', flag: '--bundle', target: 'bundle' },
   { kind: 'bool', flag: '--watch', target: 'watch', aliases: ['-w'] },
   { kind: 'bool', flag: '--watch-json', target: 'watchJson', extra: { watch: true } },

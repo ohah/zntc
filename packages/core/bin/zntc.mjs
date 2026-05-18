@@ -26,7 +26,7 @@ import {
   buildRnBundleOverride,
   buildRnDevServerInput,
 } from './rn-dev-input.mjs';
-import { printZntcBanner } from './banner.mjs';
+import { applyColorPreference, printZntcBanner } from './banner.mjs';
 
 function isMissingBuiltCore(error) {
   if (!error || error.code !== 'ERR_MODULE_NOT_FOUND') return false;
@@ -188,6 +188,9 @@ function usageLines(command) {
     '  --watch, -w                Rebuild on changes',
     '  --serve [dir]              Serve bundled output',
     '  --config <path>            Config file path',
+    '  --no-config                Skip config file discovery/loading (CLI flags only)',
+    '  --color, --no-color        Force or disable colored output (honors NO_COLOR)',
+    '  --version, -v              Print version and exit',
     '  --test262 <dir>            Run Zig Test262 runner via zig build test262-run',
     '  --help, -h                 Show this help message',
   ];
@@ -204,6 +207,12 @@ function parseArgs(argv) {
   const opts = {
     appCommand,
     help: false,
+    version: false,
+    // config 자동 탐색·로드 우회 (--no-config). --config 명시보다 우선.
+    // workspace 모드(--workspace)는 config 가 본질이라 미적용 (경고만).
+    noConfig: false,
+    // 색상 출력 강제(true)/억제(false). undefined = NO_COLOR/FORCE_COLOR + TTY 자동.
+    color: undefined,
     parseError: false,
     appRoot: undefined,
     previewDir: undefined,
@@ -1007,12 +1016,15 @@ async function runTranspile(opts) {
  * 실패 시 `Error("failed to load config — ...")` 를 throw — main 의 try/catch 가 처리.
  */
 async function loadAutoConfig(opts) {
-  const explicit = opts.configPath ? resolve(opts.configPath) : null;
+  // --no-config: 명시(--config)·자동 탐색 모두 우회. env(.env/define)는 config 와
+  // 독립이므로 계속 로드해 `{ config: null }` 만 반환.
+  const noConfig = opts.noConfig === true;
+  const explicit = !noConfig && opts.configPath ? resolve(opts.configPath) : null;
   if (explicit && !existsSync(explicit)) {
     throw new Error(`failed to load config — file not found: ${explicit}`);
   }
   const configSearchDir = getAutoConfigSearchDir(opts);
-  const configPath = explicit ?? findConfigPath(configSearchDir);
+  const configPath = noConfig ? null : (explicit ?? findConfigPath(configSearchDir));
 
   const command = opts.serve ? 'serve' : opts.watch ? 'watch' : 'bundle';
   const mode = opts.mode ?? (command === 'bundle' ? 'production' : 'development');
@@ -1036,7 +1048,7 @@ async function loadAutoConfig(opts) {
 
   // mode-specific config 자동 탐색 + 머지 (#2110). `--config <path>` 명시 시
   // 그 파일이 단독 source — mode-specific 자동 탐색 안 함 (사용자 의도 존중).
-  const modeConfigPath = explicit ? null : findModeConfigPath(configSearchDir, mode);
+  const modeConfigPath = noConfig || explicit ? null : findModeConfigPath(configSearchDir, mode);
 
   if (!configPath && !modeConfigPath) return { config: null, env, dotenvVars };
 
@@ -1474,13 +1486,15 @@ function computeRestartTriggers(opts) {
   const envDir = opts.envDir ? resolve(opts.envDir) : configSearchDir;
   dirs.add(envDir);
 
-  const explicitConfig = opts.configPath ? resolve(opts.configPath) : null;
-  const autoConfig = explicitConfig ?? findConfigPath(configSearchDir);
+  // --no-config 면 config 를 안 읽으므로 그 변경도 restart trigger 아님.
+  const noConfig = opts.noConfig === true;
+  const explicitConfig = !noConfig && opts.configPath ? resolve(opts.configPath) : null;
+  const autoConfig = noConfig ? null : (explicitConfig ?? findConfigPath(configSearchDir));
   if (autoConfig) dirs.add(dirname(autoConfig));
 
   const mode = opts.mode ?? (opts.serve || opts.watch ? 'development' : 'production');
   // mode-specific config (`zntc.config.${mode}.{ext}`) 변경도 restart trigger (#2110).
-  const modeConfig = explicitConfig ? null : findModeConfigPath(configSearchDir, mode);
+  const modeConfig = noConfig || explicitConfig ? null : findModeConfigPath(configSearchDir, mode);
   if (modeConfig) dirs.add(dirname(modeConfig));
 
   const configBase = autoConfig ? basename(autoConfig) : null;
@@ -2008,6 +2022,11 @@ function buildSubOpts(opts, w, merged) {
  * `--workspace=<name>` 필터로 단일 entry 만 남기면 serve/watch 허용.
  */
 async function runWorkspace(opts, workspacePath) {
+  // workspace 모드는 root/entry config 가 본질이라 --no-config 미적용. silent
+  // 무시는 혼란을 주므로 1회 경고 (loadAutoConfig 경로와 달리 게이트하지 않음).
+  if (opts.noConfig) {
+    console.warn('zntc: --no-config is ignored in workspace mode (--workspace)');
+  }
   const command = opts.serve ? 'serve' : opts.watch ? 'watch' : 'bundle';
   const mode = opts.mode ?? (command === 'bundle' ? 'production' : 'development');
   const env = { command, mode, env: process.env };
@@ -2090,8 +2109,16 @@ async function runWorkspace(opts, workspacePath) {
 async function main() {
   const opts = parseArgs(process.argv);
 
+  // --color/--no-color 를 NO_COLOR/FORCE_COLOR env 로 환원 (명시 flag 가 기존 env override).
+  applyColorPreference(opts.color);
+
   if (opts.help) {
     printUsage(opts.appCommand);
+    return;
+  }
+
+  if (opts.version) {
+    console.log(getCliVersion() ?? 'unknown');
     return;
   }
 
