@@ -124,6 +124,18 @@ test "Codegen: drop console" {
     try std.testing.expectEqualStrings("const x=1;", r.output);
 }
 
+test "Codegen: drop console preserves required statement bodies" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        "for (var x of xs) console.log(x); while (ok) console.log(ok); if (cond) console.log('then'); else keep(); label: console.log('label'); do console.log('body'); while (ok);",
+        .{ .drop_console = true },
+        .{ .minify_whitespace = true },
+        ".ts",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("for(var x of xs);while(ok);if(cond);else keep();label:;do ;while(ok);", r.output);
+}
+
 test "Codegen: formatted output with tab" {
     var r = try e2eWithOptions(std.testing.allocator, "const x = 1;", .{});
     defer r.deinit();

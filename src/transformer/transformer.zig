@@ -345,6 +345,8 @@ pub const Transformer = struct {
     // Control-flow visitors — transformer/control_flow.zig로 위임
     // ================================================================
     const control_flow_mod = @import("transformer/control_flow.zig");
+    pub const visitIfStatement = control_flow_mod.visitIfStatement;
+    pub const visitBinaryStatementBody = control_flow_mod.visitBinaryStatementBody;
     pub const visitForInOfTernary = control_flow_mod.visitForInOfTernary;
     pub const tryLowerForInOfPrivateTarget = control_flow_mod.tryLowerForInOfPrivateTarget;
     pub const visitForStatement = control_flow_mod.visitForStatement;
