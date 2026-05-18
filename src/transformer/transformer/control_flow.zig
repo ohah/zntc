@@ -12,6 +12,61 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
+fn makeEmptyStatement(self: *Transformer, span: Span) Error!NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .empty_statement,
+        .span = span,
+        .data = .{ .none = 0 },
+    });
+}
+
+fn ensureStatementBody(self: *Transformer, original_idx: NodeIndex, visited_idx: NodeIndex, parent_span: Span) Error!NodeIndex {
+    if (!visited_idx.isNone()) return visited_idx;
+    const span = if (!original_idx.isNone()) self.ast.getNode(original_idx).span else parent_span;
+    return makeEmptyStatement(self, span);
+}
+
+/// if-statement 의 then/else body 는 문법상 반드시 Statement 여야 한다.
+/// `--drop=console` 같은 pass 가 body expression_statement 를 `.none` 으로 지워도
+/// list context 처럼 제거하면 `if(cond)else ...` 가 되므로 empty_statement 로 보존한다.
+pub fn visitIfStatement(self: *Transformer, node: Node) Error!NodeIndex {
+    const t = node.data.ternary;
+    const new_test = try self.visitNode(t.a);
+    const raw_then = try self.visitNode(t.b);
+    const new_then = try ensureStatementBody(self, t.b, raw_then, node.span);
+    const raw_else = try self.visitNode(t.c);
+    const new_else = if (t.c.isNone())
+        raw_else
+    else
+        try ensureStatementBody(self, t.c, raw_else, node.span);
+    return self.ast.addNode(.{
+        .tag = .if_statement,
+        .span = node.span,
+        .data = .{ .ternary = .{ .a = new_test, .b = new_then, .c = new_else } },
+    });
+}
+
+/// while/do/with/labeled 처럼 `binary.right` 가 Statement body 인 노드 전용 visitor.
+/// body 가 drop 되어도 빈 statement 를 남겨 syntactic boundary 를 유지한다.
+pub fn visitBinaryStatementBody(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const node = self.ast.getNode(idx);
+    const old_left = node.data.binary.left;
+    const old_right = node.data.binary.right;
+    const new_left = try self.visitNode(old_left);
+    const raw_right = try self.visitNode(old_right);
+    const new_right = try ensureStatementBody(self, old_right, raw_right, node.span);
+    if (new_left == old_left and new_right == old_right) return idx;
+    return self.ast.addNode(.{
+        .tag = node.tag,
+        .span = node.span,
+        .data = .{ .binary = .{
+            .left = new_left,
+            .right = new_right,
+            .flags = node.data.binary.flags,
+        } },
+    });
+}
+
 /// for-in/for-of/for-await-of 헤더 전용 ternary visit.
 /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
 /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
@@ -42,7 +97,8 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             const new_a = try self.visitNode(node.data.ternary.a);
             self.in_for_in_of_header = saved;
             const new_b = try self.visitNode(node.data.ternary.b);
-            const new_c = try self.visitNode(orig_body_idx);
+            const raw_c = try self.visitNode(orig_body_idx);
+            const new_c = try ensureStatementBody(self, orig_body_idx, raw_c, node.span);
 
             if (has_capture) {
                 const result = try BlockScoping.buildLoopClosureWithFlow(
@@ -81,7 +137,8 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
     const new_a = try self.visitNode(node.data.ternary.a);
     self.in_for_in_of_header = saved;
     const new_b = try self.visitNode(node.data.ternary.b);
-    const new_c = try self.visitNode(node.data.ternary.c);
+    const raw_c = try self.visitNode(node.data.ternary.c);
+    const new_c = try ensureStatementBody(self, node.data.ternary.c, raw_c, node.span);
     return self.ast.addNode(.{
         .tag = node.tag,
         .span = node.span,
@@ -196,7 +253,8 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             const new_init = try self.visitNode(init_idx);
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
-            const new_body = try self.visitNode(orig_body_idx);
+            const raw_body = try self.visitNode(orig_body_idx);
+            const new_body = try ensureStatementBody(self, orig_body_idx, raw_body, node.span);
 
             if (has_capture) {
                 const result = try BlockScoping.buildLoopClosureWithFlow(
@@ -235,7 +293,9 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
     const new_init = try self.visitNode(init_idx);
     const new_test = try self.visitNode(self.readNodeIdx(e, 1));
     const new_update = try self.visitNode(self.readNodeIdx(e, 2));
-    const new_body = try self.visitNode(self.readNodeIdx(e, 3));
+    const old_body = self.readNodeIdx(e, 3);
+    const raw_body = try self.visitNode(old_body);
+    const new_body = try ensureStatementBody(self, old_body, raw_body, node.span);
     return self.addExtraNode(.for_statement, node.span, &.{
         @intFromEnum(new_init), @intFromEnum(new_test), @intFromEnum(new_update), @intFromEnum(new_body),
     });

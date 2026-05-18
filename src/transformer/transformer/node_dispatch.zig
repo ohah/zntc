@@ -357,6 +357,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .while_statement,
         .do_while_statement,
         .with_statement,
+        => self.visitBinaryStatementBody(idx),
+
         // JSX
         .jsx_attribute,
         .jsx_namespaced_name,
@@ -428,7 +430,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         => self.visitUnaryExtra(node),
 
         // === 삼항 노드: 자식 3개 재귀 방문 ===
-        .if_statement, .conditional_expression, .for_in_statement => {
+        .if_statement => self.visitIfStatement(node),
+        .conditional_expression => self.visitTernaryNode(node),
+        .for_in_statement => {
             if (node.tag == .for_in_statement and self.current_private_fields.len > 0) {
                 if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
             }
@@ -483,7 +487,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
                 }
             }
-            return self.visitBinaryNode(idx);
+            return self.visitBinaryStatementBody(idx);
         },
 
         // === extra 기반 노드: 별도 처리 ===
