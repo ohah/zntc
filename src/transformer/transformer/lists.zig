@@ -278,6 +278,23 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
     });
 }
 
+/// state-machine lowering 후 callback-local temp(`_a..`)의 `var` 선언을
+/// `sm_body` 에 지역 hoist 하고 temp counter 를 `saved_counter` 로 복원한다.
+/// 4개 state-machine lowering 경로(es2017 async/arrow, es2015 generator,
+/// es5 class-async)의 공통 불변식 — 누락 시 temp counter 가 outer 로 누수돼
+/// scope-hoist 번들 모듈에서 미선언 참조(`ReferenceError`)를 유발한다.
+/// caller 가 none-body 정책(early return / fall-through)을 호출 전에 결정하므로
+/// 이 helper 는 항상 non-none `sm_body` 로 호출된다.
+pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+    std.debug.assert(!sm_body.isNone());
+    var body = sm_body;
+    if (self.temp_var_counter > saved_counter) {
+        body = try self.hoistTempVarsSkippingSpans(body, saved_counter, span, self.generator_temp_var_spans.items);
+    }
+    self.temp_var_counter = saved_counter;
+    return body;
+}
+
 /// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
 /// body 의 top-level var 선언에 이미 같은 이름이 있으면 skip — `lowerDestructuringDeclaration`
 /// 처럼 declaration 형태로 직접 emit 하는 패스가 있어 mergeAdjacentDecls 가 `var _a, _a = init, ...`

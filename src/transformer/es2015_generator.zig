@@ -101,11 +101,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const sm_result = try buildStateMachine(self, body_idx, span);
             defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
-            var sm_body = sm_result.body;
-            if (self.temp_var_counter > saved_temp_counter) {
-                sm_body = try self.hoistTempVarsSkippingSpans(sm_body, saved_temp_counter, span, self.generator_temp_var_spans.items);
-            }
-            self.temp_var_counter = saved_temp_counter;
+            const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
             // generator function 이름이 있으면 프로토타입 체인 설정을 위해 __generator에 전달.
             // #1756: makeIdentifierRefFromSpan 만 쓰면 symbol_id 가 전파되지 않아
