@@ -88,7 +88,7 @@ React Native 에서 Tailwind 클래스(`className`)를 스타일로 변환하는
 
 #### React Native CLI + MCP
 
-`@react-native-community/cli` 의 `bundle`/`start` 와 호환되는 인터페이스를 제공해, RN 프로젝트가 Metro 대신 ZNTC 로 교체할 수 있게 합니다 (Metro 호환 출력은 이미 지원). 또한 ZNTC dev server 에 이미 있는 MCP(JSON-RPC) 에 RN 빌드·리로드 제어 도구를 추가해, LLM 에이전트가 RN 빌드를 직접 구동할 수 있게 할 예정입니다.
+React Native 빌드는 이미 ZNTC 코어 네이티브 엔진이 수행합니다 (`--platform=react-native`). 추가될 것은 별도 번들러가 아니라 `react-native.config.js` 의 command plugin 진입점 하나입니다 — 이 플러그인만 추가하면 기존 `react-native start`/`react-native bundle` 이 Metro 대신 ZNTC 를 경유합니다 (인자 매핑 + 기존 RN dev server 기동). 범용 `zntc` CLI 는 RN 의존성에 오염되지 않도록 이 진입점을 `@zntc/react-native` 에 둡니다. 또한 ZNTC dev server 에 이미 있는 MCP(JSON-RPC) 에 RN 빌드·리로드 제어 도구를 추가해, LLM 에이전트가 RN 빌드를 직접 구동할 수 있게 할 예정입니다.
 
 #### Chrome CDP 번들 검증 (MCP / CLI)
 
