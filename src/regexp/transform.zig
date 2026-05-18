@@ -11,6 +11,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const cps = @import("codepoint_set.zig");
+const iu_fold = @import("iu_case_fold.zig");
 
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -217,6 +218,24 @@ const T = struct {
         return true;
     }
 
+    /// i+u: set 을 ECMAScript simple case-fold 등가로 확장 (#3511).
+    /// regexpu `getCaseEquivalents(cp, UNICODE)` 1-pass 와 동형.
+    /// cp 순회는 class span 비례 — 전범위 `[\u{0}-\u{10FFFF}]/iu` 는 ~수십ms
+    /// (Unicode-bounded, attacker-unbounded 아님). cold path 이므로 허용.
+    fn foldExpand(self: *T, set: *cps.CodePointSet) TransformError!void {
+        var extra: std.ArrayList(u32) = .empty;
+        defer extra.deinit(self.b.a);
+        for (set.items()) |r| {
+            var cp = r.min;
+            while (true) : (cp += 1) {
+                try iu_fold.appendEquivalents(cp, &extra, self.b.a);
+                if (cp == r.max) break;
+            }
+        }
+        for (extra.items) |e| try set.addOne(self.b.a, e);
+        try set.normalize(self.b.a);
+    }
+
     /// 단일 → `character`(\uX), 범위 → `character_class_range` 노드.
     /// class body 의 직접 자식으로 쓰는 형태(클래스 미포장).
     fn rangeChild(self: *T, mn: u32, mx: u32, span: ast.Span) TransformError!NodeIndex {
@@ -335,29 +354,24 @@ const T = struct {
             },
             .character_class => {
                 // u-strip 시 class 를 code-point set 으로 정확 다운레벨:
-                //  - positive + astral (#3509): set → surrogate-alternation
-                //  - negated (#3513): u 에선 code-point 의미 → 항상 complement
-                //    ([0,0x10FFFF]-set) 재작성 (regexpu UNICODE_SET-singleChars).
-                //    단 i+u negated 는 case-fold 얽힘(#3511) → 게이트 유지.
-                // 미지원(\p{}/class_string/\D\W\S/i+u-neg) → incomplete →
-                // 기존 경로 + lower() 가 u 보존(silent 오변환 0).
+                //  - positive+astral (#3509): set → surrogate-alternation
+                //  - negated (#3513): u 에선 code-point 의미 → complement
+                //  - i+u (#3511): simple case-fold 등가 확장 후 재작성
+                //    (positive/negated·BMP 무관 — u-전용 fold 보존). regexpu 동형.
+                // positive+non-astral+non-i 는 u/non-u 동등 → 기존 경로 무변경.
+                // 미지원(\p{}/class_string/\D\W\S) → incomplete → u 보존(오변환 0).
                 if (self.opts.unicode_brace) {
                     const negative = (n.data[0] & 1) != 0;
-                    if (negative) {
-                        if (!self.opts.ignore_case) {
-                            var set = cps.CodePointSet{};
-                            defer set.deinit(self.b.a);
-                            if (try self.collectClassSet(n, &set)) {
+                    if (negative or self.opts.ignore_case or self.classHasAstral(n)) {
+                        var set = cps.CodePointSet{};
+                        defer set.deinit(self.b.a);
+                        if (try self.collectClassSet(n, &set)) {
+                            if (self.opts.ignore_case) try self.foldExpand(&set);
+                            if (negative) {
                                 var comp = try set.complement(self.b.a);
                                 defer comp.deinit(self.b.a);
                                 return self.buildAstralClassRewrite(&comp, n.span);
                             }
-                        }
-                        self.astral_u_incomplete = true;
-                    } else if (self.classHasAstral(n)) {
-                        var set = cps.CodePointSet{};
-                        defer set.deinit(self.b.a);
-                        if (try self.collectClassSet(n, &set)) {
                             return self.buildAstralClassRewrite(&set, n.span);
                         }
                         self.astral_u_incomplete = true;

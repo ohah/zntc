@@ -372,13 +372,20 @@ test "regex: u + negated class (non-i) — #3513 complement 다운레벨" {
     try testing.expect(std.mem.indexOf(u8, out, "\\u{") == null); // brace 잔존 없음
 }
 
-test "regex: iu + negated astral — u 보존(미변환, #3511 case-fold 게이트)" {
-    // i+u negated 는 case-fold 얽힘 → 게이트 → u 보존(silent 오변환 0).
-    const out = try runLower("/[^\\u{1F600}]/iu", .{ .unicode_brace_escape = true });
-    if (out) |o| {
-        defer testing.allocator.free(o);
-        try testing.expect(std.mem.endsWith(u8, o, "/iu") or std.mem.endsWith(u8, o, "/ui"));
-    }
+test "regex: iu + negated — #3511 fold-확장 complement 다운레벨" {
+    // i+u negated 이제 처리(게이트 해제): fold-확장 후 complement, u strip·i 유지.
+    const out = (try runLower("/[^\\u{1F600}]/iu", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.startsWith(u8, out, "/(?:"));
+    try testing.expect(std.mem.endsWith(u8, out, "/i")); // u strip, i 유지
+    try testing.expect(std.mem.indexOf(u8, out, "\\u{") == null);
+}
+
+test "regex: iu + [k] — Kelvin(U+212A) u-전용 fold 보존 (#3511)" {
+    const out = (try runLower("/[k]/iu", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\\u212A") != null); // Kelvin 명시
+    try testing.expect(std.mem.endsWith(u8, out, "/i"));
 }
 
 test "regex: esnext (미지원 없음) no-op" {

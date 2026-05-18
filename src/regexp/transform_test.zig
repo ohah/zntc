@@ -73,17 +73,30 @@ test "#3513 negated class (non-i) → complement surrogate-alternation" {
     try expectTransform("[^a]", "u", o, "(?:[\\u0000-\\u0060\\u0062-\\uFFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])");
 }
 
-test "#3513 safety gate — i+u negated 는 미변환(case-fold #3511)" {
+test "#3511 i+u case-fold — simple case-fold 등가 확장 (regexpu iuMappings 동형)" {
+    const o = transform.Options{ .unicode_brace = true, .ignore_case = true };
+    // [k]/iu: k + ascii K + u-전용 Kelvin(U+212A). (retained /i 가 K 처리,
+    //  ZNTC 는 명시 포함 — semantic 동일, regexpu set {k,212A}).
+    try expectTransform("[k]", "iu", o, "(?:[\\u004B\\u006B\\u212A])");
+    // [s]/iu: s + S + ſ(U+017F).
+    try expectTransform("[s]", "iu", o, "(?:[\\u0053\\u0073\\u017F])");
+    // fold 무관 BMP: a + A 만 (테이블 엔트리 없음).
+    try expectTransform("[a]", "iu", o, "(?:[\\u0041\\u0061])");
+    // astral + i: fold 항등(emoji 무케이스) → #3509 동일.
+    try expectTransform("[\\u{1F600}]", "iu", o, "(?:\\uD83D\\uDE00)");
+}
+
+test "#3511 i+u negated — fold-확장 후 complement (게이트 해제)" {
     const a = std.testing.allocator;
-    // i+u negated → case-fold 얽힘 → 보수적 게이트(incomplete, u 보존).
+    // i+u negated 이제 처리됨(미변환 아님). [^k]/iu = exclude {k,K,Kelvin}.
     {
         var in = mod.parse("[^\\u{1F600}]", "iu", a) orelse return error.ParseFailed;
         defer in.deinit();
         var r = try transform.transform(in, .{ .unicode_brace = true, .ignore_case = true }, a);
         defer r.deinit();
-        try std.testing.expect(r.astral_u_incomplete);
+        try std.testing.expect(!r.astral_u_incomplete); // 게이트 해제됨
     }
-    // \p{} 포함 → 여전히 미지원(데이터 백로그 #3512).
+    // \p{}+i 는 여전히 미지원(데이터 백로그 #3512) → incomplete 유지.
     {
         var in = mod.parse("[\\p{L}\\u{1F600}]", "u", a) orelse return error.ParseFailed;
         defer in.deinit();
