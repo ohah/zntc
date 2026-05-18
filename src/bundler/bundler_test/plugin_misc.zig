@@ -3718,6 +3718,47 @@ test "react_native inlineRequires: namespace member rewrite initializes source m
     try std.testing.expect(std.mem.indexOf(u8, result.output, selector_member_init) != null);
 }
 
+test "react_native release: namespace member rewrite initializes export-star source modules" {
+    // ProductTabContainer/modalSelectors 축소 재현:
+    // release(tree_shaking=true) 에서 `import * as selectors from './selectors'`
+    // 뒤 `selectors.getVisible` 을 직접 binding 으로 rewrite 할 때, export-star
+    // barrel 자체가 아니라 실제 getter source 모듈도 init 해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("selectors");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as selectors from './selectors';
+        \\globalThis.__zntcSelectorResult = selectors.getVisible({ modal: { visible: true } });
+    );
+    try writeFile(tmp.dir, "selectors/index.js",
+        \\export * from './product';
+    );
+    try writeFile(tmp.dir, "selectors/product.js",
+        \\export const getVisible = (state) => state.modal.visible;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = true,
+        .dev_mode = false,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_product") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return init_product") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ", getVisible)") != null);
+}
+
 test "react_native inlineRequires: namespace import from export-star barrel initializes source getters" {
     // react-native-animatable 축소 재현:
     // `import * as defs from './definitions'`를 값으로 넘기면 namespace object가
