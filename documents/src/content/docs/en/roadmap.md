@@ -86,6 +86,14 @@ Each of these ships its own bundler tightly coupled to the framework, so an adap
 
 NativeWind, which turns Tailwind classes (`className`) into styles in React Native, currently works by passing `nativewind/babel` through as a user Babel plugin (on the `--platform=react-native` build path). First-class support is planned: ① a reference example plus a React Native build E2E regression guard, ② folding Tailwind CSS compilation behind the plugin API (the `@tailwind` directives in `global.css` wired as a React Native entry), and ③ zero-config wiring when `nativewind` is present in `package.json` so the React Native preset sets it up automatically. Doing the `className` → style transform natively in the ZNTC transformer (without Babel) is gated on measuring the actual benefit first.
 
+#### React Native CLI + MCP
+
+Provide an interface compatible with `@react-native-community/cli`'s `bundle`/`start` so React Native projects can swap Metro for ZNTC (Metro-compatible output is already supported). The MCP (JSON-RPC) already shipped in the ZNTC dev server will also gain React Native build/reload control tools, so LLM agents can drive RN builds directly.
+
+#### Chrome CDP bundle verification (MCP / CLI)
+
+Internal tests already run bundles in a real browser via the Chrome DevTools Protocol to verify source maps and runtime errors. This path will be promoted to a user-facing CLI command and an MCP tool: run a build's output in headless Chrome and report console errors, uncaught exceptions, and source-map resolution (Playwright stays an optional dependency). An agent can then loop build → browser-runtime verification in one step.
+
 #### Vite-compatible mode
 
 Read `vite.config.js` directly for zero-cost migration. Long-term goal.
