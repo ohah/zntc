@@ -505,8 +505,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   // hide 도 추가.
   preset.footer = buildFooter(dev);
 
+  preset.jsx = dev ? 'automatic-dev' : 'automatic';
+
   if (dev) {
-    preset.jsx = 'automatic-dev';
     preset.devMode = true;
     preset.reactRefresh = true;
     preset.collectModuleCodes = true;

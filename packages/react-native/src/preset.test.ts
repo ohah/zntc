@@ -410,9 +410,9 @@ describe('buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh
     expect(opts.collectModuleCodes).toBe(true);
   });
 
-  test('dev=false — jsx 미정의 (NAPI default), devMode/reactRefresh/collectModuleCodes 미설정', () => {
+  test('dev=false — jsx=automatic, devMode/reactRefresh/collectModuleCodes 미설정', () => {
     const opts = buildRnBundleOptions(baseInput({ dev: false }));
-    expect(opts.jsx).toBeUndefined();
+    expect(opts.jsx).toBe('automatic');
     expect(opts.devMode).toBeUndefined();
     expect(opts.reactRefresh).toBeUndefined();
     expect(opts.collectModuleCodes).toBeUndefined();
