@@ -57,6 +57,19 @@ pub inline fn isImportExpressionRename(rename: []const u8) bool {
     return isNamespaceRename(rename) or std.mem.indexOf(u8, rename, EXPR_RENAME_MARKER) != null;
 }
 
+/// Metro inlineRequires가 eager/non-inline로 유지하는 RN core specifier.
+/// 이 specifier들의 named CJS import는 `require_xxx().name` expression으로
+/// 치환하지 않고 outer binding var를 만든다. 링커의 collision 수집과 metadata
+/// preamble 생성이 같은 기준을 써야 한다.
+pub inline fn isMetroNonInlinedRequireSpecifier(specifier: []const u8) bool {
+    return std.mem.eql(u8, specifier, "React") or
+        std.mem.eql(u8, specifier, "react") or
+        std.mem.eql(u8, specifier, "react/jsx-dev-runtime") or
+        std.mem.eql(u8, specifier, "react/jsx-runtime") or
+        std.mem.eql(u8, specifier, "react-compiler-runtime") or
+        std.mem.eql(u8, specifier, "react-native");
+}
+
 /// `Linker.collectUnifiedInput` 반환 컨테이너. unified_mangler.mangleAll 에
 /// 그대로 넘길 수 있는 형태.
 ///
@@ -524,7 +537,11 @@ pub const Linker = struct {
                             // CJS named import는 `require_xxx().prop` 직접 참조로 치환하므로
                             // 별도 top-level var를 만들지 않는다. helper binding (JSX runtime
                             // 등) 은 call site 가 식별자 (`_jsx(...)`) 라 var 할당이 필요.
-                            if (target_wrap == .cjs and ib.kind == .named and !ib.is_helper) break :blk false;
+                            if (target_wrap == .cjs and ib.kind == .named and !ib.is_helper and
+                                !isMetroNonInlinedRequireSpecifier(rec.specifier))
+                            {
+                                break :blk false;
+                            }
                             // __esm: scope-hoisted 타겟의 import는 skip되어 var 미생성
                             break :blk target_wrap != .none;
                         } else {
