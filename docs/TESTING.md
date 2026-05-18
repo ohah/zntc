@@ -17,6 +17,27 @@ zig build test                           # 모든 모듈 유닛 + 통합 Zig 테
 ```
 주요 테스트 파일은 `*_test.zig` 로 분리되어 모듈별 디렉토리에 함께 위치.
 
+### 테스트 코드 배치 규약
+
+표준은 **옆 파일 분리**다 — `foo.zig` 의 테스트는 `foo_test.zig` 로 빼고,
+같은 디렉토리 `mod.zig` 의 `test {}` 블록에서 `_ = @import("foo_test.zig");`
+로 aggregate 한다. lexer/parser/semantic/regexp 가 이 형태로 정착돼 있다.
+
+> Zig 의 `test {}` 블록과 거기서 import 되는 `*_test.zig` 는 `zig test`
+> 빌드일 때만 컴파일된다. 일반 `zig build`(exe/lib/napi/wasm)에는 테스트
+> 코드가 **단 1바이트도 들어가지 않는다.** 즉 "테스트가 실행 바이너리에
+> 섞인다" 는 우려는 사실이 아니며, 분리는 순수히 가독성/일관성 목적이다.
+
+**인라인 `test {}` 허용 예외 — private(비-`pub`) decl 의존.** 옆 파일
+`foo_test.zig` 는 `@import("foo.zig")` 의 `pub` decl 만 볼 수 있다. 비-`pub`
+함수를 직접 검증해야 하면 옆 파일로 못 빼므로 `foo.zig` 안 인라인 `test {}`
+를 유지하되, 그 사유를 한 줄 주석으로 남긴다 (단지 `pub` 노출만을 위해
+API 를 오염시키지 말 것).
+
+신규 테스트는 위 표준을 따른다. 기존 인라인(transformer/codegen/bundler/
+cli/app 에 잔존)은 pub-only 인 것만 점진적으로 옆 파일 이관 대상이며,
+private 의존은 예외로 인라인 유지한다 — 무지성 일괄 이관 금지.
+
 | 영역 | 위치 | 비고 |
 |------|------|------|
 | 렉서 | `src/lexer/{scanner,token,unicode}_test.zig` | 토큰/유니코드 ID/JSX |
