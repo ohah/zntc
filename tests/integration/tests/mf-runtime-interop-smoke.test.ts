@@ -519,6 +519,82 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect((await buildHost('^18', true)).exitCode).toBe(0);
   });
 
+  // dedup(누적 후속): 같은 remote 를 여러 expose 로 import 해도 무결성·
+  // shared 검증/경고는 remote 당 1회(seen_remotes). expose 검사(P3-1)
+  // 만 per-spec. 같은 spec 다중/정적∩동적은 seen_specs 로 1회.
+  test('dedup: 같은 remote 다중 import → shared 경고 1회 + expose per-spec 유지', async () => {
+    const rfx = await createFixture({
+      'Widget.ts': `import { useState } from "react";\nexport default () => typeof useState;`,
+      'Btn.ts': `import { useState } from "react";\nexport default () => "B";`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts', './Btn': './Btn.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    });
+    cleanup = rfx.cleanup;
+    const rdist = join(rfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(rfx.dir, [
+          '--bundle',
+          join(rfx.dir, 'index.ts'),
+          '--outdir',
+          rdist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    // react version concrete 비호환 유발 + sidecar 제거(P3-3 skip →
+    // version_warn 경로 도달). host requiredVersion ^18 ⊅ 19.2.4.
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const m = JSON.parse(readFileSync(manifestAbs, 'utf8'));
+    m.shared.find((s: { name: string }) => s.name === 'react').version = '19.2.4';
+    writeFileSync(manifestAbs, JSON.stringify(m));
+    rmSync(join(rdist, 'mf-manifest.json.integrity.json'), { force: true });
+
+    const buildHost = async (indexSrc: string) => {
+      const hfx = await createFixture({
+        'index.ts': indexSrc,
+        'zntc.config.json': JSON.stringify({
+          mf: {
+            name: 'host',
+            remotes: { app: `app@${manifestAbs}` },
+            shared: { react: { singleton: true, requiredVersion: '^18' } },
+          },
+        }),
+      });
+      const r = await runZntcInDir(hfx.dir, [
+        '--bundle',
+        join(hfx.dir, 'index.ts'),
+        '-o',
+        join(hfx.dir, 'host.js'),
+        '--format=iife',
+      ]);
+      await hfx.cleanup();
+      return r;
+    };
+
+    // 같은 remote app 을 정적 1 + 동적 2(총 3 spec, 2 distinct subpath)
+    // import → version_warn 은 remote 당 1회만(dedup 전이면 다중).
+    const multi = await buildHost(
+      `import W from "app/Widget";\n` +
+        `async function m(){ await import("app/Widget"); await import("app/Btn"); globalThis.__r = typeof W; }\nm();`,
+    );
+    expect(multi.exitCode).toBe(0); // version_warn=비차단
+    const warnCount = (multi.stderr.match(/MF shared 버전 경고/g) ?? []).length;
+    expect(warnCount).toBe(1); // dedup: remote 당 1회 (이전: spec 당 → 다중)
+
+    // expose 는 per-spec 유지 — 부재 expose 는 dedup 무관하게 fail-fast.
+    const bad = await buildHost(`import X from "app/Nope";\nawait import("app/Widget");`);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain('MF expose 계약 위반');
+    expect(bad.stderr).toContain('"app/Nope"');
+  });
+
   // P2-1 (#3421): exposes 있는 remote 가 remotes 도 선언 → manifest.remotes
   // = ManifestRemote[](Omit<RemoteWithEntry,'name'> & {federationContainer
   // Name,moduleName,alias}). 표준 generateSnapshotFromManifest 가

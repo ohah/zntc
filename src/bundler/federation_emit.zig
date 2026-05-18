@@ -279,8 +279,9 @@ fn sharedVerdict(host: types.MfBundleConfig.SharedEntry, remote: mf_contract.Sha
 /// http remote·미산출 sibling 기존 동작 불변). 검증만 — emit/재작성
 /// 부작용 없음(중복 파서 없음, nextRemoteImport·matchesRemoteSpec 단일
 /// 소스 재사용). emitHostInit 게이트(remotes>0·단일출력)와 동일 적용점
-/// 에서 emit *전* 호출. 같은 remote 다중 import 시 경고 중복 가능(소규모
-/// — P3-1 선례대로 허용, dedup 은 후속).
+/// 에서 emit *전* 호출. **dedup**(seen_specs/seen_remotes): 같은 remote
+/// 다중 import 시 무결성·shared 검증/경고는 remote 당 1회, 동일 spec
+/// 은 완전 1회 — expose(P3-1)만 per-spec(서브경로별 존재 확인).
 pub fn verifyHostContract(
     allocator: std.mem.Allocator,
     src: []const u8,
@@ -293,25 +294,40 @@ pub fn verifyHostContract(
     /// 의 expose 부재 fail-fast 갭을 닫는다(verifyOneRemoteSpec 단일소스).
     static_specs: []const []const u8,
 ) !void {
+    // dedup: 같은 spec 다중 import / 정적∩동적 중복 → 1회만(seen_specs).
+    // 무결성·shared 는 **remote 당 1회**(seen_remotes) — 같은 remote 의
+    // 여러 expose import 시 동일 manifest 재-read/SHA·shared 경고 중복
+    // 제거. expose 검사는 per-spec 유지(서브경로별 존재 확인 필요).
+    // 키는 borrow(src/static_specs/mf.remotes — verifyHostContract
+    // 수명 내내 유효). map 내부 alloc OOM 만 전파.
+    var seen_specs = std.StringHashMap(void).init(allocator);
+    defer seen_specs.deinit();
+    var seen_remotes = std.StringHashMap(void).init(allocator);
+    defer seen_remotes.deinit();
     var i: usize = 0;
     while (nextRemoteImport(src, mf, &i)) |h|
-        try verifyOneRemoteSpec(allocator, h.spec, mf, cwd);
+        try verifyOneRemoteSpec(allocator, h.spec, mf, cwd, &seen_specs, &seen_remotes);
     for (static_specs) |spec|
-        try verifyOneRemoteSpec(allocator, spec, mf, cwd);
+        try verifyOneRemoteSpec(allocator, spec, mf, cwd, &seen_specs, &seen_remotes);
 }
 
 /// host import spec 1개의 P3-1(expose)·P3-2(shared)·P3-3(무결성) 검증.
 /// 동적(`nextRemoteImport`)·정적(`static_specs`) 양쪽이 공유하는 단일
 /// 소스(중복 검증 로직 금지). spec 이 remote 와 매칭 안 됨 / manifest
 /// 로컬 resolve 불가(http=P4·부재·파싱불가)면 **검증 불가 ≠ 위반 →
-/// 통과**(정밀 fail-fast). 같은 spec 다중 import·정적∩동적 중복 검증
-/// 가능(소규모 — P3-1 선례대로 허용, dedup 후속).
+/// 통과**(정밀 fail-fast). dedup: 동일 spec 은 seen_specs 로 1회,
+/// remote-level(무결성·shared)은 seen_remotes 로 remote 당 1회 —
+/// expose(P3-1)만 per-spec(서브경로별 존재 확인).
 fn verifyOneRemoteSpec(
     allocator: std.mem.Allocator,
     spec: []const u8,
     mf: *const types.MfBundleConfig,
     cwd: ?[]const u8,
+    seen_specs: *std.StringHashMap(void),
+    seen_remotes: *std.StringHashMap(void),
 ) !void {
+    if (seen_specs.contains(spec)) return; // 동일 spec(다중/정적∩동적) 1회
+    try seen_specs.put(spec, {});
     const kv = for (mf.remotes) |kv| {
         if (federation.matchesRemoteSpec(spec, kv.key)) break kv;
     } else return;
@@ -323,30 +339,38 @@ fn verifyOneRemoteSpec(
         else => return,
     };
     defer rc.deinit();
-    // P3-3: 무결성 — sidecar(P2-2 SHA-256)/`.sig`(P2-3 Ed25519)와
-    // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임
-    // 절반). sidecar/sig 부재·malformed = 검증 불가 ≠ 위반 → expose/
-    // shared 로 진행(continue 아님 — 무결성 미검증이 P3-1/2 를 건너뛰면
-    // 안 됨). 정밀 fail-fast: 확정 변조만 차단.
-    mf_contract.verifyIntegrity(allocator, cwd, r.entry) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.MfIntegrityMismatch => {
-            std.log.err(
-                "zntc: MF 무결성 위반 — remote \"{s}\" 의 mf-manifest.json 이 sidecar(.integrity.json) SHA-256 과 불일치 (stale 또는 변조; 빌드 차단 — remote 재배포 필요)",
-                .{kv.key},
-            );
-            return error.MfIntegrityMismatch;
-        },
-        error.MfIntegritySignatureInvalid => {
-            std.log.err(
-                "zntc: MF 서명 위반 — remote \"{s}\" 의 sidecar Ed25519 `.sig` 검증 실패 (변조 또는 잘못된 키; 빌드 차단)",
-                .{kv.key},
-            );
-            return error.MfIntegritySignatureInvalid;
-        },
-        else => {}, // 검증 불가(sidecar 부재/malformed/network) → 진행
-    };
-    // P3-1: expose 존재
+    // remote-level(무결성·shared) 은 remote 당 1회 — 같은 remote 의 다른
+    // expose import 마다 동일 manifest SHA 재계산·shared 경고 중복 제거.
+    // expose 검사(P3-1)는 per-spec(서브경로별 존재) 라 항상 수행.
+    // integrity-before-expose 불변 유지: remote 첫 encounter 에서 무결성
+    // → expose → shared 순(기존 의미·fail-fast 메시지 우선순위 보존).
+    const remote_first = !seen_remotes.contains(kv.key);
+    if (remote_first) try seen_remotes.put(kv.key, {});
+    if (remote_first) {
+        // P3-3: 무결성 — sidecar(P2-2 SHA-256)/`.sig`(P2-3 Ed25519)와
+        // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임
+        // 절반). sidecar/sig 부재·malformed = 검증 불가 ≠ 위반 → expose/
+        // shared 로 진행. 정밀 fail-fast: 확정 변조만 차단.
+        mf_contract.verifyIntegrity(allocator, cwd, r.entry) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.MfIntegrityMismatch => {
+                std.log.err(
+                    "zntc: MF 무결성 위반 — remote \"{s}\" 의 mf-manifest.json 이 sidecar(.integrity.json) SHA-256 과 불일치 (stale 또는 변조; 빌드 차단 — remote 재배포 필요)",
+                    .{kv.key},
+                );
+                return error.MfIntegrityMismatch;
+            },
+            error.MfIntegritySignatureInvalid => {
+                std.log.err(
+                    "zntc: MF 서명 위반 — remote \"{s}\" 의 sidecar Ed25519 `.sig` 검증 실패 (변조 또는 잘못된 키; 빌드 차단)",
+                    .{kv.key},
+                );
+                return error.MfIntegritySignatureInvalid;
+            },
+            else => {}, // 검증 불가(sidecar 부재/malformed/network) → 진행
+        };
+    }
+    // P3-1: expose 존재 (per-spec — dedup 안 함)
     if (!exposeListed(rc.exposes, spec, kv.key)) {
         std.log.err(
             "zntc: MF expose 계약 위반 — host import \"{s}\" 가 remote \"{s}\" 의 mf-manifest.json exposes 에 없음 (빌드 차단; remote 재배포 또는 스펙 정렬 필요)",
@@ -354,7 +378,10 @@ fn verifyOneRemoteSpec(
         );
         return error.MfHostExposeMissing;
     }
-    // P3-2: 양쪽이 선언한 shared 패키지의 singleton·버전 호환
+    // P3-2: shared singleton·버전 호환 — remote 당 1회(경고 중복 제거).
+    // singleton/strict 충돌은 fail-fast 라 1회면 충분, version_warn 도
+    // 같은 remote 반복 import 마다 중복 출력 방지.
+    if (!remote_first) return;
     for (mf.shared) |hs| {
         for (rc.shared) |rs| {
             if (!std.mem.eql(u8, hs.name, rs.name)) continue;
