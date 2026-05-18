@@ -15,7 +15,7 @@
 
 const std = @import("std");
 const compat = @import("compat.zig");
-const unicode_escape_lower = @import("unicode_escape_lower.zig");
+const regexp = @import("../regexp/mod.zig");
 
 pub const Options = struct {
     unsupported: compat.UnsupportedFeatures,
@@ -58,8 +58,31 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
 
     if (!need_dotall and !need_named and !need_sticky and !need_unicode) return .{ .text = null };
 
-    // named capture mapping 추출 (strip 전에 — strip 후엔 named group 이 사라져 인덱스 추적 불가).
-    // 호출자가 `__wrapRegExp(re, {...})` 합성에 사용.
+    // sticky 는 flag strip 만 → 패턴 무변경. dotall/named/unicode 만 패턴 변환.
+    // sticky-only 면 parse/transform/print 를 건너뛰고 원본 패턴 verbatim
+    // (불필요 작업 제거 + canonical 정규화 미적용 — ad-hoc 과 동일 바이트).
+    const need_pattern_xform = need_dotall or need_named or need_unicode;
+
+    // parse → AST transform → dumb printer (#1475 PR2 정공법; ad-hoc byte-walk
+    // 제거). 파서는 렉서 validate 와 동일하므로(이미 통과한 리터럴) parse 실패는
+    // 없어야 하나, 방어적으로 실패 시 변환 생략(.text=null = 원본 유지).
+    var owned_pattern: ?[]u8 = null;
+    defer if (owned_pattern) |p| allocator.free(p);
+    const pattern_text: []const u8 = if (need_pattern_xform) blk: {
+        var in_ast = regexp.parse(pattern, flags, allocator) orelse return .{ .text = null };
+        defer in_ast.deinit();
+        var tr = try regexp.transform.transform(in_ast, .{
+            .dotall = need_dotall,
+            .strip_named = need_named,
+            .unicode_brace = need_unicode,
+        }, allocator);
+        defer tr.deinit();
+        owned_pattern = regexp.printer.print(tr.ast, allocator) catch return .{ .text = null };
+        break :blk owned_pattern.?;
+    } else pattern;
+
+    // named capture mapping 추출 — 패턴 변환 성공 후 (early-return 누수 방지).
+    // 원본 pattern 기준이라 변환 순서와 무관. 호출자가 `__wrapRegExp` 합성에 사용.
     var named_groups: ?[]const NamedGroupMapping = null;
     errdefer if (named_groups) |ng| allocator.free(ng);
     if (need_named) {
@@ -67,16 +90,12 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
         if (map.len > 0) named_groups = map else allocator.free(map);
     }
 
-    // /pattern/flags 를 단일 버퍼로 조립. dotAll/unicode 치환을 고려해 +8 여유.
+    // /pattern/flags 조립 + 변환된 flag strip.
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, raw.len + 8);
+    try out.ensureTotalCapacity(allocator, pattern_text.len + flags.len + 2);
     try out.append(allocator, '/');
-    try rewritePattern(allocator, &out, pattern, .{
-        .dotall = need_dotall,
-        .strip_named = need_named,
-        .unicode_brace = need_unicode,
-    });
+    try out.appendSlice(allocator, pattern_text);
     try out.append(allocator, '/');
     for (flags) |c| {
         if (need_dotall and c == 's') continue;
@@ -87,146 +106,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     return .{ .text = try out.toOwnedSlice(allocator), .named_groups = named_groups };
 }
 
-const PatternOpts = struct {
-    dotall: bool,
-    strip_named: bool,
-    unicode_brace: bool,
-};
-
-/// pattern 내부를 character class / escape 를 고려하며 순회하여 변환.
-///
-/// strip_named 활성 시 named group 위치를 capture group 인덱스로 추적해
-/// `\k<name>` named backreference 를 `\N` (positional)으로 함께 변환한다.
-fn rewritePattern(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayList(u8),
-    pattern: []const u8,
-    opts: PatternOpts,
-) !void {
-    // ECMAScript named capture group 은 한도가 없다 (V8/SpiderMonkey 모두 unbounded).
-    // 자동 생성된 lexer/regex 등에서 32+ 도 합법이라 dynamic ArrayList 로 처리한다.
-    const NamedEntry = struct { name: []const u8, idx: u32 };
-    var named: std.ArrayList(NamedEntry) = .empty;
-    defer named.deinit(allocator);
-    var group_idx: u32 = 0;
-
-    var i: usize = 0;
-    var in_class: bool = false;
-    while (i < pattern.len) {
-        const c = pattern[i];
-
-        // escape
-        if (c == '\\') {
-            // `\u{XXXX}` brace unicode escape → surrogate pair / BMP escape
-            if (opts.unicode_brace and i + 2 < pattern.len and pattern[i + 1] == 'u' and pattern[i + 2] == '{') {
-                if (unicode_escape_lower.parseBraceHex(pattern, i + 2)) |r| {
-                    try unicode_escape_lower.appendCodepoint(out, allocator, r.cp);
-                    i = r.end;
-                    continue;
-                }
-            }
-            // `\k<name>` named backreference (character class 밖에서만 의미 있음).
-            // strip_named 일 때 동일 이름의 capture group 인덱스를 찾아 `\N` 으로 치환.
-            // 이름을 못 찾으면 (해당 named group이 아직 안 나옴) 원본을 보존하지만,
-            // ECMAScript spec상 정상 패턴이라면 named group이 항상 먼저 정의되어 있다.
-            if (!in_class and opts.strip_named and i + 2 < pattern.len and pattern[i + 1] == 'k' and pattern[i + 2] == '<') {
-                if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
-                    const name = pattern[i + 3 .. gt];
-                    var found_idx: ?u32 = null;
-                    for (named.items) |e| {
-                        if (std.mem.eql(u8, e.name, name)) {
-                            found_idx = e.idx;
-                            break;
-                        }
-                    }
-                    if (found_idx) |idx| {
-                        var buf: [16]u8 = undefined;
-                        // u32 최대값 출력해도 11자 + '\\' = 12자 → 16바이트 버퍼로 충분.
-                        const s = std.fmt.bufPrint(&buf, "\\{d}", .{idx}) catch unreachable;
-                        try out.appendSlice(allocator, s);
-                        i = gt + 1;
-                        continue;
-                    }
-                }
-            }
-            try out.append(allocator, c);
-            if (i + 1 < pattern.len) {
-                try out.append(allocator, pattern[i + 1]);
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-
-        if (in_class) {
-            try out.append(allocator, c);
-            if (c == ']') in_class = false;
-            i += 1;
-            continue;
-        }
-
-        switch (c) {
-            '[' => {
-                in_class = true;
-                try out.append(allocator, c);
-                i += 1;
-            },
-            '.' => {
-                if (opts.dotall) {
-                    try out.appendSlice(allocator, "[\\s\\S]");
-                } else {
-                    try out.append(allocator, c);
-                }
-                i += 1;
-            },
-            '(' => {
-                // `(?` 로 시작하는 그룹 분류:
-                //   `(?:...)` non-capturing → capture index 카운트 X
-                //   `(?=...)`, `(?!...)` lookahead → capture index 카운트 X
-                //   `(?<=...)`, `(?<!...)` lookbehind → capture index 카운트 X
-                //   `(?<name>...)` named capture → capture index 카운트 O, strip_named 시 strip
-                if (i + 2 < pattern.len and pattern[i + 1] == '?') {
-                    const tag = pattern[i + 2];
-                    if (tag == ':' or tag == '=' or tag == '!') {
-                        try out.append(allocator, c);
-                        i += 1;
-                        continue;
-                    }
-                    if (tag == '<') {
-                        if (i + 3 < pattern.len and (pattern[i + 3] == '=' or pattern[i + 3] == '!')) {
-                            try out.append(allocator, c);
-                            i += 1;
-                            continue;
-                        }
-                        group_idx += 1;
-                        if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
-                            try named.append(allocator, .{ .name = pattern[i + 3 .. gt], .idx = group_idx });
-                            if (opts.strip_named) {
-                                try out.append(allocator, '(');
-                                i = gt + 1;
-                                continue;
-                            }
-                        }
-                        try out.append(allocator, c);
-                        i += 1;
-                        continue;
-                    }
-                }
-                group_idx += 1;
-                try out.append(allocator, c);
-                i += 1;
-            },
-            else => {
-                try out.append(allocator, c);
-                i += 1;
-            },
-        }
-    }
-}
-
 /// `String.prototype.replace` replacement string 의 `$<name>` 변환을 위한 매핑 항목.
-/// 같은 walk 로 named group 인덱스를 추적해 외부에 노출한다.
 pub const NamedGroupMapping = struct {
     name: []const u8, // pattern 내부 원본 슬라이스 (수명: pattern 원본)
     index: u32, // 1-based capture group 인덱스
