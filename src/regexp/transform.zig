@@ -10,10 +10,19 @@
 
 const std = @import("std");
 const ast = @import("ast.zig");
+const cps = @import("codepoint_set.zig");
 
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const UNNAMED = std.math.maxInt(u32);
+const UESC = @intFromEnum(ast.CharacterKind.unicode_escape);
+
+/// ECMAScript `\s` 집합 (WhiteSpace + LineTerminator). 전부 BMP.
+const WS_RANGES = [_][2]u32{
+    .{ 0x09, 0x0D },     .{ 0x20, 0x20 },     .{ 0xA0, 0xA0 },     .{ 0x1680, 0x1680 },
+    .{ 0x2000, 0x200A }, .{ 0x2028, 0x2029 }, .{ 0x202F, 0x202F }, .{ 0x205F, 0x205F },
+    .{ 0x3000, 0x3000 }, .{ 0xFEFF, 0xFEFF },
+};
 
 pub const Options = struct {
     /// `.` (character class 밖) → `[\s\S]`
@@ -32,6 +41,10 @@ pub const NamedGroup = struct {
 pub const Result = struct {
     ast: ast.RegExpAst,
     named_groups: []NamedGroup,
+    /// unicode_brace 요청 시, astral 을 정확히 ES5 로 내리지 못한 구문
+    /// (negated/\p{}/class_string 등)을 만났는가. true 면 호출자는 `u`
+    /// flag 를 strip 하면 안 된다 (silent 오변환 방지 — 부분 커버리지).
+    astral_u_incomplete: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Result) void {
@@ -105,6 +118,8 @@ const T = struct {
     /// 노드로 내지만 ECMAScript 상 backreference 가 아니므로(ad-hoc 도
     /// `!in_class` 에서만 치환) strip_named 을 적용하지 않는다.
     in_class: bool = false,
+    /// 정확히 다운레벨 못한 astral 구문 발견 (lower() 가 u-strip 보류 판단).
+    astral_u_incomplete: bool = false,
 
     fn resolveIndex(self: *T, name: []const u8) ?u32 {
         for (self.names) |g| {
@@ -115,14 +130,9 @@ const T = struct {
 
     /// surrogate pair 2 노드를 list 에 push (cp>0xFFFF).
     fn pushSurrogate(self: *T, span: ast.Span, cp: u32, out: *std.ArrayList(u32)) TransformError!void {
-        // 표준 UTF-16 surrogate 분해 (ECMA-262). regexp 는 transformer 레이어에
-        // 의존하면 안 되므로 동일 공식이 unicode_escape_lower 와 독립 존재.
-        const v = cp - 0x10000;
-        const hi: u32 = 0xD800 | (v >> 10);
-        const lo: u32 = 0xDC00 | (v & 0x3FF);
-        const uk = @intFromEnum(ast.CharacterKind.unicode_escape);
-        const a = try self.b.add(.{ .tag = .character, .span = span, .data = .{ hi, uk, 0 } });
-        const c = try self.b.add(.{ .tag = .character, .span = span, .data = .{ lo, uk, 0 } });
+        const sp = cps.splitSurrogatePair(cp);
+        const a = try self.b.add(.{ .tag = .character, .span = span, .data = .{ sp.hi, UESC, 0 } });
+        const c = try self.b.add(.{ .tag = .character, .span = span, .data = .{ sp.lo, UESC, 0 } });
         try out.append(self.b.a, @intFromEnum(a));
         try out.append(self.b.a, @intFromEnum(c));
     }
@@ -141,6 +151,123 @@ const T = struct {
         if (n.tag != .character) return false;
         const kind: ast.CharacterKind = @enumFromInt(n.data[1]);
         return kind == .unicode_escape and n.data[0] > 0xFFFF;
+    }
+
+    // ── #3509: positive character class 의 astral → surrogate-alternation ──
+
+    fn mkChar(self: *T, cp: u32, span: ast.Span) TransformError!NodeIndex {
+        return self.b.add(.{ .tag = .character, .span = span, .data = .{ cp, UESC, 0 } });
+    }
+
+    /// character 노드(또는 그 인덱스)의 codepoint. character 아니면 null.
+    fn charCp(self: *T, idx: NodeIndex) ?u32 {
+        const cn = self.in.getNode(idx);
+        return if (cn.tag == .character) cn.data[0] else null;
+    }
+
+    /// class body 에 astral(cp>0xFFFF) 멤버가 있는가 (빠른 사전 판정).
+    fn classHasAstral(self: *T, n: Node) bool {
+        for (self.in.getNodeList(n.getClassBody())) |cid| {
+            const m = self.in.getNode(@enumFromInt(cid));
+            switch (m.tag) {
+                .character => if (m.data[0] > 0xFFFF) return true,
+                .character_class_range => {
+                    if (self.charCp(@enumFromInt(m.data[1]))) |mx| if (mx > 0xFFFF) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    /// class body → CodePointSet. 단순 positive(character/range/\d\w\s)만
+    /// 지원. negative-escape(\D\W\S)/property/class_string/nested → false.
+    fn collectClassSet(self: *T, n: Node, set: *cps.CodePointSet) TransformError!bool {
+        const a = self.b.a;
+        for (self.in.getNodeList(n.getClassBody())) |cid| {
+            const m = self.in.getNode(@enumFromInt(cid));
+            switch (m.tag) {
+                .character => try set.addOne(a, m.data[0]),
+                .character_class_range => {
+                    const lo = self.charCp(@enumFromInt(m.data[0])) orelse return false;
+                    const hi = self.charCp(@enumFromInt(m.data[1])) orelse return false;
+                    try set.addRange(a, lo, hi);
+                },
+                .character_class_escape => {
+                    switch (@as(ast.CharacterClassEscapeKind, @enumFromInt(m.data[0]))) {
+                        .d => try set.addRange(a, 0x30, 0x39),
+                        .w => {
+                            try set.addRange(a, 0x30, 0x39);
+                            try set.addRange(a, 0x41, 0x5A);
+                            try set.addRange(a, 0x61, 0x7A);
+                            try set.addOne(a, 0x5F);
+                        },
+                        .s => for (WS_RANGES) |r| try set.addRange(a, r[0], r[1]),
+                        // \D \W \S = 보수(astral 포함) — slice 미지원.
+                        else => return false,
+                    }
+                },
+                // property/class_string/nested class → slice 미지원.
+                else => return false,
+            }
+        }
+        return true;
+    }
+
+    /// 단일 → `character`(\uX), 범위 → `character_class_range` 노드.
+    /// class body 의 직접 자식으로 쓰는 형태(클래스 미포장).
+    fn rangeChild(self: *T, mn: u32, mx: u32, span: ast.Span) TransformError!NodeIndex {
+        if (mn == mx) return self.mkChar(mn, span);
+        const a = try self.mkChar(mn, span);
+        const b = try self.mkChar(mx, span);
+        return self.b.add(.{ .tag = .character_class_range, .span = span, .data = .{ @intFromEnum(a), @intFromEnum(b), 0 } });
+    }
+
+    /// surrogate 조각의 standalone atom: 단일 → `\uX`, 범위 → `[\uX-\uY]`.
+    fn surAtom(self: *T, mn: u32, mx: u32, span: ast.Span) TransformError!NodeIndex {
+        const rc = try self.rangeChild(mn, mx, span);
+        if (mn == mx) return rc; // `\uX`
+        const l = try self.b.addList(&.{@intFromEnum(rc)});
+        return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
+    }
+
+    /// CodePointSet → `(?:[bmp]|\uHi[\uLo-\uLo]|…)` ignore_group.
+    fn buildAstralClassRewrite(self: *T, set: *cps.CodePointSet, span: ast.Span) TransformError!NodeIndex {
+        try set.normalize(self.b.a);
+        var alts: std.ArrayList(u32) = .empty;
+        defer alts.deinit(self.b.a);
+
+        // BMP 부분 → 단일 character_class alternative.
+        var bmp_kids: std.ArrayList(u32) = .empty;
+        defer bmp_kids.deinit(self.b.a);
+        var pieces: std.ArrayList(cps.Piece) = .empty;
+        defer pieces.deinit(self.b.a);
+
+        for (set.items()) |r| {
+            if (r.min <= 0xFFFF) {
+                try bmp_kids.append(self.b.a, @intFromEnum(try self.rangeChild(r.min, @min(r.max, 0xFFFF), span)));
+            }
+            if (r.max >= 0x10000) {
+                try cps.encodeSurrogateRange(@max(r.min, 0x10000), r.max, &pieces, self.b.a);
+            }
+        }
+        if (bmp_kids.items.len != 0) {
+            const cl = try self.b.addList(bmp_kids.items);
+            const cls = try self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, cl.start, cl.len } });
+            const al = try self.b.addList(&.{@intFromEnum(cls)});
+            try alts.append(self.b.a, @intFromEnum(try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } })));
+        }
+        for (pieces.items) |p| {
+            const hi = try self.surAtom(p.hi_min, p.hi_max, span);
+            const lo = try self.surAtom(p.lo_min, p.lo_max, span);
+            const al = try self.b.addList(&.{ @intFromEnum(hi), @intFromEnum(lo) });
+            try alts.append(self.b.a, @intFromEnum(try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } })));
+        }
+
+        const dl = try self.b.addList(alts.items);
+        const disj = try self.b.add(.{ .tag = .disjunction, .span = span, .data = .{ dl.start, dl.len, 0 } });
+        // ignore_group: enabling=0, disabling=0 → `(?:…)`
+        return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @intFromEnum(disj) } });
     }
 
     /// list 컨텍스트(alternative term / class atom / class_string char): 자식이
@@ -204,6 +331,21 @@ const T = struct {
                 return self.b.add(.{ .tag = .lookaround_assertion, .span = n.span, .data = .{ n.data[0], @intFromEnum(body), 0 } });
             },
             .character_class => {
+                // #3509: u-strip 시 astral 포함 positive class 를 정확
+                // surrogate-alternation 으로. negative/property/class_string
+                // 등은 미지원 → incomplete 표시 후 기존 경로(기존 동작 유지,
+                // lower() 가 u 보존 판단).
+                if (self.opts.unicode_brace and self.classHasAstral(n)) {
+                    const negative = (n.data[0] & 1) != 0;
+                    if (!negative) {
+                        var set = cps.CodePointSet{};
+                        defer set.deinit(self.b.a);
+                        if (try self.collectClassSet(n, &set)) {
+                            return self.buildAstralClassRewrite(&set, n.span);
+                        }
+                    }
+                    self.astral_u_incomplete = true;
+                }
                 const saved = self.in_class;
                 self.in_class = true;
                 const l = try self.expandList(n.getClassBody());
@@ -274,6 +416,7 @@ pub fn transform(in: ast.RegExpAst, opts: Options, allocator: std.mem.Allocator)
             .allocator = allocator,
         },
         .named_groups = named,
+        .astral_u_incomplete = t.astral_u_incomplete,
         .allocator = allocator,
     };
 }
