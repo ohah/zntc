@@ -664,4 +664,10 @@ describe('buildRnBundleOptions — sourcemap / minify', () => {
   test('minify explicit', () => {
     expect(buildRnBundleOptions(baseInput({ minify: true })).minify).toBe(true);
   });
+
+  test('dropConsole / dropDebugger explicit', () => {
+    const opts = buildRnBundleOptions(baseInput({ dropConsole: true, dropDebugger: true }));
+    expect(opts.dropConsole).toBe(true);
+    expect(opts.dropDebugger).toBe(true);
+  });
 });

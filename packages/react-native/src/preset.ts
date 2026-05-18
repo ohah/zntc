@@ -59,6 +59,10 @@ export interface RnBundleInput {
   sourcemap?: boolean;
   /** prod build 의 minify. */
   minify?: boolean;
+  /** console.* 호출 제거. Metro production Babel plugin 과 같은 정책을 원하는 release 경로에서 사용. */
+  dropConsole?: boolean;
+  /** debugger statement 제거. */
+  dropDebugger?: boolean;
   /**
    * preset 위에 user override. semantics:
    * - **Object dict** (`define` / `loader` / `alias` / `fallback` 등) — preset
@@ -374,7 +378,8 @@ function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial
  * 분기와 동등 동작.
  */
 export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
-  const { entry, projectRoot, rnPlatform, dev, sourcemap, minify, extra } = input;
+  const { entry, projectRoot, rnPlatform, dev, sourcemap, minify, dropConsole, dropDebugger, extra } =
+    input;
 
   if (extra?.platforms && !extra.platforms.includes(rnPlatform)) {
     throw new Error(
@@ -466,6 +471,8 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     platform: 'react-native',
     sourcemap: sourcemap ?? dev,
     minify: minify ?? false,
+    dropConsole: dropConsole ?? false,
+    dropDebugger: dropDebugger ?? false,
     plugins,
     emitDiskSourcemap: !dev,
     target: 'es5',

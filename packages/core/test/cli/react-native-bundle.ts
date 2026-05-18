@@ -88,4 +88,22 @@ describe('CLI: bundle --platform=react-native (#2540 PR #7)', () => {
     expect(exitCode).toBe(0);
     expect(existsSync(out)).toBe(true);
   });
+
+  test('RN CLI 호환: --drop=console 이 RN bundle 경로에도 적용된다', () => {
+    const out = join(dir, 'out-drop-console.js');
+    const { exitCode } = runCli([
+      '--bundle',
+      join(dir, 'src/index.ts'),
+      '--platform=react-native',
+      '--rn-platform=ios',
+      `--rn-project-root=${dir}`,
+      '--drop=console',
+      '-o',
+      out,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(existsSync(out)).toBe(true);
+    const content = readFileSync(out, 'utf8');
+    expect(content).not.toContain('console.log("rn-bundle")');
+  });
 });
