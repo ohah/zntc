@@ -68,6 +68,18 @@
         "vite": "^7",
       },
     },
+    "examples/module-federation": {
+      "name": "@zntc/example-module-federation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@module-federation/runtime": "2.4.0",
+        "react": "^19.0.0",
+      },
+      "devDependencies": {
+        "@zntc/core": "workspace:*",
+        "typescript": "^6.0.3",
+      },
+    },
     "examples/react-native-bare": {
       "name": "zntc-example-react-native-bare",
       "version": "0.0.1",
@@ -2890,6 +2902,8 @@
     "@zntc/core": ["@zntc/core@workspace:packages/core"],
 
     "@zntc/e2e": ["@zntc/e2e@workspace:tests/e2e"],
+
+    "@zntc/example-module-federation": ["@zntc/example-module-federation@workspace:examples/module-federation"],
 
     "@zntc/example-web": ["@zntc/example-web@workspace:examples/web"],
 
@@ -6826,6 +6840,8 @@
     "@zntc/benchmark/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
 
     "@zntc/benchmark/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@zntc/example-module-federation/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
 
     "@zntc/example-web/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
 

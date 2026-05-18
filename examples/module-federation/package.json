@@ -1,0 +1,20 @@
+{
+  "name": "@zntc/example-module-federation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "bun run --cwd ../../packages/core build:js",
+    "build": "cd remote && zntc --bundle src/index.ts --outdir dist --format=iife --public-path=file://$PWD/dist/",
+    "start": "node host.mjs",
+    "demo": "bun run build && bun run start"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "@module-federation/runtime": "2.4.0"
+  },
+  "devDependencies": {
+    "@zntc/core": "workspace:*",
+    "typescript": "^6.0.3"
+  }
+}
