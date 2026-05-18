@@ -116,7 +116,9 @@ the shared negotiation order.
   differentiator is build-time contract verification, not type-hint
   downloading).
 
-For a minimal working example, see
-[`examples/module-federation`](https://github.com/ohah/zntc/tree/main/examples/module-federation)
-— a ZNTC remote consumed by a standard `@module-federation/runtime`
-host, verifying a single shared React instance.
+For a runnable minimal example, see the
+[Module Federation Example](/zntc/en/guides/module-federation-recipe/)
+recipe — a ZNTC remote consumed by a standard
+`@module-federation/runtime` host, verifying a single shared React
+instance (full code:
+[`examples/module-federation`](https://github.com/ohah/zntc/tree/main/examples/module-federation)).

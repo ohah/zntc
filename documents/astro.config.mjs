@@ -164,6 +164,11 @@ export default defineConfig({
           translations: { en: 'Recipes' },
           items: [
             { label: 'Dev Server (SSE/MCP)', slug: 'guides/dev-server' },
+            {
+              label: 'Module Federation 예제',
+              slug: 'guides/module-federation-recipe',
+              translations: { en: 'Module Federation Example' },
+            },
             { label: 'Electron', slug: 'guides/electron' },
             { label: 'Vite', slug: 'guides/vite' },
             { label: 'Rspack / Webpack', slug: 'guides/rspack' },
