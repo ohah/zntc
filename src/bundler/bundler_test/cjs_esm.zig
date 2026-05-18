@@ -2431,6 +2431,56 @@ test "ESM wrapped barrel namespace import under strict order does not emit raw r
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./QueryClientProvider.js\")") == null);
 }
 
+test "ESM wrap: RN non-inlined CJS named import is deconflicted with wrapped locals" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("node_modules/react");
+    try writeFile(tmp.dir, "node_modules/react/package.json",
+        \\{
+        \\  "name": "react",
+        \\  "main": "index.js"
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/react/index.js",
+        \\exports.useEffect = function useEffect(value) {
+        \\  return 'effect:' + value;
+        \\};
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { runOverlay } from './overlay.js';
+        \\import { touch } from './api.js';
+        \\console.log(typeof touch, runOverlay('ok'));
+    );
+    try writeFile(tmp.dir, "overlay.js",
+        \\import { useEffect as Q } from 'react';
+        \\export function runOverlay(value) {
+        \\  return Q(value);
+        \\}
+    );
+    try writeFile(tmp.dir, "api.js",
+        \\var Q = class InterceptorPlugin {};
+        \\export const touch = Q;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useEffect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Q$") != null);
+}
+
 // ============================================================
 // `.cjs` / `.cts` 는 Node CommonJS 컨벤션상 ESM 구문 (`import`/`export`) 거부.
 // 이전엔 graph/parser_setup.zig 가 모든 모듈을 is_module=true 로 promote 해서

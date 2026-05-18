@@ -33,6 +33,7 @@ const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
 const shared_ns = @import("shared_namespace.zig");
 const allocEsmInitExpr = shared_ns.allocEsmInitExpr;
 const writeEsmInitExprBody = shared_ns.writeEsmInitExprBody;
+const isMetroNonInlinedRequireSpecifier = linker_mod.isMetroNonInlinedRequireSpecifier;
 
 inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Interop {
     if (self.graph.resolve_cache.platform == .react_native) return .babel;
@@ -587,7 +588,10 @@ pub fn buildMetadataForAst(
             {
                 if (canonical_m_opt.?.wrap_kind == .cjs) {
                     const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(canonical_mod));
-                    if (ib.kind == .named and !std.mem.eql(u8, ib.imported_name, "default")) {
+                    if (ib.kind == .named and
+                        !std.mem.eql(u8, ib.imported_name, "default") and
+                        !isMetroNonInlinedRequireSpecifier(rec.specifier))
+                    {
                         if (ib.local_symbol.semanticIndex()) |sym_idx| {
                             const direct_access = try std.fmt.allocPrint(self.allocator, "{s}" ++ EXPR_RENAME_MARKER ++ "{s}", .{ req_var, ib.imported_name });
                             errdefer self.allocator.free(direct_access);
@@ -688,6 +692,7 @@ pub fn buildMetadataForAst(
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
+                    !isMetroNonInlinedRequireSpecifier(rec.specifier) and
                     canonical_mod != module_index and
                     !is_helper_binding and
                     ib.kind == .named and
