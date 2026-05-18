@@ -18,6 +18,8 @@ ZNTC 트리셰이킹은 경쟁사 대비 최강(144-lib non-minify 총합 ~0.76x
 | vue / express | 1.02~1.04x | mangler 분산 (대형 lib top-level 1글자 풀 잠식) |
 | ts-pattern 1.69x / typebox 1.28x | — | **착시** — ZNTC ≈ esbuild ≈ rolldown. rspack(SWC multi-pass compress)만 outlier로 작음. ZNTC 문제 아님 |
 
+**재검증 도장 (2026-05-18, 141-lib, main `96579159`, `smoke.ts --minify-all` ReleaseFast)**: 표본을 119→141 lib 으로 확대 재측정해도 결론 동일. corpus ZNTC 4,768,602 / gap(>0 합) 196,906 = **4.13%** (ZNTC 최소 34 lib / 최대 107 lib). 절대 gap 상위 = vue +24,209(1.04x mangler 분산) · express +14,097(vs rolldown, esbuild 는 827,763 으로 더 큼) · rxjs +12,772(1.09x) · zod +7,423(1.13x) · zlib +6,863(1.13x, 1글자풀) — 전부 §1 표의 mangler 분류 그대로. ts-pattern 1.69x / typebox 1.28x 도 ZNTC≈esbuild≈rolldown·rspack-only outlier 재확인(착시). **표본 확대로도 별개 codegen 루트커즈 0 신규·결론 불변** = §3~§6 종결 유효.
+
 ## 2. 루트커즈 (코드 확정)
 
 ZNTC mangler 2-phase:
