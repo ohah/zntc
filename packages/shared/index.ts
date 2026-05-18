@@ -1,5 +1,5 @@
 /**
- * @zntc/shared — @zntc/core와 @zntc/wasm에서 공유하는 타입 및 유틸리티
+ * @zntc/shared — Types and utilities shared by @zntc/core and @zntc/wasm.
  */
 
 // ─── Types ───
@@ -22,127 +22,138 @@ export type Target =
 export type Platform = 'browser' | 'node' | 'neutral' | 'react-native';
 
 export interface TranspileOptions {
-  /** 파일 경로 (확장자 감지용, 기본: "input.ts") */
+  /** File path (used for extension detection, default: "input.ts"). */
   filename?: string;
-  /** 소스맵 생성 */
+  /** Generate a source map. */
   sourcemap?: boolean;
-  /** 소스맵 Debug ID (Sentry 호환) */
+  /** Source map Debug ID (Sentry-compatible). */
   sourcemapDebugIds?: boolean;
-  /** 소스맵에 원본 소스 포함 (기본: true) */
+  /** Include the original source in the source map (default: true). */
   sourcesContent?: boolean;
-  /** 공백 축소 */
+  /** Minify whitespace. */
   minifyWhitespace?: boolean;
-  /** 식별자 축소 */
+  /** Minify identifiers. */
   minifyIdentifiers?: boolean;
-  /** 구문 축소 */
+  /** Minify syntax. */
   minifySyntax?: boolean;
-  /** 전체 축소 (whitespace + identifiers + syntax) */
+  /** Full minification (whitespace + identifiers + syntax). */
   minify?: boolean;
-  /** JSX 런타임. `'preserve'` 는 JSX 를 변환 없이 그대로 출력 — TypeScript 어노테이션만
-   * strip. downstream tool (e.g. @vitejs/plugin-react, @preact/preset-vite,
-   * vite-plugin-solid) 이 JSX 를 처리하도록 위임할 때 사용. tsc `"jsx": "preserve"` 와 동등. */
+  /** JSX runtime. `'preserve'` emits JSX unchanged — only TypeScript annotations
+   * are stripped. Use this to delegate JSX handling to a downstream tool (e.g.
+   * @vitejs/plugin-react, @preact/preset-vite, vite-plugin-solid). Equivalent to
+   * tsc `"jsx": "preserve"`. */
   jsx?: 'classic' | 'automatic' | 'automatic-dev' | 'preserve';
-  /** classic 모드 JSX factory (기본: "React.createElement") */
+  /** classic-mode JSX factory (default: "React.createElement"). */
   jsxFactory?: string;
-  /** classic 모드 Fragment factory (기본: "React.Fragment") */
+  /** classic-mode Fragment factory (default: "React.Fragment"). */
   jsxFragment?: string;
-  /** automatic 모드 import source (기본: "react") */
+  /** automatic-mode import source (default: "react"). */
   jsxImportSource?: string;
-  /** JS 파일에서도 JSX 허용 */
+  /** Allow JSX in .js files as well. */
   jsxInJs?: boolean;
   /**
-   * React Fast Refresh transform — 컴포넌트에 `$RefreshReg$(_c, "Name")` 등록.
-   * SWC builtin 의 `jsc.transform.react.refresh: true` / babel-plugin-react-refresh
-   * 의 component registration 과 동등. loader (rspack-loader, webpack/vite plugin)
-   * 가 single-file transpile 경로에서 활성화 시 사용.
+   * React Fast Refresh transform — registers components via
+   * `$RefreshReg$(_c, "Name")`. Equivalent to the SWC builtin
+   * `jsc.transform.react.refresh: true` / babel-plugin-react-refresh component
+   * registration. Used by loaders (rspack-loader, webpack/vite plugin) when
+   * enabled on the single-file transpile path.
    *
-   * Default 동작은 Metro 호환 (registration 만, hook signature 없음).
-   * babel/SWC 동등의 hook signature emit 은 `reactRefreshHookSignatures: true`
-   * opt-in. HMR runtime ($RefreshReg$/$RefreshSig$ 정의) 은 컨슈머 측 책임.
+   * The default behavior is Metro-compatible (registration only, no hook
+   * signatures). The babel/SWC-equivalent hook signature emit is opt-in via
+   * `reactRefreshHookSignatures: true`. Defining the HMR runtime
+   * ($RefreshReg$/$RefreshSig$) is the consumer's responsibility.
    */
   reactRefresh?: boolean;
   /**
-   * `reactRefresh: true` 위에 hook signature emit (`var _s = $RefreshSig$();` +
-   * `_s(Component, "sig")`) 을 추가. babel-plugin-react-refresh 와 동등.
-   * default false — Metro 정책 (signature 없음) 보존.
+   * On top of `reactRefresh: true`, adds hook signature emit
+   * (`var _s = $RefreshSig$();` + `_s(Component, "sig")`). Equivalent to
+   * babel-plugin-react-refresh. Default false — preserves the Metro policy
+   * (no signatures).
    *
-   * 활성화 시 transformer 가 함수 본문 안 hook 호출을 스캔해 signature 문자열
-   * 빌드 → component 등록 직후 `_s(Comp, "sig")` 호출 emit. RN HMR 은 default
-   * (false) 그대로라 영향 없음.
+   * When enabled, the transformer scans hook calls inside function bodies to
+   * build the signature string, then emits a `_s(Comp, "sig")` call right after
+   * component registration. RN HMR keeps the default (false), so it is
+   * unaffected.
    */
   reactRefreshHookSignatures?: boolean;
-  /** console.* 호출 제거 */
+  /** Remove console.* calls. */
   dropConsole?: boolean;
-  /** debugger 문 제거 */
+  /** Remove debugger statements. */
   dropDebugger?: boolean;
-  /** non-ASCII를 \uXXXX로 이스케이프 */
+  /** Escape non-ASCII to \uXXXX. */
   asciiOnly?: boolean;
-  /** non-ASCII를 이스케이프하지 않음 */
+  /** Do not escape non-ASCII. */
   charsetUtf8?: boolean;
-  /** Flow 타입 스트리핑 */
+  /** Strip Flow types. */
   flow?: boolean;
-  /** legacy decorator 변환 */
+  /** legacy decorator transform. */
   experimentalDecorators?: boolean;
   /** decorator metadata emit */
   emitDecoratorMetadata?: boolean;
-  /** class field → constructor this.x = v 변환 (기본: true) */
+  /** Transform class fields → `constructor` this.x = v (default: true). */
   useDefineForClassFields?: boolean;
-  /** verbatimModuleSyntax (TS 5.0+): true면 미사용 값 import를 elide하지 않음 */
+  /** verbatimModuleSyntax (TS 5.0+): when true, unused value imports are not elided. */
   verbatimModuleSyntax?: boolean;
   /**
-   * tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 compilerOptions를 자동 로드해서 머지한다.
-   * JS 옵션이 명시적으로 설정된 필드가 우선 — 미지정 필드만 tsconfig 값으로 채워진다.
-   * 예) "./tsconfig.json" 또는 "./project-dir"
+   * Path to tsconfig.json (file or directory). When set, compilerOptions are
+   * auto-loaded and merged. Fields set explicitly via JS options take
+   * precedence — only unspecified fields are filled from the tsconfig values.
+   * e.g. "./tsconfig.json" or "./project-dir".
    */
   tsconfigPath?: string;
   /**
-   * inline tsconfig JSON 문자열 (esbuild 의 `tsconfigRaw` 와 동일 의미).
-   * 설정 시 `tsconfigPath` 와 자동 탐색을 모두 무시 — raw 가 단일 진실 원천.
-   * Zig 측 `tsconfig_merge` 에서 jsx/target/decorators 등 compilerOptions 를 직접 적용한다.
+   * Inline tsconfig JSON string (same meaning as esbuild's `tsconfigRaw`).
+   * When set, both `tsconfigPath` and autodiscovery are ignored — raw is the
+   * single source of truth. The Zig-side `tsconfig_merge` applies
+   * compilerOptions such as jsx/target/decorators directly.
    */
   tsconfigRaw?: string;
-  /** 모듈 포맷 */
+  /** Module format. */
   format?: 'esm' | 'cjs';
-  /** 문자열 따옴표 스타일 */
+  /** String quote style. */
   quotes?: 'double' | 'single' | 'preserve';
-  /** 타겟 플랫폼 */
+  /** Target platform. */
   platform?: Platform;
-  /** ES 다운레벨 타겟 */
+  /** ES downlevel target. */
   target?: Target;
   /**
-   * browserslist 쿼리 (예: "last 2 versions", ">1%, not dead").
-   * 지정 시 target보다 우선. core 패키지에서만 해석됨 (browserslist 의존).
+   * browserslist query (e.g. "last 2 versions", ">1%, not dead").
+   * Takes precedence over target when set. Resolved only in the core package
+   * (depends on browserslist).
    */
   browserslist?: string | string[];
-  /** 소스맵의 sourceRoot 필드 (기본: 빈 문자열) */
+  /** The source map's sourceRoot field (default: empty string). */
   sourceRoot?: string;
   /**
-   * 식별자 치환 쌍. `value`는 raw JSON (문자열은 반드시 따옴표 포함).
-   * 예: `[{ key: "process.env.NODE_ENV", value: "\"production\"" }]`
+   * Identifier substitution pairs. `value` is raw JSON (strings must include
+   * the surrounding quotes).
+   * e.g. `[{ key: "process.env.NODE_ENV", value: "\"production\"" }]`
    */
   define?: Array<{ key: string; value: string }>;
   /**
-   * 파이프라인 조기 종료 지점 — debug/profile 용. 지정 시 해당 phase 이후 단계는 skip 하고
-   * 빈 output 을 반환. `profile` 과 조합해 특정 phase 비용을 격리 측정할 때 유용.
+   * Pipeline early-exit point — for debug/profile. When set, all stages after
+   * the given phase are skipped and empty output is returned. Useful combined
+   * with `profile` to measure a specific phase's cost in isolation.
    *
-   * - "scan": Scanner 토큰 drain 만
-   * - "parse": Parser AST 생성 후
-   * - "semantic": Semantic analyzer 후
-   * - "transform": Transformer 후
-   * - "codegen": 전체 실행 (기본 동작과 동일)
+   * - "scan": Scanner token drain only
+   * - "parse": after Parser AST construction
+   * - "semantic": after the Semantic analyzer
+   * - "transform": after the Transformer
+   * - "codegen": full run (same as the default behavior)
    */
   stopAfter?: 'scan' | 'parse' | 'semantic' | 'transform' | 'codegen';
 }
 
 export interface TranspileResult {
-  /** 변환된 JavaScript 코드 */
+  /** Transformed JavaScript code. */
   code: string;
-  /** 소스맵 JSON (sourcemap: true 시) */
+  /** Source map JSON (when sourcemap: true). */
   map?: string;
   /**
-   * 시맨틱 에러가 있을 때 CLI와 동일한 포맷으로 렌더된 전체 에러 텍스트.
-   * tsc 호환 정책: 에러가 있어도 code는 함께 반환된다.
-   * 플레이그라운드/IDE는 이 필드를 파싱해 마커로 표시한다.
+   * Full error text rendered in the same format as the CLI when semantic
+   * errors are present. tsc-compatible policy: code is still returned even
+   * when there are errors. Playgrounds/IDEs parse this field to display
+   * markers.
    */
   errors?: string;
 }
@@ -189,21 +200,23 @@ export function targetToUnsupported(target?: Target): number {
 }
 
 /**
- * value 가 plain object (non-null, 배열 아님) 인지 narrow.
- * `JSON.parse` 결과나 동적 config 객체처럼 unknown shape 의 값을 `Record<string, unknown>`
- * 으로 좁힐 때 사용. 함수형 config / workspace 항목 / tsconfigRaw 검증 등에서 공유.
+ * Narrows whether `value` is a plain object (non-null, not an array).
+ * Use this to narrow a value of unknown shape — such as a `JSON.parse` result
+ * or a dynamic config object — to `Record<string, unknown>`. Shared across
+ * functional config / workspace entries / tsconfigRaw validation, etc.
  */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
- * `tsconfigRaw` 사용자 입력 사전 검증.
+ * Pre-validates user-supplied `tsconfigRaw` input.
  *
- * NAPI (`napi_entry.zig` / `transpile.zig`) 는 raw parse 실패 시 silent fallback (빈 TsConfig)
- * 정책이라, 잘못된 raw 가 그대로 전달되면 사용자 입장에선 옵션이 무시된 것처럼 보인다. CLI 와
- * JS API 양쪽 진입점에서 호출해 동일한 명시 에러 (`failed to parse --tsconfig-raw: ...`) 를
- * 던지도록 통일. undefined 면 no-op.
+ * NAPI (`napi_entry.zig` / `transpile.zig`) silently falls back to an empty
+ * TsConfig on raw parse failure, so an invalid raw passed through looks to the
+ * user as if the option were ignored. Called from both the CLI and JS API
+ * entry points so they uniformly throw the same explicit error
+ * (`failed to parse --tsconfig-raw: ...`). No-op when undefined.
  */
 export function validateTsConfigRaw(raw: string | undefined): void {
   if (raw === undefined) return;
@@ -222,13 +235,15 @@ export function validateTsConfigRaw(raw: string | undefined): void {
 // ─── JSON payload 구성 (Zig optionsFromJson과 1:1 매핑) ───
 
 /**
- * TranspileOptions를 Zig `ConfigOptionsDto` JSON으로 직렬화한다.
+ * Serializes TranspileOptions into Zig `ConfigOptionsDto` JSON.
  *
- * - 기본값은 생략 (payload 크기 최소화)
- * - enum 키는 Zig enum name과 일치 (예: "react-native" → "react_native")
- * - browserslist 해석 결과는 `unsupportedOverride` 숫자로 주입 가능.
- *   지정 시 Zig에서 `target` 기반 fallback보다 우선.
- * - `define`은 `[{ key, value }]` 배열로 직렬화 (Zig DefineEntry와 호환).
+ * - Default values are omitted (minimizes payload size).
+ * - enum keys match the Zig enum name (e.g. "react-native" → "react_native").
+ * - The browserslist resolution result can be injected as the
+ *   `unsupportedOverride` number. When set, it takes precedence over the
+ *   `target`-based fallback on the Zig side.
+ * - `define` is serialized as a `[{ key, value }]` array (compatible with Zig
+ *   DefineEntry).
  */
 export function buildOptionsJson(
   opts: TranspileOptions = {},
@@ -289,7 +304,7 @@ export { computeUnsupportedFromEngines, FEATURES } from './compat-engines';
 import type { Engine, EngineVersion } from './compat-engines';
 import { computeUnsupportedFromEngines } from './compat-engines';
 
-/** browserslist 결과 문자열 ("chrome 100", "ios_saf 14.5") → EngineVersion. */
+/** browserslist result string ("chrome 100", "ios_saf 14.5") → EngineVersion. */
 export function parseBrowserslistEntry(entry: string): EngineVersion | null {
   // 형식: "<name> <version>" — version은 "100", "14.1", "100-101" 등
   const m = entry.trim().match(/^(\S+)\s+([\d.]+)(?:-[\d.]+)?$/);
@@ -323,8 +338,9 @@ export function parseBrowserslistEntry(entry: string): EngineVersion | null {
 }
 
 /**
- * browserslist가 반환한 문자열 배열 → unsupported bitmask.
- * 매핑 불가능한 엔진(samsung, kaios 등)은 무시 (ZNTC가 타겟팅하지 않는 엔진).
+ * browserslist result string array → unsupported bitmask.
+ * Unmappable engines (samsung, kaios, etc.) are ignored (engines ZNTC does not
+ * target).
  */
 export function browserslistToUnsupported(entries: string[]): number {
   const engines: EngineVersion[] = [];
