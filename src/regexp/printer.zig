@@ -4,14 +4,17 @@
 //! 노드 `data` 만으로 재구성하므로 변환 후 생성된 합성 노드도 그대로 출력된다
 //! (source span 에 의존하지 않음 — 변환 시 span 은 stale).
 //!
-//! 출력은 canonical form 이다: 같은 의미의 입력이라도 표현이 정규화될 수 있다
-//! (예: `\u{41}`→`A` 고정 폭, `\ca`→`\cA` 대문자, `a{3,3}`→`a{3}`).
-//! 따라서 라운드트립 불변식은 "바이트 동일" 이 아니라 "print 멱등 + 구조
-//! 보존" 이다 (printer_test.zig 의 라운드트립 테스트 참조).
+//! 출력은 oxc(`oxc_regular_expression` display.rs) canonical form 에 맞춘다:
+//! hex 는 대문자, unicode_escape 는 4자리 `\uXXXX`/`\u{XXXXX}` 로 통일
+//! (`\xab`→`\xAB`, `\u{41}`→`A`, `\u{1f600}`→`\u{1F600}`), `\ca`→`\cA`,
+//! `a{3,3}`→`a{3}`. 따라서 라운드트립 불변식은 "바이트 동일" 이
+//! 아니라 "print 멱등 + 구조 보존" 이다 (printer_test.zig 참조).
 //!
 //! 알려진 비-라운드트립 (AST layout 한계, printer 책임 아님):
 //!   - `\p{Script=Greek}` 의 `=value` 는 parser 가 name 범위만 보존하므로
 //!     `\p{Script}` 로 축약된다 (#1475 후속 PR 에서 AST 확장 시 해소).
+//!   - octal escape 는 parser 가 단일 `octal` kind 만 보존(자릿수 미보존)하므로
+//!     최소 자릿수로 출력 (`\07`→`\7`). 값은 동일.
 
 const std = @import("std");
 const ast = @import("ast.zig");
@@ -242,17 +245,20 @@ const Printer = struct {
                 try self.wb('\\');
                 try self.fmtInt("{o}", cp);
             },
+            // hex 는 대문자 (oxc display.rs `\x{cp:02X}` / `\u{cp:04X}` 관례.
+            // ZNTC 기존 ad-hoc regex_lower 출력도 대문자라 바이트 동일 — #1475 R2 제거).
             .hexadecimal_escape => {
                 try self.w("\\x");
-                try self.fmtInt("{x:0>2}", cp);
+                try self.fmtInt("{X:0>2}", cp);
             },
             .unicode_escape => {
+                // oxc: hex=`{cp:04X}`; len≤4 → `\uXXXX`, else `\u{XXXXX}`.
                 if (cp <= 0xFFFF) {
                     try self.w("\\u");
-                    try self.fmtInt("{x:0>4}", cp);
+                    try self.fmtInt("{X:0>4}", cp);
                 } else {
                     try self.w("\\u{");
-                    try self.fmtInt("{x}", cp);
+                    try self.fmtInt("{X:0>4}", cp);
                     try self.wb('}');
                 }
             },

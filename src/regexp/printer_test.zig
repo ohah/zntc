@@ -120,6 +120,18 @@ test "printer exact — canonical input unchanged" {
     try expectExact("(?i-s:Ab)", "", "(?i-s:Ab)");
 }
 
+test "printer hex case — oxc canonical UPPERCASE (#1475 R2 제거)" {
+    // oxc display.rs: \x{cp:02X}, \u{cp:04X} — UPPERCASE.
+    // ZNTC 현 ad-hoc regex_lower 출력도 대문자(\uD83D) → 정렬 시 바이트 동일.
+    try expectExact("\\xff", "", "\\xFF");
+    try expectExact("\\xAb", "", "\\xAB");
+    try expectExact("\\u00ab", "", "\\u00AB");
+    try expectExact("\\uffff", "", "\\uFFFF");
+    try expectExact("\\uD83D", "", "\\uD83D"); // lone surrogate 유지
+    try expectExact("\\u{1f600}", "u", "\\u{1F600}"); // astral, brace 유지
+    try expectExact("\\u{a}", "u", "\\u000A"); // ≤4 hex → \uXXXX 4자리 대문자
+}
+
 test "printer canonicalization — equivalent forms converge" {
     // {n,n} → {n}, * / + / ? 정규화 등은 멱등이면 충분.
     try expectIdempotent("a{3,3}", "");
