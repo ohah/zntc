@@ -334,7 +334,7 @@ module.exports = {
 | `CssMinimizerPlugin`               | Handled by Lightning CSS post-processing                     |
 | `CompressionPlugin` (gzip/brotli)  | Not supported. Handle in post-build                          |
 | `webpack.ContextReplacementPlugin` | Not supported                                                |
-| Module Federation                  | Not supported                                                |
+| Module Federation                  | Supported (web). webpack5/rspack-compatible — container/remote, `mf-manifest.json`, shared scope (`singleton`/`requiredVersion`/`strictVersion`/`shareStrategy`), static/dynamic `import("remote/x")`, build-time contract checks (missing expose, shared version/singleton mismatch, manifest tampering), runtime guard. Host runtime delegates to standard `@module-federation/runtime`. Runtime-registered remotes (`registerRemotes()`) are runtime-verified; RN later |
 | DllPlugin / DllReferencePlugin     | Not supported                                                |
 
 ### Unsupported webpack features

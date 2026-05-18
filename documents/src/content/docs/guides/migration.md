@@ -334,7 +334,7 @@ module.exports = {
 | `CssMinimizerPlugin`               | Lightning CSS 플러그인에서 처리                    |
 | `CompressionPlugin` (gzip/brotli)  | 미지원. 후처리로 처리                              |
 | `webpack.ContextReplacementPlugin` | 미지원                                             |
-| Module Federation                  | 미지원                                             |
+| Module Federation                  | 지원 (웹). webpack5/rspack 호환 — container/remote·`mf-manifest.json`·공유 스코프(`singleton`/`requiredVersion`/`strictVersion`/`shareStrategy`)·정적/동적 `import("remote/x")`·빌드타임 계약 검증(부재 expose·공유 버전/싱글톤 불일치·매니페스트 변조 차단)·런타임 가드. host 런타임은 표준 `@module-federation/runtime` 위임. 런타임 동적 등록(`registerRemotes()`)은 런타임 검증, RN 은 이후 |
 | DllPlugin / DllReferencePlugin     | 미지원                                             |
 
 ### 미지원 webpack 기능

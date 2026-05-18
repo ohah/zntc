@@ -282,6 +282,15 @@ fn sharedVerdict(host: types.MfBundleConfig.SharedEntry, remote: mf_contract.Sha
 /// 에서 emit *전* 호출. **dedup**(seen_specs/seen_remotes): 같은 remote
 /// 다중 import 시 무결성·shared 검증/경고는 remote 당 1회, 동일 spec
 /// 은 완전 1회 — expose(P3-1)만 per-spec(서브경로별 존재 확인).
+///
+/// **범위 한계(#4, RFC §7.3 ⑥ — 설계 한계, 버그 아님)**: 검증 대상은
+/// config `mf.remotes` ∩ 빌드타임 스캔(nextRemoteImport 동적 +
+/// static_specs 정적)으로 식별되는 remote 뿐. host 가 표준 runtime
+/// `registerRemotes()`/`init({remotes})` 로 **런타임에** 등록하는
+/// remote 는 빌드 시점에 미지라 D3 빌드검증 원천 불가(없는 것을 볼 수
+/// 없음). 동작은 표준 runtime 위임으로 정상 — 그 사각은 런타임 가드
+/// (`__mfGuardedLoad`)/표준 `errorLoadRemote` 가 담당(빌드 핀+런타임
+/// 가드 분담, §9). 정적/명시 config=빌드 핀, 런타임 동적=가드.
 pub fn verifyHostContract(
     allocator: std.mem.Allocator,
     src: []const u8,
