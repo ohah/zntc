@@ -168,6 +168,11 @@ export default defineConfig({
             { label: 'Vite', slug: 'guides/vite' },
             { label: 'Rspack / Webpack', slug: 'guides/rspack' },
             { label: 'Web (standalone)', slug: 'guides/web-starter' },
+            {
+              label: '라이브러리 빌드',
+              slug: 'guides/library',
+              translations: { en: 'Library Build' },
+            },
             { label: 'React Native', slug: 'guides/react-native' },
             { label: 'React Native + Expo', slug: 'guides/react-native-expo' },
             {
