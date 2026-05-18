@@ -513,6 +513,34 @@ test "Bundler: unresolved import produces error diagnostic" {
     try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.unresolved_import, diags[0].code);
 }
 
+test "Bundler: webpack runtime helper calls are not resolved as imports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js",
+        \\var __webpack_modules__ = {
+        \\  "./src/a.ts": function(module, exports, __webpack_require__) {
+        \\    var socket = __webpack_require__("react-native-tcp-socket");
+        \\    return socket;
+        \\  },
+        \\};
+        \\export const value = 1;
+    );
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+}
+
 test "Bundler: circular dependency produces warning" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
