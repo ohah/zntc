@@ -1641,6 +1641,33 @@ test "references: node_index 로 AST 위치 역참조" {
     try std.testing.expect(refs.items[0].flags.read and !refs.items[0].flags.write);
 }
 
+test "references: arrow parameter default records imported value use" {
+    var fx = try RefFixture.init("import { value } from './dep'; const f = (x = value) => x;");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("value", &refs);
+
+    var read_seen = false;
+    for (refs.items) |r| {
+        if (r.flags.read and !r.flags.write and r.isValueUse()) {
+            read_seen = true;
+            break;
+        }
+    }
+    try std.testing.expect(read_seen);
+
+    for (fx.ana.symbols.items) |sym| {
+        const name = sym.nameText(fx.parser.ast.source);
+        if (std.mem.eql(u8, name, "value")) {
+            try std.testing.expectEqual(@as(u32, 1), sym.reference_count);
+            return;
+        }
+    }
+    try std.testing.expect(false);
+}
+
 test "references: unresolved (전역) 은 기록 안 됨" {
     var fx = try RefFixture.init("console.log(1);");
     defer fx.deinit();

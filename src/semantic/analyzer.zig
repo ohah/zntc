@@ -2554,7 +2554,7 @@ pub const SemanticAnalyzer = struct {
                     try self.declareArrowParams(@enumFromInt(raw_idx));
                 }
             },
-            .assignment_pattern, .assignment_expression => {
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
                 // 기본값: x = 1 → left는 파라미터, right는 기본값 표현식
                 try self.declareArrowParams(node.data.binary.left);
                 try self.visitNode(node.data.binary.right);
@@ -3623,7 +3623,7 @@ pub const SemanticAnalyzer = struct {
                     try self.visitNode(node.data.binary.right);
                 }
             },
-            .assignment_pattern, .assignment_target_with_default => {
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
                 // binary: { left = binding, right = default_value }
                 try self.registerBinding(node.data.binary.left, kind);
                 // 기본값 순회 — 식별자 참조를 포함할 수 있음 (e.g. function f(a = imported))
