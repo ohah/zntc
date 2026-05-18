@@ -5,6 +5,7 @@ description: Reference for @zntc/core's transpile / build / watch / vitePlugin a
 
 {/* Options below are cherry-picked — source of truth is reference/options. Update both when adding options. */}
 
+import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Mermaid from "@components/Mermaid";
 import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
 
@@ -29,9 +30,33 @@ Plugin hooks like `onResolve` / `onLoad` are awoken via NAPI threadsafe-fn whene
 
 ## Install + use
 
-```bash
-bun add @zntc/core
-```
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+    ```bash
+    bun add @zntc/core
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm i @zntc/core
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add @zntc/core
+    ```
+  </TabItem>
+  <TabItem label="yarn">
+    ```bash
+    yarn add @zntc/core
+    ```
+  </TabItem>
+  <TabItem label="deno">
+    ```bash
+    deno add npm:@zntc/core
+    ```
+  </TabItem>
+</Tabs>
 
 ```ts
 import { transpile, build, watch } from "@zntc/core";
