@@ -106,7 +106,8 @@ const m = await import('remote_app/Button');   // 동적
   않습니다. 소비 측은 자체 타입 선언을 사용합니다(ZNTC 의 차별점은
   타입 힌트 다운로드가 아니라 빌드타임 계약 검증입니다).
 
-동작하는 최소 예제는
-[`examples/module-federation`](https://github.com/ohah/zntc/tree/main/examples/module-federation)
-을 참고하세요 — ZNTC remote 를 표준 `@module-federation/runtime` host 가
-소비하고 React 단일 인스턴스 공유를 검증합니다.
+돌려볼 수 있는 최소 예제는
+[Module Federation 예제](/zntc/guides/module-federation-recipe/) 레시피를
+참고하세요 — ZNTC remote 를 표준 `@module-federation/runtime` host 가
+소비하고 React 단일 인스턴스 공유를 검증합니다(전체 코드:
+[`examples/module-federation`](https://github.com/ohah/zntc/tree/main/examples/module-federation)).
