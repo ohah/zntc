@@ -47,11 +47,37 @@ test "transform strip_named — group unname + \\k<name> → \\N" {
     try expectTransform("(?<n>a)[\\k<n>]", "", o, "(a)[\\k<n>]");
 }
 
-test "transform unicode_brace — astral → surrogate pair" {
+test "transform unicode_brace — astral atom → surrogate pair" {
     const o = transform.Options{ .unicode_brace = true };
-    try expectTransform("\\u{1F600}", "u", o, "\\uD83D\\uDE00");
-    try expectTransform("\\u{41}", "u", o, "\\u0041");
-    try expectTransform("[\\u{1F600}]", "u", o, "[\\uD83D\\uDE00]");
+    try expectTransform("\\u{1F600}", "u", o, "\\uD83D\\uDE00"); // 단독 atom: 그대로
+    try expectTransform("\\u{41}", "u", o, "\\u0041"); // BMP
+}
+
+test "#3509 transform — positive class astral → surrogate-alternation (regexpu식)" {
+    const o = transform.Options{ .unicode_brace = true };
+    // 단일 astral class → (?:\uHi\uLo)
+    try expectTransform("[\\u{1F600}]", "u", o, "(?:\\uD83D\\uDE00)");
+    // 동일 high-surrogate range → (?:\uHi[\uLo-\uLo])  ← #3509 본 케이스
+    try expectTransform("[\\u{1F600}-\\u{1F64F}]", "u", o, "(?:\\uD83D[\\uDE00-\\uDE4F])");
+    // high 교차 range → alternation
+    try expectTransform("[\\u{1F600}-\\u{1F900}]", "u", o, "(?:\\uD83D[\\uDE00-\\uDFFF]|\\uD83E[\\uDC00-\\uDD00])");
+    // BMP + astral 혼합 → (?:[bmp]|astral-alt)
+    try expectTransform("[a\\u{1F600}]", "u", o, "(?:[\\u0061]|\\uD83D\\uDE00)");
+    // 전체 astral
+    try expectTransform("[\\u{10000}-\\u{10FFFF}]", "u", o, "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])");
+}
+
+test "#3509 safety gate — negated/property astral 는 미변환(incomplete)" {
+    const a = std.testing.allocator;
+    const o = transform.Options{ .unicode_brace = true };
+    // negated astral class → slice 미지원 → 변환 안 함 + incomplete 표시
+    {
+        var in = mod.parse("[^\\u{1F600}]", "u", a) orelse return error.ParseFailed;
+        defer in.deinit();
+        var r = try transform.transform(in, o, a);
+        defer r.deinit();
+        try std.testing.expect(r.astral_u_incomplete);
+    }
 }
 
 test "transform 조합 — dotall + strip_named" {

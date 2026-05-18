@@ -68,6 +68,9 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     // 없어야 하나, 방어적으로 실패 시 변환 생략(.text=null = 원본 유지).
     var owned_pattern: ?[]u8 = null;
     defer if (owned_pattern) |p| allocator.free(p);
+    // #3509: astral 을 정확히 ES5 로 못 내린 경우(negated/\p{}/class_string)
+    // u flag 를 strip 하면 silent 오변환 → u 보존(부분 커버리지, 틀린 출력 0).
+    var astral_u_incomplete = false;
     const pattern_text: []const u8 = if (need_pattern_xform) blk: {
         var in_ast = regexp.parse(pattern, flags, allocator) orelse return .{ .text = null };
         defer in_ast.deinit();
@@ -77,9 +80,11 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
             .unicode_brace = need_unicode,
         }, allocator);
         defer tr.deinit();
+        astral_u_incomplete = tr.astral_u_incomplete;
         owned_pattern = regexp.printer.print(tr.ast, allocator) catch return .{ .text = null };
         break :blk owned_pattern.?;
     } else pattern;
+    const strip_u = need_unicode and !astral_u_incomplete;
 
     // named capture mapping 추출 — 패턴 변환 성공 후 (early-return 누수 방지).
     // 원본 pattern 기준이라 변환 순서와 무관. 호출자가 `__wrapRegExp` 합성에 사용.
@@ -100,7 +105,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     for (flags) |c| {
         if (need_dotall and c == 's') continue;
         if (need_sticky and c == 'y') continue;
-        if (need_unicode and c == 'u') continue;
+        if (strip_u and c == 'u') continue;
         try out.append(allocator, c);
     }
     return .{ .text = try out.toOwnedSlice(allocator), .named_groups = named_groups };
@@ -342,10 +347,28 @@ test "regex: u flag 없으면 no-op" {
     try testing.expect(out == null);
 }
 
-test "regex: u + character class" {
+test "regex: u + character class — #3509 정확 surrogate-alternation" {
+    // 이전 ad-hoc 은 깨진 [😀](code-unit alternation) 출력.
+    // #3509: regexpu식 정확 형태 (?:😀) 로 재기준.
     const out = (try runLower("/[\\u{1F600}]/u", .{ .unicode_brace_escape = true })).?;
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("/[\\uD83D\\uDE00]/", out);
+    try testing.expectEqualStrings("/(?:\\uD83D\\uDE00)/", out);
+}
+
+test "regex: u + astral class range — #3509" {
+    const out = (try runLower("/[\\u{1F600}-\\u{1F64F}]/u", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:\\uD83D[\\uDE00-\\uDE4F])/", out);
+}
+
+test "regex: u + negated astral class — u 보존(미변환, silent 오변환 방지)" {
+    // slice 미지원(negated) → astral_u_incomplete → u strip 보류.
+    const out = try runLower("/[^\\u{1F600}]/u", .{ .unicode_brace_escape = true });
+    // u 가 유지되므로 출력은 원본과 동등(변환 없음 → null) 또는 u 포함.
+    if (out) |o| {
+        defer testing.allocator.free(o);
+        try testing.expect(std.mem.endsWith(u8, o, "/u"));
+    }
 }
 
 test "regex: esnext (미지원 없음) no-op" {
