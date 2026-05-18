@@ -269,6 +269,12 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
   const cliOnlyFlags: ReadonlySet<string> = new Set([
     // 빌드 모드 / 명령
     '--help',
+    // CLI flow 전용 — BuildOptions 키 매핑 없음 (버전 출력 후 종료 / config 우회 /
+    // 색상 토글은 NO_COLOR·FORCE_COLOR env 로 환원).
+    '--version',
+    '--no-config',
+    '--color',
+    '--no-color',
     '--bundle',
     '--watch',
     '--watch-json',
