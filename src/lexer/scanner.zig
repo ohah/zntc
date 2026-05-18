@@ -923,7 +923,7 @@ pub const Scanner = struct {
                 // 패턴 + 플래그 검증 (ECMAScript 21.2.1)
                 const pattern_text = self.source[pattern_start..pattern_end];
                 const flag_text = self.source[flags_start..flags_end];
-                if (regexp_mod.validate(pattern_text, flag_text) != null) {
+                if (regexp_mod.validate(pattern_text, flag_text, self.allocator) != null) {
                     return .syntax_error;
                 }
                 return .regexp_literal;

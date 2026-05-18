@@ -28,8 +28,10 @@ pub const unicode_property = @import("unicode_property.zig");
 /// 정규식 리터럴을 검증한다.
 /// pattern: `/` 사이의 패턴 텍스트 (예: "\\d{4}")
 /// flag_text: 닫는 `/` 뒤의 플래그 텍스트 (예: "gi")
+/// scratch_alloc: named group/backref 가 inline cap(16/32)을 초과할 때만
+///   spill 에 사용. 일반 정규식은 무할당 (렉서 hot path 성능 무변).
 /// 에러가 있으면 에러 메시지를 반환, 없으면 null.
-pub fn validate(pattern: []const u8, flag_text: []const u8) ?[]const u8 {
+pub fn validate(pattern: []const u8, flag_text: []const u8, scratch_alloc: std.mem.Allocator) ?[]const u8 {
     // 1. 플래그 검증 — 구체적인 에러 메시지를 보존
     if (flags.validate(flag_text)) |err| {
         return err.message;
@@ -39,6 +41,7 @@ pub fn validate(pattern: []const u8, flag_text: []const u8) ?[]const u8 {
     const parsed_flags = flags.parse(flag_text);
     const Validator = parser.PatternParser(false);
     var validator = Validator.init(pattern, parsed_flags);
+    validator.ext_alloc = scratch_alloc;
     if (validator.validate()) |err| {
         return err;
     }
