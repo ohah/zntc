@@ -444,6 +444,27 @@ function safeRealpath(p) {
   }
 }
 
+/**
+ * BuildResult / NAPI diag 의 errors / warnings 를 stderr 로 출력.
+ * `logLevel === 'silent'` 면 출력 안 함, `'error'` 면 errors 만.
+ * `err.specifier` 는 NAPI 가 diag suggestion 으로 노출하는 import specifier.
+ */
+function printResultDiagnostics(result, logLevel) {
+  if (result.errors.length > 0 && logLevel !== 'silent') {
+    for (const err of result.errors) {
+      const loc = err.location ? `${err.location.file}: ` : '';
+      const detail = err.specifier ? ` (${err.specifier})` : '';
+      console.error(`error: ${loc}${err.text}${detail}`);
+    }
+  }
+  if (result.warnings.length > 0 && logLevel !== 'silent' && logLevel !== 'error') {
+    for (const warn of result.warnings) {
+      const detail = warn.specifier ? ` (${warn.specifier})` : '';
+      console.error(`warning: ${warn.text}${detail}`);
+    }
+  }
+}
+
 function assertCanWriteOutput(outPath, resolvedEntries) {
   if (!resolvedEntries) return;
   if (resolvedEntries.has(safeRealpath(outPath))) {
@@ -777,19 +798,7 @@ async function runRnBundle(opts, config) {
     }),
   });
 
-  if (result.errors.length > 0 && opts.logLevel !== 'silent') {
-    for (const err of result.errors) {
-      const loc = err.location ? `${err.location.file}: ` : '';
-      const detail = err.specifier ? ` (${err.specifier})` : '';
-      console.error(`error: ${loc}${err.text}${detail}`);
-    }
-  }
-  if (result.warnings.length > 0 && opts.logLevel !== 'silent' && opts.logLevel !== 'error') {
-    for (const warn of result.warnings) {
-      const detail = warn.specifier ? ` (${warn.specifier})` : '';
-      console.error(`warning: ${warn.text}${detail}`);
-    }
-  }
+  printResultDiagnostics(result, opts.logLevel);
 
   // caller-side write — bundle / sourcemap path 분리 + URL override 적용.
   if (callerWrite && result.errors.length === 0 && result.outputFiles?.length) {
@@ -1302,17 +1311,7 @@ async function runBundle(opts, config) {
 
   const result = plugins.length > 0 ? await build(buildOpts) : buildSync(buildOpts);
 
-  if (result.errors.length > 0 && opts.logLevel !== 'silent') {
-    for (const err of result.errors) {
-      const loc = err.location ? `${err.location.file}: ` : '';
-      console.error(`error: ${loc}${err.text}`);
-    }
-  }
-  if (result.warnings.length > 0 && opts.logLevel !== 'silent' && opts.logLevel !== 'error') {
-    for (const warn of result.warnings) {
-      console.error(`warning: ${warn.text}`);
-    }
-  }
+  printResultDiagnostics(result, opts.logLevel);
 
   // 출력
   if (opts.outfile || opts.outdir) {

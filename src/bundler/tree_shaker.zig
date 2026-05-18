@@ -71,6 +71,12 @@ pub const TreeShaker = struct {
     opaque_visited: ?std.DynamicBitSet = null,
     /// 모듈별 used export 존재 여부 (hasAnyUsedExportDirect 최적화: O(1) 조회).
     has_direct_used_export: []bool = &.{},
+    /// 모듈별 sentinel 이 아닌 specific named export 가 markExportUsed 된 적이 있는지.
+    /// `hasAnySpecificUsedExport` 를 O(1) 로 조회. `has_direct_used_export` 와 분리한
+    /// 이유는 `markAllExportsUsed` 가 내부적으로 `markExportUsed(ALL_EXPORTS_SENTINEL)`
+    /// 를 호출해 sentinel-only 마킹된 모듈도 `has_direct_used_export = true` 가 되기
+    /// 때문이다.
+    has_specific_used_export: []bool = &.{},
     /// prebuilt StmtInfo를 사용하는 모듈 마스크.
     /// prebuilt는 parse_arena가 소유하므로 deinit에서 해제하지 않는다.
     prebuilt_mask: ?std.DynamicBitSet = null,
@@ -196,6 +202,9 @@ pub const TreeShaker = struct {
         }
         if (self.has_direct_used_export.len > 0) {
             self.allocator.free(self.has_direct_used_export);
+        }
+        if (self.has_specific_used_export.len > 0) {
+            self.allocator.free(self.has_specific_used_export);
         }
         self.numeric_dfs_stack.deinit(self.allocator);
         if (self.materialize_scratch) |*s| s.deinit();
@@ -422,10 +431,13 @@ pub const TreeShaker = struct {
                 }
             }
 
-            // has_direct_used_export 배열 초기화 (hasAnyUsedExportDirect O(1) 조회용)
+            // has_direct_used_export / has_specific_used_export 배열 초기화 (O(1) 조회용)
             const has_due = try self.allocator.alloc(bool, mod_count);
             @memset(has_due, false);
             self.has_direct_used_export = has_due;
+            const has_specific = try self.allocator.alloc(bool, mod_count);
+            @memset(has_specific, false);
+            self.has_specific_used_export = has_specific;
 
             // entry / context_dep 모듈의 모든 export를 사용으로 마킹 — runtime require 로
             // 접근하는 모듈은 어떤 export 가 쓰일지 정적으로 알 수 없음 (dynamic import 와 유사).
@@ -918,8 +930,7 @@ pub const TreeShaker = struct {
                     has_specific_cjs_exports;
                 if (is_bfs_seed) {
                     if (m.wrap_kind == .cjs) {
-                        const has_specific_exports = has_specific_cjs_exports;
-                        if (self.entry_set.isSet(i) or !has_specific_exports) {
+                        if (self.entry_set.isSet(i) or !has_specific_cjs_exports) {
                             try self.seedAllCjsExportFacts(@intCast(i), infos, &queue, reachable_stmts);
                         } else {
                             var names = try self.collectDirectUsedExportNames(@intCast(i));
@@ -1992,23 +2003,21 @@ pub const TreeShaker = struct {
                     self.included.set(src);
                     changed = true;
                 }
-                if (all_exports_used) {
-                    if (src_module.wrap_kind == .cjs and eb.kind == .re_export) {
-                        try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
-                    } else if (src_module.wrap_kind == .cjs or eb.kind.isReExportAll()) {
-                        try self.markAllExportsUsed(@intCast(src));
-                    } else {
-                        try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
-                    }
-                }
                 // A named re-export from CJS is still observed through the CJS
                 // namespace at runtime. If an ESM facade such as
                 // `export { URLSearchParams } from "cjs"` is later read via
                 // `require("./facade").URLSearchParams`, keeping only the
                 // facade getter can leave the source-side
                 // `exports.URLSearchParams = ...` assignment shaken out.
-                if (src_module.wrap_kind == .cjs and eb.kind == .re_export) {
+                const cjs_named_reexport = src_module.wrap_kind == .cjs and eb.kind == .re_export;
+                if (cjs_named_reexport) {
                     try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
+                } else if (all_exports_used) {
+                    if (src_module.wrap_kind == .cjs or eb.kind.isReExportAll()) {
+                        try self.markAllExportsUsed(@intCast(src));
+                    } else {
+                        try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
+                    }
                 }
                 // wrapper-barrel intermediate 보존: chain 끝 canonical 까지의 intermediate
                 // (lodash.default.js) 가 prune phase 에서 hasAnyUsedExport=false 로 unset
@@ -2214,6 +2223,11 @@ pub const TreeShaker = struct {
         if (module_index < self.has_direct_used_export.len) {
             self.has_direct_used_export[module_index] = true;
         }
+        if (!std.mem.eql(u8, export_name, ALL_EXPORTS_SENTINEL) and
+            module_index < self.has_specific_used_export.len)
+        {
+            self.has_specific_used_export[module_index] = true;
+        }
     }
 
     fn applyNodeBufferCapabilityFacts(self: *TreeShaker) !void {
@@ -2295,15 +2309,8 @@ pub const TreeShaker = struct {
     }
 
     fn hasAnySpecificUsedExport(self: *const TreeShaker, module_index: u32) bool {
-        var it = self.used_exports.keyIterator();
-        while (it.next()) |key_ptr| {
-            const key = key_ptr.*;
-            if (key.len < 5 or key[4] != 0) continue;
-            var key_module: u32 = undefined;
-            @memcpy(std.mem.asBytes(&key_module), key[0..4]);
-            if (key_module != module_index) continue;
-            const name = key[5..];
-            if (!std.mem.eql(u8, name, ALL_EXPORTS_SENTINEL)) return true;
+        if (module_index < self.has_specific_used_export.len) {
+            return self.has_specific_used_export[module_index];
         }
         return false;
     }
