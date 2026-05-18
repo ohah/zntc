@@ -49,6 +49,13 @@ pub const MfBundleConfig = struct {
         name: []const u8,
         singleton: bool = false,
         required_version: ?[]const u8 = null,
+        /// `shared.<pkg>.strictVersion`(표준 MF *shareConfig* 개념 —
+        /// 표준 sdk ManifestShared 스키마 필드는 아님). manifest 에
+        /// additive 게시(producer contract — ManifestShared-typed
+        /// consumer 는 무시) + P3-2 빌드타임: strict 선언 + concrete
+        /// version 비호환 → 경고 아닌 **fail-fast** 격상(별 PR). 런타임
+        /// 강제는 표준 runtime 책임(D1 위임 — share.ts strictVersion→error).
+        strict_version: bool = false,
         eager: bool = false,
         /// container 소유 글로벌 식별자(`__mf_shared_<name>`). mfBundleFromDto
         /// 가 1회 생성·소유(freeMfBundle 해제) → P1-2 seam·P1-4 init 은
@@ -65,6 +72,11 @@ pub const MfBundleConfig = struct {
     /// seam(`__mf_shared_<pkg>`) 채움. 버전 satisfy 판정은 host runtime 책임.
     shared: []const SharedEntry = &.{},
     share_scope: []const u8 = "default",
+    /// host shared 협상 순서. emitHostInit 가 `R.init({…,shareStrategy})`
+    /// 로 배선 → 표준 @module-federation/runtime 이 협상에 적용(D1 위임).
+    /// 기본 "version-first"(runtime default 와 동일). mfBundleFromDto 가
+    /// 항상 owned dup(freeMfBundle 대칭, share_scope 동일 패턴).
+    share_strategy: []const u8 = "version-first",
 };
 
 pub const ModuleIndex = enum(u32) {

@@ -293,6 +293,100 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(Array.isArray(mani.exposes) && mani.exposes.length).toBe(1);
   });
 
+  // #2 감사: shareStrategy/strictVersion config 표면. strictVersion →
+  // ManifestShared 게시(producer contract, sdk 호환). shareStrategy →
+  // host R.init({…,shareStrategy}) 배선(표준 runtime Options.share
+  // Strategy 가 협상순서 적용 — D1 위임). 런타임 강제·P3-2 fail-fast
+  // 격상은 표준 runtime/별 PR. 여기선 config→manifest/init emit 박제.
+  test('#2 shareStrategy/strictVersion: manifest 게시 + host init 배선', async () => {
+    // remote: shared react strictVersion → manifest.shared[].strictVersion
+    const rfx = await createFixture({
+      'Widget.ts': `import { useState } from "react";\nexport default () => typeof useState;`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: {
+            react: { singleton: true, requiredVersion: '^19', strictVersion: true },
+            'react-dom': { requiredVersion: '^19' }, // strictVersion 미지정 → false
+          },
+        },
+      }),
+    });
+    cleanup = rfx.cleanup;
+    const rdist = join(rfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(rfx.dir, [
+          '--bundle',
+          join(rfx.dir, 'index.ts'),
+          '--outdir',
+          rdist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const mani = JSON.parse(await readFile(join(rdist, 'mf-manifest.json'), 'utf8'));
+    const r = mani.shared.find((s: { name: string }) => s.name === 'react');
+    expect(r.strictVersion).toBe(true); // 명시 → true
+    const rd = mani.shared.find((s: { name: string }) => s.name === 'react-dom');
+    expect(rd.strictVersion).toBe(false); // 미지정 → false(P2-0 7필드 + strictVersion)
+    await rfx.cleanup();
+    cleanup = undefined;
+
+    // host: shareStrategy → R.init({…,"shareStrategy":"loaded-first"})
+    const hfx = await createFixture({
+      'index.ts': `globalThis.__x = import("app/W");`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'host',
+          remotes: { app: 'app@http://x/r.js' },
+          shareStrategy: 'loaded-first',
+        },
+      }),
+    });
+    const hostOut = join(hfx.dir, 'host.js');
+    expect(
+      (
+        await runZntcInDir(hfx.dir, [
+          '--bundle',
+          join(hfx.dir, 'index.ts'),
+          '-o',
+          hostOut,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const hsrc = readFileSyncSafe(hostOut);
+    // 표준 @module-federation/runtime 이 읽는 Options.shareStrategy 위치
+    expect(hsrc).toContain('"shareStrategy":"loaded-first"');
+    expect(hsrc).toContain('R.init({"name":"host"'); // 기존 init 보존
+    await hfx.cleanup();
+
+    // 미지정 → runtime default 와 동일 "version-first" 명시 emit
+    const hfx2 = await createFixture({
+      'index.ts': `globalThis.__y = import("a/Z");`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'h2', remotes: { a: 'a@http://x/y' } },
+      }),
+    });
+    cleanup = hfx2.cleanup;
+    const o2 = join(hfx2.dir, 'h2.js');
+    expect(
+      (
+        await runZntcInDir(hfx2.dir, [
+          '--bundle',
+          join(hfx2.dir, 'index.ts'),
+          '-o',
+          o2,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    expect(readFileSyncSafe(o2)).toContain('"shareStrategy":"version-first"');
+  });
+
   // P2-1 (#3421): exposes 있는 remote 가 remotes 도 선언 → manifest.remotes
   // = ManifestRemote[](Omit<RemoteWithEntry,'name'> & {federationContainer
   // Name,moduleName,alias}). 표준 generateSnapshotFromManifest 가

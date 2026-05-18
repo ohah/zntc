@@ -518,6 +518,7 @@ fn dupeKvMap(
 fn freeMfBundle(alloc: std.mem.Allocator, mfb: lib.bundler.MfBundleConfig) void {
     if (mfb.name) |n| alloc.free(n);
     alloc.free(mfb.share_scope);
+    alloc.free(mfb.share_strategy);
     for (mfb.exposes) |kv| {
         alloc.free(kv.key);
         alloc.free(kv.value);
@@ -548,6 +549,8 @@ fn mfBundleFromDto(
     // share_scope 는 항상 owned(default 도 dup) — deinit 해제 대칭(리터럴/
     // owned 혼재 회피).
     out.share_scope = try allocator.dupe(u8, dto.shareScope orelse "default");
+    // share_strategy 도 항상 owned(default 도 dup) — freeMfBundle 대칭.
+    out.share_strategy = try allocator.dupe(u8, dto.shareStrategy orelse "version-first");
 
     if (dto.exposes) |e| out.exposes = try dupeKvMap(allocator, &e.map);
     if (dto.remotes) |r| out.remotes = try dupeKvMap(allocator, &r.map);
@@ -573,6 +576,7 @@ fn mfBundleFromDto(
                 .name = nm,
                 .singleton = c.singleton orelse false,
                 .required_version = rv,
+                .strict_version = c.strictVersion orelse false,
                 .eager = c.eager orelse false,
                 // 글로벌명 1회 생성·소유(seam·init borrow). 단일 규칙.
                 .global_seam = try lib.bundler.federation.mfSharedGlobalName(allocator, nm),
