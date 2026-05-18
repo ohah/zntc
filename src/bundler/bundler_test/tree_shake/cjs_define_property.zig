@@ -28,6 +28,265 @@ test "TreeShaking CJS: named import prunes unused Object.defineProperty exports 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFINE_PROPERTY_MARKER") == null);
 }
 
+test "TreeShaking CJS: __export getter keeps returned local binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { useIsRestoring } from './lib.js'; console.log(useIsRestoring());");
+    try writeFile(tmp.dir, "lib.js",
+        \\var __defProp = Object.defineProperty;
+        \\var __export = (target, all) => {
+        \\  for (var name in all) __defProp(target, name, { get: all[name], enumerable: true });
+        \\};
+        \\var __toCommonJS = (mod) => mod;
+        \\var lib_exports = {};
+        \\__export(lib_exports, {
+        \\  useIsRestoring: () => useIsRestoring,
+        \\  unusedExport: () => unusedExport
+        \\});
+        \\module.exports = __toCommonJS(lib_exports);
+        \\var useIsRestoring = () => "USED_CJS_EXPORT_HELPER_MARKER";
+        \\var unusedExport = () => "UNUSED_CJS_EXPORT_HELPER_MARKER";
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_CJS_EXPORT_HELPER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_CJS_EXPORT_HELPER_MARKER") == null);
+}
+
+test "TreeShaking CJS: whole require preserves member export assignments" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "entry.js",
+        \\const ReactFabric = require("./shim.js").default;
+        \\console.log(ReactFabric.render());
+    );
+    try writeFile(tmp.dir, "shim.js",
+        \\const ReactFabric = __DEV__ ? require("./renderer-dev.js") : require("./renderer-prod.js");
+        \\globalThis.RN$stopSurface = ReactFabric.stopSurface;
+        \\globalThis.registerCallableModule("ReactFabric", ReactFabric);
+        \\exports.default = ReactFabric;
+    );
+    try writeFile(tmp.dir, "renderer-dev.js",
+        \\exports.render = function render() { return "UNUSED_WHOLE_REQUIRE_DEV_RENDER_MARKER"; };
+    );
+    try writeFile(tmp.dir, "renderer-prod.js",
+        \\exports.render = function render() { return "USED_WHOLE_REQUIRE_RENDER_MARKER"; };
+        \\exports.stopSurface = function stopSurface() { return "USED_WHOLE_REQUIRE_STOP_MARKER"; };
+        \\exports.unmountComponentAtNode = function unmountComponentAtNode() {
+        \\  return "USED_WHOLE_REQUIRE_UNMOUNT_MARKER";
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .define = &.{.{ .key = "__DEV__", .value = "false" }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_WHOLE_REQUIRE_RENDER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_WHOLE_REQUIRE_STOP_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_WHOLE_REQUIRE_UNMOUNT_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_WHOLE_REQUIRE_DEV_RENDER_MARKER") == null);
+}
+
+test "TreeShaking CJS: namespace sentinel preserves member export assignments" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "entry.js",
+        \\import("./renderer.js").then((renderer) => {
+        \\  globalThis.registerCallableModule("ReactFabric", renderer);
+        \\});
+    );
+    try writeFile(tmp.dir, "renderer.js",
+        \\exports.render = function render() { return "USED_CJS_SENTINEL_RENDER_MARKER"; };
+        \\exports.stopSurface = function stopSurface() { return "USED_CJS_SENTINEL_STOP_MARKER"; };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_CJS_SENTINEL_RENDER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_CJS_SENTINEL_STOP_MARKER") != null);
+}
+
+test "TreeShaking CJS: default import preserves bare module.exports assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "entry.js",
+        \\import Color from './color.js';
+        \\class Card {
+        \\  render(backgroundColor) {
+        \\    return typeof backgroundColor === "string" ? Color(backgroundColor).alpha() : false;
+        \\  }
+        \\}
+        \\console.log(new Card().render("#fff"));
+    );
+    try writeFile(tmp.dir, "color.js",
+        \\const normalize = require("./normalize.js");
+        \\function Color(value) {
+        \\  if (!(this instanceof Color)) return new Color(value);
+        \\  this.value = normalize(value);
+        \\}
+        \\Color.prototype.alpha = function alpha() {
+        \\  return "USED_BARE_MODULE_EXPORTS_ALPHA_MARKER";
+        \\};
+        \\module.exports = Color;
+    );
+    try writeFile(tmp.dir, "normalize.js",
+        \\module.exports = function normalize(value) {
+        \\  return value;
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_BARE_MODULE_EXPORTS_ALPHA_MARKER") != null);
+    var module_exports_count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOf(u8, result.output[search_from..], "module.exports=")) |offset| {
+        module_exports_count += 1;
+        search_from += offset + "module.exports=".len;
+    }
+    try std.testing.expect(module_exports_count >= 2);
+}
+
+test "TreeShaking CJS: re-exported require member keeps CJS export assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { setupURLPolyfill } from './auto.js';
+        \\setupURLPolyfill();
+        \\console.log(new globalThis.URLSearchParams().tag);
+    );
+    try writeFile(tmp.dir, "auto.js",
+        \\export { setupURLPolyfill } from './index.js';
+    );
+    try writeFile(tmp.dir, "index.js",
+        \\export * from './url.js';
+        \\export * from './url-search-params.js';
+        \\function polyfillGlobal(name, getValue) {
+        \\  globalThis[name] = getValue();
+        \\}
+        \\export function setupURLPolyfill() {
+        \\  polyfillGlobal("URL", () => require("./url.js").URL);
+        \\  polyfillGlobal("URLSearchParams", () => require("./url-search-params.js").URLSearchParams);
+        \\}
+    );
+    try writeFile(tmp.dir, "url.js",
+        \\import { URL } from './whatwg.js';
+        \\URL.createObjectURL = function createObjectURL() {};
+        \\export { URL };
+    );
+    try writeFile(tmp.dir, "url-search-params.js",
+        \\export { URLSearchParams } from './whatwg.js';
+    );
+    try writeFile(tmp.dir, "whatwg.js",
+        \\const { URL, URLSearchParams } = require("./wrapper.js");
+        \\const sharedGlobalObject = {};
+        \\URL.install(sharedGlobalObject);
+        \\URLSearchParams.install(sharedGlobalObject);
+        \\exports.URL = sharedGlobalObject.URL;
+        \\exports.URLSearchParams = sharedGlobalObject.URLSearchParams;
+    );
+    try writeFile(tmp.dir, "wrapper.js",
+        \\exports.URL = {
+        \\  install(object) {
+        \\    object.URL = function URL() {
+        \\      this.tag = "UNUSED_URL_MARKER";
+        \\    };
+        \\  },
+        \\};
+        \\exports.URLSearchParams = {
+        \\  install(object) {
+        \\    object.URLSearchParams = function URLSearchParams() {
+        \\      this.tag = "USED_URL_SEARCH_PARAMS_MARKER";
+        \\    };
+        \\  },
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_URL_SEARCH_PARAMS_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.URLSearchParams=sharedGlobalObject.URLSearchParams") != null);
+}
+
 test "TreeShaking CJS: module.exports defineProperty keeps helper and require target" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
