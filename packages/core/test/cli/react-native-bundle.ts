@@ -71,4 +71,21 @@ describe('CLI: bundle --platform=react-native (#2540 PR #7)', () => {
     expect(exitCode).toBe(0);
     expect(existsSync(out)).toBe(true);
   });
+
+  test('RN CLI 호환: --rn-platform / --rn-project-root pair form도 허용', () => {
+    const out = join(dir, 'out-pair.js');
+    const { exitCode } = runCli([
+      '--bundle',
+      join(dir, 'src/index.ts'),
+      '--platform=react-native',
+      '--rn-platform',
+      'ios',
+      '--rn-project-root',
+      dir,
+      '-o',
+      out,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(existsSync(out)).toBe(true);
+  });
 });
