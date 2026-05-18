@@ -45,10 +45,6 @@ Scope-hoisting at the level of rspack / rolldown.
 
 Only an in-memory parse cache + resolve cache lives across rebuilds within a watch / serve session. A persistent on-disk cache to speed up cold rebuilds is on the backlog.
 
-#### Module Federation
-
-Microfrontend code / asset sharing, comparable to rspack. Not implemented yet.
-
 #### Lazy compilation
 
 On-demand module compilation for faster dev startup. Not implemented yet.
@@ -104,7 +100,7 @@ App mode (`zntc dev` / `zntc build`) supports `.module.css` class-name hashing /
 
 CSS is emitted as a single artifact even when JS is code-split. Per-chunk CSS is deferred.
 
-### Persistent disk cache · Module Federation · Lazy compilation · mangleProps
+### Persistent disk cache · Lazy compilation · mangleProps
 
 See the corresponding "Planned" items.
 

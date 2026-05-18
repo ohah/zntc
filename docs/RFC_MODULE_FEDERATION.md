@@ -263,7 +263,17 @@ P3-1·P3-2·P3-3 = 빌드 핀(fail-fast, S6), P3-5 = 런타임 가드. 각 PR = 
 > 가 local/file resolve 우선, 네트워크 fetch·캐시·신뢰 모델은 P4(RN 보안
 > 모델)/후속. ④ `.d.ts` 타입힌트 **생성**(MF2 `@mf-types` 대응물)은 D3
 > 차별화의 별도 축 → 후속/비-목표(P3 는 *검증*, 타입 생성 아님).
-> ⑤ RN = P4.
+> ⑤ RN = P4. ⑥ **런타임 동적 remote(`registerRemotes()`) 빌드검증 =
+> 원천 비-목표(설계 한계)**: zntc D3 빌드검증(P3-1/2/3)은 config
+> `mf.remotes` ∩ 빌드타임 스캔(정적/동적 import) 으로 식별되는 remote
+> 만 대상. host 코드가 표준 `@module-federation/runtime`
+> `registerRemotes()`/`init({remotes})` 로 **런타임에** 등록하는
+> remote 는 빌드 시점에 존재 자체가 미지 → 계약(expose/shared/무결성)
+> 빌드검증 불가능(있는 것을 못 보는 게 아니라 *없는 것*을 보는 것은
+> 불가). 동작 자체는 표준 runtime 위임으로 정상(zntc 가 막지 않음) —
+> 그 사각은 **런타임 가드(`__mfGuardedLoad`)/표준 `errorLoadRemote`**
+> 가 메우며, 이는 D3 "빌드 핀 + 런타임 가드"(§9)의 의도된 분담.
+> "정적/명시 config 는 빌드 핀, 런타임 동적은 가드"가 일관 모델.
 
 ---
 
