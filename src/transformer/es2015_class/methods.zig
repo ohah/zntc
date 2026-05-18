@@ -118,9 +118,26 @@ pub fn Methods(comptime Transformer: type) type {
                     const arrow_env = es_helpers.pushArrowEnv(self);
                     defer es_helpers.popArrowEnv(self, arrow_env);
 
-                    const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+                    // es2017.zig 의 async-lowering 과 동일 불변식: state machine
+                    // 안에서 optional chaining/nullish/destructuring lowering 이
+                    // 만든 callback-local temp 의 `var _a,_b,..` 선언을 wrapper
+                    // body 안에 지역 hoist 한다. class 메서드 경로(es5 에서 class
+                    // → IIFE 로 먼저 lowering 됨)만 이 hoist 가 누락돼 있었다 —
+                    // 누락 시 temp counter 가 module-top 으로 누수되어, scope-hoist
+                    // 번들 모듈에서 per-module resync 가 module-top `var _a..` 를
+                    // 미사용으로 elide → generator body 의 `_c` 가 미선언 →
+                    // `ReferenceError: _c is not defined` (react-query v5 smoke).
+                    const saved_temp_counter = self.temp_var_counter;
+                    var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
                     defer self.generator_temp_var_spans.clearRetainingCapacity();
+                    // body == none 은 buildStateMachine 의 empty-body 조기반환뿐
+                    // (temp 미할당) → counter 복원 불필요, non-generator 경로로
+                    // fall-through 안전. 복원은 hoist 와 함께 if 안에서만 수행.
                     if (!sm_result.body.isNone()) {
+                        if (self.temp_var_counter > saved_temp_counter) {
+                            sm_result.body = try self.hoistTempVarsSkippingSpans(sm_result.body, saved_temp_counter, span, self.generator_temp_var_spans.items);
+                        }
+                        self.temp_var_counter = saved_temp_counter;
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen_call, span);
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
