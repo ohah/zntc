@@ -787,6 +787,16 @@ pub const Linker = struct {
         defer exported.deinit();
         var reserved = std.StringHashMap(void).init(self.allocator);
         defer reserved.deinit();
+
+        // Scope-hoisted output shares one top-level lexical environment. If a
+        // minified top-level declaration reuses an unresolved global name
+        // (`Set`, `Promise`, app-provided globals, ...), the declaration is
+        // hoisted and shadows that global even in modules evaluated earlier.
+        var global_it = self.reserved_globals.keyIterator();
+        while (global_it.next()) |name| {
+            try reserved.put(name.*, {});
+        }
+
         var mit = self.graph.modulesIterator();
         while (mit.next()) |m| {
             if (m.is_entry_point) {
@@ -1069,6 +1079,8 @@ pub const Linker = struct {
         defer scope.end();
 
         const um = @import("../codegen/unified_mangler.zig");
+
+        try self.collectReservedGlobals();
 
         var collected = try self.collectUnifiedInput();
         // bitsets 은 linker 로 이관 후 free, candidates/modules/reserved/import_refs 는 여기서 해제.

@@ -102,6 +102,38 @@ test "Bundler: minified output" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "// ---") == null);
 }
 
+test "Bundler: unresolved globals reserve minified top-level names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts",
+        \\function localFunctionName() { return 1; }
+        \\export const value = localFunctionName();
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value } from './dep';
+        \\globalThis.__RESULT__ = [value, t];
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "globalThis.__RESULT__") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ",t]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function t(") == null);
+}
+
 test "Bundler: minify가 래퍼 합성 심볼을 짧은 이름으로 바꿈" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
