@@ -476,6 +476,7 @@ pub fn resyncAfterAstMutation(
         module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
         module.has_cjs_export_signal = refreshed_scan_result.has_module_exports or refreshed_scan_result.has_exports_dot;
+        module.has_esmodule_marker = refreshed_scan_result.has_esmodule_marker;
         module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(
             module.wrap_kind == .cjs,
             refreshed_scan_result.has_module_exports,

@@ -150,6 +150,7 @@ pub fn materialize(
     module.exports_kind = determineExportsKind(scan_result, module.path);
     module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
     module.has_cjs_export_signal = scan_result.has_module_exports or scan_result.has_exports_dot;
+    module.has_esmodule_marker = scan_result.has_esmodule_marker;
     module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(
         module.wrap_kind == .cjs,
         scan_result.has_module_exports,
