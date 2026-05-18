@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
+  BENCHMARK_MAX_BUFFER,
   ROOT,
   ZNTC_BIN,
   buildBin as buildBinShared,
@@ -107,7 +108,11 @@ function runZntc(
   }
 
   const start = performance.now();
-  const r = spawnSync(ZNTC_BIN, args, { stdio: 'pipe', timeout: 30000 });
+  const r = spawnSync(ZNTC_BIN, args, {
+    stdio: 'pipe',
+    timeout: 30000,
+    maxBuffer: BENCHMARK_MAX_BUFFER,
+  });
   const wall_ms = performance.now() - start;
   if (r.status !== 0) {
     throw new Error(`zntc failed: ${r.stderr?.toString().slice(0, 400)}`);
@@ -132,7 +137,11 @@ function runRolldown(bin: string, entry: string, outDir: string, externals: stri
   if (externals.length > 0) args.push('--external', externals.join(','));
 
   const start = performance.now();
-  const r = spawnSync(bin, args, { stdio: 'pipe', timeout: 30000 });
+  const r = spawnSync(bin, args, {
+    stdio: 'pipe',
+    timeout: 30000,
+    maxBuffer: BENCHMARK_MAX_BUFFER,
+  });
   const wall_ms = performance.now() - start;
   if (r.status !== 0) {
     throw new Error(`rolldown failed: ${r.stderr?.toString().slice(0, 600)}`);
@@ -169,6 +178,7 @@ function runRspack(bin: string, configPath: string, outDir: string): RunResult {
     cwd: ROOT,
     stdio: 'pipe',
     timeout: 30000,
+    maxBuffer: BENCHMARK_MAX_BUFFER,
   });
   const wall_ms = performance.now() - start;
   if (r.status !== 0) {

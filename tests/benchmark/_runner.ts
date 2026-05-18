@@ -12,6 +12,11 @@ import { join, resolve } from 'node:path';
 export const ROOT = resolve(__dirname, '../..');
 export const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 
+/// `spawnSync` 의 기본 maxBuffer (1MB) 가 `--profile-level=detailed` 의 1000-module
+/// profile JSON 출력 등을 자를 수 있다 (#3494 perf 회귀). 64MB 면 detailed profile
+/// 도 충분히 수용. 다른 벤치마크에서도 동일한 truncate 회피용으로 재사용.
+export const BENCHMARK_MAX_BUFFER = 64 * 1024 * 1024;
+
 export function buildBin(label: string): void {
   if (existsSync(ZNTC_BIN)) return;
   console.log(`[${label}] zntc binary not found, building ReleaseFast...`);
