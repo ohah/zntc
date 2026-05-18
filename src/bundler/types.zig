@@ -61,6 +61,11 @@ pub const MfBundleConfig = struct {
         /// 가 1회 생성·소유(freeMfBundle 해제) → P1-2 seam·P1-4 init 은
         /// borrow(재-alloc 0, 누수 0). 단일 규칙=federation.mfSharedGlobalName.
         global_seam: []const u8 = "",
+        /// #4-0: 이 shared 가 속할 named share scope. mfBundleFromDto 가
+        /// per-shared→번들→"default" 해석 후 항상 owned dup(소유·불변 규칙은
+        /// 번들 `share_scope` 와 동일). #4-1 컨테이너 init 다중-scope 해석
+        /// (`remoteEntryInitOptions.shareScopeMap[scope]`)에서 소비.
+        share_scope: []const u8 = "default",
     };
     name: ?[]const u8 = null,
     /// `{ "./Widget": "./src/Widget.tsx" }` → [{"./Widget","./src/Widget.tsx"}]

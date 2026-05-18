@@ -200,6 +200,12 @@ pub const MfSharedDto = struct {
     requiredVersion: ?[]const u8 = null,
     strictVersion: ?bool = null,
     eager: ?bool = null,
+    /// #4-0: 이 shared 가 속할 named share scope. 미지정 → 번들 `shareScope`
+    /// 상속(그것도 미지정이면 "default"). MF2 `shared[].shareScope` 동형.
+    /// string-first — `string[]` 다중-scope 는 후속(P1-0 array/boolean
+    /// shorthand 이연 선례 동일). default 외 사용처: gradual upgrade·
+    /// 도메인 격리. emit 반영은 #4-1(컨테이너 init 다중-scope 해석).
+    shareScope: ?[]const u8 = null,
 };
 
 pub const MfValidationError = error{
@@ -261,6 +267,12 @@ test "validateMf: record 형태 + exposes/remotes 있으면 name 필수" {
         defer v.deinit();
         try validateMf(&v.value);
         try std.testing.expect(v.value.shared.?.map.get("react").?.singleton.?);
+    }
+    { // #4-0: per-shared shareScope 파싱(string). 미지정 = null(번들 상속)
+        const v = try J.p(a, "{\"shared\":{\"react\":{\"shareScope\":\"ui\"},\"lodash\":{}}}");
+        defer v.deinit();
+        try std.testing.expectEqualStrings("ui", v.value.shared.?.map.get("react").?.shareScope.?);
+        try std.testing.expect(v.value.shared.?.map.get("lodash").?.shareScope == null);
     }
     { // 빈 record = 미선언
         const v = try J.p(a, "{\"exposes\":{}}");
