@@ -260,69 +260,91 @@ pub fn verifyHostContract(
     src: []const u8,
     mf: *const types.MfBundleConfig,
     cwd: ?[]const u8,
+    /// PR-3 (#3459): 정적 `import … from "remote/x"` 는 codegen 이
+    /// elide(PR-1) → `nextRemoteImport`(동적 `import(` 스캔)에 안 잡힘.
+    /// metadata.zig 가 수집한 정적 spec(emitHostInit 와 동일 집합)을
+    /// 받아 동적과 **동일 per-spec 검증**(P3-1/2/3) 적용 — 정적 import
+    /// 의 expose 부재 fail-fast 갭을 닫는다(verifyOneRemoteSpec 단일소스).
+    static_specs: []const []const u8,
 ) !void {
     var i: usize = 0;
-    while (nextRemoteImport(src, mf, &i)) |h| {
-        const kv = for (mf.remotes) |kv| {
-            if (federation.matchesRemoteSpec(h.spec, kv.key)) break kv;
-        } else continue;
-        const r = parseRemote(kv);
-        // 검증 불가(http=P4 / 부재 / 파싱불가) = 위반 아님 → skip(정밀
-        // fail-fast). 단 OOM 은 빌드 자원 문제 → silent skip 금지, 전파.
-        var rc = mf_contract.loadContract(allocator, cwd, r.entry) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => continue,
-        };
-        defer rc.deinit();
-        // P3-3: 무결성 — sidecar(P2-2 SHA-256)/`.sig`(P2-3 Ed25519)와
-        // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임
-        // 절반). sidecar/sig 부재·malformed = 검증 불가 ≠ 위반 → expose/
-        // shared 로 진행(continue 아님 — 무결성 미검증이 P3-1/2 를 건너뛰면
-        // 안 됨). 정밀 fail-fast: 확정 변조만 차단.
-        mf_contract.verifyIntegrity(allocator, cwd, r.entry) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.MfIntegrityMismatch => {
-                std.log.err(
-                    "zntc: MF 무결성 위반 — remote \"{s}\" 의 mf-manifest.json 이 sidecar(.integrity.json) SHA-256 과 불일치 (stale 또는 변조; 빌드 차단 — remote 재배포 필요)",
-                    .{kv.key},
-                );
-                return error.MfIntegrityMismatch;
-            },
-            error.MfIntegritySignatureInvalid => {
-                std.log.err(
-                    "zntc: MF 서명 위반 — remote \"{s}\" 의 sidecar Ed25519 `.sig` 검증 실패 (변조 또는 잘못된 키; 빌드 차단)",
-                    .{kv.key},
-                );
-                return error.MfIntegritySignatureInvalid;
-            },
-            else => {}, // 검증 불가(sidecar 부재/malformed/network) → 진행
-        };
-        // P3-1: expose 존재
-        if (!exposeListed(rc.exposes, h.spec, kv.key)) {
+    while (nextRemoteImport(src, mf, &i)) |h|
+        try verifyOneRemoteSpec(allocator, h.spec, mf, cwd);
+    for (static_specs) |spec|
+        try verifyOneRemoteSpec(allocator, spec, mf, cwd);
+}
+
+/// host import spec 1개의 P3-1(expose)·P3-2(shared)·P3-3(무결성) 검증.
+/// 동적(`nextRemoteImport`)·정적(`static_specs`) 양쪽이 공유하는 단일
+/// 소스(중복 검증 로직 금지). spec 이 remote 와 매칭 안 됨 / manifest
+/// 로컬 resolve 불가(http=P4·부재·파싱불가)면 **검증 불가 ≠ 위반 →
+/// 통과**(정밀 fail-fast). 같은 spec 다중 import·정적∩동적 중복 검증
+/// 가능(소규모 — P3-1 선례대로 허용, dedup 후속).
+fn verifyOneRemoteSpec(
+    allocator: std.mem.Allocator,
+    spec: []const u8,
+    mf: *const types.MfBundleConfig,
+    cwd: ?[]const u8,
+) !void {
+    const kv = for (mf.remotes) |kv| {
+        if (federation.matchesRemoteSpec(spec, kv.key)) break kv;
+    } else return;
+    const r = parseRemote(kv);
+    // 검증 불가(http=P4 / 부재 / 파싱불가) = 위반 아님 → 통과(정밀
+    // fail-fast). 단 OOM 은 빌드 자원 문제 → silent skip 금지, 전파.
+    var rc = mf_contract.loadContract(allocator, cwd, r.entry) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return,
+    };
+    defer rc.deinit();
+    // P3-3: 무결성 — sidecar(P2-2 SHA-256)/`.sig`(P2-3 Ed25519)와
+    // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임
+    // 절반). sidecar/sig 부재·malformed = 검증 불가 ≠ 위반 → expose/
+    // shared 로 진행(continue 아님 — 무결성 미검증이 P3-1/2 를 건너뛰면
+    // 안 됨). 정밀 fail-fast: 확정 변조만 차단.
+    mf_contract.verifyIntegrity(allocator, cwd, r.entry) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.MfIntegrityMismatch => {
             std.log.err(
-                "zntc: MF expose 계약 위반 — host import \"{s}\" 가 remote \"{s}\" 의 mf-manifest.json exposes 에 없음 (빌드 차단; remote 재배포 또는 스펙 정렬 필요)",
-                .{ h.spec, kv.key },
+                "zntc: MF 무결성 위반 — remote \"{s}\" 의 mf-manifest.json 이 sidecar(.integrity.json) SHA-256 과 불일치 (stale 또는 변조; 빌드 차단 — remote 재배포 필요)",
+                .{kv.key},
             );
-            return error.MfHostExposeMissing;
-        }
-        // P3-2: 양쪽이 선언한 shared 패키지의 singleton·버전 호환
-        for (mf.shared) |hs| {
-            for (rc.shared) |rs| {
-                if (!std.mem.eql(u8, hs.name, rs.name)) continue;
-                switch (sharedVerdict(hs, rs)) {
-                    .ok => {},
-                    .singleton_conflict => {
-                        std.log.err(
-                            "zntc: MF shared singleton 충돌 — '{s}' 가 host(singleton={}) ↔ remote \"{s}\"(singleton={}) 불일치 (빌드 차단; 인스턴스 분열 — 양측 shareConfig.singleton 정렬 필요)",
-                            .{ hs.name, hs.singleton, kv.key, rs.singleton },
-                        );
-                        return error.MfSharedSingletonConflict;
-                    },
-                    .version_warn => std.log.warn(
-                        "zntc: MF shared 버전 경고 — host requiredVersion '{s}' 가 remote \"{s}\" 의 '{s}' 게시버전 '{s}' 을 불만족 (런타임 버전협상 시 폴백 가능; 계약 정렬 권장)",
-                        .{ hs.required_version orelse "", kv.key, rs.name, rs.version },
-                    ),
-                }
+            return error.MfIntegrityMismatch;
+        },
+        error.MfIntegritySignatureInvalid => {
+            std.log.err(
+                "zntc: MF 서명 위반 — remote \"{s}\" 의 sidecar Ed25519 `.sig` 검증 실패 (변조 또는 잘못된 키; 빌드 차단)",
+                .{kv.key},
+            );
+            return error.MfIntegritySignatureInvalid;
+        },
+        else => {}, // 검증 불가(sidecar 부재/malformed/network) → 진행
+    };
+    // P3-1: expose 존재
+    if (!exposeListed(rc.exposes, spec, kv.key)) {
+        std.log.err(
+            "zntc: MF expose 계약 위반 — host import \"{s}\" 가 remote \"{s}\" 의 mf-manifest.json exposes 에 없음 (빌드 차단; remote 재배포 또는 스펙 정렬 필요)",
+            .{ spec, kv.key },
+        );
+        return error.MfHostExposeMissing;
+    }
+    // P3-2: 양쪽이 선언한 shared 패키지의 singleton·버전 호환
+    for (mf.shared) |hs| {
+        for (rc.shared) |rs| {
+            if (!std.mem.eql(u8, hs.name, rs.name)) continue;
+            switch (sharedVerdict(hs, rs)) {
+                .ok => {},
+                .singleton_conflict => {
+                    std.log.err(
+                        "zntc: MF shared singleton 충돌 — '{s}' 가 host(singleton={}) ↔ remote \"{s}\"(singleton={}) 불일치 (빌드 차단; 인스턴스 분열 — 양측 shareConfig.singleton 정렬 필요)",
+                        .{ hs.name, hs.singleton, kv.key, rs.singleton },
+                    );
+                    return error.MfSharedSingletonConflict;
+                },
+                .version_warn => std.log.warn(
+                    "zntc: MF shared 버전 경고 — host requiredVersion '{s}' 가 remote \"{s}\" 의 '{s}' 게시버전 '{s}' 을 불만족 (런타임 버전협상 시 폴백 가능; 계약 정렬 권장)",
+                    .{ hs.required_version orelse "", kv.key, rs.name, rs.version },
+                ),
             }
         }
     }
