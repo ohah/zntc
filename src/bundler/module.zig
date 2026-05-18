@@ -140,8 +140,9 @@ pub const Module = struct {
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
-    /// dependency lookup 시작 디렉토리. preserve_symlinks=true 에서 symlink 를 거친
-    /// logical dirname 을 보존한다. null 이면 dirname(path)를 사용.
+    /// dependency lookup 시작 디렉토리. null 이면 dirname(path)를 사용한다.
+    /// preserve_symlinks=true 에서는 보통 null 로 두어 logical dirname 이 1차 기준이
+    /// 되게 한다. realpath sibling lookup 은 resolver fallback 에서 처리한다.
     resolve_dir: ?[]const u8 = null,
     /// dev mode 모듈 ID. bundler에서 한 번 계산 (path의 서브슬라이스, 할당 없음).
     dev_id: []const u8 = "",

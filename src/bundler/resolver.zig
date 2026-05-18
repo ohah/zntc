@@ -304,17 +304,17 @@ pub const Resolver = struct {
     /// symlink 를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks).
     /// esbuild/Node `--preserve-symlinks` 호환: makeResult() 에서 link path 를 module
     /// identity 로 그대로 사용한다. 같은 realpath 라도 link path 가 다르면 별도 모듈
-    /// 인스턴스로 취급된다 — RN/pnpm 처럼 identity 는 logical 로 유지하되 후속 bare
-    /// lookup 을 real package 디렉토리에서 시작하고 싶다면 `resolve_symlink_siblings` 도
-    /// 함께 켠다.
+    /// 인스턴스로 취급된다. RN/pnpm 처럼 identity 와 후속 bare lookup 의 1차 기준을
+    /// logical path 로 유지하되, real package 옆 dependency 를 fallback 으로 보려면
+    /// `resolve_symlink_siblings` 도 함께 켠다.
     preserve_symlinks: bool = false,
-    /// `preserve_symlinks` 로 logical path 를 module identity 로 보존하는 경우에도,
-    /// symlink 로 resolve 된 모듈의 후속 bare specifier 는 realpath 디렉토리에서
-    /// 시작할 수 있게 한다.
+    /// `preserve_symlinks` 로 logical path 를 module identity 로 보존한 상태에서,
+    /// logical node_modules 탐색이 실패한 bare specifier 를 realpath 디렉토리 기준으로
+    /// 한 번 더 찾는다.
     /// pnpm 처럼 `app/node_modules/pkg` 가 `.pnpm/.../pkg` 로 symlink 된 환경에서,
     /// `pkg` 의 sibling dependency (예: `code-push`) 가 `.pnpm/.../node_modules/` 에만
-    /// 존재하거나, `.pnpm/node_modules` 의 다른 버전보다 package-local 버전이 우선되어야
-    /// 하는 경우 Metro/Node 와 같은 결과를 만든다.
+    /// 존재하는 경우 Metro/Node 와 같은 결과를 만든다. workspace symlink 패키지는
+    /// 앱의 logical node_modules 를 먼저 보므로 consuming app dependency 를 놓치지 않는다.
     /// `preserve_symlinks` 와 직교한 옵션이며, 둘은 함께 켜는 것이 일반적이다.
     resolve_symlink_siblings: bool = false,
     /// `resolveNodeModules` 의 parent dir walk-up 차단 (Metro `resolver.
@@ -910,9 +910,13 @@ pub const Resolver = struct {
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
-        // preserve_symlinks=true → link path 를 module identity 로 그대로 사용 (esbuild/Node).
-        // resolve_symlink_siblings=true 이면 identity 는 유지하되 resolve_dir 만 realpath 로
-        // 기록해 후속 bare lookup 이 pnpm package-local dependency 를 먼저 보게 한다.
+        // preserve_symlinks=true → link path 를 module identity 와 1차 resolve 기준으로
+        // 그대로 사용한다 (Metro/Node --preserve-symlinks). 일반 app/workspace
+        // node_modules symlink 는 realpath sibling lookup 을 resolveInner() fallback 에서만
+        // 수행한다. 여기서 resolve_dir 을 realpath 로 바꾸면 workspace symlink package 가
+        // consuming app node_modules 를 건너뛰는 회귀가 발생한다. 단,
+        // `.pnpm/node_modules` virtual store 엔트리는 그 자체가 global hoist facade 이므로
+        // package-local dependency 우선순위를 위해 real resolve_dir 을 유지한다.
         // false → bun(.bun/) / pnpm(.pnpm/) 의 symlink 를 realpath 로 해석해 중첩 node_modules
         // 탐색이 올바른 계층에서 동작하게 한다.
         const resolved = blk: {
@@ -929,7 +933,9 @@ pub const Resolver = struct {
                 self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         };
         errdefer self.allocator.free(resolved);
-        const resolve_dir = if (self.preserve_symlinks and self.resolve_symlink_siblings)
+        const resolve_dir = if (self.preserve_symlinks and
+            self.resolve_symlink_siblings and
+            shouldUseRealResolveDirForLogicalPath(path))
             try self.realResolveDirForLogicalPath(path, resolved)
         else
             null;
@@ -940,6 +946,11 @@ pub const Resolver = struct {
             .module_type = ModuleType.fromExtension(ext),
             .resolve_dir = resolve_dir,
         };
+    }
+
+    fn shouldUseRealResolveDirForLogicalPath(path: []const u8) bool {
+        return std.mem.indexOf(u8, path, ".pnpm/node_modules/") != null or
+            std.mem.indexOf(u8, path, ".pnpm\\node_modules\\") != null;
     }
 
     fn realResolveDirForLogicalPath(self: *Resolver, path: []const u8, logical_path: []const u8) ResolveError!?[]const u8 {
