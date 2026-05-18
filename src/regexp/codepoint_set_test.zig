@@ -21,6 +21,42 @@ test "CodePointSet normalize — 정렬 + 인접/중첩 병합" {
     try std.testing.expectEqual(@as(u32, 0x60), r[1].max);
 }
 
+test "CodePointSet complement — [0,0x10FFFF] 여집합 (#3513)" {
+    const a = std.testing.allocator;
+    var s = cps.CodePointSet{};
+    defer s.deinit(a);
+    try s.addOne(a, 0x61); // {a}
+    var c = try s.complement(a);
+    defer c.deinit(a);
+    const r = c.items();
+    try std.testing.expectEqual(@as(usize, 2), r.len);
+    try std.testing.expectEqual(@as(u32, 0), r[0].min);
+    try std.testing.expectEqual(@as(u32, 0x60), r[0].max);
+    try std.testing.expectEqual(@as(u32, 0x62), r[1].min);
+    try std.testing.expectEqual(@as(u32, 0x10FFFF), r[1].max);
+}
+
+test "CodePointSet complement — 빈 집합 → 전체 / 전체 → 빈" {
+    const a = std.testing.allocator;
+    {
+        var s = cps.CodePointSet{};
+        defer s.deinit(a);
+        var c = try s.complement(a);
+        defer c.deinit(a);
+        try std.testing.expectEqual(@as(usize, 1), c.items().len);
+        try std.testing.expectEqual(@as(u32, 0), c.items()[0].min);
+        try std.testing.expectEqual(@as(u32, 0x10FFFF), c.items()[0].max);
+    }
+    {
+        var s = cps.CodePointSet{};
+        defer s.deinit(a);
+        try s.addRange(a, 0, 0x10FFFF);
+        var c = try s.complement(a);
+        defer c.deinit(a);
+        try std.testing.expectEqual(@as(usize, 0), c.items().len);
+    }
+}
+
 fn expectPieces(lo: u32, hi: u32, expected: []const cps.Piece) !void {
     const a = std.testing.allocator;
     var out: std.ArrayList(cps.Piece) = .empty;

@@ -31,6 +31,9 @@ pub const Options = struct {
     strip_named: bool = false,
     /// astral `\u{XXXXX}` (cp>0xFFFF) → surrogate pair 2 노드
     unicode_brace: bool = false,
+    /// `i` flag 활성 여부. negated class 의 정확 다운레벨은 case-fold 와
+    /// 얽히므로(#3511), `i`+`u` negated 는 보수적으로 게이트(미변환).
+    ignore_case: bool = false,
 };
 
 pub const NamedGroup = struct {
@@ -331,20 +334,34 @@ const T = struct {
                 return self.b.add(.{ .tag = .lookaround_assertion, .span = n.span, .data = .{ n.data[0], @intFromEnum(body), 0 } });
             },
             .character_class => {
-                // #3509: u-strip 시 astral 포함 positive class 를 정확
-                // surrogate-alternation 으로. negative/property/class_string
-                // 등은 미지원 → incomplete 표시 후 기존 경로(기존 동작 유지,
-                // lower() 가 u 보존 판단).
-                if (self.opts.unicode_brace and self.classHasAstral(n)) {
+                // u-strip 시 class 를 code-point set 으로 정확 다운레벨:
+                //  - positive + astral (#3509): set → surrogate-alternation
+                //  - negated (#3513): u 에선 code-point 의미 → 항상 complement
+                //    ([0,0x10FFFF]-set) 재작성 (regexpu UNICODE_SET-singleChars).
+                //    단 i+u negated 는 case-fold 얽힘(#3511) → 게이트 유지.
+                // 미지원(\p{}/class_string/\D\W\S/i+u-neg) → incomplete →
+                // 기존 경로 + lower() 가 u 보존(silent 오변환 0).
+                if (self.opts.unicode_brace) {
                     const negative = (n.data[0] & 1) != 0;
-                    if (!negative) {
+                    if (negative) {
+                        if (!self.opts.ignore_case) {
+                            var set = cps.CodePointSet{};
+                            defer set.deinit(self.b.a);
+                            if (try self.collectClassSet(n, &set)) {
+                                var comp = try set.complement(self.b.a);
+                                defer comp.deinit(self.b.a);
+                                return self.buildAstralClassRewrite(&comp, n.span);
+                            }
+                        }
+                        self.astral_u_incomplete = true;
+                    } else if (self.classHasAstral(n)) {
                         var set = cps.CodePointSet{};
                         defer set.deinit(self.b.a);
                         if (try self.collectClassSet(n, &set)) {
                             return self.buildAstralClassRewrite(&set, n.span);
                         }
+                        self.astral_u_incomplete = true;
                     }
-                    self.astral_u_incomplete = true;
                 }
                 const saved = self.in_class;
                 self.in_class = true;

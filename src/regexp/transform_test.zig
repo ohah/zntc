@@ -67,14 +67,27 @@ test "#3509 transform — positive class astral → surrogate-alternation (regex
     try expectTransform("[\\u{10000}-\\u{10FFFF}]", "u", o, "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])");
 }
 
-test "#3509 safety gate — negated/property astral 는 미변환(incomplete)" {
-    const a = std.testing.allocator;
+test "#3513 negated class (non-i) → complement surrogate-alternation" {
     const o = transform.Options{ .unicode_brace = true };
-    // negated astral class → slice 미지원 → 변환 안 함 + incomplete 표시
+    // [^a]/u = code-point 의미 → [0,0x10FFFF]-{a} complement.
+    try expectTransform("[^a]", "u", o, "(?:[\\u0000-\\u0060\\u0062-\\uFFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])");
+}
+
+test "#3513 safety gate — i+u negated 는 미변환(case-fold #3511)" {
+    const a = std.testing.allocator;
+    // i+u negated → case-fold 얽힘 → 보수적 게이트(incomplete, u 보존).
     {
-        var in = mod.parse("[^\\u{1F600}]", "u", a) orelse return error.ParseFailed;
+        var in = mod.parse("[^\\u{1F600}]", "iu", a) orelse return error.ParseFailed;
         defer in.deinit();
-        var r = try transform.transform(in, o, a);
+        var r = try transform.transform(in, .{ .unicode_brace = true, .ignore_case = true }, a);
+        defer r.deinit();
+        try std.testing.expect(r.astral_u_incomplete);
+    }
+    // \p{} 포함 → 여전히 미지원(데이터 백로그 #3512).
+    {
+        var in = mod.parse("[\\p{L}\\u{1F600}]", "u", a) orelse return error.ParseFailed;
+        defer in.deinit();
+        var r = try transform.transform(in, .{ .unicode_brace = true }, a);
         defer r.deinit();
         try std.testing.expect(r.astral_u_incomplete);
     }
