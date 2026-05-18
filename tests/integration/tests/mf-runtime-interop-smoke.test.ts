@@ -808,6 +808,63 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(stderr).not.toMatch(/RUNTIME-00\d|runtime guard|does not contain "init"/);
   }, 30000);
 
+  // PR-3 (#3459): 정적 import 도 P3-1 expose 계약 검증. 정적 import 는
+  // codegen elide → verifyHostContract 의 동적 `import(` 스캔에 안 잡혀
+  // 검증 갭이었음. metadata.zig 수집 정적 spec 을 verifyHostContract
+  // 가 동적과 동일 per-spec 검증(verifyOneRemoteSpec 단일소스) →
+  // 정적 부재 expose 도 빌드 fail-fast(S6).
+  test('PR-3 정적 import P3-1: 부재 expose 정적 import → 빌드 fail-fast', async () => {
+    const rfx = await createFixture({
+      'Widget.ts': `export default function W(){ return "OK"; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts' } },
+      }),
+    });
+    const rdist = join(rfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(rfx.dir, [
+          '--bundle',
+          join(rfx.dir, 'index.ts'),
+          '--outdir',
+          rdist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const prev = cleanup;
+    cleanup = async () => {
+      await prev?.();
+      await rfx.cleanup();
+    };
+    const buildHost = async (importLine: string) => {
+      const hfx = await createFixture({
+        'index.ts': `${importLine}\nglobalThis.__r = 1;`,
+        'zntc.config.json': JSON.stringify({
+          mf: { name: 'host', remotes: { app: `app@${manifestAbs}` } },
+        }),
+      });
+      const r = await runZntcInDir(hfx.dir, [
+        '--bundle',
+        join(hfx.dir, 'index.ts'),
+        '-o',
+        join(hfx.dir, 'host.js'),
+        '--format=iife',
+      ]);
+      await hfx.cleanup();
+      return r;
+    };
+    // 정적 존재 expose → 빌드 성공(정밀 — blanket 아님)
+    expect((await buildHost('import W from "app/Widget";')).exitCode).toBe(0);
+    // 정적 부재 expose → 빌드 fail-fast(verifyOneRemoteSpec 정적 경로)
+    const bad = await buildHost('import X from "app/Missing";');
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain('MF expose 계약 위반');
+    expect(bad.stderr).toContain('"app/Missing"');
+  }, 30000);
+
   // P3-1 (#3436): 빌드타임 expose 계약 검증(D3, 스파이크 S6). host import
   // 가 remote 의 게시 mf-manifest.json exposes 에 **없으면 빌드 fail-fast**
   // (런타임 깨짐 아님 — MF2 의 stale 런타임-실패 대비 차별화). resolve

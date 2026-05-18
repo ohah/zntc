@@ -711,3 +711,109 @@ test('P3-5 런타임-가드(실브라우저): 도달가능 remote의 런타임 e
     await rm(hostDir, { recursive: true, force: true });
   }
 });
+
+// PR-3 (#3459): 정적 `import X from "remote/x"` 가 **실 Chromium** 에서
+// 표준 @module-federation/[email protected] 으로 동작(S3-대칭, 동적 대신
+// 정적). PR-2 async preload-gate 가 정적 import binding(seam 글로벌)을
+// loadRemote 결과로 채운 뒤 host body 실행. default/named/namespace
+// 3형태 + http manifest entry + cross-origin http chunk 전체경로.
+test('PR-3 정적 import(실브라우저): default/named/namespace 표준 runtime 렌더', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const remoteDir = await mkdtemp(join(tmpdir(), 'zntc-pr3si-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-pr3si-host-'));
+  let remoteSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const remoteDist = join(remoteDir, 'dist');
+    await mkdir(remoteDist, { recursive: true });
+    remoteSrv = await serve(remoteDist, { 'Access-Control-Allow-Origin': '*' });
+    const rOrigin = `http://localhost:${remoteSrv.port}`;
+    await writeFile(
+      join(remoteDir, 'Widget.ts'),
+      `export default () => "DEF-OK";\nexport const meta = "MET-OK";`,
+    );
+    await writeFile(join(remoteDir, 'index.ts'), `export const sentinel = "re";`);
+    await writeFile(
+      join(remoteDir, 'zntc.config.json'),
+      JSON.stringify({ mf: { name: 'app', exposes: { './Widget': './Widget.ts' } } }),
+    );
+    const rb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(remoteDir, 'index.ts'),
+        '--outdir',
+        remoteDist,
+        '--format=iife',
+        '--platform=browser',
+        `--public-path=${rOrigin}/`,
+      ],
+      { cwd: remoteDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(rb.status, `remote build: ${rb.stderr?.toString().slice(0, 400)}`).toBe(0);
+
+    // 정적 3형태 — PR-1 elide + PR-2 gate. body 는 gate `.then` 으로
+    // deferral(seam 채운 뒤 실행). http manifest entry → 빌드타임 P3-1
+    // skip(네트워크=비-목표) → 빌드 성공, 런타임 표준 runtime 이 로드.
+    await writeFile(
+      join(hostDir, 'index.ts'),
+      `import W from "app/Widget";\n` +
+        `import { meta } from "app/Widget";\n` +
+        `import * as NS from "app/Widget";\n` +
+        `document.getElementById("out").textContent = W() + "|" + meta + "|" + (typeof NS.default);\n` +
+        `window.__done = true;`,
+    );
+    await writeFile(
+      join(hostDir, 'zntc.config.json'),
+      JSON.stringify({
+        mf: { name: 'host', remotes: { app: `app@${rOrigin}/mf-manifest.json` } },
+      }),
+    );
+    const hb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(hostDir, 'index.ts'),
+        '-o',
+        join(hostDir, 'host.js'),
+        '--format=iife',
+        '--platform=browser',
+      ],
+      { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(hb.status, `host build: ${hb.stderr?.toString().slice(0, 500)}`).toBe(0);
+
+    await buildGlue(hostDir);
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script></head><body><div id="out">pending</div>` +
+        `<script src="./host.js"></script></body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    const seen: Record<string, number> = {};
+    page.on('response', (r) => {
+      if (r.url() === `${rOrigin}/mf-manifest.json`) seen.manifest = r.status();
+    });
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 20000,
+    });
+
+    // 정적 3형태 실행: default→W()=DEF-OK, named→meta=MET-OK,
+    // namespace→typeof NS.default=function. 폴백/스텁이면 불일치 → fail.
+    expect(await page.locator('#out').textContent()).toBe('DEF-OK|MET-OK|function');
+    expect(seen.manifest, 'remote mf-manifest.json fetched').toBe(200);
+    expect(pageErrors, `pageerror: ${pageErrors.join(', ')}`).toHaveLength(0);
+  } finally {
+    if (remoteSrv) await closeServer(remoteSrv.server);
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(remoteDir, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
