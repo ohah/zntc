@@ -235,6 +235,51 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(ab.id).toBe('app:a/B'); // './' 만 제거(중첩 경로 보존)
   });
 
+  // #3468: expose 가 CSS import 시 그 CSS 청크 산출을 manifest
+  // exposes[].assets.css.async 에 게시 → 표준 preloadRemote 가
+  // stylesheet 도 prefetch(JS 와 동일 lazy). CSS 없는 expose 는 빈
+  // [] 유지(무회귀). css_emit.planChunkHrefs(chunk→CSS basename) ↔
+  // chunk_graph.getModuleChunk(expose 모듈) 연결(단일 소스).
+  test('#3468 CSS assets: expose CSS import → manifest css.async 게시', async () => {
+    const fx = await createFixture({
+      'w.css': `.w{color:red}`,
+      'Widget.ts': `import "./w.css";\nexport default function W(){ return "CSS-OK"; }`,
+      // CSS 미import expose — css.async 빈 [] 유지(무회귀 박제)
+      'Plain.ts': `export default function P(){ return "PLAIN"; }`,
+      'index.ts': `export const s = "re";`,
+      'zntc.config.json': JSON.stringify({
+        mf: { name: 'app', exposes: { './Widget': './Widget.ts', './Plain': './Plain.ts' } },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(fx.dir, [
+          '--bundle',
+          join(fx.dir, 'index.ts'),
+          '--outdir',
+          dist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const files = await readdir(dist);
+    const mani = JSON.parse(await readFile(join(dist, 'mf-manifest.json'), 'utf8'));
+    const w = mani.exposes.find((e: { name: string }) => e.name === './Widget');
+    // CSS import expose → css.async = [실제 산출 CSS 파일](preloadRemote 가
+    // 이걸 prefetch). 매니페스트가 가리키는 파일이 실재해야 함.
+    expect(w.assets.css.async.length).toBe(1);
+    expect(files).toContain(w.assets.css.async[0]);
+    expect(w.assets.css.async[0]).toMatch(/\.css$/);
+    expect(w.assets.css.sync).toEqual([]); // sync 는 js 와 동일 사유 []
+    expect(w.assets.js.async.length).toBe(1); // js 경로 무회귀
+    const p = mani.exposes.find((e: { name: string }) => e.name === './Plain');
+    // CSS 미import expose → 빈 [] 유지(무회귀: 기존 동작 불변)
+    expect(p.assets.css.async).toEqual([]);
+    expect(p.assets.css.sync).toEqual([]);
+  });
+
   // P2-0 (#3420): manifest.shared 정밀. mf.shared → ManifestShared
   // (@module-federation/sdk: id/name/version/singleton/requiredVersion/
   // hash/assets). 표준 generateSnapshotFromManifest 가 name/version 으로
