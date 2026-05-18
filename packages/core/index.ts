@@ -1,8 +1,8 @@
 /**
- * @zntc/core — ZNTC TypeScript 트랜스파일러 네이티브 NAPI 바인딩
+ * @zntc/core — Native NAPI bindings for the ZNTC TypeScript transpiler.
  *
- * Node.js, Bun, Deno 모두 지원하는 NAPI 네이티브 모듈.
- * 전역 상태 없이 JS 힙에 직접 결과를 반환한다.
+ * A NAPI native module that supports Node.js, Bun, and Deno.
+ * Returns results directly on the JS heap with no global state.
  *
  * @example
  * ```ts
@@ -41,20 +41,22 @@ export type { RuntimePolyfillOptions, RuntimePolyfillsOption };
 
 interface OutputFile {
   path: string;
-  /** Raw byte content. NAPI 가 `napi_create_buffer_copy` 로 노출 — string copy + UTF-8
-   * 검증 비용 회피 (binary asset / CSS bundle / source map 모두 안전). esbuild
-   * OutputFile.contents 와 동등. */
+  /** Raw byte content. Exposed by NAPI via `napi_create_buffer_copy` — avoids
+   * the string copy + UTF-8 validation cost (safe for binary asset / CSS bundle
+   * / source map alike). Equivalent to esbuild OutputFile.contents. */
   contents: Uint8Array;
-  /** Lazy UTF-8 decode of `contents`. 첫 access 시 한 번 디코드 후 캐시. esbuild
-   * OutputFile.text 와 동등. */
+  /** Lazy UTF-8 decode of `contents`. Decoded once on first access and cached.
+   * Equivalent to esbuild OutputFile.text. */
   readonly text: string;
-  /** code splitting 시 이 chunk 에 포함된 모듈 절대경로 (rolldown `chunk.moduleIds` 호환).
-   * 단일 번들 / asset output 은 빈 배열. */
+  /** When code splitting, the absolute paths of the modules in this chunk
+   * (compatible with rolldown `chunk.moduleIds`). Empty array for a single
+   * bundle / asset output. */
   moduleIds?: string[];
-  /** 이 chunk 가 export 하는 심볼 이름 목록 (cross-chunk 검증용). */
+  /** The list of symbol names this chunk exports (for cross-chunk validation). */
   exports?: string[];
-  /** 이 chunk 가 import 하는 다른 chunk 의 최종 filename 배열 (rolldown `chunk.imports` 호환).
-   * content-hash 까지 확정된 경로. */
+  /** The final filenames of the other chunks this chunk imports (compatible
+   * with rolldown `chunk.imports`). Paths are resolved down to the
+   * content-hash. */
   imports?: string[];
 }
 
@@ -103,9 +105,10 @@ interface Diagnostic {
 }
 
 /**
- * RN AssetRegistry.registerAsset 메타데이터 — `rn-asset-copy` 의 release copy
- * 경로가 실제 읽는 필드만 노출. width/height/hash 는 bundle 안 `registerAsset({...})`
- * 호출로 RN runtime 에 직접 전달되므로 이 사이드채널에는 중복 보관하지 않는다.
+ * RN AssetRegistry.registerAsset metadata — only exposes the fields actually
+ * read by the `rn-asset-copy` release copy path. width/height/hash are passed
+ * directly to the RN runtime via the in-bundle `registerAsset({...})` call, so
+ * they are not duplicated on this side channel.
  */
 export interface RnAssetMetadata {
   httpServerLocation: string;
@@ -273,9 +276,9 @@ function findAddon(): string {
 // ─── Public API ───
 
 /**
- * `zntc.config.{ts,js}` 타입 체크/자동완성용 identity 헬퍼.
+ * Identity helper for `zntc.config.{ts,js}` type checking / autocompletion.
  *
- * 객체 또는 함수형 config 둘 다 지원:
+ * Supports both object and functional config:
  * ```ts
  * export default defineConfig({ format: "esm" });
  * export default defineConfig(({ command, mode, env }) => ({
@@ -328,9 +331,10 @@ export type {
 import type { UserConfigInput } from './src/config-loader.ts';
 
 /**
- * NAPI addon 을 로드한다 — `transpile()`/`build()`/`watch()` 등 native API 첫 호출 시
- * 자동으로 호출되므로 명시 호출은 옵션. addon path override (custom prebuild 등) 가
- * 필요할 때만 직접 호출. 이미 로드된 경우 no-op.
+ * Loads the NAPI addon — called automatically on the first invocation of a
+ * native API such as `transpile()`/`build()`/`watch()`, so calling it
+ * explicitly is optional. Call it directly only when you need an addon path
+ * override (e.g. a custom prebuild). No-op if already loaded.
  */
 export function init(addonPath?: string): void {
   if (native) return;
@@ -351,7 +355,7 @@ function ensureNative(): NativeModule {
 }
 
 /**
- * TypeScript/JSX 소스 코드를 트랜스파일한다.
+ * Transpiles TypeScript/JSX source code.
  */
 /**
  * browserslist 모듈 lazy-load 캐시.
@@ -399,14 +403,18 @@ function resolveUnsupported(options: TranspileOptions): number {
 }
 
 /**
- * tsconfig autodiscover walk 결과 캐시 (#2367). 다수 파일을 in-process 반복 transpile 하는
- * NAPI consumer (Vite/Rollup plugin 등) 가 인스턴스 1 회 생성해 transpile 호출들에 재사용 →
- * file 당 5–10 fs syscall 절약.
+ * Cache of tsconfig autodiscovery walk results (#2367). A NAPI consumer that
+ * repeatedly transpiles many files in-process (Vite/Rollup plugin, etc.)
+ * creates one instance and reuses it across transpile calls → saves 5–10 fs
+ * syscalls per file.
  *
- * `transpile()` 의 `cache` 옵션으로 패스. `tsconfigPath` / `tsconfigRaw` 가 명시되면 캐시는
- * 무시되고 명시 값 사용. 인스턴스는 GC 시 자동 cleanup — 명시 dispose 불필요.
+ * Passed via the `cache` option of `transpile()`. When `tsconfigPath` /
+ * `tsconfigRaw` is specified, the cache is bypassed and the explicit value is
+ * used. The instance is cleaned up automatically on GC — explicit dispose is
+ * not required.
  *
- * rolldown `TsconfigCache` 와 정합 (디자인은 1-slot 이 아니라 N-slot HashMap).
+ * Aligned with rolldown `TsconfigCache` (the design is an N-slot HashMap, not
+ * a single slot).
  *
  * @example
  *   const cache = new TsconfigCache();
@@ -415,33 +423,34 @@ function resolveUnsupported(options: TranspileOptions): number {
  *   }
  */
 export class TsconfigCache {
-  /** @internal native handle — `transpile()` 가 unwrap 해서 사용. 외부 사용 금지. */
+  /** @internal native handle — unwrapped and used by `transpile()`. Do not use externally. */
   private readonly _handle: NativeTsconfigCacheHandle;
 
   constructor() {
     this._handle = ensureNative().createTsconfigCache();
   }
 
-  /** 모든 cache entry 와 내부 string 메모리 회수. 인스턴스는 재사용 가능. */
+  /** Reclaims all cache entries and internal string memory. The instance can be reused. */
   clear(): void {
     this._handle.clear();
   }
 
-  /** 현재 캐시된 entry 수 (테스트 / 디버깅). */
+  /** Current number of cached entries (testing / debugging). */
   get size(): number {
     return this._handle.size();
   }
 
   /**
    * Explicit Resource Management (TC39 Stage 4) — `using cache = new TsconfigCache();`
-   * 스코프 종료 시 자동 `clear()`. 메모리 자체는 GC finalizer 가 회수하므로 본 메서드는
-   * "cache 비움" 만 수행 (인스턴스 재사용 가능).
+   * automatically calls `clear()` on scope exit. The memory itself is reclaimed
+   * by the GC finalizer, so this method only "empties the cache" (the instance
+   * can be reused).
    */
   [Symbol.dispose](): void {
     this._handle.clear();
   }
 
-  /** transpile() 가 native handle 추출용 — 외부 사용 금지 (private 회피). */
+  /** Used by transpile() to extract the native handle — do not use externally (private escape hatch). */
   /** @internal */
   static _unwrap(c: TsconfigCache): NativeTsconfigCacheHandle {
     return c._handle;
@@ -484,119 +493,134 @@ export function profileReport(format: 'table' | 'tree' | 'json' | 'csv' = 'table
 
 export type { OutputFile, Diagnostic };
 
-/** Rollup `manualChunks(id, meta)` 의 `meta.getModuleInfo(id)` 반환. */
+/** Return value of `meta.getModuleInfo(id)` in Rollup `manualChunks(id, meta)`. */
 export interface ManualChunksModuleInfo {
   id: string;
   isEntry: boolean;
-  /** `external` 패턴 매칭으로 번들에 포함되지 않는 모듈. AST/source 없음 — graph
-   * traversal 1급 노드로만 노출됨. */
+  /** A module not included in the bundle because it matched an `external`
+   * pattern. No AST/source — exposed only as a first-class graph traversal
+   * node. */
   isExternal: boolean;
-  /** 모듈이 side effect 를 가질 수 있는지 (Rollup `hasModuleSideEffects` 호환).
-   * `package.json` `sideEffects` 필드 또는 `treeShaking.moduleSideEffects` 옵션으로 결정.
-   * `false` 면 unused 시 tree-shaker 가 제거 가능. */
+  /** Whether the module may have side effects (compatible with Rollup
+   * `hasModuleSideEffects`). Determined by the `package.json` `sideEffects`
+   * field or the `treeShaking.moduleSideEffects` option. When `false`, the
+   * tree-shaker may remove it if unused. */
   hasModuleSideEffects: boolean;
-  /** 모듈 source 코드 (Rollup `code` 호환).
-   * external / asset / 미파싱 모듈은 null. UTF-8 디코딩 실패 시도 null. */
+  /** Module source code (compatible with Rollup `code`).
+   * null for external / asset / unparsed modules. Also null if UTF-8 decoding
+   * fails. */
   code: string | null;
-  /** tree-shake 후 번들에 포함된 모듈인지 (Rollup `isIncluded` 호환).
-   * `treeShaking: false` 일 땐 모든 모듈이 false 처럼 보일 수 있음 — Module 의 mirror flag 라
-   * tree-shaker 가 안 돌면 기본값 그대로. */
+  /** Whether the module is included in the bundle after tree-shaking
+   * (compatible with Rollup `isIncluded`). When `treeShaking: false`, all
+   * modules may appear false — it is a mirror flag on Module, so it stays at
+   * its default if the tree-shaker does not run. */
   isIncluded: boolean;
-  /** 이 모듈이 export 하는 이름 목록 (Rollup `exports` 호환). default / re-export 별표 모두 포함.
-   * external 은 빈 배열 (graph 가 export 정보 없음). */
+  /** The list of names this module exports (compatible with Rollup `exports`).
+   * Includes both default and re-export stars. Empty array for external (the
+   * graph has no export info). */
   exports: string[];
-  /** Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
-   * ZNTC 는 plugin context API 확장 (#1880) 까지 항상 false. */
+  /** Synthetic named exports defined by a plugin (compatible with Rollup
+   * `syntheticNamedExports`). Always false until the ZNTC plugin context API
+   * extension (#1880). */
   syntheticNamedExports: boolean;
-  /** `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
-   * ZNTC plugin context API (#1880) 까지 항상 빈 배열. */
+  /** Result of the `implicitlyLoadedAfterOneOf` option of `this.emitFile`
+   * (Rollup-compatible). Always an empty array until the ZNTC plugin context
+   * API (#1880). */
   implicitlyLoadedAfterOneOf: string[];
-  /** 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들. */
+  /** The opposite direction — modules that must be loaded after this module is
+   * implicitly loaded. */
   implicitlyLoadedBefore: string[];
-  /** 이 모듈을 static import 하는 모듈들. external 도 importer 목록에 포함됨
-   * (자기 자신은 external 일 때 in-graph 모듈이 importer). */
+  /** Modules that statically import this module. External modules are also
+   * included in the importer list (when itself is external, an in-graph module
+   * is the importer). */
   importers: string[];
-  /** 이 모듈을 dynamic import (`import()`) 하는 모듈들. */
+  /** Modules that dynamically import (`import()`) this module. */
   dynamicImporters: string[];
-  /** 이 모듈이 static import 하는 모듈들. external 모듈도 포함. */
+  /** Modules that this module statically imports. Includes external modules. */
   importedIds: string[];
-  /** 이 모듈이 dynamic import (`import()`) 하는 모듈들. external 도 포함. */
+  /** Modules that this module dynamically imports (`import()`). Includes
+   * external modules. */
   dynamicallyImportedIds: string[];
 }
 
-/** `manualChunks` 콜백의 두 번째 인자 — 모듈 그래프 토폴로지 조회. */
+/** The second argument of the `manualChunks` callback — module graph topology lookup. */
 export interface ManualChunksMeta {
-  /** `id` 로 모듈 정보 조회. 없으면 null. */
+  /** Look up module info by `id`. null if not found. */
   getModuleInfo(id: string): ManualChunksModuleInfo | null;
 }
 
 /**
- * `compiler` 네임스페이스 — 라이브러리별 1st-party transform 설정 (`@next/swc` 호환 surface).
+ * The `compiler` namespace — per-library 1st-party transform settings
+ * (`@next/swc`-compatible surface).
  *
- * `babel-plugin-styled-components` / `@emotion/babel-plugin` 의 1st-party 대응.
- * plugin 등록 없이 옵션만 켜면 동일한 변환 결과를 얻는다.
+ * The 1st-party counterpart to `babel-plugin-styled-components` /
+ * `@emotion/babel-plugin`. Enabling the option alone, without registering a
+ * plugin, produces the same transform result.
  */
 export interface CompilerOptions {
   /**
    * styled-components 1st-party transform.
-   * `babel-plugin-styled-components` / `@swc/plugin-styled-components` 와 동일한 변환 의도.
+   * Same transform intent as `babel-plugin-styled-components` /
+   * `@swc/plugin-styled-components`.
    */
   styledComponents?: boolean | StyledComponentsOptions;
   /**
    * emotion 1st-party transform.
-   * `@emotion/babel-plugin` / `@swc/plugin-emotion` 와 동일한 변환 의도.
+   * Same transform intent as `@emotion/babel-plugin` / `@swc/plugin-emotion`.
    */
   emotion?: boolean | EmotionOptions;
 }
 
-/** styled-components transform 옵션 (`babel-plugin-styled-components` 호환). */
+/** styled-components transform options (`babel-plugin-styled-components`-compatible). */
 export interface StyledComponentsOptions {
-  /** devtools 표시용 displayName 자동 부여 (default: NODE_ENV !== "production") */
+  /** Auto-assign a displayName for devtools display (default: NODE_ENV !== "production"). */
   displayName?: boolean;
-  /** SSR hydration 안정화용 결정론적 componentId hash (default: true) */
+  /** Deterministic componentId hash for stable SSR hydration (default: true). */
   ssr?: boolean;
-  /** componentId 에 파일명 포함 (default: true) */
+  /** Include the file name in componentId (default: true). */
   fileName?: boolean;
-  /** CSS 화이트스페이스 minify (default: true) */
+  /** Minify CSS whitespace (default: true). */
   minify?: boolean;
-  /** 모던 JS 로 다운레벨된 템플릿 리터럴 인식 (default: true) */
+  /** Recognize template literals downleveled to modern JS (default: true). */
   transpileTemplateLiterals?: boolean;
-  /** styled.X 가 부수효과 없음을 minifier 에 알림 (default: false) */
+  /** Tell the minifier that styled.X is side-effect-free (default: false). */
   pure?: boolean;
-  /** displayName / componentId 의 namespace prefix — 다중 styled 인스턴스 격리 */
+  /** Namespace prefix for displayName / componentId — isolates multiple styled instances. */
   namespace?: string;
   /**
-   * basename 이 의미 없을 때 displayName prefix 를 parent dir 로 fallback 시키는 list
-   * (default: `["index"]`). babel-plugin-styled-components 의 동일 옵션과 동등.
+   * List that makes the displayName prefix fall back to the parent dir when
+   * the basename is meaningless (default: `["index"]`). Equivalent to the
+   * option of the same name in babel-plugin-styled-components.
    */
   meaninglessFileNames?: string[];
   /**
-   * vendored fork 인식할 import source 목록 (e.g. `@my-org/styled`, `@my-org/*`,
-   * `@{my-org,co}/*`). picomatch 호환 glob — `*`, `?`, `[abc]`/`[a-z]`/`[!abc]`,
-   * `{a,b}` (nested 가능).
+   * List of import sources to recognize as vendored forks (e.g. `@my-org/styled`,
+   * `@my-org/*`, `@{my-org,co}/*`). picomatch-compatible glob — `*`, `?`,
+   * `[abc]`/`[a-z]`/`[!abc]`, `{a,b}` (nesting allowed).
    */
   topLevelImportPaths?: string[];
   /**
-   * `<div css={...}>` JSX prop 을 module-level styled component 로 추출 (default: false).
-   * babel-plugin-styled-components default true 와 다르게 opt-in.
-   * intrinsic / custom (jsx_member_expression 포함) / `css\`\`` 템플릿 / object form /
-   * `${expr}` 동적 prop forwarding 까지 지원. auto-inject 시 `styled` 바인딩 충돌은
-   * `_styled` / `_styled2` 로 자동 mangling.
+   * Extract the `<div css={...}>` JSX prop into a module-level styled component
+   * (default: false). Opt-in, unlike babel-plugin-styled-components which
+   * defaults to true. Supports intrinsic / custom (including
+   * jsx_member_expression) / `css\`\`` template / object form / `${expr}`
+   * dynamic prop forwarding. On auto-inject, a `styled` binding collision is
+   * automatically mangled to `_styled` / `_styled2`.
    */
   cssProp?: boolean;
-  /** [meta] 표시 (default: false) */
+  /** Emit the [meta] marker (default: false). */
   meta?: boolean;
 }
 
-/** emotion transform 옵션 (`@emotion/babel-plugin` 호환). */
+/** emotion transform options (`@emotion/babel-plugin`-compatible). */
 export interface EmotionOptions {
-  /** sourceMap 생성 (default: true) */
+  /** Generate a sourceMap (default: true). */
   sourceMap?: boolean;
-  /** 변수명을 CSS class label 로 자동 부여 (default: "dev-only"). `false` 는 autoLabel 을 끈다. */
+  /** Auto-assign the variable name as the CSS class label (default: "dev-only"). `false` disables autoLabel. */
   autoLabel?: 'always' | 'dev-only' | 'never' | boolean;
   /** label format string. tokens: `[local]`, `[filename]`, `[dirname]` (default: "[local]") */
   labelFormat?: string;
-  /** import 경로 alias — fork 또는 vendored emotion 사용 시 */
+  /** Import path alias — for using a fork or vendored emotion. */
   importMap?: Record<string, Record<string, { canonicalImport: [string, string] }>>;
 }
 
@@ -616,9 +640,10 @@ type BuildTarget = import('../shared/index').Target | (string & {});
 
 /**
  * Common build options shared by all platforms.
- * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
+ * The `platform` + `target` combination is constrained as a discriminated
+ * union in `BuildOptions`.
  */
-/** Module Federation `shared` 의존 옵션 (MF2 `SharedConfig` 부분집합, #3318). */
+/** Module Federation `shared` dependency options (a subset of MF2 `SharedConfig`, #3318). */
 export interface MfSharedConfig {
   singleton?: boolean;
   requiredVersion?: string;
@@ -626,22 +651,23 @@ export interface MfSharedConfig {
   eager?: boolean;
 }
 
-/** Module Federation config 블록 (#3318 P1-0). webpack/rspack
- * `ModuleFederationPlugin` 과 동형 record 형태 — `@module-federation/runtime`
- * 계약 타겟. **P1-0 은 zntc.config 파싱·검증만**(emit 미연결, P1-1+ 소비;
- * build()/NAPI mf 추출도 P1-1+). `shared` array/boolean shorthand 는
- * P1-1+ — P1-0 은 record-of-object 만. */
+/** Module Federation config block (#3318 P1-0). A record shape isomorphic to
+ * the webpack/rspack `ModuleFederationPlugin` — targeting the
+ * `@module-federation/runtime` contract. **P1-0 is zntc.config parsing &
+ * validation only** (emit not wired up; consumed in P1-1+; build()/NAPI mf
+ * extraction is also P1-1+). The `shared` array/boolean shorthand is P1-1+ —
+ * P1-0 only supports record-of-object. */
 export interface ModuleFederationConfig {
-  /** remote 식별자. `exposes`/`remotes` 사용 시 필수. */
+  /** remote identifier. Required when using `exposes`/`remotes`. */
   name?: string;
-  /** 노출 모듈: `{ "./Widget": "./src/Widget.tsx" }`. */
+  /** Exposed modules: `{ "./Widget": "./src/Widget.tsx" }`. */
   exposes?: Record<string, string>;
-  /** 소비 remote: `{ remoteA: "remoteA@https://…/mf-manifest.json" }`. */
+  /** Consumed remotes: `{ remoteA: "remoteA@https://…/mf-manifest.json" }`. */
   remotes?: Record<string, string>;
-  /** 공유 의존: `{ react: { singleton: true, requiredVersion: "^18" } }`.
-   * (P1-0: record-of-object 만. boolean/array shorthand 는 P1-1+.) */
+  /** Shared dependencies: `{ react: { singleton: true, requiredVersion: "^18" } }`.
+   * (P1-0: record-of-object only. boolean/array shorthand is P1-1+.) */
   shared?: Record<string, MfSharedConfig>;
-  /** share scope 이름 (기본 `"default"`). */
+  /** share scope name (default `"default"`). */
   shareScope?: string;
 }
 
@@ -654,32 +680,41 @@ interface BuildOptionsCommon {
   minifyIdentifiers?: boolean;
   minifySyntax?: boolean;
   splitting?: boolean;
-  /** Rollup `output.inlineDynamicImports` — dynamic import target 을 importer 의 chunk 에
-   * 흡수하고 `import("./x")` 호출을 `__esm` 래퍼 init/exports 호출로 재작성.
-   * `splitting: true` 와 조합. 결과 번들은 단일 파일로 실행 가능.
+  /** Rollup `output.inlineDynamicImports` — absorbs the dynamic import target
+   * into the importer's chunk and rewrites the `import("./x")` call into an
+   * `__esm` wrapper init/exports call. Combine with `splitting: true`. The
+   * resulting bundle is runnable as a single file.
    *
-   * 보존 보장:
+   * Preservation guarantees:
    * - namespace identity: `(await import("./x")) === (await import("./x"))`
-   * - top-level side effect 1회 실행 (캐싱)
-   * - live binding (모듈이 `export let` 을 mutate 하면 caller 측에서도 반영)
+   * - top-level side effects run once (cached)
+   * - live bindings (if the module mutates an `export let`, the change is
+   *   reflected on the caller side too)
    */
   inlineDynamicImports?: boolean;
-  /** Rollup `output.experimentalMinChunkSize` 류 — 모듈 source 합(추정)이 이
-   * 바이트 미만인 작은 common 청크를, 도달성이 상위집합인(over-fetch 없는)
-   * 청크로 자동 병합. entry/manual/dynamic 청크는 보존. 0/미지정 = 비활성. */
+  /** Like Rollup `output.experimentalMinChunkSize` — automatically merges a
+   * small common chunk whose (estimated) total module source is under this
+   * many bytes into a chunk whose reachability is a superset (no over-fetch).
+   * entry/manual/dynamic chunks are preserved. 0/unspecified = disabled. */
   minChunkSize?: number;
-  /** Module Federation 설정 (#3318 P1-0). 파싱·검증만 — emit 은 후속(P1-1+).
-   * nested 객체라 config/`build()` 전용(CLI flag 없음 — 생태계 전부
-   * config-driven). MF2 계약(`name`/`exposes`/`remotes`/`shared`/`shareScope`). */
+  /** Module Federation config (#3318 P1-0). Parsing & validation only — emit
+   * is a follow-up (P1-1+). Being a nested object, it is config/`build()`-only
+   * (no CLI flag — the whole ecosystem is config-driven). MF2 contract
+   * (`name`/`exposes`/`remotes`/`shared`/`shareScope`). */
   mf?: ModuleFederationConfig;
   sourcemap?: boolean;
   /**
-   * sourcemap 출력 형식 (`sourcemap: true` 일 때만 의미). esbuild / rolldown 호환 (#2152).
-   *  - `"linked"` (default): `.map` 파일 emit + `//# sourceMappingURL=<file>.map` 주석.
-   *  - `"external"`: `.map` 파일 emit, URL 주석 없음 (Sentry/CI 표준 — 위치 비공개).
-   *  - `"inline"`: `.map` 파일 미생성, JSON 을 base64 data URL 로 주석에 embed.
+   * Source map output format (only meaningful when `sourcemap: true`).
+   * esbuild / rolldown-compatible (#2152).
+   *  - `"linked"` (default): emit a `.map` file +
+   *    `//# sourceMappingURL=<file>.map` comment.
+   *  - `"external"`: emit a `.map` file, no URL comment (Sentry/CI standard —
+   *    location not disclosed).
+   *  - `"inline"`: no `.map` file, embed the JSON as a base64 data URL in a
+   *    comment.
    *
-   * watch / dev server 환경에서는 강제로 `linked` 적용 (HMR + DevTools 통합 보장).
+   * In watch / dev server environments, `linked` is forced (guarantees
+   * HMR + DevTools integration).
    */
   sourcemapMode?: 'linked' | 'external' | 'inline';
   sourcemapDebugIds?: boolean;
@@ -694,22 +729,24 @@ interface BuildOptionsCommon {
   useDefineForClassFields?: boolean;
   experimentalDecorators?: boolean;
   emitDecoratorMetadata?: boolean;
-  /** `import { x } from 'mod'` cherry-pick 분해 매핑. babel-plugin-lodash 등의 ZNTC 동등 (#2393).
-   * key = source module 이름 (정확 매칭), value = template (`{name}` placeholder 가
-   * specifier 이름으로 치환).
+  /** `import { x } from 'mod'` cherry-pick decomposition mapping. The ZNTC
+   * equivalent of babel-plugin-lodash and the like (#2393).
+   * key = source module name (exact match), value = template (the `{name}`
+   * placeholder is replaced with the specifier name).
    *
-   * 예: `{ lodash: 'lodash/{name}' }` 면 `import { map } from 'lodash'` 가
-   *     `import map from 'lodash/map'` 으로 변환.
+   * e.g. with `{ lodash: 'lodash/{name}' }`, `import { map } from 'lodash'`
+   *      becomes `import map from 'lodash/map'`.
    *
-   * 변환 조건 (모두 만족 시): named specifier 만, alias 없음, type-only 아님. 미충족 시
-   * 원본 import 유지 — 라이브러리가 path import 미지원 시 안전망.
+   * Transform conditions (all must hold): named specifiers only, no alias, not
+   * type-only. If not met, the original import is kept — a safety net for when
+   * the library does not support path imports.
    */
   moduleSpecifierMap?: Record<string, string>;
   banner?: string;
   footer?: string;
-  /** Rollup `output.intro`: format wrapper 내부 코드 앞에 삽입할 텍스트 */
+  /** Rollup `output.intro`: text to insert before the code inside the format wrapper. */
   intro?: string;
-  /** Rollup `output.outro`: format wrapper 내부 코드 뒤에 삽입할 텍스트 */
+  /** Rollup `output.outro`: text to insert after the code inside the format wrapper. */
   outro?: string;
   globalName?: string;
   /** Rollup `output.globals`: IIFE/UMD external specifier → global variable mapping */
@@ -718,66 +755,82 @@ interface BuildOptionsCommon {
   entryNames?: string;
   chunkNames?: string;
   assetNames?: string;
-  /** Metro AssetRegistry 모듈 경로 (React Native 전용 레이어).
-   * - `undefined`: 플랫폼 프리셋 결정 (`platform: "react-native"`이면 기본 경로 자동)
-   * - `string`: 해당 경로의 registerAsset을 사용해 `module.exports = require(path).registerAsset({...})`로 래핑
-   * - `false`: 비활성화 (웹과 동일한 URL 문자열 export)
-   * 기본 경로: `"react-native/Libraries/Image/AssetRegistry"` */
+  /** Metro AssetRegistry module path (React Native-only layer).
+   * - `undefined`: determined by the platform preset (with
+   *   `platform: "react-native"`, the default path is used automatically)
+   * - `string`: wrap with the registerAsset at that path as
+   *   `module.exports = require(path).registerAsset({...})`
+   * - `false`: disabled (export the same URL string as web)
+   * Default path: `"react-native/Libraries/Image/AssetRegistry"` */
   assetRegistry?: string | false;
-  /** JSX runtime mode. `'preserve'` 는 JSX 를 변환 없이 그대로 출력 — TS 어노테이션만
-   * strip. downstream tool (`@vitejs/plugin-react` / `@preact/preset-vite` /
-   * `vite-plugin-solid` 등) 이 JSX 를 처리하도록 위임할 때 사용. tsc 의
-   * `"jsx": "preserve"` 와 동등.
-   * 알려진 제약 — JSX 안의 expression container 내부 TS 어노테이션
-   * (e.g. `<Foo prop={value as Type}>`) 은 strip 되지 않은 채 raw 로 남음. */
+  /** JSX runtime mode. `'preserve'` emits JSX unchanged — only TS annotations
+   * are stripped. Use this to delegate JSX handling to a downstream tool (e.g.
+   * `@vitejs/plugin-react` / `@preact/preset-vite` / `vite-plugin-solid`).
+   * Equivalent to tsc `"jsx": "preserve"`.
+   * Known limitation — TS annotations inside an expression container within JSX
+   * (e.g. `<Foo prop={value as Type}>`) are left raw, not stripped. */
   jsx?: 'classic' | 'automatic' | 'automatic-dev' | 'preserve';
   jsxFactory?: string;
   jsxFragment?: string;
   jsxImportSource?: string;
-  /** 컴파일 타임 상수 치환 (esbuild `define` 호환).
-   * 키는 식별자 또는 `obj.prop` 같은 멤버 표현식, 값은 JS 표현식 문자열.
-   * 예: `{ "__DEV__": "false", "process.env.NODE_ENV": '"production"' }` */
+  /** Compile-time constant substitution (esbuild `define`-compatible).
+   * Keys are identifiers or member expressions like `obj.prop`; values are JS
+   * expression strings.
+   * e.g. `{ "__DEV__": "false", "process.env.NODE_ENV": '"production"' }` */
   define?: Record<string, string>;
   /** Dev server defaults for `zntc dev` / `zntc --serve`. CLI flags still take precedence. */
   server?: DevServerOptions;
-  /** Import 경로 별칭 — 두 형태 지원 (esbuild / Vite 호환):
+  /** Import path aliases — two forms supported (esbuild / Vite-compatible):
    *
-   * 1. **Object 형태** (esbuild `alias`): exact + prefix 매칭. 정해진 specifier 만 치환.
-   *    예: `{ react: "preact/compat" }` — `react` 또는 `react/hooks` → `preact/compat[/hooks]`
+   * 1. **Object form** (esbuild `alias`): exact + prefix matching. Only the
+   *    given specifier is substituted.
+   *    e.g. `{ react: "preact/compat" }` — `react` or `react/hooks` →
+   *    `preact/compat[/hooks]`
    *
-   * 2. **Array 형태** (Vite `resolve.alias`, #2153): `RegExp` find 지원. 매칭 순서대로 첫번째 적용.
-   *    `find` 가 string 이면 prefix 매칭, RegExp 이면 host runtime 이 매칭 + `replacement` 로 치환.
-   *    예: `[{ find: /^@\/(.*)$/, replacement: "./src/$1" }]`
+   * 2. **Array form** (Vite `resolve.alias`, #2153): supports `RegExp` find.
+   *    The first match in order is applied. When `find` is a string it is
+   *    prefix-matched; when a RegExp, the host runtime matches and substitutes
+   *    via `replacement`.
+   *    e.g. `[{ find: /^@\/(.*)$/, replacement: "./src/$1" }]`
    *
-   * 일반 해석 **전에 무조건** 치환됨 — 설치된 실제 패키지가 있어도 무시.
-   * Optional shim 용도로는 `fallback`을 쓸 것 (실패 시에만 적용).
-   * Array 형태는 sync hook만 쓰는 buildSync()에서도 지원. */
+   * Substituted **unconditionally before** normal resolution — even an
+   * actually-installed package is ignored. For an optional shim, use
+   * `fallback` instead (applied only on failure). The array form is also
+   * supported in buildSync(), which uses only sync hooks. */
   alias?: Record<string, string> | Array<{ find: string | RegExp; replacement: string }>;
-  /** Fallback resolution — 일반 해석이 **실패했을 때만** 적용됨 (webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환).
-   * 값이 문자열이면 해당 specifier로 재해석, `false`면 빈 모듈로 대체.
-   * 예: `{ crypto: "crypto-browserify", fs: false }` */
+  /** Fallback resolution — applied **only when** normal resolution fails
+   * (webpack `resolve.fallback` / Metro `resolver.extraNodeModules`-compatible).
+   * If the value is a string, re-resolve to that specifier; if `false`,
+   * substitute an empty module.
+   * e.g. `{ crypto: "crypto-browserify", fs: false }` */
   fallback?: Record<string, string | false>;
-  /** 해석 차단 패턴 (Metro `resolver.blockList` / webpack `IgnorePlugin` 호환).
-   * 매칭되는 절대 경로는 resolver가 해석 실패시켜 번들 그래프에 포함되지 않는다.
-   * - `RegExp`: `.source`를 추출해 패턴으로 사용
-   * - `string`: regex 문자열 그대로 사용
+  /** Resolution-blocking patterns (Metro `resolver.blockList` / webpack
+   * `IgnorePlugin`-compatible). Absolute paths that match are failed by the
+   * resolver and not included in the bundle graph.
+   * - `RegExp`: `.source` is extracted and used as the pattern
+   * - `string`: used as the regex string as-is
    *
-   * 지원 구문: 리터럴, `.*`, `^`, `$`, `\x` 이스케이프. `|`, `[]`, `()`, `+?`, `\w\d`는 미지원.
+   * Supported syntax: literals, `.*`, `^`, `$`, `\x` escapes. `|`, `[]`, `()`,
+   * `+?`, `\w\d` are not supported.
    *
-   * `platform: "react-native"` 시 Metro 기본 패턴들(`__tests__`, iOS/Android 빌드 폴더 등)이
-   * 자동 prepend된다. 사용자 패턴은 그 뒤에 append. */
+   * With `platform: "react-native"`, Metro's default patterns (`__tests__`,
+   * iOS/Android build folders, etc.) are auto-prepended. User patterns are
+   * appended after them. */
   blockList?: (RegExp | string)[];
   inject?: string[];
   jobs?: number;
   plugins?: ZntcPlugin[];
-  /** 사용자 정의 청크 분할 — Rollup/rolldown `manualChunks` 호환 (#1027).
-   * 모듈 id (절대경로) 를 받아 청크 이름을 반환하면 해당 모듈은 그 이름의 청크로 묶임.
-   * null/undefined 반환 시 기존 자동 분배. transitive dependency 도 같은 청크로 따라감
-   * (cross-chunk 순환 회피). dynamic import target 은 async chunk 대신 manual 우선.
+  /** User-defined chunk splitting — Rollup/rolldown `manualChunks`-compatible
+   * (#1027). Receives a module id (absolute path); returning a chunk name
+   * groups that module into the chunk of that name. Returning null/undefined
+   * uses the existing automatic distribution. Transitive dependencies follow
+   * into the same chunk (avoids cross-chunk cycles). Dynamic import targets
+   * prefer the manual chunk over an async chunk.
    *
-   * 두 번째 인자 `meta.getModuleInfo(id)` 는 그래프 토폴로지 조회 — Rollup 호환.
+   * The second argument `meta.getModuleInfo(id)` is a graph topology lookup —
+   * Rollup-compatible.
    *
-   * 예:
+   * e.g.:
    * ```ts
    * manualChunks: (id, meta) => {
    *   const info = meta.getModuleInfo(id);
@@ -788,217 +841,249 @@ interface BuildOptionsCommon {
    * ```
    */
   manualChunks?: (id: string, meta: ManualChunksMeta) => string | null | undefined;
-  /** 확장자별 로더 오버라이드 (예: { ".png": "file", ".svg": "text" }) */
+  /** Per-extension loader override (e.g. { ".png": "file", ".svg": "text" }). */
   loader?: Record<string, string>;
-  /** package.json exports 커스텀 조건 */
+  /** Custom package.json exports conditions. */
   conditions?: string[];
-  /** 확장자 탐색 순서 (예: [".ts", ".tsx", ".js"]) */
+  /** Extension resolution order (e.g. [".ts", ".tsx", ".js"]). */
   resolveExtensions?: string[];
-  /** package.json 필드 순서 (예: ["module", "main"]) */
+  /** package.json field order (e.g. ["module", "main"]). */
   mainFields?: string[];
-  /** 출력 디렉토리 (write: true 시 사용) */
+  /** Output directory (used when write: true). */
   outdir?: string;
-  /** 출력 파일 경로 (단일 엔트리 시, write: true 시 사용) */
+  /** Output file path (for a single entry, used when write: true). */
   outfile?: string;
-  /** 디스크 쓰기 여부 (기본: false, outdir/outfile 지정 시 자동 true) */
+  /** Whether to write to disk (default: false, automatically true when outdir/outfile is set). */
   write?: boolean;
-  /** 출력 파일이 입력 파일을 덮어쓰는 것을 허용 */
+  /** Allow output files to overwrite input files. */
   allowOverwrite?: boolean;
-  /** 엔트리 포인트 공통 기준 경로 (출력 디렉토리 구조 결정) */
+  /** Common base path for entry points (determines the output directory structure). */
   outbase?: string;
-  /** 모든 bare import를 external 처리 */
+  /** Treat all bare imports as external. */
   packagesExternal?: boolean;
-  /** symlink를 따라가지 않고 링크 경로로 해석 (esbuild/Node 호환) */
+  /** Resolve to the link path instead of following symlinks (esbuild/Node-compatible). */
   preserveSymlinks?: boolean;
   /**
-   * 일반 `node_modules` 탐색이 실패하면 `source_dir` 의 realpath 디렉토리에서
-   * 한 번 더 탐색한다. RN/pnpm peer dependency 가 symlink 너머의 sibling
-   * `node_modules` 에만 존재하는 경우 fallback 으로 사용. `preserveSymlinks`
-   * 와 직교한 옵션 — 함께 켜는 것이 일반적이다.
+   * When normal `node_modules` resolution fails, search once more in the
+   * realpath directory of `source_dir`. Used as a fallback when an RN/pnpm
+   * peer dependency exists only in a sibling `node_modules` beyond a symlink.
+   * Orthogonal to `preserveSymlinks` — they are commonly enabled together.
    */
   resolveSymlinkSiblings?: boolean;
   /**
-   * Metro `resolver.disableHierarchicalLookup` 호환. true 면 entry 디렉토리
-   * 외부의 `node_modules` walk-up 탐색을 차단 — monorepo 에서 dependency
-   * hoisting 강제 또는 워크스페이스 외부 모듈 누수 방지에 사용.
+   * Metro `resolver.disableHierarchicalLookup`-compatible. When true, blocks
+   * `node_modules` walk-up resolution outside the entry directory — used in a
+   * monorepo to force dependency hoisting or to prevent leakage of modules
+   * outside the workspace.
    */
   disableHierarchicalLookup?: boolean;
-  /** @__PURE__, sideEffects 어노테이션 무시 */
+  /** Ignore @__PURE__ and sideEffects annotations. */
   ignoreAnnotations?: boolean;
-  /** 미사용 JSX를 tree-shake하지 않음 */
+  /** Do not tree-shake unused JSX. */
   jsxSideEffects?: boolean;
-  /** 번들 분석 출력 (metafile 강제 활성화) */
+  /** Bundle analysis output (forces metafile on). */
   analyze?: boolean;
-  /** 제거할 labeled statement의 라벨 이름 목록 */
+  /** List of label names of labeled statements to remove. */
   dropLabels?: string[];
-  /** `console.*` 호출 expression statement 를 transformer 에서 제거 (#2155). bundle/transpile 동일 적용. */
+  /** Remove `console.*` call expression statements in the transformer (#2155). Applied identically for bundle/transpile. */
   dropConsole?: boolean;
-  /** `debugger;` statement 를 transformer 에서 제거 (#2155). bundle/transpile 동일 적용. */
+  /** Remove `debugger;` statements in the transformer (#2155). Applied identically for bundle/transpile. */
   dropDebugger?: boolean;
-  /** 순수 함수로 마킹할 글로벌 함수명 목록 */
+  /** List of global function names to mark as pure. */
   pure?: string[];
   /**
-   * 진단 출력 레벨 (esbuild 호환, #2158). NAPI 가 build result 의 errors/warnings 배열을
-   * 이 level 기준으로 필터링한다 — `result.errors` / `result.warnings` 에 포함되는 항목 자체가 줄어듦.
+   * Diagnostic output level (esbuild-compatible, #2158). NAPI filters the
+   * build result's errors/warnings arrays by this level — the items included
+   * in `result.errors` / `result.warnings` themselves are reduced.
    *
-   *  - `"silent"`: errors / warnings 둘 다 빈 배열 — fail 도 result 객체로 확인 (throw 안 함)
-   *  - `"error"`: warnings 만 빈 배열, errors 는 그대로
-   *  - `"warning"` (default): errors + warnings 둘 다 그대로
-   *  - `"info"` / `"debug"` / `"verbose"`: warning 과 동일 (info-level 진단은 현재 emit 안 함)
+   *  - `"silent"`: both errors / warnings are empty arrays — even a failure is
+   *    observed via the result object (no throw)
+   *  - `"error"`: only warnings is an empty array, errors as-is
+   *  - `"warning"` (default): both errors + warnings as-is
+   *  - `"info"` / `"debug"` / `"verbose"`: same as warning (info-level
+   *    diagnostics are not emitted currently)
    */
   logLevel?: 'silent' | 'error' | 'warning' | 'info' | 'debug' | 'verbose';
   /**
-   * 진단 갯수 제한 (esbuild `logLimit`, #2158). 0 이면 무제한 (default).
-   * errors / warnings 각 배열에 동일 limit 적용 — 초과 항목은 자동 truncate.
+   * Diagnostic count limit (esbuild `logLimit`, #2158). 0 means unlimited
+   * (default). The same limit applies to each of the errors / warnings arrays
+   * — excess items are auto-truncated.
    */
   logLimit?: number;
   /**
-   * CJS / UMD entry export 형식 (Rollup `output.exports` 호환, #2159). ESM 출력에서는 무시.
+   * CJS / UMD entry export format (Rollup `output.exports`-compatible, #2159).
+   * Ignored for ESM output.
    *
    *  - `"auto"` (default): default-only → `module.exports = X`. named-only → `exports.X = X`
    *    (no `__esModule` flag). mixed → `exports.X = X` + `__esModule` flag.
-   *  - `"named"`: 항상 named (`exports.X = X`). default 있으면 `__esModule` flag 자동 추가
-   *    (rolldown `IfDefaultProp` 동작 — default 없을 때는 flag 없음).
-   *  - `"default"`: `module.exports = X` 단일 — default-only 일 때만. named 섞이면 warning + 빈 출력.
-   *  - `"none"`: export 출력 안 함.
+   *  - `"named"`: always named (`exports.X = X`). If a default exists, the
+   *    `__esModule` flag is added automatically (rolldown `IfDefaultProp`
+   *    behavior — no flag when there is no default).
+   *  - `"default"`: single `module.exports = X` — only when default-only. If
+   *    named is mixed in, warning + empty output.
+   *  - `"none"`: no export output.
    */
   outputExports?: 'auto' | 'named' | 'default' | 'none';
   /**
-   * inline tsconfig JSON 문자열 (esbuild 의 `tsconfigRaw` 와 동일 의미).
-   * 설정 시 `tsconfigPath` 와 자동 탐색을 모두 무시 — raw 가 단일 진실 원천.
-   * compilerOptions 의 jsx/target/decorators 등이 Zig 측 `tsconfig_merge` 에서 적용된다.
+   * Inline tsconfig JSON string (same meaning as esbuild's `tsconfigRaw`).
+   * When set, both `tsconfigPath` and autodiscovery are ignored — raw is the
+   * single source of truth. compilerOptions such as jsx/target/decorators are
+   * applied by the Zig-side `tsconfig_merge`.
    *
    * @example
    *   tsconfigRaw: JSON.stringify({ compilerOptions: { jsx: "react-jsx", jsxImportSource: "preact" } })
    */
   tsconfigRaw?: string;
   /**
-   * tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 compilerOptions 를 자동 로드해서 머지한다.
-   * JS 옵션이 명시적으로 설정된 필드가 우선 — 미지정 필드만 tsconfig 값으로 채워진다.
-   * 예) "./tsconfig.json" 또는 "./project-dir"
+   * Path to tsconfig.json (file or directory). When set, compilerOptions are
+   * auto-loaded and merged. Fields set explicitly via JS options take
+   * precedence — only unspecified fields are filled from the tsconfig values.
+   * e.g. "./tsconfig.json" or "./project-dir".
    */
   tsconfigPath?: string;
-  /** NODE_PATH 추가 탐색 경로 */
+  /** Additional NODE_PATH resolution paths. */
   nodePaths?: string[];
-  /** 줄 길이 제한 (0=무제한) */
+  /** Line length limit (0=unlimited). */
   lineLimit?: number;
-  /** 출력 파일 확장자 오버라이드 (예: ".mjs") */
+  /** Output file extension override (e.g. ".mjs"). */
   outExtension?: string;
-  /** 소스맵 sourceRoot 필드 */
+  /** Source map sourceRoot field. */
   sourceRoot?: string;
-  /** 라이센스 주석 처리 ("none" | "inline" | "eof" | "linked") */
+  /** License comment handling ("none" | "inline" | "eof" | "linked"). */
   legalComments?: 'none' | 'inline' | 'eof' | 'linked';
-  /** 모듈별 개별 파일 출력 (라이브러리 빌드) */
+  /** Emit a separate file per module (library build). */
   preserveModules?: boolean;
-  /** preserve-modules 출력 디렉토리 구조 기준 경로 */
+  /** Base path for the preserve-modules output directory structure. */
   preserveModulesRoot?: string;
   /**
-   * 활성화할 profile category 목록 (ZNTC_PROFILE env 와 합집합).
-   * 예: `["all"]`, `["parse", "transform"]`, `["transform.jsx"]`.
-   * Parent 를 지정하면 child 도 자동 활성 (e.g. "transform" → "transform.jsx"/"transform.ts_strip"/...).
-   * 사용 가능한 category: docs/design/profile-infrastructure.md 참조.
+   * List of profile categories to enable (union with the ZNTC_PROFILE env).
+   * e.g. `["all"]`, `["parse", "transform"]`, `["transform.jsx"]`.
+   * Specifying a parent auto-enables children too (e.g. "transform" →
+   * "transform.jsx"/"transform.ts_strip"/...).
+   * Available categories: see docs/design/profile-infrastructure.md.
    */
   profile?: string[];
   /**
-   * Profile 상세도.
-   * - "summary": phase 총합만 (기본)
-   * - "detailed": sub-phase 포함
-   * - "per-module": 모듈별 breakdown
-   * - "per-pass": transformer visit 수준
+   * Profile detail level.
+   * - "summary": phase totals only (default)
+   * - "detailed": includes sub-phases
+   * - "per-module": per-module breakdown
+   * - "per-pass": transformer visit level
    */
   profileLevel?: 'summary' | 'detailed' | 'per-module' | 'per-pass';
   /**
-   * Profile 리포트 출력 포맷.
-   * - "table": 사람 가독 (기본)
-   * - "tree": parent/child 트리
-   * - "json": 기계 판독
-   * - "csv": 스프레드시트
+   * Profile report output format.
+   * - "table": human-readable (default)
+   * - "tree": parent/child tree
+   * - "json": machine-readable
+   * - "csv": spreadsheet
    */
   profileFormat?: 'table' | 'tree' | 'json' | 'csv';
-  /** dev mode: 모듈을 __zntc_register() 팩토리로 래핑 + HMR 런타임 주입 */
+  /** dev mode: wrap modules in a __zntc_register() factory + inject the HMR runtime. */
   devMode?: boolean;
-  /** dev mode 모듈 ID 기준 경로 */
+  /** dev mode module ID base path. */
   rootDir?: string;
-  /** React Fast Refresh 활성화 */
+  /** Enable React Fast Refresh. */
   reactRefresh?: boolean;
-  /** dev mode per-module codes 수집 (HMR rebuild용) */
+  /** Collect dev mode per-module codes (for HMR rebuilds). */
   collectModuleCodes?: boolean;
-  /** Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환) */
+  /** Add configurable: true to Object.defineProperty (RN/Hermes-compatible). */
   configurableExports?: boolean;
-  /** ESM 실행 순서 보장 — 함수 선언을 factory 내부 assignment로 다운그레이드해 호이스팅 방지.
-   * Rolldown의 strictExecutionOrder와 동일. React Native 플랫폼에서 자동 활성화. */
+  /** Guarantee ESM execution order — downgrade function declarations to
+   * assignments inside the factory to prevent hoisting. Same as Rolldown's
+   * strictExecutionOrder. Auto-enabled on the React Native platform. */
   strictExecutionOrder?: boolean;
-  /** entry trigger (`init_X()` / `require_X()`) 호출을 try/catch + ErrorUtils.reportFatalError 로 wrap.
-   * Metro `guardedLoadModule` (top-level `__r` wrapper) 와 동등 mechanism — module factory throw 가
-   * 부팅을 막지 않고 RN 표준 LogBox 에 fatal 로 표시. ErrorUtils 미정의 환경 (test / browser) 에선
-   * throw 그대로 re-throw. 발견 계기는 iOS 26.4 Hermes 가 `Location` 등 spec global 을 immutable
-   * descriptor (`configurable: false`) 로 미리 등록 + expo-metro-runtime 의 가드 없는
-   * `defineProperty` 시도 throw 였지만, mechanism 은 OS/엔진 무관 — 모든 module factory throw 케이스
-   * 커버. React Native 플랫폼에서 자동 활성화. */
+  /** Wrap entry trigger (`init_X()` / `require_X()`) calls in try/catch +
+   * ErrorUtils.reportFatalError. Equivalent mechanism to Metro
+   * `guardedLoadModule` (top-level `__r` wrapper) — a module factory throw is
+   * shown as fatal in the standard RN LogBox instead of blocking boot. In
+   * environments without ErrorUtils (test / browser), the throw is re-thrown
+   * as-is. It was discovered when iOS 26.4 Hermes pre-registers spec globals
+   * such as `Location` with an immutable descriptor (`configurable: false`)
+   * and expo-metro-runtime's unguarded `defineProperty` attempt threw, but the
+   * mechanism is OS/engine-agnostic — it covers every module factory throw
+   * case. Auto-enabled on the React Native platform. */
   entryErrorGuard?: boolean;
-  /** Prologue 에 `console.error` setter intercept 주입 — RegExp source string 배열의 어느 하나라도
-   * match 하는 console.error 호출은 silent swallow. `entryErrorGuard` 와 직교. consumer 가 환경
-   * (e.g. expo) 감지 후 패턴 주입. 비어있거나 미지정 시 wrap 자체 emit 안 됨 → vanilla RN CLI 빌드는
-   * dead code 0. RN preset 에서도 자동 활성화 안 함 (trigger 가 environment-specific 이므로).
+  /** Inject a `console.error` setter intercept into the prologue — console.error
+   * calls matching any one of the RegExp source string array are silently
+   * swallowed. Orthogonal to `entryErrorGuard`. The consumer detects the
+   * environment (e.g. expo) and injects the patterns. When empty or
+   * unspecified, the wrap itself is not emitted → a vanilla RN CLI build has
+   * zero dead code. Not auto-enabled even by the RN preset (the trigger is
+   * environment-specific).
    *
-   * 예: `["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"]`
-   * (expo `installGlobal.ts` + RN `polyfillObjectProperty` 의 native immutable global 충돌 메시지) */
+   * e.g.: `["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"]`
+   * (the native immutable global collision message of expo `installGlobal.ts`
+   * + RN `polyfillObjectProperty`) */
   silentConsoleErrorPatterns?: string[];
-  /** scope hoisting 활성화 (기본 true). 단일 chunk에서 모듈 경계를 제거하고 심볼을 평탄화. */
+  /** Enable scope hoisting (default true). Removes module boundaries within a single chunk and flattens symbols. */
   scopeHoist?: boolean;
-  /** Reanimated worklet 변환 — "worklet" 디렉티브 함수에 __workletHash/__closure/__initData 주입.
-   * React Native 플랫폼에서 자동 활성화. */
+  /** Reanimated worklet transform — injects __workletHash/__closure/__initData
+   * into functions with the "worklet" directive. Auto-enabled on the React
+   * Native platform. */
   workletTransform?: boolean;
-  /** worklet의 `__pluginVersion` 값 (Reanimated dev mode jsVersion 대조용).
-   * 사용자 환경의 react-native-worklets 패키지 version을 전달해야 런타임 에러 없음. */
+  /** The worklet's `__pluginVersion` value (for cross-checking Reanimated dev
+   * mode jsVersion). Must be passed the react-native-worklets package version
+   * from the user's environment to avoid a runtime error. */
   workletPluginVersion?: string;
-  /** RN view config codegen — `*NativeComponent.{js,ts}` 의 `codegenNativeComponent`
-   * 호출을 inline view config 로 교체 (#2348). React Native 플랫폼에서 자동 활성화.
-   * `@react-native/codegen` 의 `GenerateViewConfigJs.generate()` fileTemplate 와 동일.
-   * Fabric early-register race (`View config not found for component 'X'`) 회피. */
+  /** RN view config codegen — replaces the `codegenNativeComponent` call in
+   * `*NativeComponent.{js,ts}` with an inline view config (#2348). Auto-enabled
+   * on the React Native platform. Same as the
+   * `GenerateViewConfigJs.generate()` fileTemplate of `@react-native/codegen`.
+   * Avoids the Fabric early-register race (`View config not found for
+   * component 'X'`). */
   codegenTransform?: boolean;
-  /** scope hoisting 시 예약할 전역 식별자 */
+  /** Global identifiers to reserve during scope hoisting. */
   globalIdentifiers?: string[];
-  /** 번들 시작 시 즉시 실행 폴리필 경로 */
+  /** Paths of polyfills to run immediately at bundle start. */
   polyfills?: string[];
   /**
-   * core-js 기반 런타임 API 폴리필 자동 주입.
+   * Auto-inject core-js-based runtime API polyfills.
    *
-   * - `"off"` (default): 자동 런타임 폴리필 없음.
-   * - `"auto"` / `"usage"`: resolve/load/transform 이후 실제 번들 그래프 사용 API를 감지해 타겟 미지원 모듈 주입.
-   * - `"entry"`: 타겟 기준 필요한 core-js ES/Web 모듈을 엔트리 prelude에 포괄 주입.
-   * - 타겟 지정은 Rspack/SWC `env.targets`와 같은 Browserslist query 배열을 사용한다.
+   * - `"off"` (default): no automatic runtime polyfills.
+   * - `"auto"` / `"usage"`: after resolve/load/transform, detect the APIs
+   *   actually used in the bundle graph and inject the modules unsupported by
+   *   the target.
+   * - `"entry"`: comprehensively inject the core-js ES/Web modules required by
+   *   the target into the entry prelude.
+   * - Target specification uses a Browserslist query array, like Rspack/SWC
+   *   `env.targets`.
    */
   runtimePolyfills?: RuntimePolyfillsOption;
-  /** core-js-compat 계산에 사용할 core-js 버전 (예: `"3.49"`). `runtimePolyfills.coreJs`와 동일한 역할. */
+  /** core-js version used for the core-js-compat computation (e.g. `"3.49"`). Same role as `runtimePolyfills.coreJs`. */
   coreJs?: string;
-  /** 엔트리 모듈 직전에 실행할 모듈 경로 */
+  /** Paths of modules to run immediately before the entry module. */
   runBeforeMain?: string[];
-  /** 번들 그래프 밖의 디렉토리를 감시 루트에 추가 (Metro watchFolders 호환).
-   * 절대/상대 경로 모두 허용. 지정된 경로는 재귀 스캔되어 감시 대상에 포함된다. */
+  /** Add directories outside the bundle graph to the watch roots (Metro
+   * watchFolders-compatible). Both absolute and relative paths are allowed.
+   * The given paths are recursively scanned and included in the watch set. */
   watchFolders?: string[];
-  /** watchFolders 스캔 시 포함할 파일 glob 화이트리스트 (루트 기준 상대 경로). */
+  /** File glob whitelist to include when scanning watchFolders (paths relative to the root). */
   watchInclude?: string[];
-  /** watchFolders 스캔 시 제외할 파일 glob (루트 기준 상대 경로). */
+  /** File globs to exclude when scanning watchFolders (paths relative to the root). */
   watchExclude?: string[];
-  /** watch 모드 빌드 완료 콜백 */
+  /** watch-mode build-complete callback. */
   onReady?: (event: WatchReadyEvent) => void | Promise<void>;
-  /** watch 모드 리빌드 콜백 */
+  /** watch-mode rebuild callback. */
   onRebuild?: (event: WatchRebuildEvent) => void | Promise<void>;
   /**
-   * `.map` 파일을 디스크에 기록할지 여부 (Issue #1727 Phase B).
+   * Whether to write the `.map` file to disk (Issue #1727 Phase B).
    *
-   * - 기본 `true` — `bundle.js.map` 을 `output_filename + ".map"` 경로에 저장.
-   * - `false` — 디스크 I/O 생략. bungae 같은 dev server 가
-   *   {@link WatchHandle.getBundleSourceMap} / {@link WatchHandle.getHmrSourceMap}
-   *   을 호출해 lazy 엔드포인트로 serve 하는 경우 권장.
+   * - Default `true` — save `bundle.js.map` to the `output_filename + ".map"`
+   *   path.
+   * - `false` — skip disk I/O. Recommended when a dev server such as bungae
+   *   serves it from a lazy endpoint by calling
+   *   {@link WatchHandle.getBundleSourceMap} /
+   *   {@link WatchHandle.getHmrSourceMap}.
    */
   emitDiskSourcemap?: boolean;
   /**
-   * 라이브러리별 1st-party transform 설정 (`@next/swc` 의 `compiler` 와 호환 surface).
+   * Per-library 1st-party transform settings (`@next/swc` `compiler`-compatible
+   * surface).
    *
-   * 현재는 타입 stub — Zig transformer 가 아직 인식하지 않아 런타임 효과 없음.
-   * 후속 epic 에서 styled-components / emotion 1st-party transform 도입 시 활성화.
+   * Currently a type stub — no runtime effect since the Zig transformer does
+   * not recognize it yet. Activated in a follow-up epic when the
+   * styled-components / emotion 1st-party transforms are introduced.
    *
    * @example
    * ```ts
@@ -1014,23 +1099,24 @@ interface BuildOptionsCommon {
 }
 
 /**
- * BuildOptions: 사용자 공개 API.
+ * BuildOptions: the user-facing public API.
  *
- * `platform === "react-native"` 일 때는 Hermes 호환 매트릭스가 강제되므로
- * `target` / `browserslist`를 전달할 수 없다 (런타임에서도 무시됨).
+ * When `platform === "react-native"`, the Hermes compatibility matrix is
+ * forced, so `target` / `browserslist` cannot be passed (they are ignored at
+ * runtime too).
  */
 export type BuildOptions =
   | (BuildOptionsCommon & {
-      /** React Native (Hermes) 프리셋. target은 Hermes 매트릭스로 강제됨. */
+      /** React Native (Hermes) preset. target is forced to the Hermes matrix. */
       platform: Extract<import('../shared/index').Platform, 'react-native'>;
       target?: BuildTarget;
       browserslist?: never;
     })
   | (BuildOptionsCommon & {
       platform?: Exclude<import('../shared/index').Platform, 'react-native'>;
-      /** ES 다운레벨 타겟. Rspack-style node/hermes target strings are accepted by the JS wrapper. */
+      /** ES downlevel target. Rspack-style node/hermes target strings are accepted by the JS wrapper. */
       target?: BuildTarget;
-      /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
+      /** browserslist query (string or string[]). Takes precedence over target when set. */
       browserslist?: string | string[];
     });
 
@@ -1048,30 +1134,34 @@ export interface WatchRebuildEvent {
     id: string;
     code: string;
     /**
-     * 모듈별 standalone source map (V3 JSON). sourcemap 옵션 활성화 시 채워진다.
-     * HMR 클라이언트가 eval된 코드에 sourceMappingURL data URL로 부착하면
-     * 전체 번들 sourcemap을 재생성하지 않고도 디버거 매핑이 유지된다 (Issue #1248).
+     * Per-module standalone source map (V3 JSON). Populated when the sourcemap
+     * option is enabled. When the HMR client attaches it to the eval'd code as
+     * a sourceMappingURL data URL, debugger mapping is preserved without
+     * regenerating the whole bundle sourcemap (Issue #1248).
      */
     map?: string;
   }>;
   bytes?: number;
   /**
-   * 단계별 빌드 시간 (밀리초). 성공한 리빌드에서만 노출.
+   * Per-phase build time (milliseconds). Exposed only on a successful rebuild.
    *
-   * **기본 phase** (항상 측정):
+   * **Base phases** (always measured):
    * - `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
-   * 필드 이름과 실제 값이 정확히 일치. 2026-04-22 이전의 `parse` / `semantic` 은
-   * 사실 각각 `graph` / `link+shake` 를 담았던 레거시 이름이었으며 제거됨 —
-   * 이제 sub-phase 로만 (실제 parser / SemanticAnalyzer 시간) 노출된다.
+   * Field names exactly match their actual values. The pre-2026-04-22 `parse` /
+   * `semantic` were in fact legacy names that held `graph` / `link+shake`
+   * respectively and have been removed — they are now exposed only as
+   * sub-phases (the real parser / SemanticAnalyzer times).
    *
-   * **Sub-phase** (`ZNTC_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `profile: ["<cat>"]` 활성 시):
+   * **Sub-phases** (when `ZNTC_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` /
+   * `profile: ["<cat>"]` is active):
    * - `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
-   * - 비활성 상태에선 모두 0. `parse` 는 이제 진짜 parser 시간, `semantic` 은 진짜 SemanticAnalyzer.
+   * - All 0 when inactive. `parse` is now the real parser time, `semantic` the
+   *   real SemanticAnalyzer.
    */
   phaseDurations?: {
     // 기본 phase (항상 측정)
 
-    /** 변경 감지 (mtime 스캔) */
+    /** Change detection (mtime scan). */
     detect: number;
     /** Module graph build — resolve + parse + semantic + finalize */
     graph: number;
@@ -1079,86 +1169,91 @@ export interface WatchRebuildEvent {
     link: number;
     /** Tree shaking */
     shake: number;
-    /** 코드 생성 (transform + codegen + emit) */
+    /** Code generation (transform + codegen + emit). */
     emit: number;
-    /** HMR delta 추출 */
+    /** HMR delta extraction. */
     delta: number;
-    /** 총 리빌드 시간 (detect → delta 합산) */
+    /** Total rebuild time (sum of detect → delta). */
     total: number;
 
     // Sub-phase (profile 활성 시에만)
 
     /** Scanner tokenization */
     scan: number;
-    /** Parser — 실제 parser 시간만 */
+    /** Parser — real parser time only. */
     parse: number;
     /** Dependency resolution */
     resolve: number;
-    /** SemanticAnalyzer — 실제 semantic 분석 시간만 */
+    /** SemanticAnalyzer — real semantic analysis time only. */
     semantic: number;
-    /** Transformer 전체 */
+    /** Transformer total. */
     transform: number;
-    /** Codegen 전체 */
+    /** Codegen total. */
     codegen: number;
     /** Linker metadata build */
     metadata: number;
 
     // Graph sub-phase (graph 내부 분해)
 
-    /** `graph.build()` / `graph.buildIncremental()` — 모듈 그래프 구축 본체 */
+    /** `graph.build()` / `graph.buildIncremental()` — the module graph construction body. */
     graphBuild: number;
-    /** `new Worker(new URL(...))` 패턴 entry 별도 빌드 */
+    /** Separate build of the `new Worker(new URL(...))` pattern entry. */
     graphWorker: number;
-    /** Phase 1: 이벤트 큐 BFS 스캔 (모듈 발견 + 파싱 + resolve) */
+    /** Phase 1: event queue BFS scan (module discovery + parsing + resolve). */
     graphDiscover: number;
-    /** Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파 */
+    /** Phase 2-4: DFS exec_index + ExportsKind promotion + TLA propagation. */
     graphFinalize: number;
 
     // Emit sub-phase (bundler.zig 수준 분해)
 
-    /** `--polyfill` 파일 내용 로딩 + Flow 트랜스파일 */
+    /** Loading `--polyfill` file contents + Flow transpilation. */
     emitPolyfill: number;
-    /** React Refresh 런타임 preamble/epilogue 조립 (dev + 브라우저) */
+    /** Assembling the React Refresh runtime preamble/epilogue (dev + browser). */
     emitRefresh: number;
-    /** `emitter.emitWithTreeShaking` / `emitChunks` — 번들 출력 생성 본체 */
+    /** `emitter.emitWithTreeShaking` / `emitChunks` — the bundle output generation body. */
     emitOutput: number;
-    /** `--metafile` / `--analyze` JSON 생성 */
+    /** `--metafile` / `--analyze` JSON generation. */
     emitMetafile: number;
-    /** CSS 엔트리별 번들 + lightningcss 후처리 */
+    /** Per-CSS-entry bundling + lightningcss post-processing. */
     emitCss: number;
 
     // emit_output 내부 (emitter.emitWithTreeShaking 분해)
 
-    /** 포맷 prologue + polyfill IIFE + runtime helper 주입 */
+    /** Format prologue + polyfill IIFE + runtime helper injection. */
     emitPrelude: number;
     /** Phase 1/1.5/2/2.5 — used_names + cache lookup + emitModule + cache put */
     emitModulePass: number;
-    /** Phase 3: module concat + runtime helpers 합산 + renderChunk + epilogue */
+    /** Phase 3: module concat + runtime helpers summation + renderChunk + epilogue. */
     emitConcat: number;
-    /** 소스맵 V3 JSON 생성 (VLQ encode + sources content + debugId) */
+    /** Source map V3 JSON generation (VLQ encode + sources content + debugId). */
     emitSourcemapFinalize: number;
   };
-  /** 증분 그래프에서 재파싱된 모듈 수. 캐시 미스된 모듈만 카운트. 전체 빌드에서는 미노출. */
+  /** Number of modules reparsed in the incremental graph. Counts cache-missed
+   * modules only. Not exposed for full builds. */
   reparsedModules?: number;
 }
 
 export interface WatchHandle {
   stop(): void;
   /**
-   * 최신 rebuild 의 번들 전체 sourcemap JSON 을 lazy 생성해 반환 (Issue #1727 Phase B).
+   * Lazily generates and returns the full-bundle sourcemap JSON of the latest
+   * rebuild (Issue #1727 Phase B).
    *
-   * emit 단계에서 VLQ encode + sourcesContent 첨부를 건너뛰어 HMR latency 밖으로 빼낸
-   * 비용을 요청 시점으로 지연시킨다. dev server 가 `/bundle.js.map` 요청을 받을 때 호출.
+   * The emit step skips VLQ encoding + sourcesContent attachment, deferring
+   * that cost out of HMR latency until request time. Called when the dev
+   * server receives a `/bundle.js.map` request.
    *
-   * - sourcemap 비활성 / 초기 빌드 전 / `stop()` 이후에는 `null`.
-   * - Metro `_processSourceMapRequest` 패턴.
+   * - `null` when sourcemap is disabled / before the initial build / after
+   *   `stop()`.
+   * - Metro `_processSourceMapRequest` pattern.
    */
   getBundleSourceMap(): string | null;
   /**
-   * 최신 rebuild 의 모듈별 sourcemap JSON 을 lazy 생성해 반환.
+   * Lazily generates and returns the per-module sourcemap JSON of the latest
+   * rebuild.
    *
-   * dev server 가 `/hmr-map/:moduleId` 요청을 받을 때 호출.
-   * `moduleId` 가 이번 rebuild 에 포함되지 않았으면 `null`.
+   * Called when the dev server receives a `/hmr-map/:moduleId` request.
+   * `null` if `moduleId` was not included in this rebuild.
    */
   getHmrSourceMap(moduleId: string): string | null;
 }
@@ -1168,7 +1263,7 @@ export interface ZntcPlugin {
   setup(build: PluginBuild): void;
 }
 
-/** 플러그인 훅 반환값: 동기/비동기 모두 허용. null/undefined로 패스스루. */
+/** Plugin hook return value: both sync and async allowed. null/undefined for pass-through. */
 type HookResult<T> = T | null | undefined | Promise<T | null | undefined>;
 type PluginFailureResult = {
   __zntcPluginFailure: true;
@@ -1185,11 +1280,12 @@ export interface PluginBuild {
     options: { filter: RegExp },
     callback: (args: { path: string; importer: string | null }) => HookResult<{
       path?: string;
-      /** import 문을 그대로 유지 — 런타임이 해석 (esbuild 호환). */
+      /** Keep the import statement as-is — resolved at runtime (esbuild-compatible). */
       external?: boolean;
-      /** 모듈을 빈 객체(`module.exports = {}`)로 대체.
-       * Metro `resolveRequest`가 `{ type: 'empty' }` 반환할 때, webpack `resolve.fallback`이
-       * `false`일 때 매핑용. `path` 생략 시 specifier가 식별자로 사용됨. */
+      /** Substitute the module with an empty object (`module.exports = {}`).
+       * For mapping when Metro `resolveRequest` returns `{ type: 'empty' }`, or
+       * when webpack `resolve.fallback` is `false`. If `path` is omitted, the
+       * specifier is used as the identifier. */
       disabled?: boolean;
     }>,
   ): void;
@@ -1209,22 +1305,28 @@ export interface PluginBuild {
   ): void;
   onGenerateBundle(callback: (outputs: OutputFile[]) => void | Promise<void>): void;
   /**
-   * Bundle 시작 시 1회 호출. esbuild `onStart`, Rollup/Vite/rolldown `buildStart` 동일 (#2156).
-   * watch 모드는 초기 build 와 매 rebuild 마다 호출됨 (Rollup 5+ 정책과 동일).
+   * Called once at bundle start. Same as esbuild `onStart`,
+   * Rollup/Vite/rolldown `buildStart` (#2156). In watch mode it is called for
+   * the initial build and on every rebuild (same as the Rollup 5+ policy).
    *
-   * 인자는 없음 — esbuild `onStart` 와 동일. plugin 자체 setup 시 `BuildOptions` 가 이미 전달됨.
+   * No arguments — same as esbuild `onStart`. `BuildOptions` is already passed
+   * during the plugin's own setup.
    */
   onBuildStart(callback: () => void | Promise<void>): void;
   /**
-   * Bundle 종료 시 1회 호출. 성공/실패 모두 dispatch. 실패 시 fatal diagnostic 의 첫 항목을
-   * `Error` 로 wrap 해서 전달 (#2156). watch 모드는 초기 build 와 매 rebuild 마다 호출.
+   * Called once at bundle end. Dispatched for both success and failure. On
+   * failure, the first fatal diagnostic item is wrapped in an `Error` and
+   * passed (#2156). In watch mode it is called for the initial build and on
+   * every rebuild.
    *
-   * `onCloseBundle` 보다 먼저 호출됨.
+   * Called before `onCloseBundle`.
    */
   onBuildEnd(callback: (error?: Error) => void | Promise<void>): void;
   /**
-   * Output 파일 write 완료 후 1회 호출 (#2156). Rollup `closeBundle` 와 동일 — temp 파일 cleanup,
-   * 외부 시스템에 빌드 완료 알림 등에 사용. watch 모드는 초기 build 와 매 rebuild 마다 호출.
+   * Called once after output files are written (#2156). Same as Rollup
+   * `closeBundle` — used for temp file cleanup, notifying external systems of
+   * build completion, etc. In watch mode it is called for the initial build
+   * and on every rebuild.
    */
   onCloseBundle(callback: () => void | Promise<void>): void;
   onAstFunction(
@@ -1232,16 +1334,22 @@ export interface PluginBuild {
     callback: (info: AstFunctionInfo) => HookResult<AstFunctionResult>,
   ): void;
   /**
-   * `require.context(dir, recursive, filter, mode)` 의 매칭 결과를 호스트 런타임에서 채운다. (#1579)
-   * ZNTC 자체 regex executor 가 없어서 (#1771) host 의 RegExp 에 위임 — Node V8 / Bun JSC.
+   * Fills in the match results of `require.context(dir, recursive, filter,
+   * mode)` from the host runtime. (#1579) Since ZNTC has no regex executor of
+   * its own (#1771), this is delegated to the host's RegExp — Node V8 / Bun
+   * JSC.
    *
-   * `options.filter` 는 `dir` 에 적용 (예: `/^\.\/app/` 으로 특정 디렉토리만 처리).
-   * 콜백 반환:
-   *   - `{ context: string[] }` — 매칭된 파일 경로 배열 (빈 배열 = empty context)
-   *   - `null`/`undefined` — 다음 plugin 시도 (모두 null 이면 graph 가 require_context_no_handler diagnostic)
+   * `options.filter` applies to `dir` (e.g. `/^\.\/app/` to process only a
+   * specific directory).
+   * Callback return:
+   *   - `{ context: string[] }` — array of matched file paths (empty array =
+   *     empty context)
+   *   - `null`/`undefined` — try the next plugin (if all are null, the graph
+   *     emits a require_context_no_handler diagnostic)
    *
-   * 콜백 인자 `filter` 는 require.context 의 정규식 본문 (slashes 없이),
-   * `flags` 는 정규식 플래그. host 가 `new RegExp(filter, flags)` 로 컴파일 후 매칭.
+   * The callback argument `filter` is the regex body of require.context
+   * (without slashes), and `flags` are the regex flags. The host compiles it
+   * with `new RegExp(filter, flags)` and then matches.
    */
   onResolveContext(
     options: { filter: RegExp },
@@ -1308,8 +1416,9 @@ export interface AppBuildOptions {
   /** Enable code splitting for the application bundle. */
   splitting?: boolean;
   /**
-   * 라이브러리별 1st-party transform (`@next/swc` 의 `compiler` 와 호환 surface).
-   * BuildOptions 와 동일 의미 — bundle / app 빌드 양쪽에서 같은 옵션 표현 사용.
+   * Per-library 1st-party transform (`@next/swc` `compiler`-compatible
+   * surface). Same meaning as in BuildOptions — both bundle / app builds use
+   * the same option representation.
    */
   compiler?: CompilerOptions;
 }
@@ -2198,12 +2307,14 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
 }
 
 /**
- * 번들링을 비동기적으로 실행한다. 이벤트 루프를 블로킹하지 않음.
- * JS 플러그인의 Promise/async hook 은 이 함수에서 지원됨.
+ * Runs bundling asynchronously. Does not block the event loop.
+ * Promise/async hooks of JS plugins are supported in this function.
  *
- * Plugin lifecycle 호출 순서: buildStart → (NAPI build) → buildEnd → write → closeBundle.
- * `buildEnd` 는 NAPI 실패 시에도 호출되며 error 인자가 전달된다 (Rollup 동일).
- * `closeBundle` 은 write 성공 시에만 호출.
+ * Plugin lifecycle call order: buildStart → (NAPI build) → buildEnd → write →
+ * closeBundle.
+ * `buildEnd` is called even on NAPI failure, with the error argument passed
+ * (same as Rollup).
+ * `closeBundle` is called only on a successful write.
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
   const n = ensureNative();
@@ -2242,8 +2353,9 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 }
 
 /**
- * 번들링을 동기적으로 실행한다.
- * JS 플러그인은 sync hook만 지원한다. Promise/async hook은 plugin_error로 실패한다.
+ * Runs bundling synchronously.
+ * JS plugins support only sync hooks. Promise/async hooks fail with a
+ * plugin_error.
  */
 export function buildSync(options: BuildOptions): BuildResult {
   const n = ensureNative();
@@ -2348,8 +2460,8 @@ export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPre
 }
 
 /**
- * 리소스 해제 (NAPI 모듈은 프로세스 종료 시 자동 해제).
- * API 호환성을 위해 유지.
+ * Releases resources (the NAPI module is released automatically on process
+ * exit). Kept for API compatibility.
  */
 export function close(): void {
   native = null;
@@ -2358,29 +2470,29 @@ export function close(): void {
 // ─── Benchmark API (CLI `zntc bench` 의 NAPI 대응) ───
 
 /**
- * 벤치마크 옵션. `source` 또는 `file` 중 하나는 반드시 지정.
+ * Benchmark options. One of `source` or `file` must be specified.
  */
 export interface BenchmarkOptions {
-  /** Source 코드 문자열 (file 과 둘 중 하나) */
+  /** Source code string (one of this or file). */
   source?: string;
-  /** 파일 경로 (source 와 둘 중 하나) */
+  /** File path (one of this or source). */
   file?: string;
-  /** filename (source 와 함께 사용, 확장자 감지) */
+  /** filename (used together with source, for extension detection). */
   filename?: string;
   /**
-   * 측정할 profile category 목록 (required, non-empty).
-   * 예: `["parse"]`, `["scan", "parse", "transform"]`, `["transform.jsx"]`.
-   * `all` / `none` 은 허용되지 않음 — 구체적 phase 이름만.
+   * List of profile categories to measure (required, non-empty).
+   * e.g. `["parse"]`, `["scan", "parse", "transform"]`, `["transform.jsx"]`.
+   * `all` / `none` are not allowed — concrete phase names only.
    */
   phases: string[];
-  /** 반복 횟수 (default 100) */
+  /** Number of iterations (default 100). */
   iterations?: number;
-  /** Warmup 반복 (default 10) */
+  /** Warmup iterations (default 10). */
   warmup?: number;
 }
 
 /**
- * Phase 하나의 통계 (모든 값 ms 단위).
+ * Statistics for a single phase (all values in ms).
  */
 export interface BenchmarkPhaseStats {
   samples: number;
@@ -2394,16 +2506,17 @@ export interface BenchmarkPhaseStats {
 }
 
 /**
- * 벤치마크 결과 — `phases` 옵션에 지정된 각 category 별 통계.
+ * Benchmark result — statistics per category specified in the `phases` option.
  */
 export interface BenchmarkResult {
   phases: Record<string, BenchmarkPhaseStats>;
 }
 
 /**
- * 특정 phase 를 N 회 반복 실행하고 통계 (mean/median/p95/p99/stddev/min/max) 를 반환한다.
+ * Runs a specific phase N times and returns statistics
+ * (mean/median/p95/p99/stddev/min/max).
  *
- * CLI `zntc bench --phase=...` 의 NAPI 대응 — 같은 engine 사용.
+ * The NAPI counterpart of CLI `zntc bench --phase=...` — uses the same engine.
  *
  * @example
  * ```ts
@@ -2437,7 +2550,7 @@ export function benchmark(options: BenchmarkOptions): BenchmarkResult {
 // ─── Vite/Rollup 플러그인 어댑터 ───
 
 /**
- * Rollup/Vite 스타일 플러그인을 ZNTC 플러그인으로 변환한다.
+ * Converts a Rollup/Vite-style plugin into a ZNTC plugin.
  *
  * @example
  * ```ts
@@ -2481,19 +2594,19 @@ function extractHandler<F extends (...args: never[]) => unknown>(
 }
 
 export interface RollupPluginContext {
-  /** plugin 안에서 error 를 throw 한다. Rollup `this.error` 호환. */
+  /** Throw an error from within the plugin. Rollup `this.error`-compatible. */
   error(error: unknown): never;
-  /** warning 을 콘솔에 출력한다. Rollup `this.warn` 호환 — 빌드를 멈추지 않음. */
+  /** Print a warning to the console. Rollup `this.warn`-compatible — does not stop the build. */
   warn(message: unknown): void;
-  /** Watch 모드에서 추가로 감시할 파일을 등록. 현재 no-op (graph mutation 미지원). */
+  /** Register an additional file to watch in watch mode. Currently a no-op (graph mutation not supported). */
   addWatchFile(id: string): void;
-  /** 모듈 resolve. 현재 미지원 — 호출 시 Error throw 로 plugin 작성자에게 알림. */
+  /** Module resolve. Currently unsupported — throws an Error when called to notify the plugin author. */
   resolve(
     source: string,
     importer?: string | null,
     options?: unknown,
   ): Promise<{ id: string; external?: boolean } | null>;
-  /** Asset/chunk 추가 emit. 현재 미지원 — 호출 시 Error throw. */
+  /** Emit an additional asset/chunk. Currently unsupported — throws an Error when called. */
   emitFile(file: unknown): string;
 }
 
@@ -2504,7 +2617,7 @@ type RenderChunkResult = string | null | undefined | void | { code: string };
 
 export interface RollupPlugin {
   name: string;
-  /** Rollup `resolveId`. Function 또는 vite 4+ 신형 hook object `{ filter, handler }` 둘 다 허용. */
+  /** Rollup `resolveId`. Both a function and a vite 4+ new-style hook object `{ filter, handler }` are allowed. */
   resolveId?: Hook<
     (
       this: RollupPluginContext,
@@ -2520,13 +2633,14 @@ export interface RollupPlugin {
     (this: RollupPluginContext, code: string, chunk: string) => MaybePromise<RenderChunkResult>
   >;
   generateBundle?: Hook<(this: RollupPluginContext, outputs: OutputFile[]) => MaybePromise<void>>;
-  /** Bundle 시작 시 1회. esbuild `onStart` / Rollup `buildStart` 호환 (#2156).
-   *  ZNTC 는 인자 없이 호출 (esbuild 스타일) — Rollup plugin 이 `options` 인자를 기대하면
-   *  plugin 자체 closure 로 받아둘 것. */
+  /** Once at bundle start. esbuild `onStart` / Rollup `buildStart`-compatible
+   *  (#2156). ZNTC calls it with no arguments (esbuild style) — if a Rollup
+   *  plugin expects the `options` argument, capture it in the plugin's own
+   *  closure. */
   buildStart?: Hook<(this: RollupPluginContext) => MaybePromise<void>>;
-  /** Bundle 종료 시 1회. Rollup `buildEnd` 호환 — error 가 있으면 빌드 실패. */
+  /** Once at bundle end. Rollup `buildEnd`-compatible — if there is an error, the build fails. */
   buildEnd?: Hook<(this: RollupPluginContext, error?: Error) => MaybePromise<void>>;
-  /** Output 파일 write 완료 후. Rollup `closeBundle` 호환. */
+  /** After output files are written. Rollup `closeBundle`-compatible. */
   closeBundle?: Hook<(this: RollupPluginContext) => MaybePromise<void>>;
 }
 
@@ -2703,11 +2817,13 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
 }
 
 /**
- * Watch 모드로 번들링한다. 파일 변경 시 incremental rebuild + HMR diff.
- * 초기 빌드 완료 시 onReady, 리빌드 시 onRebuild 콜백 호출.
+ * Bundles in watch mode. On file changes: incremental rebuild + HMR diff.
+ * Calls the onReady callback when the initial build completes, and onRebuild
+ * on each rebuild.
  *
- * Plugin lifecycle 호출 순서: buildStart → (NAPI build/rebuild) → buildEnd
- * → onReady/onRebuild → closeBundle. closeBundle 은 callback 이 없거나 throw 해도 호출된다.
+ * Plugin lifecycle call order: buildStart → (NAPI build/rebuild) → buildEnd
+ * → onReady/onRebuild → closeBundle. closeBundle is called even if there is no
+ * callback or it throws.
  */
 export function watch(options: BuildOptions): WatchHandle {
   const n = ensureNative();

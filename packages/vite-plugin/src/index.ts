@@ -1,5 +1,5 @@
 /**
- * @zntc/vite-plugin — Vite의 esbuild transform을 ZNTC로 교체하는 플러그인
+ * @zntc/vite-plugin — Vite plugin that replaces Vite's esbuild transform with ZNTC.
  *
  * @example
  * ```ts
@@ -19,22 +19,24 @@ import type { TranspileOptions } from '@zntc/core';
 
 export interface ZntcPluginOptions {
   /**
-   * 변환할 파일 확장자 패턴 (기본: /\.(tsx?|jsx)$/)
+   * File extension pattern to transform (default: /\.(tsx?|jsx)$/).
    */
   include?: RegExp;
   /**
-   * 제외할 파일 패턴 (기본: /node_modules/)
+   * File pattern to exclude (default: /node_modules/).
    */
   exclude?: RegExp;
   /**
-   * ZNTC transpile 옵션 (target, jsx 등)
+   * ZNTC transpile options (target, jsx, etc.).
    */
   transpileOptions?: Omit<TranspileOptions, 'filename'>;
   /**
-   * tsconfig autodiscover 결과 캐시 활성화 (기본: true). plugin 인스턴스 lifetime 동안
-   * 같은 워크스페이스 안 파일은 한 번만 walk → file 당 5–10 fs syscall 절약 (#2367).
-   * `transpileOptions.tsconfigPath` / `tsconfigRaw` 명시 시 캐시는 자동으로 무시됨.
-   * Vite dev 세션이 너무 길어 메모리가 우려되면 false 로 비활성화 가능.
+   * Enable caching of tsconfig autodiscovery results (default: true). For the
+   * lifetime of the plugin instance, files in the same workspace are walked only
+   * once → saves 5–10 fs syscalls per file (#2367).
+   * The cache is automatically bypassed when `transpileOptions.tsconfigPath` /
+   * `tsconfigRaw` is set explicitly.
+   * Set to false to disable if a very long Vite dev session raises memory concerns.
    */
   tsconfigCache?: boolean;
 }
