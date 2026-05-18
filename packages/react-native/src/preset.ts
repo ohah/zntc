@@ -202,7 +202,10 @@ export const DEFAULT_ASSET_EXTS: string[] = [
   '.woff2',
 ];
 
-function buildResolveExtensions(rnPlatform: 'ios' | 'android', sourceExts: readonly string[]): string[] {
+function buildResolveExtensions(
+  rnPlatform: 'ios' | 'android',
+  sourceExts: readonly string[],
+): string[] {
   const platformPrefix = `.${rnPlatform}`;
   const extensions: string[] = [];
   const seen = new Set<string>();
