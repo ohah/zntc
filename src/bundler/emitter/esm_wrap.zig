@@ -1256,6 +1256,8 @@ fn makeStarGetterValue(
     name: []const u8,
     options: *const EmitOptions,
 ) !?[]const u8 {
+    if (l.tree_shaker_active and !src_mod.is_included) return null;
+
     switch (src_mod.wrap_kind) {
         .none => {
             // scope-hoisted: export의 local_name을 찾아 canonical name으로 변환
@@ -1273,6 +1275,7 @@ fn makeStarGetterValue(
             if (l.resolveExportChain(@enumFromInt(src_i), name, 0)) |resolved| {
                 const canonical_mod_i = resolved.module_index.toU32();
                 const canonical_mod = l.graph.getModule(resolved.module_index) orelse return null;
+                if (l.tree_shaker_active and !canonical_mod.is_included) return null;
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
                     const ev = try canonical_mod.allocExportsName(allocator);
