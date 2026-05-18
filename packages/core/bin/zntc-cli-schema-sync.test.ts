@@ -275,6 +275,11 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     '--watch-delay=',
     '--serve',
     '--no-splitting',
+    // 엔진 기본값 true 옵션의 명시적 비활성 negation flag (positive `--tree-shaking`/
+    // `--scope-hoist`/`--emit-disk-sourcemap` 는 string-bool 로 BuildOptions 키와 직접 매핑).
+    '--no-tree-shaking',
+    '--no-scope-hoist',
+    '--no-emit-disk-sourcemap',
     '--open',
     '--clean',
     // 설정 / 환경
@@ -393,6 +398,7 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     ...NAPI_INTERNAL_ONLY_KEYS,
     // 함수형 / 중첩 객체 (CLI 표현 불가)
     'compiler', // compiler.styledComponents / compiler.emotion — 중첩 객체, CLI 미노출
+    'mf', // Module Federation (#3318) — nested 객체, config/build() 전용 (CLI flag 없음)
     'manualChunks',
     'plugins',
     'moduleSpecifierMap',
@@ -408,7 +414,6 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     'inlineDynamicImports',
     'outExtension', // namespace 객체 — `--out-extension:.js=` 가 일부 cover
     'outbase',
-    'treeShaking',
     'watch', // BuildOptions 의 watch 와 CLI --watch 는 의미 다름
     // CLI 가 enum→boolean 변환 (`--charset=utf8` → charsetUtf8: true)
     'charsetUtf8',
