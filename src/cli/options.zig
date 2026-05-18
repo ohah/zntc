@@ -509,6 +509,16 @@ fn dupeKvMap(
     return list;
 }
 
+/// 한 SharedEntry 의 owned 필드 해제. freeMfBundle 정상경로와
+/// mfBundleFromDto 부분실패 errdefer 가 **동일 본문 공유**(필드 추가 시
+/// 한 곳만 — #4-0 share_scope 가 양쪽 동기화 부담 노출).
+fn freeSharedEntry(alloc: std.mem.Allocator, s: lib.bundler.MfBundleConfig.SharedEntry) void {
+    alloc.free(s.name);
+    if (s.required_version) |rv| alloc.free(rv);
+    if (s.global_seam.len > 0) alloc.free(s.global_seam);
+    alloc.free(s.share_scope); // name 과 동일 — 항상 owned(default 도 dup)
+}
+
 /// mfBundleFromDto 가 allocator-dup 한 것 일괄 해제. CliOptions.deinit 과
 /// mfBundleFromDto 의 errdefer 가 **공유**(해제 모델 단일 소스 — 부분
 /// 실패/정상 종료 대칭). len>0 가드: exposes/remotes/shared default 는
@@ -529,11 +539,7 @@ fn freeMfBundle(alloc: std.mem.Allocator, mfb: lib.bundler.MfBundleConfig) void 
         alloc.free(kv.value);
     }
     if (mfb.remotes.len > 0) alloc.free(mfb.remotes);
-    for (mfb.shared) |s| {
-        alloc.free(s.name);
-        if (s.required_version) |rv| alloc.free(rv);
-        if (s.global_seam.len > 0) alloc.free(s.global_seam);
-    }
+    for (mfb.shared) |s| freeSharedEntry(alloc, s);
     if (mfb.shared.len > 0) alloc.free(mfb.shared);
 }
 
@@ -560,18 +566,18 @@ fn mfBundleFromDto(
         errdefer allocator.free(list);
         var it = sh.map.iterator();
         var i: usize = 0;
-        // 부분 실패 시: 이미 채운 항목 전체 해제(freeMfBundle 와 대칭).
-        errdefer for (list[0..i]) |s| {
-            allocator.free(s.name);
-            if (s.required_version) |rv| allocator.free(rv);
-            if (s.global_seam.len > 0) allocator.free(s.global_seam);
-        };
+        // 부분 실패 시: 이미 채운 항목 해제(list[0..i] — 실패 iteration 의
+        // i 는 미증가라 제외, in-progress 는 아래 per-field errdefer 가).
+        errdefer for (list[0..i]) |s| freeSharedEntry(allocator, s);
         while (it.next()) |kv| : (i += 1) {
             const c = kv.value_ptr.*; // MfSharedDto (P1-0 파싱, 여기서 소비)
             const nm = try allocator.dupe(u8, kv.key_ptr.*);
             errdefer allocator.free(nm);
             const rv = if (c.requiredVersion) |v| try allocator.dupe(u8, v) else null;
             errdefer if (rv) |r| allocator.free(r);
+            // #4-0 해석 3-tier + 항상-owned 근거: SharedEntry.share_scope doc.
+            const sc = try allocator.dupe(u8, c.shareScope orelse dto.shareScope orelse "default");
+            errdefer allocator.free(sc);
             list[i] = .{
                 .name = nm,
                 .singleton = c.singleton orelse false,
@@ -580,6 +586,7 @@ fn mfBundleFromDto(
                 .eager = c.eager orelse false,
                 // 글로벌명 1회 생성·소유(seam·init borrow). 단일 규칙.
                 .global_seam = try lib.bundler.federation.mfSharedGlobalName(allocator, nm),
+                .share_scope = sc,
             };
         }
         out.shared = list;
@@ -1202,3 +1209,32 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
 }
 
 const DefineEntry = lib.transformer.DefineEntry;
+
+test "#4-0 mfBundleFromDto: per-shared share_scope 명시 + 번들 상속 + free 대칭" {
+    const a = std.testing.allocator;
+    const P = struct {
+        fn p(alloc: std.mem.Allocator, s: []const u8) !std.json.Parsed(lib.transpile.MfConfigDto) {
+            return std.json.parseFromSlice(lib.transpile.MfConfigDto, alloc, s, .{ .ignore_unknown_fields = true });
+        }
+        fn scopeOf(mfb: lib.bundler.MfBundleConfig, nm: []const u8) []const u8 {
+            for (mfb.shared) |s| if (std.mem.eql(u8, s.name, nm)) return s.share_scope;
+            return "<missing>";
+        }
+    };
+
+    { // 번들 shareScope="host": react 는 명시 "ui", lodash 미지정 → "host" 상속
+        const v = try P.p(a, "{\"shareScope\":\"host\",\"shared\":{\"react\":{\"shareScope\":\"ui\"},\"lodash\":{}}}");
+        defer v.deinit();
+        const mfb = try mfBundleFromDto(a, &v.value);
+        defer freeMfBundle(a, mfb); // testing.allocator = 누수 탐지(항상-owned free 대칭 강제)
+        try std.testing.expectEqualStrings("ui", P.scopeOf(mfb, "react"));
+        try std.testing.expectEqualStrings("host", P.scopeOf(mfb, "lodash"));
+    }
+    { // 번들 shareScope 미지정 + per-shared 미지정 → "default"
+        const v = try P.p(a, "{\"shared\":{\"react\":{}}}");
+        defer v.deinit();
+        const mfb = try mfBundleFromDto(a, &v.value);
+        defer freeMfBundle(a, mfb);
+        try std.testing.expectEqualStrings("default", P.scopeOf(mfb, "react"));
+    }
+}
