@@ -45,7 +45,7 @@ pub const MfStaticRemotes = struct {
 };
 
 /// P1-6 host: 스펙 런타임 패키지(자체 재구현 금지=D1) 및 그 글로벌 seam.
-/// **단일 소스** — applyMfRemotesSeam(cli/options.zig)이 external+글로벌로
+/// **단일 소스** — mf_options.seamGlobals/번들러 ④ 가 external+글로벌로
 /// 걸고 emitHostInit(federation_emit.zig)이 그 글로벌로 init/loadRemote
 /// 배선. 두 곳이 반드시 일치해야 동작(mfSharedGlobalName 단일소스 선례).
 pub const MF_RUNTIME_PKG = "@module-federation/runtime";

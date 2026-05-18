@@ -765,6 +765,16 @@ pub const ResolveCache = struct {
 
     /// specifier가 external인지 판별.
     /// exact match + `*` 글롭 매칭 (D069).
+    /// external 패턴 슬라이스 교체(#3318 ④). `external_patterns` 는
+    /// init 시 borrow 저장만 되고 실제 소비는 `isExternal`(resolve 단계
+    /// lazy)이라, resolve 시작 *전* 에 교체하면 init 무변경으로 무손실.
+    /// 슬라이스는 여전히 **borrow**(소유모델 불변) — 호출자(Bundler)가
+    /// combined 버퍼 소유·해제. MF seam 을 옵션 레이어가 아닌 번들러
+    /// 단일 지점에서 주입하는 데 사용.
+    pub fn setExternalPatterns(self: *ResolveCache, patterns: []const []const u8) void {
+        self.external_patterns = patterns;
+    }
+
     pub fn isExternal(self: *const ResolveCache, specifier: []const u8) bool {
         // node: 프리픽스는 platform과 무관하게 항상 external
         if (std.mem.startsWith(u8, specifier, "node:")) return true;

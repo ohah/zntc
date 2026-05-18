@@ -93,7 +93,7 @@ fn isRemoteSpec(spec: []const u8, mf: *const types.MfBundleConfig) bool {
 /// remotes})`)를 prepend + 런타임 가드(`__mfGuardedLoad`, P3-5) 정의 +
 /// 원격 동적 `import("remote/x")` 를 `globalThis.__mfGuardedLoad(
 /// "remote/x")` 로 치환(가드가 내부에서 `loadRemote` 호출 + 거부 폴백).
-/// runtime 은 applyMfRemotesSeam 이 external+글로벌(__mf_runtime) 처리 →
+/// runtime 은 번들러 ④(mf_options.seam*)가 external+글로벌(__mf_runtime) 처리 →
 /// host 환경이 그 글로벌로 스펙 런타임 제공(P1-2/P1-3 글로벌-seam 모델
 /// 일관, iife/umd/amd valid). 반환 = 새 owned 문자열(caller 가 기존 src
 /// free). 정적 `import X from "remote/x"` 는 비-목표(async 강등 — 후속).
