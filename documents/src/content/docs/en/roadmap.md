@@ -82,6 +82,10 @@ Each of these ships its own bundler tightly coupled to the framework, so an adap
 
 - **Expo**: A meta-framework on top of React Native. Plain React Native apps already build via `--platform=react-native`, but integrating with Expo Router's filesystem-routing manifest, the `expo prebuild` step, and the EAS build pipeline requires a dedicated adapter.
 
+#### NativeWind (React Native + Tailwind)
+
+NativeWind, which turns Tailwind classes (`className`) into styles in React Native, currently works by passing `nativewind/babel` through as a user Babel plugin (on the `--platform=react-native` build path). First-class support is planned: ① a reference example plus a React Native build E2E regression guard, ② folding Tailwind CSS compilation behind the plugin API (the `@tailwind` directives in `global.css` wired as a React Native entry), and ③ zero-config wiring when `nativewind` is present in `package.json` so the React Native preset sets it up automatically. Doing the `className` → style transform natively in the ZNTC transformer (without Babel) is gated on measuring the actual benefit first.
+
 #### Vite-compatible mode
 
 Read `vite.config.js` directly for zero-cost migration. Long-term goal.
