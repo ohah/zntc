@@ -777,6 +777,20 @@ async function runRnBundle(opts, config) {
     }),
   });
 
+  if (result.errors.length > 0 && opts.logLevel !== 'silent') {
+    for (const err of result.errors) {
+      const loc = err.location ? `${err.location.file}: ` : '';
+      const detail = err.specifier ? ` (${err.specifier})` : '';
+      console.error(`error: ${loc}${err.text}${detail}`);
+    }
+  }
+  if (result.warnings.length > 0 && opts.logLevel !== 'silent' && opts.logLevel !== 'error') {
+    for (const warn of result.warnings) {
+      const detail = warn.specifier ? ` (${warn.specifier})` : '';
+      console.error(`warning: ${warn.text}${detail}`);
+    }
+  }
+
   // caller-side write — bundle / sourcemap path 분리 + URL override 적용.
   if (callerWrite && result.errors.length === 0 && result.outputFiles?.length) {
     const bundlePath = resolve(outfile);
