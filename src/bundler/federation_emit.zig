@@ -602,27 +602,42 @@ pub fn wrapContainer(
         "}};if(!M[e])throw new Error(\"Module \\\"\"+e+\"\\\" does not exist in container {s}.\");return M[e]()}},",
         .{name},
     );
-    // init(P1-4): runtime 은 `init(shareScope, initScope, remoteEntryInit
-    // Options)` 로 호출하며 **반환값을 await**(@module-federation/runtime-core
-    // module/index.js:73) → init 을 async(Promise 반환) 로 만들어 shared
-    // 해석을 끝낸 *후* host 가 get() 호출(init-before-get). 멱등: 같은
-    // Promise 재반환. 인자 `s` = host 의 해당 scope 객체(shareScopeMap 전체
-    // 아님 — runtime-core 가 scope 만 전달). 버전 satisfy/singleton 판정은
-    // host runtime(getRegisteredShare) 책임 → container 는 scope[pkg] 의
-    // 가용 버전 1개를 취해 글로벌 seam 에 대입만(과설계 금지).
-    try buf.appendSlice(allocator, "init:function(s,i){if(g.__zntc_mf_inited)return g.__zntc_mf_inited;g.__zntc_mf_inited=(async function(){");
+    // init(P1-4/#4-1): runtime-core 는 `init(shareScope, initScope,
+    // remoteEntryInitOptions)` 로 호출하며 **반환값을 await**
+    // (@module-federation/runtime-core module/index.js:73) → init 을
+    // async(Promise 반환) 로 shared 해석 후 host 가 get() (init-before-
+    // get). 멱등: 같은 Promise 재반환.
+    //
+    // per-shared scope 선택(#4-1) — **모던 host 면 그 scope 만, 없으면
+    // skip; 레거시 host 일 때만 positional `s`**:
+    //   `SC = (o && o.shareScopeMap) ? o.shareScopeMap[scope] : s`
+    // · `o.shareScopeMap`=전체 named scope 맵(runtime-core `// TODO use
+    //   shareScopeMap if exist`). 모던 host 면 이게 진실 소스.
+    // · `s`=레거시 positional 단일 scope(`localShareScopeMap
+    //   [shareScopeKeys[0]]`). o/shareScopeMap 부재(진짜 레거시 host)일
+    //   때만 채널이라 사용.
+    // 무회귀: default scope+모던 host 면 `o.shareScopeMap["default"]===s`
+    // (둘 다 같은 localShareScopeMap 인덱싱, 동작 동일). 레거시 host(o
+    // 부재)면 `s` 로 기존과 동일. **`||s` 가 아닌 ternary 인 이유**: 모던
+    // host 가 producer 선언 scope 를 미등록 시 `||s` 면 *다른* scope(s)
+    // 의 동명 pkg 로 silent 오결합(singleton/버전 위반) — ternary 는
+    // 미등록→SC undefined→아래 가드가 skip(seam 미설정→정상 협상 폴백).
+    // 버전 satisfy/singleton 은 host runtime(getRegisteredShare) 책임 →
+    // container 는 scope[pkg] 가용 1버전을 글로벌 seam 에 대입만.
+    try buf.appendSlice(allocator, "init:function(s,i,o){if(g.__zntc_mf_inited)return g.__zntc_mf_inited;g.__zntc_mf_inited=(async function(){");
     for (mf.shared) |se| {
         const glob = se.global_seam; // borrow (mfBundleFromDto 1회 생성·소유)
-        // scope[pkg] = { "<ver>": { lib?, get?:()=>Promise<factory|module> } }.
-        // eager=lib(모듈|팩토리), lazy=get→factory thunk(우리 get 과 동형) |
-        // 직접 모듈. 두 형태 모두 흡수(host 등록형은 PR-B 실 runtime 검증).
-        // K[0] = 첫 버전 채택 — 버전 satisfy/다중버전 선택은 host runtime
-        // (getRegisteredShare) 책임이라 scope 에 이미 해소된 버전만 옴(P1-4
-        // 비-목표, P1-6 다중-remote 에서 정밀화). se.name 은 JS 문자열에 raw
-        // 삽입 — npm 패키지명은 `"`/제어문자 불가라 escape 불요(mf.name 은
-        // 임의값 가능해 appendJsStringLiteral, pkg 명은 규약상 안전).
+        // scope 키는 임의 user config → appendJsonStr escape(mf.name·
+        // buildManifest 동일 single-source; se.name=npm 패키지명은 규약상
+        // 안전해 raw). scope[pkg]={"<ver>":{lib?|get?}} — eager=lib, lazy=
+        // get→factory thunk, K[0]=첫 버전(satisfy/다중버전은 host
+        // getRegisteredShare 책임, scope 에 해소된 버전만 옴). var SC/V/e/
+        // f/L/K 재선언은 기존 패턴 동형(JS var 함수스코프, 무해).
+        try buf.appendSlice(allocator, "var SC=(o&&o.shareScopeMap)?o.shareScopeMap[");
+        try appendJsonStr(&buf, allocator, se.share_scope);
+        try buf.appendSlice(allocator, "]:s;");
         try w.print(
-            "if(s&&s[\"{s}\"]){{var V=s[\"{s}\"],K=Object.keys(V);if(K.length){{var e=V[K[0]],L;" ++
+            "if(SC&&SC[\"{s}\"]){{var V=SC[\"{s}\"],K=Object.keys(V);if(K.length){{var e=V[K[0]],L;" ++
                 "if(e){{if(e.lib){{L=(typeof e.lib===\"function\")?e.lib():e.lib;}}" ++
                 "else if(e.get){{var f=await e.get();L=(typeof f===\"function\")?f():f;}}}}" ++
                 "if(L)g.{s}=L;}}}}",
