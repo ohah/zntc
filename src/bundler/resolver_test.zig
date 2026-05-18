@@ -372,8 +372,7 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
     // preserve_symlinks=true → identity 는 link path. `.pnpm` 미포함, `node_modules/ui` 로 끝남.
     try std.testing.expect(std.mem.indexOf(u8, logical_ui.path, ".pnpm") == null);
     try std.testing.expect(pathEndsWith(logical_ui.path, "node_modules/ui/dist/index.js"));
-    try std.testing.expect(logical_ui.resolve_dir != null);
-    try std.testing.expect(std.mem.indexOf(u8, logical_ui.resolve_dir.?, ".pnpm/ui@1_react@18/node_modules/ui/dist") != null);
+    try std.testing.expect(logical_ui.resolve_dir == null);
 
     const logical_ui_dir = std.fs.path.dirname(logical_ui.path).?;
     // peer dependency dedupe: lookup root 는 link path → walk up 으로 root node_modules/react 도달.

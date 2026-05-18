@@ -1980,6 +1980,52 @@ test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve fr
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_hoist_non_react_statics") != null);
 }
 
+test "react_native preserve_symlinks: workspace symlink package resolves app logical dependencies first" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/node_modules/@scope");
+    try tmp.dir.makePath("apps/app/node_modules/react-native-tcp-socket");
+    try tmp.dir.makePath("packages/pkg/dist");
+    try writeFile(tmp.dir, "apps/app/node_modules/react-native-tcp-socket/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "apps/app/node_modules/react-native-tcp-socket/index.js", "module.exports = { createConnection() {} };");
+    try writeFile(tmp.dir, "packages/pkg/package.json", "{\"main\":\"dist/index.js\"}");
+    try writeFile(tmp.dir, "packages/pkg/dist/index.js",
+        \\import TcpSocket from "react-native-tcp-socket";
+        \\export const socket = TcpSocket;
+    );
+
+    tmp.dir.symLink(
+        "../../../../packages/pkg",
+        "apps/app/node_modules/@scope/pkg",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try writeFile(tmp.dir, "apps/app/index.js",
+        \\import { socket } from "@scope/pkg";
+        \\console.log(socket);
+    );
+
+    const entry = try absPath(&tmp, "apps/app/index.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .preserve_symlinks = true,
+        .resolve_symlink_siblings = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "react-native-tcp-socket") == null);
+}
+
 test "preserve_symlinks: alias to pnpm symlink package root bundles package entry" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
