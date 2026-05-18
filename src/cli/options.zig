@@ -407,27 +407,16 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     if (dto.mf) |*mf| {
         try lib.transpile.validateMf(mf);
         // 해석본을 allocator(=CliOptions 수명) 으로 deep-dupe. dto 는 arena
-        // (이 함수 종료 시 해제) 라 borrow 불가. 변환·seam 은 mf_options
-        // 단일 소스(NAPI 와 공용 — silent drift 봉인).
+        // (이 함수 종료 시 해제) 라 borrow 불가. 변환은 mf_options 단일
+        // 소스. **seam(shared/remote external+글로벌) 유도는 옵션 레이어가
+        // 아니라 번들러 단일 지점(#3318 ④, bundler.bundle())** — CLI·NAPI
+        // 둘 다 opts.mf 만 세팅.
         opts.mf = try mf_options.fromDto(allocator, mf);
-        // P1-2/P1-6: shared/remotes 글로벌 seam 자동 파생. shared pkg +
-        // remote key + `@module-federation/runtime` 를 external(번들 제외 —
-        // shareScope/host 에서 옴) + GlobalEntry(IIFE/UMD/AMD 글로벌-파라
-        // 미터 seam) 로. seamExternals/seamGlobals 순수 유도 → opts list 에
-        // appendSlice(원소 borrow=opts.mf 소유, 컨테이너는 임시→free).
-        // 산출 순서·내용은 기존 applyMf*Seam 과 byte 동일(무회귀).
         if (opts.mf) |mfb| {
-            const seam_ext = try mf_options.seamExternals(allocator, mfb);
-            defer allocator.free(seam_ext); // 컨테이너만(원소는 mfb/static)
-            try opts.external_list.appendSlice(allocator, seam_ext);
-            const seam_gl = try mf_options.seamGlobals(allocator, mfb);
-            defer allocator.free(seam_gl);
-            try opts.globals_list.appendSlice(allocator, seam_gl);
-            // P1-3 (#3385): exposes 있는 mf = remote → container/exposes 는
-            // reg_split 다중-청크(chunk.zig 가 expose→lazy 청크) 위에 얹으므로
-            // splitting 필수(부트스트랩은 format=iife/umd/amd 필요 — 없으면
-            // wrapContainer fail-fast). exposes 없는 host(shared/remotes-only)
-            // 는 강제 안 함 — P1-2 단일파일 seam 경로 불변.
+            // exposes 있는 mf = remote → container/exposes 는 reg_split
+            // 다중-청크 위에 얹으므로 splitting 필수(부트스트랩 format=
+            // iife/umd/amd 없으면 wrapContainer fail-fast). exposes 없는
+            // host(shared/remotes-only)는 강제 안 함(단일파일 seam 불변).
             if (mfb.exposes.len > 0) opts.splitting = true;
         }
     }

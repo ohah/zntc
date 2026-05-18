@@ -602,6 +602,17 @@ pub const Bundler = struct {
     resolve_cache: ResolveCache,
     /// 외부 소유 ResolveCache 포인터. non-null이면 이것을 사용하고 resolve_cache 필드는 무시.
     resolve_cache_ref: ?*ResolveCache = null,
+    /// #3318 ④: MF seam(shared/remote external + 글로벌)을 옵션 레이어가
+    /// 아닌 번들러 단일 지점(bundle() 초입)에서 `opts.mf` 로부터 유도한
+    /// combined 버퍼. self.allocator 소유 → **deinit 가 유일 free 지점**
+    /// (필드 set 이후 errdefer 잔존 0 → bundle() 후속 try 실패+deinit
+    /// 이중해제 없음). 원소는 borrow(opts.mf/static). mf 없으면 null.
+    /// watch(persistent ResolveCache): 매 bundle() 가 resolve *전*
+    /// setExternalPatterns 를 **무조건** 재주입(mf=sx / non-mf=options.
+    /// external) → deinit 가 sx 를 free 해도 persistent cache 가 freed
+    /// 포인터를 parking 하지 않음(mf→non-mf 전환·조기 resolve 안전).
+    mf_eff_external: ?[]const []const u8 = null,
+    mf_eff_globals: ?[]const types.GlobalEntry = null,
 
     /// platform=react-native → Hermes unsupported matrix로 덮어쓰기.
     /// 사용자가 --target으로 지정한 값은 무시된다 (Hermes는 ES 버전으로 표현 불가능한
@@ -661,6 +672,9 @@ pub const Bundler = struct {
         if (self.resolve_cache_ref == null) {
             self.resolve_cache.deinit();
         }
+        // #3318 ④ combined seam 버퍼(컨테이너만; 원소 borrow).
+        if (self.mf_eff_external) |x| self.allocator.free(x);
+        if (self.mf_eff_globals) |x| self.allocator.free(x);
     }
 
     /// BundleOptions → TransformOptions base 변환 (#1961 PR 1f). graph 와 emitter
@@ -973,6 +987,40 @@ pub const Bundler = struct {
         // remote seam 합성 시 append) → emitHostInit async preload-gate.
         var mf_static_remotes: @import("federation.zig").MfStaticRemotes = .{};
         defer mf_static_remotes.deinit(self.allocator);
+
+        // #3318 ④: MF seam 단일 적용점(옵션 레이어가 아닌 번들러 1곳).
+        // 소유/수명·watch 불변식은 `mf_eff_external` 필드 doc, 주입이
+        // resolve 전이라 안전한 근거는 setExternalPatterns doc 참조.
+        // 실패 시 명시 free(잔존 errdefer 0 → 소유권이 필드로 이전된
+        // *뒤* bundle() 후속 try 실패해도 이중해제 없음). mf 없으면 미진입.
+        if (self.options.mf) |mfb| {
+            const mfo = @import("mf_options.zig");
+            const se = try mfo.seamExternals(self.allocator, mfb);
+            const sx = std.mem.concat(self.allocator, []const u8, &.{ self.options.external, se }) catch |e| {
+                self.allocator.free(se);
+                return e;
+            };
+            self.allocator.free(se); // 이후 live = sx
+            const sg = mfo.seamGlobals(self.allocator, mfb) catch |e| {
+                self.allocator.free(sx);
+                return e;
+            };
+            const gx = std.mem.concat(self.allocator, types.GlobalEntry, &.{ self.options.globals, sg }) catch |e| {
+                self.allocator.free(sg);
+                self.allocator.free(sx);
+                return e;
+            };
+            self.allocator.free(sg);
+            // 소유권을 필드로 이전 — 이후 sx/gx free 는 오직 deinit.
+            self.mf_eff_external = sx;
+            self.mf_eff_globals = gx;
+            self.options.globals = gx; // emit/linker 가 self.options.globals 소비
+        }
+        // external_patterns 는 매 bundle() **무조건** 재주입(resolve 전):
+        // mf 면 combined(sx), 아니면 self.options.external. persistent
+        // ResolveCache(watch)가 이전 빌드의 freed sx 를 parking 하지
+        // 않게 — mf→non-mf 전환·조기 resolve 에도 dangling 0.
+        self.getResolveCache().setExternalPatterns(self.mf_eff_external orelse self.options.external);
 
         // 1. 모듈 그래프 구축
         var graph_scope = profile.begin(.graph);
