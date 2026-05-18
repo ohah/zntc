@@ -816,6 +816,8 @@ async function runRnBundle(opts, config) {
     sourcemap: wantsSourcemap,
     minify:
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
+    dropConsole: opts.drop.includes('console'),
+    dropDebugger: opts.drop.includes('debugger'),
     extra,
     override: buildRnBundleOverride({
       config: cfg,
