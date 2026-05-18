@@ -191,6 +191,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'quotes',
   // ─── 1st-party transform 네임스페이스 (compiler.styledComponents/emotion 등) ───
   'compiler',
+  // ─── Module Federation ───
+  'mf',
   // ─── 기타 ───
   'flow',
   'plugins',

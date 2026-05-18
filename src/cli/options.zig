@@ -2,6 +2,10 @@ const std = @import("std");
 const lib = @import("zntc_lib");
 const BundleOptions = lib.bundler.BundleOptions;
 const usage_cli = @import("usage.zig");
+/// mf DTO→Bundle 변환 + seam 유도 단일 소스(CLI·NAPI 공용). 과거
+/// 이 로직이 cli/options.zig 에만 있어 NAPI 가 silent drift → 발행
+/// @zntc/core 에서 MF 미동작했던 갭을 구조적으로 봉인(#3318).
+const mf_options = lib.bundler.mf_options;
 
 /// CLI 인자를 파싱한 결과를 담는 구조체.
 /// main()에서 개별 변수 30여 개로 흩어져 있던 옵션을 하나로 모은다.
@@ -267,8 +271,9 @@ pub const CliOptions = struct {
         self.watch_include_list.deinit(alloc);
         self.watch_exclude_list.deinit(alloc);
         self.globals_list.deinit(alloc);
-        // #3318 mf: 해제는 freeMfBundle 단일 소스(mfBundleFromDto errdefer 와 공유).
-        if (self.mf) |mfb| freeMfBundle(alloc, mfb);
+        // #3318 mf: 해제는 mf_options.freeMfBundle 단일 소스(fromDto errdefer·
+        // NAPI cleanup 과 공유).
+        if (self.mf) |mfb| mf_options.freeMfBundle(alloc, mfb);
     }
 };
 
@@ -401,21 +406,23 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     // P1-1+ 에서 NAPI mf 추출 + validateMf 연결 필수(silent drift 주의).
     if (dto.mf) |*mf| {
         try lib.transpile.validateMf(mf);
-        // P1-1 소비자(federation.markBoundary) 용 해석본을 allocator(=CliOptions
-        // 수명) 으로 deep-dupe. dto 는 arena(이 함수 종료 시 해제) 라 borrow 불가.
-        opts.mf = try mfBundleFromDto(allocator, mf);
-        // P1-2 (#3384): shared 글로벌 seam 자동 파생. mf.shared 패키지를
-        // external(번들 제외 — shared 는 shareScope 에서 옴) + GlobalEntry
-        // (IIFE/UMD/AMD 글로벌-파라미터 seam) 로 합친다. 스파이크 S2 가
-        // `--external pkg --globals pkg=__mf_shared_pkg` 로 검증한 기계를
-        // 그대로 재사용 — bundler/emitter/codegen 무변경.
+        // 해석본을 allocator(=CliOptions 수명) 으로 deep-dupe. dto 는 arena
+        // (이 함수 종료 시 해제) 라 borrow 불가. 변환·seam 은 mf_options
+        // 단일 소스(NAPI 와 공용 — silent drift 봉인).
+        opts.mf = try mf_options.fromDto(allocator, mf);
+        // P1-2/P1-6: shared/remotes 글로벌 seam 자동 파생. shared pkg +
+        // remote key + `@module-federation/runtime` 를 external(번들 제외 —
+        // shareScope/host 에서 옴) + GlobalEntry(IIFE/UMD/AMD 글로벌-파라
+        // 미터 seam) 로. seamExternals/seamGlobals 순수 유도 → opts list 에
+        // appendSlice(원소 borrow=opts.mf 소유, 컨테이너는 임시→free).
+        // 산출 순서·내용은 기존 applyMf*Seam 과 byte 동일(무회귀).
         if (opts.mf) |mfb| {
-            try applyMfSharedSeam(allocator, opts, mfb.shared);
-            // P1-6 (#3388): host = remotes 소비자. 원격 specifier(`remoteA`,
-            // `remoteA/...`)와 `@module-federation/runtime`(스펙 런타임, 자체
-            // 재구현 금지=D1) 를 external + 글로벌 seam(P1-2 와 동일 기계) 로.
-            // emitHostInit 이 `__mf_runtime.init/loadRemote` 로 배선.
-            if (mfb.remotes.len > 0) try applyMfRemotesSeam(allocator, opts, mfb.remotes);
+            const seam_ext = try mf_options.seamExternals(allocator, mfb);
+            defer allocator.free(seam_ext); // 컨테이너만(원소는 mfb/static)
+            try opts.external_list.appendSlice(allocator, seam_ext);
+            const seam_gl = try mf_options.seamGlobals(allocator, mfb);
+            defer allocator.free(seam_gl);
+            try opts.globals_list.appendSlice(allocator, seam_gl);
             // P1-3 (#3385): exposes 있는 mf = remote → container/exposes 는
             // reg_split 다중-청크(chunk.zig 가 expose→lazy 청크) 위에 얹으므로
             // splitting 필수(부트스트랩은 format=iife/umd/amd 필요 — 없으면
@@ -424,174 +431,6 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
             if (mfb.exposes.len > 0) opts.splitting = true;
         }
     }
-}
-
-/// mf.shared 패키지명 → 결정적 container-소유 글로벌 식별자.
-/// 비-식별자(`@ / - .`) → `_`. react→`__mf_shared_react`,
-/// react-dom→`__mf_shared_react_dom`, @scope/pkg→`__mf_shared__scope_pkg`.
-/// mf.shared → external_list + globals_list 파생.
-///
-/// **호출 순서 불변조건**: applyZntcConfigJson(config defaults)은 CLI arg
-/// 루프(`--globals`/`--external` 파싱)보다 *먼저* 돈다. 따라서 여기서 append
-/// 한 mf-파생 GlobalEntry 가 사용자 `--globals` 보다 list **앞**에 온다 →
-/// `GlobalEntry.lookup`(first-match) 이 mf-파생을 채택. shared 의 글로벌명은
-/// container 계약이라 mf-파생이 authoritative(RFC §8.1 #1) — 이 순서가 그
-/// 의미를 자연히 만든다(별도 prepend 불요).
-///
-/// 메모리: name·global_seam 모두 `opts.mf`(CliOptions 수명, mfBundleFromDto
-/// 가 1회 생성·소유, freeMfBundle 해제) 를 **borrow** — 여기서 재-alloc 0,
-/// 누수 0(P1-4 에서 global_seam 을 SharedEntry 로 끌어올려 P1-2 의 per-call
-/// alloc 누수 제거). parseGlobalsArg 의 borrow 모델과 일관.
-fn applyMfSharedSeam(
-    allocator: std.mem.Allocator,
-    opts: *CliOptions,
-    shared: []const lib.bundler.MfBundleConfig.SharedEntry,
-) !void {
-    for (shared) |s| {
-        try opts.external_list.append(allocator, s.name); // borrow (opts.mf 소유)
-        try opts.globals_list.append(allocator, .{
-            .specifier = s.name, // borrow
-            .global_name = s.global_seam, // borrow (mfBundleFromDto 가 1회 생성·소유)
-        });
-    }
-}
-
-/// 스펙 런타임 pkg/글로벌 — federation.zig 단일 소스 재노출(emitHostInit
-/// 과 반드시 일치). 고정 상수라 alloc/소유 무관(static literal).
-const MF_RUNTIME_PKG = lib.bundler.federation.MF_RUNTIME_PKG;
-const MF_RUNTIME_GLOBAL = lib.bundler.federation.MF_RUNTIME_GLOBAL;
-
-/// mf.remotes → host 소비 seam. 원격 specifier(KV.key, 예 `remoteA`)는
-/// external — resolve_cache sub-path 매칭이 `remoteA/Widget` 도 자동 external
-/// (esbuild 동등). `@module-federation/runtime` 도 external + 글로벌
-/// (`__mf_runtime`) — host 가 그 글로벌로 스펙 런타임 제공(P1-2 와 동일
-/// 기계, container 글로벌 소비 모델과 일관). emitHostInit 이 init/loadRemote
-/// 를 그 글로벌로 배선. 모든 문자열 borrow(opts.mf KV / static literal).
-fn applyMfRemotesSeam(
-    allocator: std.mem.Allocator,
-    opts: *CliOptions,
-    remotes: []const lib.bundler.MfBundleConfig.KV,
-) !void {
-    for (remotes) |kv| {
-        try opts.external_list.append(allocator, kv.key); // borrow (opts.mf 소유)
-    }
-    try opts.external_list.append(allocator, MF_RUNTIME_PKG);
-    try opts.globals_list.append(allocator, .{
-        .specifier = MF_RUNTIME_PKG,
-        .global_name = MF_RUNTIME_GLOBAL,
-    });
-}
-
-/// `MfConfigDto`(arena, record) → `MfBundleConfig`(CliOptions 수명, 평탄화).
-/// exposes/remotes record → []KV, shared record → 패키지명 []. 모든 문자열
-/// `allocator.dupe` (외부 mf list/main.zig 가 build 끝까지 참조).
-/// JSON record(`std.json.ArrayHashMap`)→`[]KV` deep-dupe. exposes/remotes
-/// 공용(DRY). 중간 OOM 시 이미 dup 한 항목+list 해제(errdefer).
-fn dupeKvMap(
-    allocator: std.mem.Allocator,
-    map: anytype,
-) ![]const lib.bundler.MfBundleConfig.KV {
-    const KV = lib.bundler.MfBundleConfig.KV;
-    const list = try allocator.alloc(KV, map.count());
-    var done: usize = 0;
-    errdefer {
-        for (list[0..done]) |kv| {
-            allocator.free(kv.key);
-            allocator.free(kv.value);
-        }
-        allocator.free(list);
-    }
-    var it = map.iterator();
-    while (it.next()) |kv| : (done += 1) list[done] = .{
-        .key = try allocator.dupe(u8, kv.key_ptr.*),
-        .value = try allocator.dupe(u8, kv.value_ptr.*),
-    };
-    return list;
-}
-
-/// 한 SharedEntry 의 owned 필드 해제. freeMfBundle 정상경로와
-/// mfBundleFromDto 부분실패 errdefer 가 **동일 본문 공유**(필드 추가 시
-/// 한 곳만 — #4-0 share_scope 가 양쪽 동기화 부담 노출).
-fn freeSharedEntry(alloc: std.mem.Allocator, s: lib.bundler.MfBundleConfig.SharedEntry) void {
-    alloc.free(s.name);
-    if (s.required_version) |rv| alloc.free(rv);
-    if (s.global_seam.len > 0) alloc.free(s.global_seam);
-    alloc.free(s.share_scope); // name 과 동일 — 항상 owned(default 도 dup)
-}
-
-/// mfBundleFromDto 가 allocator-dup 한 것 일괄 해제. CliOptions.deinit 과
-/// mfBundleFromDto 의 errdefer 가 **공유**(해제 모델 단일 소스 — 부분
-/// 실패/정상 종료 대칭). len>0 가드: exposes/remotes/shared default 는
-/// static `&.{}` (오해제 방지, chunks.zig reg_ids 와 동일 관용). name 은
-/// set 시 항상 dup, share_scope 는 항상 dup(아래 통일). **불변: mf 는
-/// mfBundleFromDto 로만 생성**(외부 생성 시 share_scope 리터럴 free 위험).
-fn freeMfBundle(alloc: std.mem.Allocator, mfb: lib.bundler.MfBundleConfig) void {
-    if (mfb.name) |n| alloc.free(n);
-    alloc.free(mfb.share_scope);
-    alloc.free(mfb.share_strategy);
-    for (mfb.exposes) |kv| {
-        alloc.free(kv.key);
-        alloc.free(kv.value);
-    }
-    if (mfb.exposes.len > 0) alloc.free(mfb.exposes);
-    for (mfb.remotes) |kv| {
-        alloc.free(kv.key);
-        alloc.free(kv.value);
-    }
-    if (mfb.remotes.len > 0) alloc.free(mfb.remotes);
-    for (mfb.shared) |s| freeSharedEntry(alloc, s);
-    if (mfb.shared.len > 0) alloc.free(mfb.shared);
-}
-
-fn mfBundleFromDto(
-    allocator: std.mem.Allocator,
-    dto: *const lib.transpile.MfConfigDto,
-) !lib.bundler.MfBundleConfig {
-    var out: lib.bundler.MfBundleConfig = .{};
-    // 부분 dup 후 실패 시 누수 방지 — deinit 과 동일 해제로 대칭.
-    // out.shared 는 루프 완료 후에야 대입 → 진행 중 list 는 블록 errdefer 가.
-    errdefer freeMfBundle(allocator, out);
-    if (dto.name) |n| out.name = try allocator.dupe(u8, n);
-    // share_scope 는 항상 owned(default 도 dup) — deinit 해제 대칭(리터럴/
-    // owned 혼재 회피).
-    out.share_scope = try allocator.dupe(u8, dto.shareScope orelse "default");
-    // share_strategy 도 항상 owned(default 도 dup) — freeMfBundle 대칭.
-    out.share_strategy = try allocator.dupe(u8, dto.shareStrategy orelse "version-first");
-
-    if (dto.exposes) |e| out.exposes = try dupeKvMap(allocator, &e.map);
-    if (dto.remotes) |r| out.remotes = try dupeKvMap(allocator, &r.map);
-    if (dto.shared) |sh| {
-        const SE = lib.bundler.MfBundleConfig.SharedEntry;
-        const list = try allocator.alloc(SE, sh.map.count());
-        errdefer allocator.free(list);
-        var it = sh.map.iterator();
-        var i: usize = 0;
-        // 부분 실패 시: 이미 채운 항목 해제(list[0..i] — 실패 iteration 의
-        // i 는 미증가라 제외, in-progress 는 아래 per-field errdefer 가).
-        errdefer for (list[0..i]) |s| freeSharedEntry(allocator, s);
-        while (it.next()) |kv| : (i += 1) {
-            const c = kv.value_ptr.*; // MfSharedDto (P1-0 파싱, 여기서 소비)
-            const nm = try allocator.dupe(u8, kv.key_ptr.*);
-            errdefer allocator.free(nm);
-            const rv = if (c.requiredVersion) |v| try allocator.dupe(u8, v) else null;
-            errdefer if (rv) |r| allocator.free(r);
-            // #4-0 해석 3-tier + 항상-owned 근거: SharedEntry.share_scope doc.
-            const sc = try allocator.dupe(u8, c.shareScope orelse dto.shareScope orelse "default");
-            errdefer allocator.free(sc);
-            list[i] = .{
-                .name = nm,
-                .singleton = c.singleton orelse false,
-                .required_version = rv,
-                .strict_version = c.strictVersion orelse false,
-                .eager = c.eager orelse false,
-                // 글로벌명 1회 생성·소유(seam·init borrow). 단일 규칙.
-                .global_seam = try lib.bundler.federation.mfSharedGlobalName(allocator, nm),
-                .share_scope = sc,
-            };
-        }
-        out.shared = list;
-    }
-    return out;
 }
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
@@ -1225,16 +1064,16 @@ test "#4-0 mfBundleFromDto: per-shared share_scope 명시 + 번들 상속 + free
     { // 번들 shareScope="host": react 는 명시 "ui", lodash 미지정 → "host" 상속
         const v = try P.p(a, "{\"shareScope\":\"host\",\"shared\":{\"react\":{\"shareScope\":\"ui\"},\"lodash\":{}}}");
         defer v.deinit();
-        const mfb = try mfBundleFromDto(a, &v.value);
-        defer freeMfBundle(a, mfb); // testing.allocator = 누수 탐지(항상-owned free 대칭 강제)
+        const mfb = try mf_options.fromDto(a, &v.value);
+        defer mf_options.freeMfBundle(a, mfb); // testing.allocator = 누수 탐지(항상-owned free 대칭)
         try std.testing.expectEqualStrings("ui", P.scopeOf(mfb, "react"));
         try std.testing.expectEqualStrings("host", P.scopeOf(mfb, "lodash"));
     }
     { // 번들 shareScope 미지정 + per-shared 미지정 → "default"
         const v = try P.p(a, "{\"shared\":{\"react\":{}}}");
         defer v.deinit();
-        const mfb = try mfBundleFromDto(a, &v.value);
-        defer freeMfBundle(a, mfb);
+        const mfb = try mf_options.fromDto(a, &v.value);
+        defer mf_options.freeMfBundle(a, mfb);
         try std.testing.expectEqualStrings("default", P.scopeOf(mfb, "react"));
     }
 }

@@ -254,6 +254,14 @@ pub fn freeOptionsTypedSlices(opts: *const BundleOptions) void {
     if (opts.fallback.len > 0) native_alloc.free(opts.fallback);
     if (opts.globals.len > 0) native_alloc.free(opts.globals);
     if (opts.loader_overrides.len > 0) native_alloc.free(opts.loader_overrides);
+    // PR-plumb (#3318): mf 있을 때만(비-MF 무영향). opts.external=combined
+    // (ext_c), opts.globals=combined(gl_c, 위 줄에서 free). exts/옛 entries_buf
+    // 는 owned_string_arrays/파싱블록이 별도 소유 → 여기서 안 건드림(이중
+    // 해제 없음). mfb 의 dup 문자열은 freeMfBundle 단일 소스(CLI 와 공유).
+    if (opts.mf) |mfb| {
+        native_alloc.free(opts.external); // combined 컨테이너(원소 borrow)
+        bundler_mod.mf_options.freeMfBundle(native_alloc, mfb);
+    }
     if (opts.runtime_polyfills) |plan| {
         if (plan.candidates.len > 0) native_alloc.free(plan.candidates);
         if (plan.entry_modules.len > 0) native_alloc.free(plan.entry_modules);
@@ -697,30 +705,96 @@ pub fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
+    // RN block_list 머지를 여기서 선계산(hoist) — return literal 안에 두면
+    // mf 블록 *이후* fallible(concat OOM/trackArr) 가 생겨 mf 의 mfb/
+    // combined 가 null 경로에서 leak. 위로 끌어 mf 블록 이후 무-fallible
+    // 보장(merged 는 trackArr 로 owned_string_arrays 소유 → null 경로도 정리).
+    const block_list_final: []const []const u8 = blk: {
+        const user = block_list orelse &.{};
+        if (platform == .react_native) {
+            const merged = std.mem.concat(native_alloc, []const u8, &.{ bundler_mod.RN_DEFAULT_BLOCK_LIST, user }) catch return null;
+            if (!trackArr(owned_string_arrays, merged)) return null;
+            break :blk merged;
+        }
+        break :blk user;
+    };
+
+    // PR-plumb (#3318): Module Federation. `mfRaw`(index.ts =
+    // JSON.stringify(config.mf))를 JSON string 으로 받아 **CLI 와 동일
+    // 단일 소스**(`mf_options`; src/cli/options.zig applyZntcConfigJson 의
+    // arena+parseFromSliceLeaky 선례와 동형)로 변환·seam 유도. 배경/
+    // silent-drift 봉인 근거 = `mf_options.zig` 모듈 doc. mf 없으면 블록
+    // 미진입 → external/globals/.mf 기존 그대로(비-MF byte 동일 무회귀).
+    //
+    // 메모리: 이 파일은 `catch return null`(에러 아님)이라 errdefer 무효
+    // 이고, 호출자는 null 시 freeOptionsTypedSlices 를 안 거친다 → 블록
+    // 내 실패는 **명시 free 로 롤백**해야 leak 0. 성공 시 mfb/combined 는
+    // BundleOptions 로 넘어가 freeOptionsTypedSlices 가 mf-게이트로 해제
+    // (combined 컨테이너만; 원소 borrow=mfb/static, exts/옛globals 는 각
+    // owned_string_arrays/아래 free 소유). 블록 *이후* fallible 가 없도록
+    // RN block_list 머지는 위에서 const 로 선계산(literal 내 잔존 X).
+    const MfParsed = struct {
+        mfb: bundler_mod.mf_options.MfBundleConfig,
+        external: []const []const u8,
+        globals: []const bundler_mod.types.GlobalEntry,
+    };
+    const mf_parsed: ?MfParsed = blk: {
+        const raw = getObjectString(env, opts_obj, "mfRaw", native_alloc) orelse break :blk null;
+        defer native_alloc.free(raw);
+        var mf_arena = std.heap.ArenaAllocator.init(native_alloc);
+        defer mf_arena.deinit();
+        const dto = std.json.parseFromSliceLeaky(zntc_lib.transpile.MfConfigDto, mf_arena.allocator(), raw, .{ .ignore_unknown_fields = true }) catch return null;
+        zntc_lib.transpile.validateMf(&dto) catch return null;
+        // fromDto 실패 = 내부 errdefer 가 부분 mfb 해제(여기 롤백 불요).
+        const mfb = bundler_mod.mf_options.fromDto(native_alloc, &dto) catch return null;
+        // 이후 실패는 mfb(+필요 시 ext_c) 명시 free 후 return null.
+        const se = bundler_mod.mf_options.seamExternals(native_alloc, mfb) catch {
+            bundler_mod.mf_options.freeMfBundle(native_alloc, mfb);
+            return null;
+        };
+        defer native_alloc.free(se); // 컨테이너만(원소 borrow)
+        const sg = bundler_mod.mf_options.seamGlobals(native_alloc, mfb) catch {
+            bundler_mod.mf_options.freeMfBundle(native_alloc, mfb);
+            return null;
+        };
+        defer native_alloc.free(sg);
+        const base_ext: []const []const u8 = external orelse &.{};
+        const ext_c = std.mem.concat(native_alloc, []const u8, &.{ base_ext, se }) catch {
+            bundler_mod.mf_options.freeMfBundle(native_alloc, mfb);
+            return null;
+        };
+        const gl_c = std.mem.concat(native_alloc, bundler_mod.types.GlobalEntry, &.{ globals, sg }) catch {
+            native_alloc.free(ext_c);
+            bundler_mod.mf_options.freeMfBundle(native_alloc, mfb);
+            return null;
+        };
+        // 옛 globals(entries_buf)는 어디서도 추적 안 됨 → concat 이 복사한
+        // *후* 해제(cleanup 은 combined gl_c=opts.globals 만; exts 는
+        // owned_string_arrays 소유라 미해제).
+        if (globals.len > 0) native_alloc.free(globals);
+        break :blk .{ .mfb = mfb, .external = ext_c, .globals = gl_c };
+    };
+
     const minify = getObjectBool(env, opts_obj, "minify", false);
     return .{
         .entry_points = entries,
         .format = format,
         .platform = platform,
-        .external = external orelse &.{},
+        .external = if (mf_parsed) |m| m.external else (external orelse &.{}),
+        .mf = if (mf_parsed) |m| m.mfb else null,
         .debug = debug_categories orelse &.{},
         .define = define_entries,
         .alias = alias_entries,
         .ts_paths = ts_path_entries,
         .fallback = fallback_entries,
-        .block_list = blk: {
-            const user = block_list orelse &.{};
-            if (platform == .react_native) {
-                const merged = std.mem.concat(native_alloc, []const u8, &.{ bundler_mod.RN_DEFAULT_BLOCK_LIST, user }) catch return null;
-                if (!trackArr(owned_string_arrays, merged)) return null;
-                break :blk merged;
-            }
-            break :blk user;
-        },
+        .block_list = block_list_final,
         .minify_whitespace = if (minify) true else getObjectBool(env, opts_obj, "minifyWhitespace", false),
         .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
         .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
-        .code_splitting = getObjectBool(env, opts_obj, "splitting", false),
+        // mf.exposes(remote) → expose=lazy 청크라 splitting 강제(CLI
+        // options.zig 의 `if (mfb.exposes.len>0) opts.splitting=true` 미러).
+        .code_splitting = getObjectBool(env, opts_obj, "splitting", false) or
+            (if (mf_parsed) |m| m.mfb.exposes.len > 0 else false),
         .inline_dynamic_imports = getObjectBool(env, opts_obj, "inlineDynamicImports", false),
         .min_chunk_size = @as(usize, getObjectUint32(env, opts_obj, "minChunkSize", 0)),
         .sourcemap = .{
@@ -749,7 +823,7 @@ pub fn parseBuildOptions(
         .intro_js = intro_js,
         .outro_js = outro_js,
         .global_name = global_name,
-        .globals = globals,
+        .globals = if (mf_parsed) |m| m.globals else globals,
         .public_path = public_path orelse "",
         .entry_names = entry_names orelse "[name]",
         .chunk_names = chunk_names orelse "[name]-[hash]",

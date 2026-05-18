@@ -1280,6 +1280,10 @@ async function runBundle(opts, config) {
     // 누락 시 `zntc.config.json` 의 `compiler` 설정이 silently drop 돼 1st-party transform
     // (autoLabel 등) 이 활성화 안 됨.
     compiler: config?.compiler,
+    // PR-plumb (#3318): zntc.config 의 `mf`(Module Federation) 를 NAPI 로
+    // forward. 누락 시 `mf` 가 silently drop → 발행 패키지에서 MF 미동작
+    // (native CLI 만 zntc.config.json mf 를 직접 읽어 동작했던 갭).
+    mf: config?.mf,
   };
 
   const result = plugins.length > 0 ? await build(buildOpts) : buildSync(buildOpts);
