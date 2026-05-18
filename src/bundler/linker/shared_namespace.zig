@@ -116,7 +116,9 @@ pub fn registerNamespaceRewrites(
     errdefer if (!inner_map_transferred) inner_map.deinit();
     var has_shadow = false;
     // target_init 은 target_mod_idx 에만 의존하므로 export 마다 재계산할 필요가 없다.
-    // 비-dev 빌드는 wrap 자체가 불필요하므로 호출도 생략한다 (lazy 런타임 미사용).
+    // dev lazy runtime 에서는 access site 가 package entry 도 깨워야 하므로 target init 을
+    // 포함한다. release 는 module preamble 이 target init 을 이미 보장하므로 source init 만
+    // rewrite value 에 붙인다.
     const target_init: ?[]const u8 = if (self.dev_mode)
         try allocEsmInitExprForModuleIndex(self, target_mod_idx)
     else
@@ -170,17 +172,15 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(exp.exported, ns_var);
             continue;
         }
-        if (self.dev_mode) {
-            if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, &source_init_cache)) |rewrite_value| {
-                var owned_by_list = false;
-                errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
-                // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
-                // LinkingMetadata.owned_rename_values 로 이전해 metadata deinit 에서 해제한다.
-                try owned_rewrite_values.append(self.allocator, rewrite_value);
-                owned_by_list = true;
-                try inner_map.put(exp.exported, rewrite_value);
-                continue;
-            }
+        if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, &source_init_cache)) |rewrite_value| {
+            var owned_by_list = false;
+            errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
+            // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
+            // LinkingMetadata.owned_rename_values 로 이전해 metadata deinit 에서 해제한다.
+            try owned_rewrite_values.append(self.allocator, rewrite_value);
+            owned_by_list = true;
+            try inner_map.put(exp.exported, rewrite_value);
+            continue;
         }
         // exp.local 은 owned=true 면 ns_export_cache 가, 아니면 target module 이 소유한다.
         // metadata map 은 값 포인터만 빌린다.
