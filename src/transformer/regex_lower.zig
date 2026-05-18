@@ -48,6 +48,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     const has_s = std.mem.indexOfScalar(u8, flags, 's') != null;
     const has_y = std.mem.indexOfScalar(u8, flags, 'y') != null;
     const has_u = std.mem.indexOfScalar(u8, flags, 'u') != null;
+    const has_i = std.mem.indexOfScalar(u8, flags, 'i') != null;
 
     const need_dotall = has_s and opts.unsupported.regex_dotall;
     const need_named = opts.unsupported.regex_named_groups and hasNamedGroup(pattern);
@@ -78,6 +79,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
             .dotall = need_dotall,
             .strip_named = need_named,
             .unicode_brace = need_unicode,
+            .ignore_case = has_i,
         }, allocator);
         defer tr.deinit();
         astral_u_incomplete = tr.astral_u_incomplete;
@@ -361,13 +363,21 @@ test "regex: u + astral class range — #3509" {
     try testing.expectEqualStrings("/(?:\\uD83D[\\uDE00-\\uDE4F])/", out);
 }
 
-test "regex: u + negated astral class — u 보존(미변환, silent 오변환 방지)" {
-    // slice 미지원(negated) → astral_u_incomplete → u strip 보류.
-    const out = try runLower("/[^\\u{1F600}]/u", .{ .unicode_brace_escape = true });
-    // u 가 유지되므로 출력은 원본과 동등(변환 없음 → null) 또는 u 포함.
+test "regex: u + negated class (non-i) — #3513 complement 다운레벨" {
+    // [^😀]/u → [0,0x10FFFF]-{😀} complement surrogate-alternation, u strip.
+    const out = (try runLower("/[^\\u{1F600}]/u", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.startsWith(u8, out, "/(?:"));
+    try testing.expect(!std.mem.endsWith(u8, out, "/u")); // u strip 됨
+    try testing.expect(std.mem.indexOf(u8, out, "\\u{") == null); // brace 잔존 없음
+}
+
+test "regex: iu + negated astral — u 보존(미변환, #3511 case-fold 게이트)" {
+    // i+u negated 는 case-fold 얽힘 → 게이트 → u 보존(silent 오변환 0).
+    const out = try runLower("/[^\\u{1F600}]/iu", .{ .unicode_brace_escape = true });
     if (out) |o| {
         defer testing.allocator.free(o);
-        try testing.expect(std.mem.endsWith(u8, o, "/u"));
+        try testing.expect(std.mem.endsWith(u8, o, "/iu") or std.mem.endsWith(u8, o, "/ui"));
     }
 }
 

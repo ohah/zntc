@@ -62,6 +62,22 @@ pub const CodePointSet = struct {
     pub fn items(self: *const CodePointSet) []const Range {
         return self.ranges.items;
     }
+
+    /// [0, 0x10FFFF] 전체 대비 여집합을 새 set 으로 반환 (regexpu
+    /// `UNICODE_SET.clone().remove(set)` 와 동형). 호출자가 deinit.
+    pub fn complement(self: *CodePointSet, a: std.mem.Allocator) !CodePointSet {
+        try self.normalize(a);
+        var out = CodePointSet{};
+        errdefer out.deinit(a);
+        var next: u32 = 0;
+        for (self.ranges.items) |r| {
+            if (r.min > next) try out.addRange(a, next, r.min - 1);
+            if (r.max == 0x10FFFF) return out; // 더 이상 gap 없음
+            next = r.max + 1;
+        }
+        try out.addRange(a, next, 0x10FFFF);
+        return out;
+    }
 };
 
 /// astral codepoint(≥0x10000) → UTF-16 surrogate pair. 표준 ECMA-262 공식.
