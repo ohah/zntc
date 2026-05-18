@@ -429,12 +429,10 @@ const cases: BrowserSmokeCase[] = [
     entry: `import ar from 'ansi-regex';\nconsole.log(typeof ar);`,
     expected: 'function',
   },
+  // content-type: 최신판 __esModule + named export 만 — default 는 undefined (esbuild 동일), named import 필수
   {
     name: 'content-type',
     pkg: 'content-type',
-    // content-type 최신판은 __esModule:true + named export(parse/format)만 두고
-    // default export 가 없다. `import ct from` 의 default 는 표준 ESM↔CJS
-    // 인터롭에서 undefined (esbuild 동일) — named import 가 올바른 사용법.
     entry: `import { parse } from 'content-type';\nconsole.log(parse('text/html').type);`,
     expected: 'text/html',
   },
