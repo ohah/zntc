@@ -22,6 +22,7 @@ pub const ast = @import("ast.zig");
 pub const flags = @import("flags.zig");
 pub const diagnostics = @import("diagnostics.zig");
 pub const parser = @import("parser.zig");
+pub const printer = @import("printer.zig");
 pub const unicode_property = @import("unicode_property.zig");
 
 /// 정규식 리터럴을 검증한다.
@@ -82,6 +83,7 @@ test {
     _ = flags;
     _ = diagnostics;
     _ = parser;
+    _ = printer;
     _ = unicode_property;
 
     // test files
@@ -89,4 +91,5 @@ test {
     _ = @import("unicode_property_test.zig");
     _ = @import("flags_test.zig");
     _ = @import("ast_test.zig");
+    _ = @import("printer_test.zig");
 }
