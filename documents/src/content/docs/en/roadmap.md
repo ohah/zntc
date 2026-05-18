@@ -90,6 +90,10 @@ NativeWind, which turns Tailwind classes (`className`) into styles in React Nati
 
 React Native builds are already produced by the ZNTC native core engine (`--platform=react-native`). What gets added is not a separate bundler but a single `react-native.config.js` command-plugin entry point — adding that plugin makes the existing `react-native start`/`react-native bundle` go through ZNTC instead of Metro (argument mapping + spinning up the existing RN dev server). This entry point lives in `@zntc/react-native` so the general-purpose `zntc` CLI stays free of RN dependencies. The MCP (JSON-RPC) already shipped in the ZNTC dev server will also gain React Native build/reload control tools, so LLM agents can drive RN builds directly.
 
+#### React Native Hermes-targeted downleveling
+
+React Native bundles are currently always downleveled to ES5. But modern Hermes (the version shipped with current React Native) natively supports many ES2015+ constructs — classes, `let`/`const`, arrow functions, destructuring, and more — so blanket ES5 transformation only inflates the bundle with unnecessary helpers and closures. ZNTC's engine-target feature (Hermes included, per-feature downleveling) already exists, so the React Native preset will switch from a hardcoded ES5 target to downleveling only what the bundled Hermes version actually needs. Constructs Hermes still lacks (certain regular-expression features, etc.) keep being downleveled, and apps with Hermes disabled (JSC) fall back to ES5.
+
 #### Chrome CDP bundle verification (MCP / CLI)
 
 Internal tests already run bundles in a real browser via the Chrome DevTools Protocol to verify source maps and runtime errors. This path will be promoted to a user-facing CLI command and an MCP tool: run a build's output in headless Chrome and report console errors, uncaught exceptions, and source-map resolution (Playwright stays an optional dependency). An agent can then loop build → browser-runtime verification in one step.

@@ -90,6 +90,10 @@ React Native 에서 Tailwind 클래스(`className`)를 스타일로 변환하는
 
 React Native 빌드는 이미 ZNTC 코어 네이티브 엔진이 수행합니다 (`--platform=react-native`). 추가될 것은 별도 번들러가 아니라 `react-native.config.js` 의 command plugin 진입점 하나입니다 — 이 플러그인만 추가하면 기존 `react-native start`/`react-native bundle` 이 Metro 대신 ZNTC 를 경유합니다 (인자 매핑 + 기존 RN dev server 기동). 범용 `zntc` CLI 는 RN 의존성에 오염되지 않도록 이 진입점을 `@zntc/react-native` 에 둡니다. 또한 ZNTC dev server 에 이미 있는 MCP(JSON-RPC) 에 RN 빌드·리로드 제어 도구를 추가해, LLM 에이전트가 RN 빌드를 직접 구동할 수 있게 할 예정입니다.
 
+#### React Native Hermes 타겟 다운레벨
+
+현재 React Native 번들은 항상 ES5 로 다운레벨됩니다. 하지만 최신 Hermes 엔진(현행 RN 동봉 버전)은 class·let/const·arrow·destructuring 등 다수의 ES2015+ 문법을 네이티브로 지원하므로, ES5 일괄 변환은 불필요한 헬퍼·클로저로 번들만 키웁니다. ZNTC 의 엔진 타겟 기능(Hermes 포함, feature 단위 다운레벨)은 이미 구현돼 있으므로, RN preset 이 ES5 고정 대신 RN 이 동봉한 Hermes 버전에 맞춰 필요한 문법만 다운레벨하도록 전환할 예정입니다. Hermes 가 아직 미지원하는 항목(일부 정규식 등)은 그대로 다운레벨을 유지하고, Hermes 비활성(JSC) 앱은 ES5 폴백을 둡니다.
+
 #### Chrome CDP 번들 검증 (MCP / CLI)
 
 지금도 내부 테스트는 Chrome DevTools Protocol 로 번들을 실제 브라우저에서 실행해 sourcemap·런타임 에러를 검증합니다. 이 경로를 사용자 CLI 명령과 MCP 도구로 승격해, 빌드 결과를 헤드리스 Chrome 에서 실행하고 console error·uncaught·sourcemap 해석 결과를 리포트하도록 할 예정입니다 (Playwright 는 optional dependency). 에이전트가 빌드 → 브라우저 런타임 검증을 한 루프로 돌릴 수 있습니다.
