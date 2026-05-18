@@ -70,6 +70,7 @@ pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const MfBundleConfig = types.MfBundleConfig; // #3318 P1-1
 pub const federation = @import("federation.zig"); // #3318 (mfSharedGlobalName 단일 소스)
+pub const mf_options = @import("mf_options.zig"); // #3318 mf DTO→Bundle + seam 단일 소스(CLI·NAPI 공용)
 pub const OutputExports = bundler_core.OutputExports;
 pub const BundleResult = bundler_core.BundleResult;
 pub const RN_BOOL_PRESET = bundler_core.RN_BOOL_PRESET;
@@ -124,6 +125,7 @@ test {
     _ = @import("chunk_test.zig");
     _ = @import("mf_integrity.zig"); // #3422 inline test (computeSri)
     _ = @import("mf_contract.zig"); // #3435 P3-0 inline test (parseContract)
+    _ = @import("mf_options.zig"); // #3318 inline test (fromDto/seam 단일소스)
     _ = @import("semver.zig"); // #3437 P3-2 inline test (satisfies)
     _ = @import("federation_emit.zig"); // #3436/#3437 P3-1/2 inline test (verifyHostContract)
     _ = @import("statement_shaker_test.zig");

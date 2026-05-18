@@ -1991,6 +1991,16 @@ function prepareNapiOptions(options: BuildOptions): {
   if (options.manualChunks) {
     napiOptions._manualChunks = options.manualChunks;
   }
+  // PR-plumb (#3318): Module Federation. nested record(name/exposes/remotes/
+  // shared/shareScope/shareStrategy)를 NAPI 로 깊게 직렬화하는 대신 JSON
+  // string `mfRaw` 로 전달(transport 는 `tsconfigRaw` 와 동형 — JSON string
+  // over NAPI). Zig NAPI 는 native CLI(applyZntcConfigJson)와 **동일 단일
+  // 소스**(`mf_options.fromDto` + std.json `MfConfigDto`/`validateMf`)로
+  // 파싱 — silent drift 봉인.
+  delete napiOptions.mf;
+  if (options.mf) {
+    napiOptions.mfRaw = JSON.stringify(options.mf);
+  }
   // blockList: RegExp는 .source로 추출해 string[]으로 넘긴다 (NAPI는 string만).
   if (options.blockList) {
     napiOptions.blockList = options.blockList.map((p) => {

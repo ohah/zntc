@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { runConfigBundle, writeOutputs, runNode } from './helpers';
+import { runConfigBundle, writeOutputs, runNode, createFixture, runZntcInDir } from './helpers';
 
 // P1-3 (#3385): webpack-style container emit (remoteEntry).
 //   - entry 청크의 eager bootstrap(`var X=__zntc_require("id")`)을
@@ -106,6 +106,41 @@ describe('MF P1-3: webpack-style container emit', () => {
     // 단일 positional 직접 조회(s["react"])는 더 이상 1차 경로 아님
     expect(entry).not.toContain('if(s&&s["react"])');
   });
+
+  // PR-plumb (#3318): 발행 @zntc/core JS CLI(NAPI 경로) 가 zntc.config 의
+  // `mf` 를 native 번들러로 전달하는지. 기존 MF 테스트는 전부 ZNTC_BIN
+  // (native) 만 → 사용자가 실제 쓰는 JS CLI 경로 갭이 미검출이었다.
+  // bin:'js' = packages/core/bin/zntc.mjs (NAPI) 경로.
+  test('JS CLI(NAPI): zntc.config mf → 컨테이너/매니페스트 산출', async () => {
+    const fx = await createFixture({
+      'Widget.ts': `export default function Widget() { return "JS-CLI-OK"; }`,
+      'index.ts': `export const sentinel = "remote-entry";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+    const r = await runZntcInDir(
+      fx.dir,
+      ['--bundle', join(fx.dir, 'index.ts'), '--outdir', dist, '--format=iife'],
+      { bin: 'js' },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).not.toContain("unknown config key 'mf'");
+
+    const files = readdirSync(dist);
+    const entryFile = files.find(
+      (f) =>
+        f.endsWith('.js') && readFileSync(join(dist, f), 'utf8').includes('__zntc_mf_container'),
+    );
+    expect(entryFile).toBeDefined(); // ← native 와 동일하게 컨테이너 emit
+    expect(files).toContain('mf-manifest.json'); // ← 매니페스트도
+  }, 30000);
 
   test('interop 계약: init→get 으로 exposed 모듈 lazy 도달 (S1/S3 형태)', async () => {
     const r = await runConfigBundle({
