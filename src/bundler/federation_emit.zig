@@ -44,6 +44,21 @@ const IMPORT_NEEDLE = "import(";
 /// (loadRemote 결과 passthrough → S3/S4/P2-5 interop 보존), 거부만
 /// catch. 폴백은 silent 아님: console.error + `__mfUnavailable:true`
 /// (관측가능·비-차단). loadRemote 인자 그대로 forward(`arguments`).
+///
+/// **표준 `errorLoadRemote` hook 과의 관계(감사 ⚠️ 검증 결론)**:
+/// 선점/이중발화 **없음**(module-federation-core runtime-core/src/
+/// remote/index.ts:250-266 단일 errorLoadRemote emit + 본 가드 외곽
+/// wrap). host 가 표준
+/// `init/registerPlugins({errorLoadRemote})` 로 fallback module 을
+/// 반환하면 표준 loadRemote 가 **resolve** → 이 가드의 `.catch`
+/// **미발화** → host hook fallback 그대로 passthrough(가드가
+/// 가로채지 않음 — e2e 박제). 가드는 loadRemote 가 **reject** 할
+/// 때만(=hook 미등록 / hook 이 falsy 반환·throw → 표준상 전파) 개입
+/// → 표준이면 앱 error-boundary 로 throw 전파될 것을 P3-5 sentinel
+/// 로 graceful 흡수. 이는 **의도된 P3-5 opinion**(빌드핀 사각의
+/// white-screen 방지, 비-목표=표준 throw 전파)이며 버그 아님. 표준
+/// 에러 전파를 원하면 host hook 이 fallback 을 반환하는 spec 경로를
+/// 쓰면 됨(가드 통과).
 const MF_GUARDED = "globalThis.__mfGuardedLoad";
 const GUARD_DEF = MF_GUARDED ++ "=function(){var RR=globalThis." ++ MF_RUNTIME_GLOBAL ++
     ",a=arguments,id=a[0];function F(){return{default:function(){return null;},__mfUnavailable:true};}" ++

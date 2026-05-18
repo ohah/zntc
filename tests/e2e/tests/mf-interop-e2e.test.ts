@@ -817,3 +817,123 @@ test('PR-3 정적 import(실브라우저): default/named/namespace 표준 runtim
     await rm(hostDir, { recursive: true, force: true });
   }
 });
+
+// ⚠️ 감사: zntc __mfGuardedLoad(P3-5) ↔ 표준 @module-federation/runtime
+// errorLoadRemote hook **비-충돌 박제**. host 가 표준 plugin 으로
+// errorLoadRemote fallback module 을 반환하면 표준 loadRemote 가
+// resolve → zntc 가드 `.catch` 미발화 → host hook fallback 그대로
+// passthrough(가드가 **선점/이중발화 안 함**). reject 경로만 P3-5
+// sentinel(별 테스트 #7) — 이건 의도된 opinion. 여기선 hook-resolve
+// 경로가 깨끗함을 실 Chromium + 실 runtime 으로 확정.
+test('⚠️ 표준 errorLoadRemote hook fallback 이 zntc 가드 통과(선점 없음)', async ({ page }) => {
+  test.setTimeout(90_000);
+  const remoteDir = await mkdtemp(join(tmpdir(), 'zntc-hk-remote-'));
+  const hostDir = await mkdtemp(join(tmpdir(), 'zntc-hk-host-'));
+  let remoteSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  let hostSrv: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const remoteDist = join(remoteDir, 'dist');
+    await mkdir(remoteDist, { recursive: true });
+    remoteSrv = await serve(remoteDist, { 'Access-Control-Allow-Origin': '*' });
+    const rOrigin = `http://localhost:${remoteSrv.port}`;
+    await writeFile(join(remoteDir, 'Widget.ts'), `export default () => "REAL";`);
+    await writeFile(join(remoteDir, 'index.ts'), `export const sentinel = "re";`);
+    await writeFile(
+      join(remoteDir, 'zntc.config.json'),
+      JSON.stringify({ mf: { name: 'app', exposes: { './Widget': './Widget.ts' } } }),
+    );
+    const rb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(remoteDir, 'index.ts'),
+        '--outdir',
+        remoteDist,
+        '--format=iife',
+        '--platform=browser',
+        `--public-path=${rOrigin}/`,
+      ],
+      { cwd: remoteDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(rb.status, `remote build: ${rb.stderr?.toString().slice(0, 400)}`).toBe(0);
+
+    // host 는 **부재 expose** import → 표준 loadRemote reject 유발.
+    // 단, 표준 errorLoadRemote hook 이 fallback module 을 반환하므로
+    // 표준 loadRemote 가 resolve → zntc 가드 .catch 미발화여야 함.
+    await writeFile(
+      join(hostDir, 'index.ts'),
+      `async function main(){ const m = await import("app/Missing");` +
+        ` const v = (m && m.default) ? m.default() : ("NONE:" + JSON.stringify(m));` +
+        ` document.getElementById("out").textContent =` +
+        ` (m && m.__mfUnavailable) ? ("GUARD-PREEMPTED:" + v) : v;` +
+        ` window.__done = true; }\n` +
+        `main().catch((e) => { window.__err = String((e && e.stack) || e); window.__done = true; });`,
+    );
+    await writeFile(
+      join(hostDir, 'zntc.config.json'),
+      JSON.stringify({
+        mf: { name: 'host', remotes: { app: `app@${rOrigin}/mf-manifest.json` } },
+      }),
+    );
+    const hb = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        join(hostDir, 'index.ts'),
+        '-o',
+        join(hostDir, 'host.js'),
+        '--format=iife',
+        '--platform=browser',
+      ],
+      { cwd: hostDir, stdio: 'pipe', timeout: 20000 },
+    );
+    expect(hb.status, `host build: ${hb.stderr?.toString().slice(0, 500)}`).toBe(0);
+
+    await buildGlue(hostDir);
+    // glue → **errorLoadRemote 등록 스크립트** → host.js. 등록 스크립트는
+    // host.js prelude(R.init = FederationInstance 생성) *후* sync 실행
+    // 되어야 registerPlugins 가능 → 그래서 host.js 뒤에 배치. 모든
+    // sync 스크립트가 loadRemote 비동기 실패(microtask)보다 먼저 끝남.
+    await writeFile(
+      join(hostDir, 'index.html'),
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<script src="./glue.js"></script></head><body><div id="out">pending</div>` +
+        `<script src="./host.js"></script>` +
+        `<script>globalThis.__mf_runtime.registerPlugins([{name:"efb",` +
+        `errorLoadRemote:function(args){console.log("HOOK-FIRED:"+(args&&args.id));` +
+        `return {default:function(){return "HOOK-FB";}};}}]);</script>` +
+        `</body></html>`,
+    );
+    hostSrv = await serve(hostDir);
+
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    const allConsole: string[] = [];
+    page.on('console', (msg) => allConsole.push(`${msg.type()}:${msg.text()}`));
+    await page.goto(`http://localhost:${hostSrv.port}/`);
+    await page.waitForFunction(() => (window as { __done?: boolean }).__done === true, {
+      timeout: 20000,
+    });
+
+    expect(await page.evaluate(() => (window as { __err?: string }).__err)).toBeFalsy();
+    // hook fallback 이 표준 loadRemote 를 resolve → 가드 passthrough →
+    // host 가 hook 의 module 을 그대로 받음("HOOK-FB"). 가드가 선점했다면
+    // "GUARD-PREEMPTED:..." 또는 null sentinel — 그건 실패.
+    expect(await page.locator('#out').textContent()).toBe('HOOK-FB');
+    // hook 실제 발화(표준 runtime 이 호출) + 가드 catch 미발화(선점 없음)
+    expect(
+      allConsole.some((t) => t.includes('HOOK-FIRED:app/Missing')),
+      `console: ${allConsole.join(' | ')}`,
+    ).toBe(true);
+    expect(
+      allConsole.some((t) => t.includes('[mf] runtime guard')),
+      `guard catch fired(선점) — console: ${allConsole.join(' | ')}`,
+    ).toBe(false);
+    expect(pageErrors, `pageerror: ${pageErrors.join(', ')}`).toHaveLength(0);
+  } finally {
+    if (remoteSrv) await closeServer(remoteSrv.server);
+    if (hostSrv) await closeServer(hostSrv.server);
+    await rm(remoteDir, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+  }
+});
