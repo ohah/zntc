@@ -245,6 +245,9 @@ pub const Module = struct {
     /// scanner가 `module.exports`/`exports.*` 런타임 export 신호를 본 경우.
     /// export-star fallback은 빈 type barrel이 임의 이름을 claim하지 않도록 이 값으로 제한한다.
     has_cjs_export_signal: bool = false,
+    /// scanner가 `exports.__esModule` / `module.exports.__esModule` / defineProperty marker 를 본 경우.
+    /// CJS default interop 과 default-import property pruning 은 이 marker 를 존중해야 한다.
+    has_esmodule_marker: bool = false,
     /// CJS default import를 `__toESM(require_x()).default` 대신 `require_x()`로 낮출 수 있는지.
     /// 직접 `module.exports = ...` shape이고 `__esModule`/exports member 신호가 없을 때만 true.
     can_skip_cjs_default_interop: bool = false,

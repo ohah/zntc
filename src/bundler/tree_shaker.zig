@@ -1202,7 +1202,8 @@ pub const TreeShaker = struct {
         }
 
         if (target_module_for_import.wrap_kind == .cjs and ib.kind == .default) {
-            if (ib.namespace_used_properties) |props| {
+            if (!target_module_for_import.has_esmodule_marker and ib.namespace_used_properties != null) {
+                const props = ib.namespace_used_properties.?;
                 if (props.len > 0) {
                     for (props, 0..) |prop_name, pi| {
                         if (dispatch_stmt) |ds| gate: {
@@ -1359,6 +1360,7 @@ pub const TreeShaker = struct {
                 return;
             };
             try self.seedCjsExportFact(canon_mod, target_infos, fact, queue, reachable_stmts);
+            try self.seedCjsEsModuleMarkerForDefault(canon_mod, target_infos, canonical.export_name, queue, reachable_stmts);
             return;
         }
 
@@ -1496,6 +1498,7 @@ pub const TreeShaker = struct {
             return;
         };
         try self.seedCjsExportFact(mod_idx, target_infos, fact, queue, reachable_stmts);
+        try self.seedCjsEsModuleMarkerForDefault(mod_idx, target_infos, export_name, queue, reachable_stmts);
     }
 
     fn seedNodeBufferModuleObjectExport(
@@ -1573,6 +1576,18 @@ pub const TreeShaker = struct {
             try self.seedCjsExportFact(mod_idx, infos, fact, queue, reachable_stmts);
         }
         return found;
+    }
+
+    fn seedCjsEsModuleMarkerForDefault(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        export_name: []const u8,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        if (!std.mem.eql(u8, export_name, "default")) return;
+        _ = try self.seedCjsExportFactsByName(mod_idx, infos, "__esModule", queue, reachable_stmts);
     }
 
     fn seedAllCjsExportFacts(
@@ -1667,7 +1682,8 @@ pub const TreeShaker = struct {
                 if (ib.kind == .namespace) {
                     try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
                 } else if (ib.kind == .default) {
-                    if (ib.namespace_used_properties) |props| {
+                    if (!target_module.has_esmodule_marker and ib.namespace_used_properties != null) {
+                        const props = ib.namespace_used_properties.?;
                         if (props.len > 0) {
                             for (props) |prop_name| {
                                 try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
@@ -2147,7 +2163,8 @@ pub const TreeShaker = struct {
 
             if (target_module.wrap_kind == .cjs) {
                 if (ib.kind == .default) {
-                    if (ib.namespace_used_properties) |props| {
+                    if (!target_module.has_esmodule_marker and ib.namespace_used_properties != null) {
+                        const props = ib.namespace_used_properties.?;
                         if (props.len > 0) {
                             for (props) |prop_name| {
                                 try self.markExportUsed(@intCast(target_mod), prop_name);

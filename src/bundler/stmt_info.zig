@@ -37,12 +37,13 @@ pub const CjsExportFact = struct {
         object_property,
         define_property_value,
         define_property_getter,
+        es_module_marker,
 
         /// stmt 자체가 단일 export 라 BFS seed 시 stmt 전체를 enqueue 하면 충분한지.
         /// `assignment` (`exports.foo = rhs`) 만 그렇고, 나머지는 같은 stmt 안에 여러 export
         /// 가 공존할 수 있어 호출자가 rhs symbol 만 시드한다.
         pub fn seedsWholeStatement(self: Kind) bool {
-            return self == .assignment;
+            return self == .assignment or self == .es_module_marker;
         }
     };
 
@@ -1064,6 +1065,28 @@ fn appendCjsExportHelperFacts(
     return true;
 }
 
+fn appendCjsEsModuleMarkerFact(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    node: Node,
+    node_idx: u32,
+    stmt_i: u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    facts: *std.ArrayListUnmanaged(CjsExportFact),
+) !bool {
+    if (!try isSafeCjsEsModuleMarkerStmt(allocator, ast, node, unresolved_globals)) return false;
+    const export_name = try allocator.dupe(u8, "__esModule");
+    errdefer allocator.free(export_name);
+    try facts.append(allocator, .{
+        .export_name = export_name,
+        .statement_index = stmt_i,
+        .export_assignment_node = node_idx,
+        .kind = .es_module_marker,
+        .is_safe_to_prune = true,
+    });
+    return true;
+}
+
 fn invalidateConflictingCjsExportFacts(facts: []CjsExportFact, stmts: []StmtInfo) void {
     for (facts, 0..) |fact, i| {
         if (!fact.is_safe_to_prune) continue;
@@ -1454,7 +1477,7 @@ fn buildStmtInfoSlot(
         cjs_shape_extracted =
             try appendCjsDefinePropertyFact(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids) or
             try appendCjsExportHelperFacts(allocator, ast, node, stmt_i, cjs_export_object_names, cjs_export_facts_buf, symbol_ids) or
-            try isSafeCjsEsModuleMarkerStmt(allocator, ast, node, unresolved_globals) or
+            try appendCjsEsModuleMarkerFact(allocator, ast, node, ni, stmt_i, unresolved_globals, cjs_export_facts_buf) or
             try collectAndAppendCjsObjectFacts(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids);
     }
     const side_effects = if (node.tag == .import_declaration)

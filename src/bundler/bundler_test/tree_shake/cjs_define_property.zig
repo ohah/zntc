@@ -439,6 +439,48 @@ test "TreeShaking CJS: default import keeps __esModule defineProperty marker" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__esModule") != null);
 }
 
+test "TreeShaking CJS: minified default import keeps __esModule marker for object default export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "entry.js",
+        \\import BootSplash from './bootsplash.js';
+        \\globalThis.__bootSplashHide = BootSplash.hide;
+    );
+    try writeFile(tmp.dir, "bootsplash.js",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = void 0;
+        \\exports.hide = hide;
+        \\exports.isVisible = isVisible;
+        \\function hide() { return "USED_BOOT_SPLASH_HIDE_MARKER"; }
+        \\function isVisible() { return true; }
+        \\var BootSplash = exports.default = { hide, isVisible };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .strict_execution_order = true,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_BOOT_SPLASH_HIDE_MARKER") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, result.output, "Object.defineProperty(exports,\"__esModule\"") != null or
+            std.mem.indexOf(u8, result.output, "$dp(exports,\"__esModule\"") != null,
+    );
+}
+
 test "TreeShaking CJS: unsafe Object.defineProperty export forms are preserved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
