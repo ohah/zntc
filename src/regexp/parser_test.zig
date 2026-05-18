@@ -933,3 +933,20 @@ test "#3501 validate: 40 named backrefs accepted (>[32] cap)" {
     p.ext_alloc = a;
     try std.testing.expect(p.validate() == null);
 }
+
+// ============================================================
+// #3503: mod.parse 에러 경로에서 ast_nodes/ast_extra 미해제 누수
+// ============================================================
+
+test "#3503 mod.parse: 문법 에러 정규식 누수 없음" {
+    const mod = @import("mod.zig");
+    // flag 는 유효(flag 검증 통과) 하나 패턴이 문법 에러 →
+    // parse() 가 ast 빌드 도중 err → null 반환. testing.allocator 가
+    // ast_nodes/ast_extra 미해제 시 누수 패닉.
+    for ([_][]const u8{ "(", "(?<n>", "[a-", "\\", "a{2,1}", "(?<n>a)(?<n>b)" }) |pat| {
+        try std.testing.expect(mod.parse(pat, "", std.testing.allocator) == null);
+    }
+    // 성공 경로도 누수 0 (toOwnedSlice 후 p.deinit no-op 검증).
+    var ok = mod.parse("(a)\\1", "", std.testing.allocator) orelse return error.ParseFailed;
+    ok.deinit();
+}
