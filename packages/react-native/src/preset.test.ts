@@ -67,19 +67,51 @@ describe('buildRnBundleOptions — 기본 RN preset 필드', () => {
 });
 
 describe('buildRnBundleOptions — platform 분기 (resolveExtensions)', () => {
-  test('iOS — `.ios.*` 가 prefix', () => {
+  test('iOS — Metro sourceExts 순서대로 `.ios.*` / `.native.*` / base 를 탐색', () => {
     const opts = buildRnBundleOptions(baseInput({ rnPlatform: 'ios' }));
-    expect(opts.resolveExtensions?.[0]).toBe('.ios.ts');
-    expect(opts.resolveExtensions?.[1]).toBe('.ios.tsx');
-    expect(opts.resolveExtensions).toContain('.native.ts');
-    expect(opts.resolveExtensions).toContain('.ts');
+    expect(opts.resolveExtensions?.slice(0, 15)).toEqual([
+      '.ios.js',
+      '.native.js',
+      '.js',
+      '.ios.jsx',
+      '.native.jsx',
+      '.jsx',
+      '.ios.json',
+      '.native.json',
+      '.json',
+      '.ios.ts',
+      '.native.ts',
+      '.ts',
+      '.ios.tsx',
+      '.native.tsx',
+      '.tsx',
+    ]);
   });
 
-  test('Android — `.android.*` 가 prefix', () => {
+  test('Android — Metro sourceExts 순서대로 `.android.*` / `.native.*` / base 를 탐색', () => {
     const opts = buildRnBundleOptions(baseInput({ rnPlatform: 'android' }));
-    expect(opts.resolveExtensions?.[0]).toBe('.android.ts');
-    expect(opts.resolveExtensions?.[1]).toBe('.android.tsx');
-    expect(opts.resolveExtensions).toContain('.native.ts');
+    expect(opts.resolveExtensions?.slice(0, 6)).toEqual([
+      '.android.js',
+      '.native.js',
+      '.js',
+      '.android.jsx',
+      '.native.jsx',
+      '.jsx',
+    ]);
+  });
+
+  test('extra.sourceExts 도 Metro 방식의 순서를 보존', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ rnPlatform: 'ios', extra: { sourceExts: ['ts', 'js'] } }),
+    );
+    expect(opts.resolveExtensions).toEqual([
+      '.ios.ts',
+      '.native.ts',
+      '.ts',
+      '.ios.js',
+      '.native.js',
+      '.js',
+    ]);
   });
 });
 
@@ -108,7 +140,7 @@ describe('buildRnBundleOptions — extra.platforms validation', () => {
     const opts = buildRnBundleOptions(
       baseInput({ rnPlatform: 'ios', extra: { platforms: ['ios', 'android', 'web'] } }),
     );
-    expect(opts.resolveExtensions?.[0]).toBe('.ios.ts');
+    expect(opts.resolveExtensions?.[0]).toBe('.ios.js');
     expect(opts.resolveExtensions).not.toContain('.web.ts');
   });
 });
