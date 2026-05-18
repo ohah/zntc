@@ -157,6 +157,12 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             _ = c.napi_set_named_property(env, js_diag, "location", js_loc);
         }
 
+        if (d.suggestion) |suggestion| {
+            var js_suggestion: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, suggestion.ptr, suggestion.len, &js_suggestion);
+            _ = c.napi_set_named_property(env, js_diag, "specifier", js_suggestion);
+        }
+
         if (is_err) {
             _ = c.napi_set_element(env, js_errors, err_idx, js_diag);
             err_idx += 1;
