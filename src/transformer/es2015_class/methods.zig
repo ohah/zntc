@@ -132,12 +132,9 @@ pub fn Methods(comptime Transformer: type) type {
                     defer self.generator_temp_var_spans.clearRetainingCapacity();
                     // body == none 은 buildStateMachine 의 empty-body 조기반환뿐
                     // (temp 미할당) → counter 복원 불필요, non-generator 경로로
-                    // fall-through 안전. 복원은 hoist 와 함께 if 안에서만 수행.
+                    // fall-through 안전. hoist+복원은 if 안에서만 수행.
                     if (!sm_result.body.isNone()) {
-                        if (self.temp_var_counter > saved_temp_counter) {
-                            sm_result.body = try self.hoistTempVarsSkippingSpans(sm_result.body, saved_temp_counter, span, self.generator_temp_var_spans.items);
-                        }
-                        self.temp_var_counter = saved_temp_counter;
+                        sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen_call, span);
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);

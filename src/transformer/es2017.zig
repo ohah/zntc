@@ -269,10 +269,7 @@ pub fn ES2017(comptime Transformer: type) type {
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
-            if (self.temp_var_counter > saved_temp_counter) {
-                sm_result.body = try self.hoistTempVarsSkippingSpans(sm_result.body, saved_temp_counter, span, self.generator_temp_var_spans.items);
-            }
-            self.temp_var_counter = saved_temp_counter;
+            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
@@ -350,10 +347,7 @@ pub fn ES2017(comptime Transformer: type) type {
             var sm_result = lowered.sm_result;
             defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
-            if (self.temp_var_counter > saved_temp_counter) {
-                sm_result.body = try self.hoistTempVarsSkippingSpans(sm_result.body, saved_temp_counter, span, self.generator_temp_var_spans.items);
-            }
-            self.temp_var_counter = saved_temp_counter;
+            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
