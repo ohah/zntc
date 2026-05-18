@@ -72,11 +72,13 @@ pub fn parse(
     }
 
     // 2. 패턴 파싱 + AST 빌드
-    // parse()가 소유권을 toOwnedSlice()로 이전하므로 별도 deinit 불필요.
-    // 에러 시 parse() 내부에서 deinit 처리.
+    // 성공 시 parse()가 toOwnedSlice 로 소유권 이전 → p.deinit()은 빈
+    // ArrayList 해제(no-op). 에러 시 parse()는 ast_nodes/ast_extra 를
+    // 해제하지 않으므로 defer p.deinit()이 누수를 막는다 (#3503).
     const parsed_flags = flags.parse(flag_text);
     const Parser = parser.PatternParser(true);
     var p = Parser.initWithAllocator(pattern, parsed_flags, allocator);
+    defer p.deinit();
     return p.parse();
 }
 
