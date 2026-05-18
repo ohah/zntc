@@ -172,6 +172,90 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"|eager consumption/);
   }, 30000);
 
+  // #4-2 (#3318): named share scope 다중 완결 박제. S2 와 동일하나 react
+  // 를 **non-default named scope "ui"** 로. zntc remote: shared.react.
+  // shareScope='ui'(#4-0 표면). 컨테이너 init: SC=(o&&o.shareScopeMap)?
+  // o.shareScopeMap["ui"]:s(#4-1 emit). 표준 @module-federation/runtime
+  // host 는 remote 를 shareScope:'ui' 로 등록(runtime-core shareScopeKeys
+  // =['ui'] → localShareScopeMap['ui'] 생성·remoteEntryInitOptions.
+  // shareScopeMap 으로 전달) + react 를 scope:'ui' 로 등록(registerShared
+  // → shareScopeMap['ui']['react']). 실 [email protected] 으로 named
+  // scope 경유 singleton identity 검증 = #4-0+#4-1 end-to-end 완결.
+  test('#4-2 named scope "ui": zntc remote shared 가 host named scope 에서 해석 (singleton)', async () => {
+    const fx = await createFixture({
+      'Widget.ts':
+        `import { useState } from "react";\n` +
+        `export const usedHook = useState;\n` +
+        `export default function Widget() { return typeof useState === "function" ? "UI-OK" : "UI-NO"; }`,
+      'index.ts': `export const sentinel = "remote-entry";`,
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          // #4-0: per-shared shareScope = non-default "ui"
+          shared: { react: { singleton: true, requiredVersion: '^19', shareScope: 'ui' } },
+        },
+      }),
+    });
+    cleanup = fx.cleanup;
+    const dist = join(fx.dir, 'dist');
+
+    const b = await runZntcInDir(fx.dir, [
+      '--bundle',
+      join(fx.dir, 'index.ts'),
+      '--outdir',
+      dist,
+      '--format=iife',
+      `--public-path=file://${dist}/`,
+    ]);
+    expect(b.exitCode).toBe(0);
+
+    // #4-1 emit 형태 직접 확인: "ui" scope ternary (||s 오결합 아님)
+    const entrySrc = readFileSync(join(dist, 'index.js'), 'utf8');
+    expect(entrySrc).toContain('init:function(s,i,o){');
+    expect(entrySrc).toMatch(/var SC=\(o&&o\.shareScopeMap\)\?o\.shareScopeMap\["ui"\]:s;/);
+
+    server = createServer(async (req, res) => {
+      try {
+        const f = join(dist, req.url === '/' ? '/index.js' : req.url!);
+        res.writeHead(200, { 'content-type': 'application/javascript' });
+        res.end(await readFile(f));
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((r) => server!.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+
+    const mfRuntime = createRequire(import.meta.url).resolve('@module-federation/runtime');
+    const reactPath = createRequire(import.meta.url).resolve('react');
+    driverPath = join(fx.dir, 'rt-driver.mjs');
+    writeFileSync(
+      driverPath,
+      `import mf from ${JSON.stringify('file://' + mfRuntime)};
+import * as hostReact from ${JSON.stringify('file://' + reactPath)};
+const { init, loadRemote } = mf;
+// remote 를 named scope 'ui' 로 등록(runtime-core remoteInfo.shareScope
+// → shareScopeKeys=['ui'] → o.shareScopeMap['ui'] 생성·전달).
+// react 를 scope:'ui' 로 등록(registerShared → shareScopeMap['ui'].react).
+init({
+  name: 'host-mf2',
+  remotes: [{ name: 'app', entry: 'http://localhost:${port}/index.js', shareScope: 'ui' }],
+  shared: { react: { version: '19.2.4', scope: 'ui', lib: () => hostReact, shareConfig: { singleton: true, requiredVersion: '^19' } } },
+});
+const m = await loadRemote('app/Widget');
+const W = m && (m.default ?? m);
+console.log('RENDER=' + (typeof W === 'function' ? W() : 'no'));
+console.log('SAME=' + (m && m.usedHook === hostReact.useState));
+`,
+    );
+    const { stdout, stderr } = await runNode(driverPath);
+
+    expect(stdout).toContain('RENDER=UI-OK'); // 'ui' scope seam 해석 성공
+    expect(stdout).toContain('SAME=true'); // named scope 경유 동일 react 인스턴스
+    expect(stderr).not.toMatch(/RUNTIME-00\d|does not contain "init"|eager consumption/);
+  }, 30000);
+
   // P1-5 (#3387): mf-manifest.json 에미터. webpack/rspack MF 호환 스키마
   // (@module-federation/sdk@2.4.0 Manifest 타입 + runtime-core
   // SnapshotHandler:161 필수키 metaData/exposes/shared). content-hash
