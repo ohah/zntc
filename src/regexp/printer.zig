@@ -6,7 +6,7 @@
 //!
 //! 출력은 oxc(`oxc_regular_expression` display.rs) canonical form 에 맞춘다:
 //! hex 는 대문자, unicode_escape 는 4자리 `\uXXXX`/`\u{XXXXX}` 로 통일
-//! (`\xab`→`\xAB`, `\u{41}`→`A`, `\u{1f600}`→`\u{1F600}`), `\ca`→`\cA`,
+//! (`\xab`→`\xAB`, `\u{41}`→`\u0041`, `\u{1f600}`→`\u{1F600}`), `\ca`→`\cA`,
 //! `a{3,3}`→`a{3}`. 따라서 라운드트립 불변식은 "바이트 동일" 이
 //! 아니라 "print 멱등 + 구조 보존" 이다 (printer_test.zig 참조).
 //!
