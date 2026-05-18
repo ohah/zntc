@@ -1280,6 +1280,37 @@ test "require.context: plain require is not require_context" {
     try std.testing.expect(has_require);
 }
 
+test "require: webpack runtime helper calls are not static imports" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtract(alloc,
+        \\var __webpack_modules__ = {
+        \\  "./src/a.ts": function(module, exports, __webpack_require__) {
+        \\    var dep = __webpack_require__("./src/dep.ts");
+        \\    return dep;
+        \\  },
+        \\};
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 0), records.len);
+}
+
+test "inline scan require: webpack runtime helper calls are not static imports" {
+    const alloc = std.testing.allocator;
+    const records = try parseInlineScanRecords(alloc,
+        \\var __webpack_modules__ = {
+        \\  "./src/a.ts": function(module, exports, __webpack_require__) {
+        \\    var dep = __webpack_require__("./src/dep.ts");
+        \\    var bare = __webpack_require__("react-native-tcp-socket");
+        \\    return dep;
+        \\  },
+        \\};
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 0), records.len);
+}
+
 test "require.context: Symbol.context is ignored" {
     const alloc = std.testing.allocator;
     const records = try parseAndExtract(alloc, "Symbol.context('./pages');");
