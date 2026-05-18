@@ -3322,3 +3322,41 @@ test "ES5: async switch case block extracts await" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "requestCameraPermission()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
 }
+
+test "ES5: class async method + nested-member optional-call hoists temp decl (react-query v5 regression)" {
+    // es5 에서 class → IIFE 로 먼저 lowering → async 메서드는 es2015_class/
+    // methods.zig 의 class-async-state-machine 경로로 처리된다. 이 경로만
+    // es2017.zig 의 불변식(saved_temp_counter + hoistTempVarsSkippingSpans +
+    // counter 복원)을 빠뜨려, optional chaining nested-member-call 이 만든
+    // temp(_a/_b)의 `var` 선언이 함수 body 에 지역 hoist 되지 않고 counter 가
+    // module-top 으로 누수됐다. scope-hoist 번들 모듈에서 per-module resync 가
+    // 미사용 module-top `var _a..` 를 elide → `ReferenceError: _c is not
+    // defined` (react-query v5 mutation execute). bundle-level end-to-end
+    // 회귀 가드는 tests/integration/tests/react-query-v5-smoke.test.ts.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class M {
+        \\  o = { cb: async function (v) { return v; } };
+        \\  async run(v) {
+        \\    await Promise.resolve();
+        \\    const c = await this.o.cb?.(v);
+        \\    return (c ?? 0) + v;
+        \\  }
+        \\}
+    , .es5);
+    defer r.deinit();
+    // class async 메서드도 state machine 으로 변환.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    // optional-chaining nested-member-call temp 가 출력에 쓰이면 반드시 그
+    // `var` 선언이 함께 emit 돼야 한다 — 선언 없는 `_a`/`_b` 사용 = 회귀.
+    const uses_temp = std.mem.indexOf(u8, r.output, "_b.call(") != null or
+        std.mem.indexOf(u8, r.output, "(_b=") != null or
+        std.mem.indexOf(u8, r.output, "(_b =") != null or
+        std.mem.indexOf(u8, r.output, "(_a=") != null or
+        std.mem.indexOf(u8, r.output, "(_a =") != null;
+    if (uses_temp) {
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") != null or
+            std.mem.indexOf(u8, r.output, "var _b") != null or
+            std.mem.indexOf(u8, r.output, ",_a") != null or
+            std.mem.indexOf(u8, r.output, ",_b") != null);
+    }
+}
