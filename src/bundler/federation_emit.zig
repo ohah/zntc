@@ -697,7 +697,21 @@ pub fn buildManifest(
         try appendJsonStr(&b, allocator, ex.name);
         try b.appendSlice(allocator, ",\"path\":");
         try appendJsonStr(&b, allocator, ex.name);
-        // expose 는 자기 lazy 청크 → js.async=[청크], sync=[]. css 는 비-목표.
+        // assets 정확성(#3 감사): zntc(P1-3)는 expose + 그 전이 **정적**
+        // 의존을 단일 lazy 청크로 co-bundle(BitSet 도달성 splitting) →
+        // `js.async`=[그 1 청크]가 **완전**(표준 esbuild 의 정적-의존
+        // 트리 분할과 형태만 다를 뿐, 그 1 파일이 전부 포함). 표준
+        // `preloadRemote` 가 이 파일을 prefetch 하면 container.get 이
+        // 같은 파일을 로드 → 의존 충족(기능 정합 — 부정확/누락 아님).
+        // `js.sync`=[] 는 의도: 분리된 정적-의존 청크가 없고 entry 는
+        // metaData.remoteEntry 가 담당. shared.assets=[] 도 의도(seam
+        // 글로벌 로딩 — 표준 runtime 은 이를 preload 소스로 안 쓰고
+        // dedup-제외 set 으로만 읽음, 빈 배열이라 제외 대상 0 = 무해,
+        // P1-4). **CSS assets** 만
+        // 실제 갭(expose 가 CSS import 시 zntc 는 CSS 청크 산출하나
+        // 여기 미기재 → preloadRemote 가 stylesheet prefetch 불가):
+        // css_plan→chunk_index→wrapContainer plumbing 필요한 별도 집중
+        // 단위로 추적(트래커). 그 외는 정확.
         try b.appendSlice(allocator, ",\"assets\":{\"js\":{\"sync\":[],\"async\":[");
         try appendJsonStr(&b, allocator, ex.chunk_file);
         try b.appendSlice(allocator, "]},\"css\":{\"sync\":[],\"async\":[]}}}");
