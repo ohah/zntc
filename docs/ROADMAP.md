@@ -244,7 +244,7 @@ esbuild / rolldown / rspack 기준으로 ZNTC에 빠진 기능 목록.
 | ~~**external phantom**~~     | ✅     | ❌      | ✅                | ❌             | ✅  | external 도 graph 1급 노드 — Rollup `getModuleInfo("react").isExternal` 동작     |
 | **innerGraph**               | L      | ❌      | ✅                | ✅             | 🟡  | 변수 할당 추적으로 정밀 DCE — straight-line dead store 일부 완료                 |
 | **Persistent caching**       | XL     | ❌      | ❌                | ✅             | ❌  | 디스크 캐시, 콜드 리빌드 250%↑                                                   |
-| **Module Federation**        | XL     | ❌      | ❌                | ✅             | ❌  | 마이크로프론트엔드 코드/리소스 공유                                              |
+| **Module Federation**        | XL     | ❌      | ❌                | ✅             | 🟡  | 마이크로프론트엔드 코드/리소스 공유 — RFC #3318 P1 진행 중 (컨테이너 init / named share scope 다중 / strictVersion fail-fast / CSS·assets manifest 게시 구현, 런타임 동적 remote 빌드검증은 설계 한계). [RFC](./RFC_MODULE_FEDERATION.md) |
 | **Lazy compilation**         | XL     | ❌      | ❌                | ✅             | ❌  | 온디맨드 모듈 컴파일 (dev 시작 가속)                                             |
 | ~~**Stage 3 decorators**~~   | ✅     | ❌      | ✅                | ✅             | ✅  | TC39 Stage 3 데코레이터 (legacy + Stage 3)                                       |
 | **mangleProps**              | XL     | ✅      | ❌                | ❌             | ❌  | cross-module 프로퍼티 난독화                                                     |
@@ -285,6 +285,7 @@ esbuild / rolldown / rspack 기준으로 ZNTC에 빠진 기능 목록.
   mangleProps (1주+) — cross-module 프로퍼티 추적
   Stage 3 decorators ✅ 완료 — TC39 Stage 3 데코레이터 (legacy + Stage 3, MobX 6 호환)
   Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
+  Module Federation 🟡 RFC #3318 P1 진행 중 — 컨테이너 init/named share scope/strictVersion/manifest 게시 (런타임 동적 remote 빌드검증은 설계 한계)
   manualChunks ✅ 완료 — Rollup 호환 (record + function + meta API 13/14 필드)
   innerGraph 🟡 부분 완료 — straight-line local dead store 제거 완료. 다음: reference 기반 일반 dead store/control-flow 확장
   Rollup ModuleInfo Phase B (#1880) — plugin context API + meta 필드 (1.5~2주)
