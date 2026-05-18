@@ -59,6 +59,54 @@ describe('MF P1-3: webpack-style container emit', () => {
     expect(entry).not.toMatch(/var\s+\w+\s*=\s*globalThis\.__zntc_require\(/);
   });
 
+  // #4-1 (#3318): named share scope 다중. 표준 runtime-core 는
+  // init(shareScope,initScope,remoteEntryInitOptions) 로 호출하고
+  // remoteEntryInitOptions.shareScopeMap 에 전체 named scope 맵을 싣는다
+  // (// TODO use shareScopeMap if exist). 모던 host 면 그 맵[scope] 만,
+  // 미등록이면 skip(seam 미설정→정상 협상); 레거시 host(맵 부재)일 때만
+  // positional s. `||s` 가 아닌 ternary — 미등록 scope 가 *다른* scope
+  // 로 silent 오결합(singleton/버전 위반)되지 않게.
+  test('다중 named scope: init 3rd-arg + per-shared o.shareScopeMap[scope] 해석', async () => {
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `export const sentinel = "remote-entry";`,
+        'Widget.ts': `export default function Widget() { return "W"; }`,
+        'zntc.config.json': JSON.stringify({
+          mf: {
+            name: 'app',
+            exposes: { './Widget': './Widget.ts' },
+            // react = 명시 "ui" scope, lodash = 미지정 → 번들 default 상속
+            shared: { react: { singleton: true, shareScope: 'ui' }, lodash: {} },
+          },
+        }),
+      },
+      args: ['--format=iife'],
+      outDir: 'out',
+    });
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+
+    const files = readdirSync(r.outDir!);
+    const entryFile = files.find(
+      (f) =>
+        f.endsWith('.js') &&
+        readFileSync(join(r.outDir!, f), 'utf8').includes('__zntc_mf_container'),
+    )!;
+    const entry = readFileSync(join(r.outDir!, entryFile), 'utf8');
+
+    // 3rd-arg(remoteEntryInitOptions) 수신
+    expect(entry).toMatch(/init:function\(s,i,o\)\{/);
+    // react → 명시 "ui" scope, lodash → 번들 default scope
+    expect(entry).toContain('o.shareScopeMap["ui"]');
+    expect(entry).toContain('o.shareScopeMap["default"]');
+    // 선택 형태: (o&&o.shareScopeMap) ? o.shareScopeMap[scope] : s
+    //  — ternary(모던=scope만/미등록 skip, 레거시=s). `||s` 오결합 방지
+    expect(entry).toMatch(/var SC=\(o&&o\.shareScopeMap\)\?o\.shareScopeMap\["ui"\]:s;/);
+    expect(entry).not.toContain('])||s;'); // `||s` 폴백 잔존 금지
+    // 단일 positional 직접 조회(s["react"])는 더 이상 1차 경로 아님
+    expect(entry).not.toContain('if(s&&s["react"])');
+  });
+
   test('interop 계약: init→get 으로 exposed 모듈 lazy 도달 (S1/S3 형태)', async () => {
     const r = await runConfigBundle({
       files: {
