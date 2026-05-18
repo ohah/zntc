@@ -110,8 +110,13 @@ pub fn emitHostInit(
         try emitter.appendJsonString(&out, allocator, r.entry);
         try out.append(allocator, '}');
     }
+    // #2 (감사): shareStrategy 를 init 인자로 배선 — 표준
+    // @module-federation/runtime 이 Options.shareStrategy 로 읽어 협상
+    // 순서(version-first|loaded-first) 적용(D1 위임, zntc 자체 협상 X).
+    try out.appendSlice(allocator, "],\"shareStrategy\":");
+    try emitter.appendJsonString(&out, allocator, mf.share_strategy);
     // P3-5: init 후 가드 정의(글로벌 — 모듈 스코프 재작성 코드가 호출).
-    try out.appendSlice(allocator, "]});" ++ GUARD_DEF ++ "})();");
+    try out.appendSlice(allocator, "});" ++ GUARD_DEF ++ "})();");
 
     // PR-2 (#3459): 정적 remote import async preload-gate. 정적 import
     // 구문은 PR-1 이 elide 하고 `var X = __mf_remote_<san>[.default]`
@@ -634,6 +639,13 @@ pub fn buildManifest(
         try b.appendSlice(allocator, if (se.singleton) "true" else "false");
         try b.appendSlice(allocator, ",\"requiredVersion\":");
         try appendJsonStr(&b, allocator, rv);
+        // #2 (감사): strictVersion additive 게시(producer contract).
+        // 표준 sdk ManifestShared 스키마 필드는 아님 — ManifestShared-
+        // typed consumer 는 무시(무해), 표준 강제는 host init shareConfig
+        // 가 표준 runtime 에 위임(share.ts strictVersion→error). zntc 는
+        // 이 게시값을 P3-2 빌드타임 fail-fast 격상에 사용(별 PR).
+        try b.appendSlice(allocator, ",\"strictVersion\":");
+        try b.appendSlice(allocator, if (se.strict_version) "true" else "false");
         try b.appendSlice(allocator, ",\"hash\":\"\",\"assets\":{\"js\":{\"sync\":[],\"async\":[]},\"css\":{\"sync\":[],\"async\":[]}}}");
     }
     // P2-1 (#3421): manifest.remotes 정밀. exposes 있는 remote 가 다른

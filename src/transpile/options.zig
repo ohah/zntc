@@ -188,6 +188,11 @@ pub const MfConfigDto = struct {
     /// `{ "react": { singleton:true, requiredVersion:"^18" } }`
     shared: ?std.json.ArrayHashMap(MfSharedDto) = null,
     shareScope: ?[]const u8 = null,
+    /// host shared 협상 순서(`@module-federation/runtime` Options.
+    /// shareStrategy). `"version-first"`(기본) | `"loaded-first"`.
+    /// emitHostInit 가 `R.init({…,shareStrategy})` 로 배선 → 표준
+    /// runtime 이 실제 협상에 적용(zntc 자체 협상 아님, D1 위임).
+    shareStrategy: ?[]const u8 = null,
 };
 
 pub const MfSharedDto = struct {
