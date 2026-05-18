@@ -318,6 +318,7 @@ fn runOnce(
     var changed = false;
     var i: u32 = 0;
     while (i < ast.nodes.items.len) : (i += 1) {
+        if (!isLiveMinifyNode(live_nodes, i)) continue;
         const node = ast.nodes.items[i];
         switch (node.tag) {
             .binary_expression => foldBinary(ast, scratch, i, node, &changed),
@@ -364,6 +365,11 @@ fn runOnce(
         removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);
     }
     return changed;
+}
+
+fn isLiveMinifyNode(live_nodes: ?*const std.DynamicBitSet, node_idx: u32) bool {
+    const lives = live_nodes orelse return true;
+    return node_idx < lives.capacity() and lives.isSet(node_idx);
 }
 
 fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBitSet) void {

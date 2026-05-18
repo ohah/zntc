@@ -4,3 +4,4 @@ import './edge-combinations/plugins';
 import './edge-combinations/errors';
 import './edge-combinations/react';
 import './edge-combinations/minify-identifiers';
+import './edge-combinations/minify-syntax';
