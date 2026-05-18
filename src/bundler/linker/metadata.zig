@@ -912,12 +912,16 @@ pub fn buildMetadataForAst(
                 } else if (tmod.wrap_kind == .esm and tidx != module_index) {
                     // __esm → __esm live binding: named import만 skip.
                     // namespace import는 body codegen이 exports_xxx 할당을 생성해야 함.
+                    // 단 tree-shaking 이 target wrapper 를 제거한 경우에는 원본 import
+                    // lowering 도 반드시 제거해야 한다. 그렇지 않으면 body 에
+                    // `(init_removed(), __toCommonJS(exports_removed))` orphan 호출이 남아
+                    // RN release 런타임에서 ReferenceError 가 난다.
                     // self-import는 제외 (순환 자기 참조 시 body codegen이 처리).
                     const has_namespace = for (m.import_bindings) |ib| {
                         if (ib.import_record_index == rec_i and ib.kind == .namespace)
                             break true;
                     } else false;
-                    if (!has_namespace) {
+                    if (!has_namespace or (self.tree_shaker_active and !tmod.is_included)) {
                         try hoisted_specifiers.put(rec.specifier, {});
                     }
                 }

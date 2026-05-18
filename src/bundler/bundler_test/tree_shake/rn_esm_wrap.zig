@@ -248,3 +248,142 @@ test "TreeShaking #2398: RN namespace import (`import * as ns`) 가 .esm wrap pu
     try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_B_MARKER") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_C_MARKER") != null);
 }
+
+test "TreeShaking: RN .esm wrap unused namespace re-export drops orphan import init" {
+    // Sentry-style barrel:
+    //   import * as logger from './logs/public-api.js';
+    //   export { logger };
+    //
+    // If consumers only use another export from the same pure wrapper, the
+    // namespace target can be tree-shaken. The original import declaration must
+    // be skipped too; otherwise the wrapper body still executes
+    // `(init_public_api$N(), __toCommonJS(exports_public_api$N))` even though
+    // that target wrapper was not emitted.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from 'pkg';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\import * as logger from './logs/public-api.js';
+        \\export { logger };
+        \\export function used() { return 'USED_EXPORT_MARKER'; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/logs/public-api.js",
+        \\import { capture } from './internal.js';
+        \\export { fmt } from '../utils/parameterize.js';
+        \\export function debug() { return capture('UNUSED_LOGGER_MARKER'); }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/logs/internal.js",
+        \\export function capture(value) { return value; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/utils/parameterize.js",
+        \\export function fmt(value) { return value; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/package.json", "{\"name\": \"pkg\", \"main\": \"index.js\", \"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_EXPORT_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_LOGGER_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "pkg_logs_public_api") == null);
+}
+
+test "TreeShaking: RN .esm wrap used namespace re-export includes namespace target" {
+    // `export { logger }` where `logger` is `import * as logger` must keep the
+    // namespace source. Otherwise the re-exporting wrapper can be live while its
+    // generated import init points at a pruned wrapper.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { logger } from 'pkg';
+        \\console.log(logger.debug());
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\import * as logger from './logs/public-api.js';
+        \\export { logger };
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/logs/public-api.js",
+        \\import { capture } from './internal.js';
+        \\export { fmt } from '../utils/parameterize.js';
+        \\export function debug() { return capture('USED_LOGGER_MARKER'); }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/logs/internal.js",
+        \\export function capture(value) { return value; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/utils/parameterize.js",
+        \\export function fmt(value) { return value; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/package.json", "{\"name\": \"pkg\", \"main\": \"index.js\", \"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_LOGGER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_pkg_logs_public_api") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_pkg_logs_public_api") != null);
+}
+
+test "TreeShaking: RN .esm wrap export-star drops getter for pruned source" {
+    // `export * from './style.js'` expands into lazy getters on the barrel
+    // exports object. If the star source is tree-shaken, those getters must be
+    // omitted too; otherwise the live barrel can contain
+    // `init_style()` / `exports_style.foo` references to a wrapper that was not
+    // emitted in the release bundle.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from 'pkg';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\export { used } from './used.js';
+        \\export * from './style.js';
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/used.js",
+        \\export function used() { return 'USED_FROM_STAR_BARREL'; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/style.js",
+        \\export const unusedStyle = 'UNUSED_STAR_STYLE_MARKER';
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/package.json", "{\"name\": \"pkg\", \"main\": \"index.js\", \"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_FROM_STAR_BARREL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_STAR_STYLE_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "pkg_style") == null);
+}
