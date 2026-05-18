@@ -158,7 +158,7 @@ export interface RnBundleInput {
   workletPluginVersion?: string;
 }
 
-const DEFAULT_SOURCE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'];
+const DEFAULT_SOURCE_EXTS = ['.js', '.jsx', '.json', '.ts', '.tsx', '.mjs', '.cjs'];
 // Metro 호환 + RN 흔한 폰트/이미지 — bungae DEFAULT_RESOLVER.assetExts 와 동일.
 // caller 가 `extra.assetExts` 로 override 하면 이 list 무시.
 export const DEFAULT_ASSET_EXTS: string[] = [
@@ -202,23 +202,22 @@ export const DEFAULT_ASSET_EXTS: string[] = [
   '.woff2',
 ];
 
-const NATIVE_AND_BASE = [
-  '.native.ts',
-  '.native.tsx',
-  '.native.js',
-  '.native.jsx',
-  '.ts',
-  '.tsx',
-  '.js',
-  '.jsx',
-  '.json',
-];
+function buildResolveExtensions(rnPlatform: 'ios' | 'android', sourceExts: readonly string[]): string[] {
+  const platformPrefix = `.${rnPlatform}`;
+  const extensions: string[] = [];
+  const seen = new Set<string>();
 
-function buildResolveExtensions(rnPlatform: 'ios' | 'android'): string[] {
-  if (rnPlatform === 'ios') {
-    return ['.ios.ts', '.ios.tsx', '.ios.js', '.ios.jsx', ...NATIVE_AND_BASE];
+  for (const sourceExt of sourceExts) {
+    const ext = normalizeExt(sourceExt);
+    for (const candidate of [`${platformPrefix}${ext}`, `.native${ext}`, ext]) {
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        extensions.push(candidate);
+      }
+    }
   }
-  return ['.android.ts', '.android.tsx', '.android.js', '.android.jsx', ...NATIVE_AND_BASE];
+
+  return extensions;
 }
 
 function buildAssetLoaders(assetExts: readonly string[]): Record<string, string> {
@@ -473,7 +472,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     strictExecutionOrder: true,
     workletTransform: true,
     codegenTransform: true,
-    resolveExtensions: buildResolveExtensions(rnPlatform),
+    resolveExtensions: buildResolveExtensions(rnPlatform, sourceExts),
     mainFields: ['react-native', 'browser', 'main'],
     loader: baseLoader,
     // RN core packages must be singletons. pnpm exposes peer folders such as
