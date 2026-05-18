@@ -153,6 +153,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'preserveModulesRoot',
   'inlineDynamicImports',
   'manualChunks',
+  'minChunkSize',
   'metafile',
   'treeShaking',
   'shimMissingExports',

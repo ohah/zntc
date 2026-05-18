@@ -14,7 +14,12 @@ import { createServer as createHttpsServer } from 'node:https';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
-import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from './cli-flags.mjs';
+import {
+  applyFlagAction,
+  KNOWN_FLAGS,
+  matchFlagFromRegistry,
+  normalizeFallback,
+} from './cli-flags.mjs';
 import { copyRnAssets } from './rn-asset-copy.mjs';
 import {
   buildRnBundleExtra,
@@ -160,6 +165,12 @@ function usageLines(command) {
     '  --global:SPEC=NAME         Map external specifier to IIFE/UMD global',
     '  --intro=<text>             Insert wrapper-internal text before bundle code',
     '  --outro=<text>             Insert wrapper-internal text after bundle code',
+    '  --tree-shaking[=false]     Tree shaking (default: true; --no-tree-shaking to disable)',
+    '  --scope-hoist[=false]      Scope hoisting (default: true; --no-scope-hoist to disable)',
+    '  --emit-disk-sourcemap[=false] Write .map to disk in watch mode (default: true)',
+    '  --fallback:SPEC=TARGET     Fallback resolution on failure (=false → empty module)',
+    '  --block-list=<pattern>     Block module resolution by pattern (repeatable)',
+    '  --min-chunk-size=<n>       Merge small common chunks below n bytes',
     '  --ignore-annotations       Ignore pure/sideEffects annotations',
     '  --jsx-side-effects         Preserve unused JSX expressions',
     '  --profile=<csv>            Collect profile categories (all, parse, transform, ...)',
@@ -231,6 +242,11 @@ function parseArgs(argv) {
     metafile: undefined,
     analyze: false,
     treeShaking: true,
+    // 엔진 기본값 true — `--no-*` / `--*=false` 또는 config false 로만 끈다.
+    scopeHoist: true,
+    emitDiskSourcemap: true,
+    fallback: {},
+    blockList: [],
     external: [],
     packagesExternal: false,
     define: {},
@@ -269,6 +285,7 @@ function parseArgs(argv) {
     jobs: undefined,
     logLimit: undefined,
     lineLimit: undefined,
+    minChunkSize: undefined,
     clean: false,
     allowOverwrite: false,
     preserveModules: false,
@@ -1075,6 +1092,7 @@ function mergeConfigIntoOpts(opts, config) {
     'logLevel',
     'logLimit',
     'lineLimit',
+    'minChunkSize',
     'outputExports',
     'outExtensionJs',
     'metafile',
@@ -1133,9 +1151,15 @@ function mergeConfigIntoOpts(opts, config) {
       opts[key] = true;
     }
   }
-  // sourcesContent / treeShaking / useDefineForClassFields 는 default=true.
-  // CLI 가 default 면 config 가 false 일 때 false 로.
-  for (const key of ['sourcesContent', 'treeShaking', 'useDefineForClassFields']) {
+  // default=true 옵션: CLI 가 default(true) 면 config=false 일 때만 false 로 내린다
+  // (개별 키는 아래 배열 — 추가 시 여기만 갱신).
+  for (const key of [
+    'sourcesContent',
+    'treeShaking',
+    'scopeHoist',
+    'emitDiskSourcemap',
+    'useDefineForClassFields',
+  ]) {
     if (opts[key] === true && config[key] === false) {
       opts[key] = false;
     }
@@ -1153,6 +1177,7 @@ function mergeConfigIntoOpts(opts, config) {
     'conditions',
     'nodePaths',
     'profile',
+    'blockList',
   ];
   for (const key of ARRAY_KEYS) {
     if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
@@ -1160,7 +1185,7 @@ function mergeConfigIntoOpts(opts, config) {
     }
   }
 
-  for (const key of ['define', 'alias', 'loader', 'globals']) {
+  for (const key of ['define', 'alias', 'loader', 'globals', 'fallback']) {
     if (config[key] && typeof config[key] === 'object') {
       opts[key] = { ...config[key], ...opts[key] };
     }
@@ -1225,6 +1250,11 @@ async function runBundle(opts, config) {
     sourcesContent: opts.sourcesContent,
     sourceRoot: opts.sourceRoot,
     treeShaking: opts.treeShaking,
+    scopeHoist: opts.scopeHoist,
+    emitDiskSourcemap: opts.emitDiskSourcemap,
+    fallback: normalizeFallback(opts.fallback),
+    blockList: opts.blockList.length > 0 ? opts.blockList : undefined,
+    minChunkSize: opts.minChunkSize,
     metafile: !!opts.metafile,
     keepNames: opts.keepNames,
     shimMissingExports: opts.shimMissingExports,

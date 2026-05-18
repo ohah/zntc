@@ -67,6 +67,13 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--sourcemap-debug-ids', target: 'sourcemapDebugIds' },
   { kind: 'bool', flag: '--splitting', target: 'splitting' },
   { kind: 'bool', flag: '--no-splitting', target: 'splitting', value: false },
+  // tree shaking / scope hoisting / .map 디스크 쓰기 — 엔진 기본값 true.
+  // string-bool toggle (`--tree-shaking=false`) + 명시적 `--no-*` bool 양쪽 제공
+  // (`--no-splitting` 선례와 동형). `--no-*` 는 opts=false 로 두는데, config 머지
+  // default=true 루프가 `opts===true` 일 때만 동작하므로 config true 가 못 덮는다.
+  { kind: 'bool', flag: '--no-tree-shaking', target: 'treeShaking', value: false },
+  { kind: 'bool', flag: '--no-scope-hoist', target: 'scopeHoist', value: false },
+  { kind: 'bool', flag: '--no-emit-disk-sourcemap', target: 'emitDiskSourcemap', value: false },
   { kind: 'bool', flag: '--analyze', target: 'analyze', extra: { metafile: 'meta.json' } },
   { kind: 'bool', flag: '--flow', target: 'flow' },
   { kind: 'bool', flag: '--experimental-decorators', target: 'experimentalDecorators' },
@@ -167,6 +174,8 @@ export const FLAG_REGISTRY = [
   { kind: 'int', flag: '--port', target: 'port' },
   { kind: 'int', flag: '--log-limit', target: 'logLimit', forms: ['equal'] },
   { kind: 'int', flag: '--line-limit', target: 'lineLimit', forms: ['equal'] },
+  // Rollup output.experimentalMinChunkSize 류 — 작은 common 청크 자동 병합 (bytes).
+  { kind: 'int', flag: '--min-chunk-size', target: 'minChunkSize', forms: ['equal'] },
   // RN CLI 호환 — `--max-workers N` (Metro). zntc `--jobs` 와 의미 동일이므로 alias.
   { kind: 'int', flag: '--max-workers', target: 'jobs', forms: ['equal'] },
 
@@ -177,6 +186,8 @@ export const FLAG_REGISTRY = [
   // ─── kind=array — push (반복 지정) ───
   { kind: 'array', flag: '--external', target: 'external' },
   { kind: 'array', flag: '--drop', target: 'drop', forms: ['equal'] },
+  // 해석 차단 패턴 (Metro resolver.blockList / webpack IgnorePlugin 호환). 반복 지정.
+  { kind: 'array', flag: '--block-list', target: 'blockList', forms: ['equal'] },
   { kind: 'array', flag: '--plugin', target: 'pluginPaths', forms: ['pair'] },
   { kind: 'array', flag: '--runtime-target', target: 'runtimeTargetQueries' },
   // scope hoisting 시 예약할 전역 식별자 (반복 가능). NAPI BuildOptions.globalIdentifiers.
@@ -208,6 +219,10 @@ export const FLAG_REGISTRY = [
   // ─── kind=key-value — `--key:K=V` → opts[target][K]=V ───
   { kind: 'key-value', flag: '--define', target: 'define' },
   { kind: 'key-value', flag: '--alias', target: 'alias' },
+  // Fallback resolution — 해석 실패 시에만 적용 (webpack resolve.fallback /
+  // Metro extraNodeModules 호환). `--fallback:crypto=crypto-browserify`.
+  // 값 "false" → 빈-모듈 강제 + specifier 제약은 normalizeFallback 참조.
+  { kind: 'key-value', flag: '--fallback', target: 'fallback' },
   { kind: 'key-value', flag: '--loader', target: 'loader' },
   { kind: 'key-value', flag: '--global', target: 'globals' },
   // RN CLI 호환 (#2605 audit P0) — Metro `--transform-option key=value` /
@@ -239,9 +254,27 @@ export const FLAG_REGISTRY = [
 
   // ─── kind=string-bool — default=true 의 toggle. `--key=false` → false, 그 외 → true ───
   { kind: 'string-bool', flag: '--sources-content', target: 'sourcesContent' },
+  { kind: 'string-bool', flag: '--tree-shaking', target: 'treeShaking' },
+  { kind: 'string-bool', flag: '--scope-hoist', target: 'scopeHoist' },
+  { kind: 'string-bool', flag: '--emit-disk-sourcemap', target: 'emitDiskSourcemap' },
   { kind: 'string-bool', flag: '--use-define-for-class-fields', target: 'useDefineForClassFields' },
   { kind: 'string-bool', flag: '--tokenize', target: 'tokenize' },
 ];
+
+/**
+ * `--fallback:K=V` 로 수집된 dict 를 BuildOptions.fallback (`Record<string,string|false>`)
+ * 으로 정규화. CLI key-value 는 RHS 를 항상 string 으로 수집하므로 `"false"` 를 boolean
+ * false (빈-모듈 대체) 로 강제한다. config 가 준 실제 boolean false 는 strict `===` 에
+ * 안 걸려 그대로 보존. 빈 dict 는 undefined (NAPI 미전달).
+ *
+ * 한계: 값이 정확히 `"false"` 인 specifier 는 CLI 로 지정 불가 (항상 빈-모듈로 강제됨).
+ * 그 경우는 `zntc.config` 의 `fallback` 을 사용.
+ */
+export function normalizeFallback(fb) {
+  const keys = Object.keys(fb);
+  if (keys.length === 0) return undefined;
+  return Object.fromEntries(keys.map((k) => [k, fb[k] === 'false' ? false : fb[k]]));
+}
 
 /** spec 의 canonical + alias 를 한 array 로. spec.flag (canonical) 항상 첫번째. */
 export const flagsOf = (spec) => [spec.flag, ...(spec.aliases ?? [])];
