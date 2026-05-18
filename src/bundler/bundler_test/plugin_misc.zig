@@ -3988,6 +3988,47 @@ test "react_native inlineRequires: simple parameter default visits ESM value imp
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
 }
 
+test "react_native inlineRequires: minified bare parameter default visits ESM value import" {
+    // `function f(a = IMPORTED_CONST)` — release/minify 에서 bare named import
+    // default initializer 의 symbol_id 가 빠지면 import 원본 이름이 전역 조회로
+    // 남아 RN 런타임에서 ReferenceError 가 난다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import useThrottleEventHandler from './hook';
+        \\globalThis.__zntcBareParamDefaultResult = useThrottleEventHandler();
+    );
+    try writeFile(tmp.dir, "ui.js",
+        \\export const DEFAULT_THROTTLE_MILLISECONDS = 2000;
+    );
+    try writeFile(tmp.dir, "hook.js",
+        \\import { DEFAULT_THROTTLE_MILLISECONDS } from './ui';
+        \\const useThrottleEventHandler = (throttleTime = DEFAULT_THROTTLE_MILLISECONDS) => throttleTime;
+        \\export default useThrottleEventHandler;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .entry_error_guard = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=DEFAULT_THROTTLE_MILLISECONDS") == null);
+}
+
 test "react_native inlineRequires: array pattern default visits ESM value import" {
     // `function f([a = X.y])` — array_pattern element default.
     var tmp = std.testing.tmpDir(.{});
