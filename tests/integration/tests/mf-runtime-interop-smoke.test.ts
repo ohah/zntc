@@ -387,6 +387,93 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(readFileSyncSafe(o2)).toContain('"shareStrategy":"version-first"');
   });
 
+  // #2 PR#2: P3-2 strictVersion 빌드타임 fail-fast 격상. host
+  // strictVersion 선언 + remote 게시 concrete version 이 host
+  // requiredVersion 불만족 → version_warn(비차단) 대신 **빌드 차단**.
+  // 정밀 fail-fast 불변: 판정 불가(remote.version 비-concrete=zntc
+  // P2-0 range)는 strict 여도 ok(거짓 빌드중단 금지).
+  test('#2 strictVersion fail-fast: concrete 비호환+strict→차단; non-strict/판정불가→통과', async () => {
+    const rfx = await createFixture({
+      'Widget.ts': `import { useState } from "react";\nexport default () => typeof useState;`,
+      'index.ts': `export const s = "re";`,
+      // remote singleton:true (host 와 일치 → singleton_conflict 가 version
+      // 검사를 가리지 않게). requiredVersion ^19 → manifest version 대용.
+      'zntc.config.json': JSON.stringify({
+        mf: {
+          name: 'app',
+          exposes: { './Widget': './Widget.ts' },
+          shared: { react: { singleton: true, requiredVersion: '^19' } },
+        },
+      }),
+    });
+    cleanup = rfx.cleanup;
+    const rdist = join(rfx.dir, 'dist');
+    expect(
+      (
+        await runZntcInDir(rfx.dir, [
+          '--bundle',
+          join(rfx.dir, 'index.ts'),
+          '--outdir',
+          rdist,
+          '--format=iife',
+        ])
+      ).exitCode,
+    ).toBe(0);
+    const manifestAbs = join(rdist, 'mf-manifest.json');
+    const sidecarAbs = join(rdist, 'mf-manifest.json.integrity.json');
+    // 외부 빌더 remote 모사: react shared version 을 concrete 로 재작성
+    // (zntc P2-0 는 version=range 라 strict 판정불가 — concrete 필요).
+    // sidecar 제거 → P3-3 무결성 검증 skip(아니면 변조로 먼저 fail).
+    const m = JSON.parse(readFileSync(manifestAbs, 'utf8'));
+    m.shared.find((s: { name: string }) => s.name === 'react').version = '19.2.4';
+    writeFileSync(manifestAbs, JSON.stringify(m));
+    rmSync(sidecarAbs, { force: true });
+
+    const buildHost = async (requiredVersion: string, strictVersion: boolean) => {
+      const hfx = await createFixture({
+        'index.ts': `globalThis.__x = import("app/Widget");`,
+        'zntc.config.json': JSON.stringify({
+          mf: {
+            name: 'host',
+            remotes: { app: `app@${manifestAbs}` },
+            shared: { react: { singleton: true, requiredVersion, strictVersion } },
+          },
+        }),
+      });
+      const r = await runZntcInDir(hfx.dir, [
+        '--bundle',
+        join(hfx.dir, 'index.ts'),
+        '-o',
+        join(hfx.dir, 'host.js'),
+        '--format=iife',
+      ]);
+      await hfx.cleanup();
+      return r;
+    };
+
+    // ① strict + concrete 비호환(^18 ⊅ 19.2.4) → 빌드 fail-fast
+    const bad = await buildHost('^18', true);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain('MF shared strictVersion 위반');
+    // ② non-strict + 동일 비호환 → version_warn(비차단, 빌드 성공)
+    const warn = await buildHost('^18', false);
+    expect(warn.exitCode).toBe(0);
+    expect(warn.stderr).toContain('MF shared 버전 경고');
+    // ③ strict + 호환(^19 ⊇ 19.2.4) → 격상 안 함(빌드 성공)
+    expect((await buildHost('^19', true)).exitCode).toBe(0);
+
+    // ④ 정밀 fail-fast: zntc remote(version=range "^19", sidecar 복원)
+    //    → satisfies 판정불가 → strict 여도 ok(거짓 빌드중단 금지).
+    await runZntcInDir(rfx.dir, [
+      '--bundle',
+      join(rfx.dir, 'index.ts'),
+      '--outdir',
+      rdist,
+      '--format=iife',
+    ]); // 원본 재빌드(version=range, sidecar 재생성)
+    expect((await buildHost('^18', true)).exitCode).toBe(0);
+  });
+
   // P2-1 (#3421): exposes 있는 remote 가 remotes 도 선언 → manifest.remotes
   // = ManifestRemote[](Omit<RemoteWithEntry,'name'> & {federationContainer
   // Name,moduleName,alias}). 표준 generateSnapshotFromManifest 가

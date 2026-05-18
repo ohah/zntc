@@ -228,6 +228,7 @@ const SharedVerdict = enum {
     ok, // 호환(또는 검증 불가 = 정밀 fail-fast 로 통과)
     singleton_conflict, // singleton 불일치 — 결정적, 인스턴스 분열 → fail-fast
     version_warn, // host range 가 remote concrete version 불만족 → 경고(비차단)
+    strict_version_conflict, // ↑ + host strictVersion 선언 → fail-fast 격상
 };
 
 /// host shared 선언 vs remote 가 게시한 shared. singleton 불일치는
@@ -235,12 +236,17 @@ const SharedVerdict = enum {
 /// 버전은 host required_version(range) 가 remote 의 concrete version 을
 /// 만족하나 — semver.satisfies 가 `null`(remote.version 비-concrete:
 /// zntc P2-0 는 version=range 대용 / range 지원밖)이면 **판정 불가 →
-/// ok**(정밀 fail-fast: 거짓 경고 금지). `false` 일 때만 version_warn.
+/// ok**(정밀 fail-fast: 거짓 경고/차단 금지 — strict 여도 불변). 확정
+/// `false`(concrete 판정) 일 때만: host.strict_version → fail-fast
+/// (strict_version_conflict), 아니면 경고(version_warn). strict +
+/// required_version=null 은 강제할 제약 자체가 없음 → ok(no-op 설정,
+/// 위반 아님 — 정밀 fail-fast).
 fn sharedVerdict(host: types.MfBundleConfig.SharedEntry, remote: mf_contract.SharedContract) SharedVerdict {
     if (host.singleton != remote.singleton) return .singleton_conflict;
-    const hr = host.required_version orelse return .ok; // host 무제약 → 버전 검사 없음
+    const hr = host.required_version orelse return .ok; // host 무제약 → 검사 없음
     const sat = semver.satisfies(hr, remote.version) orelse return .ok; // 판정 불가 → 통과
-    return if (sat) .ok else .version_warn;
+    if (sat) return .ok;
+    return if (host.strict_version) .strict_version_conflict else .version_warn;
 }
 
 /// P3-1 (#3436) expose + P3-2 (#3437) shared: 빌드타임 host 계약 검증.
@@ -350,6 +356,13 @@ fn verifyOneRemoteSpec(
                     "zntc: MF shared 버전 경고 — host requiredVersion '{s}' 가 remote \"{s}\" 의 '{s}' 게시버전 '{s}' 을 불만족 (런타임 버전협상 시 폴백 가능; 계약 정렬 권장)",
                     .{ hs.required_version orelse "", kv.key, rs.name, rs.version },
                 ),
+                .strict_version_conflict => {
+                    std.log.err(
+                        "zntc: MF shared strictVersion 위반 — host strictVersion '{s}' 의 requiredVersion '{s}' 가 remote \"{s}\" 의 '{s}' 게시버전 '{s}' 을 불만족 (빌드 차단; strictVersion 은 런타임 폴백 불허 — 버전 정렬 또는 strictVersion 해제 필요)",
+                        .{ hs.name, hs.required_version orelse "", kv.key, rs.name, rs.version },
+                    );
+                    return error.MfSharedStrictVersionMismatch;
+                },
             }
         }
     }
@@ -797,5 +810,26 @@ test "sharedVerdict: singleton 충돌 fail-fast / 버전 경고 / 판정불가 o
     try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
         SE{ .name = "react", .singleton = false, .required_version = null },
         SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = false },
+    ));
+    // PR#2: strictVersion + concrete 비호환 → version_warn 대신 fail-fast 격상
+    try std.testing.expectEqual(SharedVerdict.strict_version_conflict, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = "^18", .strict_version = true },
+        SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = true },
+    ));
+    // strictVersion 이어도 호환이면 ok(격상 안 함)
+    try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = "^19", .strict_version = true },
+        SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = true },
+    ));
+    // strictVersion + 판정 불가(remote.version 비-concrete=zntc P2-0) → ok
+    // (정밀 fail-fast: strict 여도 확정 못 하면 차단 금지 — 거짓 빌드중단 방지)
+    try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = "^18", .strict_version = true },
+        SC{ .name = "react", .version = "^19", .required_version = "^19", .singleton = true },
+    ));
+    // strictVersion + required_version=null → 강제할 제약 없음 → ok(no-op 설정)
+    try std.testing.expectEqual(SharedVerdict.ok, sharedVerdict(
+        SE{ .name = "react", .singleton = true, .required_version = null, .strict_version = true },
+        SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = true },
     ));
 }
