@@ -382,13 +382,18 @@ fn isJsIdent(name: []const u8) bool {
 
 /// graph 에서 expose value(abs) 와 path 가 일치하는 모듈의 federation_id
 /// (graph allocator 소유 — wrap 시점 graph 생존, borrow).
-fn exposeFedId(graph: anytype, abs: []const u8) ?[]const u8 {
+/// expose 소스 abs → {모듈 인덱스, federation_id}. idx 는 #3468 에서
+/// chunk_graph.getModuleChunk → css_hrefs 연결에 필요(단일 스캔).
+fn exposeMatch(graph: anytype, abs: []const u8) ?struct { idx: types.ModuleIndex, fed_id: []const u8 } {
     const count = graph.moduleCount();
     var i: usize = 0;
     while (i < count) : (i += 1) {
         const idx: types.ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
         const m = graph.getModule(idx) orelse continue;
-        if (std.mem.eql(u8, m.path, abs)) return m.federation_id;
+        if (std.mem.eql(u8, m.path, abs)) {
+            if (m.federation_id) |fid| return .{ .idx = idx, .fed_id = fid };
+            return null; // 경계 미표시(P1-1) → fed_id 없음
+        }
     }
     return null;
 }
@@ -442,16 +447,29 @@ fn bootstrapSpan(text: []const u8) ?struct { start: usize, end: usize } {
 /// — wrapContainer 수명 동안 mf/graph/outputs 생존. 슬라이스만 caller free.
 // pub: P3-0 mf_contract.zig 의 emit↔parse 라운드트립 테스트가 스키마
 // 단일 소스 박제를 위해 buildManifest 와 함께 소비(RFC §7.3).
-pub const ExposeInfo = struct { name: []const u8, fed_id: []const u8, chunk_file: []const u8 };
+pub const ExposeInfo = struct {
+    name: []const u8,
+    fed_id: []const u8,
+    chunk_file: []const u8,
+    /// #3468: expose 청크가 소유한 CSS 산출 basename(css_emit.planChunk
+    /// Hrefs[chunk]). null=CSS 없음. manifest assets.css.async 에 게시 →
+    /// 표준 preloadRemote 가 stylesheet 도 prefetch. 기본 null(테스트
+    /// 리터럴·CSS 없는 expose 무회귀 = 기존 빈 [] 유지).
+    css_file: ?[]const u8 = null,
+};
 
-/// exposes → (명, fed_id, lazy 청크 파일) 수집. container.get 맵과
-/// mf-manifest 가 **동일 스캔**을 쓰므로 단일 소스(exposeFedId/
+/// exposes → (명, fed_id, lazy 청크 파일, CSS 파일) 수집. container.get
+/// 맵과 mf-manifest 가 **동일 스캔**을 쓰므로 단일 소스(exposeMatch/
 /// exposeChunkFile 재사용). 미해결 expose 는 warn 후 skip(부분 산출).
+/// #3468: chunk_graph.getModuleChunk(expose 모듈)→css_hrefs[chunk] 로
+/// expose 가 소유한 CSS 산출을 연결(없으면 null → assets.css 빈 [] 유지).
 fn collectExposes(
     allocator: std.mem.Allocator,
     outputs: []const emitter.OutputFile,
     mf: *const types.MfBundleConfig,
     graph: anytype,
+    chunk_graph: anytype,
+    css_hrefs: ?[]const ?[]const u8,
     cwd: ?[]const u8,
 ) ![]ExposeInfo {
     var list: std.ArrayListUnmanaged(ExposeInfo) = .empty;
@@ -459,15 +477,30 @@ fn collectExposes(
     for (mf.exposes) |kv| {
         const abs = federation.resolveAbs(allocator, cwd, kv.value) catch continue;
         defer allocator.free(abs);
-        const fed_id = exposeFedId(graph, abs) orelse {
+        const match = exposeMatch(graph, abs) orelse {
             std.log.warn("[mf] expose '{s}' has no federation_id (P1-1 미표시) — container.get 누락", .{kv.key});
             continue;
         };
-        const file = (try exposeChunkFile(outputs, allocator, fed_id)) orelse {
+        const file = (try exposeChunkFile(outputs, allocator, match.fed_id)) orelse {
             std.log.warn("[mf] expose '{s}' 청크 산출 없음 — container.get 누락", .{kv.key});
             continue;
         };
-        try list.append(allocator, .{ .name = kv.key, .fed_id = fed_id, .chunk_file = file });
+        // #3468: expose 모듈 → 청크 → css_hrefs basename(빌린 slice —
+        // css plan 생존 중 유효, manifest emit 까지). 청크 미할당(.none)·
+        // CSS 없음·plan 없음이면 null → assets.css 빈 [](무회귀).
+        const css_file: ?[]const u8 = blk: {
+            const hrefs = css_hrefs orelse break :blk null;
+            const ci = chunk_graph.getModuleChunk(match.idx);
+            if (ci.isNone()) break :blk null;
+            const cu: usize = @intFromEnum(ci);
+            break :blk if (cu < hrefs.len) hrefs[cu] else null;
+        };
+        try list.append(allocator, .{
+            .name = kv.key,
+            .fed_id = match.fed_id,
+            .chunk_file = file,
+            .css_file = css_file,
+        });
     }
     return list.toOwnedSlice(allocator);
 }
@@ -481,6 +514,12 @@ pub fn wrapContainer(
     outputs: []emitter.OutputFile,
     mf: *const types.MfBundleConfig,
     graph: anytype,
+    /// #3468: expose 모듈→청크 매핑 + 청크별 CSS basename(css_emit.
+    /// planChunkHrefs, wrapContainer 전 계산). expose 의 CSS 산출을
+    /// manifest assets.css.async 에 게시. css_hrefs=null(비-CSS 빌드/
+    /// preserve-modules)이면 기존대로 빈 [](무회귀).
+    chunk_graph: anytype,
+    css_hrefs: ?[]const ?[]const u8,
     public_path: []const u8,
 ) !?[]const u8 {
     if (mf.exposes.len == 0) return null; // host(shared/remotes-only) = container 아님
@@ -489,7 +528,7 @@ pub fn wrapContainer(
     const cwd = federation.cwdRealpath(allocator); // WASI-safe(comptime 분기)
     defer if (cwd) |c| allocator.free(c);
 
-    const exposes = try collectExposes(allocator, outputs, mf, graph, cwd);
+    const exposes = try collectExposes(allocator, outputs, mf, graph, chunk_graph, css_hrefs, cwd);
     defer allocator.free(exposes);
 
     // ── container 객체 문자열 빌드(min-무관 compact, 유효 JS) ──
@@ -705,16 +744,17 @@ pub fn buildManifest(
         // 같은 파일을 로드 → 의존 충족(기능 정합 — 부정확/누락 아님).
         // `js.sync`=[] 는 의도: 분리된 정적-의존 청크가 없고 entry 는
         // metaData.remoteEntry 가 담당. shared.assets=[] 도 의도(seam
-        // 글로벌 로딩 — 표준 runtime 은 이를 preload 소스로 안 쓰고
-        // dedup-제외 set 으로만 읽음, 빈 배열이라 제외 대상 0 = 무해,
-        // P1-4). **CSS assets** 만
-        // 실제 갭(expose 가 CSS import 시 zntc 는 CSS 청크 산출하나
-        // 여기 미기재 → preloadRemote 가 stylesheet prefetch 불가):
-        // css_plan→chunk_index→wrapContainer plumbing 필요한 별도 집중
-        // 단위로 추적(트래커). 그 외는 정확.
+        // 글로벌 로딩 — 표준 runtime 은 preload 소스 아닌 dedup-제외
+        // set 으로만 읽음, 빈 배열=제외 대상 0=무해, P1-4). #3468:
+        // **CSS assets** — expose 청크가 CSS 산출(`css_file`) 보유 시
+        // `css.async`=[그 basename] 게시 → 표준 preloadRemote 가
+        // stylesheet 도 prefetch(JS 와 동일 lazy 의미). CSS 없으면
+        // 기존대로 빈 [](무회귀). sync 는 js 와 동일 사유로 [].
         try b.appendSlice(allocator, ",\"assets\":{\"js\":{\"sync\":[],\"async\":[");
         try appendJsonStr(&b, allocator, ex.chunk_file);
-        try b.appendSlice(allocator, "]},\"css\":{\"sync\":[],\"async\":[]}}}");
+        try b.appendSlice(allocator, "]},\"css\":{\"sync\":[],\"async\":[");
+        if (ex.css_file) |cf| try appendJsonStr(&b, allocator, cf);
+        try b.appendSlice(allocator, "]}}}");
     }
     try b.appendSlice(allocator, "]}");
     return b.toOwnedSlice(allocator);

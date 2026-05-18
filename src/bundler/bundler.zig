@@ -1496,7 +1496,9 @@ pub const Bundler = struct {
             // webpack-style container(init/get, globalName 대입)로 후처리
             // wrap. 게이트는 markBoundary(graph.build 후)와 동일 관례.
             if (self.options.mf) |*mf|
-                mf_manifest = try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, &graph, self.options.public_path);
+                // #3468: chunk_graph + css_hrefs(planChunkHrefs, 위에서
+                // 계산) 전달 → expose CSS 산출을 manifest assets.css 게시.
+                mf_manifest = try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, &graph, &chunk_graph, css_hrefs, self.options.public_path);
 
             // emitChunks 가 href 를 청크 내용으로 복사 완료 → 이제 plan 의
             // path/contents 소유권을 OutputFile 로 이전(plan 컨테이너만 해제).
