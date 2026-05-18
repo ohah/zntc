@@ -378,8 +378,17 @@ function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial
  * 분기와 동등 동작.
  */
 export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
-  const { entry, projectRoot, rnPlatform, dev, sourcemap, minify, dropConsole, dropDebugger, extra } =
-    input;
+  const {
+    entry,
+    projectRoot,
+    rnPlatform,
+    dev,
+    sourcemap,
+    minify,
+    dropConsole,
+    dropDebugger,
+    extra,
+  } = input;
 
   if (extra?.platforms && !extra.platforms.includes(rnPlatform)) {
     throw new Error(

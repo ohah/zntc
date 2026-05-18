@@ -452,9 +452,7 @@ fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyn
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .variable_declaration) continue;
         if (skip.isSet(i)) continue;
-        if (live_nodes) |lives| {
-            if (i >= lives.capacity() or !lives.isSet(i)) continue;
-        }
+        if (!isLiveMinifyNode(live_nodes, @intCast(i))) continue;
         tryRemoveDeadDecl(ast, ctx, @intCast(i), node, changed);
     }
 }
@@ -787,9 +785,7 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
                 if (read_i >= ctx.symbol_ids.len) continue;
                 if ((ctx.symbol_ids[read_i] orelse continue) != sym_id) continue;
                 if (forbidden.isSet(read_i)) continue;
-                if (live_nodes) |lives| {
-                    if (read_i >= lives.capacity() or !lives.isSet(read_i)) continue;
-                }
+                if (!isLiveMinifyNode(live_nodes, @intCast(read_i))) continue;
                 if (sourceSpanStart(read_node) <= decl_start) continue;
                 ast.nodes.items[read_i] = .{
                     .tag = init_node.tag,
@@ -839,9 +835,7 @@ fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyna
 
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .identifier_reference) continue;
-        if (live_nodes) |lives| {
-            if (i >= lives.capacity() or !lives.isSet(i)) continue;
-        }
+        if (!isLiveMinifyNode(live_nodes, @intCast(i))) continue;
         if (i >= ctx.symbol_ids.len) continue;
         const sid = ctx.symbol_ids[i] orelse continue;
         if (sid >= counts.len) continue;
@@ -855,9 +849,7 @@ fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyna
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .variable_declaration) continue;
         if (skip.isSet(i)) continue;
-        if (live_nodes) |lives| {
-            if (i >= lives.capacity() or !lives.isSet(i)) continue;
-        }
+        if (!isLiveMinifyNode(live_nodes, @intCast(i))) continue;
         tryInlineDecl(ast, ctx, counts, first_loc, &stmt_roots, @intCast(i), node, changed);
     }
 }
