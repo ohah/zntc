@@ -912,8 +912,25 @@ pub const TreeShaker = struct {
                 //   (1) entry: 번들 외부 사용자가 접근 가능 — 모든 export live.
                 //   (2) ALL_EXPORTS_SENTINEL 마킹된 모듈: dynamic import target(#1260) 또는 export * 전파 대상.
                 // non-entry·sentinel 없음: followImport만으로 도달해야 가짜 used 확산을 막는다.
-                const is_bfs_seed = self.entry_set.isSet(i) or self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
+                const has_specific_cjs_exports = m.wrap_kind == .cjs and self.hasAnySpecificUsedExport(@intCast(i));
+                const is_bfs_seed = self.entry_set.isSet(i) or
+                    self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL) or
+                    has_specific_cjs_exports;
                 if (is_bfs_seed) {
+                    if (m.wrap_kind == .cjs) {
+                        const has_specific_exports = has_specific_cjs_exports;
+                        if (self.entry_set.isSet(i) or !has_specific_exports) {
+                            try self.seedAllCjsExportFacts(@intCast(i), infos, &queue, reachable_stmts);
+                        } else {
+                            var names = try self.collectDirectUsedExportNames(@intCast(i));
+                            defer names.deinit(self.allocator);
+                            for (names.items) |name| {
+                                try self.seedCjsExportOrAll(@intCast(i), name, &queue, module_stmt_infos, reachable_stmts);
+                            }
+                        }
+                        continue;
+                    }
+
                     const sem = m.semantic orelse continue;
                     if (sem.scope_maps.len == 0) continue;
                     for (m.export_bindings) |eb| {
@@ -1175,17 +1192,19 @@ pub const TreeShaker = struct {
 
         if (target_module_for_import.wrap_kind == .cjs and ib.kind == .default) {
             if (ib.namespace_used_properties) |props| {
-                for (props, 0..) |prop_name, pi| {
-                    if (dispatch_stmt) |ds| gate: {
-                        const prop_stmts = ib.namespace_used_property_stmts orelse break :gate;
-                        if (pi >= prop_stmts.len) break :gate;
-                        if (!containsU32(prop_stmts[pi], ds)) continue;
+                if (props.len > 0) {
+                    for (props, 0..) |prop_name, pi| {
+                        if (dispatch_stmt) |ds| gate: {
+                            const prop_stmts = ib.namespace_used_property_stmts orelse break :gate;
+                            if (pi >= prop_stmts.len) break :gate;
+                            if (!containsU32(prop_stmts[pi], ds)) continue;
+                        }
+                        try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
                     }
-                    try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
+                    return;
                 }
-                return;
             }
-            try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+            try self.seedCjsExportOrAll(@intCast(target), "default", queue, module_stmt_infos, reachable_stmts);
             return;
         }
 
@@ -1545,6 +1564,25 @@ pub const TreeShaker = struct {
         return found;
     }
 
+    fn seedAllCjsExportFacts(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        for (infos.cjs_export_facts) |fact| {
+            if (!fact.is_safe_to_prune and fact.statement_index < infos.stmts.len) {
+                if (reachable_stmts[mod_idx] == null) {
+                    reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+                }
+                try self.enqueue(mod_idx, fact.statement_index, reachable_stmts, queue);
+                continue;
+            }
+            try self.seedCjsExportFact(mod_idx, infos, fact, queue, reachable_stmts);
+        }
+    }
+
     fn seedCjsExportFact(
         self: *TreeShaker,
         mod_idx: u32,
@@ -1566,11 +1604,24 @@ pub const TreeShaker = struct {
             reachable_stmts[mod_idx].?.set(fact.statement_index);
         }
 
-        const rhs_sym = fact.rhs_symbol orelse return;
-        if (infos.declaredStmtBySymbol(rhs_sym)) |dep_stmt| {
+        try self.seedCjsExportFactSymbol(mod_idx, infos, fact.helper_symbol, queue, reachable_stmts);
+        try self.seedCjsExportFactSymbol(mod_idx, infos, fact.target_symbol, queue, reachable_stmts);
+        try self.seedCjsExportFactSymbol(mod_idx, infos, fact.rhs_symbol, queue, reachable_stmts);
+    }
+
+    fn seedCjsExportFactSymbol(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        maybe_sym: ?u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        const sym = maybe_sym orelse return;
+        if (infos.declaredStmtBySymbol(sym)) |dep_stmt| {
             try self.enqueue(mod_idx, dep_stmt, reachable_stmts, queue);
         }
-        for (infos.writerStmts(rhs_sym)) |writer_stmt| {
+        for (infos.writerStmts(sym)) |writer_stmt| {
             try self.enqueue(mod_idx, writer_stmt, reachable_stmts, queue);
         }
     }
@@ -1606,8 +1657,12 @@ pub const TreeShaker = struct {
                     try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
                 } else if (ib.kind == .default) {
                     if (ib.namespace_used_properties) |props| {
-                        for (props) |prop_name| {
-                            try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
+                        if (props.len > 0) {
+                            for (props) |prop_name| {
+                                try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
+                            }
+                        } else {
+                            try self.seedCjsExportOrAll(@intCast(target), "default", queue, module_stmt_infos, reachable_stmts);
                         }
                     } else {
                         try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
@@ -1779,6 +1834,12 @@ pub const TreeShaker = struct {
         try self.markAllExportsUsed(mod_idx);
         self.included.set(mod_idx);
         try self.seedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
+        const module = self.getModule(mod_idx) orelse return;
+        if (module.wrap_kind != .cjs) return;
+        const infos = if (mod_idx < module_stmt_infos.len) module_stmt_infos[mod_idx] else null;
+        if (infos) |target_infos| {
+            try self.seedAllCjsExportFacts(mod_idx, target_infos, queue, reachable_stmts);
+        }
     }
 
     fn seedReExportSourcesForRequireNamespace(
@@ -1803,6 +1864,20 @@ pub const TreeShaker = struct {
             } else {
                 try self.seedExport(src, m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
             }
+        }
+
+        // `require("./facade").name` observes the facade namespace at runtime. If
+        // the facade was generated from `export { name } from "./cjs"`, the
+        // re-export source must stay namespace-live too. Some CJS re-export
+        // facades lower to a getter over `require(source).name`, so keeping only
+        // the facade body can leave the source's `exports.name = ...` assignment
+        // shaken out and make the getter return undefined.
+        for (m.import_records) |rec| {
+            if (rec.kind != .re_export) continue;
+            if (rec.resolved.isNone()) continue;
+            const src = @intFromEnum(rec.resolved);
+            if (self.graph.getModule(rec.resolved) == null) continue;
+            try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
         }
     }
 
@@ -1905,16 +1980,35 @@ pub const TreeShaker = struct {
                 const src_idx = m.import_records[rec_idx].resolved;
                 const src_module = self.graph.getModule(src_idx) orelse continue;
                 const src = @intFromEnum(src_idx);
+                const all_exports_used = self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
                 // 평가 부수효과가 없는 source 는 사용된 export 가 있을 때만 끌어옴.
                 // `export *` 의 named import 는 seedExport 가 canonical source 로 직접 시드하므로,
                 // 전체 namespace 가 사용되지 않는 한 unrelated star source 까지 fan out 하지 않는다.
                 if (check_used and !module_effects.hasEvaluationEffect(src_module)) {
                     const probe_name = if (eb.kind == .re_export_star) ALL_EXPORTS_SENTINEL else eb.exported_name;
-                    if (!self.isExportUsed(@intCast(i), probe_name)) continue;
+                    if (!all_exports_used and !self.isExportUsed(@intCast(i), probe_name)) continue;
                 }
                 if (!self.included.isSet(src)) {
                     self.included.set(src);
                     changed = true;
+                }
+                if (all_exports_used) {
+                    if (src_module.wrap_kind == .cjs and eb.kind == .re_export) {
+                        try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
+                    } else if (src_module.wrap_kind == .cjs or eb.kind.isReExportAll()) {
+                        try self.markAllExportsUsed(@intCast(src));
+                    } else {
+                        try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
+                    }
+                }
+                // A named re-export from CJS is still observed through the CJS
+                // namespace at runtime. If an ESM facade such as
+                // `export { URLSearchParams } from "cjs"` is later read via
+                // `require("./facade").URLSearchParams`, keeping only the
+                // facade getter can leave the source-side
+                // `exports.URLSearchParams = ...` assignment shaken out.
+                if (src_module.wrap_kind == .cjs and eb.kind == .re_export) {
+                    try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
                 }
                 // wrapper-barrel intermediate 보존: chain 끝 canonical 까지의 intermediate
                 // (lodash.default.js) 가 prune phase 에서 hasAnyUsedExport=false 로 unset
@@ -2045,8 +2139,12 @@ pub const TreeShaker = struct {
             if (target_module.wrap_kind == .cjs) {
                 if (ib.kind == .default) {
                     if (ib.namespace_used_properties) |props| {
-                        for (props) |prop_name| {
-                            try self.markExportUsed(@intCast(target_mod), prop_name);
+                        if (props.len > 0) {
+                            for (props) |prop_name| {
+                                try self.markExportUsed(@intCast(target_mod), prop_name);
+                            }
+                        } else {
+                            try self.markExportUsed(@intCast(target_mod), "default");
                         }
                     } else {
                         try self.markAllExportsUsed(@intCast(target_mod));
@@ -2192,6 +2290,20 @@ pub const TreeShaker = struct {
     fn hasAnyUsedExportDirect(self: *const TreeShaker, module_index: u32) bool {
         if (module_index < self.has_direct_used_export.len) {
             return self.has_direct_used_export[module_index];
+        }
+        return false;
+    }
+
+    fn hasAnySpecificUsedExport(self: *const TreeShaker, module_index: u32) bool {
+        var it = self.used_exports.keyIterator();
+        while (it.next()) |key_ptr| {
+            const key = key_ptr.*;
+            if (key.len < 5 or key[4] != 0) continue;
+            var key_module: u32 = undefined;
+            @memcpy(std.mem.asBytes(&key_module), key[0..4]);
+            if (key_module != module_index) continue;
+            const name = key[5..];
+            if (!std.mem.eql(u8, name, ALL_EXPORTS_SENTINEL)) return true;
         }
         return false;
     }
