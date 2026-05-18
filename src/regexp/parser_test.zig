@@ -865,3 +865,71 @@ test "bug3: \\k<name> without named group in non-unicode is identity escape" {
     var p4 = P.init("\\k<y>(?<x>a)", .{});
     try std.testing.expect(p4.validate() != null);
 }
+
+// ============================================================
+// Tests — #3501: named-group/backref 버퍼 동적화
+// (고정 [16]/[32] 가 유효한 17개+ named group / 33개+ backref 정규식을
+//  오거부하던 버그. #1475 PR2 의 #2472(50 named) blocker.)
+// ============================================================
+
+/// `(?<n0>a)(?<n1>a)...(?<n{count-1}>a)` 패턴을 빌드.
+fn buildNamedGroups(alloc: std.mem.Allocator, count: u32, with_last_backref: bool) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(alloc);
+    var i: u32 = 0;
+    while (i < count) : (i += 1) try buf.writer(alloc).print("(?<n{d}>a)", .{i});
+    if (with_last_backref) try buf.writer(alloc).print("\\k<n{d}>", .{count - 1});
+    return buf.toOwnedSlice(alloc);
+}
+
+test "#3501 validate: 17/50/100 distinct named groups accepted" {
+    const a = std.testing.allocator;
+    const P = PatternParser(false);
+    for ([_]u32{ 17, 50, 100 }) |count| {
+        const pat = try buildNamedGroups(a, count, false);
+        defer a.free(pat);
+        var p = P.init(pat, .{});
+        p.ext_alloc = a; // 렉서는 scanner.allocator 를 mod.validate 로 주입
+        try std.testing.expect(p.validate() == null);
+    }
+}
+
+test "#3501 AST: 50 named groups + trailing backref parses (#2472)" {
+    const a = std.testing.allocator;
+    const pat = try buildNamedGroups(a, 50, true);
+    defer a.free(pat);
+    const P = PatternParser(true);
+    var p = P.initWithAllocator(pat, .{}, a);
+    defer p.deinit();
+    var tree = p.parse() orelse return error.ParseFailed;
+    defer tree.deinit();
+    try std.testing.expect(tree.nodeCount() > 50);
+}
+
+test "#3501 correctness: duplicate name past inline cap still errors" {
+    const a = std.testing.allocator;
+    // 20개 그룹, 같은 alternative 에서 이름 `n3` 중복 → 16 초과 후에도 dup 검출 유지.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(a);
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const nm: u32 = if (i == 19) 3 else i; // 마지막을 n3 으로 → n3 중복
+        try buf.writer(a).print("(?<n{d}>a)", .{nm});
+    }
+    const P = PatternParser(false);
+    var p = P.init(buf.items, .{});
+    p.ext_alloc = a;
+    try std.testing.expect(p.validate() != null);
+}
+
+test "#3501 validate: 40 named backrefs accepted (>[32] cap)" {
+    const a = std.testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(a);
+    var i: u32 = 0;
+    while (i < 40) : (i += 1) try buf.writer(a).print("(?<n{d}>a)\\k<n{d}>", .{ i, i });
+    const P = PatternParser(false);
+    var p = P.init(buf.items, .{});
+    p.ext_alloc = a;
+    try std.testing.expect(p.validate() == null);
+}

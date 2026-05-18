@@ -25,9 +25,71 @@ pub const unicode_property = @import("unicode_property.zig");
 /// 렉서의 유니코드 식별자 판별 + UTF-8 디코딩.
 const unicode = @import("../lexer/unicode.zig");
 
+/// inline 우선 small-vector. `inline_cap` 까지는 스택 배열(무할당),
+/// 초과 시 1회 heap 으로 spill 하여 전체를 연속 슬라이스로 유지.
+/// alloc 이 null 인 채 초과하면 `error.TooMany` (무할당 호출자 하위호환:
+/// 종전처럼 거부). #3501: 고정 [16]/[32] 의 유효 정규식 오거부 해소.
+fn SmallVec(comptime T: type, comptime inline_cap: usize) type {
+    return struct {
+        inline_buf: [inline_cap]T = undefined,
+        inline_len: usize = 0,
+        heap: ?std.ArrayList(T) = null, // set 이면 전체 보유
+
+        const SV = @This();
+
+        fn append(self: *SV, alloc: ?std.mem.Allocator, item: T) error{ TooMany, OutOfMemory }!void {
+            if (self.heap) |*list| {
+                try list.append(alloc.?, item);
+                return;
+            }
+            if (self.inline_len < inline_cap) {
+                self.inline_buf[self.inline_len] = item;
+                self.inline_len += 1;
+                return;
+            }
+            const a = alloc orelse return error.TooMany;
+            var list = try std.ArrayList(T).initCapacity(a, inline_cap * 2);
+            errdefer list.deinit(a);
+            list.appendSliceAssumeCapacity(self.inline_buf[0..self.inline_len]);
+            list.appendAssumeCapacity(item);
+            self.heap = list;
+        }
+
+        fn items(self: *const SV) []const T {
+            if (self.heap) |list| return list.items;
+            return self.inline_buf[0..self.inline_len];
+        }
+
+        fn count(self: *const SV) usize {
+            return self.items().len;
+        }
+
+        /// spill heap 해제. inline-only(미spill) 면 no-op. heap 해제 후
+        /// null 로 리셋하므로 이중 호출 안전. (spill 후 inline_len 은 미사용
+        /// — items()/append() 가 heap 우선 분기.)
+        fn deinit(self: *SV, alloc: ?std.mem.Allocator) void {
+            if (self.heap) |*list| {
+                if (alloc) |a| list.deinit(a);
+                self.heap = null;
+                self.inline_len = 0;
+            }
+        }
+    };
+}
+
+/// SmallVec append 에러 → setError 메시지 (두 호출부 공통; 메시지 문자열은
+/// 종전 그대로 보존). comptime kind = "capturing groups" | "back references".
+fn smallVecErrMsg(e: error{ TooMany, OutOfMemory }, comptime kind: []const u8) []const u8 {
+    return switch (e) {
+        error.TooMany => "too many named " ++ kind,
+        error.OutOfMemory => "out of memory parsing named " ++ kind,
+    };
+}
+
 /// 패턴 파서. comptime emit_ast로 검증/AST 모드 분리.
 ///
-/// - emit_ast=false: 검증만 수행, 할당 없음 (현재 렉서에서 사용)
+/// - emit_ast=false: 검증만 수행. ≤16 named group / ≤32 named backref 는
+///   무할당 (렉서 hot path). 초과 시에만 spill 용 allocator 사용 (드묾).
 /// - emit_ast=true: AST를 빌드하여 반환, allocator 필요
 pub fn PatternParser(comptime emit_ast: bool) type {
     return struct {
@@ -55,12 +117,13 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         group_count: u32 = 0,
         /// pre-parse에서 수집한 총 capturing group 수 (forward reference 즉시 검증용).
         total_group_count: u32 = 0,
-        /// named group 목록 (ES2025 중복 검증용).
-        named_groups_buf: [16]NamedGroupEntry = undefined,
-        named_groups_len: u8 = 0,
-        /// named back reference 목록 (파싱 끝에서 존재 검증).
-        named_refs_buf: [32][]const u8 = undefined,
-        named_refs_len: u8 = 0,
+        /// named group 목록 (ES2025 중복 검증용). ≤16 무할당, 초과 시 spill.
+        named_groups: SmallVec(NamedGroupEntry, 16) = .{},
+        /// named back reference 목록 (파싱 끝에서 존재 검증). ≤32 무할당.
+        named_refs: SmallVec([]const u8, 32) = .{},
+        /// small-vec spill 용 allocator. validate 모드는 mod.validate 가,
+        /// AST 모드는 initWithAllocator 가 설정. null 이면 초과 시 종전처럼 거부.
+        ext_alloc: ?std.mem.Allocator = null,
         /// \k가 < 없이 사용되었는지 (named group이 있으면 에러).
         has_bare_k_escape: bool = false,
 
@@ -135,21 +198,32 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 .ast_nodes = nodes,
                 .ast_extra = extra,
                 .allocator = alloc,
+                .ext_alloc = alloc,
             };
         }
 
-        /// AST 모드 리소스 해제.
+        /// AST 모드 리소스 해제. scratch small-vec 도 함께 해제(idempotent).
         pub fn deinit(self: *Self) void {
             if (emit_ast) {
                 self.ast_nodes.deinit(self.allocator);
                 self.ast_extra.deinit(self.allocator);
             }
+            self.deinitScratch();
+        }
+
+        /// named_groups/named_refs spill heap 해제. validate/parse 종료 시
+        /// 호출 (scratch 는 반환 AST 와 무관 — 항상 해제). idempotent.
+        fn deinitScratch(self: *Self) void {
+            self.named_groups.deinit(self.ext_alloc);
+            self.named_refs.deinit(self.ext_alloc);
         }
 
         /// 패턴을 검증한다 (emit_ast=false 전용).
         /// 에러가 있으면 에러 메시지, 없으면 null.
         pub fn validate(self: *Self) ?[]const u8 {
             if (emit_ast) @compileError("use parse() for emit_ast=true");
+            // err_message 는 정적 문자열/ source 슬라이스 — scratch 와 무관, 해제 안전.
+            defer self.deinitScratch();
             self.parseAndFinalize();
             return self.err_message;
         }
@@ -165,6 +239,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         pub fn parse(self: *Self) ?ast.RegExpAst {
             if (!emit_ast) @compileError("use validate() for emit_ast=false");
 
+            // scratch(named_groups/refs)는 반환 AST 와 무관 — 항상 해제.
+            // 반환 AST 의 name 은 source 슬라이스라 영향 없음. (deinit 와 중복 호출 안전)
+            defer self.deinitScratch();
             self.parseAndFinalize();
             if (self.err_message != null) return null;
 
@@ -260,11 +337,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             // named back reference가 정의된 named group을 참조하는지 검증.
             // Annex B: non-unicode mode에서 named group이 하나도 없으면
             // \k<name>은 identity escape로 처리되므로 검증을 건너뛴다.
-            const should_validate_refs = self.flags.hasUnicodeMode() or self.named_groups_len > 0;
+            const should_validate_refs = self.flags.hasUnicodeMode() or self.named_groups.count() > 0;
             if (should_validate_refs) {
-                for (self.named_refs_buf[0..self.named_refs_len]) |ref_name| {
+                for (self.named_refs.items()) |ref_name| {
                     var found = false;
-                    for (self.named_groups_buf[0..self.named_groups_len]) |entry| {
+                    for (self.named_groups.items()) |entry| {
                         if (std.mem.eql(u8, ref_name, entry.name)) {
                             found = true;
                             break;
@@ -278,7 +355,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             // \k without < in pattern that has named groups → error
-            if (self.has_bare_k_escape and self.named_groups_len > 0) {
+            if (self.has_bare_k_escape and self.named_groups.count() > 0) {
                 self.err_message = "invalid named back reference";
                 return;
             }
@@ -953,12 +1030,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         }
                         // 참조 이름을 수집 (파싱 끝에서 존재 검증)
                         const ref_name = self.source[ref_name_start .. self.pos - 1];
-                        if (self.named_refs_len >= self.named_refs_buf.len) {
-                            self.setError("too many named back references");
+                        self.named_refs.append(self.ext_alloc, ref_name) catch |e| {
+                            self.setError(smallVecErrMsg(e, "back references"));
                             return false;
-                        }
-                        self.named_refs_buf[self.named_refs_len] = ref_name;
-                        self.named_refs_len += 1;
+                        };
                         if (emit_ast) {
                             self.last_node = self.addNode(.named_reference, .{
                                 .start = bs_pos,
@@ -1221,7 +1296,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         // ES2025 중복 이름 체크: 같은 alternative면 에러, 다른 alternative면 허용
                         const cur_depth = @min(self.alt_depth, 7);
                         const cur_path = self.alt_indices[0 .. cur_depth + 1];
-                        for (self.named_groups_buf[0..self.named_groups_len]) |existing| {
+                        for (self.named_groups.items()) |existing| {
                             if (std.mem.eql(u8, existing.name, name)) {
                                 const ex_path = existing.alt_path[0 .. existing.alt_depth + 1];
                                 if (!canParticipate(ex_path, cur_path)) {
@@ -1230,11 +1305,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 }
                             }
                         }
-                        if (self.named_groups_len >= self.named_groups_buf.len) {
-                            self.setError("too many named capturing groups");
-                            return false;
-                        }
-                        self.named_groups_buf[self.named_groups_len] = .{
+                        self.named_groups.append(self.ext_alloc, .{
                             .name = name,
                             .alt_path = blk: {
                                 var path: [8]u32 = [_]u32{0} ** 8;
@@ -1243,8 +1314,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 break :blk path;
                             },
                             .alt_depth = cur_depth,
+                        }) catch |e| {
+                            self.setError(smallVecErrMsg(e, "capturing groups"));
+                            return false;
                         };
-                        self.named_groups_len += 1;
                         self.group_count += 1;
 
                         self.parseDisjunction();
