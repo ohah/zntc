@@ -432,7 +432,10 @@ const cases: BrowserSmokeCase[] = [
   {
     name: 'content-type',
     pkg: 'content-type',
-    entry: `import ct from 'content-type';\nconsole.log(ct.parse('text/html').type);`,
+    // content-type 최신판은 __esModule:true + named export(parse/format)만 두고
+    // default export 가 없다. `import ct from` 의 default 는 표준 ESM↔CJS
+    // 인터롭에서 undefined (esbuild 동일) — named import 가 올바른 사용법.
+    entry: `import { parse } from 'content-type';\nconsole.log(parse('text/html').type);`,
     expected: 'text/html',
   },
   {
