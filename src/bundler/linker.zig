@@ -1021,8 +1021,24 @@ pub const Linker = struct {
                         }
                         continue;
                     }
-                    // .alias 는 re-export chain 중간 노드 → 궁극 `.semantic` 도출.
-                    // 미해결/순환/non-semantic 은 외부·shim → skip 안전.
+                    // 일반 named import 도 codegen/metadata 는 resolveExportChain 결과
+                    // (최종 export source)를 직접 참조로 rewrite 할 수 있다. importer 의
+                    // Phase B local 이름이 그 최종 source 의 Phase A mangled 이름을
+                    // 재사용하면 bare scope-hoist 에서 `COLORS.white` → `local.white`
+                    // 같은 silent-broken 이 발생하므로, import record 의 resolved module
+                    // 기준으로 먼저 궁극 `.semantic` source 를 예약한다.
+                    if (ib.import_record_index < m.import_records.len) {
+                        const tgt = m.import_records[ib.import_record_index].resolved;
+                        if (!tgt.isNone()) {
+                            if (self.resolveSemanticExportSource(tgt, ib.imported_name)) |sr| {
+                                try appendSem(self.allocator, &ir_buf, sr);
+                                continue;
+                            }
+                        }
+                    }
+                    // fallback: 미해결/순환/non-semantic 은 외부·shim 이라 mangle 대상이
+                    // 아니지만, populateImportSymbols 가 이미 source-side symbol 을 넣은
+                    // 단순 import 는 기존 경로로 보존한다.
                     const sr: bundler_symbol.SymbolRef = switch (ib.symbol) {
                         .semantic => ib.symbol,
                         .alias => |a| blk: {
