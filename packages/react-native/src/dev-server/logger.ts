@@ -91,13 +91,15 @@ export const ZNTC_ASCII = [
   '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
 ] as const;
 
-export const ZNTC_GRADIENT = [
+// 명시 타입 — `--isolatedDeclarations`(tsconfig.base) 는 exported const 의
+// 비-리터럴 요소(`colors.X` member access) 타입을 추론하지 못함(TS9013).
+export const ZNTC_GRADIENT: readonly string[] = [
   colors.brightYellow,
   colors.brightYellow,
   colors.yellow,
   colors.brightRed,
   colors.brightRed,
-] as const;
+];
 
 // ZNTC_ASCII[i] 는 ZNTC_GRADIENT[i] 로 색칠 — desync 시 undefined 가
 // visibleLen 을 오염시켜 줄 정렬이 깨진다. import 시점 fail-fast.
