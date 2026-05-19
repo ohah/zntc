@@ -314,3 +314,20 @@ if (fails.length > 0) {
   console.log(`\nFAILS:`);
   for (const f of fails) console.log(`  - [${f.status}] ${f.group} / ${f.label}`);
 }
+
+// EXPECTED-FAIL-BUT-OK = 의도된 제약(CodeSplittingRequiresESM 등)이 더 이상
+// 에러로 막히지 않는 케이스. 회귀가 아니라 제약 변경이므로 CI 를 막지 않고
+// 정보성으로만 노출 — 제약을 영구 해제할지는 별도 판단 (이슈 추적).
+// hard fail = 그 외 모든 !ok (UNEXPECTED-FAIL / MISSING / UNEXPECTED-PRESENT
+// / FAIL): 이전에 통과하던 동작이 깨진 진짜 회귀.
+const hardFails = fails.filter((r) => r.status !== "EXPECTED-FAIL-BUT-OK");
+const constraintLifted = fails.filter((r) => r.status === "EXPECTED-FAIL-BUT-OK");
+if (constraintLifted.length > 0) {
+  console.log(`\n::notice::의도 제약 완화 ${constraintLifted.length}건 (회귀 아님, 검토 대상):`);
+  for (const f of constraintLifted) console.log(`  - ${f.group} / ${f.label}`);
+}
+if (hardFails.length > 0) {
+  console.log(`\n❌ 회귀 ${hardFails.length}건 — CI fail`);
+  process.exit(1);
+}
+console.log("\n✅ 회귀 없음");
