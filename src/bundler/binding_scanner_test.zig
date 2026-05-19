@@ -287,6 +287,29 @@ test "barrel re-export with alias: import { foo as bar }; export { bar }" {
     try std.testing.expectEqualStrings("foo", r.export_bindings[0].local_name);
 }
 
+test "barrel re-export: default import then named export" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc,
+        \\import Path from './Path';
+        \\export { Path };
+    );
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    try std.testing.expectEqual(@as(usize, 1), r.import_bindings.len);
+    try std.testing.expectEqualStrings("Path", r.import_bindings[0].local_name);
+    try std.testing.expectEqualStrings("default", r.import_bindings[0].imported_name);
+    try std.testing.expectEqual(ImportBinding.Kind.default, r.import_bindings[0].kind);
+
+    try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
+    try std.testing.expectEqualStrings("Path", r.export_bindings[0].exported_name);
+    try std.testing.expectEqual(ExportBinding.Kind.re_export, r.export_bindings[0].kind);
+    try std.testing.expect(r.export_bindings[0].import_record_index != null);
+    try std.testing.expectEqualStrings("default", r.export_bindings[0].local_name);
+}
+
 test "barrel re-export: namespace import stays local" {
     const alloc = std.testing.allocator;
     var r = try parseAndExtractBindings(alloc,

@@ -588,9 +588,28 @@ pub fn emitEsmWrappedModule(
                             const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
 
                             const local_name = module.exportBindingLocalName(eb);
+                            const exported_local_name = if (module.ast) |*module_ast|
+                                module_ast.getText(eb.local_span)
+                            else
+                                local_name;
                             for (module.import_bindings) |ib| {
                                 if (ib.import_record_index != rec_idx) continue;
-                                if (std.mem.eql(u8, ib.imported_name, local_name)) {
+                                if (std.mem.eql(u8, ib.imported_name, local_name) or
+                                    std.mem.eql(u8, ib.local_name, exported_local_name) or
+                                    (std.mem.eql(u8, local_name, "default") and
+                                        std.mem.eql(u8, ib.local_name, eb.exported_name)))
+                                {
+                                    // `import Path from './Path'; export { Path };`
+                                    // 형태의 alias barrel 은 RN ESM wrap 에서 현재 모듈에
+                                    // 실제 local storage 를 남기지 않는다. Non-CJS source 는
+                                    // source module getter/local 에서 직접 읽어야 한다. CJS
+                                    // default interop 은 현재 모듈 local binding 을 만들기 때문에
+                                    // 기존 경로를 유지해야 한다.
+                                    if (src_mod.wrap_kind != .cjs) {
+                                        const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, ib.imported_name, options)) orelse continue;
+                                        try star_owned.append(allocator, getter_val);
+                                        break :blk getter_val;
+                                    }
                                     break :blk l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
                                 }
                             }
@@ -598,6 +617,33 @@ pub fn emitEsmWrappedModule(
                             const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, local_name, options)) orelse continue;
                             try star_owned.append(allocator, getter_val);
                             break :blk getter_val;
+                        }
+                        // Some default-import alias barrels can remain `.local`
+                        // because the export points at the importer-side semantic
+                        // symbol. In RN ESM wrap the import declaration is still
+                        // removed, so its getter must not return the importer-side
+                        // renamed symbol either.
+                        if (eb.kind == .local) imported_local: {
+                            const l = linker orelse break :imported_local;
+                            const exported_local_name = if (module.ast) |*module_ast|
+                                module_ast.getText(eb.local_span)
+                            else
+                                module.exportBindingLocalName(eb);
+                            for (module.import_bindings) |ib| {
+                                if (!std.mem.eql(u8, ib.local_name, exported_local_name) and
+                                    !std.mem.eql(u8, ib.local_name, eb.exported_name))
+                                    continue;
+                                if (ib.kind == .namespace) break :imported_local;
+                                if (ib.import_record_index >= module.import_records.len) break :imported_local;
+                                const src_idx = module.import_records[ib.import_record_index].resolved;
+                                if (src_idx.isNone() or src_idx == module.index) break :imported_local;
+                                const src_i = @intFromEnum(src_idx);
+                                const src_mod = l.graph.getModule(src_idx) orelse break :imported_local;
+                                if (src_mod.wrap_kind == .cjs) break :imported_local;
+                                const getter_val = (try makeStarGetterValue(allocator, l, src_mod, src_i, ib.imported_name, options)) orelse continue;
+                                try star_owned.append(allocator, getter_val);
+                                break :blk getter_val;
+                            }
                         }
                         if (reExportAliasCanonicalName(eb.symbol, module)) |canon| {
                             break :blk canon;

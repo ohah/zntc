@@ -168,9 +168,10 @@ test "Default: barrel re-export default chain preserves bindings (#1321)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "Shape: () => Shape") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "Path: () => Path") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default\": () => Svg") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Shape: function() { return Shape$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Path: function() { return Path$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_Shape.default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_Path.default") != null);
 }
 
 test "Default: export { X as default } where X is default-import (#1321 edge)" {
