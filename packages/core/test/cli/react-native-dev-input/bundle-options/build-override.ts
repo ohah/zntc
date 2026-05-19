@@ -17,6 +17,23 @@ describe('buildRnBundleOverride — options object 시그니처', () => {
     expect(out?.alias).toEqual({ '~': '/abs/src' });
   });
 
+  test('opts.alias → out.alias (RN CLI --alias 전달)', async () => {
+    const buildRnBundleOverride = await loadBuildRnBundleOverride();
+    const out = buildRnBundleOverride({
+      opts: { alias: { '~': '/cli/src' } },
+    });
+    expect(out?.alias).toEqual({ '~': '/cli/src' });
+  });
+
+  test('alias 병합 우선순위 — CLI opts.alias 가 config.alias 를 덮음', async () => {
+    const buildRnBundleOverride = await loadBuildRnBundleOverride();
+    const out = buildRnBundleOverride({
+      config: { alias: { '~': '/config/src', react: '/config/react' } },
+      opts: { alias: { '~': '/cli/src' } },
+    });
+    expect(out?.alias).toEqual({ '~': '/cli/src', react: '/config/react' });
+  });
+
   test('config.moduleSpecifierMap → out.moduleSpecifierMap', async () => {
     const buildRnBundleOverride = await loadBuildRnBundleOverride();
     const out = buildRnBundleOverride({
