@@ -120,8 +120,3 @@ export function postProcessSourceMap(rawJson: string, pathOpts?: SourcemapPathOp
     return rawJson;
   }
 }
-
-/** @deprecated `postProcessSourceMap(rawJson, opts)` 의 path 옵션 사용. */
-export function applyMapPathOptions(rawJson: string, options: SourcemapPathOptions): string {
-  return postProcessSourceMap(rawJson, options);
-}
