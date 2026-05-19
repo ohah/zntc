@@ -97,6 +97,92 @@ test "CJS: ESM imports named from CJS" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".value") != null);
 }
 
+test "CJS: RN strict order eagerly evaluates named CJS import before importer body" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "setup.js",
+        \\globalThis.order = [];
+        \\globalThis.phase = 'before';
+    );
+    try writeFile(tmp.dir, "lib.cjs",
+        \\globalThis.order.push(globalThis.phase);
+        \\exports.value = 'value';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import './setup.js';
+        \\import { value } from './lib.cjs';
+        \\globalThis.phase = 'after';
+        \\console.log(value + ':' + globalThis.order.join(','));
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .platform = .react_native,
+        .strict_execution_order = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const node_result = std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{ "node", "-e", result.output },
+        .max_output_bytes = 16 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(node_result.stdout);
+    defer std.testing.allocator.free(node_result.stderr);
+
+    switch (node_result.term) {
+        .Exited => |code| if (code != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{node_result.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{node_result.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try std.testing.expectEqualStrings("value:before\n", node_result.stdout);
+}
+
+test "CJS: RN strict order skips named import used only as TS type" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "types.cjs",
+        \\globalThis.typeOnlyImportShouldNotRun = true;
+        \\exports.T = String;
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { T } from './types.cjs';
+        \\export const value: T = 'ok';
+        \\export const App = () => <>{value}</>;
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .strict_execution_order = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_types();") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "typeOnlyImportShouldNotRun") == null);
+}
+
 test "CJS: no runtime helper when no CJS modules" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
