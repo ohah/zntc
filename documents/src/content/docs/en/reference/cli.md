@@ -169,6 +169,7 @@ Full table + behavior: [React Native guide](/zntc/en/guides/react-native/#metro-
 | `--sourcemap-debug-ids`   | Sentry debugId support                                               |
 | `--sources-content=false` | Omit `sourcesContent`                                                |
 | `--source-root=<path>`    | `sourceRoot` field                                                   |
+| `--emit-disk-sourcemap[=false]` / `--no-emit-disk-sourcemap` | Whether to write `.map` to disk in watch mode (default `true`). Turn off to keep maps in memory only (e.g. dev server) |
 
 ## Transform / Replace
 
@@ -255,6 +256,9 @@ use preact by adding just `/** @jsxImportSource preact */` — that file alone u
 | `--run-before-main=<path>`         | Module to execute right before the entry module (repeatable, resolved to absolute path)                                                        |
 | `--public-path=<url>`              | Asset URL prefix                                                                                                                               |
 | `--shim-missing-exports`           | Shim missing exports with `undefined`                                                                                                          |
+| `--tree-shaking[=false]` / `--no-tree-shaking` | Tree shaking (default `true`). Turn off only for debugging / preserving dead code                                                  |
+| `--scope-hoist[=false]` / `--no-scope-hoist`   | Scope hoisting (default `true`). Off keeps per-module wrappers — for output diffing / debugging                                    |
+| `--min-chunk-size=<n>`             | Merge common chunks smaller than n bytes (curbs chunk fragmentation under code splitting)                                                       |
 
 ## Resolve
 
@@ -267,6 +271,9 @@ use preact by adding just `/** @jsxImportSource preact */` — that file alone u
 | `--conditions=<list>`                   | Add package exports conditions from a CSV list (for example `prod,react-native`) |
 | `--node-paths=<list>`                   | Additional bare-specifier lookup paths from a CSV list                           |
 | `--preserve-symlinks`                   | Don't resolve symlinks                                                           |
+| `--fallback:FROM=TO`                    | Map `FROM` → `TO` only when normal resolution fails (`=false` → empty module). Unlike `--alias`, tried after the normal path |
+| `--resolve-symlink-siblings`            | On lookup miss, retry from the source dir realpath (RN/pnpm peer sibling resolution) |
+| `--disable-hierarchical-lookup`         | Disable parent `node_modules` hierarchy lookup (Metro-style single-tree resolution) |
 
 ## Watch / Dev Server
 
@@ -314,6 +321,9 @@ use preact by adding just `/** @jsxImportSource preact */` — that file alone u
 | `--stop-after=<phase>`       | Debug option to stop after a compiler phase (`scan\|parse\|semantic\|transform\|codegen`) |
 | `--test262 <dir>`            | Run the Zig Test262 runner                                                                |
 | `--allow-overwrite`          | Explicitly permit an output path to overwrite an input file. Blocked by default.          |
+| `--no-config`                | Skip `zntc.config.*` discovery/loading — run on CLI flags only (isolate config influence) |
+| `--color` / `--no-color`     | Force/disable colored output (honors the `NO_COLOR` env var)                               |
+| `-v, --version`              | Print version and exit                                                                    |
 | `-h, --help`                 | Show help                                                                                 |
 
 ## Benchmark (`zntc bench`)
