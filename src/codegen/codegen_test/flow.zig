@@ -663,6 +663,33 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: import type with reserved-word local (babel imports/import-type-keyword)" {
+    // import type switch from 'foo' — type-only, local=`switch`(예약어). 통째 strip.
+    var r = try e2eFlowModule(std.testing.allocator, "import type switch from 'foo';\nlet a = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let a=1;", r.output);
+
+    // 회귀 가드: 일반 type-import 불변
+    var r2 = try e2eFlowModule(std.testing.allocator, "import type { T } from 'm';\nlet b = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let b=2;", r2.output);
+
+    var r3 = try e2eFlowModule(std.testing.allocator, "import type T from 'm';\nlet c = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let c=3;", r3.output);
+
+    // 회귀 가드: `import type, { foo }` 는 VALUE import (babel importKind=value,
+    // `type`=default 이름) — strip 안 함, 그대로 보존.
+    var r4 = try e2eFlowModule(std.testing.allocator, "import type, { foo } from \"bar\";\nlet d = 4;");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("import type, {foo} from \"bar\";let d=4;", r4.output);
+
+    // 회귀 가드: `import type from 'm'` 도 VALUE import (`type`=default 이름)
+    var r5 = try e2eFlowModule(std.testing.allocator, "import type from 'm';\nlet e = 5;");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("import type from \"m\";let e=5;", r5.output);
+}
+
 test "Flow: inline interface type extends list (babel interface-types)" {
     // type T = interface extends X, Y { p: string } — multiple extends
     var r = try e2eFlow(std.testing.allocator, "type T = interface extends X, Y { p: string };\nlet a = 1;");
