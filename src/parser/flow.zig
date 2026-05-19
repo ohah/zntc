@@ -2224,7 +2224,22 @@ pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
         base_type = try parseFlowEnumBaseType(self);
     }
 
-    try self.expect(.l_curly);
+    // 무효 enum head — `enum Name [of base]` 뒤는 반드시 `{` (Hermes:
+    // "'{' expected in enum declaration"). `{` 가 없으면 깨진 멤버 AST 를
+    // 만들지 않고(codegen OOB 방지) 진단 기록 후 잔여를 안전 지점까지 strip.
+    if (self.current() != .l_curly) {
+        try self.expect(.l_curly); // rich 진단만 기록 (커서 불변)
+        // `{`/`;`/eof 까지 skip. `{`/`;` 둘 다 없으면(예: `enum A : string\n
+        // let x=1`) 다음 `;` 까지 over-skip — 무효 입력의 허용 가능한 손실
+        // (크래시·무한루프 없음, Hermes 도 동일 위치에서 에러).
+        while (self.current() != .l_curly and self.current() != .semicolon and
+            self.current() != .eof) : (try self.advance())
+        {}
+        if (self.current() == .l_curly) try skipBalancedBraces(self);
+        _ = try self.eat(.semicolon);
+        return NodeIndex.none;
+    }
+    try self.advance(); // consume '{'
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
@@ -2239,7 +2254,8 @@ pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
         }
 
         const member = try parseFlowEnumMember(self);
-        try self.scratch.append(self.allocator, member);
+        // 무효 멤버(키 파싱 실패)는 append 안 함 — 깨진 enum AST 생성 회피.
+        if (!member.isNone()) try self.scratch.append(self.allocator, member);
         if (!try self.eat(.comma) and !try self.eat(.semicolon)) break;
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
@@ -2288,6 +2304,9 @@ fn parseFlowEnumBaseType(self: *Parser) ParseError2!FlowEnumBaseType {
 fn parseFlowEnumMember(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     const name = try self.parsePropertyKey();
+    // parsePropertyKey 는 무효 토큰서 진단+advance 후 `.invalid` 태그 노드를
+    // 반환(.none 아님). 키 없는 멤버는 무효 → 노드 미생성(caller append 스킵).
+    if (self.ast.getNode(name).tag == .invalid) return NodeIndex.none;
 
     var init_val = NodeIndex.none;
     if (try self.eat(.eq)) {
