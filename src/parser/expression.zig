@@ -1056,12 +1056,41 @@ fn trySkipTypeArgsSpeculative(self: *Parser, comptime strict: bool, comptime fol
         break :blk follow(self);
     };
 
+    // Flow: `f<T>( name : Type )` 의 `( name :` 는 parenthesized typecast 으로,
+    // generic-call argument 로는 유효하지 않다(call arg 에 `name:` 불가). 따라서
+    // 이 형태는 generic-call 이 아니라 relational `(f < T) > (name: Type)` 이
+    // 유일 해석(babel 동일: type-generics/async-arrow-like 는 BinaryExpression).
+    // type-args 확정을 취소해 `<`/`>` 가 비교 연산자로 처리되게 한다.
+    if (type_args_ok and self.is_flow and self.current() == .l_paren and
+        flowTypecastParenFollows(self))
+    {
+        checkpoint.rollback(self);
+        return false;
+    }
+
     if (type_args_ok) {
         checkpoint.rollbackKeepScanner(self);
     } else {
         checkpoint.rollback(self);
     }
     return type_args_ok;
+}
+
+/// 현재 `(` 직후가 `<simple> :` (parenthesized Flow typecast) 인지 — 2-token
+/// lookahead. call argument 는 `name:` 로 시작할 수 없으므로, 이 형태면
+/// 선행 `<...>` 는 type-args 가 아니라 비교 연산자다. `advance()` 로 전진하나
+/// SpeculationCheckpoint + `defer rollback` 으로 전 경로 scanner/parser 복원.
+fn flowTypecastParenFollows(self: *Parser) bool {
+    const cp = Parser.SpeculationCheckpoint.save(self);
+    defer cp.rollback(self);
+    self.advance() catch return false; // skip '('
+    // typecast 피연산자 시작: identifier / 비예약 keyword / this / string literal
+    const t = self.current();
+    const operand_ok = t == .identifier or t == .kw_this or t == .string_literal or
+        (t.isKeyword() and !t.isReservedKeyword());
+    if (!operand_ok) return false;
+    self.advance() catch return false; // skip operand
+    return self.current() == .colon; // `( name :` → typecast paren
 }
 
 fn followedByParenOnly(self: *const Parser) bool {
