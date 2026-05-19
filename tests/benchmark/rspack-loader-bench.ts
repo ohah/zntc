@@ -29,6 +29,7 @@ import { performance } from 'node:perf_hooks';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '../..');
 const ZNTC_LOADER = resolve(ROOT, 'packages/rspack-loader/src/index.ts');
+const ZNTC_CORE_DIST = resolve(ROOT, 'packages/core/dist/index.js');
 
 const WARMUP = 2;
 const ITERATIONS = parseArg('iterations', 5);
@@ -126,6 +127,7 @@ async function runRspackOnce(opts: BuildOptions): Promise<{ ms: number; modules:
         resolve: {
           extensions: ['.ts', '.tsx', '.js', '.jsx', '.cjs', '.mjs'],
           modules: opts.modulesPaths,
+          alias: { '@zntc/core': ZNTC_CORE_DIST },
         },
         module: { rules: [opts.rule] },
         cache: false,
