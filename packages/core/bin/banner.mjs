@@ -59,21 +59,20 @@ function bannerLine(content) {
   return `${colors.cyan}    ║${colors.reset}${' '.repeat(left)}${content}${' '.repeat(right)}${colors.cyan}║${colors.reset}`;
 }
 
-// 지구라트 로고 (계단식) — documents 의 zntc-logo.svg / favicon 과 동일 정체성.
-// 6줄 = ZNTC_GRADIENT 6색과 1:1. bannerLine 이 각 줄을 박스 중앙 정렬.
+// 지구라트 로고 — zntc-logo.svg / favicon 과 동일: 단 사이가 띈 적층 바
+// (햄버거식). half-block `▀` 로 한 줄에 바+여백을 담아 절반 높이·컴팩트.
+// ZNTC_GRADIENT 와 index 1:1. bannerLine 이 각 줄을 박스 중앙 정렬.
 export const ZNTC_ASCII = [
-  '██████',
-  '████████████',
-  '██████████████████',
-  '████████████████████████',
-  '██████████████████████████████',
-  '████████████████████████████████████████',
+  '▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
 ];
 
 export const ZNTC_GRADIENT = [
   colors.brightYellow,
   colors.brightYellow,
-  colors.yellow,
   colors.yellow,
   colors.brightRed,
   colors.brightRed,
