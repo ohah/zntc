@@ -630,6 +630,9 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     // ...rest 또는 identifier: → 확정적 named/rest function param
     const is_definite_fn = blk: {
         if (self.current() == .dot3) break :blk true;
+        // Flow `this` 파라미터(`(this: T, …) => R`): `this` 는 binding name 토큰이
+        // 아니라 아래 분기에 안 걸려 parseType(this) 로 오파싱됨 → 함수타입 확정.
+        if (self.current() == .kw_this and (try self.peekNextKind()) == .colon) break :blk true;
         if (self.current().canBeBindingName()) {
             const next = try self.peekNextKind();
             break :blk (next == .colon or next == .question);
@@ -741,6 +744,21 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
         const param_start = self.currentSpan().start;
+
+        // Flow `this` 파라미터: `(this: T, ...) => R`. strip 전용이라 토큰만
+        // 소비 — `this` 는 binding name 토큰이 아니라 아래 canBeBindingName
+        // 분기에 안 걸려 positional parseType(this) 로 빠지면 함수타입 전체가
+        // 오파싱돼 출력이 오염된다 (bare type alias 일 때 표면화).
+        if (self.current() == .kw_this) {
+            try self.advance();
+            if (try self.eat(.colon)) {
+                const this_type = try parseType(self);
+                try self.scratch.append(self.allocator, this_type);
+            }
+            if (!try self.eat(.comma)) break;
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
+            continue;
+        }
 
         // ...rest 파라미터 — name 정보 안 가짐, 단순 strip.
         if (self.current() == .dot3) {
