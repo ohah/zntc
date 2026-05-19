@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC outline monogram">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- 아웃라인 타일 (미니멀 — A 의 경량 변형) -->
+  <rect x="9" y="9" width="110" height="110" rx="26" fill="none" stroke="url(#g)" stroke-width="7"/>
+  <path fill="url(#g)" fill-rule="evenodd"
+        d="M40 40 H88 V54 H40 Z
+           M40 74 H88 V88 H40 Z
+           M88 54 L70 54 L40 74 L58 74 Z"/>
+</svg>

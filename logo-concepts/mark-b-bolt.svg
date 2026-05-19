@@ -6,6 +6,7 @@
       <stop offset="1" stop-color="#ea580c"/>
     </linearGradient>
   </defs>
+  <!-- 단일 꼭짓점 top — 기존의 평평하게 잘린 삼각 꼭지 제거 -->
   <path fill="url(#b)"
-        d="M74 14 L34 70 L58 70 L50 114 L96 54 L70 54 L82 14 Z"/>
+        d="M70 16 L33 72 L55 72 L46 112 L95 56 L69 56 Z"/>
 </svg>

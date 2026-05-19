@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC hex chip">
+  <defs>
+    <linearGradient id="d" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- 육각 칩 (네이티브/실리콘 뉘앙스) -->
+  <path fill="url(#d)" d="M122 64 L93 114 L35 114 L6 64 L35 14 L93 14 Z"/>
+  <!-- Z 음각 (모노그램과 동일 글리프) -->
+  <path fill="#171210" fill-rule="evenodd"
+        d="M40 40 H88 V54 H40 Z
+           M40 74 H88 V88 H40 Z
+           M88 54 L70 54 L40 74 L58 74 Z"/>
+</svg>

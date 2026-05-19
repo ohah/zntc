@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC fast-forward">
+  <defs>
+    <linearGradient id="e" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- 이중 셰브론 »  — 컴파일 fast-forward / 속도 -->
+  <path fill="url(#e)" d="M22 26 L64 64 L22 102 L44 102 L86 64 L44 26 Z"/>
+  <path fill="url(#e)" d="M58 26 L100 64 L58 102 L80 102 L122 64 L80 26 Z"/>
+</svg>
