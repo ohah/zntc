@@ -272,7 +272,10 @@ function parseArgs(argv) {
     jsxFactory: undefined,
     jsxFragment: undefined,
     jsxImportSource: undefined,
-    devMode: undefined,
+    // false default (이전 undefined): BOOL_KEYS 머지 조건 `opts===false &&
+    // config===true` 가 동작하려면 필수 (undefined 면 config.devMode 무시).
+    // 코드의 `if (opts.devMode)` 는 undefined/false 동일 falsy — 동작 무변경.
+    devMode: false,
     flow: false,
     experimentalDecorators: false,
     useDefineForClassFields: true,
@@ -280,6 +283,10 @@ function parseArgs(argv) {
     shimMissingExports: false,
     preserveSymlinks: false,
     resolveSymlinkSiblings: false,
+    // canonical shape — BOOL_KEYS 머지 키. 이전 opts default 누락으로
+    // config.disableHierarchicalLookup 가 silent 무시되던 pre-existing 버그
+    // (깨진 double-quote 가드가 은폐, C4 fix 로 검출).
+    disableHierarchicalLookup: false,
     charsetUtf8: false,
     asciiOnly: false,
     quotes: undefined,
@@ -333,6 +340,14 @@ function parseArgs(argv) {
     conditions: [],
     nodePaths: [],
     profile: [],
+    // canonical opts shape — ARRAY_KEYS 머지 키는 default 에 존재해야
+    // (drift-guard #2112). 미존재 시 lazy 초기화돼 머지 조건이 어긋남.
+    globalIdentifiers: [],
+    polyfills: [],
+    runBeforeMain: [],
+    watchFolders: [],
+    watchInclude: [],
+    watchExclude: [],
     profileLevel: undefined,
     profileFormat: undefined,
     runtimePolyfills: undefined,
@@ -1076,8 +1091,10 @@ async function loadAutoConfig(opts) {
  * - 배열: CLI 가 비어있으면 config 사용
  * - 객체 (define/alias/loader): shallow merge (config defaults + CLI override)
  *
- * FIXME: 키 리스트 4종이 `BuildOptions` 와 수동 동기화. 새 옵션 추가 시 누락 가능.
- *        근본 fix 는 #2112 (Phase 3-5 schema sync) 에서 single source of truth 도입.
+ * 키 5그룹은 손-유지(머지 분류가 FLAG_REGISTRY kind/TS type 어디에도 기계적
+ * 으로 없는 큐레이션 정책이라 순수 파생 불가 — 2회 실측 회귀로 확인). 대신
+ * `zntc-cli-schema-sync.test.ts` 가 drift-guard: config-mergeable BuildOption
+ * flag 가 여기 누락되면 CI 가 loud fail (이전 silent-무시 footgun 해소).
  */
 function mergeConfigIntoOpts(opts, config) {
   if (!config) return opts;
@@ -1159,6 +1176,11 @@ function mergeConfigIntoOpts(opts, config) {
     'allowOverwrite',
     'ignoreAnnotations',
     'jsxSideEffects',
+    // drift-guard 가 검출한 silent-무시 버그 수정 (#2112 잔여): config 값이
+    // 머지 안 되던 실 BuildOption bool.
+    'analyze',
+    'inlineDynamicImports',
+    'devMode',
   ];
   for (const key of BOOL_KEYS) {
     if (opts[key] === false && config[key] === true) {
@@ -1192,9 +1214,21 @@ function mergeConfigIntoOpts(opts, config) {
     'nodePaths',
     'profile',
     'blockList',
+    // drift-guard 검출 silent-무시 버그 수정 (#2112 잔여): 실 BuildOption array.
+    'globalIdentifiers',
+    'polyfills',
+    'runBeforeMain',
+    'watchFolders',
+    'watchInclude',
+    'watchExclude',
   ];
   for (const key of ARRAY_KEYS) {
-    if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
+    // opts[key] 미초기화([]가 아님) 가능 → 방어 (config 만 있으면 채택).
+    if (
+      Array.isArray(config[key]) &&
+      config[key].length > 0 &&
+      (!Array.isArray(opts[key]) || opts[key].length === 0)
+    ) {
       opts[key] = [...config[key]];
     }
   }

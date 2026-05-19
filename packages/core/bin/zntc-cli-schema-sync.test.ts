@@ -83,7 +83,9 @@ function extractMergeKeyLists(source: string): {
     if (idx < 0) throw new Error(`${label} not found`);
     const closeIdx = source.indexOf('];', idx);
     const body = source.slice(idx, closeIdx);
-    return [...body.matchAll(/"([a-zA-Z_][a-zA-Z0-9_]*)"/g)].map((m) => m[1]);
+    // 키 리스트는 single-quote (Prettier). 이전 double-quote 정규식은 0개
+    // 추출 → line-513 가드가 vacuous-pass 하던 latent 버그였음(이번에 fix).
+    return [...body.matchAll(/['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g)].map((m) => m[1]);
   };
   return {
     scalar: extractList('SCALAR_KEYS'),
@@ -521,6 +523,53 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
       throw new Error(
         `[schema drift] SCALAR/BOOL/ARRAY_KEYS 에는 있지만 parseArgs opts default 에 없음: ${missing.join(', ')}\n` +
           `parseArgs 의 opts 객체에 default 추가 (보통 \`undefined\` / \`false\` / \`[]\`).`,
+      );
+    }
+  });
+
+  // ── #2112 잔여: mergeConfigIntoOpts 손-리스트 drift-guard ──────────────
+  // mergeConfigIntoOpts 의 5 그룹(SCALAR/BOOL/default-true/ARRAY/object)은 손-동기
+  // 화라, 새 BuildOptions flag 를 FLAG_REGISTRY 에 추가하고 머지 리스트에 빠뜨리면
+  // config 값이 **silent 무시**된다(이전 FIXME). 순수 파생은 머지 분류가 어느
+  // 단일출처(FLAG_REGISTRY kind / TS type)에도 기계적으로 없는 큐레이션 정책이라
+  // 불가(2회 실측 회귀). → 대신 누락을 **CI 에서 loud fail** 로 전환:
+  // config-mergeable BuildOption(=knownKeys) 인 registry target 은 머지 5그룹에
+  // 있거나 mergeExemptKeys 에 명시 등록돼야 한다(의도적 제외 추적).
+
+  /**
+   * mergeConfigIntoOpts 함수 본문의 모든 quoted 키(= 5 그룹 합집합).
+   * 전제: 함수 본문엔 5 key-list literal 외 quoted 토큰이 없음(에러메시지/
+   * mode 문자열/`config['x']` 추가 금지 — 추가 시 false-positive=silent-무시
+   * 재발). 위반 시 이 가드가 무력화되므로 함수 단순성 유지가 불변식.
+   */
+  function extractHandledMergeKeys(source: string): Set<string> {
+    const m = /function mergeConfigIntoOpts\(opts, config\) \{/.exec(source);
+    if (!m) throw new Error('mergeConfigIntoOpts not found');
+    const body = extractBracedBody(source, m.index + m[0].length, 'mergeConfigIntoOpts');
+    return new Set([...body.matchAll(/'([a-zA-Z_][a-zA-Z0-9_]*)'/g)].map((x) => x[1]));
+  }
+
+  // BuildOption 이나 CLI>config 머지에서 의도적으로 제외하는 키 (사유 주석 필수).
+  // 현재 비어 있음: 누락 9키는 모두 실 버그라 머지 리스트에 추가해 해소함.
+  // server config(host/port 등)는 DevServerOptions(nested `server?:`)라 knownKeys
+  // 에 안 잡혀 이 가드 대상이 아님 — 별도 등록 불필요(이전 inert 항목 제거).
+  const mergeExemptKeys: ReadonlySet<string> = new Set<string>([]);
+
+  test('config-mergeable BuildOption flag 가 mergeConfigIntoOpts 5그룹에 모두 존재 (silent-무시 가드)', () => {
+    const handled = extractHandledMergeKeys(cliSource);
+    const missing: string[] = [];
+    for (const spec of FLAG_REGISTRY as readonly { target: string }[]) {
+      const t = spec.target;
+      if (!knownKeys.has(t)) continue; // BuildOption/TranspileOption 아님 → 머지 무관
+      if (handled.has(t) || mergeExemptKeys.has(t)) continue;
+      missing.push(t);
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `[schema drift] config-mergeable BuildOption flag 인데 mergeConfigIntoOpts 머지 ` +
+          `리스트에 없음 → config 값 silent 무시: ${[...new Set(missing)].join(', ')}\n` +
+          `zntc.mjs mergeConfigIntoOpts 의 알맞은 그룹(SCALAR/BOOL/default-true/ARRAY/object)에 ` +
+          `추가 OR (의도적 제외면) 이 테스트의 mergeExemptKeys 에 사유와 함께 등록.`,
       );
     }
   });
