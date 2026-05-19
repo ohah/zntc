@@ -80,20 +80,20 @@ function bannerLine(content: string): string {
   return `${colors.cyan}    ║${colors.reset}${' '.repeat(left)}${content}${' '.repeat(right)}${colors.cyan}║${colors.reset}`;
 }
 
-// 지구라트 로고 (계단식) — banner.mjs 와 sync 유지 (양쪽 동시 수정).
+// 지구라트 로고 — 단 사이가 띈 적층 바(햄버거식, zntc-logo.svg 와 동일).
+// half-block `▀` 로 한 줄에 바+여백 → 절반 높이·컴팩트. banner.mjs 와
+// sync 유지 (양쪽 동시 수정).
 export const ZNTC_ASCII = [
-  '██████',
-  '████████████',
-  '██████████████████',
-  '████████████████████████',
-  '██████████████████████████████',
-  '████████████████████████████████████████',
+  '▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
 ] as const;
 
 export const ZNTC_GRADIENT = [
   colors.brightYellow,
   colors.brightYellow,
-  colors.yellow,
   colors.yellow,
   colors.brightRed,
   colors.brightRed,
@@ -107,7 +107,7 @@ if (ZNTC_ASCII.length !== ZNTC_GRADIENT.length) {
   );
 }
 
-/** ZNTC RN dev server 시작 banner — 6줄 ASCII 로고 + 그라디언트 + 박스. */
+/** ZNTC RN dev server 시작 banner — ASCII 로고 + 그라디언트 + 박스. */
 export function printZntcRnBanner(version?: string): void {
   const versionText = version ? `v${version}` : '';
   const logoLines = ZNTC_ASCII.map((line, i) =>
