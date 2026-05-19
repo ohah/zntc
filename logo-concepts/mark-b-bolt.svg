@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC bolt">
+  <defs>
+    <linearGradient id="b" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="0.55" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#b)"
+        d="M74 14 L34 70 L58 70 L50 114 L96 54 L70 54 L82 14 Z"/>
+</svg>

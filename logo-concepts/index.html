@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZNTC 로고 시안 비교</title>
+<style>
+  :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #141110; color: #e7e5e4; }
+  header { padding: 28px 32px; border-bottom: 1px solid #2a2422; }
+  header h1 { margin: 0 0 6px; font-size: 20px; }
+  header p { margin: 0; color: #a8a29e; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #2a2422; }
+  @media (max-width: 900px){ .grid { grid-template-columns: 1fr; } }
+  .card { background: #1c1816; padding: 24px; }
+  .card h2 { margin: 0 0 4px; font-size: 16px; color: #f7a41d; }
+  .card .desc { margin: 0 0 18px; font-size: 13px; color: #a8a29e; line-height: 1.5; }
+  .swatches { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .bgblock { padding: 18px; border-radius: 10px; display: flex; gap: 16px; align-items: flex-end; }
+  .dark { background: #0d0a07; }
+  .light { background: #fafaf9; }
+  .sizes { display: flex; gap: 14px; align-items: flex-end; }
+  .sizes figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .sizes figcaption { font-size: 10px; color: #78716c; }
+  .light .sizes figcaption { color: #a8a29e; }
+  .lockup { margin-top: 20px; display: flex; gap: 22px; flex-wrap: wrap; }
+  .wm { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 10px; }
+  .wm.dark { background: #0d0a07; }
+  .wm.light { background: #fafaf9; color: #1c1816; }
+  .wm b { font-size: 22px; font-weight: 800; letter-spacing: .06em; }
+  .wm.dark b { color: #fafaf9; }
+  footer { padding: 24px 32px; border-top: 1px solid #2a2422; color: #a8a29e; font-size: 13px; }
+  code { background: #0d0a07; padding: 2px 6px; border-radius: 4px; color: #fdba74; font-size: 12px; }
+  pre { background: #0d0a07; padding: 14px 16px; border-radius: 8px; overflow:auto; font-size: 12px; color: #d6d3d1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ZNTC 로고 시안 — 보고 고르세요</h1>
+  <p>Zig 오렌지 <code>#f7a41d</code> · 사이트 다크 배경 <code>#0d0a07</code> 기준. 각 시안을 다크/라이트 · 파비콘(16·32)~로고(48·128) · 워드마크 락업으로 표시.</p>
+</header>
+
+<section class="grid">
+  <!-- A -->
+  <div class="card">
+    <h2>① 모노그램 타일 Z</h2>
+    <p class="desc">라운드 사각 타일 + 각진 Z 음각. swc/oxc/esbuild 계열과 어울리는 정석 마크. 16px 파비콘에서 가장 또렷함.</p>
+    <div class="swatches">
+      <div class="bgblock dark"><div class="sizes">
+        <figure><img src="mark-a-monogram.svg" width="16" height="16"><figcaption>16</figcaption></figure>
+        <figure><img src="mark-a-monogram.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+        <figure><img src="mark-a-monogram.svg" width="48" height="48"><figcaption>48</figcaption></figure>
+        <figure><img src="mark-a-monogram.svg" width="96" height="96"><figcaption>96</figcaption></figure>
+      </div></div>
+      <div class="bgblock light"><div class="sizes">
+        <figure><img src="mark-a-monogram.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+        <figure><img src="mark-a-monogram.svg" width="64" height="64"><figcaption>64</figcaption></figure>
+      </div></div>
+    </div>
+    <div class="lockup">
+      <div class="wm dark"><img src="mark-a-monogram.svg" width="30" height="30"><b>ZNTC</b></div>
+      <div class="wm light"><img src="mark-a-monogram.svg" width="30" height="30"><b>ZNTC</b></div>
+    </div>
+  </div>
+
+  <!-- B -->
+  <div class="card">
+    <h2>② 번개 (속도)</h2>
+    <p class="desc">투명 배경 + 오렌지 그라디언트 볼트. Zig 네이티브 속도/컴파일 에너지. 다이나믹하고 고유성 높음. 작은 크기에선 디테일 손실 주의.</p>
+    <div class="swatches">
+      <div class="bgblock dark"><div class="sizes">
+        <figure><img src="mark-b-bolt.svg" width="16" height="16"><figcaption>16</figcaption></figure>
+        <figure><img src="mark-b-bolt.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+        <figure><img src="mark-b-bolt.svg" width="48" height="48"><figcaption>48</figcaption></figure>
+        <figure><img src="mark-b-bolt.svg" width="96" height="96"><figcaption>96</figcaption></figure>
+      </div></div>
+      <div class="bgblock light"><div class="sizes">
+        <figure><img src="mark-b-bolt.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+        <figure><img src="mark-b-bolt.svg" width="64" height="64"><figcaption>64</figcaption></figure>
+      </div></div>
+    </div>
+    <div class="lockup">
+      <div class="wm dark"><img src="mark-b-bolt.svg" width="28" height="28"><b>ZNTC</b></div>
+      <div class="wm light"><img src="mark-b-bolt.svg" width="28" height="28"><b>ZNTC</b></div>
+    </div>
+  </div>
+
+  <!-- C -->
+  <div class="card">
+    <h2>③ 브래킷 [ Z ]</h2>
+    <p class="desc">각진 브래킷 사이 오렌지 Z. 소스→출력 트랜스파일/번들러 의미 직접 은유. (컬리 <code>{ }</code>는 16px에서 깨져 각진 브래킷으로 구현 — 원하면 컬리로 재작업.)</p>
+    <div class="swatches">
+      <div class="bgblock dark"><div class="sizes">
+        <figure><img src="mark-c-brackets.svg" height="16"><figcaption>h16</figcaption></figure>
+        <figure><img src="mark-c-brackets.svg" height="32"><figcaption>h32</figcaption></figure>
+        <figure><img src="mark-c-brackets.svg" height="48"><figcaption>h48</figcaption></figure>
+        <figure><img src="mark-c-brackets.svg" height="80"><figcaption>h80</figcaption></figure>
+      </div></div>
+      <div class="bgblock light"><div class="sizes">
+        <figure><img src="mark-c-brackets.svg" height="32"><figcaption>h32</figcaption></figure>
+        <figure><img src="mark-c-brackets.svg" height="56"><figcaption>h56</figcaption></figure>
+      </div></div>
+    </div>
+    <div class="lockup">
+      <div class="wm dark"><img src="mark-c-brackets.svg" height="26"><b>ZNTC</b></div>
+      <div class="wm light"><img src="mark-c-brackets.svg" height="26"><b>ZNTC</b></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p><b>다음 단계</b> — 고른 번호를 알려주시면: ① <code>documents/public/favicon.svg</code> 교체(라이트/다크 prefers-color-scheme 대응 추가), ② <code>documents/astro.config.mjs</code> Starlight <code>logo</code> 키 배선(아이콘+ZNTC 텍스트). 색·디테일 조정도 가능.</p>
+  <pre>// astro.config.mjs · starlight({ ... })
+starlight({
+  logo: { src: './src/assets/zntc-mark.svg', alt: 'ZNTC' },
+  // replacesTitle: false  // 아이콘 + "ZNTC" 텍스트 병기
+})</pre>
+  <p>이 <code>logo-concepts/</code> 디렉토리는 비교용 스크래치이며 커밋되지 않았습니다 — 선택 후 실제 위치로 이동/정리합니다.</p>
+</footer>
+</body>
+</html>
