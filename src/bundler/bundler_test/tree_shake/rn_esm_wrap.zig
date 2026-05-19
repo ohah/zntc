@@ -47,6 +47,41 @@ test "TreeShaking #2398: RN .esm wrap + sideEffects:false barrel drops unused re
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_FN2_BODY") == null);
 }
 
+test "TreeShaking: RN .esm wrap named barrel use skips unused default re-export assignment" {
+    // lodash-es `lodash.js` 패턴. named export만 쓰는 경우 `export { default } from`
+    // source는 tree-shake로 제외되므로, barrel의 synthetic default 할당도 함께 빠져야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from 'pkg';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\export { default as used } from './used.js';
+        \\export { default } from './lodash.default.js';
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/used.js", "export default function used() { return 'USED_BODY'; }");
+    try writeFile(tmp.dir, "node_modules/pkg/lodash.default.js", "export default function lodash() { return 'UNUSED_DEFAULT_BODY'; }");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json", "{\"name\": \"pkg\", \"main\": \"index.js\", \"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_BODY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFAULT_BODY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "lodash_default") == null);
+}
+
 test "TreeShaking #2398: RN .esm wrap + sideEffects 미명시는 conservative 보존 (회귀 가드)" {
     // RN core 처럼 `package.json sideEffects` 필드 없는 모듈은 본 fix 가
     // 종전 보수 동작 유지. user-declared pure 가 아니면 .esm wrap StmtInfo 빌드도
