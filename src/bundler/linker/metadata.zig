@@ -396,6 +396,11 @@ pub fn buildMetadataForAst(
         cjs_var_cache.deinit();
     }
 
+    // CJS named import는 값 접근을 direct expression으로 유지해도, 정적 import의
+    // 평가 효과는 importer 본문 전에 한 번 발생해야 한다.
+    var cjs_static_init_set = std.AutoHashMap(u32, void).init(self.allocator);
+    defer cjs_static_init_set.deinit();
+
     var ns_var_list: std.ArrayListUnmanaged([]const u8) = .empty;
     // ns_var_list 소유권은 metadata.dev_ns_vars로 이전됨 (정상 경로)
     // 에러 시에만 여기서 해제
@@ -433,6 +438,35 @@ pub fn buildMetadataForAst(
         defer exported_locals.deinit();
         for (m.export_bindings) |eb| {
             if (eb.kind == .local) try exported_locals.put(m.exportBindingLocalName(eb), {});
+        }
+
+        if (self.strict_execution_order and m.wrap_kind == .esm) {
+            // 정적 import의 평가 효과는 모든 importer 본문보다 먼저, 그리고 소스에
+            // 나타난 순서대로 발생해야 한다. RN inlineRequires가 named CJS 값 접근을
+            // lazy expression으로 낮추더라도 factory 평가는 여기서 선행시킨다.
+            for (m.import_records) |rec| {
+                if (rec.kind != .static_import and rec.kind != .side_effect) continue;
+                if (rec.resolved.isNone()) continue;
+                const target_mod = self.graph.getModule(rec.resolved) orelse continue;
+                if (self.tree_shaker_active and !target_mod.is_included) continue;
+
+                const target_idx: u32 = @intCast(@intFromEnum(rec.resolved));
+                switch (target_mod.wrap_kind) {
+                    .none => {},
+                    .cjs => {
+                        if (cjs_static_init_set.contains(target_idx)) continue;
+                        try cjs_static_init_set.put(target_idx, {});
+                        const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, target_idx);
+                        try preamble.write(req_var);
+                        try preamble.write("();\n");
+                    },
+                    .esm => {
+                        if (esm_init_set.contains(target_idx)) continue;
+                        try esm_init_set.put(target_idx, {});
+                        try appendEsmInitCall(self, &preamble, target_mod);
+                    },
+                }
+            }
         }
 
         // import 바인딩 → canonical 이름
@@ -1007,6 +1041,9 @@ pub fn buildMetadataForAst(
             switch (target_mod.wrap_kind) {
                 .none => {},
                 .cjs => {
+                    const target = @intFromEnum(rec.resolved);
+                    if (cjs_static_init_set.contains(@intCast(target))) continue;
+                    try cjs_static_init_set.put(@intCast(target), {});
                     const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(@intFromEnum(rec.resolved)));
                     try preamble.write(req_var);
                     try preamble.write("();\n");

@@ -353,6 +353,12 @@ pub fn emitWithTreeShaking(
     }
 
     std.mem.sort(*const Module, sorted.items, {}, Module.bundleOrderLessThan);
+    var run_before_main_closure: ?std.DynamicBitSet = null;
+    defer if (run_before_main_closure) |*closure| closure.deinit();
+    if (options.run_before_main.len > 0) {
+        const closure = try collectRunBeforeMainClosure(allocator, graph, options.run_before_main);
+        run_before_main_closure = closure;
+    }
 
     // 2. 각 모듈을 변환 + 코드젠
     var output: std.ArrayList(u8) = .empty;
@@ -735,8 +741,8 @@ pub fn emitWithTreeShaking(
     };
 
     const emit_top_level_rbm = options.run_before_main.len > 0;
-    const rbm_insert_after_pos = if (emit_top_level_rbm)
-        findLastRunBeforeMainPosition(sorted.items, options.run_before_main)
+    const rbm_insert_after_pos = if (run_before_main_closure) |*closure|
+        findLastRunBeforeMainPosition(sorted.items, closure)
     else
         null;
     var rbm_calls_emitted = false;
@@ -749,9 +755,11 @@ pub fn emitWithTreeShaking(
 
         const code = results[i].code orelse continue;
 
-        // --run-before-main/runtime-prelude: dependency 본문도 polyfill/setup 이후
-        // 실행되어야 하므로 rbm 모듈 정의가 끝난 직후, 첫 user module 전에 호출한다.
-        // __esm 래핑된 엔트리(RN)는 emitEsmWrappedModule에서 body 안에 삽입.
+        // Metro 는 factory 정의를 먼저 등록하고 append script 에서 runBeforeMainModule 을
+        // require 한다. zntc 는 일부 모듈을 scope-hoist 할 수 있으므로 전역 맨 뒤가 아니라
+        // runBeforeMain dependency closure 의 마지막 정의 직후에 실행한다. 이렇게 하면
+        // InitializeCore 가 RendererProxy 같은 뒤쪽 RN facade 를 당겨도 registry 가 준비되고,
+        // 동시에 user entry body 는 setup 이후 실행된다.
         if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(i, rbm_insert_after_pos)) {
             const before_len = module_output.items.len;
             try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
@@ -1273,6 +1281,33 @@ pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.A
     }
 }
 
+fn collectRunBeforeMainClosure(allocator: std.mem.Allocator, graph: *const ModuleGraph, run_before_main: []const []const u8) !std.DynamicBitSet {
+    var closure = try std.DynamicBitSet.initEmpty(allocator, graph.moduleCount());
+    errdefer closure.deinit();
+    for (run_before_main) |rbm_path| {
+        const rbm = graph.findModuleByPath(rbm_path) orelse continue;
+        try markRunBeforeMainClosure(graph, rbm.index, &closure);
+    }
+    return closure;
+}
+
+fn markRunBeforeMainClosure(graph: *const ModuleGraph, index: ModuleIndex, closure: *std.DynamicBitSet) !void {
+    if (index.isNone()) return;
+    const i = index.toUsize();
+    if (i >= closure.capacity()) return;
+    if (closure.isSet(i)) return;
+    closure.set(i);
+
+    const module = graph.getModule(index) orelse return;
+    for (module.import_records) |rec| {
+        if (rec.resolved.isNone()) continue;
+        switch (rec.kind) {
+            .static_import, .side_effect, .re_export, .require => try markRunBeforeMainClosure(graph, rec.resolved, closure),
+            else => {},
+        }
+    }
+}
+
 /// `out` 의 마지막 statement 가 `var ... ;` 로 끝나고 `next` 가 `var ` 로 시작하면
 /// `;var ` 를 `,` 로 합쳐 single declaration 으로 만든다 — `;` 를 in-place mutate +
 /// `next` 의 `"var "` (4 chars) prefix skip. caller 의 minify path 에서 두 곳 (M5
@@ -1285,19 +1320,20 @@ fn tryMergeVarDeclaration(out: *std.ArrayList(u8), allocator: std.mem.Allocator,
     return true;
 }
 
-fn findLastRunBeforeMainPosition(sorted: []const *const Module, run_before_main: []const []const u8) ?usize {
-    var last: ?usize = null;
-    for (sorted, 0..) |m, i| {
-        if (isRunBeforeMainPath(m.path, run_before_main)) last = i;
-    }
-    return last;
-}
-
 pub fn isRunBeforeMainPath(path: []const u8, run_before_main: []const []const u8) bool {
     for (run_before_main) |rbm_path| {
         if (std.mem.eql(u8, path, rbm_path)) return true;
     }
     return false;
+}
+
+fn findLastRunBeforeMainPosition(sorted: []const *const Module, closure: *const std.DynamicBitSet) ?usize {
+    var last: ?usize = null;
+    for (sorted, 0..) |m, i| {
+        const module_idx = m.index.toUsize();
+        if (module_idx < closure.capacity() and closure.isSet(module_idx)) last = i;
+    }
+    return last;
 }
 
 pub fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
