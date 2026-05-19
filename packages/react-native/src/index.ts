@@ -71,7 +71,6 @@ export {
   logError,
   logInfo,
   logWarn,
-  applyMapPathOptions,
   postProcessSourceMap,
   type SourcemapPathOptions,
   printZntcRnBanner,

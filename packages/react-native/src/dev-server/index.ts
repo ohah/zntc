@@ -56,11 +56,7 @@ export {
   isMapRoute,
 } from './routes/bundle.ts';
 export { handleSymbolicateRequest, isSymbolicateRoute } from './routes/symbolicate.ts';
-export {
-  applyMapPathOptions,
-  postProcessSourceMap,
-  type SourcemapPathOptions,
-} from './sourcemap.ts';
+export { postProcessSourceMap, type SourcemapPathOptions } from './sourcemap.ts';
 export {
   setupTerminalActions,
   type TerminalActionsCallbacks,
