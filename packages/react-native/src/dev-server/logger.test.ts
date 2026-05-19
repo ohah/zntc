@@ -108,7 +108,7 @@ describe('printZntcRnBanner', () => {
     printZntcRnBanner('0.1.0');
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
     // 지구라트 ASCII 로고 (최하단 base 타일) + 슬로건 + version.
-    expect(out).toContain('██████████████████████████████████████');
+    expect(out).toContain(RN_ASCII.at(-1)!);
     expect(out).toContain('Lightning Fast React Native Bundler');
     expect(out).toContain('v0.1.0');
   });
@@ -116,7 +116,7 @@ describe('printZntcRnBanner', () => {
   test('version 없음 → version 영역 비움', () => {
     printZntcRnBanner();
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    expect(out).toContain('██████████████████████████████████████');
+    expect(out).toContain(RN_ASCII.at(-1)!);
     expect(out).not.toMatch(/v\d/);
   });
 

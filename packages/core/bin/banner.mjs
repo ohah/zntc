@@ -10,9 +10,10 @@ const colors = {
   blue: '\x1b[34m',
   magenta: '\x1b[35m',
   cyan: '\x1b[36m',
-  // ZNTC 브랜드 오렌지 (256-color; 미지원 터미널은 근사색으로 degrade)
-  amber: '\x1b[38;5;214m',
-  orange: '\x1b[38;5;208m',
+  // 16-color 엔 진짜 amber/orange 가 없어 bright-yellow→yellow→bright-red 로
+  // warm 근사. 256-color 는 미지원 터미널서 무색으로 떨어져 보편 16-color 사용.
+  brightYellow: '\x1b[93m',
+  brightRed: '\x1b[91m',
 };
 
 /**
@@ -61,21 +62,21 @@ function bannerLine(content) {
 // 지구라트 로고 (계단식) — documents 의 zntc-logo.svg / favicon 과 동일 정체성.
 // 6줄 = ZNTC_GRADIENT 6색과 1:1. bannerLine 이 각 줄을 박스 중앙 정렬.
 export const ZNTC_ASCII = [
-  '████████',
-  '██████████████',
-  '████████████████████',
-  '██████████████████████████',
-  '████████████████████████████████',
-  '██████████████████████████████████████',
+  '██████',
+  '████████████',
+  '██████████████████',
+  '████████████████████████',
+  '██████████████████████████████',
+  '████████████████████████████████████████',
 ];
 
 export const ZNTC_GRADIENT = [
-  colors.amber,
-  colors.amber,
-  colors.amber,
-  colors.orange,
-  colors.orange,
-  colors.orange,
+  colors.brightYellow,
+  colors.brightYellow,
+  colors.yellow,
+  colors.yellow,
+  colors.brightRed,
+  colors.brightRed,
 ];
 
 // ZNTC_ASCII[i] 는 ZNTC_GRADIENT[i] 로 색칠 — desync 시 undefined 가
