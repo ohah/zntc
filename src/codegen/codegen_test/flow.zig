@@ -522,6 +522,33 @@ test "Flow: type alias with generic stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: const + variance type parameter (Hermes function-typeparams.js)" {
+    // const +T (const → variance 순서) — Hermes function-typeparams.js:141
+    var r = try e2eFlow(std.testing.allocator, "(function<const +T>(): void {});");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("(function(){});", r.output);
+
+    // const -T (contravariant)
+    var r2 = try e2eFlow(std.testing.allocator, "(function<const -T>(): void {});");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("(function(){});", r2.output);
+
+    // 함수 선언 + class 의 const +T
+    var r3 = try e2eFlow(std.testing.allocator, "function f<const +T>(): void {}\nclass C<const -U> {}");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("function f(){}class C{}", r3.output);
+
+    // const +T: bound (constraint 동반)
+    var r4 = try e2eFlow(std.testing.allocator, "function g<const +T: string>(): void {}");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("function g(){}", r4.output);
+
+    // 회귀 가드: const T (variance 無) / +T (const 無) 기존 동작 불변
+    var r5 = try e2eFlow(std.testing.allocator, "(function<const T>(): void {});\n(function<+U>(): void {});");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("(function(){});(function(){});", r5.output);
+}
+
 test "Flow: opaque type stripped" {
     var r = try e2eFlow(std.testing.allocator, "opaque type ID = string;\nlet x = 1;");
     defer r.deinit();
