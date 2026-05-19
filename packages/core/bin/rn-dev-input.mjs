@@ -136,8 +136,13 @@ function assignRnBuildOptionOverrides(out, config, opts = {}) {
 export function buildRnBundleOverride({ config, opts = {}, override } = {}) {
   const cfg = config ?? {};
   const out = {};
-  if (cfg.alias && typeof cfg.alias === 'object') {
-    out.alias = cfg.alias;
+  if (
+    (cfg.alias && typeof cfg.alias === 'object') ||
+    (opts.alias && typeof opts.alias === 'object')
+  ) {
+    // RN 경로에서도 일반 zntc `--alias`/config.alias 를 동일하게 적용한다.
+    // Babel module-resolver 를 제외한 프로젝트가 alias 를 native resolver 로 옮길 때 필요하다.
+    out.alias = { ...(cfg.alias ?? {}), ...(opts.alias ?? {}) };
   }
   if (cfg.moduleSpecifierMap && typeof cfg.moduleSpecifierMap === 'object') {
     out.moduleSpecifierMap = cfg.moduleSpecifierMap;
