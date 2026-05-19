@@ -382,6 +382,21 @@ pub const Kind = enum(u8) {
         return self == .identifier or (self.isKeyword() and !self.isReservedKeyword());
     }
 
+    /// class/interface 선언 이름(BindingIdentifier) 자리에 올 수 있는 토큰인지
+    /// — babel `@babel/parser` flow 와 동일: `.identifier`, 비-strict-reserved
+    /// contextual keyword(`of`/`async`/`from`/`type` 등), 그리고 Flow 가
+    /// contextually 허용하는 `interface`(`class interface {}`/`interface of {}`
+    /// non-throws). strict-reserved(`let`/`static`/`implements`/`yield`/
+    /// `package`/`private`/`protected`/`public`)는 제외 — strict 인 class/
+    /// interface 이름으로 무효(babel 도 거부). yield/await 는 generator/async/
+    /// module context 규칙이 있어 caller 가 별도 처리.
+    pub fn canBeFlowDeclName(self: Kind) bool {
+        if (self == .kw_interface) return true;
+        return (self == .identifier or
+            (self.canBeBindingName() and !self.isStrictModeReserved())) and
+            self != .kw_yield and self != .kw_await;
+    }
+
     /// 숫자 리터럴인지 (decimal..hex_bigint)
     pub fn isNumericLiteral(self: Kind) bool {
         return self.inRange(.decimal, .hex_bigint);

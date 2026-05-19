@@ -369,13 +369,16 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
     const saved_strict_mode = self.is_strict_mode;
     self.is_strict_mode = true;
 
-    // 클래스 이름 (선언은 필수, 표현식은 선택)
-    // kw_yield/kw_await는 컨텍스트에 따라 식별자로 사용 가능
+    // 클래스 이름 (선언은 필수, 표현식은 선택). kw_yield/kw_await 는 context 별
+    // 식별자 가능(자체 절). canBeFlowDeclName: 비-strict-reserved contextual
+    // keyword + Flow-lenient `interface`/`of` 수용, strict-reserved(let/static/
+    // implements 등)는 제외 — main 의 거부 동작 보존.
     var name = NodeIndex.none;
     if (self.current() == .identifier or
         (self.current() == .kw_yield and !self.ctx.in_generator) or
         (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.in_namespace)) or
-        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
+        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved or
+        self.current().canBeFlowDeclName())
     {
         name = try self.parseBindingIdentifier();
     }

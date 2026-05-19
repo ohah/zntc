@@ -288,11 +288,13 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
             break :blk parseExpressionOrLabeledStatement(self);
         },
         .kw_interface => blk_iface: {
-            // interface\nFoo {} → 'interface' expression statement + 'Foo' + '{}' (ASI)
-            // interface Foo {} → TS interface declaration
-            // esbuild: !p.lexer.HasNewlineBefore
+            // interface Foo {} / interface of<T> {} → interface declaration.
+            // 그 외 — `interface ? a : b`, `interface.foo`, newline(ASI) — 는
+            // `interface` 식별자 표현식(babel: contextual keyword). class 이름과
+            // 동일 predicate(canBeFlowDeclName) 로 대칭 — next 가 선언 이름일
+            // 때만 선언(babel `issue-10675-interface` `interface of<T>{}` 유효).
             const next_iface = try self.peekNext();
-            if (next_iface.has_newline_before) {
+            if (next_iface.has_newline_before or !next_iface.kind.canBeFlowDeclName()) {
                 break :blk_iface parseExpressionOrLabeledStatement(self);
             }
             if (self.is_flow) {
