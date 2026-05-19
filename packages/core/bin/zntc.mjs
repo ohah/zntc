@@ -272,10 +272,9 @@ function parseArgs(argv) {
     jsxFactory: undefined,
     jsxFragment: undefined,
     jsxImportSource: undefined,
-    // false default (이전 undefined): BOOL_KEYS 머지 조건 `opts===false &&
-    // config===true` 가 동작하려면 필수 (undefined 면 config.devMode 무시).
-    // 코드의 `if (opts.devMode)` 는 undefined/false 동일 falsy — 동작 무변경.
-    devMode: false,
+    // undefined 기본값이어야 RN dev server 의 자체 default(true)를 막지 않는다.
+    // `--dev` / config.devMode=true 만 명시 opt-in 으로 BuildOptions devMode에 전달.
+    devMode: undefined,
     flow: false,
     experimentalDecorators: false,
     useDefineForClassFields: true,
@@ -1148,8 +1147,8 @@ function mergeConfigIntoOpts(opts, config) {
     }
   }
 
-  // boolean default=false → config 가 true 면 적용. CLI 명시 false 를 구분 못 하므로
-  // 함수형 config (#2103) 에서 정밀한 우선순위 적용 예정.
+  // boolean default=false/undefined → config 가 true 면 적용. CLI 명시 false 를
+  // 구분 못 하므로 함수형 config (#2103) 에서 정밀한 우선순위 적용 예정.
   const BOOL_KEYS = [
     'minify',
     'minifyWhitespace',
@@ -1183,7 +1182,7 @@ function mergeConfigIntoOpts(opts, config) {
     'devMode',
   ];
   for (const key of BOOL_KEYS) {
-    if (opts[key] === false && config[key] === true) {
+    if ((opts[key] === false || opts[key] === undefined) && config[key] === true) {
       opts[key] = true;
     }
   }

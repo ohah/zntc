@@ -25,6 +25,12 @@ describe('buildRnDevServerInput — runtime bundle option config 추출 (#2605)'
     const defaultInput = buildRnDevServerInput({ entryPoints: ['i.js'] }, {});
     expect(defaultInput?.bundle.dev).toBe(true);
 
+    const cliDefaultShape = buildRnDevServerInput(
+      { entryPoints: ['i.js'], devMode: undefined },
+      {},
+    );
+    expect(cliDefaultShape?.bundle.dev).toBe(true);
+
     const configOff = buildRnDevServerInput({ entryPoints: ['i.js'] }, { dev: false });
     expect(configOff?.bundle.dev).toBe(false);
 
