@@ -271,6 +271,22 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
+    // renders T / renders? T / renders* T — Flow component-syntax 렌더 타입 연산자.
+    // 피연산자는 prefix precedence → `renders (B|C) | null` 은 renders 가 (B|C) 에
+    // 결합되고 `| null` 은 union 으로 wrap (Hermes parsePrefixTypeAnnotationFlow).
+    // 피연산자 없는 bare `renders` 는 일반 type reference 이므로 연산자 아님.
+    if (self.current() == .identifier and self.isContextual("renders") and
+        try rendersHasOperand(self))
+    {
+        _ = try eatRendersOperator(self);
+        _ = try parsePrefixType(self);
+        return try self.ast.addNode(.{
+            .tag = .flow_literal_type,
+            .span = span,
+            .data = .{ .none = 0 },
+        });
+    }
+
     // infer T — conditional type의 타입 추론 변수
     if (self.current() == .identifier and self.isContextual("infer")) {
         try self.advance(); // skip 'infer'
@@ -1263,12 +1279,33 @@ fn skipBalancedBraces(self: *Parser) !void {
     return skipBalanced(self, .l_curly, .r_curly);
 }
 
-/// `renders Type` / `renders? Type` / `renders* Type` 절이 있으면 소비.
+/// `renders` / `renders?` / `renders*` 연산자 토큰을 소비. 소비 시 true.
+/// 피연산자 타입은 caller 가 자신의 precedence 로 파싱 — trailing(return-position)
+/// 은 parseType, prefix type-operator 위치는 parsePrefixType (Hermes
+/// parseRenderTypeOperator 와 동일한 토큰/피연산자 분리).
+fn eatRendersOperator(self: *Parser) ParseError2!bool {
+    if (self.current() != .identifier or !self.isContextual("renders")) return false;
+    try self.advance(); // skip 'renders'
+    _ = try self.eat(.question);
+    _ = try self.eat(.star);
+    return true;
+}
+
+/// `renders` 다음 토큰이 타입 피연산자를 시작하는지 — terminator 면 피연산자
+/// 없음(= `renders` 라는 이름의 일반 type reference) 이므로 연산자 아님.
+fn rendersHasOperand(self: *Parser) ParseError2!bool {
+    return switch (try self.peekNextKind()) {
+        // `.r_angle`/`.shift_right`/`.shift_right3` — `Array<renders>` 등 generic
+        // type-arg 의 단독 `renders` (닫는 `>`/`>>`/`>>>`) 도 피연산자 없음.
+        .semicolon, .comma, .r_paren, .r_curly, .r_bracket, .eq, .pipe, .amp, .colon, .arrow, .eof, .r_angle, .shift_right, .shift_right3 => false,
+        else => true,
+    };
+}
+
+/// `renders Type` / `renders? Type` / `renders* Type` 절이 있으면 소비
+/// (trailing return-position — 피연산자는 parseType precedence).
 fn trySkipRendersClause(self: *Parser) !void {
-    if (self.current() == .identifier and self.isContextual("renders")) {
-        try self.advance();
-        _ = try self.eat(.question);
-        _ = try self.eat(.star);
+    if (try eatRendersOperator(self)) {
         _ = try parseType(self);
     }
 }
