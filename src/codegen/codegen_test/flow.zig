@@ -800,6 +800,27 @@ test "Flow enum: of boolean → callable" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Off:false") != null);
 }
 
+test "Flow enum: of bigint → callable with bigint values (Hermes enum.js)" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Big of bigint { Low = 1n, High = 10n }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Big=require(\"flow-enums-runtime\")({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Low:1n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "High:10n") != null);
+    // bigint 가 멤버명으로 오파싱되어 누출되지 않아야 함 (RED 회귀 가드)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "bigint:") == null);
+}
+
+test "Flow enum: of bigint empty body → callable (Hermes `enum E of bigint {}`)" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum E of bigint {}
+        \\let x = 1;
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const E=require(\"flow-enums-runtime\")({});let x=1;", r.output);
+}
+
 test "Flow enum: usage — member access / cast helper 호출 정합" {
     // `flow-enums-runtime` callable 결과는 RN core 의 `X.cast(value)` 호출 호환.
     // 본 테스트는 codegen 단계만 — 실제 cast 호출 동작은 flow-enums-runtime 의 책임.
