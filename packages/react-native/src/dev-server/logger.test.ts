@@ -8,7 +8,14 @@ import {
   logInfo,
   logWarn,
   printZntcRnBanner,
+  ZNTC_ASCII as RN_ASCII,
+  ZNTC_GRADIENT as RN_GRADIENT,
 } from './logger.ts';
+// banner.mjs(@zntc/core) 와 ASCII/GRADIENT 는 수동 sync 계약 — drift 자동 차단.
+import {
+  ZNTC_ASCII as CORE_ASCII,
+  ZNTC_GRADIENT as CORE_GRADIENT,
+} from '../../../core/bin/banner.mjs';
 
 let logSpy: ReturnType<typeof mock>;
 let warnSpy: ReturnType<typeof mock>;
@@ -100,8 +107,8 @@ describe('printZntcRnBanner', () => {
   test('version 지정 시 banner 에 포함', () => {
     printZntcRnBanner('0.1.0');
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    // ZNTC ASCII 로고 (Z 글리프 첫 줄) + 슬로건 + version.
-    expect(out).toContain('███████╗███╗');
+    // 지구라트 ASCII 로고 (최하단 base 타일) + 슬로건 + version.
+    expect(out).toContain('██████████████████████████████████████');
     expect(out).toContain('Lightning Fast React Native Bundler');
     expect(out).toContain('v0.1.0');
   });
@@ -109,7 +116,7 @@ describe('printZntcRnBanner', () => {
   test('version 없음 → version 영역 비움', () => {
     printZntcRnBanner();
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    expect(out).toContain('███████╗███╗');
+    expect(out).toContain('██████████████████████████████████████');
     expect(out).not.toMatch(/v\d/);
   });
 
@@ -156,5 +163,19 @@ describe('formatLogBadge — RN client console.log forwarding (#2605 audit P2)',
   test('level uppercase 적용', () => {
     expect(formatLogBadge('error')).toContain(' ERROR ');
     expect(formatLogBadge('Warn')).toContain(' WARN ');
+  });
+});
+
+describe('banner ↔ @zntc/core 동기화 (수동 sync 계약 자동 차단)', () => {
+  test('ZNTC_ASCII 가 banner.mjs 와 byte-identical', () => {
+    expect([...RN_ASCII]).toEqual([...CORE_ASCII]);
+  });
+
+  test('ZNTC_GRADIENT 가 banner.mjs 와 동일', () => {
+    expect([...RN_GRADIENT]).toEqual([...CORE_GRADIENT]);
+  });
+
+  test('ASCII ↔ GRADIENT 길이 1:1', () => {
+    expect(RN_ASCII.length).toBe(RN_GRADIENT.length);
   });
 });
