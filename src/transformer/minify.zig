@@ -362,7 +362,7 @@ fn runOnce(
         // 잔존 (e.g. `const kn="["; const out=\`<!--${kn}-->\`;` → `const e="["` 잔존).
         inlineSingleUse(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
         inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &changed, scratch);
-        removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);
+        removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
     }
     return changed;
 }
@@ -446,14 +446,35 @@ fn markReachableNodes(ast: *const Ast, root: NodeIndex, live: *std.DynamicBitSet
 /// orphan (transformer 가 visit 중 복제하고 root 에서 연결 안 한 원본) 을 건드리면
 /// `decrementRefsInExpr` 가 공유 symbol table 의 refcount 를 중복 감산해 live 선언이
 /// 잘못 dead 판정된다.
-fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, changed: *bool) void {
+fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, changed: *bool, scratch: std.mem.Allocator) void {
     const skip = skip_for_binding orelse return;
+
+    // inline 패스가 rewrite 하지 않는 shorthand object property key(=value) 위치에
+    // 라이브 ref 를 가진 symbol 집합 (#3559). 이 symbol 들은 effectiveRefCount 가 0 으로
+    // 보여도 — ref_deltas 누적과 base count 불일치로 — 실제로는 emit 되는 ref 가 살아
+    // 있으므로 dead 제거에서 보호한다. 패스당 1회 O(n) 선계산 (per-decl O(n²) 회피).
+    var shorthand_ref_syms = std.DynamicBitSet.initEmpty(scratch, ctx.symbols.len) catch {
+        // OOM: 보수적으로 dead-store pass 자체를 skip (잘못된 제거보다 안전).
+        return;
+    };
+    defer shorthand_ref_syms.deinit();
+    for (ast.nodes.items) |node| {
+        if (node.tag != .object_property) continue;
+        if (!node.data.binary.right.isNone()) continue; // shorthand 만
+        const key_ni = @intFromEnum(node.data.binary.left);
+        if (key_ni >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[key_ni].tag != .identifier_reference) continue;
+        if (!isLiveMinifyNode(live_nodes, @intCast(key_ni))) continue;
+        if (key_ni >= ctx.symbol_ids.len) continue;
+        const sid = ctx.symbol_ids[key_ni] orelse continue;
+        if (sid < shorthand_ref_syms.capacity()) shorthand_ref_syms.set(sid);
+    }
 
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .variable_declaration) continue;
         if (skip.isSet(i)) continue;
         if (!isLiveMinifyNode(live_nodes, @intCast(i))) continue;
-        tryRemoveDeadDecl(ast, ctx, @intCast(i), node, changed);
+        tryRemoveDeadDecl(ast, ctx, @intCast(i), node, changed, &shorthand_ref_syms);
     }
 }
 
@@ -488,7 +509,7 @@ fn markForLoopBindings(ast: *const Ast, skip: *std.DynamicBitSet) void {
     }
 }
 
-fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
+fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool, shorthand_ref_syms: *const std.DynamicBitSet) void {
     const kind = ast.variableDeclarationKind(node);
     // `using` / `await using`: Symbol.dispose 호출 side-effect → 보존
     if (kind.isUsing()) return;
@@ -557,6 +578,21 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     // reference 가 있거나 다른 곳에서 쓰이면 dead 아님.
     // ref_deltas 가 이번 emit 에서 감산된 양을 반영.
     if (ctx.effectiveRefCount(sym_id) != 0 or sym.write_count != 0) return;
+
+    // shorthand object property `{ x }` 의 key(=value) 위치 identifier_reference 는
+    // inline 패스가 의도적으로 rewrite 하지 않는다 (markForbiddenInlineSites — replace
+    // 하면 `{[1,2,3]}` 같은 잘못된 구문). 그 ref 는 emit 에 그대로 살아남는데,
+    // effectiveRefCount 는 base reference_count − ref_deltas 누적이라
+    // inlineTopLevelPrimitiveConstants 가 다른(비-forbidden) ref 를 인라인하며 delta 를
+    // 올리면 base 와 어긋나 0 으로 포화될 수 있다 (#3559). 그 상태로 선언을 제거하면
+    // 살아있는 shorthand-key ref 가 dangling → `ReferenceError`.
+    //
+    // effectiveRefCount==0 은 어디까지나 휴리스틱이고, "실제로 살아있는 ref 가 있는가"
+    // 가 권위 기준이다. inline 이 손대지 않는 forbidden(shorthand-key) ref 가 라이브로
+    // 남아있으면 — count 가 0 으로 보여도 — 선언을 보존한다. 이 가드는 반드시
+    // decrementRefsInExpr 앞에 둔다 — 뒤에서 bail 하면 보존된 init 의 ref 가 이미
+    // 감산돼 동일 drift 를 한 단계 아래에서 재생산한다 (다른 보호 return 과 동일 위치).
+    if (sym_id < shorthand_ref_syms.capacity() and shorthand_ref_syms.isSet(sym_id)) return;
 
     // init 이 있으면 purity 검사 — 불순하면 RHS 보존을 위해 (아직) 제거 불가
     if (!init_idx.isNone()) {
