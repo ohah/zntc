@@ -133,7 +133,11 @@ fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
     // type args 파싱은 일반 scanner 모드를 쓰므로, 끝난 후 JSX 모드로 재스캔.
     if (self.source_mode == .ts and self.current() == .l_angle) {
         _ = try self.parseTypeArguments();
-        // type args 닫는 > 이후 토큰이 일반 모드로 스캔됨 → JSX 모드로 재스캔
+        // type args 닫는 > 이후 토큰은 parseTypeArguments() 내부의 일반 스캐너가 이미
+        // 하나 읽어둔 상태다. 여기서 nextInsideJSXElement()를 바로 호출하면 첫 JSX
+        // 속성 이름을 건너뛴다. 현재 토큰 시작점으로 되돌려 JSX 스캐너로 같은 토큰을
+        // 다시 읽어야 `data-value` 같은 JSX 전용 식별자까지 보존된다.
+        self.scanner.current = self.currentSpan().start;
         try self.scanner.nextInsideJSXElement();
     }
 

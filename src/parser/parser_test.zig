@@ -1391,6 +1391,10 @@ test "Parser: JSX with attributes" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: TSX generic JSX type arguments keep following attributes" {
+    try parseTSXOk("const x = <Carousel<Banner> data={banners} />;");
+}
+
 test "Parser: JSX with expression" {
     var scanner = try Scanner.init(std.testing.allocator,
         \\const x = <span>{name}</span>;
@@ -1411,6 +1415,16 @@ fn parseJSXOk(source: []const u8) !void {
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_jsx = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+fn parseTSXOk(source: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.configureFromExtension(".tsx");
     defer parser.deinit();
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
