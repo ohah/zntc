@@ -450,7 +450,7 @@ pub const Scanner = struct {
                 ';' => .semicolon,
                 ',' => .comma,
                 '~' => .tilde,
-                '@' => .at,
+                '@' => self.scanAt(),
                 ':' => .colon,
 
                 // 후속 문자에 따라 분기하는 토큰 — 추후 PR에서 구현
@@ -775,6 +775,19 @@ pub const Scanner = struct {
     // ====================================================================
     // 복합 연산자 스캔
     // ====================================================================
+
+    /// `@@name` (Flow internal-slot well-known-symbol, 예: `@@iterator`)는
+    /// babel `@babel/parser` flow 와 동일하게 단일 식별자 토큰(text=`@@name`)
+    /// 으로 lex. JS/TS 에선 `@@` 인접이 항상 무효(decorator 는 단일 `@`)이므로
+    /// flow-gate 없이 안전. 그 외 단일 `@` 는 decorator 토큰(`.at`).
+    fn scanAt(self: *Scanner) Kind {
+        if (self.peek() == '@' and isAsciiIdentStart(self.peekAt(1))) {
+            _ = self.advance(); // 2번째 '@' 소비
+            self.scanIdentifierTail(); // 슬롯 이름 (span 은 첫 '@' 부터 → text=`@@name`)
+            return .identifier;
+        }
+        return .at;
+    }
 
     fn scanDot(self: *Scanner) Kind {
         if (self.peek() == '.' and self.peekAt(1) == '.') {

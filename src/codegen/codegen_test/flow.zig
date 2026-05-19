@@ -663,6 +663,53 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: 내부슬롯 @@name — 타입위치 strip / 런타임 key 보존 (babel iterator)" {
+    // declare class / interface / type / object-type 의 @@iterator → 통째 strip
+    var r = try e2eFlow(std.testing.allocator, "declare class A { @@iterator(): Iterator<File>; }\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+
+    var r2 = try e2eFlow(std.testing.allocator, "interface A { @@asyncIterator(): Iterator<File>; }\nlet y = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let y=2;", r2.output);
+
+    var r3 = try e2eFlow(std.testing.allocator, "type T = { @@iterator: () => string };\nlet z = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let z=3;", r3.output);
+
+    // 런타임 class/object 의 @@iterator 메서드 — babel 처럼 key 보존(미변환), CRASH 금지
+    var r4 = try e2eFlow(std.testing.allocator, "class T { @@asyncIterator(){} }");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("class T{@@asyncIterator(){}}", r4.output);
+
+    var r5 = try e2eFlow(std.testing.allocator, "let o = { @@iterator() {} };");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("let o={@@iterator(){}};", r5.output);
+}
+
+test "Flow: 내부슬롯 [[name]] — object/interface 타입 strip (babel internal-slot)" {
+    var r = try e2eFlow(std.testing.allocator, "type T = { [[foo]](): X };\nlet a = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let a=1;", r.output);
+
+    var r2 = try e2eFlow(std.testing.allocator, "type T = { [[foo]]?: X };\nlet b = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let b=2;", r2.output);
+
+    var r3 = try e2eFlow(std.testing.allocator, "interface I { [[foo]](): X }\nlet c = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let c=3;", r3.output);
+
+    // variance prefix `+[[foo]]` + declare-class `static [[foo]]` (회귀 가드)
+    var r4 = try e2eFlow(std.testing.allocator, "type T = { +[[foo]](): X };\nlet d = 4;");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("let d=4;", r4.output);
+
+    var r5 = try e2eFlow(std.testing.allocator, "declare class C { static [[foo]]: T }\nlet e = 5;");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("let e=5;", r5.output);
+}
+
 test "Flow: declare namespace stripped (Hermes declare-namespace.js)" {
     var r = try e2eFlowModule(std.testing.allocator, "declare namespace NS {}\nlet x = 1;");
     defer r.deinit();
