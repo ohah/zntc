@@ -72,6 +72,16 @@ function extractOptsDefaultKeys(source: string): string[] {
   return extractKeysByLine(body, /^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
 }
 
+function extractOptsDefaultValue(source: string, key: string): string | null {
+  const startMarker = 'const opts = {';
+  const start = source.indexOf(startMarker, source.indexOf('function parseArgs(argv)'));
+  if (start < 0) throw new Error('opts default object not found in parseArgs');
+  const body = extractBracedBody(source, start + startMarker.length, 'opts default');
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = body.match(new RegExp(`\\b${escaped}\\s*:\\s*([^,\\n]+)`));
+  return match ? match[1].trim() : null;
+}
+
 /** zntc.mjs 의 `mergeConfigIntoOpts` 안 SCALAR_KEYS / BOOL_KEYS / ARRAY_KEYS 리스트의 키 집합 추출. */
 function extractMergeKeyLists(source: string): {
   scalar: string[];
@@ -525,6 +535,10 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
           `parseArgs 의 opts 객체에 default 추가 (보통 \`undefined\` / \`false\` / \`[]\`).`,
       );
     }
+  });
+
+  test('RN dev server 기본값을 막지 않도록 parseArgs devMode default 는 undefined', () => {
+    expect(extractOptsDefaultValue(cliSource, 'devMode')).toBe('undefined');
   });
 
   // ── #2112 잔여: mergeConfigIntoOpts 손-리스트 drift-guard ──────────────
