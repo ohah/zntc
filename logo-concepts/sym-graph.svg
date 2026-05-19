@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC dependency graph">
+  <defs>
+    <linearGradient id="gr" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- 의존성/AST 그래프 — 파서·번들러 정체성 (모노라인 + 노드) -->
+  <g stroke="url(#gr)" stroke-width="6" stroke-linecap="round">
+    <line x1="64" y1="30" x2="32" y2="72"/>
+    <line x1="64" y1="30" x2="96" y2="72"/>
+    <line x1="32" y1="72" x2="96" y2="72"/>
+    <line x1="32" y1="72" x2="64" y2="106"/>
+    <line x1="96" y1="72" x2="64" y2="106"/>
+  </g>
+  <g fill="url(#gr)">
+    <circle cx="64" cy="30" r="13"/>
+    <circle cx="32" cy="72" r="11"/>
+    <circle cx="96" cy="72" r="11"/>
+    <circle cx="64" cy="106" r="11"/>
+  </g>
+</svg>

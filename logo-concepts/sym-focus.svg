@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC focus">
+  <defs>
+    <linearGradient id="fc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- 모노라인 동심 포커스 — 최적화/정밀 (순수 라인 렌더링) -->
+  <g fill="none" stroke="url(#fc)" stroke-width="6" stroke-linecap="round">
+    <circle cx="64" cy="64" r="42" stroke-dasharray="210 264"/>
+    <circle cx="64" cy="64" r="25" stroke-dasharray="118 158"/>
+  </g>
+  <circle cx="64" cy="64" r="9" fill="url(#fc)"/>
+</svg>
