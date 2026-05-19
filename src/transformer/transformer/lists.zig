@@ -60,13 +60,7 @@ fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
     const new_list = try visitExtraList(self, .{ .start = list_start, .len = list_len });
 
     // 블록 퇴장: rename 맵 + scope_var_names 모두 복원
-    if (renames_added > 0) {
-        const saved_rename_len = self.block_rename_stack.items.len - renames_added;
-        for (self.block_rename_stack.items[saved_rename_len..]) |entry| {
-            self.allocator.free(entry.new_name);
-        }
-        self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);
-    }
+    popBlockRenames(self, renames_added);
     self.scope_var_names.shrinkRetainingCapacity(saved_scope_len);
 
     return self.ast.addNode(.{
@@ -246,6 +240,33 @@ fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u3
     }
 
     return renames_added;
+}
+
+/// for/for-in/for-of 헤더의 lexical binding 은 block_statement 자식이 아니므로
+/// pushBlockRenames() 스캔에 잡히지 않는다. block_scoping lowering 으로 `var` 가
+/// 되면 같은 함수 스코프의 기존 이름을 덮을 수 있으므로, 충돌하는 헤더 이름만
+/// 루프 헤더/body 방문 중 임시 rename 한다.
+pub fn pushLoopHeaderBlockRenames(self: *Transformer, names: []const []const u8) Error!u32 {
+    var renames_added: u32 = 0;
+    for (names) |name| {
+        if (!isNameInScope(self, name)) continue;
+
+        self.block_rename_counter += 1;
+        const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
+        self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name }) catch return Error.OutOfMemory;
+        renames_added += 1;
+    }
+    return renames_added;
+}
+
+pub fn popBlockRenames(self: *Transformer, renames_added: u32) void {
+    if (renames_added == 0) return;
+
+    const saved_rename_len = self.block_rename_stack.items.len - renames_added;
+    for (self.block_rename_stack.items[saved_rename_len..]) |entry| {
+        self.allocator.free(entry.new_name);
+    }
+    self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);
 }
 
 /// var <name> = <init_value>; 문 생성 (범용 헬퍼).

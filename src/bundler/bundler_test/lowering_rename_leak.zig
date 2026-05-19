@@ -101,6 +101,60 @@ test "rename leak: for-of body 의 template literal compound assign 도 일관 r
     try testing.expect(std.mem.indexOf(u8, body, "t += ") == null);
 }
 
+test "rename leak: for-of header binding 이 outer 함수 이름을 덮지 않음" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js",
+        \\export function matchKeys(n, s, c) {
+        \\  let o = (item, expected, check) => check(item, expected);
+        \\  let values = [];
+        \\  for (const o of n.keys()) {
+        \\    values.push(n[o]);
+        \\  }
+        \\  return values.every((item, index) => o(item, s[index], c));
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { matchKeys } from './lib.js';
+        \\matchKeys([1], [1], (a, b) => a === b);
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    const code = r.code();
+
+    // ts-pattern 실제 패턴: `for (const o of n.keys())` 가 `var o` 로 내려가면
+    // 뒤의 `o(...)` 호출까지 숫자 loop key 를 바라봐 `1 is not a function` 이 된다.
+    try testing.expect(std.mem.indexOf(u8, code, "for (var o of") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "for (var o$") != null);
+}
+
+test "rename leak: for header binding 이 outer 함수 이름을 덮지 않음" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js",
+        \\export function visit(values) {
+        \\  let i = (value) => value;
+        \\  for (let i = 0; i < values.length; i++) {
+        \\    values[i] = values[i] + 1;
+        \\  }
+        \\  return values.map((value) => i(value));
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { visit } from './lib.js';
+        \\visit([1]);
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    const code = r.code();
+    const body = fnBody(code, "function visit(values)", "return values.map") orelse return error.TestUnexpectedResult;
+
+    try testing.expect(std.mem.indexOf(u8, body, "for (var i = 0;") == null);
+    try testing.expect(std.mem.indexOf(u8, body, "for (var i$") != null);
+}
+
 test "rename leak: object shorthand 는 block-rename 된 value 로 확장됨" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

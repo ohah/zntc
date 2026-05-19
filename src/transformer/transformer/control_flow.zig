@@ -1,5 +1,6 @@
 //! Control-flow visitor helpers for Transformer.
 
+const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -24,6 +25,12 @@ fn ensureStatementBody(self: *Transformer, original_idx: NodeIndex, visited_idx:
     if (!visited_idx.isNone()) return visited_idx;
     const span = if (!original_idx.isNone()) self.ast.getNode(original_idx).span else parent_span;
     return makeEmptyStatement(self, span);
+}
+
+fn collectActiveLoopHeaderNames(self: *Transformer, names: []const []const u8, out: *std.ArrayList([]const u8)) Error!void {
+    for (names) |name| {
+        try out.append(self.allocator, self.lookupBlockRename(name) orelse name);
+    }
 }
 
 /// if-statement 의 then/else body 는 문법상 반드시 Statement 여야 한다.
@@ -92,19 +99,26 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                 BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
             }
 
+            const new_b = try self.visitNode(node.data.ternary.b);
+            const renames_added = try self.pushLoopHeaderBlockRenames(lexical_names.items);
+            defer self.popBlockRenames(renames_added);
+
             const saved = self.in_for_in_of_header;
             self.in_for_in_of_header = true;
             const new_a = try self.visitNode(node.data.ternary.a);
             self.in_for_in_of_header = saved;
-            const new_b = try self.visitNode(node.data.ternary.b);
             const raw_c = try self.visitNode(orig_body_idx);
             const new_c = try ensureStatementBody(self, orig_body_idx, raw_c, node.span);
 
             if (has_capture) {
+                var active_lexical_names: std.ArrayList([]const u8) = .empty;
+                defer active_lexical_names.deinit(self.allocator);
+                try collectActiveLoopHeaderNames(self, lexical_names.items, &active_lexical_names);
+
                 const result = try BlockScoping.buildLoopClosureWithFlow(
                     self,
                     new_c,
-                    lexical_names.items,
+                    active_lexical_names.items,
                     &flow,
                     null,
                     node.span,
@@ -250,6 +264,9 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                 BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
             }
 
+            const renames_added = try self.pushLoopHeaderBlockRenames(lexical_names.items);
+            defer self.popBlockRenames(renames_added);
+
             const new_init = try self.visitNode(init_idx);
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
@@ -257,10 +274,14 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             const new_body = try ensureStatementBody(self, orig_body_idx, raw_body, node.span);
 
             if (has_capture) {
+                var active_lexical_names: std.ArrayList([]const u8) = .empty;
+                defer active_lexical_names.deinit(self.allocator);
+                try collectActiveLoopHeaderNames(self, lexical_names.items, &active_lexical_names);
+
                 const result = try BlockScoping.buildLoopClosureWithFlow(
                     self,
                     new_body,
-                    lexical_names.items,
+                    active_lexical_names.items,
                     &flow,
                     null,
                     node.span,
