@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC fat arrow">
+  <defs>
+    <linearGradient id="ta" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- => fat arrow — JS/TS 변환 코드 시그니처 -->
+  <g fill="url(#ta)">
+    <rect x="18" y="49" width="46" height="12" rx="6"/>
+    <rect x="18" y="67" width="46" height="12" rx="6"/>
+    <path d="M70 44 L106 64 L70 84 Z"/>
+  </g>
+</svg>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC terminal prompt">
+  <defs>
+    <linearGradient id="tp" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <mask id="tpm">
+      <rect x="10" y="10" width="108" height="108" rx="28" fill="#fff"/>
+      <!-- > 캐럿 -->
+      <path d="M36 42 L62 64 L36 86 L46 86 L72 64 L46 42 Z" fill="#000"/>
+      <!-- _ 커서 -->
+      <rect x="72" y="78" width="32" height="11" rx="3" fill="#000"/>
+    </mask>
+  </defs>
+  <!-- 터미널 프롬프트 >_ — CLI 트랜스파일러 정체성 -->
+  <rect x="10" y="10" width="108" height="108" rx="28" fill="url(#tp)" mask="url(#tpm)"/>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC cube">
+  <!-- 아이소메트릭 큐브 — 묶인 빌드 산출물 / 네이티브 -->
+  <path fill="#fbbf24" d="M64 14 L108 39 L64 64 L20 39 Z"/>
+  <path fill="#ea580c" d="M20 39 L64 64 L64 114 L20 89 Z"/>
+  <path fill="#f7a41d" d="M108 39 L108 89 L64 114 L64 64 Z"/>
+</svg>

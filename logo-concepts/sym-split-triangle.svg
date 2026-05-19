@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC split forward">
+  <defs>
+    <linearGradient id="st" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- forward 재생 삼각을 슬라이스 — 속도/실행 -->
+  <path fill="url(#st)" d="M40 22 L104 60 L40 60 Z"/>
+  <path fill="url(#st)" d="M40 68 L104 68 L40 106 Z"/>
+</svg>
