@@ -81,6 +81,55 @@ test "JSX: RN dev default component import from directory index keeps target mod
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var Widget = void 0") == null);
 }
 
+test "JSX: RN dev TSX generic component import keeps target module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("BannerCarousel");
+    try writeFile(tmp.dir, "app.tsx",
+        \\import BannerCarousel from './BannerCarousel';
+        \\const data = [{ id: '1' }];
+        \\export function App() {
+        \\  return <BannerCarousel banners={data} />;
+        \\}
+        \\console.log(App);
+    );
+    try writeFile(tmp.dir, "BannerCarousel/index.tsx",
+        \\interface Banner { id: string }
+        \\interface Props { banners: Banner[] }
+        \\function Carousel<T>(props: { data: T[] }) {
+        \\  return <span>{props.data.length}</span>;
+        \\}
+        \\const BannerCarousel = ({ banners }: Props) => {
+        \\  return <Carousel<Banner> data={banners} />;
+        \\};
+        \\export default BannerCarousel;
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .dev_mode = true,
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+        .strict_execution_order = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    if (result.hasErrors() or
+        std.mem.indexOf(u8, result.output, "BannerCarousel/index.tsx") == null or
+        std.mem.indexOf(u8, result.output, "var BannerCarousel = void 0") != null)
+    {
+        std.debug.print("\n=== output ===\n{s}\n=== /output ===\n", .{result.output});
+    }
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "BannerCarousel/index.tsx") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var BannerCarousel = void 0") == null);
+}
+
 test "JSX: component with props" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
