@@ -369,9 +369,19 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .none = 0 },
             });
         },
-        // interface {} — Flow inline interface type
+        // interface [extends T (, T)*] { ... } — Flow inline interface type.
+        // strip 전용: optional heritage list + body 통째 소비.
         .kw_interface => {
             try self.advance();
+            if (self.current() == .kw_extends) {
+                try self.advance();
+                while (self.current() != .l_curly and self.current() != .eof) {
+                    const loop_guard_pos = self.scanner.token.span.start;
+                    _ = try parsePrimaryType(self); // heritage 항목(`X`/`X<T>`)
+                    if (!try self.eat(.comma)) break;
+                    if (try self.ensureLoopProgress(loop_guard_pos)) break;
+                }
+            }
             if (self.current() == .l_curly) {
                 try skipBalancedBraces(self);
             }
