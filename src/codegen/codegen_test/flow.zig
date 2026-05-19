@@ -368,6 +368,54 @@ test "Flow: declare export hook stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: renders type operator stripped (Hermes component-syntax/renders.js)" {
+    // type alias RHS 의 renders 타입 — 통째 strip
+    var r = try e2eFlow(std.testing.allocator, "type A = renders B;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+
+    // renders (B | C) | null — renders 는 prefix 결합, | null 은 union 으로 wrap
+    var r2 = try e2eFlow(std.testing.allocator, "type A = renders (B | C) | null;\nlet y = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let y=2;", r2.output);
+
+    // renders ?number — nullable 피연산자
+    var r3 = try e2eFlow(std.testing.allocator, "type A = renders ?number;\nlet z = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let z=3;", r3.output);
+
+    // renders React.Node — qualified 피연산자
+    var r4 = try e2eFlow(std.testing.allocator, "type A = renders React.Node;\nlet w = 4;");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("let w=4;", r4.output);
+
+    // 파라미터 타입 위치의 renders — component lowering 시 타입만 strip
+    var r5 = try e2eFlow(std.testing.allocator, "component Foo(bar: renders A) {}");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("function Foo({bar:bar}){}", r5.output);
+}
+
+test "Flow: bare `renders` as generic type-arg (회귀 가드 — 연산자 오발 금지)" {
+    // `renders` 가 단독 type-arg (닫는 `>`/`>>`/`>>>`) → 일반 type reference,
+    // renders 연산자로 오발해 `>` 를 피연산자로 소비하면 안 됨.
+    var r = try e2eFlow(std.testing.allocator, "type X = Array<renders>;\nlet a = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let a=1;", r.output);
+
+    var r2 = try e2eFlow(std.testing.allocator, "type X = Array<Array<renders>>;\nlet b = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let b=2;", r2.output);
+
+    var r3 = try e2eFlow(std.testing.allocator, "type X = A<B<C<renders>>>;\nlet c = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let c=3;", r3.output);
+
+    // bare `renders` 가 union 멤버 / 단독 (식별자) 인 경우도 불변
+    var r4 = try e2eFlow(std.testing.allocator, "type X = renders | number;\nlet d = 4;");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("let d=4;", r4.output);
+}
+
 test "Flow: mixed declare export sequence stripped" {
     var r = try e2eFlowModule(
         std.testing.allocator,
