@@ -18,13 +18,21 @@ export async function waitForServer(
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   while (Date.now() < deadline) {
+    // AbortSignal.timeout 은 성공 후에도 타이머가 살아 event loop 에 매달림
+    // (14곳 순차 호출 시 누적). 명시 controller + finally clearTimeout 로 정리.
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2000);
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      await res.body?.cancel(); // 소켓 정리 (body 미소비 시 leak)
+      const res = await fetch(url, { signal: ctrl.signal });
+      // body 미소비 시 소켓 leak. cancel 자체 reject 가 liveness 판정으로
+      // 새는 걸 막기 위해 swallow (서버는 이미 응답했으므로 ready 확정).
+      await res.body?.cancel().catch(() => {});
       return;
     } catch (e) {
       lastErr = e;
       await new Promise((r) => setTimeout(r, intervalMs));
+    } finally {
+      clearTimeout(t);
     }
   }
   const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
