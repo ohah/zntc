@@ -663,6 +663,42 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: arrow 반환타입에 중첩 =>/generic (babel anon-fn-no-parens good_05/15)" {
+    // (x): (number => 123) => 123 — RT=괄호 anon fn type, `=>123`=arrow body.
+    var r = try e2eFlow(std.testing.allocator, "var f = (x): (number => 123) => 123;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=x=>123;", r.output);
+
+    // (): Array<(string) => number> => [] — generic arg 안 fn type
+    var r2 = try e2eFlow(std.testing.allocator, "let x = (): Array<(string) => number> => [];");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let x=()=>[];", r2.output);
+
+    // 회귀 가드: 단순 반환타입 arrow (기존 정상) 불변
+    var r3 = try e2eFlow(std.testing.allocator, "var g = (): string | number => 123;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("var g=()=>123;", r3.output);
+
+    // 회귀 가드: 괄호 함수타입 type-alias (기존 정상) 불변
+    var r4 = try e2eFlow(std.testing.allocator, "type A = (string => boolean) => number;\nlet h = 4;");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("let h=4;", r4.output);
+
+    // 회귀 가드 (/simplify HIGH): empty-paren / named-param / comma fn-type RT
+    // — 내부 fn-type 반환타입이 outer arrow body 를 흡수하지 않아야 함.
+    var r5 = try e2eFlow(std.testing.allocator, "var a = (): (x: number) => R => 123;");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("var a=()=>123;", r5.output);
+
+    var r6 = try e2eFlow(std.testing.allocator, "var b = (): () => void => 123;");
+    defer r6.deinit();
+    try std.testing.expectEqualStrings("var b=()=>123;", r6.output);
+
+    var r7 = try e2eFlow(std.testing.allocator, "var c = (): (a: number, b: string) => number => 123;");
+    defer r7.deinit();
+    try std.testing.expectEqualStrings("var c=()=>123;", r7.output);
+}
+
 test "Flow: object type generic call property (babel call-properties/4)" {
     // `{ <T>(x: T): number; }` — generic call sig. 타입주석만 strip
     // (var a 는 실 변수 → `var a;` 유지, babel flow-strip 동일).

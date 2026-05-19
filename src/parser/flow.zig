@@ -533,6 +533,12 @@ pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.expectOpeningAngleBracket();
 
+    // `<...>` 안의 `=>` 는 항상 함수타입(arrow body 와 무관) — outer 가
+    // arrow-return context 였어도 reset. `(): Array<(string) => number> => []`.
+    const prev_in_ret = self.flow_in_return_type;
+    self.flow_in_return_type = false;
+    defer self.flow_in_return_type = prev_in_ret;
+
     const scratch_top = self.saveScratch();
     while (!self.isAtClosingAngleBracket() and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
@@ -639,11 +645,21 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const prev_allow_cond = self.flow_allow_conditional_type;
     self.flow_allow_conditional_type = true;
     defer self.flow_allow_conditional_type = prev_allow_cond;
+    // 괄호 내부의 `=>` 는 함수타입 화살표로 명확(outer arrow body 와 무관) →
+    // reset. 단, 닫는 `)` 뒤의 `=>`(이 paren 그룹 자체가 fn type 인지)는
+    // arrow-return 최상위에서 arrow body 와 모호하므로 outer 값(prev_in_ret)
+    // 으로 판정. `(x): (number => 123) => 123` — RT=`(number=>123)`, `=>123`=body.
+    const prev_in_ret = self.flow_in_return_type;
+    self.flow_in_return_type = false;
+    defer self.flow_in_return_type = prev_in_ret;
 
+    // fn-type 의 반환타입 파싱은 outer context(prev_in_ret) 로 — 그 trailing
+    // `=>` 는 outer arrow body 와 같은 모호성 레벨(param/content 만 reset 유지).
     // 빈 괄호: () => Type
     if (self.current() == .r_paren) {
         try self.advance();
         try self.expect(.arrow);
+        self.flow_in_return_type = prev_in_ret;
         const return_type = try parseType(self);
         return makeFunctionType(self, start, NodeIndex.none, .{ .start = 0, .len = 0 }, return_type);
     }
@@ -665,6 +681,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         const params = try parseFunctionTypeParamList(self);
         try self.expect(.r_paren);
         try self.expect(.arrow);
+        self.flow_in_return_type = prev_in_ret;
         const return_type = try parseType(self);
         return makeFunctionType(self, start, NodeIndex.none, params, return_type);
     }
@@ -699,6 +716,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         }
         try self.expect(.r_paren);
         try self.expect(.arrow);
+        self.flow_in_return_type = prev_in_ret;
         const return_type = try parseType(self);
         const items = self.scratch.items[scratch_top..];
         const params = try self.ast.addNodeList(items);
@@ -710,7 +728,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     // return type context에서는 `=>` 가 arrow function body이므로 function type으로 해석하지 않는다.
     if (self.current() == .r_paren) {
         try self.advance();
-        if (self.current() == .arrow and !self.flow_in_return_type) {
+        if (self.current() == .arrow and !prev_in_ret) {
             try self.advance();
             const return_type = try parseType(self);
             const params = try self.ast.addNodeList(&.{first_type});
