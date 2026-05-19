@@ -663,6 +663,51 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: interface/of 식별자 위치 (babel interfaces-as-identifier/issue-10675)" {
+    // class interface {} — interface 가 클래스 이름
+    var r = try e2eFlow(std.testing.allocator, "class interface {}");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class interface{}", r.output);
+
+    // interface ? a : b — interface 가 ternary test 식별자
+    var r2 = try e2eFlow(std.testing.allocator, "interface ? true : false;\nlet a = 1;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("interface?true:false;let a=1;", r2.output);
+
+    // member expression — foo.interface / interface.foo
+    var r3 = try e2eFlow(std.testing.allocator, "foo.interface;\ninterface.foo;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("foo.interface;interface.foo;", r3.output);
+
+    // class of<T> {} — of 가 클래스 이름 + type param strip (babel issue-10675)
+    var r4 = try e2eFlow(std.testing.allocator, "class of<T> {}");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("class of{}", r4.output);
+
+    // 회귀 가드: 진짜 interface 선언은 여전히 통째 strip
+    var r5 = try e2eFlow(std.testing.allocator, "interface I { x: number }\nlet b = 2;");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("let b=2;", r5.output);
+
+    // 회귀 가드: enum of string (of 는 enum base) 불변
+    var r6 = try e2eFlow(std.testing.allocator, "enum E of string { A, B }\nlet c = 3;");
+    defer r6.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r6.output, "flow-enums-runtime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r6.output, "let c=3;") != null);
+
+    // interface of<T> {} — interface 이름이 contextual keyword `of`
+    // (babel regression/issue-10675-interface, non-throws). 통째 strip.
+    var r7 = try e2eFlow(std.testing.allocator, "interface of<T> {}\nlet d = 4;");
+    defer r7.deinit();
+    try std.testing.expectEqualStrings("let d=4;", r7.output);
+
+    // 회귀 가드: strict-reserved(`let`)는 클래스 이름으로 silent-accept 금지
+    // (canBeFlowDeclName 제외 → main 처럼 정상 named class 로 안 나옴).
+    var r8 = try e2eFlow(std.testing.allocator, "class let {}");
+    defer r8.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r8.output, "class let{}") == null);
+}
+
 test "Flow: arrow 반환타입에 중첩 =>/generic (babel anon-fn-no-parens good_05/15)" {
     // (x): (number => 123) => 123 — RT=괄호 anon fn type, `=>123`=arrow body.
     var r = try e2eFlow(std.testing.allocator, "var f = (x): (number => 123) => 123;");
