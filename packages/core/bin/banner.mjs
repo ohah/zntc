@@ -10,6 +10,9 @@ const colors = {
   blue: '\x1b[34m',
   magenta: '\x1b[35m',
   cyan: '\x1b[36m',
+  // ZNTC 브랜드 오렌지 (256-color; 미지원 터미널은 근사색으로 degrade)
+  amber: '\x1b[38;5;214m',
+  orange: '\x1b[38;5;208m',
 };
 
 /**
@@ -55,23 +58,33 @@ function bannerLine(content) {
   return `${colors.cyan}    ║${colors.reset}${' '.repeat(left)}${content}${' '.repeat(right)}${colors.cyan}║${colors.reset}`;
 }
 
-const ZNTC_ASCII = [
-  '███████╗███╗   ██╗████████╗ ██████╗',
-  '╚══███╔╝████╗  ██║╚══██╔══╝██╔════╝',
-  '  ███╔╝ ██╔██╗ ██║   ██║   ██║     ',
-  ' ███╔╝  ██║╚██╗██║   ██║   ██║     ',
-  '███████╗██║ ╚████║   ██║   ╚██████╗',
-  '╚══════╝╚═╝  ╚═══╝   ╚═╝    ╚═════╝',
+// 지구라트 로고 (계단식) — documents 의 zntc-logo.svg / favicon 과 동일 정체성.
+// 6줄 = ZNTC_GRADIENT 6색과 1:1. bannerLine 이 각 줄을 박스 중앙 정렬.
+export const ZNTC_ASCII = [
+  '████████',
+  '██████████████',
+  '████████████████████',
+  '██████████████████████████',
+  '████████████████████████████████',
+  '██████████████████████████████████████',
 ];
 
-const ZNTC_GRADIENT = [
-  colors.yellow,
-  colors.yellow,
-  colors.blue,
-  colors.blue,
-  colors.magenta,
-  colors.magenta,
+export const ZNTC_GRADIENT = [
+  colors.amber,
+  colors.amber,
+  colors.amber,
+  colors.orange,
+  colors.orange,
+  colors.orange,
 ];
+
+// ZNTC_ASCII[i] 는 ZNTC_GRADIENT[i] 로 색칠 — desync 시 undefined 가
+// visibleLen 을 오염시켜 줄 정렬이 깨진다. import 시점 fail-fast.
+if (ZNTC_ASCII.length !== ZNTC_GRADIENT.length) {
+  throw new Error(
+    `ZNTC banner: ZNTC_ASCII(${ZNTC_ASCII.length}) / ZNTC_GRADIENT(${ZNTC_GRADIENT.length}) 길이 불일치`,
+  );
+}
 
 const TAGLINES = {
   web: 'Lightning Fast Web Bundler',
