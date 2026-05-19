@@ -1008,6 +1008,16 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
         if (try self.eat(.colon)) _ = try parseType(self);
         return NodeIndex.none;
     }
+    // Generic call signature: `<T>(args): R` (babel — type-param 동반 call
+    // property). type-params 소비 후 call-sig 와 동일 처리·strip.
+    if (self.isAtOpeningAngleBracket()) {
+        _ = try parseTypeParameterDeclaration(self);
+        if (self.current() == .l_paren) {
+            try skipBalancedParens(self);
+            if (try self.eat(.colon)) _ = try parseType(self);
+        }
+        return NodeIndex.none;
+    }
     if (self.current() == .l_paren) {
         try skipBalancedParens(self);
         if (try self.eat(.colon)) _ = try parseType(self);

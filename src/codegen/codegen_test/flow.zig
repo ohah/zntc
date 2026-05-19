@@ -663,6 +663,24 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: object type generic call property (babel call-properties/4)" {
+    // `{ <T>(x: T): number; }` — generic call sig. 타입주석만 strip
+    // (var a 는 실 변수 → `var a;` 유지, babel flow-strip 동일).
+    var r = try e2eFlow(std.testing.allocator, "var a : { <T>(x: T): number; };\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var a;let x=1;", r.output);
+
+    // interface 의 generic call sig — interface 는 통째 strip
+    var r2 = try e2eFlow(std.testing.allocator, "interface A { <T>(x: T): number; }\nlet y = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let y=2;", r2.output);
+
+    // 회귀 가드: 비-generic call sig (기존 정상) 불변
+    var r3 = try e2eFlow(std.testing.allocator, "var b : { (): number; y: string };\nlet z = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("var b;let z=3;", r3.output);
+}
+
 test "Flow: 내부슬롯 @@name — 타입위치 strip / 런타임 key 보존 (babel iterator)" {
     // declare class / interface / type / object-type 의 @@iterator → 통째 strip
     var r = try e2eFlow(std.testing.allocator, "declare class A { @@iterator(): Iterator<File>; }\nlet x = 1;");
