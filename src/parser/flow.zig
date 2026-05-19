@@ -593,14 +593,15 @@ pub fn parseTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
 fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
+    // Flow modifier 순서: const → variance → name (`<const +T>`).
+    // const type parameter: <const T> / <const +T> — const modifier 스킵.
+    if (self.current() == .kw_const) {
+        try self.advance(); // skip 'const'
+    }
+
     // variance: +T (covariant) 또는 -T (contravariant)
     if (self.current() == .plus or self.current() == .minus) {
         try self.advance();
-    }
-
-    // Flow const type parameter: <const T: {...}> — const modifier를 건너뛴다.
-    if (self.current() == .kw_const) {
-        try self.advance(); // skip 'const'
     }
 
     try self.advance(); // type param name
