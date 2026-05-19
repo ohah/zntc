@@ -1238,6 +1238,9 @@ pub const Bundler = struct {
             // 실제로 없어도 런타임 값은 ReferenceError가 아니라 undefined가 된다.
             l.shim_missing_exports = self.options.shim_missing_exports or self.options.platform == .react_native;
             l.dev_mode = self.options.dev_mode;
+            l.entry_error_guard = self.options.entry_error_guard;
+            l.inline_requires = self.options.platform == .react_native;
+            l.strict_execution_order = self.options.strict_execution_order;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
             l.minify_whitespace = self.options.minify_whitespace;
             l.configurable_exports = self.options.configurable_exports;

@@ -500,8 +500,14 @@ pub fn emitChunks(
             .common, .manual => null,
         };
         const emit_top_level_rbm = chunk_is_user_entry and options.run_before_main.len > 0;
-        const rbm_insert_after_pos = if (emit_top_level_rbm)
-            findLastRunBeforeMainPosition(graph, sorted_mods, options.run_before_main)
+        var run_before_main_closure: ?std.DynamicBitSet = null;
+        defer if (run_before_main_closure) |*closure| closure.deinit();
+        if (emit_top_level_rbm) {
+            const closure = try collectRunBeforeMainClosure(allocator, graph, options.run_before_main);
+            run_before_main_closure = closure;
+        }
+        const rbm_insert_after_pos = if (run_before_main_closure) |*closure|
+            findLastRunBeforeMainPosition(graph, sorted_mods, closure)
         else
             null;
         var rbm_calls_emitted = false;
@@ -561,9 +567,6 @@ pub fn emitChunks(
             else
                 code;
 
-            // Match the single-file emitter: dependency bodies must also run
-            // after runtime prelude/setup, so insert after rbm definitions and
-            // before the first user module in this entry chunk.
             if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(sorted_pos, rbm_insert_after_pos)) {
                 const before_len = chunk_output.items.len;
                 try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
@@ -952,19 +955,6 @@ pub fn emitChunks(
     return outputs.toOwnedSlice(allocator);
 }
 
-fn findLastRunBeforeMainPosition(
-    graph: *const ModuleGraph,
-    sorted_mods: []const ModuleIndex,
-    run_before_main: []const []const u8,
-) ?usize {
-    var last: ?usize = null;
-    for (sorted_mods, 0..) |mod_idx, i| {
-        const m = graph.getModule(mod_idx) orelse continue;
-        if (isRunBeforeMainPath(m.path, run_before_main)) last = i;
-    }
-    return last;
-}
-
 fn collectRunBeforeMainCrossImports(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(RunBeforeMainCrossImport),
@@ -992,6 +982,43 @@ fn collectRunBeforeMainCrossImports(
         }
         try out.append(allocator, .{ .source_chunk = source_chunk, .name = name });
     }
+}
+
+fn collectRunBeforeMainClosure(allocator: std.mem.Allocator, graph: *const ModuleGraph, run_before_main: []const []const u8) !std.DynamicBitSet {
+    var closure = try std.DynamicBitSet.initEmpty(allocator, graph.moduleCount());
+    errdefer closure.deinit();
+    for (run_before_main) |rbm_path| {
+        const rbm = graph.findModuleByPath(rbm_path) orelse continue;
+        try markRunBeforeMainClosure(graph, rbm.index, &closure);
+    }
+    return closure;
+}
+
+fn markRunBeforeMainClosure(graph: *const ModuleGraph, index: ModuleIndex, closure: *std.DynamicBitSet) !void {
+    if (index.isNone()) return;
+    const i = index.toUsize();
+    if (i >= closure.capacity()) return;
+    if (closure.isSet(i)) return;
+    closure.set(i);
+
+    const module = graph.getModule(index) orelse return;
+    for (module.import_records) |rec| {
+        if (rec.resolved.isNone()) continue;
+        switch (rec.kind) {
+            .static_import, .side_effect, .re_export, .require => try markRunBeforeMainClosure(graph, rec.resolved, closure),
+            else => {},
+        }
+    }
+}
+
+fn findLastRunBeforeMainPosition(graph: *const ModuleGraph, sorted_mods: []const ModuleIndex, closure: *const std.DynamicBitSet) ?usize {
+    _ = graph;
+    var last: ?usize = null;
+    for (sorted_mods, 0..) |mod_idx, i| {
+        const module_idx = mod_idx.toUsize();
+        if (module_idx < closure.capacity() and closure.isSet(module_idx)) last = i;
+    }
+    return last;
 }
 
 fn emitRunBeforeMainCrossImports(

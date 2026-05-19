@@ -2707,7 +2707,7 @@ test "entry_error_guard #5: 다중 chain entry — import init 은 entry guard �
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_c") == null);
 }
 
-test "entry_error_guard #5b: runBeforeMain 을 module output 앞쪽에 분리하고 entry import 는 중첩 유지" {
+test "entry_error_guard #5b: runBeforeMain 을 entry 앞에 분리하고 entry import 는 중첩 유지" {
     // 재현 최소 케이스: runBeforeMain이 ErrorUtils를 설치한 뒤 entry dependency가 throw.
     // Metro에서는 entry outer guard가 그 throw를 report하고 entry factory를 중단하므로
     // 뒤 import/entry body가 실행되지 않는다. zntc가 entry import를 top-level 개별 guard로
@@ -2743,9 +2743,10 @@ test "entry_error_guard #5b: runBeforeMain 을 module output 앞쪽에 분리하
     const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
     const top_level = result.output[top_start..];
     const setup_call = "__zntc_guarded(init_setup);";
-    _ = std.mem.indexOf(u8, result.output, setup_call) orelse return error.SetupCallMissing;
-    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_setup") == null);
-    try std.testing.expect(std.mem.indexOf(u8, top_level, "init_entry") != null);
+    const setup_call_idx = std.mem.indexOf(u8, result.output, setup_call) orelse return error.SetupCallMissing;
+    const entry_top_idx = std.mem.indexOf(u8, top_level, "init_entry") orelse return error.EntryTopLevelCallMissing;
+    const entry_abs_idx = top_start + entry_top_idx;
+    try std.testing.expect(setup_call_idx < entry_abs_idx);
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_boom") == null);
     try std.testing.expect(std.mem.indexOf(u8, top_level, "init_after") == null);
 
@@ -2753,18 +2754,21 @@ test "entry_error_guard #5b: runBeforeMain 을 module output 앞쪽에 분리하
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return init_after();});") != null);
 }
 
-test "entry_error_guard #5c: runBeforeMain 이 scope-hoisted user module 보다 먼저 실행" {
-    // RN Release 에서는 일부 ESM 이 scope-hoisted body 로 직접 emit 된다. Metro 의
-    // runBeforeMainModule(InitializeCore) 동작과 맞추려면 entry trigger 직전이 아니라,
-    // runBeforeMain 정의 직후 첫 user module body 전에 실행되어야 한다.
+test "entry_error_guard #5c: runBeforeMain 은 dependency closure 정의 뒤 entry 앞에서 실행" {
+    // Metro 는 모든 factory 를 define 한 뒤 append script 에서 runBeforeMainModule 을
+    // require 한다. RN 0.85 InitializeCore 는 평가 중 뒤쪽 facade(RendererProxy 같은
+    // re-export-only 모듈)를 require 할 수 있으므로, zntc 도 runBeforeMain 이 당겨 쓸
+    // dependency closure 를 모두 등록한 뒤 entry body 보다 먼저 실행해야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "setup.js", "globalThis.setupReady = true;\n");
-    try writeFile(tmp.dir, "node_modules/pkg/package.json", "{\"name\":\"pkg\",\"main\":\"index.js\",\"sideEffects\":false}");
-    try writeFile(tmp.dir, "node_modules/pkg/index.js", "export const plain = 1;\n");
+    try writeFile(tmp.dir, "setup.js",
+        \\import { value } from './facade.js';
+        \\globalThis.setupValue = value;
+    );
+    try writeFile(tmp.dir, "facade.js", "export * from './impl.js';\n");
+    try writeFile(tmp.dir, "impl.js", "export const value = 1;\n");
     try writeFile(tmp.dir, "entry.js",
-        \\import { plain } from 'pkg';
-        \\globalThis.entryValue = plain;
+        \\globalThis.entryRan = true;
     );
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
@@ -2784,9 +2788,10 @@ test "entry_error_guard #5c: runBeforeMain 이 scope-hoisted user module 보다 
 
     try std.testing.expect(!result.hasErrors());
     const setup_call_idx = std.mem.indexOf(u8, result.output, "__zntc_guarded(init_setup);") orelse return error.SetupCallMissing;
-    const scope_module_idx = std.mem.indexOf(u8, result.output, "//#region index.js") orelse return error.ScopeModuleMissing;
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_index") == null);
-    try std.testing.expect(setup_call_idx < scope_module_idx);
+    const facade_region_idx = std.mem.indexOf(u8, result.output, "//#region facade.js") orelse return error.FacadeModuleMissing;
+    const entry_body_idx = std.mem.indexOf(u8, result.output, "entryRan") orelse return error.EntryBodyMissing;
+    try std.testing.expect(facade_region_idx < setup_call_idx);
+    try std.testing.expect(setup_call_idx < entry_body_idx);
 }
 
 test "react_native dev auto InitializeCore: preserve_symlinks logical runBeforeMain 중복 주입 방지" {

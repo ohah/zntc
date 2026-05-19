@@ -181,6 +181,10 @@ pub const Linker = struct {
     /// module init을 top-level preamble에서 미루고, 참조 지점에서 lazy init한다.
     inline_requires: bool = false,
 
+    /// 정적 import 평가 순서 보장. RN inlineRequires가 값 접근은 lazy로 유지해도
+    /// static import 대상 모듈의 factory는 importer 본문 전에 한 번 실행해야 한다.
+    strict_execution_order: bool = false,
+
     /// `EmitOptions.entry_error_guard` propagate. preamble 의 module init 호출을
     /// `__zntc_guarded(fn)` 으로 wrap 하여 outermost 에서 `ErrorUtils.reportFatalError`
     /// 로 swallow. helper 자체는 emitter prologue 에 주입.
