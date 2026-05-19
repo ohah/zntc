@@ -64,6 +64,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: napi-${{ matrix.zig_target }}
 
       - name: Build NAPI (ReleaseFast)
         shell: bash
@@ -135,6 +136,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: cli-${{ matrix.target }}
 
       - name: Build CLI (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
@@ -163,6 +165,9 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # 이 job 은 zig build 를 직접 돌리지 않음 (artifact download) — 전역
+          # 기본 키 공유로 인한 thrash 만 격리.
+          cache-key: release-publish
 
       - uses: oven-sh/setup-bun@v2
         with:

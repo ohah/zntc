@@ -29,6 +29,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: debug
 
       - name: Build (Debug)
         run: zig build
@@ -58,6 +59,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: release-${{ matrix.optimize }}
 
       # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
       # ("LLVM ERROR: out of memory"). Debug 빌드·테스트 커버리지는 Linux/macOS
@@ -77,6 +79,9 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # zig fmt --check 만 실행 — 빌드 캐시 미생성. 캐싱은 순수 오버헤드이고,
+          # 키 미지정 시 전역 기본 키를 build job 들과 공유해 thrash 유발하므로 off.
+          use-cache: false
 
       - name: Check formatting
         run: zig fmt --check src/
@@ -117,6 +122,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: napi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -234,6 +240,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: napi-smoke-${{ matrix.platform }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -344,6 +351,8 @@ jobs:
       # 나머지 publishable workspace package 빌드만 하면 된다.
       - name: Setup ZNTC (core + NAPI)
         uses: ./.github/actions/setup-zntc
+        with:
+          cache-key: publish-smoke
 
       - name: Build wasm binaries
         run: zig build wasm && zig build wasm-bundler
@@ -388,6 +397,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: wasm
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
