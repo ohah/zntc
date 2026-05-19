@@ -1396,9 +1396,26 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .unary = .{ .operand = rest_name, .flags = 0 } },
             });
         } else {
-            // propName: Type = default → binding_property
-            const prop_name = try self.parseSimpleIdentifier();
+            // name [as binding] [?] [: Type] [= default] → binding_property
+            // name 은 identifier 또는 string literal (`'foo' as bar`).
+            const prop_name = if (self.current() == .string_literal) blk: {
+                const sp = self.currentSpan();
+                try self.advance();
+                break :blk try self.ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = sp,
+                    .data = .{ .string_ref = sp },
+                });
+            } else try self.parseSimpleIdentifier();
             const prop_text = self.ast.source[self.ast.getNode(prop_name).span.start..self.ast.getNode(prop_name).span.end];
+
+            // `as` local binding — identifier / object / array pattern.
+            // 없으면 binding = prop_name (기존 shorthand 동작).
+            const binding_target = if (self.isContextual("as")) blk: {
+                try self.advance(); // skip 'as'
+                break :blk try self.parseBindingName();
+            } else prop_name;
+
             _ = try self.eat(.question);
             if (self.current() == .colon) {
                 try self.advance();
@@ -1410,9 +1427,9 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
                 break :blk try self.ast.addNode(.{
                     .tag = .assignment_pattern,
                     .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = prop_name, .right = default_val, .flags = 0 } },
+                    .data = .{ .binary = .{ .left = binding_target, .right = default_val, .flags = 0 } },
                 });
-            } else prop_name;
+            } else binding_target;
 
             // ref 파라미터는 분리 (hook에서는 ref도 일반 prop으로 취급)
             if (!is_hook and std.mem.eql(u8, prop_text, "ref")) {
