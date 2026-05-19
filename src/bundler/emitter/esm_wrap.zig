@@ -19,7 +19,8 @@ const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
 const Linker = @import("../linker.zig").Linker;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
-const TreeShaker = @import("../tree_shaker.zig").TreeShaker;
+const tree_shaker_mod = @import("../tree_shaker.zig");
+const TreeShaker = tree_shaker_mod.TreeShaker;
 const statement_shaker = @import("../statement_shaker.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
@@ -124,6 +125,16 @@ inline fn shouldSkipTreeShakenReExportSource(l: *const Linker, m: *const Module,
     if (src_idx == m.index) return false;
     const src_mod = l.graph.getModule(src_idx) orelse return true;
     return !src_mod.is_included;
+}
+
+inline fn shouldEmitSyntheticDefaultReExport(l: ?*const Linker, m: *const Module, eb: ExportBinding) bool {
+    const linker = l orelse return true;
+    if (!linker.tree_shaker_active) return true;
+    if (shouldSkipTreeShakenReExportSource(linker, m, eb)) return false;
+    const shaker = linker.tree_shaker orelse return true;
+    const module_index = m.index.toU32();
+    return shaker.isExportUsed(module_index, "default") or
+        shaker.isExportUsed(module_index, tree_shaker_mod.ALL_EXPORTS_SENTINEL);
 }
 
 fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
@@ -343,6 +354,7 @@ pub fn emitEsmWrappedModule(
     {
         for (module.export_bindings) |eb| {
             if (eb.kind == .re_export and eb.hasSyntheticDefault(module.semanticSymbols())) {
+                if (!shouldEmitSyntheticDefaultReExport(linker, module, eb)) continue;
                 const def_name = if (metadata) |md| md.default_export_name else "_default";
                 try hoisted_var_names.append(allocator, def_name);
                 break;
@@ -765,6 +777,7 @@ pub fn emitEsmWrappedModule(
     for (module.export_bindings) |eb| {
         if (eb.kind != .re_export) continue;
         if (!eb.hasSyntheticDefault(module.semanticSymbols())) continue;
+        if (!shouldEmitSyntheticDefaultReExport(linker, module, eb)) continue;
         const rec_idx = eb.import_record_index orelse continue;
         if (rec_idx >= module.import_records.len) continue;
         const source_mod_idx = module.import_records[rec_idx].resolved;
