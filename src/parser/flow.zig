@@ -1720,20 +1720,18 @@ pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         if (next == .string_literal or next == .identifier) {
             try self.advance(); // skip 'module'
             try self.advance(); // skip name
-            if (self.current() == .l_curly) {
-                // balanced brace skip
-                try self.advance(); // skip '{'
-                var depth: u32 = 1;
-                while (depth > 0 and self.current() != .eof) {
-                    switch (self.current()) {
-                        .l_curly => depth += 1,
-                        .r_curly => depth -= 1,
-                        else => {},
-                    }
-                    if (depth > 0) try self.advance();
-                }
-                try self.expect(.r_curly);
-            }
+            try skipBalancedBraces(self);
+            return NodeIndex.none;
+        }
+    }
+
+    // declare namespace NS { ... } — ambient namespace, 본문 전체 type-only → 통째 strip
+    if (self.isContextual("namespace")) {
+        const next = try self.peekNextKind();
+        if (next == .identifier) {
+            try self.advance(); // skip 'namespace'
+            try self.advance(); // skip name
+            try skipBalancedBraces(self);
             return NodeIndex.none;
         }
     }
