@@ -427,7 +427,9 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
     expect(names).toEqual(['zntc:react-native:runtime', 'zntc:react-native:require-context']);
   });
 
-  test('native 외 inline babel plugin 지정 시 babel plugin 추가', () => {
+  // DISABLED: babel.config.js auto-detection/loading is temporarily turned off
+  // in preset.ts (unstable). Re-enable this test together with that block.
+  test.skip('native 외 inline babel plugin 지정 시 babel plugin 추가', () => {
     const opts = buildRnBundleOptions(
       baseInput({
         extra: {
