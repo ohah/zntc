@@ -245,6 +245,7 @@ pub const ResolveCache = struct {
         r.custom_extensions = options.resolve_extensions;
         r.main_fields = if (options.main_fields.len == 0) defaultMainFieldsFor(platform) else options.main_fields;
         r.node_paths = options.node_paths;
+        r.react_native_asset_scale_fallback = platform == .react_native;
         const has_custom = custom_conditions.len > 0;
         const cond_import = if (has_custom)
             buildConditions(allocator, baseConditionsFor(platform, .static_import), custom_conditions) catch baseConditionsFor(platform, .static_import)

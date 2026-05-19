@@ -354,6 +354,9 @@ pub const Resolver = struct {
     pkg_json_cache: ?*pkg_json.PackageJsonCache = null,
     /// NODE_PATH 추가 탐색 경로 (--node-paths). 상위 디렉토리 탐색 실패 시 폴백.
     node_paths: []const []const u8 = &.{},
+    /// React Native asset resolver 호환: `name.ext` base 파일이 없어도
+    /// `name@2x.ext` / `name@3x.ext` 같은 scale variant가 있으면 그 파일로 해석한다.
+    react_native_asset_scale_fallback: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Resolver {
         return .{ .allocator = allocator };
@@ -440,11 +443,76 @@ pub const Resolver = struct {
         }
 
         if (self.fileExists(abs_path)) return try self.makeResult(abs_path);
+        if (try self.tryReactNativeScaleAssetFallback(abs_path)) |result| return result;
         if (try self.tryExtensions(abs_path)) |result| return result;
         if (try self.tryTsExtensionMapping(abs_path)) |result| return result;
         if (!maybe_dir) {
             if (try self.tryDirectoryIndex(abs_path)) |result| return result;
         }
+        return null;
+    }
+
+    fn isReactNativeScaleAssetExt(ext: []const u8) bool {
+        inline for (&[_][]const u8{
+            ".bmp", ".gif",  ".jpg", ".jpeg", ".png", ".psd",  ".svg",   ".webp", ".tiff", ".tif", ".xml", ".avif", ".ico",
+            ".m4v", ".mov",  ".mp4", ".mpeg", ".mpg", ".webm", ".aac",   ".aiff", ".caf",  ".m4a", ".mp3", ".wav",  ".html",
+            ".pdf", ".yaml", ".yml", ".otf",  ".ttf", ".woff", ".woff2",
+        }) |candidate| {
+            if (std.ascii.eqlIgnoreCase(ext, candidate)) return true;
+        }
+        return false;
+    }
+
+    fn hasScaleSuffix(name_without_ext: []const u8) bool {
+        if (name_without_ext.len < 4 or name_without_ext[name_without_ext.len - 1] != 'x') return false;
+
+        var cursor = name_without_ext.len - 1;
+        var saw_digit = false;
+        var saw_dot = false;
+        while (cursor > 0) {
+            const ch = name_without_ext[cursor - 1];
+            if (std.ascii.isDigit(ch)) {
+                saw_digit = true;
+                cursor -= 1;
+                continue;
+            }
+            if (ch == '.' and !saw_dot and saw_digit) {
+                saw_dot = true;
+                saw_digit = false;
+                cursor -= 1;
+                continue;
+            }
+            break;
+        }
+        return saw_digit and cursor > 0 and name_without_ext[cursor - 1] == '@';
+    }
+
+    fn tryReactNativeScaleAssetFallback(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
+        if (!self.react_native_asset_scale_fallback) return null;
+
+        const ext = std.fs.path.extension(abs_path);
+        if (ext.len == 0 or !isReactNativeScaleAssetExt(ext)) return null;
+
+        const dir = std.fs.path.dirname(abs_path) orelse return null;
+        const basename = std.fs.path.basename(abs_path);
+        if (basename.len <= ext.len) return null;
+
+        const name_without_ext = basename[0 .. basename.len - ext.len];
+        if (hasScaleSuffix(name_without_ext)) return null;
+
+        // Metro assetResolutions 중 현재 RN asset metadata 모델이 표현하는 정수 scale 후보.
+        // base 파일은 위 fileExists에서 이미 확인했으므로 @1x, @2x, @3x, @4x만 순서대로 본다.
+        var scale: u32 = 1;
+        while (scale <= 4) : (scale += 1) {
+            const variant_name = try std.fmt.allocPrint(self.allocator, "{s}@{d}x{s}", .{ name_without_ext, scale, ext });
+            defer self.allocator.free(variant_name);
+            if (!self.fileExistsIn(dir, variant_name)) continue;
+
+            const variant_path = try std.fs.path.join(self.allocator, &.{ dir, variant_name });
+            defer self.allocator.free(variant_path);
+            return self.makeResult(variant_path);
+        }
+
         return null;
     }
 
