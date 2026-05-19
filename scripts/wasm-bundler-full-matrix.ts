@@ -232,11 +232,22 @@ const cases: Case[] = [
 ];
 
 // ─── 실행 ───
+// status 는 producer(아래 분류)와 consumer(말미 요약)가 공유 — 문자열 오타가
+// 회귀를 "제약 완화"로 오분류해 CI 를 green 으로 통과시키는 걸 막는다.
+const STATUS = {
+  OK: "OK",
+  FAIL: "FAIL",
+  EXPECTED_FAIL: "EXPECTED-FAIL",
+  UNEXPECTED_FAIL: "UNEXPECTED-FAIL",
+  EXPECTED_FAIL_BUT_OK: "EXPECTED-FAIL-BUT-OK",
+} as const;
+type Status = (typeof STATUS)[keyof typeof STATUS];
+
 interface Result {
   group: string;
   label: string;
   ok: boolean;
-  status: string;
+  status: Status | "";
   notes: string[];
 }
 const results: Result[] = [];
@@ -244,7 +255,7 @@ const results: Result[] = [];
 for (const c of cases) {
   const notes: string[] = [];
   let ok = true;
-  let status = "";
+  let status: Status | "" = "";
 
   const chunks = buildChunks(c.entry, c.opts);
 
@@ -253,20 +264,20 @@ for (const c of cases) {
     if (c.expectFailMatch) {
       const matched = c.expectFailMatch.test(msg);
       ok = matched;
-      status = matched ? "EXPECTED-FAIL" : "UNEXPECTED-FAIL";
+      status = matched ? STATUS.EXPECTED_FAIL : STATUS.UNEXPECTED_FAIL;
       notes.push(`msg=${msg}`);
     } else {
       ok = false;
-      status = "FAIL";
+      status = STATUS.FAIL;
       notes.push(`msg=${msg || "(none)"}`);
     }
   } else {
     if (c.expectFailMatch) {
       ok = false;
-      status = "EXPECTED-FAIL-BUT-OK";
+      status = STATUS.EXPECTED_FAIL_BUT_OK;
       notes.push(`got ${chunks.length} chunk(s)`);
     } else {
-      status = "OK";
+      status = STATUS.OK;
     }
 
     // 모든 chunk 합쳐서 패턴 검증
@@ -307,27 +318,25 @@ for (const r of results) {
   for (const n of r.notes) console.log(`     ${n}`);
 }
 
-const fails = results.filter((r) => !r.ok);
-console.log(`\n${"=".repeat(60)}`);
-console.log(`Total: ${results.length}, OK: ${results.length - fails.length}, FAIL: ${fails.length}`);
-if (fails.length > 0) {
-  console.log(`\nFAILS:`);
-  for (const f of fails) console.log(`  - [${f.status}] ${f.group} / ${f.label}`);
-}
-
 // EXPECTED-FAIL-BUT-OK = 의도된 제약(CodeSplittingRequiresESM 등)이 더 이상
 // 에러로 막히지 않는 케이스. 회귀가 아니라 제약 변경이므로 CI 를 막지 않고
 // 정보성으로만 노출 — 제약을 영구 해제할지는 별도 판단 (이슈 추적).
 // hard fail = 그 외 모든 !ok (UNEXPECTED-FAIL / MISSING / UNEXPECTED-PRESENT
 // / FAIL): 이전에 통과하던 동작이 깨진 진짜 회귀.
-const hardFails = fails.filter((r) => r.status !== "EXPECTED-FAIL-BUT-OK");
-const constraintLifted = fails.filter((r) => r.status === "EXPECTED-FAIL-BUT-OK");
+const constraintLifted = results.filter((r) => r.status === STATUS.EXPECTED_FAIL_BUT_OK);
+const hardFails = results.filter((r) => !r.ok && r.status !== STATUS.EXPECTED_FAIL_BUT_OK);
+const okCount = results.length - hardFails.length - constraintLifted.length;
+console.log(`\n${"=".repeat(60)}`);
+console.log(
+  `Total: ${results.length}, OK: ${okCount}, 회귀: ${hardFails.length}, 제약완화: ${constraintLifted.length}`,
+);
 if (constraintLifted.length > 0) {
   console.log(`\n::notice::의도 제약 완화 ${constraintLifted.length}건 (회귀 아님, 검토 대상):`);
   for (const f of constraintLifted) console.log(`  - ${f.group} / ${f.label}`);
 }
 if (hardFails.length > 0) {
   console.log(`\n❌ 회귀 ${hardFails.length}건 — CI fail`);
+  for (const f of hardFails) console.log(`  - [${f.status}] ${f.group} / ${f.label}`);
   process.exit(1);
 }
 console.log("\n✅ 회귀 없음");

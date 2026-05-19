@@ -793,8 +793,11 @@ export function mountApp() {
       stdio: 'pipe',
     });
 
-    await waitForServer(BUILD_JSX_PORT, { timeoutMs: 10000 });
-    await waitForServer(DEV_JSX_PORT, { timeoutMs: 15000 });
+    // preview·devServer 는 위에서 동시에 spawn — 대기도 병렬.
+    await Promise.all([
+      waitForServer(BUILD_JSX_PORT, { timeoutMs: 15000 }),
+      waitForServer(DEV_JSX_PORT, { timeoutMs: 15000 }),
+    ]);
   });
 
   test.afterAll(async () => {
