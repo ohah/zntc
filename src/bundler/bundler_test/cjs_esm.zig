@@ -1894,6 +1894,45 @@ test "ESM re-export: CJS require member access keeps re-export source body" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = { registerAsset, getAssetByID }") != null);
 }
 
+test "RN asset registry: scale-only asset keeps Metro base name and scale" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.registerAsset = function registerAsset(asset) { return asset; };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset } from './registry.js';
+    );
+    try writeFile(tmp.dir, "assets.ts",
+        \\import Poster from './poster@3x.webp';
+        \\export { Poster };
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Poster } from './assets';
+        \\console.log(Poster);
+    );
+    try writeFile(tmp.dir, "poster@3x.webp", "webp");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .asset_registry = "./AssetRegistry.js",
+        .loader_overrides = &.{.{ .ext = ".webp", .loader = .file }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return default;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"name\": \"poster\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"scales\": [3]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"name\": \"poster@3x\"") == null);
+}
+
 test "ESM namespace import: CJS named re-export member binds via require getter" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

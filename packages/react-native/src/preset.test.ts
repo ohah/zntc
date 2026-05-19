@@ -453,7 +453,11 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
       }),
     );
     expect(opts.plugins?.length).toBe(3);
-    expect(opts.plugins?.[2]?.name).toBe('zntc:react-native:metro-resolve-request');
+    expect(opts.plugins?.map((p) => p.name)).toEqual([
+      'zntc:react-native:metro-resolve-request',
+      'zntc:react-native:runtime',
+      'zntc:react-native:require-context',
+    ]);
   });
 
   test('extra.additionalPlugins → plugins 끝에 append', () => {

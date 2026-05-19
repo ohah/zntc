@@ -402,7 +402,19 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
 
   // Plugin set — RN preset 기본 runtime/require-context + optional Babel compatibility
   // + optional MetroResolveRequest + optional additional.
-  const plugins: ZntcPlugin[] = [
+  const plugins: ZntcPlugin[] = [];
+
+  if (extra?.metroResolveRequest) {
+    const opts: MetroResolveRequestOptions = {
+      resolveRequest: extra.metroResolveRequest,
+      // RN preset 의 rnPlatform (ios/android) 을 MetroPlatform 으로. caller 가
+      // web 시나리오를 원하면 metro-resolve-request 를 직접 만들어 plugin 에 주입.
+      platform: rnPlatform as MetroPlatform,
+    };
+    plugins.push(createMetroResolveRequestPlugin(opts));
+  }
+
+  plugins.push(
     createAssetPlugin({
       projectRoot,
       assetExts,
@@ -411,7 +423,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       sourceExts,
       babelTransformerPath: extra?.babelTransformerPath,
     }),
-  ];
+  );
 
   // Babel compatibility is opt-in by detection. Native RN preset/worklet/codegen
   // paths cover the default case, so projects with only native-equivalent Babel
@@ -432,15 +444,6 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   // }
 
   plugins.push(createRequireContextPlugin());
-  if (extra?.metroResolveRequest) {
-    const opts: MetroResolveRequestOptions = {
-      resolveRequest: extra.metroResolveRequest,
-      // RN preset 의 rnPlatform (ios/android) 을 MetroPlatform 으로. caller 가
-      // web 시나리오를 원하면 metro-resolve-request 를 직접 만들어 plugin 에 주입.
-      platform: rnPlatform as MetroPlatform,
-    };
-    plugins.push(createMetroResolveRequestPlugin(opts));
-  }
   if (extra?.additionalPlugins) {
     plugins.push(...extra.additionalPlugins);
   }

@@ -11,6 +11,10 @@ interface OnLoadHandler {
   (args: { path: string }): Promise<{ contents?: string } | null> | { contents?: string } | null;
 }
 
+interface OnResolveHandler {
+  (args: { path: string; importer?: string }): { path?: string } | null;
+}
+
 interface CapturedHandler {
   filter: RegExp;
   handler: OnLoadHandler;
@@ -24,6 +28,21 @@ function captureHandlers(config: PluginConfig): CapturedHandler[] {
       captured.push({ filter: filter.filter, handler });
     },
     onResolve() {},
+    onResolveContext() {},
+    onTransform() {},
+  };
+  plugin.setup(fakeBuild as never);
+  return captured;
+}
+
+function captureResolveHandlers(config: PluginConfig): Array<{ filter: RegExp; handler: OnResolveHandler }> {
+  const plugin = createAssetPlugin(config);
+  const captured: Array<{ filter: RegExp; handler: OnResolveHandler }> = [];
+  const fakeBuild = {
+    onLoad() {},
+    onResolve(filter: { filter: RegExp }, handler: OnResolveHandler) {
+      captured.push({ filter: filter.filter, handler });
+    },
     onResolveContext() {},
     onTransform() {},
   };
@@ -57,6 +76,30 @@ describe('createAssetPlugin', () => {
     const result = handlers[0]!.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
     expect(result?.contents).toBe(ZNTC_HMR_CLIENT_CODE);
     expect(result?.contents).not.toContain('__ZNTC_FORWARD_CLIENT_LOGS__');
+  });
+
+  test('Metro asset resolution — base 파일 없이 @3x 파일만 있어도 logical asset import 해결', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-rn-scale-asset-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      const asset3x = join(dir, 'src', 'poster@3x.webp');
+      writeFileSync(asset3x, 'webp');
+
+      const handlers = captureResolveHandlers({
+        ...baseConfig,
+        projectRoot: dir,
+        assetExts: ['webp'],
+      });
+
+      expect(handlers.length).toBe(1);
+      const resolved = handlers[0]!.handler({
+        path: './poster.webp',
+        importer: join(dir, 'src', 'index.ts'),
+      });
+      expect(resolved).toEqual({ path: asset3x });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('babelTransformerPath 미지정 — HMRClient.js handler 만 등록 (custom transformer 없음)', () => {
