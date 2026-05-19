@@ -663,6 +663,42 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: f<T>(name: Type) 는 generic-call 아닌 relational (babel async-arrow-like)" {
+    // async <T>(fn: () => T); — babel: BinaryExpression (async<T)>(fn:()=>T typecast).
+    // generic-call 로는 무효(call arg 에 `name:` 불가) → 누출 없이 relational.
+    var r = try e2eFlow(std.testing.allocator, "async <T>(fn: () => T);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("async<T>fn;", r.output);
+
+    // async 무관 — 일반 식별자도 동일
+    var r2 = try e2eFlow(std.testing.allocator, "foo <T>(fn: () => T);");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("foo<T>fn;", r2.output);
+
+    // 회귀 가드: 정상 generic call 은 불변 (`(...)` 가 typecast-paren 아님)
+    var r3 = try e2eFlow(std.testing.allocator, "foo<T>(x);");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("foo(x);", r3.output);
+
+    var r4 = try e2eFlow(std.testing.allocator, "foo<T>(x, y);\nfoo<U>();");
+    defer r4.deinit();
+    try std.testing.expectEqualStrings("foo(x,y);foo();", r4.output);
+
+    var r5 = try e2eFlow(std.testing.allocator, "const r = ident<number>(value);");
+    defer r5.deinit();
+    try std.testing.expectEqualStrings("const r=ident(value);", r5.output);
+
+    // 회귀 가드: 진짜 async generic arrow (=> 있음) 불변
+    var r6 = try e2eFlow(std.testing.allocator, "const f = async <T>(x: T): T => x;");
+    defer r6.deinit();
+    try std.testing.expectEqualStrings("const f=async x=>x;", r6.output);
+
+    // 회귀 가드: 괄호 typecast 단독 불변
+    var r7 = try e2eFlow(std.testing.allocator, "(fn: () => T);");
+    defer r7.deinit();
+    try std.testing.expectEqualStrings("fn;", r7.output);
+}
+
 test "Flow: import type with reserved-word local (babel imports/import-type-keyword)" {
     // import type switch from 'foo' — type-only, local=`switch`(예약어). 통째 strip.
     var r = try e2eFlowModule(std.testing.allocator, "import type switch from 'foo';\nlet a = 1;");
