@@ -511,3 +511,24 @@ pub fn getMtime(path: []const u8) !i128 {
     const stat = try fs.statFile(path);
     return stat.mtime;
 }
+
+/// 증분 빌드 teardown: `graph.deinit()` 직전에 모든 모듈을 persistent
+/// store 로 이전한다. `putModule` 이 `parse_arena` 소유권을 store 로
+/// 가져가므로 이후 `graph.deinit()` 에서 이중 해제가 발생하지 않는다.
+///
+/// store transfer 는 `parse_arena` 소유권 이동이라 `*Module` mutable 이
+/// 필요하다. graph 내부 전용 `moduleAtMut` 호출을 이 graph 메서드 안으로
+/// 가두어, bundler 등 외부 호출자가 raw `moduleAtMut` 를 직접 잡지 않게
+/// 한다 (phase accessor 불변식 — graph.zig accessor 주석 참조).
+pub fn transferModulesToStore(self: *ModuleGraph, store: *module_store.PersistentModuleStore) void {
+    for (0..self.moduleCount()) |i| {
+        const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+        if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
+        // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록.
+        // 여기서 재-stat 하면 watcher-driven mtime cache 효과가 half-revert
+        // 됨 (Issue #1727 §3). 0 이면 초기 경로에서 실패했던 모듈 —
+        // fallback 으로 한 번 더 stat.
+        const mtime = if (m.mtime != 0) m.mtime else (getMtime(m.path) catch 0);
+        store.putModule(m.path, m, mtime);
+    }
+}

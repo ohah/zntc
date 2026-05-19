@@ -306,6 +306,7 @@ pub const ModuleGraph = struct {
     pub const IncrementalBuildResult = graph_build_flow.IncrementalBuildResult;
     pub const buildIncremental = graph_build_flow.buildIncremental;
     pub const getMtime = graph_build_flow.getMtime;
+    pub const transferModulesToStore = graph_build_flow.transferModulesToStore;
 
     // Import resolution and resolved dependency application — graph/resolve_imports.zig로 위임
     const graph_resolve_imports = @import("graph/resolve_imports.zig");

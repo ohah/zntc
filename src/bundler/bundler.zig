@@ -1813,17 +1813,7 @@ pub const Bundler = struct {
         // putModule이 parse_arena 소유권을 store로 가져가므로
         // graph.deinit()에서 이중 해제가 발생하지 않는다.
         if (self.options.module_store) |store| {
-            for (0..graph.moduleCount()) |i| {
-                // store transfer 가 m.parse_arena 소유권 이동 → *Module mutable 필요.
-                // TODO #1c: store transfer 전용 accessor 메서드 도입 검토.
-                const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
-                if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
-                // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록. 여기서 재-stat
-                // 하면 watcher-driven mtime cache 효과가 half-revert 됨 (Issue #1727 §3).
-                // 0 이면 초기 경로에서 실패했던 모듈 — fallback 으로 한 번 더 stat.
-                const mtime = if (m.mtime != 0) m.mtime else (ModuleGraph.getMtime(m.path) catch 0);
-                store.putModule(m.path, m, mtime);
-            }
+            graph.transferModulesToStore(store);
         }
 
         var first_err: ?*const types.BundlerDiagnostic = null;
