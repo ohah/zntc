@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 152 128" role="img" aria-label="ZNTC transform pipeline">
+  <defs>
+    <linearGradient id="p" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- source (raw 코드 라인) -->
+  <g fill="#8a807a">
+    <rect x="12" y="44" width="34" height="11" rx="5"/>
+    <rect x="12" y="58" width="24" height="11" rx="5"/>
+    <rect x="12" y="72" width="34" height="11" rx="5"/>
+  </g>
+  <!-- transform arrow -->
+  <path fill="url(#p)" d="M56 56 H78 V46 L100 64 L78 82 V72 H56 Z"/>
+  <!-- bundled output -->
+  <rect x="108" y="42" width="44" height="44" rx="12" fill="url(#p)"/>
+</svg>

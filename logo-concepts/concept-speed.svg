@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ZNTC native speed">
+  <defs>
+    <linearGradient id="s" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- motion trails -->
+  <g fill="url(#s)">
+    <rect x="6" y="40" width="22" height="9" rx="4"/>
+    <rect x="6" y="59" width="32" height="9" rx="4"/>
+    <rect x="6" y="78" width="22" height="9" rx="4"/>
+  </g>
+  <!-- forward arrowhead (속도) -->
+  <path fill="url(#s)" d="M48 18 L104 64 L48 110 L70 64 Z"/>
+</svg>
