@@ -47,38 +47,42 @@ pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
     return parseType(self);
 }
 
-/// 리턴 타입 어노테이션 (`: Type`). 함수 선언에서 사용.
-/// Flow의 `%checks` predicate도 여기서 소비한다 (타입 뒤에 붙을 수 있음).
+/// Flow `%checks` predicate (`%checks` | `%checks(expr)`) 를 소비. strip 전용
+/// — 토큰만 먹고 버린다. 소비했으면 true. `%`는 .percent, `checks`는 identifier.
+fn consumeChecksPredicate(self: *Parser) ParseError2!bool {
+    if (self.current() != .percent) return false;
+    if ((try self.peekNextKind()) != .identifier) return false;
+    const saved = self.saveState();
+    try self.advance(); // '%'
+    if (!std.mem.eql(u8, self.tokenText(), "checks")) {
+        self.restoreState(saved); // %foo 같은 임의 identifier 는 무시
+        return false;
+    }
+    try self.advance(); // 'checks'
+    if (self.current() == .l_paren) {
+        try self.advance(); // '('
+        _ = try self.parseAssignmentExpression();
+        try self.expect(.r_paren);
+    }
+    return true;
+}
+
+/// 리턴 타입 어노테이션 (`: Type`). 함수 선언/arrow 에서 사용.
+/// Flow `%checks` predicate 도 소비: 선행(타입 없는 inferred — arrow
+/// `): %checks =>`) + 후행(`: T %checks`) 둘 다.
 pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .colon) return NodeIndex.none;
     try self.advance();
+    // 선행 %checks: 타입 없는 inferred predicate. parseType 전에 처리하지
+    // 않으면 parseType(`%`) 가 실패해 arrow 감지가 붕괴된다 (#3527).
+    if (try consumeChecksPredicate(self)) return NodeIndex.none;
     var ty = try parseType(self);
     // type predicate: value is Type — Flow type guard (TS와 동일 구문)
     if (self.current() == .identifier and self.isContextual("is")) {
         try self.advance(); // skip 'is'
         ty = try parseType(self);
     }
-    // %checks — Flow type guard predicate. 타입 스트리핑에서는 무시.
-    // `%`는 .percent 토큰, `checks`는 identifier.
-    if (self.current() == .percent) {
-        const next = try self.peekNextKind();
-        if (next == .identifier) {
-            // %checks만 유효 — %foo 같은 임의 identifier는 무시
-            const saved = self.saveState();
-            try self.advance(); // skip '%'
-            if (!std.mem.eql(u8, self.tokenText(), "checks")) {
-                self.restoreState(saved);
-                return ty;
-            }
-            try self.advance(); // skip 'checks'
-            // %checks(expr) 형태도 가능
-            if (self.current() == .l_paren) {
-                try self.advance(); // skip '('
-                _ = try self.parseAssignmentExpression();
-                try self.expect(.r_paren);
-            }
-        }
-    }
+    _ = try consumeChecksPredicate(self); // 후행 %checks
     return ty;
 }
 

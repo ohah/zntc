@@ -979,3 +979,21 @@ test "Flow: this-param inline function type annotation stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let cb=(function(){});", r.output);
 }
+
+test "Flow: inferred-predicate arrow `): %checks =>` stripped (#3527)" {
+    var r = try e2eFlow(std.testing.allocator, "const x = (y: mixed): %checks => typeof y === 'string';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=y=>typeof y===\"string\";", r.output);
+}
+
+test "Flow: %checks(expr) inferred-predicate arrow stripped (#3527)" {
+    var r = try e2eFlow(std.testing.allocator, "const f = (x: mixed): %checks(typeof x === 'number') => true;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const f=x=>true;", r.output);
+}
+
+test "Flow: trailing %checks 선언문 회귀 가드 (#3527)" {
+    var r = try e2eFlow(std.testing.allocator, "function f(x: number): boolean %checks { return !!x; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(x){return!!x;}", r.output);
+}
