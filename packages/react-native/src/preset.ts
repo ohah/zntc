@@ -31,7 +31,8 @@ import {
 
 import type { CustomResolver, MetroPlatform } from './metro-resolver-types.ts';
 import { createAssetPlugin } from './plugins/asset.ts';
-import { createBabelPlugin, detectCustomPlugins } from './plugins/babel.ts';
+// DISABLED: babel.config.js auto-detection/loading temporarily turned off (unstable).
+// import { createBabelPlugin, detectCustomPlugins } from './plugins/babel.ts';
 import { normalizeExt, requireFromCli } from './plugins/internal.ts';
 import {
   createMetroResolveRequestPlugin,
@@ -415,17 +416,20 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   // Babel compatibility is opt-in by detection. Native RN preset/worklet/codegen
   // paths cover the default case, so projects with only native-equivalent Babel
   // config do not pay a per-file Babel pass.
-  if (detectCustomPlugins(projectRoot, extra?.babel)) {
-    plugins.push(
-      createBabelPlugin({
-        projectRoot,
-        assetExts,
-        rnPlatform,
-        sourceExts,
-        inlineBabel: extra?.babel,
-      }),
-    );
-  }
+  //
+  // DISABLED: babel.config.js auto-detection/loading is currently too unstable.
+  // Re-enable by uncommenting the block below once stabilized.
+  // if (detectCustomPlugins(projectRoot, extra?.babel)) {
+  //   plugins.push(
+  //     createBabelPlugin({
+  //       projectRoot,
+  //       assetExts,
+  //       rnPlatform,
+  //       sourceExts,
+  //       inlineBabel: extra?.babel,
+  //     }),
+  //   );
+  // }
 
   plugins.push(createRequireContextPlugin());
   if (extra?.metroResolveRequest) {
