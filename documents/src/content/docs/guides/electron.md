@@ -68,6 +68,53 @@ app.whenReady().then(() => {
 });
 ```
 
+## zntc.config.ts 로 묶기 (config 파일 방식)
+
+위처럼 npm script 에 flag 를 길게 나열하는 대신, webpack 의 `webpack.config.ts` 처럼 설정을 파일로 분리할 수 있습니다. `zntc.config.{ts,js,json}` 은 `entryPoints` · `platform` · `format` · `packagesExternal` · `outfile` 을 모두 받습니다.
+
+ZNTC config 는 **파일 하나가 빌드 한 개** 입니다(여러 타깃을 한 파일에 배열로 묶는 형태는 미지원). Electron 은 main · preload · renderer 가 platform/format 이 서로 다르므로, webpack 의 Electron 멀티 config 와 동일하게 **타깃별로 config 파일을 나누고 `--config` 로 지정** 합니다.
+
+```ts
+// zntc.main.config.ts
+import { defineConfig } from "@zntc/core";
+
+export default defineConfig({
+  entryPoints: ["src/main.ts"],
+  platform: "node",
+  format: "cjs",          // Electron 28+ ESM main 은 "esm"
+  packagesExternal: true, // electron · Node builtin 등 bare import 유지
+  outfile: "dist/main.cjs",
+});
+```
+
+```ts
+// zntc.preload.config.ts
+import { defineConfig } from "@zntc/core";
+
+export default defineConfig({
+  entryPoints: ["src/preload.ts"],
+  platform: "node",
+  format: "cjs",
+  packagesExternal: true,
+  outfile: "dist/preload.cjs",
+});
+```
+
+renderer 는 browser 가 기본값이라 별도 config 가 필요 없습니다 — `zntc dev src/renderer` / `zntc build src/renderer` 를 그대로 씁니다.
+
+```jsonc
+{
+  "scripts": {
+    "build:main": "zntc --bundle --config zntc.main.config.ts",
+    "build:preload": "zntc --bundle --config zntc.preload.config.ts",
+    "build:renderer": "zntc build src/renderer",
+    "build": "npm-run-all build:main build:preload build:renderer"
+  }
+}
+```
+
+CLI flag 와 config 를 동시에 주면 CLI 가 이깁니다(scalar override). 예: `zntc --bundle --config zntc.main.config.ts --format=esm` 는 config 의 `cjs` 대신 `esm` 으로 빌드합니다. 함수형 config(`defineConfig(({ mode, env }) => ({ … }))`) 로 dev/prod 분기도 가능합니다.
+
 ## 개발 / 프로덕션 스크립트
 
 watch · 재시작 · 동시 실행은 webpack/rspack 의 Electron 가이드와 동일하게 `npm-run-all`, `wait-on`, `nodemon` 등 표준 도구로 구성합니다.

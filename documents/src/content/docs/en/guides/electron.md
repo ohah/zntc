@@ -68,6 +68,53 @@ app.whenReady().then(() => {
 });
 ```
 
+## Using zntc.config.ts (config file)
+
+Instead of long flag lists in npm scripts, you can split the setup into a file — just like webpack's `webpack.config.ts`. `zntc.config.{ts,js,json}` accepts `entryPoints` · `platform` · `format` · `packagesExternal` · `outfile`.
+
+A ZNTC config is **one file = one build** (bundling multiple targets into a single array-style config is not supported). Since Electron's main · preload · renderer differ in platform/format, split the config per target and select it with `--config` — the same as webpack's multi-config Electron setup.
+
+```ts
+// zntc.main.config.ts
+import { defineConfig } from "@zntc/core";
+
+export default defineConfig({
+  entryPoints: ["src/main.ts"],
+  platform: "node",
+  format: "cjs",          // "esm" for Electron 28+ ESM main
+  packagesExternal: true, // keep electron · Node builtin bare imports external
+  outfile: "dist/main.cjs",
+});
+```
+
+```ts
+// zntc.preload.config.ts
+import { defineConfig } from "@zntc/core";
+
+export default defineConfig({
+  entryPoints: ["src/preload.ts"],
+  platform: "node",
+  format: "cjs",
+  packagesExternal: true,
+  outfile: "dist/preload.cjs",
+});
+```
+
+The renderer defaults to `browser`, so it needs no config — keep using `zntc dev src/renderer` / `zntc build src/renderer`.
+
+```jsonc
+{
+  "scripts": {
+    "build:main": "zntc --bundle --config zntc.main.config.ts",
+    "build:preload": "zntc --bundle --config zntc.preload.config.ts",
+    "build:renderer": "zntc build src/renderer",
+    "build": "npm-run-all build:main build:preload build:renderer"
+  }
+}
+```
+
+When a CLI flag and config both set the same option, the CLI wins (scalar override). For example, `zntc --bundle --config zntc.main.config.ts --format=esm` builds as `esm` instead of the config's `cjs`. A functional config (`defineConfig(({ mode, env }) => ({ … }))`) lets you branch dev/prod.
+
 ## Dev / prod scripts
 
 Watch · restart · concurrent execution is wired with standard tooling (`npm-run-all`, `wait-on`, `nodemon`) — the same pattern as webpack/rspack's Electron guides.
