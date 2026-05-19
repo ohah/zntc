@@ -237,9 +237,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         //   → next가 kw_from이고 그 다음이 string_literal이면 type-only가 아님
         //   → next가 kw_from이고 그 다음이 string이 아니면 type-only
         //     (예: import type from from 'bar' — from이 default import 이름)
-        // 비예약 키워드도 타입 이름으로 유효 (import type async from 'bar')
+        // 키워드(예약어 포함)도 type-only import 의 local 로 유효 — 타입 전용
+        // 바인딩은 erase 되어 reserved-word 런타임 충돌 없음 (babel 동일:
+        // `import type switch from 'foo'` → importKind=type, local=`switch`).
+        // `from`/`,` 는 아래 전용 분기/value-import 판정에 위임(여기서 제외).
         if (next == .l_curly or next == .star or next == .identifier or
-            (next != .kw_from and next.isKeyword() and !next.isReservedKeyword()) or
+            (next != .kw_from and next != .comma and next.isKeyword()) or
             (next == .kw_from and blk: {
                 // 2-token lookahead: from 다음이 string이 아니면 type-only
                 const saved = self.saveState();
@@ -366,9 +369,13 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // default import: import foo from "module"
-    // contextual keyword (get/set/number/string/object/type 등)도 import 이름으로 유효
+    // contextual keyword (get/set/number/string/object/type 등)도 import 이름으로 유효.
+    // type-only import 는 local 이 erase 되어 예약어(`switch` 등)도 유효 — babel
+    // `import type switch from 'foo'` (importKind=type, local=`switch`).
     var has_default = false;
-    if (self.current().canBeBindingName()) {
+    if (self.current().canBeBindingName() or
+        (is_type_only and self.current().isKeyword()))
+    {
         const next = try self.peekNextKind();
         if (next == .comma or next == .kw_from) {
             const spec_span = self.currentSpan();
