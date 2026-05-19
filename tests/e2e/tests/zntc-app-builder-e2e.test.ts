@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PORTS } from './ports';
+import { waitForServer } from './wait-for-server';
 
 /**
  * Vite-style app builder (`zntc build` / `zntc dev` / `zntc preview`) 의 브라우저 E2E.
@@ -101,7 +102,7 @@ test.describe.serial('zntc build + preview E2E', () => {
       ['preview', join(fixtureDir, 'dist'), '--port', String(BUILD_PREVIEW_PORT)],
       { stdio: 'pipe' },
     );
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitForServer(BUILD_PREVIEW_PORT);
   });
 
   test.afterAll(async () => {
@@ -163,7 +164,7 @@ test.describe.serial('zntc dev E2E', () => {
     server = spawn(ZNTC_BIN, ['dev', fixtureDir, '--port', String(DEV_PORT)], {
       stdio: 'pipe',
     });
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(DEV_PORT);
   });
 
   test.afterAll(async () => {
@@ -206,7 +207,7 @@ test.describe.serial('zntc dev E2E', () => {
     const server = spawn(ZNTC_BIN, ['dev', dir, '--port', String(OVERLAY_DEV_PORT)], {
       stdio: 'pipe',
     });
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(OVERLAY_DEV_PORT);
 
     try {
       await page.goto(`http://localhost:${OVERLAY_DEV_PORT}/`, { waitUntil: 'domcontentloaded' });
@@ -243,7 +244,7 @@ test.describe.serial('zntc dev E2E', () => {
     const server = spawn(ZNTC_BIN, ['dev', dir, '--port', String(RUNTIME_OVERLAY_DEV_PORT)], {
       stdio: 'pipe',
     });
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(RUNTIME_OVERLAY_DEV_PORT);
 
     try {
       await page.goto(`http://localhost:${RUNTIME_OVERLAY_DEV_PORT}/`, {
@@ -292,7 +293,7 @@ test.describe.serial('zntc dev E2E', () => {
     const server = spawn(ZNTC_BIN, ['dev', dir, '--port', String(REJECTION_OVERLAY_DEV_PORT)], {
       stdio: 'pipe',
     });
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(REJECTION_OVERLAY_DEV_PORT);
 
     try {
       await page.goto(`http://localhost:${REJECTION_OVERLAY_DEV_PORT}/`, {
@@ -362,7 +363,7 @@ test.describe.serial('zntc build: nested CSS path preservation E2E', () => {
       ['preview', join(nestedDir, 'dist'), '--port', String(NESTED_PORT)],
       { stdio: 'pipe' },
     );
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitForServer(NESTED_PORT);
   });
 
   test.afterAll(async () => {
@@ -442,7 +443,7 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
       [ZNTC_JS_CLI, 'preview', join(dir, 'dist'), '--port', String(CSS_MODULE_PREVIEW_PORT)],
       { stdio: 'pipe' },
     );
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitForServer(CSS_MODULE_PREVIEW_PORT);
     try {
       await page.goto(`http://localhost:${CSS_MODULE_PREVIEW_PORT}/`);
       const button = page.getByTestId('button');
@@ -472,7 +473,7 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
         stdio: 'pipe',
       },
     );
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(CSS_MODULE_DEV_PORT);
 
     try {
       await page.goto(`http://localhost:${CSS_MODULE_DEV_PORT}/`);
@@ -561,7 +562,7 @@ $label-color: rgb(140, 30, 20);
       [ZNTC_JS_CLI, 'preview', join(dir, 'dist'), '--port', String(SCSS_PREVIEW_PORT)],
       { stdio: 'pipe' },
     );
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitForServer(SCSS_PREVIEW_PORT);
     try {
       await page.goto(`http://localhost:${SCSS_PREVIEW_PORT}/`);
       await expect(page.getByTestId('panel')).toHaveAttribute('data-ready', 'yes');
@@ -625,7 +626,7 @@ $label-color: rgb(170, 20, 60)
       [ZNTC_JS_CLI, 'preview', join(dir, 'dist'), '--port', String(SASS_HTML_PREVIEW_PORT)],
       { stdio: 'pipe' },
     );
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitForServer(SASS_HTML_PREVIEW_PORT);
     try {
       await page.goto(`http://localhost:${SASS_HTML_PREVIEW_PORT}/`);
       const direct = page.getByTestId('direct');
@@ -651,7 +652,7 @@ $label-color: rgb(170, 20, 60)
         stdio: 'pipe',
       },
     );
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(SCSS_DEV_PORT);
 
     try {
       await page.goto(`http://localhost:${SCSS_DEV_PORT}/`);
@@ -689,7 +690,7 @@ $label-color: rgb(170, 20, 60)
         stdio: 'pipe',
       },
     );
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitForServer(SCSS_RECOVERY_DEV_PORT);
 
     try {
       await page.goto(`http://localhost:${SCSS_RECOVERY_DEV_PORT}/`);
@@ -762,20 +763,6 @@ export function mountApp() {
     await writeFile(join(dir, 'src/main.tsx'), "import { mountApp } from './App';\nmountApp();\n");
   }
 
-  async function waitForServer(port: number, deadlineMs: number): Promise<boolean> {
-    const deadline = Date.now() + deadlineMs;
-    while (Date.now() < deadline) {
-      try {
-        const r = await fetch(`http://localhost:${port}/`);
-        if (r.ok) return true;
-      } catch {
-        // not ready
-      }
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    return false;
-  }
-
   test.beforeAll(async () => {
     buildFixtureDir = await mkdtemp(join(tmpdir(), 'zntc-app-preact-jsx-build-'));
     devFixtureDir = await mkdtemp(join(tmpdir(), 'zntc-app-preact-jsx-dev-'));
@@ -806,11 +793,8 @@ export function mountApp() {
       stdio: 'pipe',
     });
 
-    const previewOk = await waitForServer(BUILD_JSX_PORT, 10000);
-    const devOk = await waitForServer(DEV_JSX_PORT, 15000);
-    if (!previewOk || !devOk) {
-      throw new Error(`servers not ready: preview=${previewOk} dev=${devOk}`);
-    }
+    await waitForServer(BUILD_JSX_PORT, { timeoutMs: 10000 });
+    await waitForServer(DEV_JSX_PORT, { timeoutMs: 15000 });
   });
 
   test.afterAll(async () => {
