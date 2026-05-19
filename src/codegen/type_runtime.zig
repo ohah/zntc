@@ -305,6 +305,13 @@ fn emitFlowEnumDefaultValue(self: anytype, base_type: u32, member_name: []const 
             const slice = std.fmt.bufPrint(&buf, "{d}", .{auto_idx}) catch unreachable;
             try self.write(slice);
         },
+        // Flow 는 bigint enum 멤버에 명시 `= Nn` 을 강제(default 불가)하므로 정상
+        // 입력에선 unreachable — exhaustive 보장 + 방어값(number 동형 + `n`).
+        .bigint => {
+            var buf: [17]u8 = undefined;
+            const slice = std.fmt.bufPrint(&buf, "{d}n", .{auto_idx}) catch unreachable;
+            try self.write(slice);
+        },
         .boolean => try self.write("false"),
     }
 }

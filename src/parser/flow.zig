@@ -2153,6 +2153,7 @@ pub const FlowEnumBaseType = enum(u32) {
     number = 2,
     boolean = 3,
     symbol = 4,
+    bigint = 5,
 };
 
 pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
@@ -2221,6 +2222,8 @@ fn parseFlowEnumBaseType(self: *Parser) ParseError2!FlowEnumBaseType {
         .boolean
     else if (std.mem.eql(u8, text, "symbol"))
         .symbol
+    else if (std.mem.eql(u8, text, "bigint"))
+        .bigint
     else
         .none;
     if (kind != .none) try self.advance();
