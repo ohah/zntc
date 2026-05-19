@@ -920,6 +920,17 @@ fn parseFlowObjectMembers(self: *Parser, terminator: Kind) ParseError2!ast_mod.N
 fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
+    // Flow `proto` 프로퍼티 modifier (`{ proto p: T }` — prototype property).
+    // strip 전용 — 토큰만 소비하고 실제 key 파싱으로 진행. `proto` 가 key 자체인
+    // 경우(`{ proto: T }`/`{ proto?: T }`/`{ proto(): R }`/`{ proto<T>(): R }`)와
+    // 구분: 뒤따르는 토큰이 `:`/`?`/`(`/`<` 면 key, 그 외면 modifier.
+    if (self.isContextual("proto")) {
+        const next = try self.peekNextKind();
+        if (next != .colon and next != .question and next != .l_paren and next != .l_angle) {
+            try self.advance(); // consume `proto` modifier
+        }
+    }
+
     // Variance marker: `+key` covariant (output position) → readonly 등가로 매핑.
     // `-key` contravariant (input position) → 현재 PropertySignatureFlags 에 별도 비트
     // 없음, 무시 (codegen view config 미사용 — RN spec 에서 거의 안 쓰임).
