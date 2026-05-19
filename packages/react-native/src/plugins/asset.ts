@@ -3,8 +3,8 @@
 // 통합. Asset registry / scale variant 처리는 ZNTC 코어가 직접 (preset 의
 // assetRegistry/loader/alias 옵션) 처리한다.
 
-import { readFileSync } from 'node:fs';
-import { basename, extname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 
 import type { ZntcPlugin } from '@zntc/core';
 
@@ -12,6 +12,8 @@ import { HMR_CLIENT_SUFFIX, ZNTC_HMR_CLIENT_CODE } from '../runtime-loader.ts';
 import { escapeRegex } from './escape-regex.ts';
 import { getErrorMessage, normalizeExt, requireFromCli } from './internal.ts';
 import type { PluginConfig } from './types.ts';
+
+const METRO_ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4'];
 
 interface MetroTransformerResult {
   code?: string;
@@ -40,6 +42,47 @@ function svgComponentName(filePath: string): string {
     .map((part) => part[0]!.toUpperCase() + part.slice(1))
     .join('');
   return pascal ? `Svg${pascal}` : 'SvgComponent';
+}
+
+function isRelativeSpecifier(path: string): boolean {
+  return path.startsWith('./') || path.startsWith('../');
+}
+
+function isScaledAssetName(name: string): boolean {
+  return /@\d+(?:\.\d+)?x$/.test(name);
+}
+
+function createAssetResolvePattern(assetExts: readonly string[]): RegExp | null {
+  const extensions = assetExts.map((e) => escapeRegex(normalizeExt(e).slice(1))).filter(Boolean);
+  if (extensions.length === 0) return null;
+  return new RegExp(`\\.(${extensions.join('|')})$`, 'i');
+}
+
+function resolveMetroAssetFile(specifier: string, importer: string | undefined): string | null {
+  if (!importer) return null;
+  if (!isRelativeSpecifier(specifier) && !isAbsolute(specifier)) return null;
+
+  const ext = extname(specifier);
+  const baseName = basename(specifier, ext);
+  if (!ext || isScaledAssetName(baseName)) return null;
+
+  const specifierDir = dirname(specifier);
+  const originDir = isAbsolute(specifier) ? dirname(specifier) : resolve(dirname(importer), specifierDir);
+  const logicalBase = isAbsolute(specifier)
+    ? join(originDir, baseName)
+    : resolve(dirname(importer), specifierDir, baseName);
+
+  // Metro DependencyGraph.resolveAsset 와 같은 후보군. base 파일이 없어도 @3x 같은
+  // scale variant 만 있으면 assetFiles 로 취급하고, ModuleResolution 은 그중
+  // lexicographically lowest path 하나를 graph module 로 사용한다.
+  const candidates = [
+    `${logicalBase}${ext}`,
+    ...METRO_ASSET_RESOLUTIONS.map((resolution) => `${logicalBase}@${resolution}x${ext}`),
+  ].filter((path) => existsSync(path));
+
+  if (candidates.length === 0) return null;
+  candidates.sort();
+  return candidates[0]!;
 }
 
 export function createSvgComponentModule(svg: string, filePath: string): string {
@@ -72,6 +115,14 @@ export function createAssetPlugin(config: PluginConfig): ZntcPlugin {
   return {
     name: 'zntc:react-native:runtime',
     setup(build) {
+      const assetResolvePattern = createAssetResolvePattern(config.assetExts);
+      if (assetResolvePattern) {
+        build.onResolve({ filter: assetResolvePattern }, (args) => {
+          const resolved = resolveMetroAssetFile(args.path, args.importer);
+          return resolved ? { path: resolved } : null;
+        });
+      }
+
       // HMRClient.js path 매칭 — onLoad 응답으로 ZNTC_HMR_CLIENT_CODE 그대로.
       const hmrClientPattern = new RegExp(`${escapeRegex(HMR_CLIENT_SUFFIX)}$`);
       build.onLoad({ filter: hmrClientPattern }, () => ({

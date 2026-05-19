@@ -199,6 +199,7 @@ pub const AssetEmitInput = struct {
     name_without_ext: []const u8,
     url: []const u8,
     scales: []const u32,
+    primary_scale: u32 = 1,
     project_root: []const u8,
 };
 
@@ -213,8 +214,9 @@ pub fn emitAssetRegistryCall(
     input: AssetEmitInput,
 ) !EmittedAsset {
     const dims = asset_meta.extractDimensions(input.bytes);
-    const width = if (dims) |d| d.width else 0;
-    const height = if (dims) |d| d.height else 0;
+    const primary_scale = if (input.primary_scale == 0) 1 else input.primary_scale;
+    const width = if (dims) |d| @divTrunc(d.width, primary_scale) else 0;
+    const height = if (dims) |d| @divTrunc(d.height, primary_scale) else 0;
     const asset_type = asset_meta.AssetType.fromExtension(input.ext);
     const type_name = asset_type.typeName(input.ext);
 
@@ -310,8 +312,36 @@ pub const ScaleCollection = struct {
     variants: []const Module.ScaleVariant,
 };
 
+pub const ScaleInfo = struct {
+    logical_name: []const u8,
+    scale: u32,
+};
+
+/// `name@3x` 같은 Metro scale suffix 를 분리한다. 현재 RN asset copy 경로는 정수
+/// scale 만 보관하므로 `@1.5x` 는 기존 base-name 취급을 유지한다.
+pub fn parseScaleSuffix(name_without_ext: []const u8) ?ScaleInfo {
+    if (name_without_ext.len < 4 or name_without_ext[name_without_ext.len - 1] != 'x') return null;
+    var digit_start = name_without_ext.len - 1;
+    while (digit_start > 0 and std.ascii.isDigit(name_without_ext[digit_start - 1])) {
+        digit_start -= 1;
+    }
+    if (digit_start == name_without_ext.len - 1) return null;
+    if (digit_start == 0 or name_without_ext[digit_start - 1] != '@') return null;
+    const scale = std.fmt.parseUnsigned(u32, name_without_ext[digit_start .. name_without_ext.len - 1], 10) catch return null;
+    if (scale == 0) return null;
+    return .{
+        .logical_name = name_without_ext[0 .. digit_start - 1],
+        .scale = scale,
+    };
+}
+
+fn scaleVariantBaseName(alloc: std.mem.Allocator, logical_name: []const u8, scale: u32) ![]const u8 {
+    if (scale == 1) return try alloc.dupe(u8, logical_name);
+    return try std.fmt.allocPrint(alloc, "{s}@{d}x", .{ logical_name, scale });
+}
+
 /// `name.ext`의 sibling을 스캔해 `name@2x.ext`, `name@3x.ext` 등을 수집.
-/// Metro는 base(1x)가 반드시 존재해야 하며 variant만 있으면 매칭 안 함 — 같은 규칙.
+/// Metro 호환: base(1x)가 없어도 scale variant 만 있으면 해당 scale 로 등록한다.
 pub fn collectScaleVariants(
     alloc: std.mem.Allocator,
     abs_path: []const u8,
@@ -319,38 +349,47 @@ pub fn collectScaleVariants(
     ext: []const u8,
     asset_names: []const u8,
     dir_pattern: []const u8,
+    primary_scale: u32,
 ) !ScaleCollection {
     const fs_dir = std.fs.path.dirname(abs_path) orelse return ScaleCollection{ .scales = &.{1}, .variants = &.{} };
 
     var scale_list: std.ArrayList(u32) = .empty;
     defer scale_list.deinit(alloc);
-    try scale_list.append(alloc, 1); // base
 
     var variants: std.ArrayList(Module.ScaleVariant) = .empty;
     defer variants.deinit(alloc);
 
-    // @2x부터 @4x까지 검사 (RN 실전 최대치). @1x 명시는 base와 중복이므로 무시.
-    // stat으로 존재 여부 먼저 확인 — 없으면 readFileAlloc의 큰 alloc + read 시도 회피.
-    var scale: u32 = 2;
+    // Metro 기본 assetResolutions 의 정수 scale subset. @1.5x 는 현재 u32 metadata
+    // 모델에서 표현하지 못하므로 기존처럼 일반 파일명으로만 처리한다.
+    var scale: u32 = 1;
     while (scale <= 4) : (scale += 1) {
-        const variant_name = try std.fmt.allocPrint(alloc, "{s}@{d}x{s}", .{ name_without_ext, scale, ext });
+        const variant_basename = try scaleVariantBaseName(alloc, name_without_ext, scale);
+        defer alloc.free(variant_basename);
+        const variant_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ variant_basename, ext });
         defer alloc.free(variant_name);
         const variant_path = try std.fs.path.join(alloc, &.{ fs_dir, variant_name });
         defer alloc.free(variant_path);
 
         fs.access(variant_path) catch continue;
+        try scale_list.append(alloc, scale);
+
+        if (scale == primary_scale and std.mem.eql(u8, variant_path, abs_path)) {
+            continue;
+        }
+
         const loaded = fs.readFile(alloc, variant_path, 100 * 1024 * 1024) catch continue;
         const hash = contentHash(loaded.contents);
-        const variant_basename = try std.fmt.allocPrint(alloc, "{s}@{d}x", .{ name_without_ext, scale });
-        defer alloc.free(variant_basename);
         const output_name = try applyAssetNamingPattern(alloc, asset_names, variant_basename, &hash, ext, dir_pattern);
 
-        try scale_list.append(alloc, scale);
         try variants.append(alloc, .{
             .scale = scale,
             .output_name = output_name,
             .raw_content = loaded.contents,
         });
+    }
+
+    if (scale_list.items.len == 0) {
+        try scale_list.append(alloc, if (primary_scale == 0) 1 else primary_scale);
     }
 
     return ScaleCollection{

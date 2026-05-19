@@ -17,6 +17,7 @@ const ScaleCollection = graph_assets.ScaleCollection;
 const collectScaleVariants = graph_assets.collectScaleVariants;
 const computeAssetDir = graph_assets.computeAssetDir;
 const assetSourceFromBytes = graph_assets.sourceFromBytes;
+const parseScaleSuffix = graph_assets.parseScaleSuffix;
 const graph_mod = @import("../graph.zig");
 const ModuleGraph = graph_mod.ModuleGraph;
 
@@ -101,6 +102,9 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                 basename[0 .. basename.len - ext.len]
             else
                 basename;
+            const scale_info = parseScaleSuffix(name_without_ext);
+            const logical_name_without_ext = if (scale_info) |info| info.logical_name else name_without_ext;
+            const primary_scale = if (scale_info) |info| info.scale else 1;
 
             // [dir]: entry_dir 기준 상대 디렉토리 경로
             const dir = computeAssetDir(module.path, self.entry_dir);
@@ -113,7 +117,7 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
             // RN scale variants (@2x, @3x): asset_registry 활성화 시에만 스캔.
             // 기본 URL 출력 모드에서는 variant가 의미 없음 (런타임이 해석 안 함).
             const scales_result = if (self.asset_registry != null)
-                collectScaleVariants(arena_alloc, module.path, name_without_ext, ext, self.asset_names, dir) catch ScaleCollection{ .scales = &.{1}, .variants = &.{} }
+                collectScaleVariants(arena_alloc, module.path, logical_name_without_ext, ext, self.asset_names, dir, primary_scale) catch ScaleCollection{ .scales = &.{1}, .variants = &.{} }
             else
                 ScaleCollection{ .scales = &.{1}, .variants = &.{} };
 
@@ -148,9 +152,10 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
                     .abs_path = module.path,
                     .bytes = raw,
                     .ext = ext,
-                    .name_without_ext = name_without_ext,
+                    .name_without_ext = logical_name_without_ext,
                     .url = url,
                     .scales = scales_result.scales,
+                    .primary_scale = primary_scale,
                     .project_root = self.project_root,
                 }) catch {
                     module.state = .ready;
