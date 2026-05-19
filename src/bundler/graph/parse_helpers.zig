@@ -45,25 +45,90 @@ pub fn mergeImportRecords(
 ) ![]ImportRecord {
     var records: std.ArrayList(ImportRecord) = .empty;
     errdefer records.deinit(arena_alloc);
-    try records.appendSlice(arena_alloc, previous);
     for (transformed) |rec| {
+        if (hasImportRecord(records.items, rec)) continue;
+        const merged = if (findImportRecord(previous, rec)) |prev| prev else rec;
+        try records.append(arena_alloc, merged);
+    }
+    for (previous) |rec| {
+        // transformer 가 type-only import 를 제거한 뒤에도 이전 parser record 를 되살리면
+        // strictExecutionOrder 가 타입 전용 모듈까지 평가한다. AST 에 없는 record 는 버리고,
+        // AST 노드가 없는 synthetic record(Flow enum runtime 등)만 보존한다.
+        if (!isSyntheticImportRecord(rec)) continue;
         if (hasImportRecord(records.items, rec)) continue;
         try records.append(arena_alloc, rec);
     }
     return records.toOwnedSlice(arena_alloc);
 }
 
-fn hasImportRecord(records: []const ImportRecord, needle: ImportRecord) bool {
+fn findImportRecord(records: []const ImportRecord, needle: ImportRecord) ?ImportRecord {
     for (records) |rec| {
-        if (rec.kind == needle.kind and
-            rec.span.start == needle.span.start and
-            rec.span.end == needle.span.end and
-            std.mem.eql(u8, rec.specifier, needle.specifier))
-        {
-            return true;
-        }
+        if (sameImportRecordIdentity(rec, needle)) return rec;
     }
-    return false;
+    return null;
+}
+
+fn hasImportRecord(records: []const ImportRecord, needle: ImportRecord) bool {
+    return findImportRecord(records, needle) != null;
+}
+
+fn sameImportRecordIdentity(rec: ImportRecord, needle: ImportRecord) bool {
+    return rec.kind == needle.kind and
+        rec.span.start == needle.span.start and
+        rec.span.end == needle.span.end and
+        std.mem.eql(u8, rec.specifier, needle.specifier);
+}
+
+fn isSyntheticImportRecord(rec: ImportRecord) bool {
+    return rec.span.start == 0 and rec.span.end == 0;
+}
+
+test "mergeImportRecords drops parser record removed by transform" {
+    const Span = @import("../../lexer/token.zig").Span;
+    const prev = [_]ImportRecord{.{
+        .specifier = "./types",
+        .kind = .static_import,
+        .span = Span{ .start = 10, .end = 19 },
+    }};
+    const merged = try mergeImportRecords(std.testing.allocator, &prev, &.{});
+    defer std.testing.allocator.free(merged);
+
+    try std.testing.expectEqual(@as(usize, 0), merged.len);
+}
+
+test "mergeImportRecords preserves synthetic record without AST span" {
+    const Span = @import("../../lexer/token.zig").Span;
+    const prev = [_]ImportRecord{.{
+        .specifier = "\x00zntc:flow-enums-runtime",
+        .kind = .require,
+        .span = Span.EMPTY,
+    }};
+    const merged = try mergeImportRecords(std.testing.allocator, &prev, &.{});
+    defer std.testing.allocator.free(merged);
+
+    try std.testing.expectEqual(@as(usize, 1), merged.len);
+    try std.testing.expectEqualStrings("\x00zntc:flow-enums-runtime", merged[0].specifier);
+}
+
+test "mergeImportRecords keeps previous resolved state for unchanged record" {
+    const Span = @import("../../lexer/token.zig").Span;
+    const span = Span{ .start = 10, .end = 17 };
+    const prev = [_]ImportRecord{.{
+        .specifier = "./dep",
+        .kind = .static_import,
+        .span = span,
+        .resolved = @enumFromInt(7),
+    }};
+    const transformed = [_]ImportRecord{.{
+        .specifier = "./dep",
+        .kind = .static_import,
+        .span = span,
+    }};
+    const merged = try mergeImportRecords(std.testing.allocator, &prev, &transformed);
+    defer std.testing.allocator.free(merged);
+
+    try std.testing.expectEqual(@as(usize, 1), merged.len);
+    try std.testing.expectEqual(@as(u32, 7), @intFromEnum(merged[0].resolved));
 }
 
 /// `ExportBinding[]` -> `[]const []const u8` 평탄 이름 슬라이스 (#1883).
