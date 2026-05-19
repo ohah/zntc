@@ -986,6 +986,22 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
         );
     }
 
+    // Flow internal slot: `[[name]]` / `[[name]]?: T` / `[[name]](): R`
+    // (babel ObjectTypeInternalSlot). variance(`+`/`-`)는 위 prefix 에서 소비;
+    // `static [[..]]` 는 declare-class 가 parseStatement 로 통째 strip 되어
+    // 여기 도달 안 함. strip 전용 — balanced `[[..]]` + `?` + 메서드/프롭 소비.
+    if (self.current() == .l_bracket and try self.peekNextKind() == .l_bracket) {
+        try skipBalanced(self, .l_bracket, .r_bracket); // `[[ name ]]` 통째
+        _ = try self.eat(.question);
+        if (self.current() == .l_paren) {
+            try skipBalancedParens(self);
+            if (try self.eat(.colon)) _ = try parseType(self);
+        } else if (try self.eat(.colon)) {
+            _ = try parseType(self);
+        }
+        return NodeIndex.none;
+    }
+
     // Indexer (`[key: T]: U`) 또는 call/construct signature (`(args): R`) — skip.
     if (self.current() == .l_bracket) {
         try skipBalanced(self, .l_bracket, .r_bracket);
