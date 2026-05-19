@@ -961,3 +961,21 @@ test "Flow match: nested object/array binding" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let x=") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let y=") != null);
 }
+
+test "Flow: bare this-param function type alias fully stripped" {
+    var r = try e2eFlow(std.testing.allocator, "type Fn = (this: Foo, x: number) => void;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("", r.output);
+}
+
+test "Flow: this-param function type — with usage stripped" {
+    var r = try e2eFlow(std.testing.allocator, "type Fn = (this: Foo, x: number) => void; let f: Fn = (function () {});");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let f=(function(){});", r.output);
+}
+
+test "Flow: this-param inline function type annotation stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let cb: (this: Window, e: number) => void = (function () {});");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let cb=(function(){});", r.output);
+}
