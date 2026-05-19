@@ -556,6 +556,28 @@ test "Flow: declare module.exports stripped" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: declare namespace stripped (Hermes declare-namespace.js)" {
+    var r = try e2eFlowModule(std.testing.allocator, "declare namespace NS {}\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+
+    // 본문에 declare/import 가 섞인 ambient namespace 도 통째 strip
+    var r2 = try e2eFlowModule(
+        std.testing.allocator,
+        "declare namespace N { declare const a: number; import type T from \"TM\"; }\nlet y = 2;",
+    );
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let y=2;", r2.output);
+
+    // 중첩 brace 도 balanced skip
+    var r3 = try e2eFlowModule(
+        std.testing.allocator,
+        "declare namespace O { declare const o: {| a: number |}; }\nlet z = 3;",
+    );
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let z=3;", r3.output);
+}
+
 test "Flow: interface declaration stripped" {
     var r = try e2eFlow(std.testing.allocator, "interface Foo { x: number; y: string; }\nlet x = 1;");
     defer r.deinit();
