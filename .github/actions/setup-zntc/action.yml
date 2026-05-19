@@ -14,6 +14,13 @@ inputs:
     description: Optional Zig CPU feature set for portable CI artifacts.
     required: false
     default: ""
+  cache-key:
+    description: >-
+      Zig 빌드 캐시 세그먼트. mlugg/setup-zig 의 캐시 키는 레포 전역이며 OS+zig
+      버전만 자동 포함 → 빌드 프로파일(cpu/napi 조합)이 다른 caller 가 같은 키를
+      공유하면 서로 덮어쓰며 thrash. caller 마다 고유 값을 넘길 것.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -22,6 +29,7 @@ runs:
       uses: mlugg/setup-zig@v2
       with:
         version: 0.15.2
+        cache-key: ${{ inputs.cache-key }}
 
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2

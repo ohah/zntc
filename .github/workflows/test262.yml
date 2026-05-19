@@ -30,6 +30,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: test262-unit
 
       - name: Run Test262 runner unit tests
         run: zig build test262
@@ -49,6 +50,9 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # lexer/parser job 이 동일 ReleaseFast 빌드를 의도적으로 공유 (cross-job
+          # 캐시 재사용). 분리하지 말 것 — save race 는 동일 산출물이라 무해.
+          cache-key: test262-run
 
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
@@ -110,6 +114,8 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # test262-lexer 와 동일 ReleaseFast 빌드 — 키 공유로 cross-job 재사용.
+          cache-key: test262-run
 
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast

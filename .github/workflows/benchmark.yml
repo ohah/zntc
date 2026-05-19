@@ -35,6 +35,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: benchmark
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
