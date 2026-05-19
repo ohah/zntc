@@ -39,6 +39,7 @@ import {
   type MetroResolveRequestOptions,
 } from './plugins/metro-resolve-request.ts';
 import { createRequireContextPlugin } from './plugins/require-context.ts';
+import { createStyledComponentsNativePlugin } from './plugins/styled-components-native.ts';
 import type { InlineBabelConfig } from './plugins/types.ts';
 import {
   resolveRnPolyfills,
@@ -424,6 +425,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       babelTransformerPath: extra?.babelTransformerPath,
     }),
   );
+  plugins.push(createStyledComponentsNativePlugin());
 
   // Babel compatibility is opt-in by detection. Native RN preset/worklet/codegen
   // paths cover the default case, so projects with only native-equivalent Babel

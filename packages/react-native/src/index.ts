@@ -111,6 +111,11 @@ export {
   type MetroResolveRequestOptions,
 } from './plugins/metro-resolve-request.ts';
 export { createRequireContextPlugin } from './plugins/require-context.ts';
+export {
+  createStyledComponentsNativePlugin,
+  disableStyledComponentsNativeDomProbe,
+  STYLED_COMPONENTS_NATIVE_PATH_RE,
+} from './plugins/styled-components-native.ts';
 export type { PluginConfig } from './plugins/types.ts';
 export {
   buildRnBundleOptions,

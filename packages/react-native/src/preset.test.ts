@@ -419,12 +419,16 @@ describe('buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh
   });
 });
 
-describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context/[+metro-resolve])', () => {
-  test('기본 2 plugin (asset/require-context)', () => {
+describe('buildRnBundleOptions — plugins (asset/styled-components/optional-babel/require-context/[+metro-resolve])', () => {
+  test('기본 3 plugin (asset/styled-components/require-context)', () => {
     const opts = buildRnBundleOptions(baseInput());
-    expect(opts.plugins?.length).toBe(2);
+    expect(opts.plugins?.length).toBe(3);
     const names = opts.plugins?.map((p) => p.name);
-    expect(names).toEqual(['zntc:react-native:runtime', 'zntc:react-native:require-context']);
+    expect(names).toEqual([
+      'zntc:react-native:runtime',
+      'zntc:react-native:styled-components-native',
+      'zntc:react-native:require-context',
+    ]);
   });
 
   // DISABLED: babel.config.js auto-detection/loading is temporarily turned off
@@ -439,12 +443,13 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
     );
     expect(opts.plugins?.map((p) => p.name)).toEqual([
       'zntc:react-native:runtime',
+      'zntc:react-native:styled-components-native',
       'zntc:react-native:babel-transform',
       'zntc:react-native:require-context',
     ]);
   });
 
-  test('extra.metroResolveRequest 지정 시 3 plugin (metro-resolve-request 추가)', () => {
+  test('extra.metroResolveRequest 지정 시 4 plugin (metro-resolve-request 추가)', () => {
     const opts = buildRnBundleOptions(
       baseInput({
         extra: {
@@ -452,10 +457,11 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
         },
       }),
     );
-    expect(opts.plugins?.length).toBe(3);
+    expect(opts.plugins?.length).toBe(4);
     expect(opts.plugins?.map((p) => p.name)).toEqual([
       'zntc:react-native:metro-resolve-request',
       'zntc:react-native:runtime',
+      'zntc:react-native:styled-components-native',
       'zntc:react-native:require-context',
     ]);
   });
@@ -469,8 +475,8 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
         },
       }),
     );
-    expect(opts.plugins?.length).toBe(3);
-    expect(opts.plugins?.[2]).toBe(userPlugin);
+    expect(opts.plugins?.length).toBe(4);
+    expect(opts.plugins?.[3]).toBe(userPlugin);
   });
 });
 
