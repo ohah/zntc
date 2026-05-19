@@ -61,13 +61,17 @@ pub inline fn isImportExpressionRename(rename: []const u8) bool {
 /// 이 specifier들의 named CJS import는 `require_xxx().name` expression으로
 /// 치환하지 않고 outer binding var를 만든다. 링커의 collision 수집과 metadata
 /// preamble 생성이 같은 기준을 써야 한다.
+const METRO_NON_INLINED_REQUIRE_SPECIFIERS = std.StaticStringMap(void).initComptime(.{
+    .{ "React", {} },
+    .{ "react", {} },
+    .{ "react/jsx-dev-runtime", {} },
+    .{ "react/jsx-runtime", {} },
+    .{ "react-compiler-runtime", {} },
+    .{ "react-native", {} },
+});
+
 pub inline fn isMetroNonInlinedRequireSpecifier(specifier: []const u8) bool {
-    return std.mem.eql(u8, specifier, "React") or
-        std.mem.eql(u8, specifier, "react") or
-        std.mem.eql(u8, specifier, "react/jsx-dev-runtime") or
-        std.mem.eql(u8, specifier, "react/jsx-runtime") or
-        std.mem.eql(u8, specifier, "react-compiler-runtime") or
-        std.mem.eql(u8, specifier, "react-native");
+    return METRO_NON_INLINED_REQUIRE_SPECIFIERS.has(specifier);
 }
 
 /// `Linker.collectUnifiedInput` 반환 컨테이너. unified_mangler.mangleAll 에
