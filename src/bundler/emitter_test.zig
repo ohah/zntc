@@ -1428,6 +1428,81 @@ test "GENERATOR_RUNTIME_MIN: brace balance" {
     try std.testing.expectEqual(opens, closes);
 }
 
+test "CJS runtime: factory 실패 시 빈 module 캐시를 재사용하지 않는다" {
+    const rt = @import("runtime_helpers.zig");
+
+    // CJS factory 는 순환 참조 때문에 실행 전에 module 객체를 캐시한다. 하지만
+    // factory 가 throw 한 경우에는 Node/Metro 처럼 캐시를 폐기해야 한다. RN dev 의
+    // ErrorUtils guard 가 첫 예외를 보고만 하고 다음 require 를 계속 진행하면,
+    // 실패한 빈 exports 가 고정되어 named import 가 undefined 로 보이는 회귀가 난다.
+    try std.testing.expect(std.mem.indexOf(u8, rt.CJS_RUNTIME, "catch (e) { mod = void 0; throw e; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.CJS_RUNTIME_ES5, "catch (e) { mod = void 0; throw e; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.CJS_RUNTIME_MIN, "catch(e){mod=void 0;throw e}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.CJS_RUNTIME_ES5_MIN, "catch(e){mod=void 0;throw e}") != null);
+
+    try expectCjsRuntimeRetriesAfterThrow(rt.CJS_RUNTIME, false);
+    try expectCjsRuntimeRetriesAfterThrow(rt.CJS_RUNTIME_ES5, false);
+    try expectCjsRuntimeRetriesAfterThrow(rt.CJS_RUNTIME_MIN, true);
+    try expectCjsRuntimeRetriesAfterThrow(rt.CJS_RUNTIME_ES5_MIN, true);
+}
+
+fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void {
+    const factory = if (minified)
+        \\$c(function(exports, module) {
+        \\  calls++;
+        \\  if (calls === 1) throw new Error("first failure");
+        \\  exports.value = 42;
+        \\})
+    else
+        \\__commonJS({
+        \\  "dep.js": function(exports, module) {
+        \\    calls++;
+        \\    if (calls === 1) throw new Error("first failure");
+        \\    exports.value = 42;
+        \\  }
+        \\})
+    ;
+
+    var script: std.ArrayList(u8) = .empty;
+    defer script.deinit(std.testing.allocator);
+    try script.appendSlice(std.testing.allocator, runtime);
+    try script.appendSlice(std.testing.allocator,
+        \\var calls = 0;
+        \\var req = 
+    );
+    try script.appendSlice(std.testing.allocator, factory);
+    try script.appendSlice(std.testing.allocator,
+        \\;
+        \\try { req(); } catch (e) {}
+        \\var second = req();
+        \\if (calls !== 2 || second.value !== 42) {
+        \\  throw new Error("stale CJS cache: calls=" + calls + ", value=" + second.value);
+        \\}
+    );
+
+    const result = std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{ "node", "-e", script.items },
+        .max_output_bytes = 16 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{result.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{result.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
 test "HMR runtime: RN reload goes through DevSettings wrapper before native proxy" {
     const rt = @import("runtime_helpers.zig");
 
