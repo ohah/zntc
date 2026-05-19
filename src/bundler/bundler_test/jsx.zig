@@ -37,6 +37,50 @@ test "JSX: component composition" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "<div>") == null);
 }
 
+test "JSX: RN dev default component import from directory index keeps target module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("Widget");
+    try writeFile(tmp.dir, "app.tsx",
+        \\import Widget from './Widget';
+        \\export function App() { return <Widget label="ok" />; }
+        \\console.log(App);
+    );
+    try writeFile(tmp.dir, "Widget/index.tsx",
+        \\function Carousel(props: { data: string[] }) {
+        \\  return <span>{props.data.length}</span>;
+        \\}
+        \\const Widget = (props: { label: string }) => {
+        \\  const data = [props.label];
+        \\  return <Carousel data={data} />;
+        \\};
+        \\export default Widget;
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .dev_mode = true,
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+        .strict_execution_order = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    if (std.mem.indexOf(u8, result.output, "const Widget") == null and
+        std.mem.indexOf(u8, result.output, "Widget =") == null)
+    {
+        std.debug.print("\n=== output ===\n{s}\n=== /output ===\n", .{result.output});
+    }
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Widget =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var Widget = void 0") == null);
+}
+
 test "JSX: component with props" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
