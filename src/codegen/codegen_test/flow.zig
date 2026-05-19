@@ -919,6 +919,41 @@ test "Flow enum: of bigint → callable with bigint values (Hermes enum.js)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "bigint:") == null);
 }
 
+test "Flow enum: 무효 입력 graceful — codegen OOB 패닉 금지" {
+    // `enum A : string {B,}` — 무효 Flow (Hermes: "'{' expected in enum
+    // declaration"). 깨진 enum AST → codegen OOB 패닉(crash) 이었음.
+    var r = try e2eFlow(std.testing.allocator, "enum A : string { B, }\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+
+    // of-base 없이 `:` + body
+    var r2 = try e2eFlow(std.testing.allocator, "enum A : number { B }\nlet y = 2;");
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("let y=2;", r2.output);
+
+    // 무효 head, body 없음
+    var r3 = try e2eFlow(std.testing.allocator, "enum A : string;\nlet z = 3;");
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("let z=3;", r3.output);
+
+    // 유효 braces 내 무효 멤버(키 없음) — codegen .left OOB 방어. 크래시 금지.
+    var r4 = try e2eFlow(std.testing.allocator, "enum E { , A }\nlet a = 1;");
+    defer r4.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r4.output, "let a=1;") != null);
+
+    var r5 = try e2eFlow(std.testing.allocator, "enum F { = 1 }\nlet b = 2;");
+    defer r5.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r5.output, "let b=2;") != null);
+
+    // 정상 enum 회귀 가드 (불변)
+    var r6 = try e2eFlow(std.testing.allocator, "enum E { A, B }\nlet w = 4;");
+    defer r6.deinit();
+    try std.testing.expectEqualStrings(
+        "const E=require(\"flow-enums-runtime\")({A:Symbol(\"A\"),B:Symbol(\"B\")});let w=4;",
+        r6.output,
+    );
+}
+
 test "Flow enum: of bigint empty body → callable (Hermes `enum E of bigint {}`)" {
     var r = try e2eFlow(std.testing.allocator,
         \\enum E of bigint {}

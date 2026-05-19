@@ -253,9 +253,14 @@ pub fn emitFlowEnum(self: anytype, node: Node) std.mem.Allocator.Error!void {
 
     if (is_mirrored) {
         try self.write(".Mirrored([");
-        for (members, 0..) |raw_idx, i| {
-            if (i > 0) try self.writeByte(',');
+        var emitted: u32 = 0;
+        for (members) |raw_idx| {
             const member = self.ast.getNode(@enumFromInt(raw_idx));
+            // 키 없는(무효) 멤버 — member.binary.left 무조건 getNode 하므로
+            // .none 이면 OOB. 무효 입력에서만 발생, skip 으로 견고화.
+            if (member.data.binary.left.isNone()) continue;
+            if (emitted > 0) try self.writeByte(',');
+            emitted += 1;
             const member_name_node = self.ast.getNode(member.data.binary.left);
             const member_name = Ast.stripStringQuotes(self.ast.getText(member_name_node.span));
             try self.writeByte('"');
@@ -268,9 +273,12 @@ pub fn emitFlowEnum(self: anytype, node: Node) std.mem.Allocator.Error!void {
 
     try self.write("({");
     var auto_idx: u32 = 0;
-    for (members, 0..) |raw_idx, i| {
-        if (i > 0) try self.writeByte(',');
+    var emitted: u32 = 0;
+    for (members) |raw_idx| {
         const member = self.ast.getNode(@enumFromInt(raw_idx));
+        if (member.data.binary.left.isNone()) continue; // 무효 멤버 방어 (위와 동일)
+        if (emitted > 0) try self.writeByte(',');
+        emitted += 1;
         const member_name_node = self.ast.getNode(member.data.binary.left);
         const member_name = Ast.stripStringQuotes(self.ast.getText(member_name_node.span));
         try self.write(member_name);
