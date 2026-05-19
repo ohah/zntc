@@ -14,6 +14,7 @@ export default defineConfig({
     starlight({
       title: 'ZNTC',
       description: 'Zig Native Transpiler & Compiler',
+      logo: { src: './src/assets/zntc-logo.svg', alt: 'ZNTC' },
       expressiveCode: {
         themes: ['github-dark', 'github-light'],
         styleOverrides: {
