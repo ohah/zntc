@@ -1954,6 +1954,57 @@ test "ESM re-export: named re-export from ESM binds via exports getter (#1425)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_source.helper") != null);
 }
 
+test "ESM re-export: local import alias getter uses source value in RN ESM wrap" {
+    // react-native-svg 축소 재현:
+    //   elements.ts: import Path from './Path'; export { Path };
+    // RN ESM wrap 에서 elements.ts의 local import binding은 body에서 제거된다.
+    // export getter가 현재 모듈의 rename(Path$1)을 반환하면 선언 없는 자유변수로 남고,
+    // CJS consumer가 __toCommonJS(exports_elements)를 읽는 순간 ReferenceError가 난다.
+    // getter는 source module의 실제 export value로 연결되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "Path.js",
+        \\export default class Path {
+        \\  static displayName = 'Path';
+        \\}
+    );
+    try writeFile(tmp.dir, "elements.js",
+        \\import Path from './Path.js';
+        \\export { Path };
+    );
+    try writeFile(tmp.dir, "other.js",
+        \\export class Path {
+        \\  static displayName = 'OtherPath';
+        \\}
+    );
+    try writeFile(tmp.dir, "consumer.cjs",
+        \\const E = require('./elements.js');
+        \\const Other = require('./other.js');
+        \\globalThis.__zntcPathNames = [E.Path.displayName, Other.Path.displayName].join(',');
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\require('./consumer.cjs');
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const elements_start = std.mem.indexOf(u8, result.output, "//#region elements.js").?;
+    const elements_end = std.mem.indexOfPos(u8, result.output, elements_start, "//#endregion").?;
+    const elements_output = result.output[elements_start..elements_end];
+    try std.testing.expect(std.mem.indexOf(u8, elements_output, "Path: function() { return Path$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_Path.default") != null);
+}
+
 test "ESM re-export: self re-export emits circular_reexport diagnostic (#1425 follow-up)" {
     // alias/resolver가 source를 자기 자신으로 redirect한 경우 (예: bungae alias 패턴)
     // emit 단계에서 자기 참조 getter가 생성되어 무한 재귀가 발생한다.
