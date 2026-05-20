@@ -40,6 +40,27 @@ inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Int
     return if (importer.def_format.isEsm()) .node else .babel;
 }
 
+fn canDeferStaticImportForInlineRequires(
+    m: *const Module,
+    rec_index: u32,
+    target_mod: *const Module,
+    exported_locals: *const std.StringHashMap(void),
+) bool {
+    if (target_mod.uses_top_level_await) return false;
+
+    var saw_binding = false;
+    for (m.import_bindings) |ib| {
+        if (ib.import_record_index != rec_index) continue;
+        saw_binding = true;
+
+        if (ib.is_helper) return false;
+        if (ib.kind != .named or ib.importsDefault()) return false;
+        if (exported_locals.contains(m.importBindingLocalName(ib))) return false;
+    }
+
+    return saw_binding;
+}
+
 fn getOrCreateCjsRequireRef(
     self: *const Linker,
     cache: *std.AutoHashMap(u32, []const u8),
@@ -442,13 +463,27 @@ pub fn buildMetadataForAst(
 
         if (self.strict_execution_order and m.wrap_kind == .esm) {
             // 정적 import의 평가 효과는 모든 importer 본문보다 먼저, 그리고 소스에
-            // 나타난 순서대로 발생해야 한다. RN inlineRequires가 named CJS 값 접근을
-            // lazy expression으로 낮추더라도 factory 평가는 여기서 선행시킨다.
-            for (m.import_records) |rec| {
+            // 나타난 순서대로 발생해야 한다. 단, RN inlineRequires 가 값 사용 지점으로
+            // 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.
+            for (m.import_records, 0..) |rec, rec_index| {
                 if (rec.kind != .static_import and rec.kind != .side_effect) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_mod = self.graph.getModule(rec.resolved) orelse continue;
                 if (self.tree_shaker_active and !target_mod.is_included) continue;
+
+                if (self.inline_requires and
+                    m.wrap_kind == .esm and
+                    rec.kind == .static_import and
+                    !isMetroNonInlinedRequireSpecifier(rec.specifier) and
+                    canDeferStaticImportForInlineRequires(
+                        &m,
+                        @intCast(rec_index),
+                        target_mod,
+                        &exported_locals,
+                    ))
+                {
+                    continue;
+                }
 
                 const target_idx: u32 = @intCast(@intFromEnum(rec.resolved));
                 switch (target_mod.wrap_kind) {

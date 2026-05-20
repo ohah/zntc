@@ -3537,6 +3537,62 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
 }
 
+test "react_native inlineRequires: strict order still defers named CJS imports" {
+    // Metro inlineRequires 는 CJS named import 도 값 사용 지점에서 require 한다.
+    // strictExecutionOrder 가 켜져도 이 named import 를 선행 실행하면 RN app 초기
+    // render 전에 CJS barrel 의 DOM 접근 side effect 가 먼저 터질 수 있다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { Widget } from './ui';
+        \\export function render() {
+        \\  return Widget;
+        \\}
+        \\globalThis.__zntcRender = render;
+    );
+    try writeFile(tmp.dir, "ui.js",
+        \\globalThis.__zntcUiWasRequired = true;
+        \\exports.Widget = 'widget-ready';
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const ui = try absPath(&tmp, "ui.js");
+    defer std.testing.allocator.free(ui);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+        .strict_execution_order = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const eager_ui_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "__zntc_modules[\"{s}\"].fn();",
+        .{ui},
+    );
+    defer std.testing.allocator.free(eager_ui_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, eager_ui_init) == null);
+
+    const lazy_widget = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "__zntc_modules[\"{s}\"].fn().Widget",
+        .{ui},
+    );
+    defer std.testing.allocator.free(lazy_widget);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_widget) != null);
+}
+
 test "react_native inlineRequires: named re-export initializes canonical source at use site" {
     // `import { createStackNavigator } from '@react-navigation/stack'` 형태의
     // named re-export는 barrel 모듈이 아니라 실제 default export source를 실행해야
