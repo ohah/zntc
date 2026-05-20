@@ -1,45 +1,46 @@
 ---
 name: zntc-cli
-description: ZNTC (Zig Native Transpiler & Compiler) 설치 + CLI/NAPI 사용. JS/TS/JSX/Flow transpile, bundle, tree-shake, minify. esbuild/Bun/rolldown/rspack 대체용 (transpile small -62% / bundle small 1위)
+description: ZNTC (Zig Native Transpiler & Compiler) install + CLI/NAPI usage. Transpile JS/TS/JSX/Flow, bundle, tree-shake, minify. Drop-in alternative to esbuild/Bun/rolldown/rspack (transpile small -62% / bundle small 1st place)
 ---
 
-# ZNTC 사용 가이드 (Claude Code skill)
+# ZNTC usage guide (Claude Code skill)
 
-LLM (Claude / GPT 등) 이 ZNTC 의 *설치 + 사용* 을 빠르게 이해하도록 구성. `~/.claude/skills/zntc-cli/SKILL.md` 또는 프로젝트 `.claude/skills/zntc-cli/SKILL.md` 위치.
+A Claude Code skill that teaches LLMs how to install and use ZNTC. Place at `~/.claude/skills/zntc-cli/SKILL.md` (global) or `.claude/skills/zntc-cli/SKILL.md` (per-project).
 
-## 무엇
+## What is ZNTC
 
-ZNTC = Zig 로 작성한 JS/TS 트랜스파일러 + 번들러:
-- **트랜스파일**: TS 타입 strip, JSX, Flow, ES2015+ 다운레벨
-- **번들**: Tree-shake + minify, rolldown/esbuild 동급 속도, 일부 lib 더 작음
-- **호출 방식**: CLI binary, C NAPI (.node), WASM, Vite/Rollup plugin adapter
+ZNTC is a JS/TS transpiler + bundler written in Zig:
 
-## 설치
+- **Transpile**: strip TypeScript types, JSX, Flow; downlevel ES2015+
+- **Bundle**: tree-shake + minify; on par with rolldown/esbuild in speed and sometimes smaller in output
+- **Invocation**: CLI binary, C NAPI (`.node`), WASM, or Vite/Rollup plugin adapter
 
-### Option A: CLI binary (가장 단순)
+## Installation
+
+### Option A: CLI binary (simplest)
 
 ```sh
-# 한 번에 설치 (release binary 다운로드)
+# One-line installer (downloads release binary)
 curl -fsSL https://raw.githubusercontent.com/ohah/zntc/main/install.sh | sh
 
-# 또는 npm
+# Or via npm
 npm install -g @zntc/core
 ```
 
-### Option B: 개별 패키지
+### Option B: Individual packages
 
 ```sh
-# Bundler / CLI (rolldown 대체)
+# Core bundler / CLI (rolldown alternative)
 npm install --save-dev @zntc/core
 
-# Vite 플러그인 (rollup 대체)
+# Vite plugin (rollup alternative)
 npm install --save-dev @zntc/vite-plugin
 
-# Rollup 플러그인
+# Rollup plugin
 npm install --save-dev @zntc/rollup-plugin
 ```
 
-## 빠른 시작
+## Quick start
 
 ### Transpile (TS → JS)
 
@@ -52,7 +53,7 @@ zntc src/main.ts --target=es2020 -o dist/main.js
 ### Bundle
 
 ```sh
-# 단일 파일 번들 (esbuild 동급 사용법)
+# Single-file bundle (esbuild-equivalent usage)
 zntc --bundle src/index.ts -o dist/bundle.js
 
 # Multi-format (rollup-style)
@@ -61,7 +62,7 @@ zntc --bundle src/index.ts \
   --format=cjs --output=dist/cjs/bundle.cjs
 ```
 
-### NAPI (Node.js / Bun in-process — 50× faster than CLI spawn)
+### NAPI (Node.js / Bun in-process — ~50× faster than CLI spawn)
 
 ```ts
 import { transpile, bundle } from '@zntc/core';
@@ -94,21 +95,21 @@ export default defineConfig({
 });
 ```
 
-## 주요 옵션
+## Key options
 
-| Flag | 의미 |
+| Flag | Meaning |
 |---|---|
-| `--bundle` | 번들 모드 (없으면 transpile only) |
-| `--format=esm/cjs/iife` | 출력 모듈 형식 |
-| `--target=es5/es2015/es2020/es2022` | ECMAScript 타깃 (다운레벨링) |
-| `--jsx=automatic/classic/preserve` | JSX 변환 모드 |
-| `--minify` / `--minify-identifiers` / `--minify-whitespace` | minify 모드 (esbuild 동등) |
-| `--tree-shake` | tree-shaking 활성 (`--bundle` 시 default on) |
-| `--watch` | watch mode (HMR — incremental rebuild ~22 ms / 641 module) |
-| `--profile=parse,transform,...` | 단계별 timing stdout (debug) |
-| `--target-platform=node/browser/react-native` | resolution 플랫폼 |
+| `--bundle` | bundle mode (without this flag, transpile only) |
+| `--format=esm/cjs/iife` | output module format |
+| `--target=es5/es2015/es2020/es2022` | ECMAScript target (for downleveling) |
+| `--jsx=automatic/classic/preserve` | JSX transform mode |
+| `--minify` / `--minify-identifiers` / `--minify-whitespace` | minify (esbuild-equivalent flags) |
+| `--tree-shake` | enable tree-shaking (default on with `--bundle`) |
+| `--watch` | watch mode (HMR — incremental rebuild ~22 ms / 641 modules) |
+| `--profile=parse,transform,...` | print per-phase timing to stderr (debug) |
+| `--target-platform=node/browser/react-native` | resolution platform |
 
-## 성능 지표 (2026-05-21, darwin arm64, 20-run median)
+## Performance (2026-05-21, darwin arm64, 20-run median)
 
 | Task | ZNTC | esbuild | Bun | rolldown | rspack |
 |---|---|---|---|---|---|
@@ -118,7 +119,7 @@ export default defineConfig({
 | Bundle 1K modules | **17.0 ms** | 26.8 | 23.3 | 70.2 | 83.8 |
 | Bundle 5K modules | 81.7 ms | 89.1 | **66.4** | 126 | 181 |
 
-## 실전 워크플로
+## Practical workflows
 
 ### React + TypeScript SPA
 
@@ -145,7 +146,7 @@ zntc --bundle src/index.ts \
   --minify
 ```
 
-### Existing Vite project (drop-in)
+### Drop-in to an existing Vite project
 
 ```ts
 // vite.config.ts
@@ -156,34 +157,35 @@ export default {
 };
 ```
 
-## 한계 / 미지원
+## Limitations / not supported
 
-- WASM build: `.wasm` 타깃 미릴리스 (계획 중)
-- Hermes regex named capture group 다운레벨: 미지원 (Hermes 한계, 기록만 strip)
-- Multi-format + dev_mode/splitting/MF 조합 거부 (error 명시)
-- 일부 minify case 에서 zod/effect 가 rolldown 보다 약간 큼 (mangler 격차, deferred)
+- WASM build: `.wasm` target not released yet (planned)
+- Hermes regex named capture group downleveling: not supported (Hermes limitation — only kept in original form)
+- Multi-format + dev_mode/splitting/MF combination is rejected (explicit error)
+- Some minify cases: zod/effect output is slightly larger than rolldown's (mangler gap, deferred work)
 
-## 참고 자료
+## References
 
-- 공식 docs: https://ohah.github.io/zntc/
-- 영어 docs: https://ohah.github.io/zntc/en/
-- llms.txt (사이트맵): https://ohah.github.io/zntc/llms.txt
-- llms-full.txt (전체 docs plain text): https://ohah.github.io/zntc/llms-full.txt
+- Official docs: https://ohah.github.io/zntc/
+- English docs: https://ohah.github.io/zntc/en/
+- llms.txt (sitemap): https://ohah.github.io/zntc/llms.txt
+- llms-full.txt (entire docs as plain text): https://ohah.github.io/zntc/llms-full.txt
 - GitHub: https://github.com/ohah/zntc
-- Playground: https://ohah.github.io/zntc/playground/
+- Playground: https://ohah.github.io/zntc/en/playground/
 
-## Claude Code 설치 방법
+## How to install this skill (Claude Code)
 
-이 파일을 다음 위치에 저장:
 ```sh
+# Global (works in every project)
 mkdir -p ~/.claude/skills/zntc-cli
 curl -fsSL https://ohah.github.io/zntc/zntc-cli.skill.md > ~/.claude/skills/zntc-cli/SKILL.md
 ```
 
-또는 프로젝트 단위:
+Or per-project:
+
 ```sh
 mkdir -p .claude/skills/zntc-cli
 curl -fsSL https://ohah.github.io/zntc/zntc-cli.skill.md > .claude/skills/zntc-cli/SKILL.md
 ```
 
-설치 후 Claude Code 가 `zntc` 또는 `transpile` 관련 작업 시 이 skill 을 *자동 활용*.
+After installing, Claude Code automatically invokes this skill when it detects `zntc`, `transpile`, or `bundle`-related tasks.

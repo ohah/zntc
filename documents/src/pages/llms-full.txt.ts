@@ -1,11 +1,11 @@
 /**
- * llms-full.txt — LLM context 직접 주입용 단일 plain text dump.
+ * llms-full.txt — Single plain-text dump for direct LLM context injection.
  *
- * docs collection 의 모든 페이지 본문을 *순서대로 concat*. LLM 의 long-context
- * window 에 통째로 넣어 사이트 전체를 컨텍스트로 활용 가능. RAG 보조 시스템 없이도
- * 한 번의 fetch 로 모든 문서 학습 가능.
+ * Concatenates every English docs page in order. Designed to be fed to an LLM's
+ * long-context window in one shot — no RAG infrastructure needed. Korean docs
+ * are excluded; readers wanting Korean should browse the docs site.
  *
- * 주의: 매우 큰 응답 (수 MB 가능). 일반 사용자는 사용 안 함.
+ * Note: response is large (hundreds of KB to a few MB). Not intended for end users.
  */
 
 import { getCollection } from 'astro:content';
@@ -13,13 +13,10 @@ import { getCollection } from 'astro:content';
 export async function GET() {
   const docs = await getCollection('docs');
 
-  // 한국어 → 영어 순서 (가독성)
-  const sorted = [...docs].sort((a, b) => {
-    const aEn = a.id.startsWith('en/') ? 1 : 0;
-    const bEn = b.id.startsWith('en/') ? 1 : 0;
-    if (aEn !== bEn) return aEn - bEn;
-    return a.id.localeCompare(b.id);
-  });
+  // English docs only, sorted by id for stable ordering
+  const sorted = [...docs.filter((d) => d.id.startsWith('en/'))].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
 
   const parts = sorted.map((d) => {
     const slug = d.id.replace(/\.(md|mdx)$/, '');
@@ -32,8 +29,9 @@ export async function GET() {
 
   const header = `# ZNTC — All Documentation (LLM-readable single file)
 
-# This is a plain-text concatenation of every page on https://ohah.github.io/zntc/
-# Intended for direct LLM context injection. For sitemap-style links, see /llms.txt.
+# This is a plain-text concatenation of every English page on https://ohah.github.io/zntc/
+# Intended for direct LLM context injection. For a sitemap-style index, see /llms.txt.
+# Korean documentation is not included here; visit the docs site directly for Korean.
 
 `;
 
