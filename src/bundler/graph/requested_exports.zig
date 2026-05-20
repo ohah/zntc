@@ -114,6 +114,10 @@ pub fn populateExportIndexByName(m: *Module, allocator: std.mem.Allocator) !void
 }
 
 pub fn nameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {
+    // PR-Y2: index 가 있으면 O(1) lookup. map 은 non-star eb 만 포함하므로 hit 자체가
+    // "non-star export 존재" 증거. populate 안 된 edge (test fixture / asset module) 만
+    // linear fallback.
+    if (m.export_index_by_name) |map| return map.contains(name);
     for (m.export_bindings) |eb| {
         if (eb.kind == .re_export_star) continue;
         if (std.mem.eql(u8, eb.exported_name, name)) return true;
@@ -182,36 +186,64 @@ pub fn requestedExportsForReExportRecord(
     }
     self.requested_exports_mutex.unlock();
     if (request_all) return requestAll(self, dep_idx);
+    // requested_names 가 비어 있으면 outer 진입 자체가 no-op — star 캐시 계산 회피.
+    if (requested_names.items.len == 0) return changed;
+
+    // PR-Y2: 기존 cross-product O(N×M) 를 O(N) 으로. ECMAScript spec 의 non-star unique
+    // 보장으로 (name → idx) HashMap lookup 1회 (M4 결과: 47ms warm 의 66% 차지하는 inner
+    // loop). re_export_star 의 rec_i 매치는 outer 진입 전 1회 캐싱 후 outer 마다 boolean.
+    const has_star_for_rec = blk: {
+        for (importer.export_bindings) |eb| {
+            if (eb.kind != .re_export_star) continue;
+            const eb_rec = eb.import_record_index orelse continue;
+            if (eb_rec == rec_i) break :blk true;
+        }
+        break :blk false;
+    };
 
     for (requested_names.items) |requested_name| {
-        for (importer.export_bindings) |eb| {
-            const eb_rec = eb.import_record_index orelse continue;
-            if (eb_rec != rec_i) continue;
-            switch (eb.kind) {
-                .re_export => {
-                    if (std.mem.eql(u8, eb.exported_name, requested_name)) {
-                        changed = (try requestNamed(self, dep_idx, eb.local_name)) or changed;
+        // Non-star match: 단일 idx lookup. populate 안 된 edge 는 fallback linear.
+        if (importer.export_index_by_name) |map| {
+            if (map.get(requested_name)) |eb_idx| {
+                const eb = importer.export_bindings[eb_idx];
+                if (eb.import_record_index) |eb_rec| {
+                    if (eb_rec == rec_i) {
+                        switch (eb.kind) {
+                            .re_export => {
+                                changed = (try requestNamed(self, dep_idx, eb.local_name)) or changed;
+                            },
+                            .re_export_namespace => {
+                                return (try requestAll(self, dep_idx)) or changed;
+                            },
+                            .local => {},
+                            // map 은 non-star 만 포함 → 도달 불가.
+                            .re_export_star => unreachable,
+                        }
                     }
-                },
-                // namespace / star re-export 는 dep 전체를 요청한다 — 한 번 `.all` 이 되면
-                // 이후 requested_name 들의 작업은 전부 no-op 이므로 즉시 반환.
-                .re_export_namespace => {
-                    if (std.mem.eql(u8, eb.exported_name, requested_name)) {
-                        return (try requestAll(self, dep_idx)) or changed;
-                    }
-                },
-                .re_export_star => {
-                    // `export * from "./X"` 는 어느 source 가 이 이름을 제공하는지 정적으로
-                    // 알 수 없다 — 후보 source 의 namespace 전체를 요청해야 한다. 그러지
-                    // 않으면 X 가 이 이름을 안 가졌을 때 X 의 import record 가 deferred 인
-                    // 채로 (wrapped barrel 의 `init_*` 로 도달 가능해) 번들에 남아 raw
-                    // `require()` 가 출력된다 (#3136).
-                    if (!nameHasDirectNonStarExport(importer, requested_name)) {
-                        return (try requestAll(self, dep_idx)) or changed;
-                    }
-                },
-                .local => {},
+                }
             }
+        } else {
+            for (importer.export_bindings) |eb| {
+                if (eb.kind == .re_export_star) continue;
+                const eb_rec = eb.import_record_index orelse continue;
+                if (eb_rec != rec_i) continue;
+                if (!std.mem.eql(u8, eb.exported_name, requested_name)) continue;
+                switch (eb.kind) {
+                    .re_export => {
+                        changed = (try requestNamed(self, dep_idx, eb.local_name)) or changed;
+                    },
+                    .re_export_namespace => {
+                        return (try requestAll(self, dep_idx)) or changed;
+                    },
+                    .local, .re_export_star => {},
+                }
+            }
+        }
+
+        // Star match: `export * from "./X"` 는 어느 source 가 이 이름을 제공하는지 정적으로
+        // 알 수 없다 — name 이 non-star 로 직접 export 가 없으면 dep 전체 요청 (#3136).
+        if (has_star_for_rec and !nameHasDirectNonStarExport(importer, requested_name)) {
+            return (try requestAll(self, dep_idx)) or changed;
         }
     }
     return changed;
@@ -259,23 +291,45 @@ pub fn requestDependencyExports(
 
 pub fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const RequestedExports) bool {
     if (req.all) return true;
+    if (req.names.count() == 0) return false;
+    // PR-Y2: requestedExportsForReExportRecord 와 동일 패턴 — index lookup O(1) + star check.
+    const has_star_for_rec = blk: {
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .re_export_star) continue;
+            const eb_rec = eb.import_record_index orelse continue;
+            if (eb_rec == rec_i) break :blk true;
+        }
+        break :blk false;
+    };
+
     var names = req.names.keyIterator();
     while (names.next()) |requested_name| {
-        for (m.export_bindings) |eb| {
-            const eb_rec = eb.import_record_index orelse continue;
-            if (eb_rec != rec_i) continue;
-            switch (eb.kind) {
-                .re_export,
-                .re_export_namespace,
-                => {
-                    if (std.mem.eql(u8, eb.exported_name, requested_name.*)) return true;
-                },
-                .re_export_star => {
-                    if (!nameHasDirectNonStarExport(m, requested_name.*)) return true;
-                },
-                .local => {},
+        if (m.export_index_by_name) |map| {
+            if (map.get(requested_name.*)) |eb_idx| {
+                const eb = m.export_bindings[eb_idx];
+                if (eb.import_record_index) |eb_rec| {
+                    if (eb_rec == rec_i) {
+                        switch (eb.kind) {
+                            .re_export, .re_export_namespace => return true,
+                            .local => {},
+                            .re_export_star => unreachable,
+                        }
+                    }
+                }
+            }
+        } else {
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export_star) continue;
+                const eb_rec = eb.import_record_index orelse continue;
+                if (eb_rec != rec_i) continue;
+                if (!std.mem.eql(u8, eb.exported_name, requested_name.*)) continue;
+                switch (eb.kind) {
+                    .re_export, .re_export_namespace => return true,
+                    .local, .re_export_star => {},
+                }
             }
         }
+        if (has_star_for_rec and !nameHasDirectNonStarExport(m, requested_name.*)) return true;
     }
     return false;
 }
