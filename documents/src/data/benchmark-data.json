@@ -1,67 +1,63 @@
 {
-  "date": "2026-05-06",
+  "date": "2026-05-21",
   "platform": "darwin arm64",
   "runs": {
-    "cli": { "iterations": 5 },
-    "napi": { "warmup": 3, "iterations": 10 },
+    "cli": { "iterations": 20 },
+    "napi": { "warmup": 5, "iterations": 20 },
     "bundlePerf": { "warmup": 5, "iterations": 20 },
     "pipeline": { "iterations": 5 }
   },
   "results": {
     "transpileCli": [
-      { "tool": "ZNTC", "scale": "small (100 lines)", "medianMs": 4.77, "minMs": 2.95, "maxMs": 8.19, "p95Ms": 7.9 },
-      { "tool": "esbuild", "scale": "small (100 lines)", "medianMs": 4.78, "minMs": 3.92, "maxMs": 5.18, "p95Ms": 5.11 },
-      { "tool": "Bun", "scale": "small (100 lines)", "medianMs": 3.71, "minMs": 3.63, "maxMs": 3.9, "p95Ms": 3.9 },
-      { "tool": "oxc (node)", "scale": "small (100 lines)", "medianMs": 16.3, "minMs": 16.1, "maxMs": 16.5, "p95Ms": 16.4 },
-      { "tool": "SWC", "scale": "small (100 lines)", "medianMs": 47.7, "minMs": 47.4, "maxMs": 47.8, "p95Ms": 47.8 },
+      { "tool": "ZNTC", "scale": "small (100 lines)", "medianMs": 1.79, "minMs": 1.55, "maxMs": 2.34, "p95Ms": 2.16 },
+      { "tool": "esbuild", "scale": "small (100 lines)", "medianMs": 3.90, "minMs": 3.58, "maxMs": 4.53, "p95Ms": 4.21 },
+      { "tool": "Bun", "scale": "small (100 lines)", "medianMs": 5.16, "minMs": 4.97, "maxMs": 5.47, "p95Ms": 5.41 },
+      { "tool": "oxc (node)", "scale": "small (100 lines)", "medianMs": 18.3, "minMs": 17.9, "maxMs": 18.8, "p95Ms": 18.7 },
+      { "tool": "SWC", "scale": "small (100 lines)", "medianMs": 49.3, "minMs": 48.1, "maxMs": 54.1, "p95Ms": 53.1 },
 
-      { "tool": "ZNTC", "scale": "medium (1K lines)", "medianMs": 2.3, "minMs": 2.29, "maxMs": 2.48, "p95Ms": 2.45 },
-      { "tool": "esbuild", "scale": "medium (1K lines)", "medianMs": 3.05, "minMs": 3.02, "maxMs": 3.12, "p95Ms": 3.12 },
-      { "tool": "Bun", "scale": "medium (1K lines)", "medianMs": 4.22, "minMs": 4.15, "maxMs": 4.29, "p95Ms": 4.28 },
-      { "tool": "oxc (node)", "scale": "medium (1K lines)", "medianMs": 16.4, "minMs": 16.3, "maxMs": 16.6, "p95Ms": 16.6 },
-      { "tool": "SWC", "scale": "medium (1K lines)", "medianMs": 55.2, "minMs": 50.6, "maxMs": 58.8, "p95Ms": 58.1 },
+      { "tool": "ZNTC", "scale": "medium (1K lines)", "medianMs": 3.02, "minMs": 2.30, "maxMs": 3.25, "p95Ms": 3.25 },
+      { "tool": "esbuild", "scale": "medium (1K lines)", "medianMs": 4.79, "minMs": 3.59, "maxMs": 5.26, "p95Ms": 5.24 },
+      { "tool": "Bun", "scale": "medium (1K lines)", "medianMs": 5.59, "minMs": 5.38, "maxMs": 5.87, "p95Ms": 5.81 },
+      { "tool": "oxc (node)", "scale": "medium (1K lines)", "medianMs": 18.4, "minMs": 17.8, "maxMs": 20.1, "p95Ms": 19.1 },
+      { "tool": "SWC", "scale": "medium (1K lines)", "medianMs": 50.5, "minMs": 49.5, "maxMs": 51.0, "p95Ms": 51.0 },
 
-      { "tool": "ZNTC", "scale": "large (5K lines)", "medianMs": 5.61, "minMs": 5.42, "maxMs": 5.63, "p95Ms": 5.62 },
-      { "tool": "esbuild", "scale": "large (5K lines)", "medianMs": 3.11, "minMs": 3.0, "maxMs": 3.28, "p95Ms": 3.26 },
-      { "tool": "Bun", "scale": "large (5K lines)", "medianMs": 5.99, "minMs": 5.86, "maxMs": 6.33, "p95Ms": 6.29 },
-      { "tool": "oxc (node)", "scale": "large (5K lines)", "medianMs": 16.6, "minMs": 16.4, "maxMs": 17.2, "p95Ms": 17.1 },
-      { "tool": "SWC", "scale": "large (5K lines)", "medianMs": 56.2, "minMs": 55.9, "maxMs": 56.4, "p95Ms": 56.3 }
+      { "tool": "ZNTC", "scale": "large (5K lines)", "medianMs": 5.74, "minMs": 5.54, "maxMs": 6.01, "p95Ms": 5.99 },
+      { "tool": "esbuild", "scale": "large (5K lines)", "medianMs": 3.87, "minMs": 3.51, "maxMs": 4.23, "p95Ms": 4.13 },
+      { "tool": "Bun", "scale": "large (5K lines)", "medianMs": 7.60, "minMs": 7.24, "maxMs": 9.12, "p95Ms": 8.44 },
+      { "tool": "oxc (node)", "scale": "large (5K lines)", "medianMs": 18.5, "minMs": 18.0, "maxMs": 19.4, "p95Ms": 18.8 },
+      { "tool": "SWC", "scale": "large (5K lines)", "medianMs": 56.4, "minMs": 55.9, "maxMs": 58.8, "p95Ms": 57.8 }
     ],
     "bundleCli": [
-      { "tool": "ZNTC", "scale": "small (10 modules)", "medianMs": 3.0, "minMs": 2.87, "maxMs": 3.49, "p95Ms": 3.43 },
-      { "tool": "Bun", "scale": "small (10 modules)", "medianMs": 6.68, "minMs": 6.39, "maxMs": 6.92, "p95Ms": 6.88 },
-      { "tool": "esbuild", "scale": "small (10 modules)", "medianMs": 8.84, "minMs": 8.23, "maxMs": 9.0, "p95Ms": 8.99 },
-      { "tool": "rolldown", "scale": "small (10 modules)", "medianMs": 50.5, "minMs": 48.9, "maxMs": 54.0, "p95Ms": 53.4 },
-      { "tool": "rspack", "scale": "small (10 modules)", "medianMs": 58.8, "minMs": 58.4, "maxMs": 58.9, "p95Ms": 58.9 },
+      { "tool": "ZNTC", "scale": "small (10 modules)", "medianMs": 2.62, "minMs": 2.48, "maxMs": 3.03, "p95Ms": 2.82 },
+      { "tool": "Bun", "scale": "small (10 modules)", "medianMs": 8.05, "minMs": 7.79, "maxMs": 8.43, "p95Ms": 8.24 },
+      { "tool": "esbuild", "scale": "small (10 modules)", "medianMs": 10.8, "minMs": 10.4, "maxMs": 11.2, "p95Ms": 11.1 },
+      { "tool": "rolldown", "scale": "small (10 modules)", "medianMs": 52.3, "minMs": 48.1, "maxMs": 54.5, "p95Ms": 54.0 },
+      { "tool": "rspack", "scale": "small (10 modules)", "medianMs": 62.4, "minMs": 59.4, "maxMs": 63.6, "p95Ms": 63.3 },
 
-      { "tool": "ZNTC", "scale": "medium (1000 modules)", "medianMs": 17.5, "minMs": 17.2, "maxMs": 17.8, "p95Ms": 17.8 },
-      { "tool": "Bun", "scale": "medium (1000 modules)", "medianMs": 20.2, "minMs": 19.9, "maxMs": 21.0, "p95Ms": 20.9 },
-      { "tool": "esbuild", "scale": "medium (1000 modules)", "medianMs": 23.9, "minMs": 23.5, "maxMs": 24.1, "p95Ms": 24.1 },
-      { "tool": "rolldown", "scale": "medium (1000 modules)", "medianMs": 67.8, "minMs": 66.1, "maxMs": 68.8, "p95Ms": 68.7 },
-      { "tool": "rspack", "scale": "medium (1000 modules)", "medianMs": 84.2, "minMs": 84.0, "maxMs": 85.2, "p95Ms": 85.2 },
+      { "tool": "ZNTC", "scale": "medium (1000 modules)", "medianMs": 17.0, "minMs": 16.7, "maxMs": 17.7, "p95Ms": 17.6 },
+      { "tool": "Bun", "scale": "medium (1000 modules)", "medianMs": 23.3, "minMs": 18.2, "maxMs": 29.7, "p95Ms": 27.6 },
+      { "tool": "esbuild", "scale": "medium (1000 modules)", "medianMs": 26.8, "minMs": 25.8, "maxMs": 27.9, "p95Ms": 27.7 },
+      { "tool": "rolldown", "scale": "medium (1000 modules)", "medianMs": 70.2, "minMs": 68.3, "maxMs": 72.3, "p95Ms": 71.7 },
+      { "tool": "rspack", "scale": "medium (1000 modules)", "medianMs": 83.8, "minMs": 80.8, "maxMs": 89.8, "p95Ms": 89.4 },
 
-      { "tool": "ZNTC", "scale": "large (5000 modules)", "medianMs": 80.7, "minMs": 78.8, "maxMs": 81.1, "p95Ms": 81.0 },
-      { "tool": "Bun", "scale": "large (5000 modules)", "medianMs": 67.6, "minMs": 63.7, "maxMs": 74.9, "p95Ms": 74.7 },
-      { "tool": "esbuild", "scale": "large (5000 modules)", "medianMs": 86.1, "minMs": 85.6, "maxMs": 86.6, "p95Ms": 86.5 },
-      { "tool": "rolldown", "scale": "large (5000 modules)", "medianMs": 145, "minMs": 143, "maxMs": 148, "p95Ms": 147 },
-      { "tool": "rspack", "scale": "large (5000 modules)", "medianMs": 211, "minMs": 192, "maxMs": 230, "p95Ms": 227 }
+      { "tool": "ZNTC", "scale": "large (5000 modules)", "medianMs": 81.7, "minMs": 80.0, "maxMs": 253, "p95Ms": 102 },
+      { "tool": "Bun", "scale": "large (5000 modules)", "medianMs": 66.4, "minMs": 59.5, "maxMs": 70.0, "p95Ms": 69.3 },
+      { "tool": "esbuild", "scale": "large (5000 modules)", "medianMs": 89.1, "minMs": 87.8, "maxMs": 90.6, "p95Ms": 90.6 },
+      { "tool": "rolldown", "scale": "large (5000 modules)", "medianMs": 126, "minMs": 123, "maxMs": 133, "p95Ms": 130 },
+      { "tool": "rspack", "scale": "large (5000 modules)", "medianMs": 181, "minMs": 177, "maxMs": 220, "p95Ms": 206 }
     ],
     "napiWasmCli": [
-      { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.335, "minMs": 0.324, "maxMs": 0.369, "p95Ms": 0.368 },
-      { "tool": "WASM (.wasm)", "scale": "small (100 lines)", "medianMs": 0.337, "minMs": 0.272, "maxMs": 1.143, "p95Ms": 0.972 },
-      { "tool": "CLI (subprocess)", "scale": "small (100 lines)", "medianMs": 3.368, "minMs": 3.19, "maxMs": 3.474, "p95Ms": 3.473 },
+      { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.056, "minMs": 0.055, "maxMs": 0.066, "p95Ms": 0.062 },
+      { "tool": "CLI (subprocess)", "scale": "small (100 lines)", "medianMs": 3.727, "minMs": 3.562, "maxMs": 5.024, "p95Ms": 4.328 },
 
-      { "tool": "NAPI (.node)", "scale": "medium (1K lines)", "medianMs": 0.427, "minMs": 0.413, "maxMs": 0.447, "p95Ms": 0.445 },
-      { "tool": "WASM (.wasm)", "scale": "medium (1K lines)", "medianMs": 1.187, "minMs": 1.143, "maxMs": 2.327, "p95Ms": 2.006 },
-      { "tool": "CLI (subprocess)", "scale": "medium (1K lines)", "medianMs": 21.224, "minMs": 20.852, "maxMs": 22.102, "p95Ms": 22.029 },
+      { "tool": "NAPI (.node)", "scale": "medium (1K lines)", "medianMs": 0.465, "minMs": 0.460, "maxMs": 0.556, "p95Ms": 0.519 },
+      { "tool": "CLI (subprocess)", "scale": "medium (1K lines)", "medianMs": 24.334, "minMs": 23.588, "maxMs": 32.878, "p95Ms": 30.390 },
 
-      { "tool": "NAPI (.node)", "scale": "large (5K lines)", "medianMs": 2.18, "minMs": 2.116, "maxMs": 2.28, "p95Ms": 2.242 },
-      { "tool": "WASM (.wasm)", "scale": "large (5K lines)", "medianMs": 5.312, "minMs": 5.029, "maxMs": 5.69, "p95Ms": 5.652 },
-      { "tool": "CLI (subprocess)", "scale": "large (5K lines)", "medianMs": 64.298, "minMs": 62.607, "maxMs": 78.121, "p95Ms": 74.239 },
+      { "tool": "NAPI (.node)", "scale": "large (5K lines)", "medianMs": 2.378, "minMs": 2.307, "maxMs": 2.659, "p95Ms": 2.640 },
+      { "tool": "CLI (subprocess)", "scale": "large (5K lines)", "medianMs": 79.335, "minMs": 70.542, "maxMs": 98.026, "p95Ms": 92.775 },
 
-      { "tool": "NAPI (.node)", "scale": "xlarge (10K lines)", "medianMs": 4.332, "minMs": 4.314, "maxMs": 4.394, "p95Ms": 4.387 },
-      { "tool": "WASM (.wasm)", "scale": "xlarge (10K lines)", "medianMs": 9.453, "minMs": 9.17, "maxMs": 11.033, "p95Ms": 10.716 },
-      { "tool": "CLI (subprocess)", "scale": "xlarge (10K lines)", "medianMs": 65.941, "minMs": 64.56, "maxMs": 67.319, "p95Ms": 66.832 }
+      { "tool": "NAPI (.node)", "scale": "xlarge (10K lines)", "medianMs": 4.965, "minMs": 4.646, "maxMs": 5.814, "p95Ms": 5.780 },
+      { "tool": "CLI (subprocess)", "scale": "xlarge (10K lines)", "medianMs": 88.620, "minMs": 72.489, "maxMs": 109.441, "p95Ms": 108.312 }
     ],
     "bundlePerf": [
       { "tool": "ZNTC", "scale": "small (10 modules, 0 ext)", "medianMs": 2.66 },
