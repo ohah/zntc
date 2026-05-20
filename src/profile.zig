@@ -175,6 +175,10 @@ pub const Category = enum {
     // (caller) 의 진짜 dominant 찾기. entry setup (requested_names 복사 + has_star scan) 와
     // outer loop body (per-name lookup + branch) 분리.
     graph_discover_incr_re_export_entry, // 함수 진입 시 setup (requested_names 복사 + star scan)
+    // entry 내부 3-way (PR-M7). Z1 후 entry 5.6ms 의 진짜 dominant 식별.
+    graph_discover_incr_re_export_entry_get, // requested_exports.get (outer HashMap lookup)
+    graph_discover_incr_re_export_entry_copy, // names.keyIterator + stack/heap append (Z1 buffer)
+    graph_discover_incr_re_export_entry_star_scan, // has_star_for_rec scan (export_bindings 순회)
     graph_discover_incr_re_export_outer, // outer loop body (per-name index lookup + branch)
     graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
@@ -669,6 +673,7 @@ pub fn count(cat: Category) u32 {
 
 /// 지정한 format 으로 리포트 출력.
 pub fn report(writer: anytype, format: Format) !void {
+    @setEvalBranchQuota(20000);
     switch (format) {
         .table => try reportTable(writer),
         .tree => try reportTree(writer),
