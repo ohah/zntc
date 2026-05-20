@@ -27,3 +27,24 @@ test "Module: state transitions" {
     m.state = .ready;
     try std.testing.expectEqual(Module.State.ready, m.state);
 }
+
+test "bundleOrderLessThan: exec_index 동률 시 path 사전순" {
+    // dynamic-only 미방문 모듈은 모두 exec_index = maxInt(u32) — 동률 처리에서
+    // stable sort 가 input 순(= module_index) 보존하던 비결정성 차단 검증.
+    var a = Module.init(@enumFromInt(0), "z/last.ts");
+    var b = Module.init(@enumFromInt(1), "a/first.ts");
+    // exec_index 동률 (default maxInt)
+    try std.testing.expectEqual(a.exec_index, b.exec_index);
+    // path 사전순 — a/first.ts 가 z/last.ts 보다 우선
+    try std.testing.expect(Module.bundleOrderLessThan({}, &b, &a));
+    try std.testing.expect(!Module.bundleOrderLessThan({}, &a, &b));
+}
+
+test "bundleOrderLessThan: exec_index 우선 (path 사전순 무시)" {
+    var a = Module.init(@enumFromInt(0), "a/first.ts");
+    var b = Module.init(@enumFromInt(1), "z/last.ts");
+    a.exec_index = 10;
+    b.exec_index = 5;
+    // a 의 path 가 사전순 앞이지만 exec_index 가 더 커서 b 가 우선
+    try std.testing.expect(Module.bundleOrderLessThan({}, &b, &a));
+}
