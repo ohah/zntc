@@ -853,6 +853,12 @@ interface BuildOptionsCommon {
   outdir?: string;
   /** Output file path (for a single entry, used when write: true). */
   outfile?: string;
+  /**
+   * Multi-format emit (rolldown-style). 배열 길이 >= 2 시 같은 entry 로 각 format 별
+   * build() 호출 후 BuildResult.outputsByFormat 에 결과 묶음. 사용자가 한 호출로
+   * ESM+CJS 동시 출력. graph 재사용은 현재 미지원 (각 format 마다 graph 재빌드).
+   */
+  output?: OutputOptions[];
   /** Whether to write to disk (default: false, automatically true when outdir/outfile is set). */
   write?: boolean;
   /** Allow output files to overwrite input files. */
@@ -1385,6 +1391,12 @@ export interface BuildResult {
   metafile?: string;
   outputCount?: number;
   rnAssetMetadata?: RnAssetMetadata[];
+  /// Multi-format emit (`BuildOptions.output: OutputOptions[]`) 결과 — format 별로 묶음.
+  /// 단일 build/format 모드에서는 undefined.
+  outputsByFormat?: Array<{
+    format: 'esm' | 'cjs' | 'iife' | 'umd' | 'amd';
+    outputFiles: OutputFile[];
+  }>;
 }
 
 /**
@@ -2321,6 +2333,10 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
 
+  if (options.output && options.output.length >= 2) {
+    return buildMultiFormat(options);
+  }
+
   const { napiOptions, cleanup } = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options);
   if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
@@ -2442,6 +2458,37 @@ export async function zntc(options: BuildOptions): Promise<BuildInstance> {
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
   return new BuildInstance(options);
+}
+
+/// esbuild-style `build({output:[...]})` sugar — internal 으로 format 별 build() N회 호출 후
+/// outputsByFormat 으로 묶음. PR-I (#3561) 진입점. graph 재사용은 별도 epic.
+async function buildMultiFormat(options: BuildOptions): Promise<BuildResult> {
+  const outputs = options.output!;
+  const { output: _omit, ...baseOpts } = options as BuildOptions & { output?: OutputOptions[] };
+
+  const aggregated: BuildResult = {
+    outputFiles: [],
+    errors: [],
+    warnings: [],
+    outputsByFormat: [],
+  };
+
+  for (const cfg of outputs) {
+    const r = await build(mergeOutput(baseOpts as BuildOptions, cfg));
+    aggregated.errors.push(...r.errors);
+    aggregated.warnings.push(...r.warnings);
+    aggregated.outputsByFormat!.push({
+      format: cfg.format ?? 'esm',
+      outputFiles: r.outputFiles,
+    });
+  }
+
+  // backward-compat: 첫 entry 의 결과를 outputFiles 에 alias.
+  if (aggregated.outputsByFormat!.length > 0) {
+    aggregated.outputFiles = aggregated.outputsByFormat![0].outputFiles;
+  }
+
+  return aggregated;
 }
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
