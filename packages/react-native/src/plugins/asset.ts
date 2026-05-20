@@ -58,7 +58,10 @@ function createAssetResolvePattern(assetExts: readonly string[]): RegExp | null 
   return new RegExp(`\\.(${extensions.join('|')})$`, 'i');
 }
 
-function resolveMetroAssetFile(specifier: string, importer: string | undefined): string | null {
+function resolveMetroAssetFile(
+  specifier: string,
+  importer: string | null | undefined,
+): string | null {
   if (!importer) return null;
   if (!isRelativeSpecifier(specifier) && !isAbsolute(specifier)) return null;
 
