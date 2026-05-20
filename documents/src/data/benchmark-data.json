@@ -1,5 +1,5 @@
 {
-  "date": "2026-05-06",
+  "date": "2026-05-21",
   "platform": "darwin arm64",
   "runs": {
     "cli": { "iterations": 5 },
@@ -9,59 +9,55 @@
   },
   "results": {
     "transpileCli": [
-      { "tool": "ZNTC", "scale": "small (100 lines)", "medianMs": 4.77, "minMs": 2.95, "maxMs": 8.19, "p95Ms": 7.9 },
-      { "tool": "esbuild", "scale": "small (100 lines)", "medianMs": 4.78, "minMs": 3.92, "maxMs": 5.18, "p95Ms": 5.11 },
-      { "tool": "Bun", "scale": "small (100 lines)", "medianMs": 3.71, "minMs": 3.63, "maxMs": 3.9, "p95Ms": 3.9 },
-      { "tool": "oxc (node)", "scale": "small (100 lines)", "medianMs": 16.3, "minMs": 16.1, "maxMs": 16.5, "p95Ms": 16.4 },
-      { "tool": "SWC", "scale": "small (100 lines)", "medianMs": 47.7, "minMs": 47.4, "maxMs": 47.8, "p95Ms": 47.8 },
+      { "tool": "ZNTC", "scale": "small (100 lines)", "medianMs": 1.81, "minMs": 1.65, "maxMs": 2.15, "p95Ms": 2.12 },
+      { "tool": "esbuild", "scale": "small (100 lines)", "medianMs": 5.59, "minMs": 4.91, "maxMs": 6.99, "p95Ms": 6.74 },
+      { "tool": "Bun", "scale": "small (100 lines)", "medianMs": 5.24, "minMs": 5.10, "maxMs": 5.43, "p95Ms": 5.41 },
+      { "tool": "oxc (node)", "scale": "small (100 lines)", "medianMs": 18.5, "minMs": 18.1, "maxMs": 22.2, "p95Ms": 21.5 },
+      { "tool": "SWC", "scale": "small (100 lines)", "medianMs": 48.0, "minMs": 47.7, "maxMs": 49.4, "p95Ms": 49.2 },
 
-      { "tool": "ZNTC", "scale": "medium (1K lines)", "medianMs": 2.3, "minMs": 2.29, "maxMs": 2.48, "p95Ms": 2.45 },
-      { "tool": "esbuild", "scale": "medium (1K lines)", "medianMs": 3.05, "minMs": 3.02, "maxMs": 3.12, "p95Ms": 3.12 },
-      { "tool": "Bun", "scale": "medium (1K lines)", "medianMs": 4.22, "minMs": 4.15, "maxMs": 4.29, "p95Ms": 4.28 },
-      { "tool": "oxc (node)", "scale": "medium (1K lines)", "medianMs": 16.4, "minMs": 16.3, "maxMs": 16.6, "p95Ms": 16.6 },
-      { "tool": "SWC", "scale": "medium (1K lines)", "medianMs": 55.2, "minMs": 50.6, "maxMs": 58.8, "p95Ms": 58.1 },
+      { "tool": "ZNTC", "scale": "medium (1K lines)", "medianMs": 2.49, "minMs": 2.42, "maxMs": 2.59, "p95Ms": 2.58 },
+      { "tool": "esbuild", "scale": "medium (1K lines)", "medianMs": 4.04, "minMs": 3.98, "maxMs": 4.12, "p95Ms": 4.10 },
+      { "tool": "Bun", "scale": "medium (1K lines)", "medianMs": 6.41, "minMs": 6.21, "maxMs": 6.52, "p95Ms": 6.50 },
+      { "tool": "oxc (node)", "scale": "medium (1K lines)", "medianMs": 18.7, "minMs": 18.4, "maxMs": 19.4, "p95Ms": 19.3 },
+      { "tool": "SWC", "scale": "medium (1K lines)", "medianMs": 50.6, "minMs": 50.5, "maxMs": 51.8, "p95Ms": 51.6 },
 
-      { "tool": "ZNTC", "scale": "large (5K lines)", "medianMs": 5.61, "minMs": 5.42, "maxMs": 5.63, "p95Ms": 5.62 },
-      { "tool": "esbuild", "scale": "large (5K lines)", "medianMs": 3.11, "minMs": 3.0, "maxMs": 3.28, "p95Ms": 3.26 },
-      { "tool": "Bun", "scale": "large (5K lines)", "medianMs": 5.99, "minMs": 5.86, "maxMs": 6.33, "p95Ms": 6.29 },
-      { "tool": "oxc (node)", "scale": "large (5K lines)", "medianMs": 16.6, "minMs": 16.4, "maxMs": 17.2, "p95Ms": 17.1 },
-      { "tool": "SWC", "scale": "large (5K lines)", "medianMs": 56.2, "minMs": 55.9, "maxMs": 56.4, "p95Ms": 56.3 }
+      { "tool": "ZNTC", "scale": "large (5K lines)", "medianMs": 6.66, "minMs": 6.08, "maxMs": 7.09, "p95Ms": 7.04 },
+      { "tool": "esbuild", "scale": "large (5K lines)", "medianMs": 4.35, "minMs": 4.24, "maxMs": 4.51, "p95Ms": 4.48 },
+      { "tool": "Bun", "scale": "large (5K lines)", "medianMs": 7.42, "minMs": 7.23, "maxMs": 7.89, "p95Ms": 7.85 },
+      { "tool": "oxc (node)", "scale": "large (5K lines)", "medianMs": 18.8, "minMs": 18.5, "maxMs": 18.9, "p95Ms": 18.9 },
+      { "tool": "SWC", "scale": "large (5K lines)", "medianMs": 56.9, "minMs": 56.7, "maxMs": 58.9, "p95Ms": 58.7 }
     ],
     "bundleCli": [
-      { "tool": "ZNTC", "scale": "small (10 modules)", "medianMs": 3.0, "minMs": 2.87, "maxMs": 3.49, "p95Ms": 3.43 },
-      { "tool": "Bun", "scale": "small (10 modules)", "medianMs": 6.68, "minMs": 6.39, "maxMs": 6.92, "p95Ms": 6.88 },
-      { "tool": "esbuild", "scale": "small (10 modules)", "medianMs": 8.84, "minMs": 8.23, "maxMs": 9.0, "p95Ms": 8.99 },
-      { "tool": "rolldown", "scale": "small (10 modules)", "medianMs": 50.5, "minMs": 48.9, "maxMs": 54.0, "p95Ms": 53.4 },
-      { "tool": "rspack", "scale": "small (10 modules)", "medianMs": 58.8, "minMs": 58.4, "maxMs": 58.9, "p95Ms": 58.9 },
+      { "tool": "ZNTC", "scale": "small (10 modules)", "medianMs": 2.70, "minMs": 2.62, "maxMs": 2.79, "p95Ms": 2.77 },
+      { "tool": "Bun", "scale": "small (10 modules)", "medianMs": 8.07, "minMs": 7.91, "maxMs": 8.66, "p95Ms": 8.57 },
+      { "tool": "esbuild", "scale": "small (10 modules)", "medianMs": 10.8, "minMs": 10.6, "maxMs": 11.1, "p95Ms": 11.1 },
+      { "tool": "rolldown", "scale": "small (10 modules)", "medianMs": 50.2, "minMs": 49.2, "maxMs": 52.4, "p95Ms": 52.3 },
+      { "tool": "rspack", "scale": "small (10 modules)", "medianMs": 59.6, "minMs": 58.4, "maxMs": 61.3, "p95Ms": 61.1 },
 
-      { "tool": "ZNTC", "scale": "medium (1000 modules)", "medianMs": 17.5, "minMs": 17.2, "maxMs": 17.8, "p95Ms": 17.8 },
-      { "tool": "Bun", "scale": "medium (1000 modules)", "medianMs": 20.2, "minMs": 19.9, "maxMs": 21.0, "p95Ms": 20.9 },
-      { "tool": "esbuild", "scale": "medium (1000 modules)", "medianMs": 23.9, "minMs": 23.5, "maxMs": 24.1, "p95Ms": 24.1 },
-      { "tool": "rolldown", "scale": "medium (1000 modules)", "medianMs": 67.8, "minMs": 66.1, "maxMs": 68.8, "p95Ms": 68.7 },
-      { "tool": "rspack", "scale": "medium (1000 modules)", "medianMs": 84.2, "minMs": 84.0, "maxMs": 85.2, "p95Ms": 85.2 },
+      { "tool": "ZNTC", "scale": "medium (1000 modules)", "medianMs": 18.1, "minMs": 17.7, "maxMs": 18.4, "p95Ms": 18.4 },
+      { "tool": "Bun", "scale": "medium (1000 modules)", "medianMs": 21.6, "minMs": 18.3, "maxMs": 21.8, "p95Ms": 21.8 },
+      { "tool": "esbuild", "scale": "medium (1000 modules)", "medianMs": 26.2, "minMs": 26.0, "maxMs": 26.7, "p95Ms": 26.6 },
+      { "tool": "rolldown", "scale": "medium (1000 modules)", "medianMs": 66.7, "minMs": 66.2, "maxMs": 69.4, "p95Ms": 69.1 },
+      { "tool": "rspack", "scale": "medium (1000 modules)", "medianMs": 84.1, "minMs": 83.0, "maxMs": 85.2, "p95Ms": 85.0 },
 
-      { "tool": "ZNTC", "scale": "large (5000 modules)", "medianMs": 80.7, "minMs": 78.8, "maxMs": 81.1, "p95Ms": 81.0 },
-      { "tool": "Bun", "scale": "large (5000 modules)", "medianMs": 67.6, "minMs": 63.7, "maxMs": 74.9, "p95Ms": 74.7 },
-      { "tool": "esbuild", "scale": "large (5000 modules)", "medianMs": 86.1, "minMs": 85.6, "maxMs": 86.6, "p95Ms": 86.5 },
-      { "tool": "rolldown", "scale": "large (5000 modules)", "medianMs": 145, "minMs": 143, "maxMs": 148, "p95Ms": 147 },
-      { "tool": "rspack", "scale": "large (5000 modules)", "medianMs": 211, "minMs": 192, "maxMs": 230, "p95Ms": 227 }
+      { "tool": "ZNTC", "scale": "large (5000 modules)", "medianMs": 81.6, "minMs": 80.9, "maxMs": 82.5, "p95Ms": 82.3 },
+      { "tool": "Bun", "scale": "large (5000 modules)", "medianMs": 67.4, "minMs": 63.4, "maxMs": 70.4, "p95Ms": 70.1 },
+      { "tool": "esbuild", "scale": "large (5000 modules)", "medianMs": 89.6, "minMs": 88.3, "maxMs": 91.5, "p95Ms": 91.2 },
+      { "tool": "rolldown", "scale": "large (5000 modules)", "medianMs": 125, "minMs": 124, "maxMs": 127, "p95Ms": 127 },
+      { "tool": "rspack", "scale": "large (5000 modules)", "medianMs": 181, "minMs": 176, "maxMs": 183, "p95Ms": 183 }
     ],
     "napiWasmCli": [
-      { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.335, "minMs": 0.324, "maxMs": 0.369, "p95Ms": 0.368 },
-      { "tool": "WASM (.wasm)", "scale": "small (100 lines)", "medianMs": 0.337, "minMs": 0.272, "maxMs": 1.143, "p95Ms": 0.972 },
-      { "tool": "CLI (subprocess)", "scale": "small (100 lines)", "medianMs": 3.368, "minMs": 3.19, "maxMs": 3.474, "p95Ms": 3.473 },
+      { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.063, "minMs": 0.048, "maxMs": 0.069, "p95Ms": 0.068 },
+      { "tool": "CLI (subprocess)", "scale": "small (100 lines)", "medianMs": 3.360, "minMs": 3.270, "maxMs": 4.459, "p95Ms": 4.146 },
 
-      { "tool": "NAPI (.node)", "scale": "medium (1K lines)", "medianMs": 0.427, "minMs": 0.413, "maxMs": 0.447, "p95Ms": 0.445 },
-      { "tool": "WASM (.wasm)", "scale": "medium (1K lines)", "medianMs": 1.187, "minMs": 1.143, "maxMs": 2.327, "p95Ms": 2.006 },
-      { "tool": "CLI (subprocess)", "scale": "medium (1K lines)", "medianMs": 21.224, "minMs": 20.852, "maxMs": 22.102, "p95Ms": 22.029 },
+      { "tool": "NAPI (.node)", "scale": "medium (1K lines)", "medianMs": 0.479, "minMs": 0.459, "maxMs": 0.501, "p95Ms": 0.499 },
+      { "tool": "CLI (subprocess)", "scale": "medium (1K lines)", "medianMs": 21.551, "minMs": 21.483, "maxMs": 21.705, "p95Ms": 21.704 },
 
-      { "tool": "NAPI (.node)", "scale": "large (5K lines)", "medianMs": 2.18, "minMs": 2.116, "maxMs": 2.28, "p95Ms": 2.242 },
-      { "tool": "WASM (.wasm)", "scale": "large (5K lines)", "medianMs": 5.312, "minMs": 5.029, "maxMs": 5.69, "p95Ms": 5.652 },
-      { "tool": "CLI (subprocess)", "scale": "large (5K lines)", "medianMs": 64.298, "minMs": 62.607, "maxMs": 78.121, "p95Ms": 74.239 },
+      { "tool": "NAPI (.node)", "scale": "large (5K lines)", "medianMs": 2.396, "minMs": 2.376, "maxMs": 2.466, "p95Ms": 2.444 },
+      { "tool": "CLI (subprocess)", "scale": "large (5K lines)", "medianMs": 64.049, "minMs": 62.789, "maxMs": 65.246, "p95Ms": 65.187 },
 
-      { "tool": "NAPI (.node)", "scale": "xlarge (10K lines)", "medianMs": 4.332, "minMs": 4.314, "maxMs": 4.394, "p95Ms": 4.387 },
-      { "tool": "WASM (.wasm)", "scale": "xlarge (10K lines)", "medianMs": 9.453, "minMs": 9.17, "maxMs": 11.033, "p95Ms": 10.716 },
-      { "tool": "CLI (subprocess)", "scale": "xlarge (10K lines)", "medianMs": 65.941, "minMs": 64.56, "maxMs": 67.319, "p95Ms": 66.832 }
+      { "tool": "NAPI (.node)", "scale": "xlarge (10K lines)", "medianMs": 4.696, "minMs": 4.653, "maxMs": 4.756, "p95Ms": 4.742 },
+      { "tool": "CLI (subprocess)", "scale": "xlarge (10K lines)", "medianMs": 66.059, "minMs": 62.943, "maxMs": 67.635, "p95Ms": 67.535 }
     ],
     "bundlePerf": [
       { "tool": "ZNTC", "scale": "small (10 modules, 0 ext)", "medianMs": 2.66 },
