@@ -495,6 +495,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     jsxInJs: true,
     configurableExports: true,
     strictExecutionOrder: true,
+    // RN/Hermes 번들은 파일 전체를 먼저 파싱하므로 실행되지 않는 분기라도
+    // raw `import()` 문법이 남으면 릴리즈 빌드에서 실패한다.
+    inlineDynamicImports: true,
     workletTransform: true,
     codegenTransform: true,
     resolveExtensions: buildResolveExtensions(rnPlatform, sourceExts),
