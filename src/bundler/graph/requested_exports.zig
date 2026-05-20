@@ -185,6 +185,7 @@ pub fn requestedExportsForReExportRecord(
     rec_i: usize,
     dep_idx: ModuleIndex,
 ) !bool {
+    var s_entry = profile.begin(.graph_discover_incr_re_export_entry);
     const importer_key: u32 = @intFromEnum(importer.index);
     var changed = false;
 
@@ -200,15 +201,22 @@ pub fn requestedExportsForReExportRecord(
             while (it.next()) |name| {
                 requested_names.append(self.allocator, name.*) catch {
                     self.requested_exports_mutex.unlock();
+                    s_entry.end();
                     return error.OutOfMemory;
                 };
             }
         }
     }
     self.requested_exports_mutex.unlock();
-    if (request_all) return requestAll(self, dep_idx);
+    if (request_all) {
+        s_entry.end();
+        return requestAll(self, dep_idx);
+    }
     // requested_names 가 비어 있으면 outer 진입 자체가 no-op — star 캐시 계산 회피.
-    if (requested_names.items.len == 0) return changed;
+    if (requested_names.items.len == 0) {
+        s_entry.end();
+        return changed;
+    }
 
     // PR-Y2: 기존 cross-product O(N×M) 를 O(N) 으로. ECMAScript spec 의 non-star unique
     // 보장으로 (name → idx) HashMap lookup 1회 (M4 결과: 47ms warm 의 66% 차지하는 inner
@@ -221,7 +229,10 @@ pub fn requestedExportsForReExportRecord(
         }
         break :blk false;
     };
+    s_entry.end();
 
+    var s_outer = profile.begin(.graph_discover_incr_re_export_outer);
+    defer s_outer.end();
     for (requested_names.items) |requested_name| {
         // Non-star match: 단일 idx lookup. populate 안 된 edge 는 fallback linear.
         if (importer.export_index_by_name) |map| {
