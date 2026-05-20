@@ -17,8 +17,7 @@ describe('styled-components/native plugin', () => {
   });
 
   test('공백이 있는 동일 조건식도 비활성화한다', () => {
-    const code =
-      'const shouldUseDOM = typeof window !== "undefined" && "HTMLElement" in window;';
+    const code = 'const shouldUseDOM = typeof window !== "undefined" && "HTMLElement" in window;';
 
     expect(disableStyledComponentsNativeDomProbe(code)).toBe('const shouldUseDOM = false;');
   });
@@ -60,11 +59,11 @@ describe('styled-components/native plugin', () => {
       onBuildEnd() {},
     });
 
-    const path =
-      '/repo/node_modules/styled-components/native/dist/styled-components.native.cjs.js';
+    const path = '/repo/node_modules/styled-components/native/dist/styled-components.native.cjs.js';
     expect(filter?.test(path)).toBe(true);
-    expect(transform?.({ path, code: 'var E="undefined"!=typeof window&&"HTMLElement"in window;' }))
-      .toEqual({ code: 'var E=false;' });
+    expect(
+      transform?.({ path, code: 'var E="undefined"!=typeof window&&"HTMLElement"in window;' }),
+    ).toEqual({ code: 'var E=false;' });
     expect(transform?.({ path, code: 'var E=true;' })).toBe(null);
   });
 });

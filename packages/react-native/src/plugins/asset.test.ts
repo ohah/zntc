@@ -35,7 +35,9 @@ function captureHandlers(config: PluginConfig): CapturedHandler[] {
   return captured;
 }
 
-function captureResolveHandlers(config: PluginConfig): Array<{ filter: RegExp; handler: OnResolveHandler }> {
+function captureResolveHandlers(
+  config: PluginConfig,
+): Array<{ filter: RegExp; handler: OnResolveHandler }> {
   const plugin = createAssetPlugin(config);
   const captured: Array<{ filter: RegExp; handler: OnResolveHandler }> = [];
   const fakeBuild = {

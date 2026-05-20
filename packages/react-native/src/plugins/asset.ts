@@ -67,7 +67,9 @@ function resolveMetroAssetFile(specifier: string, importer: string | undefined):
   if (!ext || isScaledAssetName(baseName)) return null;
 
   const specifierDir = dirname(specifier);
-  const originDir = isAbsolute(specifier) ? dirname(specifier) : resolve(dirname(importer), specifierDir);
+  const originDir = isAbsolute(specifier)
+    ? dirname(specifier)
+    : resolve(dirname(importer), specifierDir);
   const logicalBase = isAbsolute(specifier)
     ? join(originDir, baseName)
     : resolve(dirname(importer), specifierDir, baseName);
