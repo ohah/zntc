@@ -345,6 +345,32 @@ pub const Linker = struct {
         };
     }
 
+    /// per-emit format-dependent state set. 같은 Linker 가 다른 format 으로 reemit 될 때
+    /// 매 emit 직전 호출. emit 루프 진입점에서 매 OutputConfig 마다 재호출 가능.
+    pub const SetEmitFormatOpts = struct {
+        iife_globals: []const types.GlobalEntry = &.{},
+        mf_remotes: []const types.MfBundleConfig.KV = &.{},
+        mf_static_remotes: ?*MfStaticRemotes = null,
+        inline_requires: bool = false,
+        entry_error_guard: bool = false,
+    };
+
+    pub fn setEmitFormat(self: *Linker, format: types.Format, opts: SetEmitFormatOpts) void {
+        self.format = format;
+        self.iife_globals = opts.iife_globals;
+        self.mf_remotes = opts.mf_remotes;
+        self.mf_static_remotes = opts.mf_static_remotes;
+        self.inline_requires = opts.inline_requires;
+        self.entry_error_guard = opts.entry_error_guard;
+    }
+
+    /// emit 경로별 transient state 초기화. splitting 경로가 set 한 ns_preamble_chunked /
+    /// use_shared_ns_preamble 를 다음 emit 진입 전 reset. 단일 → 단일 reemit 시 stale 영향 차단.
+    pub fn resetEmitTransients(self: *Linker) void {
+        self.use_shared_ns_preamble = false;
+        self.ns_preamble_chunked = false;
+    }
+
     pub fn deinit(self: *Linker) void {
         if (self.unified_result) |*ur| ur.deinit();
         for (self.unified_module_scopes) |*b| b.deinit();

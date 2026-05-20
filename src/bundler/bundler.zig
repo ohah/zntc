@@ -1220,21 +1220,20 @@ pub const Bundler = struct {
             // 실제로 없어도 런타임 값은 ReferenceError가 아니라 undefined가 된다.
             l.shim_missing_exports = self.options.shim_missing_exports or self.options.platform == .react_native;
             l.dev_mode = self.options.dev_mode;
-            l.entry_error_guard = self.options.entry_error_guard;
-            l.inline_requires = self.options.platform == .react_native;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
             l.minify_whitespace = self.options.minify_whitespace;
             l.configurable_exports = self.options.configurable_exports;
             // #1791 Phase D: value-ref 0 binding elision 정책을 transformer 와 동기화.
             l.verbatim_module_syntax = self.options.verbatim_module_syntax;
-            // #1824: IIFE external globals 매핑 — linker 가 매핑 유무로 preamble 경로 분기.
-            l.iife_globals = self.options.globals;
-            // PR-1/PR-2 (#3459): 정적 remote import → seam 글로벌 매핑용
-            // KV + 발견 specifier 수집기(emitHostInit preload-gate 용).
-            if (self.options.mf) |*m| {
-                l.mf_remotes = m.remotes;
-                l.mf_static_remotes = &mf_static_remotes;
-            }
+            // per-emit format-dependent state — setter 일원화로 emit 루프에서 매 format 마다 재호출 가능.
+            const mf_opt = self.options.mf;
+            l.setEmitFormat(self.options.format, .{
+                .iife_globals = self.options.globals,
+                .mf_remotes = if (mf_opt) |*m| m.remotes else &.{},
+                .mf_static_remotes = if (mf_opt) |_| &mf_static_remotes else null,
+                .inline_requires = self.options.platform == .react_native,
+                .entry_error_guard = self.options.entry_error_guard,
+            });
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
             // Phase 3b (#1328): populateReExportAliases 가 canonical_name 을 채우려면
