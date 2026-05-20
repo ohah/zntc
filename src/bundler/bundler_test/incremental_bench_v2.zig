@@ -14,8 +14,15 @@ const profile = @import("../../profile.zig");
 test "incremental bench: react-style 10 components, cache hit on no-change" {
     profile.resetForTest();
     profile.setLevel(.summary);
-    // graph_build / graph_finalize 는 enable 만 하고 read 하지 않으면 dead — 측정하는 3 category 만.
-    profile.addCategories(&.{ "parse", "semantic", "graph_discover" });
+    profile.addCategories(&.{
+        "parse",
+        "semantic",
+        "graph_discover",
+        "graph_discover_incr_mtime",
+        "graph_discover_incr_cache_lookup",
+        "graph_discover_incr_cache_hit_assign",
+        "graph_discover_incr_replay",
+    });
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -89,5 +96,23 @@ test "incremental bench: react-style 10 components, cache hit on no-change" {
         cold_parse,        cold_semantic,   cold_discover,     cold_total,
         warm_parse,        warm_semantic,   warm_discover,     warm_total,
         parse_savings_pct, sem_savings_pct, total_savings_pct, if (cold_total == 0) @as(u64, 0) else (cold_parse + cold_semantic) * 100 / cold_total,
+    });
+
+    const w_mtime = profile.totalNs(.graph_discover_incr_mtime);
+    const w_cl = profile.totalNs(.graph_discover_incr_cache_lookup);
+    const w_ha = profile.totalNs(.graph_discover_incr_cache_hit_assign);
+    const w_rp = profile.totalNs(.graph_discover_incr_replay);
+    std.debug.print(
+        \\  warm sub-phase (ns, % of discover):
+        \\    mtime           = {d}ns ({d}%)
+        \\    cache_lookup    = {d}ns ({d}%)
+        \\    cache_hit_assign= {d}ns ({d}%)
+        \\    replay          = {d}ns ({d}%)
+        \\
+    , .{
+        w_mtime, if (warm_discover == 0) @as(u64, 0) else w_mtime * 100 / warm_discover,
+        w_cl,    if (warm_discover == 0) @as(u64, 0) else w_cl * 100 / warm_discover,
+        w_ha,    if (warm_discover == 0) @as(u64, 0) else w_ha * 100 / warm_discover,
+        w_rp,    if (warm_discover == 0) @as(u64, 0) else w_rp * 100 / warm_discover,
     });
 }
