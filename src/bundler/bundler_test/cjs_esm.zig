@@ -97,7 +97,10 @@ test "CJS: ESM imports named from CJS" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".value") != null);
 }
 
-test "CJS: RN strict order eagerly evaluates named CJS import before importer body" {
+test "CJS: RN strict order defers named CJS import with inlineRequires" {
+    // RN inlineRequires 에서는 named CJS import 도 Metro 처럼 값 사용 지점에서 평가된다.
+    // side-effect import 순서는 유지하지만, named binding 의 require 는 본문 실행 전
+    // 강제하지 않는다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "setup.js",
@@ -151,7 +154,7 @@ test "CJS: RN strict order eagerly evaluates named CJS import before importer bo
             return error.TestUnexpectedResult;
         },
     }
-    try std.testing.expectEqualStrings("value:before\n", node_result.stdout);
+    try std.testing.expectEqualStrings("value:after\n", node_result.stdout);
 }
 
 test "CJS: RN strict order skips named import used only as TS type" {
