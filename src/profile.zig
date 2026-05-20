@@ -171,6 +171,11 @@ pub const Category = enum {
     graph_discover_incr_req_outer_map, // self.requested_exports.getOrPut(mod_idx key)
     graph_discover_incr_req_inner_contains, // names.contains(name) (inner HashMap)
     graph_discover_incr_req_inner_put, // names.put(name, {}) (inner HashMap)
+    // re_export caller side decomposition (PR-M6). M5 가 lock+map=17% 만 격리 → 나머지 83%
+    // (caller) 의 진짜 dominant 찾기. entry setup (requested_names 복사 + has_star scan) 와
+    // outer loop body (per-name lookup + branch) 분리.
+    graph_discover_incr_re_export_entry, // 함수 진입 시 setup (requested_names 복사 + star scan)
+    graph_discover_incr_re_export_outer, // outer loop body (per-name index lookup + branch)
     graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
     graph_renumber,
