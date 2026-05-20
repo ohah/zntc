@@ -1,30 +1,41 @@
 ---
 name: zntc-cli
-description: ZNTC (Zig Native Transpiler & Compiler) — transpile/bundle JS/TS/JSX/Flow. Drop-in alternative to esbuild/Bun/rolldown/rspack. Use when the user mentions zntc, transpile, bundle, or wants a fast Vite/Rollup-compatible toolchain.
+description: ZNTC (Zig Native Transpiler & Compiler) — transpile/bundle JS/TS/JSX/Flow. Drop-in alternative to esbuild/Bun/rolldown/rspack. Use when the user mentions zntc, transpile, bundle, react-native build/transpile, or wants a fast Vite/Rollup-compatible toolchain.
 ---
 
 # ZNTC
 
-Zig-based JS/TS transpiler + bundler. CLI, NAPI (`.node`), or Vite/Rollup plugin.
+Zig-based JS/TS transpiler + bundler. Use `npx @zntc/init` to overlay onto an existing project or scaffold a new one — no manual config needed.
 
-## Install
+## Setup with `@zntc/init`
 
 ```sh
-npm install -g @zntc/core         # CLI
-npm install --save-dev @zntc/vite-plugin    # Vite (rollup alternative)
+# Overlay onto an existing project (auto-detects React Native / Vite / Rspack / Webpack)
+npx @zntc/init react-native       # RN CLI project (--platform ios|android)
+npx @zntc/init vite               # add @zntc/vite-plugin to existing Vite config
+npx @zntc/init rspack             # add @zntc/rspack-loader (also handles Webpack)
+
+# Scaffold a brand-new standalone web project (no Vite/Rspack)
+npx @zntc/init web --framework react       # React starter
+npx @zntc/init web --framework vanilla     # vanilla starter
+
+# Help
+npx @zntc/init --help
 ```
 
-## Use
+The init tool edits `package.json`, adds `@zntc/core` + the mode-specific package, and creates a default config only if one doesn't already exist.
+
+## Direct CLI use (after init or for one-shot transpile)
 
 ```sh
-# Transpile
+# Transpile a single file
 zntc input.ts -o output.js
 zntc input.tsx -o output.js --jsx=automatic
 
 # Bundle
 zntc --bundle src/index.ts -o dist/bundle.js --target=es2020 --minify --tree-shake
 
-# Watch (HMR)
+# Watch mode
 zntc --bundle src/index.tsx --watch -o dist/bundle.js
 ```
 
@@ -34,12 +45,6 @@ import { transpile, bundle } from '@zntc/core';
 const { code } = transpile(source, { filename: 'in.tsx', jsx: 'automatic', target: 'es2022' });
 ```
 
-```ts
-// vite.config.ts
-import zntc from '@zntc/vite-plugin';
-export default { plugins: [zntc()] };
-```
-
 ## More details (fetch when needed)
 
 - Sitemap of all docs: <https://ohah.github.io/zntc/llms.txt>
@@ -47,4 +52,4 @@ export default { plugins: [zntc()] };
 - Docs site: <https://ohah.github.io/zntc/en/>
 - GitHub: <https://github.com/ohah/zntc>
 
-Fetch `llms-full.txt` (~400 KB) when you need full CLI flag reference, NAPI API, plugin internals, performance benchmarks, or migration guides.
+Fetch `llms-full.txt` (~400 KB) when you need the full CLI flag reference, NAPI API, plugin internals, performance benchmarks, or migration guides.
