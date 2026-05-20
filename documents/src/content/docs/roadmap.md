@@ -88,7 +88,7 @@ React Native 에서 Tailwind 클래스(`className`)를 스타일로 변환하는
 
 #### React Native CLI + MCP
 
-React Native 빌드는 이미 ZNTC 코어 네이티브 엔진이 수행합니다 (`--platform=react-native`). 추가될 것은 별도 번들러가 아니라 `react-native.config.js` 의 command plugin 진입점 하나입니다 — 이 플러그인만 추가하면 기존 `react-native start`/`react-native bundle` 이 Metro 대신 ZNTC 를 경유합니다 (인자 매핑 + 기존 RN dev server 기동). 범용 `zntc` CLI 는 RN 의존성에 오염되지 않도록 이 진입점을 `@zntc/react-native` 에 둡니다. 또한 ZNTC dev server 에 이미 있는 MCP(JSON-RPC) 에 RN 빌드·리로드 제어 도구를 추가해, LLM 에이전트가 RN 빌드를 직접 구동할 수 있게 할 예정입니다.
+React Native 빌드·실행·디버깅은 이미 ZNTC 코어 네이티브 엔진이 수행합니다 (`--platform=react-native`). 추가될 것은 별도 번들러가 아니라 `react-native.config.js` 의 command plugin 진입점 하나입니다 — 이 플러그인만 추가하면 기존 `react-native start` / `react-native bundle` / `react-native run-ios|android` 가 Metro 대신 ZNTC 를 경유합니다 (인자 매핑 + 기존 RN dev server 기동 + 디바이스 실행/디버그 채널 연결). 범용 `zntc` CLI 는 RN 의존성에 오염되지 않도록 이 진입점을 `@zntc/react-native` 에 둡니다. 또한 ZNTC dev server 에 이미 있는 MCP(JSON-RPC) 에 RN 빌드·리로드·실행·디버그 제어 도구를 추가해, LLM 에이전트가 RN 의 빌드부터 실행·디버깅까지 직접 구동할 수 있게 할 예정입니다.
 
 #### React Native Hermes 타겟 다운레벨
 

@@ -88,7 +88,7 @@ NativeWind, which turns Tailwind classes (`className`) into styles in React Nati
 
 #### React Native CLI + MCP
 
-React Native builds are already produced by the ZNTC native core engine (`--platform=react-native`). What gets added is not a separate bundler but a single `react-native.config.js` command-plugin entry point — adding that plugin makes the existing `react-native start`/`react-native bundle` go through ZNTC instead of Metro (argument mapping + spinning up the existing RN dev server). This entry point lives in `@zntc/react-native` so the general-purpose `zntc` CLI stays free of RN dependencies. The MCP (JSON-RPC) already shipped in the ZNTC dev server will also gain React Native build/reload control tools, so LLM agents can drive RN builds directly.
+React Native builds, launches, and debugging are already handled by the ZNTC native core engine (`--platform=react-native`). What gets added is not a separate bundler but a single `react-native.config.js` command-plugin entry point — adding that plugin makes the existing `react-native start` / `react-native bundle` / `react-native run-ios|android` go through ZNTC instead of Metro (argument mapping + spinning up the existing RN dev server + wiring up the device launch/debug channels). This entry point lives in `@zntc/react-native` so the general-purpose `zntc` CLI stays free of RN dependencies. The MCP (JSON-RPC) already shipped in the ZNTC dev server will also gain React Native build/reload/launch/debug control tools, so LLM agents can drive everything from RN builds through launch and debugging directly.
 
 #### React Native Hermes-targeted downleveling
 
