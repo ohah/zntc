@@ -85,6 +85,7 @@ pub fn materialize(
             module.exported_names = projectExportedNames(arena_alloc, ebindings);
             // barrel 분류 캐시 (export_bindings 가 final 인 시점에 한 번 계산).
             @import("requested_exports.zig").computeBarrelFlags(module);
+            @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};
         } else |_| {}
     }
 

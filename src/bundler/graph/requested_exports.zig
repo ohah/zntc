@@ -87,6 +87,32 @@ pub fn computeBarrelFlags(m: *Module) void {
     m.default_export_named_local = default_named_local;
 }
 
+/// `exported_name → export_bindings idx` HashMap 을 build. PR-Y1.
+/// computeBarrelFlags 와 동일 시점 (parse 끝나 export_bindings final) 에 호출.
+///
+/// `resyncAfterAstMutation` 처럼 export_bindings 가 재생성되는 경로에서도 안전하도록,
+/// 기존 map 이 있으면 **deinit 후 재build** (stale idx 회피 + 누수 회피). cache-hit
+/// 경로는 build_flow 가 cached 쪽 포인터를 nullify 해 ownership 만 이전 (재build X).
+///
+/// ECMAScript spec: 같은 exported_name 의 중복 export 는 parse-time syntax error 라
+/// non-star eb 의 exported_name 은 unique 보장 → fallback 불필요. re_export_star
+/// (exported_name="") 는 *어떤* name 도 export 가능해 idx 등록 제외 (caller 가 별도 처리).
+pub fn populateExportIndexByName(m: *Module, allocator: std.mem.Allocator) !void {
+    if (m.export_index_by_name) |*old| {
+        old.deinit(allocator);
+        m.export_index_by_name = null;
+    }
+    if (m.export_bindings.len == 0) return;
+    var map: std.StringHashMapUnmanaged(u32) = .empty;
+    errdefer map.deinit(allocator);
+    try map.ensureTotalCapacity(allocator, @intCast(m.export_bindings.len));
+    for (m.export_bindings, 0..) |eb, i| {
+        if (eb.kind == .re_export_star) continue;
+        try map.put(allocator, eb.exported_name, @intCast(i));
+    }
+    m.export_index_by_name = map;
+}
+
 pub fn nameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {
     for (m.export_bindings) |eb| {
         if (eb.kind == .re_export_star) continue;
@@ -252,4 +278,66 @@ pub fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const 
         }
     }
     return false;
+}
+
+// ── tests ─────────────────────────────────────────────────────
+
+const binding_scanner = @import("../binding_scanner.zig");
+const ExportBinding = binding_scanner.ExportBinding;
+const Span = @import("../../lexer/token.zig").Span;
+
+test "populateExportIndexByName: 빈 export_bindings 면 null" {
+    const testing = std.testing;
+    var module = Module.init(@enumFromInt(0), "empty.ts");
+    defer module.deinit(testing.allocator);
+
+    try populateExportIndexByName(&module, testing.allocator);
+    try testing.expect(module.export_index_by_name == null);
+}
+
+test "populateExportIndexByName: re_export_star 는 제외, 나머지는 idx 등록" {
+    const testing = std.testing;
+    var module = Module.init(@enumFromInt(0), "mix.ts");
+    defer module.deinit(testing.allocator);
+
+    const ebs = try testing.allocator.alloc(ExportBinding, 3);
+    defer testing.allocator.free(ebs);
+    ebs[0] = .{ .exported_name = "a", .local_name = "a", .local_span = Span.EMPTY, .kind = .local };
+    ebs[1] = .{ .exported_name = "", .local_name = "", .local_span = Span.EMPTY, .kind = .re_export_star };
+    ebs[2] = .{ .exported_name = "b", .local_name = "b_local", .local_span = Span.EMPTY, .kind = .local };
+    module.export_bindings = ebs;
+
+    try populateExportIndexByName(&module, testing.allocator);
+    const map = &module.export_index_by_name.?;
+    try testing.expectEqual(@as(u32, 2), map.count());
+    try testing.expectEqual(@as(u32, 0), map.get("a").?);
+    try testing.expectEqual(@as(u32, 2), map.get("b").?);
+    try testing.expect(map.get("") == null); // re_export_star 의 빈 이름은 등록 안 됨
+}
+
+test "populateExportIndexByName: resync 시 stale idx 회피 (재build, 누수 없음)" {
+    const testing = std.testing;
+    var module = Module.init(@enumFromInt(0), "resync.ts");
+    defer module.deinit(testing.allocator);
+
+    // build 1
+    var ebs1 = try testing.allocator.alloc(ExportBinding, 2);
+    defer testing.allocator.free(ebs1);
+    ebs1[0] = .{ .exported_name = "x", .local_name = "x", .local_span = Span.EMPTY, .kind = .local };
+    ebs1[1] = .{ .exported_name = "y", .local_name = "y", .local_span = Span.EMPTY, .kind = .local };
+    module.export_bindings = ebs1;
+    try populateExportIndexByName(&module, testing.allocator);
+    try testing.expectEqual(@as(u32, 0), module.export_index_by_name.?.get("x").?);
+    try testing.expectEqual(@as(u32, 1), module.export_index_by_name.?.get("y").?);
+
+    // resync: export_bindings 가 재생성돼 idx 가 바뀌었다고 가정 (x, y 의 순서 swap)
+    const ebs2 = try testing.allocator.alloc(ExportBinding, 2);
+    defer testing.allocator.free(ebs2);
+    ebs2[0] = .{ .exported_name = "y", .local_name = "y", .local_span = Span.EMPTY, .kind = .local };
+    ebs2[1] = .{ .exported_name = "x", .local_name = "x", .local_span = Span.EMPTY, .kind = .local };
+    module.export_bindings = ebs2;
+    try populateExportIndexByName(&module, testing.allocator);
+    // 재build 되어 새 idx 가 반영되어야 함 (stale 0/1 가 아닌 1/0).
+    try testing.expectEqual(@as(u32, 1), module.export_index_by_name.?.get("x").?);
+    try testing.expectEqual(@as(u32, 0), module.export_index_by_name.?.get("y").?);
 }

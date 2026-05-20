@@ -208,6 +208,16 @@ pub const Module = struct {
     /// `export_bindings.exported_name` 의 평탄 slice 프리컴퓨트 (ModuleInfo 노출용 #1883).
     /// graph allocator 소유. 이름 자체는 source/AST text 의 borrow 라 별도 free 불필요.
     exported_names: []const []const u8 = &.{},
+    /// exported_name → export_bindings 의 idx. PR-Y1 (#3592 follow-up) — warm rebuild 의
+    /// `requestedExportsForReExportRecord` 가 cross-product O(N×M) loop 라 47ms warm 의
+    /// 66% 차지 (M4 측정). HashMap 으로 O(1) lookup.
+    ///
+    /// ECMAScript spec: 같은 exported_name 의 중복 export 는 parse-time syntax error 라
+    /// **non-star eb 의 exported_name 은 unique 보장** → caller fallback 불필요. re_export_star
+    /// (exported_name="") 는 *어떤* name 도 export 가능해 별도 path 로 처리 (caller).
+    ///
+    /// graph allocator 소유. PR-Y1 = populate 만 + caller 미사용 (dormant). PR-Y2 = caller 적용.
+    export_index_by_name: ?std.StringHashMapUnmanaged(u32) = null,
     /// Bundler-local 합성 심볼 테이블 (cross-module linking용). #1328 Phase 1.
     /// graph allocator 소유. null = 미초기화 (asset/disabled 모듈 등).
     alias_table: ?AliasTable = null,
@@ -632,6 +642,7 @@ pub const Module = struct {
         }
         self.resolved_deps.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
+        if (self.export_index_by_name) |*map| map.deinit(allocator);
         // require.context: plugin 이 채운 outer slice + 각 inner string free (#1579 Phase 2).
         // contract: plugin 이 allocator 로 dupe 한 상태로 반환 → graph 가 일괄 해제.
         for (self.import_records) |record| {

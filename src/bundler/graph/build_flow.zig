@@ -457,6 +457,10 @@ pub fn buildIncremental(
                 // malloc abort. ownership 을 graph 로 이전해 graph.deinit
                 // 한 번만 free 되도록 한다.
                 cached.module.alias_table = null;
+                // export_index_by_name (PR-Y1) 도 동일 ownership 이전 패턴 — graph deinit
+                // 만 free, 다음 rebuild 의 populate 가 cached.module 의 export_bindings 로
+                // 재build. cached.module 쪽 stale 포인터 회피.
+                cached.module.export_index_by_name = null;
                 // canonical_name 은 이전 Build 의 Linker 가 소유한 문자열을
                 // 가리키는데, 그 Linker.deinit 이후 이미 freed 상태다.
                 // 다음 Linker 가 conflict 마다 새로 assign 하므로 stale 한

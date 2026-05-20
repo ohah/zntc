@@ -437,6 +437,7 @@ pub fn resyncAfterAstMutation(
         );
         module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
         @import("requested_exports.zig").computeBarrelFlags(module);
+        @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};
     }
 
     const has_refreshed_cjs = scan_result.has_cjs_require or
