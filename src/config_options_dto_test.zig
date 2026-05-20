@@ -190,6 +190,8 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "outdir", // CLI -o/--outdir
     "outfile",
     "outbase",
+    "output", // multi-format sugar (PR-I) — JS-level dispatch, native 로 전달 안 함
+    "outputsByFormat", // BuildResult only — write 시점에 BundleResult 안 가지만 schema test 가 BuildOptions 만 검사
     "globalName", // IIFE/UMD only
     "publicPath",
     "splitting", // bundler 옵션, DTO 에 모음
