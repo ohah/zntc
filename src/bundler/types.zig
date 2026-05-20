@@ -505,6 +505,16 @@ pub const Format = enum {
     }
 };
 
+/// 단일 output emit 설정 — 같은 module graph 에서 N format reemit 시 per-output 분리.
+/// 빈 슬라이스 (`BundleOptions.output = &.{}`) 면 `BundleOptions.format`/`globals` 등을
+/// fallback 으로 사용 (단일 default config 합성).
+pub const OutputConfig = struct {
+    format: Format = .esm,
+    /// `--globals SPEC=GLOBAL` 매핑 (IIFE/UMD/AMD external → factory param 이름).
+    /// rollup `output.globals` 호환.
+    globals: []const GlobalEntry = &.{},
+};
+
 // ============================================================
 // 로더 (Asset Loader)
 // ============================================================
