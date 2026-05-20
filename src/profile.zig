@@ -180,6 +180,15 @@ pub const Category = enum {
     graph_discover_incr_re_export_entry_copy, // names.keyIterator + stack/heap append (Z1 buffer)
     graph_discover_incr_re_export_entry_star_scan, // has_star_for_rec scan (export_bindings 순회)
     graph_discover_incr_re_export_outer, // outer loop body (per-name index lookup + branch)
+    // record_dep + add_module 내부 분해 (PR-M8). Z2 후 잔여 22ms 의 다음 후보:
+    // record_dep 5.7ms (linkDep 양방향 append + import_records write)
+    // add_module 4.3ms (path_to_module.get + alloc + dup + put + preopenDir)
+    graph_discover_incr_record_dep_rec_write, // import_records[rec_i].resolved = dep_idx (single store)
+    graph_discover_incr_record_dep_link, // linkDependency/linkDynamicImport (양방향 ArrayList append)
+    graph_discover_incr_add_module_dedup, // path_to_module.get(abs_path) — dedup 분기
+    graph_discover_incr_add_module_alloc, // Module.init + path/dir dupe + slot alloc
+    graph_discover_incr_add_module_put, // path_to_module.put + modules.append
+    graph_discover_incr_add_module_preopen, // source_read_cache.preopenDir
     graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
     graph_renumber,

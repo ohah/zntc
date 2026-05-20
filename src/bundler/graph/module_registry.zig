@@ -11,6 +11,7 @@ const Module = module_mod.Module;
 const plugin_mod = @import("../plugin.zig");
 const graph_parse_helpers = @import("parse_helpers.zig");
 const moduleTypeForLoader = graph_parse_helpers.moduleTypeForLoader;
+const profile = @import("../../profile.zig");
 
 /// 확장자에 대한 로더를 결정한다.
 /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
@@ -75,7 +76,10 @@ pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
 
 pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve_dir: ?[]const u8) !ModuleIndex {
     // 중복 체크
-    if (self.path_to_module.get(abs_path)) |existing| {
+    var s_dedup = profile.begin(.graph_discover_incr_add_module_dedup);
+    const existing_opt = self.path_to_module.get(abs_path);
+    s_dedup.end();
+    if (existing_opt) |existing| {
         if (resolve_dir) |dir| {
             const existing_module = self.modules.at(@intFromEnum(existing));
             if (existing_module.resolve_dir == null) {
@@ -86,6 +90,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve
     }
 
     // 새 모듈 슬롯 할당
+    var s_alloc = profile.begin(.graph_discover_incr_add_module_alloc);
     const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
     var ownership_transferred = false;
     const path_owned = try self.allocator.dupe(u8, abs_path);
@@ -101,14 +106,20 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve
     const parsed_loader = resolveLoader(self, ext_for_loader);
     module.loader = parsed_loader.loader;
     module.module_type = parsed_loader.module_type orelse moduleTypeForLoader(module.module_type, module.loader);
+    s_alloc.end();
+
+    var s_put = profile.begin(.graph_discover_incr_add_module_put);
     try self.modules.append(self.allocator, module);
     ownership_transferred = true;
     try self.path_to_module.put(path_owned, index);
+    s_put.end();
 
     // 신규 모듈 path 의 dir 를 source_read_cache 에 pre-warm — readModuleSource 단계의
     // dir-fd cache MISS (avg 70μs) 를 graph BFS 시점에 미리 처리. virtual path
     // (disabled / optional missing 등) 는 disabled_path 전용 함수에서 처리되므로
     // 여기 들어오는 abs_path 는 fs file path. openDir 실패는 preopenDir 가 swallow.
+    var s_pre = profile.begin(.graph_discover_incr_add_module_preopen);
+    defer s_pre.end();
     if (std.fs.path.dirname(abs_path)) |dir_path| {
         self.source_read_cache.preopenDir(self.allocator, dir_path);
     }
