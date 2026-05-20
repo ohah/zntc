@@ -458,6 +458,9 @@ pub const Linker = struct {
     const NameOwner = struct {
         module_index: u32,
         exec_index: u32,
+        /// calculateRenames sort tie-break. exec_index 동률 시 path 사전순 (cross-chunk
+        /// marker 는 ""), worker race 비결정성 방지.
+        path: []const u8,
     };
 
     /// name_to_owners HashMap의 타입 별칭.
@@ -562,12 +565,13 @@ pub const Linker = struct {
             try self.addNameOwner(name_to_owners, sym_name, .{
                 .module_index = module_index,
                 .exec_index = m.exec_index,
+                .path = m.path,
             });
         }
 
         // codegen이 현재 모듈에 `_default` 합성 변수를 만드는 모든 export를 수집.
         // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
-        const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index };
+        const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index, .path = m.path };
         for (m.export_bindings) |eb| {
             if (eb.hasSyntheticDefault(m.semanticSymbols())) {
                 try self.addNameOwner(name_to_owners, "_default", owner);
@@ -646,10 +650,12 @@ pub const Linker = struct {
                 continue;
             }
 
-            // exec_index 순으로 정렬 — 가장 낮은 게 원본 유지
+            // exec_index 순으로 정렬 — 가장 낮은 게 원본 유지. 동률 (cross-chunk marker +
+            // 같은 entry barrel) 시 path 사전순 — worker race 비결정 차단.
             std.mem.sort(NameOwner, entry.value_ptr.items, {}, struct {
                 fn lessThan(_: void, a: NameOwner, b: NameOwner) bool {
-                    return a.exec_index < b.exec_index;
+                    if (a.exec_index != b.exec_index) return a.exec_index < b.exec_index;
+                    return types.stringLessThan({}, a.path, b.path);
                 }
             }.lessThan);
 
@@ -2224,6 +2230,7 @@ pub const Linker = struct {
             try entry.value_ptr.append(self.allocator, .{
                 .module_index = std.math.maxInt(u32), // 특수 마커 — 실제 모듈 아님
                 .exec_index = 0, // 가장 낮은 exec_index → 원본 이름 유지
+                .path = "", // marker — 항상 정렬 우선 (사전순 최상)
             });
         }
 
