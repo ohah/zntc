@@ -42,6 +42,10 @@ const WarmResult = struct {
     incr_cache_hit_assign_ns: u64,
     incr_miss_parse_ns: u64,
     incr_replay_ns: u64,
+    incr_replay_add_module_ns: u64,
+    incr_replay_request_exports_ns: u64,
+    incr_replay_record_dep_ns: u64,
+    incr_replay_other_ns: u64,
     incr_miss_resolve_ns: u64,
 };
 
@@ -82,12 +86,17 @@ fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entr
         .incr_cache_hit_assign_ns = profile.totalNs(.graph_discover_incr_cache_hit_assign),
         .incr_miss_parse_ns = profile.totalNs(.graph_discover_incr_miss_parse),
         .incr_replay_ns = profile.totalNs(.graph_discover_incr_replay),
+        .incr_replay_add_module_ns = profile.totalNs(.graph_discover_incr_replay_add_module),
+        .incr_replay_request_exports_ns = profile.totalNs(.graph_discover_incr_replay_request_exports),
+        .incr_replay_record_dep_ns = profile.totalNs(.graph_discover_incr_replay_record_dep),
+        .incr_replay_other_ns = profile.totalNs(.graph_discover_incr_replay_other),
         .incr_miss_resolve_ns = profile.totalNs(.graph_discover_incr_miss_resolve),
     };
 }
 
 fn printSubPhase(label: []const u8, r: WarmResult) void {
     const d = r.discover_ns;
+    const rep = r.incr_replay_ns;
     std.debug.print(
         \\  {s} sub-phase (us, % of discover):
         \\    mtime           = {d:>7}us ({d:>3}%)
@@ -95,6 +104,10 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         \\    cache_hit_assign= {d:>7}us ({d:>3}%)
         \\    miss_parse      = {d:>7}us ({d:>3}%)
         \\    replay          = {d:>7}us ({d:>3}%)
+        \\      add_module    = {d:>7}us ({d:>3}% of replay)
+        \\      request_export= {d:>7}us ({d:>3}% of replay)
+        \\      record_dep    = {d:>7}us ({d:>3}% of replay)
+        \\      other         = {d:>7}us ({d:>3}% of replay)
         \\    miss_resolve    = {d:>7}us ({d:>3}%)
         \\
     , .{
@@ -109,6 +122,14 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         if (d == 0) @as(u64, 0) else r.incr_miss_parse_ns * 100 / d,
         r.incr_replay_ns / 1000,
         if (d == 0) @as(u64, 0) else r.incr_replay_ns * 100 / d,
+        r.incr_replay_add_module_ns / 1000,
+        if (rep == 0) @as(u64, 0) else r.incr_replay_add_module_ns * 100 / rep,
+        r.incr_replay_request_exports_ns / 1000,
+        if (rep == 0) @as(u64, 0) else r.incr_replay_request_exports_ns * 100 / rep,
+        r.incr_replay_record_dep_ns / 1000,
+        if (rep == 0) @as(u64, 0) else r.incr_replay_record_dep_ns * 100 / rep,
+        r.incr_replay_other_ns / 1000,
+        if (rep == 0) @as(u64, 0) else r.incr_replay_other_ns * 100 / rep,
         r.incr_miss_resolve_ns / 1000,
         if (d == 0) @as(u64, 0) else r.incr_miss_resolve_ns * 100 / d,
     });
@@ -126,6 +147,10 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
         "graph_discover_incr_cache_hit_assign",
         "graph_discover_incr_miss_parse",
         "graph_discover_incr_replay",
+        "graph_discover_incr_replay_add_module",
+        "graph_discover_incr_replay_request_exports",
+        "graph_discover_incr_replay_record_dep",
+        "graph_discover_incr_replay_other",
         "graph_discover_incr_miss_resolve",
     });
 

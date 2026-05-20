@@ -155,6 +155,12 @@ pub const Category = enum {
     graph_discover_incr_cache_hit_assign, // 캐시 히트 시 Module struct 복원 + ownership 이전
     graph_discover_incr_miss_parse, // 캐시 미스 — parseModule + sideEffects 적용
     graph_discover_incr_replay, // 히트 분기: replay cached resolved deps + deferred imports
+    // replay 내부 분해 (PR-M3): parallel 가능 vs main-thread mutex 비중 격리.
+    // 47ms warm 의 95% 가 replay. 진짜 ROI 검증을 위해 hot path 의 4 sub-step 측정.
+    graph_discover_incr_replay_add_module, // addModuleWithResolveDir — path_to_module HashMap put
+    graph_discover_incr_replay_request_exports, // requestDependencyExports — requested_exports HashMap mutation
+    graph_discover_incr_replay_record_dep, // recordResolvedDep — import_records write + linkDependency/linkDynamicImport
+    graph_discover_incr_replay_other, // virtual/disabled/optional/external/worker 분기 + 부수 work
     graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
     graph_renumber,

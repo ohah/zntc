@@ -14,6 +14,7 @@ const graph_require_context = @import("require_context.zig");
 const expandRequireContextRecords = graph_require_context.expandRecords;
 const graph_import_usage = @import("import_usage.zig");
 const graph_requested_exports = @import("requested_exports.zig");
+const profile = @import("../../profile.zig");
 
 fn appendResolvedDep(
     self: *ModuleGraph,
@@ -40,7 +41,9 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
     for (mod_ptr.resolved_deps.items) |dep| {
         switch (dep.target) {
             .file, .virtual => {
+                var s_am = profile.begin(.graph_discover_incr_replay_add_module);
                 const dep_idx = try self.addModuleWithResolveDir(dep.path, dep.resolve_dir);
+                s_am.end();
                 if (dep.target_is_module_field or mod_ptr.is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
                 }
@@ -50,21 +53,36 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
                 try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
             },
             .disabled => {
+                // _other 는 leaf bucket — request_exports/record_dep 와 중첩 측정 금지
+                // (inclusive totals 가 합쳐져 percentage 가 100% 초과). addDisabledModule
+                // 만 _other 로 측정하고 link 부분은 replayLinkResolvedDep 가 자체 측정.
+                var s_o = profile.begin(.graph_discover_incr_replay_other);
                 const dep_idx = try self.addDisabledModule(dep.path);
+                s_o.end();
                 try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
             },
             .optional_missing => {
+                var s_o = profile.begin(.graph_discover_incr_replay_other);
                 const dep_idx = try self.addOptionalMissingModule(dep.path);
+                s_o.end();
                 try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
             },
             .external => {
+                // external 은 replayLinkResolvedDep 를 거치지 않고 inline 하므로
+                // 동일한 sub-phase 로 명시 분해 (다른 분기와 측정 대칭성 유지).
+                var s_am = profile.begin(.graph_discover_incr_replay_add_module);
                 const ext_idx = try self.addExternalModule(dep.path);
+                s_am.end();
                 if (dep.record_index) |rec_idx| {
                     if (rec_idx < mod_ptr.import_records.len) {
                         mod_ptr.import_records[rec_idx].is_external = true;
+                        var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
                         _ = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_idx, mod_ptr.import_records[rec_idx], ext_idx);
+                        s_re.end();
                     }
                 }
+                var s_rd = profile.begin(.graph_discover_incr_replay_record_dep);
+                defer s_rd.end();
                 if (dep.kind == .dynamic_import) {
                     try self.linkDynamicImport(mod_index, ext_idx);
                 } else {
@@ -72,6 +90,9 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
                 }
             },
             .worker => {
+                // worker_entries.append 만 — 진짜 link 는 별도 phase. _other leaf 적합.
+                var s_o = profile.begin(.graph_discover_incr_replay_other);
+                defer s_o.end();
                 const rec_idx = dep.record_index orelse continue;
                 const path_dupe = try self.allocator.dupe(u8, dep.path);
                 try self.worker_entries.append(self.allocator, .{
@@ -96,12 +117,20 @@ fn replayLinkResolvedDep(
     if (dep.record_index) |rec_idx| {
         const mod_ptr = self.modules.at(mod_idx);
         if (rec_idx >= mod_ptr.import_records.len) return;
+        var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
         const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_idx, mod_ptr.import_records[rec_idx], dep_idx);
+        s_re.end();
+        var s_rd = profile.begin(.graph_discover_incr_replay_record_dep);
         try recordResolvedDep(self, mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
+        s_rd.end();
         if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
         return;
     }
+    var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
     _ = try graph_requested_exports.requestAll(self, dep_idx);
+    s_re.end();
+    var s_rd = profile.begin(.graph_discover_incr_replay_record_dep);
+    defer s_rd.end();
     if (dep.kind == .dynamic_import) {
         try self.linkDynamicImport(mod_index, dep_idx);
     } else {
