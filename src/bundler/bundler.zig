@@ -1450,6 +1450,12 @@ pub const Bundler = struct {
             if (self.options.dev_mode or self.options.code_splitting or self.options.preserve_modules) {
                 return error.MultiFormatRequiresSinglePath;
             }
+            // Module Federation 은 federation_emit.wrapContainer 가 splitting 경로 전용이라
+            // single multi-emit 에서 host/remote container 가 누락 (사일런트 깨짐). MF host 는
+            // 단일 IIFE/UMD/AMD 출력 한정.
+            if (self.options.mf != null) {
+                return error.MultiFormatNotSupportedWithModuleFederation;
+            }
         }
         // #3318 P1-5: MF remote 의 mf-manifest.json (wrapContainer 산출,
         // asset_outputs 로 편입). errdefer 로 부분실패 누수 방지.

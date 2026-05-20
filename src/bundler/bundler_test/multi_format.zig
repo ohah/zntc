@@ -140,6 +140,28 @@ test "multi-format: memory safety — repeated multi-emit no leak" {
     }
 }
 
+test "multi-format: Module Federation rejected" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .mf = .{ .name = "host" },
+        .output = &.{
+            .{ .format = .esm },
+            .{ .format = .cjs },
+        },
+    });
+    defer b.deinit();
+
+    const result = b.bundle();
+    try std.testing.expectError(error.MultiFormatNotSupportedWithModuleFederation, result);
+}
+
 test "multi-format: dev_mode rejected" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
