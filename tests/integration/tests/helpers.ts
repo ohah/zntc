@@ -1,6 +1,7 @@
 import { spawn } from 'bun';
-import { mkdtemp, rm, writeFile, mkdir, symlink, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, symlink, realpath, readFile } from 'node:fs/promises';
 import { readFileSync, statSync, openSync, closeSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -287,6 +288,11 @@ export async function runZntc(
   options?: RunOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return runCmd([ZNTC_BIN, ...args], options);
+}
+
+export async function sha256OfFile(filePath: string): Promise<{ hash: string; size: number }> {
+  const buf = await readFile(filePath);
+  return { hash: createHash('sha256').update(buf).digest('hex'), size: buf.byteLength };
 }
 
 /// fixture 생성 → ZNTC 실행 → 자동 cleanup 한 번에 묶는 헬퍼. caller 의 try/finally

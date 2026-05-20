@@ -456,6 +456,37 @@ test "mangleAll: Phase B loop runs with empty module (counter carried through)" 
     try std.testing.expectEqual(@as(usize, 0), result.phase_b_modules[0].slot_count);
 }
 
+test "mangleAll: deterministic — same input twice yields identical renames" {
+    const candidates = [_]TopLevelCandidate{
+        .{ .module_index = 0, .symbol_id = 0, .name = "alpha", .ref_count = 7 },
+        .{ .module_index = 1, .symbol_id = 0, .name = "beta", .ref_count = 12 },
+        .{ .module_index = 2, .symbol_id = 0, .name = "gamma", .ref_count = 3 },
+        .{ .module_index = 0, .symbol_id = 1, .name = "delta", .ref_count = 7 }, // tie with alpha
+    };
+
+    var r1 = try mangleAll(std.testing.allocator, .{
+        .modules = &.{},
+        .top_level_candidates = &candidates,
+    });
+    defer r1.deinit();
+
+    var r2 = try mangleAll(std.testing.allocator, .{
+        .modules = &.{},
+        .top_level_candidates = &candidates,
+    });
+    defer r2.deinit();
+
+    try std.testing.expectEqual(r1.renames.count(), r2.renames.count());
+    var it = r1.renames.iterator();
+    while (it.next()) |kv| {
+        const v2 = r2.renames.get(kv.key_ptr.*) orelse {
+            std.debug.print("missing key in r2: ({d},{d})\n", .{ kv.key_ptr.module_index, kv.key_ptr.symbol_id });
+            return error.MissingKey;
+        };
+        try std.testing.expectEqualStrings(kv.value_ptr.*, v2);
+    }
+}
+
 test "mangleAll: identity rename (name already equals base54 head) — no rename entry" {
     // 원본 이름이 base54 의 (reserved 'e'/'m' 을 skip 한 후) 첫 이름 "t" 와 같으면
     // renames 에 기록하지 않음 (no-op).
