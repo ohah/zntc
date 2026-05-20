@@ -2386,6 +2386,64 @@ export function buildSync(options: BuildOptions): BuildResult {
   }
 }
 
+/// rollup-style per-output options. `BuildInstance.write/generate` 호출 시 input 옵션과
+/// merge 되어 native 호출. 미지정 필드는 base BuildOptions 의 값을 사용.
+export interface OutputOptions {
+  format?: 'esm' | 'cjs' | 'iife' | 'umd' | 'amd';
+  dir?: string;
+  file?: string;
+  /// IIFE/UMD/AMD external → factory param 이름. rollup `output.globals` 호환.
+  globals?: Record<string, string>;
+}
+
+/// rollup/rolldown 스타일 build instance. `await zntc(options)` 로 생성, `.write(output)` /
+/// `.generate(output)` 다회 호출 후 `.close()`. multi-format 빌드 패턴 우선, lifecycle
+/// 훅 (watch/incremental 후속) 의 anchor.
+///
+/// 주의: 현재 native 측 graph cache 미보유 — `.write()` 매 호출이 graph 재빌드. multi-format
+/// 효율 우선이면 `build({ output: [...] })` (esbuild-style) 사용.
+export class BuildInstance {
+  #base: BuildOptions;
+  #closed: boolean = false;
+  constructor(base: BuildOptions) {
+    this.#base = base;
+  }
+  get closed(): boolean {
+    return this.#closed;
+  }
+  async write(output: OutputOptions = {}): Promise<BuildResult> {
+    this.#assertOpen();
+    return build(mergeOutput(this.#base, output));
+  }
+  async generate(output: OutputOptions = {}): Promise<BuildResult> {
+    this.#assertOpen();
+    return build({ ...mergeOutput(this.#base, output), write: false } as BuildOptions);
+  }
+  async close(): Promise<void> {
+    this.#closed = true;
+  }
+  #assertOpen(): void {
+    if (this.#closed) throw new Error('@zntc/core: BuildInstance is closed');
+  }
+}
+
+function mergeOutput(base: BuildOptions, out: OutputOptions): BuildOptions {
+  const merged: any = { ...base };
+  if (out.format !== undefined) merged.format = out.format;
+  if (out.dir !== undefined) merged.outdir = out.dir;
+  if (out.file !== undefined) merged.outfile = out.file;
+  if (out.globals !== undefined) merged.globals = out.globals;
+  return merged as BuildOptions;
+}
+
+/// rollup/rolldown 스타일 entry — `zntc(input).write(output).close()`. Graph 재사용은
+/// 향후 native ScanStageCache 도입 시 추가 (현재는 매 write 가 graph 재빌드).
+export async function zntc(options: BuildOptions): Promise<BuildInstance> {
+  if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
+  validateTsConfigRaw(options.tsconfigRaw);
+  return new BuildInstance(options);
+}
+
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   const n = ensureNative();
   const { publicDir, compiler, ...rest } = options;
