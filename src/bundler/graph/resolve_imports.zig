@@ -389,8 +389,27 @@ pub fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, idx: ModuleInd
     if (mod_idx >= self.modules.count()) return;
     const m = self.modules.at(mod_idx);
     if (m.state != .ready or m.is_external or m.is_disabled) return;
+    try propagateRequestedExportsFromResolvedReExports(self, idx);
     if (!graph_requested_exports.hasDeferredRequestedImports(self, mod_idx)) return;
     try resolveModuleImports(self, idx);
+}
+
+fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, idx: ModuleIndex) anyerror!void {
+    if (idx.isNone()) return;
+    const mod_idx = idx.toUsize();
+    if (mod_idx >= self.modules.count()) return;
+    const m = self.modules.at(mod_idx);
+
+    for (m.import_records, 0..) |record, rec_i| {
+        if (record.kind != .re_export) continue;
+        if (record.resolved.isNone()) continue;
+        const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, record.resolved);
+        if (request_changed) {
+            // 이미 resolve 된 re-export barrel 에 뒤늦게 namespace/require 요청이 들어오면
+            // 하위 lazy barrel 의 미해결 record 까지 다시 전파해야 한다.
+            try resolveDeferredRequestedImportsIfReady(self, record.resolved);
+        }
+    }
 }
 
 /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.

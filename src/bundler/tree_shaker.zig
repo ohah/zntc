@@ -53,6 +53,9 @@ pub const TreeShaker = struct {
     included: std.DynamicBitSet,
     used_exports: std.StringHashMap(void),
     entry_set: std.DynamicBitSet,
+    /// markAllExportsUsed 의 re-export source 확장 방문 여부.
+    /// `*` sentinel 은 다른 경로에서 먼저 찍힐 수 있으므로 recursion guard 와 분리한다.
+    all_exports_expanded: std.DynamicBitSet,
     /// 모듈별 StmtInfo (심볼 기반 도달성 분석). analyze() 내 fixpoint 루프 전에 구축.
     module_stmt_infos: []?StmtInfos = &.{},
     /// 모듈별 도달성 bitset 캐시. crossModuleBFS가 채우고 같은 fixpoint 안에서
@@ -134,6 +137,8 @@ pub const TreeShaker = struct {
         errdefer included.deinit();
         var entry_set = try std.DynamicBitSet.initEmpty(allocator, mod_count);
         errdefer entry_set.deinit();
+        var all_exports_expanded = try std.DynamicBitSet.initEmpty(allocator, mod_count);
+        errdefer all_exports_expanded.deinit();
 
         return .{
             .allocator = allocator,
@@ -142,6 +147,7 @@ pub const TreeShaker = struct {
             .included = included,
             .used_exports = std.StringHashMap(void).init(allocator),
             .entry_set = entry_set,
+            .all_exports_expanded = all_exports_expanded,
         };
     }
 
@@ -157,6 +163,7 @@ pub const TreeShaker = struct {
         self.used_exports.deinit();
         self.included.deinit();
         self.entry_set.deinit();
+        self.all_exports_expanded.deinit();
         if (self.module_stmt_infos.len > 0) {
             for (self.module_stmt_infos, 0..) |*si, i| {
                 if (si.*) |*infos| {
@@ -602,7 +609,7 @@ pub const TreeShaker = struct {
                         // 보수적으로 target 의 모든 export 를 used 로 마킹. .cjs 와 .esm wrap 둘 다
                         // (#2398: 이전엔 .esm 의 StmtInfo 가 안 만들어져 reachability 가 conservative
                         // true 라 자동 보존됐지만, 본 PR 에서 .esm StmtInfo 를 빌드하면서 명시 마킹 필요).
-                        if (rec.kind == .require and tmod.wrap_kind.isWrapped() and preserve) {
+                        if (rec.kind == .require) {
                             try self.markAllExportsUsed(@intCast(target));
                         }
                     }
@@ -613,6 +620,8 @@ pub const TreeShaker = struct {
             if (self.included.count() != included_count_before) changed = true;
             if (!changed) break;
         }
+
+        try self.propagateUsedNamedReExports();
 
         // 미사용 sideEffects=false 모듈 제거.
         {
@@ -679,6 +688,41 @@ pub const TreeShaker = struct {
         if (module_index >= self.reachable_stmts.len) return true;
         const reachable = self.reachable_stmts[module_index] orelse return true;
         return reachable.isSet(stmt_idx);
+    }
+
+    fn propagateUsedNamedReExports(self: *TreeShaker) !void {
+        const mod_count = self.graph.moduleCount();
+        var changed = true;
+        while (changed) {
+            changed = false;
+            const used_count_before = self.used_exports.count();
+            const included_count_before = self.included.count();
+
+            for (0..mod_count) |i| {
+                if (!self.included.isSet(i)) continue;
+                const m = self.getModule(@intCast(i)) orelse continue;
+                const all_exports_used = self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
+
+                for (m.export_bindings) |eb| {
+                    if (eb.kind != .re_export) continue;
+                    if (!all_exports_used and !self.isExportUsed(@intCast(i), eb.exported_name)) continue;
+
+                    const rec_idx = eb.import_record_index orelse continue;
+                    if (rec_idx >= m.import_records.len) continue;
+                    const src_idx = m.import_records[rec_idx].resolved;
+                    const src = @intFromEnum(src_idx);
+                    if (self.graph.getModule(src_idx) == null) continue;
+
+                    if (!self.included.isSet(src)) self.included.set(src);
+                    // namespace/require 관찰로 상위 getter가 live가 된 경우, direct source의
+                    // getter도 같이 live여야 한다. canonical 끝점만으로는 중간 barrel이 빠진다.
+                    try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
+                }
+            }
+
+            if (self.used_exports.count() != used_count_before) changed = true;
+            if (self.included.count() != included_count_before) changed = true;
+        }
     }
 
     /// reachable_stmts 가 emit 와 어긋나는 케이스를 해소 — emit dead-stmt skip
@@ -2273,9 +2317,14 @@ pub const TreeShaker = struct {
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
         const m = self.getModule(module_index) orelse return;
-        // 순환 export * 방지: 이미 처리한 모듈은 skip
-        if (self.isExportUsed(module_index, ALL_EXPORTS_SENTINEL)) return;
-        try self.markExportUsed(module_index, ALL_EXPORTS_SENTINEL);
+        if (!self.isExportUsed(module_index, ALL_EXPORTS_SENTINEL)) {
+            try self.markExportUsed(module_index, ALL_EXPORTS_SENTINEL);
+        }
+        // 순환 export * 방지는 sentinel 이 아니라 source 확장 방문 여부로 판단한다.
+        // sentinel 은 import/namespace 분석 경로에서 먼저 찍힐 수 있고, 그 경우에도
+        // named re-export source getter는 여기서 전파해야 한다.
+        if (self.all_exports_expanded.isSet(module_index)) return;
+        self.all_exports_expanded.set(module_index);
         for (m.export_bindings) |eb| {
             // re-export 소스 include는 sentinel skip 전에 처리
             if (eb.kind.isAnyReExport()) {
@@ -2288,6 +2337,9 @@ pub const TreeShaker = struct {
                             if (eb.kind.isReExportAll()) {
                                 try self.markAllExportsUsed(@intCast(source_mod));
                             } else {
+                                // named re-export: namespace 관찰 시 direct source getter도 live다.
+                                // canonical 끝점만 마킹하면 중간 barrel `__export`가 빠질 수 있다.
+                                try self.markExportUsed(@intCast(source_mod), m.exportBindingLocalName(eb));
                                 // named re-export: canonical 모듈도 include
                                 if (self.linker.resolveExportChain(
                                     source_idx,

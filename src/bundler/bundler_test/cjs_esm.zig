@@ -2124,28 +2124,52 @@ test "RN namespace re-export: type-only neighbor keeps value getter live" {
     // value re-export가 있고, 소비자가 namespace.member로 읽어도 source getter가 살아야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "event.ts",
+    try writeFile(tmp.dir, "node_modules/react-native-reanimated/package.json",
+        \\{
+        \\  "name": "react-native-reanimated",
+        \\  "react-native": "src/index.ts",
+        \\  "sideEffects": ["./src/index.ts"]
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/react-native-gesture-handler/package.json",
+        \\{
+        \\  "name": "react-native-gesture-handler",
+        \\  "main": "src/index.ts"
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/react-native-reanimated/src/hook/useEvent.ts",
         \\export type EventHandler = () => void;
         \\export function useEvent() { return 'event'; }
     );
-    try writeFile(tmp.dir, "shared.ts",
+    try writeFile(tmp.dir, "node_modules/react-native-reanimated/src/hook/useSharedValue.ts",
         \\export function useSharedValue() { return 'shared'; }
     );
-    try writeFile(tmp.dir, "hook.ts",
-        \\export type { EventHandler } from './event';
-        \\export { useEvent } from './event';
-        \\export { useSharedValue } from './shared';
+    try writeFile(tmp.dir, "node_modules/react-native-reanimated/src/hook/index.ts",
+        \\export type { EventHandler } from './useEvent';
+        \\export { useEvent } from './useEvent';
+        \\export { useSharedValue } from './useSharedValue';
     );
-    try writeFile(tmp.dir, "root.ts",
+    try writeFile(tmp.dir, "node_modules/react-native-reanimated/src/index.ts",
         \\export { useEvent, useSharedValue } from './hook';
     );
-    try writeFile(tmp.dir, "wrapper.ts",
-        \\import * as Reanimated from './root';
-        \\if (!Reanimated?.useSharedValue) throw new Error('missing shared');
+    try writeFile(tmp.dir, "node_modules/react-native-gesture-handler/src/reanimatedWrapper.ts",
+        \\let Reanimated;
+        \\try {
+        \\  Reanimated = require('react-native-reanimated');
+        \\} catch (e) {
+        \\  Reanimated = undefined;
+        \\}
+        \\if (!Reanimated?.useSharedValue) Reanimated = undefined;
+        \\export { Reanimated };
+    );
+    try writeFile(tmp.dir, "consumer.ts",
+        \\import { Reanimated } from 'react-native-gesture-handler/src/reanimatedWrapper';
         \\export function run() { return Reanimated.useEvent(); }
     );
     try writeFile(tmp.dir, "entry.ts",
-        \\import { run } from './wrapper';
+        \\import { useSharedValue } from 'react-native-reanimated';
+        \\import { run } from './consumer';
+        \\globalThis.shared = useSharedValue();
         \\globalThis.result = run();
     );
 
@@ -2161,7 +2185,7 @@ test "RN namespace re-export: type-only neighbor keeps value getter live" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    const hook_start = std.mem.indexOf(u8, result.output, "//#region hook.ts").?;
+    const hook_start = std.mem.indexOf(u8, result.output, "var exports_react_native_reanimated_src_hook_index").?;
     const hook_end = std.mem.indexOfPos(u8, result.output, hook_start, "//#endregion").?;
     const hook_output = result.output[hook_start..hook_end];
     try std.testing.expect(std.mem.indexOf(u8, hook_output, "useEvent:") != null);
