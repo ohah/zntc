@@ -271,6 +271,13 @@ export const FLAG_REGISTRY = [
   { kind: 'string-bool', flag: '--emit-disk-sourcemap', target: 'emitDiskSourcemap' },
   { kind: 'string-bool', flag: '--use-define-for-class-fields', target: 'useDefineForClassFields' },
   { kind: 'string-bool', flag: '--tokenize', target: 'tokenize' },
+
+  // ─── `zntc verify` 전용. 다른 모드와 silent 충돌 방지를 위해 prefix 강제 ───
+  { kind: 'int', flag: '--verify-timeout', target: 'verifyTimeout' },
+  { kind: 'array', flag: '--verify-ignore', target: 'verifyIgnore' },
+  { kind: 'bool', flag: '--verify-allow-console-error', target: 'verifyAllowConsoleError' },
+  { kind: 'bool', flag: '--verify-json', target: 'verifyJson' },
+  { kind: 'string', flag: '--verify-report', target: 'verifyReport' },
 ];
 
 /**

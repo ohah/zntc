@@ -407,6 +407,15 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     '--global-identifier=', // → globalIdentifiers
     '--polyfill=', // → polyfills
     '--watch-folder=', // → watchFolders (RN-CLI `--watchFolders` csv 와 별개)
+    // `zntc verify` 전용 — BuildOptions/TranspileOptions 매핑 없음 (Playwright runner option).
+    '--verify-timeout',
+    '--verify-timeout=',
+    '--verify-ignore',
+    '--verify-ignore=',
+    '--verify-allow-console-error',
+    '--verify-json',
+    '--verify-report',
+    '--verify-report=',
   ]);
 
   // BuildOptions/TranspileOptions 에 있고 CLI 에 없는 키 (의도적). 함수형/고급 옵션.

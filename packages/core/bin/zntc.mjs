@@ -147,6 +147,27 @@ function usageLines(command) {
       '  --help, -h                 Show this help message',
     ];
   }
+  if (command === 'verify') {
+    return [
+      'Usage: zntc verify <path-or-url> [options]',
+      '',
+      'Loads the target in a headless Chromium and reports pageerror,',
+      'console.error, 4xx responses, and request failures. Exits non-zero',
+      'on any captured event so CI can gate on real browser runtime errors.',
+      '',
+      'Options:',
+      '  --verify-timeout <ms>          Page load timeout (default: 10000)',
+      '  --verify-ignore <pattern>      Regex to skip matching console/url events (repeatable)',
+      '  --verify-allow-console-error   console.error events do not affect exit code',
+      '  --verify-json                  Emit machine-readable report on stdout',
+      '  --verify-report <path>         Write JSON report to file',
+      '  --help, -h                     Show this help message',
+      '',
+      'Requires Playwright (peer/optional):',
+      '  npm install --save-dev playwright',
+      '  npx playwright install chromium',
+    ];
+  }
   return [
     'Usage: zntc [options] <file.ts>',
     '       zntc --bundle <entry.ts> -o out.js',
@@ -202,7 +223,7 @@ function printUsage(command, stream = console.log) {
 
 function parseArgs(argv) {
   const args = argv.slice(2);
-  const appCommands = new Set(['dev', 'build', 'preview']);
+  const appCommands = new Set(['dev', 'build', 'preview', 'verify']);
   const appCommand = appCommands.has(args[0]) ? args.shift() : undefined;
   const opts = {
     appCommand,
@@ -359,6 +380,14 @@ function parseArgs(argv) {
     tokenize: false,
     tokenizeFormat: 'text',
     test262: undefined,
+    // verify 모드 (`zntc verify <path-or-url>`) 전용 — FLAG_REGISTRY 가 다른 모드에서
+    // 매칭해도 핸들러가 무시. verifyTarget 만 positional 로 채워진다.
+    verifyTarget: undefined,
+    verifyJson: false,
+    verifyReport: undefined,
+    verifyTimeout: undefined,
+    verifyIgnore: [],
+    verifyAllowConsoleError: false,
   };
 
   if (appCommand === 'dev') {
@@ -386,6 +415,8 @@ function parseArgs(argv) {
         opts.appRoot = opts.appRoot ?? arg;
       } else if (opts.appCommand === 'preview') {
         opts.previewDir = opts.previewDir ?? arg;
+      } else if (opts.appCommand === 'verify') {
+        opts.verifyTarget = opts.verifyTarget ?? arg;
       } else {
         opts.entryPoints.push(arg);
       }
@@ -2198,6 +2229,18 @@ async function main() {
       process.exit(1);
     }
     return;
+  }
+
+  // verify 는 Playwright 만 호출 — config / NAPI dlopen 불필요. test262 와 동일한 early dispatch.
+  if (opts.appCommand === 'verify') {
+    try {
+      const { runVerify } = await import('./verify.mjs');
+      const r = await runVerify(opts);
+      process.exit(r.exitCode);
+    } catch (err) {
+      console.error(`error: ${err.message}`);
+      process.exit(1);
+    }
   }
 
   // RN dev/build 의 positional arg 는 entry point (파일) — web 처럼 appRoot (디렉토리)
