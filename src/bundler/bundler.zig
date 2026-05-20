@@ -1605,6 +1605,13 @@ pub const Bundler = struct {
             // Multi-format single-path emit. 매 OutputConfig 마다 linker setEmitFormat 으로
             // format-dependent state 갱신, emit 결과 누적. 첫 entry 의 결과를 `output` /
             // `dev_sourcemap` 에 alias 로 노출 (backward-compat).
+            //
+            // 산출물 정책 (PR-H):
+            //   - bundle.js 본문 = format 별 (outputs_by_format[*].output)
+            //   - CSS / worker / asset = graph 기반이라 *format 무관, 공유*. result.asset_outputs
+            //     가 모든 OutputConfig 와 공유 (한 번만 emit). 사용자가 per-format CSS 원하면
+            //     build() 를 두 번 호출.
+            //   - mf_manifest = MF + multi-format 거부 (위 validation) 라 항상 null.
             const by = try self.allocator.alloc(types.FormatOutput, self.options.output.len);
             errdefer self.allocator.free(by);
             const mf_opt2 = self.options.mf;
