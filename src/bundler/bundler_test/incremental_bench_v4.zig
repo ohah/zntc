@@ -54,6 +54,9 @@ const WarmResult = struct {
     incr_req_inner_contains_ns: u64,
     incr_req_inner_put_ns: u64,
     incr_re_export_entry_ns: u64,
+    incr_re_export_entry_get_ns: u64,
+    incr_re_export_entry_copy_ns: u64,
+    incr_re_export_entry_star_scan_ns: u64,
     incr_re_export_outer_ns: u64,
     incr_miss_resolve_ns: u64,
 };
@@ -107,6 +110,9 @@ fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entr
         .incr_req_inner_contains_ns = profile.totalNs(.graph_discover_incr_req_inner_contains),
         .incr_req_inner_put_ns = profile.totalNs(.graph_discover_incr_req_inner_put),
         .incr_re_export_entry_ns = profile.totalNs(.graph_discover_incr_re_export_entry),
+        .incr_re_export_entry_get_ns = profile.totalNs(.graph_discover_incr_re_export_entry_get),
+        .incr_re_export_entry_copy_ns = profile.totalNs(.graph_discover_incr_re_export_entry_copy),
+        .incr_re_export_entry_star_scan_ns = profile.totalNs(.graph_discover_incr_re_export_entry_star_scan),
         .incr_re_export_outer_ns = profile.totalNs(.graph_discover_incr_re_export_outer),
         .incr_miss_resolve_ns = profile.totalNs(.graph_discover_incr_miss_resolve),
     };
@@ -165,6 +171,9 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         \\      inner_put     = {d:>7}us ({d:>3}%)
         \\    re_export caller side (us, % of re_export):
         \\      entry         = {d:>7}us ({d:>3}%)
+        \\        get         = {d:>7}us ({d:>3}% of entry)
+        \\        copy        = {d:>7}us ({d:>3}% of entry)
+        \\        star_scan   = {d:>7}us ({d:>3}% of entry)
         \\      outer_loop    = {d:>7}us ({d:>3}%)
         \\
     , .{
@@ -184,6 +193,12 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         if (req == 0) @as(u64, 0) else r.incr_req_inner_put_ns * 100 / req,
         r.incr_re_export_entry_ns / 1000,
         if (r.incr_req_re_export_ns == 0) @as(u64, 0) else r.incr_re_export_entry_ns * 100 / r.incr_req_re_export_ns,
+        r.incr_re_export_entry_get_ns / 1000,
+        if (r.incr_re_export_entry_ns == 0) @as(u64, 0) else r.incr_re_export_entry_get_ns * 100 / r.incr_re_export_entry_ns,
+        r.incr_re_export_entry_copy_ns / 1000,
+        if (r.incr_re_export_entry_ns == 0) @as(u64, 0) else r.incr_re_export_entry_copy_ns * 100 / r.incr_re_export_entry_ns,
+        r.incr_re_export_entry_star_scan_ns / 1000,
+        if (r.incr_re_export_entry_ns == 0) @as(u64, 0) else r.incr_re_export_entry_star_scan_ns * 100 / r.incr_re_export_entry_ns,
         r.incr_re_export_outer_ns / 1000,
         if (r.incr_req_re_export_ns == 0) @as(u64, 0) else r.incr_re_export_outer_ns * 100 / r.incr_req_re_export_ns,
     });
@@ -213,6 +228,9 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
         "graph_discover_incr_req_inner_contains",
         "graph_discover_incr_req_inner_put",
         "graph_discover_incr_re_export_entry",
+        "graph_discover_incr_re_export_entry_get",
+        "graph_discover_incr_re_export_entry_copy",
+        "graph_discover_incr_re_export_entry_star_scan",
         "graph_discover_incr_re_export_outer",
         "graph_discover_incr_miss_resolve",
     });

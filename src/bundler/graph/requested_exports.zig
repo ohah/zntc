@@ -202,10 +202,14 @@ pub fn requestedExportsForReExportRecord(
     var overflowed = false;
 
     self.requested_exports_mutex.lock();
+    var s_get = profile.begin(.graph_discover_incr_re_export_entry_get);
     const maybe_req = self.requested_exports.get(importer_key);
+    s_get.end();
     const request_all = if (maybe_req) |req| req.all else true;
     if (!request_all) {
         if (maybe_req) |req| {
+            var s_copy = profile.begin(.graph_discover_incr_re_export_entry_copy);
+            defer s_copy.end();
             var it = req.names.keyIterator();
             while (it.next()) |name| {
                 if (!overflowed) {
@@ -245,6 +249,7 @@ pub fn requestedExportsForReExportRecord(
     // PR-Y2: 기존 cross-product O(N×M) 를 O(N) 으로. ECMAScript spec 의 non-star unique
     // 보장으로 (name → idx) HashMap lookup 1회 (M4 결과: 47ms warm 의 66% 차지하는 inner
     // loop). re_export_star 의 rec_i 매치는 outer 진입 전 1회 캐싱 후 outer 마다 boolean.
+    var s_star = profile.begin(.graph_discover_incr_re_export_entry_star_scan);
     const has_star_for_rec = blk: {
         for (importer.export_bindings) |eb| {
             if (eb.kind != .re_export_star) continue;
@@ -253,6 +258,7 @@ pub fn requestedExportsForReExportRecord(
         }
         break :blk false;
     };
+    s_star.end();
     s_entry.end();
 
     var s_outer = profile.begin(.graph_discover_incr_re_export_outer);
