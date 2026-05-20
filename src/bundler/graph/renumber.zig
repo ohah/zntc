@@ -15,6 +15,7 @@ const ModuleIndex = types.ModuleIndex;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
 const ModuleList = ModuleGraph.ModuleList;
 const RequestedExports = @import("state.zig").RequestedExports;
+const bundler_symbol = @import("../symbol.zig");
 const profile = @import("../../profile.zig");
 
 pub const RenumberError = error{ RenumberIncomplete, OutOfMemory };
@@ -100,6 +101,16 @@ pub fn renumberModulesDeterministically(
             if (rec.resolved.isNone()) continue;
             rec.resolved = @enumFromInt(old_to_new[rec.resolved.toU32()]);
         }
+        // binding_scanner 가 scan 시점 (renumber 전) module_index 를 SymbolRef 에 박음.
+        // ImportBinding.symbol/local_symbol + ExportBinding.symbol 의 .semantic.module / .alias.module
+        // 필드를 renumber 후 새 idx 로 일괄 치환 — cross-module symbol resolution 정확성 보장.
+        for (m.import_bindings) |*ib| {
+            ib.symbol = remapSymbolRef(ib.symbol, old_to_new);
+            ib.local_symbol = remapSymbolRef(ib.local_symbol, old_to_new);
+        }
+        for (m.export_bindings) |*eb| {
+            eb.symbol = remapSymbolRef(eb.symbol, old_to_new);
+        }
     }
 
     var p_it = self.path_to_module.iterator();
@@ -161,6 +172,19 @@ inline fn remapList(list: *std.ArrayList(ModuleIndex), old_to_new: []const u32) 
     for (list.items) |*idx| {
         idx.* = @enumFromInt(old_to_new[idx.toU32()]);
     }
+}
+
+fn remapSymbolRef(ref: bundler_symbol.SymbolRef, old_to_new: []const u32) bundler_symbol.SymbolRef {
+    return switch (ref) {
+        .semantic => |s| if (s.module.isNone()) ref else .{ .semantic = .{
+            .module = @enumFromInt(old_to_new[s.module.toU32()]),
+            .symbol = s.symbol,
+        } },
+        .alias => |a| if (a.module.isNone()) ref else .{ .alias = .{
+            .module = @enumFromInt(old_to_new[a.module.toU32()]),
+            .symbol = a.symbol,
+        } },
+    };
 }
 
 fn lessThanByPath(graph: *const ModuleGraph, a: u32, b: u32) bool {
