@@ -2026,6 +2026,83 @@ test "react_native preserve_symlinks: workspace symlink package resolves app log
     try std.testing.expect(std.mem.indexOf(u8, result.output, "react-native-tcp-socket") == null);
 }
 
+test "react_native preserve_symlinks: standard pnpm package symlink is bundled once" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/node_modules/@webview-bridge");
+    try tmp.dir.makePath("node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native");
+    try writeFile(tmp.dir, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/index.js",
+        \\const WebView = require("react-native-webview");
+        \\exports.Bridge = WebView;
+    );
+    try writeFile(tmp.dir, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/package.json", "{\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/index.js",
+        \\exports.marker = "RNC_WEBVIEW_SINGLETON_MARKER";
+    );
+
+    tmp.dir.symLink(
+        "../../../node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview",
+        "apps/app/node_modules/react-native-webview",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    tmp.dir.symLink(
+        "../../../../node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native",
+        "apps/app/node_modules/@webview-bridge/react-native",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    tmp.dir.symLink(
+        "../../react-native-webview@13/node_modules/react-native-webview",
+        "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/react-native-webview",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try writeFile(tmp.dir, "apps/app/index.js",
+        \\const direct = require("react-native-webview");
+        \\const bridge = require("@webview-bridge/react-native");
+        \\console.log(direct.marker, bridge.Bridge.marker);
+    );
+
+    const entry = try absPath(&tmp, "apps/app/index.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .metafile = true,
+        .preserve_symlinks = true,
+        .resolve_symlink_siblings = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    var marker_count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, result.output, search_from, "RNC_WEBVIEW_SINGLETON_MARKER")) |pos| {
+        marker_count += 1;
+        search_from = pos + "RNC_WEBVIEW_SINGLETON_MARKER".len;
+    }
+    try std.testing.expectEqual(@as(usize, 1), marker_count);
+    const metafile = result.metafile_json orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, metafile, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/index.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metafile, "apps/app/node_modules/react-native-webview/index.js") == null);
+    try std.testing.expect(std.mem.indexOf(u8, metafile, "@webview-bridge+react-native@1/node_modules/react-native-webview/index.js") == null);
+}
+
 test "preserve_symlinks: alias to pnpm symlink package root bundles package entry" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

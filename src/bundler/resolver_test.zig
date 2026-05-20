@@ -394,6 +394,55 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
     try std.testing.expect(std.mem.indexOf(u8, package_owned_subpath.path, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js") != null);
 }
 
+test "resolve: preserve_symlinks + resolve_symlink_siblings — 표준 pnpm package symlink identity canonicalize" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("apps/app/node_modules");
+    try tmp.dir.makePath("node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/src");
+    try writeFile(tmp.dir, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/package.json", "{\"main\":\"index.js\"}");
+    try createFile(tmp.dir, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts");
+
+    tmp.dir.symLink(
+        "../../../node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview",
+        "apps/app/node_modules/react-native-webview",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    tmp.dir.symLink(
+        "../../react-native-webview@13/node_modules/react-native-webview",
+        "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/react-native-webview",
+        .{ .is_directory = true },
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "apps/app");
+    defer std.testing.allocator.free(app_root);
+    const bridge_src = try tmp.dir.realpathAlloc(std.testing.allocator, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/src");
+    defer std.testing.allocator.free(bridge_src);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.preserve_symlinks = true;
+    resolver.resolve_symlink_siblings = true;
+
+    const from_app = try resolver.resolve(app_root, "react-native-webview/src/RNCWebViewNativeComponent");
+    defer std.testing.allocator.free(from_app.path);
+    defer if (from_app.resolve_dir) |dir| std.testing.allocator.free(dir);
+    const from_bridge = try resolver.resolve(bridge_src, "react-native-webview/src/RNCWebViewNativeComponent");
+    defer std.testing.allocator.free(from_bridge.path);
+    defer if (from_bridge.resolve_dir) |dir| std.testing.allocator.free(dir);
+
+    try std.testing.expectEqualStrings(from_app.path, from_bridge.path);
+    try std.testing.expect(std.mem.indexOf(u8, from_app.path, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, from_app.path, "apps/app/node_modules/react-native-webview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, from_app.path, "@webview-bridge+react-native@1/node_modules/react-native-webview") == null);
+}
+
 test "resolve: preserve_symlinks sibling fallback beats global node_paths version" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -431,7 +480,8 @@ test "resolve: preserve_symlinks sibling fallback beats global node_paths versio
     const pkg = try resolver.resolve(app_root, "@scope/pkg");
     defer std.testing.allocator.free(pkg.path);
     defer if (pkg.resolve_dir) |dir| std.testing.allocator.free(dir);
-    try std.testing.expect(pathEndsWith(pkg.path, "apps/app/node_modules/@scope/pkg/dist/index.js"));
+    try std.testing.expect(std.mem.indexOf(u8, pkg.path, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/dist/index.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pkg.path, "apps/app/node_modules/@scope/pkg/dist/index.js") == null);
 
     const pkg_dir = std.fs.path.dirname(pkg.path).?;
     const dep = try resolver.resolve(pkg_dir, "dep");
@@ -480,9 +530,9 @@ test "resolve: global node_paths symlink records real resolve_dir before hoisted
     defer std.testing.allocator.free(pkg.path);
     defer if (pkg.resolve_dir) |dir| std.testing.allocator.free(dir);
 
-    try std.testing.expect(std.mem.indexOf(u8, pkg.path, "node_modules/.pnpm/node_modules/pkg/index.js") != null);
-    try std.testing.expect(pkg.resolve_dir != null);
-    try std.testing.expect(std.mem.indexOf(u8, pkg.resolve_dir.?, "node_modules/.pnpm/pkg@1/node_modules/pkg") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pkg.path, "node_modules/.pnpm/pkg@1/node_modules/pkg/index.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pkg.path, "node_modules/.pnpm/node_modules/pkg/index.js") == null);
+    try std.testing.expect(pkg.resolve_dir == null);
 
     const dep_source_dir = pkg.resolve_dir orelse std.fs.path.dirname(pkg.path).?;
     const dep = try resolver.resolve(dep_source_dir, "dep");
