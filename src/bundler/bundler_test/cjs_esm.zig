@@ -2119,6 +2119,55 @@ test "ESM re-export: named re-export from ESM binds via exports getter (#1425)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_source.helper") != null);
 }
 
+test "RN namespace re-export: type-only neighbor keeps value getter live" {
+    // reanimated hook/index.ts 축소 재현. 같은 source의 type-only re-export 옆에
+    // value re-export가 있고, 소비자가 namespace.member로 읽어도 source getter가 살아야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "event.ts",
+        \\export type EventHandler = () => void;
+        \\export function useEvent() { return 'event'; }
+    );
+    try writeFile(tmp.dir, "shared.ts",
+        \\export function useSharedValue() { return 'shared'; }
+    );
+    try writeFile(tmp.dir, "hook.ts",
+        \\export type { EventHandler } from './event';
+        \\export { useEvent } from './event';
+        \\export { useSharedValue } from './shared';
+    );
+    try writeFile(tmp.dir, "root.ts",
+        \\export { useEvent, useSharedValue } from './hook';
+    );
+    try writeFile(tmp.dir, "wrapper.ts",
+        \\import * as Reanimated from './root';
+        \\if (!Reanimated?.useSharedValue) throw new Error('missing shared');
+        \\export function run() { return Reanimated.useEvent(); }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { run } from './wrapper';
+        \\globalThis.result = run();
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const hook_start = std.mem.indexOf(u8, result.output, "//#region hook.ts").?;
+    const hook_end = std.mem.indexOfPos(u8, result.output, hook_start, "//#endregion").?;
+    const hook_output = result.output[hook_start..hook_end];
+    try std.testing.expect(std.mem.indexOf(u8, hook_output, "useEvent:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hook_output, "useSharedValue:") != null);
+}
+
 test "ESM re-export: local import alias getter uses source value in RN ESM wrap" {
     // react-native-svg 축소 재현:
     //   elements.ts: import Path from './Path'; export { Path };
