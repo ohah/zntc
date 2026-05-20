@@ -281,6 +281,7 @@ pub fn buildMetadataForAst(
     module_index: u32,
     is_entry: bool,
     override_symbol_ids: ?[]const ?u32,
+    format: types.Format,
 ) !LinkingMetadata {
     var scope = @import("../../profile.zig").begin(.metadata);
     defer scope.end();
@@ -312,7 +313,7 @@ pub fn buildMetadataForAst(
             .final_exports = null,
             .symbol_ids = &.{},
             .cjs_import_preamble = null,
-            .require_rewrites = try self.buildRequireRewrites(&m),
+            .require_rewrites = try self.buildRequireRewrites(&m, format),
             .allocator = self.allocator,
         };
     }
@@ -455,7 +456,7 @@ pub fn buildMetadataForAst(
                     const is_helper_esm = ib.is_helper and m.wrap_kind == .esm;
                     const Mapped = struct { name: []const u8, remote: bool };
                     const mapped: ?Mapped = blk: {
-                        if (try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator)) |mp|
+                        if (try mappedExternalParam(format, self.iife_globals, rec, self.allocator)) |mp|
                             break :blk .{ .name = mp, .remote = false };
                         // PR-1/PR-2 (#3459): 정적 `import X from "remote/x"`
                         // 의 unresolved external 을 per-spec seam 글로벌
@@ -466,7 +467,7 @@ pub fn buildMetadataForAst(
                         // 들을 __mfGuardedLoad 로 미리 로드 후 seam 글로벌
                         // 대입). remote=true → default import 는 ESM
                         // namespace 의 `.default`(아래).
-                        if (self.format == .iife and rec.is_external) {
+                        if (format == .iife and rec.is_external) {
                             for (self.mf_remotes) |kv| {
                                 if (federation.matchesRemoteSpec(rec.specifier, kv.key)) {
                                     if (self.mf_static_remotes) |c|
@@ -525,7 +526,7 @@ pub fn buildMetadataForAst(
                             try preamble.write(ib.imported_name);
                             try preamble.write(";\n");
                         }
-                    } else if (self.format == .iife and !ib.is_helper) {
+                    } else if (format == .iife and !ib.is_helper) {
                         // #1791 IIFE: 매핑 안 된 unresolved external 은 의미 자체가 성립 안 함
                         // (factory 스코프에 require 없음, top-level import 도 불가).
                         // #1824: --globals 로 매핑된 external 은 위 `is_iife_mapped` 브랜치에서 처리됨.
@@ -550,7 +551,7 @@ pub fn buildMetadataForAst(
                                 .suggestion = null,
                             });
                         }
-                    } else if (self.format == .esm and rec.is_external and !is_helper_esm) {
+                    } else if (format == .esm and rec.is_external and !is_helper_esm) {
                         // #1962 ESM external: chunk top 의 ESM `import` 구문이 binding 을
                         // 제공하므로 모듈 preamble 에 require() 를 두지 않는다.
                         // - emitter 의 `external_imports.emitChunkExternalImports` 가 dedup 후 emit.
@@ -1082,7 +1083,7 @@ pub fn buildMetadataForAst(
     const require_rewrites = blk: {
         var rr_scope = profile.begin(.metadata_require_rewrites);
         defer rr_scope.end();
-        break :blk try self.buildRequireRewrites(&m);
+        break :blk try self.buildRequireRewrites(&m, format);
     };
 
     // ns_var_list → dev_ns_vars: backing slice 소유권 이전 (복사 없음)
@@ -1119,7 +1120,8 @@ pub fn buildMetadataForAst(
 
 /// 모듈의 import_records에서 require() → CJS 모듈 대상의 specifier → require_xxx() 맵 구축.
 /// CJS 래핑 모듈과 scope hoisted ESM+CJS 혼합 모듈 모두에서 사용.
-pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHashMapUnmanaged([]const u8) {
+/// `format` 은 per-emit 인자 — 같은 Linker 가 다른 format 으로 호출될 수 있음.
+pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types.Format) !std.StringHashMapUnmanaged([]const u8) {
     var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
     const self_idx = m.index.toU32();
     var audit = debug_log.auditScope(.metadata_audit);
@@ -1128,7 +1130,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
         if (rec.resolved.isNone()) {
             // UMD/AMD/IIFE+globals: external require → factory 매개변수 참조.
             // require("react") → React (factory params에서 주입, #1824 IIFE 확장).
-            if (try mappedExternalParam(self.format, self.iife_globals, rec, self.allocator)) |param| {
+            if (try mappedExternalParam(format, self.iife_globals, rec, self.allocator)) |param| {
                 defer self.allocator.free(param);
                 if (!require_rewrites.contains(rec.specifier)) {
                     // "(React)" 형태로 저장 — emitRewriteValue가 '('로 시작하면 ()를 붙이지 않음

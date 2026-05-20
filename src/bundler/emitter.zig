@@ -1484,6 +1484,7 @@ pub fn emitModule(
             module.index.toU32(),
             is_entry,
             override_syms,
+            l.format,
         );
         // transformer가 전파한 symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {

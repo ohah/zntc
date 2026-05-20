@@ -1094,7 +1094,7 @@ fn buildMetadataForModule(
 ) !LinkingMetadata {
     const mod = r.linker.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return error.NoAst;
     const ast: *const Ast = &(mod.ast orelse return error.NoAst);
-    return r.linker.buildMetadataForAst(ast, module_index, is_entry, null);
+    return r.linker.buildMetadataForAst(ast, module_index, is_entry, null, r.linker.format);
 }
 
 test "preamble: CJS module import — named import generates require_xxx" {
