@@ -900,6 +900,7 @@ pub const Linker = struct {
                                 .symbol_id = @intCast(si),
                                 .name = key,
                                 .ref_count = if (sym.reference_count == 0) 1 else sym.reference_count,
+                                .module_path = m.path,
                             });
                         }
                     }
@@ -960,6 +961,7 @@ pub const Linker = struct {
                             .symbol_id = sym_idx,
                             .name = key,
                             .ref_count = sym.reference_count,
+                            .module_path = m.path,
                         });
                     }
                 }
@@ -992,6 +994,7 @@ pub const Linker = struct {
                             .symbol_id = @intCast(si),
                             .name = key,
                             .ref_count = ref_count,
+                            .module_path = m.path,
                         });
                     }
                 }

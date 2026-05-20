@@ -66,16 +66,20 @@ pub const TopLevelCandidate = struct {
     symbol_id: u32,
     name: []const u8,
     ref_count: u32,
+    /// `candidateLessThan` 의 tie-break — module_index 는 renumber 결정적이지만
+    /// path 는 입력 의존이라 더 강한 invariant. caller 가 반드시 채워야 함.
+    module_path: []const u8,
 };
 
-/// Phase A 빈도순 정렬 비교자. ref_count 내림차순, 동률은 name →
-/// module_index → symbol_id (병렬 파싱 비결정 회피 — name 은 computeRenames
-/// 이후 bundle-wide 유일하므로 결정적).
+/// Phase A 빈도순 정렬 비교자. ref_count 내림차순, 동률은 name → module_path →
+/// symbol_id. name 은 computeRenames 이후 bundle-wide 유일하므로 보통 동률 없고,
+/// 합성 default 등 잔존 동률은 path 로 안정화.
 fn candidateLessThan(_: void, a: TopLevelCandidate, b: TopLevelCandidate) bool {
     if (a.ref_count != b.ref_count) return a.ref_count > b.ref_count;
     const name_order = std.mem.order(u8, a.name, b.name);
     if (name_order != .eq) return name_order == .lt;
-    if (a.module_index != b.module_index) return a.module_index < b.module_index;
+    const path_order = std.mem.order(u8, a.module_path, b.module_path);
+    if (path_order != .eq) return path_order == .lt;
     return a.symbol_id < b.symbol_id;
 }
 
@@ -123,9 +127,6 @@ pub fn mangleAll(
     const sorted = try allocator.alloc(TopLevelCandidate, input.top_level_candidates.len);
     defer allocator.free(sorted);
     @memcpy(sorted, input.top_level_candidates);
-    // Tie-breaker 는 name 우선 — `module_index`/`symbol_id` 는 병렬 파싱으로
-    // run 마다 다를 수 있어 non-deterministic 결과를 유발. 이름은
-    // `computeRenames` 이후 bundle-wide 로 유일하므로 결정적 정렬 보장.
     std.mem.sortUnstable(TopLevelCandidate, sorted, {}, candidateLessThan);
 
     // Phase B 가 outer Phase A binding 과 shadow 충돌 (#1757) 을 피하려면 Phase A 가
@@ -383,9 +384,9 @@ test "mangleAll: empty input" {
 
 test "mangleAll: Phase A renames by frequency" {
     const candidates = [_]TopLevelCandidate{
-        .{ .module_index = 0, .symbol_id = 0, .name = "rarelyUsed", .ref_count = 1 },
-        .{ .module_index = 0, .symbol_id = 1, .name = "hotPath", .ref_count = 100 },
-        .{ .module_index = 0, .symbol_id = 2, .name = "medium", .ref_count = 10 },
+        .{ .module_index = 0, .symbol_id = 0, .name = "rarelyUsed", .ref_count = 1, .module_path = "a.ts" },
+        .{ .module_index = 0, .symbol_id = 1, .name = "hotPath", .ref_count = 100, .module_path = "a.ts" },
+        .{ .module_index = 0, .symbol_id = 2, .name = "medium", .ref_count = 10, .module_path = "a.ts" },
     };
 
     var result = try mangleAll(std.testing.allocator, .{
@@ -406,7 +407,7 @@ test "mangleAll: Phase A renames by frequency" {
 test "mangleAll: global_reserved blocks name assignment" {
     // Base54 첫 이름은 "e" (eternia/...) — 이를 reserved 로 막아 다음 이름이 오게.
     const candidates = [_]TopLevelCandidate{
-        .{ .module_index = 0, .symbol_id = 0, .name = "longOriginal", .ref_count = 10 },
+        .{ .module_index = 0, .symbol_id = 0, .name = "longOriginal", .ref_count = 10, .module_path = "a.ts" },
     };
 
     var result = try mangleAll(std.testing.allocator, .{
@@ -441,7 +442,7 @@ test "mangleAll: Phase B loop runs with empty module (counter carried through)" 
     };
 
     const candidates = [_]TopLevelCandidate{
-        .{ .module_index = 0, .symbol_id = 0, .name = "alpha", .ref_count = 5 },
+        .{ .module_index = 0, .symbol_id = 0, .name = "alpha", .ref_count = 5, .module_path = "a.ts" },
     };
 
     var result = try mangleAll(std.testing.allocator, .{
@@ -458,10 +459,10 @@ test "mangleAll: Phase B loop runs with empty module (counter carried through)" 
 
 test "mangleAll: deterministic — same input twice yields identical renames" {
     const candidates = [_]TopLevelCandidate{
-        .{ .module_index = 0, .symbol_id = 0, .name = "alpha", .ref_count = 7 },
-        .{ .module_index = 1, .symbol_id = 0, .name = "beta", .ref_count = 12 },
-        .{ .module_index = 2, .symbol_id = 0, .name = "gamma", .ref_count = 3 },
-        .{ .module_index = 0, .symbol_id = 1, .name = "delta", .ref_count = 7 }, // tie with alpha
+        .{ .module_index = 0, .symbol_id = 0, .name = "alpha", .ref_count = 7, .module_path = "a.ts" },
+        .{ .module_index = 1, .symbol_id = 0, .name = "beta", .ref_count = 12, .module_path = "b.ts" },
+        .{ .module_index = 2, .symbol_id = 0, .name = "gamma", .ref_count = 3, .module_path = "c.ts" },
+        .{ .module_index = 0, .symbol_id = 1, .name = "delta", .ref_count = 7, .module_path = "a.ts" },
     };
 
     var r1 = try mangleAll(std.testing.allocator, .{
@@ -487,11 +488,38 @@ test "mangleAll: deterministic — same input twice yields identical renames" {
     }
 }
 
+test "mangleAll: candidate tie-break uses path, not module_index" {
+    // 같은 path 의 candidate 는 module_index 와 무관하게 동일 rename 받아야 함.
+    // c1 vs c2 의 module_index 만 다름 (path 동일) → 결과 byte-identical 이면
+    // path 우선 invariant 보장. module_index tie-break 였다면 rename 발산.
+    const c1 = [_]TopLevelCandidate{
+        .{ .module_index = 0, .symbol_id = 0, .name = "shared", .ref_count = 5, .module_path = "a.ts" },
+        .{ .module_index = 1, .symbol_id = 0, .name = "shared", .ref_count = 5, .module_path = "z.ts" },
+    };
+    const c2 = [_]TopLevelCandidate{
+        .{ .module_index = 100, .symbol_id = 0, .name = "shared", .ref_count = 5, .module_path = "a.ts" },
+        .{ .module_index = 1, .symbol_id = 0, .name = "shared", .ref_count = 5, .module_path = "z.ts" },
+    };
+
+    var r1 = try mangleAll(std.testing.allocator, .{ .modules = &.{}, .top_level_candidates = &c1 });
+    defer r1.deinit();
+    var r2 = try mangleAll(std.testing.allocator, .{ .modules = &.{}, .top_level_candidates = &c2 });
+    defer r2.deinit();
+
+    const a1 = r1.renames.get(.{ .module_index = 0, .symbol_id = 0 }) orelse return error.MissingRename;
+    const a2 = r2.renames.get(.{ .module_index = 100, .symbol_id = 0 }) orelse return error.MissingRename;
+    try std.testing.expectEqualStrings(a1, a2);
+
+    const z1 = r1.renames.get(.{ .module_index = 1, .symbol_id = 0 }) orelse return error.MissingRename;
+    const z2 = r2.renames.get(.{ .module_index = 1, .symbol_id = 0 }) orelse return error.MissingRename;
+    try std.testing.expectEqualStrings(z1, z2);
+}
+
 test "mangleAll: identity rename (name already equals base54 head) — no rename entry" {
     // 원본 이름이 base54 의 (reserved 'e'/'m' 을 skip 한 후) 첫 이름 "t" 와 같으면
     // renames 에 기록하지 않음 (no-op).
     const candidates = [_]TopLevelCandidate{
-        .{ .module_index = 0, .symbol_id = 0, .name = "t", .ref_count = 10 },
+        .{ .module_index = 0, .symbol_id = 0, .name = "t", .ref_count = 10, .module_path = "a.ts" },
     };
 
     var result = try mangleAll(std.testing.allocator, .{
