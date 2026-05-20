@@ -2,8 +2,8 @@
   "date": "2026-05-21",
   "platform": "darwin arm64",
   "runs": {
-    "cli": { "iterations": 5 },
-    "napi": { "warmup": 3, "iterations": 10 },
+    "cli": { "iterations": 20 },
+    "napi": { "warmup": 5, "iterations": 20 },
     "bundlePerf": { "warmup": 5, "iterations": 20 },
     "pipeline": { "iterations": 5 }
   },
