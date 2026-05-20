@@ -389,35 +389,3 @@ deno install -A -g npm:@zntc/core
 
   </TabItem>
 </Tabs>
-
-## 소스에서 빌드 (컨트리뷰터 / 최신 main)
-
-publish 된 npm 버전이 아닌 최신 main 브랜치 또는 직접 수정한 코드로 동작시키려면:
-
-### 사전 요구사항
-
-- **Zig 0.15.2** ([mise](https://mise.jdx.dev/) 설치 권장)
-- **Bun 1.3+** 또는 **Node.js 24+**
-- **Git**
-
-### 빌드
-
-```bash
-git clone https://github.com/ohah/zntc.git
-cd zntc
-zig build -Doptimize=ReleaseFast
-```
-
-빌드된 바이너리: `zig-out/bin/zntc`. PATH 에 추가하면 npm 설치본과 같은 식으로 사용 가능:
-
-```bash
-# ~/.zshrc 또는 ~/.bashrc
-export PATH="$PATH:/path/to/zntc/zig-out/bin"
-```
-
-NAPI 패키지를 직접 빌드하려면:
-
-```bash
-zig build napi               # @zntc/core 의 native binary
-zig build wasm wasm-bundler  # @zntc/wasm 의 .wasm
-```
