@@ -794,7 +794,8 @@ pub const DevServer = struct {
             try w.writeAll(
                 \\"result":{"tools":[
                 \\{"name":"reset_cache","description":"Clear the build cache. Next build will be a full rebuild.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-                \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}}
+                \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}},
+                \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}}
                 \\]}
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
@@ -884,7 +885,114 @@ pub const DevServer = struct {
             return;
         }
 
+        if (std.mem.eql(u8, tool_name, "verify_in_chrome")) {
+            try self.handleVerifyInChrome(w, args);
+            return;
+        }
+
         try w.writeAll("\"error\":{\"code\":-32602,\"message\":\"Unknown tool\"}");
+    }
+
+    /// `verify_in_chrome` MCP 도구. Node CLI (`zntc verify --verify-json ...`) 를
+    /// 자식 프로세스로 spawn 해 JSON 리포트를 받아온다. CLI 경로는 `ZNTC_CLI` env →
+    /// PATH 의 `zntc` 순. Playwright optionalDependency 가 Node 측 책임.
+    fn handleVerifyInChrome(self: *DevServer, w: anytype, args: std.json.Value) !void {
+        const allocator = self.allocator;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        // 1. target — 기본값 = 서버 root URL.
+        var target: []const u8 = "";
+        var timeout_ms: ?i64 = null;
+        var allow_console_error = false;
+        var ignore_patterns: []const std.json.Value = &.{};
+        switch (args) {
+            .object => |o| {
+                switch (o.get("target") orelse .null) {
+                    .string => |s| target = s,
+                    else => {},
+                }
+                switch (o.get("timeout") orelse .null) {
+                    .integer => |n| timeout_ms = n,
+                    .float => |f| timeout_ms = @intFromFloat(f),
+                    else => {},
+                }
+                switch (o.get("allowConsoleError") orelse .null) {
+                    .bool => |b| allow_console_error = b,
+                    else => {},
+                }
+                switch (o.get("ignore") orelse .null) {
+                    .array => |arr| ignore_patterns = arr.items,
+                    else => {},
+                }
+            },
+            else => {},
+        }
+        if (target.len == 0) {
+            target = try std.fmt.allocPrint(arena_alloc, "http://{s}:{d}/", .{ self.host, self.port });
+        }
+
+        // 2. CLI 경로 — ZNTC_CLI 우선 (모노레포 dev / 비표준 install 환경), 없으면 PATH 의 `zntc`.
+        const cli_path = std.process.getEnvVarOwned(arena_alloc, "ZNTC_CLI") catch
+            try arena_alloc.dupe(u8, "zntc");
+
+        // 3. argv 구성 — ZNTC_CLI 가 `.mjs/.js` 면 직접 exec 불가 (Node 는 스크립트
+        // 파일을 ELF/Mach-O 처럼 실행 못함, `node script.mjs` 형태 필요).
+        const needs_node = std.mem.endsWith(u8, cli_path, ".mjs") or
+            std.mem.endsWith(u8, cli_path, ".js");
+        var argv: std.ArrayList([]const u8) = .empty;
+        if (needs_node) try argv.append(arena_alloc, "node");
+        try argv.append(arena_alloc, cli_path);
+        try argv.append(arena_alloc, "verify");
+        try argv.append(arena_alloc, target);
+        try argv.append(arena_alloc, "--verify-json");
+        if (timeout_ms) |t| {
+            try argv.append(arena_alloc, "--verify-timeout");
+            try argv.append(arena_alloc, try std.fmt.allocPrint(arena_alloc, "{d}", .{t}));
+        }
+        if (allow_console_error) {
+            try argv.append(arena_alloc, "--verify-allow-console-error");
+        }
+        for (ignore_patterns) |p| switch (p) {
+            .string => |s| {
+                try argv.append(arena_alloc, "--verify-ignore");
+                try argv.append(arena_alloc, s);
+            },
+            else => {},
+        };
+
+        // 4. spawn (1MB stdout / stderr 상한 — verify 리포트는 보통 1-10KB).
+        const result = std.process.Child.run(.{
+            .allocator = arena_alloc,
+            .argv = argv.items,
+            .max_output_bytes = 1024 * 1024,
+        }) catch |err| {
+            try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+            const msg = try std.fmt.allocPrint(
+                arena_alloc,
+                "zntc verify spawn 실패: {}. ZNTC_CLI env (또는 PATH 의 `zntc` Node CLI) 가 설치/실행 가능한지 확인.",
+                .{err},
+            );
+            try writeJsonEscaped(w, msg);
+            try w.writeAll("\"}],\"isError\":true}");
+            return;
+        };
+
+        // 5. 응답 구성 — stdout (JSON 1줄) 이 verify 리포트. 비어있으면 stderr 노출.
+        const is_error = switch (result.term) {
+            .Exited => |code| code != 0,
+            else => true,
+        };
+        const stdout_trim = std.mem.trim(u8, result.stdout, " \t\r\n");
+        const stderr_trim = std.mem.trim(u8, result.stderr, " \t\r\n");
+        const payload = if (stdout_trim.len > 0) stdout_trim else stderr_trim;
+
+        try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+        try writeJsonEscaped(w, payload);
+        try w.writeAll("\"}]");
+        if (is_error) try w.writeAll(",\"isError\":true");
+        try w.writeAll("}");
     }
 
     /// 이벤트를 SSE 구독자 전원에 브로드캐스트.
