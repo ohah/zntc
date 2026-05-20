@@ -59,7 +59,7 @@ describe('build determinism (#3564)', () => {
     await expectDeterministic('name-collision', 'index.js', ['--minify-identifiers']);
   });
 
-  test.skip('dynamic-only — exec_index ties from import() only', async () => {
+  test('dynamic-only — exec_index ties from import() only', async () => {
     await expectDeterministic('dynamic-only', 'index.js');
   });
 

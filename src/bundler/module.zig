@@ -570,12 +570,14 @@ pub const Module = struct {
     /// 번들 출력 순서 comparator.
     /// 래핑된 모듈(__esm/__commonJS)을 scope-hoisted 모듈보다 먼저 배치.
     /// var init_xxx = __esm(...) 선언이 init_xxx() 호출보다 앞에 와야 하므로,
-    /// 같은 그룹 내에서는 exec_index 오름차순.
+    /// 같은 그룹 내에서는 exec_index 오름차순. exec_index 동률 (보통 dynamic-only
+    /// 미방문 모듈의 maxInt 마커) 시 path 사전순 — worker race 비결정 차단.
     pub fn bundleOrderLessThan(_: void, a: *const Module, b: *const Module) bool {
         const a_wrapped = a.wrap_kind != .none;
         const b_wrapped = b.wrap_kind != .none;
         if (a_wrapped != b_wrapped) return a_wrapped;
-        return a.exec_index < b.exec_index;
+        if (a.exec_index != b.exec_index) return a.exec_index < b.exec_index;
+        return types.stringLessThan({}, a.path, b.path);
     }
 
     pub fn init(index: ModuleIndex, path: []const u8) Module {
