@@ -1109,6 +1109,13 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
+    // emit Phase 3 의 per-module pending_diagnostics flush 가 worker 완료 순서로 append 되어
+    // fatal_diagnostics 의 stderr 출현 순서가 비결정 (#3564). emit 종료 직전 stable sort 로 결정성 회복.
+    if (linker) |l| {
+        const linker_mut = @constCast(l);
+        std.mem.sort(types.BundlerDiagnostic, linker_mut.fatal_diagnostics.items, {}, diagnosticLessThan);
+    }
+
     // Lazy 경로: stack bundle_sm 을 heap 으로 얕은 복사. ArrayList items 포인터는 allocator 가
     // 소유하므로 payload 만 heap 으로 옮겨도 double-free 없음. flag 토글 후 본 함수 defer 는 skip.
     // 반드시 `toOwnedSlice` 성공 후 이관 — 실패 시 defer 가 원본 builder 를 정리.
@@ -2176,3 +2183,37 @@ fn addIdentityMappings(sm: *SourceMap.SourceMapBuilder, source_idx: u32, gen_sta
 // --- 포맷별 래핑 (prologue/epilogue) ---
 const emitFormatPrologue = format_wrapper.emitFormatPrologue;
 const emitFormatEpilogue = format_wrapper.emitFormatEpilogue;
+
+/// fatal_diagnostics 결정성 정렬 키 (#3564): severity → file_path → span.start → message.
+fn diagnosticLessThan(_: void, a: types.BundlerDiagnostic, b: types.BundlerDiagnostic) bool {
+    const a_sev = @intFromEnum(a.severity);
+    const b_sev = @intFromEnum(b.severity);
+    if (a_sev != b_sev) return a_sev < b_sev;
+    const path_order = std.mem.order(u8, a.file_path, b.file_path);
+    if (path_order != .eq) return path_order == .lt;
+    if (a.span.start != b.span.start) return a.span.start < b.span.start;
+    return std.mem.lessThan(u8, a.message, b.message);
+}
+
+test "diagnosticLessThan: severity → path → span.start → message" {
+    const Span = @import("../lexer/token.zig").Span;
+    const d1: types.BundlerDiagnostic = .{
+        .code = .unresolved_import,
+        .severity = .@"error",
+        .message = "msg",
+        .file_path = "z.ts",
+        .span = Span{ .start = 10, .end = 20 },
+        .step = .resolve,
+    };
+    const d2: types.BundlerDiagnostic = .{
+        .code = .unresolved_import,
+        .severity = .@"error",
+        .message = "msg",
+        .file_path = "a.ts",
+        .span = Span{ .start = 10, .end = 20 },
+        .step = .resolve,
+    };
+    // path 사전순 — a.ts 가 z.ts 보다 우선
+    try std.testing.expect(diagnosticLessThan({}, d2, d1));
+    try std.testing.expect(!diagnosticLessThan({}, d1, d2));
+}
