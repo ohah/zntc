@@ -4,6 +4,7 @@ const types = @import("../types.zig");
 const ImportRecord = types.ImportRecord;
 const ModuleIndex = types.ModuleIndex;
 const RequestedExports = @import("state.zig").RequestedExports;
+const profile = @import("../../profile.zig");
 
 pub fn requestAll(self: anytype, idx: ModuleIndex) !bool {
     if (idx.isNone()) return false;
@@ -200,6 +201,8 @@ pub fn requestDependencyExports(
     const importer = self.modules.at(importer_idx);
     switch (record.kind) {
         .static_import => {
+            var s = profile.begin(.graph_discover_incr_req_static_import);
+            defer s.end();
             var changed = false;
             var found_binding = false;
             for (importer.import_bindings) |ib| {
@@ -215,8 +218,16 @@ pub fn requestDependencyExports(
             }
             return changed;
         },
-        .re_export => return requestedExportsForReExportRecord(self, importer, rec_i, dep_idx),
-        .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => return requestAll(self, dep_idx),
+        .re_export => {
+            var s = profile.begin(.graph_discover_incr_req_re_export);
+            defer s.end();
+            return requestedExportsForReExportRecord(self, importer, rec_i, dep_idx);
+        },
+        .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => {
+            var s = profile.begin(.graph_discover_incr_req_simple);
+            defer s.end();
+            return requestAll(self, dep_idx);
+        },
     }
 }
 

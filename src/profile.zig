@@ -161,6 +161,10 @@ pub const Category = enum {
     graph_discover_incr_replay_request_exports, // requestDependencyExports — requested_exports HashMap mutation
     graph_discover_incr_replay_record_dep, // recordResolvedDep — import_records write + linkDependency/linkDynamicImport
     graph_discover_incr_replay_other, // virtual/disabled/optional/external/worker 분기 + 부수 work
+    // requestDependencyExports 의 3 분기 (PR-M4). 37ms 단일 함수의 어느 분기가 dominant 인지.
+    graph_discover_incr_req_static_import, // static_import — import_bindings iterate + requestNamed/All
+    graph_discover_incr_req_re_export, // re_export — requestedExportsForReExportRecord (cross-product loop)
+    graph_discover_incr_req_simple, // side_effect/require/dyn/worker/glob/require_context — requestAll
     graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
     graph_renumber,
