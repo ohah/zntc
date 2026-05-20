@@ -165,6 +165,12 @@ pub const Category = enum {
     graph_discover_incr_req_static_import, // static_import — import_bindings iterate + requestNamed/All
     graph_discover_incr_req_re_export, // re_export — requestedExportsForReExportRecord (cross-product loop)
     graph_discover_incr_req_simple, // side_effect/require/dyn/worker/glob/require_context — requestAll
+    // requestNamed/requestAll 내부 4-way (PR-M5). M4 결과 re_export 42% 절감 후 잔여 18ms
+    // 의 진짜 dominant 격리. mutex / outer HashMap / inner contains / inner put.
+    graph_discover_incr_req_mutex, // requested_exports_mutex.lock+unlock cost
+    graph_discover_incr_req_outer_map, // self.requested_exports.getOrPut(mod_idx key)
+    graph_discover_incr_req_inner_contains, // names.contains(name) (inner HashMap)
+    graph_discover_incr_req_inner_put, // names.put(name, {}) (inner HashMap)
     graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
     graph_renumber,
@@ -323,7 +329,7 @@ pub const Category = enum {
     pub fn displayName(cat: Category) []const u8 {
         return switch (cat) {
             inline else => |c| comptime blk: {
-                @setEvalBranchQuota(5000);
+                @setEvalBranchQuota(20000);
                 const name = @tagName(c);
                 var buf: [name.len]u8 = undefined;
                 for (name, 0..) |ch, i| {

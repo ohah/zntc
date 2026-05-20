@@ -9,10 +9,18 @@ const profile = @import("../../profile.zig");
 pub fn requestAll(self: anytype, idx: ModuleIndex) !bool {
     if (idx.isNone()) return false;
     const key: u32 = @intFromEnum(idx);
+    var s_mx = profile.begin(.graph_discover_incr_req_mutex);
     self.requested_exports_mutex.lock();
-    defer self.requested_exports_mutex.unlock();
+    s_mx.end();
+    defer {
+        var s_un = profile.begin(.graph_discover_incr_req_mutex);
+        self.requested_exports_mutex.unlock();
+        s_un.end();
+    }
 
+    var s_om = profile.begin(.graph_discover_incr_req_outer_map);
     const gop = try self.requested_exports.getOrPut(self.allocator, key);
+    s_om.end();
     if (!gop.found_existing) {
         gop.value_ptr.* = .{};
     }
@@ -26,15 +34,28 @@ pub fn requestAll(self: anytype, idx: ModuleIndex) !bool {
 pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
     if (idx.isNone()) return false;
     const key: u32 = @intFromEnum(idx);
+    var s_mx = profile.begin(.graph_discover_incr_req_mutex);
     self.requested_exports_mutex.lock();
-    defer self.requested_exports_mutex.unlock();
+    s_mx.end();
+    defer {
+        var s_un = profile.begin(.graph_discover_incr_req_mutex);
+        self.requested_exports_mutex.unlock();
+        s_un.end();
+    }
 
+    var s_om = profile.begin(.graph_discover_incr_req_outer_map);
     const gop = try self.requested_exports.getOrPut(self.allocator, key);
+    s_om.end();
     if (!gop.found_existing) {
         gop.value_ptr.* = .{};
     }
     if (gop.value_ptr.all) return false;
-    if (gop.value_ptr.names.contains(name)) return false;
+    var s_ic = profile.begin(.graph_discover_incr_req_inner_contains);
+    const already = gop.value_ptr.names.contains(name);
+    s_ic.end();
+    if (already) return false;
+    var s_ip = profile.begin(.graph_discover_incr_req_inner_put);
+    defer s_ip.end();
     try gop.value_ptr.names.put(self.allocator, name, {});
     return true;
 }
