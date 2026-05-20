@@ -148,6 +148,7 @@ pub const Category = enum {
     graph_discover_pm_prepass_run,
     graph_discover_pm_is_pkg_type,
     graph_finalize,
+    graph_renumber,
     graph_resync,
     graph_resync_const,
     graph_resync_semantic,

@@ -5,6 +5,7 @@ const determineExportsKind = graph_mod.determineExportsKind;
 const Module = @import("module.zig").Module;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
+const renumber_mod = @import("graph/renumber.zig");
 const import_scanner = @import("import_scanner.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const module_store_mod = @import("module_store.zig");
@@ -1334,4 +1335,44 @@ test "linkDependency: out-of-bounds dep is no-op" {
     try graph.modules.append(alloc, Module.init(@enumFromInt(0), "a.ts"));
     try graph.linkDependency(@enumFromInt(0), @enumFromInt(99));
     try std.testing.expectEqual(@as(usize, 0), graph.getModule(@enumFromInt(0)).?.dependencies.items.len);
+}
+
+test "renumber: empty graph is no-op" {
+    const alloc = std.testing.allocator;
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+
+    try renumber_mod.renumberModulesDeterministically(&graph, &.{});
+    try std.testing.expectEqual(@as(usize, 0), graph.modules.count());
+}
+
+test "renumber: orphan modules sorted by path regardless of add order" {
+    const alloc = std.testing.allocator;
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+
+    // 의도적 역순 add: c.ts → idx 0, b.ts → 1, a.ts → 2
+    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "c.ts"));
+    try graph.modules.append(alloc, Module.init(@enumFromInt(1), "b.ts"));
+    try graph.modules.append(alloc, Module.init(@enumFromInt(2), "a.ts"));
+    try graph.path_to_module.put(try alloc.dupe(u8, "c.ts"), @enumFromInt(0));
+    try graph.path_to_module.put(try alloc.dupe(u8, "b.ts"), @enumFromInt(1));
+    try graph.path_to_module.put(try alloc.dupe(u8, "a.ts"), @enumFromInt(2));
+
+    try renumber_mod.renumberModulesDeterministically(&graph, &.{});
+
+    // orphan path-sort 후: a.ts → 0, b.ts → 1, c.ts → 2
+    try std.testing.expectEqualStrings("a.ts", graph.modules.at(0).path);
+    try std.testing.expectEqualStrings("b.ts", graph.modules.at(1).path);
+    try std.testing.expectEqualStrings("c.ts", graph.modules.at(2).path);
+    try std.testing.expectEqual(@as(u32, 0), graph.path_to_module.get("a.ts").?.toU32());
+    try std.testing.expectEqual(@as(u32, 1), graph.path_to_module.get("b.ts").?.toU32());
+    try std.testing.expectEqual(@as(u32, 2), graph.path_to_module.get("c.ts").?.toU32());
+    // Module.index 도 remap
+    try std.testing.expectEqual(@as(u32, 0), graph.modules.at(0).index.toU32());
+    try std.testing.expectEqual(@as(u32, 2), graph.modules.at(2).index.toU32());
 }

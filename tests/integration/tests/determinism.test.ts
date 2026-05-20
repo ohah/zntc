@@ -51,7 +51,7 @@ async function expectDeterministic(
 }
 
 describe('build determinism (#3564)', () => {
-  test.skip('small — 5 file ESM, no collisions', async () => {
+  test('small — 5 file ESM, no collisions', async () => {
     await expectDeterministic('small', 'index.js');
   });
 
