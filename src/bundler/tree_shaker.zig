@@ -691,14 +691,13 @@ pub const TreeShaker = struct {
     }
 
     fn propagateUsedNamedReExports(self: *TreeShaker) !void {
-        const mod_count = self.graph.moduleCount();
         var changed = true;
         while (changed) {
             changed = false;
             const used_count_before = self.used_exports.count();
             const included_count_before = self.included.count();
 
-            for (0..mod_count) |i| {
+            for (self.re_export_modules.items) |i| {
                 if (!self.included.isSet(i)) continue;
                 const m = self.getModule(@intCast(i)) orelse continue;
                 const all_exports_used = self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
