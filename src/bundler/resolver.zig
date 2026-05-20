@@ -37,9 +37,9 @@ pub const ResolveResult = struct {
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
-    /// `preserveSymlinks` 로 module identity 는 logical path 로 유지하되,
-    /// `resolveSymlinkSiblings` 에서 symlink target 이 확인된 경우 후속 dependency
-    /// lookup 은 realpath 디렉토리에서 시작해야 한다.
+    /// `preserveSymlinks` 의 기본 module identity 는 logical path 이지만, 표준 pnpm
+    /// package symlink 는 Metro 와 맞추기 위해 real package path 로 정규화될 수 있다.
+    /// 이 값이 있으면 후속 dependency lookup 은 `path` 의 dirname 대신 여기서 시작한다.
     /// null 이면 dirname(path) 를 사용한다.
     resolve_dir: ?[]const u8 = null,
 };
@@ -295,6 +295,101 @@ pub const RealpathCache = struct {
     }
 };
 
+const NodeModulesPackagePath = struct {
+    name: []const u8,
+    node_modules_index: usize,
+};
+
+fn isPathSeparator(c: u8) bool {
+    return c == '/' or c == '\\';
+}
+
+fn nextPathSeparator(path: []const u8, start: usize) usize {
+    var i = start;
+    while (i < path.len and !isPathSeparator(path[i])) : (i += 1) {}
+    return i;
+}
+
+fn previousNodeModulesSegment(path: []const u8, end: usize) ?usize {
+    var search_end = @min(end, path.len);
+    while (std.mem.lastIndexOf(u8, path[0..search_end], "node_modules")) |idx| {
+        const before_ok = idx == 0 or isPathSeparator(path[idx - 1]);
+        const after = idx + "node_modules".len;
+        const after_ok = after < path.len and isPathSeparator(path[after]);
+        if (before_ok and after_ok) return idx;
+        if (idx == 0) return null;
+        search_end = idx;
+    }
+    return null;
+}
+
+fn lastNodeModulesPackagePath(path: []const u8) ?NodeModulesPackagePath {
+    var end = path.len;
+    while (previousNodeModulesSegment(path, end)) |node_modules_index| {
+        const package_start = node_modules_index + "node_modules".len + 1;
+        if (package_start >= path.len) {
+            end = node_modules_index;
+            continue;
+        }
+
+        const first_end = nextPathSeparator(path, package_start);
+        if (first_end == package_start) {
+            end = node_modules_index;
+            continue;
+        }
+        const first_segment = path[package_start..first_end];
+        if (std.mem.eql(u8, first_segment, ".pnpm")) {
+            end = node_modules_index;
+            continue;
+        }
+
+        var package_end = first_end;
+        if (first_segment.len > 0 and first_segment[0] == '@') {
+            if (first_end >= path.len) {
+                end = node_modules_index;
+                continue;
+            }
+            package_end = nextPathSeparator(path, first_end + 1);
+            if (package_end == first_end + 1) {
+                end = node_modules_index;
+                continue;
+            }
+        }
+
+        return .{
+            .name = path[package_start..package_end],
+            .node_modules_index = node_modules_index,
+        };
+    }
+    return null;
+}
+
+fn hasNodeModulesPnpmPrefix(path: []const u8) bool {
+    var end = path.len;
+    while (previousNodeModulesSegment(path, end)) |node_modules_index| {
+        const pnpm_start = node_modules_index + "node_modules".len + 1;
+        const pnpm_end = pnpm_start + ".pnpm".len;
+        if (pnpm_end <= path.len and
+            std.mem.eql(u8, path[pnpm_start..pnpm_end], ".pnpm") and
+            (pnpm_end == path.len or isPathSeparator(path[pnpm_end])))
+        {
+            return true;
+        }
+        end = node_modules_index;
+    }
+    return false;
+}
+
+fn shouldCanonicalizePnpmPackageSymlink(logical_path: []const u8, real_path: []const u8) bool {
+    if (std.mem.eql(u8, logical_path, real_path)) return false;
+
+    const logical_pkg = lastNodeModulesPackagePath(logical_path) orelse return false;
+    const real_pkg = lastNodeModulesPackagePath(real_path) orelse return false;
+    if (!std.mem.eql(u8, logical_pkg.name, real_pkg.name)) return false;
+
+    return hasNodeModulesPnpmPrefix(real_path[0..real_pkg.node_modules_index]);
+}
+
 pub const Resolver = struct {
     allocator: std.mem.Allocator,
     /// 조건 세트 (D064: import kind별로 다를 수 있음).
@@ -302,11 +397,11 @@ pub const Resolver = struct {
     /// 기본값은 테스트용 (브라우저 ESM).
     conditions: []const []const u8 = &.{ "import", "module", "browser", "default" },
     /// symlink 를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks).
-    /// esbuild/Node `--preserve-symlinks` 호환: makeResult() 에서 link path 를 module
-    /// identity 로 그대로 사용한다. 같은 realpath 라도 link path 가 다르면 별도 모듈
-    /// 인스턴스로 취급된다. RN/pnpm 처럼 identity 와 후속 bare lookup 의 1차 기준을
-    /// logical path 로 유지하되, real package 옆 dependency 를 fallback 으로 보려면
-    /// `resolve_symlink_siblings` 도 함께 켠다.
+    /// 기본은 esbuild/Node 처럼 link path 를 module identity 로 쓰지만,
+    /// `resolve_symlink_siblings` 와 함께 켠 표준 pnpm package symlink 는 Metro처럼
+    /// 실제 `.pnpm/<pkg>/node_modules/<pkg>` 경로 하나로 정규화한다. 같은 native
+    /// package 가 app/node_modules 와 peer package node_modules 양쪽에서 들어와 두 번
+    /// evaluate 되는 RN 회귀를 막기 위함이다.
     preserve_symlinks: bool = false,
     /// `preserve_symlinks` 로 logical path 를 module identity 로 보존한 상태에서,
     /// logical node_modules 탐색이 실패한 bare specifier 를 realpath 디렉토리 기준으로
@@ -978,19 +1073,31 @@ pub const Resolver = struct {
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
-        // preserve_symlinks=true → link path 를 module identity 와 1차 resolve 기준으로
-        // 그대로 사용한다 (Metro/Node --preserve-symlinks). 일반 app/workspace
-        // node_modules symlink 는 realpath sibling lookup 을 resolveInner() fallback 에서만
-        // 수행한다. 여기서 resolve_dir 을 realpath 로 바꾸면 workspace symlink package 가
-        // consuming app node_modules 를 건너뛰는 회귀가 발생한다. 단,
-        // `.pnpm/node_modules` virtual store 엔트리는 그 자체가 global hoist facade 이므로
-        // package-local dependency 우선순위를 위해 real resolve_dir 을 유지한다.
+        // preserve_symlinks=true → 기본은 link path 를 module identity 와 1차 resolve
+        // 기준으로 그대로 사용한다. 단 RN/pnpm 에서는 같은 실제 패키지가
+        // app/node_modules/<pkg> 와 .pnpm/<peer>/node_modules/<pkg> 두 symlink 로
+        // 들어오며 native module init 이 중복될 수 있다. Metro 는 이 케이스를 실제
+        // .pnpm package path 하나로 보므로, pnpm package symlink 로 확인되는 경우만
+        // identity 를 realpath 로 정규화한다. workspace symlink 는 real target 이
+        // .pnpm package root 가 아니므로 logical path 를 유지한다.
         // false → bun(.bun/) / pnpm(.pnpm/) 의 symlink 를 realpath 로 해석해 중첩 node_modules
         // 탐색이 올바른 계층에서 동작하게 한다.
         const resolved = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
             if (self.preserve_symlinks) {
+                if (self.resolve_symlink_siblings and std.mem.indexOf(u8, path, "node_modules") != null) {
+                    const real_path = if (self.realpath_cache) |cache|
+                        cache.resolve(path) catch return error.OutOfMemory
+                    else
+                        fs.realpath(self.allocator, path) catch
+                            self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+
+                    if (shouldCanonicalizePnpmPackageSymlink(path, real_path)) {
+                        break :blk real_path;
+                    }
+                    self.allocator.free(real_path);
+                }
                 break :blk self.allocator.dupe(u8, path) catch return error.OutOfMemory;
             }
             if (self.realpath_cache) |cache| {

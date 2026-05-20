@@ -500,17 +500,16 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     resolveExtensions: buildResolveExtensions(rnPlatform, sourceExts),
     mainFields: ['react-native', 'browser', 'main'],
     loader: baseLoader,
-    // RN core packages must be singletons. pnpm exposes peer folders such as
-    // `.pnpm/<dep>/node_modules/react-native`; resolving those as separate module
-    // IDs re-runs InitializeCore/DevTools and breaks Fabric.
+    // RN core package 는 singleton 이어야 한다. pnpm peer folder 에서
+    // react-native/react 가 별도 module 로 들어오면 InitializeCore/DevTools 가
+    // 다시 실행되어 Fabric 이 깨질 수 있다.
     alias: buildRnSingletonAliases(projectRoot),
-    // Metro resolves dependencies from the logical node_modules symlink path.
-    // With pnpm, realpathing a package before resolving its bare imports exposes
-    // the package's peer farm and can pull a second React copy into RN bundles.
+    // Metro 설정과 맞춰 pnpm symlink 를 처리한다. resolver 는 표준 pnpm package
+    // symlink 의 module identity 를 실제 .pnpm package path 로 정규화하되, workspace
+    // symlink 는 logical path 를 유지한다.
     preserveSymlinks: true,
-    // preserveSymlinks keeps the module identity on the Metro-style logical path,
-    // while this fallback resolves package-private/peer deps that only exist next
-    // to the real pnpm package directory.
+    // logical lookup 에 실패한 package-private/peer dependency 는 실제 pnpm package
+    // 옆 node_modules 를 fallback 으로 탐색한다.
     resolveSymlinkSiblings: true,
     define,
     banner: buildPrelude(input),
