@@ -15,6 +15,7 @@ const graph_project_root = @import("project_root.zig");
 const graph_requested_exports = @import("requested_exports.zig");
 const graph_runtime_polyfills = @import("runtime_polyfills.zig");
 const graph_discovery_scan = @import("discovery_scan.zig");
+const renumber = @import("renumber.zig");
 const graph_resolve_imports = @import("resolve_imports.zig");
 const graph_cycles = @import("cycles.zig");
 const graph_finalize = @import("finalize.zig");
@@ -264,6 +265,10 @@ fn linkDependencyUnique(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) 
 fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     var scope = profile.begin(.graph_finalize);
     defer scope.end();
+
+    // discovery 워커 race 로 비결정인 module_index 를 BFS 순으로 재부여.
+    // linker init 전에 수행해 외부 idx 키 자료구조 영향 0.
+    try renumber.renumberModulesDeterministically(self, entry_points);
 
     const count = self.modules.count();
     if (count == 0) return;
