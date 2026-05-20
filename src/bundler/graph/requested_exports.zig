@@ -189,8 +189,17 @@ pub fn requestedExportsForReExportRecord(
     const importer_key: u32 = @intFromEnum(importer.index);
     var changed = false;
 
-    var requested_names: std.ArrayList([]const u8) = .empty;
-    defer requested_names.deinit(self.allocator);
+    // PR-Z1: 매 호출 ArrayList alloc-free (M6 측정 = re_export entry 의 72%, 13.3ms) 회피.
+    // re_export importer 의 requested names 는 거의 항상 소수 (수 개 ~ 십수 개) — barrel
+    // re-export 의 본질이 "묶음" 이라 caller 가 요청하는 이름 집합도 묶음 이름 일부에 한정.
+    // 32-slot stack 으로 흔한 경우 alloc 0, overflow 시 heap ArrayList 로 spillover (rare).
+    // stack frame: 32 × 16B = 512B — bundler hot path 용량으로 작음.
+    const REQUESTED_NAMES_STACK_CAP = 32;
+    var stack_buf: [REQUESTED_NAMES_STACK_CAP][]const u8 = undefined;
+    var stack_len: usize = 0;
+    var heap_buf: std.ArrayList([]const u8) = .empty;
+    defer heap_buf.deinit(self.allocator);
+    var overflowed = false;
 
     self.requested_exports_mutex.lock();
     const maybe_req = self.requested_exports.get(importer_key);
@@ -199,7 +208,21 @@ pub fn requestedExportsForReExportRecord(
         if (maybe_req) |req| {
             var it = req.names.keyIterator();
             while (it.next()) |name| {
-                requested_names.append(self.allocator, name.*) catch {
+                if (!overflowed) {
+                    if (stack_len < REQUESTED_NAMES_STACK_CAP) {
+                        stack_buf[stack_len] = name.*;
+                        stack_len += 1;
+                        continue;
+                    }
+                    // 첫 overflow: 누적된 32 개를 heap 으로 일괄 복사 후 분기 전환.
+                    heap_buf.appendSlice(self.allocator, stack_buf[0..REQUESTED_NAMES_STACK_CAP]) catch {
+                        self.requested_exports_mutex.unlock();
+                        s_entry.end();
+                        return error.OutOfMemory;
+                    };
+                    overflowed = true;
+                }
+                heap_buf.append(self.allocator, name.*) catch {
                     self.requested_exports_mutex.unlock();
                     s_entry.end();
                     return error.OutOfMemory;
@@ -212,8 +235,9 @@ pub fn requestedExportsForReExportRecord(
         s_entry.end();
         return requestAll(self, dep_idx);
     }
+    const requested_names: []const []const u8 = if (overflowed) heap_buf.items else stack_buf[0..stack_len];
     // requested_names 가 비어 있으면 outer 진입 자체가 no-op — star 캐시 계산 회피.
-    if (requested_names.items.len == 0) {
+    if (requested_names.len == 0) {
         s_entry.end();
         return changed;
     }
@@ -233,7 +257,7 @@ pub fn requestedExportsForReExportRecord(
 
     var s_outer = profile.begin(.graph_discover_incr_re_export_outer);
     defer s_outer.end();
-    for (requested_names.items) |requested_name| {
+    for (requested_names) |requested_name| {
         // Non-star match: 단일 idx lookup. populate 안 된 edge 는 fallback linear.
         if (importer.export_index_by_name) |map| {
             if (map.get(requested_name)) |eb_idx| {
