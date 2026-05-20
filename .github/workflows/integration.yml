@@ -302,6 +302,24 @@ jobs:
             smoke-output.txt
             smoke-deep-min-output.txt
 
+  determinism:
+    name: Build Determinism (N=10) (#3564)
+    runs-on: ubuntu-latest
+    needs: prepare-zntc-cli-ubuntu
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/use-zntc-artifact
+        with:
+          artifact-name: zntc-cli-ubuntu-latest
+          napi: "false"
+
+      - name: Install integration dependencies
+        run: cd tests/integration && bun install --frozen-lockfile
+
+      - name: Run determinism gate (N=10 byte-identical)
+        run: cd tests/integration && bun test tests/determinism.test.ts --timeout 120000
+
   smoke-comment:
     name: Post Smoke Results
     needs: smoke
