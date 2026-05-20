@@ -540,7 +540,7 @@ test "Worklet: initData code has no TS syntax (as expression stripped)" {
     try std.testing.expect(std.mem.indexOf(u8, init_section, " as ") == null);
 }
 
-test "Worklet: global and __DEV__ not captured in closure" {
+test "Worklet: global stays global and __DEV__ is captured like Metro" {
     var r = try transformWorklet(std.testing.allocator,
         \\export function f() {
         \\  "worklet";
@@ -550,8 +550,11 @@ test "Worklet: global and __DEV__ not captured in closure" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // global과 __DEV__는 JS_GLOBALS에 등록 → closure에 포함 안 됨
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+    // Metro Worklets 플러그인은 __DEV__를 글로벌 제외 목록에 넣지 않고
+    // closure 값으로 캡처한다. UI 런타임의 __initData.code가 번들 prelude를
+    // 볼 수 없기 때문에 zntc도 같은 방식으로 전달해야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { __DEV__: __DEV__ }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "console.log(global)") != null);
 }
 
 test "Worklet: multiple default params not in closure" {
