@@ -1281,7 +1281,7 @@ pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.A
     }
 }
 
-fn collectRunBeforeMainClosure(allocator: std.mem.Allocator, graph: *const ModuleGraph, run_before_main: []const []const u8) !std.DynamicBitSet {
+pub fn collectRunBeforeMainClosure(allocator: std.mem.Allocator, graph: *const ModuleGraph, run_before_main: []const []const u8) !std.DynamicBitSet {
     var closure = try std.DynamicBitSet.initEmpty(allocator, graph.moduleCount());
     errdefer closure.deinit();
     for (run_before_main) |rbm_path| {

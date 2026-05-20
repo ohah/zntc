@@ -39,6 +39,7 @@ const emitModule = parent.emitModule;
 const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
 const isRunBeforeMainPath = parent.isRunBeforeMainPath;
 const shouldInsertRunBeforeMainBefore = parent.shouldInsertRunBeforeMainBefore;
+const collectRunBeforeMainClosure = parent.collectRunBeforeMainClosure;
 
 const RunBeforeMainCrossImport = struct {
     source_chunk: ChunkIndex,
@@ -507,7 +508,7 @@ pub fn emitChunks(
             run_before_main_closure = closure;
         }
         const rbm_insert_after_pos = if (run_before_main_closure) |*closure|
-            findLastRunBeforeMainPosition(graph, sorted_mods, closure)
+            findLastRunBeforeMainPosition(sorted_mods, closure)
         else
             null;
         var rbm_calls_emitted = false;
@@ -984,35 +985,7 @@ fn collectRunBeforeMainCrossImports(
     }
 }
 
-fn collectRunBeforeMainClosure(allocator: std.mem.Allocator, graph: *const ModuleGraph, run_before_main: []const []const u8) !std.DynamicBitSet {
-    var closure = try std.DynamicBitSet.initEmpty(allocator, graph.moduleCount());
-    errdefer closure.deinit();
-    for (run_before_main) |rbm_path| {
-        const rbm = graph.findModuleByPath(rbm_path) orelse continue;
-        try markRunBeforeMainClosure(graph, rbm.index, &closure);
-    }
-    return closure;
-}
-
-fn markRunBeforeMainClosure(graph: *const ModuleGraph, index: ModuleIndex, closure: *std.DynamicBitSet) !void {
-    if (index.isNone()) return;
-    const i = index.toUsize();
-    if (i >= closure.capacity()) return;
-    if (closure.isSet(i)) return;
-    closure.set(i);
-
-    const module = graph.getModule(index) orelse return;
-    for (module.import_records) |rec| {
-        if (rec.resolved.isNone()) continue;
-        switch (rec.kind) {
-            .static_import, .side_effect, .re_export, .require => try markRunBeforeMainClosure(graph, rec.resolved, closure),
-            else => {},
-        }
-    }
-}
-
-fn findLastRunBeforeMainPosition(graph: *const ModuleGraph, sorted_mods: []const ModuleIndex, closure: *const std.DynamicBitSet) ?usize {
-    _ = graph;
+fn findLastRunBeforeMainPosition(sorted_mods: []const ModuleIndex, closure: *const std.DynamicBitSet) ?usize {
     var last: ?usize = null;
     for (sorted_mods, 0..) |mod_idx, i| {
         const module_idx = mod_idx.toUsize();
