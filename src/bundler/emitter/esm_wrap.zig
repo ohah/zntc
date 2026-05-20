@@ -477,6 +477,8 @@ pub fn emitEsmWrappedModule(
             defer seen.deinit();
             var visited = std.AutoHashMap(u32, void).init(allocator);
             defer visited.deinit();
+            var sorted_names: std.ArrayList([]const u8) = .empty;
+            defer sorted_names.deinit(allocator);
 
             for (module.export_bindings) |eb| {
                 if (!eb.kind.isReExportAll()) continue;
@@ -492,9 +494,15 @@ pub fn emitEsmWrappedModule(
                     visited.clearRetainingCapacity();
                     try collectStarExportNames(l, src_i, &seen, &visited);
 
+                    // hashmap 순회는 비결정 — 사전순 정렬 후 emit 해 namespace getter 출현 순서 결정.
+                    sorted_names.clearRetainingCapacity();
                     var it = seen.iterator();
                     while (it.next()) |entry| {
-                        const name = entry.key_ptr.*;
+                        try sorted_names.append(allocator, entry.key_ptr.*);
+                    }
+                    std.mem.sort([]const u8, sorted_names.items, {}, types.stringLessThan);
+
+                    for (sorted_names.items) |name| {
                         if (std.mem.eql(u8, name, "default")) continue;
                         if (direct_exports.contains(name)) continue;
 
