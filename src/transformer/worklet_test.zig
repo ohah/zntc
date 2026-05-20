@@ -177,6 +177,27 @@ test "Worklet: react-native-worklets default globals are excluded from closure v
     try std.testing.expect(std.mem.indexOf(u8, code, "performance: performance") == null);
 }
 
+test "Worklet: worklets error bindings are excluded from closure vars" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\const ReanimatedError = Error;
+        \\const WorkletsError = Error;
+        \\function anim() {
+        \\  "worklet";
+        \\  if (Math.random()) throw new ReanimatedError("bad");
+        \\  throw new WorkletsError("bad");
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // Babel plugin은 이 에러 바인딩을 글로벌로 취급하므로 closure/classFactory에 넣지 않는다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "ReanimatedError: ReanimatedError") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "ReanimatedError__classFactory") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "WorkletsError: WorkletsError") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "WorkletsError__classFactory") == null);
+}
+
 test "Worklet: worklet transform disabled when no plugins" {
     // plugins 없이 변환하면 worklet 처리 안 됨
     var r = try parseAndTransformWithOptions(

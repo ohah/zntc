@@ -147,13 +147,20 @@ const JS_GLOBALS = std.StaticStringMap(void).initComptime(.{
     .{ "eval", {} },              .{ "arguments", {} },             .{ "this", {} },
 });
 
+/// Babel react-native-worklets/plugin이 글로벌로 취급하는 에러 바인딩.
+/// import binding이어도 worklet closure에 넣지 않아야 UI runtime에서 동일한 글로벌을 참조한다.
+const WORKLET_GLOBAL_BINDINGS = std.StaticStringMap(void).initComptime(.{
+    .{ "ReanimatedError", {} },
+    .{ "WorkletsError", {} },
+});
+
 /// 함수 body와 파라미터로부터 closure 변수(외부 참조)를 추출한다.
 ///
 /// 알고리즘:
 ///   1. 함수 이름 + 파라미터 이름 → locals 집합에 추가
 ///   2. body 내 지역 선언(var/let/const/function) 이름 → locals 집합에 추가
 ///   3. body 내 identifier_reference 이름 → refs 집합에 추가
-///   4. refs - locals - JS_GLOBALS = closure 변수
+///   4. refs - locals - globals = closure 변수
 pub fn collectClosureVars(
     self: *Transformer,
     body_idx: NodeIndex,
@@ -198,7 +205,7 @@ pub fn collectClosureVars(
     while (iter.next()) |entry| {
         const name = entry.key_ptr.*;
         if (locals.contains(name)) continue;
-        if (isGlobal(name)) continue;
+        if (isClosureExcludedGlobal(name)) continue;
         // 사용자 설정 globals (옵션)도 closure에서 제외
         if (string_list.contains(self.options.worklet_globals, name)) continue;
         const duped = self.allocator.dupe(u8, name) catch return error.OutOfMemory;
@@ -210,7 +217,7 @@ pub fn collectClosureVars(
     while (nc_iter.next()) |entry| {
         const base_name = entry.key_ptr.*;
         if (locals.contains(base_name)) continue;
-        if (isGlobal(base_name)) continue;
+        if (isClosureExcludedGlobal(base_name)) continue;
         if (string_list.contains(self.options.worklet_globals, base_name)) continue;
         const base_duped = self.allocator.dupe(u8, base_name) catch return error.OutOfMemory;
         // factory key: "<BaseClass>__classFactory"
@@ -519,6 +526,11 @@ fn walkBodyForClosureAnalysis(
 /// JS 글로벌 식별자인지 확인 (O(1) comptime HashMap 조회).
 fn isGlobal(name: []const u8) bool {
     return JS_GLOBALS.has(name);
+}
+
+/// worklet closure에서 제외해야 하는 글로벌 식별자인지 확인.
+fn isClosureExcludedGlobal(name: []const u8) bool {
+    return isGlobal(name) or WORKLET_GLOBAL_BINDINGS.has(name);
 }
 
 // ================================================================
