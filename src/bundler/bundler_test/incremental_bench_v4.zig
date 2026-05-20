@@ -58,6 +58,12 @@ const WarmResult = struct {
     incr_re_export_entry_copy_ns: u64,
     incr_re_export_entry_star_scan_ns: u64,
     incr_re_export_outer_ns: u64,
+    incr_record_dep_rec_write_ns: u64,
+    incr_record_dep_link_ns: u64,
+    incr_add_module_dedup_ns: u64,
+    incr_add_module_alloc_ns: u64,
+    incr_add_module_put_ns: u64,
+    incr_add_module_preopen_ns: u64,
     incr_miss_resolve_ns: u64,
 };
 
@@ -114,6 +120,12 @@ fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entr
         .incr_re_export_entry_copy_ns = profile.totalNs(.graph_discover_incr_re_export_entry_copy),
         .incr_re_export_entry_star_scan_ns = profile.totalNs(.graph_discover_incr_re_export_entry_star_scan),
         .incr_re_export_outer_ns = profile.totalNs(.graph_discover_incr_re_export_outer),
+        .incr_record_dep_rec_write_ns = profile.totalNs(.graph_discover_incr_record_dep_rec_write),
+        .incr_record_dep_link_ns = profile.totalNs(.graph_discover_incr_record_dep_link),
+        .incr_add_module_dedup_ns = profile.totalNs(.graph_discover_incr_add_module_dedup),
+        .incr_add_module_alloc_ns = profile.totalNs(.graph_discover_incr_add_module_alloc),
+        .incr_add_module_put_ns = profile.totalNs(.graph_discover_incr_add_module_put),
+        .incr_add_module_preopen_ns = profile.totalNs(.graph_discover_incr_add_module_preopen),
         .incr_miss_resolve_ns = profile.totalNs(.graph_discover_incr_miss_resolve),
     };
 }
@@ -202,6 +214,32 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         r.incr_re_export_outer_ns / 1000,
         if (r.incr_req_re_export_ns == 0) @as(u64, 0) else r.incr_re_export_outer_ns * 100 / r.incr_req_re_export_ns,
     });
+    const rec_dep = r.incr_record_dep_rec_write_ns + r.incr_record_dep_link_ns;
+    const add_mod = r.incr_add_module_dedup_ns + r.incr_add_module_alloc_ns + r.incr_add_module_put_ns + r.incr_add_module_preopen_ns;
+    std.debug.print(
+        \\    record_dep breakdown (us, % of record_dep):
+        \\      rec_write     = {d:>7}us ({d:>3}%)
+        \\      link          = {d:>7}us ({d:>3}%)
+        \\    add_module breakdown (us, % of add_module):
+        \\      dedup         = {d:>7}us ({d:>3}%)
+        \\      alloc         = {d:>7}us ({d:>3}%)
+        \\      put           = {d:>7}us ({d:>3}%)
+        \\      preopen       = {d:>7}us ({d:>3}%)
+        \\
+    , .{
+        r.incr_record_dep_rec_write_ns / 1000,
+        if (rec_dep == 0) @as(u64, 0) else r.incr_record_dep_rec_write_ns * 100 / rec_dep,
+        r.incr_record_dep_link_ns / 1000,
+        if (rec_dep == 0) @as(u64, 0) else r.incr_record_dep_link_ns * 100 / rec_dep,
+        r.incr_add_module_dedup_ns / 1000,
+        if (add_mod == 0) @as(u64, 0) else r.incr_add_module_dedup_ns * 100 / add_mod,
+        r.incr_add_module_alloc_ns / 1000,
+        if (add_mod == 0) @as(u64, 0) else r.incr_add_module_alloc_ns * 100 / add_mod,
+        r.incr_add_module_put_ns / 1000,
+        if (add_mod == 0) @as(u64, 0) else r.incr_add_module_put_ns * 100 / add_mod,
+        r.incr_add_module_preopen_ns / 1000,
+        if (add_mod == 0) @as(u64, 0) else r.incr_add_module_preopen_ns * 100 / add_mod,
+    });
 }
 
 test "incremental bench v4: changed_files null/empty/single comparison" {
@@ -232,6 +270,12 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
         "graph_discover_incr_re_export_entry_copy",
         "graph_discover_incr_re_export_entry_star_scan",
         "graph_discover_incr_re_export_outer",
+        "graph_discover_incr_record_dep_rec_write",
+        "graph_discover_incr_record_dep_link",
+        "graph_discover_incr_add_module_dedup",
+        "graph_discover_incr_add_module_alloc",
+        "graph_discover_incr_add_module_put",
+        "graph_discover_incr_add_module_preopen",
         "graph_discover_incr_miss_resolve",
     });
 

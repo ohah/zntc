@@ -203,9 +203,13 @@ fn recordResolvedDep(
     dep_idx: ModuleIndex,
     kind: types.ImportKind,
 ) !void {
+    var s_rw = profile.begin(.graph_discover_incr_record_dep_rec_write);
     const src_mod = self.modules.at(mod_idx);
     src_mod.import_records[rec_i].resolved = dep_idx;
     src_mod.import_records[rec_i].is_lazy_resolved = false;
+    s_rw.end();
+    var s_lk = profile.begin(.graph_discover_incr_record_dep_link);
+    defer s_lk.end();
     if (kind == .dynamic_import) {
         try self.linkDynamicImport(mod_index, dep_idx);
     } else {
