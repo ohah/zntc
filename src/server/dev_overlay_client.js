@@ -1,15 +1,8 @@
-// @zntc/web 의 브라우저 inject 코드 — `<script type="module" src="/__zntc_app_dev_hmr__">`
-// 로 dev server 가 내려보내는 텍스트. WebSocket 연결 + Shadow DOM error overlay
-// + sourcemap 디코더 + runtime error capture 를 모두 포함.
-//
-// 이 파일 자체는 module 로 평가되지만 export 하는 `APP_DEV_HMR_CLIENT` 는
-// **string** 이라 브라우저로 그대로 전송됨. template literal 안의 `${...}` 는
-// module 평가 시점에 치환되어 protocol 상수 (`/__hmr`, "error" 같은 것) 가
-// 정확히 박힘 — server 측 `@zntc/server/protocol` 과 single source of truth.
+// zntc Zig dev server (src/server/dev_server.zig) 가 @embedFile 로 베이크해
+// 브라우저로 raw text 전송하는 HMR overlay client. WebSocket 연결 + Shadow DOM
+// error overlay + sourcemap VLQ 디코더 + runtime error capture 포함.
+// 메시지 타입 문자열은 dev_server.zig 의 broadcast 와 contract — 양쪽 동기.
 
-import { APP_DEV_HMR_WS_PATH, HMR_MSG } from '@zntc/server';
-
-export const APP_DEV_HMR_CLIENT = `
 const socketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
 let overlay = null;
 let closeOverlayOnEsc = null;
@@ -23,11 +16,11 @@ function normalizeErrors(errors) {
   if (!Array.isArray(errors) || errors.length === 0) {
     return [{ file: "", message: "Unknown build error" }];
   }
-  return errors.map((error) => {
+  return errors.map(function(error) {
     if (typeof error === "string") return { file: "", message: error };
     return {
       file: error && typeof error.file === "string" ? error.file : "",
-      message: error && typeof error.message === "string" ? error.message : String(error),
+      message: error && typeof error.message === "string" ? error.message : String(error)
     };
   });
 }
@@ -46,7 +39,7 @@ const sourceMapVlqChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 function displaySourceName(source) {
   if (!source) return "";
   const clean = String(source).split("?")[0].split("#")[0];
-  const slash = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\\\"));
+  const slash = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
   return slash >= 0 ? clean.slice(slash + 1) : clean;
 }
 function decodeSourceMapVlq(segment) {
@@ -128,18 +121,18 @@ function findOriginalPosition(map, line, column) {
 async function loadSourceMapForGeneratedUrl(url) {
   const generatedUrl = new URL(url, location.href).href;
   if (sourceMapCache.has(generatedUrl)) return sourceMapCache.get(generatedUrl);
-  const safeJson = async (response) => {
+  async function safeJson(response) {
     try { return await response.json(); } catch (_) { return null; }
-  };
-  const promise = (async () => {
-    const direct = await fetch(generatedUrl + ".map", { cache: "no-store" }).catch(() => null);
+  }
+  const promise = (async function() {
+    const direct = await fetch(generatedUrl + ".map", { cache: "no-store" }).catch(function() { return null; });
     if (direct && direct.ok) return safeJson(direct);
-    const jsResponse = await fetch(generatedUrl, { cache: "no-store" }).catch(() => null);
+    const jsResponse = await fetch(generatedUrl, { cache: "no-store" }).catch(function() { return null; });
     if (!jsResponse || !jsResponse.ok) return null;
     const code = await jsResponse.text();
     const match =
-      code.match(/\\/\\/[#@]\\s*sourceMappingURL=([^\\n\\r]+)/) ||
-      code.match(/\\/\\*[#@]\\s*sourceMappingURL=([^*]+)\\*\\//);
+      code.match(/\/\/[#@]\s*sourceMappingURL=([^\n\r]+)/) ||
+      code.match(/\/\*[#@]\s*sourceMappingURL=([^*]+)\*\//);
     if (!match) return null;
     const ref = match[1].trim();
     if (ref.startsWith("data:")) {
@@ -154,7 +147,7 @@ async function loadSourceMapForGeneratedUrl(url) {
         return null;
       }
     }
-    const mapResponse = await fetch(new URL(ref, generatedUrl).href, { cache: "no-store" }).catch(() => null);
+    const mapResponse = await fetch(new URL(ref, generatedUrl).href, { cache: "no-store" }).catch(function() { return null; });
     return mapResponse && mapResponse.ok ? safeJson(mapResponse) : null;
   })();
   sourceMapCache.set(generatedUrl, promise);
@@ -166,7 +159,7 @@ async function mapGeneratedLocation(url, line, column) {
 }
 async function mapLocationText(text) {
   if (!text) return text;
-  const match = String(text).match(/(https?:\\/\\/[^\\s)]+):(\\d+):(\\d+)/);
+  const match = String(text).match(/(https?:\/\/[^\s)]+):(\d+):(\d+)/);
   if (!match) return text;
   const mapped = await mapGeneratedLocation(match[1], Number(match[2]), Number(match[3]));
   if (!mapped) return text;
@@ -174,8 +167,8 @@ async function mapLocationText(text) {
 }
 async function mapStackTrace(stack) {
   if (typeof stack !== "string") return stack;
-  const lines = await Promise.all(stack.split("\\n").map(mapLocationText));
-  return lines.join("\\n");
+  const lines = await Promise.all(stack.split("\n").map(mapLocationText));
+  return lines.join("\n");
 }
 async function normalizeRuntimeErrorWithSourceMap(error, file) {
   const item = normalizeRuntimeError(error, file);
@@ -212,7 +205,7 @@ function showOverlay(errors, titleText = "Build Error") {
   backdrop.className = "backdrop";
   const panel = document.createElement("div");
   panel.className = "window";
-  panel.onclick = (event) => event.stopPropagation();
+  panel.onclick = function(event) { event.stopPropagation(); };
   const header = document.createElement("div");
   header.className = "header";
   const title = document.createElement("div");
@@ -245,7 +238,7 @@ function showOverlay(errors, titleText = "Build Error") {
   backdrop.appendChild(panel);
   root.appendChild(style);
   root.appendChild(backdrop);
-  closeOverlayOnEsc = (event) => {
+  closeOverlayOnEsc = function(event) {
     if (event.key === "Escape" || event.code === "Escape") hideOverlay();
   };
   document.addEventListener("keydown", closeOverlayOnEsc);
@@ -255,50 +248,50 @@ globalThis.__zntc_show_error_overlay = showOverlay;
 globalThis.__zntc_clear_error_overlay = hideOverlay;
 if (!globalThis.__zntc_runtime_listeners_attached) {
   globalThis.__zntc_runtime_listeners_attached = true;
-  window.addEventListener("error", (event) => {
+  window.addEventListener("error", function(event) {
     const file = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : "";
     showRuntimeOverlay(event.error || event.message, file);
   });
-  window.addEventListener("unhandledrejection", (event) => {
+  window.addEventListener("unhandledrejection", function(event) {
     showRuntimeOverlay(event.reason, "");
   });
 }
-const socket = new WebSocket(socketProtocol + "//" + location.host + "${APP_DEV_HMR_WS_PATH}");
-socket.addEventListener("message", (event) => {
+const socket = new WebSocket(socketProtocol + "//" + location.host + "/__hmr");
+socket.addEventListener("message", function(event) {
   const msg = JSON.parse(event.data);
-  if (msg.type === "${HMR_MSG.Error}") {
-    showOverlay(msg.errors);
-    return;
-  }
-  if (msg.type === "${HMR_MSG.ClearError}") {
+  if (msg.type === "error") { showOverlay(msg.errors); return; }
+  if (msg.type === "clear-error") { hideOverlay(); return; }
+  if (msg.type === "update-start") return;
+  if (msg.type === "update-done") { hideOverlay(); return; }
+  if (msg.type === "full-reload") { hideOverlay(); location.reload(); return; }
+  if (msg.type === "update") {
     hideOverlay();
+    if (typeof __zntc_apply_update === "function") __zntc_apply_update(msg.modules);
+    else location.reload();
     return;
   }
-  if (msg.type === "${HMR_MSG.FullReload}") {
+  if (msg.type === "css-update") {
     hideOverlay();
-    location.reload();
-    return;
+    const targetPath = msg.href || msg.file;
+    const stamp = msg.timestamp || Date.now();
+    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+    let updated = false;
+    for (const link of links) {
+      const href = link.getAttribute("href");
+      if (!href) continue;
+      const current = new URL(href, location.href);
+      const target = new URL(targetPath || current.pathname, location.href);
+      if (targetPath && current.pathname !== target.pathname) continue;
+      const next = new URL(current.href);
+      next.searchParams.set("t", String(stamp));
+      const replacement = link.cloneNode();
+      replacement.href = next.href;
+      replacement.onload = function() { link.remove(); };
+      replacement.onerror = function() { location.reload(); };
+      link.after(replacement);
+      updated = true;
+    }
+    if (!updated) location.reload();
   }
-  if (msg.type !== "${HMR_MSG.CssUpdate}") return;
-  hideOverlay();
-  const stamp = msg.timestamp || Date.now();
-  const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
-  let updated = false;
-  for (const link of links) {
-    const href = link.getAttribute("href");
-    if (!href) continue;
-    const current = new URL(href, location.href);
-    const target = new URL(msg.href || current.pathname, location.href);
-    if (msg.href && current.pathname !== target.pathname) continue;
-    const next = new URL(current.href);
-    next.searchParams.set("t", String(stamp));
-    const replacement = link.cloneNode();
-    replacement.href = next.href;
-    replacement.onload = () => link.remove();
-    replacement.onerror = () => location.reload();
-    link.after(replacement);
-    updated = true;
-  }
-  if (!updated) location.reload();
 });
-`;
+
