@@ -147,6 +147,15 @@ pub const Category = enum {
     graph_discover_pm_prepass_decision_unsupported_walk,
     graph_discover_pm_prepass_run,
     graph_discover_pm_is_pkg_type,
+    // Incremental rebuild hot path (build_flow.zig:buildIncremental).
+    // M0 측정값 (lodash-es 641 module warm) 의 47ms 를 sub-phase 로 분해해서
+    // 어느 단계가 dominant 인지 측정한다. graph_discover_pm_* 와 동위 prefix.
+    graph_discover_incr_mtime, // mtime 결정 (watcher skip → cached / fallback stat)
+    graph_discover_incr_cache_lookup, // store.getIfFresh — fresh 판정 (hash + mtime 비교)
+    graph_discover_incr_cache_hit_assign, // 캐시 히트 시 Module struct 복원 + ownership 이전
+    graph_discover_incr_miss_parse, // 캐시 미스 — parseModule + sideEffects 적용
+    graph_discover_incr_replay, // 히트 분기: replay cached resolved deps + deferred imports
+    graph_discover_incr_miss_resolve, // 미스 분기: resolveModuleImports (대칭 측정용)
     graph_finalize,
     graph_renumber,
     graph_resync,

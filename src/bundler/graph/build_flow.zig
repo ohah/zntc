@@ -406,6 +406,8 @@ pub fn buildIncremental(
             // 그대로 쓴다. 수백 모듈 × ~100us stat 이 주 병목이었음. changed_files 가 null
             // 이거나 cache miss 인 경로는 기존처럼 stat.
             const mtime: i128 = blk: {
+                var s_mtime = profile.begin(.graph_discover_incr_mtime);
+                defer s_mtime.end();
                 if (changed_files) |cf| {
                     if (!cf.contains(mod_path)) {
                         if (store.modules.get(mod_path)) |cached_entry| {
@@ -416,8 +418,15 @@ pub fn buildIncremental(
                 break :blk getMtime(mod_path) catch 0;
             };
 
-            // 캐시 조회
-            if (store.getIfFresh(mod_path, mtime)) |cached| {
+            // 캐시 조회. `defer` 가 아닌 명시 `end()` — getIfFresh 호출 자체만 측정해야
+            // 하고, 뒤따르는 if/else 분기(cache_hit_assign / miss_parse) 시간이 섞이면
+            // 안 된다. 이 분기들은 각자 자기 scope 로 따로 측정한다.
+            var s_cl = profile.begin(.graph_discover_incr_cache_lookup);
+            const lookup_result = store.getIfFresh(mod_path, mtime);
+            s_cl.end();
+            if (lookup_result) |cached| {
+                var s_ha = profile.begin(.graph_discover_incr_cache_hit_assign);
+                defer s_ha.end();
                 // 캐시 히트: struct assign으로 전체 복원 후 graph-specific 필드만 override.
                 // Module에 새 필드가 추가되어도 누락 없이 복사됨.
                 const saved_index = mod.index;
@@ -457,6 +466,8 @@ pub fn buildIncremental(
                 }
                 mod.state = .ready;
             } else {
+                var s_mp = profile.begin(.graph_discover_incr_miss_parse);
+                defer s_mp.end();
                 // 캐시 미스: 정상 파싱
                 self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
                 const m_ptr = self.modules.at(i);
@@ -470,9 +481,13 @@ pub fn buildIncremental(
         // resolve + addModule (새 의존성 등록)
         for (parse_start..parse_end) |i| {
             if (cache_hit_modules.contains(@intCast(i))) {
+                var s_rp = profile.begin(.graph_discover_incr_replay);
+                defer s_rp.end();
                 try graph_resolve_imports.replayCachedResolvedDeps(self, i);
                 try graph_resolve_imports.resolveDeferredRequestedImportsIfReady(self, ModuleIndex.fromUsize(i));
             } else {
+                var s_mr = profile.begin(.graph_discover_incr_miss_resolve);
+                defer s_mr.end();
                 try graph_resolve_imports.resolveModuleImports(self, @enumFromInt(@as(u32, @intCast(i))));
             }
         }
