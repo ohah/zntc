@@ -10,9 +10,9 @@ ZNTC의 트랜스파일/번들 성능과 최종 번들 크기(tree-shaking + min
 ## 측정 환경
 
 - **Platform**: `darwin arm64`
-- **기준 일시**: 2026-05-06
-- **CLI**: `bench.ts` median 5회, 직접 CLI 바이너리 실행 (npx 오버헤드 제거)
-- **NAPI / WASM / CLI**: `napi-bench.ts` warmup 3회 + median 10회
+- **기준 일시**: 2026-05-21
+- **CLI**: `bench.ts` median 20회, 직접 CLI 바이너리 실행 (npx 오버헤드 제거)
+- **NAPI / CLI**: `napi-bench.ts` warmup 5회 + median 20회
 - **Bundle perf**: `bundle-perf.ts` warmup 5회 + median 20회, CI와 같은 ZNTC/Rolldown/Rspack same-run 비교
 - **Pipeline**: `pipeline.ts` median 5회, profile total 기준
 - **번들 크기**: `smoke.ts --minify-all`, 2026-05-17, 실제 npm 라이브러리 9종을 번들 + minify 한 raw 출력 바이트
