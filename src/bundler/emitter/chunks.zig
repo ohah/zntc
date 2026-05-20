@@ -903,6 +903,8 @@ pub fn emitChunks(
                     try names.append(allocator, try allocator.dupe(u8, name));
                 }
             }
+            // hashmap 순회는 비결정 — 출력 결정성 위해 사전순 정렬 (line 654 와 일관).
+            std.mem.sort([]const u8, names.items, {}, types.stringLessThan);
             break :blk try names.toOwnedSlice(allocator);
         };
 

@@ -63,11 +63,12 @@ describe('build determinism (#3564)', () => {
     await expectDeterministic('dynamic-only', 'index.js');
   });
 
-  test.skip('barrel — export * from chain', async () => {
+  test('barrel — export * from chain', async () => {
     await expectDeterministic('barrel', 'index.js');
   });
 
+  // code-splitting fixture 는 --splitting + --outdir 모드라 helper 확장 필요 (별도 PR).
   test.skip('code-splitting — manualChunks + dynamic', async () => {
-    await expectDeterministic('code-splitting', 'index.js', ['--code-splitting']);
+    await expectDeterministic('code-splitting', 'index.js', ['--splitting']);
   });
 });
