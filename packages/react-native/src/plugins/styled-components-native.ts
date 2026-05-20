@@ -1,6 +1,6 @@
 import type { ZntcPlugin } from '@zntc/core';
 
-export const STYLED_COMPONENTS_NATIVE_PATH_RE =
+export const STYLED_COMPONENTS_NATIVE_PATH_RE: RegExp =
   /(?:^|[/\\])styled-components[/\\]native[/\\]dist[/\\]styled-components\.native\.(?:cjs|esm)\.js$/;
 
 const DOM_PROBE_PATTERNS = [
