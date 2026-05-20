@@ -1992,6 +1992,7 @@ pub const TreeShaker = struct {
         defer scope.end();
 
         var changed = false;
+        const used_count_before = self.used_exports.count();
         for (self.re_export_modules.items) |i| {
             if (!self.included.isSet(i)) continue;
             const m = self.getModule(@intCast(i)) orelse continue;
@@ -2011,6 +2012,7 @@ pub const TreeShaker = struct {
                 // 평가 부수효과가 없는 source 는 사용된 export 가 있을 때만 끌어옴.
                 // `export *` 의 named import 는 seedExport 가 canonical source 로 직접 시드하므로,
                 // 전체 namespace 가 사용되지 않는 한 unrelated star source 까지 fan out 하지 않는다.
+                const reexport_is_used = all_exports_used or self.isExportUsed(@intCast(i), eb.exported_name);
                 if (check_used and !module_effects.hasEvaluationEffect(src_module)) {
                     const probe_name = if (eb.kind == .re_export_star) ALL_EXPORTS_SENTINEL else eb.exported_name;
                     if (!all_exports_used and !self.isExportUsed(@intCast(i), probe_name)) continue;
@@ -2027,6 +2029,10 @@ pub const TreeShaker = struct {
                 // `exports.URLSearchParams = ...` assignment shaken out.
                 const cjs_named_reexport = src_module.wrap_kind == .cjs and eb.kind == .re_export;
                 if (cjs_named_reexport) {
+                    try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
+                } else if (eb.kind == .re_export and reexport_is_used) {
+                    // canonical source만 used로 찍히면 중간 barrel의 getter가 빠질 수 있다.
+                    // `root -> hook -> useEvent` 체인에서 hook.useEvent도 live로 전파한다.
                     try self.markExportUsed(@intCast(src), m.exportBindingLocalName(eb));
                 } else if (all_exports_used) {
                     if (src_module.wrap_kind == .cjs or eb.kind.isReExportAll()) {
@@ -2062,6 +2068,7 @@ pub const TreeShaker = struct {
                 }
             }
         }
+        if (self.used_exports.count() != used_count_before) changed = true;
         return changed;
     }
 
