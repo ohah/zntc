@@ -49,6 +49,10 @@ const WarmResult = struct {
     incr_req_static_import_ns: u64,
     incr_req_re_export_ns: u64,
     incr_req_simple_ns: u64,
+    incr_req_mutex_ns: u64,
+    incr_req_outer_map_ns: u64,
+    incr_req_inner_contains_ns: u64,
+    incr_req_inner_put_ns: u64,
     incr_miss_resolve_ns: u64,
 };
 
@@ -96,6 +100,10 @@ fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entr
         .incr_req_static_import_ns = profile.totalNs(.graph_discover_incr_req_static_import),
         .incr_req_re_export_ns = profile.totalNs(.graph_discover_incr_req_re_export),
         .incr_req_simple_ns = profile.totalNs(.graph_discover_incr_req_simple),
+        .incr_req_mutex_ns = profile.totalNs(.graph_discover_incr_req_mutex),
+        .incr_req_outer_map_ns = profile.totalNs(.graph_discover_incr_req_outer_map),
+        .incr_req_inner_contains_ns = profile.totalNs(.graph_discover_incr_req_inner_contains),
+        .incr_req_inner_put_ns = profile.totalNs(.graph_discover_incr_req_inner_put),
         .incr_miss_resolve_ns = profile.totalNs(.graph_discover_incr_miss_resolve),
     };
 }
@@ -104,6 +112,7 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
     const d = r.discover_ns;
     const rep = r.incr_replay_ns;
     const req = r.incr_req_static_import_ns + r.incr_req_re_export_ns + r.incr_req_simple_ns;
+    // 32-arg print 한계 회피 — 두 호출로 분리.
     std.debug.print(
         \\  {s} sub-phase (us, % of discover):
         \\    mtime           = {d:>7}us ({d:>3}%)
@@ -115,10 +124,6 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         \\      request_export= {d:>7}us ({d:>3}% of replay)
         \\      record_dep    = {d:>7}us ({d:>3}% of replay)
         \\      other         = {d:>7}us ({d:>3}% of replay)
-        \\    request_exports breakdown (us, % of request_exports):
-        \\      static_import = {d:>7}us ({d:>3}%)
-        \\      re_export     = {d:>7}us ({d:>3}%)
-        \\      simple        = {d:>7}us ({d:>3}%)
         \\    miss_resolve    = {d:>7}us ({d:>3}%)
         \\
     , .{
@@ -141,14 +146,35 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
         if (rep == 0) @as(u64, 0) else r.incr_replay_record_dep_ns * 100 / rep,
         r.incr_replay_other_ns / 1000,
         if (rep == 0) @as(u64, 0) else r.incr_replay_other_ns * 100 / rep,
+        r.incr_miss_resolve_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_miss_resolve_ns * 100 / d,
+    });
+    std.debug.print(
+        \\    request_exports breakdown (us, % of request_exports):
+        \\      static_import = {d:>7}us ({d:>3}%)
+        \\      re_export     = {d:>7}us ({d:>3}%)
+        \\      simple        = {d:>7}us ({d:>3}%)
+        \\    requestNamed/All internals (us, % of request_exports):
+        \\      mutex         = {d:>7}us ({d:>3}%)
+        \\      outer_map     = {d:>7}us ({d:>3}%)
+        \\      inner_contains= {d:>7}us ({d:>3}%)
+        \\      inner_put     = {d:>7}us ({d:>3}%)
+        \\
+    , .{
         r.incr_req_static_import_ns / 1000,
         if (req == 0) @as(u64, 0) else r.incr_req_static_import_ns * 100 / req,
         r.incr_req_re_export_ns / 1000,
         if (req == 0) @as(u64, 0) else r.incr_req_re_export_ns * 100 / req,
         r.incr_req_simple_ns / 1000,
         if (req == 0) @as(u64, 0) else r.incr_req_simple_ns * 100 / req,
-        r.incr_miss_resolve_ns / 1000,
-        if (d == 0) @as(u64, 0) else r.incr_miss_resolve_ns * 100 / d,
+        r.incr_req_mutex_ns / 1000,
+        if (req == 0) @as(u64, 0) else r.incr_req_mutex_ns * 100 / req,
+        r.incr_req_outer_map_ns / 1000,
+        if (req == 0) @as(u64, 0) else r.incr_req_outer_map_ns * 100 / req,
+        r.incr_req_inner_contains_ns / 1000,
+        if (req == 0) @as(u64, 0) else r.incr_req_inner_contains_ns * 100 / req,
+        r.incr_req_inner_put_ns / 1000,
+        if (req == 0) @as(u64, 0) else r.incr_req_inner_put_ns * 100 / req,
     });
 }
 
@@ -171,6 +197,10 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
         "graph_discover_incr_req_static_import",
         "graph_discover_incr_req_re_export",
         "graph_discover_incr_req_simple",
+        "graph_discover_incr_req_mutex",
+        "graph_discover_incr_req_outer_map",
+        "graph_discover_incr_req_inner_contains",
+        "graph_discover_incr_req_inner_put",
         "graph_discover_incr_miss_resolve",
     });
 
