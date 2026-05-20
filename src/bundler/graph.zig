@@ -74,6 +74,10 @@ pub const ModuleGraph = struct {
     const isPackageTypeModule = graph_package_info.isPackageTypeModule;
 
     allocator: std.mem.Allocator,
+    /// PR-Z4: Module path/resolve_dir 전용 arena. M8 측정에서 add_module alloc 의
+    /// 69% (3.1ms) 가 path/dir dupe. arena 로 alloc 비용 cheap + graph deinit 시 일괄
+    /// 해제 (path_to_module key free loop 회피).
+    path_arena: std.heap.ArenaAllocator,
     /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
     /// 않아서 worker race-safety 를 보장한다 (#1779 PR #3). prealloc=0 은 전량
     /// heap chunk — Module 이 수백 바이트라 stack pre-alloc 비효율.

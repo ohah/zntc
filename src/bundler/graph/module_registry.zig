@@ -89,12 +89,12 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve
         return existing;
     }
 
-    // 새 모듈 슬롯 할당
+    // 새 모듈 슬롯 할당 — PR-Z4: path 만 path_arena (Module.deinit/store transfer 안전).
+    // resolve_dir 은 Module.deinit 가 graph_allocator 로 free 하므로 그대로 유지.
     var s_alloc = profile.begin(.graph_discover_incr_add_module_alloc);
     const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
     var ownership_transferred = false;
-    const path_owned = try self.allocator.dupe(u8, abs_path);
-    errdefer if (!ownership_transferred) self.allocator.free(path_owned);
+    const path_owned = try self.path_arena.allocator().dupe(u8, abs_path);
     const resolve_dir_owned = if (resolve_dir) |dir| try self.allocator.dupe(u8, dir) else null;
     errdefer if (!ownership_transferred) if (resolve_dir_owned) |dir| self.allocator.free(dir);
 
@@ -155,11 +155,11 @@ fn addDisabledModuleWithMode(
     specifier: []const u8,
     throw_on_require: bool,
 ) !ModuleIndex {
-    const disabled_path = try std.mem.concat(self.allocator, u8, &.{ prefix, specifier });
+    // PR-Z4: path_arena 에 alloc — graph 일괄 해제.
+    const disabled_path = try std.mem.concat(self.path_arena.allocator(), u8, &.{ prefix, specifier });
 
-    // 중복 체크
+    // 중복 체크 (arena 에 buffer 남지만 graph deinit 시 일괄 해제, leak 아님)
     if (self.path_to_module.get(disabled_path)) |existing| {
-        self.allocator.free(disabled_path);
         return existing;
     }
 
@@ -185,7 +185,8 @@ pub fn addExternalModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex
     if (self.path_to_module.get(specifier)) |existing| return existing;
 
     const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
-    const path_owned = try self.allocator.dupe(u8, specifier);
+    // PR-Z4: path_arena 에서 alloc — graph 일괄 해제.
+    const path_owned = try self.path_arena.allocator().dupe(u8, specifier);
     var module = Module.init(index, path_owned);
     module.is_external = true;
     module.module_type = .js;

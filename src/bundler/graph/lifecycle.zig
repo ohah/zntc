@@ -11,6 +11,7 @@ const ResolveCache = resolve_cache_mod.ResolveCache;
 pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
     return .{
         .allocator = allocator,
+        .path_arena = std.heap.ArenaAllocator.init(allocator),
         // modules 는 default (.{}) 로 빈 SegmentedList.
         .path_to_module = std.StringHashMap(ModuleIndex).init(allocator),
         .diagnostics = .empty,
@@ -26,11 +27,9 @@ pub fn deinit(self: *ModuleGraph) void {
         m.deinit(self.allocator); // parse_arena.deinit() + dependencies/importers 해제
     }
     self.modules.deinit(self.allocator);
-    var key_it = self.path_to_module.keyIterator();
-    while (key_it.next()) |key| {
-        self.allocator.free(key.*);
-    }
+    // PR-Z4: path_to_module key 메모리는 path_arena 가 owned — 개별 free 불요, 일괄 해제.
     self.path_to_module.deinit();
+    self.path_arena.deinit();
     var req_it = self.requested_exports.valueIterator();
     while (req_it.next()) |req| req.deinit(self.allocator);
     self.requested_exports.deinit(self.allocator);

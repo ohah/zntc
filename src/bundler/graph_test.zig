@@ -1359,9 +1359,11 @@ test "renumber: orphan modules sorted by path regardless of add order" {
     try graph.modules.append(alloc, Module.init(@enumFromInt(0), "c.ts"));
     try graph.modules.append(alloc, Module.init(@enumFromInt(1), "b.ts"));
     try graph.modules.append(alloc, Module.init(@enumFromInt(2), "a.ts"));
-    try graph.path_to_module.put(try alloc.dupe(u8, "c.ts"), @enumFromInt(0));
-    try graph.path_to_module.put(try alloc.dupe(u8, "b.ts"), @enumFromInt(1));
-    try graph.path_to_module.put(try alloc.dupe(u8, "a.ts"), @enumFromInt(2));
+    // PR-Z4: path_to_module key 는 path_arena 가 owned (graph deinit 시 일괄 해제).
+    const arena_alloc = graph.path_arena.allocator();
+    try graph.path_to_module.put(try arena_alloc.dupe(u8, "c.ts"), @enumFromInt(0));
+    try graph.path_to_module.put(try arena_alloc.dupe(u8, "b.ts"), @enumFromInt(1));
+    try graph.path_to_module.put(try arena_alloc.dupe(u8, "a.ts"), @enumFromInt(2));
 
     try renumber_mod.renumberModulesDeterministically(&graph, &.{});
 
