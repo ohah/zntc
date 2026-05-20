@@ -55,7 +55,7 @@ describe('build determinism (#3564)', () => {
     await expectDeterministic('small', 'index.js');
   });
 
-  test.skip('name-collision — same export name across 3 modules', async () => {
+  test('name-collision — same export name across 3 modules', async () => {
     await expectDeterministic('name-collision', 'index.js', ['--minify-identifiers']);
   });
 
