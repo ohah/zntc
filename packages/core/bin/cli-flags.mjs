@@ -91,7 +91,12 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--shim-missing-exports', target: 'shimMissingExports' },
   { kind: 'bool', flag: '--ascii-only', target: 'asciiOnly' },
   { kind: 'bool', flag: '--preserve-modules', target: 'preserveModules' },
-  { kind: 'bool', flag: '--inline-dynamic-imports', target: 'inlineDynamicImports' },
+  {
+    kind: 'bool',
+    flag: '--inline-dynamic-imports',
+    target: 'inlineDynamicImports',
+    extra: { inlineDynamicImportsExplicit: true },
+  },
   { kind: 'bool', flag: '--preserve-symlinks', target: 'preserveSymlinks' },
   { kind: 'bool', flag: '--resolve-symlink-siblings', target: 'resolveSymlinkSiblings' },
   { kind: 'bool', flag: '--disable-hierarchical-lookup', target: 'disableHierarchicalLookup' },

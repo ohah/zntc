@@ -8,3 +8,4 @@ import './bundle/formats';
 import './bundle/resolution';
 import './bundle/syntax-targets';
 import './bundle/errors';
+import './bundle/dynamic-imports';
