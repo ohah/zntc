@@ -394,6 +394,10 @@ pub const BundleResult = struct {
     /// 다중 출력 파일. code_splitting=true일 때 사용. allocator 소유.
     /// null이면 단일 파일 모드 (output 필드 사용).
     outputs: ?[]OutputFile = null,
+    /// Multi-format emit 결과 (`BundleOptions.output.len >= 2` 시 사용). allocator 소유.
+    /// null 이면 단일 format 모드 (`output`/`outputs` 필드 사용). 첫 entry 의 결과가
+    /// `output` 필드에 alias 로 노출되어 backward-compat.
+    outputs_by_format: ?[]types.FormatOutput = null,
     /// 빌드 중 발생한 진단 메시지들. deep copy — 내부 문자열도 allocator 소유.
     diagnostics: ?[]OwnedDiagnostic,
     /// 번들에 포함된 모든 모듈의 절대 경로. allocator 소유. dev server watch용.
@@ -457,6 +461,15 @@ pub const BundleResult = struct {
         if (self.outputs) |outs| {
             for (outs) |o| o.deinit(allocator);
             allocator.free(outs);
+        }
+        if (self.outputs_by_format) |by| {
+            for (by) |fo| {
+                // 첫 entry 의 output/sourcemap 은 result.output/sourcemap 으로 move 됐을 수 있음 —
+                // 빈 슬라이스 (len 0) free 는 allocator 별 동작 차이 회피.
+                if (fo.output.len > 0) allocator.free(fo.output);
+                if (fo.sourcemap) |sm| allocator.free(sm);
+            }
+            allocator.free(by);
         }
         if (self.diagnostics) |diags| {
             for (diags) |d| {
@@ -1422,6 +1435,22 @@ pub const Bundler = struct {
         var output_scope = profile.begin(.emit_output);
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
+        var outputs_by_format: ?[]types.FormatOutput = null;
+        errdefer if (outputs_by_format) |by| {
+            for (by) |fo| {
+                self.allocator.free(fo.output);
+                if (fo.sourcemap) |sm| self.allocator.free(sm);
+            }
+            self.allocator.free(by);
+        };
+
+        // multi-format emit: single 경로만 본 단계에서 지원. dev/splitting 와 조합은 후속.
+        const multi_format = self.options.output.len > 1;
+        if (multi_format) {
+            if (self.options.dev_mode or self.options.code_splitting or self.options.preserve_modules) {
+                return error.MultiFormatRequiresSinglePath;
+            }
+        }
         // #3318 P1-5: MF remote 의 mf-manifest.json (wrapContainer 산출,
         // asset_outputs 로 편입). errdefer 로 부분실패 누수 방지.
         var mf_manifest: ?[]const u8 = null;
@@ -1566,6 +1595,62 @@ pub const Bundler = struct {
 
             // output은 빈 문자열 — code splitting 시 outputs를 사용
             output = try self.allocator.dupe(u8, "");
+        } else if (multi_format) {
+            // Multi-format single-path emit. 매 OutputConfig 마다 linker setEmitFormat 으로
+            // format-dependent state 갱신, emit 결과 누적. 첫 entry 의 결과를 `output` /
+            // `dev_sourcemap` 에 alias 로 노출 (backward-compat).
+            const by = try self.allocator.alloc(types.FormatOutput, self.options.output.len);
+            errdefer self.allocator.free(by);
+            const mf_opt2 = self.options.mf;
+            var filled: usize = 0;
+            errdefer {
+                var k: usize = 0;
+                while (k < filled) : (k += 1) {
+                    if (by[k].output.len > 0) self.allocator.free(by[k].output);
+                    if (by[k].sourcemap) |sm| self.allocator.free(sm);
+                }
+            }
+            for (self.options.output, 0..) |cfg, i| {
+                if (linker) |*l| {
+                    l.setEmitFormat(cfg.format, .{
+                        .iife_globals = cfg.globals,
+                        .mf_remotes = if (mf_opt2) |*m| m.remotes else &.{},
+                        .mf_static_remotes = if (mf_opt2) |_| &mf_static_remotes else null,
+                        .inline_requires = self.options.platform == .react_native,
+                        .entry_error_guard = self.options.entry_error_guard,
+                    });
+                    l.resetEmitTransients();
+                }
+                var emit_opts = self.makeEmitOptions();
+                emit_opts.format = cfg.format;
+                emit_opts.polyfills = polyfill_entries.items;
+                emit_opts.worker_map_per_module = &worker_map_per_module;
+                if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
+                const emit_result = try emitter.emitWithTreeShaking(
+                    self.allocator,
+                    &graph,
+                    &emit_opts,
+                    if (linker) |*l| l else null,
+                    if (shaker) |*s| s else null,
+                );
+                by[i] = .{
+                    .format = cfg.format,
+                    .output = emit_result.output,
+                    .sourcemap = emit_result.sourcemap,
+                };
+                filled = i + 1;
+            }
+            // 첫 entry 의 output/sourcemap 을 result.output / dev_sourcemap 으로 *move* — 동일
+            // 메모리 중복 alloc 회피. by[0] 의 슬라이스는 빈 슬라이스로 marker, deinit 의 가드가
+            // 빈 슬라이스 free 를 skip. outputs_by_format = by 는 *마지막* statement 로 두어
+            // 이후 try 가 없음을 보장 — outer errdefer 가 double-free 트리거하지 않음.
+            output = by[0].output;
+            by[0].output = &.{};
+            if (by[0].sourcemap) |sm| {
+                dev_sourcemap = sm;
+                by[0].sourcemap = null;
+            }
+            outputs_by_format = by;
         } else {
             // 단일 파일 경로 (tree shaking + 소스맵 지원)
             var emit_opts = self.makeEmitOptions();
@@ -1867,6 +1952,7 @@ pub const Bundler = struct {
             .sourcemap = dev_sourcemap,
             .sourcemap_builder = dev_sourcemap_builder,
             .outputs = outputs,
+            .outputs_by_format = outputs_by_format,
             .diagnostics = diagnostics,
             .module_paths = module_paths,
             .module_dev_codes = module_dev_codes,

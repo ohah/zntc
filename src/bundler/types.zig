@@ -515,6 +515,14 @@ pub const OutputConfig = struct {
     globals: []const GlobalEntry = &.{},
 };
 
+/// Multi-format emit 의 단일 결과. `BundleResult.outputs_by_format` 의 element.
+/// 모든 필드는 allocator 소유. `BundleResult.deinit` 가 일괄 해제.
+pub const FormatOutput = struct {
+    format: Format,
+    output: []const u8,
+    sourcemap: ?[]const u8 = null,
+};
+
 // ============================================================
 // 로더 (Asset Loader)
 // ============================================================

@@ -37,5 +37,6 @@ comptime {
     _ = @import("bundler_test/lowering_rename_leak.zig");
     _ = @import("bundler_test/manual_chunks.zig");
     _ = @import("bundler_test/runtime_helper_shadow.zig");
+    _ = @import("bundler_test/multi_format.zig");
     _ = @import("namespace_access_test.zig");
 }
