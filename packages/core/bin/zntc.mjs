@@ -306,6 +306,7 @@ function parseArgs(argv) {
     preserveModules: false,
     preserveModulesRoot: undefined,
     inlineDynamicImports: false,
+    inlineDynamicImportsExplicit: false,
     loader: {},
     legalComments: undefined,
     resolveExtensions: [],
@@ -1178,7 +1179,6 @@ function mergeConfigIntoOpts(opts, config) {
     // drift-guard 가 검출한 silent-무시 버그 수정 (#2112 잔여): config 값이
     // 머지 안 되던 실 BuildOption bool.
     'analyze',
-    'inlineDynamicImports',
     'devMode',
   ];
   for (const key of BOOL_KEYS) {
@@ -1198,6 +1198,13 @@ function mergeConfigIntoOpts(opts, config) {
     if (opts[key] === true && config[key] === false) {
       opts[key] = false;
     }
+  }
+
+  // false 도 의미가 있는 옵션이라 일반 BOOL_KEYS 루프로는 명시 여부가 사라진다.
+  // single-file bundle 보정에서 Zig CLI 와 같은 에러를 내기 위해 별도로 추적한다.
+  if (config.inlineDynamicImports !== undefined) {
+    opts.inlineDynamicImports = config.inlineDynamicImports;
+    opts.inlineDynamicImportsExplicit = true;
   }
 
   const ARRAY_KEYS = [
@@ -1273,6 +1280,8 @@ async function runBundle(opts, config) {
       plugins.push(cfg);
     }
   }
+
+  applySingleFileDynamicImportDefault(opts);
 
   const buildOpts = {
     entryPoints: opts.entryPoints.map((e) => resolve(e)),
@@ -1423,6 +1432,18 @@ async function runBundle(opts, config) {
   }
 
   return result;
+}
+
+function applySingleFileDynamicImportDefault(opts) {
+  if (opts.splitting || opts.preserveModules) return;
+  if (opts.inlineDynamicImportsExplicit && opts.inlineDynamicImports === false) {
+    throw new Error(
+      'inlineDynamicImports=false requires splitting or preserveModules in bundle mode',
+    );
+  }
+  // Zig CLI 와 동일한 기본값: 단일 파일 번들은 dynamic import target 을 같은 파일에
+  // 인라인해야 Hermes/Node 가 외부 chunk 없는 native import() 를 실행하지 않는다.
+  opts.inlineDynamicImports = true;
 }
 
 // ─── Watch 모드 ───
