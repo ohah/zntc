@@ -183,3 +183,40 @@ test "multi-format: dev_mode rejected" {
     const result = b.bundle();
     try std.testing.expectError(error.MultiFormatRequiresSinglePath, result);
 }
+
+test "multi-format: CSS import yields shared CSS output across formats" {
+    // multi-format 의 CSS/worker/asset 산출물은 *format 무관* — graph 에서 추출되어
+    // 모든 OutputConfig 가 공유. result.asset_outputs 가 *한 번만* CSS 포함하는지 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "style.css", ".a { color: red; }\n");
+    try writeFile(tmp.dir, "index.ts", "import './style.css';\nexport const x = 42;\n");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .output = &.{
+            .{ .format = .esm },
+            .{ .format = .cjs },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.outputs_by_format != null);
+    try std.testing.expectEqual(@as(usize, 2), result.outputs_by_format.?.len);
+    // CSS 는 asset_outputs 에 정확히 1개 (format 무관 공유) — multi-emit N회 호출에도 중복 emit 없음.
+    if (result.asset_outputs) |assets| {
+        var css_count: usize = 0;
+        for (assets) |a| {
+            if (std.mem.endsWith(u8, a.path, ".css")) css_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), css_count);
+    } else {
+        return error.NoCssOutput;
+    }
+}
