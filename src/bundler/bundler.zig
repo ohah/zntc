@@ -232,6 +232,11 @@ pub const BundleOptions = struct {
     /// IIFE external → 전역 식별자 매핑 (--globals, rollup `output.globals` 호환, #1824).
     /// emitter 가 IIFE factory 호출 인자로 사용. 매핑되지 않은 external 은 에러.
     globals: []const types.GlobalEntry = &.{},
+    /// rollup 식 `output: [...]` multi-format emit 설정. 빈 슬라이스면 기존
+    /// `format`/`globals` 를 fallback 으로 단일 default 합성. 길이 ≥ 2 시 같은
+    /// module graph 를 N format 으로 reemit (후속 활성). 본 epic 단계에서는 dormant
+    /// — bundler 가 항상 단일 emit 경로 사용.
+    output: []const types.OutputConfig = &.{},
     /// 출력 파일 확장자 오버라이드 (--out-extension:.js=.mjs)
     out_extension_js: ?[]const u8 = null,
     /// 소스맵 관련 옵션 묶음 (enable/debug_ids/function_map/lazy/source_root/sources_content).
