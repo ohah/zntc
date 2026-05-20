@@ -443,6 +443,13 @@ pub fn buildIncremental(
                 mod.dynamic_imports = saved_dynamic;
                 mod.dynamic_importers = saved_dynamic_importers;
                 mod.mtime = mtime;
+                // PR-Z3: 정상 경로에선 `addModuleWithResolveDir` 에서 이미 capacity 8 을
+                // 확보하므로 여기서는 no-op (saved_deps 는 그 capacity 를 그대로 캐리).
+                // 다만 disabled/external 같은 by-pass 경로가 미래에 cache-hit 분기로
+                // 흘러들어올 가능성에 대한 방어선이고, 이미 8 이상이면 비교 1번뿐이라
+                // 코스트는 무시 가능. (M8 측정 record_dep link 88%).
+                mod.dependencies.ensureTotalCapacity(self.allocator, 8) catch {};
+                mod.importers.ensureTotalCapacity(self.allocator, 8) catch {};
                 try cache_hit_modules.put(@intCast(i), {});
                 // parse_arena 소유권 이전: store → graph.
                 cached.module.parse_arena = null;

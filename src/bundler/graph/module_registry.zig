@@ -112,6 +112,11 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve
     try self.modules.append(self.allocator, module);
     ownership_transferred = true;
     try self.path_to_module.put(path_owned, index);
+    // PR-Z3: lodash-es 평균 3-4 dep / module 로 ArrayList default grow (4→8→16) 가 매
+    // build 마다 alloc 1-2회. 사전 capacity 8 로 link 의 grow 회피 (M8 측정 link 98%).
+    const mod_ref = self.modules.at(@intFromEnum(index));
+    mod_ref.dependencies.ensureTotalCapacity(self.allocator, 8) catch {};
+    mod_ref.importers.ensureTotalCapacity(self.allocator, 8) catch {};
     s_put.end();
 
     // 신규 모듈 path 의 dir 를 source_read_cache 에 pre-warm — readModuleSource 단계의
