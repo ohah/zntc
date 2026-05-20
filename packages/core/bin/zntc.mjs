@@ -802,6 +802,7 @@ async function runRnBundle(opts, config) {
   }
   warnRnBundleUnsupported(opts);
   const rnPlatform = opts.rnPlatform === 'android' ? 'android' : 'ios';
+  applySingleFileDynamicImportDefault(opts);
 
   // RN CLI 호환 — `--bundle-output X` 가 `--outfile X` 와 동일 의미. 양쪽 다 받되
   // 명시 우선순위: --outfile > --bundle-output. 둘 다 미지정 시 in-memory.

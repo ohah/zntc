@@ -39,13 +39,14 @@ describe('buildRnBundleOptions — 기본 RN preset 필드', () => {
     expect(opts.platform).toBe('react-native');
   });
 
-  test('RN-specific 자동 활성 필드 (target/flow/jsxInJs/configurableExports/strictExecutionOrder/workletTransform/codegenTransform)', () => {
+  test('RN-specific 자동 활성 필드 (target/flow/jsxInJs/configurableExports/strictExecutionOrder/inlineDynamicImports/workletTransform/codegenTransform)', () => {
     const opts = buildRnBundleOptions(baseInput());
     expect(opts.target).toBe('es5');
     expect(opts.flow).toBe(true);
     expect(opts.jsxInJs).toBe(true);
     expect(opts.configurableExports).toBe(true);
     expect(opts.strictExecutionOrder).toBe(true);
+    expect(opts.inlineDynamicImports).toBe(true);
     expect(opts.workletTransform).toBe(true);
     expect(opts.codegenTransform).toBe(true);
   });

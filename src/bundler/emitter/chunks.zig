@@ -1438,20 +1438,23 @@ fn rewriteDynamicImports(
 /// `emit` (라인 258) 가 사용하는 single-file path 는 chunk 분리 없이 모든 모듈을
 /// 한 파일에 합치므로 *동일 bundle = same_chunk* 라는 단순 가정만 필요. dynamic
 /// target 이 `wrap_kind = .esm` 으로 promote 됐으면 `Promise.resolve().then(...)`
-/// 패턴으로 호출 재작성. target 이 미 promote 면 조용히 그대로 둠 — 외부 sibling
-/// 파일 fallback 으로 동작 (해당 케이스는 #2211 follow-up 으로 별도 처리).
+/// 패턴으로 호출 재작성. React Native/Hermes 는 raw `import()` 문법 자체를 파싱하지
+/// 못하므로 unresolved/external literal import 도 parse-safe rejection 으로 낮춘다.
+/// 브라우저/Node 계열은 target 이 미 promote 면 그대로 둬 외부 sibling 파일 fallback
+/// 가능성을 유지한다.
 pub fn rewriteDynamicImportsSingleFile(
     allocator: std.mem.Allocator,
     code: []const u8,
     module: *const Module,
     graph: *const ModuleGraph,
+    lower_unresolved_dynamic_imports: bool,
 ) ![]const u8 {
     if (module.import_records.len == 0) return try allocator.dupe(u8, code);
     if (!graph.inline_dynamic_imports) return try allocator.dupe(u8, code);
 
     var has_dynamic = false;
     for (module.import_records) |rec| {
-        if (rec.kind == .dynamic_import and rec.resolved != .none) {
+        if (rec.kind == .dynamic_import and (rec.resolved != .none or lower_unresolved_dynamic_imports)) {
             has_dynamic = true;
             break;
         }
@@ -1463,7 +1466,20 @@ pub fn rewriteDynamicImportsSingleFile(
 
     for (module.import_records) |rec| {
         if (rec.kind != .dynamic_import) continue;
-        if (rec.resolved == .none) continue;
+        if (rec.resolved == .none) {
+            if (!lower_unresolved_dynamic_imports) continue;
+
+            // RN 릴리즈 번들은 Hermes가 전체 파일을 먼저 파싱한다. 실제로 실행되지
+            // 않는 fallback callback 안의 `import()` 도 문법 에러가 되므로, Metro처럼
+            // 런타임 실패 표현으로 낮춰 파서 통과를 보장한다.
+            const replacement_expr = "Promise.reject(new Error(\"Dynamic import is not available in this React Native bundle\"))";
+            const new_result_opt = try rewriteImportCallToWrapper(allocator, result, rec.specifier, replacement_expr);
+            if (new_result_opt) |new_result| {
+                allocator.free(result);
+                result = new_result;
+            }
+            continue;
+        }
 
         const target_mod = graph.getModule(rec.resolved) orelse continue;
         const replacement_expr = switch (target_mod.wrap_kind) {

@@ -3,6 +3,7 @@ import {
   expect,
   join,
   mkdtempSync,
+  readFileSync,
   rmSync,
   runCli,
   test,
@@ -43,6 +44,28 @@ describe('CLI: bundle > dynamic import', () => {
     expect(stderr).toContain(
       'inlineDynamicImports=false requires splitting or preserveModules in bundle mode',
     );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('react-native single-file bundle lowers unresolved dynamic imports for Hermes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-cli-rn-dynamic-import-'));
+    writeFileSync(
+      join(dir, 'entry.ts'),
+      "export const load = () => import('external-only').then((mod) => mod.value);",
+    );
+    const outFile = join(dir, 'main.jsbundle');
+
+    const { stdout, exitCode } = runCli(
+      ['--bundle', join(dir, 'entry.ts'), '--platform=react-native', '--bundle-output', outFile],
+      { cwd: dir },
+    );
+    const output = readFileSync(outFile, 'utf8');
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe('');
+    expect(output).toContain('Dynamic import is not available in this React Native bundle');
+    expect(output).not.toContain("import('external-only')");
+    expect(output).not.toContain('import("external-only")');
     rmSync(dir, { recursive: true, force: true });
   });
 });
