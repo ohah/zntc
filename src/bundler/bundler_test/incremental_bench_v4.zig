@@ -37,6 +37,12 @@ const WarmResult = struct {
     semantic_ns: u64,
     discover_ns: u64,
     total_ns: u64,
+    incr_mtime_ns: u64,
+    incr_cache_lookup_ns: u64,
+    incr_cache_hit_assign_ns: u64,
+    incr_miss_parse_ns: u64,
+    incr_replay_ns: u64,
+    incr_miss_resolve_ns: u64,
 };
 
 fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entry: []const u8, case: Case) !WarmResult {
@@ -71,13 +77,57 @@ fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entr
         .semantic_ns = semantic_ns,
         .discover_ns = discover_ns,
         .total_ns = parse_ns + semantic_ns + discover_ns,
+        .incr_mtime_ns = profile.totalNs(.graph_discover_incr_mtime),
+        .incr_cache_lookup_ns = profile.totalNs(.graph_discover_incr_cache_lookup),
+        .incr_cache_hit_assign_ns = profile.totalNs(.graph_discover_incr_cache_hit_assign),
+        .incr_miss_parse_ns = profile.totalNs(.graph_discover_incr_miss_parse),
+        .incr_replay_ns = profile.totalNs(.graph_discover_incr_replay),
+        .incr_miss_resolve_ns = profile.totalNs(.graph_discover_incr_miss_resolve),
     };
+}
+
+fn printSubPhase(label: []const u8, r: WarmResult) void {
+    const d = r.discover_ns;
+    std.debug.print(
+        \\  {s} sub-phase (us, % of discover):
+        \\    mtime           = {d:>7}us ({d:>3}%)
+        \\    cache_lookup    = {d:>7}us ({d:>3}%)
+        \\    cache_hit_assign= {d:>7}us ({d:>3}%)
+        \\    miss_parse      = {d:>7}us ({d:>3}%)
+        \\    replay          = {d:>7}us ({d:>3}%)
+        \\    miss_resolve    = {d:>7}us ({d:>3}%)
+        \\
+    , .{
+        label,
+        r.incr_mtime_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_mtime_ns * 100 / d,
+        r.incr_cache_lookup_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_cache_lookup_ns * 100 / d,
+        r.incr_cache_hit_assign_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_cache_hit_assign_ns * 100 / d,
+        r.incr_miss_parse_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_miss_parse_ns * 100 / d,
+        r.incr_replay_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_replay_ns * 100 / d,
+        r.incr_miss_resolve_ns / 1000,
+        if (d == 0) @as(u64, 0) else r.incr_miss_resolve_ns * 100 / d,
+    });
 }
 
 test "incremental bench v4: changed_files null/empty/single comparison" {
     profile.resetForTest();
     profile.setLevel(.summary);
-    profile.addCategories(&.{ "parse", "semantic", "graph_discover" });
+    profile.addCategories(&.{
+        "parse",
+        "semantic",
+        "graph_discover",
+        "graph_discover_incr_mtime",
+        "graph_discover_incr_cache_lookup",
+        "graph_discover_incr_cache_hit_assign",
+        "graph_discover_incr_miss_parse",
+        "graph_discover_incr_replay",
+        "graph_discover_incr_miss_resolve",
+    });
 
     const allocator = std.testing.allocator;
 
@@ -168,4 +218,8 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
         if (c_null.total_ns == 0) @as(u64, 0) else c_empty.total_ns * 100 / c_null.total_ns,
         if (c_null.total_ns == 0) @as(u64, 0) else c_single.total_ns * 100 / c_null.total_ns,
     });
+
+    printSubPhase("null  ", c_null);
+    printSubPhase("empty ", c_empty);
+    printSubPhase("single", c_single);
 }
