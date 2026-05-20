@@ -59,6 +59,42 @@ imported CSS 산출물에 자동 적용한다. Tailwind v4는 `postcss.config.mj
 source map을 적용해 가능한 경우 원본 `main.ts:line:column` 위치로 보여준다.
 세부 동작: [HMR.md § 에러 오버레이](./HMR.md#에러-오버레이).
 
+### 브라우저 런타임 검증 (`zntc verify`)
+
+```bash
+zntc verify dist/index.html          # 정적 빌드 결과 검증
+zntc verify dist/                    # 디렉토리 → index.html 자동
+zntc verify http://localhost:3000/   # 실행 중인 서버 검증
+```
+
+빌드 산출물이 실제 브라우저에서 깨지는지 한 줄로 가드 — headless Chromium 으로 페이지를
+띄우고 `pageerror` (uncaught + unhandledrejection) / `console.error` / 4xx 응답 /
+request 실패를 수집한다. 이벤트 발견 시 **exit 1** 로 CI 가 fail 처리.
+
+```bash
+zntc verify dist/ --verify-json --verify-report=verify-report.json
+zntc verify dist/ --verify-ignore "third-party warning" --verify-allow-console-error
+```
+
+- `--verify-timeout <ms>` — 페이지 로드 타임아웃 (기본 10000)
+- `--verify-ignore <pattern>` — 매칭되는 console/url 이벤트는 무시 (정규식, 반복 가능)
+- `--verify-allow-console-error` — `console.error` 는 exit 코드에 영향 없음 (pageerror 만 fail)
+- `--verify-json` — 사람이 읽는 요약 대신 JSON 보고서를 stdout 에
+- `--verify-report <path>` — JSON 보고서를 파일로 저장
+
+다른 모드의 flag 와 격리하기 위해 모두 `--verify-` prefix.
+
+**의존성**: Playwright peer/optional. 미설치 시 친화 에러 + exit 64.
+
+```bash
+npm install --save-dev playwright
+npx playwright install chromium
+```
+
+타입체크와 유닛 테스트가 못 잡는 런타임 회귀 (ESM circular dep, TDZ, scope-hoist
+오재작성, 누락된 리소스) 를 잡는 게 목적. 사용자가 `npx playwright` 로 한 번 설치하면
+`zntc build && zntc verify dist/` 한 줄로 CI 검증 추가.
+
 ## 설정 파일 (`zntc.config.json` / `zntc.config.{ts,js,mjs,cjs,mts,cts}`)
 
 ### `zntc.config.json` — TranspileOptions defaults
