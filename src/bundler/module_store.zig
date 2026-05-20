@@ -52,6 +52,7 @@ pub const PersistentModuleStore = struct {
         // parse_arena / alias_table 가 아직 store 에 있으면 해제.
         if (cached.module.parse_arena) |arena| Module_mod.destroyParseArena(self.allocator, arena);
         if (cached.module.alias_table) |*t| t.deinit();
+        if (cached.module.export_index_by_name) |*m| m.deinit(self.allocator);
         // dependencies/importers/dynamic_imports/dynamic_importers ArrayList 해제
         cached.module.dependencies.deinit(self.allocator);
         cached.module.importers.deinit(self.allocator);
@@ -107,6 +108,10 @@ pub const PersistentModuleStore = struct {
         module.parse_arena = null;
         module.resolve_dir = null;
         module.alias_table = null;
+        // export_index_by_name (PR-Y1) 도 alias_table 와 동일 ownership 이전 패턴 —
+        // shallow copy 라 양쪽이 같은 HashMap backing 가리킴, graph.deinit 이 free 하면
+        // store 쪽 dangling. ownership 을 store 로 이전 (graph 쪽 nullify).
+        module.export_index_by_name = null;
         module.import_records = &.{};
         module.resolved_deps = .empty;
 
@@ -120,6 +125,7 @@ pub const PersistentModuleStore = struct {
                 if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
                 if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
                 if (cached_module.alias_table) |*t| t.deinit();
+                if (cached_module.export_index_by_name) |*m| m.deinit(self.allocator);
                 for (cached_module.resolved_deps.items) |dep| {
                     self.allocator.free(dep.path);
                     if (dep.resolve_dir) |dir| self.allocator.free(dir);
@@ -133,6 +139,7 @@ pub const PersistentModuleStore = struct {
                 if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
                 if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
                 if (cached_module.alias_table) |*t| t.deinit();
+                if (cached_module.export_index_by_name) |*m| m.deinit(self.allocator);
                 for (cached_module.resolved_deps.items) |dep| {
                     self.allocator.free(dep.path);
                     if (dep.resolve_dir) |dir| self.allocator.free(dir);
@@ -152,6 +159,7 @@ pub const PersistentModuleStore = struct {
                 if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
                 if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
                 if (cached_module.alias_table) |*t| t.deinit();
+                if (cached_module.export_index_by_name) |*m| m.deinit(self.allocator);
                 for (cached_module.resolved_deps.items) |dep| {
                     self.allocator.free(dep.path);
                     if (dep.resolve_dir) |dir| self.allocator.free(dir);
