@@ -19,10 +19,21 @@ pub const WorkerEntry = struct {
 
 pub const RequestedExports = struct {
     all: bool = false,
-    names: std.StringHashMapUnmanaged(void) = .{},
+    /// PR-Z2: flat array (≈10 평균 names) — HashMap 의 keyIterator bucket scan 보다 빠름.
+    /// M7 측정에서 caller copy 가 entry 의 91% (5.4ms). flat array iter 는 contiguous
+    /// memcpy + cache locality 로 ~50% 절감 가설.
+    names: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn deinit(self: *RequestedExports, allocator: std.mem.Allocator) void {
         self.names.deinit(allocator);
+    }
+
+    /// O(N) linear scan — N 평균 ~10. HashMap.contains 보다 cache locality 이득.
+    pub fn contains(self: *const RequestedExports, name: []const u8) bool {
+        for (self.names.items) |n| {
+            if (std.mem.eql(u8, n, name)) return true;
+        }
+        return false;
     }
 };
 

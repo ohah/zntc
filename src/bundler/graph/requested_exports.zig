@@ -26,7 +26,7 @@ pub fn requestAll(self: anytype, idx: ModuleIndex) !bool {
     }
     if (gop.value_ptr.all) return false;
     gop.value_ptr.names.deinit(self.allocator);
-    gop.value_ptr.names = .{};
+    gop.value_ptr.names = .empty;
     gop.value_ptr.all = true;
     return true;
 }
@@ -51,12 +51,12 @@ pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
     }
     if (gop.value_ptr.all) return false;
     var s_ic = profile.begin(.graph_discover_incr_req_inner_contains);
-    const already = gop.value_ptr.names.contains(name);
+    const already = gop.value_ptr.contains(name);
     s_ic.end();
     if (already) return false;
     var s_ip = profile.begin(.graph_discover_incr_req_inner_put);
     defer s_ip.end();
-    try gop.value_ptr.names.put(self.allocator, name, {});
+    try gop.value_ptr.names.append(self.allocator, name);
     return true;
 }
 
@@ -210,27 +210,19 @@ pub fn requestedExportsForReExportRecord(
         if (maybe_req) |req| {
             var s_copy = profile.begin(.graph_discover_incr_re_export_entry_copy);
             defer s_copy.end();
-            var it = req.names.keyIterator();
-            while (it.next()) |name| {
-                if (!overflowed) {
-                    if (stack_len < REQUESTED_NAMES_STACK_CAP) {
-                        stack_buf[stack_len] = name.*;
-                        stack_len += 1;
-                        continue;
-                    }
-                    // 첫 overflow: 누적된 32 개를 heap 으로 일괄 복사 후 분기 전환.
-                    heap_buf.appendSlice(self.allocator, stack_buf[0..REQUESTED_NAMES_STACK_CAP]) catch {
-                        self.requested_exports_mutex.unlock();
-                        s_entry.end();
-                        return error.OutOfMemory;
-                    };
-                    overflowed = true;
-                }
-                heap_buf.append(self.allocator, name.*) catch {
+            // PR-Z2: flat array iter — HashMap.keyIterator 의 bucket scan 회피.
+            // 작은 batch (≤ 32) 는 stack-only @memcpy, overflow 시 heap spillover.
+            const src = req.names.items;
+            if (src.len <= REQUESTED_NAMES_STACK_CAP) {
+                @memcpy(stack_buf[0..src.len], src);
+                stack_len = src.len;
+            } else {
+                heap_buf.appendSlice(self.allocator, src) catch {
                     self.requested_exports_mutex.unlock();
                     s_entry.end();
                     return error.OutOfMemory;
                 };
+                overflowed = true;
             }
         }
     }
@@ -353,7 +345,7 @@ pub fn requestDependencyExports(
 
 pub fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const RequestedExports) bool {
     if (req.all) return true;
-    if (req.names.count() == 0) return false;
+    if (req.names.items.len == 0) return false;
     // PR-Y2: requestedExportsForReExportRecord 와 동일 패턴 — index lookup O(1) + star check.
     const has_star_for_rec = blk: {
         for (m.export_bindings) |eb| {
@@ -364,10 +356,9 @@ pub fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const 
         break :blk false;
     };
 
-    var names = req.names.keyIterator();
-    while (names.next()) |requested_name| {
+    for (req.names.items) |requested_name| {
         if (m.export_index_by_name) |map| {
-            if (map.get(requested_name.*)) |eb_idx| {
+            if (map.get(requested_name)) |eb_idx| {
                 const eb = m.export_bindings[eb_idx];
                 if (eb.import_record_index) |eb_rec| {
                     if (eb_rec == rec_i) {
@@ -384,14 +375,14 @@ pub fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const 
                 if (eb.kind == .re_export_star) continue;
                 const eb_rec = eb.import_record_index orelse continue;
                 if (eb_rec != rec_i) continue;
-                if (!std.mem.eql(u8, eb.exported_name, requested_name.*)) continue;
+                if (!std.mem.eql(u8, eb.exported_name, requested_name)) continue;
                 switch (eb.kind) {
                     .re_export, .re_export_namespace => return true,
                     .local, .re_export_star => {},
                 }
             }
         }
-        if (has_star_for_rec and !nameHasDirectNonStarExport(m, requested_name.*)) return true;
+        if (has_star_for_rec and !nameHasDirectNonStarExport(m, requested_name)) return true;
     }
     return false;
 }
