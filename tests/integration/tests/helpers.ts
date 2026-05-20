@@ -1,5 +1,14 @@
 import { spawn } from 'bun';
-import { mkdtemp, rm, writeFile, mkdir, symlink, realpath, readFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  rm,
+  writeFile,
+  mkdir,
+  symlink,
+  realpath,
+  readFile,
+  readdir,
+} from 'node:fs/promises';
 import { readFileSync, statSync, openSync, closeSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -293,6 +302,20 @@ export async function runZntc(
 export async function sha256OfFile(filePath: string): Promise<{ hash: string; size: number }> {
   const buf = await readFile(filePath);
   return { hash: createHash('sha256').update(buf).digest('hex'), size: buf.byteLength };
+}
+
+/// 디렉토리 내 모든 파일을 path 사전순으로 정렬해 SHA256+size 수집. 결정성 게이트 / outdir
+/// 모드 결과 비교용. recursive 탐색, withFileTypes 로 stat 호출 제거, Promise.all 병렬 hash.
+export async function dirContentsHash(
+  dir: string,
+): Promise<Array<{ path: string; hash: string; size: number }>> {
+  const dirents = await readdir(dir, { recursive: true, withFileTypes: true });
+  const files = dirents
+    .filter((d) => d.isFile())
+    .map((d) => relative(dir, join(d.parentPath, d.name)))
+    .sort();
+  const hashes = await Promise.all(files.map((f) => sha256OfFile(join(dir, f))));
+  return files.map((path, i) => ({ path, ...hashes[i] }));
 }
 
 /// fixture 생성 → ZNTC 실행 → 자동 cleanup 한 번에 묶는 헬퍼. caller 의 try/finally
