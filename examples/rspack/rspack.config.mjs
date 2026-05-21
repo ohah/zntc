@@ -7,8 +7,10 @@ import { rspack } from "@rspack/core";
 const require = createRequire(import.meta.url);
 const zntcLoader = require.resolve("@zntc/rspack-loader");
 
+const isProd = process.env.NODE_ENV === "production";
+
 export default {
-  mode: "development",
+  mode: isProd ? "production" : "development",
   // zntc-loader 의 소스맵(원본 .tsx → 변환 JS)을 rspack 이 이어붙이게 한다.
   // 미지정 시 DevTools 가 변환 결과(_jsx(...))를 원본으로 보여준다.
   devtool: "source-map",
@@ -20,6 +22,7 @@ export default {
     rules: [
       {
         test: /\.[jt]sx?$/,
+        exclude: /node_modules/,
         loader: zntcLoader,
         options: {
           transpileOptions: {
@@ -33,8 +36,4 @@ export default {
     ],
   },
   plugins: [new rspack.HtmlRspackPlugin({ template: "./index.html" })],
-  devServer: {
-    host: "0.0.0.0",
-    port: 12308,
-  },
 };
