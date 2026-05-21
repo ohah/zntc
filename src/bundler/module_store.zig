@@ -122,31 +122,13 @@ pub const PersistentModuleStore = struct {
                 .module = cached_module,
                 .import_specifiers = specs,
             }) catch {
-                if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
-                if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
-                if (cached_module.alias_table) |*t| t.deinit();
-                if (cached_module.export_index_by_name) |*m| m.deinit(self.allocator);
-                for (cached_module.resolved_deps.items) |dep| {
-                    self.allocator.free(dep.path);
-                    if (dep.resolve_dir) |dir| self.allocator.free(dir);
-                }
-                cached_module.resolved_deps.deinit(self.allocator);
-                for (specs) |s| self.allocator.free(s);
-                self.allocator.free(specs);
+                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs };
+                self.freeCachedModule(&orphan);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
-                if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
-                if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
-                if (cached_module.alias_table) |*t| t.deinit();
-                if (cached_module.export_index_by_name) |*m| m.deinit(self.allocator);
-                for (cached_module.resolved_deps.items) |dep| {
-                    self.allocator.free(dep.path);
-                    if (dep.resolve_dir) |dir| self.allocator.free(dir);
-                }
-                cached_module.resolved_deps.deinit(self.allocator);
-                for (specs) |s| self.allocator.free(s);
-                self.allocator.free(specs);
+                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs };
+                self.freeCachedModule(&orphan);
                 return;
             };
 
@@ -156,17 +138,8 @@ pub const PersistentModuleStore = struct {
                 .import_specifiers = specs,
             }) catch {
                 self.allocator.free(key);
-                if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
-                if (cached_module.resolve_dir) |dir| self.allocator.free(dir);
-                if (cached_module.alias_table) |*t| t.deinit();
-                if (cached_module.export_index_by_name) |*m| m.deinit(self.allocator);
-                for (cached_module.resolved_deps.items) |dep| {
-                    self.allocator.free(dep.path);
-                    if (dep.resolve_dir) |dir| self.allocator.free(dir);
-                }
-                cached_module.resolved_deps.deinit(self.allocator);
-                for (specs) |s| self.allocator.free(s);
-                self.allocator.free(specs);
+                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs };
+                self.freeCachedModule(&orphan);
             };
         }
     }
