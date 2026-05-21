@@ -109,7 +109,7 @@ Vite 의 esbuild transform 단계가 ZNTC 로 교체되어 TS / JSX / Flow / 1st
 npx @zntc/init
 ```
 
-기존 RN CLI 앱의 `start` / `bundle:*` 스크립트를 ZNTC 로 교체합니다 (Metro fallback 은 보존). 자세한 절차는 [React Native 가이드](https://ohah.github.io/zntc/guides/react-native/).
+기존 RN CLI 앱의 `start` / `bundle:*` 스크립트를 ZNTC 로 교체합니다 (Metro fallback 은 보존). 자세한 절차는 [React Native 가이드](https://ohah.github.io/zntc/guides/react-native/)와 [`zntc.config.ts` 예시](./docs/CONFIG.md#react-native-config-예제)를 참고합니다.
 
 ## Features
 

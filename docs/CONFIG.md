@@ -95,6 +95,175 @@ defineConfig(({ command, mode, env }) => ({
 | `mode`    | `--mode <name>` 명시값. 미지정 시 command 기본 (`serve`/`watch` → `"development"`, 그 외 → `"production"`)     |
 | `env`     | `process.env` + `.env*` 머지 (shell env 가 `.env` 를 override — Vite/dotenv 16+ 일치)                          |
 
+## `defineConfig` 예제
+
+`defineConfig` 는 런타임 변환 없이 입력 객체를 그대로 반환하는 identity helper 다. 목적은
+`zntc.config.{ts,js}` 에서 타입 체크와 자동완성을 얻는 것이다.
+
+### 기본 객체 config
+
+```ts
+// zntc.config.ts
+import { defineConfig } from '@zntc/core';
+
+export default defineConfig({
+  entryPoints: ['src/index.ts'],
+  outfile: 'dist/index.js',
+  format: 'esm',
+  sourcemap: true,
+});
+```
+
+### 개발 / 릴리즈 분기
+
+```ts
+// zntc.config.ts
+import { defineConfig } from '@zntc/core';
+
+export default defineConfig(({ command, mode, env }) => {
+  const production = command === 'bundle' && mode === 'production';
+
+  return {
+    entryPoints: ['src/index.ts'],
+    outdir: 'dist',
+    format: production ? 'esm' : 'cjs',
+    minify: production,
+    define: {
+      __APP_ENV__: JSON.stringify(env.ZNTC_APP_ENV ?? mode),
+    },
+  };
+});
+```
+
+같은 디렉터리에 `zntc.config.production.ts` 처럼 mode 별 config 를 두면 base
+`zntc.config.ts` 위에 shallow merge 된다. 배열은 concat 하지 않고 mode 파일 값이
+base 값을 대체한다.
+
+## React Native config 예제
+
+RN 은 개발 서버와 릴리즈 번들의 관심사가 다르다. 개발 서버에는 `server.*`,
+`dev: true`, client log forwarding 같은 설정이 필요하고, 릴리즈 번들은 보통
+RN CLI/Gradle/Xcode 가 넘기는 `--dev false`, `--minify true`, `--bundle-output`
+같은 flag 가 최종값을 결정한다. 따라서 하나의 `zntc.config.ts` 를 쓰되,
+`command` / `mode` 로 dev-only 값을 좁히는 형태를 권장한다.
+
+```ts
+// zntc.config.ts
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from '@zntc/core';
+
+const projectRoot = dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig(({ command, mode }) => {
+  const production = command === 'bundle' && mode === 'production';
+
+  return {
+    root: projectRoot,
+    // RN dev server 는 Metro 형태의 `entry` 를 읽고,
+    // bundle/build 경로는 `entryPoints` 또는 CLI positional entry 를 쓴다.
+    entry: 'index.js',
+    entryPoints: ['index.js'],
+    dev: !production,
+    minify: production,
+    resolver: {
+      // 현재 platform suffix 뒤에 .native.* fallback 을 함께 허용한다.
+      platforms: ['android', 'ios', 'native'],
+    },
+    transformer: {
+      // @react-native/metro-config 의 RN 기본값과 맞춘다.
+      inlineRequires: true,
+    },
+    server: {
+      port: 8081,
+      host: 'localhost',
+      useGlobalHotkey: true,
+      forwardClientLogs: true,
+    },
+  };
+});
+```
+
+`transformer.babel` 은 기본 설정이 아니다. ZNTC 가 TS/Flow/RN preset/worklets 를
+native transform 으로 처리하므로, 앱이 별도의 Babel plugin/preset 을 실제로 요구할 때만
+아래처럼 추가한다.
+
+```ts
+export default defineConfig({
+  transformer: {
+    babel: {
+      plugins: ['babel-plugin-macros'],
+    },
+  },
+});
+```
+
+`serializer.polyfills` / `serializer.prelude` 도 빈 배열을 넣을 필요가 없다. 실제로
+entry 전에 실행해야 하는 추가 모듈이 있을 때만 넣으면 preset 의 RN polyfill 뒤에
+이어 붙는다.
+
+### RN monorepo 예제
+
+```ts
+// apps/mobile/zntc.config.ts
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from '@zntc/core';
+
+const require = createRequire(import.meta.url);
+const projectRoot = dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = resolve(projectRoot, '../..');
+
+export default defineConfig(({ command, mode }) => {
+  const production = command === 'bundle' && mode === 'production';
+
+  return {
+    root: projectRoot,
+    entry: 'index.js',
+    entryPoints: ['index.js'],
+    dev: !production,
+    minify: production,
+    watchFolders: [workspaceRoot],
+    preserveSymlinks: true,
+    resolveSymlinkSiblings: true,
+    resolver: {
+      nodeModulesPaths: [
+        resolve(projectRoot, 'node_modules'),
+        resolve(workspaceRoot, 'node_modules'),
+      ],
+      sourceExts: ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs', '.json', '.svg'],
+      assetExts: ['.bmp', '.gif', '.jpg', '.jpeg', '.png', '.webp', '.avif', '.ico'],
+      platforms: ['android', 'ios', 'native'],
+      resolveRequest(context, moduleName, platform) {
+        if (moduleName === 'redux-saga') {
+          // Metro config 에서도 package.json module field 를 피하려는 경우
+          // 같은 방식으로 CJS entry 를 고정한다.
+          const resolved = require.resolve(moduleName);
+          return context.resolveRequest(context, resolved, platform);
+        }
+
+        return context.resolveRequest(context, moduleName, platform);
+      },
+    },
+    transformer: {
+      inlineRequires: true,
+    },
+    server: {
+      port: 8081,
+      host: 'localhost',
+      useGlobalHotkey: true,
+      forwardClientLogs: true,
+    },
+  };
+});
+```
+
+이 예시의 `preserveSymlinks` 는 pnpm workspace 의 logical path 를 유지하고,
+`resolveSymlinkSiblings` 는 symlink 된 package 의 realpath 주변 dependency 를 한 번 더
+찾기 위한 fallback 이다. 둘은 서로 다른 옵션이지만 pnpm/RN monorepo 에서는 보통 함께
+켠다.
+
 ## `.env` 파일 자동 로드
 
 CLI 가 항상 자동 호출 (별도 flag 불필요).
