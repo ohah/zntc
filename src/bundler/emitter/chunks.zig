@@ -104,6 +104,45 @@ pub fn emitChunks(
         outputs.deinit(allocator);
     }
 
+    // 통합(non-split) 경로와 동일하게 statement-level export DCE 를 splitting 경로에도
+    // 적용한다. `generateChunks` 는 shaker 로 *모듈 단위* 포함 여부만 거르므로,
+    // 포함된 모듈 안의 미사용 export(예: 사용 안 한 `export function`) 와 그 종속
+    // top-level 선언은 emit 까지 살아남는다. 그 미사용 export 가 모듈 단위로 이미
+    // 제거된 cross-module import(예: default import)를 참조하면 `X is not defined`
+    // 런타임 크래시가 난다. shaker(=linker.tree_shaker)와 per-module used_export_names
+    // 를 emitModule 에 전달해 emitter.zig 의 statement_shaker 게이트를 활성화한다.
+    const shaker: ?*const TreeShaker = if (linker) |l| l.tree_shaker else null;
+    var used_names_by_modidx: []UsedNamesEntry = &.{};
+    defer if (used_names_by_modidx.len > 0) {
+        for (used_names_by_modidx) |un| allocator.free(un.names);
+        allocator.free(used_names_by_modidx);
+    };
+    if (shaker) |s| {
+        // module index → *const Module (희소 그래프 대비 별도 슬라이스로 dense 화).
+        var mod_ptrs: std.ArrayList(*const Module) = .empty;
+        defer mod_ptrs.deinit(allocator);
+        var idx_it = graph.modulesIterator();
+        while (idx_it.next()) |m| try mod_ptrs.append(allocator, m);
+        const computed = try computeAllUsedNames(allocator, mod_ptrs.items, graph, s);
+        defer allocator.free(computed); // names 슬라이스는 by_modidx 로 이동
+        used_names_by_modidx = try allocator.alloc(UsedNamesEntry, module_count);
+        for (used_names_by_modidx) |*e| e.* = .{ .names = &.{}, .all_used = true };
+        for (mod_ptrs.items, 0..) |m, i| {
+            const mi = m.index.toU32();
+            if (mi >= module_count) continue;
+            // `export * from "./this"` source 는 cross-chunk export 목록이 모든 export
+            // 이름을 over-approx 로 포함한다. emit DCE 로 그 export 선언을 지우면 codegen
+            // 의 `export { ... }` 절과 어긋나 Node `Export X is not defined` SyntaxError.
+            // 보수적으로 all_used (DCE 미적용) — over-include 는 correctness-safe.
+            if (s.isReExportStarTarget(mi)) {
+                allocator.free(computed[i].names);
+                used_names_by_modidx[mi] = .{ .names = &.{}, .all_used = true };
+            } else {
+                used_names_by_modidx[mi] = computed[i];
+            }
+        }
+    }
+
     // 청크를 exec_order 순으로 정렬하여 결정론적 출력 순서 보장.
     // 엔트리 청크가 먼저, 공통 청크가 나중에 오도록 정렬한다.
     const sorted_indices = try allocator.alloc(usize, chunk_graph.chunkCount());
@@ -538,14 +577,18 @@ pub fn emitChunks(
             // IIFE splitting: emitModule 에 wrapped `return{}` 억제 플래그 전달
             // (factory 가 함수 스코프 제공, export 는 emitCjsEntryExports/
             // xchunk_exports 가 담당). iife_emit_opts 는 빌드당 1회 복사.
+            const mod_used_names: ?[]const []const u8 = if (mi < used_names_by_modidx.len and !used_names_by_modidx[mi].all_used)
+                used_names_by_modidx[mi].names
+            else
+                null;
             const raw_code = try emitModule(
                 allocator,
                 m,
                 if (reg_split) &iife_emit_opts else options,
                 linker,
                 is_entry,
-                null,
-                null,
+                mod_used_names,
+                shaker,
                 null,
                 if (chunk_sm != null) &module_mappings else null,
                 if (chunk_sm != null) &module_names else null,
