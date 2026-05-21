@@ -266,9 +266,10 @@ jobs:
           echo "dist-tag=${DIST_TAG}" >> "$GITHUB_OUTPUT"
           echo "Will publish with --tag ${DIST_TAG}"
 
-      # release.ts 의 npm publish 가 인증을 읽도록 $HOME/.npmrc 에 리터럴 토큰을 쓴다
-      # (값은 redirect 라 로그 비노출 + GitHub secret 마스킹). whoami 로 16개 publish
-      # 전에 인증을 사전 검증 — 실패 시 여기서 명확히 중단.
+      # release.ts 의 bun publish 가 인증을 읽도록 $HOME/.npmrc 에 리터럴 토큰을 쓴다
+      # (값은 redirect 라 로그 비노출 + GitHub secret 마스킹). registry-url 을 빼서
+      # NPM_CONFIG_USERCONFIG 가 이 파일을 가리지 않게 했고, whoami 로 16개 publish 전에
+      # 인증을 사전 검증한다 — 실패 시 여기서 명확히 중단.
       - name: Publish via release.ts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,6 +1,6 @@
 {
   "name": "@zntc/web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ZNTC web platform — dev server + HMR overlay + postcss/sass pipeline + dev controller",
   "keywords": [
     "bundler",

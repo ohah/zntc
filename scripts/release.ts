@@ -187,10 +187,10 @@ async function main() {
     console.log(`\n--- publishing ${t.name}@${t.version} ---`);
     const publishArgs = ['publish', '--access', 'public'];
     if (tag) publishArgs.push('--tag', tag);
-    // npm publish 사용 — `bun publish` 는 setup-node/.npmrc 의 토큰 인증을 못 읽어
-    // CI 에서 "missing authentication" 으로 실패한다. npm 은 .npmrc(_authToken)를
-    // 표준대로 읽어 인증. prepublishOnly hook(bun run build)은 npm 도 그대로 실행.
-    const res = spawnSync('npm', publishArgs, {
+    // bun publish — `workspace:*` 를 실제 버전으로 자동 변환한다(npm 은 미지원). 인증은
+    // release.yml 이 $HOME/.npmrc 에 리터럴 토큰을 쓰고 setup-node registry-url 을 빼서
+    // (NPM_CONFIG_USERCONFIG 미설정) bun 이 기본 .npmrc 를 읽도록 해 해결.
+    const res = spawnSync('bun', publishArgs, {
       cwd: resolve(repoRoot, t.dir),
       stdio: 'inherit',
     });
