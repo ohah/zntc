@@ -857,19 +857,69 @@ pub fn matchPackageSubPath(pattern: []const u8, specifier: []const u8) bool {
 }
 
 pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
-    if (std.mem.indexOf(u8, pattern, "*")) |star_pos| {
-        const prefix = pattern[0..star_pos];
-        const suffix = pattern[star_pos + 1 ..];
-
-        if (!std.mem.startsWith(u8, text, prefix)) return false;
-        if (text.len < prefix.len + suffix.len) return false;
-        if (!std.mem.endsWith(u8, text, suffix)) return false;
-
-        // * 가 매칭한 부분에 / 가 있으면 불매칭
-        const matched = text[prefix.len .. text.len - suffix.len];
-        return std.mem.indexOf(u8, matched, "/") == null;
+    if (std.mem.indexOfScalar(u8, pattern, '{')) |open| {
+        if (std.mem.indexOfScalarPos(u8, pattern, open + 1, '}')) |close| {
+            const prefix = pattern[0..open];
+            const body = pattern[open + 1 .. close];
+            const suffix = pattern[close + 1 ..];
+            var rest = body;
+            while (true) {
+                const comma = std.mem.indexOfScalar(u8, rest, ',');
+                const alt = if (comma) |idx| rest[0..idx] else rest;
+                var expanded_buf: [4096]u8 = undefined;
+                if (prefix.len + alt.len + suffix.len <= expanded_buf.len) {
+                    @memcpy(expanded_buf[0..prefix.len], prefix);
+                    @memcpy(expanded_buf[prefix.len .. prefix.len + alt.len], alt);
+                    @memcpy(expanded_buf[prefix.len + alt.len .. prefix.len + alt.len + suffix.len], suffix);
+                    if (matchGlob(expanded_buf[0 .. prefix.len + alt.len + suffix.len], text)) return true;
+                }
+                if (comma) |idx| {
+                    rest = rest[idx + 1 ..];
+                } else break;
+            }
+            return false;
+        }
     }
 
-    // 글롭 없으면 exact match
-    return std.mem.eql(u8, pattern, text);
+    return matchGlobNoBrace(pattern, text);
+}
+
+fn matchGlobNoBrace(pattern: []const u8, text: []const u8) bool {
+    if (pattern.len == 0) return text.len == 0;
+
+    if (std.mem.startsWith(u8, pattern, "**")) {
+        var rest = pattern[2..];
+        if (std.mem.startsWith(u8, rest, "/")) {
+            rest = rest[1..];
+            if (matchGlobNoBrace(rest, text)) return true;
+            for (text, 0..) |ch, i| {
+                if (ch == '/' and matchGlobNoBrace(rest, text[i + 1 ..])) return true;
+            }
+            return false;
+        }
+
+        var i: usize = 0;
+        while (i <= text.len) : (i += 1) {
+            if (matchGlobNoBrace(rest, text[i..])) return true;
+        }
+        return false;
+    }
+
+    if (pattern[0] == '*') {
+        const rest = pattern[1..];
+        var i: usize = 0;
+        while (i <= text.len) : (i += 1) {
+            if (matchGlobNoBrace(rest, text[i..])) return true;
+            if (i == text.len or text[i] == '/') break;
+        }
+        return false;
+    }
+
+    if (pattern[0] == '?') {
+        if (text.len == 0 or text[0] == '/') return false;
+        return matchGlobNoBrace(pattern[1..], text[1..]);
+    }
+
+    if (text.len == 0 or pattern[0] != text[0]) return false;
+    return matchGlobNoBrace(pattern[1..], text[1..]);
 }

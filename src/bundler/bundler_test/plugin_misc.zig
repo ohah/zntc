@@ -3614,6 +3614,72 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
 }
 
+test "react_native inlineRequires: package sideEffects pattern keeps static ESM init eager" {
+    // 패키지가 sideEffects 배열로 선언한 파일은 top-level 초기화 순서가 의미 있다.
+    // Metro도 이 신호를 보고 inlineRequires lazy 대상으로 보지 않으므로, ZNTC도
+    // named import 값 사용 지점으로 미루지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { result } from './node_modules/worklets/specs';
+        \\globalThis.__zntcWorkletsResult = result;
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/package.json",
+        \\{"name":"worklets","main":"./index.js","sideEffects":["./**/runtimeKind.{js,ts}"]}
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/specs.js",
+        \\import { RuntimeKind } from './runtimeKind';
+        \\import NativeModule from './native-module';
+        \\export const result = globalThis.__RUNTIME_KIND === RuntimeKind.ReactNative ? NativeModule : null;
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/runtimeKind.ts",
+        \\export const RuntimeKind = { ReactNative: 1 };
+        \\if (globalThis.__RUNTIME_KIND === undefined) {
+        \\  globalThis.__RUNTIME_KIND = RuntimeKind.ReactNative;
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/native-module.js",
+        \\export default 'native-module';
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const runtime_kind = try absPath(&tmp, "node_modules/worklets/runtimeKind.ts");
+    defer std.testing.allocator.free(runtime_kind);
+    const specs = try absPath(&tmp, "node_modules/worklets/specs.js");
+    defer std.testing.allocator.free(specs);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = false,
+        .dev_mode = true,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const eager_runtime_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn();}});",
+        .{runtime_kind},
+    );
+    defer std.testing.allocator.free(eager_runtime_init);
+
+    const specs_pos = std.mem.indexOf(u8, result.output, specs) orelse return error.SpecsModuleMissing;
+    const specs_tail = result.output[specs_pos..];
+    const eager_pos = std.mem.indexOf(u8, specs_tail, eager_runtime_init) orelse return error.EagerRuntimeInitMissing;
+    const compare_pos = std.mem.indexOf(u8, specs_tail, "globalThis.__RUNTIME_KIND ===") orelse return error.RuntimeKindCompareMissing;
+
+    try std.testing.expect(eager_pos < compare_pos);
+    try std.testing.expect(std.mem.indexOf(u8, specs_tail, "globalThis.__RUNTIME_KIND === (__zntc_guarded") == null);
+}
+
 test "react_native inlineRequires: strict order still defers named CJS imports" {
     // Metro inlineRequires 는 CJS named import 도 값 사용 지점에서 require 한다.
     // strictExecutionOrder 가 켜져도 이 named import 를 선행 실행하면 RN app 초기
