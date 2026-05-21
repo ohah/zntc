@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const http = std.http;
 const mime = @import("mime.zig");
 const FileWatcher = @import("file_watcher.zig").FileWatcher;
@@ -38,6 +39,9 @@ pub const DevServer = struct {
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// event_seq fallback 보호용 — 32-bit 타깃은 64-bit atomic 미지원이라
+    /// `loadSeq`/`nextSeq`가 atomic 대신 이 mutex로 직렬화한다 (아래 헬퍼 참조).
+    seq_mutex: std.Thread.Mutex = .{},
     error_state: ErrorState = .{},
     /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -538,7 +542,7 @@ pub const DevServer = struct {
             if (has_css and !has_non_css) continue;
 
             // bundle_build_started 이벤트
-            const build_id = self.event_seq.load(.monotonic);
+            const build_id = self.loadSeq();
             {
                 var buf: [128]u8 = undefined;
                 if (std.fmt.bufPrint(&buf, "{{\"type\":\"bundle_build_started\",\"id\":\"{d}\"}}", .{build_id})) |json| {
@@ -849,7 +853,7 @@ pub const DevServer = struct {
                 },
                 else => {},
             }
-            const start_seq = self.event_seq.load(.monotonic);
+            const start_seq = self.loadSeq();
             std.Thread.sleep(duration_ms * std.time.ns_per_ms);
             const records = self.event_ring.snapshotSince(self.allocator, start_seq) catch {
                 try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[]\"}]}");
@@ -996,9 +1000,34 @@ pub const DevServer = struct {
     }
 
     /// 이벤트를 SSE 구독자 전원에 브로드캐스트.
+    /// event_seq 는 u64 라 32-bit 네이티브 타깃에서는 lock-free atomic 이 불가능하다
+    /// ("expected 32-bit integer type or smaller"). 64-bit & 멀티스레드일 때만 atomic 을
+    /// 쓰고, 그 외(32-bit 멀티스레드)는 mutex, single-thread 면 plain 접근으로 fallback —
+    /// profile.zig 의 useAtomicCounter 와 동일한 전략이다.
+    inline fn seqUsesAtomic() bool {
+        return !builtin.single_threaded and
+            !builtin.cpu.arch.isWasm() and
+            @bitSizeOf(u64) <= @bitSizeOf(usize);
+    }
+
+    fn loadSeq(self: *DevServer) u64 {
+        if (comptime seqUsesAtomic()) return self.event_seq.load(.monotonic);
+        if (comptime !builtin.single_threaded) self.seq_mutex.lock();
+        defer if (comptime !builtin.single_threaded) self.seq_mutex.unlock();
+        return self.event_seq.raw;
+    }
+
+    fn nextSeq(self: *DevServer) u64 {
+        if (comptime seqUsesAtomic()) return self.event_seq.fetchAdd(1, .monotonic) + 1;
+        if (comptime !builtin.single_threaded) self.seq_mutex.lock();
+        defer if (comptime !builtin.single_threaded) self.seq_mutex.unlock();
+        self.event_seq.raw += 1;
+        return self.event_seq.raw;
+    }
+
     /// `data_json`은 유효한 JSON 오브젝트 문자열이어야 한다 (이스케이프 호출부 책임).
     pub fn publishEvent(self: *DevServer, event_type: []const u8, data_json: []const u8) void {
-        const seq = self.event_seq.fetchAdd(1, .monotonic) + 1;
+        const seq = self.nextSeq();
         self.event_ring.push(seq, event_type, data_json);
         self.sse_clients.broadcast(event_type, data_json);
     }

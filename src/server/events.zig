@@ -184,7 +184,7 @@ pub const EventRing = struct {
     pub fn deinit(self: *EventRing) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const count = @min(self.head, capacity);
+        const count: usize = @intCast(@min(self.head, capacity));
         for (self.items[0..count]) |*r| {
             self.allocator.free(r.event_type);
             self.allocator.free(r.data_json);
@@ -194,7 +194,9 @@ pub const EventRing = struct {
     pub fn push(self: *EventRing, seq: u64, event_type: []const u8, data_json: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const idx = self.head % capacity;
+        // head 는 u64 라 32-bit 타깃에서 배열 인덱스(usize)로 직접 못 쓴다.
+        // `% capacity`(256) 결과는 항상 usize 범위 → @intCast 안전.
+        const idx: usize = @intCast(self.head % capacity);
         if (self.head >= capacity) {
             self.allocator.free(self.items[idx].event_type);
             self.allocator.free(self.items[idx].data_json);
@@ -224,7 +226,7 @@ pub const EventRing = struct {
         }
         var i: u64 = start;
         while (i < total) : (i += 1) {
-            const src = self.items[i % capacity];
+            const src = self.items[@as(usize, @intCast(i % capacity))];
             if (src.seq <= since_seq) continue;
             try out.append(alloc, .{
                 .seq = src.seq,
