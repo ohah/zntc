@@ -3,6 +3,8 @@ const zntc_lib = @import("zntc_lib");
 const bundler_mod = zntc_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const transformer_mod = zntc_lib.transformer.transformer;
+const JsxRuntime = zntc_lib.codegen.codegen.JsxRuntime;
+const JsxConfig = zntc_lib.app.build.JsxConfig;
 const common = @import("common.zig");
 const options_mod = @import("options.zig");
 const result_napi_mod = @import("result.zig");
@@ -173,9 +175,9 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
     // options.zig(buildSync)와 동일하게 strict throw — silent classic fallback 은
     // 사용자 typo 디버깅을 어렵게 한다. 미지정(null)은 JsxConfig default 그대로.
     const jsx_str = ownStr(env, opts_obj, "jsx", &owned_strings);
-    var jsx_cfg = zntc_lib.app.build.JsxConfig{};
+    var jsx_cfg = JsxConfig{};
     if (jsx_str) |s| {
-        jsx_cfg.runtime = zntc_lib.codegen.codegen.JsxRuntime.fromString(s) orelse
+        jsx_cfg.runtime = JsxRuntime.fromString(s) orelse
             return throwError(env, "invalid 'jsx' option (expected automatic / automatic-dev / classic / preserve)");
     }
     if (ownStr(env, opts_obj, "jsxImportSource", &owned_strings)) |s| jsx_cfg.import_source = s;
