@@ -23,6 +23,13 @@ test "matchGlob: wildcard" {
     try std.testing.expect(!matchGlob("@mui/*", "@mui/icons/filled"));
 }
 
+test "matchGlob: doublestar and brace alternates" {
+    try std.testing.expect(matchGlob("**/runtimeKind.{js,ts}", "src/runtimeKind.ts"));
+    try std.testing.expect(matchGlob("**/runtimeKind.{js,ts}", "lib/module/runtimeKind.js"));
+    try std.testing.expect(matchGlob("**/runtimeKind.{js,ts}", "runtimeKind.ts"));
+    try std.testing.expect(!matchGlob("**/runtimeKind.{js,ts}", "src/runtimeKind.jsx"));
+}
+
 test "matchGlob: node: prefix" {
     try std.testing.expect(matchGlob("node:*", "node:fs"));
     try std.testing.expect(matchGlob("node:*", "node:path"));

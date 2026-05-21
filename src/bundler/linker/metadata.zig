@@ -47,6 +47,7 @@ fn canDeferStaticImportForInlineRequires(
     exported_locals: *const std.StringHashMap(void),
 ) bool {
     if (target_mod.uses_top_level_await) return false;
+    if (target_mod.side_effects and target_mod.side_effects_user_defined) return false;
 
     var saw_binding = false;
     for (m.import_bindings) |ib| {
@@ -776,6 +777,8 @@ pub fn buildMetadataForAst(
                     !import_is_namespace_export and
                     !target_mod.uses_top_level_await and
                     !value_init_mod.uses_top_level_await and
+                    !(target_mod.side_effects and target_mod.side_effects_user_defined) and
+                    !(value_init_mod.side_effects and value_init_mod.side_effects_user_defined) and
                     !exported_locals.contains(m.importBindingLocalName(ib));
                 if (lazy_esm_import) {
                     lazy_esm_import_mod = value_init_mod;

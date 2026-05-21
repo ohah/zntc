@@ -776,6 +776,25 @@ test "matchSideEffectsPatterns: exact path match" {
     ));
 }
 
+test "matchSideEffectsPatterns: react-native-worklets style brace pattern" {
+    const patterns = &[_][]const u8{"./**/runtimeKind.{js,ts}"};
+    try std.testing.expect(ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/react-native-worklets/src/runtimeKind.ts",
+        "/app/node_modules/react-native-worklets",
+        patterns,
+    ));
+    try std.testing.expect(ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/react-native-worklets/lib/module/runtimeKind.js",
+        "/app/node_modules/react-native-worklets",
+        patterns,
+    ));
+    try std.testing.expect(!ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/react-native-worklets/src/runtimeKind.jsx",
+        "/app/node_modules/react-native-worklets",
+        patterns,
+    ));
+}
+
 test "matchSideEffectsPatterns: no patterns = no side effects" {
     const patterns = &[_][]const u8{};
     try std.testing.expect(!ModuleGraph.matchSideEffectsPatterns(
