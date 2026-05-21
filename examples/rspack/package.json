@@ -7,7 +7,7 @@
     "predev": "bun run --cwd ../../packages/core build:js && bun run --cwd ../../packages/rspack-loader build",
     "dev": "rspack serve",
     "prebuild": "bun run --cwd ../../packages/core build:js && bun run --cwd ../../packages/rspack-loader build",
-    "build": "rspack build"
+    "build": "NODE_ENV=production rspack build"
   },
   "dependencies": {
     "react": "^19.0.0",
