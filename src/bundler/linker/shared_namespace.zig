@@ -40,6 +40,8 @@ pub fn nsRewriteDisabled() bool {
 ///
 /// `force_inline`: caller 가 isNamespaceUsedAsValue / exported_locals 등으로 결정한
 /// 강제 inline 신호. shadow 충돌은 함수 안에서 자체 감지하여 ns_inline_list 를 활성화.
+/// `force_target_init`: caller preamble 이 target namespace 모듈 init 을 보장하지 못하는
+/// named-import-of-namespace-export 경로에서 member rewrite 값에 target init 을 붙인다.
 pub fn registerNamespaceRewrites(
     self: *const Linker,
     ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
@@ -49,6 +51,7 @@ pub fn registerNamespaceRewrites(
     /// 를 공유하도록 caller 가 owned. `cjs_var_cache` 와 같은 패턴 (`metadata.zig`).
     ns_target_to_var: *std.AutoHashMap(u32, []const u8),
     force_inline: bool,
+    force_target_init: bool,
     importer_mod_idx: u32,
     symbol_id: u32,
     target_mod_idx: u32,
@@ -119,7 +122,7 @@ pub fn registerNamespaceRewrites(
     // dev lazy runtime 에서는 access site 가 package entry 도 깨워야 하므로 target init 을
     // 포함한다. release 는 module preamble 이 target init 을 이미 보장하므로 source init 만
     // rewrite value 에 붙인다.
-    const target_init: ?[]const u8 = if (self.dev_mode)
+    const target_init: ?[]const u8 = if (self.dev_mode or force_target_init)
         try allocEsmInitExprForModuleIndex(self, target_mod_idx)
     else
         null;

@@ -2,16 +2,29 @@
 // `(context, moduleName, platform)` 그대로 호출. 위임 시 sentinel throw 로 ZNTC
 // 기본 해석기 fallthrough (Metro 의 `context.resolveRequest()` 호출과 동등).
 
+import { createRequire } from 'node:module';
+import { dirname, isAbsolute, resolve } from 'node:path';
+
 import type { ZntcPlugin } from '@zntc/core';
 
 import type { CustomResolver, MetroPlatform } from '../metro-resolver-types.ts';
 
 /** ZNTC 기본 해석기로 위임 위해 사용자 resolver 가 던지는 sentinel error message. */
 const DELEGATE_TO_DEFAULT_SENTINEL = '__ZNTC_RN_DELEGATE_TO_DEFAULT__';
+const nodeRequire = createRequire(import.meta.url);
 
 export interface MetroResolveRequestOptions {
   resolveRequest: CustomResolver;
   platform: MetroPlatform;
+}
+
+function resolveFallbackRequest(moduleName: string, originModulePath: string): string {
+  if (isAbsolute(moduleName)) return moduleName;
+
+  const baseDir = originModulePath ? dirname(originModulePath) : process.cwd();
+  if (moduleName.startsWith('.')) return resolve(baseDir, moduleName);
+
+  return nodeRequire.resolve(moduleName, { paths: [baseDir] });
 }
 
 export function createMetroResolveRequestPlugin(opts: MetroResolveRequestOptions): ZntcPlugin {
@@ -23,9 +36,16 @@ export function createMetroResolveRequestPlugin(opts: MetroResolveRequestOptions
     name: 'zntc:react-native:metro-resolve-request',
     setup(build) {
       build.onResolve({ filter: /.*/ }, (args) => {
-        // Default resolver 위임 함수 — Metro 의 `context.resolveRequest()` 동등.
-        // throw 시 ZNTC 가 catch 후 기본 해석 진행 (return null 과 동일 효과).
-        const fallbackResolver = (): never => {
+        // Default resolver 위임 함수 — 원래 요청 그대로면 ZNTC 기본 해석기로
+        // fallthrough, 사용자가 specifier 를 바꾸면 그 바뀐 값으로 해석한다.
+        const fallbackResolver: CustomResolver = (_context, moduleName) => {
+          if (moduleName !== args.path) {
+            return {
+              type: 'sourceFile',
+              filePath: resolveFallbackRequest(moduleName, args.importer ?? ''),
+            };
+          }
+
           throw new Error(DELEGATE_TO_DEFAULT_SENTINEL);
         };
         try {
@@ -33,7 +53,7 @@ export function createMetroResolveRequestPlugin(opts: MetroResolveRequestOptions
             {
               originModulePath: args.importer ?? '',
               platform: metroPlatform,
-              resolveRequest: fallbackResolver as never,
+              resolveRequest: fallbackResolver,
             },
             args.path,
             metroPlatform,
