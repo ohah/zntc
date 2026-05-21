@@ -21,7 +21,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "@zntc/core": "workspace:*",
     "@zntc/vite-plugin": "workspace:*",
-    "babel-plugin-react-compiler": "^19.0.0",
+    "babel-plugin-react-compiler": "^1.0.0",
     "typescript": "^6.0.3",
     "vite": "^6.0.0"
   }

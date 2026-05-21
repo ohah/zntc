@@ -42,6 +42,8 @@ packages/rspack-loader/dist/
 packages/vite-plugin/dist/
 examples/web/dist/
 examples/react-19-zntc/dist/
+examples/react-19-vite/dist/
+examples/rspack/dist/
 # 루트 cwd 에 떨어지는 임시 빌드 산출물 (NAPI 직접 호출 경로 / examples 빌드 leftover).
 /dist/
 

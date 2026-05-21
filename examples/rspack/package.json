@@ -1,0 +1,26 @@
+{
+  "name": "@zntc/example-rspack",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "bun run --cwd ../../packages/core build:js && bun run --cwd ../../packages/rspack-loader build",
+    "dev": "rspack serve",
+    "prebuild": "bun run --cwd ../../packages/core build:js && bun run --cwd ../../packages/rspack-loader build",
+    "build": "rspack build"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^2.0.1",
+    "@rspack/core": "^2.0.1",
+    "@rspack/dev-server": "^2.0.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@zntc/core": "workspace:*",
+    "@zntc/rspack-loader": "workspace:*",
+    "typescript": "^6.0.3"
+  }
+}

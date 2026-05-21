@@ -80,6 +80,25 @@
         "typescript": "^6.0.3",
       },
     },
+    "examples/react-19-vite": {
+      "name": "@zntc/example-react-19-vite",
+      "version": "0.0.0",
+      "dependencies": {
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+      "devDependencies": {
+        "@babel/core": "^7.27.0",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "@vitejs/plugin-react": "^5.0.0",
+        "@zntc/core": "workspace:*",
+        "@zntc/vite-plugin": "workspace:*",
+        "babel-plugin-react-compiler": "^1.0.0",
+        "typescript": "^6.0.3",
+        "vite": "^6.0.0",
+      },
+    },
     "examples/react-19-zntc": {
       "name": "@zntc/example-react-19-zntc",
       "version": "0.0.0",
@@ -394,6 +413,24 @@
         "babel-plugin-root-import": "^6.6.0",
         "react-native-svg-transformer": "^1.5.3",
         "typescript": "^5.8.3",
+      },
+    },
+    "examples/rspack": {
+      "name": "@zntc/example-rspack",
+      "version": "0.0.0",
+      "dependencies": {
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+      "devDependencies": {
+        "@rspack/cli": "^2.0.1",
+        "@rspack/core": "^2.0.1",
+        "@rspack/dev-server": "^2.0.1",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "@zntc/core": "workspace:*",
+        "@zntc/rspack-loader": "workspace:*",
+        "typescript": "^6.0.3",
       },
     },
     "examples/web": {
@@ -2233,6 +2270,10 @@
 
     "@rspack/core": ["@rspack/core@2.0.1", "", { "dependencies": { "@rspack/binding": "2.0.1" }, "peerDependencies": { "@module-federation/runtime-tools": "^0.24.1 || ^2.0.0", "@swc/helpers": ">=0.5.1" }, "optionalPeers": ["@module-federation/runtime-tools", "@swc/helpers"] }, "sha512-lgfZiExh8kDR/3obgi3RQKwKG5av1Xf5qDN1aVde777W9pbmx0Pqvrww1qtNvJ+gobEjbrrn5HEZWYGe0VLmcA=="],
 
+    "@rspack/dev-middleware": ["@rspack/dev-middleware@2.0.1", "", { "peerDependencies": { "@rspack/core": "^2.0.0-0" }, "optionalPeers": ["@rspack/core"] }, "sha512-cXSubf5/C+dvkWV2/+rGTtiZ93wSLd3OlTQhwMvsmsmGDdPlkYqIvQ+BTkOk9UCXxKIaF0DDYYmCpBeRRYJfJw=="],
+
+    "@rspack/dev-server": ["@rspack/dev-server@2.0.1", "", { "dependencies": { "@rspack/dev-middleware": "^2.0.1" }, "peerDependencies": { "@rspack/core": "^2.0.0-0", "selfsigned": "^5.0.0" }, "optionalPeers": ["selfsigned"] }, "sha512-N5sIdU9v6WhwPH6Ek8QCj4IMvGd8jA3ZW1NMAyHP1ezzKIr2/idcNV2zX5vbC6FJvOLRLww0rFjfKA+z4tshDA=="],
+
     "@rtsao/scc": ["@rtsao/scc@1.1.0", "", {}, "sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g=="],
 
     "@sec-ant/readable-stream": ["@sec-ant/readable-stream@0.4.1", "", {}, "sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg=="],
@@ -2931,7 +2972,11 @@
 
     "@zntc/example-module-federation": ["@zntc/example-module-federation@workspace:examples/module-federation"],
 
+    "@zntc/example-react-19-vite": ["@zntc/example-react-19-vite@workspace:examples/react-19-vite"],
+
     "@zntc/example-react-19-zntc": ["@zntc/example-react-19-zntc@workspace:examples/react-19-zntc"],
+
+    "@zntc/example-rspack": ["@zntc/example-rspack@workspace:examples/rspack"],
 
     "@zntc/example-web": ["@zntc/example-web@workspace:examples/web"],
 
@@ -6871,7 +6916,13 @@
 
     "@zntc/example-module-federation/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
 
+    "@zntc/example-react-19-vite/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
+
+    "@zntc/example-react-19-vite/vite": ["vite@6.4.2", "", { "dependencies": { "esbuild": "^0.25.0", "fdir": "^6.4.4", "picomatch": "^4.0.2", "postcss": "^8.5.3", "rollup": "^4.34.9", "tinyglobby": "^0.2.13" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0", "jiti": ">=1.21.0", "less": "*", "lightningcss": "^1.21.0", "sass": "*", "sass-embedded": "*", "stylus": "*", "sugarss": "*", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-2N/55r4JDJ4gdrCvGgINMy+HH3iRpNIz8K6SFwVsA+JbQScLiC+clmAxBgwiSPgcG9U15QmvqCGWzMbqda5zGQ=="],
+
     "@zntc/example-react-19-zntc/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
+
+    "@zntc/example-rspack/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
 
     "@zntc/example-web/react": ["react@19.2.5", "", {}, "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="],
 
