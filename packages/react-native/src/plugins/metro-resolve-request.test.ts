@@ -70,6 +70,15 @@ describe('createMetroResolveRequestPlugin', () => {
     expect(handler({ path: 'react', importer: '/abs/x' })).toBeNull();
   });
 
+  test('default resolver 위임 중 absolute specifier 로 교체하면 해당 path 반환', () => {
+    const resolver: CustomResolver = (ctx, _name, platform) =>
+      ctx.resolveRequest(ctx, '/abs/redux-saga-effects.cjs.js', platform);
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(handler({ path: 'redux-saga/effects', importer: '/abs/origin.ts' })).toEqual({
+      path: '/abs/redux-saga-effects.cjs.js',
+    });
+  });
+
   test('custom resolver 의 일반 throw 는 propagate', () => {
     const resolver: CustomResolver = () => {
       throw new Error('custom-error');

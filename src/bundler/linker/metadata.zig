@@ -462,11 +462,11 @@ pub fn buildMetadataForAst(
         }
 
         if (self.strict_execution_order and m.wrap_kind == .esm) {
-            // 정적 import의 평가 효과는 모든 importer 본문보다 먼저, 그리고 소스에
-            // 나타난 순서대로 발생해야 한다. 단, RN inlineRequires 가 값 사용 지점으로
-            // 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.
+            // 정적 import/export-from의 평가 효과는 모든 importer 본문보다 먼저, 그리고
+            // 소스에 나타난 순서대로 발생해야 한다. 단, RN inlineRequires 가 값 사용
+            // 지점으로 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.
             for (m.import_records, 0..) |rec, rec_index| {
-                if (rec.kind != .static_import and rec.kind != .side_effect) continue;
+                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_mod = self.graph.getModule(rec.resolved) orelse continue;
                 if (self.tree_shaker_active and !target_mod.is_included) continue;
@@ -746,6 +746,7 @@ pub fn buildMetadataForAst(
                 // lazy 화로 누락되어 Metro 와 다른 초기화 순서가 되는 것을 차단.
                 var value_init_mod = target_mod;
                 var value_init_mod_idx = canonical_mod;
+                var import_is_namespace_export = false;
                 if (resolved) |rb| {
                     const rb_idx = @intFromEnum(rb.canonical.module_index);
                     if (rb_idx != canonical_mod) {
@@ -753,6 +754,15 @@ pub fn buildMetadataForAst(
                             if (rb_mod.wrap_kind == .esm) {
                                 value_init_mod = rb_mod;
                                 value_init_mod_idx = @intCast(rb_idx);
+                            }
+                        }
+                    }
+                    const export_local = self.getExportLocalName(@intCast(@intFromEnum(rb.canonical.module_index)), rb.canonical.export_name) orelse rb.canonical.export_name;
+                    if (self.graph.getModule(rb.canonical.module_index)) |rb_mod| {
+                        for (rb_mod.import_bindings) |cib| {
+                            if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
+                                import_is_namespace_export = true;
+                                break;
                             }
                         }
                     }
@@ -767,6 +777,7 @@ pub fn buildMetadataForAst(
                     !is_helper_binding and
                     ib.kind == .named and
                     !ib.importsDefault() and
+                    !import_is_namespace_export and
                     !target_mod.uses_top_level_await and
                     !value_init_mod.uses_top_level_await and
                     !exported_locals.contains(m.importBindingLocalName(ib));
@@ -807,6 +818,7 @@ pub fn buildMetadataForAst(
                     &owned_nested_renames,
                     &ns_target_to_var,
                     force_inline,
+                    false,
                     module_index,
                     ns_sym_id,
                     @intCast(canonical_mod),
@@ -870,6 +882,7 @@ pub fn buildMetadataForAst(
                                                 &owned_nested_renames,
                                                 &ns_target_to_var,
                                                 nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(import_sym_id), module_index, ib.local_name),
+                                                false,
                                                 module_index,
                                                 @intCast(import_sym_id),
                                                 @intFromEnum(src),
@@ -900,6 +913,7 @@ pub fn buildMetadataForAst(
                                     &owned_nested_renames,
                                     &ns_target_to_var,
                                     nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(imp_sym), module_index, ib.local_name),
+                                    true,
                                     module_index,
                                     @intCast(imp_sym),
                                     @intCast(ns_target_mod),

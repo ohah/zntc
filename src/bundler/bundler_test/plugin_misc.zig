@@ -3789,6 +3789,73 @@ test "react_native inlineRequires: named re-export preserves package entry side 
     try std.testing.expect(std.mem.indexOf(u8, result.output, chained_lazy_init) != null);
 }
 
+test "react_native inlineRequires: export-star source side effects stay eager" {
+    // RNFirebase analytics 축소 재현:
+    // package entry가 export-star로 modular API와 namespaced 등록 모듈을 re-export한다.
+    // named getter만 lazy init하면 getAnalytics 함수는 있어도 getApp().analytics 등록이 없다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("analytics");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { getAnalytics } from './analytics';
+        \\globalThis.__zntcAnalyticsResult = getAnalytics().dataCollectionEnabled;
+    );
+    try writeFile(tmp.dir, "app.js",
+        \\export function getApp() {
+        \\  return globalThis.__zntcFirebaseApp;
+        \\}
+    );
+    try writeFile(tmp.dir, "analytics/index.js",
+        \\export * from './modular';
+        \\export * from './namespaced';
+        \\export { default } from './namespaced';
+    );
+    try writeFile(tmp.dir, "analytics/modular.js",
+        \\import { getApp } from '../app';
+        \\export function getAnalytics() {
+        \\  return getApp().analytics();
+        \\}
+    );
+    try writeFile(tmp.dir, "analytics/namespaced.js",
+        \\globalThis.__zntcFirebaseApp = {
+        \\  analytics() {
+        \\    return { dataCollectionEnabled: 'analytics-ready' };
+        \\  },
+        \\};
+        \\export const firebase = {};
+        \\export default {};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const namespaced = try absPath(&tmp, "analytics/namespaced.js");
+    defer std.testing.allocator.free(namespaced);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = true,
+        .dev_mode = true,
+        .entry_error_guard = true,
+        .strict_execution_order = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const eager_namespaced_init = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn();}});",
+        .{namespaced},
+    );
+    defer std.testing.allocator.free(eager_namespaced_init);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, eager_namespaced_init) != null);
+}
+
 test "react_native inlineRequires: namespace member rewrite initializes source modules" {
     // Sentry.init / modalSelectors.getFoo 축소 재현:
     // `import * as ns` 뒤의 `ns.member` 직접 치환도 namespace object getter와 동일하게
@@ -3950,6 +4017,57 @@ test "react_native inlineRequires: namespace import from export-star barrel init
     defer std.testing.allocator.free(getter_with_source_init);
     try std.testing.expect(std.mem.indexOf(u8, result.output, getter_with_source_init) != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "get fadeIn() { return fadeIn; }") == null);
+}
+
+test "react_native inlineRequires: named import of namespace re-export stays eager" {
+    // 축소 재현: `api` barrel 이 `import * as serverStatusApi` 후 named export 하고,
+    // consumer 가 `serverStatusApi.fetchServerHealthFlag` 멤버만 쓰면 namespace rewrite 가
+    // direct binding 으로 바뀐다. 이때 barrel init 을 lazy 로 미루면 source export 변수가
+    // 아직 undefined 로 남아 action creator 생성 중 터진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\import { action } from './actions.js';
+        \\globalThis.__zntcAction = action;
+    );
+    try writeFile(tmp.dir, "api.js",
+        \\import * as serverStatusApi from './server-status.js';
+        \\export { serverStatusApi };
+    );
+    try writeFile(tmp.dir, "server-status.js",
+        \\export function fetchServerHealthFlag() {
+        \\  return 1;
+        \\}
+    );
+    try writeFile(tmp.dir, "actions.js",
+        \\import { serverStatusApi } from './api.js';
+        \\export const action = serverStatusApi.fetchServerHealthFlag;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .tree_shaking = true,
+        .dev_mode = false,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const actions_init = std.mem.indexOf(u8, result.output, "\"actions.js\"()") orelse unreachable;
+    const actions_end = std.mem.indexOf(u8, result.output[actions_init..], "\n\t}\n});") orelse
+        std.mem.indexOf(u8, result.output[actions_init..], "}});") orelse unreachable;
+    const actions_body = result.output[actions_init .. actions_init + actions_end];
+    try std.testing.expect(std.mem.indexOf(u8, actions_body, "init_api") != null);
+    try std.testing.expect(std.mem.indexOf(u8, actions_body, "fetchServerHealthFlag") != null);
 }
 
 test "react_native inlineRequires: keeps default ESM imports eager for provider side effects" {
