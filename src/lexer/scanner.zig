@@ -1163,10 +1163,12 @@ pub const Scanner = struct {
         }
         if (start >= after.len) return null;
 
-        // 값 끝 찾기 (공백, *, / 에서 멈춤)
+        // 값 끝 찾기 (공백, 개행, 블록 주석 종료에서 멈춤). scoped 패키지의 `/`
+        // (`@emotion/react`) 는 값의 일부이므로 `/` 단독은 종료가 아니다 — `*` 가
+        // 블록 종료 `*/` 와 jsdoc ` * ` 라인 마커를 잡는다 (#3615 emotion-cases 회귀).
         var end = start;
         while (end < after.len and after[end] != ' ' and after[end] != '\t' and
-            after[end] != '*' and after[end] != '/' and after[end] != '\n' and after[end] != '\r')
+            after[end] != '*' and after[end] != '\n' and after[end] != '\r')
         {
             end += 1;
         }

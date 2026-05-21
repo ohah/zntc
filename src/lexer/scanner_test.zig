@@ -1194,6 +1194,16 @@ test "Scanner: @jsxImportSource pragma" {
     try std.testing.expectEqualStrings("preact", scanner.jsx_import_source_pragma.?);
 }
 
+test "Scanner: @jsxImportSource pragma — scoped package keeps full path" {
+    // `@emotion/react` 의 `/` 가 값 종료로 오인되어 `@emotion` 으로 잘리던 회귀 (#3615).
+    const source = "/** @jsxImportSource @emotion/react */";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqualStrings("@emotion/react", scanner.jsx_import_source_pragma.?);
+}
+
 test "Scanner: multiple pragmas in one file" {
     const source = "/** @jsx h */\n// @jsxFrag Fragment\nconst x = 1;";
     var scanner = try Scanner.init(std.testing.allocator, source);
