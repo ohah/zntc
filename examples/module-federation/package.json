@@ -7,11 +7,14 @@
     "prebuild": "bun run --cwd ../../packages/core build:js",
     "build": "cd remote && zntc --bundle src/index.ts --outdir dist --format=iife --public-path=file://$PWD/dist/",
     "start": "node host.mjs",
-    "demo": "bun run build && bun run start"
+    "demo": "bun run build && bun run start",
+    "predev:web": "bun run --cwd ../../packages/core build:js",
+    "dev:web": "node serve-web.mjs"
   },
   "dependencies": {
     "@module-federation/runtime": "2.4.0",
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@zntc/core": "workspace:*",
