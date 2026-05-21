@@ -23,6 +23,7 @@ const ModuleType = types.ModuleType;
 const pkg_json = @import("package_json.zig");
 const fs = @import("fs.zig");
 const PackageJson = pkg_json.PackageJson;
+const resolve_cache = @import("resolve_cache.zig");
 const profile = @import("../profile.zig");
 const debug_log = @import("../debug_log.zig");
 
@@ -300,84 +301,34 @@ const NodeModulesPackagePath = struct {
     node_modules_index: usize,
 };
 
-fn isPathSeparator(c: u8) bool {
-    return c == '/' or c == '\\';
-}
-
-fn nextPathSeparator(path: []const u8, start: usize) usize {
-    var i = start;
-    while (i < path.len and !isPathSeparator(path[i])) : (i += 1) {}
-    return i;
-}
-
-fn previousNodeModulesSegment(path: []const u8, end: usize) ?usize {
-    var search_end = @min(end, path.len);
-    while (std.mem.lastIndexOf(u8, path[0..search_end], "node_modules")) |idx| {
-        const before_ok = idx == 0 or isPathSeparator(path[idx - 1]);
-        const after = idx + "node_modules".len;
-        const after_ok = after < path.len and isPathSeparator(path[after]);
-        if (before_ok and after_ok) return idx;
-        if (idx == 0) return null;
-        search_end = idx;
-    }
-    return null;
-}
-
+/// `<...>/node_modules/<pkg-or-scope/pkg>` 의 안쪽부터 시작해서 `.pnpm` 은 skip,
+/// 실제 패키지명을 가진 segment 의 이름과 node_modules 위치를 반환.
+/// resolve_cache.findPackageDirPath 를 single source of truth 로 재사용 — `@scope`
+/// 와 OS sep 처리가 그쪽에 일원화돼 있다.
 fn lastNodeModulesPackagePath(path: []const u8) ?NodeModulesPackagePath {
-    var end = path.len;
-    while (previousNodeModulesSegment(path, end)) |node_modules_index| {
-        const package_start = node_modules_index + "node_modules".len + 1;
-        if (package_start >= path.len) {
-            end = node_modules_index;
-            continue;
+    const nm = "node_modules" ++ std.fs.path.sep_str;
+    var search_end: usize = path.len;
+    while (true) {
+        const dir = resolve_cache.findPackageDirPath(path[0..search_end]) orelse return null;
+        const at = std.mem.lastIndexOf(u8, dir, nm) orelse return null;
+        const name = dir[at + nm.len ..];
+        if (!std.mem.eql(u8, name, ".pnpm")) {
+            return .{ .name = name, .node_modules_index = at };
         }
-
-        const first_end = nextPathSeparator(path, package_start);
-        if (first_end == package_start) {
-            end = node_modules_index;
-            continue;
-        }
-        const first_segment = path[package_start..first_end];
-        if (std.mem.eql(u8, first_segment, ".pnpm")) {
-            end = node_modules_index;
-            continue;
-        }
-
-        var package_end = first_end;
-        if (first_segment.len > 0 and first_segment[0] == '@') {
-            if (first_end >= path.len) {
-                end = node_modules_index;
-                continue;
-            }
-            package_end = nextPathSeparator(path, first_end + 1);
-            if (package_end == first_end + 1) {
-                end = node_modules_index;
-                continue;
-            }
-        }
-
-        return .{
-            .name = path[package_start..package_end],
-            .node_modules_index = node_modules_index,
-        };
+        // .pnpm 자체는 패키지가 아니라 pnpm hard-link store — outer node_modules 로 재탐색.
+        search_end = at;
     }
-    return null;
 }
 
 fn hasNodeModulesPnpmPrefix(path: []const u8) bool {
-    var end = path.len;
-    while (previousNodeModulesSegment(path, end)) |node_modules_index| {
-        const pnpm_start = node_modules_index + "node_modules".len + 1;
-        const pnpm_end = pnpm_start + ".pnpm".len;
-        if (pnpm_end <= path.len and
-            std.mem.eql(u8, path[pnpm_start..pnpm_end], ".pnpm") and
-            (pnpm_end == path.len or isPathSeparator(path[pnpm_end])))
-        {
-            return true;
-        }
-        end = node_modules_index;
+    const nm = "node_modules" ++ std.fs.path.sep_str;
+    var search_end: usize = path.len;
+    while (true) {
+        const dir = resolve_cache.findPackageDirPath(path[0..search_end]) orelse return false;
+        const at = std.mem.lastIndexOf(u8, dir, nm) orelse return false;
+        if (std.mem.eql(u8, dir[at + nm.len ..], ".pnpm")) return true;
+        search_end = at;
     }
-    return false;
 }
 
 fn shouldCanonicalizePnpmPackageSymlink(logical_path: []const u8, real_path: []const u8) bool {
