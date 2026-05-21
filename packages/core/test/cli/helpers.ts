@@ -21,29 +21,26 @@ import { createServer as createNetServer } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { waitForServer as sharedWaitForServer } from '@zntc/test-helpers';
 
 export const BIN_DIR = resolve(import.meta.dir, '../../bin');
 export const CLI = resolve(BIN_DIR, 'zntc.mjs');
 export const RUNTIME = 'node';
 export const PROJECT_ROOT = resolve(import.meta.dir, '../../../..');
 
+// 정본은 `@zntc/test-helpers`. 호출처 (positional `(port, maxRetries, interval, protocol)`)
+// 호환을 위해 wrapper 유지 — 옵션화 마이그레이션은 별도 PR.
 export async function waitForServer(
   port: number,
   maxRetries = 50,
   interval = 100,
-  protocol = 'http',
+  protocol: 'http' | 'https' = 'http',
 ) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      await fetch(`${protocol}://localhost:${port}/`, {
-        tls: { rejectUnauthorized: false },
-      } as any);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, interval));
-    }
-  }
-  throw new Error(`Server on port ${port} did not start`);
+  await sharedWaitForServer(port, {
+    timeoutMs: maxRetries * interval,
+    intervalMs: interval,
+    protocol,
+  });
 }
 
 export async function waitForText(read: () => string, text: string, timeoutMs = 1000) {

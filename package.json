@@ -20,7 +20,8 @@
     "./examples/react-native-expo",
     "./tests/integration",
     "./tests/e2e",
-    "./tests/benchmark"
+    "./tests/benchmark",
+    "./tests/test-helpers"
   ],
   "scripts": {
     "test": "bun run test:integration",

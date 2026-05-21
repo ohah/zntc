@@ -30,6 +30,7 @@
     "@swc/core": "^1.15.24",
     "@types/bun": "latest",
     "@zntc/core": "workspace:*",
+    "@zntc/test-helpers": "workspace:*",
     "compat-table": "kangax/compat-table",
     "hoist-non-react-statics": "^3.3.2",
     "react-is": "^18.3.1",
