@@ -538,6 +538,11 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     preset.devMode = true;
     preset.reactRefresh = true;
     preset.collectModuleCodes = true;
+  } else if (minify !== true) {
+    // Metro release 와 같이 __DEV__ false 분기는 full minify 없이도 제거한다.
+    // 공백 압축/식별자 축약은 유지하고 syntax pass 만 켜서 dev-only worklet 이
+    // 릴리즈 번들에 남지 않게 한다.
+    preset.minifySyntax = true;
   }
 
   if (extra?.watchFolders && extra.watchFolders.length > 0) {
