@@ -30,7 +30,6 @@
 | 22 | peek() 캐싱 | 최적화 PR |
 | 23 | isAsciiIdentContinue → lookup table | ROI ≈ 0 확인 (2026-05-22) — 식별자 스캔 inner loop 는 이미 16B SIMD fast path, 이 함수는 16B 미만 tail 스칼라 fallback 에만 쓰임 |
 | 24 | line_offsets/template_depth_stack 초기 용량 | 최적화 PR |
-| 25 | unicode.zig 범위 테이블 불완전 (Georgian 등) | 별도 PR |
 | 31 | scratch ArrayList 미적용 일부 파싱 함수 | 최적화 PR |
 | 34 | parseForIn/parseForOf 통합 | 최적화 PR |
 
