@@ -426,6 +426,7 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // 함수형 / 중첩 객체 (CLI 표현 불가)
     'compiler', // compiler.styledComponents / compiler.emotion — 중첩 객체, CLI 미노출
     'mf', // Module Federation (#3318) — nested 객체, config/build() 전용 (CLI flag 없음)
+    'output', // esbuild-style build({output:[]}) sugar — config/build() 전용, CLI 는 --outfile/--outdir 로 cover
     'manualChunks',
     'plugins',
     'moduleSpecifierMap',
