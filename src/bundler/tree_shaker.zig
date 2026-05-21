@@ -781,6 +781,17 @@ pub const TreeShaker = struct {
         return self.used_exports.contains(key);
     }
 
+    /// 이 모듈이 어떤 모듈의 `export * from "./this"` source 인가.
+    /// 그렇다면 splitting/preserve-modules 의 cross-chunk export 목록이 이 모듈의
+    /// *모든* export 이름을 (star 재노출 chain 으로 over-approx) 포함하므로,
+    /// emit 단계 statement-level export DCE 로 export 선언을 제거하면 codegen 이
+    /// 낸 `export { ... }` 절과 불일치 → Node `SyntaxError: Export X is not defined`.
+    pub fn isReExportStarTarget(self: *const TreeShaker, module_index: u32) bool {
+        const mask = self.re_export_star_targets orelse return false;
+        if (module_index >= mask.capacity()) return false;
+        return mask.isSet(module_index);
+    }
+
     /// lazy require 의 source span 이 module 의 cjs_export_fact (lazy getter property) 의
     /// method body 안인지 매핑 + 그 fact 의 export_name 이 consumer 에서 used 인지 확인.
     /// matched fact 없으면 보수적으로 true (retain) — non-RN-core 패턴의 lazy callback 등.

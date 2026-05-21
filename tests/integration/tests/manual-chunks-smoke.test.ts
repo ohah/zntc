@@ -77,10 +77,12 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
         expect.stringMatching(/vendor\/string-utils\.ts$/),
       ]),
     );
-    // 보조: vendor 청크에 수학/string-utils 구현 전부 (transitive dep 포함 정책)
+    // 보조: vendor 청크에 실제로 import 된 export 구현은 포함.
     expect(vendor!.text).toMatch(/function\s+add\s*\(/);
     expect(vendor!.text).toMatch(/function\s+toUpper\s*\(/);
-    expect(vendor!.text).toMatch(/function\s+multiply\s*\(/);
+    // 미사용 export(`multiply`)는 splitting 청크에서도 statement-level DCE 로 제거된다
+    // (esbuild/rolldown 동일). 청크 단위 module 포함 ≠ export 단위 보존.
+    expect(vendor!.text).not.toMatch(/function\s+multiply\s*\(/);
 
     // moduleIds 는 entry / vendor 가 서로 겹치지 않아야 함
     expect(entry!.moduleIds).toEqual(expect.arrayContaining([expect.stringMatching(/entry\.ts$/)]));
