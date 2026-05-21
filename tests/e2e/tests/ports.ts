@@ -26,4 +26,5 @@ export const PORTS = {
   DEV_JSX: 3984,
   BUILD_JSX: 3983,
   VERIFY_MCP: 3982,
+  EXAMPLE_WEB_SMOKE: 3981,
 } as const;
