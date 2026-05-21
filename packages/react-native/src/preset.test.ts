@@ -427,6 +427,12 @@ describe('buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh
     expect(opts.minifyIdentifiers).toBeUndefined();
   });
 
+  test('dev=false + minify 미지정 — tri-state: minify!==true 라 syntax pruning 기본 활성', () => {
+    const opts = buildRnBundleOptions(baseInput({ dev: false }));
+    expect(opts.minify).toBe(false);
+    expect(opts.minifySyntax).toBe(true);
+  });
+
   test('dev=false + override.minifySyntax=false — 사용자 override 가 마지막에 적용', () => {
     const opts = buildRnBundleOptions(
       baseInput({
