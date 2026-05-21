@@ -21,7 +21,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@zntc/core": "workspace:*",
-    "babel-plugin-react-compiler": "^19.0.0",
+    "babel-plugin-react-compiler": "^1.0.0",
     "typescript": "^6.0.3"
   }
 }
