@@ -276,15 +276,36 @@ function findAddon(): string {
 // ─── Public API ───
 
 /**
- * Identity helper for `zntc.config.{ts,js}` type checking / autocompletion.
+ * `zntc.config.{ts,js}` 의 타입 체크 / 자동완성을 위한 identity helper.
  *
- * Supports both object and functional config:
+ * 객체 config 와 함수형 config 를 모두 지원한다.
+ *
+ * @example
  * ```ts
- * export default defineConfig({ format: "esm" });
- * export default defineConfig(({ command, mode, env }) => ({
+ * import { defineConfig } from "@zntc/core";
+ *
+ * export default defineConfig({
+ *   entryPoints: ["src/index.ts"],
  *   format: "esm",
- *   minify: command === "bundle",
- * }));
+ *   sourcemap: true,
+ * });
+ * ```
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from "@zntc/core";
+ *
+ * export default defineConfig(({ command, mode, env }) => {
+ *   const production = command === "bundle" && mode === "production";
+ *
+ *   return {
+ *     entryPoints: ["src/index.ts"],
+ *     minify: production,
+ *     define: {
+ *       __APP_ENV__: JSON.stringify(env.ZNTC_APP_ENV ?? mode),
+ *     },
+ *   };
+ * });
  * ```
  */
 export function defineConfig<T extends UserConfigInput>(config: T): T {
