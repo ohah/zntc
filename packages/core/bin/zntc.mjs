@@ -326,8 +326,7 @@ function parseArgs(argv) {
     allowOverwrite: false,
     preserveModules: false,
     preserveModulesRoot: undefined,
-    inlineDynamicImports: false,
-    inlineDynamicImportsExplicit: false,
+    inlineDynamicImports: undefined,
     loader: {},
     legalComments: undefined,
     resolveExtensions: [],
@@ -1232,11 +1231,13 @@ function mergeConfigIntoOpts(opts, config) {
     }
   }
 
-  // false 도 의미가 있는 옵션이라 일반 BOOL_KEYS 루프로는 명시 여부가 사라진다.
-  // single-file bundle 보정에서 Zig CLI 와 같은 에러를 내기 위해 별도로 추적한다.
-  if (config.inlineDynamicImports !== undefined) {
-    opts.inlineDynamicImports = config.inlineDynamicImports;
-    opts.inlineDynamicImportsExplicit = true;
+  // tristate bool: false 가 명시적 의미를 가져서 default 를 undefined 로 두는 키.
+  // CLI 가 미지정(undefined)일 때만 config 값(true/false)을 채택한다 (CLI flag 우선).
+  // inlineDynamicImports=false 의 single-file 보정은 applySingleFileDynamicImportDefault.
+  for (const key of ['inlineDynamicImports']) {
+    if (opts[key] === undefined && config[key] !== undefined) {
+      opts[key] = config[key];
+    }
   }
 
   const ARRAY_KEYS = [
@@ -1468,7 +1469,7 @@ async function runBundle(opts, config) {
 
 function applySingleFileDynamicImportDefault(opts) {
   if (opts.splitting || opts.preserveModules) return;
-  if (opts.inlineDynamicImportsExplicit && opts.inlineDynamicImports === false) {
+  if (opts.inlineDynamicImports === false) {
     throw new Error(
       'inlineDynamicImports=false requires splitting or preserveModules in bundle mode',
     );

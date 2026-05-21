@@ -115,10 +115,7 @@ function assignRnBuildOptionOverrides(out, config, opts = {}) {
   }
   if (opts.inlineDynamicImports === true || cfg.inlineDynamicImports === true) {
     out.inlineDynamicImports = true;
-  } else if (
-    (opts.inlineDynamicImportsExplicit === true && opts.inlineDynamicImports === false) ||
-    cfg.inlineDynamicImports === false
-  ) {
+  } else if (opts.inlineDynamicImports === false || cfg.inlineDynamicImports === false) {
     out.inlineDynamicImports = false;
   }
 }
