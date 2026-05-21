@@ -418,6 +418,27 @@ describe('buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh
     expect(opts.reactRefresh).toBeUndefined();
     expect(opts.collectModuleCodes).toBeUndefined();
   });
+
+  test('dev=false + minify=false — 공백/식별자 축약 없이 release dead branch pruning 활성', () => {
+    const opts = buildRnBundleOptions(baseInput({ dev: false, minify: false }));
+    expect(opts.minify).toBe(false);
+    expect(opts.minifySyntax).toBe(true);
+    expect(opts.minifyWhitespace).toBeUndefined();
+    expect(opts.minifyIdentifiers).toBeUndefined();
+  });
+
+  test('dev=false + override.minifySyntax=false — 사용자 override 가 마지막에 적용', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        dev: false,
+        minify: false,
+        override: {
+          minifySyntax: false,
+        },
+      }),
+    );
+    expect(opts.minifySyntax).toBe(false);
+  });
 });
 
 describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context/[+metro-resolve])', () => {
