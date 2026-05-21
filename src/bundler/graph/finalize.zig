@@ -54,7 +54,7 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             for (m.import_records) |rec| {
-                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                if (!rec.kind.isEagerEvalDependency()) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_idx = @intFromEnum(rec.resolved);
                 if (target_idx >= self.modules.count()) continue;
@@ -347,7 +347,7 @@ pub fn propagateTopLevelAwait(self: *ModuleGraph) void {
         while (it.next()) |m| : (src_idx += 1) {
             for (m.import_records) |rec| {
                 if (rec.resolved.isNone()) continue;
-                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                if (!rec.kind.isEagerEvalDependency()) continue;
                 const target_idx = @intFromEnum(rec.resolved);
                 if (target_idx >= count) continue;
                 reverse_deps[target_idx].append(self.allocator, @intCast(src_idx)) catch return;

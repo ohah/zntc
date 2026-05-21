@@ -466,7 +466,7 @@ pub fn buildMetadataForAst(
             // 소스에 나타난 순서대로 발생해야 한다. 단, RN inlineRequires 가 값 사용
             // 지점으로 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.
             for (m.import_records, 0..) |rec, rec_index| {
-                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                if (!rec.kind.isEagerEvalDependency()) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_mod = self.graph.getModule(rec.resolved) orelse continue;
                 if (self.tree_shaker_active and !target_mod.is_included) continue;
@@ -516,7 +516,7 @@ pub fn buildMetadataForAst(
             // resolve 미완료: external 또는 resolve 실패.
             if (rec.resolved.isNone()) {
                 if (rec.is_lazy_resolved) continue;
-                if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                if (rec.kind.isEagerEvalDependency()) {
                     if (!ib.is_helper and !ib.local_symbol.isValid()) continue;
                     const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                     // helper binding (JSX runtime 등) + ESM-wrapped 모듈 조합에서는 top-level
@@ -749,16 +749,12 @@ pub fn buildMetadataForAst(
                 var import_is_namespace_export = false;
                 if (resolved) |rb| {
                     const rb_idx = @intFromEnum(rb.canonical.module_index);
-                    if (rb_idx != canonical_mod) {
-                        if (self.graph.getModule(rb.canonical.module_index)) |rb_mod| {
-                            if (rb_mod.wrap_kind == .esm) {
-                                value_init_mod = rb_mod;
-                                value_init_mod_idx = @intCast(rb_idx);
-                            }
-                        }
-                    }
-                    const export_local = self.getExportLocalName(@intCast(@intFromEnum(rb.canonical.module_index)), rb.canonical.export_name) orelse rb.canonical.export_name;
                     if (self.graph.getModule(rb.canonical.module_index)) |rb_mod| {
+                        if (rb_idx != canonical_mod and rb_mod.wrap_kind == .esm) {
+                            value_init_mod = rb_mod;
+                            value_init_mod_idx = @intCast(rb_idx);
+                        }
+                        const export_local = self.getExportLocalName(@intCast(rb_idx), rb.canonical.export_name) orelse rb.canonical.export_name;
                         for (rb_mod.import_bindings) |cib| {
                             if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
                                 import_is_namespace_export = true;
