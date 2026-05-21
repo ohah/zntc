@@ -1448,6 +1448,14 @@ export interface AppBuildOptions {
   sourcemap?: boolean;
   /** Enable code splitting for the application bundle. */
   splitting?: boolean;
+  /** JSX runtime: "automatic" / "automatic-dev" / "classic" / "preserve". */
+  jsx?: string;
+  /** JSX import source for the automatic runtime (e.g. "react", "@emotion/react"). */
+  jsxImportSource?: string;
+  /** Classic-runtime JSX factory (e.g. "React.createElement", "h"). */
+  jsxFactory?: string;
+  /** Classic-runtime JSX fragment (e.g. "React.Fragment"). */
+  jsxFragment?: string;
   /**
    * Per-library 1st-party transform (`@next/swc` `compiler`-compatible
    * surface). Same meaning as in BuildOptions — both bundle / app builds use
