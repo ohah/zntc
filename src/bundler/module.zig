@@ -421,6 +421,13 @@ pub const Module = struct {
         return self.side_effects_user_defined and !self.side_effects;
     }
 
+    /// 모듈이 *user-declared side-effectful* — package.json `sideEffects` 배열에
+    /// 명시돼 top-level 실행 순서가 의미 있는 경우. inlineRequires lazy 대상에서
+    /// 제외하는 게이트가 공유.
+    pub inline fn isUserDeclaredSideEffectful(self: *const Module) bool {
+        return self.side_effects and self.side_effects_user_defined;
+    }
+
     /// member-augment 귀속 게이트: user-declared pure 모듈이고 크기 최적화
     /// (minify_syntax) 일 때만 top-level `X.member = pureRHS` 를 X 의
     /// augmentation 으로 귀속한다 (dev/non-minify 회귀 방지).

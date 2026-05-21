@@ -826,7 +826,6 @@ pub fn main() !void {
         if (opts.watch) {
             // 증분 빌드용 파싱 캐시 + resolve 캐시 (watch 전체 수명동안 보존)
             const module_store_mod = @import("zntc_lib").bundler.module_store;
-            const ResolveCache = @import("zntc_lib").bundler.ResolveCache;
             var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
             defer persistent_store.deinit();
 
@@ -855,20 +854,7 @@ pub fn main() !void {
                     };
                 }
             }
-            var persistent_resolve_cache = ResolveCache.init(allocator, .{
-                .platform = bundle_opts.platform,
-                .external_patterns = bundle_opts.external,
-                .custom_conditions = bundle_opts.conditions,
-                .preserve_symlinks = bundle_opts.preserve_symlinks,
-                .resolve_symlink_siblings = bundle_opts.resolve_symlink_siblings,
-                .disable_hierarchical_lookup = bundle_opts.disable_hierarchical_lookup,
-                .alias = bundle_opts.alias,
-                .fallback = bundle_opts.fallback,
-                .resolve_extensions = bundle_opts.resolve_extensions,
-                .main_fields = bundle_opts.main_fields,
-                .packages_external = bundle_opts.packages_external,
-                .node_paths = bundle_opts.node_paths,
-            });
+            var persistent_resolve_cache = Bundler.initResolveCacheFromOptions(allocator, bundle_opts);
             defer persistent_resolve_cache.deinit();
 
             // 첫 빌드 결과의 모듈을 store에 저장 (bundler가 이미 deinit된 후이므로 직접 수집)
