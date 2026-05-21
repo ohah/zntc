@@ -121,6 +121,7 @@ pub fn emitChunks(
         // module index → *const Module (희소 그래프 대비 별도 슬라이스로 dense 화).
         var mod_ptrs: std.ArrayList(*const Module) = .empty;
         defer mod_ptrs.deinit(allocator);
+        try mod_ptrs.ensureTotalCapacity(allocator, module_count);
         var idx_it = graph.modulesIterator();
         while (idx_it.next()) |m| try mod_ptrs.append(allocator, m);
         const computed = try computeAllUsedNames(allocator, mod_ptrs.items, graph, s);
@@ -129,7 +130,10 @@ pub fn emitChunks(
         for (used_names_by_modidx) |*e| e.* = .{ .names = &.{}, .all_used = true };
         for (mod_ptrs.items, 0..) |m, i| {
             const mi = m.index.toU32();
-            if (mi >= module_count) continue;
+            if (mi >= module_count) {
+                allocator.free(computed[i].names);
+                continue;
+            }
             // `export * from "./this"` source 는 cross-chunk export 목록이 모든 export
             // 이름을 over-approx 로 포함한다. emit DCE 로 그 export 선언을 지우면 codegen
             // 의 `export { ... }` 절과 어긋나 Node `Export X is not defined` SyntaxError.
