@@ -1,6 +1,6 @@
 {
   "name": "@zntc/rspack-loader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use ZNTC as the TypeScript/JSX/Flow transformer in Rspack and Webpack (drop-in alternative to swc-loader / esbuild-loader / babel-loader)",
   "keywords": [
     "babel-loader",

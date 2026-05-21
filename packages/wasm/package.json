@@ -1,6 +1,6 @@
 {
   "name": "@zntc/wasm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ZNTC native transpiler & compiler — WASM build",
   "keywords": [
     "browser",

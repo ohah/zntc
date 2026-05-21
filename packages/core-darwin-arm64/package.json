@@ -1,6 +1,6 @@
 {
   "name": "@zntc/core-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS arm64 (Apple Silicon) native binary for @zntc/core",
   "keywords": [
     "compiler",

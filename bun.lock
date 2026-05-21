@@ -453,7 +453,7 @@
     },
     "packages/core": {
       "name": "@zntc/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "bin": {
         "zntc": "./bin/zntc.mjs",
       },
@@ -462,15 +462,15 @@
         "@zntc/test-helpers": "workspace:*",
       },
       "optionalDependencies": {
-        "@zntc/core-darwin-arm64": "0.1.0",
-        "@zntc/core-darwin-x64": "0.1.0",
-        "@zntc/core-linux-arm64-gnu": "0.1.0",
-        "@zntc/core-linux-arm64-musl": "0.1.0",
-        "@zntc/core-linux-x64-gnu": "0.1.0",
-        "@zntc/core-linux-x64-musl": "0.1.0",
-        "@zntc/core-win32-arm64-msvc": "0.1.0",
-        "@zntc/core-win32-ia32-msvc": "0.1.0",
-        "@zntc/core-win32-x64-msvc": "0.1.0",
+        "@zntc/core-darwin-arm64": "0.1.1",
+        "@zntc/core-darwin-x64": "0.1.1",
+        "@zntc/core-linux-arm64-gnu": "0.1.1",
+        "@zntc/core-linux-arm64-musl": "0.1.1",
+        "@zntc/core-linux-x64-gnu": "0.1.1",
+        "@zntc/core-linux-x64-musl": "0.1.1",
+        "@zntc/core-win32-arm64-msvc": "0.1.1",
+        "@zntc/core-win32-ia32-msvc": "0.1.1",
+        "@zntc/core-win32-x64-msvc": "0.1.1",
         "browserslist": "^4.24.0",
         "core-js": "^3.49.0",
         "core-js-compat": "^3.49.0",
@@ -480,7 +480,7 @@
     },
     "packages/init": {
       "name": "@zntc/init",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "bin": {
         "zntc-init": "./bin/zntc-init.mjs",
       },
@@ -490,7 +490,7 @@
     },
     "packages/react-native": {
       "name": "@zntc/react-native",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@react-native-community/cli-server-api": "^15.0.0",
         "@zntc/core": "workspace:*",
@@ -512,7 +512,7 @@
     },
     "packages/rspack-loader": {
       "name": "@zntc/rspack-loader",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
@@ -532,7 +532,7 @@
     },
     "packages/server": {
       "name": "@zntc/server",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
@@ -542,7 +542,7 @@
     },
     "packages/vite-plugin": {
       "name": "@zntc/vite-plugin",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
@@ -556,14 +556,14 @@
     },
     "packages/wasm": {
       "name": "@zntc/wasm",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/node": "^25.5.2",
       },
     },
     "packages/web": {
       "name": "@zntc/web",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
