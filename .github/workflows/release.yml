@@ -191,10 +191,12 @@ jobs:
         with:
           bun-version: latest
 
+      # registry-url 을 지정하면 setup-node 가 NPM_CONFIG_USERCONFIG 를 $RUNNER_TEMP/.npmrc
+      # 로 설정해, 아래 Publish step 이 $HOME/.npmrc 에 쓴 토큰을 npm 이 무시한다.
+      # registry-url 생략 → npm 이 기본 $HOME/.npmrc 를 읽게 함.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
 
       - uses: ./.github/actions/bun-cache
 
@@ -264,15 +266,15 @@ jobs:
           echo "dist-tag=${DIST_TAG}" >> "$GITHUB_OUTPUT"
           echo "Will publish with --tag ${DIST_TAG}"
 
-      # release.ts 는 `bun publish` 를 호출하는데, setup-node 가 만든 .npmrc 의
-      # `${NODE_AUTH_TOKEN}` env 치환(npm 전용)을 bun 은 처리하지 않아 인증 실패한다.
-      # $HOME/.npmrc 에 리터럴 토큰을 직접 써 bun publish 가 읽게 한다 (값은 redirect 라
-      # 로그 비노출 + GitHub secret 마스킹).
+      # release.ts 의 npm publish 가 인증을 읽도록 $HOME/.npmrc 에 리터럴 토큰을 쓴다
+      # (값은 redirect 라 로그 비노출 + GitHub secret 마스킹). whoami 로 16개 publish
+      # 전에 인증을 사전 검증 — 실패 시 여기서 명확히 중단.
       - name: Publish via release.ts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
+          npm whoami
           bun scripts/release.ts --publish --yes --tag "${{ steps.tag.outputs.dist-tag }}"
 
   # ─── GitHub Release (CLI binary tarball) ───
