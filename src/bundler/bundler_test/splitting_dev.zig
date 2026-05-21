@@ -2121,6 +2121,81 @@ test "Bundler: dev mode alias named import does not emit raw require" {
     try std.testing.expect(saw_layout);
 }
 
+test "Bundler: dev mode HMR mixed alias imports do not emit raw require" {
+    // 테스트앱 재현: HMR payload는 eval 스코프에서 실행되므로 alias import가
+    // `require("~/...")`로 남으면 RN/Hermes에 global require가 없어 실패한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "src/core/settings/index.ts",
+        \\export * from './optionStore';
+    );
+    try writeFile(tmp.dir, "src/core/settings/optionStore.ts",
+        \\export const defaultOptions = { mode: 'dev' };
+    );
+    try writeFile(tmp.dir, "src/widgets/loading/index.js",
+        \\import LoadingRing from './LoadingRing';
+        \\export { LoadingRing };
+    );
+    try writeFile(tmp.dir, "src/widgets/loading/LoadingRing.js",
+        \\export default function LoadingRing() {
+        \\  return null;
+        \\}
+    );
+    try writeFile(tmp.dir, "src/App.tsx",
+        \\import { defaultOptions as appDefaults } from '~/core/settings';
+        \\import { LoadingRing } from '~/widgets/loading';
+        \\export default function App() {
+        \\  return [appDefaults.mode, LoadingRing];
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "src/App.tsx");
+    defer std.testing.allocator.free(entry);
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+
+    const ts_path_targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const ts_paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{
+            .key_prefix = "~/",
+            .key_suffix = "",
+            .has_wildcard = true,
+            .targets = &ts_path_targets,
+        },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .ts_paths = &ts_paths,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"~/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('~/") == null);
+
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    var saw_app = false;
+    for (codes) |c| {
+        if (std.mem.indexOf(u8, c.id, "src/App.tsx") == null) continue;
+        saw_app = true;
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require(\"~/") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require('~/") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "__zntc_modules[") != null);
+    }
+    try std.testing.expect(saw_app);
+}
+
 test "Bundler: dev mode ts paths re-exported CJS named import does not emit raw require" {
     // Expo Router _layout + tsconfig paths 재현:
     // app/_layout.tsx -> @/hooks/use-color-scheme -> react-native(CJS) re-export.

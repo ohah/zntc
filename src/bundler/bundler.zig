@@ -641,6 +641,25 @@ pub const Bundler = struct {
         }
     }
 
+    pub fn initResolveCacheFromOptions(allocator: std.mem.Allocator, options: BundleOptions) ResolveCache {
+        return ResolveCache.init(allocator, .{
+            .platform = options.platform,
+            .external_patterns = options.external,
+            .custom_conditions = options.conditions,
+            .preserve_symlinks = options.preserve_symlinks,
+            .resolve_symlink_siblings = options.resolve_symlink_siblings,
+            .disable_hierarchical_lookup = options.disable_hierarchical_lookup,
+            .alias = options.alias,
+            .ts_paths = options.ts_paths,
+            .fallback = options.fallback,
+            .block_list = options.block_list,
+            .resolve_extensions = options.resolve_extensions,
+            .main_fields = options.main_fields,
+            .packages_external = options.packages_external,
+            .node_paths = options.node_paths,
+        });
+    }
+
     pub fn init(allocator: std.mem.Allocator, options: BundleOptions) Bundler {
         var opts = options;
         applyPlatformPreset(&opts);
@@ -648,22 +667,7 @@ pub const Bundler = struct {
         return .{
             .allocator = allocator,
             .options = opts,
-            .resolve_cache = ResolveCache.init(allocator, .{
-                .platform = opts.platform,
-                .external_patterns = options.external,
-                .custom_conditions = options.conditions,
-                .preserve_symlinks = options.preserve_symlinks,
-                .resolve_symlink_siblings = options.resolve_symlink_siblings,
-                .disable_hierarchical_lookup = options.disable_hierarchical_lookup,
-                .alias = options.alias,
-                .ts_paths = options.ts_paths,
-                .fallback = options.fallback,
-                .block_list = options.block_list,
-                .resolve_extensions = options.resolve_extensions,
-                .main_fields = options.main_fields,
-                .packages_external = options.packages_external,
-                .node_paths = options.node_paths,
-            }),
+            .resolve_cache = initResolveCacheFromOptions(allocator, opts),
         };
     }
 

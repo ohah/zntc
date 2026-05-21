@@ -517,7 +517,6 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     // Issue #1223 Phase 2: 초기 빌드에도 PersistentModuleStore 전달.
     // 초기 빌드에서 store가 채워져야 첫 리빌드가 캐시 히트 경로로 진입한다.
     const module_store_mod = bundler_mod.module_store;
-    const ResolveCache = bundler_mod.ResolveCache;
     var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
     defer persistent_store.deinit();
 
@@ -596,19 +595,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         result.sourcemap_builder = null;
     }
 
-    var persistent_resolve_cache = ResolveCache.init(allocator, .{
-        .platform = bundle_opts.platform,
-        .external_patterns = bundle_opts.external,
-        .custom_conditions = bundle_opts.conditions,
-        .preserve_symlinks = bundle_opts.preserve_symlinks,
-        .resolve_symlink_siblings = bundle_opts.resolve_symlink_siblings,
-        .alias = bundle_opts.alias,
-        .fallback = bundle_opts.fallback,
-        .resolve_extensions = bundle_opts.resolve_extensions,
-        .main_fields = bundle_opts.main_fields,
-        .packages_external = bundle_opts.packages_external,
-        .node_paths = bundle_opts.node_paths,
-    });
+    var persistent_resolve_cache = Bundler.initResolveCacheFromOptions(allocator, bundle_opts);
     defer persistent_resolve_cache.deinit();
 
     // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).

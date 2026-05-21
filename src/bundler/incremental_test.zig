@@ -1,6 +1,9 @@
 const std = @import("std");
+const Bundler = @import("bundler.zig").Bundler;
 const IncrementalBundler = @import("incremental.zig").IncrementalBundler;
 const BundleResult = @import("bundler.zig").BundleResult;
+const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
+const module_store = @import("module_store.zig");
 const test_helpers = @import("test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -185,6 +188,220 @@ test "IncrementalBundler: changed module code keeps bundle require rewrites" {
         .build_error => return error.TestUnexpectedResult,
         .fatal => return error.TestUnexpectedResult,
     }
+}
+
+test "IncrementalBundler: changed HMR module rewrites mixed alias imports" {
+    // 테스트앱 재현: 증분 HMR payload에서 alias import가 raw `require("~/...")`
+    // 로 돌아오면 RN eval 스코프에서 global require가 없어 실패한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "src/core/settings/index.ts",
+        \\export * from './optionStore';
+    );
+    try writeFile(tmp.dir, "src/core/settings/optionStore.ts",
+        \\export const defaultOptions = { mode: 'dev' };
+    );
+    try writeFile(tmp.dir, "src/widgets/loading/index.js",
+        \\import LoadingRing from './LoadingRing';
+        \\export { LoadingRing };
+    );
+    try writeFile(tmp.dir, "src/widgets/loading/LoadingRing.js",
+        \\export default function LoadingRing() {
+        \\  return null;
+        \\}
+    );
+    try writeFile(tmp.dir, "src/App.tsx",
+        \\import { defaultOptions as appDefaults } from '~/core/settings';
+        \\import { LoadingRing } from '~/widgets/loading';
+        \\export default function App() {
+        \\  return [appDefaults.mode, LoadingRing, 1];
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "src/App.tsx");
+    defer std.testing.allocator.free(entry);
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+
+    const ts_path_targets = [_]@import("../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const ts_paths = [_]@import("../config.zig").TsConfig.PathEntry{
+        .{
+            .key_prefix = "~/",
+            .key_suffix = "",
+            .has_wildcard = true,
+            .targets = &ts_path_targets,
+        },
+    };
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .ts_paths = &ts_paths,
+    });
+    defer ib.deinit();
+
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            .build_error => |e| {
+                std.testing.allocator.free(e);
+                return error.TestUnexpectedResult;
+            },
+            .fatal => return error.TestUnexpectedResult,
+        }
+    }
+
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "src/App.tsx",
+        \\import { defaultOptions as appDefaults } from '~/core/settings';
+        \\import { LoadingRing } from '~/widgets/loading';
+        \\export default function App() {
+        \\  return [appDefaults.mode, LoadingRing, 2];
+        \\}
+    );
+
+    const result = try ib.rebuild();
+    switch (result) {
+        .success => |r| {
+            defer freeChanged(r.changed_modules);
+            try std.testing.expect(r.changed_modules.len > 0);
+
+            var saw_app = false;
+            for (r.changed_modules) |m| {
+                if (std.mem.indexOf(u8, m.id, "src/App.tsx") == null) continue;
+                saw_app = true;
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require(\"~/") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require('~/") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "__zntc_modules[") != null);
+            }
+            try std.testing.expect(saw_app);
+        },
+        .build_error => return error.TestUnexpectedResult,
+        .fatal => return error.TestUnexpectedResult,
+    }
+}
+
+test "Bundler watch path: changed HMR module rewrites mixed alias imports" {
+    // 테스트앱 재현: NAPI watch 경로는 첫 빌드부터 module_store/compiled_cache를
+    // 유지하고, 리빌드 때 changed_files와 skip_bundle_output을 함께 사용한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "src/core/settings/index.ts",
+        \\export * from './optionStore';
+    );
+    try writeFile(tmp.dir, "src/core/settings/optionStore.ts",
+        \\export const defaultOptions = { mode: 'dev' };
+    );
+    try writeFile(tmp.dir, "src/widgets/loading/index.js",
+        \\import LoadingRing from './LoadingRing';
+        \\export { LoadingRing };
+    );
+    try writeFile(tmp.dir, "src/widgets/loading/LoadingRing.js",
+        \\export default function LoadingRing() {
+        \\  return null;
+        \\}
+    );
+    try writeFile(tmp.dir, "src/widgets/header/index.js",
+        \\export { HeaderSlot } from './HeaderSlot';
+    );
+    try writeFile(tmp.dir, "src/widgets/header/HeaderSlot.js",
+        \\export function HeaderSlot() {
+        \\  return null;
+        \\}
+    );
+    try writeFile(tmp.dir, "src/App.tsx",
+        \\import { defaultOptions as appDefaults } from '~/core/settings';
+        \\import { LoadingRing } from '~/widgets/loading';
+        \\import { HeaderSlot } from '~/widgets/header';
+        \\export default function App() {
+        \\  return [appDefaults.mode, LoadingRing, HeaderSlot, 1];
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "src/App.tsx");
+    defer std.testing.allocator.free(entry);
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+
+    const ts_path_targets = [_]@import("../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const ts_paths = [_]@import("../config.zig").TsConfig.PathEntry{
+        .{
+            .key_prefix = "~/",
+            .key_suffix = "",
+            .has_wildcard = true,
+            .targets = &ts_path_targets,
+        },
+    };
+
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var compiled_cache = CompiledOutputCache.init(std.testing.allocator);
+    defer compiled_cache.deinit();
+
+    const initial_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .module_store = &store,
+        .compiled_cache = &compiled_cache,
+        .ts_paths = &ts_paths,
+        .sourcemap = .{ .enable = true, .lazy = true },
+    });
+    var resolve_cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, initial_opts);
+    defer resolve_cache.deinit();
+
+    var initial = Bundler.init(std.testing.allocator, initial_opts);
+    var initial_result = try initial.bundle();
+    defer initial_result.deinit(std.testing.allocator);
+    defer initial.deinit();
+    try std.testing.expect(!initial_result.hasErrors());
+
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "src/App.tsx",
+        \\import { defaultOptions as appDefaults } from '~/core/settings';
+        \\import { LoadingRing } from '~/widgets/loading';
+        \\import { HeaderSlot } from '~/widgets/header';
+        \\export default function App() {
+        \\  return [appDefaults.mode, LoadingRing, HeaderSlot, 2];
+        \\}
+    );
+
+    var touched = std.StringHashMap(void).init(std.testing.allocator);
+    defer touched.deinit();
+    try touched.put(entry, {});
+
+    var rebuild_opts = initial_opts;
+    rebuild_opts.changed_files = &touched;
+    rebuild_opts.skip_bundle_output = true;
+
+    var rebuild = Bundler.initWithResolveCache(std.testing.allocator, rebuild_opts, &resolve_cache);
+    var rebuild_result = try rebuild.bundle();
+    defer rebuild_result.deinit(std.testing.allocator);
+    defer rebuild.deinit();
+    try std.testing.expect(!rebuild_result.hasErrors());
+
+    const codes = rebuild_result.module_dev_codes orelse return error.TestUnexpectedResult;
+    var saw_app = false;
+    for (codes) |m| {
+        if (std.mem.indexOf(u8, m.id, "src/App.tsx") == null) continue;
+        saw_app = true;
+        try std.testing.expect(std.mem.indexOf(u8, m.code, "require(\"~/") == null);
+        try std.testing.expect(std.mem.indexOf(u8, m.code, "require('~/") == null);
+        try std.testing.expect(std.mem.indexOf(u8, m.code, "__zntc_modules[") != null);
+    }
+    try std.testing.expect(saw_app);
 }
 
 test "IncrementalBundler: detects graph change (new import)" {
@@ -637,7 +854,6 @@ test "BundleResult.reparsed_paths: cache-hit 모듈은 제외, cache-miss 만 �
     // BundleResult 를 직접 생성해 reparsed_paths 검사. IncrementalBundler 는
     // 내부적으로 Bundler.bundle() 을 호출하지만 결과를 노출하지 않으므로,
     // 같은 store 를 공유한 별도 Bundler 로 검증.
-    const Bundler = @import("bundler.zig").Bundler;
     var bundler = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .dev_mode = true,
