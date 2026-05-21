@@ -696,6 +696,10 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       minify: opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax,
       sourcemap: opts.sourcemap,
       splitting: opts.splitting || undefined,
+      jsx: opts.jsx,
+      jsxImportSource: opts.jsxImportSource,
+      jsxFactory: opts.jsxFactory,
+      jsxFragment: opts.jsxFragment,
       compiler: config?.compiler,
     });
     const htmlEnv = loadEnv(

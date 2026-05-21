@@ -166,6 +166,22 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
         owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
     }
 
+    // JSX 옵션 — buildApp(=app build) 도 일반 build 처럼 jsx runtime/import-source 를
+    // 전달해야 한다. 누락 시 JsxConfig default(.classic, React.createElement)로 떨어져
+    // pragma 없는 파일이 `React.createElement` 로 변환되는데 automatic 모드 사용자는
+    // React 를 import 하지 않아 런타임 `React is not defined`. invalid vocab 은
+    // options.zig(buildSync)와 동일하게 strict throw — silent classic fallback 은
+    // 사용자 typo 디버깅을 어렵게 한다. 미지정(null)은 JsxConfig default 그대로.
+    const jsx_str = ownStr(env, opts_obj, "jsx", &owned_strings);
+    var jsx_cfg = zntc_lib.app.build.JsxConfig{};
+    if (jsx_str) |s| {
+        jsx_cfg.runtime = zntc_lib.codegen.codegen.JsxRuntime.fromString(s) orelse
+            return throwError(env, "invalid 'jsx' option (expected automatic / automatic-dev / classic / preserve)");
+    }
+    if (ownStr(env, opts_obj, "jsxImportSource", &owned_strings)) |s| jsx_cfg.import_source = s;
+    if (ownStr(env, opts_obj, "jsxFactory", &owned_strings)) |s| jsx_cfg.factory = s;
+    if (ownStr(env, opts_obj, "jsxFragment", &owned_strings)) |s| jsx_cfg.fragment = s;
+
     const output_count = zntc_lib.app.build.buildApp(native_alloc, .{
         .root = root,
         .outdir = outdir,
@@ -194,6 +210,7 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
         .emotion_label_format = ownStr(env, opts_obj, "emotionLabelFormat", &owned_strings) orelse "",
         .emotion_extra_css_sources = emotion_extra_css orelse &.{},
         .emotion_extra_styled_sources = emotion_extra_styled orelse &.{},
+        .jsx = jsx_cfg,
     }) catch |err| {
         return throwError(env, @errorName(err));
     };
