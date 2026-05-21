@@ -160,7 +160,7 @@ const WORKLET_GLOBAL_BINDINGS = std.StaticStringMap(void).initComptime(.{
 ///   1. 함수 이름 + 파라미터 이름 → locals 집합에 추가
 ///   2. body 내 지역 선언(var/let/const/function) 이름 → locals 집합에 추가
 ///   3. body 내 identifier_reference 이름 → refs 집합에 추가
-///   4. refs - locals - globals = closure 변수
+///   4. refs - locals - (JS_GLOBALS ∪ WORKLET_GLOBAL_BINDINGS) - worklet_globals 옵션 = closure 변수
 pub fn collectClosureVars(
     self: *Transformer,
     body_idx: NodeIndex,
