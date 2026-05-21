@@ -272,6 +272,13 @@ pub const ImportKind = enum {
     glob,
     /// require.context("./pages", true, /\.tsx$/, "sync") — webpack/Metro 호환 (#1579)
     require_context,
+
+    /// importer 본문보다 먼저 평가 효과가 발생해야 하는 정적 ESM 의존성 종류.
+    /// `export { x } from`/`export * from`(re_export)도 source 모듈의 side effect 를
+    /// eager 초기화해야 하므로 포함한다.
+    pub fn isEagerEvalDependency(self: ImportKind) bool {
+        return self == .static_import or self == .side_effect or self == .re_export;
+    }
 };
 
 /// require.context mode. Metro/webpack 명세상 4가지.
