@@ -142,19 +142,7 @@ pub const IncrementalBundler = struct {
     fn doBuild(self: *IncrementalBundler, is_first: bool) !RebuildResult {
         // resolve_cache 초기화 (첫 빌드 시) 또는 재사용
         if (self.resolve_cache == null) {
-            self.resolve_cache = ResolveCache.init(self.allocator, .{
-                .platform = self.options.platform,
-                .external_patterns = self.options.external,
-                .custom_conditions = self.options.conditions,
-                .preserve_symlinks = self.options.preserve_symlinks,
-                .resolve_symlink_siblings = self.options.resolve_symlink_siblings,
-                .disable_hierarchical_lookup = self.options.disable_hierarchical_lookup,
-                .alias = self.options.alias,
-                .fallback = self.options.fallback,
-                .block_list = self.options.block_list,
-                .resolve_extensions = self.options.resolve_extensions,
-                .main_fields = self.options.main_fields,
-            });
+            self.resolve_cache = Bundler.initResolveCacheFromOptions(self.allocator, self.options);
         }
 
         // 증분 빌드: 첫 빌드가 아니면 module_store 를 전달하여 파싱 캐시 활용.
