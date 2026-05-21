@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  # 빌드 설정(release.yml/build.zig)을 바꾸는 PR 은 9-플랫폼 NAPI/CLI 빌드만 돌려
+  # cross-build 회귀를 tag push 전에 잡는다. publish/release 는 push 이벤트 전용이라 skip.
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'build.zig'
+      - 'build.zig.zon'
+  # default branch 에 이 트리거가 있어야 수동 실행 가능 (머지 후 임의 검증용).
+  workflow_dispatch:
 
 # permissions:
 #   contents: write   — github-release job (CLI binary tarball 업로드)
@@ -138,6 +147,13 @@ jobs:
           version: 0.15.2
           cache-key: cli-${{ matrix.target }}
 
+      # mimalloc(prim.c)이 macOS 에서 <CommonCrypto/CommonCryptoError.h> 를 include 하는데,
+      # -Dtarget 명시 시 zig 가 cross 모드가 되어 시스템 SDK 헤더 경로를 자동 포함하지 않는다.
+      # SDKROOT 를 주면 native runner 의 SDK 헤더를 찾아 해결.
+      - name: Setup macOS SDK
+        if: runner.os == 'macOS'
+        run: echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+
       - name: Build CLI (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
 
@@ -152,6 +168,8 @@ jobs:
   publish-npm:
     name: Publish to npm
     needs: build-napi
+    # tag push 일 때만 실제 publish. workflow_dispatch(수동) 는 빌드 검증 전용.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       # `runs-on` 과 매칭 — 변경 시 함께 갱신. 사용처: "Place zntc.node in main package".
@@ -255,6 +273,8 @@ jobs:
   github-release:
     name: Create GitHub Release
     needs: [build-cli, publish-npm]
+    # tag push 전용 — workflow_dispatch 검증 실행에서는 publish-npm 이 skip 되므로 함께 skip.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:

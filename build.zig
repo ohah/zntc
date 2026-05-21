@@ -78,6 +78,16 @@ pub fn build(b: *std.Build) void {
     });
     exe.addIncludePath(b.path("vendor/mimalloc/include"));
 
+    // macOS 를 -Dtarget 으로 cross 빌드하면 zig 가 SDK 의 usr/include 를 자동 포함하지
+    // 않아 mimalloc(prim.c)의 <CommonCrypto/CommonCryptoError.h> 를 못 찾는다.
+    // SDKROOT(CI: xcrun --show-sdk-path) 의 usr/include 를 보강. native 빌드(SDKROOT 미설정)
+    // 는 zig 가 SDK 를 자동 탐지하므로 이 분기를 타지 않는다.
+    if (target.result.os.tag == .macos) {
+        if (b.graph.env_map.get("SDKROOT")) |sdk| {
+            exe.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{sdk}) });
+        }
+    }
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
