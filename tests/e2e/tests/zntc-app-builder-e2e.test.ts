@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PORTS } from './ports';
-import { waitForServer } from './wait-for-server';
+import { waitForServer } from '@zntc/test-helpers';
 
 /**
  * Vite-style app builder (`zntc build` / `zntc dev` / `zntc preview`) 의 브라우저 E2E.

@@ -6,6 +6,7 @@
 // IMPORTANT: 반드시 tests/integration 디렉토리에서 `bun test`로 실행할 것.
 
 import { describe, test, expect, afterEach } from 'bun:test';
+import { waitForServer } from '@zntc/test-helpers';
 import { createFixture, ZNTC_BIN } from './helpers';
 import { join } from 'node:path';
 
@@ -30,22 +31,15 @@ async function startServer(args: string[]): Promise<Server> {
     stderr: 'pipe',
   });
 
-  // 서버 ready 대기 — bundle.js GET 성공할 때까지 최대 5초 polling
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/bundle.js`, {
-        signal: AbortSignal.timeout(200),
-      });
-      if (res.ok || res.status === 500) {
-        await res.text();
-        break;
-      }
-    } catch {
-      // 아직 listen 안 됨
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  // dev server 가 bundle.js 응답 (200/500 둘 다 ready 신호) 할 때까지 최대 5초 폴링.
+  await waitForServer(port, {
+    host: '127.0.0.1',
+    path: '/bundle.js',
+    timeoutMs: 5_000,
+    intervalMs: 100,
+    requestTimeoutMs: 200,
+    acceptStatus: (s) => s === 200 || s === 500,
+  });
 
   return {
     port,

@@ -404,6 +404,7 @@
       },
       "devDependencies": {
         "@types/node": "^25.5.2",
+        "@zntc/test-helpers": "workspace:*",
       },
       "optionalDependencies": {
         "@zntc/core-darwin-arm64": "0.1.0",
@@ -666,6 +667,7 @@
         "@playwright/test": "^1.50.0",
         "@rspack/cli": "2.0.1",
         "@rspack/core": "2.0.1",
+        "@zntc/test-helpers": "workspace:*",
         "react": "19.2.4",
       },
     },
@@ -691,6 +693,7 @@
         "@swc/core": "^1.15.24",
         "@types/bun": "latest",
         "@zntc/core": "workspace:*",
+        "@zntc/test-helpers": "workspace:*",
         "compat-table": "kangax/compat-table",
         "hoist-non-react-statics": "^3.3.2",
         "react-is": "^18.3.1",
@@ -698,6 +701,10 @@
         "svelte": "^5.55.1",
         "vue": "^3.5.31",
       },
+    },
+    "tests/test-helpers": {
+      "name": "@zntc/test-helpers",
+      "version": "0.0.0",
     },
   },
   "packages": {
@@ -2918,6 +2925,8 @@
     "@zntc/rspack-loader": ["@zntc/rspack-loader@workspace:packages/rspack-loader"],
 
     "@zntc/server": ["@zntc/server@workspace:packages/server"],
+
+    "@zntc/test-helpers": ["@zntc/test-helpers@workspace:tests/test-helpers"],
 
     "@zntc/vite-plugin": ["@zntc/vite-plugin@workspace:packages/vite-plugin"],
 
