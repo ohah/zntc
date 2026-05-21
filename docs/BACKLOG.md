@@ -6,14 +6,18 @@
 
 ## 성능 최적화 (SIMD/프로파일링 후)
 
+> **2026-05-22 measure-first 결과 (typescript.js 9MB / ReleaseFast / `zntc bench`)**
+> lexer scan 의 식별자·공백·문자열 스캔은 이미 16바이트 SIMD 적용 완료. 키워드 조회·lookup table 계열(#4/#8/#23)은 실측상 noise floor 아래로 **ROI ≈ 0** 확인.
+> `parse.expression.assignment` 가 profile self 45% 로 최대처럼 보이나, scope 제거 A/B 시 parse −100ms — 대부분 `profile.begin/end` timer 계측 오버헤드(count 큰 scope 의 self 절대값은 신뢰 불가). 새 lexer/parser 최적화 아이디어는 scope 제거 A/B 로 실측 후 진행할 것.
+
 | # | 항목 | 비고 |
 |---|------|------|
-| 1 | `Span`에 `source_id` 추가 (multi-file) | 번들러에서 필요 |
-| 4 | `StaticStringMap` → perfect hash 최적화 | 프로파일링 후 |
+| 1 | `Span`에 `source_id` 추가 (multi-file) | **비표준 설계 — 보류 (2026-05-22 references 4종 실측).** 어느 메이저 번들러도 AST 노드에 source_id 안 박음: esbuild=`Loc{Start int32}` 오프셋만(SourceIndex u32 는 심볼 Ref 전용), rolldown=oxc 동일, rspack=소스맵 합성. 출처는 "번들 줄 위치 + 모듈별 루프(module_id 명시)" 로 추적(현 zts 방식=esbuild 와 동일·정석). 함수 본문 인라인(노드 통째 이동)은 rspack 만 하며, 그조차 인라인 코드를 정의처로 **소스맵 합성(compose)** 으로 매핑 — 노드 확장 아님. Node 24B(`ast.zig:67`) 깨면 캐시 효율 하락(2.6→2.0/line). 진짜 트리거=함수 인라인 도입 시이고 그때도 정석은 소스맵 합성. 굳이 노드에 넣어야 하면 노는 pad 2B(u16=65536 모듈)로 크기 무증가 가능 |
+| 4 | `StaticStringMap` → perfect hash 최적화 | ROI ≈ 0 확인 (2026-05-22) — 키워드 조회 우회 A/B 시 scan 변화 noise floor 아래 |
 | 5 | scan* 함수 테이블 기반 통합 | 구조 리팩토링 |
 | 6 | skipWhitespace/scanIdentifierTail → local pos 패턴 | SIMD PR |
 | 7 | handleNewline 특수화 (handleLF/handleCR) | SIMD PR |
-| 8 | keyword lookup 길이 체크 early-exit | 최적화 PR |
+| 8 | keyword lookup 길이 체크 early-exit | ROI ≈ 0 확인 (2026-05-22) — #4 와 동일 측정. 키워드 조회 자체가 noise floor 아래 |
 | 9 | getLineColumn hint 캐싱 | 최적화 PR |
 | 10 | line_offsets Small Buffer Optimization | 최적화 PR |
 | 14 | scanHexDigits/scanOctalDigits/scanBinaryDigits 통합 | 최적화 PR |
@@ -24,10 +28,9 @@
 | 20 | checkPureComment 최적화 (단일 패스) | 최적화 PR |
 | 21 | checkJSXPragma early-exit | 최적화 PR |
 | 22 | peek() 캐싱 | 최적화 PR |
-| 23 | isAsciiIdentContinue → lookup table | SIMD PR |
+| 23 | isAsciiIdentContinue → lookup table | ROI ≈ 0 확인 (2026-05-22) — 식별자 스캔 inner loop 는 이미 16B SIMD fast path, 이 함수는 16B 미만 tail 스칼라 fallback 에만 쓰임 |
 | 24 | line_offsets/template_depth_stack 초기 용량 | 최적화 PR |
 | 25 | unicode.zig 범위 테이블 불완전 (Georgian 등) | 별도 PR |
-| 28 | runner.zig failed_list 메모리 누수 | Arena 도입 시 해결 |
 | 31 | scratch ArrayList 미적용 일부 파싱 함수 | 최적화 PR |
 | 34 | parseForIn/parseForOf 통합 | 최적화 PR |
 
