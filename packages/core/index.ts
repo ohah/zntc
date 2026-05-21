@@ -1449,7 +1449,7 @@ export interface AppBuildOptions {
   /** Enable code splitting for the application bundle. */
   splitting?: boolean;
   /** JSX runtime: "automatic" / "automatic-dev" / "classic" / "preserve". */
-  jsx?: string;
+  jsx?: 'classic' | 'automatic' | 'automatic-dev' | 'preserve';
   /** JSX import source for the automatic runtime (e.g. "react", "@emotion/react"). */
   jsxImportSource?: string;
   /** Classic-runtime JSX factory (e.g. "React.createElement", "h"). */
