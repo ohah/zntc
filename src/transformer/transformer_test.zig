@@ -2621,6 +2621,22 @@ test "D026 per-file JSX pragma override" {
         try std.testing.expect(std.mem.indexOf(u8, result.code, "\"preact/jsx-runtime\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, result.code, "from \"react/jsx-runtime\"") == null);
     }
+    // `@jsxImportSource @emotion/react` → scoped 패키지 전체 경로 보존 (#3615).
+    // 이전엔 `/` 가 pragma 값 종료로 오인되어 `@emotion` 으로 잘려 `@emotion/jsx-runtime`
+    // (존재하지 않는 패키지) import 가 생성, 번들 시 `require()` fallback → 브라우저 크래시.
+    {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            \\/** @jsxImportSource @emotion/react */
+            \\export const App = () => <p>x</p>;
+        ,
+            "input.jsx",
+            .{ .jsx_runtime = .automatic },
+        );
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "\"@emotion/react/jsx-runtime\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "\"@emotion/jsx-runtime\"") == null);
+    }
     // `@jsxRuntime classic` → automatic 기본 프로젝트를 classic 으로 전환.
     {
         var result = try transpile_mod.transpile(
