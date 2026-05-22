@@ -154,8 +154,8 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
     // chunk 분리가 없어 is_entry_point=true 가 단일파일 entry 오선택을 일으키므로 거부한다
     // (code-review: silent 오동작 방지).
     const splittable = self.code_splitting or self.preserve_modules;
-    for (store.chunks.items) |chk| {
-        if (!splittable) {
+    if (!splittable) {
+        for (store.chunks.items) |chk| {
             self.addDiag(
                 .plugin_error,
                 .@"error",
@@ -165,36 +165,73 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
                 "this.emitFile({ type: 'chunk' }) requires code splitting (splitting: true).",
                 "Enable code splitting, or emit type:'asset' instead.",
             );
-            continue;
         }
-        if (self.path_to_module.get(chk.id)) |idx| {
-            const ei = @intFromEnum(idx);
-            if (ei >= self.modules.count()) continue;
-            const m = self.modules.at(ei);
-            // external/disabled phantom 은 chunk 대상이 아님 — entry 오염 방지 (code-review).
-            if (m.is_external or m.is_disabled) {
-                self.addDiag(
-                    .plugin_error,
-                    .@"error",
-                    chk.id,
-                    .{ .start = 0, .end = 0 },
-                    .resolve,
-                    "this.emitFile({ type: 'chunk' }) id resolves to an external/disabled module — cannot be a chunk.",
-                    "Pass an id of a normal (bundled) module already in the graph.",
-                );
-                continue;
+        return;
+    }
+
+    // fixpoint (RFC §4.3): 신규 모듈(B-ii)을 addModule → discovery 하면 그 모듈의 transform 이
+    // 또 emit chunk 할 수 있어 store.chunks 가 늘 수 있다. processed 까지 처리 후, discovery 가
+    // 새 chunk 요청을 더했으면 while 이 재진입. addModule dedup 으로 bounded.
+    var processed: usize = 0;
+    while (processed < store.chunks.items.len) {
+        const cur_len = store.chunks.items.len;
+        const before_count = self.modules.count();
+        for (store.chunks.items[processed..cur_len]) |chk| {
+            if (self.path_to_module.get(chk.id)) |idx| {
+                // 이미 graph 에 있는 모듈 (B-i).
+                const ei = @intFromEnum(idx);
+                if (ei >= self.modules.count()) continue;
+                const m = self.modules.at(ei);
+                if (m.is_external or m.is_disabled) {
+                    self.addDiag(
+                        .plugin_error,
+                        .@"error",
+                        chk.id,
+                        .{ .start = 0, .end = 0 },
+                        .resolve,
+                        "this.emitFile({ type: 'chunk' }) id resolves to an external/disabled module — cannot be a chunk.",
+                        "Pass an id of a normal (bundled) module already in the graph.",
+                    );
+                    continue;
+                }
+                m.is_emitted_chunk_entry = true;
+            } else {
+                // 신규 모듈 (B-ii): graph 에 없는 id 를 새 entry 로 추가. id 는 plugin 이 this.resolve
+                // 로 얻은 abs path 여야 한다(아래 discovery 가 parse/resolve). addModule dedup.
+                const new_idx = self.addModule(chk.id) catch {
+                    self.addDiag(
+                        .plugin_error,
+                        .@"error",
+                        chk.id,
+                        .{ .start = 0, .end = 0 },
+                        .resolve,
+                        "this.emitFile({ type: 'chunk' }) id could not be added to the graph (resolve it via this.resolve first).",
+                        "Pass an absolute, resolvable module id (e.g. from this.resolve).",
+                    );
+                    continue;
+                };
+                _ = try graph_requested_exports.requestAll(self, new_idx);
+                const nei = @intFromEnum(new_idx);
+                if (nei < self.modules.count()) self.modules.at(nei).is_emitted_chunk_entry = true;
             }
-            m.is_emitted_chunk_entry = true;
-        } else {
-            self.addDiag(
-                .plugin_error,
-                .@"error",
-                chk.id,
-                .{ .start = 0, .end = 0 },
-                .resolve,
-                "this.emitFile({ type: 'chunk' }) id is not an already-graphed module — new-module chunk emit is not supported yet (PR7-2b-i).",
-                "Pass an id already in the module graph (e.g. resolved via this.resolve to a statically imported module).",
-            );
+        }
+        processed = cur_len;
+        // 새로 추가된 emit chunk 모듈을 parse/resolve. discovery 중 transform 이 또 emit chunk
+        // 하면 store.chunks 가 늘어 while 이 재진입(fixpoint).
+        if (self.modules.count() > before_count) {
+            try discoverPendingModulesSequential(self, before_count);
+            // discovery 가 신규 모듈을 external/disabled 로 판정했거나 read 실패(source 비어)면
+            // chunk 대상이 아니다 — 플래그를 clear 해 phantom 모듈이 entry/chunk 로 새는 것을
+            // 막는다. B-i 는 set 전에 가드하지만 B-ii 는 discovery 전에 set 하므로 사후 재검증
+            // (code-review: disabled/ghost 모듈 누수 방지). read 실패는 별도 진단으로 surfacing.
+            var ni = before_count;
+            while (ni < self.modules.count()) : (ni += 1) {
+                const nm = self.modules.at(ni);
+                if (!nm.is_emitted_chunk_entry) continue;
+                if (nm.is_external or nm.is_disabled or nm.source.len == 0) {
+                    nm.is_emitted_chunk_entry = false;
+                }
+            }
         }
     }
 }
