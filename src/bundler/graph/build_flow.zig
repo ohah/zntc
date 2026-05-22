@@ -346,6 +346,76 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
             }
         }
     }
+
+    // implicitlyLoadedAfterOneOf (#3664): 모든 emit chunk 가 graph 에 추가된 *뒤* 양방향 관계를
+    // 배선한다. fixpoint 안에서 하면 parent 가 더 나중 패스에 추가되는 emit chunk 일 때 미존재로
+    // 오판해 헛 진단이 난다 → 루프 종료 후 일괄 처리(이때 모든 emit chunk 가 path_to_module 에 있음).
+    // 인덱스는 이후 finalizeGraph 의 renumber 가 remap 한다(renumber.zig).
+    for (store.chunks.items) |chk| {
+        if (chk.implicitly_loaded_after_one_of.len == 0) continue;
+        const e_idx = resolveExistingModuleIndex(self, source_dir, chk.id) orelse continue;
+        try wireImplicitlyLoaded(self, e_idx, chk.implicitly_loaded_after_one_of, source_dir);
+    }
+}
+
+/// implicitlyLoadedAfterOneOf (#3664, Rollup #3606): emit chunk(e_idx)이 "이들 중 하나가 먼저
+/// 로드된 뒤에 로드"된다는 관계를 양방향으로 graph 에 기록한다. E.implicitly_loaded_after_one_of
+/// += [parent], parent.implicitly_loaded_before += [E]. getModuleInfo(manualChunks meta)가 보고.
+/// **데이터만** — 이 관계를 chunk 중복제거에 반영하는 최적화는 follow-up. 부모 id 는 이미 graph 에
+/// 있어야 한다(Rollup 도 "유일 chunk 연결" 요구) → 미존재 시 진단(silent drop 금지).
+fn wireImplicitlyLoaded(self: *ModuleGraph, e_idx: ModuleIndex, ids: []const []const u8, source_dir: []const u8) !void {
+    if (ids.len == 0) return;
+    const ei = @intFromEnum(e_idx);
+    if (ei >= self.modules.count()) return;
+    for (ids) |raw_id| {
+        const parent_idx = resolveExistingModuleIndex(self, source_dir, raw_id) orelse {
+            self.addDiag(
+                .plugin_error,
+                .@"error",
+                raw_id,
+                .{ .start = 0, .end = 0 },
+                .resolve,
+                "this.emitFile({ type: 'chunk', implicitlyLoadedAfterOneOf }) id is not in the module graph.",
+                "Pass an id reachable from an existing entry (a user entry or a previously emitted chunk).",
+            );
+            continue;
+        };
+        if (parent_idx == e_idx) continue; // self-reference 무시
+        const pi = @intFromEnum(parent_idx);
+        if (pi >= self.modules.count()) continue;
+        try appendUniqueModuleIndex(self.allocator, &self.modules.at(ei).implicitly_loaded_after_one_of, parent_idx);
+        try appendUniqueModuleIndex(self.allocator, &self.modules.at(pi).implicitly_loaded_before, e_idx);
+    }
+}
+
+fn appendUniqueModuleIndex(allocator: std.mem.Allocator, list: *std.ArrayList(ModuleIndex), val: ModuleIndex) !void {
+    for (list.items) |x| {
+        if (x == val) return;
+    }
+    try list.append(allocator, val);
+}
+
+/// id 를 *이미 graph 에 있는* 모듈 index 로 해석한다 (신규 추가 안 함 — implicit 부모는 존재해야).
+/// graph 키(abs/이미 등록)면 직접, 상대/bare 면 resolve 후 abs 로 lookup. 미존재면 null.
+fn resolveExistingModuleIndex(self: *ModuleGraph, source_dir: []const u8, id: []const u8) ?ModuleIndex {
+    if (self.path_to_module.get(id)) |idx| return idx;
+    if (std.fs.path.isAbsolute(id)) return null; // abs 는 위에서 이미 시도됨
+    const resolved = self.resolve_cache.resolveThreadSafe(source_dir, id, .static_import) catch return null;
+    const m_union = resolved orelse return null;
+    switch (m_union) {
+        .file => |f| {
+            defer {
+                self.allocator.free(f.path);
+                if (f.resolve_dir) |d| self.allocator.free(d);
+            }
+            return self.path_to_module.get(f.path);
+        },
+        .disabled => |d| {
+            self.allocator.free(d.path);
+            return null;
+        },
+        else => return null,
+    }
 }
 
 fn applyRuntimePolyfills(self: *ModuleGraph, runtime_indices: *std.ArrayList(ModuleIndex)) !void {

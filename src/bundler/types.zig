@@ -216,10 +216,10 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .code = if (m.is_external or m.source.len == 0) null else m.source,
         .is_included = m.is_included,
         .exports = if (m.is_external) &.{} else m.exported_names,
-        // Phase B (plugin context API) 까지 placeholder 값.
         .synthetic_named_exports = m.synthetic_named_exports != null,
-        .implicitly_loaded_after_one_of = &.{},
-        .implicitly_loaded_before = &.{},
+        // #3664: injectEmittedChunks 가 채운 implicitlyLoadedAfterOneOf 양방향 관계 (Rollup 호환).
+        .implicitly_loaded_after_one_of = m.implicitly_loaded_after_one_of.items,
+        .implicitly_loaded_before = m.implicitly_loaded_before.items,
         .meta = m.plugin_meta,
     };
 }

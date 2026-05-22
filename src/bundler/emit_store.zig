@@ -26,6 +26,10 @@ pub const EmittedChunk = struct {
     /// 최종 출력 파일명 (#1880 PR7-2c). 명시 fileName 이면 emit 시 즉시 set(hash 없음);
     /// name/auto 면 청킹+렌더 후 bundler 가 back-fill([name]-[hash] 확정). getFileName 이 read.
     file_name: ?[]const u8 = null,
+    /// `implicitlyLoadedAfterOneOf` (Rollup #3606, #3664): 이 chunk 가 로드되기 전 먼저 로드돼
+    /// 있다고 보장되는 모듈 id 들. injectEmittedChunks 가 resolve 해 양방향 관계를 graph 에 기록.
+    /// 각 string + 바깥 slice 모두 `EmitStore.allocator` 소유.
+    implicitly_loaded_after_one_of: []const []const u8 = &.{},
 };
 
 /// plugin `this.emitFile` 수집소 (#1880 PR5).
@@ -67,6 +71,8 @@ pub const EmitStore = struct {
         for (self.chunks.items) |chk| {
             self.allocator.free(chk.reference_id);
             self.allocator.free(chk.id);
+            for (chk.implicitly_loaded_after_one_of) |s| self.allocator.free(s);
+            if (chk.implicitly_loaded_after_one_of.len > 0) self.allocator.free(chk.implicitly_loaded_after_one_of);
             if (chk.name) |n| self.allocator.free(n);
             if (chk.file_name) |f| self.allocator.free(f);
         }
@@ -124,7 +130,13 @@ pub const EmitStore = struct {
     /// chunk emit 요청을 등록하고 reference id ("chunk-N") 를 반환한다 (#1880 PR7-2).
     /// id/name/file_name 은 dupe 로 소유. file_name 명시(fileName) 면 getFileName 즉시 가능;
     /// 미지정(name/auto)이면 bundler 가 청킹 후 `setChunkFileName` 으로 back-fill (PR7-2c).
-    pub fn emitChunk(self: *EmitStore, id: []const u8, name: ?[]const u8, file_name: ?[]const u8) ![]const u8 {
+    pub fn emitChunk(
+        self: *EmitStore,
+        id: []const u8,
+        name: ?[]const u8,
+        file_name: ?[]const u8,
+        implicitly_loaded_after_one_of: []const []const u8,
+    ) ![]const u8 {
         const reference_id = try std.fmt.allocPrint(self.allocator, "chunk-{d}", .{self.counter});
         errdefer self.allocator.free(reference_id);
         const id_owned = try self.allocator.dupe(u8, id);
@@ -133,11 +145,30 @@ pub const EmitStore = struct {
         errdefer if (name_owned) |n| self.allocator.free(n);
         const fname_owned: ?[]const u8 = if (file_name) |f| try self.allocator.dupe(u8, f) else null;
         errdefer if (fname_owned) |f| self.allocator.free(f);
+        // implicitlyLoadedAfterOneOf: 각 string + 바깥 slice 를 dupe 로 소유.
+        const implicit_owned: []const []const u8 = if (implicitly_loaded_after_one_of.len > 0) blk: {
+            const arr = try self.allocator.alloc([]const u8, implicitly_loaded_after_one_of.len);
+            var done: usize = 0;
+            errdefer {
+                for (arr[0..done]) |s| self.allocator.free(s);
+                self.allocator.free(arr);
+            }
+            for (implicitly_loaded_after_one_of, 0..) |s, i| {
+                arr[i] = try self.allocator.dupe(u8, s);
+                done = i + 1;
+            }
+            break :blk arr;
+        } else &.{};
+        errdefer if (implicit_owned.len > 0) {
+            for (implicit_owned) |s| self.allocator.free(s);
+            self.allocator.free(implicit_owned);
+        };
         try self.chunks.append(self.allocator, .{
             .reference_id = reference_id,
             .id = id_owned,
             .name = name_owned,
             .file_name = fname_owned,
+            .implicitly_loaded_after_one_of = implicit_owned,
         });
         self.counter += 1;
         return reference_id;
@@ -206,8 +237,8 @@ test "emitChunk 는 chunk-N reference id 를 발급하고 요청을 수집한다
     var store = EmitStore.init(testing.allocator, "[name]-[hash]");
     defer store.deinit();
 
-    const c0 = try store.emitChunk("./worker.ts", null, null);
-    const c1 = try store.emitChunk("./route.ts", "route", null);
+    const c0 = try store.emitChunk("./worker.ts", null, null, &.{});
+    const c1 = try store.emitChunk("./route.ts", "route", null, &.{});
     try testing.expectEqualStrings("chunk-0", c0);
     try testing.expectEqualStrings("chunk-1", c1);
     try testing.expectEqual(@as(usize, 2), store.chunks.items.len);
@@ -224,11 +255,11 @@ test "emitChunk file_name: 명시 fileName 은 즉시 getFileName, auto 는 setC
     defer store.deinit();
 
     // 명시 fileName → 즉시 조회 가능 (hash 없음).
-    const c_explicit = try store.emitChunk("/abs/lib.ts", null, "lib.js");
+    const c_explicit = try store.emitChunk("/abs/lib.ts", null, "lib.js", &.{});
     try testing.expectEqualStrings("lib.js", store.getFileName(c_explicit).?);
 
     // auto(name) → 청킹 전 null, back-fill 후 확정.
-    const c_auto = try store.emitChunk("/abs/worker.ts", "worker", null);
+    const c_auto = try store.emitChunk("/abs/worker.ts", "worker", null, &.{});
     try testing.expect(store.getFileName(c_auto) == null);
     try store.setChunkFileName("/abs/worker.ts", "worker-abc12345.js");
     try testing.expectEqualStrings("worker-abc12345.js", store.getFileName(c_auto).?);
@@ -244,7 +275,7 @@ test "asset/chunk reference id 는 공유 카운터로 서로 유니크하다" {
     defer store.deinit();
 
     const a0 = try store.emitAsset("a.css", "x");
-    const c1 = try store.emitChunk("./b.ts", null, null);
+    const c1 = try store.emitChunk("./b.ts", null, null, &.{});
     const a2 = try store.emitAsset("c.css", "y");
     try testing.expectEqualStrings("asset-0", a0);
     try testing.expectEqualStrings("chunk-1", c1);

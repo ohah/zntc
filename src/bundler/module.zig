@@ -254,6 +254,14 @@ pub const Module = struct {
     /// 나를 dynamic import 하는 모듈들 (역방향). `ModuleGraph.linkDynamicImport` 가 채움.
     dynamic_importers: std.ArrayList(ModuleIndex),
 
+    /// `this.emitFile({ type:'chunk', implicitlyLoadedAfterOneOf })` (Rollup #3606, #3664):
+    /// 이 모듈이 implicitly 로드되기 전에 이들 중 하나가 먼저 로드돼 있다고 plugin 이 보장한 모듈들.
+    /// injectEmittedChunks 가 채우고 getModuleInfo 가 보고(manualChunks meta). 데이터만 —
+    /// 청크 중복제거 최적화는 follow-up.
+    implicitly_loaded_after_one_of: std.ArrayList(ModuleIndex) = .empty,
+    /// 위의 역방향 — 이 모듈이 먼저 로드된 뒤 implicitly 로드되는 모듈들.
+    implicitly_loaded_before: std.ArrayList(ModuleIndex) = .empty,
+
     module_type: ModuleType,
     /// 모듈의 로딩 방식 (file/dataurl/text/binary/copy 등).
     /// addModule에서 확장자 또는 --loader 옵션으로 결정.
@@ -655,6 +663,8 @@ pub const Module = struct {
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
         self.dynamic_importers.deinit(allocator);
+        self.implicitly_loaded_after_one_of.deinit(allocator);
+        self.implicitly_loaded_before.deinit(allocator);
         if (self.resolve_dir) |dir| allocator.free(dir);
         if (self.federation_id) |id| allocator.free(id); // #3318 P1-1 (setBoundary alloc)
         for (self.resolved_deps.items) |dep| {
