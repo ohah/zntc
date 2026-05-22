@@ -819,12 +819,42 @@ pub fn buildIncremental(
     if (self.modules.count() > before_runtime_count) graph_changed = true;
     // watch/incremental 에서도 emit chunk 플래그를 이번 emit_store.chunks 기준으로 set
     // (cache-hit restore 에서 stale 은 이미 reset). build() 와 동일 처리 (#1880 PR7-2b-i).
+    // 신규 emit chunk 모듈(B-ii)은 메인 discovery 루프 밖(injectEmittedChunks 안)에서 추가/파싱
+    // 되므로 reparsed 에 누락된다 → 그 모듈 경로를 모아 renumber 후 reparsed 에 등록한다(아래).
+    // 누락 시 HMR diff 가 그 모듈 코드를 "no change" 로 drop → client 에 안 실려 stale (#3664).
+    const before_emit_count = self.modules.count();
     try injectEmittedChunks(self);
+    var emit_new_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer emit_new_paths.deinit(self.allocator);
+    if (self.modules.count() > before_emit_count) {
+        graph_changed = true; // 신규 emit chunk 모듈 추가 = 그래프 변경(rebuild 가 no-change 로 처리되지 않게).
+        var ni = before_emit_count;
+        while (ni < self.modules.count()) : (ni += 1) {
+            const m = self.modules.at(ni);
+            // phantom 재스캔 기준(external/disabled/empty-source)과 동일하게 거른다 — read 실패로
+            // 비워진 모듈은 emit 할 코드가 없어 reparsed 에 넣어봐야 dev_code 매칭이 안 된다.
+            if (m.state != .ready or m.is_external or m.is_disabled or m.source.len == 0) continue;
+            // path 슬라이스는 arena 소유라 renumber(모듈 struct 재배치)에도 안정 → 후속 lookup 키.
+            // emit chunk entry 뿐 아니라 그 신규 transitive dep 도 번들에 처음 등장 → 모두 re-emit 대상.
+            try emit_new_paths.append(self.allocator, m.path);
+        }
+    }
+    // 한계(orthogonal, 미해결): emit 하는 transform 이 cache-hit 으로 skip 되면 emit_store.chunks 가
+    // 비어 그 chunk 가 재플래그 안 돼 main 으로 합쳐진다(emit-on-transform + 증분캐시 모델 속성).
+    // 이 fix 는 "신규 emit chunk 모듈이 reparsed 누락" 만 해결 — cache-hit-collapse 는 별도 follow-up.
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
 
     discover_scope.end();
 
     try finalizeGraph(self, entry_points);
+
+    // renumber(finalizeGraph 내부) 가 path_to_module 을 post-renumber 인덱스로 갱신하므로, 신규
+    // emit chunk 모듈을 *여기서* path→인덱스로 조회해 reparsed 에 넣는다(pre-renumber 인덱스를
+    // 넣으면 emit 모듈은 orphan 으로 끝으로 재배치돼 stale). 메인 루프 reparsed 는 reachable 모듈
+    // 이라 orphan 추가에 인덱스가 흔들리지 않아 그대로 유효.
+    for (emit_new_paths.items) |p| {
+        if (self.path_to_module.get(p)) |idx| try reparsed.append(self.allocator, idx);
+    }
 
     return .{
         .graph_changed = graph_changed or reparsed.items.len > 0,
