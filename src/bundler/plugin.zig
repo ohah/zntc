@@ -115,6 +115,10 @@ pub const HookContext = struct {
     /// `load` / `transform` 이 반환한 source map JSON chain.
     /// 다른 hook 은 사용 안 함. caller 가 free 책임.
     source_maps: ?[]const []const u8 = null,
+    /// `transform` hook 결과의 `{ meta }` (JSON 문자열) out-param (#1880 #3664 P1). source_maps 와
+    /// 동일 패턴 — pluginTransform 이 set, runTransformForModule 이 module.plugin_meta 에 deep merge.
+    /// load/resolveId meta 는 각 hook 결과로 직접 처리. caller(parse_arena) 소유.
+    meta: ?[]const u8 = null,
     /// `this.getModuleInfo` (PR3, self-only) 용 현재 transform 중인 Module 포인터.
     /// graph 를 조회하지 않고 이 모듈 자신의 정보(id/code/meta)만 노출한다 — discovery 병렬
     /// 단계에서 graph 는 main thread 가 mutate 중이므로 worker 가 graph 를 읽으면 race.
@@ -139,6 +143,36 @@ pub const HookContext = struct {
         }
     }
 };
+
+/// 두 plugin meta JSON object 를 deep merge 한다 (#1880 #3664 P1: hook 간 meta 누적).
+/// nested object 는 재귀 merge, scalar/array/타입불일치는 `add`(나중 hook/plugin) 우선 — Rollup 의
+/// hook 순서 의미(later wins)와 일치. shallow merge 는 nested 손실이라 쓰지 않는다. 중간/결과 Value
+/// 는 `arena` 소유. 한쪽이 비-object 이거나 parse 실패면 안전하게 add/base 로 fallback. runTransform
+/// (chain 누적)·runTransformForModule(load+transform) 양쪽이 공유하도록 plugin.zig 에 둔다.
+pub fn mergeMetaJson(arena: std.mem.Allocator, base: ?[]const u8, add: []const u8) ![]const u8 {
+    const base_json = base orelse return arena.dupe(u8, add);
+    var base_v = std.json.parseFromSliceLeaky(std.json.Value, arena, base_json, .{}) catch
+        return arena.dupe(u8, add);
+    const add_v = std.json.parseFromSliceLeaky(std.json.Value, arena, add, .{}) catch
+        return arena.dupe(u8, base_json);
+    if (base_v != .object or add_v != .object) return arena.dupe(u8, add);
+    try deepMergeMetaValue(&base_v, add_v);
+    return std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(base_v, .{})});
+}
+
+fn deepMergeMetaValue(base: *std.json.Value, add: std.json.Value) std.mem.Allocator.Error!void {
+    var it = add.object.iterator();
+    while (it.next()) |e| {
+        if (base.object.getPtr(e.key_ptr.*)) |existing| {
+            if (existing.* == .object and e.value_ptr.* == .object) {
+                try deepMergeMetaValue(existing, e.value_ptr.*);
+                continue;
+            }
+        }
+        // 신규 키, 또는 둘 중 하나가 비-object → add(나중) 값으로 덮어쓴다.
+        try base.object.put(e.key_ptr.*, e.value_ptr.*);
+    }
+}
 
 /// Plugin resolveId 응답의 통합 모델 (#1885).
 ///
@@ -420,6 +454,17 @@ pub const PluginRunner = struct {
                     hook_ctx.failure = inner_ctx.failure;
                     return err;
                 };
+                // meta 는 code(result) 유무와 무관하게 누적 — Rollup transform 은 meta 만 반환 가능.
+                // chain 의 각 plugin meta 를 outer hook_ctx.meta 에 deep merge(later plugin 우선).
+                // source_maps 와 동일하게 inner_ctx → outer 로 모은다(#1880 #3664 P1). NAPI 경유 JS
+                // plugin 은 단일 dispatcher 가 JS chain 을 이미 merge 하므로 existing 분기는 native↔
+                // native(여러 native plugin 이 meta 반환) 전용 가드 — 현재는 거의 안 타지만 안전망.
+                if (inner_ctx.meta) |m| {
+                    hook_ctx.meta = if (hook_ctx.meta) |existing|
+                        (mergeMetaJson(allocator, existing, m) catch m)
+                    else
+                        m;
+                }
                 if (result) |r| {
                     if (inner_ctx.source_maps) |maps| {
                         try source_maps.appendSlice(allocator, maps);

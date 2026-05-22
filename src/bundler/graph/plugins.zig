@@ -197,6 +197,13 @@ pub fn runTransformForModule(
             return .done;
         },
     };
+    // transform hook 의 { meta } 를 module.plugin_meta 에 deep merge (#1880 #3664 P1).
+    // Rollup transform 은 code 없이 meta 만 반환할 수 있으므로 transform_result 유무와 무관하게
+    // 처리한다. 결과/입력 meta 모두 parse_arena(arena_alloc) 소유 = module 수명과 동일(load meta
+    // 동일 패턴). worker 가 결과로 반환 → main 이 module 에 저장하는 경로라 graph race 없음.
+    if (hook_ctx.meta) |tm| {
+        module.plugin_meta = plugin_mod.mergeMetaJson(arena_alloc, module.plugin_meta, tm) catch module.plugin_meta;
+    }
     if (transform_result) |result| {
         if (hook_ctx.source_maps) |maps| {
             if (!graph_diagnostics.validatePluginSourceMaps(self, maps, module.path, Span.EMPTY, .transform, "transform")) {
