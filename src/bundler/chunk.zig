@@ -196,6 +196,10 @@ pub const Chunk = struct {
     name: ?[]const u8,
     /// 최종 출력 경로 (예: "dist/index-abc123.js"). 빌림 — deinit에서 해제하지 않음.
     filename: ?[]const u8,
+    /// plugin `emitFile({ type:'chunk', fileName })` 의 verbatim 출력 경로 (#1880 PR7-2d).
+    /// non-null 이면 naming pattern([name]-[hash]) / content-hash placeholder / 확장자 append 를
+    /// 모두 우회해 이 문자열을 그대로 출력 파일명·import 경로로 쓴다. emit_store 소유 — 빌림(미해제).
+    explicit_file_name: ?[]const u8 = null,
     /// 실행 순서 (exec_index 기준 정렬에 사용)
     exec_order: u32,
     /// preserve-modules: 원본 모듈의 절대 경로 (출력 디렉토리 구조 결정용).
@@ -619,13 +623,16 @@ pub fn generateChunks(
 
         // 출력 파일명 = 모듈 파일명의 stem (확장자 제거). plugin emit chunk(name 지정)면 그 name 우선
         // (#1880 PR7-2c) — [name]-[hash] 의 [name] 으로 쓰여 plugin 이 chunk 이름을 제어한다.
+        // 명시 fileName(#1880 PR7-2d)이면 verbatim 출력 — explicit_file_name 으로 캐리해 패턴/hash 우회.
         const entry_mod = graph.getModule(entry.module_idx) orelse return error.InvalidEntryModule;
+        var explicit_file_name: ?[]const u8 = null;
         const name = blk: {
             if (entry_mod.is_emitted_chunk_entry) {
                 if (graph.emit_store) |sp| {
                     const store: *const @import("emit_store.zig").EmitStore = @ptrCast(@alignCast(sp));
                     for (store.chunks.items) |chk| {
                         if (std.mem.eql(u8, chk.id, entry_mod.path)) {
+                            explicit_file_name = chk.file_name; // 명시 fileName 이면 verbatim (없으면 null)
                             if (chk.name) |n| break :blk n;
                             break;
                         }
@@ -641,6 +648,7 @@ pub fn generateChunks(
             .is_dynamic = entry.is_dynamic,
         } }, bits);
         chunk.name = name;
+        chunk.explicit_file_name = explicit_file_name;
 
         const ci = try chunk_graph.addChunk(chunk);
         try bits_to_chunk.put(allocator, bits, ci);
