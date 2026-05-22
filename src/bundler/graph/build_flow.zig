@@ -130,10 +130,73 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer runtime_indices.deinit(self.allocator);
     try applyRuntimePolyfills(self, &runtime_indices);
+    try injectEmittedChunks(self);
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
     discover_scope.end();
 
     try finalizeGraph(self, entry_points);
+}
+
+/// PR7-2b-i (#1880): plugin `this.emitFile({ type: 'chunk', id })` 로 별도 chunk 요청된 모듈을
+/// 표시한다. discovery 패스가 모두 끝난 뒤(build thread, 모든 hook drain) emit_store.chunks 를
+/// read 하므로 Node main 의 write 와 패스 경계로 분리돼 mutex 불필요(RFC §3 옵션 B).
+///
+/// **B-i 범위**: id 가 *이미 graph 에 있는* 모듈일 때만 `is_emitted_chunk_entry` 플래그를 set
+/// (finalizeGraph 가 DFS 루트로, chunk.zig 가 dynamic entry 로 분리). 신규 모듈(graph 미존재)은
+/// resolution+discovery 가 필요해 B-ii 대기 → 진단으로 surfacing(silent-broken 방지).
+/// 플래그는 renumber 가 Module 을 옮겨도 따라가므로 finalizeGraph/chunk.zig 가 renumber 후
+/// 안전하게 읽는다(index 배열 전달 불필요).
+fn injectEmittedChunks(self: *ModuleGraph) !void {
+    const store_ptr = self.emit_store orelse return; // chunk 미사용 빌드: hot path 0
+    const store: *@import("../emit_store.zig").EmitStore = @ptrCast(@alignCast(store_ptr));
+    if (store.chunks.items.len == 0) return;
+    // emit chunk 는 별도 chunk 분리가 가능한 모드에서만 의미. 단일파일 모드(splitting:false)면
+    // chunk 분리가 없어 is_entry_point=true 가 단일파일 entry 오선택을 일으키므로 거부한다
+    // (code-review: silent 오동작 방지).
+    const splittable = self.code_splitting or self.preserve_modules;
+    for (store.chunks.items) |chk| {
+        if (!splittable) {
+            self.addDiag(
+                .plugin_error,
+                .@"error",
+                chk.id,
+                .{ .start = 0, .end = 0 },
+                .resolve,
+                "this.emitFile({ type: 'chunk' }) requires code splitting (splitting: true).",
+                "Enable code splitting, or emit type:'asset' instead.",
+            );
+            continue;
+        }
+        if (self.path_to_module.get(chk.id)) |idx| {
+            const ei = @intFromEnum(idx);
+            if (ei >= self.modules.count()) continue;
+            const m = self.modules.at(ei);
+            // external/disabled phantom 은 chunk 대상이 아님 — entry 오염 방지 (code-review).
+            if (m.is_external or m.is_disabled) {
+                self.addDiag(
+                    .plugin_error,
+                    .@"error",
+                    chk.id,
+                    .{ .start = 0, .end = 0 },
+                    .resolve,
+                    "this.emitFile({ type: 'chunk' }) id resolves to an external/disabled module — cannot be a chunk.",
+                    "Pass an id of a normal (bundled) module already in the graph.",
+                );
+                continue;
+            }
+            m.is_emitted_chunk_entry = true;
+        } else {
+            self.addDiag(
+                .plugin_error,
+                .@"error",
+                chk.id,
+                .{ .start = 0, .end = 0 },
+                .resolve,
+                "this.emitFile({ type: 'chunk' }) id is not an already-graphed module — new-module chunk emit is not supported yet (PR7-2b-i).",
+                "Pass an id already in the module graph (e.g. resolved via this.resolve to a statically imported module).",
+            );
+        }
+    }
 }
 
 fn applyRuntimePolyfills(self: *ModuleGraph, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
@@ -291,6 +354,21 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
         }
     }
 
+    // PR7-2b-i (#1880): emit chunk 모듈도 DFS 루트 — exec_index 부여 + is_entry_point(export 보존).
+    // renumber 후라 플래그를 순회해 현재 index 로 처리(plugin emit 은 entry_points 경로에 없음).
+    // 이미 import 된 모듈(B-i)이면 dfs 가 visited 로 빠르게 리턴, is_entry_point/markViaDynamic 만 의미.
+    {
+        var mi: usize = 0;
+        while (mi < self.modules.count()) : (mi += 1) {
+            const m = self.modules.at(mi);
+            if (!m.is_emitted_chunk_entry) continue;
+            m.is_entry_point = true;
+            const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(mi)));
+            try graph_cycles.dfs(self, idx, &visited, &in_stack);
+            try entry_indices.append(self.allocator, idx);
+        }
+    }
+
     // dfs 는 dependencies 만 따라가서 exec_index/TLA 분석 정확. dynamic edge 통한
     // static cycle 멤버 marking 은 별도 pass (#2211).
     try graph_cycles.markViaDynamic(self, entry_indices.items);
@@ -443,6 +521,11 @@ pub fn buildIncremental(
                 mod.dynamic_imports = saved_dynamic;
                 mod.dynamic_importers = saved_dynamic_importers;
                 mod.mtime = mtime;
+                // is_emitted_chunk_entry 는 빌드별 derived state(plugin this.emitFile chunk).
+                // store round-trip 으로 복원하면 이전 빌드의 emit 이 영구 split 으로 굳으므로
+                // 매 rebuild reset → injectEmittedChunks 가 이번 emit_store.chunks 기준 재set
+                // (code-review: watch stale 플래그 방지, #1880 PR7-2b-i).
+                mod.is_emitted_chunk_entry = false;
                 // PR-Z3: 정상 경로에선 `addModuleWithResolveDir` 에서 이미 capacity 8 을
                 // 확보하므로 여기서는 no-op (saved_deps 는 그 capacity 를 그대로 캐리).
                 // 다만 disabled/external 같은 by-pass 경로가 미래에 cache-hit 분기로
@@ -515,6 +598,9 @@ pub fn buildIncremental(
     const before_runtime_count = self.modules.count();
     try applyRuntimePolyfills(self, &runtime_indices);
     if (self.modules.count() > before_runtime_count) graph_changed = true;
+    // watch/incremental 에서도 emit chunk 플래그를 이번 emit_store.chunks 기준으로 set
+    // (cache-hit restore 에서 stale 은 이미 reset). build() 와 동일 처리 (#1880 PR7-2b-i).
+    try injectEmittedChunks(self);
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
 
     discover_scope.end();

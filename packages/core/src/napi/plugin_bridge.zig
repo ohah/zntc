@@ -391,6 +391,18 @@ pub const NapiPlugin = struct {
 
         const store: *EmitStore = @ptrCast(@alignCast(data orelse return js_null));
 
+        // chunk emit (#1880 PR7-2b): chunkId 가 있으면 source 없이 chunk 요청 수집.
+        // JS 가 type:'chunk' 일 때 { chunkId, chunkName? } 로 정규화해 넘긴다.
+        if (getObjectString(env, argv[0], "chunkId", native_alloc)) |chunk_id| {
+            defer native_alloc.free(chunk_id);
+            const chunk_name = getObjectString(env, argv[0], "chunkName", native_alloc);
+            defer if (chunk_name) |n| native_alloc.free(n);
+            const cref = store.emitChunk(chunk_id, chunk_name) catch return js_null;
+            var js_cref: c.napi_value = undefined;
+            if (c.napi_create_string_utf8(env, cref.ptr, cref.len, &js_cref) != c.napi_ok) return js_null;
+            return js_cref;
+        }
+
         // source 는 string / Uint8Array / Buffer 모두 수용 (binary-safe asset). 빈 source 도 허용.
         const source = getObjectBytes(env, argv[0], "source", native_alloc) orelse return js_null;
         defer native_alloc.free(source);
