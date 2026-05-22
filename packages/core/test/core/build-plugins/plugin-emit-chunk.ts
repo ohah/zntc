@@ -54,13 +54,50 @@ describe('@zntc/core build + plugins - this.emitFile chunk (PR7-2b-i)', () => {
     }
   });
 
-  test('graph 에 없는 신규 모듈 emit chunk 는 B-ii 대기 — build 진단', async () => {
+  test('코드에 import 없는 신규 모듈을 emit chunk 로 별도 chunk 분리한다 (B-ii)', async () => {
+    let refId: unknown = 'unset';
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-new-'));
+    const workerPath = join(dir, 'worker.ts');
     const plugin: ZntcPlugin = {
-      name: 'emit-chunk-new',
+      name: 'emit-chunk-new-module',
+      setup(build) {
+        build.onTransform(
+          { filter: /main\.ts$/ },
+          async function (this: RollupPluginContext, args: { path: string }) {
+            // worker 는 main 이 정적/동적 import 안 함 → graph 에 없음(신규). this.resolve 로 abs id.
+            const r = await this.resolve('./worker.ts', args.path);
+            refId = this.emitFile({ type: 'chunk', id: r!.id });
+            return null;
+          },
+        );
+      },
+    };
+    try {
+      writeFileSync(workerPath, 'export const w = 99;\nconsole.log("worker-side-effect");\n');
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n'); // worker 미참조
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBe(0);
+      expect(typeof refId).toBe('string');
+      // worker 가 신규 entry 로 graph 에 추가되고 tree-shaking 생존 → 별도 chunk 로 출력.
+      const workerChunk = result.outputFiles.find((f) => f.path.includes('worker'));
+      expect(workerChunk).toBeDefined();
+      expect(workerChunk!.text).toContain('99');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolve 불가능한 id 의 chunk emit 은 build 진단', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-ghost-'));
+    const plugin: ZntcPlugin = {
+      name: 'emit-chunk-ghost',
       setup(build) {
         build.onTransform({ filter: /main\.ts$/ }, function (this: RollupPluginContext) {
-          this.emitFile({ type: 'chunk', id: join(dir, 'ghost.ts') }); // graph 에 없음
+          this.emitFile({ type: 'chunk', id: join(dir, 'ghost.ts') }); // 파일 없음 → graph 추가 실패
           return null;
         });
       },

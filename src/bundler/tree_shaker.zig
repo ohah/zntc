@@ -335,6 +335,11 @@ pub const TreeShaker = struct {
                         break;
                     }
                 }
+                // plugin this.emitFile({type:'chunk'}) 로 분리 요청된 모듈 (#1880 PR7-2b). 신규
+                // 모듈(코드에 import 없음)은 BFS 로 도달 불가 → entry_set 에 넣지 않으면 tree-shaking
+                // 으로 제거된다(RFC §4.5(1) 생존 핵심). 이미 import 된 B-i 모듈은 이미 set 됨.
+                if (self.entry_set.isSet(i)) continue;
+                if (m.is_emitted_chunk_entry) self.entry_set.set(i);
             }
         }
 
