@@ -230,7 +230,7 @@ import { Editor as TiptapEditor } from '@tiptap/core';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { StarterKit } from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
-import Image from '@tiptap/extension-image';
+import TiptapImage from '@tiptap/extension-image';
 import Table from '@tiptap/extension-table';
 import TaskList from '@tiptap/extension-task-list';
 
@@ -265,7 +265,7 @@ void EditorState; void EditorView; void Schema; void DOMParser; void PmNode;
 void pmTransform; void pmSchemaBasic; void pmSchemaList; void pmCommands; void pmKeymap; void pmHistory;
 void pmDropCursor; void pmGapCursor; void pmInputRules; void pmMenu;
 void TiptapEditor; void useEditor; void EditorContent; void StarterKit;
-void Link; void Image; void Table; void TaskList;
+void Link; void TiptapImage; void Table; void TaskList;
 void XLSX; void jsPDF; void pdfMake; void html2canvas;
 void socketIO; void HubConnectionBuilder; void LogLevel;
 void Mixpanel; void algoliasearch;

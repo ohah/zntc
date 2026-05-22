@@ -45,6 +45,9 @@ examples/react-19-zntc/dist/
 examples/react-19-vite/dist/
 examples/rspack/dist/
 examples/module-federation/dist/
+# RN 예제: Re.Pack(rspack) 번들 산출물 + RN codegen 산출물 (build/generated/ios 등) + svgr 스크래치 아이콘.
+examples/react-native-*/build/
+examples/react-native-*/test-icon-*.png
 # 루트 cwd 에 떨어지는 임시 빌드 산출물 (NAPI 직접 호출 경로 / examples 빌드 leftover).
 /dist/
 
