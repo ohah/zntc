@@ -770,7 +770,7 @@ pub fn buildMetadataForAst(
                 // lazy(inline-requires) 대상이 아니다. lazy 로 두면 아래 appendEsmInitCall 이 스킵돼
                 // target(default) export 가 init_xxx() 호출 전에 참조됨 → 미초기화 ReferenceError
                 // (code-review max 적발: RN/Metro inline_requires + esm-wrapped sideEffects:false).
-                const is_synthetic_binding = if (resolved) |rb| rb.synthetic_member != null else false;
+                const is_synthetic_binding = if (resolved) |rb| rb.canonical.synthetic_member != null else false;
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
@@ -945,7 +945,7 @@ pub fn buildMetadataForAst(
                     // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를
                     // default export 객체의 member 참조로 치환. owned(allocPrint)라 lazy 와 같은
                     // 소유권 경로(owned_nested_renames)로 등록.
-                    const synth_member: ?[]const u8 = if (resolved) |rb| rb.synthetic_member else null;
+                    const synth_member: ?[]const u8 = if (resolved) |rb| rb.canonical.synthetic_member else null;
                     const rename_value = if (synth_member) |member|
                         try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ target_name, member })
                     else if (lazy_esm_import)
@@ -1408,6 +1408,10 @@ pub fn buildCrossModuleConstValuesProfiled(
             defer scope.end();
             break :blk self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
         };
+        // #3664 P2: synthetic 바인딩(`{target}.{member}`)은 cross-module const 인라인 대상이 아니다.
+        // canon 은 target export(예 scalar default 42)를 가리키지만 실제 값은 그 member 라, 인라인하면
+        // import 이름이 target 전체 값으로 잘못 치환된다(rename 경로와도 충돌). synthetic 은 skip.
+        if (canon.synthetic_member != null) continue;
         const Lookup = struct {
             sem: @import("../module.zig").ModuleSemanticData,
             sym_idx: usize,

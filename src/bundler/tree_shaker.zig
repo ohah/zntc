@@ -1386,17 +1386,10 @@ pub const TreeShaker = struct {
         const canonical = blk: {
             var resolve_scope = profile.begin(.shake_fixpoint_bfs_seed_export_resolve);
             defer resolve_scope.end();
-            const tm_idx = @as(u32, @intCast(target_mod));
-            if (self.linker.resolveExportChain(@enumFromInt(tm_idx), imported_name, 0)) |c| break :blk c;
-            // #3664 P2: synthetic_named_exports → 정적 export 없는 import 를 target(default) export 로
-            // seed 해 그 export(및 default 객체 모듈)가 tree-shaking 에서 생존하게 한다. codegen 의
-            // `_default.foo` 가 참조하는 default export 가 dead-code 제거되지 않도록.
-            if (self.graph.getModule(@enumFromInt(tm_idx))) |tm| {
-                if (tm.synthetic_named_exports) |st| {
-                    if (self.linker.resolveExportChain(@enumFromInt(tm_idx), st, 0)) |c| break :blk c;
-                }
-            }
-            return;
+            // #3664 P2: synthetic_named_exports 는 resolveExportChain 이 canonical(target export, 보통
+            // default)로 직접 해석하므로 별도 분기 없이 그 export(및 객체 모듈)가 여기서 seed 되어
+            // tree-shaking 생존한다. codegen 의 `_default.foo` 가 dead `_default` 를 참조하지 않도록.
+            break :blk self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse return;
         };
         const canon_mod = canonical.module_index.toU32();
         const canon_m = self.graph.getModule(canonical.module_index) orelse return;
