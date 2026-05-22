@@ -56,6 +56,7 @@ pub const Resolver = resolver.Resolver;
 pub const ResolveResult = resolver.ResolveResult;
 pub const ResolveCache = resolve_cache.ResolveCache;
 pub const Platform = resolve_cache.Platform;
+pub const EmitStore = @import("emit_store.zig").EmitStore;
 pub const Module = module.Module;
 pub const ModuleGraph = graph.ModuleGraph;
 pub const Linker = linker.Linker;

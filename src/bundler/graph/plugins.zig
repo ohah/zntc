@@ -97,7 +97,8 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
         return .done;
     };
     // this.resolve (PR4): load hook 에 ResolveCache 전달 (순수 path resolution, race 없음).
-    var hook_ctx: plugin_mod.HookContext = .{ .resolve_cache = @ptrCast(self.resolve_cache) };
+    // this.emitFile (PR5): load hook 에 EmitStore 전달.
+    var hook_ctx: plugin_mod.HookContext = .{ .resolve_cache = @ptrCast(self.resolve_cache), .emit_store = self.emit_store };
     const load_result = plugin_runner.runLoad(module.path, tmp_arena.allocator(), &hook_ctx) catch |err| switch (err) {
         error.PluginFailed => {
             graph_diagnostics.addPluginFailureDiag(self, hook_ctx.failure, module.path, Span.EMPTY, .resolve);
@@ -184,7 +185,7 @@ pub fn runTransformForModule(
     // this.getModuleInfo (PR3 self-only): graph 대신 현재 모듈 포인터만 전달.
     // graph 조회를 하지 않으므로 discovery 병렬 단계의 race 가 없다. self 모듈의 path/source/
     // plugin_meta 는 worker 가 load 단계에서 이미 확정해 안전하게 읽을 수 있다.
-    var hook_ctx: plugin_mod.HookContext = .{ .current_module = @ptrCast(module), .resolve_cache = @ptrCast(self.resolve_cache) };
+    var hook_ctx: plugin_mod.HookContext = .{ .current_module = @ptrCast(module), .resolve_cache = @ptrCast(self.resolve_cache), .emit_store = self.emit_store };
     const transform_result = plugin_runner.runTransform(module.source, module.path, arena_alloc, &hook_ctx) catch |err| switch (err) {
         error.PluginFailed => {
             graph_diagnostics.addPluginFailureDiag(self, hook_ctx.failure, module.path, Span.EMPTY, .transform);

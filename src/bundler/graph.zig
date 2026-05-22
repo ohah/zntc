@@ -88,6 +88,10 @@ pub const ModuleGraph = struct {
     diagnostics: std.ArrayList(BundlerDiagnostic),
     owned_diagnostic_strings: std.ArrayList([]const u8) = .empty,
     resolve_cache: *ResolveCache,
+    /// `this.emitFile` (PR5) 수집소 포인터(`emit_store.EmitStore`). bundler 가 bundle() 에서
+    /// 단일 store 를 만들어 세팅하며, plugin hook 사이트가 hook_ctx 로 전파한다. null = emitFile
+    /// 미연결(예: worker sub-bundle). 메인 스레드 직렬 write 라 동기화 불필요 (#1880 PR5).
+    emit_store: ?*anyopaque = null,
     source_read_cache: fs.ReadFileCache = .{},
     /// 병렬 워커에서 diagnostics 접근 보호용 mutex
     diag_mutex: std.Thread.Mutex = .{},
