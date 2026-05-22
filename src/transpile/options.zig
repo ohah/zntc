@@ -126,6 +126,8 @@ pub const ConfigOptionsDto = struct {
     format: ?codegen.ModuleFormat = null,
     quotes: ?codegen.QuoteStyle = null,
     platform: ?codegen.Platform = null,
+    /// `--minify` 통합 플래그 (esbuild 호환) — true 면 whitespace/identifiers/syntax 모두 ON.
+    minify: ?bool = null,
     minifyWhitespace: ?bool = null,
     minifyIdentifiers: ?bool = null,
     minifySyntax: ?bool = null,
@@ -232,6 +234,30 @@ pub fn validateMf(mf: *const MfConfigDto) MfValidationError!void {
         var it = r.map.iterator();
         while (it.next()) |kv| if (kv.value_ptr.*.len == 0) return error.MfRemoteEmptyEntry;
     }
+}
+
+test "optionsFromJson: minify=true 가 whitespace/identifiers/syntax 모두 함의 (esbuild parity, #3648)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `--minify` (통합) → 세 하위 minify 전부 ON. NAPI build 경로(options.zig:750-752)와 일관.
+    const all = try optionsFromJson(a, "{\"minify\":true}", null);
+    try std.testing.expect(all.minify_whitespace);
+    try std.testing.expect(all.minify_identifiers);
+    try std.testing.expect(all.minify_syntax);
+
+    // 개별 플래그는 세분 유지 — minifyIdentifiers 만 켜면 나머지는 false.
+    const only_id = try optionsFromJson(a, "{\"minifyIdentifiers\":true}", null);
+    try std.testing.expect(!only_id.minify_whitespace);
+    try std.testing.expect(only_id.minify_identifiers);
+    try std.testing.expect(!only_id.minify_syntax);
+
+    // minify 미지정 시 전부 off (회귀 가드).
+    const none = try optionsFromJson(a, "{}", null);
+    try std.testing.expect(!none.minify_whitespace);
+    try std.testing.expect(!none.minify_identifiers);
+    try std.testing.expect(!none.minify_syntax);
 }
 
 test "validateMf: record 형태 + exposes/remotes 있으면 name 필수" {
@@ -369,6 +395,13 @@ pub fn applyTranspileSharedFields(
     if (dto.minifyWhitespace) |v| target.minify_whitespace = v;
     if (dto.minifyIdentifiers) |v| target.minify_identifiers = v;
     if (dto.minifySyntax) |v| target.minify_syntax = v;
+    // `--minify` 통합 → 세 하위 minify 모두 ON (개별 플래그보다 우선). esbuild 의미론 +
+    // NAPI build 경로(napi/options.zig:750-752)와 일관 — 그동안 transpile 경로만 누락(#3648).
+    if (dto.minify) |v| if (v) {
+        target.minify_whitespace = true;
+        target.minify_identifiers = true;
+        target.minify_syntax = true;
+    };
     if (dto.sourcemap) |v| target.sourcemap = v;
     if (dto.sourcemapDebugIds) |v| target.sourcemap_debug_ids = v;
     if (dto.sourcesContent) |v| target.sources_content = v;
