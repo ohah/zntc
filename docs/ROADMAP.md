@@ -228,8 +228,8 @@ esbuild / rolldown / rspack 기준으로 ZNTC에 빠진 기능 목록.
 - ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
 - ~~**Stage 3 decorators**~~ — ✅ 완료. TC39 Stage 3 데코레이터 다운레벨링 (method/getter/setter/field/accessor/class, initializer 체이닝, MobX 6 호환). ES5 타겟 포함 (dispatch 수정 #1389). `accessor #x` (private key, #1511) + `accessor [k]` (computed key, #1524) ES5 direct path 까지 구현 — Babel/esbuild/oxc parity.
 - **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
-- **innerGraph** — `L` | 🟡 부분 완료. 순수 local statement, overwritten assignment, overwritten declaration initializer, direct block/function declaration body의 straight-line dead store 제거 완료. 남은 범위: reference 기반 일반 dead store, branch/loop/try control-flow 분석.
-- **lazyBarrel** — `L` | 🟡 부분 완료. 순수 re-export / local re-export / namespace barrel (`import * as X; export { X }`, `re_export_namespace`) emit skip 완료. `requested_exports.zig` + `linker.zig:1237` + `tree_shaker.zig:1220` 에서 namespace 경계 명시 처리. 남은 범위: **wrapper-barrel body mutation 정밀 분석** — 현재 `isWrapperBarrel` 가 lodash-es `lodash.default.js` 같이 imported binding 을 mutate 하는 패턴을 통째 lazy 비활성화 (보수적). mutation 영역만 부분 lazy 적용은 미완.
+- **innerGraph** — `L` | 부분 완료 + **남은 범위 종결**. straight-line dead store(순수 local statement, overwritten assignment/declaration initializer, direct block/function body) 제거 완료. 남은 범위(reference 기반 일반 dead store, branch/loop/try control-flow)는 measure 상 **ROI 0 확정으로 종결** — dead_store OFF/ON 127 lib 절감 0%, esbuild 도 부작용 가능 RHS 의 dead-store 는 보존(semantic-preserving). 이슈 #1030/#1644 closed.
+- **lazyBarrel** — `L` | 부분 완료 + **wrapper-barrel 정밀화 폐기**. 순수 re-export / local re-export / namespace barrel emit skip 완료(`requested_exports.zig` + `linker.zig` + `tree_shaker.zig` 의 namespace 경계 처리). 남은 wrapper-barrel body mutation 정밀화는 **폐기·재시도 금지** — PoC 가 smoke win 0(실적용처 없음, esbuild/rolldown/rspack 도 미구현하며 더 작은 결과).
 - ~~**realContentHash**~~ — ✅ 완료. SHA-256 기반 `[hash]` 패턴 (emitter/chunks.zig)
 - ~~**sourcemapDebugIds**~~ — ✅ 완료. `--sourcemap-debug-ids` UUID v4, 번들+소스맵 매칭
 - ~~**shimMissingExports**~~ — ✅ 완료. `--shim-missing-exports` 롤다운 호환
@@ -248,7 +248,7 @@ esbuild / rolldown / rspack 기준으로 ZNTC에 빠진 기능 목록.
 | **Lazy compilation**         | XL     | ❌      | ❌                | ✅             | ❌  | 온디맨드 모듈 컴파일 (dev 시작 가속)                                             |
 | ~~**Stage 3 decorators**~~   | ✅     | ❌      | ✅                | ✅             | ✅  | TC39 Stage 3 데코레이터 (legacy + Stage 3)                                       |
 | **mangleProps**              | XL     | ✅      | ❌                | ❌             | ❌  | cross-module 프로퍼티 난독화                                                     |
-| **lazyBarrel**               | L      | ❌      | ✅                | ❌             | 🟡  | barrel re-export 컴파일 생략 — 순수/local/namespace barrel 처리 완료, wrapper-barrel mutation 정밀화 미완 |
+| **lazyBarrel**               | L      | ❌      | ✅                | ❌             | 🟡  | barrel re-export 컴파일 생략 — 순수/local/namespace barrel 처리 완료, wrapper-barrel mutation 정밀화는 폐기(ROI 0, PoC smoke win 0) |
 | ~~**import.meta.glob**~~     | ✅     | ❌      | ✅                | ❌             | ✅  | Vite 호환 glob import                                                            |
 | ~~**플러그인 N-API**~~       | ✅     | ✅ (Go) | ✅ (Rust)         | ✅             | ✅  | in-process NAPI + async 훅 + Vite 어댑터                                         |
 | ~~**HMR module-level**~~     | ✅     | ❌      | ✅                | ✅             | ✅  | `import.meta.hot.accept()`                                                       |
@@ -287,24 +287,25 @@ esbuild / rolldown / rspack 기준으로 ZNTC에 빠진 기능 목록.
   Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
   Module Federation 🟡 RFC #3318 P1 진행 중 — 컨테이너 init/named share scope/strictVersion/manifest 게시 (런타임 동적 remote 빌드검증은 설계 한계)
   manualChunks ✅ 완료 — Rollup 호환 (record + function + meta API 13/14 필드)
-  innerGraph 🟡 부분 완료 — straight-line local dead store 제거 완료. 다음: reference 기반 일반 dead store/control-flow 확장
+  innerGraph 부분 완료 — straight-line local dead store 제거 완료. 일반 dead store/control-flow 는 ROI 0 확정으로 종결 (#1030/#1644 closed)
   Rollup ModuleInfo Phase B (#1880) — plugin context API + meta 필드 (1.5~2주)
   Rollup ModuleInfo Phase C (#1881) — ESTree adapter (info.ast, 2~4주)
 ```
 
-### 기술부채 & 구조적 제약
+### CSS / 비-JS 모듈 처리 (구현 완료)
 
-현재 번들러는 **JS 전용으로 설계**되어 있음. 배치 A~D는 이 구조에 영향 없이 안전하게 구현 가능.
-CSS 번들링/플러그인 API는 JS 전용 경계를 넘어야 함.
+CSS 는 Phase 1 에 도입됐고, 아래 계층이 모두 CSS 모듈(`ast`/`semantic` = null)을 안전하게 처리한다 —
+초기의 "JS 전용 설계" 가정은 제거 완료(2026-05 measure 로 debug/ReleaseFast 빌드에서 crash 0 확인).
 
-**JS 전용 구조 — 수정이 필요한 계층 (CSS/플러그인 시):**
-| 계층 | 파일 | 필요한 변경 |
+| 계층 | 파일 | CSS 처리 (완료) |
 |------|------|-----------|
-| Module 구조체 | module.zig | CSS 모듈 진입 시 null 방어 체크 또는 전용 필드 |
-| Linker | linker.zig | CSS 모듈은 link() 시 스킵하거나 별도 경로 |
-| Tree Shaker | tree_shaker.zig | CSS는 ast=null → side_effects=true 고정 |
-| Emitter 필터 | emitter.zig | CSS 포함으로 필터 확장 + 타입별 emit 분기 |
-| Chunk | chunk.zig | CSS 별도 청크 타입 추가 |
+| Module 구조체 | module.zig | 전용 `css_data` 필드, `ast`/`semantic` = null |
+| Linker | linker.zig | `m.semantic orelse continue` 가드로 CSS skip |
+| Tree Shaker | tree_shaker.zig | `m.semantic`/`ast orelse continue`, `side_effects=true` 로 생존 |
+| Emitter 필터 | emitter.zig | `isJavaScriptLike` 필터로 CSS 제외 |
+| Chunk | chunk.zig | `if (!m.module_type.isJavaScriptLike()) continue` — CSS 는 `css_emitter` 전용 경로 |
+
+알려진 minor: CSS-only entry point(`zntc --bundle x.css`)는 `.css` 가 silent drop(crash 아님, 백로그).
 
 ### 최근 버그 수정
 
