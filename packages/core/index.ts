@@ -2832,7 +2832,10 @@ export interface RollupPluginContext {
   warn(message: unknown): void;
   /** Register an additional file to watch in watch mode. Currently a no-op (graph mutation not supported). */
   addWatchFile(id: string): void;
-  /** Module resolve. Currently unsupported — throws an Error when called to notify the plugin author. */
+  /** Module resolve (Rollup `this.resolve` 호환, #1880 PR4). async build() 의 resolveId/load/transform
+   * hook 에서 native resolver(순수 path resolution)로 해석 → `{ id, external }` 또는 null(미해결).
+   * `options`(skipSelf 등)는 현재 no-op (native resolver 가 plugin 을 재진입하지 않아 skipSelf 자명 충족).
+   * 그 외 hook / buildSync / vitePlugin() 어댑터에서는 throw. */
   resolve(
     source: string,
     importer?: string | null,
