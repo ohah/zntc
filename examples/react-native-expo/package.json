@@ -45,7 +45,19 @@
     "react-native-worklets": "~0.8.1"
   },
   "devDependencies": {
+    "@babel/plugin-syntax-typescript": "^7.28.6",
+    "@babel/plugin-transform-class-properties": "^7.28.6",
+    "@babel/plugin-transform-flow-strip-types": "^7.27.1",
+    "@babel/plugin-transform-private-methods": "^7.28.6",
+    "@babel/plugin-transform-private-property-in-object": "^7.28.6",
+    "@babel/plugin-transform-typescript": "^7.28.6",
+    "@callstack/repack": "5.2.5",
+    "@callstack/repack-plugin-reanimated": "5.2.5",
+    "@react-native-community/cli": "20.1.3",
+    "@react-native-community/cli-platform-ios": "20.1.3",
     "@react-native-community/cli-server-api": "^15.0.0",
+    "@react-native/babel-plugin-codegen": "0.83.4",
+    "@react-native/babel-preset": "0.83.4",
     "@react-native/dev-middleware": "^0.83.1",
     "@react-navigation/core": "^7.17.4",
     "@rozenite/controls-plugin": "^1.8.1",
@@ -58,12 +70,18 @@
     "@rozenite/sqlite-plugin": "^1.8.1",
     "@rozenite/storage-plugin": "^1.8.1",
     "@rozenite/tanstack-query-plugin": "^1.8.1",
+    "@rspack/core": "2.0.1",
+    "@svgr/webpack": "8.1.0",
+    "@swc/helpers": "0.5.21",
     "@tanstack/react-query": "^5",
     "@types/react": "~19.2.10",
     "@zntc/core": "workspace:*",
     "@zntc/react-native": "workspace:*",
+    "babel-plugin-syntax-hermes-parser": "0.36.1",
+    "babel-preset-expo": "~55.0.21",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~55.0.0",
+    "hermes-parser": "0.36.1",
     "typescript": "~5.9.2"
   }
 }
