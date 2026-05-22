@@ -131,6 +131,79 @@ describe('@zntc/core build + plugins - this.emitFile chunk (PR7-2b-i)', () => {
     }
   });
 
+  test('상대 specifier 신규 모듈 emit chunk — this.resolve 없이 project_root 기준 resolve (RFC §4.2)', async () => {
+    // abs path(this.resolve 결과)뿐 아니라 RFC §4.2 는 resolveThreadSafe 로 상대/bare specifier 도
+    // 받도록 명세한다. plugin 이 this.resolve 를 선호출하지 않고 './worker.ts' 를 그대로 emit 해도
+    // source_dir(project_root) 기준으로 resolve 되어 별도 chunk 로 나와야 한다(Rollup 동형).
+    let refId: unknown = 'unset';
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-rel-'));
+    const plugin: ZntcPlugin = {
+      name: 'emit-chunk-relative',
+      setup(build) {
+        build.onTransform({ filter: /main\.ts$/ }, function (this: RollupPluginContext) {
+          // 미해석 상대 경로 — resolve 는 ZNTC 내부가 담당.
+          refId = this.emitFile({ type: 'chunk', id: './worker.ts' });
+          return null;
+        });
+      },
+    };
+    try {
+      // package.json 으로 project_root 를 dir 에 고정 → 상대 './worker.ts' 가 dir 기준 resolve.
+      // (project_root 자동탐지가 tmpdir 조상의 package.json 으로 새지 않도록 — 환경 독립 보장.)
+      writeFileSync(join(dir, 'package.json'), '{}\n');
+      writeFileSync(join(dir, 'worker.ts'), 'export const w = 7;\nconsole.log("rel-worker");\n');
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBe(0);
+      expect(typeof refId).toBe('string');
+      const workerChunk = result.outputFiles.find((f) => f.path.includes('worker'));
+      expect(workerChunk).toBeDefined();
+      expect(workerChunk!.text).toContain('7');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('emit-within-emit: 신규 모듈의 transform 이 또 emit chunk 하면 fixpoint 로 둘 다 분리', async () => {
+    // a.ts 는 plugin 이 emit(신규), 그 a.ts 의 transform 이 b.ts 를 또 emit → 재-discovery
+    // fixpoint 가 b.ts 까지 별도 chunk 로 분리해야 한다(RFC §4.3).
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-nested-'));
+    const plugin: ZntcPlugin = {
+      name: 'emit-chunk-nested',
+      setup(build) {
+        build.onTransform({ filter: /main\.ts$/ }, function (this: RollupPluginContext) {
+          this.emitFile({ type: 'chunk', id: './a.ts' });
+          return null;
+        });
+        build.onTransform({ filter: /a\.ts$/ }, function (this: RollupPluginContext) {
+          this.emitFile({ type: 'chunk', id: './b.ts' });
+          return null;
+        });
+      },
+    };
+    try {
+      // project_root 를 dir 에 고정(상대 './a.ts'/'./b.ts' resolve 기준 — 환경 독립).
+      writeFileSync(join(dir, 'package.json'), '{}\n');
+      writeFileSync(join(dir, 'a.ts'), 'export const a = 11;\nconsole.log("a-side");\n');
+      writeFileSync(join(dir, 'b.ts'), 'export const b = 22;\nconsole.log("b-side");\n');
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBe(0);
+      expect(result.outputFiles.find((f) => f.path.includes('a'))).toBeDefined();
+      expect(result.outputFiles.find((f) => f.path.includes('b'))).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('resolve 불가능한 id 의 chunk emit 은 build 진단', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-ghost-'));
     const plugin: ZntcPlugin = {
