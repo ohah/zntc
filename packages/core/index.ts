@@ -1854,7 +1854,9 @@ type NativeResolveFn = (
 type NativeEmitFileFn = (file: {
   fileName?: string;
   name?: string;
-  source: string | Uint8Array;
+  source?: string | Uint8Array;
+  chunkId?: string;
+  chunkName?: string;
 }) => string | null;
 // #1880 PR6: native getFileName 콜백. reference id → 최종 출력 파일명(미등록이면 null).
 type NativeGetFileNameFn = (referenceId: string) => string | null;
@@ -2884,8 +2886,9 @@ export interface RollupPluginContext {
    * resolveId/load/transform hook 에서 `{ type: 'asset', fileName | name, source }` 를 emit →
    * reference id 반환, 해당 asset 은 `result.outputFiles` 에 나타난다. `fileName` 은 그대로,
    * `name` 은 source hash 로 파일명 자동 생성(file/copy loader 와 동일 `assetNames` 패턴).
-   * vitePlugin() 어댑터의 resolveId/load/transform hook 에서도 동작(#1880 PR7). `type: 'chunk'` 는
-   * follow-up 으로 throw. 그 외 hook / buildSync 에서도 throw.
+   * vitePlugin() 어댑터의 resolveId/load/transform hook 에서도 동작(#1880 PR7).
+   * `{ type: 'chunk', id }` 는 id(이미 graph 에 있는 모듈)를 별도 chunk 로 분리(#1880 PR7-2b-i,
+   * splitting:true). 신규 모듈 chunk emit 은 미지원(build 진단). 그 외 hook / buildSync 는 throw.
    * **반드시 hook 본문에서 동기적으로 호출**해야 한다 — `await` 이후나 detached promise 에서
    * 호출하면 EmitStore 수명을 벗어나 asset 이 누락되거나 정의되지 않은 동작이 된다 (follow-up). */
   emitFile(file: unknown): string;
@@ -3013,10 +3016,35 @@ function createRollupPluginContext(
       if (typeof file !== 'object' || file === null) {
         throw new Error(`@zntc/core [${pluginName}]: this.emitFile() 는 객체 인자가 필요합니다.`);
       }
-      const f = file as { type?: unknown; fileName?: unknown; name?: unknown; source?: unknown };
+      const f = file as {
+        type?: unknown;
+        fileName?: unknown;
+        name?: unknown;
+        source?: unknown;
+        id?: unknown;
+      };
+      // type:'chunk' (#1880 PR7-2b): id(이미 graph 에 있는 모듈)를 별도 chunk 로 분리.
+      // 신규 모듈 emit 은 native 가 build 단계에서 진단으로 거부(B-ii 대기).
+      if (f.type === 'chunk') {
+        if (typeof f.id !== 'string' || f.id.length === 0) {
+          throw new Error(
+            `@zntc/core [${pluginName}]: this.emitFile({ type: 'chunk' }) 는 비어있지 않은 id(모듈 specifier)가 필요합니다 (#1880 PR7-2b).`,
+          );
+        }
+        const chunkRef = fn({
+          chunkId: f.id,
+          chunkName: typeof f.name === 'string' && f.name.length > 0 ? f.name : undefined,
+        });
+        if (typeof chunkRef !== 'string') {
+          throw new Error(
+            `@zntc/core [${pluginName}]: this.emitFile({ type: 'chunk', id: ${JSON.stringify(f.id)} }) 가 reference id 를 반환하지 못했습니다.`,
+          );
+        }
+        return chunkRef;
+      }
       if (f.type !== 'asset') {
         throw new Error(
-          `@zntc/core [${pluginName}]: this.emitFile({ type: '${String(f.type)}' }) 는 아직 미지원입니다 — 현재 type:'asset' 만 지원 (chunk 는 follow-up, #1880 PR6).`,
+          `@zntc/core [${pluginName}]: this.emitFile({ type: '${String(f.type)}' }) 는 아직 미지원입니다 — 현재 type:'asset'/'chunk' 만 지원 (#1880 PR7-2b).`,
         );
       }
       // 빈 문자열은 native getStringArg 가 missing(silent null)으로 취급하므로 비어있지 않은 값만 허용.

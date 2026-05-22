@@ -334,6 +334,10 @@ pub const Module = struct {
     /// container.get 이 `__zntc_load_chunk().then(()=>__zntc_require(id))`
     /// (동적 wrapper) 재사용. boundary ⊇ expose (shared 는 expose 아님).
     is_federation_expose: bool = false,
+    /// plugin `this.emitFile({ type: 'chunk' })` 로 별도 chunk 로 분리 요청된 모듈 (#1880 PR7-2b).
+    /// build_flow 가 emit_store.chunks 의 id 를 graph 에서 찾아 set → chunk.zig 가 federation
+    /// expose 와 동형으로 dynamic entry 로 분리. is_federation_expose 와 같은 lazy-chunk 경로.
+    is_emitted_chunk_entry: bool = false,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
     exec_index: u32,

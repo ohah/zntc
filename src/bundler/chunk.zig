@@ -524,6 +524,18 @@ pub fn generateChunks(
         }
     }
 
+    // PR7-2b (#1880): plugin this.emitFile({type:'chunk'}) 로 별도 chunk 요청된 모듈 →
+    // federation expose 와 동형으로 dynamic entry(lazy 청크) 로 분리. dedup/append 동일 규칙.
+    {
+        var mi: usize = 0;
+        while (mi < module_count) : (mi += 1) {
+            const eidx = ModuleIndex.fromUsize(mi);
+            const em = graph.getModule(eidx) orelse continue;
+            if (!em.is_emitted_chunk_entry) continue;
+            try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, eidx);
+        }
+    }
+
     const entry_count = entries.items.len;
     if (entry_count == 0) {
         return ChunkGraph.init(allocator, module_count);
