@@ -3019,3 +3019,38 @@ test "#2471 regression: 100-key object destructuring + rest — all keys exclude
         try std.testing.expect(std.mem.indexOf(u8, code, needle) != null);
     }
 }
+
+// ============================================================
+// experimentalDecorators + private member 다운레벨 (#3/#4 회귀)
+// experimental_decorators(또는 useDefineForClassFields:false) 경로는
+// visitClassWithAssignSemantics 를 타는데, 이 경로가 lowerPrivateMembers 를
+// 호출하지 않아 es2021 타깃에서도 private member 가 raw `#` 로 남던 버그.
+// ============================================================
+
+test "experimentalDecorators + private: static #field update 다운레벨 (es2021)" {
+    // class C { static #n=0; @dec f=1; static inc(){ return C.#n++ } }
+    // es2021 타깃 → static private field 와 그 update(C.#n++)가 다운레벨돼야 한다.
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { static #n = 0; @dec f = 1; static inc() { return C.#n++; } }",
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es2021) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // raw `#n` 이 남으면 es2021 런타임에서 실행 불가 — 다운레벨 누락.
+    try std.testing.expect(std.mem.indexOf(u8, code, "#n") == null);
+}
+
+test "experimentalDecorators + private: class expression private method 다운레벨 (es2021)" {
+    // const C = class { #m(){return 1} run(){return this.#m()} @dec f=1 }
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "const C = class { #m() { return 1; } run() { return this.#m(); } @dec f = 1; };",
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es2021) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "#m") == null);
+}

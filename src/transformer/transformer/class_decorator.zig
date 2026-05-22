@@ -14,20 +14,104 @@ const Error = Transformer.Error;
 const class_visit_mod = @import("class_visit.zig");
 pub const visitClass = class_visit_mod.visitClass;
 const shouldDropClassExprName = class_visit_mod.shouldDropClassExprName;
+// #3/#4: assign-semantics 경로의 private member 다운레벨용 (fast path 와 공유).
+const classBodyHasStaticPrivateMember = class_visit_mod.classBodyHasStaticPrivateMember;
+const wrapClassExprInIIFE = class_visit_mod.wrapClassExprInIIFE;
+const es_helpers = @import("../es_helpers.zig");
+const es2022 = @import("../es2022.zig");
+const PrivateMethodMapping = Transformer.PrivateMethodMapping;
 
 /// useDefineForClassFields=false / experimentalDecorators 처리.
 /// 멤버를 개별 분류하여 instance field를 constructor로 이동하고,
 /// experimental decorator를 __decorateClass 호출로 변환한다.
 pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
-    // TODO(es2021): apply same IIFE wrapping for class_expression with private methods — see wrapClassExprInIIFE in fast path
     const e = node.data.extra;
-    const has_super = !self.readNodeIdx(e, ast_mod.ClassExtra.super).isNone();
+    const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
+    const has_super = !super_idx.isNone();
     const raw_name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
     var new_name = try self.visitNode(raw_name_idx);
-    const new_super = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.super));
+    const new_super = try self.visitNode(super_idx);
 
-    // 원본 class_body를 직접 순회
-    const body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+    // #4 fix(super_class): fast path(class_visit.zig)와 동일하게 private method body 내 super.x 가
+    // 올바른 super class span 으로 lowering 되도록 current_super_class 를 set. assign-semantics
+    // 경로가 이 set 을 누락하면 lowerPrivateMembers 의 standalone fn body visit / classifyClassMember
+    // 의 method body visit 에서 super-prop lowering 이 null/stale 참조로 깨진다.
+    const saved_super_class = self.current_super_class;
+    if (has_super) {
+        self.current_super_class = self.ast.getNode(super_idx).span;
+    }
+    defer self.current_super_class = saved_super_class;
+
+    // #3/#4 fix(이중-visit 회피): lowerPrivateMembers 를 skip_visit_and_keep_private=true 로 호출하면
+    // current_private_* 를 호출자가 set/복원해야 한다(lowerPrivateMembers 내부 defer 가 건너뛴다).
+    // 그래야 classifyClassMember 의 단일 visit 이 current_private set 상태로 this.# rewrite +
+    // decorator 수집을 둘 다 수행한다(이중-visit + decorator strip 회피).
+    const saved_private_methods_outer = self.current_private_methods;
+    const saved_private_fields_outer = self.current_private_fields;
+    defer {
+        self.current_private_methods = saved_private_methods_outer;
+        self.current_private_fields = saved_private_fields_outer;
+    }
+
+    // #3/#4: assign-semantics(experimental_decorators / useDefineForClassFields:false) 경로도
+    // private member 를 다운레벨해야 한다 — 안 하면 es2021 타깃에서 raw `#` 가 남아 실행 불가.
+    // fast path(class_visit.zig)와 동일하게 lowerPrivateMembers 로 new_body(private 제거 +
+    // this.# rewrite + ctor init prepend)를 만들고, weakset 선언(priv_pre_stmts)은 emitPrivatePrelude
+    // 가 class 정의 앞에 emit 한다. (lowerPrivateMembers 가 current_private 를 set 후 new_body 를
+    // 통째 visit 하므로 this.# 가 그 안에서 rewrite 된다.)
+    var body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+    const lower_pm = self.options.unsupported.class_private_method;
+    const lower_pf = self.options.unsupported.class_private_field;
+    var priv_pre_stmts: std.ArrayList(NodeIndex) = .empty;
+    defer priv_pre_stmts.deinit(self.allocator);
+    var pm_mappings: std.ArrayList(PrivateMethodMapping) = .empty;
+    defer {
+        for (pm_mappings.items) |pm| {
+            self.allocator.free(pm.weakset_name);
+            self.allocator.free(pm.func_name);
+        }
+        pm_mappings.deinit(self.allocator);
+    }
+    var pf_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
+    defer {
+        for (pf_mappings.items) |pf| {
+            self.allocator.free(pf.var_name);
+        }
+        pf_mappings.deinit(self.allocator);
+    }
+    if (lower_pm or lower_pf) {
+        // class_expression + static private → 이름 부여(static init 참조 / IIFE).
+        if (node.tag == .class_expression and new_name.isNone() and
+            classBodyHasStaticPrivateMember(self, body_idx, lower_pm, lower_pf))
+        {
+            const tmp_span = try es_helpers.makeTempVarSpan(self);
+            new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+        }
+        var new_body_pl: NodeIndex = .none;
+        var ctor_stmts_pl: std.ArrayList(NodeIndex) = .empty;
+        defer ctor_stmts_pl.deinit(self.allocator);
+        const class_name_text: ?[]const u8 = if (self.getClassNameSpan(new_name)) |s|
+            self.ast.getText(s)
+        else
+            null;
+        const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
+            self,
+            body_idx,
+            &new_body_pl,
+            &priv_pre_stmts,
+            &ctor_stmts_pl,
+            &pm_mappings,
+            &pf_mappings,
+            lower_pm,
+            lower_pf,
+            has_super,
+            class_name_text,
+            true, // skip_visit_and_keep_private — public member 는 classifyClassMember 가 단일 visit.
+        );
+        if (had_any) body_idx = new_body_pl;
+    }
+
+    // 원본(또는 private 다운레벨된) class_body를 직접 순회
     const body_node = self.ast.getNode(body_idx);
     const body_members_start = body_node.data.list.start;
     const body_members_len = body_node.data.list.len;
@@ -205,6 +289,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         const old_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
 
         if (has_any_decorator) {
+            // #3/#4: private weakset 선언은 `let Foo = class {...}` 분해 앞에 와야 한다.
+            for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
             return try self.transformExperimentalDecorators(
                 node,
                 new_name,
@@ -240,6 +326,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
             none,                   0,                       0,
             new_decos.start,        new_decos.len,
         });
+        // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
+        for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
         // static field: Foo.z = 2;
         for (static_field_assignments.items) |field| {
@@ -249,6 +337,31 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         for (static_block_iifes.items) |iife| {
             try self.pending_nodes.append(self.allocator, iife);
         }
+        return .none;
+    }
+
+    // #3/#4: private member 다운레벨이 있었으면 weakset 선언(priv_pre_stmts)을 class 앞에 emit.
+    // class_expression 은 statement 위치가 아니므로 IIFE 로 래핑(fast path 와 동일), class_declaration
+    // 은 pending 에 prelude + class 를 순서대로 넣는다.
+    if (priv_pre_stmts.items.len > 0) {
+        const class_result = try self.addExtraNode(node.tag, node.span, &.{
+            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+            none,                   0,                       0,
+            new_decos.start,        new_decos.len,
+        });
+        if (node.tag == .class_expression) {
+            return wrapClassExprInIIFE(
+                self,
+                &.{},
+                priv_pre_stmts.items,
+                class_result,
+                &.{},
+                new_name,
+                node.span,
+            );
+        }
+        for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
+        try self.pending_nodes.append(self.allocator, class_result);
         return .none;
     }
 

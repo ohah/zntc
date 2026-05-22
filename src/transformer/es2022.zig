@@ -294,6 +294,10 @@ pub fn ES2022(comptime Transformer: type) type {
             lower_fields: bool,
             has_super: bool,
             class_name_text: ?[]const u8,
+            // #3/#4: assign-semantics(experimental_decorators) 경로용 — public member visit 을 skip
+            // 하고 current_private_* 를 호출자가 set/restore 한다(이중-visit 회피, decorator strip
+            // 방지). fast path 는 false(기존 동작: visit + defer 복원).
+            skip_visit_and_keep_private: bool,
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -372,8 +376,17 @@ pub fn ES2022(comptime Transformer: type) type {
             const saved_private_fields = self.current_private_fields;
             self.current_private_methods = method_mappings.items;
             self.current_private_fields = field_mappings.items;
-            defer self.current_private_methods = saved_private_methods;
-            defer self.current_private_fields = saved_private_fields;
+            // #3/#4: skip_visit_and_keep_private 면 호출자가 classifyClassMember 가 finish 한 뒤
+            // 직접 복원 — defer 로 여기서 복원하면 호출자 visit 시점에 current_private 가 비어
+            // this.# rewrite 누락.
+            errdefer {
+                self.current_private_methods = saved_private_methods;
+                self.current_private_fields = saved_private_fields;
+            }
+            defer if (!skip_visit_and_keep_private) {
+                self.current_private_methods = saved_private_methods;
+                self.current_private_fields = saved_private_fields;
+            };
 
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
                 if (m.class_name != null) {
@@ -463,7 +476,14 @@ pub fn ES2022(comptime Transformer: type) type {
                     }
                 }
 
-                const new_member = try self.visitNode(member_idx);
+                // #3/#4: skip_visit_and_keep_private 면 raw member 를 그대로 append — 호출자
+                // (assign-semantics)가 classifyClassMember 에서 단일 visit 한다(이중-visit + decorator
+                // strip 회피). ctor_pos 검색은 raw 든 visit 된 member 든 method_definition tag /
+                // constructor key 로 동작.
+                const new_member = if (skip_visit_and_keep_private)
+                    member_idx
+                else
+                    try self.visitNode(member_idx);
                 if (new_member.isNone()) continue;
 
                 if (ctor_pos == null) {

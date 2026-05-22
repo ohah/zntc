@@ -84,6 +84,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 lower_pf,
                 has_super,
                 class_name_text,
+                false, // fast path 는 lowerPrivateMembers 가 통째 visit + 복원 (기존 동작).
             );
             if (had_any) {
                 current_body_idx = new_body;
@@ -189,7 +190,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     return self.visitClassWithAssignSemantics(node);
 }
 
-fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, lower_methods: bool, lower_fields: bool) bool {
+pub fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, lower_methods: bool, lower_fields: bool) bool {
     if (body_idx.isNone()) return false;
     const body_node = self.ast.getNode(body_idx);
     if (body_node.tag != .class_body) return false;
@@ -227,7 +228,7 @@ fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, lowe
     return false;
 }
 
-fn wrapClassExprInIIFE(
+pub fn wrapClassExprInIIFE(
     self: *Transformer,
     pre_stmts_a: []const NodeIndex,
     pre_stmts_b: []const NodeIndex,
