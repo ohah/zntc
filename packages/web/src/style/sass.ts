@@ -15,6 +15,9 @@ interface SassCompileOptions {
 
 interface SassCompileResult {
   css: string;
+  /** dart-sass 가 컴파일에 사용한 전이 @import/@use URL 목록(자기 자신 포함). dev watch 의
+   *  reverse-dep 추적용 — partial(`_x.scss`) 변경 시 이를 import 한 root scss 를 재컴파일 (#71). */
+  loadedUrls?: URL[];
 }
 
 export const CSS_PREPROCESSOR_EXTENSIONS: ReadonlySet<string> = new Set(['.scss', '.sass']);
@@ -99,6 +102,9 @@ export interface TransformCssPreprocessorOptions {
   dirtyOnly?: ReadonlySet<string> | null;
   /** dirty source files — `rewriteSassReferences` 의 대상 한정. null 이면 sourceFiles 전체. */
   dirtySources?: readonly string[] | null;
+  /** 컴파일한 파일별 전이 @import/@use 의존(loadedUrls)을 보고하는 콜백. dev watch 가
+   *  reverse-dep 맵을 구축해 partial 변경 시 root scss 를 재컴파일하는 데 쓴다 (#71). */
+  onDeps?: (file: string, loadedUrls: readonly URL[]) => void;
 }
 
 /**
@@ -117,7 +123,7 @@ export function transformCssPreprocessors(
   options: TransformCssPreprocessorOptions = {},
 ): string[] {
   if (files.length === 0) return [];
-  const { dirtyOnly = null, dirtySources = null } = options;
+  const { dirtyOnly = null, dirtySources = null, onDeps = null } = options;
   const targets = dirtyOnly ? files.filter((f) => dirtyOnly.has(f)) : files;
   if (targets.length === 0) return files.map(cssPreprocessorOutputPath);
 
@@ -138,6 +144,7 @@ export function transformCssPreprocessors(
     const cssPath = cssPreprocessorOutputPath(file);
     writeFileSync(cssPath, result.css);
     writeFileSync(cssPreprocessorProxyPath(file), buildCssPreprocessorProxy(cssPath));
+    if (onDeps && result.loadedUrls) onDeps(file, result.loadedUrls);
   }
 
   rewriteSassReferences(dirtySources ?? sourceFiles);

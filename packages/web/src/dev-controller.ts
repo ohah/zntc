@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { loadEnv, prepareAppDevSync } from '@zntc/core';
 
@@ -87,6 +88,10 @@ export interface PrepareAppCssPipelineRootOptions {
   dirtyPaths?: readonly string[] | null;
   /** 이전 prep 의 stylePipelineFiles + styleSourceFiles — 구조 변화 없으면 재사용. */
   cache?: PipelineCache | null;
+  /** sass @import reverse-dep 맵(tempRoot 기준 path): dep → 그 dep 을 import 한 파일들. dev 세션이
+   *  소유하고 prep 마다 갱신/조회한다. dirty 한 sass 가 다른 root scss 의 dep 이면 그 root 도 재컴파일
+   *  대상에 transitive 추가 — partial(`_x.scss`) 변경 시 stale CSS 방지 (#71). */
+  sassReverseDep?: Map<string, Set<string>> | null;
 }
 
 export interface AppCssPipelineResult {
@@ -233,6 +238,31 @@ function copyAppRootForPostcss(
  * Incremental — existingTempRoot + dirtyPaths 가 있으면 그 파일만 cp / 삭제 처리,
  * cache 가 있으면 stylePipelineFiles / styleSourceFiles tree walk 도 skip.
  */
+/** #71: sass `loadedUrls`(전이 @import, 자기 자신 포함)로 reverse-dep 맵(dep → 그것을 import 한
+ *  파일들)을 갱신. self/비-file URL 제외. dep 맵은 누적 — 삭제된 import 의 stale entry 는 과잉
+ *  재컴파일(느릴 뿐 correctness 안전)이라 정리하지 않는다. */
+export function recordSassReverseDep(
+  reverseDep: Map<string, Set<string>>,
+  file: string,
+  loadedUrls: readonly URL[],
+): void {
+  for (const url of loadedUrls) {
+    let dep: string;
+    try {
+      dep = fileURLToPath(url);
+    } catch {
+      continue;
+    }
+    if (dep === file) continue;
+    let set = reverseDep.get(dep);
+    if (!set) {
+      set = new Set();
+      reverseDep.set(dep, set);
+    }
+    set.add(file);
+  }
+}
+
 export async function prepareAppCssPipelineRoot(
   root: string,
   outdir: string,
@@ -242,7 +272,12 @@ export async function prepareAppCssPipelineRoot(
   deps: AppDevControllerDeps,
   options: PrepareAppCssPipelineRootOptions = {},
 ): Promise<AppCssPipelineResult | null> {
-  const { existingTempRoot = null, dirtyPaths = null, cache = null } = options;
+  const {
+    existingTempRoot = null,
+    dirtyPaths = null,
+    cache = null,
+    sassReverseDep = null,
+  } = options;
   const { fallbackRequire, cliNodeModules } = deps;
   const configPath = findPostcssConfig(root);
   // F1 cache: 이전 prep 의 stylePipelineFiles 를 재사용. 호출자가 구조 변화 (.scss/.module.css
@@ -267,6 +302,10 @@ export async function prepareAppCssPipelineRoot(
   }
 
   const toTemp = (path: string): string => join(tempRoot, relative(root, path));
+  // #71: sass 컴파일이 보고한 전이 @import(loadedUrls)로 reverse-dep 맵을 갱신. null 이면 no-op.
+  const recordSassDeps = (file: string, loadedUrls: readonly URL[]): void => {
+    if (sassReverseDep) recordSassReverseDep(sassReverseDep, file, loadedUrls);
+  };
   // F2 cache: styleSourceFiles 도 cache 재사용 — 구조 변화 없으면 .html/.js/.ts 트리 walk 회피.
   // postcss-only 경로 (preprocessor/module 모두 없음) 면 dead 라 빈 배열.
   const styleSourceFiles = !needsSource
@@ -284,6 +323,22 @@ export async function prepareAppCssPipelineRoot(
   if (isIncremental && dirtyPaths) {
     const dirtyTempPaths = dirtyPaths.map(toTemp);
     dirtySassSet = new Set(dirtyTempPaths.filter((p) => isCssPreprocessorFile(p)));
+    // #71: dirty sass 를 @import 한 root scss 도 재컴파일 대상에 transitive 추가(reverse-dep).
+    // partial(`_vars.scss`)만 dirty 여도 그것을 쓰는 `style.scss` 가 stale 로 남지 않도록.
+    if (sassReverseDep) {
+      const queue = [...dirtySassSet];
+      while (queue.length > 0) {
+        const dep = queue.pop() as string;
+        const dependents = sassReverseDep.get(dep);
+        if (!dependents) continue;
+        for (const dependent of dependents) {
+          if (!dirtySassSet.has(dependent)) {
+            dirtySassSet.add(dependent);
+            queue.push(dependent);
+          }
+        }
+      }
+    }
     dirtyModuleSet = new Set(dirtyTempPaths.filter((p) => isCssModuleFile(p)));
     // dirty `.module.scss` → sass 산출물 `.module.css` 도 css-modules dirty 입력에 포함.
     for (const sassDirty of dirtySassSet) {
@@ -305,7 +360,9 @@ export async function prepareAppCssPipelineRoot(
     styleSourceFiles,
     logLevel,
     fallbackRequire,
-    isIncremental ? { dirtyOnly: dirtySassSet, dirtySources: dirtySourceList } : undefined,
+    isIncremental
+      ? { dirtyOnly: dirtySassSet, dirtySources: dirtySourceList, onDeps: recordSassDeps }
+      : { onDeps: recordSassDeps },
   );
   // Incremental 모드에서 dirty 가 모두 non-CSS 면 postcss prep 도 skip — 이미 이전 prep
   // 결과가 tempRoot 에 살아 있다. CSS / SCSS / postcss config 가 dirty 일 때만 재실행.
@@ -386,6 +443,10 @@ export function createAppDevController(
   const base = normalizeBase(opts.base ?? opts.publicPath ?? '/');
   let cssDeps = new Set<string>();
   let cssDirDeps = new Set<string>();
+  // #71: sass @import reverse-dep 맵(tempRoot 기준 path). prepare(full pipeline) 와 fast-path
+  // (rebuildScssIncremental) 가 갱신하고, isSassOnlyChange 가 조회해 dep 있는 파일은 fast-path
+  // 박탈 → full pipeline 의 transitive 재컴파일로 dependents 까지 갱신. 세션 내내 누적.
+  const sassReverseDep = new Map<string, Set<string>>();
   let primaryHref: string | null = null;
   let pipelineRoot: string | null = null;
   // F1+F2 cache (incremental prep 에서 재사용). 구조 변화 (스타일 파일 추가/삭제) 시
@@ -412,6 +473,10 @@ export function createAppDevController(
         cleanupPostcssTempRoot(pipelineRoot);
         pipelineRoot = null;
         pipelineCache = null;
+        // #71: 새 tempRoot 가 mkdtemp 되므로 이전 tempRoot 기준의 reverse-dep 키는 모두 dead.
+        // 정리하지 않으면 prepare(null) 가 반복될 때 누적된다(현재 watch 는 단일 tempRoot 라 무해하나
+        // 방어적으로 clear — code-review max).
+        sassReverseDep.clear();
       }
       // 구조 변화 — 새 .scss/.module.css 가 추가됐거나 삭제됐을 가능성. cache 무효화.
       if (
@@ -429,8 +494,8 @@ export function createAppDevController(
         'dev',
         deps,
         reuseRoot
-          ? { existingTempRoot: pipelineRoot, dirtyPaths, cache: pipelineCache }
-          : undefined,
+          ? { existingTempRoot: pipelineRoot, dirtyPaths, cache: pipelineCache, sassReverseDep }
+          : { sassReverseDep },
       );
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
@@ -521,9 +586,16 @@ export function createAppDevController(
       return false;
     },
     isSassOnlyChange(absPath) {
-      // Sass fast-path 자격 — non-module `.scss/.sass` 단일 변경. import dep 추적 없으므로
-      // 이 파일을 import 한 다른 sass 파일은 갱신 누락 가능 (BACKLOG #71 deps tracking).
-      return isCssPreprocessorFile(absPath) && !isCssModulePreprocessorFile(absPath);
+      // Sass fast-path 자격 — non-module `.scss/.sass` 단일 변경.
+      if (!isCssPreprocessorFile(absPath) || isCssModulePreprocessorFile(absPath)) return false;
+      // #71: 다른 root scss 가 @import 하는 파일(reverse-dep 보유)은 fast-path 박탈 — 단일 파일만
+      // 재컴파일하면 그것을 쓰는 root scss 가 stale 로 남는다. full pipeline 의 transitive 재컴파일로
+      // dependents 까지 갱신하도록 false 반환. (reverseDep 은 tempRoot 기준이라 toTemp 로 조회.)
+      if (pipelineRoot) {
+        const temp = join(pipelineRoot, relative(root, absPath));
+        if (sassReverseDep.has(temp)) return false;
+      }
+      return true;
     },
     async rebuildScssIncremental(absPath) {
       // pipelineRoot 가 없으면 fast-path 진입 못함 (full reload 로 fallback).
@@ -535,6 +607,9 @@ export function createAppDevController(
       mirrorFile(absPath, srcTemp);
       const sass = loadSassCompiler(root, fallbackRequire);
       const result = compileSassFile(sass, srcTemp, pipelineRoot);
+      // #71: 이 파일이 새로 @import 하게 된 partial 을 reverse-dep 에 반영 — 다음 그 partial 변경
+      // 시 fast-path 박탈되어 이 root 가 재컴파일된다.
+      if (result.loadedUrls) recordSassReverseDep(sassReverseDep, srcTemp, result.loadedUrls);
       const cssTempPath = cssPreprocessorOutputPath(srcTemp);
       writeFileSync(cssTempPath, result.css);
       // 컴파일된 CSS 도 outdir 에 mirror 해서 dev server 가 서빙 가능하게.

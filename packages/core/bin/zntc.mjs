@@ -1947,6 +1947,12 @@ async function runServe(opts, config, { appDev = null } = {}) {
               } else {
                 await rebuildAppDevFull();
               }
+            } else if (paths.some((p) => p.endsWith('.scss') || p.endsWith('.sass'))) {
+              // #71: sass 변경인데 fast-path 자격 없음(다른 root scss 가 @import 하는 partial,
+              // 또는 다중 sass 변경) → full pipeline rebuild 로 dirty 의 transitive dependents 까지
+              // 재컴파일. CSS-only 분기(afterBundle = postcss only)는 sass 를 재컴파일하지 않아
+              // partial 변경 시 root scss 가 stale 로 남는다(code-review max 적발).
+              await rebuildAppDevFull(paths);
             } else if (cssChanges.length === 1 && paths.length === 1) {
               await rebuildAppDevCss(cssChanges[0]);
             } else {
