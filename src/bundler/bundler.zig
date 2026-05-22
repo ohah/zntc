@@ -1368,18 +1368,26 @@ pub const Bundler = struct {
                 continue;
             };
             const basename = std.fs.path.basename(poly_path);
-            // Flow 모드일 때 트랜스파일하여 타입 구문 제거 (RN 폴리필은 Flow로 작성됨)
+            // 폴리필은 모듈 그래프를 우회해 여기서 직접 읽어 prepend 된다. Flow strip 과
+            // (minify 빌드 시) whitespace minify 를 transpile 1회로 처리한다. 그렇지 않으면
+            // 폴리필 원본 주석/들여쓰기/줄바꿈이 minify 번들에 그대로 남는다 (#3649).
             //
             // RN console.js 는 @noflow 이며 DevTools console callsite 의 기준 파일이다.
-            // 이를 변환하면 하단 originalConsole bridge 의 generated line 이 원본 line 과
-            // 어긋나 `console.js:<generated>` 로 노출된다. 원본이 JS 문법으로 parse 가능하므로
-            // 그대로 두고 identity sourcemap 을 유지한다.
-            const content = if (self.options.flow and !std.mem.eql(u8, basename, "console.js")) blk: {
+            // 변환하면 originalConsole bridge 의 generated line 이 원본 line 과 어긋나
+            // `console.js:<generated>` 로 노출되므로, dev(비-minify) 에선 raw 로 둔다.
+            // minify 빌드에선 sourcemap 자체가 단일 line 으로 minify 되어 callsite 보존
+            // 의미가 없으므로 console.js 도 transpile 을 허용한다.
+            // identifiers/syntax minify 는 폴리필 global 등록 안전성 때문에 제외 — whitespace 만.
+            const minify_ws = self.options.minify_whitespace;
+            const is_console = std.mem.eql(u8, basename, "console.js");
+            const should_transpile = (self.options.flow or minify_ws) and (!is_console or minify_ws);
+            const content = if (should_transpile) blk: {
                 const result = transpile_mod.transpile(self.allocator, raw, poly_path, .{
-                    .flow = true,
+                    .flow = self.options.flow,
                     .jsx_in_js = self.options.jsx_in_js,
                     // 폴리필도 verbatim 규칙을 따라야 함 — 그래야 번들 본체와 동일한 import 처리 정책.
                     .verbatim_module_syntax = self.options.verbatim_module_syntax,
+                    .minify_whitespace = minify_ws,
                 }) catch {
                     break :blk raw; // 트랜스파일 실패 시 원본 사용
                 };
