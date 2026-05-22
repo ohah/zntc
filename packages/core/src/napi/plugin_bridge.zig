@@ -320,6 +320,22 @@ pub const NapiPlugin = struct {
         const source_dir: []const u8 = if (importer) |imp| (std.fs.path.dirname(imp) orelse ".") else ".";
 
         const resolve_cache: *ResolveCache = @ptrCast(@alignCast(data orelse return js_null));
+
+        // external 패턴 매칭 specifier(node builtins / --packages=external / external 설정)는
+        // resolveThreadSafe 가 null 을 반환하므로, 먼저 판정해 `{ id: source, external: true }` 로
+        // 노출한다 (Rollup 호환 — plugin 이 external 여부로 분기). #1880 PR4.
+        if (resolve_cache.isExternal(source)) {
+            var js_ext_obj: c.napi_value = undefined;
+            _ = c.napi_create_object(env, &js_ext_obj);
+            var js_ext_id: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, source.ptr, source.len, &js_ext_id);
+            _ = c.napi_set_named_property(env, js_ext_obj, "id", js_ext_id);
+            var js_ext_true: c.napi_value = undefined;
+            _ = c.napi_get_boolean(env, true, &js_ext_true);
+            _ = c.napi_set_named_property(env, js_ext_obj, "external", js_ext_true);
+            return js_ext_obj;
+        }
+
         const resolved = (resolve_cache.resolveThreadSafe(source_dir, source, .static_import) catch return js_null) orelse return js_null;
         // resolveThreadSafe 는 path(+file.resolve_dir)를 self.allocator 로 dupe → caller free 책임.
         defer switch (resolved) {
