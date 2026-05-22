@@ -42,6 +42,33 @@ describe('@zntc/core build + plugins - plugin context (this.warn / this.error)',
     }
   });
 
+  test('this.warn 은 load hook(resolveId/load dispatch 사이트)에서도 동작한다', async () => {
+    // 회귀 가드: dispatchHook 의 resolveId/load 콜백 사이트도 context 를 this 로 바인딩해야 한다.
+    // (transform 사이트만 바인딩되고 이 사이트가 누락되면 load hook 의 this.warn 이 TypeError)
+    const loadWarner: ZntcPlugin = {
+      name: 'load-warner',
+      setup(build) {
+        build.onLoad({ filter: /\.ts$/ }, function (this: RollupPluginContext, _args) {
+          this.warn('warn from load');
+          return null; // contents 미반환 → native 가 실제 파일을 읽는다.
+        });
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-ctx-load-'));
+    try {
+      writeFileSync(join(dir, 'main.ts'), 'console.log(1);');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [loadWarner],
+      });
+      expect(result.errors.length).toBe(0);
+      expect(result.warnings.some((w) => w.text.includes('warn from load'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('this.error 는 plugin failure 로 result.errors 에 들어간다', async () => {
     const errPlugin: ZntcPlugin = {
       name: 'boomer',
