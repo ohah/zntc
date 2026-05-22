@@ -18,6 +18,7 @@ const fs = @import("fs.zig");
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const ModuleIndex = types.ModuleIndex;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const EmitStore = @import("emit_store.zig").EmitStore;
 const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const Platform = @import("resolve_cache.zig").Platform;
 const emitter = @import("emitter.zig");
@@ -1047,6 +1048,12 @@ pub const Bundler = struct {
         // 1. 모듈 그래프 구축
         var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
+        // this.emitFile (PR5): plugin 이 emit 한 asset 수집소. graph build 가 plugin hook 을
+        // 호출하기 *전* 에 연결해야 한다. emit 된 asset 은 아래에서 OutputFile(kind=.asset)로
+        // 복사되어 final_asset_outputs 에 합쳐지고, store 는 scratch 라 bundle() 종료 시 해제.
+        var emit_store = EmitStore.init(self.allocator);
+        defer emit_store.deinit();
+        graph.emit_store = @ptrCast(&emit_store);
         graph.dev_mode = self.options.dev_mode;
         graph.incremental_mode = self.options.module_store != null or
             self.options.changed_files != null or
@@ -1827,14 +1834,35 @@ pub const Bundler = struct {
             }
         }
 
-        // Worker + CSS + mf-manifest 출력 파일을 asset_outputs에 합침
-        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null or css_output_files.items.len > 0 or mf_manifest != null) blk: {
+        // this.emitFile (PR5): plugin 이 emit 한 asset 을 OutputFile(kind=.asset)로 변환.
+        // path/contents 를 새로 dupe — emit_store 는 scratch 로 deinit 되므로 OutputFile 이
+        // 자기 복사본을 소유해야 한다(OutputFile.deinit 이 path+contents 해제).
+        var emit_asset_files: std.ArrayList(OutputFile) = .empty;
+        defer emit_asset_files.deinit(self.allocator);
+        for (emit_store.assets.items) |a| {
+            const path = try self.allocator.dupe(u8, a.file_name);
+            errdefer self.allocator.free(path);
+            const contents = try self.allocator.dupe(u8, a.source);
+            errdefer self.allocator.free(contents);
+            try emit_asset_files.append(self.allocator, .{ .path = path, .contents = contents, .kind = .asset });
+        }
+        // 결정성(#3564): emit 순서는 worker 스케줄링(병렬 transform) 의존이라 path 로 정렬해
+        // outputFiles 의 asset 순서를 run 간 안정화한다. (MVP 는 fileName 중복 검출 안 함 —
+        // 같은 fileName 을 두 번 emit 하면 동일 path OutputFile 2개. Rollup 은 throw, follow-up.)
+        std.mem.sort(OutputFile, emit_asset_files.items, {}, struct {
+            fn lessThan(_: void, a: OutputFile, b: OutputFile) bool {
+                return std.mem.lessThan(u8, a.path, b.path);
+            }
+        }.lessThan);
+
+        // Worker + CSS + emit asset + mf-manifest 출력 파일을 asset_outputs에 합침
+        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null or css_output_files.items.len > 0 or emit_asset_files.items.len > 0 or mf_manifest != null) blk: {
             const existing = if (asset_outputs) |a| a.len else 0;
             const mf_n: usize = if (mf_manifest != null) 1 else 0;
             // P2-2 (#3422): manifest 산출 시 SHA-256 무결성 sidecar 도 1개.
             // P2-3 (#3423): + 키 지정 시 Ed25519 `.sig` 1개 (opt-in).
             const sig_n: usize = if (mf_n == 1 and self.options.mf_sign_key_path != null) 1 else 0;
-            const total = existing + worker_output_files.items.len + css_output_files.items.len + mf_n * 2 + sig_n;
+            const total = existing + worker_output_files.items.len + css_output_files.items.len + emit_asset_files.items.len + mf_n * 2 + sig_n;
             const merged = try self.allocator.alloc(OutputFile, total);
             if (asset_outputs) |a| {
                 @memcpy(merged[0..a.len], a);
@@ -1847,8 +1875,12 @@ pub const Bundler = struct {
             for (css_output_files.items, 0..) |cf, i| {
                 merged[css_start + i] = cf;
             }
+            const emit_start = css_start + css_output_files.items.len;
+            for (emit_asset_files.items, 0..) |ef, i| {
+                merged[emit_start + i] = ef;
+            }
             if (mf_manifest) |m| {
-                const slot = css_start + css_output_files.items.len;
+                const slot = emit_start + emit_asset_files.items.len;
                 // P2-2: manifest + 모든 JS 출력 청크의 SHA-256 SRI sidecar.
                 // m(아직 살아있음) + outputs(최종 바이트, placeholder 치환
                 // 완료) 입력. sidecar 자신·서명은 미포함(P2-3 서명 자기참조

@@ -24,6 +24,7 @@ const parseStringArray = common.parseStringArray;
 
 const plugin_mod = bundler_mod.plugin;
 const ResolveCache = bundler_mod.ResolveCache;
+const EmitStore = bundler_mod.EmitStore;
 const graph_plugins_mod = bundler_mod.graph_plugins;
 const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
@@ -81,6 +82,9 @@ pub const NapiPlugin = struct {
         /// this.resolve (PR4) 용 ResolveCache 포인터. non-null 이면 resolve 함수를 dispatcher
         /// 5번째 인자로 전달 (순수 path resolution, plugin 재진입 없음 → race/deadlock 없음).
         resolve_cache: ?*anyopaque = null,
+        /// this.emitFile (PR5) 용 EmitStore 포인터. non-null 이면 emitFile 함수를 dispatcher
+        /// 6번째 인자로 전달. callJsCallback 은 메인 스레드 직렬이라 store write 동기화 불필요.
+        emit_store: ?*anyopaque = null,
         response: ?PluginResponse = null,
         response_ready: bool = false,
         mutex: std.Thread.Mutex = .{},
@@ -371,6 +375,34 @@ pub const NapiPlugin = struct {
         return js_obj;
     }
 
+    /// this.emitFile (PR5) 구현. data = *EmitStore. argv[0] = JS 가 검증한 `{ fileName, source }`
+    /// (type='asset' + 명시 fileName 만 — chunk/name-only 검증은 JS 측에서 throw). store.emitAsset
+    /// 으로 등록 후 reference id("asset-N") 를 string 으로 반환. 메인 스레드 직렬 호출이라 store
+    /// write 동기화 불필요(emit_store.zig doc 참조).
+    fn emitFileCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+
+        var argc: usize = 1;
+        var argv: [1]c.napi_value = undefined;
+        var data: ?*anyopaque = null;
+        if (c.napi_get_cb_info(env, info, &argc, &argv, null, &data) != c.napi_ok) return js_null;
+        if (argc < 1) return js_null;
+
+        const store: *EmitStore = @ptrCast(@alignCast(data orelse return js_null));
+
+        const file_name = getObjectString(env, argv[0], "fileName", native_alloc) orelse return js_null;
+        defer native_alloc.free(file_name);
+        // source 는 string / Uint8Array / Buffer 모두 수용 (binary-safe asset). 빈 source 도 허용.
+        const source = getObjectBytes(env, argv[0], "source", native_alloc) orelse return js_null;
+        defer native_alloc.free(source);
+
+        const ref_id = store.emitAsset(file_name, source) catch return js_null;
+        var js_ref: c.napi_value = undefined;
+        if (c.napi_create_string_utf8(env, ref_id.ptr, ref_id.len, &js_ref) != c.napi_ok) return js_null;
+        return js_ref;
+    }
+
     /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
     /// data = CallContext 포인터 (per-call, 워커 스레드가 스택에 소유하며 condvar 대기 중)
     pub fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -413,6 +445,7 @@ pub const NapiPlugin = struct {
         // dispatcher 4번째 인자로 전달. graph 조회 없음 → discovery 병렬 단계 race 없음.
         var js_get_mod_info: c.napi_value = js_undefined;
         var js_resolve: c.napi_value = js_undefined;
+        var js_emit_file: c.napi_value = js_undefined;
         var argc: usize = 3;
         if (ctx.current_module) |m| {
             _ = c.napi_create_function(env, "getModuleInfo", "getModuleInfo".len, selfModuleInfoCallback, @constCast(m), &js_get_mod_info);
@@ -421,11 +454,16 @@ pub const NapiPlugin = struct {
         // this.resolve (PR4): resolve_cache 가 있으면 5번째 인자로 resolve 함수 전달.
         if (ctx.resolve_cache) |rc| {
             _ = c.napi_create_function(env, "resolve", "resolve".len, resolveIdCallback, rc, &js_resolve);
-            argc = 5;
+            if (argc < 5) argc = 5;
+        }
+        // this.emitFile (PR5): emit_store 가 있으면 6번째 인자로 emitFile 함수 전달.
+        if (ctx.emit_store) |es| {
+            _ = c.napi_create_function(env, "emitFile", "emitFile".len, emitFileCallback, es, &js_emit_file);
+            argc = 6;
         }
 
         var js_result: c.napi_value = undefined;
-        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2, js_get_mod_info, js_resolve };
+        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2, js_get_mod_info, js_resolve, js_emit_file };
         if (c.napi_call_function(env, js_undefined, js_callback, argc, &args, &js_result) != c.napi_ok) {
             signalResponse(ctx, .{});
             return;
@@ -464,7 +502,7 @@ pub const NapiPlugin = struct {
 
     /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기.
     /// per-call CallContext를 스택에 생성하여 멀티스레드 안전.
-    fn callHookFull(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, files: ?[]const bundler_mod.emitter.OutputFile, current_module: ?*const anyopaque, resolve_cache: ?*anyopaque) ?PluginResponse {
+    fn callHookFull(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, files: ?[]const bundler_mod.emitter.OutputFile, current_module: ?*const anyopaque, resolve_cache: ?*anyopaque, emit_store: ?*anyopaque) ?PluginResponse {
         var ctx = CallContext{
             .hook = hook,
             .arg1 = arg1,
@@ -472,6 +510,7 @@ pub const NapiPlugin = struct {
             .output_files = files,
             .current_module = current_module,
             .resolve_cache = resolve_cache,
+            .emit_store = emit_store,
         };
 
         if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(&ctx), c.napi_tsfn_blocking) != c.napi_ok) {
@@ -490,7 +529,7 @@ pub const NapiPlugin = struct {
     }
 
     fn callHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8) ?PluginResponse {
-        return self.callHookFull(hook, arg1, arg2, null, null, null);
+        return self.callHookFull(hook, arg1, arg2, null, null, null, null);
     }
 
     /// JSON string field 인코딩 — `"` `\` 와 control char escape.
@@ -566,8 +605,8 @@ fn NapiPluginAdapter(comptime Self: type) type {
             alloc: std.mem.Allocator,
             hook_ctx: *plugin_mod.HookContext,
         ) PluginError!?[]const u8 {
-            // PR3 current_module(getModuleInfo) + PR4 resolve_cache(this.resolve) 를 transform/renderChunk 에 전달.
-            const resp = self.callHookFull(hook, arg1, arg2, null, hook_ctx.current_module, hook_ctx.resolve_cache) orelse return null;
+            // PR3 current_module(getModuleInfo) + PR4 resolve_cache(this.resolve) + PR5 emit_store(this.emitFile) 를 transform/renderChunk 에 전달.
+            const resp = self.callHookFull(hook, arg1, arg2, null, hook_ctx.current_module, hook_ctx.resolve_cache, hook_ctx.emit_store) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
             if (resp.code) |result_code| {
@@ -586,8 +625,8 @@ fn NapiPluginAdapter(comptime Self: type) type {
             hook_ctx: *plugin_mod.HookContext,
         ) PluginError!?plugin_mod.ResolvedModule {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
-            // this.resolve (PR4): resolveId hook 에 resolve_cache 전달.
-            const resp = self.callHookFull(.resolveId, specifier, importer, null, null, hook_ctx.resolve_cache) orelse return null;
+            // this.resolve (PR4): resolveId hook 에 resolve_cache 전달. this.emitFile (PR5): emit_store 전달.
+            const resp = self.callHookFull(.resolveId, specifier, importer, null, null, hook_ctx.resolve_cache, hook_ctx.emit_store) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
 
@@ -628,8 +667,8 @@ fn NapiPluginAdapter(comptime Self: type) type {
             hook_ctx: *plugin_mod.HookContext,
         ) PluginError!?plugin_mod.LoadResult {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
-            // this.resolve (PR4): load hook 에 resolve_cache 전달.
-            const resp = self.callHookFull(.load, path, null, null, null, hook_ctx.resolve_cache) orelse return null;
+            // this.resolve (PR4): load hook 에 resolve_cache 전달. this.emitFile (PR5): emit_store 전달.
+            const resp = self.callHookFull(.load, path, null, null, null, hook_ctx.resolve_cache, hook_ctx.emit_store) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
             const result_code = resp.code orelse return null;
@@ -664,7 +703,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
 
         fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
-            if (self.callHookFull(.generateBundle, "", null, output_files, null, null)) |resp| {
+            if (self.callHookFull(.generateBundle, "", null, output_files, null, null, null)) |resp| {
                 NapiPlugin.freeResponseFields(resp);
             }
         }
@@ -723,7 +762,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
             NapiPlugin.appendJsonString(&json_buf, native_alloc, importer) catch return null;
             json_buf.append(native_alloc, '}') catch return null;
 
-            const resp = self.callHookFull(.resolveContext, json_buf.items, null, null, null, null) orelse return null;
+            const resp = self.callHookFull(.resolveContext, json_buf.items, null, null, null, null, null) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
 
@@ -833,10 +872,12 @@ pub const NapiSyncPlugin = struct {
         files: ?[]const bundler_mod.emitter.OutputFile,
         current_module: ?*const anyopaque,
         resolve_cache: ?*anyopaque,
+        emit_store: ?*anyopaque,
     ) ?NapiPlugin.PluginResponse {
-        // buildSync 는 this.getModuleInfo/this.resolve 미지원 — async build() 만 PR3/PR4 지원.
+        // buildSync 는 this.getModuleInfo/this.resolve/this.emitFile 미지원 — async build() 만 PR3/4/5 지원.
         _ = current_module;
         _ = resolve_cache;
+        _ = emit_store;
         var js_callback: c.napi_value = undefined;
         if (c.napi_get_reference_value(self.env, self.callback_ref, &js_callback) != c.napi_ok) {
             return null;
@@ -893,7 +934,7 @@ pub const NapiSyncPlugin = struct {
     }
 
     fn callHook(self: *NapiSyncPlugin, hook: NapiPlugin.HookType, arg1: []const u8, arg2: ?[]const u8) ?NapiPlugin.PluginResponse {
-        return self.callHookFull(hook, arg1, arg2, null, null, null);
+        return self.callHookFull(hook, arg1, arg2, null, null, null, null);
     }
 
     pub fn toPlugin(self: *NapiSyncPlugin) Plugin {

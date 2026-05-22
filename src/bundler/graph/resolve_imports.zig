@@ -449,7 +449,8 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
         if (plugin_runner) |runner| {
             if (self.shouldRunResolveId(record.specifier)) {
                 // this.resolve (PR4): resolveId hook 에 ResolveCache 전달.
-                var hook_ctx: plugin_mod.HookContext = .{ .resolve_cache = @ptrCast(self.resolve_cache) };
+                // this.emitFile (PR5): resolveId hook 에 EmitStore 전달.
+                var hook_ctx: plugin_mod.HookContext = .{ .resolve_cache = @ptrCast(self.resolve_cache), .emit_store = self.emit_store };
                 const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator, &hook_ctx) catch |err| switch (err) {
                     error.PluginFailed => {
                         self.addPluginFailureDiag(hook_ctx.failure, module_path, record.span, .resolve);

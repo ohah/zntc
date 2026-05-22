@@ -1668,6 +1668,7 @@ type PluginDispatcher = ((
   arg2: string | null,
   getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
   resolve?: NativeResolveFn,
+  emitFile?: NativeEmitFileFn,
 ) => Promise<unknown>) &
   PluginDispatcherLifecycle;
 type SyncPluginDispatcher = ((hookName: string, arg1: unknown, arg2: string | null) => unknown) &
@@ -1847,25 +1848,32 @@ type NativeResolveFn = (
   options?: unknown,
 ) => { id: string; external: boolean } | null;
 
+// #1880 PR5: native emitFile 콜백. JS 가 검증한 `{ fileName, source }` 를 받아 EmitStore 에
+// 등록하고 reference id("asset-N") 를 sync 반환한다. type/fileName 검증은 JS emitFile 슬롯이 수행.
+type NativeEmitFileFn = (file: { fileName: string; source: string | Uint8Array }) => string;
+
 function getPluginContext(
   reg: PluginRegistry,
   pluginName: string,
   getModuleInfo?: ((id: string) => ManualChunksModuleInfo | null) | undefined,
   resolve?: NativeResolveFn | undefined,
+  emitFile?: NativeEmitFileFn | undefined,
 ): RollupPluginContext {
   let ctx = reg.contexts.get(pluginName);
   if (!ctx) {
     ctx = createRollupPluginContext(pluginName, (d) => reg.pluginWarnings.push(d));
     reg.contexts.set(pluginName, ctx);
   }
-  // this.getModuleInfo (PR3) / this.resolve (PR4): native 가 hook 별로 넘긴 fn 을 매번 갱신
-  // (undefined 포함) — 캐시된 context 에 이전 hook 의 fn 이 stale 로 남지 않도록.
+  // this.getModuleInfo (PR3) / this.resolve (PR4) / this.emitFile (PR5): native 가 hook 별로 넘긴
+  // fn 을 매번 갱신(undefined 포함) — 캐시된 context 에 이전 hook 의 fn 이 stale 로 남지 않도록.
   const slot = ctx as {
     __getModuleInfo?: (id: string) => ManualChunksModuleInfo | null;
     __resolve?: NativeResolveFn;
+    __emitFile?: NativeEmitFileFn;
   };
   slot.__getModuleInfo = getModuleInfo;
   slot.__resolve = resolve;
+  slot.__emitFile = emitFile;
   return ctx;
 }
 
@@ -1881,6 +1889,7 @@ function* dispatchHook(
   arg2: string | null,
   getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
   resolve?: NativeResolveFn,
+  emitFile?: NativeEmitFileFn,
 ): Generator<HookCall, unknown, DispatchedHookResult> {
   // astFunction: arg1 이 JSON 직렬화된 FunctionInfo. 첫 매칭 plugin 의 non-null 반환을 채택.
   if (hookName === 'astFunction') {
@@ -1895,7 +1904,10 @@ function* dispatchHook(
       if (!h.filter.test(info.sourcePath)) continue;
       const result = yield {
         callback: () =>
-          h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), info),
+          h.callback.call(
+            getPluginContext(reg, h.pluginName, getModuleInfo, resolve, emitFile),
+            info,
+          ),
         pluginName: h.pluginName,
         hookName: 'astFunction',
         fallbackFile: info.sourcePath,
@@ -1927,7 +1939,10 @@ function* dispatchHook(
       if (!h.filter.test(args.dir)) continue;
       const result = yield {
         callback: () =>
-          h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), args),
+          h.callback.call(
+            getPluginContext(reg, h.pluginName, getModuleInfo, resolve, emitFile),
+            args,
+          ),
         pluginName: h.pluginName,
         hookName: 'resolveContext',
         fallbackFile: args.importer,
@@ -1949,7 +1964,10 @@ function* dispatchHook(
       for (const { pluginName, callback } of spec.callbacks) {
         const result = yield {
           callback: () =>
-            callback.call(getPluginContext(reg, pluginName, getModuleInfo, resolve), spec.arg),
+            callback.call(
+              getPluginContext(reg, pluginName, getModuleInfo, resolve, emitFile),
+              spec.arg,
+            ),
           pluginName,
           hookName,
         };
@@ -1978,7 +1996,10 @@ function* dispatchHook(
           : { code: currentCode, chunk: arg2 };
       const result = yield {
         callback: () =>
-          h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), cbArgs),
+          h.callback.call(
+            getPluginContext(reg, h.pluginName, getModuleInfo, resolve, emitFile),
+            cbArgs,
+          ),
         pluginName: h.pluginName,
         hookName,
         fallbackFile: arg2,
@@ -2014,7 +2035,10 @@ function* dispatchHook(
     const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
     const result = yield {
       callback: () =>
-        h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), cbArgs),
+        h.callback.call(
+          getPluginContext(reg, h.pluginName, getModuleInfo, resolve, emitFile),
+          cbArgs,
+        ),
       pluginName: h.pluginName,
       hookName,
       fallbackFile,
@@ -2106,8 +2130,11 @@ function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
     arg2: string | null,
     getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
     resolve?: NativeResolveFn,
+    emitFile?: NativeEmitFileFn,
   ) {
-    return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2, getModuleInfo, resolve));
+    return driveDispatchAsync(
+      dispatchHook(reg, hookName, arg1, arg2, getModuleInfo, resolve, emitFile),
+    );
   } as PluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
@@ -2841,7 +2868,13 @@ export interface RollupPluginContext {
     importer?: string | null,
     options?: unknown,
   ): Promise<{ id: string; external?: boolean } | null>;
-  /** Emit an additional asset/chunk. Currently unsupported — throws an Error when called. */
+  /** Emit an additional asset (Rollup `this.emitFile` 호환, #1880 PR5). async build() 의
+   * resolveId/load/transform hook 에서 `{ type: 'asset', fileName, source }` 를 emit → reference id
+   * 반환, 해당 asset 은 `result.outputFiles` 에 나타난다. MVP 는 명시 fileName 의 asset 만 —
+   * `type: 'chunk'` 및 name-only(hash 파일명)+`getFileName` 은 follow-up 으로 throw.
+   * 그 외 hook / buildSync / vitePlugin() 어댑터에서도 throw.
+   * **반드시 hook 본문에서 동기적으로 호출**해야 한다 — `await` 이후나 detached promise 에서
+   * 호출하면 EmitStore 수명을 벗어나 asset 이 누락되거나 정의되지 않은 동작이 된다 (follow-up). */
   emitFile(file: unknown): string;
   /** 모듈 그래프 정보(+plugin meta) 조회 (Rollup `this.getModuleInfo` 호환).
    * async build() 의 transform hook 에서만 사용 가능 (#1880 PR3). 그 외 hook/buildSync 에선 throw. */
@@ -2951,10 +2984,45 @@ function createRollupPluginContext(
       }
       return Promise.resolve(fn(source, importer));
     },
-    emitFile(_file): never {
-      throw new Error(
-        `@zntc/core [${pluginName}]: this.emitFile() is not supported by vitePlugin() adapter yet.`,
-      );
+    emitFile(file: unknown): string {
+      // native 가 hook 별로 __emitFile 슬롯에 주입 (#1880 PR5). asset(명시 fileName)만 MVP —
+      // type/fileName/source 검증은 여기서 수행하고 native 는 단순 store append 만 한다.
+      const fn = (ctx as { __emitFile?: NativeEmitFileFn }).__emitFile;
+      if (typeof fn !== 'function') {
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.emitFile() 는 async build() 의 resolveId/load/transform hook 에서만 사용 가능합니다 (#1880 PR5).`,
+        );
+      }
+      if (typeof file !== 'object' || file === null) {
+        throw new Error(`@zntc/core [${pluginName}]: this.emitFile() 는 객체 인자가 필요합니다.`);
+      }
+      const f = file as { type?: unknown; fileName?: unknown; source?: unknown };
+      if (f.type !== 'asset') {
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.emitFile({ type: '${String(f.type)}' }) 는 아직 미지원입니다 — 현재 type:'asset' 만 지원 (chunk 는 follow-up, #1880 PR5).`,
+        );
+      }
+      if (typeof f.fileName !== 'string' || f.fileName.length === 0) {
+        // 빈 fileName 은 native getStringArg 가 len==0 을 missing 으로 취급해 silent null 을
+        // 반환하므로 JS 단에서 거부 — Rollup 도 빈/누락 fileName 을 허용하지 않는다.
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.emitFile() asset 은 비어있지 않은 명시 fileName 이 필요합니다 (name-only hash 파일명 + getFileName 은 follow-up, #1880 PR5).`,
+        );
+      }
+      if (typeof f.source !== 'string' && !(f.source instanceof Uint8Array)) {
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.emitFile() asset 은 source(string | Uint8Array) 가 필요합니다.`,
+        );
+      }
+      const referenceId = fn({ fileName: f.fileName, source: f.source });
+      // native 는 OOM/내부 실패 시 null 을 반환 — Rollup 의 `=> string` 계약을 지키도록 throw
+      // (silent null 이 reference id 자리에 새어 나가 downstream 에서 모호한 에러를 내는 것 방지).
+      if (typeof referenceId !== 'string') {
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.emitFile({ fileName: ${JSON.stringify(f.fileName)} }) 가 reference id 를 반환하지 못했습니다 (asset emit 실패).`,
+        );
+      }
+      return referenceId;
     },
     getModuleInfo(id: string): ManualChunksModuleInfo | null {
       // native 가 transform hook 에 한해 graph-bound fn 을 __getModuleInfo 슬롯에 주입 (#1880 PR3).
