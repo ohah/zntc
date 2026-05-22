@@ -137,15 +137,17 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
     try finalizeGraph(self, entry_points);
 }
 
-/// PR7-2b-i (#1880): plugin `this.emitFile({ type: 'chunk', id })` 로 별도 chunk 요청된 모듈을
-/// 표시한다. discovery 패스가 모두 끝난 뒤(build thread, 모든 hook drain) emit_store.chunks 를
-/// read 하므로 Node main 의 write 와 패스 경계로 분리돼 mutex 불필요(RFC §3 옵션 B).
+/// PR7-2b (#1880): plugin `this.emitFile({ type: 'chunk', id })` 로 별도 chunk 요청된 모듈을
+/// graph 에 주입/표시한다. discovery 패스가 모두 끝난 뒤(build thread, 모든 hook drain) emit_store
+/// .chunks 를 read 하므로 Node main 의 write 와 패스 경계로 분리돼 mutex 불필요(RFC §3 옵션 B).
 ///
-/// **B-i 범위**: id 가 *이미 graph 에 있는* 모듈일 때만 `is_emitted_chunk_entry` 플래그를 set
-/// (finalizeGraph 가 DFS 루트로, chunk.zig 가 dynamic entry 로 분리). 신규 모듈(graph 미존재)은
-/// resolution+discovery 가 필요해 B-ii 대기 → 진단으로 surfacing(silent-broken 방지).
-/// 플래그는 renumber 가 Module 을 옮겨도 따라가므로 finalizeGraph/chunk.zig 가 renumber 후
-/// 안전하게 읽는다(index 배열 전달 불필요).
+/// **B-i**: id 가 *이미 graph 에 있는* 모듈이면 `is_emitted_chunk_entry` 플래그만 set.
+/// **B-ii**: graph 에 없는 신규 모듈이면 `resolve_cache` 로 resolve(상대/bare specifier 도
+/// project_root 기준 — RFC §4.2) → `addModuleWithResolveDir`(dedup) → 플래그 + `requestAll` →
+/// `discoverPendingModulesSequential`. emit-within-emit 은 fixpoint 루프로 재드레인.
+/// finalizeGraph 가 DFS 루트로, chunk.zig 가 dynamic entry 로 분리, tree_shaker 가 entry_set 으로
+/// 생존시킨다. 플래그는 renumber 가 Module 을 옮겨도 따라가므로(shallow copy) 이후 단계가 renumber
+/// 후 안전하게 읽는다(index 배열 전달 불필요).
 fn injectEmittedChunks(self: *ModuleGraph) !void {
     const store_ptr = self.emit_store orelse return; // chunk 미사용 빌드: hot path 0
     const store: *@import("../emit_store.zig").EmitStore = @ptrCast(@alignCast(store_ptr));
@@ -169,11 +171,33 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
         return;
     }
 
+    // 신규 모듈 resolve 기준 디렉토리: importer 가 없으므로 project_root(없으면 entry_dir).
+    // 상대/bare specifier 도 이 기준으로 resolve (RFC §4.2). Rollup 의 importer 미지정 emit 과 동형.
+    const source_dir = if (self.project_root.len > 0) self.project_root else self.entry_dir;
+
     // fixpoint (RFC §4.3): 신규 모듈(B-ii)을 addModule → discovery 하면 그 모듈의 transform 이
     // 또 emit chunk 할 수 있어 store.chunks 가 늘 수 있다. processed 까지 처리 후, discovery 가
     // 새 chunk 요청을 더했으면 while 이 재진입. addModule dedup 으로 bounded.
+    // 방어 캡: 신뢰 못 할 plugin 이 패스마다 *새로운 distinct id* 를 emit 하면 store.chunks 가
+    // 끝없이 자라 미수렴(무한 import 그래프 동형). 정상 빌드는 절대 도달하지 않는 큰 상수로 hang
+    // 대신 진단을 낸다.
     var processed: usize = 0;
+    var pass: usize = 0;
+    const max_passes: usize = 1 << 16;
     while (processed < store.chunks.items.len) {
+        pass += 1;
+        if (pass > max_passes) {
+            self.addDiag(
+                .plugin_error,
+                .@"error",
+                store.chunks.items[processed].id,
+                .{ .start = 0, .end = 0 },
+                .resolve,
+                "this.emitFile({ type: 'chunk' }) did not converge — a plugin keeps emitting new chunk ids during discovery.",
+                "Emit a finite, stable set of chunk ids; avoid emitting a fresh id on every transform.",
+            );
+            break;
+        }
         const cur_len = store.chunks.items.len;
         const before_count = self.modules.count();
         for (store.chunks.items[processed..cur_len]) |chk| {
@@ -195,9 +219,10 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
                     continue;
                 }
                 m.is_emitted_chunk_entry = true;
-            } else {
-                // 신규 모듈 (B-ii): graph 에 없는 id 를 새 entry 로 추가. id 는 plugin 이 this.resolve
-                // 로 얻은 abs path 여야 한다(아래 discovery 가 parse/resolve). addModule dedup.
+            } else if (std.fs.path.isAbsolute(chk.id)) {
+                // 절대경로면 resolve 불필요 — 그대로 등록한다. 플랫폼 무관(Windows `C:\` 포함)이며
+                // resolver 가 abs 를 bare specifier 로 오인하는 경로를 피한다. 존재/disabled/read
+                // 실패는 discovery 후 phantom 재스캔이 정리(B-ii 머지본 동작 유지).
                 const new_idx = self.addModule(chk.id) catch {
                     self.addDiag(
                         .plugin_error,
@@ -205,14 +230,101 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
                         chk.id,
                         .{ .start = 0, .end = 0 },
                         .resolve,
-                        "this.emitFile({ type: 'chunk' }) id could not be added to the graph (resolve it via this.resolve first).",
-                        "Pass an absolute, resolvable module id (e.g. from this.resolve).",
+                        "this.emitFile({ type: 'chunk' }) id could not be added to the graph.",
+                        "Pass an absolute, readable file path or a resolvable specifier.",
                     );
                     continue;
                 };
                 _ = try graph_requested_exports.requestAll(self, new_idx);
                 const nei = @intFromEnum(new_idx);
                 if (nei < self.modules.count()) self.modules.at(nei).is_emitted_chunk_entry = true;
+            } else {
+                // 상대/bare specifier (B-ii): source_dir(project_root) 기준 resolve (RFC §4.2).
+                // plugin 이 this.resolve 를 선호출하지 않아도 된다(Rollup 동형).
+                const resolved = self.resolve_cache.resolveThreadSafe(source_dir, chk.id, .static_import) catch |err| switch (err) {
+                    error.ModuleNotFound => {
+                        self.addDiag(
+                            .plugin_error,
+                            .@"error",
+                            chk.id,
+                            .{ .start = 0, .end = 0 },
+                            .resolve,
+                            "this.emitFile({ type: 'chunk' }) id could not be resolved.",
+                            "Pass a resolvable specifier (relative to project root) or an id already in the graph.",
+                        );
+                        continue;
+                    },
+                    else => |e| return e,
+                };
+                // null = external(isExternal). external 은 chunk 가 될 수 없다.
+                const m_union = resolved orelse {
+                    self.addDiag(
+                        .plugin_error,
+                        .@"error",
+                        chk.id,
+                        .{ .start = 0, .end = 0 },
+                        .resolve,
+                        "this.emitFile({ type: 'chunk' }) id resolves to an external module — cannot be a chunk.",
+                        "Pass an id of a normal (bundled) module.",
+                    );
+                    continue;
+                };
+                switch (m_union) {
+                    .file => |f| {
+                        // f.path/f.resolve_dir 는 graph allocator 소유 → addModuleWithResolveDir 가
+                        // dupe(path→arena, resolve_dir→allocator) 한 뒤 caller 가 free (resolve_imports.zig 동형).
+                        defer {
+                            self.allocator.free(f.path);
+                            if (f.resolve_dir) |dir| self.allocator.free(dir);
+                        }
+                        const new_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
+                        const nei = @intFromEnum(new_idx);
+                        if (nei >= self.modules.count()) continue;
+                        const nm = self.modules.at(nei);
+                        // 기존 external/disabled 모듈로 dedup 되면 chunk 대상이 아니다. 신규 모듈은
+                        // discovery 후 phantom 재스캔이 정리하지만, dedup(count 불변)은 재스캔이
+                        // skip 되므로 여기서 가드한다 (B-i 와 대칭, code-review).
+                        if (nm.is_external or nm.is_disabled) {
+                            self.addDiag(
+                                .plugin_error,
+                                .@"error",
+                                chk.id,
+                                .{ .start = 0, .end = 0 },
+                                .resolve,
+                                "this.emitFile({ type: 'chunk' }) id resolves to an external/disabled module — cannot be a chunk.",
+                                "Pass an id of a normal (bundled) module.",
+                            );
+                            continue;
+                        }
+                        _ = try graph_requested_exports.requestAll(self, new_idx);
+                        nm.is_emitted_chunk_entry = true;
+                    },
+                    .disabled => |d| {
+                        self.allocator.free(d.path);
+                        self.addDiag(
+                            .plugin_error,
+                            .@"error",
+                            chk.id,
+                            .{ .start = 0, .end = 0 },
+                            .resolve,
+                            "this.emitFile({ type: 'chunk' }) id resolves to a disabled module — cannot be a chunk.",
+                            "Pass an id of a normal (bundled) module.",
+                        );
+                    },
+                    // Phase-1 cache 는 virtual/dataurl/external/custom 을 반환하지 않는다
+                    // (resolve_imports.zig 와 동일 불변식). 방어적 진단 — crash 대신 surfacing.
+                    .virtual, .dataurl, .external, .custom => {
+                        self.addDiag(
+                            .plugin_error,
+                            .@"error",
+                            chk.id,
+                            .{ .start = 0, .end = 0 },
+                            .resolve,
+                            "this.emitFile({ type: 'chunk' }) id resolves to a non-file module — unsupported as a chunk.",
+                            "Pass an id of a normal (bundled) file module.",
+                        );
+                    },
+                }
             }
         }
         processed = cur_len;
