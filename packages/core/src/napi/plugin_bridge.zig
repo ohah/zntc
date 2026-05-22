@@ -375,10 +375,10 @@ pub const NapiPlugin = struct {
         return js_obj;
     }
 
-    /// this.emitFile (PR5) 구현. data = *EmitStore. argv[0] = JS 가 검증한 `{ fileName, source }`
-    /// (type='asset' + 명시 fileName 만 — chunk/name-only 검증은 JS 측에서 throw). store.emitAsset
-    /// 으로 등록 후 reference id("asset-N") 를 string 으로 반환. 메인 스레드 직렬 호출이라 store
-    /// write 동기화 불필요(emit_store.zig doc 참조).
+    /// this.emitFile (PR5/6) 구현. data = *EmitStore. argv[0] = JS 가 검증한
+    /// `{ fileName?, name?, source }` (type='asset' 만 — chunk 검증은 JS 측에서 throw).
+    /// 명시 fileName 이면 그대로, 없고 name 이면 source hash 로 파일명 자동 생성(emitAssetByName).
+    /// reference id("asset-N") 를 string 으로 반환. 메인 스레드 직렬 호출이라 동기화 불필요.
     fn emitFileCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
         var js_null: c.napi_value = undefined;
         _ = c.napi_get_null(env, &js_null);
@@ -391,16 +391,46 @@ pub const NapiPlugin = struct {
 
         const store: *EmitStore = @ptrCast(@alignCast(data orelse return js_null));
 
-        const file_name = getObjectString(env, argv[0], "fileName", native_alloc) orelse return js_null;
-        defer native_alloc.free(file_name);
         // source 는 string / Uint8Array / Buffer 모두 수용 (binary-safe asset). 빈 source 도 허용.
         const source = getObjectBytes(env, argv[0], "source", native_alloc) orelse return js_null;
         defer native_alloc.free(source);
 
-        const ref_id = store.emitAsset(file_name, source) catch return js_null;
+        // 명시 fileName 우선; 없으면 name-only(hash 파일명 자동 생성). JS 가 둘 중 하나는 보장.
+        const ref_id = blk: {
+            if (getObjectString(env, argv[0], "fileName", native_alloc)) |file_name| {
+                defer native_alloc.free(file_name);
+                break :blk store.emitAsset(file_name, source) catch return js_null;
+            }
+            const name = getObjectString(env, argv[0], "name", native_alloc) orelse return js_null;
+            defer native_alloc.free(name);
+            break :blk store.emitAssetByName(name, source) catch return js_null;
+        };
         var js_ref: c.napi_value = undefined;
         if (c.napi_create_string_utf8(env, ref_id.ptr, ref_id.len, &js_ref) != c.napi_ok) return js_null;
         return js_ref;
+    }
+
+    /// this.getFileName (PR6) 구현. data = *EmitStore. argv[0] = reference id. emit 된 asset 의
+    /// 최종 파일명을 반환(미등록이면 null). asset hash 는 source 기반이라 emit 시점에 확정되므로
+    /// lazy 없이 단순 lookup. 메인 스레드 직렬.
+    fn getFileNameCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+
+        var argc: usize = 1;
+        var argv: [1]c.napi_value = undefined;
+        var data: ?*anyopaque = null;
+        if (c.napi_get_cb_info(env, info, &argc, &argv, null, &data) != c.napi_ok) return js_null;
+        if (argc < 1) return js_null;
+
+        const store: *EmitStore = @ptrCast(@alignCast(data orelse return js_null));
+        const ref_id = getStringArg(env, argv[0], native_alloc) orelse return js_null;
+        defer native_alloc.free(ref_id);
+
+        const file_name = store.getFileName(ref_id) orelse return js_null;
+        var js_name: c.napi_value = undefined;
+        if (c.napi_create_string_utf8(env, file_name.ptr, file_name.len, &js_name) != c.napi_ok) return js_null;
+        return js_name;
     }
 
     /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
@@ -446,6 +476,7 @@ pub const NapiPlugin = struct {
         var js_get_mod_info: c.napi_value = js_undefined;
         var js_resolve: c.napi_value = js_undefined;
         var js_emit_file: c.napi_value = js_undefined;
+        var js_get_file_name: c.napi_value = js_undefined;
         var argc: usize = 3;
         if (ctx.current_module) |m| {
             _ = c.napi_create_function(env, "getModuleInfo", "getModuleInfo".len, selfModuleInfoCallback, @constCast(m), &js_get_mod_info);
@@ -456,14 +487,15 @@ pub const NapiPlugin = struct {
             _ = c.napi_create_function(env, "resolve", "resolve".len, resolveIdCallback, rc, &js_resolve);
             if (argc < 5) argc = 5;
         }
-        // this.emitFile (PR5): emit_store 가 있으면 6번째 인자로 emitFile 함수 전달.
+        // this.emitFile (PR5) 6번째 + this.getFileName (PR6) 7번째: emit_store 로 둘 다 전달.
         if (ctx.emit_store) |es| {
             _ = c.napi_create_function(env, "emitFile", "emitFile".len, emitFileCallback, es, &js_emit_file);
-            argc = 6;
+            _ = c.napi_create_function(env, "getFileName", "getFileName".len, getFileNameCallback, es, &js_get_file_name);
+            argc = 7;
         }
 
         var js_result: c.napi_value = undefined;
-        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2, js_get_mod_info, js_resolve, js_emit_file };
+        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2, js_get_mod_info, js_resolve, js_emit_file, js_get_file_name };
         if (c.napi_call_function(env, js_undefined, js_callback, argc, &args, &js_result) != c.napi_ok) {
             signalResponse(ctx, .{});
             return;
