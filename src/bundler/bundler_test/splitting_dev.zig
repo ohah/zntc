@@ -1331,6 +1331,36 @@ test "Bundler: minify_whitespace 가 polyfill content 도 minify (#3649 polyfill
     try std.testing.expect(std.mem.indexOf(u8, result.output, "    return") == null);
 }
 
+test "Bundler: polyfill transpile 의 semantic 진단 owned 필드 누수 없음 (#3649 후속, leak 가드)" {
+    // semantic 진단(let 재선언)을 내면서 code 도 정상 생성하는 polyfill — transpile 이
+    // diagnostics/line_offsets 를 self.allocator 로 할당한다. 수정 전엔 result.code 만 취하고
+    // 나머지를 free 안 해 누수했고, std.testing.allocator(GPA) 가 leak 으로 잡는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('x');");
+    // `let x` 재선언 = analyzer 가 throw 없이 진단을 쌓고 codegen 은 진행(정상 code + 진단).
+    try writeFile(tmp.dir, "diag-poly.js", "let x = 1;\nlet x = 2;\nglobal.MyPolyfill = x;\n");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const polyfill = try absPath(&tmp, "diag-poly.js");
+    defer std.testing.allocator.free(polyfill);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .polyfills = &.{polyfill},
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 핵심 가드: 테스트 종료 시 누수 없음(testing.allocator 가 자동 검출).
+    // polyfill 이 실제로 transpile 경로를 타고 번들에 포함됐는지도 확인.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MyPolyfill") != null);
+}
+
 test "Bundler: dev mode single file" {
     // Phase 2: dev mode에서 단일 파일이 프로덕션 파이프라인으로 scope-hoisted 출력
     var tmp = std.testing.tmpDir(.{});
