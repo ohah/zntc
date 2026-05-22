@@ -23,7 +23,7 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 1. 작업 단위 작게 (하나의 PR = 하나의 기능)
 2. 독립 작업은 서브에이전트로 병렬
 3. main 직접 push 금지 — feature branch → PR → merge
-4. PR 올리기 **전** `/simplify` 필수 (파일 간 상호작용까지 검토 → 이후 PR 생성)
+4. PR 올리기 **전** `/code-review max` 필수 (파일 간 상호작용까지 검토 → 이후 PR 생성)
 5. `gh pr create` 시 `--label`, `--assignee` 항상 지정
 6. PR 제목은 `feat(lexer): add numeric literal tokenization` 형식
 7. PR 본문, GitHub 이슈/PR 댓글, 리뷰 답변은 한국어로 작성
