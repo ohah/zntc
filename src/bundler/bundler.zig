@@ -1382,17 +1382,33 @@ pub const Bundler = struct {
             const is_console = std.mem.eql(u8, basename, "console.js");
             const should_transpile = (self.options.flow or minify_ws) and (!is_console or minify_ws);
             const content = if (should_transpile) blk: {
-                const result = transpile_mod.transpile(self.allocator, raw, poly_path, .{
+                var result = transpile_mod.transpile(self.allocator, raw, poly_path, .{
                     .flow = self.options.flow,
                     .jsx_in_js = self.options.jsx_in_js,
                     // 폴리필도 verbatim 규칙을 따라야 함 — 그래야 번들 본체와 동일한 import 처리 정책.
                     .verbatim_module_syntax = self.options.verbatim_module_syntax,
                     .minify_whitespace = minify_ws,
-                }) catch {
-                    break :blk raw; // 트랜스파일 실패 시 원본 사용
+                }) catch |err| {
+                    // 트랜스파일 실패 시 원본 사용 — 단 진단 없이 조용히 넘어가면 minify 번들에
+                    // 원본 주석/들여쓰기가 다시 새는 것을 알아챌 수 없으므로 경고를 남긴다(#3649 후속).
+                    std.log.warn("zntc: polyfill '{s}' 트랜스파일 실패 ({s}), 원본 사용", .{ poly_path, @errorName(err) });
+                    // raw 는 codegen 종결자(`;`) 보장이 없다. trailing newline 이 없으면 emitter 의
+                    // minify IIFE wrap (`...content})();`) 에서 content 마지막 줄 주석/미종결 식이
+                    // `})()` 를 같은 줄로 삼켜 SyntaxError 가 날 수 있어 개행을 보장한다.
+                    if (raw.len > 0 and raw[raw.len - 1] != '\n') {
+                        const padded = std.mem.concat(self.allocator, u8, &.{ raw, "\n" }) catch break :blk raw;
+                        self.allocator.free(raw);
+                        break :blk padded;
+                    }
+                    break :blk raw;
                 };
                 self.allocator.free(raw);
-                break :blk result.code;
+                // result.code 를 content 로 인계. TranspileResult.deinit 은 code 까지 free 하므로
+                // code 를 복사해 content 로 쓰고 result 전체를 deinit 한다 — sourcemap/diagnostics/
+                // line_offsets 누수 방지(#3649 후속). 직접 필드 free 는 누락 위험이 있어 deinit 에 일임.
+                const code = self.allocator.dupe(u8, result.code) catch break :blk result.code;
+                result.deinit(self.allocator);
+                break :blk code;
             } else raw;
             try polyfill_entries.append(self.allocator, .{
                 .name = basename,
