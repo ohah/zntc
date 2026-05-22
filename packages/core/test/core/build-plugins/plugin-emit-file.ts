@@ -53,6 +53,62 @@ describe('@zntc/core build + plugins - this.emitFile', () => {
     }
   });
 
+  test('binary source(Uint8Array) 가 손실 없이 emit 된다', async () => {
+    // 0x00 포함 — string 경유 시 깨지는 바이트로 binary-safe 검증.
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x01]);
+    const plugin: ZntcPlugin = {
+      name: 'emit-binary',
+      setup(build) {
+        build.onTransform({ filter: /main\.ts$/ }, function (this: RollupPluginContext) {
+          this.emitFile({ type: 'asset', fileName: 'logo.png', source: bytes });
+          return null;
+        });
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-binary-'));
+    try {
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+      });
+      expect(result.errors.length).toBe(0);
+      const asset = result.outputFiles.find((f) => f.path === 'logo.png');
+      expect(asset).toBeDefined();
+      expect(Array.from(asset!.contents)).toEqual(Array.from(bytes));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolveId hook 에서도 emit 한 asset 이 노출된다', async () => {
+    // onResolve 필터는 *specifier* 에 매칭 — import 를 둬야 hook 이 발동한다.
+    const plugin: ZntcPlugin = {
+      name: 'emit-resolveid',
+      setup(build) {
+        build.onResolve({ filter: /dep/ }, function (this: RollupPluginContext) {
+          this.emitFile({ type: 'asset', fileName: 'from-resolve.txt', source: 'R' });
+          return null; // 해석은 기본 resolver 에 위임
+        });
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-resolveid-'));
+    try {
+      writeFileSync(join(dir, 'dep.ts'), 'export const d = 1;\n');
+      writeFileSync(join(dir, 'main.ts'), 'import { d } from "./dep.ts";\nexport const x = d;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+      });
+      expect(result.errors.length).toBe(0);
+      expect(result.outputFiles.find((f) => f.path === 'from-resolve.txt')?.text).toBe('R');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('load hook 에서도 emit 한 asset 이 노출된다', async () => {
     const plugin: ZntcPlugin = {
       name: 'emit-asset-load',

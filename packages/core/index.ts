@@ -2884,7 +2884,8 @@ export interface RollupPluginContext {
    * resolveId/load/transform hook 에서 `{ type: 'asset', fileName | name, source }` 를 emit →
    * reference id 반환, 해당 asset 은 `result.outputFiles` 에 나타난다. `fileName` 은 그대로,
    * `name` 은 source hash 로 파일명 자동 생성(file/copy loader 와 동일 `assetNames` 패턴).
-   * `type: 'chunk'` 는 follow-up 으로 throw. 그 외 hook / buildSync / vitePlugin() 에서도 throw.
+   * vitePlugin() 어댑터의 resolveId/load/transform hook 에서도 동작(#1880 PR7). `type: 'chunk'` 는
+   * follow-up 으로 throw. 그 외 hook / buildSync 에서도 throw.
    * **반드시 hook 본문에서 동기적으로 호출**해야 한다 — `await` 이후나 detached promise 에서
    * 호출하면 EmitStore 수명을 벗어나 asset 이 누락되거나 정의되지 않은 동작이 된다 (follow-up). */
   emitFile(file: unknown): string;
@@ -3086,6 +3087,20 @@ function createDropWarner(context: RollupPluginContext): (reason: string) => voi
   };
 }
 
+/** vitePlugin 어댑터는 자체 `context` 를 만들어 핸들러를 `.call(context, ...)` 로 호출하므로,
+ *  native 디스패처가 hook 별로 주입하는 emit 슬롯(`this.__emitFile`/`__getFileName`)이 어댑터
+ *  context 에 닿지 않는다(#1880 PR7). 핸들러를 일반 함수로 두고 native `this` 의 슬롯을 어댑터
+ *  context 로 전달해 vite plugin 에서도 this.emitFile/getFileName 이 동작하게 한다. native this 가
+ *  슬롯을 안 가진 hook(renderChunk 등)·buildSync 에선 undefined 가 전달돼 그대로 throw — 지원 매트릭스 유지. */
+function forwardEmitContext(nativeThis: unknown, viteCtx: RollupPluginContext): void {
+  const from = nativeThis as
+    | { __emitFile?: NativeEmitFileFn; __getFileName?: NativeGetFileNameFn }
+    | undefined;
+  const to = viteCtx as { __emitFile?: NativeEmitFileFn; __getFileName?: NativeGetFileNameFn };
+  to.__emitFile = from?.__emitFile;
+  to.__getFileName = from?.__getFileName;
+}
+
 export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
   return {
     name: rollupPlugin.name,
@@ -3094,7 +3109,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
       const onDropSourceMap = createDropWarner(context);
       const resolveId = extractHandler(rollupPlugin.resolveId);
       if (resolveId) {
-        build.onResolve({ filter: /.*/ }, (args) => {
+        build.onResolve({ filter: /.*/ }, function (this: RollupPluginContext, args) {
+          forwardEmitContext(this, context);
           const result = resolveId.call(context, args.path, args.importer);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
@@ -3109,7 +3125,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
 
       const load = extractHandler(rollupPlugin.load);
       if (load) {
-        build.onLoad({ filter: /.*/ }, (args) => {
+        build.onLoad({ filter: /.*/ }, function (this: RollupPluginContext, args) {
+          forwardEmitContext(this, context);
           const result = load.call(context, args.path);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
@@ -3127,7 +3144,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
 
       const transform = extractHandler(rollupPlugin.transform);
       if (transform) {
-        build.onTransform({ filter: /.*/ }, (args) => {
+        build.onTransform({ filter: /.*/ }, function (this: RollupPluginContext, args) {
+          forwardEmitContext(this, context);
           const result = transform.call(context, args.code, args.path);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
@@ -3145,7 +3163,10 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
 
       const renderChunk = extractHandler(rollupPlugin.renderChunk);
       if (renderChunk) {
-        build.onRenderChunk({ filter: /.*/ }, (args) => {
+        build.onRenderChunk({ filter: /.*/ }, function (this: RollupPluginContext, args) {
+          // emit 미지원 hook — forward 로 어댑터 context 의 stale 슬롯을 clear(native this 슬롯 없음)
+          // 해야 transform 등에서 남은 슬롯으로 emitFile 이 잘못 동작하는 것을 막는다(#1880 PR7).
+          forwardEmitContext(this, context);
           const result = renderChunk.call(context, args.code, args.chunk);
           return mapMaybePromise(result, (result) => {
             if (result == null) return null;
@@ -3160,22 +3181,34 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
 
       const generateBundle = extractHandler(rollupPlugin.generateBundle);
       if (generateBundle) {
-        build.onGenerateBundle((outputs) => generateBundle.call(context, outputs));
+        build.onGenerateBundle(function (this: RollupPluginContext, outputs) {
+          forwardEmitContext(this, context); // stale 슬롯 clear (위 동일)
+          return generateBundle.call(context, outputs);
+        });
       }
 
       const buildStart = extractHandler(rollupPlugin.buildStart);
       if (buildStart) {
-        build.onBuildStart(() => buildStart.call(context));
+        build.onBuildStart(function (this: RollupPluginContext) {
+          forwardEmitContext(this, context);
+          return buildStart.call(context);
+        });
       }
 
       const buildEnd = extractHandler(rollupPlugin.buildEnd);
       if (buildEnd) {
-        build.onBuildEnd((err) => buildEnd.call(context, err));
+        build.onBuildEnd(function (this: RollupPluginContext, err) {
+          forwardEmitContext(this, context);
+          return buildEnd.call(context, err);
+        });
       }
 
       const closeBundle = extractHandler(rollupPlugin.closeBundle);
       if (closeBundle) {
-        build.onCloseBundle(() => closeBundle.call(context));
+        build.onCloseBundle(function (this: RollupPluginContext) {
+          forwardEmitContext(this, context);
+          return closeBundle.call(context);
+        });
       }
     },
   };
