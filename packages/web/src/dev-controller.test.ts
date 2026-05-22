@@ -3,11 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   cleanupPostcssTempRoot,
   createAppDevController,
   prepareAppCssPipelineRoot,
+  recordSassReverseDep,
 } from './dev-controller.ts';
 
 const fallbackRequire = createRequire(import.meta.url);
@@ -149,6 +151,32 @@ describe('createAppDevController', () => {
     expect(c.isSassOnlyChange('/x/style.css')).toBe(false);
   });
 
+  // #71: 실제 sass @use 컴파일로 reverse-dep 맵이 채워지는지(partial → 그것을 쓰는 root scss).
+  // isSassOnlyChange 는 이 맵을 toTemp 후 조회하므로, 맵이 맞으면 fast-path 라우팅도 정확하다.
+  test('prepareAppCssPipelineRoot — @use partial 의 reverse-dep 을 채운다(#71)', async () => {
+    touch('src/style.scss', "@use './vars';\n.x { color: vars.$c; }\n");
+    touch('src/_vars.scss', '$c: red;\n');
+    const reverseDep = new Map<string, Set<string>>();
+    const result = await prepareAppCssPipelineRoot(
+      dir,
+      join(dir, 'dist'),
+      { mode: 'development' },
+      'silent',
+      'dev',
+      deps(),
+      { sassReverseDep: reverseDep },
+    );
+    expect(result).not.toBeNull();
+    if (!result) return;
+    const varsTemp = join(result.tempRoot, 'src', '_vars.scss');
+    const styleTemp = join(result.tempRoot, 'src', 'style.scss');
+    // _vars.scss 의 dependent 에 style.scss — partial 변경 시 style 을 재컴파일하도록.
+    expect(reverseDep.get(varsTemp)?.has(styleTemp)).toBe(true);
+    // self(style)는 reverse 에서 제외.
+    expect(reverseDep.has(styleTemp)).toBe(false);
+    cleanupPostcssTempRoot(result.tempRoot);
+  });
+
   test('hrefFor — .css 는 base + rel, 그 외엔 primary fallback', () => {
     const c = controller();
     expect(c.hrefFor(join(dir, 'style.css'))).toBe('/style.css');
@@ -159,5 +187,22 @@ describe('createAppDevController', () => {
   test('rebuildScssIncremental — pipelineRoot 없으면 null', async () => {
     const c = controller();
     expect(await c.rebuildScssIncremental(join(dir, 'x.scss'))).toBeNull();
+  });
+});
+
+describe('recordSassReverseDep (#71)', () => {
+  test('reverse-dep 구축 + self 제외 + 누적', () => {
+    const map = new Map<string, Set<string>>();
+    const style = '/t/style.scss';
+    // loadedUrls 에 self(style) 도 포함되지만 reverse 에서 제외돼야 한다.
+    recordSassReverseDep(map, style, [pathToFileURL('/t/_vars.scss'), pathToFileURL(style)]);
+    expect(map.get('/t/_vars.scss')?.has(style)).toBe(true);
+    expect(map.has(style)).toBe(false); // self 제외 — style 이 자기 자신의 dep 으로 기록되지 않음
+
+    // 다른 root 가 같은 partial 을 import → dependents 누적.
+    const theme = '/t/theme.scss';
+    recordSassReverseDep(map, theme, [pathToFileURL('/t/_vars.scss')]);
+    expect(map.get('/t/_vars.scss')?.size).toBe(2);
+    expect(map.get('/t/_vars.scss')?.has(theme)).toBe(true);
   });
 });
