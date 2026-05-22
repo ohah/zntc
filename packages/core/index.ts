@@ -1667,6 +1667,7 @@ type PluginDispatcher = ((
   arg1: unknown,
   arg2: string | null,
   getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
+  resolve?: NativeResolveFn,
 ) => Promise<unknown>) &
   PluginDispatcherLifecycle;
 type SyncPluginDispatcher = ((hookName: string, arg1: unknown, arg2: string | null) => unknown) &
@@ -1840,20 +1841,31 @@ function lifecycleHookSpec(
  * 기존 driveDispatch* 의 normalizePluginFailure 경로를 그대로 탄다. resolve/emitFile 는 아직
  * placeholder(throw), getModuleInfo 는 surface 미추가 — 후속 PR(#1880 PR3~5)에서 채운다.
  */
+type NativeResolveFn = (
+  source: string,
+  importer?: string | null,
+  options?: unknown,
+) => { id: string; external: boolean } | null;
+
 function getPluginContext(
   reg: PluginRegistry,
   pluginName: string,
   getModuleInfo?: ((id: string) => ManualChunksModuleInfo | null) | undefined,
+  resolve?: NativeResolveFn | undefined,
 ): RollupPluginContext {
   let ctx = reg.contexts.get(pluginName);
   if (!ctx) {
     ctx = createRollupPluginContext(pluginName, (d) => reg.pluginWarnings.push(d));
     reg.contexts.set(pluginName, ctx);
   }
-  // this.getModuleInfo (PR3): native 가 hook 별로 넘긴 graph-bound fn 을 매번 갱신(undefined 포함)
-  // — 캐시된 context 에 이전 hook 의 fn 이 stale 로 남지 않도록.
-  (ctx as { __getModuleInfo?: (id: string) => ManualChunksModuleInfo | null }).__getModuleInfo =
-    getModuleInfo;
+  // this.getModuleInfo (PR3) / this.resolve (PR4): native 가 hook 별로 넘긴 fn 을 매번 갱신
+  // (undefined 포함) — 캐시된 context 에 이전 hook 의 fn 이 stale 로 남지 않도록.
+  const slot = ctx as {
+    __getModuleInfo?: (id: string) => ManualChunksModuleInfo | null;
+    __resolve?: NativeResolveFn;
+  };
+  slot.__getModuleInfo = getModuleInfo;
+  slot.__resolve = resolve;
   return ctx;
 }
 
@@ -1868,6 +1880,7 @@ function* dispatchHook(
   arg1: unknown,
   arg2: string | null,
   getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
+  resolve?: NativeResolveFn,
 ): Generator<HookCall, unknown, DispatchedHookResult> {
   // astFunction: arg1 이 JSON 직렬화된 FunctionInfo. 첫 매칭 plugin 의 non-null 반환을 채택.
   if (hookName === 'astFunction') {
@@ -1881,7 +1894,8 @@ function* dispatchHook(
     for (const h of reg.astFunctionHooks) {
       if (!h.filter.test(info.sourcePath)) continue;
       const result = yield {
-        callback: () => h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo), info),
+        callback: () =>
+          h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), info),
         pluginName: h.pluginName,
         hookName: 'astFunction',
         fallbackFile: info.sourcePath,
@@ -1912,7 +1926,8 @@ function* dispatchHook(
     for (const h of reg.hooks.resolveContext) {
       if (!h.filter.test(args.dir)) continue;
       const result = yield {
-        callback: () => h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo), args),
+        callback: () =>
+          h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), args),
         pluginName: h.pluginName,
         hookName: 'resolveContext',
         fallbackFile: args.importer,
@@ -1933,7 +1948,8 @@ function* dispatchHook(
       let firstFailure: PluginFailureResult | null = null;
       for (const { pluginName, callback } of spec.callbacks) {
         const result = yield {
-          callback: () => callback.call(getPluginContext(reg, pluginName, getModuleInfo), spec.arg),
+          callback: () =>
+            callback.call(getPluginContext(reg, pluginName, getModuleInfo, resolve), spec.arg),
           pluginName,
           hookName,
         };
@@ -1961,7 +1977,8 @@ function* dispatchHook(
           ? { code: currentCode, path: arg2 }
           : { code: currentCode, chunk: arg2 };
       const result = yield {
-        callback: () => h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo), cbArgs),
+        callback: () =>
+          h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), cbArgs),
         pluginName: h.pluginName,
         hookName,
         fallbackFile: arg2,
@@ -1996,7 +2013,8 @@ function* dispatchHook(
     if (!h.filter.test(filterTarget)) continue;
     const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
     const result = yield {
-      callback: () => h.callback.call(getPluginContext(reg, h.pluginName), cbArgs),
+      callback: () =>
+        h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo, resolve), cbArgs),
       pluginName: h.pluginName,
       hookName,
       fallbackFile,
@@ -2087,8 +2105,9 @@ function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
     arg1: unknown,
     arg2: string | null,
     getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
+    resolve?: NativeResolveFn,
   ) {
-    return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2, getModuleInfo));
+    return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2, getModuleInfo, resolve));
   } as PluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
@@ -2917,13 +2936,17 @@ function createRollupPluginContext(
       // SFC 의 `<style src="./x.css">` 같은 *외부* 파일 변경은 stale 캐시 가능 — 회귀 시 별도
       // surface 필요.
     },
-    resolve(_source, _importer, _options): Promise<never> {
-      // tsc 가 `Promise<never>` declared return 에서 sync `this.error(...)` (never) 만 있을 때
-      // reachable end point 검사를 통과시키지 못해 직접 throw 로 시그니처와 일치시킨다.
-      throw new Error(
-        `@zntc/core [${pluginName}]: this.resolve() is not supported by vitePlugin() adapter yet ` +
-          `(graph mutation surface missing). Use alias config or another plugin's resolveId hook.`,
-      );
+    resolve(source, importer, _options): Promise<{ id: string; external?: boolean } | null> {
+      // native resolver(순수 path resolution) 가 hook 별로 __resolve 슬롯에 주입됨 (#1880 PR4).
+      // sync native fn 을 Promise 로 감싸 Rollup async 시그니처에 맞춘다. skipSelf 는 native-only
+      // scope 에서 자명 충족(native resolver 는 plugin resolveId 를 타지 않음).
+      const fn = (ctx as { __resolve?: NativeResolveFn }).__resolve;
+      if (typeof fn !== 'function') {
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.resolve() 는 async build() 의 resolveId/load/transform hook 에서만 사용 가능합니다 (#1880 PR4).`,
+        );
+      }
+      return Promise.resolve(fn(source, importer));
     },
     emitFile(_file): never {
       throw new Error(

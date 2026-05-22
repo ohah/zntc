@@ -121,6 +121,10 @@ pub const HookContext = struct {
     /// self 모듈은 worker 가 load 단계에서 확정(path/source/plugin_meta)했으므로 안전.
     /// transform hook 에서만 set. null = getModuleInfo 미지원 hook (#1880 PR3).
     current_module: ?*const anyopaque = null,
+    /// `this.resolve` (PR4) 용 ResolveCache 포인터. native resolver 는 순수 path resolution
+    /// (graph 미접근, sharded-mutex thread-safe)이라 worker/JS thread 에서 안전 + plugin 재진입
+    /// 없음. resolveId/load/transform hook 에서 set. null = this.resolve 미지원 (#1880 PR4).
+    resolve_cache: ?*anyopaque = null,
 
     /// 사용 안 하는 failure metadata 를 일괄 정리. 이미 consume 된 경우 no-op.
     /// swallow 경로 (lifecycle hook, fallback null path 등) 에서 `defer ctx.deinit()` 으로 사용.
@@ -402,8 +406,11 @@ pub const PluginRunner = struct {
                 // 각 plugin 별 fresh inner_ctx — source_maps 는 chain 에서 누적, failure 는
                 // 첫 실패 시 outer 로 옮긴다. plugin hook 이 failure 를 read 하는 contract 는
                 // 없으므로 hook_ctx.failure 시드 불필요.
-                // current_module 은 this.getModuleInfo (PR3 self-only) 용으로 전파.
-                var inner_ctx: HookContext = .{ .current_module = hook_ctx.current_module };
+                // current_module(PR3) / resolve_cache(PR4) 를 inner_ctx 로 전파.
+                var inner_ctx: HookContext = .{
+                    .current_module = hook_ctx.current_module,
+                    .resolve_cache = hook_ctx.resolve_cache,
+                };
                 const result = hook(p.context, input, id, allocator, &inner_ctx) catch |err| {
                     hook_ctx.failure = inner_ctx.failure;
                     return err;
