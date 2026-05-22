@@ -1051,7 +1051,7 @@ pub const Bundler = struct {
         // this.emitFile (PR5): plugin 이 emit 한 asset 수집소. graph build 가 plugin hook 을
         // 호출하기 *전* 에 연결해야 한다. emit 된 asset 은 아래에서 OutputFile(kind=.asset)로
         // 복사되어 final_asset_outputs 에 합쳐지고, store 는 scratch 라 bundle() 종료 시 해제.
-        var emit_store = EmitStore.init(self.allocator);
+        var emit_store = EmitStore.init(self.allocator, self.options.asset_names);
         defer emit_store.deinit();
         graph.emit_store = @ptrCast(&emit_store);
         graph.dev_mode = self.options.dev_mode;
