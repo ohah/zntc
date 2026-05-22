@@ -65,3 +65,10 @@ check_inferred
 *.wasm
 references/
 .claude/
+
+# NAPI 네이티브 애드온 + 플랫폼 바이너리 (zig build / napi 산출물이 플랫폼 패키지에 떨어짐)
+*.node
+packages/core-*/zntc
+
+# npm pack 산출물 (pre-release-check 의 `bun pm pack` → <name>-<version>.tgz)
+*.tgz
