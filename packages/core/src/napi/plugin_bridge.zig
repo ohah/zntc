@@ -135,9 +135,10 @@ pub const NapiPlugin = struct {
         } else if (getNamedProperty(env, js_result, "maps")) |maps_val| {
             resp.source_maps = parseStringArray(env, maps_val, native_alloc);
         }
-        // ModuleInfo.meta (#1880 PR2): JS dispatcher 가 object 를 JSON string 으로 정규화해 전달.
-        // 현재 load hook 결과만 module.plugin_meta 로 저장(runLoadForModule). 다른 hook 결과의 meta 는
-        // 추출돼도 소비처가 없어 freeResponseFields 로 해제됨 — resolveId/transform merge 는 follow-up.
+        // ModuleInfo.meta (#1880 PR2 / #3664 P1): JS dispatcher 가 object 를 JSON string 으로 정규화.
+        // load 결과는 runLoadForModule, transform 결과는 callCodeHook→setResponseMeta→
+        // runTransformForModule 이 module.plugin_meta 에 deep merge. resolveId meta(cross-module
+        // 귀속)는 별도 항목(#3664).
         if (getObjectString(env, js_result, "meta", native_alloc)) |meta_json| {
             resp.meta = meta_json;
         }
@@ -202,6 +203,15 @@ pub const NapiPlugin = struct {
             copied[i] = alloc.dupe(u8, map_json) catch return error.OutOfMemory;
         }
         hook_ctx.source_maps = copied;
+    }
+
+    /// transform hook 의 `{ meta }`(JSON 문자열)를 hook_ctx.meta 로 전달 (#1880 #3664 P1).
+    /// resp.meta 는 native_alloc 소유(freeResponseFields 가 해제)라 caller(parse_arena)로 dupe —
+    /// runTransformForModule 이 module.plugin_meta 에 merge 할 때 module 수명만큼 살아야 한다.
+    fn setResponseMeta(resp: PluginResponse, alloc: std.mem.Allocator, hook_ctx: *plugin_mod.HookContext) PluginError!void {
+        const m = resp.meta orelse return;
+        if (m.len == 0) return;
+        hook_ctx.meta = alloc.dupe(u8, m) catch return error.OutOfMemory;
     }
 
     /// CallContext에 응답을 기록하고 워커 스레드에 시그널을 보낸다.
@@ -655,6 +665,9 @@ fn NapiPluginAdapter(comptime Self: type) type {
             const resp = self.callHookFull(hook, arg1, arg2, null, hook_ctx.current_module, hook_ctx.resolve_cache, hook_ctx.emit_store) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
+            // meta 는 code 유무와 무관하게 전달 — Rollup transform 은 code 없이 { meta } 만 반환 가능
+            // (#1880 #3664 P1). runTransformForModule 이 hook_ctx.meta 를 module.plugin_meta 에 merge.
+            try NapiPlugin.setResponseMeta(resp, alloc, hook_ctx);
             if (resp.code) |result_code| {
                 const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
                 try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);

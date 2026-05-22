@@ -1638,6 +1638,42 @@ function isPluginFailureResult(value: unknown): value is PluginFailureResult {
 }
 
 /**
+ * plugin meta object 를 deep merge (#1880 #3664 P1). nested object 는 재귀 merge, 그 외(scalar/
+ * array/타입불일치)는 `source`(나중 plugin) 우선 — Rollup 의 hook 순서 의미와 일치. Zig 쪽
+ * `mergeMetaJson`(graph/plugins.zig)과 동일 규칙(object recurse / later wins / array 덮어쓰기).
+ * transform chain 의 여러 plugin meta 를 단일 결과로 합칠 때 사용.
+ */
+function deepMergeMeta(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...target };
+  for (const key of Object.keys(source)) {
+    const sv = source[key];
+    const tv = out[key];
+    const merged =
+      sv != null &&
+      typeof sv === 'object' &&
+      !Array.isArray(sv) &&
+      tv != null &&
+      typeof tv === 'object' &&
+      !Array.isArray(tv)
+        ? deepMergeMeta(tv as Record<string, unknown>, sv as Record<string, unknown>)
+        : sv;
+    // `out[key] =` 의 [[Set]] 은 `__proto__`/`constructor` 키에서 setter 를 타 데이터가 손실되고
+    // Zig mergeMetaJson(plain string 키 보존)과 발산한다. defineProperty 로 own data 를 할당해
+    // setter 를 우회 → JS↔Zig 동일 결과 + prototype 오염 차단 (code-review).
+    Object.defineProperty(out, key, {
+      value: merged,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
+/**
  * `serializePluginSourceMap` 의 throw (invalid map JSON) 를 결과 객체로 wrap.
  * generator 본체는 runner 의 try/catch 밖에서 실행되므로 직접 normalize 가 필요하다.
  */
@@ -2002,6 +2038,9 @@ function* dispatchHook(
     let currentCode = arg1 as string;
     let changed = false;
     const sourceMaps: string[] = [];
+    // #1880 #3664 P1: transform chain 의 여러 plugin meta 를 deep merge(나중 plugin 우선, nested
+    // 보존). 단일 결과로 native 에 전달 → Zig 가 load meta 와 다시 deep merge. transform 만 해당.
+    let mergedMeta: Record<string, unknown> | undefined;
     for (const h of hookList) {
       if (!h.filter.test(arg2 ?? '')) continue;
       const cbArgs =
@@ -2020,7 +2059,7 @@ function* dispatchHook(
       };
       if (isPluginFailureResult(result)) return result;
       if (result != null) {
-        const obj = result as { code?: unknown; map?: unknown };
+        const obj = result as { code?: unknown; map?: unknown; meta?: unknown };
         const newCode = typeof result === 'string' ? result : obj.code;
         if (typeof newCode === 'string') {
           currentCode = newCode;
@@ -2031,10 +2070,33 @@ function* dispatchHook(
           if (!r.ok) return normalizePluginFailure(h.pluginName, hookName, r.err, arg2);
           if (r.map != null) sourceMaps.push(r.map);
         }
+        if (hookName === 'transform' && typeof result === 'object' && obj.meta != null) {
+          if (typeof obj.meta !== 'object') {
+            // Rollup 은 object meta 만 — primitive 는 무시(load/resolveId 경로와 동일 정책).
+          } else {
+            mergedMeta =
+              mergedMeta === undefined
+                ? { ...(obj.meta as Record<string, unknown>) }
+                : deepMergeMeta(mergedMeta, obj.meta as Record<string, unknown>);
+          }
+        }
       }
     }
-    return changed
-      ? { code: currentCode, ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}) }
+    let metaJson: string | undefined;
+    if (mergedMeta !== undefined) {
+      try {
+        metaJson = JSON.stringify(mergedMeta);
+      } catch (err) {
+        return normalizePluginFailure('transform-chain', hookName, err, arg2);
+      }
+    }
+    // code 변경 없이 meta 만 있어도 native 로 전달해야 한다(meta-only transform).
+    return changed || metaJson !== undefined
+      ? {
+          ...(changed ? { code: currentCode } : {}),
+          ...(sourceMaps.length > 0 ? { maps: sourceMaps } : {}),
+          ...(metaJson !== undefined ? { meta: metaJson } : {}),
+        }
       : null;
   }
 

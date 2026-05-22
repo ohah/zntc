@@ -209,4 +209,78 @@ describe('@zntc/core build + plugins - ModuleInfo.meta / this.getModuleInfo (sel
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #3664 P1: transform hook 의 meta 가 load meta 와 deep merge 된다(나중 hook=transform 우선,
+  // nested 보존). transform meta 는 chain 종료 후 module 에 반영되므로 frozen graph(manualChunks
+  // getModuleInfo)에서 검증. transform 은 code 없이 meta 만 반환(meta-only).
+  test('transform meta 가 load meta 와 deep merge 되어 manualChunks getModuleInfo 로 노출 (P1)', async () => {
+    let merged: Record<string, unknown> | undefined;
+    const plugin: ZntcPlugin = {
+      name: 'meta-merge',
+      setup(build) {
+        build.onLoad({ filter: /main\.ts$/ }, () => ({
+          contents: 'export const x = 1;\n',
+          meta: { a: 1, nested: { p: 1, q: 1 } },
+        }));
+        build.onTransform({ filter: /main\.ts$/ }, () => ({
+          // code 없이 meta 만 — meta-only transform.
+          meta: { b: 2, nested: { q: 99, r: 2 } },
+        }));
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-meta-merge-'));
+    try {
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+        manualChunks: (id, meta) => {
+          if (id.includes('main.ts')) {
+            merged = meta.getModuleInfo(id)?.meta as Record<string, unknown>;
+          }
+          return null;
+        },
+      });
+      expect(result.errors.length).toBe(0);
+      // load {a, nested:{p,q}} + transform {b, nested:{q→99, r}} → deep merge, transform 우선.
+      expect(merged).toEqual({ a: 1, b: 2, nested: { p: 1, q: 99, r: 2 } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #3664 P1: 같은 plugin 의 여러 transform 결과(chain)도 nested 보존 deep merge.
+  test('transform chain 의 여러 meta 가 deep merge 된다 (P1)', async () => {
+    let merged: Record<string, unknown> | undefined;
+    const plugin: ZntcPlugin = {
+      name: 'meta-chain',
+      setup(build) {
+        build.onTransform({ filter: /main\.ts$/ }, () => ({ meta: { nested: { a: 1 } } }));
+        build.onTransform({ filter: /main\.ts$/ }, () => ({ meta: { nested: { b: 2 } } }));
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-meta-chain-'));
+    try {
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+        manualChunks: (id, meta) => {
+          if (id.includes('main.ts')) {
+            merged = meta.getModuleInfo(id)?.meta as Record<string, unknown>;
+          }
+          return null;
+        },
+      });
+      expect(result.errors.length).toBe(0);
+      // 두 transform 의 nested 가 키 손실 없이 합쳐진다(shallow 면 {b:2}만 남음).
+      expect(merged).toEqual({ nested: { a: 1, b: 2 } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

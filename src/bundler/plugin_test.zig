@@ -864,3 +864,33 @@ test "Plugin integration: buildStart 실패 시 build 실패 + errdefer 경로�
     try std.testing.expectEqual(@as(u32, 1), LifecycleLog.close_bundle_count);
     try std.testing.expect(LifecycleLog.build_end_error_was_null); // catastrophic path: build_error=null
 }
+
+// --- mergeMetaJson deep merge (#1880 #3664 P1) ---
+test "mergeMetaJson: nested deep merge + later wins + 비-object fallback" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // nested object 는 키 손실 없이 recurse, 충돌 키는 add(나중) 우선.
+    const merged = try plugin_mod.mergeMetaJson(
+        a,
+        "{\"a\":1,\"n\":{\"p\":1,\"q\":1}}",
+        "{\"b\":2,\"n\":{\"q\":9,\"r\":2}}",
+    );
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, merged, .{});
+    const o = parsed.object;
+    try std.testing.expectEqual(@as(i64, 1), o.get("a").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), o.get("b").?.integer);
+    const n = o.get("n").?.object;
+    try std.testing.expectEqual(@as(i64, 1), n.get("p").?.integer); // base 보존
+    try std.testing.expectEqual(@as(i64, 9), n.get("q").?.integer); // add 우선
+    try std.testing.expectEqual(@as(i64, 2), n.get("r").?.integer); // add 신규
+
+    // base 가 null 이면 add 를 그대로 채택.
+    const r2 = try plugin_mod.mergeMetaJson(a, null, "{\"x\":1}");
+    try std.testing.expectEqualStrings("{\"x\":1}", r2);
+
+    // 한쪽이 비-object(array)면 deep merge 불가 → add(나중) 우선.
+    const r3 = try plugin_mod.mergeMetaJson(a, "{\"a\":1}", "[1,2]");
+    try std.testing.expectEqualStrings("[1,2]", r3);
+}
