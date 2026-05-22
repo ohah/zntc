@@ -414,8 +414,13 @@ pub fn emitChunks(
             const dep_id = if (reg_split) reg_ids[@intFromEnum(dep_chunk_idx)] else "";
 
             // import 경로 결정: preserve-modules면 상대 경로, 아니면 "./{stem}{ext}"
+            // PR7-2d: 명시 fileName 은 preserve-modules 보다 우선 — 출력 파일명(verbatim)과 import
+            // 경로가 일치해야 한다(filename 생성부도 explicit 을 먼저 검사). emit chunk 는 rel_dir
+            // 이 null 이라 preserve 분기가 verbatim 을 떨어뜨리면 ref 가 실제 출력과 어긋난다.
             const resolved_path = if (reg_split)
                 try allocator.dupe(u8, "")
+            else if (dep_chunk.explicit_file_name) |efn|
+                try std.fmt.allocPrint(allocator, "./{s}", .{efn})
             else if (options.preserve_modules) blk: {
                 const src_path = chunk.rel_dir orelse "./";
                 const dep_path = dep_chunk.rel_dir orelse "./";
@@ -908,7 +913,12 @@ pub fn emitChunks(
         }
 
         // 출력 파일명 생성
-        const filename = if (options.preserve_modules and chunk.rel_dir != null)
+        const filename = if (chunk.explicit_file_name) |efn|
+            // plugin emitFile fileName (#1880 PR7-2d): verbatim — 패턴/hash placeholder/ext 우회.
+            // efn 은 확장자를 포함한 최종 경로(Rollup 동형). content-hash 치환 대상 placeholder 가
+            // 없으므로 resolveContentHashes 의 path 치환은 no-op.
+            try allocator.dupe(u8, efn)
+        else if (options.preserve_modules and chunk.rel_dir != null)
             // preserve-modules: 원본 경로에서 root를 제거한 상대 경로 사용
             try computePreserveModulesPath(allocator, chunk.rel_dir.?, ext, options.preserve_modules_root)
         else blk: {
@@ -1058,7 +1068,11 @@ fn emitRunBeforeMainCrossImports(
             const src_path = current_chunk.rel_dir orelse "./";
             const dep_path = dep_chunk.rel_dir orelse "./";
             break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
-        } else try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+        } else if (dep_chunk.explicit_file_name) |efn|
+            // PR7-2d: 명시 fileName chunk 는 verbatim 참조.
+            try std.fmt.allocPrint(allocator, "./{s}", .{efn})
+        else
+            try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
         defer allocator.free(resolved_path);
 
         if (!options.minify_whitespace) {
@@ -1392,9 +1406,15 @@ fn rewriteDynamicImports(
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
         // 청크 파일명 생성: public_path가 있으면 "{public_path}{stem}{ext}", 없으면 "./{stem}{ext}"
+        // PR7-2d: 명시 fileName chunk 는 verbatim(패턴/hash 우회) — public_path 만 prefix.
         var stem_buf: [128]u8 = undefined;
         const stem = chunkPlaceholderStem(target_chunk, &stem_buf, emit_options);
-        const replacement = if (public_path.len > 0)
+        const replacement = if (target_chunk.explicit_file_name) |efn|
+            (if (public_path.len > 0)
+                try std.fmt.allocPrint(allocator, "{s}{s}", .{ public_path, efn })
+            else
+                try std.fmt.allocPrint(allocator, "./{s}", .{efn}))
+        else if (public_path.len > 0)
             try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ public_path, stem, out_ext })
         else
             try std.fmt.allocPrint(allocator, "./{s}{s}", .{ stem, out_ext });

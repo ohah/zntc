@@ -3097,8 +3097,10 @@ function createRollupPluginContext(
         const chunkRef = fn({
           chunkId: f.id,
           chunkName: typeof f.name === 'string' && f.name.length > 0 ? f.name : undefined,
-          // 명시 fileName 의 "정확히 그대로(hash 없이)" 는 follow-up — 현재 name 기반 [name]-[hash]
-          // 출력 + getFileName 으로 최종명 조회. (chunkFileName 미노출)
+          // 명시 fileName 은 "정확히 그대로(hash/[name] 패턴 우회)" 출력 — Rollup emitFile chunk fileName.
+          // 미지정이면 name 기반 [name]-[hash]. getFileName(refId) 가 둘 다 최종명 반환 (#1880 PR7-2c/2d).
+          chunkFileName:
+            typeof f.fileName === 'string' && f.fileName.length > 0 ? f.fileName : undefined,
         });
         if (typeof chunkRef !== 'string') {
           throw new Error(

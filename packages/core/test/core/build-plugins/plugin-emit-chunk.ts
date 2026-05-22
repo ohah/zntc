@@ -131,6 +131,56 @@ describe('@zntc/core build + plugins - this.emitFile chunk (PR7-2b-i)', () => {
     }
   });
 
+  test('명시 fileName 의 chunk emit 은 hash/[name] 패턴 없이 그대로 출력된다 (PR7-2d)', async () => {
+    // name(→[name]-[hash]) 대조: fileName 은 verbatim. Rollup emitFile chunk fileName 동형.
+    let chunkRef = '';
+    let resolvedName: string | undefined;
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-fname-'));
+    const plugin: ZntcPlugin = {
+      name: 'chunk-explicit-filename',
+      setup(build) {
+        build.onTransform(
+          { filter: /main\.ts$/ },
+          async function (this: RollupPluginContext, args: { path: string }) {
+            const r = await this.resolve('./worker.ts', args.path);
+            // 서브디렉토리 + 확장자 포함 명시 fileName.
+            chunkRef = this.emitFile({
+              type: 'chunk',
+              id: r!.id,
+              fileName: 'workers/sw.js',
+            }) as string;
+            return null;
+          },
+        );
+        build.onGenerateBundle(function (this: RollupPluginContext) {
+          resolvedName = this.getFileName(chunkRef);
+        });
+      },
+    };
+    try {
+      writeFileSync(join(dir, 'worker.ts'), 'export const w = 99;\nconsole.log("wk");\n');
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBe(0);
+      // 출력 파일명이 정확히 'workers/sw.js' (hash 없음).
+      const swChunk = result.outputFiles.find((f) => f.path === 'workers/sw.js');
+      expect(swChunk).toBeDefined();
+      expect(swChunk!.text).toContain('99');
+      // hash 가 붙은 변형이 없어야 한다.
+      expect(result.outputFiles.some((f) => /workers\/sw-[0-9a-f]{8}\.js$/.test(f.path))).toBe(
+        false,
+      );
+      // getFileName 도 동일 verbatim 반환(출력과 일치).
+      expect(resolvedName).toBe('workers/sw.js');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('상대 specifier 신규 모듈 emit chunk — this.resolve 없이 project_root 기준 resolve (RFC §4.2)', async () => {
     // abs path(this.resolve 결과)뿐 아니라 RFC §4.2 는 resolveThreadSafe 로 상대/bare specifier 도
     // 받도록 명세한다. plugin 이 this.resolve 를 선호출하지 않고 './worker.ts' 를 그대로 emit 해도
