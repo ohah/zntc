@@ -9,28 +9,30 @@
 > **2026-05-22 measure-first 결과 (typescript.js 9MB / ReleaseFast / `zntc bench`)**
 > lexer scan 의 식별자·공백·문자열 스캔은 이미 16바이트 SIMD 적용 완료. 키워드 조회·lookup table 계열(#4/#8/#23)은 실측상 noise floor 아래로 **ROI ≈ 0** 확인.
 > `parse.expression.assignment` 가 profile self 45% 로 최대처럼 보이나, scope 제거 A/B 시 parse −100ms — 대부분 `profile.begin/end` timer 계측 오버헤드(count 큰 scope 의 self 절대값은 신뢰 불가). 새 lexer/parser 최적화 아이디어는 scope 제거 A/B 로 실측 후 진행할 것.
+>
+> **lexer 마이크로 3부류 A/B 측정 전부 ROI ≈ 0 (2026-05-22, scan ~95–101ms 불변):** ①연산(#6 local pos) — LLVM 이 이미 self.current 레지스터 유지 ②할당(#24 line_offsets prealloc) — ArrayList doubling 이 amortized O(n) 이라 201K 줄도 realloc 비용 ~수십µs(scan 80ms 의 0.1% 미만) ③주석(#20/#21 pragma 우회) — `@`/`#` early-exit + 주석이 1.6M 토큰 중 소수. **scan 은 SIMD/메모리 바운드 확정 — 스칼라 마이크로 최적화 여지 없음, 재시도 금지.** #5/#14/#15/#18/#34 는 동작 동일 순수 리팩토링(성능 무관). #10(=#24 자료구조)/#22(이미 단순 인덱스)/#31(amortized)/#9·#19(핫패스 밖)도 동류 ROI 0.
 
 | # | 항목 | 비고 |
 |---|------|------|
 | 1 | `Span`에 `source_id` 추가 (multi-file) | **비표준 설계 — 보류 (2026-05-22 references 4종 실측).** 어느 메이저 번들러도 AST 노드에 source_id 안 박음: esbuild=`Loc{Start int32}` 오프셋만(SourceIndex u32 는 심볼 Ref 전용), rolldown=oxc 동일, rspack=소스맵 합성. 출처는 "번들 줄 위치 + 모듈별 루프(module_id 명시)" 로 추적(현 zts 방식=esbuild 와 동일·정석). 함수 본문 인라인(노드 통째 이동)은 rspack 만 하며, 그조차 인라인 코드를 정의처로 **소스맵 합성(compose)** 으로 매핑 — 노드 확장 아님. Node 24B(`ast.zig:67`) 깨면 캐시 효율 하락(2.6→2.0/line). 진짜 트리거=함수 인라인 도입 시이고 그때도 정석은 소스맵 합성. 굳이 노드에 넣어야 하면 노는 pad 2B(u16=65536 모듈)로 크기 무증가 가능 |
 | 4 | `StaticStringMap` → perfect hash 최적화 | ROI ≈ 0 확인 (2026-05-22) — 키워드 조회 우회 A/B 시 scan 변화 noise floor 아래 |
-| 5 | scan* 함수 테이블 기반 통합 | 구조 리팩토링 |
-| 6 | skipWhitespace/scanIdentifierTail → local pos 패턴 | SIMD PR |
-| 7 | handleNewline 특수화 (handleLF/handleCR) | SIMD PR |
+| 5 | scan* 함수 테이블 기반 통합 | 순수 리팩토링 (성능 무관) |
+| 6 | skipWhitespace/scanIdentifierTail → local pos 패턴 | ROI ≈ 0 측정 (2026-05-22) — SIMD 완료, local pos A/B 무효 (LLVM 레지스터 유지) |
+| 7 | handleNewline 특수화 (handleLF/handleCR) | LF/CR/LS 분기 이미 인라인. 함수 분리는 줄바꿈 cold 라 무의미 |
 | 8 | keyword lookup 길이 체크 early-exit | ROI ≈ 0 확인 (2026-05-22) — #4 와 동일 측정. 키워드 조회 자체가 noise floor 아래 |
-| 9 | getLineColumn hint 캐싱 | 최적화 PR |
-| 10 | line_offsets Small Buffer Optimization | 최적화 PR |
-| 14 | scanHexDigits/scanOctalDigits/scanBinaryDigits 통합 | 최적화 PR |
-| 15 | scanHexLiteral/scanOctalLiteral/scanBinaryLiteral 통합 | 최적화 PR |
-| 18 | isAsciiIdentStart/Continue를 unicode.zig로 이동 | 최적화 PR |
-| 19 | pragma dead guard 제거 | 최적화 PR |
-| 20 | checkPureComment 최적화 (단일 패스) | 최적화 PR |
-| 21 | checkJSXPragma early-exit | 최적화 PR |
-| 22 | peek() 캐싱 | 최적화 PR |
+| 9 | getLineColumn hint 캐싱 | 핫패스 밖 (에러/소스맵 경로) — ROI ≈ 0 |
+| 10 | line_offsets Small Buffer Optimization | #24 와 동일 자료구조 — amortized 라 ROI ≈ 0 |
+| 14 | scanHexDigits/scanOctalDigits/scanBinaryDigits 통합 | 순수 리팩토링 (성능 무관) |
+| 15 | scanHexLiteral/scanOctalLiteral/scanBinaryLiteral 통합 | 순수 리팩토링 (성능 무관) |
+| 18 | isAsciiIdentStart/Continue를 unicode.zig로 이동 | 순수 리팩토링 (성능 무관) |
+| 19 | pragma dead guard 제거 | 핫패스 밖 — ROI ≈ 0 |
+| 20 | checkPureComment 최적화 (단일 패스) | ROI ≈ 0 측정 (2026-05-22) — 함수 전체 우회 A/B 무효 (@/# early-exit + 주석 소수) |
+| 21 | checkJSXPragma early-exit | ROI ≈ 0 측정 (2026-05-22) — #20 과 동일 (comment pragma 우회) |
+| 22 | peek() 캐싱 | 이미 단순 배열 인덱스 — 캐싱 무의미, ROI ≈ 0 |
 | 23 | isAsciiIdentContinue → lookup table | ROI ≈ 0 확인 (2026-05-22) — 식별자 스캔 inner loop 는 이미 16B SIMD fast path, 이 함수는 16B 미만 tail 스칼라 fallback 에만 쓰임 |
-| 24 | line_offsets/template_depth_stack 초기 용량 | 최적화 PR |
-| 31 | scratch ArrayList 미적용 일부 파싱 함수 | 최적화 PR |
-| 34 | parseForIn/parseForOf 통합 | 최적화 PR |
+| 24 | line_offsets/template_depth_stack 초기 용량 | ROI ≈ 0 측정 (2026-05-22) — prealloc A/B 무효 (doubling amortized) |
+| 31 | scratch ArrayList 미적용 일부 파싱 함수 | amortized 할당 — ROI ≈ 0 (미측정, 동류) |
+| 34 | parseForIn/parseForOf 통합 | 순수 리팩토링 (성능 무관) |
 
 ---
 
