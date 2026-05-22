@@ -217,7 +217,7 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .is_included = m.is_included,
         .exports = if (m.is_external) &.{} else m.exported_names,
         // Phase B (plugin context API) 까지 placeholder 값.
-        .synthetic_named_exports = false,
+        .synthetic_named_exports = m.synthetic_named_exports != null,
         .implicitly_loaded_after_one_of = &.{},
         .implicitly_loaded_before = &.{},
         .meta = m.plugin_meta,

@@ -60,6 +60,9 @@ pub const NapiPlugin = struct {
         /// onLoad/onResolveId callback 의 `meta` (Rollup `ModuleInfo.meta`). JS dispatcher 가
         /// object 를 JSON string 으로 정규화해 전달 (#1880 PR2). native_alloc 소유.
         meta: ?[]const u8 = null,
+        /// Rollup `syntheticNamedExports` (#3664 P2). true→"default", string→그대로 정규화한 fallback
+        /// 대상 export 이름. null = 미설정. native_alloc 소유.
+        synthetic_named_exports: ?[]const u8 = null,
         is_failure: bool = false,
         failure_plugin_name: ?[]const u8 = null,
         failure_hook_name: ?[]const u8 = null,
@@ -142,6 +145,17 @@ pub const NapiPlugin = struct {
         if (getObjectString(env, js_result, "meta", native_alloc)) |meta_json| {
             resp.meta = meta_json;
         }
+        // syntheticNamedExports (#3664 P2): string 이면 그 export 이름, boolean true 면 "default".
+        if (getObjectString(env, js_result, "syntheticNamedExports", native_alloc)) |target| {
+            resp.synthetic_named_exports = target;
+        } else if (getNamedProperty(env, js_result, "syntheticNamedExports")) |sne_val| {
+            var t: c.napi_valuetype = undefined;
+            if (c.napi_typeof(env, sne_val, &t) == c.napi_ok and t == c.napi_boolean) {
+                var b: bool = false;
+                _ = c.napi_get_value_bool(env, sne_val, &b);
+                if (b) resp.synthetic_named_exports = native_alloc.dupe(u8, "default") catch null;
+            }
+        }
         // AST plugin 응답 파싱
         if (getObjectString(env, js_result, "stripDirective", native_alloc)) |sd| {
             resp.strip_directive = sd;
@@ -187,6 +201,7 @@ pub const NapiPlugin = struct {
             native_alloc.free(maps);
         }
         if (resp.meta) |s| native_alloc.free(s);
+        if (resp.synthetic_named_exports) |s| native_alloc.free(s);
         if (resp.failure_plugin_name) |s| native_alloc.free(s);
         if (resp.failure_hook_name) |s| native_alloc.free(s);
         if (resp.failure_message) |s| native_alloc.free(s);
@@ -735,7 +750,9 @@ fn NapiPluginAdapter(comptime Self: type) type {
             try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);
             // resp.meta 는 native_alloc 소유(freeResponseFields 가 해제) → caller(parse_arena) 로 dupe (#1880 PR2).
             const meta_dup: ?[]const u8 = if (resp.meta) |m| (alloc.dupe(u8, m) catch return error.OutOfMemory) else null;
-            return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type, .meta = meta_dup };
+            // syntheticNamedExports 도 동일하게 parse_arena 로 dupe (#3664 P2).
+            const synth_dup: ?[]const u8 = if (resp.synthetic_named_exports) |s| (alloc.dupe(u8, s) catch return error.OutOfMemory) else null;
+            return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type, .meta = meta_dup, .synthetic_named_exports = synth_dup };
         }
 
         fn pluginTransform(

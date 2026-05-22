@@ -766,6 +766,11 @@ pub fn buildMetadataForAst(
                 }
                 if (self.tree_shaker_active and !value_init_mod.is_included) continue;
 
+                // #3664 P2: synthetic_named_exports 바인딩은 eager `{target}.{member}` 치환이라
+                // lazy(inline-requires) 대상이 아니다. lazy 로 두면 아래 appendEsmInitCall 이 스킵돼
+                // target(default) export 가 init_xxx() 호출 전에 참조됨 → 미초기화 ReferenceError
+                // (code-review max 적발: RN/Metro inline_requires + esm-wrapped sideEffects:false).
+                const is_synthetic_binding = if (resolved) |rb| rb.synthetic_member != null else false;
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
@@ -779,7 +784,8 @@ pub fn buildMetadataForAst(
                     !value_init_mod.uses_top_level_await and
                     !target_mod.isUserDeclaredSideEffectful() and
                     !value_init_mod.isUserDeclaredSideEffectful() and
-                    !exported_locals.contains(m.importBindingLocalName(ib));
+                    !exported_locals.contains(m.importBindingLocalName(ib)) and
+                    !is_synthetic_binding;
                 if (lazy_esm_import) {
                     lazy_esm_import_mod = value_init_mod;
                 }
@@ -935,11 +941,18 @@ pub fn buildMetadataForAst(
             // 채워졌으면 rename 스킵 (#2429).
             if (!isReservedName(target_name) and target_name.len > 0 and isValidIdentStartByte(target_name[0])) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                    const rename_value = if (lazy_esm_import)
+                    // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
+                    // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를
+                    // default export 객체의 member 참조로 치환. owned(allocPrint)라 lazy 와 같은
+                    // 소유권 경로(owned_nested_renames)로 등록.
+                    const synth_member: ?[]const u8 = if (resolved) |rb| rb.synthetic_member else null;
+                    const rename_value = if (synth_member) |member|
+                        try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ target_name, member })
+                    else if (lazy_esm_import)
                         try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, target_name)
                     else
                         target_name;
-                    if (lazy_esm_import) {
+                    if (synth_member != null or lazy_esm_import) {
                         var rename_owned_by_list = false;
                         errdefer if (!rename_owned_by_list) self.allocator.free(rename_value);
                         try owned_nested_renames.append(self.allocator, rename_value);
@@ -949,8 +962,9 @@ pub fn buildMetadataForAst(
                         try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, rename_value);
                     }
                     // __esm → __esm live binding: __export getter override 등록 +
-                    // 자체 rename 루프에서 덮어쓰기 방지
-                    if (m.wrap_kind == .esm and canonical_m_opt != null and
+                    // 자체 rename 루프에서 덮어쓰기 방지. synthetic member access(`_default.foo`)는
+                    // live binding 이 아니므로(default export 객체의 member) getter override 대상 제외.
+                    if (synth_member == null and m.wrap_kind == .esm and canonical_m_opt != null and
                         canonical_m_opt.?.wrap_kind == .esm)
                     {
                         try export_getter_overrides.put(self.allocator, m.importBindingLocalName(ib), rename_value);
