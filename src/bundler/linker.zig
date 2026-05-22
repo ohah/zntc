@@ -127,6 +127,10 @@ pub const ResolvedBinding = struct {
     local_span: Span,
     /// 최종적으로 가리키는 export (re-export 체인 해결 후)
     canonical: SymbolRef,
+    /// Rollup `syntheticNamedExports` (#3664 P2). 정적으로 export 안 된 named import 가
+    /// synthetic 모듈의 fallback 대상(default/named) export 의 member 일 때 그 member 이름.
+    /// null = 일반 바인딩. 설정 시 codegen 은 `{canonical local name}.{synthetic_member}` 로 rename.
+    synthetic_member: ?[]const u8 = null,
 };
 
 pub const Linker = struct {
@@ -1456,12 +1460,30 @@ pub const Linker = struct {
 
                 if (source_record.resolved.isNone()) continue; // external 또는 미해석
 
+                const bk = BindingKey{
+                    .module_index = @intCast(i),
+                    .span_key = types.spanKey(ib.local_span),
+                };
+
                 // re-export 체인을 따라가서 canonical export 찾기
                 const canonical = self.resolveExportChain(
                     source_record.resolved,
                     ib.imported_name,
                     0,
                 ) orelse {
+                    // #3664 P2: synthetic_named_exports 모듈이면 정적으로 export 안 된 named import 를
+                    // fallback 대상(default/named) export 의 member 로 해석한다. canonical 은 그 대상
+                    // export 를 가리키고, synthetic_member 에 원래 import 이름을 담아 codegen 이
+                    // `{target}.{member}` 로 rename 하게 한다.
+                    if (self.synthExportFallback(source_record.resolved)) |target_ref| {
+                        try self.resolved_bindings.put(bk, .{
+                            .local_name = ib.local_name,
+                            .local_span = ib.local_span,
+                            .canonical = target_ref,
+                            .synthetic_member = ib.imported_name,
+                        });
+                        continue;
+                    }
                     // export를 찾을 수 없음
                     self.addDiag(
                         .missing_export,
@@ -1475,10 +1497,6 @@ pub const Linker = struct {
                     continue;
                 };
 
-                const bk = BindingKey{
-                    .module_index = @intCast(i),
-                    .span_key = types.spanKey(ib.local_span),
-                };
                 try self.resolved_bindings.put(bk, .{
                     .local_name = ib.local_name,
                     .local_span = ib.local_span,
@@ -1486,6 +1504,15 @@ pub const Linker = struct {
                 });
             }
         }
+    }
+
+    /// #3664 P2: synthetic_named_exports 모듈의 fallback 대상 export 를 resolve.
+    /// `synthetic_named_exports`("default" 또는 string target)를 resolveExportChain 으로 따라가
+    /// canonical SymbolRef 반환. 모듈이 synthetic 아니거나 target 자체도 missing 이면 null.
+    fn synthExportFallback(self: *const Linker, mod: ModuleIndex) ?SymbolRef {
+        const sm = self.graph.getModule(mod) orelse return null;
+        const target = sm.synthetic_named_exports orelse return null;
+        return self.resolveExportChain(mod, target, 0);
     }
 
     /// re-export 체인을 따라가서 canonical export를 찾는다.

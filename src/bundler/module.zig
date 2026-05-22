@@ -156,6 +156,11 @@ pub const Module = struct {
     /// (resolveId/transform meta merge 는 follow-up — 현재 load hook 만.)
     /// null = plugin 이 meta 미설정. parse_arena 가 backing 을 소유 (#1880 PR2).
     plugin_meta: ?[]const u8 = null,
+    /// Rollup `syntheticNamedExports` (#3664 P2). null = 비활성. 그 외 = fallback 대상 export 이름
+    /// — `syntheticNamedExports:true` 는 `"default"`, `syntheticNamedExports:'name'` 은 `"name"`.
+    /// 정적으로 export 안 된 named import 를 이 export 의 member 로 해석(CJS fallback 과 동형이되
+    /// 대상이 namespace 가 아니라 default/named export value). parse_arena 가 backing 소유.
+    synthetic_named_exports: ?[]const u8 = null,
     /// 파싱된 AST. nodes/extra_data/string_table 의 backing 은 `parse_arena` 가 소유.
     ///
     /// ### Ownership 규약 (D1 디버그 인프라 — RFC #1672)

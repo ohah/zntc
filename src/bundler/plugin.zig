@@ -27,6 +27,9 @@ pub const LoadResult = struct {
     module_type: ?types.ModuleType = null,
     /// plugin 이 반환한 `{ meta }` (JSON 문자열). null = 미설정. caller(parse_arena) 소유 (#1880 PR2).
     meta: ?[]const u8 = null,
+    /// Rollup `syntheticNamedExports` (#3664 P2). null = 미설정. 그 외 = fallback 대상 export 이름
+    /// ("default" 또는 string target). caller(parse_arena) 소유.
+    synthetic_named_exports: ?[]const u8 = null,
 };
 
 /// 플러그인 훅에서 반환할 수 있는 에러 타입.

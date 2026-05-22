@@ -130,6 +130,9 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
         // plugin 이 부여한 meta (JSON 문자열) 를 모듈에 귀속 (#1880 PR2).
         // plugin_result.meta 는 pluginLoad 가 parse_arena(tmp_arena) 로 dupe 했으므로 그대로 borrow.
         if (plugin_result.meta) |m| module.plugin_meta = m;
+        // syntheticNamedExports (#3664 P2) — linker 가 missing named import 를 이 export 의 member 로
+        // fallback. parse_arena 소유(meta 동일 패턴).
+        if (plugin_result.synthetic_named_exports) |s| module.synthetic_named_exports = s;
 
         if (plugin_result.loader) |loader_override| {
             module.loader = loader_override;
