@@ -617,9 +617,23 @@ pub fn generateChunks(
         errdefer bits.deinit(allocator);
         bits.setBit(@intCast(bit_idx));
 
-        // 출력 파일명 = 모듈 파일명의 stem (확장자 제거)
+        // 출력 파일명 = 모듈 파일명의 stem (확장자 제거). plugin emit chunk(name 지정)면 그 name 우선
+        // (#1880 PR7-2c) — [name]-[hash] 의 [name] 으로 쓰여 plugin 이 chunk 이름을 제어한다.
         const entry_mod = graph.getModule(entry.module_idx) orelse return error.InvalidEntryModule;
-        const name = std.fs.path.stem(std.fs.path.basename(entry_mod.path));
+        const name = blk: {
+            if (entry_mod.is_emitted_chunk_entry) {
+                if (graph.emit_store) |sp| {
+                    const store: *const @import("emit_store.zig").EmitStore = @ptrCast(@alignCast(sp));
+                    for (store.chunks.items) |chk| {
+                        if (std.mem.eql(u8, chk.id, entry_mod.path)) {
+                            if (chk.name) |n| break :blk n;
+                            break;
+                        }
+                    }
+                }
+            }
+            break :blk std.fs.path.stem(std.fs.path.basename(entry_mod.path));
+        };
 
         var chunk = Chunk.init(.none, .{ .entry_point = .{
             .bit = @intCast(bit_idx),

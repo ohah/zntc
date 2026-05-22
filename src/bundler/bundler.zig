@@ -1820,6 +1820,27 @@ pub const Bundler = struct {
             null;
         metafile_scope.end();
 
+        // PR7-2c: emit chunk(this.emitFile type:'chunk')의 최종 출력 파일명을 emit_store 에
+        // back-fill → generateBundle hook 의 this.getFileName(chunkRef) 가 확정된 [name]-[hash]
+        // 파일명을 반환(명시 fileName 없는 auto chunk). emit chunk 모듈은 자기 chunk 의 entry 라
+        // 그 chunk OutputFile.module_ids 에 chk.id 가 포함된다. 명시 fileName chunk 는 skip.
+        if (emit_store.chunks.items.len > 0) {
+            if (outputs) |outs| {
+                for (emit_store.chunks.items) |chk| {
+                    for (outs) |out| {
+                        if (out.kind != .chunk) continue;
+                        const matched = for (out.module_ids) |mid| {
+                            if (std.mem.eql(u8, mid, chk.id)) break true;
+                        } else false;
+                        if (matched) {
+                            emit_store.setChunkFileName(chk.id, out.path) catch {};
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // 8. Plugin: generateBundle 훅 — 번들 완료 후 모든 플러그인에 알림
         if (self.options.plugins.len > 0) {
             const runner = plugin_mod.PluginRunner.init(self.options.plugins);
@@ -1827,7 +1848,11 @@ pub const Bundler = struct {
                 outs
             else
                 &.{.{ .path = "bundle.js", .contents = output }};
-            runner.runGenerateBundle(gen_outputs);
+            // PR7-2c: emit_store 를 hook_ctx 로 전달 → generateBundle 의 this.getFileName(chunkRef)
+            // 가 back-fill 된 chunk 파일명을 반환(청킹 후라 확정).
+            var gen_hook_ctx: plugin_mod.HookContext = .{ .emit_store = @ptrCast(&emit_store) };
+            defer gen_hook_ctx.deinit();
+            runner.runGenerateBundle(gen_outputs, &gen_hook_ctx);
         }
 
         // 5.6. CSS 번들 수집 (엔트리별 CSS 모듈 연결)

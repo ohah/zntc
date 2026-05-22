@@ -1857,6 +1857,7 @@ type NativeEmitFileFn = (file: {
   source?: string | Uint8Array;
   chunkId?: string;
   chunkName?: string;
+  chunkFileName?: string;
 }) => string | null;
 // #1880 PR6: native getFileName 콜백. reference id → 최종 출력 파일명(미등록이면 null).
 type NativeGetFileNameFn = (referenceId: string) => string | null;
@@ -3023,8 +3024,8 @@ function createRollupPluginContext(
         source?: unknown;
         id?: unknown;
       };
-      // type:'chunk' (#1880 PR7-2b): id(이미 graph 에 있는 모듈)를 별도 chunk 로 분리.
-      // 신규 모듈 emit 은 native 가 build 단계에서 진단으로 거부(B-ii 대기).
+      // type:'chunk' (#1880 PR7-2b/2c): id(graph 모듈/신규)를 별도 chunk 로 분리. name 은 [name]
+      // 패턴, fileName 은 명시 출력명. this.getFileName(refId) 로 최종 파일명 조회(PR7-2c).
       if (f.type === 'chunk') {
         if (typeof f.id !== 'string' || f.id.length === 0) {
           throw new Error(
@@ -3034,6 +3035,8 @@ function createRollupPluginContext(
         const chunkRef = fn({
           chunkId: f.id,
           chunkName: typeof f.name === 'string' && f.name.length > 0 ? f.name : undefined,
+          // 명시 fileName 의 "정확히 그대로(hash 없이)" 는 follow-up — 현재 name 기반 [name]-[hash]
+          // 출력 + getFileName 으로 최종명 조회. (chunkFileName 미노출)
         });
         if (typeof chunkRef !== 'string') {
           throw new Error(
@@ -3074,17 +3077,18 @@ function createRollupPluginContext(
       return referenceId;
     },
     getFileName(referenceId: string): string {
-      // native 가 hook 별로 __getFileName 슬롯에 주입 (#1880 PR6). reference id → 최종 출력 파일명.
+      // native 가 hook 별로 __getFileName 슬롯에 주입 (#1880 PR6/2c). reference id → 최종 출력 파일명.
+      // asset 은 resolveId/load/transform 에서 즉시; chunk 는 청킹 후라 generateBundle 에서 확정.
       const fn = (ctx as { __getFileName?: NativeGetFileNameFn }).__getFileName;
       if (typeof fn !== 'function') {
         throw new Error(
-          `@zntc/core [${pluginName}]: this.getFileName() 는 async build() 의 resolveId/load/transform hook 에서만 사용 가능합니다 (#1880 PR6).`,
+          `@zntc/core [${pluginName}]: this.getFileName() 는 resolveId/load/transform/generateBundle hook 에서만 사용 가능합니다 (#1880 PR6/2c).`,
         );
       }
       const name = fn(referenceId);
       if (typeof name !== 'string') {
         throw new Error(
-          `@zntc/core [${pluginName}]: this.getFileName(${JSON.stringify(referenceId)}) — 알 수 없는 reference id (this.emitFile 로 emit 되지 않았거나 아직 등록 전).`,
+          `@zntc/core [${pluginName}]: this.getFileName(${JSON.stringify(referenceId)}) — 알 수 없는 reference id (미emit, 또는 chunk 를 청킹 전 hook 에서 조회 — chunk 파일명은 generateBundle 에서 확정).`,
         );
       }
       return name;

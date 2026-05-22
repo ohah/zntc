@@ -222,7 +222,7 @@ pub const Plugin = struct {
     renderChunk: ?*const fn (ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?[]const u8 = null,
 
     /// 번들 생성 완료 알림. 모든 플러그인에 호출됨.
-    generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile) void = null,
+    generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile, hook_ctx: *HookContext) void = null,
 
     /// bundle 시작 시 1회 호출. esbuild `onStart`, Rollup/Vite/rolldown `buildStart` 동일.
     /// 옵션 인자는 Zig 측에서 안 넘김 — JS 어댑터가 자체 context 로 forward.
@@ -462,10 +462,11 @@ pub const PluginRunner = struct {
     pub fn runGenerateBundle(
         self: *const PluginRunner,
         output_files: []const OutputFile,
+        hook_ctx: *HookContext,
     ) void {
         for (self.plugins) |p| {
             if (p.generateBundle) |hook| {
-                hook(p.context, output_files);
+                hook(p.context, output_files, hook_ctx);
             }
         }
     }
