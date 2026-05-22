@@ -117,6 +117,12 @@ pub const SymbolRef = struct {
     module_index: ModuleIndex,
     /// 해당 모듈의 export 이름 (e.g. "x", "default")
     export_name: []const u8,
+    /// Rollup `syntheticNamedExports` (#3664 P2). 정적으로 export 안 된 named import/re-export 가
+    /// synthetic 모듈의 fallback 대상(default/named) export 의 member 일 때 그 member 이름.
+    /// null = 일반 ref. 설정 시 codegen 은 `{module export local name}.{synthetic_member}` 로 rename.
+    /// resolveExportChain 이 re-export 체인 끝에서 synthetic 을 만나면 채워 전달(직접 import·barrel
+    /// forwarding 통합). HashMap 키/eql 에 안 쓰이므로 필드 추가 안전.
+    synthetic_member: ?[]const u8 = null,
 };
 
 /// 해석된 import 바인딩. linker가 codegen에 전달.
@@ -125,12 +131,8 @@ pub const ResolvedBinding = struct {
     local_name: []const u8,
     /// 로컬 바인딩의 소스 위치 (rename 키)
     local_span: Span,
-    /// 최종적으로 가리키는 export (re-export 체인 해결 후)
+    /// 최종적으로 가리키는 export (re-export 체인 해결 후). synthetic 은 canonical.synthetic_member.
     canonical: SymbolRef,
-    /// Rollup `syntheticNamedExports` (#3664 P2). 정적으로 export 안 된 named import 가
-    /// synthetic 모듈의 fallback 대상(default/named) export 의 member 일 때 그 member 이름.
-    /// null = 일반 바인딩. 설정 시 codegen 은 `{canonical local name}.{synthetic_member}` 로 rename.
-    synthetic_member: ?[]const u8 = null,
 };
 
 pub const Linker = struct {
@@ -1460,30 +1462,14 @@ pub const Linker = struct {
 
                 if (source_record.resolved.isNone()) continue; // external 또는 미해석
 
-                const bk = BindingKey{
-                    .module_index = @intCast(i),
-                    .span_key = types.spanKey(ib.local_span),
-                };
-
-                // re-export 체인을 따라가서 canonical export 찾기
+                // re-export 체인을 따라가서 canonical export 찾기. synthetic_named_exports(직접 import
+                // 또는 barrel re-export forwarding)는 resolveExportChain 이 canonical.synthetic_member 로
+                // 전달한다(한 곳 통합).
                 const canonical = self.resolveExportChain(
                     source_record.resolved,
                     ib.imported_name,
                     0,
                 ) orelse {
-                    // #3664 P2: synthetic_named_exports 모듈이면 정적으로 export 안 된 named import 를
-                    // fallback 대상(default/named) export 의 member 로 해석한다. canonical 은 그 대상
-                    // export 를 가리키고, synthetic_member 에 원래 import 이름을 담아 codegen 이
-                    // `{target}.{member}` 로 rename 하게 한다.
-                    if (self.synthExportFallback(source_record.resolved)) |target_ref| {
-                        try self.resolved_bindings.put(bk, .{
-                            .local_name = ib.local_name,
-                            .local_span = ib.local_span,
-                            .canonical = target_ref,
-                            .synthetic_member = ib.imported_name,
-                        });
-                        continue;
-                    }
                     // export를 찾을 수 없음
                     self.addDiag(
                         .missing_export,
@@ -1497,6 +1483,10 @@ pub const Linker = struct {
                     continue;
                 };
 
+                const bk = BindingKey{
+                    .module_index = @intCast(i),
+                    .span_key = types.spanKey(ib.local_span),
+                };
                 try self.resolved_bindings.put(bk, .{
                     .local_name = ib.local_name,
                     .local_span = ib.local_span,
@@ -1504,15 +1494,6 @@ pub const Linker = struct {
                 });
             }
         }
-    }
-
-    /// #3664 P2: synthetic_named_exports 모듈의 fallback 대상 export 를 resolve.
-    /// `synthetic_named_exports`("default" 또는 string target)를 resolveExportChain 으로 따라가
-    /// canonical SymbolRef 반환. 모듈이 synthetic 아니거나 target 자체도 missing 이면 null.
-    fn synthExportFallback(self: *const Linker, mod: ModuleIndex) ?SymbolRef {
-        const sm = self.graph.getModule(mod) orelse return null;
-        const target = sm.synthetic_named_exports orelse return null;
-        return self.resolveExportChain(mod, target, 0);
     }
 
     /// re-export 체인을 따라가서 canonical export를 찾는다.
@@ -1554,7 +1535,7 @@ pub const Linker = struct {
                 return entry.result;
             }
 
-            const result = self.resolveExportChainInner(module_idx, name, depth);
+            const result = self.resolveExportChainInner(module_idx, name, depth, true);
 
             const owned_key = self.allocator.dupe(u8, cache_key) catch return result;
             const mutable_self: *Linker = @constCast(self);
@@ -1564,15 +1545,20 @@ pub const Linker = struct {
             return result;
         }
 
-        return self.resolveExportChainInner(module_idx, name, depth);
+        return self.resolveExportChainInner(module_idx, name, depth, true);
     }
 
     /// resolveExportChain 내부 구현 (캐시 없이).
+    /// `allow_synthetic`: synthetic_named_exports fallback(#3664 P2)을 적용할지. 직접 named import·
+    /// named re-export forwarding 경로는 true, `export *`(re_export_all)는 false — Rollup 은 synthetic
+    /// 이름을 non-enumerable 로 보아 star 로 전파하지 않으며, true 면 임의 이름이 synthetic.member 로
+    /// 잘못 resolve 되어 missing_export 진단이 억제된다(code-review max 적발).
     fn resolveExportChainInner(
         self: *const Linker,
         module_idx: ModuleIndex,
         name: []const u8,
         depth: u32,
+        allow_synthetic: bool,
     ) ?SymbolRef {
         if (depth > max_chain_depth) return null;
 
@@ -1599,7 +1585,8 @@ pub const Linker = struct {
                                     .export_name = name,
                                 };
                             }
-                            if (self.resolveOrCjsFallback(source_mod, entry.binding.local_name, depth + 1)) |result| {
+                            // named re-export forwarding 은 synthetic 허용(barrel `export {foo} from synth`).
+                            if (self.resolveOrCjsFallback(source_mod, entry.binding.local_name, depth + 1, true)) |result| {
                                 return result;
                             }
                         }
@@ -1623,7 +1610,7 @@ pub const Linker = struct {
                     if (ib.import_record_index < m_local.import_records.len) {
                         const source_mod = m_local.import_records[ib.import_record_index].resolved;
                         if (!source_mod.isNone()) {
-                            return self.resolveExportChainInner(source_mod, ib.imported_name, depth + 1);
+                            return self.resolveExportChainInner(source_mod, ib.imported_name, depth + 1, true);
                         }
                     }
                     break;
@@ -1645,9 +1632,33 @@ pub const Linker = struct {
                     if (!source_mod.isNone()) {
                         // CJS fallback은 실제 `module.exports`/`exports.*` 소스에만 유효하다.
                         // 런타임 값이 비어 있는 type barrel이 임의의 이름을 소유하면 안 된다.
-                        if (self.resolveOrCjsFallback(source_mod, name, depth + 1)) |result| {
+                        // synthetic 도 같은 이유로 star 전파 금지(allow_synthetic=false) — Rollup 동일.
+                        if (self.resolveOrCjsFallback(source_mod, name, depth + 1, false)) |result| {
                             return result;
                         }
+                    }
+                }
+            }
+        }
+
+        // 3. #3664 P2: synthetic_named_exports — 정적/re-export/export* 어디서도 못 찾으면 fallback
+        // 대상(default/named) export 의 member 로 해석한다. target export 를 resolve 하고 synthetic_member
+        // 에 원래 이름을 담아 codegen 이 `{target local}.{member}` 로 rename 하게 한다. 이 한 곳에서
+        // 처리하므로 직접 named import 와 barrel re-export forwarding 이 통합되고 tree_shaker 도
+        // resolveExportChain 으로 자동 따라온다. target 자기 참조(default→default)는 가드 + depth 로
+        // bounded(무한 재귀 방지).
+        if (allow_synthetic) {
+            if (m.synthetic_named_exports) |target| {
+                if (!std.mem.eql(u8, target, name)) {
+                    if (self.resolveExportChainInner(module_idx, target, depth + 1, true)) |result| {
+                        // nested synthetic(target 자체가 또 synthetic 의 member)은 단일 member access
+                        // 로 표현 불가 → bail(missing). 단일 hop synthetic 만 지원.
+                        if (result.synthetic_member != null) return null;
+                        return .{
+                            .module_index = result.module_index,
+                            .export_name = result.export_name,
+                            .synthetic_member = name,
+                        };
                     }
                 }
             }
@@ -1658,8 +1669,8 @@ pub const Linker = struct {
 
     /// resolveExportChain + CJS fallback. CJS 모듈은 정적 export가 없으므로
     /// resolve 실패 시 CJS 모듈 자체를 반환하여 소비자가 require_xxx()로 접근.
-    fn resolveOrCjsFallback(self: *const Linker, source_mod: ModuleIndex, name: []const u8, depth: u32) ?SymbolRef {
-        if (self.resolveExportChainInner(source_mod, name, depth)) |result| return result;
+    fn resolveOrCjsFallback(self: *const Linker, source_mod: ModuleIndex, name: []const u8, depth: u32, allow_synthetic: bool) ?SymbolRef {
+        if (self.resolveExportChainInner(source_mod, name, depth, allow_synthetic)) |result| return result;
         if (self.graph.getModule(source_mod)) |sm| {
             if (sm.wrap_kind == .cjs and sm.has_cjs_export_signal) return .{ .module_index = source_mod, .export_name = name };
         }
