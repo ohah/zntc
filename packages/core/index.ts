@@ -1829,8 +1829,8 @@ function lifecycleHookSpec(
 /**
  * plugin hook 콜백의 `this` 로 바인딩할 context 를 plugin 이름별로 캐시해 반환.
  * `this.warn(...)` 은 `reg.pluginWarnings` 로 수집되고, `this.error(...)` 는 throw 되어
- * 기존 driveDispatch* 의 normalizePluginFailure 경로를 그대로 탄다. resolve/emitFile/getModuleInfo
- * 는 아직 placeholder(throw) — 후속 PR(#1880 PR3~5)에서 채운다.
+ * 기존 driveDispatch* 의 normalizePluginFailure 경로를 그대로 탄다. resolve/emitFile 는 아직
+ * placeholder(throw), getModuleInfo 는 surface 미추가 — 후속 PR(#1880 PR3~5)에서 채운다.
  */
 function getPluginContext(reg: PluginRegistry, pluginName: string): RollupPluginContext {
   let ctx = reg.contexts.get(pluginName);
@@ -1979,7 +1979,7 @@ function* dispatchHook(
     if (!h.filter.test(filterTarget)) continue;
     const fallbackFile = hookName === 'resolveId' ? arg2 : filterTarget;
     const result = yield {
-      callback: () => h.callback(cbArgs),
+      callback: () => h.callback.call(getPluginContext(reg, h.pluginName), cbArgs),
       pluginName: h.pluginName,
       hookName,
       fallbackFile,
@@ -3016,7 +3016,14 @@ export function watch(options: BuildOptions): WatchHandle {
     // swallow — 그렇지 않으면 user callback throw 와 closeBundle dispatch 실패가
     // unhandledRejection 으로 샌다. build() 는 await 가능해 이 래핑이 필요 없다.
     const dispatchCloseBundle = () => {
-      void dispatcher('closeBundle', undefined, null).catch(() => {});
+      void dispatcher('closeBundle', undefined, null)
+        .catch(() => {})
+        .finally(() => {
+          // watch 는 BuildResult 가 없어 plugin 의 this.warn 을 result.warnings 로 옮길 곳이 없다.
+          // drain 하지 않으면 reg.pluginWarnings 가 rebuild 마다 무한 누적(누수)되고, onWarn sink
+          // 때문에 console 에도 안 뜬다. rebuild 마다 비우면서 console 로 surfacing 한다.
+          for (const w of dispatcher.takePluginWarnings()) console.warn(w.text);
+        });
     };
     const wrapWatchCallback =
       <T>(callback?: (event: T) => void | Promise<void>) =>
