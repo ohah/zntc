@@ -459,6 +459,15 @@ fn addDynamicEntry(
     try entries.append(allocator, .{ .module_idx = idx, .is_dynamic = true });
 }
 
+/// entries 에서 module_idx 의 entry bit(= entries 인덱스)를 찾는다. 없으면 null(entry 청크 아님).
+/// #3664 (2) implicitlyLoadedAfterOneOf bit-collapse 의 parent/E bit lookup 용.
+fn entryBit(entries: []const EntryInfo, idx: ModuleIndex) ?u32 {
+    for (entries, 0..) |e, bit| {
+        if (e.module_idx == idx) return @intCast(bit);
+    }
+    return null;
+}
+
 pub fn generateChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -797,6 +806,41 @@ pub fn generateChunks(
         for (splitting_info) |*bs| {
             if (!bs.hasAnyBitInRange(@intCast(entry_count), @intCast(manual_count))) continue;
             bs.clearBitRange(0, @intCast(entry_count));
+        }
+    }
+
+    // #3664 (2): implicitlyLoadedAfterOneOf bit-collapse. emit chunk E 가 "parent 중 하나 로드 후
+    // 로드"됨이 plugin 보장이면, E 와 parent 가 공유하는 모듈에서 E 비트를 지워 parent 의 청크
+    // 패턴으로 흡수한다 → 별도 공통 청크(파일) 1개를 줄인다(Rollup #3606 의 chunk-shape 최적화).
+    // ※ byte 중복은 ZNTC BitSet 모델상 원래 없음(공유 모듈은 항상 단일 공통 청크) — 이건 파일 수
+    //   감소이지 중복 제거가 아니다.
+    // soundness: parent 는 실제 entry 청크(bit 보유)여야 흡수가 안전(E 보다 먼저 로드 보장). entry
+    // 가 아니면 보수적으로 skip(정확성 유지, 최적화만 포기). E 의 facade(자기 모듈)는 e_bit 유지.
+    {
+        var ei: usize = 0;
+        while (ei < module_count) : (ei += 1) {
+            const em = graph.getModule(ModuleIndex.fromUsize(ei)) orelse continue;
+            if (!em.is_emitted_chunk_entry) continue;
+            const parents = em.implicitly_loaded_after_one_of.items;
+            // soundness — "one-of" 는 parent 중 *하나만* 로드 보장한다. parent 가 여럿이면 E 가 어느
+            // parent 뒤에 로드될지 알 수 없어, 한 parent 와만 공유하는 모듈을 그 parent chunk 로
+            // 합치면 다른 경로(다른 parent 뒤)에서 미로드 → 런타임 깨짐. 올바른 흡수는 "모든 parent
+            // 경로에서 보장되는 모듈"(intersection)뿐인데, 단일 parent 면 그게 곧 그 parent 와의
+            // 공유다. 따라서 **단일 parent 일 때만** 흡수하고, 다중 parent 는 보수적으로 skip한다
+            // (별도 공통 청크 유지 — 정확성 보존, 파일수 최적화만 포기). (Rollup #3606 intersection 의미)
+            if (parents.len != 1) continue;
+            const e_bit = entryBit(entries.items, ModuleIndex.fromUsize(ei)) orelse continue;
+            const p_bit = entryBit(entries.items, parents[0]) orelse continue; // parent 가 entry 청크 아니면 skip
+            if (p_bit == e_bit) continue;
+            // parent 는 eager(non-dynamic user entry)여야 E 보다 먼저 로드됨이 보장된다. lazy(dynamic
+            // import / 다른 emit chunk) parent 는 자기도 로드 안 될 수 있어 흡수가 unsound → skip.
+            if (entries.items[p_bit].is_dynamic) continue;
+            for (splitting_info, 0..) |*bs, mi| {
+                if (mi == ei) continue; // E facade 모듈은 e_bit 유지(E 청크 보존)
+                if (!bs.hasBit(e_bit)) continue;
+                if (!bs.hasBit(p_bit)) continue;
+                bs.clearBit(e_bit); // 단일 eager parent 와 공유 → parent 청크 패턴으로 흡수
+            }
         }
     }
 
