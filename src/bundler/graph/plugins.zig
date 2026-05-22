@@ -125,6 +125,10 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
             module.plugin_source_maps = load_source_maps;
         }
 
+        // plugin 이 부여한 meta (JSON 문자열) 를 모듈에 귀속 (#1880 PR2).
+        // plugin_result.meta 는 pluginLoad 가 parse_arena(tmp_arena) 로 dupe 했으므로 그대로 borrow.
+        if (plugin_result.meta) |m| module.plugin_meta = m;
+
         if (plugin_result.loader) |loader_override| {
             module.loader = loader_override;
             module.module_type = plugin_result.module_type orelse
@@ -176,7 +180,10 @@ pub fn runTransformForModule(
     const plugin_runner = runner orelse return .skipped;
     if (!self.has_transform_plugins) return .skipped;
 
-    var hook_ctx: plugin_mod.HookContext = .{};
+    // this.getModuleInfo (PR3 self-only): graph 대신 현재 모듈 포인터만 전달.
+    // graph 조회를 하지 않으므로 discovery 병렬 단계의 race 가 없다. self 모듈의 path/source/
+    // plugin_meta 는 worker 가 load 단계에서 이미 확정해 안전하게 읽을 수 있다.
+    var hook_ctx: plugin_mod.HookContext = .{ .current_module = @ptrCast(module) };
     const transform_result = plugin_runner.runTransform(module.source, module.path, arena_alloc, &hook_ctx) catch |err| switch (err) {
         error.PluginFailed => {
             graph_diagnostics.addPluginFailureDiag(self, hook_ctx.failure, module.path, Span.EMPTY, .transform);

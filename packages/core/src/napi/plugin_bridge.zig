@@ -55,6 +55,9 @@ pub const NapiPlugin = struct {
         /// onLoad/onTransform callback 의 source map JSON chain. JS dispatcher 가 object map 을
         /// JSON string 으로 정규화해서 전달한다 (#1902).
         source_maps: ?[]const []const u8 = null,
+        /// onLoad/onResolveId callback 의 `meta` (Rollup `ModuleInfo.meta`). JS dispatcher 가
+        /// object 를 JSON string 으로 정규화해 전달 (#1880 PR2). native_alloc 소유.
+        meta: ?[]const u8 = null,
         is_failure: bool = false,
         failure_plugin_name: ?[]const u8 = null,
         failure_hook_name: ?[]const u8 = null,
@@ -71,6 +74,9 @@ pub const NapiPlugin = struct {
         arg2: ?[]const u8,
         /// generateBundle 전용: OutputFile 배열 (callJsCallback에서 JS 배열로 변환)
         output_files: ?[]const bundler_mod.emitter.OutputFile = null,
+        /// this.getModuleInfo (PR3 self-only) 용 현재 Module 포인터. non-null 이면 callJsCallback 이
+        /// self-only getModuleInfo 함수를 dispatcher 4번째 인자로 전달 (graph 조회 없음 → race 없음).
+        current_module: ?*const anyopaque = null,
         response: ?PluginResponse = null,
         response_ready: bool = false,
         mutex: std.Thread.Mutex = .{},
@@ -121,6 +127,12 @@ pub const NapiPlugin = struct {
         } else if (getNamedProperty(env, js_result, "maps")) |maps_val| {
             resp.source_maps = parseStringArray(env, maps_val, native_alloc);
         }
+        // ModuleInfo.meta (#1880 PR2): JS dispatcher 가 object 를 JSON string 으로 정규화해 전달.
+        // 현재 load hook 결과만 module.plugin_meta 로 저장(runLoadForModule). 다른 hook 결과의 meta 는
+        // 추출돼도 소비처가 없어 freeResponseFields 로 해제됨 — resolveId/transform merge 는 follow-up.
+        if (getObjectString(env, js_result, "meta", native_alloc)) |meta_json| {
+            resp.meta = meta_json;
+        }
         // AST plugin 응답 파싱
         if (getObjectString(env, js_result, "stripDirective", native_alloc)) |sd| {
             resp.strip_directive = sd;
@@ -165,6 +177,7 @@ pub const NapiPlugin = struct {
             for (maps) |m| native_alloc.free(m);
             native_alloc.free(maps);
         }
+        if (resp.meta) |s| native_alloc.free(s);
         if (resp.failure_plugin_name) |s| native_alloc.free(s);
         if (resp.failure_hook_name) |s| native_alloc.free(s);
         if (resp.failure_message) |s| native_alloc.free(s);
@@ -218,6 +231,69 @@ pub const NapiPlugin = struct {
         return undef;
     }
 
+    /// this.getModuleInfo (PR3 self-only) 구현. data = 현재 transform 중인 Module 포인터.
+    /// id 가 self 모듈 path 와 일치할 때만 그 모듈의 id/code/meta 를 반환(아니면 null) — graph 를
+    /// 조회하지 않고 worker 가 load 단계에서 확정한 path/source/plugin_meta 만 읽으므로 race 없음.
+    /// importers/exports 등 graph/linker 의존 필드는 transform 시점 미완성이라 빈 값(self-only 한계).
+    fn selfModuleInfoCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+
+        var argc: usize = 1;
+        var argv: [1]c.napi_value = undefined;
+        var data: ?*anyopaque = null;
+        if (c.napi_get_cb_info(env, info, &argc, &argv, null, &data) != c.napi_ok) return js_null;
+        if (argc < 1) return js_null;
+
+        const id = getStringArg(env, argv[0], native_alloc) orelse return js_null;
+        defer native_alloc.free(id);
+
+        const module: *const bundler_mod.Module = @ptrCast(@alignCast(data orelse return js_null));
+        // self-only: 현재 transform 중인 모듈이 아니면 null.
+        if (!std.mem.eql(u8, id, module.path)) return js_null;
+
+        var js_obj: c.napi_value = undefined;
+        _ = c.napi_create_object(env, &js_obj);
+
+        var js_id: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, module.path.ptr, module.path.len, &js_id);
+        _ = c.napi_set_named_property(env, js_obj, "id", js_id);
+
+        var js_code: c.napi_value = undefined;
+        if (module.source.len == 0 or
+            c.napi_create_string_utf8(env, module.source.ptr, module.source.len, &js_code) != c.napi_ok)
+        {
+            _ = c.napi_get_null(env, &js_code);
+        }
+        _ = c.napi_set_named_property(env, js_obj, "code", js_code);
+
+        var js_meta: c.napi_value = undefined;
+        if (module.plugin_meta) |meta_json| {
+            js_meta = NapiManualChunksResolver.parseJsonToObject(env, meta_json);
+        } else {
+            _ = c.napi_create_object(env, &js_meta);
+        }
+        _ = c.napi_set_named_property(env, js_obj, "meta", js_meta);
+
+        // graph/linker 의존 필드는 transform 시점 미완성 → 안전한 기본값.
+        var js_false: c.napi_value = undefined;
+        _ = c.napi_get_boolean(env, false, &js_false);
+        var js_true: c.napi_value = undefined;
+        _ = c.napi_get_boolean(env, true, &js_true);
+        _ = c.napi_set_named_property(env, js_obj, "isEntry", js_false);
+        _ = c.napi_set_named_property(env, js_obj, "isExternal", js_false);
+        _ = c.napi_set_named_property(env, js_obj, "hasModuleSideEffects", js_true);
+        _ = c.napi_set_named_property(env, js_obj, "isIncluded", js_false);
+        _ = c.napi_set_named_property(env, js_obj, "syntheticNamedExports", js_false);
+        inline for (.{ "exports", "importers", "dynamicImporters", "importedIds", "dynamicallyImportedIds", "implicitlyLoadedAfterOneOf", "implicitlyLoadedBefore" }) |field| {
+            var arr: c.napi_value = undefined;
+            _ = c.napi_create_array(env, &arr);
+            _ = c.napi_set_named_property(env, js_obj, field, arr);
+        }
+
+        return js_obj;
+    }
+
     /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
     /// data = CallContext 포인터 (per-call, 워커 스레드가 스택에 소유하며 condvar 대기 중)
     pub fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -253,11 +329,21 @@ pub const NapiPlugin = struct {
             _ = c.napi_get_null(env, &js_arg2);
         }
 
-        var js_result: c.napi_value = undefined;
-        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2 };
         var js_undefined: c.napi_value = undefined;
         _ = c.napi_get_undefined(env, &js_undefined);
-        if (c.napi_call_function(env, js_undefined, js_callback, 3, &args, &js_result) != c.napi_ok) {
+
+        // this.getModuleInfo (PR3 self-only): current_module 이 있으면 self-only getModuleInfo 를
+        // dispatcher 4번째 인자로 전달. graph 조회 없음 → discovery 병렬 단계 race 없음.
+        var js_get_mod_info: c.napi_value = js_undefined;
+        var argc: usize = 3;
+        if (ctx.current_module) |m| {
+            _ = c.napi_create_function(env, "getModuleInfo", "getModuleInfo".len, selfModuleInfoCallback, @constCast(m), &js_get_mod_info);
+            argc = 4;
+        }
+
+        var js_result: c.napi_value = undefined;
+        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2, js_get_mod_info };
+        if (c.napi_call_function(env, js_undefined, js_callback, argc, &args, &js_result) != c.napi_ok) {
             signalResponse(ctx, .{});
             return;
         }
@@ -295,12 +381,13 @@ pub const NapiPlugin = struct {
 
     /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기.
     /// per-call CallContext를 스택에 생성하여 멀티스레드 안전.
-    fn callHookFull(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, files: ?[]const bundler_mod.emitter.OutputFile) ?PluginResponse {
+    fn callHookFull(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, files: ?[]const bundler_mod.emitter.OutputFile, current_module: ?*const anyopaque) ?PluginResponse {
         var ctx = CallContext{
             .hook = hook,
             .arg1 = arg1,
             .arg2 = arg2,
             .output_files = files,
+            .current_module = current_module,
         };
 
         if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(&ctx), c.napi_tsfn_blocking) != c.napi_ok) {
@@ -319,7 +406,7 @@ pub const NapiPlugin = struct {
     }
 
     fn callHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8) ?PluginResponse {
-        return self.callHookFull(hook, arg1, arg2, null);
+        return self.callHookFull(hook, arg1, arg2, null, null);
     }
 
     /// JSON string field 인코딩 — `"` `\` 와 control char escape.
@@ -395,7 +482,8 @@ fn NapiPluginAdapter(comptime Self: type) type {
             alloc: std.mem.Allocator,
             hook_ctx: *plugin_mod.HookContext,
         ) PluginError!?[]const u8 {
-            const resp = self.callHook(hook, arg1, arg2) orelse return null;
+            // this.getModuleInfo (PR3 self-only): transform/renderChunk 에 hook_ctx.current_module 전달.
+            const resp = self.callHookFull(hook, arg1, arg2, null, hook_ctx.current_module) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
             if (resp.code) |result_code| {
@@ -461,7 +549,9 @@ fn NapiPluginAdapter(comptime Self: type) type {
             const result_code = resp.code orelse return null;
             const contents = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
             try NapiPlugin.setResponseSourceMaps(resp, alloc, hook_ctx);
-            return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
+            // resp.meta 는 native_alloc 소유(freeResponseFields 가 해제) → caller(parse_arena) 로 dupe (#1880 PR2).
+            const meta_dup: ?[]const u8 = if (resp.meta) |m| (alloc.dupe(u8, m) catch return error.OutOfMemory) else null;
+            return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type, .meta = meta_dup };
         }
 
         fn pluginTransform(
@@ -488,7 +578,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
 
         fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
-            if (self.callHookFull(.generateBundle, "", null, output_files)) |resp| {
+            if (self.callHookFull(.generateBundle, "", null, output_files, null)) |resp| {
                 NapiPlugin.freeResponseFields(resp);
             }
         }
@@ -547,7 +637,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
             NapiPlugin.appendJsonString(&json_buf, native_alloc, importer) catch return null;
             json_buf.append(native_alloc, '}') catch return null;
 
-            const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
+            const resp = self.callHookFull(.resolveContext, json_buf.items, null, null, null) orelse return null;
             defer NapiPlugin.freeResponseFields(resp);
             if (resp.is_failure) return failWithResponse(self, resp, alloc, hook_ctx);
 
@@ -655,7 +745,10 @@ pub const NapiSyncPlugin = struct {
         arg1: []const u8,
         arg2: ?[]const u8,
         files: ?[]const bundler_mod.emitter.OutputFile,
+        current_module: ?*const anyopaque,
     ) ?NapiPlugin.PluginResponse {
+        // buildSync 는 this.getModuleInfo 미지원 (current_module 무시) — async build() 만 PR3 지원.
+        _ = current_module;
         var js_callback: c.napi_value = undefined;
         if (c.napi_get_reference_value(self.env, self.callback_ref, &js_callback) != c.napi_ok) {
             return null;
@@ -712,7 +805,7 @@ pub const NapiSyncPlugin = struct {
     }
 
     fn callHook(self: *NapiSyncPlugin, hook: NapiPlugin.HookType, arg1: []const u8, arg2: ?[]const u8) ?NapiPlugin.PluginResponse {
-        return self.callHookFull(hook, arg1, arg2, null);
+        return self.callHookFull(hook, arg1, arg2, null, null);
     }
 
     pub fn toPlugin(self: *NapiSyncPlugin) Plugin {
@@ -760,6 +853,31 @@ pub const NapiManualChunksResolver = struct {
             write_idx += 1;
         }
         return js_arr;
+    }
+
+    /// JSON 문자열 → JS object (global `JSON.parse`). 실패/예외 시 빈 객체 `{}` 반환.
+    /// plugin meta(JSON string)를 ModuleInfo.meta JS object 로 복원할 때 사용 (#1880 PR2).
+    fn parseJsonToObject(env: c.napi_env, json: []const u8) c.napi_value {
+        var empty_obj: c.napi_value = undefined;
+        _ = c.napi_create_object(env, &empty_obj);
+        var global: c.napi_value = undefined;
+        if (c.napi_get_global(env, &global) != c.napi_ok) return empty_obj;
+        const json_ns = getNamedProperty(env, global, "JSON") orelse return empty_obj;
+        const parse_fn = getNamedProperty(env, json_ns, "parse") orelse return empty_obj;
+        var js_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, json.ptr, json.len, &js_str);
+        var result: c.napi_value = undefined;
+        const args = [_]c.napi_value{js_str};
+        if (c.napi_call_function(env, json_ns, parse_fn, 1, &args, &result) != c.napi_ok) {
+            var pending: bool = false;
+            _ = c.napi_is_exception_pending(env, &pending);
+            if (pending) {
+                var e: c.napi_value = undefined;
+                _ = c.napi_get_and_clear_last_exception(env, &e);
+            }
+            return empty_obj;
+        }
+        return result;
     }
 
     /// JS `meta.getModuleInfo(id)` 구현. napi function 의 data 슬롯에 graph 포인터를
@@ -834,6 +952,15 @@ pub const NapiManualChunksResolver = struct {
         _ = c.napi_set_named_property(env, js_obj, "dynamicImporters", pathArrayFromIndices(env, graph, mod_info.dynamic_importers));
         _ = c.napi_set_named_property(env, js_obj, "importedIds", pathArrayFromIndices(env, graph, mod_info.imported_ids));
         _ = c.napi_set_named_property(env, js_obj, "dynamicallyImportedIds", pathArrayFromIndices(env, graph, mod_info.dynamically_imported_ids));
+
+        // ModuleInfo.meta (#1880 PR2): plugin 이 부여한 JSON 을 object 로 복원. 미설정 시 빈 객체 {}.
+        var js_meta: c.napi_value = undefined;
+        if (mod_info.meta) |meta_json| {
+            js_meta = parseJsonToObject(env, meta_json);
+        } else {
+            _ = c.napi_create_object(env, &js_meta);
+        }
+        _ = c.napi_set_named_property(env, js_obj, "meta", js_meta);
 
         return js_obj;
     }

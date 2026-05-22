@@ -151,6 +151,11 @@ pub const Module = struct {
     /// JS plugin load/transform 이 반환한 Source Map V3 JSON chain.
     /// 순서는 transform 실행 순서이며 parse_arena 가 backing 을 소유한다.
     plugin_source_maps: []const []const u8 = &.{},
+    /// JS plugin 이 load hook 의 `{ meta }` 로 부여한 모듈 메타데이터 (JSON 문자열).
+    /// Rollup `ModuleInfo.meta` 호환. `getModuleInfo`(manualChunks / this.getModuleInfo)로 노출.
+    /// (resolveId/transform meta merge 는 follow-up — 현재 load hook 만.)
+    /// null = plugin 이 meta 미설정. parse_arena 가 backing 을 소유 (#1880 PR2).
+    plugin_meta: ?[]const u8 = null,
     /// 파싱된 AST. nodes/extra_data/string_table 의 backing 은 `parse_arena` 가 소유.
     ///
     /// ### Ownership 규약 (D1 디버그 인프라 — RFC #1672)

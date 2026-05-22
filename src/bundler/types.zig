@@ -193,6 +193,9 @@ pub const ModuleInfo = struct {
     implicitly_loaded_after_one_of: []const ModuleIndex,
     /// 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들.
     implicitly_loaded_before: []const ModuleIndex,
+    /// plugin 이 load hook 에서 부여한 meta (JSON 문자열, Rollup `meta` 호환).
+    /// null = 미설정 → JS 측에서 빈 객체 `{}` 로 노출 (#1880 PR2).
+    meta: ?[]const u8,
 };
 
 /// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — 모든 slice 가 graph borrow.
@@ -217,6 +220,7 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .synthetic_named_exports = false,
         .implicitly_loaded_after_one_of = &.{},
         .implicitly_loaded_before = &.{},
+        .meta = m.plugin_meta,
     };
 }
 

@@ -562,6 +562,9 @@ export interface ManualChunksModuleInfo {
   /** Modules that this module dynamically imports (`import()`). Includes
    * external modules. */
   dynamicallyImportedIds: string[];
+  /** Plugin이 load hook의 `{ meta }`로 부여한 메타데이터 (Rollup `info.meta` 호환).
+   * plugin이 meta를 설정하지 않은 모듈은 빈 객체 `{}` (#1880 PR2). */
+  meta: Record<string, unknown>;
 }
 
 /** The second argument of the `manualChunks` callback — module graph topology lookup. */
@@ -1318,9 +1321,13 @@ export interface PluginBuild {
   ): void;
   onLoad(
     options: { filter: RegExp },
-    callback: (args: {
-      path: string;
-    }) => HookResult<{ contents: string | Uint8Array; loader?: string; map?: unknown }>,
+    callback: (args: { path: string }) => HookResult<{
+      contents: string | Uint8Array;
+      loader?: string;
+      map?: unknown;
+      /** Rollup `ModuleInfo.meta` 호환 — getModuleInfo(id).meta 로 노출 (#1880 PR2). */
+      meta?: Record<string, unknown>;
+    }>,
   ): void;
   onTransform(
     options: { filter: RegExp },
@@ -1659,6 +1666,7 @@ type PluginDispatcher = ((
   hookName: string,
   arg1: unknown,
   arg2: string | null,
+  getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
 ) => Promise<unknown>) &
   PluginDispatcherLifecycle;
 type SyncPluginDispatcher = ((hookName: string, arg1: unknown, arg2: string | null) => unknown) &
@@ -1832,12 +1840,20 @@ function lifecycleHookSpec(
  * 기존 driveDispatch* 의 normalizePluginFailure 경로를 그대로 탄다. resolve/emitFile 는 아직
  * placeholder(throw), getModuleInfo 는 surface 미추가 — 후속 PR(#1880 PR3~5)에서 채운다.
  */
-function getPluginContext(reg: PluginRegistry, pluginName: string): RollupPluginContext {
+function getPluginContext(
+  reg: PluginRegistry,
+  pluginName: string,
+  getModuleInfo?: ((id: string) => ManualChunksModuleInfo | null) | undefined,
+): RollupPluginContext {
   let ctx = reg.contexts.get(pluginName);
   if (!ctx) {
     ctx = createRollupPluginContext(pluginName, (d) => reg.pluginWarnings.push(d));
     reg.contexts.set(pluginName, ctx);
   }
+  // this.getModuleInfo (PR3): native 가 hook 별로 넘긴 graph-bound fn 을 매번 갱신(undefined 포함)
+  // — 캐시된 context 에 이전 hook 의 fn 이 stale 로 남지 않도록.
+  (ctx as { __getModuleInfo?: (id: string) => ManualChunksModuleInfo | null }).__getModuleInfo =
+    getModuleInfo;
   return ctx;
 }
 
@@ -1851,6 +1867,7 @@ function* dispatchHook(
   hookName: string,
   arg1: unknown,
   arg2: string | null,
+  getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
 ): Generator<HookCall, unknown, DispatchedHookResult> {
   // astFunction: arg1 이 JSON 직렬화된 FunctionInfo. 첫 매칭 plugin 의 non-null 반환을 채택.
   if (hookName === 'astFunction') {
@@ -1864,7 +1881,7 @@ function* dispatchHook(
     for (const h of reg.astFunctionHooks) {
       if (!h.filter.test(info.sourcePath)) continue;
       const result = yield {
-        callback: () => h.callback.call(getPluginContext(reg, h.pluginName), info),
+        callback: () => h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo), info),
         pluginName: h.pluginName,
         hookName: 'astFunction',
         fallbackFile: info.sourcePath,
@@ -1895,7 +1912,7 @@ function* dispatchHook(
     for (const h of reg.hooks.resolveContext) {
       if (!h.filter.test(args.dir)) continue;
       const result = yield {
-        callback: () => h.callback.call(getPluginContext(reg, h.pluginName), args),
+        callback: () => h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo), args),
         pluginName: h.pluginName,
         hookName: 'resolveContext',
         fallbackFile: args.importer,
@@ -1916,7 +1933,7 @@ function* dispatchHook(
       let firstFailure: PluginFailureResult | null = null;
       for (const { pluginName, callback } of spec.callbacks) {
         const result = yield {
-          callback: () => callback.call(getPluginContext(reg, pluginName), spec.arg),
+          callback: () => callback.call(getPluginContext(reg, pluginName, getModuleInfo), spec.arg),
           pluginName,
           hookName,
         };
@@ -1944,7 +1961,7 @@ function* dispatchHook(
           ? { code: currentCode, path: arg2 }
           : { code: currentCode, chunk: arg2 };
       const result = yield {
-        callback: () => h.callback.call(getPluginContext(reg, h.pluginName), cbArgs),
+        callback: () => h.callback.call(getPluginContext(reg, h.pluginName, getModuleInfo), cbArgs),
         pluginName: h.pluginName,
         hookName,
         fallbackFile: arg2,
@@ -1986,12 +2003,32 @@ function* dispatchHook(
     };
     if (isPluginFailureResult(result)) return result;
     if (result != null) {
-      if (hookName === 'load' && typeof result === 'object' && 'map' in (result as object)) {
-        const r = safeSerializeSourceMap((result as { map?: unknown }).map);
-        if (!r.ok) return normalizePluginFailure(h.pluginName, hookName, r.err, fallbackFile);
-        return { ...(result as object), ...(r.map != null ? { map: r.map } : { map: undefined }) };
+      // #1880 PR2: meta object → JSON string. native parseJsResult 가 string 으로 수신.
+      // meta 는 object 일 때만 직렬화(Rollup 호환 — primitive meta 무시) + circular/BigInt 등
+      // JSON.stringify throw 는 plugin failure 로 정규화 (safeSerializeSourceMap 과 동일 정책).
+      let withMeta: unknown = result;
+      const rawMeta =
+        typeof result === 'object' && result !== null
+          ? (result as { meta?: unknown }).meta
+          : undefined;
+      if (rawMeta != null && typeof rawMeta === 'object') {
+        let metaJson: string;
+        try {
+          metaJson = JSON.stringify(rawMeta);
+        } catch (err) {
+          return normalizePluginFailure(h.pluginName, hookName, err, fallbackFile);
+        }
+        withMeta = { ...(result as object), meta: metaJson };
       }
-      return result;
+      if (hookName === 'load' && typeof withMeta === 'object' && 'map' in (withMeta as object)) {
+        const r = safeSerializeSourceMap((withMeta as { map?: unknown }).map);
+        if (!r.ok) return normalizePluginFailure(h.pluginName, hookName, r.err, fallbackFile);
+        return {
+          ...(withMeta as object),
+          ...(r.map != null ? { map: r.map } : { map: undefined }),
+        };
+      }
+      return withMeta;
     }
   }
   return null;
@@ -2045,8 +2082,13 @@ function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
   const reg = collectPluginRegistry(plugins);
   // 외부 async wrap 제거 — driveDispatchAsync 가 이미 Promise 반환. async 한 겹 더 씌우면
   // 매 호출마다 Promise 가 한 번 더 할당된다.
-  const dispatcher = function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
-    return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2));
+  const dispatcher = function dispatcher(
+    hookName: string,
+    arg1: unknown,
+    arg2: string | null,
+    getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
+  ) {
+    return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2, getModuleInfo));
   } as PluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
@@ -2779,6 +2821,9 @@ export interface RollupPluginContext {
   ): Promise<{ id: string; external?: boolean } | null>;
   /** Emit an additional asset/chunk. Currently unsupported — throws an Error when called. */
   emitFile(file: unknown): string;
+  /** 모듈 그래프 정보(+plugin meta) 조회 (Rollup `this.getModuleInfo` 호환).
+   * async build() 의 transform hook 에서만 사용 가능 (#1880 PR3). 그 외 hook/buildSync 에선 throw. */
+  getModuleInfo(id: string): ManualChunksModuleInfo | null;
 }
 
 type ResolveIdResult = string | null | undefined | void | { id: string; external?: boolean };
@@ -2857,7 +2902,7 @@ function createRollupPluginContext(
   pluginName: string,
   onWarn?: (diagnostic: Diagnostic) => void,
 ): RollupPluginContext {
-  return {
+  const ctx: RollupPluginContext = {
     error(error: unknown): never {
       throw error;
     },
@@ -2885,7 +2930,19 @@ function createRollupPluginContext(
         `@zntc/core [${pluginName}]: this.emitFile() is not supported by vitePlugin() adapter yet.`,
       );
     },
+    getModuleInfo(id: string): ManualChunksModuleInfo | null {
+      // native 가 transform hook 에 한해 graph-bound fn 을 __getModuleInfo 슬롯에 주입 (#1880 PR3).
+      const fn = (ctx as { __getModuleInfo?: (id: string) => ManualChunksModuleInfo | null })
+        .__getModuleInfo;
+      if (typeof fn !== 'function') {
+        throw new Error(
+          `@zntc/core [${pluginName}]: this.getModuleInfo() 는 async build() 의 transform hook 에서만 사용 가능합니다 (#1880 PR3).`,
+        );
+      }
+      return fn(id);
+    },
   };
+  return ctx;
 }
 
 /** 동일 plugin 의 동일 sourcemap drop reason 은 한 번만 warn — vue/svelte SFC 처럼 모듈 N 개에서
