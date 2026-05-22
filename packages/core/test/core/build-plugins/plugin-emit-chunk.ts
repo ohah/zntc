@@ -420,4 +420,56 @@ describe('@zntc/core build + plugins - this.emitFile chunk (PR7-2b-i)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #3664 (2): implicitlyLoadedAfterOneOf bit-collapse — main 과 emit chunk(worker)가 공유하는
+  // 모듈이 main chunk 로 흡수돼 별도 공통 청크가 생기지 않는다(Rollup #3606 chunk-shape 동형).
+  test('implicitlyLoadedAfterOneOf: 공유 모듈이 parent(main) chunk 로 흡수된다 (bit-collapse)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-collapse-'));
+    const plugin: ZntcPlugin = {
+      name: 'emit-chunk-collapse',
+      setup(build) {
+        build.onTransform(
+          { filter: /main\.ts$/ },
+          async function (this: RollupPluginContext, args: { path: string }) {
+            const r = await this.resolve('./worker.ts', args.path);
+            // worker 는 main 이 먼저 로드된 뒤 로드 → 공유(shared)는 main chunk 에서 직접 참조 가능.
+            this.emitFile({ type: 'chunk', id: r!.id, implicitlyLoadedAfterOneOf: [args.path] });
+            return null;
+          },
+        );
+      },
+    };
+    try {
+      // 고유 마커 424242 로 shared 의 청크 귀속을 추적.
+      writeFileSync(join(dir, 'shared.ts'), 'export const SHARED = 424242;\n');
+      writeFileSync(
+        join(dir, 'main.ts'),
+        'import { SHARED } from "./shared.ts";\nexport const m = SHARED + 1;\n',
+      );
+      writeFileSync(
+        join(dir, 'worker.ts'),
+        'import { SHARED } from "./shared.ts";\nconsole.log(SHARED);\n',
+      );
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBe(0);
+      const jsChunks = result.outputFiles.filter((f) => f.path.endsWith('.js'));
+      const mainChunk = jsChunks.find((f) => f.path.includes('main'));
+      const workerChunk = jsChunks.find((f) => f.path.includes('worker'));
+      expect(mainChunk).toBeDefined();
+      expect(workerChunk).toBeDefined();
+      // collapse: shared 정의(424242)가 main chunk 로 흡수된다(별도 공통 청크면 main 은 import 만 함).
+      expect(mainChunk!.text).toContain('424242');
+      // worker 는 shared 를 main chunk 에서 import — shared 가 main 으로 합쳐졌음을 직접 증명.
+      expect(workerChunk!.text).toMatch(/from\s*["']\.\/main[\w.-]*\.js["']/);
+      // main/worker 외 별도 공통 청크(shared 전용)가 생기지 않는다.
+      const otherChunks = jsChunks.filter((f) => f !== mainChunk && f !== workerChunk);
+      expect(otherChunks.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
