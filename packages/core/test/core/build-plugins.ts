@@ -1,5 +1,6 @@
 import './build-plugins/basic-hooks';
 import './build-plugins/plugin-context';
+import './build-plugins/module-meta';
 import './build-plugins/transform-tree-shaking';
 import './build-plugins/resolve-context';
 import './build-plugins/build-sync';

@@ -25,6 +25,8 @@ pub const LoadResult = struct {
     contents: []const u8,
     loader: ?types.Loader = null,
     module_type: ?types.ModuleType = null,
+    /// plugin 이 반환한 `{ meta }` (JSON 문자열). null = 미설정. caller(parse_arena) 소유 (#1880 PR2).
+    meta: ?[]const u8 = null,
 };
 
 /// 플러그인 훅에서 반환할 수 있는 에러 타입.
@@ -113,6 +115,12 @@ pub const HookContext = struct {
     /// `load` / `transform` 이 반환한 source map JSON chain.
     /// 다른 hook 은 사용 안 함. caller 가 free 책임.
     source_maps: ?[]const []const u8 = null,
+    /// `this.getModuleInfo` (PR3, self-only) 용 현재 transform 중인 Module 포인터.
+    /// graph 를 조회하지 않고 이 모듈 자신의 정보(id/code/meta)만 노출한다 — discovery 병렬
+    /// 단계에서 graph 는 main thread 가 mutate 중이므로 worker 가 graph 를 읽으면 race.
+    /// self 모듈은 worker 가 load 단계에서 확정(path/source/plugin_meta)했으므로 안전.
+    /// transform hook 에서만 set. null = getModuleInfo 미지원 hook (#1880 PR3).
+    current_module: ?*const anyopaque = null,
 
     /// 사용 안 하는 failure metadata 를 일괄 정리. 이미 consume 된 경우 no-op.
     /// swallow 경로 (lifecycle hook, fallback null path 등) 에서 `defer ctx.deinit()` 으로 사용.
@@ -394,7 +402,8 @@ pub const PluginRunner = struct {
                 // 각 plugin 별 fresh inner_ctx — source_maps 는 chain 에서 누적, failure 는
                 // 첫 실패 시 outer 로 옮긴다. plugin hook 이 failure 를 read 하는 contract 는
                 // 없으므로 hook_ctx.failure 시드 불필요.
-                var inner_ctx: HookContext = .{};
+                // current_module 은 this.getModuleInfo (PR3 self-only) 용으로 전파.
+                var inner_ctx: HookContext = .{ .current_module = hook_ctx.current_module };
                 const result = hook(p.context, input, id, allocator, &inner_ctx) catch |err| {
                     hook_ctx.failure = inner_ctx.failure;
                     return err;
