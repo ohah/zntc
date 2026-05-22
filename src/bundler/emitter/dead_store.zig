@@ -312,6 +312,68 @@ fn markDeadOverwrittenNestedStatementLists(
         }
     }
 
+    // innerGraph (ROADMAP): control-flow 구문의 *블록 본문 내부* straight-line dead store 도
+    // 분석한다. **분기 경계는 넘지 않는다** — 각 블록 본문에 기존(증명된) 분석을 그대로 적용할
+    // 뿐, cross-branch liveness 는 시도하지 않는다(예: `if(c) x=1; x=2;` 의 x=1 은 건드리지
+    // 않음). 자식 본문 노드로 재귀하면 그 노드가 block_statement 일 때 위 분기가 처리한다.
+    //
+    // **try/catch/finally 는 의도적으로 제외**한다(code-review: silent miscompile). try 영역 안에서는
+    // 두 write 사이의 throw 가능 statement(call 등)가 암묵 분기라, 첫 write 가 catch/finally/after-try
+    // 에서 관측될 수 있다(예: `try{ x=A; mayThrow(); x=B; }catch{ use(x) }` 에서 throw 시 x=A 가
+    // live). hasReadBetween 은 *read* 만 보고 throw 가능성을 모른다. try 영역은 오직 try_statement
+    // 재귀로만 도달하므로(그 안의 if/while 도 마찬가지) try 를 재귀 대상에서 빼면 try 영역 전체가
+    // 분석에서 제외돼 변경 전 soundness 와 동일해진다. try 밖 control-flow 는 핸들러가 없어 안전.
+    var bodies: [2]u32 = undefined;
+    var nb: usize = 0;
+    switch (node.tag) {
+        .if_statement => {
+            if (!node.data.ternary.b.isNone()) {
+                bodies[nb] = @intFromEnum(node.data.ternary.b);
+                nb += 1;
+            }
+            if (!node.data.ternary.c.isNone()) {
+                bodies[nb] = @intFromEnum(node.data.ternary.c);
+                nb += 1;
+            }
+        },
+        .while_statement, .do_while_statement, .labeled_statement => {
+            if (!node.data.binary.right.isNone()) {
+                bodies[nb] = @intFromEnum(node.data.binary.right);
+                nb += 1;
+            }
+        },
+        .for_in_statement, .for_of_statement, .for_await_of_statement => {
+            if (!node.data.ternary.c.isNone()) {
+                bodies[nb] = @intFromEnum(node.data.ternary.c);
+                nb += 1;
+            }
+        },
+        .for_statement => {
+            // extra: [init, test, update, body] — body 는 extra+3 (analyzer predeclare 와 동일).
+            const ex = node.data.extra;
+            if (ex + 3 < ast.extra_data.items.len) {
+                bodies[nb] = ast.extra_data.items[ex + 3];
+                nb += 1;
+            }
+        },
+        .switch_case => {
+            // extra: [test_expr, body.start, body.len]. case 본문 stmt list 직접 분석.
+            const ex = node.data.extra;
+            const extras = ast.extra_data.items;
+            if (ex + 2 < extras.len) {
+                const bs = extras[ex + 1];
+                const bl = extras[ex + 2];
+                if (bs + bl <= extras.len) {
+                    markDeadOverwrittenInStatementList(ast, extras[bs .. bs + bl], symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+                }
+            }
+        },
+        else => {},
+    }
+    for (bodies[0..nb]) |child| {
+        markDeadOverwrittenNestedStatementLists(ast, child, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+    }
+
     markDeadOverwrittenFunctionBody(ast, node, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
 }
 
