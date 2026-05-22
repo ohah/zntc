@@ -1652,6 +1652,8 @@ function mapMaybePromise<T, U>(value: T | PromiseLike<T>, mapper: (value: T) => 
 type HookEntry = { pluginName: string; filter: RegExp; callback: (...args: any[]) => any };
 type PluginDispatcherLifecycle = {
   takeLifecycleFailures(): PluginFailureResult[];
+  /** plugin hook 의 `this.warn(...)` 으로 수집된 경고를 꺼내 result.warnings 로 surfacing. */
+  takePluginWarnings(): Diagnostic[];
 };
 type PluginDispatcher = ((
   hookName: string,
@@ -1676,6 +1678,10 @@ type PluginRegistry = {
   closeBundleCallbacks: Array<{ pluginName: string; callback: () => void | Promise<void> }>;
   astFunctionHooks: HookEntry[];
   lifecycleFailures: PluginFailureResult[];
+  /** plugin 의 `this.warn(...)` 누적 — build/buildSync 가 result.warnings 로 옮긴다. */
+  pluginWarnings: Diagnostic[];
+  /** plugin 이름별 context(`this` 바인딩) 캐시 — 한 빌드 동안 동일 plugin 은 같은 context 를 본다. */
+  contexts: Map<string, RollupPluginContext>;
 };
 
 function collectPluginRegistry(plugins: ZntcPlugin[]): PluginRegistry {
@@ -1693,6 +1699,8 @@ function collectPluginRegistry(plugins: ZntcPlugin[]): PluginRegistry {
     closeBundleCallbacks: [],
     astFunctionHooks: [],
     lifecycleFailures: [],
+    pluginWarnings: [],
+    contexts: new Map(),
   };
 
   for (const plugin of plugins) {
@@ -1819,6 +1827,21 @@ function lifecycleHookSpec(
 }
 
 /**
+ * plugin hook 콜백의 `this` 로 바인딩할 context 를 plugin 이름별로 캐시해 반환.
+ * `this.warn(...)` 은 `reg.pluginWarnings` 로 수집되고, `this.error(...)` 는 throw 되어
+ * 기존 driveDispatch* 의 normalizePluginFailure 경로를 그대로 탄다. resolve/emitFile/getModuleInfo
+ * 는 아직 placeholder(throw) — 후속 PR(#1880 PR3~5)에서 채운다.
+ */
+function getPluginContext(reg: PluginRegistry, pluginName: string): RollupPluginContext {
+  let ctx = reg.contexts.get(pluginName);
+  if (!ctx) {
+    ctx = createRollupPluginContext(pluginName, (d) => reg.pluginWarnings.push(d));
+    reg.contexts.set(pluginName, ctx);
+  }
+  return ctx;
+}
+
+/**
  * Dispatcher 본체를 generator 로 작성해서 async/sync runner 가 동일 body 를 driving 한다.
  * 분기별 (astFunction / resolveContext / lifecycle / transform-chain / first-match) 결정은
  * 여기서 한 번만 정의되고 callback 실행 / Promise 처리만 runner 로 위임된다.
@@ -1841,7 +1864,7 @@ function* dispatchHook(
     for (const h of reg.astFunctionHooks) {
       if (!h.filter.test(info.sourcePath)) continue;
       const result = yield {
-        callback: () => h.callback(info),
+        callback: () => h.callback.call(getPluginContext(reg, h.pluginName), info),
         pluginName: h.pluginName,
         hookName: 'astFunction',
         fallbackFile: info.sourcePath,
@@ -1872,7 +1895,7 @@ function* dispatchHook(
     for (const h of reg.hooks.resolveContext) {
       if (!h.filter.test(args.dir)) continue;
       const result = yield {
-        callback: () => h.callback(args),
+        callback: () => h.callback.call(getPluginContext(reg, h.pluginName), args),
         pluginName: h.pluginName,
         hookName: 'resolveContext',
         fallbackFile: args.importer,
@@ -1893,7 +1916,7 @@ function* dispatchHook(
       let firstFailure: PluginFailureResult | null = null;
       for (const { pluginName, callback } of spec.callbacks) {
         const result = yield {
-          callback: () => callback(spec.arg),
+          callback: () => callback.call(getPluginContext(reg, pluginName), spec.arg),
           pluginName,
           hookName,
         };
@@ -1921,7 +1944,7 @@ function* dispatchHook(
           ? { code: currentCode, path: arg2 }
           : { code: currentCode, chunk: arg2 };
       const result = yield {
-        callback: () => h.callback(cbArgs),
+        callback: () => h.callback.call(getPluginContext(reg, h.pluginName), cbArgs),
         pluginName: h.pluginName,
         hookName,
         fallbackFile: arg2,
@@ -2026,6 +2049,7 @@ function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
     return driveDispatchAsync(dispatchHook(reg, hookName, arg1, arg2));
   } as PluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
+  dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
   return dispatcher;
 }
 
@@ -2039,6 +2063,7 @@ function createSyncPluginDispatcher(plugins: ZntcPlugin[]): SyncPluginDispatcher
     return driveDispatchSync(dispatchHook(reg, hookName, arg1, arg2));
   } as SyncPluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
+  dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
   return dispatcher;
 }
 
@@ -2380,6 +2405,9 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
       }
+      for (const warning of dispatcher.takePluginWarnings()) {
+        result.warnings.push(warning);
+      }
     }
 
     postProcessCssOutputs(result, options);
@@ -2389,6 +2417,9 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       await dispatcher('closeBundle', undefined, null);
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
+      }
+      for (const warning of dispatcher.takePluginWarnings()) {
+        result.warnings.push(warning);
       }
     }
     return result;
@@ -2416,6 +2447,9 @@ export function buildSync(options: BuildOptions): BuildResult {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
       }
+      for (const warning of dispatcher.takePluginWarnings()) {
+        result.warnings.push(warning);
+      }
     }
     postProcessCssOutputs(result, options);
     writeOutputFiles(result, options);
@@ -2423,6 +2457,9 @@ export function buildSync(options: BuildOptions): BuildResult {
       dispatcher('closeBundle', undefined, null);
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
+      }
+      for (const warning of dispatcher.takePluginWarnings()) {
+        result.warnings.push(warning);
       }
     }
     return result;
@@ -2812,15 +2849,22 @@ function normalizeVitePluginSourceMap(
   }
 }
 
-function createRollupPluginContext(pluginName: string): RollupPluginContext {
+/**
+ * @param onWarn `this.warn(...)` 을 받을 sink. native plugin dispatcher 는 이를 전달해
+ *   경고를 `result.warnings` 로 surfacing 한다. 미전달 시(예: vitePlugin 어댑터) console.warn fallback.
+ */
+function createRollupPluginContext(
+  pluginName: string,
+  onWarn?: (diagnostic: Diagnostic) => void,
+): RollupPluginContext {
   return {
     error(error: unknown): never {
       throw error;
     },
     warn(message: unknown): void {
-      console.warn(
-        `@zntc/core [${pluginName}]: ${typeof message === 'string' ? message : String(message)}`,
-      );
+      const text = `@zntc/core [${pluginName}]: ${typeof message === 'string' ? message : String(message)}`;
+      if (onWarn) onWarn({ text });
+      else console.warn(text);
     },
     addWatchFile(_id: string): void {
       // no-op: ZNTC 는 plugin 이 알려준 추가 watch 파일을 native watcher 에 전파하는 surface 가
