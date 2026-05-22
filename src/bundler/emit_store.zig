@@ -21,8 +21,11 @@ pub const EmittedChunk = struct {
     reference_id: []const u8,
     /// resolve 대상 모듈 specifier (entry 로 추가될 모듈).
     id: []const u8,
-    /// chunk 이름(옵션) — 파일명 패턴 `[name]` 치환용. null 이면 id 기반.
+    /// chunk 이름(옵션) — 파일명 패턴 `[name]` 치환용. null 이면 id stem 기반.
     name: ?[]const u8 = null,
+    /// 최종 출력 파일명 (#1880 PR7-2c). 명시 fileName 이면 emit 시 즉시 set(hash 없음);
+    /// name/auto 면 청킹+렌더 후 bundler 가 back-fill([name]-[hash] 확정). getFileName 이 read.
+    file_name: ?[]const u8 = null,
 };
 
 /// plugin `this.emitFile` 수집소 (#1880 PR5).
@@ -65,6 +68,7 @@ pub const EmitStore = struct {
             self.allocator.free(chk.reference_id);
             self.allocator.free(chk.id);
             if (chk.name) |n| self.allocator.free(n);
+            if (chk.file_name) |f| self.allocator.free(f);
         }
         self.chunks.deinit(self.allocator);
     }
@@ -104,32 +108,49 @@ pub const EmitStore = struct {
         return self.emitAsset(file_name, source);
     }
 
-    /// reference id 로 등록된 asset 의 출력 파일명을 조회한다(Rollup `this.getFileName`).
-    /// 메인 스레드 직렬이라 별도 동기화 없이 단순 스캔 — emit 된 asset 수는 작다.
+    /// reference id 로 등록된 asset/chunk 의 출력 파일명을 조회한다(Rollup `this.getFileName`).
+    /// 메인 스레드 직렬이라 별도 동기화 없이 단순 스캔 — emit 수는 작다. chunk 는 명시 fileName 이면
+    /// 즉시, name/auto 면 청킹 후 bundler 가 back-fill 한 file_name 을 반환(미확정이면 null → throw).
     pub fn getFileName(self: *const EmitStore, reference_id: []const u8) ?[]const u8 {
         for (self.assets.items) |a| {
             if (std.mem.eql(u8, a.reference_id, reference_id)) return a.file_name;
+        }
+        for (self.chunks.items) |c| {
+            if (std.mem.eql(u8, c.reference_id, reference_id)) return c.file_name;
         }
         return null;
     }
 
     /// chunk emit 요청을 등록하고 reference id ("chunk-N") 를 반환한다 (#1880 PR7-2).
-    /// id/name 은 dupe 로 소유. **PR7-2a 는 요청 수집만** — 이 요청을 새 entry 로 graph 에 주입해
-    /// 별도 chunk 로 출력하는 것은 PR7-2b, 파일명 lazy 확정은 PR7-2c 에서 처리한다.
-    pub fn emitChunk(self: *EmitStore, id: []const u8, name: ?[]const u8) ![]const u8 {
+    /// id/name/file_name 은 dupe 로 소유. file_name 명시(fileName) 면 getFileName 즉시 가능;
+    /// 미지정(name/auto)이면 bundler 가 청킹 후 `setChunkFileName` 으로 back-fill (PR7-2c).
+    pub fn emitChunk(self: *EmitStore, id: []const u8, name: ?[]const u8, file_name: ?[]const u8) ![]const u8 {
         const reference_id = try std.fmt.allocPrint(self.allocator, "chunk-{d}", .{self.counter});
         errdefer self.allocator.free(reference_id);
         const id_owned = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(id_owned);
         const name_owned: ?[]const u8 = if (name) |n| try self.allocator.dupe(u8, n) else null;
         errdefer if (name_owned) |n| self.allocator.free(n);
+        const fname_owned: ?[]const u8 = if (file_name) |f| try self.allocator.dupe(u8, f) else null;
+        errdefer if (fname_owned) |f| self.allocator.free(f);
         try self.chunks.append(self.allocator, .{
             .reference_id = reference_id,
             .id = id_owned,
             .name = name_owned,
+            .file_name = fname_owned,
         });
         self.counter += 1;
         return reference_id;
+    }
+
+    /// 청킹+렌더 후 bundler 가 emit chunk(id 매칭)의 최종 파일명을 back-fill 한다 (PR7-2c).
+    /// 이미 명시 fileName 으로 set 된 chunk 는 건드리지 않는다(plugin 지정 우선).
+    pub fn setChunkFileName(self: *EmitStore, id: []const u8, file_name: []const u8) !void {
+        for (self.chunks.items) |*c| {
+            if (c.file_name != null) continue; // 명시 fileName 우선
+            if (!std.mem.eql(u8, c.id, id)) continue;
+            c.file_name = try self.allocator.dupe(u8, file_name);
+        }
     }
 };
 
@@ -185,16 +206,36 @@ test "emitChunk 는 chunk-N reference id 를 발급하고 요청을 수집한다
     var store = EmitStore.init(testing.allocator, "[name]-[hash]");
     defer store.deinit();
 
-    const c0 = try store.emitChunk("./worker.ts", null);
-    const c1 = try store.emitChunk("./route.ts", "route");
+    const c0 = try store.emitChunk("./worker.ts", null, null);
+    const c1 = try store.emitChunk("./route.ts", "route", null);
     try testing.expectEqualStrings("chunk-0", c0);
     try testing.expectEqualStrings("chunk-1", c1);
     try testing.expectEqual(@as(usize, 2), store.chunks.items.len);
     try testing.expectEqualStrings("./worker.ts", store.chunks.items[0].id);
     try testing.expect(store.chunks.items[0].name == null);
     try testing.expectEqualStrings("route", store.chunks.items[1].name.?);
-    // chunk 는 아직 graph 미주입 → getFileName 으로는 조회 안 됨 (PR7-2c 에서 lazy 확정).
+    // file_name 미지정(auto) → 청킹 전엔 getFileName null. back-fill 후 확정(PR7-2c).
     try testing.expect(store.getFileName(c0) == null);
+}
+
+test "emitChunk file_name: 명시 fileName 은 즉시 getFileName, auto 는 setChunkFileName back-fill" {
+    const testing = std.testing;
+    var store = EmitStore.init(testing.allocator, "[name]-[hash]");
+    defer store.deinit();
+
+    // 명시 fileName → 즉시 조회 가능 (hash 없음).
+    const c_explicit = try store.emitChunk("/abs/lib.ts", null, "lib.js");
+    try testing.expectEqualStrings("lib.js", store.getFileName(c_explicit).?);
+
+    // auto(name) → 청킹 전 null, back-fill 후 확정.
+    const c_auto = try store.emitChunk("/abs/worker.ts", "worker", null);
+    try testing.expect(store.getFileName(c_auto) == null);
+    try store.setChunkFileName("/abs/worker.ts", "worker-abc12345.js");
+    try testing.expectEqualStrings("worker-abc12345.js", store.getFileName(c_auto).?);
+
+    // back-fill 은 명시 fileName chunk 를 덮어쓰지 않는다.
+    try store.setChunkFileName("/abs/lib.ts", "OTHER.js");
+    try testing.expectEqualStrings("lib.js", store.getFileName(c_explicit).?);
 }
 
 test "asset/chunk reference id 는 공유 카운터로 서로 유니크하다" {
@@ -203,7 +244,7 @@ test "asset/chunk reference id 는 공유 카운터로 서로 유니크하다" {
     defer store.deinit();
 
     const a0 = try store.emitAsset("a.css", "x");
-    const c1 = try store.emitChunk("./b.ts", null);
+    const c1 = try store.emitChunk("./b.ts", null, null);
     const a2 = try store.emitAsset("c.css", "y");
     try testing.expectEqualStrings("asset-0", a0);
     try testing.expectEqualStrings("chunk-1", c1);

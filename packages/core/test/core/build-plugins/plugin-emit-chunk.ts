@@ -91,6 +91,46 @@ describe('@zntc/core build + plugins - this.emitFile chunk (PR7-2b-i)', () => {
     }
   });
 
+  test('chunk emit 후 generateBundle 의 this.getFileName 이 최종 파일명을 반환한다 (PR7-2c)', async () => {
+    let chunkRef = '';
+    let resolvedName: string | undefined;
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-getname-'));
+    const workerPath = join(dir, 'worker.ts');
+    const plugin: ZntcPlugin = {
+      name: 'chunk-getfilename',
+      setup(build) {
+        build.onTransform(
+          { filter: /main\.ts$/ },
+          async function (this: RollupPluginContext, args: { path: string }) {
+            const r = await this.resolve('./worker.ts', args.path);
+            chunkRef = this.emitFile({ type: 'chunk', id: r!.id, name: 'myworker' }) as string;
+            return null;
+          },
+        );
+        // generateBundle 은 청킹 후 → getFileName 이 back-fill 된 최종 파일명 반환.
+        build.onGenerateBundle(function (this: RollupPluginContext) {
+          resolvedName = this.getFileName(chunkRef);
+        });
+      },
+    };
+    try {
+      writeFileSync(workerPath, 'export const w = 99;\nconsole.log("wk");\n');
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBe(0);
+      // name:'myworker' 가 [name] 으로 반영된 최종 chunk 파일명 + 실제 output 과 일치.
+      expect(resolvedName).toBeDefined();
+      expect(resolvedName).toContain('myworker');
+      expect(result.outputFiles.find((f) => f.path === resolvedName)).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('resolve 불가능한 id 의 chunk emit 은 build 진단', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-ghost-'));
     const plugin: ZntcPlugin = {

@@ -391,13 +391,15 @@ pub const NapiPlugin = struct {
 
         const store: *EmitStore = @ptrCast(@alignCast(data orelse return js_null));
 
-        // chunk emit (#1880 PR7-2b): chunkId 가 있으면 source 없이 chunk 요청 수집.
-        // JS 가 type:'chunk' 일 때 { chunkId, chunkName? } 로 정규화해 넘긴다.
+        // chunk emit (#1880 PR7-2b/2c): chunkId 가 있으면 source 없이 chunk 요청 수집.
+        // JS 가 type:'chunk' 일 때 { chunkId, chunkName?, chunkFileName? } 로 정규화해 넘긴다.
         if (getObjectString(env, argv[0], "chunkId", native_alloc)) |chunk_id| {
             defer native_alloc.free(chunk_id);
             const chunk_name = getObjectString(env, argv[0], "chunkName", native_alloc);
             defer if (chunk_name) |n| native_alloc.free(n);
-            const cref = store.emitChunk(chunk_id, chunk_name) catch return js_null;
+            const chunk_file_name = getObjectString(env, argv[0], "chunkFileName", native_alloc);
+            defer if (chunk_file_name) |f| native_alloc.free(f);
+            const cref = store.emitChunk(chunk_id, chunk_name, chunk_file_name) catch return js_null;
             var js_cref: c.napi_value = undefined;
             if (c.napi_create_string_utf8(env, cref.ptr, cref.len, &js_cref) != c.napi_ok) return js_null;
             return js_cref;
@@ -745,9 +747,11 @@ fn NapiPluginAdapter(comptime Self: type) type {
             return callCodeHook(self, .renderChunk, code, chunk_name, alloc, hook_ctx);
         }
 
-        fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
+        fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile, hook_ctx: *plugin_mod.HookContext) void {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
-            if (self.callHookFull(.generateBundle, "", null, output_files, null, null, null)) |resp| {
+            // PR7-2c: emit_store 를 전달해 generateBundle hook 의 this.getFileName(chunkRef) 활성화
+            // (back-fill 된 chunk 파일명 조회). discovery hook 과 달리 generateBundle 은 청킹 후라 확정.
+            if (self.callHookFull(.generateBundle, "", null, output_files, null, null, hook_ctx.emit_store)) |resp| {
                 NapiPlugin.freeResponseFields(resp);
             }
         }

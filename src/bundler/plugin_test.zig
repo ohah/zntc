@@ -36,7 +36,7 @@ test "PluginRunner: empty plugins is no-op" {
     const render_result = try runner.runRenderChunk("code", "chunk", std.testing.allocator, &hook_ctx);
     try std.testing.expect(render_result == null);
 
-    runner.runGenerateBundle(&.{});
+    runner.runGenerateBundle(&.{}, &hook_ctx);
 }
 
 // --- resolveId 훅 테스트 ---
@@ -148,7 +148,7 @@ test "PluginRunner: renderChunk chaining" {
 
 var generate_bundle_called: bool = false;
 
-fn testGenerateBundleHook(_: ?*anyopaque, _: []const OutputFile) void {
+fn testGenerateBundleHook(_: ?*anyopaque, _: []const OutputFile, _: *plugin_mod.HookContext) void {
     generate_bundle_called = true;
 }
 
@@ -159,7 +159,8 @@ test "PluginRunner: generateBundle all executed" {
     };
     const runner = PluginRunner.init(&plugins);
 
-    runner.runGenerateBundle(&.{.{ .path = "out.js", .contents = "code" }});
+    var hook_ctx: plugin_mod.HookContext = .{};
+    runner.runGenerateBundle(&.{.{ .path = "out.js", .contents = "code" }}, &hook_ctx);
     try std.testing.expect(generate_bundle_called);
 }
 
@@ -423,7 +424,7 @@ test "Plugin integration: load output invalidates compiled cache (#2038)" {
 var integration_generate_called: bool = false;
 var integration_generate_output_len: usize = 0;
 
-fn integrationGenerateBundleHook(_: ?*anyopaque, outputs: []const OutputFile) void {
+fn integrationGenerateBundleHook(_: ?*anyopaque, outputs: []const OutputFile, _: *plugin_mod.HookContext) void {
     integration_generate_called = true;
     integration_generate_output_len = outputs.len;
 }
