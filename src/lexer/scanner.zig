@@ -971,6 +971,10 @@ pub const Scanner = struct {
     fn skipLineAndRecordComment(self: *Scanner, check_pure: bool) !void {
         const comment_start = self.current;
         while (!self.isAtEnd()) {
+            // SIMD fast path: 줄 끝 sentinel(\n/\r/0xE2[U+2028·2029 선두]) 전까지 16바이트씩 스킵.
+            // 0xE2 는 LS/PS 여부를 scalar 가 3바이트로 재확인한다(다른 0xE2 문자면 1바이트 전진).
+            self.simdSkipUntilAny(&.{ '\n', '\r', 0xE2 }, null);
+            if (self.isAtEnd()) break;
             const c = self.peek();
             if (c == '\n' or c == '\r') break;
             if (c == 0xE2 and self.current + 2 < self.source.len and
@@ -1027,6 +1031,11 @@ pub const Scanner = struct {
         const comment_start = self.current;
 
         while (!self.isAtEnd()) {
+            // SIMD fast path: 종료 '*' / 줄바꿈(\n·\r·0xE2[U+2028·2029 선두]) 전까지 16바이트씩
+            // 스킵. '*' 는 뒤 '/' 여부, 0xE2 는 LS/PS 여부를 scalar 가 재확인 → newline 추적
+            // (sourcemap)·'*/' 감지 모두 보존.
+            self.simdSkipUntilAny(&.{ '*', '\n', '\r', 0xE2 }, null);
+            if (self.isAtEnd()) break;
             const c = self.peek();
             if (c == '*' and self.peekAt(1) == '/') {
                 const comment_text = self.source[comment_start..self.current];
