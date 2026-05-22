@@ -99,15 +99,26 @@ fn injectEmittedChunks(self, out_indices) !void {
   ```
 - `is_dynamic = true` → manual chunk 제외 자동, Phase 2 BFS 도달성 자동, 별도 chunk 분리 자동.
 
-### 4.5 finalizeGraph DFS 루트
-`finalizeGraph` 는 entry_points 경로에서만 DFS(exec_index) + `is_entry_point` 설정. emit chunk 모듈도 DFS 루트로 추가하지 않으면 tree-shaking 으로 제거되거나 exec_index 미부여.
+### 4.5 emit chunk 가 손봐야 할 3곳 (코드 확인으로 확정)
 
-→ `finalizeGraph(self, entry_points, emitted_chunk_indices)` 로 확장: emit chunk indices 도 `is_entry_point=true` + `dfs` + `entry_indices` 에 추가 후 `markViaDynamic`.
+emit chunk 모듈이 "발견 → **생존** → 실행순서 → **별도 chunk**" 를 완성하려면 세 단계가 각각 다른 파일에서 루트를 결정한다. 셋 다 기존 패턴(inject/run-before-main/federation) 옆에 `if (m.is_emitted_chunk_entry) ...` 한 블록씩 동형 추가 — 난이도는 낮으나 **빠짐없이 셋 다** 필요.
 
-### 4.6 renumber seed — **결정성 핵심 (#3564)**
-`renumber.zig` `renumberModulesDeterministically(entry_points)` 는 **entry 경로에서 BFS** 로 module index 를 재부여(비결정 워커 순서 보정). federation 은 expose 경로를 build() 전 entry_points 에 합쳐 해결하지만, emit chunk 는 build 도중 발견이라 그 방법 불가.
+**(1) `tree_shaker.zig:316-338` — 모듈 생존 (가장 중요)**
+tree_shaker 는 **entry_points / inject_files / run_before_main 경로 매칭**으로만 `entry_set` 을 정한다(`is_entry_point` 플래그·`dynamic_imports` 안 봄). dynamic import 대상이 사는 이유는 importer(entry)가 entry_set 이라 BFS 가 dynamic edge 로 도달하기 때문 — **emit chunk 는 importer 가 없어 BFS 로 도달 불가 → entry_set 누락 → tree-shaking 으로 제거**. tree-shaking 은 청킹보다 먼저라, 여기서 제거되면 §4.7 청킹에 도달조차 못 한다.
+→ `tree_shaker.zig:337` 뒤(run_before_main 블록 옆)에 `if (m.is_emitted_chunk_entry) self.entry_set.set(i)` 추가. **이것이 진짜 생존 지점.** (`addDynamicEntry`(§4.7)는 청킹일 뿐 생존이 아님 — 이전 초안 오류 정정.)
 
-→ renumber 에 **emit chunk 모듈을 추가 seed** 해야 한다 (`seedFromIndices` 추가 또는 seed 단계에 emit chunk indices 합류). seed 누락 시 emit chunk 서브그래프 module index 가 비결정 → output 비재현(#3564 invariant 위반). **이 부분이 가장 sensitive — 전용 검증 필요.**
+**(2) `finalizeGraph` (`build_flow.zig:283-296`) — exec_index + export 보존**
+entry_points 경로에서만 DFS(exec_index) + `is_entry_point`. emit chunk 도 DFS 루트로 안 넣으면 exec_index 미부여 + `is_entry_point=false`(emitter.zig:1164 export 보존 누락).
+→ `finalizeGraph(self, entry_points, emitted_chunk_indices)` 확장: emit chunk indices 도 `is_entry_point=true` + `dfs` + `entry_indices` append 후 `markViaDynamic`.
+
+**(3) `chunk.zig` generateChunks Phase 1 (§4.7) — 별도 chunk 분리**
+federation block 옆에 `is_emitted_chunk_entry → addDynamicEntry` 동형 추가.
+
+### 4.6 renumber — orphan path-sort 가 결정성 보장 (seed 는 선택)
+
+`renumber.zig` `renumberModulesDeterministically(entry_points)` 는 entry 경로 BFS 로 index 재부여하되, **BFS 미도달 모듈(orphan)은 `lessThanByPath` 알파벳 정렬로 결정적 번호**를 받는다(`renumber.zig:71-82`). emit chunk(+그 서브그래프)는 entry 경로에 없어 orphan 이 되지만 **path-sort 로 이미 결정적** — 즉 **#3564 invariant 위반 아님**(이전 초안의 "renumber seed 필수, 누락 시 비재현" 은 과장, 정정).
+
+→ renumber seed 추가는 **결정성 방어가 아니라 번호 품질 선택**(emit chunk 를 orphan 맨 뒤로 둘지 vs user entry BFS 순서에 섞을지). 성능: renumber 자체가 `#3564` 실측 **0.16ms/0.1%**(lodash-es 641 module, shallow copy). emit chunk 는 finalize 에서 **1회**(fixpoint 매 패스 아님), emit 모듈 수만큼만 선형.
 
 ### 4.7 chunk.zig 분리 (4.4 참조)
 addDynamicEntry 재사용으로 별도 chunk. 파일명: `name` 명시 시 `[name]`, 아니면 id stem. entry chunk 는 `chunk_names` 패턴(Rollup emit chunk 도 chunk_names).
@@ -119,8 +130,8 @@ chunk 파일명은 청킹 후 확정 → `getFileName(chunkRef)` 는 lazy. `Chun
 discovery(buildStart/resolveId/load/transform) 중에만 emit 허용. renderChunk/generateBundle 에선 throw (graph 토폴로지가 청킹 전 확정돼야). rolldown="tx 채널 죽으면 throw", rollup="phase>LOAD_AND_PARSE throw". ZTS: emit_store 가 discovery hook_ctx 에만 연결돼 자연 강제(이후 hook 은 throw — PR7-1 forwardEmitContext 와 동일 매트릭스).
 
 ## 6. 정확성 불변식 (correctness-critical)
-1. **결정성(#3564)**: emit chunk 모듈은 renumber seed 에 포함 필수. N=10 determinism CI(`Build Determinism`)로 검증.
-2. **tree-shaking 루트**: emit chunk 는 DFS 루트 → 그 서브그래프 보존. user entry 와 공유 모듈은 common chunk 로(BitSet).
+1. **tree-shaking 생존 (최우선)**: emit chunk 는 §4.5(1) `tree_shaker.entry_set` 에 들어가야 제거 안 됨. **통합 테스트로 "신규 emit chunk 가 실제 output chunk 로 나오는가" 실증** — 메커니즘은 §4.5 셋이 다 맞물려야 성립(하나라도 누락 시 사라지거나 export 깎임). 진짜 위험은 코드 위치가 아니라 이 end-to-end 검증.
+2. **결정성(#3564)**: orphan path-sort 가 보장(§4.6) — seed 안 해도 재현 가능. 그래도 N=10 determinism CI(`Build Determinism`)로 emit chunk 사용 빌드 재현성 확인.
 3. **dedup**: emit chunk id 가 이미 graph 에 있으면(이미 import) addModule 이 기존 idx 반환 → 그 모듈이 별도 chunk 로 승격(static import 였어도). 의도된 동작.
 4. **fixpoint 종료**: addModule dedup 으로 동일 id 반복은 chunks 증가 없음 → 루프 bounded.
 
@@ -131,16 +142,16 @@ discovery(buildStart/resolveId/load/transform) 중에만 emit 허용. renderChun
 
 ## 8. 분할 계획
 - **PR7-2a** ✅ MERGED (d791b9fb): EmitStore.chunks 수집 토대.
-- **PR7-2b-i** (저위험): emit chunk id 가 **이미 graph 에 있는 모듈**일 때만 — `is_emitted_chunk_entry` 플래그 + chunk.zig 분리 + finalize 루트. resolution/fixpoint/renumber-seed 불필요(이미 discovery·renumber 됨). emitFileCallback/JS chunk 활성화. **end-to-end 동작하는 최소 안전 증분.**
-- **PR7-2b-ii** (고위험): 신규 모듈 resolution + fixpoint 재-discovery + renumber seed. §4.2/4.3/4.6. 결정성 CI 게이트 필수.
+- **PR7-2b-i** (저위험): emit chunk id 가 **이미 graph 에 있는 모듈**일 때만 별도 chunk 분리 — §4.5(2) finalize `is_entry_point` + §4.5(3)/§4.7 chunk.zig `addDynamicEntry` + `is_emitted_chunk_entry` 플래그. **tree_shaker 생존(§4.5(1)) 불필요**(이미 import 돼 reachable), resolution/fixpoint/renumber-seed 불필요(이미 discovery·renumber 됨). emitFileCallback/JS 활성화하되 **id 가 graph 에 없으면(신규 모듈) 명시적 throw**(silent-broken 방지 — B-ii 대기). end-to-end 동작 최소 안전 증분.
+- **PR7-2b-ii** (고위험): 신규 모듈 지원 — §4.2 resolution + §4.3 fixpoint 재-discovery + **§4.5(1) tree_shaker.entry_set 추가(생존 핵심)**. renumber seed 는 선택(§4.6 orphan 안전망). 통합 테스트(신규 emit chunk output 실증) + 결정성 CI 게이트.
 - **PR7-2c**: getFileName lazy (§4.8).
 
-> 권장: B-i 로 골격(플래그→chunk 분리→finalize)을 안전하게 깔고, 고위험 신규-모듈/renumber 를 B-ii 로 격리. 단 B-i 만으로는 "코드에 없는 worker emit"(주 use case)은 미지원이므로 B-ii 까지가 실용 완성.
+> 권장: B-i 로 청킹/finalize 골격을 이미-있는-모듈로 안전 검증 → B-ii 에서 tree_shaker 생존 + 신규 모듈 resolution 격리. B-i 만으론 "코드에 없는 worker emit"(주 use case) 미지원 → B-ii 까지가 실용 완성. (B-i 의 "이미 있는 모듈을 별도 chunk 로" 도 manualChunks/code-splitting 미세제어로 독립 가치 있음.)
 
 ## 9. 미해결 질문
-- emit chunk importer 기본값(project_root vs entry_dir vs cwd) — Rollup 동작 재확인 필요.
-- renumber seed 순서: emit chunk 를 user entry **뒤**에 seed 해야 user entry index 안정성 유지(emit 순서 비결정이므로 emit chunk indices 자체도 정렬 seed 검토).
-- preserve_modules / code_splitting=false 모드에서 emit chunk 의미(별도 chunk 강제? inline?).
+- emit chunk importer 기본값(project_root vs entry_dir vs cwd) — Rollup 동작 재확인 필요 (B-ii).
+- B-i: emit chunk 로 별도 분리할 "이미 있는 모듈" 이 user entry 와 정적 의존 공유 시 BitSet common chunk 거동 — 의도대로 별도 chunk 승격되는지 테스트.
+- preserve_modules / code_splitting=false 모드에서 emit chunk 의미(별도 chunk 강제? inline? 아니면 throw?).
 - 동일 id 를 user entry 와 emit chunk 둘 다 지정 시 우선순위.
 
 ## 10. 대안 (기각)
