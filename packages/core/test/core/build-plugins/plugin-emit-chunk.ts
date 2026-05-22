@@ -331,4 +331,93 @@ describe('@zntc/core build + plugins - this.emitFile chunk (PR7-2b-i)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #3664 P3: implicitlyLoadedAfterOneOf — emit chunk 가 "이들 중 하나 로드 후 로드"된다는 관계를
+  // 양방향으로 graph 에 기록. getModuleInfo(manualChunks meta)로 조회. (청크 중복제거는 follow-up)
+  test('implicitlyLoadedAfterOneOf 관계가 getModuleInfo 양방향으로 보고된다', async () => {
+    let workerAfter: string[] | undefined;
+    let mainBefore: string[] | undefined;
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-implicit-'));
+    const mainPath = join(dir, 'main.ts');
+    const workerPath = join(dir, 'worker.ts');
+    const plugin: ZntcPlugin = {
+      name: 'emit-chunk-implicit',
+      setup(build) {
+        build.onTransform(
+          { filter: /main\.ts$/ },
+          async function (this: RollupPluginContext, args: { path: string }) {
+            const r = await this.resolve('./worker.ts', args.path);
+            // worker 는 main(이 모듈)이 먼저 로드된 뒤에 implicitly 로드된다고 선언.
+            this.emitFile({ type: 'chunk', id: r!.id, implicitlyLoadedAfterOneOf: [args.path] });
+            return null;
+          },
+        );
+      },
+    };
+    try {
+      writeFileSync(workerPath, 'export const w = 99;\nconsole.log("wk");\n');
+      writeFileSync(mainPath, 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [mainPath],
+        plugins: [plugin],
+        splitting: true,
+        // graph-wide getModuleInfo 는 manualChunks meta 에서만 노출. main(entry)은 항상 호출되므로
+        // 거기서 조회한다. 키는 graph 가 준 id(realpath)를 써야 함 — tmpdir /var→/private/var
+        // symlink 때문에 테스트가 만든 경로와 graph 키가 다를 수 있다(직접 join 경로로 조회 금지).
+        manualChunks: (id, meta) => {
+          if (id.includes('main.ts')) {
+            mainBefore = meta.getModuleInfo(id)?.implicitlyLoadedBefore as string[];
+            const workerKey = mainBefore?.find((p) => p.includes('worker.ts'));
+            if (workerKey) {
+              workerAfter = meta.getModuleInfo(workerKey)?.implicitlyLoadedAfterOneOf as string[];
+            }
+          }
+          return null;
+        },
+      });
+      expect(result.errors.length).toBe(0);
+      // 정방향: worker.implicitlyLoadedAfterOneOf 에 main 포함.
+      expect(workerAfter).toBeDefined();
+      expect(workerAfter!.some((p) => p.includes('main.ts'))).toBe(true);
+      // 역방향: main.implicitlyLoadedBefore 에 worker 포함.
+      expect(mainBefore).toBeDefined();
+      expect(mainBefore!.some((p) => p.includes('worker.ts'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('implicitlyLoadedAfterOneOf 의 id 가 graph 에 없으면 build 진단', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emit-chunk-implicit-bad-'));
+    const plugin: ZntcPlugin = {
+      name: 'emit-chunk-implicit-bad',
+      setup(build) {
+        build.onTransform(
+          { filter: /main\.ts$/ },
+          async function (this: RollupPluginContext, args: { path: string }) {
+            const r = await this.resolve('./worker.ts', args.path);
+            // graph 에 없는 id — Rollup 도 "유일 chunk 연결 불가" 에러.
+            this.emitFile({
+              type: 'chunk',
+              id: r!.id,
+              implicitlyLoadedAfterOneOf: [join(dir, 'ghost.ts')],
+            });
+            return null;
+          },
+        );
+      },
+    };
+    try {
+      writeFileSync(join(dir, 'worker.ts'), 'export const w = 1;\n');
+      writeFileSync(join(dir, 'main.ts'), 'export const x = 1;\n');
+      const result = await build({
+        entryPoints: [join(dir, 'main.ts')],
+        plugins: [plugin],
+        splitting: true,
+      });
+      expect(result.errors.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

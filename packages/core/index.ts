@@ -1894,6 +1894,7 @@ type NativeEmitFileFn = (file: {
   chunkId?: string;
   chunkName?: string;
   chunkFileName?: string;
+  chunkImplicitlyLoadedAfterOneOf?: string[];
 }) => string | null;
 // #1880 PR6: native getFileName 콜백. reference id → 최종 출력 파일명(미등록이면 null).
 type NativeGetFileNameFn = (referenceId: string) => string | null;
@@ -3085,6 +3086,7 @@ function createRollupPluginContext(
         name?: unknown;
         source?: unknown;
         id?: unknown;
+        implicitlyLoadedAfterOneOf?: unknown;
       };
       // type:'chunk' (#1880 PR7-2b/2c): id(graph 모듈/신규)를 별도 chunk 로 분리. name 은 [name]
       // 패턴, fileName 은 명시 출력명. this.getFileName(refId) 로 최종 파일명 조회(PR7-2c).
@@ -3094,6 +3096,17 @@ function createRollupPluginContext(
             `@zntc/core [${pluginName}]: this.emitFile({ type: 'chunk' }) 는 비어있지 않은 id(모듈 specifier)가 필요합니다 (#1880 PR7-2b).`,
           );
         }
+        // #3664: implicitlyLoadedAfterOneOf — 지정 시 string[] 이어야 한다. 잘못된 값을 silent-drop
+        // 하면 사용자가 선언한 load-order 관계가 조용히 사라지므로 id 와 동일하게 throw 로 surfacing.
+        if (
+          f.implicitlyLoadedAfterOneOf !== undefined &&
+          (!Array.isArray(f.implicitlyLoadedAfterOneOf) ||
+            !f.implicitlyLoadedAfterOneOf.every((x) => typeof x === 'string'))
+        ) {
+          throw new Error(
+            `@zntc/core [${pluginName}]: this.emitFile({ type: 'chunk' }) 의 implicitlyLoadedAfterOneOf 는 문자열 id 배열이어야 합니다 (#3664).`,
+          );
+        }
         const chunkRef = fn({
           chunkId: f.id,
           chunkName: typeof f.name === 'string' && f.name.length > 0 ? f.name : undefined,
@@ -3101,6 +3114,13 @@ function createRollupPluginContext(
           // 미지정이면 name 기반 [name]-[hash]. getFileName(refId) 가 둘 다 최종명 반환 (#1880 PR7-2c/2d).
           chunkFileName:
             typeof f.fileName === 'string' && f.fileName.length > 0 ? f.fileName : undefined,
+          // #3664: implicitlyLoadedAfterOneOf — 이 chunk 가 로드되기 전 먼저 로드되는 모듈 id 들.
+          // getModuleInfo(manualChunks meta)로 양방향 관계 조회 가능. (청크 중복제거 최적화는 follow-up)
+          // 위에서 검증됨 → 여기선 undefined 이거나 유효한 string[]. 빈 배열은 undefined 로.
+          chunkImplicitlyLoadedAfterOneOf:
+            Array.isArray(f.implicitlyLoadedAfterOneOf) && f.implicitlyLoadedAfterOneOf.length > 0
+              ? (f.implicitlyLoadedAfterOneOf as string[])
+              : undefined,
         });
         if (typeof chunkRef !== 'string') {
           throw new Error(

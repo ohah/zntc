@@ -98,6 +98,11 @@ pub const PersistentModuleStore = struct {
         cached_module.importers = .empty;
         cached_module.dynamic_imports = .empty;
         cached_module.dynamic_importers = .empty;
+        // #3664: implicitlyLoadedAfterOneOf 양방향 관계 리스트도 ModuleIndex ArrayList backing 을
+        // graph module 과 공유 → 위 4개와 동일하게 store 복사본은 빈 상태로(graph deinit 이 원본
+        // 해제, store 가 dangling 안 되도록). 다음 rebuild 의 injectEmittedChunks 가 재구성.
+        cached_module.implicitly_loaded_after_one_of = .empty;
+        cached_module.implicitly_loaded_before = .empty;
 
         // parse_arena / alias_table 소유권 이전: module → store.
         // alias_table 은 AliasTable struct (ArrayList backing) 로 graph module 과

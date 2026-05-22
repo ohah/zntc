@@ -424,7 +424,13 @@ pub const NapiPlugin = struct {
             defer if (chunk_name) |n| native_alloc.free(n);
             const chunk_file_name = getObjectString(env, argv[0], "chunkFileName", native_alloc);
             defer if (chunk_file_name) |f| native_alloc.free(f);
-            const cref = store.emitChunk(chunk_id, chunk_name, chunk_file_name) catch return js_null;
+            // #3664: implicitlyLoadedAfterOneOf — chunk 가 로드되기 전 먼저 로드되는 모듈 id 들.
+            const implicit = common.getObjectStringArray(env, argv[0], "chunkImplicitlyLoadedAfterOneOf", native_alloc);
+            defer if (implicit) |arr| {
+                for (arr) |s| native_alloc.free(s);
+                native_alloc.free(arr);
+            };
+            const cref = store.emitChunk(chunk_id, chunk_name, chunk_file_name, implicit orelse &.{}) catch return js_null;
             var js_cref: c.napi_value = undefined;
             if (c.napi_create_string_utf8(env, cref.ptr, cref.len, &js_cref) != c.napi_ok) return js_null;
             return js_cref;

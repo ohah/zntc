@@ -97,6 +97,10 @@ pub fn renumberModulesDeterministically(
         remapList(&m.importers, old_to_new);
         remapList(&m.dynamic_imports, old_to_new);
         remapList(&m.dynamic_importers, old_to_new);
+        // #3664: implicitlyLoadedAfterOneOf 양방향 관계도 ModuleIndex 보유 → renumber 시 remap.
+        // (injectEmittedChunks 가 renumber 전에 채우므로 안 하면 stale 인덱스 → 엉뚱한 모듈 보고.)
+        remapList(&m.implicitly_loaded_after_one_of, old_to_new);
+        remapList(&m.implicitly_loaded_before, old_to_new);
         for (m.import_records) |*rec| {
             if (rec.resolved.isNone()) continue;
             rec.resolved = @enumFromInt(old_to_new[rec.resolved.toU32()]);
