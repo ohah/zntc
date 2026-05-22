@@ -335,6 +335,13 @@ pub const TreeShaker = struct {
                         break;
                     }
                 }
+                // plugin `this.emitFile({ type: 'chunk' })` 로 emit 된 모듈은 importer 가
+                // 없어 BFS 도달 불가 → 여기서 entry_set 에 넣지 않으면 tree-shaking 으로
+                // 제거된다. emit chunk 는 새 entry 이므로 BFS seed + 전체 export 보존
+                // (#1880 PR7-2b-ii, RFC §4.5(1)). finalizeGraph 는 이 모듈을 별도 chunk
+                // 루트로 만들지만, tree-shaking 이 먼저라 여기서 살아남아야 청킹에 도달한다.
+                if (self.entry_set.isSet(i)) continue;
+                if (m.is_emitted_chunk_entry) self.entry_set.set(i);
             }
         }
 

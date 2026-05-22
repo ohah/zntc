@@ -137,15 +137,19 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
     try finalizeGraph(self, entry_points);
 }
 
-/// PR7-2b-i (#1880): plugin `this.emitFile({ type: 'chunk', id })` 로 별도 chunk 요청된 모듈을
-/// 표시한다. discovery 패스가 모두 끝난 뒤(build thread, 모든 hook drain) emit_store.chunks 를
-/// read 하므로 Node main 의 write 와 패스 경계로 분리돼 mutex 불필요(RFC §3 옵션 B).
+/// PR7-2b (#1880): plugin `this.emitFile({ type: 'chunk', id })` 로 별도 chunk 요청된 모듈을
+/// graph 에 주입/표시한다. discovery 패스가 모두 끝난 뒤(build thread, 모든 hook drain) emit_store
+/// .chunks 를 read 하므로 Node main 의 write 와 패스 경계로 분리돼 mutex 불필요(RFC §3 옵션 B).
 ///
-/// **B-i 범위**: id 가 *이미 graph 에 있는* 모듈일 때만 `is_emitted_chunk_entry` 플래그를 set
-/// (finalizeGraph 가 DFS 루트로, chunk.zig 가 dynamic entry 로 분리). 신규 모듈(graph 미존재)은
-/// resolution+discovery 가 필요해 B-ii 대기 → 진단으로 surfacing(silent-broken 방지).
-/// 플래그는 renumber 가 Module 을 옮겨도 따라가므로 finalizeGraph/chunk.zig 가 renumber 후
-/// 안전하게 읽는다(index 배열 전달 불필요).
+/// **B-i**: id 가 *이미 graph 에 있는* 모듈이면 `is_emitted_chunk_entry` 플래그만 set.
+/// **B-ii**: graph 에 없는 신규 모듈이면 `resolve_cache` 로 resolve → `addModuleWithResolveDir`
+/// (dedup) → 플래그 + `requestAll` → `discoverPendingModulesSequential` 로 서브그래프 디스커버리.
+/// emit-within-emit(신규 모듈 transform 이 또 emit) 은 `store.chunks` 가 더 자라므로 fixpoint
+/// 루프로 재드레인 — addModule dedup 으로 bounded(RFC §4.3, §6 invariant 4).
+///
+/// 생존은 tree_shaker entry_set(§4.5(1)), 청킹은 finalizeGraph 의 DFS 루트 + chunk.zig 의
+/// dynamic entry 가 담당. 플래그는 renumber 가 Module 을 옮겨도 따라가므로(shallow copy) 이후
+/// 단계가 renumber 후 안전하게 읽는다(index 배열 전달 불필요).
 fn injectEmittedChunks(self: *ModuleGraph) !void {
     const store_ptr = self.emit_store orelse return; // chunk 미사용 빌드: hot path 0
     const store: *@import("../emit_store.zig").EmitStore = @ptrCast(@alignCast(store_ptr));
@@ -154,49 +158,150 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
     // chunk 분리가 없어 is_entry_point=true 가 단일파일 entry 오선택을 일으키므로 거부한다
     // (code-review: silent 오동작 방지).
     const splittable = self.code_splitting or self.preserve_modules;
-    for (store.chunks.items) |chk| {
-        if (!splittable) {
+    // 신규 모듈 resolve 기준 디렉토리: importer 가 없으므로 project_root(없으면 entry_dir).
+    // Rollup 도 importer 미지정 emit 은 cwd 기준 — 여기선 project_root MVP (RFC §4.2).
+    const source_dir = if (self.project_root.len > 0) self.project_root else self.entry_dir;
+
+    var prev: usize = 0;
+    // 방어 캡: 신뢰 못 할 plugin 이 discovery 패스마다 *새로운 distinct id* 를 emit 하면
+    // store.chunks 가 끝없이 자라 수렴하지 않는다(무한 import 그래프와 동형). 정상 빌드는
+    // emit-chain 깊이만큼만 도므로 절대 도달하지 않는 큰 상수로 hang 대신 진단을 낸다.
+    var pass: usize = 0;
+    const max_passes: usize = 1 << 16;
+    while (true) {
+        const cur = store.chunks.items.len;
+        if (cur <= prev) break; // fixpoint: 신규 emit 없음
+        pass += 1;
+        if (pass > max_passes) {
             self.addDiag(
                 .plugin_error,
                 .@"error",
-                chk.id,
+                store.chunks.items[prev].id,
                 .{ .start = 0, .end = 0 },
                 .resolve,
-                "this.emitFile({ type: 'chunk' }) requires code splitting (splitting: true).",
-                "Enable code splitting, or emit type:'asset' instead.",
+                "this.emitFile({ type: 'chunk' }) did not converge — a plugin keeps emitting new chunk ids during discovery.",
+                "Emit a finite, stable set of chunk ids; avoid emitting a fresh id on every transform.",
             );
-            continue;
+            break;
         }
-        if (self.path_to_module.get(chk.id)) |idx| {
-            const ei = @intFromEnum(idx);
-            if (ei >= self.modules.count()) continue;
-            const m = self.modules.at(ei);
-            // external/disabled phantom 은 chunk 대상이 아님 — entry 오염 방지 (code-review).
-            if (m.is_external or m.is_disabled) {
+        const discover_from = self.modules.count();
+        for (store.chunks.items[prev..cur]) |chk| {
+            if (!splittable) {
                 self.addDiag(
                     .plugin_error,
                     .@"error",
                     chk.id,
                     .{ .start = 0, .end = 0 },
                     .resolve,
-                    "this.emitFile({ type: 'chunk' }) id resolves to an external/disabled module — cannot be a chunk.",
-                    "Pass an id of a normal (bundled) module already in the graph.",
+                    "this.emitFile({ type: 'chunk' }) requires code splitting (splitting: true).",
+                    "Enable code splitting, or emit type:'asset' instead.",
                 );
                 continue;
             }
-            m.is_emitted_chunk_entry = true;
-        } else {
-            self.addDiag(
-                .plugin_error,
-                .@"error",
-                chk.id,
-                .{ .start = 0, .end = 0 },
-                .resolve,
-                "this.emitFile({ type: 'chunk' }) id is not an already-graphed module — new-module chunk emit is not supported yet (PR7-2b-i).",
-                "Pass an id already in the module graph (e.g. resolved via this.resolve to a statically imported module).",
-            );
+            // 1. 이미 graph 에 있는 모듈(B-i / 이전 fixpoint 패스가 추가한 모듈): 플래그만.
+            //    이미 discovery 됐으므로 requestAll/재-discover 불필요(생존은 tree_shaker entry_set).
+            if (self.path_to_module.get(chk.id)) |idx| {
+                _ = flagEmittedChunkEntry(self, idx, chk.id);
+                continue;
+            }
+            // 2. 신규 모듈(B-ii): resolve → addModule → 플래그 + requestAll.
+            const resolved = self.resolve_cache.resolveThreadSafe(source_dir, chk.id, .static_import) catch |err| switch (err) {
+                error.ModuleNotFound => {
+                    self.addDiag(
+                        .plugin_error,
+                        .@"error",
+                        chk.id,
+                        .{ .start = 0, .end = 0 },
+                        .resolve,
+                        "this.emitFile({ type: 'chunk' }) id could not be resolved.",
+                        "Pass a resolvable specifier (relative to project root) or an id already in the graph.",
+                    );
+                    continue;
+                },
+                else => |e| return e,
+            };
+            // null = external(isExternal). external 은 chunk 가 될 수 없다.
+            const m_union = resolved orelse {
+                self.addDiag(
+                    .plugin_error,
+                    .@"error",
+                    chk.id,
+                    .{ .start = 0, .end = 0 },
+                    .resolve,
+                    "this.emitFile({ type: 'chunk' }) id resolves to an external module — cannot be a chunk.",
+                    "Pass an id of a normal (bundled) module.",
+                );
+                continue;
+            };
+            switch (m_union) {
+                .file => |f| {
+                    // f.path/f.resolve_dir 는 graph allocator 소유 → addModuleWithResolveDir 가
+                    // dupe(path→arena, resolve_dir→allocator) 한 뒤 caller 가 free (resolve_imports.zig 동형).
+                    defer {
+                        self.allocator.free(f.path);
+                        if (f.resolve_dir) |dir| self.allocator.free(dir);
+                    }
+                    const idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
+                    // 신규로 플래그된 경우에만 requestAll(중복 emit dedup 시 재요청 방지).
+                    if (flagEmittedChunkEntry(self, idx, chk.id)) {
+                        _ = try graph_requested_exports.requestAll(self, idx);
+                    }
+                },
+                .disabled => |d| {
+                    self.allocator.free(d.path);
+                    self.addDiag(
+                        .plugin_error,
+                        .@"error",
+                        chk.id,
+                        .{ .start = 0, .end = 0 },
+                        .resolve,
+                        "this.emitFile({ type: 'chunk' }) id resolves to a disabled module — cannot be a chunk.",
+                        "Pass an id of a normal (bundled) module.",
+                    );
+                },
+                // Phase-1 cache 는 virtual/dataurl/external/custom 을 반환하지 않는다
+                // (resolve_imports.zig 와 동일 불변식). 방어적 진단 — crash 대신 surfacing.
+                .virtual, .dataurl, .external, .custom => {
+                    self.addDiag(
+                        .plugin_error,
+                        .@"error",
+                        chk.id,
+                        .{ .start = 0, .end = 0 },
+                        .resolve,
+                        "this.emitFile({ type: 'chunk' }) id resolves to a non-file module — unsupported as a chunk.",
+                        "Pass an id of a normal (bundled) file module.",
+                    );
+                },
+            }
         }
+        prev = cur;
+        // 이번 패스에서 추가된 신규 모듈만 순차 디스커버리(pool 은 이미 닫힘 — RFC §4.3).
+        try discoverPendingModulesSequential(self, discover_from);
     }
+}
+
+/// emit chunk 대상 모듈에 `is_emitted_chunk_entry` 를 set. external/disabled phantom 이면
+/// 진단하고 false. 이미 플래그됐으면(중복 emit) false 를 돌려 caller 의 requestAll 재실행을 막는다.
+/// 신규로 플래그 set 한 경우에만 true.
+fn flagEmittedChunkEntry(self: *ModuleGraph, idx: ModuleIndex, diag_id: []const u8) bool {
+    const ei = @intFromEnum(idx);
+    if (ei >= self.modules.count()) return false;
+    const m = self.modules.at(ei);
+    if (m.is_external or m.is_disabled) {
+        self.addDiag(
+            .plugin_error,
+            .@"error",
+            diag_id,
+            .{ .start = 0, .end = 0 },
+            .resolve,
+            "this.emitFile({ type: 'chunk' }) id resolves to an external/disabled module — cannot be a chunk.",
+            "Pass an id of a normal (bundled) module already in the graph.",
+        );
+        return false;
+    }
+    if (m.is_emitted_chunk_entry) return false; // 이미 처리됨 (dedup)
+    m.is_emitted_chunk_entry = true;
+    return true;
 }
 
 fn applyRuntimePolyfills(self: *ModuleGraph, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
@@ -599,8 +704,11 @@ pub fn buildIncremental(
     try applyRuntimePolyfills(self, &runtime_indices);
     if (self.modules.count() > before_runtime_count) graph_changed = true;
     // watch/incremental 에서도 emit chunk 플래그를 이번 emit_store.chunks 기준으로 set
-    // (cache-hit restore 에서 stale 은 이미 reset). build() 와 동일 처리 (#1880 PR7-2b-i).
+    // (cache-hit restore 에서 stale 은 이미 reset). build() 와 동일 처리 (#1880 PR7-2b).
+    // B-ii: 신규 모듈 emit 은 graph 를 늘리므로 graph_changed 반영(downstream 재계산 트리거).
+    const before_emit_count = self.modules.count();
     try injectEmittedChunks(self);
+    if (self.modules.count() > before_emit_count) graph_changed = true;
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
 
     discover_scope.end();
