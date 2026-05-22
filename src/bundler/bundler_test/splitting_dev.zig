@@ -1299,6 +1299,38 @@ test "Bundler: dev mode includes polyfills and banner" {
     try std.testing.expect(polyfill_pos < code_pos);
 }
 
+test "Bundler: minify_whitespace 가 polyfill content 도 minify (#3649 polyfill root cause)" {
+    // RN polyfill 은 모듈 그래프를 우회해 bundler 가 직접 읽어 prepend 한다.
+    // minify_whitespace 시 polyfill content 도 주석/공백/들여쓰기가 제거돼야 한다
+    // (이전엔 flow strip 만 하고 minify 미전달 → 원본 그대로 남던 회귀).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('hi');");
+    try writeFile(tmp.dir, "my-polyfill.js", "// license banner comment\nfunction polyHelper(argName) {\n    return argName + 1;\n}\nglobal.MyPolyfill = { run: polyHelper };\n");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const polyfill = try absPath(&tmp, "my-polyfill.js");
+    defer std.testing.allocator.free(polyfill);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .polyfills = &.{polyfill},
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // polyfill content 는 여전히 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MyPolyfill") != null);
+    // minify: 주석 제거 + 4-space 들여쓰기 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "license banner comment") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "    return") == null);
+}
+
 test "Bundler: dev mode single file" {
     // Phase 2: dev mode에서 단일 파일이 프로덕션 파이프라인으로 scope-hoisted 출력
     var tmp = std.testing.tmpDir(.{});
