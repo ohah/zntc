@@ -532,6 +532,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) initial_opts.sourcemap.lazy = true;
 
     var bundler = Bundler.init(allocator, initial_opts);
+    defer bundler.deinit();
     var result = bundler.bundle() catch |err| {
         // 초기 빌드 실패 — rebuild 이벤트로 에러 전달
         const event = allocator.create(WatchRebuildEvent) catch {
