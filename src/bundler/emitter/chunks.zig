@@ -249,9 +249,14 @@ pub fn emitChunks(
             try chunk_output.appendSlice(allocator, banner);
             try chunk_output.append(allocator, '\n');
         }
-        if (options.intro_js) |intro| {
-            try chunk_output.appendSlice(allocator, intro);
-            try chunk_output.append(allocator, '\n');
+        // intro: reg_split(IIFE/UMD/AMD self-register factory)면 factory IIFE 안 첫 줄로 옮겨
+        // 모듈 본문이 closure scope 로 접근 + chunk 별 module-scope 중복 redeclare 회피. 그 외
+        // (preserve_modules / cjs / esm) 는 기존 위치(banner 다음, wrapper 밖) 유지.
+        if (!reg_split) {
+            if (options.intro_js) |intro| {
+                try chunk_output.appendSlice(allocator, intro);
+                try chunk_output.append(allocator, '\n');
+            }
         }
 
         // IIFE splitting(P3-B PR3): 레지스트리 활성화 + self-register factory.
@@ -287,6 +292,11 @@ pub fn emitChunks(
             // ⚠ federation_emit.zig(P1-3)가 `({"<reg_id>"` 부분문자열로 expose
             // 청크를 식별 — 이 prefix 형태 변경 시 동반 수정 필요.
             try chunk_output.appendSlice(allocator, "(function(g){");
+            // reg_split intro: factory IIFE 안 첫 줄 — closure scope 로 모듈 본문 접근 가능.
+            if (options.intro_js) |intro| {
+                try chunk_output.appendSlice(allocator, intro);
+                try chunk_output.append(allocator, '\n');
+            }
             try chunk_output.appendSlice(allocator, rt.ZNTC_REGISTER_INSTALL);
             try chunk_output.appendSlice(allocator, "({\"");
             try chunk_output.appendSlice(allocator, id);
@@ -848,7 +858,15 @@ pub fn emitChunks(
         // fn `}` + wrapper 호출 `)` + GLOBAL + `;`.
         if (reg_split) {
             const min = options.minify_whitespace;
-            try chunk_output.appendSlice(allocator, if (min) "}});})" else "\n}});})");
+            // reg_split outro: factory IIFE 안 마지막 — register install 호출 후, IIFE close 전.
+            // "}});" = fn close + 객체 close + register call close, 그 다음 outro, 마지막 ")" = IIFE close.
+            try chunk_output.appendSlice(allocator, if (min) "}});" else "\n}});");
+            if (options.outro_js) |outro| {
+                try chunk_output.append(allocator, '\n');
+                try chunk_output.appendSlice(allocator, outro);
+                try chunk_output.append(allocator, '\n');
+            }
+            try chunk_output.appendSlice(allocator, "})");
             try chunk_output.appendSlice(allocator, rt.ZNTC_IIFE_GLOBAL);
             try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
             if (chunk_is_user_entry) {
@@ -901,9 +919,12 @@ pub fn emitChunks(
             }
         }
 
-        if (options.outro_js) |outro| {
-            try chunk_output.appendSlice(allocator, outro);
-            try chunk_output.append(allocator, '\n');
+        // outro: reg_split 면 위 factory IIFE 안에서 이미 emit — 여기선 skip.
+        if (!reg_split) {
+            if (options.outro_js) |outro| {
+                try chunk_output.appendSlice(allocator, outro);
+                try chunk_output.append(allocator, '\n');
+            }
         }
 
         // footer 삽입 (각 청크 출력 뒤)

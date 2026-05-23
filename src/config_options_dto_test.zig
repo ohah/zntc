@@ -46,6 +46,8 @@ const bundler_only_fields = [_][]const u8{
     "mainFields",
     "banner",
     "footer",
+    "intro",
+    "outro",
     "assetNames",
     "chunkNames",
     "entryNames",

@@ -99,6 +99,8 @@ pub const CliOptions = struct {
     public_path: ?[]const u8 = null,
     banner_js: ?[]const u8 = null,
     footer_js: ?[]const u8 = null,
+    intro_js: ?[]const u8 = null,
+    outro_js: ?[]const u8 = null,
     global_name: ?[]const u8 = null,
     out_extension_js: ?[]const u8 = null,
     source_root: ?[]const u8 = null,
@@ -306,8 +308,7 @@ fn parseGlobalsArg(opts: *CliOptions, allocator: std.mem.Allocator, val: []const
 ///    mainFields/banner/footer/{asset,chunk,entry}Names/preserveModules*/inlineDynamicImports/
 ///    manualChunks (record form)
 ///
-/// `intro`/`outro` 는 BundleOptions 미지원 — 별도 PR (FIXME). function-form
-/// `manualChunks` 는 JS-only 라 JSON 에서는 record form 만 받는다.
+/// function-form `manualChunks` 는 JS-only 라 JSON 에서는 record form 만 받는다.
 fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     const f = try std.fs.cwd().openFile("zntc.config.json", .{});
     defer f.close();
@@ -370,6 +371,12 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     };
     if (dto.footer) |s| if (s.len > 0) {
         opts.footer_js = try allocator.dupe(u8, s);
+    };
+    if (dto.intro) |s| if (s.len > 0) {
+        opts.intro_js = try allocator.dupe(u8, s);
+    };
+    if (dto.outro) |s| if (s.len > 0) {
+        opts.outro_js = try allocator.dupe(u8, s);
     };
     if (dto.entryNames) |s| if (s.len > 0) {
         opts.entry_names = try allocator.dupe(u8, s);
@@ -796,6 +803,10 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             opts.banner_js = arg["--banner:js=".len..];
         } else if (std.mem.startsWith(u8, arg, "--footer:js=")) {
             opts.footer_js = arg["--footer:js=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--intro:js=")) {
+            opts.intro_js = arg["--intro:js=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--outro:js=")) {
+            opts.outro_js = arg["--outro:js=".len..];
         } else if (std.mem.startsWith(u8, arg, "--global-name=")) {
             opts.global_name = arg["--global-name=".len..];
         } else if (std.mem.startsWith(u8, arg, "--out-extension:")) {
