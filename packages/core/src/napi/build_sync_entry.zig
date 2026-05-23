@@ -11,7 +11,7 @@ const result_napi_mod = @import("result.zig");
 const plugin_bridge = @import("plugin_bridge.zig");
 const c = common.c;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 
 const throwError = common.throwError;
 const getNamedProperty = common.getNamedProperty;
