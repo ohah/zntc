@@ -52,7 +52,7 @@ runs:
         if [ -n "${{ inputs.cpu }}" ]; then
           napi_args+=("-Dcpu=${{ inputs.cpu }}")
         fi
-        zig build napi "${napi_args[@]}"
+        zig build napi --cache-dir .zig-cache-napi "${napi_args[@]}"
       shell: bash
 
     - name: Build core JS wrapper

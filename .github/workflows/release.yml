@@ -77,7 +77,7 @@ jobs:
 
       - name: Build NAPI (ReleaseFast)
         shell: bash
-        run: zig build napi -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+        run: zig build napi --cache-dir .zig-cache-napi -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
       - name: Locate zntc.node
         id: locate
