@@ -655,9 +655,10 @@ pub fn buildIncremental(
     // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
     // 매 buildIncremental 시 entry_points 로부터 재계산 — watch 모드에서 entry
     // 추가/삭제 시 stale 회피 (Issue #65). computeEntryDir 는 O(N) pure fn.
+    // project_root 는 user-set 옵션 (RN/Metro `projectRoot`) 보존을 위해 강제
+    // invalidate 하지 않는다 — 자동 추론은 *최초* 빈 값일 때만.
     if (entry_points.len > 0) {
         self.entry_dir = computeEntryDir(entry_points);
-        self.project_root = "";
     }
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
         self.project_root = graph_project_root.findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
