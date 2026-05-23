@@ -463,3 +463,31 @@ watch({
   },
 });
 ```
+
+## 5. Local dev — `zig build napi` 와 `zig build test` 동시 실행 cache 분리
+
+`zig build napi` (background) 와 `zig build test` 를 같은 `.zig-cache/` 공유로 동시에 돌리면 Zig 0.15.2 build system 의 cache 슬롯 corruption 으로 무관 영역 — 특히 `parser/ast_walk_test` 같은 단위 테스트 — 에서 25 fail flaky 가 일관 발생한다(Issue #54).
+
+### 증상
+
+```sh
+# concurrent
+$ bun run build:napi & zig build test
+# → parser/ast_walk_test 영역 25 fail
+```
+
+직렬 실행 시 통과. fresh `.zig-cache` 단독 `zig build test` 도 통과. 트리거 = *concurrent build 가 같은 cache root* 사용.
+
+### Fix
+
+`packages/core/package.json` 의 `build:napi` script 는 `--cache-dir .zig-cache-napi` 로 별도 cache root 사용 (Issue #54). 다른 호출 사이트 (CI, 사용자 직접 `zig build napi` 호출) 도 concurrent test 와 같이 돌릴 때는 다음 패턴:
+
+```sh
+zig build napi --cache-dir .zig-cache-napi
+```
+
+`.gitignore` 에 `.zig-cache-napi/` 등록됨.
+
+### CI 영향
+
+CI (`ci.yml` 의 `test` job) 는 `zig build` 후 `zig build test` 가 *순차* 실행이라 concurrent 트리거 없음 — 영향 0.
