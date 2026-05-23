@@ -50,6 +50,7 @@ const bundler_only_fields = [_][]const u8{
     "outro",
     "assetNames",
     "chunkNames",
+    "cssNames",
     "entryNames",
     "preserveModules",
     "preserveModulesRoot",

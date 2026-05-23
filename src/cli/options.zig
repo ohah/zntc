@@ -107,7 +107,8 @@ pub const CliOptions = struct {
     sources_content: bool = true,
     log_level: LogLevel = .info,
     charset_utf8: bool = false,
-    entry_names: []const u8 = "[name]",
+    // PR B-4b sub-2: default `[name]` → `[dir]/[name]` (esbuild parity).
+    entry_names: []const u8 = "[dir]/[name]",
     chunk_names: []const u8 = "[name]-[hash]",
     asset_names: []const u8 = "[name]-[hash]",
     /// --asset-registry=PATH: Metro AssetRegistry 모듈 경로. null=일반 URL, ""(명시적 off),

@@ -779,6 +779,9 @@ interface BuildOptionsCommon {
   entryNames?: string;
   chunkNames?: string;
   assetNames?: string;
+  /** CSS chunk path pattern. Default: `[dir]/[name]` (PR B-4b sub-2; esbuild parity).
+   * Supports `[name]`, `[hash]` (content), and `[dir]` (entry-relative). */
+  cssNames?: string;
   /** Metro AssetRegistry module path (React Native-only layer).
    * - `undefined`: determined by the platform preset (with
    *   `platform: "react-native"`, the default path is used automatically)

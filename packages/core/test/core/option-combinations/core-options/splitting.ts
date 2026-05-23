@@ -139,7 +139,10 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
       splitting: true,
       entryNames: '[name]',
       chunkNames: '[name]',
-      // cssNames 는 기본('[name]') — 의도적으로 충돌 조건을 만든다.
+      // 옛 default 시대 시나리오 — cssNames 도 평면 패턴 명시.
+      // (PR B-4b sub-2 부터 cssNames default 는 `[dir]/[name]` 으로 변경됐으므로
+      // disambiguator 동작 검증 위해 명시적으로 옛 default 옵트인.)
+      cssNames: '[name]',
     });
     expect(result.errors.length).toBe(0);
 
@@ -194,6 +197,8 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
       splitting: true,
       entryNames: '[name]',
       chunkNames: '[name]',
+      // 옛 default 시대 disambiguator 결정성 검증 — cssNames 도 평면 명시.
+      cssNames: '[name]',
     };
     const r1 = await build(opts);
     const r2 = await build(opts);
@@ -223,6 +228,8 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
       entryPoints: [join(dir, 'ns-a', 'index.ts'), join(dir, 'ns-b', 'index.ts')],
       splitting: false,
       entryNames: '[name]',
+      // 비-splitting disambiguator 검증 — 옛 평면 default 명시.
+      cssNames: '[name]',
     });
     expect(result.errors.length).toBe(0);
 
@@ -254,6 +261,9 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
       entryPoints: [join(dir, 'nsd-a', 'index.ts'), join(dir, 'nsd-b', 'index.ts')],
       splitting: false,
       entryNames: '[name]',
+      // F2 (sub-2 review): cssNames default 변경 후에도 *disambiguator 결정성*
+      // 검증 의도 보존을 위해 평면 cssNames 명시.
+      cssNames: '[name]',
     };
     const r1 = await build(opts);
     const r2 = await build(opts);
@@ -263,5 +273,97 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
       r.outputFiles.find((f) => f.path.endsWith('.css') && f.text.includes(marker))!.path;
     expect(pickCssByMarker(r1, '.nsd-a')).toBe(pickCssByMarker(r2, '.nsd-a'));
     expect(pickCssByMarker(r1, '.nsd-b')).toBe(pickCssByMarker(r2, '.nsd-b'));
+  });
+
+  // PR B-4b sub-2 회귀 가드: default `entryNames` 가 `[dir]/[name]` 이라는
+  // semver-major 약속. entryNames 명시 *없이* 두 entry 가 다른 dir 의 같은
+  // stem 일 때 자동으로 dir prefix 가 붙어 path collision 회피되어야 한다.
+  // (옛 default `[name]` 시대엔 disambiguator 가 처리했고, 새 default 는
+  // disambiguator 발현 전에 dir-aware path 로 emit.)
+  test('default entryNames — 같은 stem 두 entry 가 [dir]/[name] 으로 자동 unique', async () => {
+    mkdirSync(join(dir, 'def-a'), { recursive: true });
+    mkdirSync(join(dir, 'def-b'), { recursive: true });
+    writeFileSync(join(dir, 'def-a', 'index.ts'), 'const a = 1;\nexport { a };\n');
+    writeFileSync(join(dir, 'def-b', 'index.ts'), 'const b = 2;\nexport { b };\n');
+
+    const result = await build({
+      // entryNames 명시 *안 함* — default 동작 검증.
+      entryPoints: [join(dir, 'def-a', 'index.ts'), join(dir, 'def-b', 'index.ts')],
+      splitting: true,
+    });
+    expect(result.errors.length).toBe(0);
+
+    const js = result.outputFiles.filter((f) => f.path.endsWith('.js'));
+    const aJs = js.find((j) => j.text.includes('const a = 1'));
+    const bJs = js.find((j) => j.text.includes('const b = 2'));
+    expect(aJs).toBeDefined();
+    expect(bJs).toBeDefined();
+    // 새 default 라 path 가 자동으로 `def-a/index*.js` / `def-b/index*.js`
+    // 형태가 되어 collision 없음 (disambiguator hash 부여 없이).
+    expect(aJs!.path).not.toBe(bJs!.path);
+    const jsPathSet = new Set(js.map((j) => j.path));
+    expect(jsPathSet.size).toBe(js.length);
+    // 시맨틱 lock (F3 review) — uniqueness 외 entry dir prefix 가 path 에
+    // 실제로 포함되는지 강제.
+    expect(aJs!.path).toMatch(/def-a\//);
+    expect(bJs!.path).toMatch(/def-b\//);
+  });
+
+  // PR B-4b sub-2 회귀 가드: default `cssNames` 가 `[dir]/[name]`. entry CSS
+  // 도 자동으로 dir prefix → same-stem CSS path collision 자동 회피.
+  test('default cssNames — 같은 stem 두 entry 의 CSS 가 [dir]/[name] 으로 자동 unique', async () => {
+    mkdirSync(join(dir, 'cdef-a'), { recursive: true });
+    mkdirSync(join(dir, 'cdef-b'), { recursive: true });
+    writeFileSync(join(dir, 'cdef-a', 'index.ts'), 'import "./s.css";\nconst a = 1;\n');
+    writeFileSync(join(dir, 'cdef-a', 's.css'), '.cdef-a { color: red; }\n');
+    writeFileSync(join(dir, 'cdef-b', 'index.ts'), 'import "./s.css";\nconst b = 2;\n');
+    writeFileSync(join(dir, 'cdef-b', 's.css'), '.cdef-b { color: blue; }\n');
+
+    const result = await build({
+      entryPoints: [join(dir, 'cdef-a', 'index.ts'), join(dir, 'cdef-b', 'index.ts')],
+      splitting: true,
+    });
+    expect(result.errors.length).toBe(0);
+
+    const css = result.outputFiles.filter((f) => f.path.endsWith('.css'));
+    const aCss = css.find((c) => c.text.includes('.cdef-a'));
+    const bCss = css.find((c) => c.text.includes('.cdef-b'));
+    expect(aCss).toBeDefined();
+    expect(bCss).toBeDefined();
+    expect(aCss!.path).not.toBe(bCss!.path);
+    // 새 default `[dir]/[name]` semantics 가드 — 단순 uniqueness 가 아닌
+    // *entry dir prefix 가 path 에 실제로 포함됨* 검증 (F3 review).
+    // 옛 default 로 회귀하면 disambiguator hash 로 unique 해져 위 not.toBe 는
+    // 통과하지만 아래 toMatch 는 실패 — 정확한 시맨틱 lock.
+    expect(aCss!.path).toMatch(/cdef-a\//);
+    expect(bCss!.path).toMatch(/cdef-b\//);
+  });
+
+  // PR B-4b sub-2 회귀 가드: 사용자가 명시적으로 `entryNames: '[name]'` opt-out
+  // 하면 옛 평면 동작이 그대로. 즉 path 에 entry dir prefix 가 *붙지 않음*
+  // (collision 자체는 disambiguator 보호 영역 — 별도 test 가 검증).
+  test('entryNames opt-out — `[name]` 명시 시 path 에 dir prefix 안 붙음', async () => {
+    mkdirSync(join(dir, 'optout-a'), { recursive: true });
+    mkdirSync(join(dir, 'optout-b'), { recursive: true });
+    writeFileSync(join(dir, 'optout-a', 'index.ts'), 'const a = 1;\nexport { a };\n');
+    writeFileSync(join(dir, 'optout-b', 'index.ts'), 'const b = 2;\nexport { b };\n');
+
+    const result = await build({
+      entryPoints: [join(dir, 'optout-a', 'index.ts'), join(dir, 'optout-b', 'index.ts')],
+      splitting: true,
+      entryNames: '[name]', // 옛 평면 default 옵트인.
+    });
+    expect(result.errors.length).toBe(0);
+
+    const js = result.outputFiles.filter((f) => f.path.endsWith('.js'));
+    // 두 entry JS 모두 outputFiles 에 emit (collision 시 in-memory list 엔
+    // 둘 다 유지되고 disk write 단계에서 last-wins — F3 review 강화).
+    const aJs = js.find((j) => j.text.includes('const a = 1'));
+    const bJs = js.find((j) => j.text.includes('const b = 2'));
+    expect(aJs).toBeDefined();
+    expect(bJs).toBeDefined();
+    // path 가 `<dir>/index.js` 형태가 아니어야 — opt-out 효과.
+    expect(aJs!.path).not.toMatch(/optout-[ab]\//);
+    expect(bJs!.path).not.toMatch(/optout-[ab]\//);
   });
 });

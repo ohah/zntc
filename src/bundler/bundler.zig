@@ -247,14 +247,24 @@ pub const BundleOptions = struct {
     output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
-    /// 엔트리 청크 파일명 패턴 (--entry-names, 기본: "[name]")
-    entry_names: []const u8 = "[name]",
+    /// 엔트리 청크 파일명 패턴 (--entry-names, 기본: "[dir]/[name]")
+    /// PR B-4b sub-2 (breaking): default 가 `[name]` 에서 `[dir]/[name]` 로
+    /// 변경 (esbuild parity). 두 entry 가 같은 stem (예: pages/a/index.tsx +
+    /// pages/b/index.tsx) 일 때 entry_dir 기준 상대 디렉토리(`pages/a`, `pages/b`)
+    /// 가 자동으로 출력 경로에 prefix → 청크 path collision 자동 회피. 사용자가
+    /// 명시적으로 `--entry-names=[name]` 을 지정하면 옛 평면 동작.
+    /// `[dir]` 토큰은 sanitize 거친 entry_dir-relative dir (chunk.zig:
+    /// entryRelativeDir) — 빈 dir 이면 leading-slash skip(esbuild parity).
+    entry_names: []const u8 = "[dir]/[name]",
     /// 공통 청크 파일명 패턴 (--chunk-names, 기본: "[name]-[hash]")
+    /// 일반·manual chunk 는 entry 가 아니라 dir 정보가 없어 `[dir]` 토큰 미사용.
     chunk_names: []const u8 = "[name]-[hash]",
     /// 에셋 파일명 패턴 (--asset-names, 기본: "[name]-[hash]")
     asset_names: []const u8 = "[name]-[hash]",
-    /// CSS 출력 파일명 패턴 (--css-names, 기본: "[name]")
-    css_names: []const u8 = "[name]",
+    /// CSS 출력 파일명 패턴 (--css-names, 기본: "[dir]/[name]")
+    /// PR B-4b sub-2: entry_names 와 일관성을 위해 같이 `[dir]/[name]`. CSS
+    /// 측 [dir] 토큰 처리는 PR B-2 / B-3 의 applyCssChunkNameWithDir 가 담당.
+    css_names: []const u8 = "[dir]/[name]",
     /// 확장자별 로더 오버라이드 (--loader:.png=file)
     loader_overrides: []const types.LoaderOverride = &.{},
     /// legal comments 처리 모드 (--legal-comments)

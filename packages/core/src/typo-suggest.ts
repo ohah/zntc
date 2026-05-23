@@ -102,6 +102,7 @@ export function warnUnknownKeys(
 export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // ─── 진입 ───
   'entryPoints',
+  'output', // PR B-4b sub-2 sidecar: pre-existing schema drift 동기화
   'outdir',
   'outfile',
   'outbase',
@@ -175,6 +176,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'entryNames',
   'chunkNames',
   'assetNames',
+  'cssNames',
   // ─── TypeScript / decorator ───
   'experimentalDecorators',
   'emitDecoratorMetadata',
