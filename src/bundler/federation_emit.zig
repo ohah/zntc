@@ -669,9 +669,17 @@ pub fn wrapContainer(
     // ── remoteEntry(부트스트랩 보유 청크) 의 bootstrap 을 container 로 치환 ──
     for (outputs) |*o| {
         const span = bootstrapSpan(o.contents) orelse continue;
-        // entry 청크 = remoteEntry. o.path 는 splice 후에도 불변(해시 확정)
-        // → basename = manifest.metaData.remoteEntry.name.
-        const remote_entry = std.fs.path.basename(o.path);
+        // entry 청크 = remoteEntry. o.path 는 splice 후에도 불변(해시 확정).
+        // PR B-4b sub-1b: basename + dirname 분리 — entry_names 가 [dir] 토큰을
+        // 갖는 경우(예: `[dir]/[name]`) o.path 가 `pages-a/Card-h.js` 같이
+        // dir 를 포함. manifest 의 remoteEntry.name 은 basename, path 는
+        // `dir/` (runtime simpleJoinRemoteEntry 가 publicPath + path + name
+        // 합성). 평면 빌드(default) 에선 dirname=null → path="" 으로
+        // 옛 동작 유지.
+        const remote_entry_name = std.fs.path.basename(o.path);
+        const remote_entry_path = try formatRemoteEntryPath(allocator, std.fs.path.dirname(o.path));
+        defer allocator.free(remote_entry_path);
+
         var next: std.ArrayListUnmanaged(u8) = .empty;
         errdefer next.deinit(allocator);
         try next.appendSlice(allocator, o.contents[0..span.start]);
@@ -685,7 +693,7 @@ pub fn wrapContainer(
         o.contents = owned;
         // mf-manifest.json (S4 박제 스키마 — runtime SnapshotHandler 가
         // metaData/exposes/shared 필수). 같은 시점이라 모든 해시 확정.
-        return try buildManifest(allocator, name, mf, exposes, remote_entry, public_path);
+        return try buildManifest(allocator, name, mf, exposes, remote_entry_name, remote_entry_path, public_path);
     }
     // mf 빌드인데 reg_split 부트스트랩이 없음 = 잘못된 구성(format/splitting).
     // 조용한 오작동(container 없는 산출) 금지 — federation.zig 진단 관례.
@@ -712,6 +720,7 @@ pub fn buildManifest(
     mf: *const types.MfBundleConfig,
     exposes: []const ExposeInfo,
     remote_entry: []const u8,
+    remote_entry_path: []const u8,
     public_path: []const u8,
 ) ![]const u8 {
     var b: std.ArrayListUnmanaged(u8) = .empty;
@@ -731,7 +740,9 @@ pub fn buildManifest(
     try appendJsonStr(&b, allocator, name);
     try b.appendSlice(allocator, "},\"remoteEntry\":{\"name\":");
     try appendJsonStr(&b, allocator, remote_entry);
-    try b.appendSlice(allocator, ",\"path\":\"\",\"type\":\"global\"},\"types\":{\"path\":\"\",\"name\":\"\",\"zip\":\"\",\"api\":\"\"},\"globalName\":");
+    try b.appendSlice(allocator, ",\"path\":");
+    try appendJsonStr(&b, allocator, remote_entry_path);
+    try b.appendSlice(allocator, ",\"type\":\"global\"},\"types\":{\"path\":\"\",\"name\":\"\",\"zip\":\"\",\"api\":\"\"},\"globalName\":");
     try appendJsonStr(&b, allocator, name);
     try b.appendSlice(allocator, ",\"pluginVersion\":\"0.1.0\",\"publicPath\":");
     try appendJsonStr(&b, allocator, pp);
@@ -952,4 +963,84 @@ test "sharedVerdict: singleton 충돌 fail-fast / 버전 경고 / 판정불가 o
         SE{ .name = "react", .singleton = true, .required_version = null, .strict_version = true },
         SC{ .name = "react", .version = "19.2.4", .required_version = "^19", .singleton = true },
     ));
+}
+
+/// MF manifest 의 `metaData.remoteEntry.path` 필드 값 생성.
+/// PR B-4b sub-1b: dirname(o.path) → `dir/` (trailing slash 1개 보장).
+/// **Edge case 처리**:
+/// - null/empty: `""` 반환 → manifest path="" → runtime publicPath+name 합성.
+/// - `.` (현재 dir 참조): `""` 로 정규화 → manifest publicPath+name 합성에서
+///   `./` 불필요한 prefix 방지.
+/// - `/` 단독: `""` 로 정규화 → URL 의 `//` doubled-slash 방지.
+/// - Windows 백슬래시: `/` 로 정규화 (URL/HTTP path separator).
+fn formatRemoteEntryPath(allocator: std.mem.Allocator, dir: ?[]const u8) ![]u8 {
+    const d = dir orelse return try allocator.dupe(u8, "");
+    if (d.len == 0) return try allocator.dupe(u8, "");
+    if (d.len == 1 and (d[0] == '/' or d[0] == '.')) return try allocator.dupe(u8, "");
+
+    // 백슬래시 → forward slash + trailing `/` 보장.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.ensureTotalCapacity(allocator, d.len + 1);
+    for (d) |c| buf.appendAssumeCapacity(if (c == '\\') '/' else c);
+    if (buf.items.len > 0 and buf.items[buf.items.len - 1] != '/') {
+        try buf.append(allocator, '/');
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
+test "formatRemoteEntryPath: 평면 (dirname null) → 빈 path" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, null);
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "formatRemoteEntryPath: 정상 dir → trailing slash 추가" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, "pages-a");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("pages-a/", r);
+}
+
+test "formatRemoteEntryPath: F3 — '/' 단독 → 빈 path (double-slash URL 방지)" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, "/");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "formatRemoteEntryPath: '.' 단독 (current dir) → 빈 path" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, ".");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "formatRemoteEntryPath: 빈 문자열 → 빈 path" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, "");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "formatRemoteEntryPath: Windows 백슬래시 → forward slash 정규화" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, "pages\\a");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("pages/a/", r);
+}
+
+test "formatRemoteEntryPath: dir 이미 trailing slash 있으면 중복 안 함" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, "pages-a/");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("pages-a/", r);
+}
+
+test "formatRemoteEntryPath: 깊은 dir 보존" {
+    const a = std.testing.allocator;
+    const r = try formatRemoteEntryPath(a, "apps/admin/dashboard");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("apps/admin/dashboard/", r);
 }
