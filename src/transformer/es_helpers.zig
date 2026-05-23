@@ -17,6 +17,10 @@ const Span = token_mod.Span;
 
 /// static private field descriptor 선언 생성: `var _x = { writable: true, value: initValue };`
 /// __classStaticPrivateFieldSpecGet/Set 헬퍼가 descriptor 객체의 value/get/set 슬롯을 읽는다.
+///
+/// #3680-F1: descriptor 는 class body 밖 (모듈 top-level / IIFE) 에 emit 되므로 init 안의
+/// `super.x` 는 raw 로 두면 SyntaxError. init visit 동안 `current_super_in_extracted_fn=true`
+/// + `current_super_is_static=true` 로 강제 lowering (static private field → static super 의미).
 pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span) !NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -33,6 +37,14 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
         .span = span,
         .data = .{ .binary = .{ .left = writable_key, .right = true_val, .flags = 0 } },
     }));
+
+    // #3680-F1: init 안 super 강제 lowering 컨텍스트 (static, extracted)
+    const saved_in_extracted = self.current_super_in_extracted_fn;
+    const saved_super_is_static = self.current_super_is_static;
+    self.current_super_in_extracted_fn = true;
+    self.current_super_is_static = true;
+    defer self.current_super_in_extracted_fn = saved_in_extracted;
+    defer self.current_super_is_static = saved_super_is_static;
 
     const value_key = try makeIdentifierRef(self, "value");
     const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
@@ -1317,6 +1329,27 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
     self.current_super_in_extracted_fn = true;
     defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
+    // #3680-F3: static private method 의 super 는 instance form 이 아닌 static form
+    // (`Base.x.call(this)`) 으로 lowering 되어야 한다. method flags 에서 static-ness 를
+    // 읽어 current_super_is_static 도 동기.
+    const saved_super_is_static = self.current_super_is_static;
+    if ((method_flags & ast_mod.MethodFlags.is_static) != 0) {
+        self.current_super_is_static = true;
+    }
+    defer self.current_super_is_static = saved_super_is_static;
+    // #3680-F2: non-derived class 의 method 안 `super.x` 도 spec valid — home object 의
+    // [[Prototype]] 은 Object.prototype (또는 static method 면 Function.prototype, 우리는
+    // 클래스 자체가 함수이므로 동일 base 사용). current_super_class==null 인 채로
+    // standalone fn 으로 추출되면 raw `super.x` 가 leak 되어 SyntaxError. 임시로
+    // "Object" span 을 set 해 buildSuperBaseRef 가 Object.prototype 을 만들도록 한다.
+    const saved_super_class = self.current_super_class;
+    const saved_super_class_old_idx = self.current_super_class_old_idx;
+    if (self.current_super_class == null) {
+        self.current_super_class = try self.ast.addString("Object");
+        self.current_super_class_old_idx = .none;
+    }
+    defer self.current_super_class = saved_super_class;
+    defer self.current_super_class_old_idx = saved_super_class_old_idx;
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 

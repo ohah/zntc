@@ -37,10 +37,18 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     // 경로가 이 set 을 누락하면 lowerPrivateMembers 의 standalone fn body visit / classifyClassMember
     // 의 method body visit 에서 super-prop lowering 이 null/stale 참조로 깨진다.
     const saved_super_class = self.current_super_class;
+    const saved_super_class_old_idx = self.current_super_class_old_idx;
+    // #3680-F5/F6: inner class 가 extends 없으면 null 로 명시적 reset (outer 누수 차단).
+    // F6: super_class 와 동시에 old_idx 도 set — fast path 에서도 super lowering 활성화돼 symbol propagation 필요.
     if (has_super) {
         self.current_super_class = self.ast.getNode(super_idx).span;
+        self.current_super_class_old_idx = super_idx;
+    } else {
+        self.current_super_class = null;
+        self.current_super_class_old_idx = .none;
     }
     defer self.current_super_class = saved_super_class;
+    defer self.current_super_class_old_idx = saved_super_class_old_idx;
     // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
     const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
     self.current_super_in_extracted_fn = false;
