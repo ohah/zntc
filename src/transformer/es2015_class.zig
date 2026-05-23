@@ -105,14 +105,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
             const saved_super_static_receiver = self.current_super_static_receiver;
+            // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
+            const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
             self.current_super_class = super_span;
             self.current_super_class_old_idx = super_idx;
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
+            self.current_super_in_extracted_fn = false;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
             defer self.current_super_is_static = saved_super_static;
             defer self.current_super_static_receiver = saved_super_static_receiver;
+            defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span);
@@ -343,14 +347,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
             const saved_super_static_receiver = self.current_super_static_receiver;
+            // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
+            const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
             self.current_super_class = super_span;
             self.current_super_class_old_idx = super_idx;
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
+            self.current_super_in_extracted_fn = false;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
             defer self.current_super_is_static = saved_super_static;
             defer self.current_super_static_receiver = saved_super_static_receiver;
+            defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
             // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span);

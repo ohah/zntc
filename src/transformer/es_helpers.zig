@@ -1295,6 +1295,11 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) 
 /// private generator method (`*#name`) / async method 를 `_name_fn` 으로 꺼낼 때
 /// method flags(is_async, is_generator)를 function flags로 옮겨 호이스팅한다.
 /// 이 매핑이 없으면 `function* _fn` 을 잃어 `yield` 가 일반 함수에 노출돼 SyntaxError (#1564).
+///
+/// #3680: 추출된 함수 body 는 class lexical context 밖이라 raw `super` 키워드가
+/// SyntaxError. params/body visit 동안 `current_super_in_extracted_fn` 을 켜서
+/// `super.x` 등을 `__superGet(Parent.prototype, "x", this)` 로 lowering 한다.
+/// nested class body 진입 시 visitClass 가 다시 false 로 reset.
 pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
     const method_node = self.ast.getNode(method_idx);
     const params_list_old = self.ast.functionParamsList(method_node);
@@ -1307,6 +1312,11 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     defer popArrowEnv(self, arrow_env);
 
     const saved_temp_counter = self.temp_var_counter;
+
+    // #3680: standalone fn body visit 동안 super property lowering 강제
+    const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+    self.current_super_in_extracted_fn = true;
+    defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 

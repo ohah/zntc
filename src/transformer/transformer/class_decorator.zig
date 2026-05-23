@@ -41,6 +41,10 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         self.current_super_class = self.ast.getNode(super_idx).span;
     }
     defer self.current_super_class = saved_super_class;
+    // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
+    const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+    self.current_super_in_extracted_fn = false;
+    defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
     // #3/#4 fix(이중-visit 회피): lowerPrivateMembers 를 skip_visit_and_keep_private=true 로 호출하면
     // current_private_* 를 호출자가 set/복원해야 한다(lowerPrivateMembers 내부 defer 가 건너뛴다).

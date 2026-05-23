@@ -31,6 +31,12 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             self.current_super_class = self.ast.getNode(super_idx).span;
         }
         defer self.current_super_class = saved_super_class;
+        // #3680: 우리가 outer standalone fn body 안에서 visit 중이라도 inner class body 의
+        // `super` 는 lexical 로 valid 하므로 flag 를 reset. (inner private method 가 다시
+        // 추출되면 buildStandaloneFunc 가 다시 true 로 set.)
+        const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+        self.current_super_in_extracted_fn = false;
+        defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
         var current_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
 
