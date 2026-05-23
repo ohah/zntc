@@ -463,15 +463,25 @@ pub fn ES2022(comptime Transformer: type) type {
                     if (!is_static and !key.isNone()) {
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag != .private_identifier) {
-                            const lowered_key = if (key_node.tag == .computed_property_key) blk: {
-                                const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
-                                try pre_stmts.append(self.allocator, memo.decl);
-                                break :blk memo.computed_key;
-                            } else key;
-                            const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
-                            const init_stmt = try buildPublicFieldSetInit(self, lowered_key, init_val, span);
-                            try ctor_init_stmts.append(self.allocator, init_stmt);
-                            continue;
+                            // #3680 fix: decorator 가 있는 public field 는 ctor 이동을 skip.
+                            // buildPublicFieldSetInit 가 decorator 정보를 버리므로, ctor 로 옮기면
+                            // classifyClassMember 가 못 봐 kind=2 property decorator 수집(collectMember
+                            // Decorators + __decorateClass)이 우회됨 → silent drop. raw 로 fall
+                            // through(466) 해서 classifyClassMember(skip_visit_and_keep_private 경로)/
+                            // visitNode(fast path) 가 decorator + field 를 함께 처리한다.
+                            const field_deco_len = self.readU32(pe, ast_mod.PropertyExtra.deco_len);
+                            if (field_deco_len == 0) {
+                                const lowered_key = if (key_node.tag == .computed_property_key) blk: {
+                                    const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
+                                    try pre_stmts.append(self.allocator, memo.decl);
+                                    break :blk memo.computed_key;
+                                } else key;
+                                const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
+                                const init_stmt = try buildPublicFieldSetInit(self, lowered_key, init_val, span);
+                                try ctor_init_stmts.append(self.allocator, init_stmt);
+                                continue;
+                            }
+                            // decorator 있으면 fall through — 466 의 raw append (skip) 또는 visitNode (fast).
                         }
                     }
                 }

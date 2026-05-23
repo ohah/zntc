@@ -3054,3 +3054,18 @@ test "experimentalDecorators + private: class expression private method 다운�
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "#m") == null);
 }
+
+// #3680 회귀 가드: experimental_decorators + private member 동반 시 public field decorator 가
+// silent drop 되지 않아야 한다. lowerPrivateMembers 의 lower_fields 분기가 deco_len>0 인 field 를
+// ctor 로 이동하면(decorator 정보 손실) classifyClassMember 가 못 보고 __decorateClass 가 미emit.
+test "experimentalDecorators + private: @dec field 가 private 동반에도 emit (#3680)" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function dec(t,k){return t} class C { #p = 1; @dec f = 2; }",
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es2021) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__decorateClass") != null);
+}
