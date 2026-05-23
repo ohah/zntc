@@ -50,7 +50,25 @@ extern fn atexit(?*const fn () callconv(.c) void) c_int;
 
 fn dumpLeaksAtExit() callconv(.c) void {
     if (comptime builtin.mode != .Debug) return;
-    _ = debug_gpa.deinit();
+    // `deinit()` (stdlib debug_allocator.zig:500) 가 detectLeaks 후 `self.* =
+    // undefined` 로 GPA 상태 무효화 → atexit 발화 시점에 detached watch worker
+    // (`thread.detach()`, watch.zig) / TsconfigCache napi_wrap finalizer / late
+    // libc destructor 가 후속 native_alloc.alloc/free 호출 시 undefined memory
+    // dereference → segfault (PR #3695 review HIGH #1).
+    //
+    // `detectLeaks()` (debug_allocator.zig:449) 는 leak stack trace 만 stderr 에
+    // dump 하고 state 유지 → 동시 in-flight alloc/free 가 후속에 진행해도 안전.
+    // 단, detectLeaks 자체가 `self.buckets` / `self.large_allocations` 를 lock
+    // 없이 iterate → 동시 alloc/free 가 mutate 하면 torn pointer read / iterator
+    // desync 위험 (review max HIGH catch). `mutex.tryLock` 으로 best-effort
+    // serialize: worker 가 mid-alloc 이면 skip (leak dump 일부 손실) → deadlock
+    // 보다 안전 (`lock` 은 worker 가 강제 kill 시 영구 hang).
+    if (debug_gpa.mutex.tryLock()) {
+        defer debug_gpa.mutex.unlock();
+        _ = debug_gpa.detectLeaks();
+    }
+    // large_allocations HashMap 자체는 leak (deinit 만 free) — process 종료
+    // 직전이라 OS 가 회수.
 }
 
 /// `napi_register_module_v1` 의 중복 호출 race 방지 atomic flag. Node
