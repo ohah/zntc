@@ -637,6 +637,8 @@ pub fn main() !void {
             .public_path = opts.public_path orelse "",
             .banner_js = opts.banner_js,
             .footer_js = opts.footer_js,
+            .intro_js = opts.intro_js,
+            .outro_js = opts.outro_js,
             .global_name = opts.global_name,
             .globals = opts.globals_list.items,
             .out_extension_js = opts.out_extension_js,
