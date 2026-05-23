@@ -1268,3 +1268,78 @@ test "#x in obj: es2022 타겟에서는 보존 (native 지원)" {
     // es2022에서는 private field가 native 지원이므로 #x in o 그대로 보존
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in o") != null);
 }
+
+// #3680: private method 안의 `super.x` 가 standalone fn (_call_fn) 에 추출되면
+// 그 함수는 class body 밖이라 `super` 키워드가 SyntaxError. 따라서 super
+// property access 를 super-call lowering path 로 강제 lowering.
+// - `super.m(args)` (call form) → `Base.prototype.m.call(this, args)` (lowerSuperMethodCall)
+// - `super.x` (bare get) → `__superGet(Base.prototype, "x", this)` (lowerSuperMember, getter 보존)
+// - `super.y = v` (set) → `__superSet(...)` (lowerSuperPropertyAssignment, setter 보존)
+test "#3680: private method 내 super.method() → Base.prototype.x.call(this) (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { greet(){return "base"} }
+        \\class D extends Base {
+        \\  #call() { return super.greet(); }
+        \\  run() { return this.#call(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // standalone fn 추출
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _call_fn") != null);
+    // standalone fn 안에 raw `super.` 키워드가 남으면 안 됨 (#3680 회귀 가드)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return super.greet") == null);
+    // method call 형태는 `Base.prototype.greet.call(this)` 로 lowering
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.greet.call(this)") != null);
+}
+
+test "#3680: private method 내 super.prop 읽기 → __superGet (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { constructor(){this.x=1} }
+        \\class D extends Base {
+        \\  #read() { return super.x; }
+        \\  run() { return this.#read(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _read_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return super.x") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(Base.prototype,\"x\",this)") != null);
+}
+
+test "#3680: private method 내 super.method = v 쓰기 → __superSet (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { set y(v){this._y=v} }
+        \\class D extends Base {
+        \\  #write(v) { super.y = v; }
+        \\  run(v) { this.#write(v); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _write_fn") != null);
+    // standalone fn 안에 raw `super.y =` 가 남으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.y=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(Base.prototype,\"y\"") != null);
+}
+
+// nested class: standalone fn 안의 *inner* class body 의 `super.x` 는
+// inner class lexical context 가 valid 하므로 inner super 로 lowering 돼야 한다.
+// outer extracted fn flag 가 inner class 안으로 새지 않는지 회귀 가드.
+test "#3680: nested class — inner super 가 outer extracted fn flag 의 영향 안 받음 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class B1 { f(){return 1} }
+        \\class B2 { f(){return 2} }
+        \\class D extends B1 {
+        \\  #outer() {
+        \\    class Inner extends B2 {
+        \\      g(){ return super.f(); }
+        \\    }
+        \\    return new Inner().g();
+        \\  }
+        \\  run() { return this.#outer(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _outer_fn") != null);
+    // inner class super.f() 는 es2021 에서 native 그대로 emit (inner class body context 라 valid).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.f()") != null);
+}

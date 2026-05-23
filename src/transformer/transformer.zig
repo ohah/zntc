@@ -148,6 +148,13 @@ pub const Transformer = struct {
     current_super_is_static: bool = false,
     /// static field/block 처럼 `this` 표현식이 사라지는 위치에서 super receiver로 사용할 class 이름.
     current_super_static_receiver: ?Span = null,
+    /// #3680: private method 가 standalone function (`_name_fn`) 으로 추출돼 class body
+    /// 밖에서 정의되는 동안 true. 추출된 함수는 `super` 키워드가 SyntaxError 이므로
+    /// `super.x` / `super.method()` / `super.y = v` 등 super property 접근을
+    /// `__superGet(Parent.prototype, "x", this)` 형태로 강제 lowering 해야 한다.
+    /// nested class body 진입 시 (visitClass) false 로 reset (inner class lexical
+    /// context 는 super 키워드가 valid).
+    current_super_in_extracted_fn: bool = false,
 
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
@@ -261,9 +268,11 @@ pub const Transformer = struct {
     /// - `unsupported.class`: ES2015 미만 타겟이라 class 자체가 lowering 됨
     /// - `current_super_is_static`: target 이 class 를 지원해도 static field init/static block 은
     ///   IIFE/`Class.foo = …` 로 들어내져 super 가 더 이상 lexical 로 의미를 가지지 않음
+    /// - `current_super_in_extracted_fn`: ES2022 private method 가 standalone fn 으로
+    ///   추출돼 class body 밖에서 정의되는 동안 (#3680) — super 키워드 자체가 invalid
     /// - `current_super_class != null`: derived class 안 (extends 가 있어 super 의미 자체가 존재)
     pub inline fn needsSuperLowering(self: *const Transformer) bool {
-        return (self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null;
+        return (self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn) and self.current_super_class != null;
     }
 
     /// 현재 scope 의 private field 가 `WeakMap.get/set` lowering 대상인지 판정.
