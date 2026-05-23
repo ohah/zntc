@@ -176,13 +176,20 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       },
     });
 
-    // lazy 는 vendor 가 아닌 별도 async chunk 에 있어야
+    // lazy 는 vendor manualChunk 가 아닌 별도 async chunk 에 있어야.
+    // PR B-4b sub-3: 새 default `[dir]/[name]` 하에서 lazy 모듈의 source path 가
+    // `vendor/lazy.ts` 라 자연스럽게 lazy chunk path 에 `vendor/` 가 prefix 로
+    // 붙는다 — manualChunks 와 무관. test 의 *intent* 는 lazy 가 manualChunks
+    // 의 vendor chunk 와 *다른* 청크라는 것.
     const lazyChunk = result.outputFiles.find((o) => o.text.includes('LAZY_VENDOR'));
     expect(lazyChunk).toBeDefined();
-    expect(lazyChunk!.path).not.toContain('vendor');
-    // manual 매칭된 static 모듈이 없으므로 vendor chunk 자체가 생성 안 됨
-    const vendorChunk = result.outputFiles.find((o) => o.path.includes('vendor'));
-    expect(vendorChunk).toBeUndefined();
+    // manual 매칭된 static 모듈이 없으므로 *manualChunks 의 vendor chunk* 자체가
+    // 생성 안 됨 (lazy 모듈은 dynamic import 라 vendor 흡수 거부 — Rollup 동일).
+    // 식별: lazyChunk 가 LAZY_VENDOR 마커 보유 + 같은 마커 가진 별도 청크 없음.
+    const manualVendorChunk = result.outputFiles.find(
+      (o) => o.path !== lazyChunk!.path && o.text.includes('LAZY_VENDOR'),
+    );
+    expect(manualVendorChunk).toBeUndefined();
   });
 
   test('realistic: dynamic entry 가 vendor dep 을 static import — 번들 구조 일치', async () => {
@@ -212,11 +219,16 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
       manualChunks: (id) => (id.includes('/vendor/') ? 'vendor' : null),
     });
 
-    // 최소 3개 청크: entry, vendor, lazy
-    const vendor = result.outputFiles.find(
-      (o) => o.path.includes('vendor') && !o.path.includes('lazy'),
-    )!;
+    // 최소 3개 청크: entry, vendor (manual), lazy (async, source=vendor/lazy.ts).
+    // PR B-4b sub-3 식별 보정:
+    // - manual vendor chunk: SHARED_MARKER 함유 + lazy 마커 미함유.
+    // - lazy chunk: `lazy:` 마커 함유. source `vendor/lazy.ts` 라 새 default
+    //   `[dir]/[name]` 하에서 path 에 `vendor/` 가 prefix 로 붙음 — manualChunks
+    //   와 무관 (단지 source dir 의 자연스러운 반영).
     const lazyChunk = result.outputFiles.find((o) => o.text.includes('lazy:'))!;
+    const vendor = result.outputFiles.find(
+      (o) => o.text.includes('SHARED_MARKER') && o !== lazyChunk,
+    )!;
     const entry = result.outputFiles.find((o) => o.path.endsWith('entry.js'))!;
     expect(vendor).toBeDefined();
     expect(lazyChunk).toBeDefined();
@@ -225,8 +237,8 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
     expect(vendor.text).toContain('SHARED_MARKER');
     expect(vendor.text).toMatch(/export\s*\{/);
 
-    // lazy chunk 는 vendor 가 아닌 별도 경로 + vendor 에서 SHARED import
-    expect(lazyChunk.path).not.toContain('vendor');
+    // lazy chunk 는 manual vendor chunk 와 *다른* 청크 + vendor 에서 SHARED import.
+    expect(lazyChunk.path).not.toBe(vendor.path);
     expect(lazyChunk.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
 
     // entry 도 vendor 에서 SHARED import, dynamic import("./lazy") 사용
