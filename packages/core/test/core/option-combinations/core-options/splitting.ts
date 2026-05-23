@@ -366,4 +366,43 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
     expect(aJs!.path).not.toMatch(/optout-[ab]\//);
     expect(bJs!.path).not.toMatch(/optout-[ab]\//);
   });
+
+  // F5 (post-review): Rollup parity — *static* entry 는 `entryNames` 패턴,
+  // *dynamic* import 로 생성된 entry chunk 는 `chunkNames` 패턴 적용. 옛
+  // 코드는 `chunk.kind == .entry_point` 가 둘 다 흡수해 dynamic 도 entry_names
+  // 사용 → Rollup `entryFileNames`/`chunkFileNames` 분리 정책 위반.
+  test('F5: dynamic import 로 생성된 chunk 는 chunkNames 패턴 적용 (Rollup parity)', async () => {
+    writeFileSync(join(dir, 'f5-lazy.ts'), 'export const lazy = "LAZY";\n');
+    writeFileSync(
+      join(dir, 'f5-entry.ts'),
+      'const m = await import("./f5-lazy"); console.log(m.lazy);\n',
+    );
+
+    const result = await build({
+      entryPoints: [join(dir, 'f5-entry.ts')],
+      splitting: true,
+      entryNames: 'static/[name]',
+      chunkNames: 'chunks/[name]',
+    });
+    expect(result.errors.length).toBe(0);
+
+    const js = result.outputFiles.filter((f) => f.path.endsWith('.js'));
+    const entryJs = js.find((j) => j.text.includes('await import'));
+    const lazyJs = js.find((j) => j.text.includes('"LAZY"'));
+    expect(entryJs).toBeDefined();
+    expect(lazyJs).toBeDefined();
+
+    // static entry 는 entryNames 패턴
+    expect(entryJs!.path).toMatch(/^static\//);
+    // dynamic chunk 는 chunkNames 패턴 (entryNames 아님)
+    expect(lazyJs!.path).toMatch(/^chunks\//);
+    expect(lazyJs!.path).not.toMatch(/^static\//);
+
+    // 런타임 import path 정합 (review F1 가드): entry chunk(static/) 가
+    // lazy chunk(chunks/) 를 import 시 상대 경로 `../chunks/f5-lazy.js` —
+    // flat `./chunks/f5-lazy.js` 면 Node 가 `static/chunks/f5-lazy.js` 로
+    // 해석 시도 → ERR_MODULE_NOT_FOUND. 옛 has_dir_token 게이트 회귀 가드.
+    expect(entryJs!.text).toMatch(/import\(["']\.\.\/chunks\/f5-lazy/);
+    expect(entryJs!.text).not.toMatch(/import\(["']\.\/chunks\/f5-lazy/);
+  });
 });

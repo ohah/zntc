@@ -416,6 +416,13 @@ pub fn emitChunks(
         // PR B-4b-1: stack buf → ArrayList reuse. loop 안 단일 alloc amortize.
         var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer dep_buf.deinit(allocator);
+        // F5 post-review fix: importer chunk 의 *최종 stem* (pattern 적용 + baked-in
+        // slash 포함) 의 dirname 을 src_dir 로 사용. chunk.name_dir 만 보면 패턴
+        // `'static/[name]'` 같은 baked-in dir 를 놓침.
+        var importer_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer importer_buf.deinit(allocator);
+        try chunkPlaceholderStem(chunk, &importer_buf, allocator, options);
+        const importer_dir = std.fs.path.dirname(importer_buf.items) orelse "";
 
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
@@ -434,24 +441,18 @@ pub fn emitChunks(
             const resolved_path = if (reg_split)
                 try allocator.dupe(u8, "")
             else if (dep_chunk.explicit_file_name) |efn|
-                try std.fmt.allocPrint(allocator, "./{s}", .{efn})
+                // F5 post-review fix — efn 도 importer_dir 기준 relative.
+                // 옛 `./{efn}` 평면은 efn 가 dir 포함 시 importer 위치 무시.
+                try computeRelativePath(allocator, importer_dir, efn, "")
             else if (options.preserve_modules) blk: {
                 const src_path = chunk.rel_dir orelse "./";
                 const dep_path = dep_chunk.rel_dir orelse "./";
                 break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
             } else blk: {
-                // PR B-4b-1 blocker #1: dep_stem 이 [dir] 토큰 활성화로 dir 를
-                // 포함하면 importer chunk dir 기준 relative 계산. default
-                // 패턴(`[name]`)에선 chunk.name_dir 가 채워져 있어도 *패턴에
-                // [dir] 토큰이 없으면* dep_stem 은 평면 — 옛 `./{stem}{ext}`
-                // 동작 유지로 회귀 방지. 패턴 검사로 활성화.
-                const has_dir_token = std.mem.indexOf(u8, options.entry_names, "[dir]") != null or
-                    std.mem.indexOf(u8, options.chunk_names, "[dir]") != null;
-                if (has_dir_token) {
-                    const src_dir = chunk.name_dir orelse "";
-                    break :blk try computeRelativePath(allocator, src_dir, dep_stem, ext);
-                }
-                break :blk try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+                // F5 post-review fix — *항상* importer chunk *stem dir* 기준 relative
+                // 계산. importer_dir 는 chunkPlaceholderStem(chunk) 결과의 dirname
+                // 으로 baked-in slash (`'static/[name]'`) 까지 포함.
+                break :blk try computeRelativePath(allocator, importer_dir, dep_stem, ext);
             };
             defer allocator.free(resolved_path);
 
@@ -1103,6 +1104,11 @@ fn emitRunBeforeMainCrossImports(
 ) !void {
     var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer dep_buf.deinit(allocator);
+    // F5 post-review fix: importer chunk 의 *최종 stem* dirname 으로 src_dir 계산.
+    var importer_buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer importer_buf.deinit(allocator);
+    try chunkPlaceholderStem(current_chunk, &importer_buf, allocator, options);
+    const importer_dir = std.fs.path.dirname(importer_buf.items) orelse "";
     for (imports) |imp| {
         const dep_chunk = chunk_graph.getChunk(imp.source_chunk);
         try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
@@ -1112,19 +1118,12 @@ fn emitRunBeforeMainCrossImports(
             const dep_path = dep_chunk.rel_dir orelse "./";
             break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
         } else if (dep_chunk.explicit_file_name) |efn|
-            // PR7-2d: 명시 fileName chunk 는 verbatim 참조.
-            try std.fmt.allocPrint(allocator, "./{s}", .{efn})
+            // F5 post-review fix — efn 도 importer_dir 기준 relative.
+            try computeRelativePath(allocator, importer_dir, efn, "")
         else blk: {
-            // PR B-4b-1 blocker #1: [dir] 토큰이 entry/chunk_names 에 있을
-            // 때만 importer chunk dir 기준 relative 계산. default 패턴은
-            // 옛 평면 `./{stem}{ext}` 유지.
-            const has_dir_token = std.mem.indexOf(u8, options.entry_names, "[dir]") != null or
-                std.mem.indexOf(u8, options.chunk_names, "[dir]") != null;
-            if (has_dir_token) {
-                const src_dir = current_chunk.name_dir orelse "";
-                break :blk try computeRelativePath(allocator, src_dir, dep_stem, ext);
-            }
-            break :blk try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+            // F5 post-review fix — RBM cross-chunk import 도 importer chunk stem dir
+            // (baked-in slash 포함) 기준 relative.
+            break :blk try computeRelativePath(allocator, importer_dir, dep_stem, ext);
         };
         defer allocator.free(resolved_path);
 
@@ -1361,10 +1360,17 @@ fn rewriteDynamicImports(
     defer stem_buf.deinit(allocator);
 
     const src_chunk_idx = chunk_graph.getModuleChunk(module.index);
+    // F5 post-review fix: importer chunk *stem* (pattern + baked-in slash) 의
+    // dirname 사용 — name_dir 만 보면 entry_names/chunk_names 의 baked-in dir
+    // 미감지로 import path 가 importer 위치 기준 잘못 계산됨.
+    var importer_stem_buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer importer_stem_buf.deinit(allocator);
     const src_chunk_dir: []const u8 = if (src_chunk_idx.isNone())
         ""
-    else
-        chunk_graph.getChunk(src_chunk_idx).name_dir orelse "";
+    else blk: {
+        try chunkPlaceholderStem(chunk_graph.getChunk(src_chunk_idx), &importer_stem_buf, allocator, emit_options);
+        break :blk std.fs.path.dirname(importer_stem_buf.items) orelse "";
+    };
 
     // 리라이트할 레코드가 있는지 먼저 확인 (불필요한 할당 방지)
     var has_dynamic = false;
@@ -1482,18 +1488,14 @@ fn rewriteDynamicImports(
             (if (public_path.len > 0)
                 try std.fmt.allocPrint(allocator, "{s}{s}", .{ public_path, efn })
             else
-                try std.fmt.allocPrint(allocator, "./{s}", .{efn}))
+                // F5 post-review fix — efn 도 src_chunk_dir 기준 relative.
+                try computeRelativePath(allocator, src_chunk_dir, efn, ""))
         else if (public_path.len > 0)
             try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ public_path, stem, out_ext })
         else blk: {
-            // PR B-4b-1 blocker #1: [dir] 토큰 활성 시만 importer dir 기준
-            // relative — default 패턴은 옛 평면 `./{stem}{ext}` 유지.
-            const has_dir_token = std.mem.indexOf(u8, emit_options.entry_names, "[dir]") != null or
-                std.mem.indexOf(u8, emit_options.chunk_names, "[dir]") != null;
-            if (has_dir_token) {
-                break :blk try computeRelativePath(allocator, src_chunk_dir, stem, out_ext);
-            }
-            break :blk try std.fmt.allocPrint(allocator, "./{s}{s}", .{ stem, out_ext });
+            // F5 post-review fix — dynamic import 도 *항상* importer chunk dir
+            // 기준 relative. 패턴 baked-in slash 케이스 가드.
+            break :blk try computeRelativePath(allocator, src_chunk_dir, stem, out_ext);
         };
         defer allocator.free(replacement);
 
@@ -1858,17 +1860,20 @@ fn chunkPlaceholderStem(
     allocator: std.mem.Allocator,
     options: *const EmitOptions,
 ) !void {
-    // PR B-4b sub-3: 정확한 discriminator 는 `chunk.kind`. 옛 `chunk.name != null`
-    // 검사는 manualChunks 청크도 name 이 set 돼 있어 entry_names 패턴이 잘못
-    // 적용 → manualChunks 청크 path 가 `[dir]/[name]` (sub-2 새 default) 로
-    // 변환되며 dir="" 라 stem="vendor" 만 남음. lazy 청크와 cross-chunk import
-    // 계산 시 src_dir="vendor" == dep_stem="vendor" → `./.js` 깨짐.
-    const is_entry = chunk.kind == .entry_point;
+    // F5 post-review — Rollup parity:
+    // - *static* entry (사용자 `entryPoints` 로 명시): entry_names + name_dir
+    // - *dynamic* entry (`import()` 로 생성된 entry chunk, `is_dynamic=true`):
+    //   chunk_names + dir 강제 "" (Rollup `chunkFileNames`)
+    // - manualChunks / common: chunk_names + dir 강제 ""
+    const is_static_entry = switch (chunk.kind) {
+        .entry_point => |ep| !ep.is_dynamic,
+        else => false,
+    };
     const base_name = chunk.name orelse "chunk";
-    const pattern = if (is_entry) options.entry_names else options.chunk_names;
-    // manualChunks / common 청크는 dir 정보 없음(entry-relative dir 미상). entry
-    // 청크만 name_dir 사용해 `[dir]/[name]` 효과 발현.
-    const dir = if (is_entry) (chunk.name_dir orelse "") else "";
+    const pattern = if (is_static_entry) options.entry_names else options.chunk_names;
+    // static entry 만 name_dir 사용 — dynamic/manual/common 은 entry-relative
+    // dir 의미 약함 + Rollup `chunkFileNames` 도 dir 토큰 미사용.
+    const dir = if (is_static_entry) (chunk.name_dir orelse "") else "";
 
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);
@@ -2400,16 +2405,20 @@ fn computeRelativePath(
     dep_path_no_ext: []const u8,
     ext: []const u8,
 ) ![]const u8 {
-    // 공통 prefix 찾기
+    // 공통 prefix 찾기 — segment 경계 (`/`) 까지만 매칭. mid-segment 매치는 제외.
     var common_len: usize = 0;
+    var matched_full: usize = 0;
     const min_len = @min(src_dir.len, dep_path_no_ext.len);
     for (0..min_len) |i| {
-        if (src_dir.len > i and dep_path_no_ext.len > i and src_dir[i] == dep_path_no_ext[i]) {
-            if (src_dir[i] == '/') common_len = i + 1;
-        } else break;
+        if (src_dir[i] != dep_path_no_ext[i]) break;
+        matched_full = i + 1;
+        if (src_dir[i] == '/') common_len = i + 1;
     }
-    // 전체가 일치하면 (src_dir가 dep_path_no_ext의 prefix이거나 같을 때)
-    if (min_len == src_dir.len and (dep_path_no_ext.len == src_dir.len or
+    // F5 post-review fix: src_dir 가 dep_path 의 *진짜* prefix 일 때만 segment
+    // 매치로 인정 — 옛 코드는 byte 일치 검사 없이 src_dir.len 기반 가정 →
+    // src_dir="static", dep_path="chunks/..." 같이 무관한 path 도 prefix 로
+    // 잘못 인식해 dep_remaining 손실.
+    if (matched_full == src_dir.len and (dep_path_no_ext.len == src_dir.len or
         (dep_path_no_ext.len > src_dir.len and dep_path_no_ext[src_dir.len] == '/')))
     {
         common_len = src_dir.len;
