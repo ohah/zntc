@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { createFixture, hasPackage } from './helpers';
+import { createFixture, hasPackage, writeOutputs, runNode } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
@@ -1337,5 +1337,47 @@ describe('manualChunks smoke (실제 번들 실행)', () => {
     for (const e of externals) {
       expect(entryImported).toContain(e);
     }
+  });
+
+  // F5 e2e 가드: entryNames / chunkNames 가 *다른 폴더* 패턴일 때 dynamic import
+  // 가 런타임에 정상 해석되는지 Node 로 직접 실행해 검증. 옛 코드는 import path 가
+  // flat (`./lazy.js`) 로 emit 되어 Node 가 importer 위치(static/) 기준으로
+  // `static/lazy.js` 찾다가 ERR_MODULE_NOT_FOUND.
+  test('F5: entryNames + chunkNames 폴더 분리 시 dynamic import 런타임 정합', async () => {
+    const fixture = await createFixture({
+      'lazy.ts': `export const lazy = "F5_RUNTIME_OK";`,
+      'main.ts': `
+        async function run() {
+          const m = await import("./lazy");
+          console.log(m.lazy);
+        }
+        run();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'main.ts')],
+      format: 'esm',
+      splitting: true,
+      outdir: join(fixture.dir, 'dist'),
+      write: false,
+      entryNames: 'static/[name]',
+      chunkNames: 'chunks/[name]',
+    });
+    expect(result.errors.length).toBe(0);
+
+    const distDir = join(fixture.dir, 'dist');
+    mkdirSync(distDir, { recursive: true });
+    writeOutputs(distDir, result.outputFiles);
+
+    const entry = result.outputFiles.find(
+      (o) => o.path.startsWith('static/') && o.path.endsWith('.js'),
+    )!;
+    expect(entry).toBeDefined();
+
+    // Node 실행으로 import path 해석 정상 검증.
+    const { stdout } = await runNode(join(distDir, entry.path));
+    expect(stdout.trim()).toBe('F5_RUNTIME_OK');
   });
 });

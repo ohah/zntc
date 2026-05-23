@@ -111,6 +111,11 @@ export default defineConfig({
               translations: { en: 'manualChunks' },
             },
             {
+              label: '출력 파일명 패턴',
+              slug: 'guides/output-naming',
+              translations: { en: 'Output Naming Patterns' },
+            },
+            {
               label: 'Module Federation',
               slug: 'guides/module-federation',
               translations: { en: 'Module Federation' },
