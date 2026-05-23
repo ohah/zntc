@@ -505,7 +505,15 @@ pub fn parseBuildOptions(
             valid_count += 1;
         }
         native_alloc.free(pairs);
-        loader_overrides = overrides[0..valid_count];
+        // unknown loader (`ParsedLoader.fromString → null`) skip 시 valid_count <
+        // pairs.len → backing alloc(pairs.len) vs return-slice (valid_count) size
+        // mismatch (`getStringArg` 와 동일 root cause, `c_allocator` silent /
+        // `DebugAllocator` panic). valid_count==0 면 overrides 자체 누수도 발생.
+        if (valid_count == 0) {
+            native_alloc.free(overrides);
+        } else {
+            loader_overrides = common.shrinkSlice(bundler_mod.types.LoaderOverride, native_alloc, overrides, valid_count) orelse return null;
+        }
     }
 
     const conditions = getObjectStringArray(env, opts_obj, "conditions", native_alloc);
