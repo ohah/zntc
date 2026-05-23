@@ -19,7 +19,27 @@ pub const NullableStringPair = struct { []const u8, ?[]const u8 };
 // 모든 NAPI 파일이 `common.nativeAlloc()` 1개 인스턴스를 공유해야 cross-file
 // alloc/free (예: watch.zig 가 transpile_entry 결과 free) 시 false leak 이
 // 안 뜬다.
-var debug_gpa: std.heap.DebugAllocator(.{ .stack_trace_frames = 16 }) = .init;
+//
+// `backing_allocator = c_allocator` 명시 (default = page_allocator 대신).
+// page_allocator backing 은 size_class 마다 fresh page (macOS ≥64KB, Linux 4KB-
+// 1MB) 점유 → small-alloc 다양성 시 RSS 인플레이션이 측정 시그널을 왜곡
+// (#dev-leak-investigation PR #3695 review MEDIUM). c_allocator (libc malloc)
+// 는 baseline c_allocator release 빌드와 동일 backing — Debug vs Release delta
+// 가 GPA overhead 보다 진짜 leak signal 을 더 잘 노출.
+//
+// **`backing_allocator_zeroes = false` 필수**: Config default = `true` 가
+// "backing 이 zero page 를 준다" 가정하고 DebugAllocator 의 `usedBits` /
+// `requestedSizes` zero-pass 를 스킵한다 (stdlib debug_allocator.zig:793-796).
+// 그러나 `c_allocator` (libc malloc/posix_memalign) 는 zero-fill 보장 없음 →
+// usedBits[1..]/requestedSizes[*] garbage → false-positive double-free panic
+// 또는 phantom leak. stdlib 자체 테스트 `debug_allocator.zig:1287-1292` 가
+// 동일 non-page backing 패턴에 이 flag 를 false 로 명시.
+var debug_gpa: std.heap.DebugAllocator(.{
+    .stack_trace_frames = 16,
+    .backing_allocator_zeroes = false,
+}) = .{
+    .backing_allocator = std.heap.c_allocator,
+};
 
 pub fn nativeAlloc() std.mem.Allocator {
     if (comptime builtin.mode == .Debug) return debug_gpa.allocator();
