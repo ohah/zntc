@@ -79,6 +79,7 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     }
 
     var bundler = Bundler.init(native_alloc, bundle_opts);
+    defer bundler.deinit();
     var result = bundler.bundle() catch |err| {
         return throwError(env, @errorName(err));
     };

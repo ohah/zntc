@@ -49,6 +49,7 @@ const BuildAsyncData = struct {
 /// 독립 스레드에서 번들링 실행 (libuv 워커 미사용 → TSFN 데드락 방지)
 fn buildWorkerThread(async_data: *BuildAsyncData) void {
     var bundler = Bundler.init(native_alloc, async_data.options);
+    defer bundler.deinit();
     async_data.result = bundler.bundle() catch |err| {
         async_data.err_msg = @errorName(err);
         // 완료 TSFN 호출
