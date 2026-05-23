@@ -1,5 +1,9 @@
 var __commonJS = function(cb, mod) { return function __require() {
-	return mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+	if (mod) return mod.exports;
+	mod = { exports: {} };
+	try { (0, cb[Object.keys(cb)[0]])(mod.exports, mod); }
+	catch (e) { mod = void 0; throw e; }
+	return mod.exports;
 }; };
 var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
@@ -109,7 +113,7 @@ __export(exports_react_native_Libraries_StyleSheet_flattenStyle, {
 var init_react_native_Libraries_StyleSheet_flattenStyle = __esm({
 	"flattenStyle.js"() {
 	flattenStyle = function(style) {
-		if (style === null || typeof style !== "object") {
+		if (style === null || typeof style != "object") {
 			return undefined;
 		}
 		if (!Array.isArray(style)) {
@@ -127,6 +131,22 @@ var init_react_native_Libraries_StyleSheet_flattenStyle = __esm({
 		return result;
 	};
 		"use strict";
+	
+	
+	}
+});
+//#endregion
+//#region class-call-check
+var exports_class_call_check = {};
+var __classCallCheck;
+__export(exports_class_call_check, {
+	__classCallCheck: function() { return __classCallCheck; },
+});
+var init_class_call_check = __esm({
+	"class-call-check"() {
+	__classCallCheck = function(instance,Constructor) {
+		if (!(instance instanceof Constructor))throw new TypeError("Cannot call a class as a function");
+	};
 	
 	
 	}
@@ -153,7 +173,7 @@ var init_react_native_Libraries_Performance_Systrace = __esm({
 	};
 	beginEvent = function(eventName,args) {
 		if (isEnabled()) {
-			var eventNameString = typeof eventName === "function" ? eventName() : eventName;
+			var eventNameString = typeof eventName == "function" ? eventName() : eventName;
 			global.nativeTraceBeginSection(TRACE_TAG_REACT, eventNameString, args);
 		}
 	};
@@ -166,20 +186,20 @@ var init_react_native_Libraries_Performance_Systrace = __esm({
 		var cookie = _asyncCookie;
 		if (isEnabled()) {
 			_asyncCookie++;
-			var eventNameString = typeof eventName === "function" ? eventName() : eventName;
+			var eventNameString = typeof eventName == "function" ? eventName() : eventName;
 			global.nativeTraceBeginAsyncSection(TRACE_TAG_REACT, eventNameString, cookie, args);
 		}
 		return cookie;
 	};
 	endAsyncEvent = function(eventName,cookie,args) {
 		if (isEnabled()) {
-			var eventNameString = typeof eventName === "function" ? eventName() : eventName;
+			var eventNameString = typeof eventName == "function" ? eventName() : eventName;
 			global.nativeTraceEndAsyncSection(TRACE_TAG_REACT, eventNameString, cookie, args);
 		}
 	};
 	counterEvent = function(eventName,value) {
 		if (isEnabled()) {
-			var eventNameString = typeof eventName === "function" ? eventName() : eventName;
+			var eventNameString = typeof eventName == "function" ? eventName() : eventName;
 			global.nativeTraceCounter && global.nativeTraceCounter(TRACE_TAG_REACT, eventNameString, value);
 		}
 	};
@@ -229,14 +249,14 @@ var init_react_native_Libraries_Utilities_stringifySafe = __esm({
 			while (stack.length && this !== stack[0]) {
 				stack.shift();
 			}
-			if (typeof value === "string") {
+			if (typeof value == "string") {
 				var truncatedString = "...(truncated)...";
 				if (value.length > maxStringLimit + truncatedString.length) {
 					return value.substring(0, maxStringLimit) + truncatedString;
 				}
 				return value;
 			}
-			if (typeof value !== "object" || value === null) {
+			if (typeof value != "object" || value === null) {
 				return value;
 			}
 			var retval = value;
@@ -247,7 +267,7 @@ var init_react_native_Libraries_Utilities_stringifySafe = __esm({
 					retval = value.slice(0, maxArrayLimit).concat([`... extra ${value.length - maxArrayLimit} values truncated ...`]);
 				}
 			} else {
-				invariant(typeof value === "object", "This was already found earlier");
+				invariant(typeof value == "object", "This was already found earlier");
 				var keys = Object.keys(value);
 				if (stack.length >= maxDepth) {
 					retval = `{ ... object with ${keys.length} keys ... }`;
@@ -268,7 +288,7 @@ var init_react_native_Libraries_Utilities_stringifySafe = __esm({
 				return "undefined";
 			} else if (arg === null) {
 				return "null";
-			} else if (typeof arg === "function") {
+			} else if (typeof arg == "function") {
 				try {
 					return arg.toString();
 				} catch (e) {
@@ -284,7 +304,7 @@ var init_react_native_Libraries_Utilities_stringifySafe = __esm({
 					}
 					return ret;
 				} catch (e) {
-					if (typeof arg.toString === "function") {
+					if (typeof arg.toString == "function") {
 						try {
 							return arg.toString();
 						} catch (E) {
@@ -295,7 +315,8 @@ var init_react_native_Libraries_Utilities_stringifySafe = __esm({
 			return "[\"" + typeof arg + "\" failed to stringify]";
 		};
 	};
-		invariant = require_invariant_browser();
+		require_invariant_browser();
+	invariant = require_invariant_browser();
 		
 	stringifySafe = createStringifySafeWithLimits({ maxDepth: 10, maxStringLimit: 100, maxArrayLimit: 50, maxObjectKeysLimit: 50 });
 	
@@ -312,22 +333,6 @@ __export(exports_react_native_Libraries_vendor_core_ErrorUtils, {
 var init_react_native_Libraries_vendor_core_ErrorUtils = __esm({
 	"ErrorUtils.js"() {
 	_default=global.ErrorUtils;
-	
-	}
-});
-//#endregion
-//#region class-call-check
-var exports_class_call_check = {};
-var __classCallCheck;
-__export(exports_class_call_check, {
-	__classCallCheck: function() { return __classCallCheck; },
-});
-var init_class_call_check = __esm({
-	"class-call-check"() {
-	__classCallCheck = function(instance,Constructor) {
-		if (!(instance instanceof Constructor))throw new TypeError("Cannot call a class as a function");
-	};
-	
 	
 	}
 });
@@ -482,7 +487,7 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 			}
 		} });
 		Object.defineProperty(MessageQueue.prototype, "__shouldPauseOnThrow", { configurable: true, writable: true, value: function() {
-			return (typeof DebuggerInternal !== "undefined" && DebuggerInternal.shouldPauseOnThrow === true);
+			return (typeof DebuggerInternal < "u" && DebuggerInternal.shouldPauseOnThrow === true);
 		} });
 		Object.defineProperty(MessageQueue.prototype, "__callReactNativeMicrotasks", { configurable: true, writable: true, value: function() {
 			Systrace$1.beginEvent("JSTimers.callReactNativeMicrotasks()");
@@ -659,7 +664,7 @@ var init_react_native_Libraries_BatchedBridge_NativeModules = __esm({
 			};
 		} else {
 			fn = function nonPromiseMethodWrapper(...args) {
-				var lastArg = args.length > 0 ? args[args.length - 1] : null,secondLastArg = args.length > 1 ? args[args.length - 2] : null,hasSuccessCallback = typeof lastArg === "function",hasErrorCallback = typeof secondLastArg === "function";
+				var lastArg = args.length > 0 ? args[args.length - 1] : null,secondLastArg = args.length > 1 ? args[args.length - 2] : null,hasSuccessCallback = typeof lastArg == "function",hasErrorCallback = typeof secondLastArg == "function";
 				hasErrorCallback && invariant$2(hasSuccessCallback, "Cannot have a non-function arg after a function arg.");
 				var onSuccess = hasSuccessCallback ? lastArg : null,onFail = hasErrorCallback ? secondLastArg : null,callbackCount = hasSuccessCallback + hasErrorCallback,newArgs = args.slice(0, args.length - callbackCount);
 				if (type === "sync") {
@@ -738,7 +743,8 @@ var init_react_native_Libraries_TurboModule_TurboModuleRegistry = __esm({
 		invariant$3(module != null, `TurboModuleRegistry.getEnforcing(...): '${name}' could not be found. ` + "Verify that a module by this name is registered in the native binary.");
 		return module;
 	};
-		invariant$3 = require_invariant_browser();
+		require_invariant_browser();
+	invariant$3 = require_invariant_browser();
 		
 	NativeModules$1 = (init_react_native_Libraries_BatchedBridge_NativeModules(), __toCommonJS(exports_react_native_Libraries_BatchedBridge_NativeModules)).default;
 	turboModuleProxy = global.__turboModuleProxy;
@@ -1054,10 +1060,10 @@ __export(exports_react_native_Libraries_StyleSheet_processAspectRatio, {
 var init_react_native_Libraries_StyleSheet_processAspectRatio = __esm({
 	"processAspectRatio.js"() {
 	processAspectRatio = function(aspectRatio) {
-		if (typeof aspectRatio === "number") {
+		if (typeof aspectRatio == "number") {
 			return aspectRatio;
 		}
-		if (typeof aspectRatio !== "string") {
+		if (typeof aspectRatio != "string") {
 			;
 			return;
 		}
@@ -1163,13 +1169,13 @@ var require__react_native_normalize_colors_index = __commonJS({
 	"index.js"(exports, module) {
 "use strict";
 	function normalizeColor(color) {
-		if (typeof color === "number") {
+		if (typeof color == "number") {
 			if (color >>> 0 === color && color >= 0 && color <= 0xffffffff) {
 				return color;
 			}
 			return null;
 		}
-		if (typeof color !== "string") {
+		if (typeof color != "string") {
 			return null;
 		}
 		var matchers = getMatchers(),match = void 0;
@@ -1657,17 +1663,18 @@ __export(exports_react_native_Libraries_StyleSheet_normalizeColor, {
 var init_react_native_Libraries_StyleSheet_normalizeColor = __esm({
 	"normalizeColor.js"() {
 	normalizeColor = function(color) {
-		if (typeof color === "object" && color != null) {
+		if (typeof color == "object" && color != null) {
 			var { normalizeColorObject:normalizeColorObject } = (init_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios(), __toCommonJS(exports_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios)),normalizedColor = normalizeColorObject(color);
 			if (normalizedColor != null) {
 				return normalizedColor;
 			}
 		}
-		if (typeof color === "string" || typeof color === "number") {
+		if (typeof color == "string" || typeof color == "number") {
 			return _normalizeColor(color);
 		}
 	};
-		_normalizeColor = require__react_native_normalize_colors_index();
+		require__react_native_normalize_colors_index();
+	_normalizeColor = require__react_native_normalize_colors_index();
 		
 	
 	
@@ -1683,20 +1690,20 @@ __export(exports_react_native_Libraries_StyleSheet_processColor, {
 var init_react_native_Libraries_StyleSheet_processColor = __esm({
 	"processColor.js"() {
 	processColor = function(color) {
-		if (color === undefined || color === null) {
+		if (color == null) {
 			return color;
 		}
 		var normalizedColor = normalizeColor$1(color);
-		if (normalizedColor === null || normalizedColor === undefined) {
+		if (normalizedColor == null) {
 			return undefined;
 		}
-		if (typeof normalizedColor === "object") {
+		if (typeof normalizedColor == "object") {
 			var processColorObject = (init_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios(), __toCommonJS(exports_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios)).processColorObject,processedColorObj = processColorObject(normalizedColor);
 			if (processedColorObj != null) {
 				return processedColorObj;
 			}
 		}
-		if (typeof normalizedColor !== "number") {
+		if (typeof normalizedColor != "number") {
 			return null;
 		}
 		normalizedColor = ((normalizedColor << 24) | (normalizedColor >>> 8)) >>> 0;
@@ -1726,7 +1733,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundImage = __esm({
 		if (backgroundImage == null) {
 			return result;
 		}
-		if (typeof backgroundImage === "string") {
+		if (typeof backgroundImage == "string") {
 			result = parseBackgroundImageCSSString(backgroundImage.replace(/\n/g, " "));
 		} else if (Array.isArray(backgroundImage)) {
 			for (var bgImage of backgroundImage) {
@@ -1766,9 +1773,9 @@ var init_react_native_Libraries_StyleSheet_processBackgroundImage = __esm({
 						}
 					}
 					if (bgImage.size != null) {
-						if (typeof bgImage.size === "string" && (bgImage.size === "closest-side" || bgImage.size === "closest-corner" || bgImage.size === "farthest-side" || bgImage.size === "farthest-corner")) {
+						if (typeof bgImage.size == "string" && (bgImage.size === "closest-side" || bgImage.size === "closest-corner" || bgImage.size === "farthest-side" || bgImage.size === "farthest-corner")) {
 							size = bgImage.size;
-						} else if (typeof bgImage.size === "object" && bgImage.size.x != null && bgImage.size.y != null) {
+						} else if (typeof bgImage.size == "object" && bgImage.size.x != null && bgImage.size.y != null) {
 							size = { x: bgImage.size.x, y: bgImage.size.y };
 						} else {
 							return [];
@@ -1789,7 +1796,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundImage = __esm({
 			var colorStop = bgImage.colorStops[index],positions = colorStop.positions;
 			if (colorStop.color == null && Array.isArray(positions) && positions.length === 1) {
 				var position = positions[0];
-				if (typeof position === "number" || (typeof position === "string" && position.endsWith("%"))) {
+				if (typeof position == "number" || (typeof position == "string" && position.endsWith("%"))) {
 					processedColorStops.push({ color: null, position });
 				} else {
 					return null;
@@ -1801,7 +1808,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundImage = __esm({
 				}
 				if (positions != null && positions.length > 0) {
 					for (var position of positions) {
-						if (typeof position === "number" || (typeof position === "string" && position.endsWith("%"))) {
+						if (typeof position == "number" || (typeof position == "string" && position.endsWith("%"))) {
 							processedColorStops.push({ color: processedColor, position });
 						} else {
 							return null;
@@ -1847,7 +1854,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundImage = __esm({
 				if (sizeX == null) {
 					return null;
 				}
-				if (typeof sizeX === "number" && sizeX < 0) {
+				if (typeof sizeX == "number" && sizeX < 0) {
 					return null;
 				}
 				hasShapeSizeOrPositionString = true;
@@ -1863,7 +1870,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundImage = __esm({
 					if (sizeY == null) {
 						return null;
 					}
-					if (typeof sizeY === "number" && sizeY < 0) {
+					if (typeof sizeY == "number" && sizeY < 0) {
 						return null;
 					}
 					size = { x: sizeX, y: sizeY };
@@ -2192,7 +2199,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 		if (backgroundPosition == null) {
 			return [];
 		}
-		if (typeof backgroundPosition === "string") {
+		if (typeof backgroundPosition == "string") {
 			result = parseBackgroundPositionCSSString(backgroundPosition.replace(/\n/g, " "));
 		} else if (Array.isArray(backgroundPosition)) {
 			result = backgroundPosition;
@@ -2421,7 +2428,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundRepeat = __esm({
 		if (Array.isArray(backgroundRepeat)) {
 			return backgroundRepeat;
 		}
-		if (typeof backgroundRepeat === "string") {
+		if (typeof backgroundRepeat == "string") {
 			result = parseBackgroundRepeatCSSString(backgroundRepeat.replace(/\n/g, " "));
 		}
 		return result;
@@ -2491,7 +2498,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundSize = __esm({
 		if (backgroundSize == null) {
 			return [];
 		}
-		if (typeof backgroundSize === "string") {
+		if (typeof backgroundSize == "string") {
 			result = parseBackgroundSizeCSSString(backgroundSize.replace(/\n/g, " "));
 		} else if (Array.isArray(backgroundSize)) {
 			result = backgroundSize;
@@ -2570,34 +2577,34 @@ var init_react_native_Libraries_StyleSheet_processBoxShadow = __esm({
 		if (rawBoxShadows == null) {
 			return result;
 		}
-		var boxShadowList = typeof rawBoxShadows === "string" ? parseBoxShadowString(rawBoxShadows.replace(/\n/g, " ")) : rawBoxShadows;
+		var boxShadowList = typeof rawBoxShadows == "string" ? parseBoxShadowString(rawBoxShadows.replace(/\n/g, " ")) : rawBoxShadows;
 		for (var rawBoxShadow of boxShadowList) {
 			var parsedBoxShadow = { offsetX: 0, offsetY: 0 },value = void 0;
 			for (var arg in rawBoxShadow) {
 				switch (arg) {
 					case "offsetX":
-						value = typeof rawBoxShadow.offsetX === "string" ? parseLength(rawBoxShadow.offsetX) : rawBoxShadow.offsetX;
+						value = typeof rawBoxShadow.offsetX == "string" ? parseLength(rawBoxShadow.offsetX) : rawBoxShadow.offsetX;
 						if (value == null) {
 							return [];
 						}
 						parsedBoxShadow.offsetX = value;
 						break;
 					case "offsetY":
-						value = typeof rawBoxShadow.offsetY === "string" ? parseLength(rawBoxShadow.offsetY) : rawBoxShadow.offsetY;
+						value = typeof rawBoxShadow.offsetY == "string" ? parseLength(rawBoxShadow.offsetY) : rawBoxShadow.offsetY;
 						if (value == null) {
 							return [];
 						}
 						parsedBoxShadow.offsetY = value;
 						break;
 					case "spreadDistance":
-						value = typeof rawBoxShadow.spreadDistance === "string" ? parseLength(rawBoxShadow.spreadDistance) : rawBoxShadow.spreadDistance;
+						value = typeof rawBoxShadow.spreadDistance == "string" ? parseLength(rawBoxShadow.spreadDistance) : rawBoxShadow.spreadDistance;
 						if (value == null) {
 							return [];
 						}
 						parsedBoxShadow.spreadDistance = value;
 						break;
 					case "blurRadius":
-						value = typeof rawBoxShadow.blurRadius === "string" ? parseLength(rawBoxShadow.blurRadius) : rawBoxShadow.blurRadius;
+						value = typeof rawBoxShadow.blurRadius == "string" ? parseLength(rawBoxShadow.blurRadius) : rawBoxShadow.blurRadius;
 						if (value == null || value < 0) {
 							return [];
 						}
@@ -2719,7 +2726,7 @@ var init_react_native_Libraries_StyleSheet_processFilter = __esm({
 		if (filter == null) {
 			return result;
 		}
-		if (typeof filter === "string") {
+		if (typeof filter == "string") {
 			filter = filter.replace(/\n/g, " ");
 			var regex = /([\w-]+)\(([^()]*|\([^()]*\)|[^()]*\([^()]*\)[^()]*)\)/g,matches = void 0;
 			while ((matches = regex.exec(filter))) {
@@ -2769,14 +2776,14 @@ var init_react_native_Libraries_StyleSheet_processFilter = __esm({
 	};
 	_getFilterAmount = function(filterName,filterArgs) {
 		var filterArgAsNumber = void 0,unit = void 0;
-		if (typeof filterArgs === "string") {
+		if (typeof filterArgs == "string") {
 			var argsWithUnitsRegex = new RegExp(/([+-]?\d*(\.\d+)?)([a-zA-Z%]+)?/g),match = argsWithUnitsRegex.exec(filterArgs);
 			if (!match || isNaN(Number(match[1]))) {
 				return undefined;
 			}
 			filterArgAsNumber = Number(match[1]);
 			unit = match[3];
-		} else if (typeof filterArgs === "number") {
+		} else if (typeof filterArgs == "number") {
 			filterArgAsNumber = filterArgs;
 		} else {
 			return undefined;
@@ -2814,26 +2821,26 @@ var init_react_native_Libraries_StyleSheet_processFilter = __esm({
 		}
 	};
 	parseDropShadow = function(rawDropShadow) {
-		var dropShadow = typeof rawDropShadow === "string" ? parseDropShadowString(rawDropShadow) : rawDropShadow,parsedDropShadow = { offsetX: 0, offsetY: 0 },offsetX = void 0,offsetY = void 0;
+		var dropShadow = typeof rawDropShadow == "string" ? parseDropShadowString(rawDropShadow) : rawDropShadow,parsedDropShadow = { offsetX: 0, offsetY: 0 },offsetX = void 0,offsetY = void 0;
 		for (var arg in dropShadow) {
 			var value = void 0;
 			switch (arg) {
 				case "offsetX":
-					value = typeof dropShadow.offsetX === "string" ? parseLength$1(dropShadow.offsetX) : dropShadow.offsetX;
+					value = typeof dropShadow.offsetX == "string" ? parseLength$1(dropShadow.offsetX) : dropShadow.offsetX;
 					if (value == null) {
 						return null;
 					}
 					offsetX = value;
 					break;
 				case "offsetY":
-					value = typeof dropShadow.offsetY === "string" ? parseLength$1(dropShadow.offsetY) : dropShadow.offsetY;
+					value = typeof dropShadow.offsetY == "string" ? parseLength$1(dropShadow.offsetY) : dropShadow.offsetY;
 					if (value == null) {
 						return null;
 					}
 					offsetY = value;
 					break;
 				case "standardDeviation":
-					value = typeof dropShadow.standardDeviation === "string" ? parseLength$1(dropShadow.standardDeviation) : dropShadow.standardDeviation;
+					value = typeof dropShadow.standardDeviation == "string" ? parseLength$1(dropShadow.standardDeviation) : dropShadow.standardDeviation;
 					if (value == null || value < 0) {
 						return null;
 					}
@@ -2951,7 +2958,7 @@ __export(exports_react_native_Libraries_StyleSheet_processTransform, {
 var init_react_native_Libraries_StyleSheet_processTransform = __esm({
 	"processTransform.js"() {
 	processTransform = function(transform) {
-		if (typeof transform === "string") {
+		if (typeof transform == "string") {
 			var regex = new RegExp(/(\w+)\(([^)]+)\)/g),transformArray = [],matches = void 0;
 			while ((matches = regex.exec(transform))) {
 				var { key:key, value:value } = _getKeyAndValueFromCSSTransform(matches[1], matches[2]);
@@ -2994,21 +3001,21 @@ var init_react_native_Libraries_StyleSheet_processTransform = __esm({
 			case "rotate":
 			case "skewX":
 			case "skewY":
-				invariant$5(typeof value === "string", "Transform with key of \"%s\" must be a string: %s", key, stringifySafe$2(transformation));
+				invariant$5(typeof value == "string", "Transform with key of \"%s\" must be a string: %s", key, stringifySafe$2(transformation));
 				invariant$5(value.indexOf("deg") > -1 || value.indexOf("rad") > -1, "Rotate transform must be expressed in degrees (deg) or radians (rad): %s", stringifySafe$2(transformation));
 				break;
 			case "perspective":
-				invariant$5(typeof value === "number", "Transform with key of \"%s\" must be a number: %s", key, stringifySafe$2(transformation));
+				invariant$5(typeof value == "number", "Transform with key of \"%s\" must be a number: %s", key, stringifySafe$2(transformation));
 				invariant$5(value !== 0, "Transform with key of \"%s\" cannot be zero: %s", key, stringifySafe$2(transformation));
 				break;
 			case "translateX":
 			case "translateY":
-				invariant$5(typeof value === "number" || (typeof value === "string" && value.endsWith("%")), "Transform with key of \"%s\" must be number or a percentage. Passed value: %s.", key, stringifySafe$2(transformation));
+				invariant$5(typeof value == "number" || (typeof value == "string" && value.endsWith("%")), "Transform with key of \"%s\" must be number or a percentage. Passed value: %s.", key, stringifySafe$2(transformation));
 				break;
 			case "scale":
 			case "scaleX":
 			case "scaleY":
-				invariant$5(typeof value === "number", "Transform with key of \"%s\" must be a number: %s", key, stringifySafe$2(transformation));
+				invariant$5(typeof value == "number", "Transform with key of \"%s\" must be a number: %s", key, stringifySafe$2(transformation));
 				break;
 			default:
 				invariant$5(false, "Invalid transform %s: %s", key, stringifySafe$2(transformation));
@@ -3072,7 +3079,7 @@ __export(exports_react_native_Libraries_StyleSheet_processTransformOrigin, {
 var init_react_native_Libraries_StyleSheet_processTransformOrigin = __esm({
 	"processTransformOrigin.js"() {
 	processTransformOrigin = function(transformOrigin) {
-		if (typeof transformOrigin === "string") {
+		if (typeof transformOrigin == "string") {
 			var transformOriginString = transformOrigin,regex = /(top|bottom|left|right|center|\d+(?:%|px)|0)/gi,transformOriginArray = ["50%", "50%", 0],index = INDEX_X,matches = void 0;
 			outer:while ((matches = regex.exec(transformOriginString))) {
 				var nextIndex = index + 1,value = matches[0],valueLower = value.toLowerCase();
@@ -3137,11 +3144,12 @@ var init_react_native_Libraries_StyleSheet_processTransformOrigin = __esm({
 	_validateTransformOrigin = function(transformOrigin) {
 		invariant$6(transformOrigin.length === 3, "Transform origin must have exactly 3 values.");
 		var [x, y, z] = transformOrigin;
-		invariant$6(typeof x === "number" || (typeof x === "string" && x.endsWith("%")), "Transform origin x-position must be a number. Passed value: %s.", x);
-		invariant$6(typeof y === "number" || (typeof y === "string" && y.endsWith("%")), "Transform origin y-position must be a number. Passed value: %s.", y);
-		invariant$6(typeof z === "number", "Transform origin z-position must be a number. Passed value: %s.", z);
+		invariant$6(typeof x == "number" || (typeof x == "string" && x.endsWith("%")), "Transform origin x-position must be a number. Passed value: %s.", x);
+		invariant$6(typeof y == "number" || (typeof y == "string" && y.endsWith("%")), "Transform origin y-position must be a number. Passed value: %s.", y);
+		invariant$6(typeof z == "number", "Transform origin z-position must be a number. Passed value: %s.", z);
 	};
-		invariant$6 = require_invariant_browser();
+		require_invariant_browser();
+	invariant$6 = require_invariant_browser();
 		
 	INDEX_X = 0;
 	INDEX_Y = 1;
@@ -3210,6 +3218,47 @@ var init_react_native_Libraries_Components_View_ReactNativeStyleAttributes = __e
 	}
 });
 //#endregion
+//#region extends
+var exports_extends = {};
+var __extends;
+__export(exports_extends, {
+	__extends: function() { return __extends; },
+});
+var init_extends = __esm({
+	"extends"() {
+	__extends = function(d,b) {
+		Object.setPrototypeOf(d, b);
+		function __() {
+			this.constructor = d;
+		}
+		d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype,new __());
+	};
+	
+	
+	}
+});
+//#endregion
+//#region call-super
+var exports_call_super = {};
+var __callSuper;
+__export(exports_call_super, {
+	__callSuper: function() { return __callSuper; },
+});
+var init_call_super = __esm({
+	"call-super"() {
+	__callSuper = function(Parent,args,NewTarget) {
+		if (typeof Reflect < "u" && typeof Reflect.construct == "function") {
+			return Reflect.construct(Parent, args || [], NewTarget);
+		}
+		var _this = Object.create(NewTarget.prototype),result = Parent.apply(_this, args);
+		if (result && (typeof result == "object" || typeof result == "function"))return result;
+		return _this;
+	};
+	
+	
+	}
+});
+//#endregion
 //#region class-private-field-set
 var exports_class_private_field_set = {};
 var __zntcClassPrivateFieldSet;
@@ -3255,7 +3304,7 @@ var init_react_native_Libraries_vendor_emitter_EventEmitter = __esm({
 			__zntcClassPrivateFieldSet(_registry, this, {});
 		}
 		Object.defineProperty(EventEmitter.prototype, "addListener", { configurable: true, writable: true, value: function(eventType,listener,context) {
-			if (typeof listener !== "function") {
+			if (typeof listener != "function") {
 				throw new TypeError("EventEmitter.addListener(...): 2nd argument must be a function.");
 			}
 			var registrations = allocate(_registry.get(this), eventType),registration = { context, listener, remove() {
@@ -3285,47 +3334,6 @@ var init_react_native_Libraries_vendor_emitter_EventEmitter = __esm({
 		} });
 		return EventEmitter;
 	})();
-	
-	
-	}
-});
-//#endregion
-//#region extends
-var exports_extends = {};
-var __extends;
-__export(exports_extends, {
-	__extends: function() { return __extends; },
-});
-var init_extends = __esm({
-	"extends"() {
-	__extends = function(d,b) {
-		Object.setPrototypeOf(d, b);
-		function __() {
-			this.constructor = d;
-		}
-		d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype,new __());
-	};
-	
-	
-	}
-});
-//#endregion
-//#region call-super
-var exports_call_super = {};
-var __callSuper;
-__export(exports_call_super, {
-	__callSuper: function() { return __callSuper; },
-});
-var init_call_super = __esm({
-	"call-super"() {
-	__callSuper = function(Parent,args,NewTarget) {
-		if (typeof Reflect !== "undefined" && typeof Reflect.construct === "function") {
-			return Reflect.construct(Parent, args || [], NewTarget);
-		}
-		var _this = Object.create(NewTarget.prototype),result = Parent.apply(_this, args);
-		if (result && (typeof result === "object" || typeof result === "function"))return result;
-		return _this;
-	};
 	
 	
 	}
@@ -3406,7 +3414,8 @@ __export(exports_react_native_Libraries_Utilities_NativeDeviceInfo, {
 });
 var init_react_native_Libraries_Utilities_NativeDeviceInfo = __esm({
 	"NativeDeviceInfo.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeDeviceInfo();
+		
 	
 		_default$3 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeDeviceInfo(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeDeviceInfo)).default;
 	
@@ -3425,6 +3434,7 @@ var init_react_native_Libraries_Utilities_Dimensions = __esm({
 	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
 	init_react_native_Libraries_vendor_emitter_EventEmitter();
 	init_react_native_Libraries_Utilities_NativeDeviceInfo();
+	require_invariant_browser();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeDeviceInfo();
 	invariant$7 = require_invariant_browser();
 		
@@ -3543,7 +3553,7 @@ var init_react_native_Libraries_StyleSheet_StyleSheetExports = __esm({
 		var value = void 0;
 		if (ReactNativeStyleAttributes$1[property] === true) {
 			value = { process };
-		} else if (typeof ReactNativeStyleAttributes$1[property] === "object") {
+		} else if (typeof ReactNativeStyleAttributes$1[property] == "object") {
 			value = { ...ReactNativeStyleAttributes$1[property], process };
 		} else {
 			console.error(`${property} is not a valid style attribute`);
@@ -3893,17 +3903,19 @@ var require_react_index = __commonJS({
 //#endregion
 //#region TextAncestorContext.js
 var exports_react_native_Libraries_Text_TextAncestorContext = {};
-var TextAncestorContext, React$1;
+var TextAncestorContext, React$1, createContext;
 __export(exports_react_native_Libraries_Text_TextAncestorContext, {
 	"default": function() { return TextAncestorContext; },
 });
 var init_react_native_Libraries_Text_TextAncestorContext = __esm({
 	"TextAncestorContext.js"() {
+	require_react_index();
 	React$1 = __toESM(require_react_index());
+	createContext = require_react_index().createContext;
 		"use strict";
 	
 	
-	TextAncestorContext = require_react_index().createContext(false);
+	TextAncestorContext = createContext(false);
 	;
 	
 	
@@ -3991,6 +4003,35 @@ var init_react_native_Libraries_Image_AssetUtils = __esm({
 var require__react_native_assets_registry_path_support = __commonJS({
 	"path-support.js"(exports, module) {
 "use strict";
+	var androidScaleSuffix = { "0.75": "ldpi", "1": "mdpi", "1.5": "hdpi", "2": "xhdpi", "3": "xxhdpi", "4": "xxxhdpi" },ANDROID_BASE_DENSITY = 160;
+	function getAndroidAssetSuffix(scale) {
+		if (scale.toString() in androidScaleSuffix) {
+			return androidScaleSuffix[scale.toString()];
+		}
+		if (Number.isFinite(scale) && scale > 0) {
+			return Math.round(scale * ANDROID_BASE_DENSITY) + "dpi";
+		}
+		throw new Error("no such scale " + scale.toString());
+	}
+	var drawableFileTypes = new Set(["gif", "jpeg", "jpg", "ktx", "png", "webp", "xml"]);
+	function getAndroidResourceFolderName(asset,scale) {
+		if (!drawableFileTypes.has(asset.type)) {
+			return "raw";
+		}
+		var suffix = getAndroidAssetSuffix(scale);
+		if (!suffix) {
+			throw new Error("Don't know which android drawable suffix to use for scale: " + scale + "\nAsset: " + JSON.stringify(asset, null, "\t") + "\nPossible scales are:" + JSON.stringify(androidScaleSuffix, null, "\t"));
+		}
+		return "drawable-" + suffix;
+	}
+	function getAndroidResourceIdentifier(asset) {
+		return (getBasePath(asset) + "/" + asset.name).toLowerCase().replace(/\//g, "_").replace(/([^a-z0-9_])/g, "").replace(/^(?:assets|assetsunstable_path)_/, "");
+	}
+	function getBasePath(asset) {
+		var basePath = asset.httpServerLocation;
+		return basePath.startsWith("/") ? basePath.slice(1) : basePath;
+	}
+	module.exports = { getAndroidResourceFolderName, getAndroidResourceIdentifier, getBasePath };
 	
 	}
 });
@@ -4096,6 +4137,14 @@ var init_react_native_Libraries_Image_AssetSourceResolver = __esm({
 var require__react_native_assets_registry_registry = __commonJS({
 	"registry.js"(exports, module) {
 "use strict";
+	var assets = [];
+	function registerAsset(asset) {
+		return assets.push(asset);
+	}
+	function getAssetByID(assetId) {
+		return assets[assetId - 1];
+	}
+	module.exports = { registerAsset, getAssetByID };
 	
 	}
 });
@@ -4152,7 +4201,7 @@ var init_react_native_Libraries_Image_resolveAssetSource = __esm({
 		_customSourceTransformers.push(transformer);
 	};
 	resolveAssetSource = function(source) {
-		if (source == null || typeof source === "object") {
+		if (source == null || typeof source == "object") {
 			return source;
 		}
 		var asset = AssetRegistry.getAssetByID(source);
@@ -4326,6 +4375,8 @@ var require_nullthrows_nullthrows = __commonJS({
 		throw error;
 	}
 	module.exports = nullthrows;
+	module.exports.default = nullthrows;
+	Object.defineProperty(module.exports, "__esModule", { value: true });
 	
 	}
 });
@@ -4368,6 +4419,7 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 	};
 		init_react_native_Libraries_Utilities_defineLazyObjectProperty();
 	init_react_native_Libraries_Utilities_Platform_ios();
+	require_nullthrows_nullthrows();
 	nullthrows = __toESM(require_nullthrows_nullthrows()).default;
 		"use strict";
 	
@@ -4646,7 +4698,7 @@ var init_react_native_Libraries_ReactNative_PaperUIManager = __esm({
 				var viewManager = NativeModules$2[viewConfig.Manager],constants = {};
 				viewManager && Object.keys(viewManager).forEach(function(key) {
 					var value = viewManager[key];
-					if (typeof value !== "function") {
+					if (typeof value != "function") {
 						constants[key] = value;
 					}
 				});
@@ -4656,7 +4708,7 @@ var init_react_native_Libraries_ReactNative_PaperUIManager = __esm({
 				var viewManager = NativeModules$2[viewConfig.Manager],commands = {},index = 0;
 				viewManager && Object.keys(viewManager).forEach(function(key) {
 					var value = viewManager[key];
-					if (typeof value === "function") {
+					if (typeof value == "function") {
 						commands[key] = index++;
 					}
 				});
@@ -4665,6 +4717,7 @@ var init_react_native_Libraries_ReactNative_PaperUIManager = __esm({
 		}
 	};
 		init_react_native_Libraries_ReactNative_NativeUIManager();
+	require_nullthrows_nullthrows();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeUIManager();
 	nullthrows$1 = __toESM(require_nullthrows_nullthrows()).default;
 		
@@ -4730,7 +4783,8 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 	isFabricReactTag = function(reactTag) {
 		return reactTag % 2 === 0;
 	};
-		nullthrows$2 = __toESM(require_nullthrows_nullthrows()).default;
+		require_nullthrows_nullthrows();
+	nullthrows$2 = __toESM(require_nullthrows_nullthrows()).default;
 		
 	
 	UIManagerImpl = global.RN$Bridgeless === true ? (init_react_native_Libraries_ReactNative_BridgelessUIManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_BridgelessUIManager)).default : (init_react_native_Libraries_ReactNative_PaperUIManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_PaperUIManager)).default;
@@ -4781,7 +4835,7 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 			UIManagerImpl.measureLayoutRelativeToParent(reactTag, errorCallback, callback);
 		}
 	}, dispatchViewManagerCommand(reactTag,commandName,commandArgs) {
-		if (typeof reactTag !== "number") {
+		if (typeof reactTag != "number") {
 			throw new Error("dispatchViewManagerCommand: found null reactTag");
 		}
 		if (isFabricReactTag(reactTag)) {
@@ -4859,7 +4913,7 @@ var init_react_native_Libraries_ReactNative_getNativeComponentAttributes = __esm
 			var sourceValue = source[key];
 			if (destination.hasOwnProperty(key)) {
 				var destinationValue = destination[key];
-				if (typeof sourceValue === "object" && typeof destinationValue === "object") {
+				if (typeof sourceValue == "object" && typeof destinationValue == "object") {
 					sourceValue = merge(destinationValue, sourceValue);
 				}
 			}
@@ -4944,17 +4998,6 @@ var init_react_native_Libraries_ReactNative_getNativeComponentAttributes = __esm
 	}
 });
 //#endregion
-//#region ReactNativeTypes.js
-var exports_react_native_Libraries_Renderer_shims_ReactNativeTypes = {};
-var React$2;
-var init_react_native_Libraries_Renderer_shims_ReactNativeTypes = __esm({
-	"ReactNativeTypes.js"() {
-	React$2 = __toESM(require_react_index());
-		
-	
-	}
-});
-//#endregion
 //#region ReactNativeViewConfigRegistry.js
 var exports_react_native_Libraries_Renderer_shims_ReactNativeViewConfigRegistry = {};
 var customBubblingEventTypes, customDirectEventTypes, viewConfigCallbacks, viewConfigs, processEventTypes, register, get$1, invariant$9;
@@ -4986,7 +5029,7 @@ var init_react_native_Libraries_Renderer_shims_ReactNativeViewConfigRegistry = _
 	};
 	register = function(name,callback) {
 		invariant$9(!viewConfigCallbacks.has(name), "Tried to register two views with the same name %s", name);
-		invariant$9(typeof callback === "function", "View config getter callback for component `%s` must be a function (received `%s`)", name, callback === null ? "null" : typeof callback);
+		invariant$9(typeof callback == "function", "View config getter callback for component `%s` must be a function (received `%s`)", name, callback === null ? "null" : typeof callback);
 		viewConfigCallbacks.set(name, callback);
 		return name;
 	};
@@ -4994,8 +5037,8 @@ var init_react_native_Libraries_Renderer_shims_ReactNativeViewConfigRegistry = _
 		var viewConfig = viewConfigs.get(name);
 		if (viewConfig == null) {
 			var callback = viewConfigCallbacks.get(name);
-			if (typeof callback !== "function") {
-				invariant$9(false, "View config getter callback for component `%s` must be a function (received `%s`).%s", name, callback === null ? "null" : typeof callback, typeof name[0] === "string" && /[a-z]/.test(name[0]) ? " Make sure to start component names with a capital letter." : "");
+			if (typeof callback != "function") {
+				invariant$9(false, "View config getter callback for component `%s` must be a function (received `%s`).%s", name, callback === null ? "null" : typeof callback, typeof name[0] == "string" && /[a-z]/.test(name[0]) ? " Make sure to start component names with a capital letter." : "");
 			}
 			viewConfig = callback();
 			invariant$9(viewConfig, "View config not found for component `%s`", name);
@@ -5005,13 +5048,26 @@ var init_react_native_Libraries_Renderer_shims_ReactNativeViewConfigRegistry = _
 		}
 		return viewConfig;
 	};
-		invariant$9 = require_invariant_browser();
+		require_invariant_browser();
+	invariant$9 = require_invariant_browser();
 		"use strict";
 	
 	customBubblingEventTypes = {};
 	customDirectEventTypes = {};
 	viewConfigCallbacks = new Map();
 	viewConfigs = new Map();
+	
+	}
+});
+//#endregion
+//#region ReactNativeTypes.js
+var exports_react_native_Libraries_Renderer_shims_ReactNativeTypes = {};
+var React$2;
+var init_react_native_Libraries_Renderer_shims_ReactNativeTypes = __esm({
+	"ReactNativeTypes.js"() {
+	require_react_index();
+	React$2 = __toESM(require_react_index());
+		
 	
 	}
 });
@@ -5068,9 +5124,10 @@ var init_react_native_Libraries_NativeComponent_StaticViewConfigValidator = __es
 		}
 	};
 	ifObject = function(value) {
-		return typeof value === "object" && !Array.isArray(value) ? value : null;
+		return typeof value == "object" && !Array.isArray(value) ? value : null;
 	};
 		init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
+	init_react_native_Libraries_Renderer_shims_ReactNativeTypes();
 		ReactNativeFeatureFlags$1=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
 	}
@@ -5097,7 +5154,7 @@ var init_react_native_Libraries_NativeComponent_ViewConfigIgnore = __esm({
 		return undefined;
 	};
 	isIgnored = function(value) {
-		if (typeof value === "object" && value != null) {
+		if (typeof value == "object" && value != null) {
 			return ignoredViewConfigProps.has(value);
 		}
 		return false;
@@ -5235,6 +5292,8 @@ var init_react_native_Libraries_NativeComponent_NativeComponentRegistry = __esm(
 	init_react_native_Libraries_ReactNative_UIManager();
 	init_react_native_Libraries_Renderer_shims_ReactNativeViewConfigRegistry();
 	init_react_native_Libraries_NativeComponent_StaticViewConfigValidator();
+	require_invariant_browser();
+	require_react_index();
 	invariant$10 = require_invariant_browser();
 	React$3 = __toESM(require_react_index());
 		
@@ -5303,6 +5362,71 @@ var init_react_native_Libraries_Core_Devtools_parseHermesStack = __esm({
 var require_stacktrace_parser_dist_stack_trace_parser_cjs = __commonJS({
 	"stack-trace-parser.cjs.js"(exports, module) {
 "use strict";
+	Object.defineProperty(exports, "__esModule", { value: true });
+	var UNKNOWN_FUNCTION = "<unknown>";
+	function parse(stackString) {
+		var lines = stackString.split("\n");
+		return lines.reduce(function(stack,line) {
+			var parseResult = parseChrome(line) || parseWinjs(line) || parseGecko(line) || parseNode(line) || parseJSC(line);
+			if (parseResult) {
+				stack.push(parseResult);
+			}
+			return stack;
+		}, []);
+	}
+	var chromeRe = /^\s*at (.*?) ?\(((?:file|https?|blob|chrome-extension|native|eval|webpack|rsc|<anonymous>|\/|[a-z]:\\|\\\\).*?)(?::(\d+))?(?::(\d+))?\)?\s*$/i,chromeEvalRe = /\((\S*)(?::(\d+))(?::(\d+))\)/;
+	function parseChrome(line) {
+		var parts = chromeRe.exec(line);
+		if (!parts) {
+			return null;
+		}
+		var isNative = parts[2] && parts[2].indexOf("native") === 0,isEval = parts[2] && parts[2].indexOf("eval") === 0,submatch = chromeEvalRe.exec(parts[2]);
+		if (isEval && submatch != null) {
+			parts[2] = submatch[1];
+			parts[3] = submatch[2];
+			parts[4] = submatch[3];
+		}
+		return { file: !isNative ? parts[2] : null, methodName: parts[1] || UNKNOWN_FUNCTION, arguments: isNative ? [parts[2]] : [], lineNumber: parts[3] ? +parts[3] : null, column: parts[4] ? +parts[4] : null };
+	}
+	var winjsRe = /^\s*at (?:((?:\[object object\])?.+) )?\(?((?:file|ms-appx|https?|webpack|rsc|blob):.*?):(\d+)(?::(\d+))?\)?\s*$/i;
+	function parseWinjs(line) {
+		var parts = winjsRe.exec(line);
+		if (!parts) {
+			return null;
+		}
+		return { file: parts[2], methodName: parts[1] || UNKNOWN_FUNCTION, arguments: [], lineNumber: +parts[3], column: parts[4] ? +parts[4] : null };
+	}
+	var geckoRe = /^\s*(.*?)(?:\((.*?)\))?(?:^|@)((?:file|https?|blob|chrome|webpack|rsc|resource|\[native).*?|[^@]*bundle)(?::(\d+))?(?::(\d+))?\s*$/i,geckoEvalRe = /(\S+) line (\d+)(?: > eval line \d+)* > eval/i;
+	function parseGecko(line) {
+		var parts = geckoRe.exec(line);
+		if (!parts) {
+			return null;
+		}
+		var isEval = parts[3] && parts[3].indexOf(" > eval") > -1,submatch = geckoEvalRe.exec(parts[3]);
+		if (isEval && submatch != null) {
+			parts[3] = submatch[1];
+			parts[4] = submatch[2];
+			parts[5] = null;
+		}
+		return { file: parts[3], methodName: parts[1] || UNKNOWN_FUNCTION, arguments: parts[2] ? parts[2].split(",") : [], lineNumber: parts[4] ? +parts[4] : null, column: parts[5] ? +parts[5] : null };
+	}
+	var javaScriptCoreRe = /^\s*(?:([^@]*)(?:\((.*?)\))?@)?(\S.*?):(\d+)(?::(\d+))?\s*$/i;
+	function parseJSC(line) {
+		var parts = javaScriptCoreRe.exec(line);
+		if (!parts) {
+			return null;
+		}
+		return { file: parts[3], methodName: parts[1] || UNKNOWN_FUNCTION, arguments: [], lineNumber: +parts[4], column: parts[5] ? +parts[5] : null };
+	}
+	var nodeRe = /^\s*at (?:((?:\[object object\])?[^\\/]+(?: \[as \S+\])?) )?\(?(.*?):(\d+)(?::(\d+))?\)?\s*$/i;
+	function parseNode(line) {
+		var parts = nodeRe.exec(line);
+		if (!parts) {
+			return null;
+		}
+		return { file: parts[2], methodName: parts[1] || UNKNOWN_FUNCTION, arguments: [], lineNumber: +parts[3], column: parts[4] ? +parts[4] : null };
+	}
+	exports.parse = parse;
 	
 	}
 });
@@ -5431,12 +5555,12 @@ var init_react_native_Libraries_Core_ExceptionsManager = __esm({
 			message = namePrefix + message;
 		}
 		var extraData = { ...e[decoratedExtraDataKey], jsEngine: e.jsEngine, rawStack: e.stack };
-		if (e.cause != null && typeof e.cause === "object") {
+		if (e.cause != null && typeof e.cause == "object") {
 			extraData.stackSymbols = e.cause.stackSymbols;
 			extraData.stackReturnAddresses = e.cause.stackReturnAddresses;
 			extraData.stackElements = e.cause.stackElements;
 		}
-		var data = preprocessException({ message, originalMessage: message === originalMessage ? null : originalMessage, name: e.name == null || e.name === "" ? null : e.name, componentStack: typeof e.componentStack === "string" ? e.componentStack : null, stack, id: currentExceptionID, isFatal, extraData });
+		var data = preprocessException({ message, originalMessage: message === originalMessage ? null : originalMessage, name: e.name == null || e.name === "" ? null : e.name, componentStack: typeof e.componentStack == "string" ? e.componentStack : null, stack, id: currentExceptionID, isFatal, extraData });
 		if (reportToConsole) {
 			console.error(e);
 		}
@@ -5483,7 +5607,7 @@ var init_react_native_Libraries_Core_ExceptionsManager = __esm({
 			error = firstArg;
 		} else {
 			var stringifySafe = (init_react_native_Libraries_Utilities_stringifySafe(), __toCommonJS(exports_react_native_Libraries_Utilities_stringifySafe)).default,message = args.map(function(arg) {
-				return (typeof arg === "string" ? arg : stringifySafe(arg));
+				return (typeof arg == "string" ? arg : stringifySafe(arg));
 			}).join(" ");
 			error = new SyntheticError(message);
 			error.name = "console.error";
@@ -5554,7 +5678,7 @@ var init_react_native_src_private_renderer_errorhandling_ErrorHandlers = __esm({
 		var error = void 0;
 		if (errorValue instanceof Error) {
 			error = errorValue;
-		} else if (typeof errorValue === "string") {
+		} else if (typeof errorValue == "string") {
 			error = new ((init_react_native_Libraries_Core_ExceptionsManager(), SyntheticError))(errorValue);
 		} else {
 			error = new ((init_react_native_Libraries_Core_ExceptionsManager(), SyntheticError))("Unspecified error");
@@ -5579,6 +5703,7 @@ var init_react_native_src_private_renderer_errorhandling_ErrorHandlers = __esm({
 		console.warn(error);
 	};
 		init_react_native_Libraries_Core_ExceptionsManager();
+	require_react_index();
 	React$4 = __toESM(require_react_index());
 		
 	
@@ -5598,7 +5723,7 @@ var init_react_native_Libraries_Core_registerCallableModule = __esm({
 	registerCallableModule = (function() {
 		if (global.RN$Bridgeless === true) {
 			return function(name,moduleOrFactory) {
-				if (typeof moduleOrFactory === "function") {
+				if (typeof moduleOrFactory == "function") {
 					global.RN$registerCallableModule(name, moduleOrFactory);
 					return;
 				}
@@ -5609,13 +5734,32 @@ var init_react_native_Libraries_Core_registerCallableModule = __esm({
 		}
 		var BatchedBridge = (init_react_native_Libraries_BatchedBridge_BatchedBridge(), __toCommonJS(exports_react_native_Libraries_BatchedBridge_BatchedBridge)).default;
 		return function(name,moduleOrFactory) {
-			if (typeof moduleOrFactory === "function") {
+			if (typeof moduleOrFactory == "function") {
 				BatchedBridge.registerLazyCallableModule(name, moduleOrFactory);
 				return;
 			}
 			BatchedBridge.registerCallableModule(name, moduleOrFactory);
 		};
 	})();
+	
+	
+	}
+});
+//#endregion
+//#region RCTEventEmitter.js
+var exports_react_native_Libraries_EventEmitter_RCTEventEmitter = {};
+var RCTEventEmitter;
+__export(exports_react_native_Libraries_EventEmitter_RCTEventEmitter, {
+	"default": function() { return RCTEventEmitter; },
+});
+var init_react_native_Libraries_EventEmitter_RCTEventEmitter = __esm({
+	"RCTEventEmitter.js"() {
+	init_react_native_Libraries_Core_registerCallableModule();
+		"use strict";
+	
+	RCTEventEmitter = { register(eventEmitter) {
+		registerCallableModule("RCTEventEmitter", eventEmitter);
+	} };
 	
 	
 	}
@@ -5720,7 +5864,7 @@ var init_react_native_Libraries_Components_TextInput_TextInputState = __esm({
 		return;
 	};
 	focusTextInput = function(textField) {
-		if (typeof textField === "number") {
+		if (typeof textField == "number") {
 			;
 			return;
 		}
@@ -5738,7 +5882,7 @@ var init_react_native_Libraries_Components_TextInput_TextInputState = __esm({
 		}
 	};
 	blurTextInput = function(textField) {
-		if (typeof textField === "number") {
+		if (typeof textField == "number") {
 			;
 			return;
 		}
@@ -5752,21 +5896,21 @@ var init_react_native_Libraries_Components_TextInput_TextInputState = __esm({
 		}
 	};
 	registerInput = function(textField) {
-		if (typeof textField === "number") {
+		if (typeof textField == "number") {
 			;
 			return;
 		}
 		inputs.add(textField);
 	};
 	unregisterInput = function(textField) {
-		if (typeof textField === "number") {
+		if (typeof textField == "number") {
 			;
 			return;
 		}
 		inputs.delete(textField);
 	};
 	isTextInput = function(textField) {
-		if (typeof textField === "number") {
+		if (typeof textField == "number") {
 			;
 			return false;
 		}
@@ -5796,14 +5940,14 @@ var init_react_native_Libraries_Utilities_differ_deepDiffer = __esm({
 		logListeners = listeners;
 	};
 	deepDiffer = function(one,two,maxDepthOrOptions=-1,maybeOptions) {
-		var options = typeof maxDepthOrOptions === "number" ? maybeOptions : maxDepthOrOptions,maxDepth = typeof maxDepthOrOptions === "number" ? maxDepthOrOptions : -1;
+		var options = typeof maxDepthOrOptions == "number" ? maybeOptions : maxDepthOrOptions,maxDepth = typeof maxDepthOrOptions == "number" ? maxDepthOrOptions : -1;
 		if (maxDepth === 0) {
 			return true;
 		}
 		if (one === two) {
 			return false;
 		}
-		if (typeof one === "function" && typeof two === "function") {
+		if (typeof one == "function" && typeof two == "function") {
 			var unsafelyIgnoreFunctions = options?.unsafelyIgnoreFunctions;
 			if (unsafelyIgnoreFunctions == null) {
 				if (logListeners && logListeners.onDifferentFunctionsIgnored && (!options || !("unsafelyIgnoreFunctions" in options))) {
@@ -5813,10 +5957,10 @@ var init_react_native_Libraries_Utilities_differ_deepDiffer = __esm({
 			}
 			return !unsafelyIgnoreFunctions;
 		}
-		if (typeof one !== "object" || one === null) {
+		if (typeof one != "object" || one === null) {
 			return one !== two;
 		}
-		if (typeof two !== "object" || two === null) {
+		if (typeof two != "object" || two === null) {
 			return true;
 		}
 		if (one.constructor !== two.constructor) {
@@ -5854,6 +5998,38 @@ var init_react_native_Libraries_Utilities_differ_deepDiffer = __esm({
 	}
 });
 //#endregion
+//#region ReactFiberErrorDialog.js
+var exports_react_native_Libraries_Core_ReactFiberErrorDialog = {};
+var ReactFiberErrorDialog;
+__export(exports_react_native_Libraries_Core_ReactFiberErrorDialog, {
+	"default": function() { return ReactFiberErrorDialog; },
+});
+var init_react_native_Libraries_Core_ReactFiberErrorDialog = __esm({
+	"ReactFiberErrorDialog.js"() {
+	init_react_native_Libraries_Core_ExceptionsManager();
+		
+	ReactFiberErrorDialog = { showErrorDialog({ componentStack:componentStack, error:errorValue }) {
+		var error = void 0;
+		if (errorValue instanceof Error) {
+			error = errorValue;
+		} else if (typeof errorValue == "string") {
+			error = new ((init_react_native_Libraries_Core_ExceptionsManager(), SyntheticError))(errorValue);
+		} else {
+			error = new ((init_react_native_Libraries_Core_ExceptionsManager(), SyntheticError))("Unspecified error");
+		}
+		try {
+			error.componentStack = componentStack;
+			error.isComponentError = true;
+		} catch {
+		}
+		ExceptionsManager$1.handleException(error, false);
+		return false;
+	} };
+	
+	
+	}
+});
+//#endregion
 //#region NativeAccessibilityManager.js
 var exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager = {};
 var TurboModuleRegistry$6, _default$12;
@@ -5877,7 +6053,8 @@ __export(exports_react_native_Libraries_Components_AccessibilityInfo_NativeAcces
 });
 var init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager = __esm({
 	"NativeAccessibilityManager.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager();
+		
 	
 		_default$13 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager)).default;
 	
@@ -5905,6 +6082,49 @@ var init_react_native_Libraries_Components_AccessibilityInfo_legacySendAccessibi
 	}
 });
 //#endregion
+//#region RawEventEmitter.js
+var exports_react_native_Libraries_Core_RawEventEmitter = {};
+var RawEventEmitter;
+__export(exports_react_native_Libraries_Core_RawEventEmitter, {
+	"default": function() { return RawEventEmitter; },
+});
+var init_react_native_Libraries_Core_RawEventEmitter = __esm({
+	"RawEventEmitter.js"() {
+	init_react_native_Libraries_vendor_emitter_EventEmitter();
+		
+	RawEventEmitter = new EventEmitter();
+	
+	
+	}
+});
+//#endregion
+//#region derived-constructor
+var exports_derived_constructor = {};
+var __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn;
+__export(exports_derived_constructor, {
+	__assertThisInitialized: function() { return __assertThisInitialized; },
+	__assertThisUninitialized: function() { return __assertThisUninitialized; },
+	__possibleConstructorReturn: function() { return __possibleConstructorReturn; },
+});
+var init_derived_constructor = __esm({
+	"derived-constructor"() {
+	__assertThisInitialized = function(self) {
+		if (self === void 0)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
+		return self;
+	};
+	__assertThisUninitialized = function(self) {
+		if (self !== void 0)throw new ReferenceError("Super constructor may only be called once");
+	};
+	__possibleConstructorReturn = function(call,self) {
+		if (call && (typeof call == "object" || typeof call == "function"))return call;
+		if (call !== void 0)throw new TypeError("Derived constructors may only return object or undefined");
+		return __assertThisInitialized(self);
+	};
+	
+	
+	}
+});
+//#endregion
 //#region PlatformObjects.js
 var exports_react_native_src_private_webapis_webidl_PlatformObjects = {};
 var IS_PLATFORM_OBJECT_KEY, CLONE_PLATFORM_OBJECT_KEY, setPlatformObject, isPlatformObject, getPlatformObjectClone;
@@ -5924,7 +6144,7 @@ var init_react_native_src_private_webapis_webidl_PlatformObjects = __esm({
 		IS_PLATFORM_OBJECT_KEY = Symbol("isPlatformObject");
 	CLONE_PLATFORM_OBJECT_KEY = Symbol("clonePlatformObject");
 	setPlatformObject = function(obj,options) {
-		if (typeof obj === "function") {
+		if (typeof obj == "function") {
 			obj.prototype[IS_PLATFORM_OBJECT_KEY] = true;
 			if (options) {
 				obj.prototype[CLONE_PLATFORM_OBJECT_KEY] = options.clone;
@@ -6134,28 +6354,39 @@ var init_react_native_src_private_webapis_dom_events_Event = __esm({
 	}
 });
 //#endregion
-//#region derived-constructor
-var exports_derived_constructor = {};
-var __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn;
-__export(exports_derived_constructor, {
-	__assertThisInitialized: function() { return __assertThisInitialized; },
-	__assertThisUninitialized: function() { return __assertThisUninitialized; },
-	__possibleConstructorReturn: function() { return __possibleConstructorReturn; },
+//#region CustomEvent.js
+var exports_react_native_src_private_webapis_dom_events_CustomEvent = {};
+var CustomEvent, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn;
+__export(exports_react_native_src_private_webapis_dom_events_CustomEvent, {
+	"default": function() { return CustomEvent; },
 });
-var init_derived_constructor = __esm({
-	"derived-constructor"() {
-	__assertThisInitialized = function(self) {
-		if (self === void 0)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
-		return self;
-	};
-	__assertThisUninitialized = function(self) {
-		if (self !== void 0)throw new ReferenceError("Super constructor may only be called once");
-	};
-	__possibleConstructorReturn = function(call,self) {
-		if (call && (typeof call === "object" || typeof call === "function"))return call;
-		if (call !== void 0)throw new TypeError("Derived constructors may only return object or undefined");
-		return __assertThisInitialized(self);
-	};
+var init_react_native_src_private_webapis_dom_events_CustomEvent = __esm({
+	"CustomEvent.js"() {
+	init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_derived_constructor();
+	init_react_native_src_private_webapis_dom_events_Event();
+		
+	
+	
+	
+	
+	CustomEvent = (function(_super) {
+		function CustomEvent(type,options) {
+			__classCallCheck(this, CustomEvent);
+			var _newTarget = this.constructor,_this;
+			;
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [type, options], _newTarget);
+			__assertThisInitialized(_this)._detail = options?.detail;
+			return __assertThisInitialized(_this);
+		}
+		__extends(CustomEvent, _super);
+		Object.defineProperty(CustomEvent.prototype, "detail", { configurable: true, get: function() {
+			return this._detail;
+		} });
+		return CustomEvent;
+	})(Event$1);
 	
 	
 	}
@@ -6171,7 +6402,7 @@ __export(exports_react_native_Libraries_ReactNative_ReactFabricPublicInstance_Re
 var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativeAttributePayload = __esm({
 	"ReactNativeAttributePayload.js"() {
 	defaultDiffer = function(prevProp,nextProp) {
-		if (typeof nextProp !== "object" || nextProp === null) {
+		if (typeof nextProp != "object" || nextProp === null) {
 			return true;
 		} else {
 			return deepDiffer(prevProp, nextProp, deepDifferOptions);
@@ -6197,16 +6428,16 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativ
 				if (!attributeConfig) {
 					continue;
 				}
-				if (typeof nextProp === "function") {
+				if (typeof nextProp == "function") {
 					nextProp = true;
 				}
-				if (typeof nextProp === "undefined") {
+				if (typeof nextProp > "u") {
 					nextProp = null;
 				}
-				if (typeof attributeConfig !== "object") {
+				if (typeof attributeConfig != "object") {
 					updatePayload[propKey] = nextProp;
-				} else if (typeof attributeConfig.diff === "function" || typeof attributeConfig.process === "function") {
-					var nextValue = typeof attributeConfig.process === "function" ? attributeConfig.process(nextProp) : nextProp;
+				} else if (typeof attributeConfig.diff == "function" || typeof attributeConfig.process == "function") {
+					var nextValue = typeof attributeConfig.process == "function" ? attributeConfig.process(nextProp) : nextProp;
 					updatePayload[propKey] = nextValue;
 				}
 				removedKeys[propKey] = false;
@@ -6276,18 +6507,18 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativ
 			}
 			prevProp = prevProps[propKey];
 			nextProp = nextProps[propKey];
-			if (typeof nextProp === "function") {
-				var attributeConfigHasProcess = typeof attributeConfig === "object" && typeof attributeConfig.process === "function";
+			if (typeof nextProp == "function") {
+				var attributeConfigHasProcess = typeof attributeConfig == "object" && typeof attributeConfig.process == "function";
 				if (!attributeConfigHasProcess) {
 					nextProp = true;
-					if (typeof prevProp === "function") {
+					if (typeof prevProp == "function") {
 						prevProp = true;
 					}
 				}
 			}
-			if (typeof nextProp === "undefined") {
+			if (typeof nextProp > "u") {
 				nextProp = null;
-				if (typeof prevProp === "undefined") {
+				if (typeof prevProp > "u") {
 					prevProp = null;
 				}
 			}
@@ -6295,10 +6526,10 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativ
 				removedKeys[propKey] = false;
 			}
 			if (updatePayload && updatePayload[propKey] !== undefined) {
-				if (typeof attributeConfig !== "object") {
+				if (typeof attributeConfig != "object") {
 					updatePayload[propKey] = nextProp;
-				} else if (typeof attributeConfig.diff === "function" || typeof attributeConfig.process === "function") {
-					var nextValue = typeof attributeConfig.process === "function" ? attributeConfig.process(nextProp) : nextProp;
+				} else if (typeof attributeConfig.diff == "function" || typeof attributeConfig.process == "function") {
+					var nextValue = typeof attributeConfig.process == "function" ? attributeConfig.process(nextProp) : nextProp;
 					updatePayload[propKey] = nextValue;
 				}
 				continue;
@@ -6306,14 +6537,14 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativ
 			if (prevProp === nextProp) {
 				continue;
 			}
-			if (typeof attributeConfig !== "object") {
+			if (typeof attributeConfig != "object") {
 				if (defaultDiffer(prevProp, nextProp)) {
 					(updatePayload || (updatePayload = {}))[propKey] = nextProp;
 				}
-			} else if (typeof attributeConfig.diff === "function" || typeof attributeConfig.process === "function") {
-				var shouldUpdate = prevProp === undefined || (typeof attributeConfig.diff === "function" ? attributeConfig.diff(prevProp, nextProp) : defaultDiffer(prevProp, nextProp));
+			} else if (typeof attributeConfig.diff == "function" || typeof attributeConfig.process == "function") {
+				var shouldUpdate = prevProp === undefined || (typeof attributeConfig.diff == "function" ? attributeConfig.diff(prevProp, nextProp) : defaultDiffer(prevProp, nextProp));
 				if (shouldUpdate) {
-					var nextValue = typeof attributeConfig.process === "function" ? attributeConfig.process(nextProp) : nextProp;
+					var nextValue = typeof attributeConfig.process == "function" ? attributeConfig.process(nextProp) : nextProp;
 					(updatePayload || (updatePayload = {}))[propKey] = nextValue;
 				}
 			} else {
@@ -6341,7 +6572,7 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativ
 			if (prevProp === undefined) {
 				continue;
 			}
-			if (typeof attributeConfig !== "object" || typeof attributeConfig.diff === "function" || typeof attributeConfig.process === "function") {
+			if (typeof attributeConfig != "object" || typeof attributeConfig.diff == "function" || typeof attributeConfig.process == "function") {
 				(updatePayload || (updatePayload = {}))[propKey] = null;
 				if (!removedKeys) {
 					removedKeys = {};
@@ -6375,14 +6606,14 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactNativ
 				} else {
 					continue;
 				}
-			} else if (typeof attributeConfig === "object") {
-				if (typeof attributeConfig.process === "function") {
+			} else if (typeof attributeConfig == "object") {
+				if (typeof attributeConfig.process == "function") {
 					newValue = attributeConfig.process(prop);
-				} else if (typeof attributeConfig.diff === "function") {
+				} else if (typeof attributeConfig.diff == "function") {
 					newValue = prop;
 				}
 			} else {
-				if (typeof prop === "function") {
+				if (typeof prop == "function") {
 					newValue = true;
 				} else {
 					newValue = prop;
@@ -6433,7 +6664,7 @@ var init_generator = __esm({
 		__iterProto[Symbol.iterator] = function() {
 			return this;
 		};
-		var __genProto = Object.create(__iterProto),__protoSet = typeof Symbol !== "undefined" ? Symbol("__protoSet") : "__gen_proto_set__";
+		var __genProto = Object.create(__iterProto),__protoSet = typeof Symbol < "u" ? Symbol("__protoSet") : "__gen_proto_set__";
 		return function(thisArg,body,genFn) {
 			var _ = { label: 0, sent: function() {
 				if (t[0] & 1)throw t[1];
@@ -6721,10 +6952,10 @@ var init_react_native_src_private_webapis_dom_nodes_internals_ReactNativeDocumen
 		return instanceHandle;
 	};
 	getPublicInstanceFromReactNativeDocumentInstanceHandle = function(instanceHandle) {
-		return getPublicInstanceFromRootTag(Number(instanceHandle));
+		return (init_react_native_Libraries_ReactNative_RendererImplementation(), getPublicInstanceFromRootTag)(Number(instanceHandle));
 	};
 	isReactNativeDocumentInstanceHandle = function(instanceHandle) {
-		return typeof instanceHandle === "number" && instanceHandle % 10 === 1;
+		return typeof instanceHandle == "number" && instanceHandle % 10 === 1;
 	};
 		init_react_native_Libraries_ReactNative_RendererProxy();
 		RendererProxy=__toESM((init_react_native_Libraries_ReactNative_RendererProxy(), __toCommonJS(exports_react_native_Libraries_ReactNative_RendererProxy)));
@@ -7817,6 +8048,55 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyText = __esm({
 	}
 });
 //#endregion
+//#region ReactFabricPublicInstance.js
+var exports_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstance = {};
+var RendererProxy$1, createPublicRootInstance, createPublicInstance, createPublicTextInstance, getNativeTagFromPublicInstance, getNodeFromPublicInstance, getInternalInstanceHandleFromPublicInstance;
+__export(exports_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstance, {
+	createPublicRootInstance: function() { return createPublicRootInstance; },
+	createPublicInstance: function() { return createPublicInstance; },
+	createPublicTextInstance: function() { return createPublicTextInstance; },
+	getNativeTagFromPublicInstance: function() { return getNativeTagFromPublicInstance; },
+	getNodeFromPublicInstance: function() { return getNodeFromPublicInstance; },
+	getInternalInstanceHandleFromPublicInstance: function() { return getInternalInstanceHandleFromPublicInstance; },
+});
+var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstance = __esm({
+	"ReactFabricPublicInstance.js"() {
+	createPublicRootInstance = function(rootTag) {
+		return (init_react_native_src_private_webapis_dom_nodes_ReactNativeDocument(), createReactNativeDocument)(rootTag);
+	};
+	createPublicInstance = function(tag,viewConfig,internalInstanceHandle,ownerDocument) {
+		return new _default$15(tag, viewConfig, internalInstanceHandle, ownerDocument);
+	};
+	createPublicTextInstance = function(internalInstanceHandle,ownerDocument) {
+		return new ReadOnlyText(internalInstanceHandle, ownerDocument);
+	};
+	getNativeTagFromPublicInstance = function(publicInstance) {
+		return publicInstance.__nativeTag;
+	};
+	getNodeFromPublicInstance = function(publicInstance) {
+		if (publicInstance.__internalInstanceHandle == null) {
+			return null;
+		}
+		return (init_react_native_Libraries_ReactNative_RendererImplementation(), getNodeFromInternalInstanceHandle$1)(publicInstance.__internalInstanceHandle);
+	};
+	getInternalInstanceHandleFromPublicInstance = function(publicInstance) {
+		if (publicInstance._internalInstanceHandle != null) {
+			return publicInstance._internalInstanceHandle;
+		}
+		return publicInstance.__internalInstanceHandle;
+	};
+		init_react_native_src_private_webapis_dom_nodes_ReactNativeDocument();
+	init_react_native_src_private_webapis_dom_nodes_ReactNativeElement();
+	init_react_native_src_private_webapis_dom_nodes_ReadOnlyText();
+	init_react_native_Libraries_ReactNative_RendererProxy();
+		
+	
+	
+	RendererProxy$1=__toESM((init_react_native_Libraries_ReactNative_RendererProxy(), __toCommonJS(exports_react_native_Libraries_ReactNative_RendererProxy)));
+	
+	}
+});
+//#endregion
 //#region ReactNativePrivateInterface.js
 var require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface = __commonJS({
 	"ReactNativePrivateInterface.js"(exports, module) {
@@ -8052,7 +8332,7 @@ var init_react_native_src_private_webapis_errors_DOMException = __esm({
 				_name.set(_this, void 0);
 				_code.set(_this, void 0);
 			}
-			if (typeof name === "undefined") {
+			if (typeof name > "u") {
 				__zntcClassPrivateFieldSet(_name, __assertThisInitialized(_this), "Error");
 				__zntcClassPrivateFieldSet(_code, __assertThisInitialized(_this), 0);
 			} else {
@@ -8103,7 +8383,7 @@ var init_react_native_src_private_webapis_structuredClone_structuredClone = __es
 			case "bigint":
 				return value;
 		}
-		if (typeof value !== "object") {
+		if (typeof value != "object") {
 			throw new DOMException(`Failed to execute 'structuredClone' on 'Window': ${String(value)} could not be cloned.`, "DataCloneError");
 		}
 		if (memory.has(value)) {
@@ -8298,6 +8578,7 @@ var init_react_native_src_private_webapis_performance_EventTiming = __esm({
 	init_derived_constructor();
 	init_class_private_field_set();
 	init_react_native_src_private_webapis_performance_specs_NativePerformance();
+	require_nullthrows_nullthrows();
 	nullthrows$4 = __toESM(require_nullthrows_nullthrows()).default;
 		
 	
@@ -8814,6 +9095,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 	init_react_native_src_private_webapis_performance_MemoryInfo();
 	init_react_native_src_private_webapis_performance_ReactNativeStartupTiming();
 	init_react_native_src_private_webapis_performance_specs_NativePerformance();
+	require_nullthrows_nullthrows();
 	nullthrows$5 = __toESM(require_nullthrows_nullthrows()).default;
 		
 	
@@ -8855,12 +9137,12 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			if (markName === undefined) {
 				throw new TypeError(`Failed to execute 'mark' on 'Performance': 1 argument required, but only 0 present.`);
 			}
-			var resolvedMarkName = typeof markName === "string" ? markName : String(markName),resolvedStartTime = void 0,resolvedDetail = void 0,startTime = void 0,detail = void 0;
+			var resolvedMarkName = typeof markName == "string" ? markName : String(markName),resolvedStartTime = void 0,resolvedDetail = void 0,startTime = void 0,detail = void 0;
 			if (markOptions != null) {
 				({ startTime, detail } = markOptions);
 			}
 			if (startTime !== undefined) {
-				resolvedStartTime = typeof startTime === "number" ? startTime : Number(startTime);
+				resolvedStartTime = typeof startTime == "number" ? startTime : Number(startTime);
 				if (resolvedStartTime < 0) {
 					throw new TypeError(`Failed to execute 'mark' on 'Performance': '${resolvedMarkName}' cannot have a negative start time.`);
 				} else if (resolvedStartTime !== resolvedStartTime || resolvedStartTime === Infinity) {
@@ -8886,7 +9168,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			if (measureName === undefined) {
 				throw new TypeError(`Failed to execute 'measure' on 'Performance': 1 argument required, but only 0 present.`);
 			}
-			resolvedMeasureName = typeof measureName === "string" ? measureName : String(measureName);
+			resolvedMeasureName = typeof measureName == "string" ? measureName : String(measureName);
 			if (startMarkOrOptions != null) {
 				switch (typeof startMarkOrOptions) {
 					case "object":
@@ -9122,7 +9404,7 @@ __export(exports_react_native_src_private_webapis_performance_PerformanceObserve
 	PerformanceObserverEntryList: function() { return PerformanceObserverEntryList; },
 	PerformanceObserverEntryList_public: function() { return PerformanceObserverEntryList_public; },
 	PerformanceObserver: function() { return PerformanceObserver; },
-	PerformanceEventTiming: function() { return PerformanceEventTiming$2; },
+	PerformanceEventTiming: function() { return (init_react_native_src_private_webapis_performance_EventTiming(), exports_react_native_src_private_webapis_performance_EventTiming.PerformanceEventTiming); },
 });
 var init_react_native_src_private_webapis_performance_PerformanceObserver = __esm({
 	"PerformanceObserver.js"() {
@@ -9134,6 +9416,8 @@ var init_react_native_src_private_webapis_performance_PerformanceObserver = __es
 	init_class_call_check();
 	init_class_private_field_set();
 	init_react_native_src_private_webapis_performance_specs_NativePerformance();
+	require_nullthrows_nullthrows();
+	init_react_native_src_private_webapis_performance_PerformanceEntry();
 	nullthrows$6 = __toESM(require_nullthrows_nullthrows()).default;
 		
 	
@@ -9380,10 +9664,10 @@ var require_promise_setimmediate_core = __commonJS({
 	}
 	module.exports = Promise;
 	function Promise(fn) {
-		if (typeof this !== "object") {
+		if (typeof this != "object") {
 			throw new TypeError("Promises must be constructed via new");
 		}
-		if (typeof fn !== "function") {
+		if (typeof fn != "function") {
 			throw new TypeError("Promise constructor's argument is not a function");
 		}
 		this._x = 0;
@@ -9457,7 +9741,7 @@ var require_promise_setimmediate_core = __commonJS({
 		if (newValue === self) {
 			return reject(self, new TypeError("A promise cannot be resolved with itself."));
 		}
-		if (newValue && (typeof newValue === "object" || typeof newValue === "function")) {
+		if (newValue && (typeof newValue == "object" || typeof newValue == "function")) {
 			var then = getThen(newValue);
 			if (then === IS_ERROR) {
 				return reject(self, LAST_ERROR);
@@ -9467,7 +9751,7 @@ var require_promise_setimmediate_core = __commonJS({
 				self._z = newValue;
 				finale(self);
 				return;
-			} else if (typeof then === "function") {
+			} else if (typeof then == "function") {
 				doResolve(then.bind(newValue), self);
 				return;
 			}
@@ -9497,8 +9781,8 @@ var require_promise_setimmediate_core = __commonJS({
 		}
 	}
 	function Handler(onFulfilled,onRejected,promise) {
-		this.onFulfilled = typeof onFulfilled === "function" ? onFulfilled : null;
-		this.onRejected = typeof onRejected === "function" ? onRejected : null;
+		this.onFulfilled = typeof onFulfilled == "function" ? onFulfilled : null;
+		this.onRejected = typeof onRejected == "function" ? onRejected : null;
 		this.promise = promise;
 	}
 	function doResolve(fn,promise) {
@@ -9541,10 +9825,10 @@ var require_promise_setimmediate_es6_extensions = __commonJS({
 		if (value === false)return FALSE;
 		if (value === 0)return ZERO;
 		if (value === "")return EMPTYSTRING;
-		if (typeof value === "object" || typeof value === "function") {
+		if (typeof value == "object" || typeof value == "function") {
 			try {
 				var then = value.then;
-				if (typeof then === "function") {
+				if (typeof then == "function") {
 					return new Promise(then.bind(value));
 				}
 			} catch (ex) {
@@ -9556,7 +9840,7 @@ var require_promise_setimmediate_es6_extensions = __commonJS({
 		return valuePromise(value);
 	};
 	var iterableToArray = function(iterable) {
-		if (typeof Array.from === "function") {
+		if (typeof Array.from == "function") {
 			iterableToArray = Array.from;
 			return Array.from(iterable);
 		}
@@ -9571,7 +9855,7 @@ var require_promise_setimmediate_es6_extensions = __commonJS({
 			if (args.length === 0)return resolve([]);
 			var remaining = args.length;
 			function res(i,val) {
-				if (val && (typeof val === "object" || typeof val === "function")) {
+				if (val && (typeof val == "object" || typeof val == "function")) {
 					if (val instanceof Promise && val.then === Promise.prototype.then) {
 						while (val._y === 3) {
 							val = val._z;
@@ -9584,7 +9868,7 @@ var require_promise_setimmediate_es6_extensions = __commonJS({
 						return;
 					} else {
 						var then = val.then;
-						if (typeof then === "function") {
+						if (typeof then == "function") {
 							var p = new Promise(then.bind(val));
 							p.then(function(val) {
 								res(i, val);
@@ -9610,12 +9894,12 @@ var require_promise_setimmediate_es6_extensions = __commonJS({
 		return { status: "rejected", reason: reason };
 	}
 	function mapAllSettled(item) {
-		if (item && (typeof item === "object" || typeof item === "function")) {
+		if (item && (typeof item == "object" || typeof item == "function")) {
 			if (item instanceof Promise && item.then === Promise.prototype.then) {
 				return item.then(onSettledFulfill, onSettledReject);
 			}
 			var then = item.then;
-			if (typeof then === "function") {
+			if (typeof then == "function") {
 				return new Promise(then.bind(item)).then(onSettledFulfill, onSettledReject);
 			}
 		}
@@ -9640,7 +9924,7 @@ var require_promise_setimmediate_es6_extensions = __commonJS({
 		return this.then(null, onRejected);
 	};
 	function getAggregateError(errors) {
-		if (typeof AggregateError === "function") {
+		if (typeof AggregateError == "function") {
 			return new AggregateError(errors, "All promises were rejected");
 		}
 		var error = new Error("All promises were rejected");
@@ -9705,6 +9989,7 @@ __export(exports_react_native_Libraries_Promise, {
 });
 var init_react_native_Libraries_Promise = __esm({
 	"Promise.js"() {
+	require_promise_setimmediate_es6_extensions();
 	Promise$1 = require_promise_setimmediate_es6_extensions();
 		"use strict";
 	
@@ -9761,7 +10046,7 @@ var init_react_native_Libraries_Core_Timers_immediateShim = __esm({
 		if (arguments.length < 1) {
 			throw new TypeError("setImmediate must be called with at least one argument (a function to call)");
 		}
-		if (typeof callback !== "function") {
+		if (typeof callback != "function") {
 			throw new TypeError("The first argument to setImmediate must be a function.");
 		}
 		var id = GUIID++;
@@ -10106,7 +10391,7 @@ var init_react_native_Libraries_Core_Timers_queueMicrotask = __esm({
 		if (arguments.length < 1) {
 			throw new TypeError("queueMicrotask must be called with at least one argument (a function to call)");
 		}
-		if (typeof callback !== "function") {
+		if (typeof callback != "function") {
 			throw new TypeError("The argument to queueMicrotask must be a function.");
 		}
 		(resolvedPromise || (resolvedPromise = Promise.resolve())).then(callback).catch(function(error) {
@@ -10205,7 +10490,7 @@ __export(exports_react_native_Libraries_Utilities_FeatureDetection, {
 var init_react_native_Libraries_Utilities_FeatureDetection = __esm({
 	"FeatureDetection.js"() {
 	isNativeFunction = function(f) {
-		return typeof f === "function" && f.toString().indexOf("[native code]") > -1;
+		return typeof f == "function" && f.toString().indexOf("[native code]") > -1;
 	};
 	hasNativeConstructor = function(o,expectedName) {
 		var con = Object.getPrototypeOf(o).constructor;
@@ -10222,7 +10507,7 @@ var runtime = (function(exports) {
 		"use strict";
 		var Op = Object.prototype,hasOwn = Op.hasOwnProperty,defineProperty = Object.defineProperty || function(obj,key,desc) {
 			obj[key] = desc.value;
-		},undefined,$Symbol = typeof Symbol === "function" ? Symbol : {},iteratorSymbol = $Symbol.iterator || "@@iterator",asyncIteratorSymbol = $Symbol.asyncIterator || "@@asyncIterator",toStringTagSymbol = $Symbol.toStringTag || "@@toStringTag";
+		},undefined,$Symbol = typeof Symbol == "function" ? Symbol : {},iteratorSymbol = $Symbol.iterator || "@@iterator",asyncIteratorSymbol = $Symbol.asyncIterator || "@@asyncIterator",toStringTagSymbol = $Symbol.toStringTag || "@@toStringTag";
 		function define(obj,key,value) {
 			Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true });
 			return obj[key];
@@ -10275,7 +10560,7 @@ var runtime = (function(exports) {
 			});
 		}
 		exports.isGeneratorFunction = function(genFun) {
-			var ctor = typeof genFun === "function" && genFun.constructor;
+			var ctor = typeof genFun == "function" && genFun.constructor;
 			return ctor ? ctor === GeneratorFunction || (ctor.displayName || ctor.name) === "GeneratorFunction" : false;
 		};
 		exports.mark = function(genFun) {
@@ -10298,7 +10583,7 @@ var runtime = (function(exports) {
 					reject(record.arg);
 				} else {
 					var result = record.arg,value = result.value;
-					if (value && typeof value === "object" && hasOwn.call(value, "__await")) {
+					if (value && typeof value == "object" && hasOwn.call(value, "__await")) {
 						return PromiseImpl.resolve(value.__await).then(function(value) {
 							invoke("next", value, resolve, reject);
 						}, function(err) {
@@ -10486,7 +10771,7 @@ var runtime = (function(exports) {
 				if (iteratorMethod) {
 					return iteratorMethod.call(iterable);
 				}
-				if (typeof iterable.next === "function") {
+				if (typeof iterable.next == "function") {
 					return iterable;
 				}
 				if (!isNaN(iterable.length)) {
@@ -10639,11 +10924,11 @@ var runtime = (function(exports) {
 			return ContinueSentinel;
 		} };
 		return exports;
-	}(typeof module === "object" ? module.exports : {}));
+	}(typeof module == "object" ? module.exports : {}));
 	try {
 		regeneratorRuntime = runtime;
 	} catch (accidentalStrictMode) {
-		if (typeof globalThis === "object") {
+		if (typeof globalThis == "object") {
 			globalThis.regeneratorRuntime = runtime;
 		} else {
 			Function("r", "regeneratorRuntime = r")(runtime);
@@ -10711,7 +10996,7 @@ var init_react_native_src_private_webapis_dom_events_EventHandlerAttributes = __
 				map.delete(type);
 			}
 		}
-		if (callback != null && (typeof callback === "function" || typeof callback === "object")) {
+		if (callback != null && (typeof callback == "function" || typeof callback == "object")) {
 			var listener = { handleEvent: callback };
 			try {
 				target.addEventListener(type, listener);
@@ -10762,7 +11047,7 @@ __export(exports_react_native_src_private_webapis_dom_events_EventTarget, {
 var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 	"EventTarget.js"() {
 	validateCallback = function(callback,methodName) {
-		if (typeof callback !== "function" && typeof callback !== "object") {
+		if (typeof callback != "function" && typeof callback != "object") {
 			throw new TypeError(`Failed to execute '${methodName}' on 'EventTarget': parameter 2 is not of type 'Object'.`);
 		}
 	};
@@ -10830,9 +11115,9 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 			global.event = event;
 			var callback = listener.callback;
 			try {
-				if (typeof callback === "function") {
+				if (typeof callback == "function") {
 					callback.call(eventTarget, event);
-				} else if (typeof callback.handleEvent === "function") {
+				} else if (typeof callback.handleEvent == "function") {
 					callback.handleEvent(event);
 				}
 			} catch (error) {
@@ -10880,7 +11165,7 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 			}
 			validateCallback(callback, "addEventListener");
 			var processedType = String(type),capture = void 0,passive = void 0,once = void 0,signal = void 0;
-			if (optionsOrUseCapture != null && (typeof optionsOrUseCapture === "object" || typeof optionsOrUseCapture === "function")) {
+			if (optionsOrUseCapture != null && (typeof optionsOrUseCapture == "object" || typeof optionsOrUseCapture == "function")) {
 				capture = Boolean(optionsOrUseCapture.capture);
 				passive = optionsOrUseCapture.passive == null ? getDefaultPassiveValue(processedType, this) : Boolean(optionsOrUseCapture.passive);
 				once = Boolean(optionsOrUseCapture.once);
@@ -10928,7 +11213,7 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 				return;
 			}
 			validateCallback(callback, "removeEventListener");
-			var processedType = String(type),capture = typeof optionsOrUseCapture === "boolean" ? optionsOrUseCapture : Boolean(optionsOrUseCapture.capture),listenersByType = getListenersForPhase(this, capture),listeners = listenersByType?.get(processedType);
+			var processedType = String(type),capture = typeof optionsOrUseCapture == "boolean" ? optionsOrUseCapture : Boolean(optionsOrUseCapture.capture),listenersByType = getListenersForPhase(this, capture),listeners = listenersByType?.get(processedType);
 			if (listeners == null) {
 				return;
 			}
@@ -11093,13 +11378,13 @@ var init_react_native_Libraries_Blob_Blob = __esm({
 		}
 		Object.defineProperty(Blob.prototype, "slice", { configurable: true, writable: true, value: function(start,end,contentType="") {
 			var BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default,{ offset:offset, size:size } = this.data;
-			if (typeof start === "number") {
+			if (typeof start == "number") {
 				if (start > size) {
 					start = size;
 				}
 				offset += start;
 				size -= start;
-				if (typeof end === "number") {
+				if (typeof end == "number") {
 					if (end < 0) {
 						end = this.size + end;
 					}
@@ -11196,6 +11481,7 @@ var init_react_native_Libraries_Blob_BlobManager = __esm({
 	};
 		init_class_call_check();
 	init_react_native_Libraries_Blob_NativeBlobModule();
+	require_invariant_browser();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeBlobModule();
 	invariant$12 = require_invariant_browser();
 		
@@ -11481,13 +11767,77 @@ var init_react_native_Libraries_Utilities_GlobalPerformanceLogger = __esm({
 var require_base64_js_index = __commonJS({
 	"index.js"(exports, module) {
 "use strict";
-	var lookup = [],revLookup = [],code = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	exports.byteLength = byteLength;
+	exports.toByteArray = toByteArray;
+	exports.fromByteArray = fromByteArray;
+	var lookup = [],revLookup = [],Arr = typeof Uint8Array < "u" ? Uint8Array : Array,code = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	for (var i = 0,len = code.length; i < len; ++i) {
 		lookup[i] = code[i];
 		revLookup[code.charCodeAt(i)] = i;
 	}
 	revLookup["-".charCodeAt(0)] = 62;
 	revLookup["_".charCodeAt(0)] = 63;
+	function getLens(b64) {
+		var len = b64.length;
+		if (len % 4 > 0) {
+			throw new Error("Invalid string. Length must be a multiple of 4");
+		}
+		var validLen = b64.indexOf("=");
+		if (validLen === -1)validLen = len;
+		var placeHoldersLen = validLen === len ? 0 : 4 - (validLen % 4);
+		return [validLen, placeHoldersLen];
+	}
+	function byteLength(b64) {
+		var lens = getLens(b64),validLen = lens[0],placeHoldersLen = lens[1];
+		return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen;
+	}
+	function _byteLength(b64,validLen,placeHoldersLen) {
+		return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen;
+	}
+	function toByteArray(b64) {
+		var tmp,lens = getLens(b64),validLen = lens[0],placeHoldersLen = lens[1],arr = new Arr(_byteLength(b64, validLen, placeHoldersLen)),curByte = 0,len = placeHoldersLen > 0 ? validLen - 4 : validLen,i;
+		for (i = 0; i < len; i += 4) {
+			tmp = (revLookup[b64.charCodeAt(i)] << 18) | (revLookup[b64.charCodeAt(i + 1)] << 12) | (revLookup[b64.charCodeAt(i + 2)] << 6) | revLookup[b64.charCodeAt(i + 3)];
+			arr[curByte++] = (tmp >> 16) & 0xFF;
+			arr[curByte++] = (tmp >> 8) & 0xFF;
+			arr[curByte++] = tmp & 0xFF;
+		}
+		if (placeHoldersLen === 2) {
+			tmp = (revLookup[b64.charCodeAt(i)] << 2) | (revLookup[b64.charCodeAt(i + 1)] >> 4);
+			arr[curByte++] = tmp & 0xFF;
+		}
+		if (placeHoldersLen === 1) {
+			tmp = (revLookup[b64.charCodeAt(i)] << 10) | (revLookup[b64.charCodeAt(i + 1)] << 4) | (revLookup[b64.charCodeAt(i + 2)] >> 2);
+			arr[curByte++] = (tmp >> 8) & 0xFF;
+			arr[curByte++] = tmp & 0xFF;
+		}
+		return arr;
+	}
+	function tripletToBase64(num) {
+		return lookup[num >> 18 & 0x3F] + lookup[num >> 12 & 0x3F] + lookup[num >> 6 & 0x3F] + lookup[num & 0x3F];
+	}
+	function encodeChunk(uint8,start,end) {
+		var tmp,output = [];
+		for (var i = start; i < end; i += 3) {
+			tmp = ((uint8[i] << 16) & 0xFF0000) + ((uint8[i + 1] << 8) & 0xFF00) + (uint8[i + 2] & 0xFF);
+			output.push(tripletToBase64(tmp));
+		}
+		return output.join("");
+	}
+	function fromByteArray(uint8) {
+		var tmp,len = uint8.length,extraBytes = len % 3,parts = [],maxChunkLength = 16383;
+		for (var i = 0,len2 = len - extraBytes; i < len2; i += maxChunkLength) {
+			parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)));
+		}
+		if (extraBytes === 1) {
+			tmp = uint8[len - 1];
+			parts.push(lookup[tmp >> 2] + lookup[(tmp << 4) & 0x3F] + "==");
+		} else if (extraBytes === 2) {
+			tmp = (uint8[len - 2] << 8) + uint8[len - 1];
+			parts.push(lookup[tmp >> 10] + lookup[(tmp >> 4) & 0x3F] + lookup[(tmp << 2) & 0x3F] + "=");
+		}
+		return parts.join("");
+	}
 	
 	}
 });
@@ -11552,11 +11902,11 @@ var init_react_native_Libraries_Network_FormData = __esm({
 		Object.defineProperty(FormData.prototype, "getParts", { configurable: true, writable: true, value: function() {
 			return this._parts.map(function([name, value]) {
 				var contentDisposition = "form-data; name=\"" + name + "\"",headers = { "content-disposition": contentDisposition };
-				if (typeof value === "object" && !Array.isArray(value) && value) {
-					if (typeof value.name === "string") {
+				if (typeof value == "object" && !Array.isArray(value) && value) {
+					if (typeof value.name == "string") {
 						headers["content-disposition"] += `; filename="${encodeFilename(value.name)}"`;
 					}
-					if (typeof value.type === "string") {
+					if (typeof value.type == "string") {
 						headers["content-type"] = value.type;
 					}
 					return { ...value, headers, fieldName: name };
@@ -11580,7 +11930,7 @@ __export(exports_react_native_Libraries_Network_convertRequestBody, {
 var init_react_native_Libraries_Network_convertRequestBody = __esm({
 	"convertRequestBody.js"() {
 	convertRequestBody = function(body) {
-		if (typeof body === "string") {
+		if (typeof body == "string") {
 			return { string: body };
 		}
 		if (body instanceof Blob$3) {
@@ -11652,8 +12002,11 @@ __export(exports_react_native_Libraries_Network_RCTNetworking_ios, {
 var init_react_native_Libraries_Network_RCTNetworking_ios = __esm({
 	"RCTNetworking.ios.js"() {
 	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
+	init_react_native_Libraries_vendor_emitter_EventEmitter();
 	init_react_native_Libraries_Network_convertRequestBody();
 	init_react_native_Libraries_Network_NativeNetworkingIOS();
+	require_react_native_Libraries_Network_RCTNetworkingEventDefinitions_flow();
+	init_react_native_Libraries_Network_XMLHttpRequest();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeNetworkingIOS();
 		"use strict";
 	
@@ -11718,7 +12071,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 	HEADERS_RECEIVED = 2;
 	LOADING = 3;
 	DONE = 4;
-	SUPPORTED_RESPONSE_TYPES = { arraybuffer: typeof global.ArrayBuffer === "function", blob: typeof global.Blob === "function", document: false, json: true, text: true, "": true };
+	SUPPORTED_RESPONSE_TYPES = { arraybuffer: typeof global.ArrayBuffer == "function", blob: typeof global.Blob == "function", document: false, json: true, text: true, "": true };
 	XMLHttpRequestEventTarget = (function(_super) {
 		function XMLHttpRequestEventTarget() {
 			__classCallCheck(this, XMLHttpRequestEventTarget);
@@ -12091,7 +12444,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 					this._cachedResponse = base64$1.toByteArray(this._response).buffer;
 					break;
 				case "blob":
-					if (typeof this._response === "object" && this._response) {
+					if (typeof this._response == "object" && this._response) {
 						this._cachedResponse = BlobManager$1.createFromOptions(this._response);
 					} else if (this._response === "") {
 						this._cachedResponse = BlobManager$1.createFromParts([]);
@@ -12175,10 +12528,10 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 	"fetch.umd.js"(exports, module) {
 (function(global,factory) {
-		typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (factory((global.WHATWGFetch = {})));
+		typeof exports == "object" && typeof module < "u" ? factory(exports) : typeof define == "function" && define.amd ? define(["exports"], factory) : (factory((global.WHATWGFetch = {})));
 	}(this, (function(exports) {
 		"use strict";
-		var g = (typeof globalThis !== "undefined" && globalThis) || (typeof self !== "undefined" && self) || (typeof global !== "undefined" && global) || {},support = { searchParams: "URLSearchParams" in g, iterable: "Symbol" in g && "iterator" in Symbol, blob: "FileReader" in g && "Blob" in g && (function() {
+		var g = (typeof globalThis < "u" && globalThis) || (typeof self < "u" && self) || (typeof global < "u" && global) || {},support = { searchParams: "URLSearchParams" in g, iterable: "Symbol" in g && "iterator" in Symbol, blob: "FileReader" in g && "Blob" in g && (function() {
 			try {
 				new Blob();
 				return true;
@@ -12195,7 +12548,7 @@ var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 			};
 		}
 		function normalizeName(name) {
-			if (typeof name !== "string") {
+			if (typeof name != "string") {
 				name = String(name);
 			}
 			if (/[^a-z0-9\-#$%&'*+.^_`|~!]/i.test(name) || name === "") {
@@ -12204,7 +12557,7 @@ var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 			return name.toLowerCase();
 		}
 		function normalizeValue(value) {
-			if (typeof value !== "string") {
+			if (typeof value != "string") {
 				value = String(value);
 			}
 			return value;
@@ -12341,7 +12694,7 @@ var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 				if (!body) {
 					this._noBody = true;
 					this._bodyText = "";
-				} else if (typeof body === "string") {
+				} else if (typeof body == "string") {
 					this._bodyText = body;
 				} else if (support.blob && Blob.prototype.isPrototypeOf(body)) {
 					this._bodyBlob = body;
@@ -12358,7 +12711,7 @@ var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 					this._bodyText = body = Object.prototype.toString.call(body);
 				}
 				if (!this.headers.get("content-type")) {
-					if (typeof body === "string") {
+					if (typeof body == "string") {
 						this.headers.set("content-type", "text/plain;charset=UTF-8");
 					} else if (this._bodyBlob && this._bodyBlob.type) {
 						this.headers.set("content-type", this._bodyBlob.type);
@@ -12622,7 +12975,7 @@ var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 						xhr.responseType = "arraybuffer";
 					}
 				}
-				if (init && typeof init.headers === "object" && !(init.headers instanceof Headers || (g.Headers && init.headers instanceof g.Headers))) {
+				if (init && typeof init.headers == "object" && !(init.headers instanceof Headers || (g.Headers && init.headers instanceof g.Headers))) {
 					var names = [];
 					Object.getOwnPropertyNames(init.headers).forEach(function(name) {
 						names.push(normalizeName(name));
@@ -12646,7 +12999,7 @@ var require_whatwg_fetch_dist_fetch_umd = __commonJS({
 						}
 					};
 				}
-				xhr.send(typeof request._bodyInit === "undefined" ? null : request._bodyInit);
+				xhr.send(typeof request._bodyInit > "u" ? null : request._bodyInit);
 			});
 		}
 		fetch.polyfill = true;
@@ -12790,6 +13143,7 @@ var init_react_native_Libraries_EventEmitter_NativeEventEmitter = __esm({
 	init_class_call_check();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
+	require_invariant_browser();
 	invariant$14 = require_invariant_browser();
 		
 	"use strict";
@@ -12802,7 +13156,7 @@ var init_react_native_Libraries_EventEmitter_NativeEventEmitter = __esm({
 			if (Platform.OS === "ios") {
 				invariant$14(nativeModule != null, "`new NativeEventEmitter()` requires a non-null argument.");
 			}
-			var hasAddListener = !!nativeModule && typeof nativeModule.addListener === "function",hasRemoveListeners = !!nativeModule && typeof nativeModule.removeListeners === "function";
+			var hasAddListener = !!nativeModule && typeof nativeModule.addListener == "function",hasRemoveListeners = !!nativeModule && typeof nativeModule.removeListeners == "function";
 			;
 			if (nativeModule && hasAddListener && hasRemoveListeners) {
 				this._nativeModule = nativeModule;
@@ -12899,6 +13253,8 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 	init_react_native_Libraries_Utilities_binaryToBase64();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_WebSocket_NativeWebSocketModule();
+	require_base64_js_index();
+	require_invariant_browser();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeWebSocketModule();
 	base64$2 = __toESM(require_base64_js_index()).default;
 	invariant$15 = require_invariant_browser();
@@ -12940,11 +13296,11 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 				_this.readyState = CONNECTING;
 			}
 			__assertThisInitialized(_this).url = url;
-			if (typeof protocols === "string") {
+			if (typeof protocols == "string") {
 				protocols = [protocols];
 			}
 			var { headers:headers={}, ...unrecognized } = options || {};
-			if (unrecognized && typeof unrecognized.origin === "string") {
+			if (unrecognized && typeof unrecognized.origin == "string") {
 				console.warn("Specifying `origin` as a WebSocket connection option is deprecated. Include it under `headers` instead.");
 				headers.origin = unrecognized.origin;
 				delete unrecognized.origin;
@@ -12978,7 +13334,7 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 				BlobManager.sendOverSocket(data, this._socketId);
 				return;
 			}
-			if (typeof data === "string") {
+			if (typeof data == "string") {
 				_default$26.send(data, this._socketId);
 				return;
 			}
@@ -12995,7 +13351,7 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 			_default$26.ping(this._socketId);
 		} });
 		Object.defineProperty(WebSocket.prototype, "_close", { configurable: true, writable: true, value: function(code,reason) {
-			var statusCode = typeof code === "number" ? code : CLOSE_NORMAL,closeReason = typeof reason === "string" ? reason : "";
+			var statusCode = typeof code == "number" ? code : CLOSE_NORMAL,closeReason = typeof reason == "string" ? reason : "";
 			_default$26.close(statusCode, closeReason, this._socketId);
 			if (BlobManager.isAvailable && this._binaryType === "blob") {
 				BlobManager.removeWebSocketHandler(this._socketId);
@@ -13367,7 +13723,7 @@ var init_react_native_Libraries_Blob_FileReader = __esm({
 //#endregion
 //#region URLSearchParams.js
 var exports_react_native_Libraries_Blob_URLSearchParams = {};
-var _a$4, _b$1, _c, _d, _e, _f, _g, _h, _i, URLSearchParams$1, __generator, __classCallCheck;
+var _a$4, URLSearchParams$1, __generator, __classCallCheck;
 __export(exports_react_native_Libraries_Blob_URLSearchParams, {
 	URLSearchParams: function() { return URLSearchParams$1; },
 });
@@ -13386,7 +13742,7 @@ var init_react_native_Libraries_Blob_URLSearchParams = __esm({
 			if (params === null) {
 				return;
 			}
-			if (typeof params === "string") {
+			if (typeof params == "string") {
 				params.replace(/^\?/, "").split("&").forEach(function(pair) {
 					if (!pair) {
 						return;
@@ -13400,7 +13756,7 @@ var init_react_native_Libraries_Blob_URLSearchParams = __esm({
 				params.forEach(function([key, value]) {
 					return _this.append(key, value);
 				});
-			} else if (typeof params === "object") {
+			} else if (typeof params == "object") {
 				Object.entries(params).forEach(function([key, value]) {
 					return _this.append(key, value);
 				});
@@ -13474,36 +13830,36 @@ var init_react_native_Libraries_Blob_URLSearchParams = __esm({
 		} });
 		Object.defineProperty(URLSearchParams.prototype, "entries", { configurable: true, writable: true, value: function() {
 			function generateEntries(params) {
-				var key,values,value,_f,_g,_h,_i;
+				var key,values,value,_b,_c,_d,_e;
 				return __generator(this, function(_state) {
 					switch (_state.label) {
 						case 0:
-							_f = 0;
-							_g = params;
+							_b = 0;
+							_c = params;
 							return [3, 1];
 						case 1:
-							if (!(_f < _g.length)) {
+							if (!(_b < _c.length)) {
 								return [3, 7];
 							}
-							[key, values] = _g[_f];
-							_h = 0;
-							_i = values;
+							[key, values] = _c[_b];
+							_d = 0;
+							_e = values;
 							return [3, 2];
 						case 2:
-							if (!(_h < _i.length)) {
+							if (!(_d < _e.length)) {
 								return [3, 5];
 							}
-							value = _i[_h];
+							value = _e[_d];
 							return [4, [key, value]];
 						case 3:
 							_state.sent();
 							return [3, 4];
 						case 4:
-							_h++;
+							_d++;
 							return [3, 2];
 						case 5:
 						case 6:
-							_f++;
+							_b++;
 							return [3, 1];
 						case 7:
 							return [2];
@@ -13565,14 +13921,15 @@ var init_react_native_Libraries_Blob_URL = __esm({
 	};
 		init_class_call_check();
 	init_react_native_Libraries_Blob_NativeBlobModule();
+	init_react_native_Libraries_Blob_URLSearchParams();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeBlobModule();
 		
 	
 	BLOB_URL_PREFIX = null;
-	if (_default$22 && typeof _default$22.getConstants().BLOB_URI_SCHEME === "string") {
+	if (_default$22 && typeof _default$22.getConstants().BLOB_URI_SCHEME == "string") {
 		var constants$3 = _default$22.getConstants();
 		BLOB_URL_PREFIX = constants$3.BLOB_URI_SCHEME + ":";
-		if (typeof constants$3.BLOB_URI_HOST === "string") {
+		if (typeof constants$3.BLOB_URI_HOST == "string") {
 			BLOB_URL_PREFIX += `//${constants$3.BLOB_URI_HOST}/`;
 		}
 	}
@@ -13594,7 +13951,7 @@ var init_react_native_Libraries_Blob_URL = __esm({
 					this._url += "/";
 				}
 			} else {
-				if (typeof base === "string") {
+				if (typeof base == "string") {
 					baseUrl = base;
 					if (!validateBaseUrl(baseUrl)) {
 						throw new TypeError(`Invalid base URL: ${baseUrl}`);
@@ -13701,7 +14058,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 	}
 	function setCancelFlag(data) {
 		if (data.passiveListener != null) {
-			if (typeof console !== "undefined" && typeof console.error === "function") {
+			if (typeof console < "u" && typeof console.error == "function") {
 				console.error("Unable to preventDefault inside passive event listener invocation.", data.passiveListener);
 			}
 			return;
@@ -13710,7 +14067,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 			return;
 		}
 		data.canceled = true;
-		if (typeof data.event.preventDefault === "function") {
+		if (typeof data.event.preventDefault == "function") {
 			data.event.preventDefault();
 		}
 	}
@@ -13750,14 +14107,14 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 	}, stopPropagation() {
 		var data = pd(this);
 		data.stopped = true;
-		if (typeof data.event.stopPropagation === "function") {
+		if (typeof data.event.stopPropagation == "function") {
 			data.event.stopPropagation();
 		}
 	}, stopImmediatePropagation() {
 		var data = pd(this);
 		data.stopped = true;
 		data.immediateStopped = true;
-		if (typeof data.event.stopImmediatePropagation === "function") {
+		if (typeof data.event.stopImmediatePropagation == "function") {
 			data.event.stopImmediatePropagation();
 		}
 	}, get bubbles() {
@@ -13782,7 +14139,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 		}
 		var data = pd(this);
 		data.stopped = true;
-		if (typeof data.event.cancelBubble === "boolean") {
+		if (typeof data.event.cancelBubble == "boolean") {
 			data.event.cancelBubble = true;
 		}
 	}, get returnValue() {
@@ -13794,7 +14151,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 	}, initEvent() {
 	} };
 	Object.defineProperty(Event.prototype, "constructor", { value: Event, configurable: true, writable: true });
-	if (typeof window !== "undefined" && typeof window.Event !== "undefined") {
+	if (typeof window < "u" && typeof window.Event < "u") {
 		Object.setPrototypeOf(Event.prototype, window.Event.prototype);
 		wrappers.set(window.Event.prototype, Event);
 	}
@@ -13823,7 +14180,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 		for (var i = 0; i < keys.length; ++i) {
 			var key = keys[i];
 			if (!(key in BaseEvent.prototype)) {
-				var descriptor = Object.getOwnPropertyDescriptor(proto, key),isFunc = typeof descriptor.value === "function";
+				var descriptor = Object.getOwnPropertyDescriptor(proto, key),isFunc = typeof descriptor.value == "function";
 				Object.defineProperty(CustomEvent.prototype, key, isFunc ? defineCallDescriptor(key) : defineRedirectDescriptor(key));
 			}
 		}
@@ -13858,7 +14215,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 	}
 	var listenersMap = new WeakMap(),CAPTURE = 1,BUBBLE = 2,ATTRIBUTE = 3;
 	function isObject(x) {
-		return x !== null && typeof x === "object";
+		return x !== null && typeof x == "object";
 	}
 	function getListeners(eventTarget) {
 		var listeners = listenersMap.get(eventTarget);
@@ -13878,7 +14235,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 			}
 			return null;
 		}, set(listener) {
-			if (typeof listener !== "function" && !isObject(listener)) {
+			if (typeof listener != "function" && !isObject(listener)) {
 				listener = null;
 			}
 			var listeners = getListeners(this),prev = null,node = listeners.get(eventName);
@@ -13940,7 +14297,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 		if (listener == null) {
 			return;
 		}
-		if (typeof listener !== "function" && !isObject(listener)) {
+		if (typeof listener != "function" && !isObject(listener)) {
 			throw new TypeError("'listener' should be a function or an object.");
 		}
 		var listeners = getListeners(this),optionsIsObj = isObject(options),capture = optionsIsObj ? Boolean(options.capture) : Boolean(options),listenerType = capture ? CAPTURE : BUBBLE,newNode = { listener, listenerType, passive: optionsIsObj && Boolean(options.passive), once: optionsIsObj && Boolean(options.once), next: null },node = listeners.get(eventName);
@@ -13977,7 +14334,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 			node = node.next;
 		}
 	}, dispatchEvent(event) {
-		if (event == null || typeof event.type !== "string") {
+		if (event == null || typeof event.type != "string") {
 			throw new TypeError("\"event.type\" should be a string.");
 		}
 		var listeners = getListeners(this),eventName = event.type,node = listeners.get(eventName);
@@ -13998,15 +14355,15 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 				prev = node;
 			}
 			setPassiveListener(wrappedEvent, node.passive ? node.listener : null);
-			if (typeof node.listener === "function") {
+			if (typeof node.listener == "function") {
 				try {
 					node.listener.call(this, wrappedEvent);
 				} catch (err) {
-					if (typeof console !== "undefined" && typeof console.error === "function") {
+					if (typeof console < "u" && typeof console.error == "function") {
 						console.error(err);
 					}
 				}
-			} else if (node.listenerType !== ATTRIBUTE && typeof node.listener.handleEvent === "function") {
+			} else if (node.listenerType !== ATTRIBUTE && typeof node.listener.handleEvent == "function") {
 				node.listener.handleEvent(wrappedEvent);
 			}
 			if (isStopped(wrappedEvent)) {
@@ -14020,7 +14377,7 @@ var require_event_target_shim_dist_event_target_shim = __commonJS({
 		return !wrappedEvent.defaultPrevented;
 	} };
 	Object.defineProperty(EventTarget.prototype, "constructor", { value: EventTarget, configurable: true, writable: true });
-	if (typeof window !== "undefined" && typeof window.EventTarget !== "undefined") {
+	if (typeof window < "u" && typeof window.EventTarget < "u") {
 		Object.setPrototypeOf(EventTarget.prototype, window.EventTarget.prototype);
 	}
 	exports.defineEventAttribute = defineEventAttribute;
@@ -14054,7 +14411,7 @@ init_extends();
 		__extends(AbortSignal, _super);
 		Object.defineProperty(AbortSignal.prototype, "aborted", { configurable: true, get: function() {
 			var aborted = abortedFlags.get(this);
-			if (typeof aborted !== "boolean") {
+			if (typeof aborted != "boolean") {
 				throw new TypeError(`Expected 'this' to be an 'AbortSignal' object, but got ${this === null ? "null" : typeof this}`);
 			}
 			return aborted;
@@ -14078,7 +14435,7 @@ init_extends();
 	}
 	var abortedFlags = new WeakMap();
 	Object.defineProperties(AbortSignal.prototype, { aborted: { enumerable: true } });
-	if (typeof Symbol === "function" && typeof Symbol.toStringTag === "symbol") {
+	if (typeof Symbol == "function" && typeof Symbol.toStringTag == "symbol") {
 		Object.defineProperty(AbortSignal.prototype, Symbol.toStringTag, { configurable: true, value: "AbortSignal" });
 	}
 	var AbortController = (function() {
@@ -14103,7 +14460,7 @@ init_extends();
 		return signal;
 	}
 	Object.defineProperties(AbortController.prototype, { signal: { enumerable: true }, abort: { enumerable: true } });
-	if (typeof Symbol === "function" && typeof Symbol.toStringTag === "symbol") {
+	if (typeof Symbol == "function" && typeof Symbol.toStringTag == "symbol") {
 		Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { configurable: true, value: "AbortController" });
 	}
 	exports.AbortController = AbortController;
@@ -14312,7 +14669,7 @@ var init_react_native_Libraries_Alert_Alert = __esm({
 		Object.defineProperty(Alert, "prompt", { configurable: true, writable: true, value: function(title,message,callbackOrButtons,type="plain-text",defaultValue,keyboardType,options) {
 			if (Platform.OS === "ios") {
 				var callbacks = [],buttons = [],cancelButtonKey = void 0,destructiveButtonKey = void 0,preferredButtonKey = void 0;
-				if (typeof callbackOrButtons === "function") {
+				if (typeof callbackOrButtons == "function") {
 					callbacks = [callbackOrButtons];
 				} else if (Array.isArray(callbackOrButtons)) {
 					callbackOrButtons.forEach(function(btn,index) {
@@ -14387,7 +14744,7 @@ var init_react_native_Libraries_Utilities_RCTLog = __esm({
 	levelsMap = { log: "log", info: "info", warn: "warn", error: "error", fatal: "error" };
 	warningHandler = null;
 	RCTLog = { logIfNoNativeHook(level,...args) {
-		if (typeof global.nativeLoggingHook === "undefined") {
+		if (typeof global.nativeLoggingHook > "u") {
 			RCTLog.logToConsole(level, ...args);
 		} else {
 			if (warningHandler && level === "warn") {
@@ -14618,7 +14975,7 @@ var init_react_native_Libraries_ReactNative_HeadlessJsTaskError = __esm({
 //#endregion
 //#region PerformanceLoggerContext.js
 var exports_react_native_Libraries_Utilities_PerformanceLoggerContext = {};
-var PerformanceLoggerContext, usePerformanceLogger, React$5;
+var PerformanceLoggerContext, usePerformanceLogger, React$5, createContext$1, useContext;
 __export(exports_react_native_Libraries_Utilities_PerformanceLoggerContext, {
 	usePerformanceLogger: function() { return usePerformanceLogger; },
 	"default": function() { return PerformanceLoggerContext; },
@@ -14626,14 +14983,17 @@ __export(exports_react_native_Libraries_Utilities_PerformanceLoggerContext, {
 var init_react_native_Libraries_Utilities_PerformanceLoggerContext = __esm({
 	"PerformanceLoggerContext.js"() {
 	usePerformanceLogger = function() {
-		return require_react_index().useContext(PerformanceLoggerContext);
+		return useContext(PerformanceLoggerContext);
 	};
 		init_react_native_Libraries_Utilities_GlobalPerformanceLogger();
+	require_react_index();
 	React$5 = __toESM(require_react_index());
+	createContext$1 = require_react_index().createContext;
+	useContext = require_react_index().useContext;
 		
 	
 	
-	PerformanceLoggerContext = require_react_index().createContext(GlobalPerformanceLogger);
+	PerformanceLoggerContext = createContext$1(GlobalPerformanceLogger);
 	;
 	
 	
@@ -14642,7 +15002,7 @@ var init_react_native_Libraries_Utilities_PerformanceLoggerContext = __esm({
 //#endregion
 //#region RootTag.js
 var exports_react_native_Libraries_ReactNative_RootTag = {};
-var RootTagContext, createRootTag, React$6;
+var RootTagContext, createRootTag, React$6, createContext$2;
 __export(exports_react_native_Libraries_ReactNative_RootTag, {
 	RootTagContext: function() { return RootTagContext; },
 	createRootTag: function() { return createRootTag; },
@@ -14652,10 +15012,12 @@ var init_react_native_Libraries_ReactNative_RootTag = __esm({
 	createRootTag = function(rootTag) {
 		return rootTag;
 	};
-		React$6 = __toESM(require_react_index());
+		require_react_index();
+	React$6 = __toESM(require_react_index());
+	createContext$2 = require_react_index().createContext;
 		
 	
-	RootTagContext = require_react_index().createContext(0);
+	RootTagContext = createContext$2(0);
 	;
 	
 	}
@@ -14671,6 +15033,7 @@ var init_react_native_Libraries_ReactNative_AppContainer_prod = __esm({
 	"AppContainer-prod.js"() {
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
+	require_react_index();
 	React$7 = __toESM(require_react_index());
 		
 	
@@ -14697,6 +15060,7 @@ __export(exports_react_native_Libraries_ReactNative_AppContainer, {
 });
 var init_react_native_Libraries_ReactNative_AppContainer = __esm({
 	"AppContainer.js"() {
+	require_react_index();
 	React$8 = __toESM(require_react_index());
 		
 	AppContainer$1 = (init_react_native_Libraries_ReactNative_AppContainer_prod(), __toCommonJS(exports_react_native_Libraries_ReactNative_AppContainer_prod)).default;
@@ -14724,7 +15088,8 @@ var init_react_native_Libraries_ReactNative_getCachedComponentWithDebugName = __
 		}
 		return ComponentWithDisplayName;
 	};
-		React$9 = __toESM(require_react_index());
+		require_react_index();
+	React$9 = __toESM(require_react_index());
 		
 	cache = new Map();
 	
@@ -14769,8 +15134,8 @@ var init_react_native_Libraries_ReactNative_renderApplication = __esm({
 		performanceLogger.startTimespan("renderApplication_React_render");
 		performanceLogger.setExtra("usedReactConcurrentRoot", useConcurrentRoot ? "1" : "0");
 		performanceLogger.setExtra("usedReactFabric", fabric ? "1" : "0");
-		performanceLogger.setExtra("usedReactProfiler", isProfilingRenderer());
-		renderElement({ element: renderable, rootTag, useFabric: Boolean(fabric), useConcurrentRoot });
+		performanceLogger.setExtra("usedReactProfiler", (init_react_native_Libraries_ReactNative_RendererImplementation(), isProfilingRenderer)());
+		(init_react_native_Libraries_ReactNative_RendererImplementation(), renderElement)({ element: renderable, rootTag, useFabric: Boolean(fabric), useConcurrentRoot });
 		var newArchitecture = !!fabric;
 		if (!newArchitecture) {
 			warnOnce("[OSS][OldArchDeprecatedWarning]", "The app is running using the Legacy Architecture. The Legacy Architecture is deprecated and will be removed in a future version of React Native. Please consider migrating to the New Architecture. For more information, please see https://reactnative.dev/blog/2024/10/23/the-new-architecture-is-here");
@@ -14784,6 +15149,9 @@ var init_react_native_Libraries_ReactNative_renderApplication = __esm({
 	init_react_native_Libraries_ReactNative_DisplayMode();
 	init_react_native_Libraries_ReactNative_getCachedComponentWithDebugName();
 	init_react_native_Libraries_ReactNative_RendererProxy();
+	require_invariant_browser();
+	require_react_index();
+	init_react_native_Libraries_Utilities_BackHandler_ios();
 	invariant$18 = require_invariant_browser();
 	React$10 = __toESM(require_react_index());
 		init_react_native_Libraries_Utilities_BackHandler_ios();
@@ -14978,6 +15346,7 @@ var init_react_native_Libraries_ReactNative_AppRegistryImpl = __esm({
 		init_react_native_Libraries_Utilities_createPerformanceLogger();
 	init_react_native_Libraries_Utilities_SceneTracker();
 	init_react_native_Libraries_ReactNative_HeadlessJsTaskError();
+	require_invariant_browser();
 	invariant$19 = require_invariant_browser();
 		
 	
@@ -15239,6 +15608,7 @@ var init_react_native_src_private_webapis_intersectionobserver_internals_Interse
 		init_react_native_Libraries_Performance_Systrace();
 	init_react_native_Libraries_Utilities_warnOnce();
 	init_react_native_src_private_webapis_intersectionobserver_specs_NativeIntersectionObserver();
+	require_nullthrows_nullthrows();
 	nullthrows$7 = __toESM(require_nullthrows_nullthrows()).default;
 		Systrace$3=__toESM((init_react_native_Libraries_Performance_Systrace(), __toCommonJS(exports_react_native_Libraries_Performance_Systrace)));
 	
@@ -15312,7 +15682,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 		if (rootMargin == null || rootMargin === "") {
 			return "0px 0px 0px 0px";
 		}
-		if (typeof rootMargin !== "string") {
+		if (typeof rootMargin != "string") {
 			throw new TypeError("Failed to construct 'IntersectionObserver': Failed to read the 'rootMargin' property from 'IntersectionObserverInit': The provided value is not of type 'string'.");
 		}
 		var marginStr = rootMargin.trim();
@@ -15362,7 +15732,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 			if (callback == null) {
 				throw new TypeError("Failed to construct 'IntersectionObserver': 1 argument required, but only 0 present.");
 			}
-			if (typeof callback !== "function") {
+			if (typeof callback != "function") {
 				throw new TypeError("Failed to construct 'IntersectionObserver': parameter 1 is not of type 'Function'.");
 			}
 			if (options?.root != null && !(options?.root instanceof _default$15)) {
@@ -15523,6 +15893,7 @@ var exports_react_native_Libraries_ReactPrivate_ReactNativePrivateInitializeCore
 var init_react_native_Libraries_ReactPrivate_ReactNativePrivateInitializeCore = __esm({
 	"ReactNativePrivateInitializeCore.js"() {
 	require_react_native_Libraries_Core_InitializeCore();
+		require_react_native_Libraries_Core_InitializeCore();
 	
 	}
 });
@@ -16435,6 +16806,10 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 		0 === (nextRetryLane & 62914560) && (nextRetryLane = 4194304);
 		return lane;
 	}
+	function createLaneMap(initial) {
+		for (var laneMap = [],i = 0; 31 > i; i++)laneMap.push(initial);
+		return laneMap;
+	}
 	function markRootUpdated$1(root,updateLane) {
 		root.pendingLanes |= updateLane;
 		268435456 !== updateLane && ((root.suspendedLanes = 0),(root.pingedLanes = 0),(root.warmLanes = 0));
@@ -16522,6 +16897,94 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 	function lanesToEventPriority(lanes) {
 		lanes &= -lanes;
 		return 2 < lanes ? 8 < lanes ? 0 !== (lanes & 134217727) ? 32 : 268435456 : 8 : 2;
+	}
+	function getNearestMountedFiber(fiber) {
+		var node = fiber,nearestMounted = fiber;
+		if (fiber.alternate)for (; node.return; )node = node.return; else {
+			fiber = node;
+			do (node = fiber),0 !== (node.flags & 4098) && (nearestMounted = node.return),(fiber = node.return); while (fiber);
+		}
+		return 3 === node.tag ? nearestMounted : null;
+	}
+	function assertIsMounted(fiber) {
+		if (getNearestMountedFiber(fiber) !== fiber)throw Error("Unable to find node on an unmounted component.");
+	}
+	function findCurrentFiberUsingSlowPath(fiber) {
+		var alternate = fiber.alternate;
+		if (!alternate) {
+			alternate = getNearestMountedFiber(fiber);
+			if (null === alternate)throw Error("Unable to find node on an unmounted component.");
+			return alternate !== fiber ? null : fiber;
+		}
+		for (var a = fiber,b = alternate; ; ) {
+			var parentA = a.return;
+			if (null === parentA)break;
+			var parentB = parentA.alternate;
+			if (null === parentB) {
+				b = parentA.return;
+				if (null !== b) {
+					a = b;
+					continue;
+				}
+				break;
+			}
+			if (parentA.child === parentB.child) {
+				for (parentB = parentA.child; parentB; ) {
+					if (parentB === a)return assertIsMounted(parentA),fiber;
+					if (parentB === b)return assertIsMounted(parentA),alternate;
+					parentB = parentB.sibling;
+				}
+				throw Error("Unable to find node on an unmounted component.");
+			}
+			if (a.return !== b.return)(a = parentA),(b = parentB); else {
+				for (var didFindChild = false,child$11 = parentA.child; child$11; ) {
+					if (child$11 === a) {
+						didFindChild = true;
+						a = parentA;
+						b = parentB;
+						break;
+					}
+					if (child$11 === b) {
+						didFindChild = true;
+						b = parentA;
+						a = parentB;
+						break;
+					}
+					child$11 = child$11.sibling;
+				}
+				if (!didFindChild) {
+					for (child$11 = parentB.child; child$11; ) {
+						if (child$11 === a) {
+							didFindChild = true;
+							a = parentB;
+							b = parentA;
+							break;
+						}
+						if (child$11 === b) {
+							didFindChild = true;
+							b = parentB;
+							a = parentA;
+							break;
+						}
+						child$11 = child$11.sibling;
+					}
+					if (!didFindChild)throw Error("Child was not found in either parent set. This indicates a bug in React related to the return pointer. Please file an issue.");
+				}
+			}
+			if (a.alternate !== b)throw Error("Return fibers should always be each others' alternates. This error is likely caused by a bug in React. Please file an issue.");
+		}
+		if (3 !== a.tag)throw Error("Unable to find node on an unmounted component.");
+		return a.stateNode.current === a ? fiber : alternate;
+	}
+	function findCurrentHostFiberImpl(node) {
+		var tag = node.tag;
+		if (5 === tag || 26 === tag || 27 === tag || 6 === tag)return node;
+		for (node = node.child; null !== node; ) {
+			tag = findCurrentHostFiberImpl(node);
+			if (null !== tag)return tag;
+			node = node.sibling;
+		}
+		return null;
 	}
 	var valueStack = [],index = -1;
 	function createCursor(defaultValue) {
@@ -18271,6 +18734,9 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 			for (var propName$52 in Component)void 0 === newProps[propName$52] && (newProps[propName$52] = Component[propName$52]);
 		}
 		return newProps;
+	}
+	function defaultOnRecoverableError(error) {
+		reportGlobalError(error);
 	}
 	function logUncaughtError(root,errorInfo) {
 		try {
@@ -20780,6 +21246,53 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 		mode.stateNode = { containerInfo: portal.containerInfo, pendingChildren: null, implementation: portal.implementation };
 		return mode;
 	}
+	function FiberRootNode(containerInfo,tag,hydrate,identifierPrefix,onUncaughtError,onCaughtError,onRecoverableError,onDefaultTransitionIndicator,formState) {
+		this.tag = tag;
+		this.containerInfo = containerInfo;
+		this.pingCache = this.current = this.pendingChildren = null;
+		this.timeoutHandle = -1;
+		this.callbackNode = this.next = this.pendingContext = this.context = this.cancelPendingCommit = null;
+		this.callbackPriority = 0;
+		this.expirationTimes = createLaneMap(-1);
+		this.entangledLanes = this.shellSuspendCounter = this.errorRecoveryDisabledLanes = this.expiredLanes = this.warmLanes = this.pingedLanes = this.suspendedLanes = this.pendingLanes = 0;
+		this.entanglements = createLaneMap(0);
+		this.hiddenUpdates = createLaneMap(null);
+		this.identifierPrefix = identifierPrefix;
+		this.onUncaughtError = onUncaughtError;
+		this.onCaughtError = onCaughtError;
+		this.onRecoverableError = onRecoverableError;
+		this.pooledCache = null;
+		this.pooledCacheLanes = 0;
+		this.formState = formState;
+		this.incompleteTransitions = new Map();
+	}
+	function createPortal$1(children,containerInfo,implementation) {
+		var key = 3 < arguments.length && void 0 !== arguments[3] ? arguments[3] : null;
+		return { $$typeof: REACT_PORTAL_TYPE, key: null == key ? null : "" + key, children: children, containerInfo: containerInfo, implementation: implementation };
+	}
+	function findHostInstance(component) {
+		var fiber = component._reactInternals;
+		if (void 0 === fiber) {
+			if ("function" === typeof component.render)throw Error("Unable to find node on an unmounted component.");
+			component = Object.keys(component).join(",");
+			throw Error("Argument appears to not be a ReactComponent. Keys: " + component);
+		}
+		component = findCurrentFiberUsingSlowPath(fiber);
+		component = null !== component ? findCurrentHostFiberImpl(component) : null;
+		return null === component ? null : getPublicInstance(component.stateNode);
+	}
+	function updateContainer(element,container,parentComponent,callback) {
+		parentComponent = container.current;
+		var lane = requestUpdateLane(parentComponent);
+		null === container.context ? (container.context = emptyContextObject) : (container.pendingContext = emptyContextObject);
+		container = createUpdate(lane);
+		container.payload = { element: element };
+		callback = void 0 === callback ? null : callback;
+		null !== callback && (container.callback = callback);
+		element = enqueueUpdate(parentComponent, container, lane);
+		null !== element && (scheduleUpdateOnFiber(element, parentComponent, lane),entangleTransitions(element, parentComponent, lane));
+		return lane;
+	}
 	function shim$1() {
 		throw Error("The current renderer does not support hydration. This error is likely caused by a bug in React. Please file an issue.");
 	}
@@ -20845,6 +21358,14 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 		to && to.stateNode && nativeFabricUIManager.setIsJSResponder(to.stateNode.node, true, blockNativeResponder || false);
 	} });
 	if ("function" !== typeof ReactNativePrivateInterface.ReactFiberErrorDialog.showErrorDialog)throw Error("Expected ReactFiberErrorDialog.showErrorDialog to be a function.");
+	function nativeOnUncaughtError(error,errorInfo) {
+		false !== ReactNativePrivateInterface.ReactFiberErrorDialog.showErrorDialog({ errorBoundary: null, error: error, componentStack: null != errorInfo.componentStack ? errorInfo.componentStack : "" }) && reportGlobalError(error);
+	}
+	function nativeOnCaughtError(error,errorInfo) {
+		false !== ReactNativePrivateInterface.ReactFiberErrorDialog.showErrorDialog({ errorBoundary: errorInfo.errorBoundary, error: error, componentStack: null != errorInfo.componentStack ? errorInfo.componentStack : "" }) && console.error(error);
+	}
+	function nativeOnDefaultTransitionIndicator() {
+	}
 	batchedUpdatesImpl = function(fn,a) {
 		var prevExecutionContext = executionContext;
 		executionContext |= 1;
@@ -20863,6 +21384,86 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 		} catch (err) {
 		}
 	}
+	exports.createPortal = function(children,containerTag) {
+		return createPortal$1(children, containerTag, null, 2 < arguments.length && void 0 !== arguments[2] ? arguments[2] : null);
+	};
+	exports.dispatchCommand = function(handle,command,args) {
+		var nativeTag = null != handle._nativeTag ? handle._nativeTag : ReactNativePrivateInterface.getNativeTagFromPublicInstance(handle);
+		null != nativeTag && ((handle = ReactNativePrivateInterface.getNodeFromPublicInstance(handle)),null != handle ? nativeFabricUIManager.dispatchCommand(handle, command, args) : ReactNativePrivateInterface.UIManager.dispatchViewManagerCommand(nativeTag, command, args));
+	};
+	exports.findHostInstance_DEPRECATED = function(componentOrHandle) {
+		return null == componentOrHandle ? null : componentOrHandle.canonical && componentOrHandle.canonical.publicInstance ? componentOrHandle.canonical.publicInstance : componentOrHandle._nativeTag ? componentOrHandle : findHostInstance(componentOrHandle);
+	};
+	exports.findNodeHandle = function(componentOrHandle) {
+		if (null == componentOrHandle)return null;
+		if ("number" === typeof componentOrHandle)return componentOrHandle;
+		if (componentOrHandle._nativeTag)return componentOrHandle._nativeTag;
+		if (null != componentOrHandle.canonical && null != componentOrHandle.canonical.nativeTag)return componentOrHandle.canonical.nativeTag;
+		var nativeTag = ReactNativePrivateInterface.getNativeTagFromPublicInstance(componentOrHandle);
+		if (nativeTag)return nativeTag;
+		componentOrHandle = findHostInstance(componentOrHandle);
+		return null == componentOrHandle ? componentOrHandle : null != componentOrHandle._nativeTag ? componentOrHandle._nativeTag : ReactNativePrivateInterface.getNativeTagFromPublicInstance(componentOrHandle);
+	};
+	exports.getNodeFromInternalInstanceHandle = function(internalInstanceHandle) {
+		return (internalInstanceHandle && internalInstanceHandle.stateNode && internalInstanceHandle.stateNode.node);
+	};
+	exports.getPublicInstanceFromInternalInstanceHandle = function(internalInstanceHandle) {
+		var instance = internalInstanceHandle.stateNode;
+		return null == instance ? null : 6 === internalInstanceHandle.tag ? (null == instance.publicInstance && (instance.publicInstance = ReactNativePrivateInterface.createPublicTextInstance(internalInstanceHandle)),instance.publicInstance) : getPublicInstance(internalInstanceHandle.stateNode);
+	};
+	exports.getPublicInstanceFromRootTag = function(rootTag) {
+		return (rootTag = roots.get(rootTag)) ? rootTag.containerInfo.publicInstance : null;
+	};
+	exports.isChildPublicInstance = function() {
+		throw Error("isChildPublicInstance() is not available in production.");
+	};
+	exports.render = function(element,containerTag,callback,concurrentRoot,options) {
+		var root = roots.get(containerTag);
+		if (!root) {
+			root = nativeOnUncaughtError;
+			var onCaughtError = nativeOnCaughtError,onRecoverableError = defaultOnRecoverableError;
+			options && void 0 !== options.onUncaughtError && (root = options.onUncaughtError);
+			options && void 0 !== options.onCaughtError && (onCaughtError = options.onCaughtError);
+			options && void 0 !== options.onRecoverableError && (onRecoverableError = options.onRecoverableError);
+			options = { publicInstance: ReactNativePrivateInterface.createPublicRootInstance(containerTag), containerTag: containerTag };
+			concurrentRoot = concurrentRoot ? 1 : 0;
+			root = new FiberRootNode(options, concurrentRoot, false, "", root, onCaughtError, onRecoverableError, nativeOnDefaultTransitionIndicator, null);
+			concurrentRoot = createFiberImplClass(3, null, null, 1 === concurrentRoot ? 1 : 0);
+			root.current = concurrentRoot;
+			concurrentRoot.stateNode = root;
+			onCaughtError = createCache();
+			onCaughtError.refCount++;
+			root.pooledCache = onCaughtError;
+			onCaughtError.refCount++;
+			concurrentRoot.memoizedState = { element: null, isDehydrated: false, cache: onCaughtError };
+			initializeUpdateQueue(concurrentRoot);
+			roots.set(containerTag, root);
+		}
+		updateContainer(element, root, null, callback);
+		a:if (((element = root.current),element.child))switch (element.child.tag) {
+			case 27:
+			case 5:
+				element = getPublicInstance(element.child.stateNode);
+				break a;
+			default:
+				element = element.child.stateNode;
+		} else element = null;
+		return element;
+	};
+	exports.sendAccessibilityEvent = function(handle,eventType) {
+		var nativeTag = null != handle._nativeTag ? handle._nativeTag : ReactNativePrivateInterface.getNativeTagFromPublicInstance(handle);
+		null != nativeTag && ((handle = ReactNativePrivateInterface.getNodeFromPublicInstance(handle)),null != handle ? nativeFabricUIManager.sendAccessibilityEvent(handle, eventType) : ReactNativePrivateInterface.legacySendAccessibilityEvent(nativeTag, eventType));
+	};
+	exports.stopSurface = function(containerTag) {
+		var root = roots.get(containerTag);
+		root && updateContainer(null, root, null, function() {
+			root.containerInfo.publicInstance = null;
+			roots.delete(containerTag);
+		});
+	};
+	exports.unmountComponentAtNode = function(containerTag) {
+		this.stopSurface(containerTag);
+	};
 	
 	}
 });
@@ -21509,6 +22110,94 @@ var require_react_native_Libraries_Renderer_implementations_ReactNativeRenderer_
 	ResponderEventPlugin.injection.injectGlobalResponderHandler({ onChange: function(from,to,blockNativeResponder) {
 		null !== to ? ReactNativePrivateInterface.UIManager.setJSResponder(to.stateNode._nativeTag, blockNativeResponder) : ReactNativePrivateInterface.UIManager.clearJSResponder();
 	} });
+	function getNearestMountedFiber(fiber) {
+		var node = fiber,nearestMounted = fiber;
+		if (fiber.alternate)for (; node.return; )node = node.return; else {
+			fiber = node;
+			do (node = fiber),0 !== (node.flags & 4098) && (nearestMounted = node.return),(fiber = node.return); while (fiber);
+		}
+		return 3 === node.tag ? nearestMounted : null;
+	}
+	function assertIsMounted(fiber) {
+		if (getNearestMountedFiber(fiber) !== fiber)throw Error("Unable to find node on an unmounted component.");
+	}
+	function findCurrentFiberUsingSlowPath(fiber) {
+		var alternate = fiber.alternate;
+		if (!alternate) {
+			alternate = getNearestMountedFiber(fiber);
+			if (null === alternate)throw Error("Unable to find node on an unmounted component.");
+			return alternate !== fiber ? null : fiber;
+		}
+		for (var a = fiber,b = alternate; ; ) {
+			var parentA = a.return;
+			if (null === parentA)break;
+			var parentB = parentA.alternate;
+			if (null === parentB) {
+				b = parentA.return;
+				if (null !== b) {
+					a = b;
+					continue;
+				}
+				break;
+			}
+			if (parentA.child === parentB.child) {
+				for (parentB = parentA.child; parentB; ) {
+					if (parentB === a)return assertIsMounted(parentA),fiber;
+					if (parentB === b)return assertIsMounted(parentA),alternate;
+					parentB = parentB.sibling;
+				}
+				throw Error("Unable to find node on an unmounted component.");
+			}
+			if (a.return !== b.return)(a = parentA),(b = parentB); else {
+				for (var didFindChild = false,child$6 = parentA.child; child$6; ) {
+					if (child$6 === a) {
+						didFindChild = true;
+						a = parentA;
+						b = parentB;
+						break;
+					}
+					if (child$6 === b) {
+						didFindChild = true;
+						b = parentA;
+						a = parentB;
+						break;
+					}
+					child$6 = child$6.sibling;
+				}
+				if (!didFindChild) {
+					for (child$6 = parentB.child; child$6; ) {
+						if (child$6 === a) {
+							didFindChild = true;
+							a = parentB;
+							b = parentA;
+							break;
+						}
+						if (child$6 === b) {
+							didFindChild = true;
+							b = parentB;
+							a = parentA;
+							break;
+						}
+						child$6 = child$6.sibling;
+					}
+					if (!didFindChild)throw Error("Child was not found in either parent set. This indicates a bug in React related to the return pointer. Please file an issue.");
+				}
+			}
+			if (a.alternate !== b)throw Error("Return fibers should always be each others' alternates. This error is likely caused by a bug in React. Please file an issue.");
+		}
+		if (3 !== a.tag)throw Error("Unable to find node on an unmounted component.");
+		return a.stateNode.current === a ? fiber : alternate;
+	}
+	function findCurrentHostFiberImpl(node) {
+		var tag = node.tag;
+		if (5 === tag || 26 === tag || 27 === tag || 6 === tag)return node;
+		for (node = node.child; null !== node; ) {
+			tag = findCurrentHostFiberImpl(node);
+			if (null !== tag)return tag;
+			node = node.sibling;
+		}
+		return null;
+	}
 	var emptyObject = {},removedKeys = null,removedKeyCount = 0,deepDifferOptions = { unsafelyIgnoreFunctions: true };
 	function defaultDiffer(prevProp,nextProp) {
 		return "object" !== typeof nextProp || null === nextProp ? true : ReactNativePrivateInterface.deepDiffer(prevProp, nextProp, deepDifferOptions);
@@ -21730,6 +22419,10 @@ var require_react_native_Libraries_Renderer_implementations_ReactNativeRenderer_
 		nextRetryLane <<= 1;
 		0 === (nextRetryLane & 62914560) && (nextRetryLane = 4194304);
 		return lane;
+	}
+	function createLaneMap(initial) {
+		for (var laneMap = [],i = 0; 31 > i; i++)laneMap.push(initial);
+		return laneMap;
 	}
 	function markRootUpdated$1(root,updateLane) {
 		root.pendingLanes |= updateLane;
@@ -23599,6 +24292,9 @@ var require_react_native_Libraries_Renderer_implementations_ReactNativeRenderer_
 			for (var propName$56 in Component)void 0 === newProps[propName$56] && (newProps[propName$56] = Component[propName$56]);
 		}
 		return newProps;
+	}
+	function defaultOnRecoverableError(error) {
+		reportGlobalError(error);
 	}
 	function logUncaughtError(root,errorInfo) {
 		try {
@@ -26200,7 +26896,68 @@ var require_react_native_Libraries_Renderer_implementations_ReactNativeRenderer_
 		mode.stateNode = { containerInfo: portal.containerInfo, pendingChildren: null, implementation: portal.implementation };
 		return mode;
 	}
+	function FiberRootNode(containerInfo,tag,hydrate,identifierPrefix,onUncaughtError,onCaughtError,onRecoverableError,onDefaultTransitionIndicator,formState) {
+		this.tag = tag;
+		this.containerInfo = containerInfo;
+		this.pingCache = this.current = this.pendingChildren = null;
+		this.timeoutHandle = -1;
+		this.callbackNode = this.next = this.pendingContext = this.context = this.cancelPendingCommit = null;
+		this.callbackPriority = 0;
+		this.expirationTimes = createLaneMap(-1);
+		this.entangledLanes = this.shellSuspendCounter = this.errorRecoveryDisabledLanes = this.expiredLanes = this.warmLanes = this.pingedLanes = this.suspendedLanes = this.pendingLanes = 0;
+		this.entanglements = createLaneMap(0);
+		this.hiddenUpdates = createLaneMap(null);
+		this.identifierPrefix = identifierPrefix;
+		this.onUncaughtError = onUncaughtError;
+		this.onCaughtError = onCaughtError;
+		this.onRecoverableError = onRecoverableError;
+		this.pooledCache = null;
+		this.pooledCacheLanes = 0;
+		this.formState = formState;
+		this.incompleteTransitions = new Map();
+	}
+	function createPortal$1(children,containerInfo,implementation) {
+		var key = 3 < arguments.length && void 0 !== arguments[3] ? arguments[3] : null;
+		return { $$typeof: REACT_PORTAL_TYPE, key: null == key ? null : "" + key, children: children, containerInfo: containerInfo, implementation: implementation };
+	}
+	function findHostInstance(component) {
+		var fiber = component._reactInternals;
+		if (void 0 === fiber) {
+			if ("function" === typeof component.render)throw Error("Unable to find node on an unmounted component.");
+			component = Object.keys(component).join(",");
+			throw Error("Argument appears to not be a ReactComponent. Keys: " + component);
+		}
+		component = findCurrentFiberUsingSlowPath(fiber);
+		component = null !== component ? findCurrentHostFiberImpl(component) : null;
+		return null === component ? null : getPublicInstance(component.stateNode);
+	}
+	function updateContainer(element,container,parentComponent,callback) {
+		parentComponent = container.current;
+		var lane = requestUpdateLane(parentComponent);
+		null === container.context ? (container.context = emptyContextObject) : (container.pendingContext = emptyContextObject);
+		container = createUpdate(lane);
+		container.payload = { element: element };
+		callback = void 0 === callback ? null : callback;
+		null !== callback && (container.callback = callback);
+		element = enqueueUpdate(parentComponent, container, lane);
+		null !== element && (scheduleUpdateOnFiber(element, parentComponent, lane),entangleTransitions(element, parentComponent, lane));
+		return lane;
+	}
 	if ("function" !== typeof ReactNativePrivateInterface.ReactFiberErrorDialog.showErrorDialog)throw Error("Expected ReactFiberErrorDialog.showErrorDialog to be a function.");
+	function nativeOnUncaughtError(error,errorInfo) {
+		false !== ReactNativePrivateInterface.ReactFiberErrorDialog.showErrorDialog({ errorBoundary: null, error: error, componentStack: null != errorInfo.componentStack ? errorInfo.componentStack : "" }) && reportGlobalError(error);
+	}
+	function nativeOnCaughtError(error,errorInfo) {
+		false !== ReactNativePrivateInterface.ReactFiberErrorDialog.showErrorDialog({ errorBoundary: errorInfo.errorBoundary, error: error, componentStack: null != errorInfo.componentStack ? errorInfo.componentStack : "" }) && console.error(error);
+	}
+	function nativeOnDefaultTransitionIndicator() {
+	}
+	function unmountComponentAtNode(containerTag) {
+		var root = roots.get(containerTag);
+		root && updateContainer(null, root, null, function() {
+			roots.delete(containerTag);
+		});
+	}
 	batchedUpdatesImpl = function(fn,a) {
 		var prevExecutionContext = executionContext;
 		executionContext |= 1;
@@ -26219,6 +26976,71 @@ var require_react_native_Libraries_Renderer_implementations_ReactNativeRenderer_
 		} catch (err) {
 		}
 	}
+	exports.createPortal = function(children,containerTag) {
+		return createPortal$1(children, containerTag, null, 2 < arguments.length && void 0 !== arguments[2] ? arguments[2] : null);
+	};
+	exports.dispatchCommand = function(handle,command,args) {
+		var nativeTag = null != handle._nativeTag ? handle._nativeTag : ReactNativePrivateInterface.getNativeTagFromPublicInstance(handle);
+		null != nativeTag && ((handle = ReactNativePrivateInterface.getNodeFromPublicInstance(handle)),null != handle ? nativeFabricUIManager.dispatchCommand(handle, command, args) : ReactNativePrivateInterface.UIManager.dispatchViewManagerCommand(nativeTag, command, args));
+	};
+	exports.findHostInstance_DEPRECATED = function(componentOrHandle) {
+		return null == componentOrHandle ? null : componentOrHandle.canonical && componentOrHandle.canonical.publicInstance ? componentOrHandle.canonical.publicInstance : componentOrHandle._nativeTag ? componentOrHandle : findHostInstance(componentOrHandle);
+	};
+	exports.findNodeHandle = function(componentOrHandle) {
+		if (null == componentOrHandle)return null;
+		if ("number" === typeof componentOrHandle)return componentOrHandle;
+		if (componentOrHandle._nativeTag)return componentOrHandle._nativeTag;
+		if (null != componentOrHandle.canonical && null != componentOrHandle.canonical.nativeTag)return componentOrHandle.canonical.nativeTag;
+		var nativeTag = ReactNativePrivateInterface.getNativeTagFromPublicInstance(componentOrHandle);
+		if (nativeTag)return nativeTag;
+		componentOrHandle = findHostInstance(componentOrHandle);
+		return null == componentOrHandle ? componentOrHandle : null != componentOrHandle._nativeTag ? componentOrHandle._nativeTag : ReactNativePrivateInterface.getNativeTagFromPublicInstance(componentOrHandle);
+	};
+	exports.isChildPublicInstance = function() {
+		throw Error("isChildPublicInstance() is not available in production.");
+	};
+	exports.render = function(element,containerTag,callback,options) {
+		var root = roots.get(containerTag);
+		if (!root) {
+			root = nativeOnUncaughtError;
+			var onCaughtError = nativeOnCaughtError,onRecoverableError = defaultOnRecoverableError;
+			options && void 0 !== options.onUncaughtError && (root = options.onUncaughtError);
+			options && void 0 !== options.onCaughtError && (onCaughtError = options.onCaughtError);
+			options && void 0 !== options.onRecoverableError && (onRecoverableError = options.onRecoverableError);
+			options = new FiberRootNode({ containerTag: containerTag, publicInstance: null }, 0, false, "", root, onCaughtError, onRecoverableError, nativeOnDefaultTransitionIndicator, null);
+			root = createFiberImplClass(3, null, null, 0);
+			options.current = root;
+			root.stateNode = options;
+			onCaughtError = createCache();
+			onCaughtError.refCount++;
+			options.pooledCache = onCaughtError;
+			onCaughtError.refCount++;
+			root.memoizedState = { element: null, isDehydrated: false, cache: onCaughtError };
+			initializeUpdateQueue(root);
+			root = options;
+			roots.set(containerTag, root);
+		}
+		updateContainer(element, root, null, callback);
+		a:if (((element = root.current),element.child))switch (element.child.tag) {
+			case 27:
+			case 5:
+				element = getPublicInstance(element.child.stateNode);
+				break a;
+			default:
+				element = element.child.stateNode;
+		} else element = null;
+		return element;
+	};
+	exports.sendAccessibilityEvent = function(handle,eventType) {
+		var nativeTag = null != handle._nativeTag ? handle._nativeTag : ReactNativePrivateInterface.getNativeTagFromPublicInstance(handle);
+		null != nativeTag && ((handle = ReactNativePrivateInterface.getNodeFromPublicInstance(handle)),null != handle ? nativeFabricUIManager.sendAccessibilityEvent(handle, eventType) : ReactNativePrivateInterface.legacySendAccessibilityEvent(nativeTag, eventType));
+	};
+	exports.unmountComponentAtNode = unmountComponentAtNode;
+	exports.unmountComponentAtNodeAndRemoveContainer = function(containerTag) {
+		unmountComponentAtNode(containerTag);
+		ReactNativePrivateInterface.UIManager.removeRootView(containerTag);
+	};
+	exports.unstable_batchedUpdates = batchedUpdates$1;
 	
 	}
 });
@@ -26307,7 +27129,8 @@ var init_react_native_Libraries_ReactNative_RendererImplementation = __esm({
 	isProfilingRenderer = function() {
 		return Boolean(false);
 	};
-		React$11 = __toESM(require_react_index());
+		require_react_index();
+	React$11 = __toESM(require_react_index());
 		
 	
 	cachedFabricRenderer = void 0;
@@ -26341,22 +27164,23 @@ var init_react_native_Libraries_ReactNative_RendererImplementation = __esm({
 //#region RendererProxy.js
 var exports_react_native_Libraries_ReactNative_RendererProxy = {};
 __export(exports_react_native_Libraries_ReactNative_RendererProxy, {
-	unstable_batchedUpdates: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.unstable_batchedUpdates); },
-	unmountComponentAtNodeAndRemoveContainer: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.unmountComponentAtNodeAndRemoveContainer); },
-	isChildPublicInstance: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.isChildPublicInstance); },
+	dispatchCommand: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.dispatchCommand); },
+	findHostInstance_DEPRECATED: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.findHostInstance_DEPRECATED); },
+	findNodeHandle: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.findNodeHandle); },
 	getNodeFromInternalInstanceHandle: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.getNodeFromInternalInstanceHandle); },
+	getPublicInstanceFromInternalInstanceHandle: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.getPublicInstanceFromInternalInstanceHandle); },
+	getPublicInstanceFromRootTag: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.getPublicInstanceFromRootTag); },
+	isChildPublicInstance: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.isChildPublicInstance); },
+	isProfilingRenderer: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.isProfilingRenderer); },
 	renderElement: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.renderElement); },
 	sendAccessibilityEvent: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.sendAccessibilityEvent); },
-	findHostInstance_DEPRECATED: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.findHostInstance_DEPRECATED); },
-	dispatchCommand: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.dispatchCommand); },
-	isProfilingRenderer: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.isProfilingRenderer); },
-	getPublicInstanceFromRootTag: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.getPublicInstanceFromRootTag); },
-	findNodeHandle: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.findNodeHandle); },
-	getPublicInstanceFromInternalInstanceHandle: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.getPublicInstanceFromInternalInstanceHandle); },
+	unmountComponentAtNodeAndRemoveContainer: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.unmountComponentAtNodeAndRemoveContainer); },
+	unstable_batchedUpdates: function() { return (init_react_native_Libraries_ReactNative_RendererImplementation(), exports_react_native_Libraries_ReactNative_RendererImplementation.unstable_batchedUpdates); },
 });
 var init_react_native_Libraries_ReactNative_RendererProxy = __esm({
 	"RendererProxy.js"() {
-	
+	init_react_native_Libraries_ReactNative_RendererImplementation();
+		
 	
 	}
 });
@@ -26389,6 +27213,7 @@ var exports_react_native_Libraries_Components_View_ViewPropTypes = {};
 var React$12;
 var init_react_native_Libraries_Components_View_ViewPropTypes = __esm({
 	"ViewPropTypes.js"() {
+	require_react_index();
 	React$12 = __toESM(require_react_index());
 		"use strict";
 	
@@ -26407,6 +27232,7 @@ var init_react_native_Libraries_Components_View_ViewNativeComponent = __esm({
 	"ViewNativeComponent.js"() {
 	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
 	init_react_native_Libraries_Utilities_codegenNativeCommands();
+	init_react_native_Libraries_Components_View_ViewPropTypes();
 		NativeComponentRegistry$2=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
 	
 	ViewNativeComponent = get$2("RCTView", function() {
@@ -26420,14 +27246,14 @@ var init_react_native_Libraries_Components_View_ViewNativeComponent = __esm({
 //#endregion
 //#region View.js
 var exports_react_native_Libraries_Components_View_View = {};
-var View_withRef, View$1, React$13;
+var View_withRef, View$1, React$13, use;
 __export(exports_react_native_Libraries_Components_View_View, {
 	"default": function() { return View$1; },
 });
 var init_react_native_Libraries_Components_View_View = __esm({
 	"View.js"() {
 	View_withRef = function({ ...props },ref) {
-		var hasTextAncestor = require_react_index().use(TextAncestorContext),{ accessibilityState:accessibilityState, accessibilityValue:accessibilityValue, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-hidden':ariaHidden, 'aria-label':ariaLabel, 'aria-labelledby':ariaLabelledBy, 'aria-live':ariaLive, 'aria-selected':ariaSelected, 'aria-valuemax':ariaValueMax, 'aria-valuemin':ariaValueMin, 'aria-valuenow':ariaValueNow, 'aria-valuetext':ariaValueText, id:id, tabIndex:tabIndex, ...otherProps } = props,processedProps = otherProps,parsedAriaLabelledBy = ariaLabelledBy?.split(/\s*,\s*/g);
+		var hasTextAncestor = use(TextAncestorContext),{ accessibilityState:accessibilityState, accessibilityValue:accessibilityValue, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-hidden':ariaHidden, 'aria-label':ariaLabel, 'aria-labelledby':ariaLabelledBy, 'aria-live':ariaLive, 'aria-selected':ariaSelected, 'aria-valuemax':ariaValueMax, 'aria-valuemin':ariaValueMin, 'aria-valuenow':ariaValueNow, 'aria-valuetext':ariaValueText, id:id, tabIndex:tabIndex, ...otherProps } = props,processedProps = otherProps,parsedAriaLabelledBy = ariaLabelledBy?.split(/\s*,\s*/g);
 		if (parsedAriaLabelledBy !== undefined) {
 			processedProps.accessibilityLabelledBy = parsedAriaLabelledBy;
 		}
@@ -26463,7 +27289,9 @@ var init_react_native_Libraries_Components_View_View = __esm({
 	};
 		init_react_native_Libraries_Text_TextAncestorContext();
 	init_react_native_Libraries_Components_View_ViewNativeComponent();
+	require_react_index();
 	React$13 = __toESM(require_react_index());
+	use = require_react_index().use;
 		
 	
 	
@@ -26487,6 +27315,7 @@ var init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView 
 	init_class_call_check();
 	init_call_super();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
+	require_react_index();
 	React$14 = __toESM(require_react_index());
 		
 	
@@ -26562,7 +27391,8 @@ __export(exports_react_native_Libraries_Components_ActivityIndicator_ActivityInd
 });
 var init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent = __esm({
 	"ActivityIndicatorViewNativeComponent.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent();
+		
 	
 		_default$40 = (init_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent)).default;
 	
@@ -26580,6 +27410,7 @@ var init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator =
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Components_View_View();
+	require_react_index();
 	React$15 = __toESM(require_react_index());
 		"use strict";
 	
@@ -26626,7 +27457,7 @@ var init_react_native_Libraries_StyleSheet_Rect = __esm({
 		return { bottom: size, left: size, right: size, top: size };
 	};
 	normalizeRect = function(rectOrSize) {
-		return typeof rectOrSize === "number" ? createSquare(rectOrSize) : rectOrSize;
+		return typeof rectOrSize == "number" ? createSquare(rectOrSize) : rectOrSize;
 	};
 	
 	}
@@ -26655,6 +27486,7 @@ var init_react_native_Libraries_Pressability_PressabilityDebug = __esm({
 	};
 		init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_StyleSheet_normalizeColor();
+	require_react_index();
 	React$16 = __toESM(require_react_index());
 		
 	
@@ -26688,7 +27520,8 @@ __export(exports_react_native_Libraries_Components_Sound_NativeSoundManager, {
 });
 var init_react_native_Libraries_Components_Sound_NativeSoundManager = __esm({
 	"NativeSoundManager.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeSoundManager();
+		
 	
 		_default$42 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeSoundManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeSoundManager)).default;
 	
@@ -26716,13 +27549,6 @@ var init_react_native_Libraries_Components_Sound_SoundManager = __esm({
 	}
 });
 //#endregion
-//#region CoreEventTypes.js
-var require_react_native_Libraries_Types_CoreEventTypes = __commonJS({
-	"CoreEventTypes.js"(exports, module) {
-
-	}
-});
-//#endregion
 //#region HoverState.js
 var exports_react_native_Libraries_Pressability_HoverState = {};
 var isEnabled$2, isHoverEnabled;
@@ -26738,7 +27564,7 @@ var init_react_native_Libraries_Pressability_HoverState = __esm({
 		
 	isEnabled$2 = false;
 	if (Platform.OS === "web") {
-		var canUseDOM = Boolean(typeof window !== "undefined" && window.document && window.document.createElement);
+		var canUseDOM = Boolean(typeof window < "u" && window.document && window.document.createElement);
 		if (canUseDOM) {
 			var HOVER_THRESHOLD_MS = 1000,lastTouchTimestamp = 0,enableHover = function() {
 				if (isEnabled$2 || Date.now() - lastTouchTimestamp < HOVER_THRESHOLD_MS) {
@@ -26757,13 +27583,6 @@ var init_react_native_Libraries_Pressability_HoverState = __esm({
 		}
 	}
 	
-	}
-});
-//#endregion
-//#region PressabilityTypes.js
-var require_react_native_Libraries_Pressability_PressabilityTypes = __commonJS({
-	"PressabilityTypes.js"(exports, module) {
-
 	}
 });
 //#endregion
@@ -26830,6 +27649,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 	init_react_native_Libraries_ReactNative_UIManager();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Pressability_PressabilityPerformanceEventEmitter();
+	require_invariant_browser();
 	invariant$20 = require_invariant_browser();
 		
 	ReactNativeFeatureFlags$4=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
@@ -27070,7 +27890,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 			if (this._responderID == null && signal === "RESPONDER_RELEASE") {
 				return;
 			}
-			invariant$20(nextState != null && nextState !== "ERROR", "Pressability: Invalid signal `%s` for state `%s` on responder: %s", signal, prevState, typeof this._responderID === "number" ? this._responderID : "<<host component>>");
+			invariant$20(nextState != null && nextState !== "ERROR", "Pressability: Invalid signal `%s` for state `%s` on responder: %s", signal, prevState, typeof this._responderID == "number" ? this._responderID : "<<host component>>");
 			if (prevState !== nextState) {
 				this._performTransitionSideEffects(prevState, nextState, signal, event);
 				this._touchState = nextState;
@@ -27142,7 +27962,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 			if (this._responderID == null) {
 				return;
 			}
-			if (typeof this._responderID === "number") {
+			if (typeof this._responderID == "number") {
 				UIManager.measure(this._responderID, this._measureCallback);
 			} else {
 				this._responderID.measure(this._measureCallback);
@@ -27234,14 +28054,14 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 //#endregion
 //#region usePressability.js
 var exports_react_native_Libraries_Pressability_usePressability = {};
-var ReactNativeFeatureFlags$5, useConfigurationEffect, usePressability;
+var ReactNativeFeatureFlags$5, useConfigurationEffect, usePressability, useEffect, useInsertionEffect, useRef;
 __export(exports_react_native_Libraries_Pressability_usePressability, {
 	"default": function() { return usePressability; },
 });
 var init_react_native_Libraries_Pressability_usePressability = __esm({
 	"usePressability.js"() {
 	usePressability = function(config) {
-		var pressabilityRef = require_react_index().useRef(null);
+		var pressabilityRef = useRef(null);
 		if (config != null && pressabilityRef.current == null) {
 			pressabilityRef.current = new Pressability(config);
 		}
@@ -27262,10 +28082,14 @@ var init_react_native_Libraries_Pressability_usePressability = __esm({
 	};
 		init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_Libraries_Pressability_Pressability();
+	require_react_index();
+	useEffect = require_react_index().useEffect;
+	useInsertionEffect = require_react_index().useInsertionEffect;
+	useRef = require_react_index().useRef;
 		ReactNativeFeatureFlags$5=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
 	
-	useConfigurationEffect = configurePressabilityDuringInsertion() ? require_react_index().useInsertionEffect : require_react_index().useEffect;
+	useConfigurationEffect = configurePressabilityDuringInsertion() ? useInsertionEffect : useEffect;
 	
 	}
 });
@@ -27278,7 +28102,8 @@ __export(exports_react_native_Libraries_Renderer_shims_createReactNativeComponen
 });
 var init_react_native_Libraries_Renderer_shims_createReactNativeComponentClass = __esm({
 	"createReactNativeComponentClass.js"() {
-	"use strict";
+	init_react_native_Libraries_Renderer_shims_ReactNativeTypes();
+		"use strict";
 	
 	({ register:register$2 } = require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface().ReactNativeViewConfigRegistry);
 	createReactNativeComponentClass = function(name,callback) {
@@ -27317,14 +28142,14 @@ var init_react_native_Libraries_Text_TextNativeComponent = __esm({
 //#endregion
 //#region Text.js
 var exports_react_native_Libraries_Text_Text = {};
-var ReactNativeFeatureFlags$6, PressabilityDebug, _TextImpl, TextImpl, useTextPressability, NativePressableVirtualText, NativePressableText, userSelectToSelectableMap, verticalAlignToTextAlignVerticalMap, React$17;
+var ReactNativeFeatureFlags$6, PressabilityDebug, _TextImpl, TextImpl, useTextPressability, NativePressableVirtualText, NativePressableText, userSelectToSelectableMap, verticalAlignToTextAlignVerticalMap, React$17, useContext$1, useMemo, useState;
 __export(exports_react_native_Libraries_Text_Text, {
 	"default": function() { return TextImpl; },
 });
 var init_react_native_Libraries_Text_Text = __esm({
 	"Text.js"() {
 	useTextPressability = function({ onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, onResponderGrant:onResponderGrant, onResponderMove:onResponderMove, onResponderRelease:onResponderRelease, onResponderTerminate:onResponderTerminate, onResponderTerminationRequest:onResponderTerminationRequest, onStartShouldSetResponder:onStartShouldSetResponder, pressRetentionOffset:pressRetentionOffset, suppressHighlighting:suppressHighlighting }) {
-		var [isHighlighted, setHighlighted] = require_react_index().useState(false),config = require_react_index().useMemo(function() {
+		var [isHighlighted, setHighlighted] = useState(false),config = useMemo(function() {
 			var _onPressIn = onPressIn,_onPressOut = onPressOut;
 			if (Platform.OS === "ios") {
 				_onPressIn = function(event) {
@@ -27337,7 +28162,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				};
 			}
 			return { disabled: false, pressRectOffset: pressRetentionOffset, onLongPress, onPress, onPressIn: _onPressIn, onPressOut: _onPressOut };
-		}, [pressRetentionOffset, onLongPress, onPress, onPressIn, onPressOut, suppressHighlighting]),eventHandlers = usePressability(config),eventHandlersForText = require_react_index().useMemo(function() {
+		}, [pressRetentionOffset, onLongPress, onPress, onPressIn, onPressOut, suppressHighlighting]),eventHandlers = usePressability(config),eventHandlersForText = useMemo(function() {
 			return eventHandlers == null ? null : { onResponderGrant(event) {
 				eventHandlers.onResponderGrant(event);
 				if (onResponderGrant != null) {
@@ -27360,7 +28185,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				}
 			}, onClick: eventHandlers.onClick, onResponderTerminationRequest: onResponderTerminationRequest != null ? onResponderTerminationRequest : eventHandlers.onResponderTerminationRequest, onStartShouldSetResponder: onStartShouldSetResponder != null ? onStartShouldSetResponder : eventHandlers.onStartShouldSetResponder };
 		}, [eventHandlers, onResponderGrant, onResponderMove, onResponderRelease, onResponderTerminate, onResponderTerminationRequest, onStartShouldSetResponder]);
-		return require_react_index().useMemo(function() {
+		return useMemo(function() {
 			return [isHighlighted, eventHandlersForText];
 		}, [isHighlighted, eventHandlersForText]);
 	};
@@ -27371,7 +28196,11 @@ var init_react_native_Libraries_Text_Text = __esm({
 	init_react_native_Libraries_StyleSheet_processColor();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Text_TextAncestorContext();
+	require_react_index();
 	React$17 = __toESM(require_react_index());
+	useContext$1 = require_react_index().useContext;
+	useMemo = require_react_index().useMemo;
+	useState = require_react_index().useState;
 		ReactNativeFeatureFlags$6=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	PressabilityDebug=__toESM((init_react_native_Libraries_Pressability_PressabilityDebug(), __toCommonJS(exports_react_native_Libraries_Pressability_PressabilityDebug)));
 	
@@ -27413,7 +28242,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 			var _selectable = selectable,processedStyle = flattenStyle(_style);
 			if (processedStyle != null) {
 				var overrides = null;
-				if (typeof processedStyle.fontWeight === "number") {
+				if (typeof processedStyle.fontWeight == "number") {
 					overrides = overrides || {};
 					overrides.fontWeight = String(processedStyle.fontWeight);
 				}
@@ -27457,7 +28286,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 			if (isPressable) {
 				textPressabilityProps = { onLongPress, onPress, onPressIn, onPressOut, onResponderGrant, onResponderMove, onResponderRelease, onResponderTerminate, onResponderTerminationRequest, onStartShouldSetResponder, pressRetentionOffset, suppressHighlighting };
 			}
-			var hasTextAncestor = require_react_index().useContext(TextAncestorContext);
+			var hasTextAncestor = useContext$1(TextAncestorContext);
 			if (hasTextAncestor) {
 				processedProps.disabled = disabled;
 				processedProps.children = children;
@@ -27483,7 +28312,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 			if (Array.isArray(children) && children.length <= 3) {
 				var hasNonTextChild = false;
 				for (var child of children) {
-					if (child != null && typeof child === "object") {
+					if (child != null && typeof child == "object") {
 						hasNonTextChild = true;
 						break;
 					}
@@ -27491,7 +28320,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				if (!hasNonTextChild) {
 					return nativeText;
 				}
-			} else if (typeof children !== "object") {
+			} else if (typeof children != "object") {
 				return nativeText;
 			}
 			return /* @__PURE__ */ React$17.createElement(TextAncestorContext, { value: true }, nativeText);
@@ -27521,7 +28350,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 			var _selectable = selectable,processedStyle = flattenStyle(_style);
 			if (processedStyle != null) {
 				var overrides = null;
-				if (typeof processedStyle.fontWeight === "number") {
+				if (typeof processedStyle.fontWeight == "number") {
 					overrides = overrides || {};
 					overrides.fontWeight = processedStyle.fontWeight.toString();
 				}
@@ -27539,7 +28368,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 					_style = [_style, overrides];
 				}
 			}
-			var _nativeID = id ?? nativeID,hasTextAncestor = require_react_index().useContext(TextAncestorContext);
+			var _nativeID = id ?? nativeID,hasTextAncestor = useContext$1(TextAncestorContext);
 			if (hasTextAncestor) {
 				if (isPressable) {
 					return (/* @__PURE__ */ React$17.createElement(NativePressableVirtualText, { ref: forwardedRef, textProps: { ...restProps, accessibilityElementsHidden: _accessibilityElementsHidden, accessibilityLabel: _accessibilityLabel, accessibilityState: _accessibilityState, importantForAccessibility: _importantForAccessibility, nativeID: _nativeID, numberOfLines: _numberOfLines, selectable: _selectable, selectionColor: _selectionColor, style: _style, disabled: disabled, children }, textPressabilityProps: { onLongPress, onPress, onPressIn, onPressOut, onResponderGrant, onResponderMove, onResponderRelease, onResponderTerminate, onResponderTerminationRequest, onStartShouldSetResponder, pressRetentionOffset, suppressHighlighting } }));
@@ -27561,7 +28390,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 			if (Array.isArray(children) && children.length <= 3) {
 				var hasNonTextChild = false;
 				for (var child of children) {
-					if (child != null && typeof child === "object") {
+					if (child != null && typeof child == "object") {
 						hasNonTextChild = true;
 						break;
 					}
@@ -27569,7 +28398,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				if (!hasNonTextChild) {
 					return nativeText;
 				}
-			} else if (typeof children !== "object") {
+			} else if (typeof children != "object") {
 				return nativeText;
 			}
 			return /* @__PURE__ */ React$17.createElement(TextAncestorContext, { value: true }, nativeText);
@@ -27595,7 +28424,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 //#endregion
 //#region TouchableNativeFeedback.js
 var exports_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = {};
-var TouchableNativeFeedback, getBackgroundProp, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$21, React$18;
+var TouchableNativeFeedback, getBackgroundProp, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$21, React$18, cloneElement;
 __export(exports_react_native_Libraries_Components_Touchable_TouchableNativeFeedback, {
 	"default": function() { return TouchableNativeFeedback; },
 });
@@ -27609,8 +28438,11 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 	init_react_native_Libraries_Pressability_Pressability();
 	init_react_native_Libraries_StyleSheet_processColor();
 	init_react_native_Libraries_Utilities_Platform_ios();
+	require_invariant_browser();
+	require_react_index();
 	invariant$21 = require_invariant_browser();
 	React$18 = __toESM(require_react_index());
+	cloneElement = require_react_index().cloneElement;
 		
 	
 	
@@ -27683,7 +28515,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 			var { onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers(),_accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
 			_accessibilityState = this.props.disabled != null ? { ..._accessibilityState, disabled: this.props.disabled } : _accessibilityState;
 			var accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text },accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion),accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
-			return require_react_index().cloneElement(element, { ...eventHandlersWithoutBlurAndFocus, ...getBackgroundProp(this.props.background === undefined ? TouchableNativeFeedback.SelectableBackground() : this.props.background, this.props.useForeground === true), accessible: this.props.accessible !== false, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityLabel: accessibilityLabel, accessibilityRole: this.props.accessibilityRole, accessibilityState: _accessibilityState, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, accessibilityValue: accessibilityValue, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, hasTVPreferredFocus: this.props.hasTVPreferredFocus, hitSlop: this.props.hitSlop, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, onLayout: this.props.onLayout, testID: this.props.testID }, ...children);
+			return cloneElement(element, { ...eventHandlersWithoutBlurAndFocus, ...getBackgroundProp(this.props.background === undefined ? TouchableNativeFeedback.SelectableBackground() : this.props.background, this.props.useForeground === true), accessible: this.props.accessible !== false, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityLabel: accessibilityLabel, accessibilityRole: this.props.accessibilityRole, accessibilityState: _accessibilityState, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, accessibilityValue: accessibilityValue, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, hasTVPreferredFocus: this.props.hasTVPreferredFocus, hitSlop: this.props.hitSlop, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, onLayout: this.props.onLayout, testID: this.props.testID }, ...children);
 		} });
 		Object.defineProperty(TouchableNativeFeedback.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(prevProps,prevState) {
 			this.state.pressability.configure(this._createPressabilityConfig());
@@ -27702,7 +28534,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 		} });
 		Object.defineProperty(TouchableNativeFeedback, "Ripple", { configurable: true, enumerable: true, writable: true, value: function(color,borderless,rippleRadius) {
 			var processedColor = processColor(color);
-			invariant$21(processedColor == null || typeof processedColor === "number", "Unexpected color given for Ripple color");
+			invariant$21(processedColor == null || typeof processedColor == "number", "Unexpected color given for Ripple color");
 			return { type: "RippleAndroid", color: processedColor, borderless, rippleRadius };
 		} });
 		Object.defineProperty(TouchableNativeFeedback, "canUseNativeForeground", { configurable: true, enumerable: true, writable: true, value: function() {
@@ -27913,7 +28745,7 @@ var init_react_native_src_private_animated_NativeAnimatedHelper = __esm({
 		return config.useNativeDriver || false;
 	};
 	transformDataType = function(value) {
-		if (typeof value !== "string") {
+		if (typeof value != "string") {
 			return value;
 		}
 		if (value.endsWith("deg")) {
@@ -27926,13 +28758,15 @@ var init_react_native_src_private_animated_NativeAnimatedHelper = __esm({
 		}
 	};
 		init_react_native_Libraries_Animated_NativeAnimatedModule();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeAnimatedModule();
 	init_react_native_Libraries_Animated_NativeAnimatedTurboModule();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeAnimatedTurboModule();
 	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
 	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
+	require_invariant_browser();
+	require_nullthrows_nullthrows();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAnimatedModule();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAnimatedTurboModule();
 	invariant$22 = require_invariant_browser();
 	nullthrows$8 = __toESM(require_nullthrows_nullthrows()).default;
 		
@@ -28251,7 +29085,7 @@ var init_react_native_Libraries_Animated_bezier = __esm({
 	SUBDIVISION_MAX_ITERATIONS = 10;
 	kSplineTableSize = 11;
 	kSampleStepSize = 1.0 / (kSplineTableSize - 1.0);
-	float32ArraySupported = typeof Float32Array === "function";
+	float32ArraySupported = typeof Float32Array == "function";
 	
 	}
 });
@@ -28346,6 +29180,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedNode = __esm({
 	"AnimatedNode.js"() {
 	init_class_call_check();
 	init_react_native_src_private_animated_NativeAnimatedHelper();
+	require_invariant_browser();
 	invariant$23 = require_invariant_browser();
 		
 	
@@ -28570,7 +29405,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 			extrapolateRight = config.extrapolate;
 		}
 		return function(input) {
-			invariant$24(typeof input === "number", "Cannot interpolation an input which is not a number");
+			invariant$24(typeof input == "number", "Cannot interpolation an input which is not a number");
 			var range = findRange(input, inputRange);
 			return interpolate(input, inputRange[range], inputRange[range + 1], outputRange[range], outputRange[range + 1], easing, extrapolateLeft, extrapolateRight);
 		};
@@ -28621,8 +29456,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 	};
 	mapStringToNumericComponents = function(input) {
 		var normalizedColor = normalizeColor(input);
-		invariant$24(normalizedColor == null || typeof normalizedColor !== "object", "PlatformColors are not supported");
-		if (typeof normalizedColor === "number") {
+		invariant$24(normalizedColor == null || typeof normalizedColor != "object", "PlatformColors are not supported");
+		if (typeof normalizedColor == "number") {
 			normalizedColor = normalizedColor || 0;
 			var r = (normalizedColor & 0xff000000) >>> 24,g = (normalizedColor & 0x00ff0000) >>> 16,b = (normalizedColor & 0x0000ff00) >>> 8,a = (normalizedColor & 0x000000ff) / 255;
 			return { isColor: true, components: [r, g, b, a] };
@@ -28648,7 +29483,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 		;
 		var numericComponents = outputRange.map(function(output) {
 			return isColor ? output.components : output.components.filter(function(c) {
-				return typeof c === "number";
+				return typeof c == "number";
 			});
 		}),interpolations = numericComponents[0].map(function(_,i) {
 			return createNumericInterpolation({ ...config, outputRange: numericComponents.map(function(components) {
@@ -28661,7 +29496,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 					return interpolation(input);
 				}),i = 0;
 				return outputRange[0].components.map(function(c) {
-					return (typeof c === "number" ? values[i++] : c);
+					return (typeof c == "number" ? values[i++] : c);
 				}).join("");
 			};
 		} else {
@@ -28709,6 +29544,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 	init_react_native_Libraries_StyleSheet_processColor();
 	init_react_native_Libraries_Animated_Easing();
 	init_react_native_Libraries_Animated_nodes_AnimatedWithChildren();
+	require_invariant_browser();
 	invariant$24 = require_invariant_browser();
 		
 	
@@ -28738,7 +29574,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 		Object.defineProperty(AnimatedInterpolation.prototype, "_getInterpolation", { configurable: true, writable: true, value: function() {
 			if (!this._interpolation) {
 				var config = this._config;
-				if (config.outputRange && typeof config.outputRange[0] === "string") {
+				if (config.outputRange && typeof config.outputRange[0] == "string") {
 					this._interpolation = createStringInterpolation(config);
 				} else {
 					this._interpolation = createNumericInterpolation(config);
@@ -28752,7 +29588,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 		} });
 		Object.defineProperty(AnimatedInterpolation.prototype, "__getValue", { configurable: true, writable: true, value: function() {
 			var parentValue = this._parent.__getValue();
-			invariant$24(typeof parentValue === "number", "Cannot interpolate an input which is not a number.");
+			invariant$24(typeof parentValue == "number", "Cannot interpolate an input which is not a number.");
 			return this._getInterpolation()(parentValue);
 		} });
 		Object.defineProperty(AnimatedInterpolation.prototype, "interpolate", { configurable: true, writable: true, value: function(config) {
@@ -28769,10 +29605,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 		Object.defineProperty(AnimatedInterpolation.prototype, "__getNativeConfig", { configurable: true, writable: true, value: function() {
 			;
 			var outputRange = this._config.outputRange,outputType = null;
-			if (typeof outputRange[0] === "string") {
+			if (typeof outputRange[0] == "string") {
 				outputRange = outputRange.map(function(value) {
 					var processedColor = processColor(value);
-					if (typeof processedColor === "number") {
+					if (typeof processedColor == "number") {
 						outputType = "color";
 						return processedColor;
 					} else {
@@ -28801,7 +29637,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 	flushValue = function(rootNode) {
 		var leaves = new Set();
 		function findAnimatedStyles(node) {
-			if (typeof node.update === "function") {
+			if (typeof node.update == "function") {
 				leaves.add(node);
 			} else {
 				node.__getChildren().forEach(findAnimatedStyles);
@@ -28838,7 +29674,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			if (typeof value !== "number") {
+			if (typeof value != "number") {
 				throw new Error("AnimatedValue: Attempting to set value to undefined");
 			}
 			__assertThisInitialized(_this)._listenerCount = 0;
@@ -29032,6 +29868,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValueXY = __esm({
 	init_derived_constructor();
 	init_react_native_Libraries_Animated_nodes_AnimatedValue();
 	init_react_native_Libraries_Animated_nodes_AnimatedWithChildren();
+	require_invariant_browser();
 	invariant$25 = require_invariant_browser();
 		
 	
@@ -29049,7 +29886,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValueXY = __esm({
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
 			var value = valueIn || { x: 0, y: 0 };
-			if (typeof value.x === "number" && typeof value.y === "number") {
+			if (typeof value.x == "number" && typeof value.y == "number") {
 				__assertThisInitialized(_this).x = new AnimatedValue(value.x);
 				__assertThisInitialized(_this).y = new AnimatedValue(value.y);
 			} else {
@@ -29157,7 +29994,7 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 			} else if (value instanceof AnimatedValueXY) {
 				traverse(value.x, path.concat("x"));
 				traverse(value.y, path.concat("y"));
-			} else if (typeof value === "object") {
+			} else if (typeof value == "object") {
 				for (var key in value) {
 					traverse(value[key], path.concat(key));
 				}
@@ -29182,19 +30019,19 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 	validateMapping = function(argMapping,args) {
 		var validate = function(recMapping,recEvt,key) {
 			if (recMapping instanceof AnimatedValue) {
-				invariant$26(typeof recEvt === "number", "Bad mapping of event key " + key + ", should be number but got " + typeof recEvt);
+				invariant$26(typeof recEvt == "number", "Bad mapping of event key " + key + ", should be number but got " + typeof recEvt);
 				return;
 			}
 			if (recMapping instanceof AnimatedValueXY) {
-				invariant$26(typeof recEvt.x === "number" && typeof recEvt.y === "number", "Bad mapping of event key " + key + ", should be XY but got " + recEvt);
+				invariant$26(typeof recEvt.x == "number" && typeof recEvt.y == "number", "Bad mapping of event key " + key + ", should be XY but got " + recEvt);
 				return;
 			}
-			if (typeof recEvt === "number") {
+			if (typeof recEvt == "number") {
 				invariant$26(recMapping instanceof AnimatedValue, "Bad mapping of type " + typeof recMapping + " for key " + key + ", event value must map to AnimatedValue");
 				return;
 			}
-			invariant$26(typeof recMapping === "object", "Bad mapping of type " + typeof recMapping + " for key " + key);
-			invariant$26(typeof recEvt === "object", "Bad event of type " + typeof recEvt + " for key " + key);
+			invariant$26(typeof recMapping == "object", "Bad mapping of type " + typeof recMapping + " for key " + key);
+			invariant$26(typeof recEvt == "object", "Bad event of type " + typeof recEvt + " for key " + key);
 			for (var mappingKey in recMapping) {
 				validate(recMapping[mappingKey], recEvt[mappingKey], mappingKey);
 			}
@@ -29208,6 +30045,7 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 	init_react_native_src_private_animated_NativeAnimatedHelper();
 	init_react_native_Libraries_Animated_nodes_AnimatedValue();
 	init_react_native_Libraries_Animated_nodes_AnimatedValueXY();
+	require_invariant_browser();
 	invariant$26 = require_invariant_browser();
 		
 	"use strict";
@@ -29266,15 +30104,15 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 				;
 				var traverse = function(recMapping,recEvt) {
 					if (recMapping instanceof AnimatedValue) {
-						if (typeof recEvt === "number") {
+						if (typeof recEvt == "number") {
 							recMapping.setValue(recEvt);
 						}
 					} else if (recMapping instanceof AnimatedValueXY) {
-						if (typeof recEvt === "object") {
+						if (typeof recEvt == "object") {
 							traverse(recMapping.x, recEvt.x);
 							traverse(recMapping.y, recEvt.y);
 						}
-					} else if (typeof recMapping === "object") {
+					} else if (typeof recMapping == "object") {
 						for (var mappingKey in recMapping) {
 							traverse(recMapping[mappingKey], recEvt[mappingKey]);
 						}
@@ -29295,7 +30133,7 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 //#endregion
 //#region AnimatedObject.js
 var exports_react_native_Libraries_Animated_nodes_AnimatedObject = {};
-var MAX_DEPTH, isPlainObject, flatAnimatedNodes, mapAnimatedNodes, AnimatedObject, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn;
+var MAX_DEPTH, isPlainObject, flatAnimatedNodes, mapAnimatedNodes, AnimatedObject, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, isValidElement;
 __export(exports_react_native_Libraries_Animated_nodes_AnimatedObject, {
 	isPlainObject: function() { return isPlainObject; },
 	"default": function() { return AnimatedObject; },
@@ -29303,7 +30141,7 @@ __export(exports_react_native_Libraries_Animated_nodes_AnimatedObject, {
 var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 	"AnimatedObject.js"() {
 	isPlainObject = function(value) {
-		return (value !== null && typeof value === "object" && Object.getPrototypeOf(value).isPrototypeOf(Object) && !require_react_index().isValidElement(value));
+		return (value !== null && typeof value == "object" && Object.getPrototypeOf(value).isPrototypeOf(Object) && !isValidElement(value));
 	};
 	flatAnimatedNodes = function(value,nodes=[],depth=0) {
 		if (depth >= MAX_DEPTH) {
@@ -29352,6 +30190,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 	init_derived_constructor();
 	init_react_native_Libraries_Animated_nodes_AnimatedNode();
 	init_react_native_Libraries_Animated_nodes_AnimatedWithChildren();
+	require_react_index();
+	isValidElement = require_react_index().isValidElement;
 		
 	
 	
@@ -29463,7 +30303,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 					result[key] = value.map(function(element) {
 						return element instanceof AnimatedNode$1 ? mapFunction(element) : element;
 					});
-				} else if (typeof value === "object") {
+				} else if (typeof value == "object") {
 					var object = {};
 					for (var propertyName in value) {
 						var propertyValue = value[propertyName];
@@ -29761,7 +30601,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			if (allowlist == null || hasOwn$1(allowlist, key)) {
 				var node = void 0;
 				if (key === "style") {
-					if (typeof value === "object" && value != null) {
+					if (typeof value == "object" && value != null) {
 						var flatStyle = flattenStyle(value);
 						node = AnimatedStyle.from(flatStyle, allowlist?.style, value);
 						staticValue = flatStyle;
@@ -29796,6 +30636,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 	init_react_native_Libraries_Animated_nodes_AnimatedNode();
 	init_react_native_Libraries_Animated_nodes_AnimatedObject();
 	init_react_native_Libraries_Animated_nodes_AnimatedStyle();
+	require_invariant_browser();
 	invariant$27 = require_invariant_browser();
 		
 	
@@ -30174,29 +31015,29 @@ __export(exports_react_native_Libraries_Animated_nodes_AnimatedColor, {
 var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 	"AnimatedColor.js"() {
 	processColor$10 = function(color) {
-		if (color === undefined || color === null) {
+		if (color == null) {
 			return null;
 		}
 		if (isRgbaValue(color)) {
 			return color;
 		}
 		var normalizedColor = normalizeColor(color);
-		if (normalizedColor === undefined || normalizedColor === null) {
+		if (normalizedColor == null) {
 			return null;
 		}
-		if (typeof normalizedColor === "object") {
+		if (typeof normalizedColor == "object") {
 			var processedColorObj = (init_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios(), processColorObject)(normalizedColor);
 			if (processedColorObj != null) {
 				return processedColorObj;
 			}
-		} else if (typeof normalizedColor === "number") {
+		} else if (typeof normalizedColor == "number") {
 			var r = (normalizedColor & 0xff000000) >>> 24,g = (normalizedColor & 0x00ff0000) >>> 16,b = (normalizedColor & 0x0000ff00) >>> 8,a = (normalizedColor & 0x000000ff) / 255;
 			return { r, g, b, a };
 		}
 		return null;
 	};
 	isRgbaValue = function(value) {
-		return (value && typeof value.r === "number" && typeof value.g === "number" && typeof value.b === "number" && typeof value.a === "number");
+		return (value && typeof value.r == "number" && typeof value.g == "number" && typeof value.b == "number" && typeof value.a == "number");
 	};
 	isRgbaAnimatedValue = function(value) {
 		return (value && value.r instanceof AnimatedValue && value.g instanceof AnimatedValue && value.b instanceof AnimatedValue && value.a instanceof AnimatedValue);
@@ -30453,6 +31294,7 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 	init_react_native_Libraries_Animated_nodes_AnimatedColor();
 	init_react_native_Libraries_Animated_SpringConfig();
 	init_react_native_Libraries_Animated_animations_Animation();
+	require_invariant_browser();
 	invariant$28 = require_invariant_browser();
 		
 	
@@ -30720,15 +31562,15 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabri
 //#endregion
 //#region useRefEffect.js
 var exports_react_native_Libraries_Utilities_useRefEffect = {};
-var useRefEffect;
+var useRefEffect, useCallback, useRef$1;
 __export(exports_react_native_Libraries_Utilities_useRefEffect, {
 	"default": function() { return useRefEffect; },
 });
 var init_react_native_Libraries_Utilities_useRefEffect = __esm({
 	"useRefEffect.js"() {
 	useRefEffect = function(effect) {
-		var cleanupRef = require_react_index().useRef(undefined);
-		return require_react_index().useCallback(function(instance) {
+		var cleanupRef = useRef$1(undefined);
+		return useCallback(function(instance) {
 			if (cleanupRef.current) {
 				cleanupRef.current();
 				cleanupRef.current = undefined;
@@ -30738,6 +31580,9 @@ var init_react_native_Libraries_Utilities_useRefEffect = __esm({
 			}
 		}, [effect]);
 	};
+		require_react_index();
+	useCallback = require_react_index().useCallback;
+	useRef$1 = require_react_index().useRef;
 		
 	
 	}
@@ -30745,7 +31590,7 @@ var init_react_native_Libraries_Utilities_useRefEffect = __esm({
 //#endregion
 //#region createAnimatedPropsMemoHook.js
 var exports_react_native_src_private_animated_createAnimatedPropsMemoHook = {};
-var createAnimatedPropsMemoHook, createCompositeKeyForProps, createCompositeKeyForArray, createCompositeKeyForObject, areCompositeKeysEqual, areCompositeKeyComponentsEqual, _hasOwnProp$2, hasOwn$2, nullthrows$9;
+var createAnimatedPropsMemoHook, createCompositeKeyForProps, createCompositeKeyForArray, createCompositeKeyForObject, areCompositeKeysEqual, areCompositeKeyComponentsEqual, _hasOwnProp$2, hasOwn$2, nullthrows$9, useInsertionEffect$1, useMemo$1, useRef$2;
 __export(exports_react_native_src_private_animated_createAnimatedPropsMemoHook, {
 	createAnimatedPropsMemoHook: function() { return createAnimatedPropsMemoHook; },
 	createCompositeKeyForProps: function() { return createCompositeKeyForProps; },
@@ -30755,10 +31600,10 @@ var init_react_native_src_private_animated_createAnimatedPropsMemoHook = __esm({
 	"createAnimatedPropsMemoHook.js"() {
 	createAnimatedPropsMemoHook = function(allowlist) {
 		return function useAnimatedPropsMemo(create,props) {
-			var compositeKey = require_react_index().useMemo(function() {
+			var compositeKey = useMemo$1(function() {
 				return createCompositeKeyForProps(props, allowlist);
-			}, [props]),prevRef = require_react_index().useRef(),prev = prevRef.current,next = prev != null && areCompositeKeysEqual(prev.compositeKey, compositeKey) ? prev : { compositeKey, node: create() };
-			require_react_index().useInsertionEffect(function() {
+			}, [props]),prevRef = useRef$2(),prev = prevRef.current,next = prev != null && areCompositeKeysEqual(prev.compositeKey, compositeKey) ? prev : { compositeKey, node: create() };
+			useInsertionEffect$1(function() {
 				prevRef.current = next;
 			}, [next]);
 			return next.node;
@@ -30916,7 +31761,12 @@ var init_react_native_src_private_animated_createAnimatedPropsMemoHook = __esm({
 	};
 		init_react_native_Libraries_Animated_nodes_AnimatedNode();
 	init_react_native_Libraries_StyleSheet_flattenStyle();
+	require_nullthrows_nullthrows();
+	require_react_index();
 	nullthrows$9 = __toESM(require_nullthrows_nullthrows()).default;
+	useInsertionEffect$1 = require_react_index().useInsertionEffect;
+	useMemo$1 = require_react_index().useMemo;
+	useRef$2 = require_react_index().useRef;
 		
 	
 	
@@ -30933,7 +31783,7 @@ var init_react_native_src_private_animated_createAnimatedPropsMemoHook = __esm({
 //#endregion
 //#region createAnimatedPropsHook.js
 var exports_react_native_src_private_animated_createAnimatedPropsHook = {};
-var ReactNativeFeatureFlags$12, createAnimatedPropsHook, reduceAnimatedProps, addListenersToPropsValue, addAnimatedValuesListenersToProps, useAnimatedPropsLifecycle, getEventTarget, isFabricInstance;
+var ReactNativeFeatureFlags$12, createAnimatedPropsHook, reduceAnimatedProps, addListenersToPropsValue, addAnimatedValuesListenersToProps, useAnimatedPropsLifecycle, getEventTarget, isFabricInstance, useCallback$1, useEffect$1, useInsertionEffect$2, useReducer, useRef$3;
 __export(exports_react_native_src_private_animated_createAnimatedPropsHook, {
 	"default": function() { return createAnimatedPropsHook; },
 });
@@ -30942,14 +31792,14 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 	createAnimatedPropsHook = function(allowlist) {
 		var useAnimatedPropsMemo = (init_react_native_src_private_animated_createAnimatedPropsMemoHook(), createAnimatedPropsMemoHook)(allowlist),useNativePropsInFabric = shouldUseSetNativePropsInFabric();
 		return function useAnimatedProps(props) {
-			var [, scheduleUpdate] = require_react_index().useReducer(function(count) {
+			var [, scheduleUpdate] = useReducer(function(count) {
 				return count + 1;
-			}, 0),onUpdateRef = require_react_index().useRef(null),timerRef = require_react_index().useRef(null),node = useAnimatedPropsMemo(function() {
+			}, 0),onUpdateRef = useRef$3(null),timerRef = useRef$3(null),node = useAnimatedPropsMemo(function() {
 				return new AnimatedProps(props, function() {
 					return onUpdateRef.current?.();
 				}, allowlist);
 			}, props);
-			require_react_index().useEffect(function() {
+			useEffect$1(function() {
 				if (!_default$45.shouldSignalBatch) {
 					_default$45.API.flushQueue();
 				}
@@ -30964,7 +31814,7 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 				};
 			});
 			useAnimatedPropsLifecycle(node);
-			var refEffect = require_react_index().useCallback(function(instance) {
+			var refEffect = useCallback$1(function(instance) {
 				node.setNativeView(instance);
 				onUpdateRef.current = function() {
 					;
@@ -30976,7 +31826,7 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 						}
 						return;
 					}
-					if (typeof instance !== "object" || typeof instance?.setNativeProps !== "function") {
+					if (typeof instance != "object" || typeof instance?.setNativeProps != "function") {
 						return scheduleUpdate();
 					}
 					if (!isFabricNode) {
@@ -31035,8 +31885,8 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 		}
 	};
 	useAnimatedPropsLifecycle = function(node) {
-		var isMounted = require_react_index().useRef(false);
-		require_react_index().useInsertionEffect(function() {
+		var isMounted = useRef$3(false);
+		useInsertionEffect$2(function() {
 			isMounted.current = true;
 			node.__attach();
 			return function() {
@@ -31051,7 +31901,7 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 		}, [node]);
 	};
 	getEventTarget = function(instance) {
-		return typeof instance === "object" && typeof instance?.getScrollableNode === "function" ? instance.getScrollableNode() : instance;
+		return typeof instance == "object" && typeof instance?.getScrollableNode == "function" ? instance.getScrollableNode() : instance;
 	};
 	isFabricInstance = function(instance) {
 		return ((init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstanceUtils(), isPublicInstance)(instance) || (init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstanceUtils(), isPublicInstance)(instance?.getNativeScrollRef?.()) || (init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstanceUtils(), isPublicInstance)(instance?.getScrollResponder?.()?.getNativeScrollRef?.()));
@@ -31062,6 +31912,12 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 	init_react_native_Libraries_Utilities_useRefEffect();
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_src_private_animated_NativeAnimatedHelper();
+	require_react_index();
+	useCallback$1 = require_react_index().useCallback;
+	useEffect$1 = require_react_index().useEffect;
+	useInsertionEffect$2 = require_react_index().useInsertionEffect;
+	useReducer = require_react_index().useReducer;
+	useRef$3 = require_react_index().useRef;
 		
 	
 	
@@ -31077,21 +31933,21 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 //#endregion
 //#region useMergeRefs.js
 var exports_react_native_Libraries_Utilities_useMergeRefs = {};
-var useMergeRefs, React$19;
+var useMergeRefs, React$19, useCallback$2;
 __export(exports_react_native_Libraries_Utilities_useMergeRefs, {
 	"default": function() { return useMergeRefs; },
 });
 var init_react_native_Libraries_Utilities_useMergeRefs = __esm({
 	"useMergeRefs.js"() {
 	useMergeRefs = function(...refs) {
-		var refEffect = require_react_index().useCallback(function(current) {
+		var refEffect = useCallback$2(function(current) {
 			var cleanups = refs.map(function(ref) {
 				if (ref == null) {
 					return undefined;
 				} else {
-					if (typeof ref === "function") {
+					if (typeof ref == "function") {
 						var cleanup = ref(current);
-						return typeof cleanup === "function" ? cleanup : function() {
+						return typeof cleanup == "function" ? cleanup : function() {
 							ref(null);
 						};
 					} else {
@@ -31111,7 +31967,9 @@ var init_react_native_Libraries_Utilities_useMergeRefs = __esm({
 		return useRefEffect(refEffect);
 	};
 		init_react_native_Libraries_Utilities_useRefEffect();
+	require_react_index();
 	React$19 = __toESM(require_react_index());
+	useCallback$2 = require_react_index().useCallback;
 		
 	
 	
@@ -31121,7 +31979,7 @@ var init_react_native_Libraries_Utilities_useMergeRefs = __esm({
 //#endregion
 //#region createAnimatedComponent.js
 var exports_react_native_Libraries_Animated_createAnimatedComponent = {};
-var createAnimatedComponent, unstable_createAnimatedComponentWithAllowlist, React$20;
+var createAnimatedComponent, unstable_createAnimatedComponentWithAllowlist, React$20, useMemo$2;
 __export(exports_react_native_Libraries_Animated_createAnimatedComponent, {
 	"default": function() { return createAnimatedComponent; },
 	unstable_createAnimatedComponentWithAllowlist: function() { return unstable_createAnimatedComponentWithAllowlist; },
@@ -31133,7 +31991,7 @@ var init_react_native_Libraries_Animated_createAnimatedComponent = __esm({
 	};
 	unstable_createAnimatedComponentWithAllowlist = function(Component,allowlist) {
 		var useAnimatedProps = createAnimatedPropsHook(allowlist),AnimatedComponent = function({ ref:forwardedRef, ...props }) {
-			var [reducedProps, callbackRef] = useAnimatedProps(props),ref = useMergeRefs(callbackRef, forwardedRef),{ passthroughAnimatedPropExplicitValues:passthroughAnimatedPropExplicitValues, style:style } = reducedProps,passthroughStyle = passthroughAnimatedPropExplicitValues?.style,mergedStyle = require_react_index().useMemo(function() {
+			var [reducedProps, callbackRef] = useAnimatedProps(props),ref = useMergeRefs(callbackRef, forwardedRef),{ passthroughAnimatedPropExplicitValues:passthroughAnimatedPropExplicitValues, style:style } = reducedProps,passthroughStyle = passthroughAnimatedPropExplicitValues?.style,mergedStyle = useMemo$2(function() {
 				return composeStyles(style, passthroughStyle);
 			}, [passthroughStyle, style]);
 			return (/* @__PURE__ */ React$20.createElement(Component, { ...reducedProps, ...passthroughAnimatedPropExplicitValues, style: mergedStyle, ref: ref }));
@@ -31144,7 +32002,9 @@ var init_react_native_Libraries_Animated_createAnimatedComponent = __esm({
 		init_react_native_src_private_animated_createAnimatedPropsHook();
 	init_react_native_src_private_styles_composeStyles();
 	init_react_native_Libraries_Utilities_useMergeRefs();
+	require_react_index();
 	React$20 = __toESM(require_react_index());
+	useMemo$2 = require_react_index().useMemo;
 		
 	
 	
@@ -31183,8 +32043,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedAddition = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			__assertThisInitialized(_this)._a = typeof a == "number" ? new AnimatedValue(a) : a;
+			__assertThisInitialized(_this)._b = typeof b == "number" ? new AnimatedValue(b) : b;
 			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedAddition, _super);
@@ -31321,8 +32181,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDivision = __esm({
 			if (b === 0 || (b instanceof AnimatedNode$1 && b.__getValue() === 0)) {
 				console.error("Detected potential division by zero in AnimatedDivision");
 			}
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			__assertThisInitialized(_this)._a = typeof a == "number" ? new AnimatedValue(a) : a;
+			__assertThisInitialized(_this)._b = typeof b == "number" ? new AnimatedValue(b) : b;
 			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedDivision, _super);
@@ -31455,8 +32315,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedMultiplication = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			__assertThisInitialized(_this)._a = typeof a == "number" ? new AnimatedValue(a) : a;
+			__assertThisInitialized(_this)._b = typeof b == "number" ? new AnimatedValue(b) : b;
 			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedMultiplication, _super);
@@ -31520,8 +32380,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedSubtraction = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			__assertThisInitialized(_this)._a = typeof a == "number" ? new AnimatedValue(a) : a;
+			__assertThisInitialized(_this)._b = typeof b == "number" ? new AnimatedValue(b) : b;
 			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedSubtraction, _super);
@@ -31644,7 +32504,7 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 			return event;
 		} else {
 			return function(...args) {
-				typeof event === "function" && event(...args);
+				typeof event == "function" && event(...args);
 				listener(...args);
 			};
 		}
@@ -32042,1113 +32902,9 @@ var init_react_native_Libraries_Animated_AnimatedMock = __esm({
 	}
 });
 //#endregion
-//#region AndroidHorizontalScrollViewNativeComponent.js
-var exports_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent = {};
-var NativeComponentRegistry$4, __INTERNAL_VIEW_CONFIG$3, AndroidHorizontalScrollViewNativeComponent;
-__export(exports_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent, {
-	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$3; },
-	"default": function() { return AndroidHorizontalScrollViewNativeComponent; },
-});
-var init_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent = __esm({
-	"AndroidHorizontalScrollViewNativeComponent.js"() {
-	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
-		NativeComponentRegistry$4=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
-	__INTERNAL_VIEW_CONFIG$3 = { uiViewClassName: "AndroidHorizontalScrollView", bubblingEventTypes: {}, directEventTypes: {}, validAttributes: { decelerationRate: true, disableIntervalMomentum: true, maintainVisibleContentPosition: true, endFillColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, fadingEdgeLength: true, nestedScrollEnabled: true, overScrollMode: true, pagingEnabled: true, persistentScrollbar: true, horizontal: true, scrollEnabled: true, scrollEventThrottle: true, scrollPerfTag: true, sendMomentumEvents: true, showsHorizontalScrollIndicator: true, snapToAlignment: true, snapToEnd: true, snapToInterval: true, snapToStart: true, snapToOffsets: true, contentOffset: true, borderBottomLeftRadius: true, borderBottomRightRadius: true, borderRadius: true, borderStyle: true, borderRightColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderBottomColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderTopLeftRadius: true, borderTopColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, removeClippedSubviews: true, borderTopRightRadius: true, borderLeftColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, pointerEvents: true } };
-	AndroidHorizontalScrollViewNativeComponent = get$2("AndroidHorizontalScrollView", function() {
-		return __INTERNAL_VIEW_CONFIG$3;
-	});
-	
-	
-	}
-});
-//#endregion
-//#region ScrollContentViewNativeComponent.js
-var exports_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent = {};
-var NativeComponentRegistry$5, __INTERNAL_VIEW_CONFIG$4, ScrollContentViewNativeComponent;
-__export(exports_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent, {
-	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$4; },
-	"default": function() { return ScrollContentViewNativeComponent; },
-});
-var init_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent = __esm({
-	"ScrollContentViewNativeComponent.js"() {
-	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
-		NativeComponentRegistry$5=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
-	__INTERNAL_VIEW_CONFIG$4 = { uiViewClassName: "RCTScrollContentView", bubblingEventTypes: {}, directEventTypes: {}, validAttributes: {} };
-	ScrollContentViewNativeComponent = get$2("RCTScrollContentView", function() {
-		return __INTERNAL_VIEW_CONFIG$4;
-	});
-	
-	
-	}
-});
-//#endregion
-//#region ScrollViewNativeComponent.js
-var exports_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent = {};
-var NativeComponentRegistry$6, __INTERNAL_VIEW_CONFIG$5, ScrollViewNativeComponent;
-__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent, {
-	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$5; },
-	"default": function() { return ScrollViewNativeComponent; },
-});
-var init_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent = __esm({
-	"ScrollViewNativeComponent.js"() {
-	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
-	init_react_native_Libraries_Utilities_Platform_ios();
-		NativeComponentRegistry$6=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
-	
-	
-	__INTERNAL_VIEW_CONFIG$5 = Platform.OS === "android" ? { uiViewClassName: "RCTScrollView", bubblingEventTypes: {}, directEventTypes: { topMomentumScrollBegin: { registrationName: "onMomentumScrollBegin" }, topMomentumScrollEnd: { registrationName: "onMomentumScrollEnd" }, topScroll: { registrationName: "onScroll" }, topScrollBeginDrag: { registrationName: "onScrollBeginDrag" }, topScrollEndDrag: { registrationName: "onScrollEndDrag" } }, validAttributes: { contentOffset: { diff: (init_react_native_Libraries_Utilities_differ_pointsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_pointsDiffer)).default }, decelerationRate: true, disableIntervalMomentum: true, maintainVisibleContentPosition: true, pagingEnabled: true, scrollEnabled: true, showsVerticalScrollIndicator: true, snapToAlignment: true, snapToEnd: true, snapToInterval: true, snapToOffsets: true, snapToStart: true, borderBottomLeftRadius: true, borderBottomRightRadius: true, sendMomentumEvents: true, borderRadius: true, nestedScrollEnabled: true, scrollEventThrottle: true, borderStyle: true, borderRightColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderBottomColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, persistentScrollbar: true, horizontal: true, endFillColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, fadingEdgeLength: true, overScrollMode: true, borderTopLeftRadius: true, scrollPerfTag: true, borderTopColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, removeClippedSubviews: true, borderTopRightRadius: true, borderLeftColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, pointerEvents: true, isInvertedVirtualizedList: true } } : { uiViewClassName: "RCTScrollView", bubblingEventTypes: {}, directEventTypes: { topMomentumScrollBegin: { registrationName: "onMomentumScrollBegin" }, topMomentumScrollEnd: { registrationName: "onMomentumScrollEnd" }, topScroll: { registrationName: "onScroll" }, topScrollBeginDrag: { registrationName: "onScrollBeginDrag" }, topScrollEndDrag: { registrationName: "onScrollEndDrag" }, topScrollToTop: { registrationName: "onScrollToTop" } }, validAttributes: { alwaysBounceHorizontal: true, alwaysBounceVertical: true, automaticallyAdjustContentInsets: true, automaticallyAdjustKeyboardInsets: true, automaticallyAdjustsScrollIndicatorInsets: true, bounces: true, bouncesZoom: true, canCancelContentTouches: true, centerContent: true, contentInset: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, contentOffset: { diff: (init_react_native_Libraries_Utilities_differ_pointsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_pointsDiffer)).default }, contentInsetAdjustmentBehavior: true, decelerationRate: true, endDraggingSensitivityMultiplier: true, directionalLockEnabled: true, disableIntervalMomentum: true, indicatorStyle: true, inverted: true, keyboardDismissMode: true, maintainVisibleContentPosition: true, maximumZoomScale: true, minimumZoomScale: true, pagingEnabled: true, pinchGestureEnabled: true, scrollEnabled: true, scrollEventThrottle: true, scrollIndicatorInsets: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, scrollToOverflowEnabled: true, scrollsToTop: true, showsHorizontalScrollIndicator: true, showsVerticalScrollIndicator: true, snapToAlignment: true, snapToEnd: true, snapToInterval: true, snapToOffsets: true, snapToStart: true, verticalScrollIndicatorInsets: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, zoomScale: true, ...(init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), ConditionallyIgnoredEventHandlers)({ onScrollBeginDrag: true, onMomentumScrollEnd: true, onScrollEndDrag: true, onMomentumScrollBegin: true, onScrollToTop: true, onScroll: true }) } };
-	ScrollViewNativeComponent = get$2("RCTScrollView", function() {
-		return __INTERNAL_VIEW_CONFIG$5;
-	});
-	
-	
-	}
-});
-//#endregion
-//#region AndroidHorizontalScrollContentViewNativeComponent.js
-var exports_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent = {};
-var NativeComponentRegistry$7, nativeComponentName$1, __INTERNAL_VIEW_CONFIG$6, _default$49;
-__export(exports_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent, {
-	"default": function() { return _default$49; },
-});
-var init_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent = __esm({
-	"AndroidHorizontalScrollContentViewNativeComponent.js"() {
-	NativeComponentRegistry$7 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
-	nativeComponentName$1 = "AndroidHorizontalScrollContentView";
-	__INTERNAL_VIEW_CONFIG$6 = { uiViewClassName: "AndroidHorizontalScrollContentView", validAttributes: { removeClippedSubviews: true } };
-	_default$49=NativeComponentRegistry$7.get(nativeComponentName$1, function() {
-		return __INTERNAL_VIEW_CONFIG$6;
-	});
-	
-	}
-});
-//#endregion
-//#region HScrollViewNativeComponents.js
-var exports_react_native_src_private_components_scrollview_HScrollViewNativeComponents = {};
-var HScrollViewNativeComponent, HScrollContentViewNativeComponent;
-__export(exports_react_native_src_private_components_scrollview_HScrollViewNativeComponents, {
-	HScrollViewNativeComponent: function() { return HScrollViewNativeComponent; },
-	HScrollContentViewNativeComponent: function() { return HScrollContentViewNativeComponent; },
-});
-var init_react_native_src_private_components_scrollview_HScrollViewNativeComponents = __esm({
-	"HScrollViewNativeComponents.js"() {
-	init_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent();
-	init_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent();
-	init_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent();
-	init_react_native_Libraries_Utilities_Platform_ios();
-	init_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent();
-		
-	
-	
-	
-	
-	HScrollViewNativeComponent = Platform.OS === "android" ? AndroidHorizontalScrollViewNativeComponent : ScrollViewNativeComponent;
-	HScrollContentViewNativeComponent = Platform.OS === "android" ? _default$49 : ScrollContentViewNativeComponent;
-	
-	}
-});
-//#endregion
-//#region VScrollViewNativeComponents.js
-var exports_react_native_src_private_components_scrollview_VScrollViewNativeComponents = {};
-var VScrollViewNativeComponent, VScrollContentViewNativeComponent;
-__export(exports_react_native_src_private_components_scrollview_VScrollViewNativeComponents, {
-	VScrollViewNativeComponent: function() { return VScrollViewNativeComponent; },
-	VScrollContentViewNativeComponent: function() { return VScrollContentViewNativeComponent; },
-});
-var init_react_native_src_private_components_scrollview_VScrollViewNativeComponents = __esm({
-	"VScrollViewNativeComponents.js"() {
-	init_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent();
-	init_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent();
-	init_react_native_Libraries_Components_View_View();
-	init_react_native_Libraries_Utilities_Platform_ios();
-		
-	
-	
-	
-	VScrollViewNativeComponent = ScrollViewNativeComponent;
-	VScrollContentViewNativeComponent = Platform.OS === "android" ? View$1 : ScrollContentViewNativeComponent;
-	
-	}
-});
-//#endregion
-//#region NativeFrameRateLogger.js
-var exports_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger = {};
-var TurboModuleRegistry$24, _default$50;
-__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger, {
-	"default": function() { return _default$50; },
-});
-var init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger = __esm({
-	"NativeFrameRateLogger.js"() {
-	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
-		TurboModuleRegistry$24=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
-	_default$50=get("FrameRateLogger");
-	
-	}
-});
-//#endregion
-//#region NativeFrameRateLogger.js
-var exports_react_native_Libraries_Interaction_NativeFrameRateLogger = {};
-var _default$51;
-__export(exports_react_native_Libraries_Interaction_NativeFrameRateLogger, {
-	"default": function() { return _default$51; },
-});
-var init_react_native_Libraries_Interaction_NativeFrameRateLogger = __esm({
-	"NativeFrameRateLogger.js"() {
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger();
-		
-	
-	_default$51=_default$50;
-		_default$51 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger)).default;
-	
-	}
-});
-//#endregion
-//#region FrameRateLogger.js
-var exports_react_native_Libraries_Interaction_FrameRateLogger = {};
-var invariant$29, FrameRateLogger;
-__export(exports_react_native_Libraries_Interaction_FrameRateLogger, {
-	"default": function() { return FrameRateLogger; },
-});
-var init_react_native_Libraries_Interaction_FrameRateLogger = __esm({
-	"FrameRateLogger.js"() {
-	init_react_native_Libraries_Interaction_NativeFrameRateLogger();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger();
-		
-	invariant$29 = require_invariant_browser();
-	FrameRateLogger = { setGlobalOptions: function(options) {
-		if (options.debug !== undefined) {
-			invariant$29(_default$50, "Trying to debug FrameRateLogger without the native module!");
-		}
-		_default$50?.setGlobalOptions({ debug: !!options.debug });
-	}, setContext: function(context) {
-		_default$50?.setContext(context);
-	}, beginScroll() {
-		_default$50?.beginScroll();
-	}, endScroll() {
-		_default$50?.endScroll();
-	} };
-	
-	
-	}
-});
-//#endregion
-//#region splitLayoutProps.js
-var exports_react_native_Libraries_StyleSheet_splitLayoutProps = {};
-var splitLayoutProps;
-__export(exports_react_native_Libraries_StyleSheet_splitLayoutProps, {
-	"default": function() { return splitLayoutProps; },
-});
-var init_react_native_Libraries_StyleSheet_splitLayoutProps = __esm({
-	"splitLayoutProps.js"() {
-	splitLayoutProps = function(props) {
-		var outer = null,inner = null;
-		if (props != null) {
-			outer = {};
-			inner = {};
-			for (var prop of Object.keys(props)) {
-				switch (prop) {
-					case "margin":
-					case "marginHorizontal":
-					case "marginVertical":
-					case "marginBottom":
-					case "marginTop":
-					case "marginLeft":
-					case "marginRight":
-					case "flex":
-					case "flexGrow":
-					case "flexShrink":
-					case "flexBasis":
-					case "alignSelf":
-					case "height":
-					case "minHeight":
-					case "maxHeight":
-					case "width":
-					case "minWidth":
-					case "maxWidth":
-					case "position":
-					case "left":
-					case "right":
-					case "bottom":
-					case "top":
-					case "transform":
-					case "transformOrigin":
-					case "rowGap":
-					case "columnGap":
-					case "gap":
-						outer[prop] = props[prop];
-						break;
-					default:
-						inner[prop] = props[prop];
-						break;
-				}
-			}
-		}
-		return { outer, inner };
-	};
-	
-	}
-});
-//#endregion
-//#region dismissKeyboard.js
-var exports_react_native_Libraries_Utilities_dismissKeyboard = {};
-var TextInputState$2, dismissKeyboard;
-__export(exports_react_native_Libraries_Utilities_dismissKeyboard, {
-	"default": function() { return dismissKeyboard; },
-});
-var init_react_native_Libraries_Utilities_dismissKeyboard = __esm({
-	"dismissKeyboard.js"() {
-	dismissKeyboard = function() {
-		TextInputState$2.blurTextInput(TextInputState$2.currentlyFocusedInput());
-	};
-		"use strict";
-	TextInputState$2 = (init_react_native_Libraries_Components_TextInput_TextInputState(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_TextInputState)).default;
-	
-	
-	}
-});
-//#endregion
-//#region LayoutAnimation.js
-var exports_react_native_Libraries_LayoutAnimation_LayoutAnimation = {};
-var ReactNativeFeatureFlags$13, UIManager$5, isLayoutAnimationEnabled$1, setLayoutAnimationEnabled, configureNext, createLayoutAnimation, Presets, LayoutAnimation;
-__export(exports_react_native_Libraries_LayoutAnimation_LayoutAnimation, {
-	"default": function() { return LayoutAnimation; },
-});
-var init_react_native_Libraries_LayoutAnimation_LayoutAnimation = __esm({
-	"LayoutAnimation.js"() {
-	setLayoutAnimationEnabled = function(value) {
-		isLayoutAnimationEnabled$1 = isLayoutAnimationEnabled$1;
-	};
-	configureNext = function(config,onAnimationDidEnd,onAnimationDidFail) {
-		if (Platform.isDisableAnimations) {
-			return;
-		}
-		if (!isLayoutAnimationEnabled$1) {
-			return;
-		}
-		var animationCompletionHasRun = false,onAnimationComplete = function() {
-			if (animationCompletionHasRun) {
-				return;
-			}
-			animationCompletionHasRun = true;
-			clearTimeout(raceWithAnimationId);
-			onAnimationDidEnd?.();
-		},raceWithAnimationId = setTimeout(onAnimationComplete, (config.duration ?? 0) + 17),FabricUIManager = (init_react_native_Libraries_ReactNative_FabricUIManager(), getFabricUIManager)();
-		if (FabricUIManager?.configureNextLayoutAnimation) {
-			global?.nativeFabricUIManager?.configureNextLayoutAnimation(config, onAnimationComplete, onAnimationDidFail ?? function() {
-			});
-			return;
-		}
-		if (UIManager$5?.configureNextLayoutAnimation) {
-			UIManager$5.configureNextLayoutAnimation(config, onAnimationComplete ?? function() {
-			}, onAnimationDidFail ?? function() {
-			});
-		}
-	};
-	createLayoutAnimation = function(duration,type,property) {
-		return { duration, create: { type, property }, update: { type }, delete: { type, property } };
-	};
-		init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
-	init_react_native_Libraries_Utilities_Platform_ios();
-		"use strict";
-	ReactNativeFeatureFlags$13=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
-	
-	
-	UIManager$5 = (init_react_native_Libraries_ReactNative_UIManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_UIManager)).default;
-	isLayoutAnimationEnabled$1 = isLayoutAnimationEnabled();
-	Presets = { easeInEaseOut: createLayoutAnimation(300, "easeInEaseOut", "opacity"), linear: createLayoutAnimation(500, "linear", "opacity"), spring: { duration: 700, create: { type: "linear", property: "opacity" }, update: { type: "spring", springDamping: 0.4 }, delete: { type: "linear", property: "opacity" } } };
-	LayoutAnimation = { configureNext, create: createLayoutAnimation, Types: Object.freeze({ spring: "spring", linear: "linear", easeInEaseOut: "easeInEaseOut", easeIn: "easeIn", easeOut: "easeOut", keyboard: "keyboard" }), Properties: Object.freeze({ opacity: "opacity", scaleX: "scaleX", scaleY: "scaleY", scaleXY: "scaleXY" }), checkConfig(...args) {
-		console.error("LayoutAnimation.checkConfig(...) has been disabled.");
-	}, Presets, easeInEaseOut: configureNext.bind(null, Presets.easeInEaseOut), linear: configureNext.bind(null, Presets.linear), spring: configureNext.bind(null, Presets.spring), setEnabled: setLayoutAnimationEnabled };
-	
-	
-	}
-});
-//#endregion
-//#region NativeKeyboardObserver.js
-var exports_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver = {};
-var TurboModuleRegistry$25, _default$52;
-__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver, {
-	"default": function() { return _default$52; },
-});
-var init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver = __esm({
-	"NativeKeyboardObserver.js"() {
-	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
-		TurboModuleRegistry$25=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
-	_default$52=get("KeyboardObserver");
-	
-	}
-});
-//#endregion
-//#region NativeKeyboardObserver.js
-var exports_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver = {};
-var _default$53;
-__export(exports_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver, {
-	"default": function() { return _default$53; },
-});
-var init_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver = __esm({
-	"NativeKeyboardObserver.js"() {
-	
-	
-		_default$53 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver)).default;
-	
-	}
-});
-//#endregion
-//#region Keyboard.js
-var exports_react_native_Libraries_Components_Keyboard_Keyboard = {};
-var KeyboardImpl, Keyboard, __classCallCheck;
-__export(exports_react_native_Libraries_Components_Keyboard_Keyboard, {
-	"default": function() { return Keyboard; },
-});
-var init_react_native_Libraries_Components_Keyboard_Keyboard = __esm({
-	"Keyboard.js"() {
-	init_class_call_check();
-	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
-	init_react_native_Libraries_LayoutAnimation_LayoutAnimation();
-	init_react_native_Libraries_Utilities_dismissKeyboard();
-	init_react_native_Libraries_Utilities_Platform_ios();
-	init_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver();
-		
-	
-	
-	
-	
-	
-	KeyboardImpl = (function() {
-		function KeyboardImpl() {
-			__classCallCheck(this, KeyboardImpl);
-			this._emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$52);
-			var _this = this;
-			this.addListener("keyboardDidShow", function(ev) {
-				_this._currentlyShowing = ev;
-			});
-			this.addListener("keyboardDidHide", function(_ev) {
-				_this._currentlyShowing = null;
-			});
-		}
-		Object.defineProperty(KeyboardImpl.prototype, "addListener", { configurable: true, writable: true, value: function(eventType,listener,context) {
-			return this._emitter.addListener(eventType, listener);
-		} });
-		Object.defineProperty(KeyboardImpl.prototype, "removeAllListeners", { configurable: true, writable: true, value: function(eventType) {
-			this._emitter.removeAllListeners(eventType);
-		} });
-		Object.defineProperty(KeyboardImpl.prototype, "dismiss", { configurable: true, writable: true, value: function() {
-			dismissKeyboard();
-		} });
-		Object.defineProperty(KeyboardImpl.prototype, "isVisible", { configurable: true, writable: true, value: function() {
-			return !!this._currentlyShowing;
-		} });
-		Object.defineProperty(KeyboardImpl.prototype, "metrics", { configurable: true, writable: true, value: function() {
-			return this._currentlyShowing?.endCoordinates;
-		} });
-		Object.defineProperty(KeyboardImpl.prototype, "scheduleLayoutAnimation", { configurable: true, writable: true, value: function(event) {
-			var { duration:duration, easing:easing } = event;
-			if (duration != null && duration !== 0) {
-				LayoutAnimation.configureNext({ duration: duration, update: { duration: duration, type: (easing != null && LayoutAnimation.Types[easing]) || "keyboard" } });
-			}
-		} });
-		return KeyboardImpl;
-	})();
-	Keyboard = new KeyboardImpl();
-	;
-	
-	
-	}
-});
-//#endregion
-//#region processDecelerationRate.js
-var exports_react_native_Libraries_Components_ScrollView_processDecelerationRate = {};
-var processDecelerationRate;
-__export(exports_react_native_Libraries_Components_ScrollView_processDecelerationRate, {
-	"default": function() { return processDecelerationRate; },
-});
-var init_react_native_Libraries_Components_ScrollView_processDecelerationRate = __esm({
-	"processDecelerationRate.js"() {
-	processDecelerationRate = function(decelerationRate) {
-		if (decelerationRate === "normal") {
-			return Platform.select({ ios: 0.998, android: 0.985 });
-		} else if (decelerationRate === "fast") {
-			return Platform.select({ ios: 0.99, android: 0.9 });
-		}
-		return decelerationRate;
-	};
-		init_react_native_Libraries_Utilities_Platform_ios();
-		
-	
-	
-	}
-});
-//#endregion
-//#region ScrollViewCommands.js
-var exports_react_native_Libraries_Components_ScrollView_ScrollViewCommands = {};
-var _default$54, React$21;
-__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewCommands, {
-	"default": function() { return _default$54; },
-});
-var init_react_native_Libraries_Components_ScrollView_ScrollViewCommands = __esm({
-	"ScrollViewCommands.js"() {
-	init_react_native_Libraries_Utilities_codegenNativeCommands();
-	React$21 = __toESM(require_react_index());
-		
-	
-	_default$54=codegenNativeCommands$2({ supportedCommands: ["flashScrollIndicators", "scrollTo", "scrollToEnd", "zoomToRect"] });
-	
-	}
-});
-//#endregion
-//#region ScrollViewContext.js
-var exports_react_native_Libraries_Components_ScrollView_ScrollViewContext = {};
-var ScrollViewContext, HORIZONTAL, VERTICAL, React$22;
-__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewContext, {
-	"default": function() { return ScrollViewContext; },
-	HORIZONTAL: function() { return HORIZONTAL; },
-	VERTICAL: function() { return VERTICAL; },
-});
-var init_react_native_Libraries_Components_ScrollView_ScrollViewContext = __esm({
-	"ScrollViewContext.js"() {
-	React$22 = __toESM(require_react_index());
-		
-	
-	ScrollViewContext = require_react_index().createContext(null);
-	;
-	
-	HORIZONTAL = Object.freeze({ horizontal: true });
-	VERTICAL = Object.freeze({ horizontal: false });
-	
-	}
-});
-//#endregion
-//#region ScrollViewStickyHeader.js
-var exports_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = {};
-var ScrollViewStickyHeader, styles$3, React$23;
-__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader, {
-	"default": function() { return ScrollViewStickyHeader; },
-});
-var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = __esm({
-	"ScrollViewStickyHeader.js"() {
-	init_react_native_Libraries_Animated_Animated();
-	init_react_native_Libraries_StyleSheet_StyleSheet();
-	init_react_native_Libraries_Utilities_Platform_ios();
-	init_react_native_Libraries_Utilities_useMergeRefs();
-	React$23 = __toESM(require_react_index());
-		
-	
-	
-	
-	
-	
-	
-	ScrollViewStickyHeader = function({ ref:forwardedRef, ...props }) {
-		var { inverted:inverted, scrollViewHeight:scrollViewHeight, hiddenOnScroll:hiddenOnScroll, scrollAnimatedValue:scrollAnimatedValue, nextHeaderLayoutY:_nextHeaderLayoutY } = props,[measured, setMeasured] = require_react_index().useState(false),[layoutY, setLayoutY] = require_react_index().useState(0),[layoutHeight, setLayoutHeight] = require_react_index().useState(0),[translateY, setTranslateY] = require_react_index().useState(null),[nextHeaderLayoutY, setNextHeaderLayoutY] = require_react_index().useState(_nextHeaderLayoutY),[isFabric, setIsFabric] = require_react_index().useState(false),callbackRef = require_react_index().useCallback(function(ref) {
-			if (ref == null) {
-				return;
-			}
-			ref.setNextHeaderY = setNextHeaderLayoutY;
-			setIsFabric((init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstanceUtils(), isPublicInstance)(ref));
-		}, []),ref = useMergeRefs(callbackRef, forwardedRef),offset = require_react_index().useMemo(function() {
-			return hiddenOnScroll === true ? Animated$2.diffClamp(scrollAnimatedValue.interpolate({ extrapolateLeft: "clamp", inputRange: [layoutY, layoutY + 1], outputRange: [0, 1] }).interpolate({ inputRange: [0, 1], outputRange: [0, -1] }), -layoutHeight, 0) : null;
-		}, [scrollAnimatedValue, layoutHeight, layoutY, hiddenOnScroll]),[animatedTranslateY, setAnimatedTranslateY] = require_react_index().useState(function() {
-			var inputRange = [-1, 0],outputRange = [0, 0],initialTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
-			if (offset != null) {
-				return Animated$2.add(initialTranslateY, offset);
-			}
-			return initialTranslateY;
-		}),haveReceivedInitialZeroTranslateY = require_react_index().useRef(true),translateYDebounceTimer = require_react_index().useRef(null);
-		require_react_index().useEffect(function() {
-			if (translateY !== 0 && translateY != null) {
-				haveReceivedInitialZeroTranslateY.current = false;
-			}
-		}, [translateY]);
-		var animatedValueListener = require_react_index().useCallback(function({ value:value }) {
-			var debounceTimeout = Platform.OS === "android" ? 15 : 64;
-			if (value === 0 && !haveReceivedInitialZeroTranslateY.current) {
-				haveReceivedInitialZeroTranslateY.current = true;
-				return;
-			}
-			if (translateYDebounceTimer.current != null) {
-				clearTimeout(translateYDebounceTimer.current);
-			}
-			translateYDebounceTimer.current = setTimeout(function() {
-				return setTranslateY(value);
-			}, debounceTimeout);
-		}, []);
-		require_react_index().useEffect(function() {
-			var inputRange = [-1, 0],outputRange = [0, 0];
-			if (measured) {
-				if (inverted === true) {
-					if (scrollViewHeight != null) {
-						var stickStartPoint = layoutY + layoutHeight - scrollViewHeight;
-						if (stickStartPoint > 0) {
-							inputRange.push(stickStartPoint);
-							outputRange.push(0);
-							inputRange.push(stickStartPoint + 1);
-							outputRange.push(1);
-							var collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight - scrollViewHeight;
-							if (collisionPoint > stickStartPoint) {
-								inputRange.push(collisionPoint, collisionPoint + 1);
-								outputRange.push(collisionPoint - stickStartPoint, collisionPoint - stickStartPoint);
-							}
-						}
-					}
-				} else {
-					inputRange.push(layoutY);
-					outputRange.push(0);
-					var collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight;
-					if (collisionPoint >= layoutY) {
-						inputRange.push(collisionPoint, collisionPoint + 1);
-						outputRange.push(collisionPoint - layoutY, collisionPoint - layoutY);
-					} else {
-						inputRange.push(layoutY + 1);
-						outputRange.push(1);
-					}
-				}
-			}
-			var newAnimatedTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
-			if (offset != null) {
-				newAnimatedTranslateY = Animated$2.add(newAnimatedTranslateY, offset);
-			}
-			var animatedListenerId = void 0;
-			if (isFabric) {
-				animatedListenerId = newAnimatedTranslateY.addListener(animatedValueListener);
-			}
-			setAnimatedTranslateY(newAnimatedTranslateY);
-			return function() {
-				if (animatedListenerId) {
-					newAnimatedTranslateY.removeListener(animatedListenerId);
-				}
-				if (translateYDebounceTimer.current != null) {
-					clearTimeout(translateYDebounceTimer.current);
-				}
-			};
-		}, [nextHeaderLayoutY, measured, layoutHeight, layoutY, scrollViewHeight, scrollAnimatedValue, inverted, offset, animatedValueListener, isFabric]);
-		var _onLayout = function(event) {
-			setLayoutY(event.nativeEvent.layout.y);
-			setLayoutHeight(event.nativeEvent.layout.height);
-			setMeasured(true);
-			props.onLayout(event);
-			var child$1 = React$23.Children.only(props.children);
-			if (child$1.props.onLayout) {
-				child$1.props.onLayout(event);
-			}
-		},child = React$23.Children.only(props.children),passthroughAnimatedPropExplicitValues = isFabric && translateY != null ? { style: { transform: [{ translateY }] } } : null;
-		return (/* @__PURE__ */ React$23.createElement(Animated$2.View, { collapsable: false, nativeID: props.nativeID, onLayout: _onLayout, ref: ref, style: [child.props.style, styles$3.header, { transform: [{ translateY: animatedTranslateY }] }], passthroughAnimatedPropExplicitValues: passthroughAnimatedPropExplicitValues }, require_react_index().cloneElement(child, { onLayout: undefined, style: styles$3.fill })));
-	};
-	styles$3 = StyleSheet.create({ fill: { flex: 1 }, header: { zIndex: 10 } });
-	
-	
-	}
-});
-//#endregion
-//#region memoize-one.cjs.js
-var require_memoize_one_dist_memoize_one_cjs = __commonJS({
-	"memoize-one.cjs.js"(exports, module) {
-
-	}
-});
-//#endregion
-//#region ScrollView.js
-var exports_react_native_Libraries_Components_ScrollView_ScrollView = {};
-var ReactNativeFeatureFlags$14, IS_ANIMATING_TOUCH_START_THRESHOLD_MS, ScrollView, styles$4, createRefForwarder, ScrollViewWrapper, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$30, memoize, nullthrows$10, React$24;
-__export(exports_react_native_Libraries_Components_ScrollView_ScrollView, {
-	"default": function() { return ScrollViewWrapper; },
-});
-var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
-	"ScrollView.js"() {
-	createRefForwarder = function(mutator) {
-		var state = { getForwardingRef: memoize(function(forwardedRef) {
-			return function(nativeInstance) {
-				var publicInstance = nativeInstance == null ? null : mutator(nativeInstance);
-				state.nativeInstance = nativeInstance;
-				state.publicInstance = publicInstance;
-				if (forwardedRef != null) {
-					if (typeof forwardedRef === "function") {
-						forwardedRef(publicInstance);
-					} else {
-						forwardedRef.current = publicInstance;
-					}
-				}
-			};
-		}), nativeInstance: null, publicInstance: null };
-		return state;
-	};
-		init_extends();
-	init_class_call_check();
-	init_call_super();
-	init_derived_constructor();
-	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
-	init_react_native_Libraries_Animated_AnimatedImplementation();
-	init_react_native_Libraries_Interaction_FrameRateLogger();
-	init_react_native_Libraries_ReactNative_UIManager();
-	init_react_native_Libraries_StyleSheet_flattenStyle();
-	init_react_native_Libraries_StyleSheet_splitLayoutProps();
-	init_react_native_Libraries_StyleSheet_StyleSheet();
-	init_react_native_Libraries_Utilities_Dimensions();
-	init_react_native_Libraries_Utilities_dismissKeyboard();
-	init_react_native_Libraries_Utilities_Platform_ios();
-	init_react_native_Libraries_Components_Keyboard_Keyboard();
-	init_react_native_Libraries_Components_TextInput_TextInputState();
-	init_react_native_Libraries_Components_View_View();
-	init_react_native_Libraries_Components_ScrollView_processDecelerationRate();
-	init_react_native_Libraries_Components_ScrollView_ScrollViewCommands();
-	init_react_native_Libraries_Components_ScrollView_ScrollViewContext();
-	init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader();
-	invariant$30 = require_invariant_browser();
-	memoize = require_memoize_one_dist_memoize_one_cjs();
-	nullthrows$10 = __toESM(require_nullthrows_nullthrows()).default;
-	React$24 = __toESM(require_react_index());
-		
-	
-	
-	
-	
-	
-	ReactNativeFeatureFlags$14=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	IS_ANIMATING_TOUCH_START_THRESHOLD_MS = 16;
-	ScrollView = (function(_super) {
-		function ScrollView(props) {
-			__classCallCheck(this, ScrollView);
-			var _newTarget = this.constructor,_this;
-			;
-			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [props], _newTarget);
-				_this._scrollAnimatedValueAttachment = null;
-				_this._stickyHeaderRefs = new Map();
-				_this._headerLayoutYs = new Map();
-				_this._keyboardMetrics = null;
-				_this._additionalScrollOffset = 0;
-				_this._isTouching = false;
-				_this._lastMomentumScrollBeginTime = 0;
-				_this._lastMomentumScrollEndTime = 0;
-				_this._observedScrollSinceBecomingResponder = false;
-				_this._becameResponderWhileAnimating = false;
-				_this._preventNegativeScrollOffset = null;
-				_this._animated = null;
-				_this._subscriptionKeyboardWillShow = null;
-				_this._subscriptionKeyboardWillHide = null;
-				_this._subscriptionKeyboardDidShow = null;
-				_this._subscriptionKeyboardDidHide = null;
-				_this.state = { layoutHeight: null };
-				_this.getScrollResponder = function() {
-					return _this;
-				};
-				_this.getScrollableNode = function() {
-					return (init_react_native_Libraries_ReactNative_RendererProxy(), init_react_native_Libraries_ReactNative_RendererImplementation(), findNodeHandle$1)(_this.getNativeScrollRef());
-				};
-				_this.getInnerViewNode = function() {
-					return (init_react_native_Libraries_ReactNative_RendererProxy(), init_react_native_Libraries_ReactNative_RendererImplementation(), findNodeHandle$1)(_this._innerView.nativeInstance);
-				};
-				_this.getInnerViewRef = function() {
-					return _this._innerView.nativeInstance;
-				};
-				_this.getNativeScrollRef = function() {
-					return _this._scrollView.nativeInstance;
-				};
-				_this.scrollTo = function(options,deprecatedX,deprecatedAnimated) {
-					var x = void 0,y = void 0,animated = void 0;
-					if (typeof options === "number") {
-						console.warn("`scrollTo(y, x, animated)` is deprecated. Use `scrollTo({x: 5, y: 5, animated: true})` instead.");
-						y = options;
-						x = deprecatedX;
-						animated = deprecatedAnimated;
-					} else if (options) {
-						y = options.y;
-						x = options.x;
-						animated = options.animated;
-					}
-					var component = _this.getNativeScrollRef();
-					if (component == null) {
-						return;
-					}
-					_default$54.scrollTo(component, x || 0, y || 0, animated !== false);
-				};
-				_this.scrollToEnd = function(options) {
-					var animated = (options && options.animated) !== false,component = _this.getNativeScrollRef();
-					if (component == null) {
-						return;
-					}
-					_default$54.scrollToEnd(component, animated);
-				};
-				_this.flashScrollIndicators = function() {
-					var component = _this.getNativeScrollRef();
-					if (component == null) {
-						return;
-					}
-					_default$54.flashScrollIndicators(component);
-				};
-				_this.scrollResponderScrollNativeHandleToKeyboard = function(nodeHandle,additionalOffset,preventNegativeScrollOffset) {
-					_this._additionalScrollOffset = additionalOffset || 0;
-					_this._preventNegativeScrollOffset = !!preventNegativeScrollOffset;
-					if (_this._innerView.nativeInstance == null) {
-						return;
-					}
-					if (typeof nodeHandle === "number") {
-						UIManager.measureLayout(nodeHandle, nullthrows$10((init_react_native_Libraries_ReactNative_RendererProxy(), init_react_native_Libraries_ReactNative_RendererImplementation(), findNodeHandle$1)(_this)), _this._textInputFocusError, _this._inputMeasureAndScrollToKeyboard);
-					} else {
-						nodeHandle.measureLayout(_this._innerView.nativeInstance, _this._inputMeasureAndScrollToKeyboard, _this._textInputFocusError);
-					}
-				};
-				_this.scrollResponderZoomTo = function(rect,animated) {
-					invariant$30(Platform.OS === "ios", "zoomToRect is not implemented");
-					if ("animated" in rect) {
-						_this._animated = rect.animated;
-						delete rect.animated;
-					} else if (typeof animated !== "undefined") {
-						console.warn("`scrollResponderZoomTo` `animated` argument is deprecated. Use `options.animated` instead");
-					}
-					var component = _this.getNativeScrollRef();
-					if (component == null) {
-						return;
-					}
-					_default$54.zoomToRect(component, rect, animated !== false);
-				};
-				_this._inputMeasureAndScrollToKeyboard = function(left,top,width,height) {
-					var keyboardScreenY = Dimensions.get("window").height,scrollTextInputIntoVisibleRect = function() {
-						if (_this._keyboardMetrics != null) {
-							keyboardScreenY = _this._keyboardMetrics.screenY;
-						}
-						var scrollOffsetY = top - keyboardScreenY + height + _this._additionalScrollOffset;
-						if (_this._preventNegativeScrollOffset === true) {
-							scrollOffsetY = Math.max(0, scrollOffsetY);
-						}
-						_this.scrollTo({ x: 0, y: scrollOffsetY, animated: true });
-						_this._additionalScrollOffset = 0;
-						_this._preventNegativeScrollOffset = false;
-					};
-					if (_this._keyboardMetrics == null) {
-						setTimeout(function() {
-							scrollTextInputIntoVisibleRect();
-						}, 0);
-					} else {
-						scrollTextInputIntoVisibleRect();
-					}
-				};
-				_this._handleScroll = function(e) {
-					_this._observedScrollSinceBecomingResponder = true;
-					_this.props.onScroll && _this.props.onScroll(e);
-				};
-				_this._handleLayout = function(e) {
-					if (_this.props.invertStickyHeaders === true) {
-						_this.setState({ layoutHeight: e.nativeEvent.layout.height });
-					}
-					if (_this.props.onLayout) {
-						_this.props.onLayout(e);
-					}
-				};
-				_this._handleContentOnLayout = function(e) {
-					var { width:width, height:height } = e.nativeEvent.layout;
-					_this.props.onContentSizeChange && _this.props.onContentSizeChange(width, height);
-				};
-				_this._innerView = createRefForwarder(function(instance) {
-					return instance;
-				});
-				_this._scrollView = createRefForwarder(function(nativeInstance) {
-					var publicInstance = Object.assign(nativeInstance, { getScrollResponder: _this.getScrollResponder, getScrollableNode: _this.getScrollableNode, getInnerViewNode: _this.getInnerViewNode, getInnerViewRef: _this.getInnerViewRef, getNativeScrollRef: _this.getNativeScrollRef, scrollTo: _this.scrollTo, scrollToEnd: _this.scrollToEnd, flashScrollIndicators: _this.flashScrollIndicators, scrollResponderZoomTo: _this.scrollResponderZoomTo, scrollResponderScrollNativeHandleToKeyboard: _this.scrollResponderScrollNativeHandleToKeyboard });
-					return publicInstance;
-				});
-				_this.scrollResponderKeyboardWillShow = function(e) {
-					_this._keyboardMetrics = e.endCoordinates;
-					_this.props.onKeyboardWillShow && _this.props.onKeyboardWillShow(e);
-				};
-				_this.scrollResponderKeyboardWillHide = function(e) {
-					_this._keyboardMetrics = null;
-					_this.props.onKeyboardWillHide && _this.props.onKeyboardWillHide(e);
-				};
-				_this.scrollResponderKeyboardDidShow = function(e) {
-					_this._keyboardMetrics = e.endCoordinates;
-					_this.props.onKeyboardDidShow && _this.props.onKeyboardDidShow(e);
-				};
-				_this.scrollResponderKeyboardDidHide = function(e) {
-					_this._keyboardMetrics = null;
-					_this.props.onKeyboardDidHide && _this.props.onKeyboardDidHide(e);
-				};
-				_this._handleMomentumScrollBegin = function(e) {
-					_this._lastMomentumScrollBeginTime = global.performance.now();
-					_this.props.onMomentumScrollBegin && _this.props.onMomentumScrollBegin(e);
-				};
-				_this._handleMomentumScrollEnd = function(e) {
-					FrameRateLogger.endScroll();
-					_this._lastMomentumScrollEndTime = global.performance.now();
-					_this.props.onMomentumScrollEnd && _this.props.onMomentumScrollEnd(e);
-				};
-				_this._handleScrollBeginDrag = function(e) {
-					FrameRateLogger.beginScroll();
-					if (Platform.OS === "android" && _this.props.keyboardDismissMode === "on-drag") {
-						dismissKeyboard();
-					}
-					_this.props.onScrollBeginDrag && _this.props.onScrollBeginDrag(e);
-				};
-				_this._handleScrollEndDrag = function(e) {
-					var { velocity:velocity } = e.nativeEvent;
-					if (!_this._isAnimating() && (!velocity || (velocity.x === 0 && velocity.y === 0))) {
-						FrameRateLogger.endScroll();
-					}
-					_this.props.onScrollEndDrag && _this.props.onScrollEndDrag(e);
-				};
-				_this._isAnimating = function() {
-					var now = global.performance.now(),timeSinceLastMomentumScrollEnd = now - _this._lastMomentumScrollEndTime,isAnimating = timeSinceLastMomentumScrollEnd < IS_ANIMATING_TOUCH_START_THRESHOLD_MS || _this._lastMomentumScrollEndTime < _this._lastMomentumScrollBeginTime;
-					return isAnimating;
-				};
-				_this._handleResponderGrant = function(e) {
-					_this._observedScrollSinceBecomingResponder = false;
-					_this.props.onResponderGrant && _this.props.onResponderGrant(e);
-					_this._becameResponderWhileAnimating = _this._isAnimating();
-				};
-				_this._handleResponderReject = function() {
-				};
-				_this._handleResponderRelease = function(e) {
-					_this._isTouching = e.nativeEvent.touches.length !== 0;
-					_this.props.onResponderRelease && _this.props.onResponderRelease(e);
-					if (typeof e.target === "number") {
-						;
-						return;
-					}
-					var currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
-					if (currentlyFocusedTextInput != null && _this.props.keyboardShouldPersistTaps !== true && _this.props.keyboardShouldPersistTaps !== "always" && _this._keyboardIsDismissible() && e.target !== currentlyFocusedTextInput && !_this._observedScrollSinceBecomingResponder && !_this._becameResponderWhileAnimating) {
-						TextInputState.blurTextInput(currentlyFocusedTextInput);
-					}
-				};
-				_this._handleResponderTerminationRequest = function() {
-					return !_this._observedScrollSinceBecomingResponder;
-				};
-				_this._handleScrollShouldSetResponder = function() {
-					if (_this.props.disableScrollViewPanResponder === true) {
-						return false;
-					}
-					return _this._isTouching;
-				};
-				_this._handleStartShouldSetResponder = function(e) {
-					if (_this.props.disableScrollViewPanResponder === true) {
-						return false;
-					}
-					var currentlyFocusedInput = TextInputState.currentlyFocusedInput();
-					if (_this.props.keyboardShouldPersistTaps === "handled" && _this._keyboardIsDismissible() && e.target !== currentlyFocusedInput) {
-						return true;
-					}
-					return false;
-				};
-				_this._handleStartShouldSetResponderCapture = function(e) {
-					if (_this._isAnimating()) {
-						return true;
-					}
-					if (_this.props.disableScrollViewPanResponder === true) {
-						return false;
-					}
-					var { keyboardShouldPersistTaps:keyboardShouldPersistTaps } = _this.props,keyboardNeverPersistTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never";
-					if (typeof e.target === "number") {
-						;
-						return false;
-					}
-					if (_this._softKeyboardIsDetached()) {
-						return false;
-					}
-					if (keyboardNeverPersistTaps && _this._keyboardIsDismissible() && e.target != null && !TextInputState.isTextInput(e.target)) {
-						return true;
-					}
-					return false;
-				};
-				_this._keyboardIsDismissible = function() {
-					var currentlyFocusedInput = TextInputState.currentlyFocusedInput(),hasFocusedTextInput = currentlyFocusedInput != null && TextInputState.isTextInput(currentlyFocusedInput),softKeyboardMayBeOpen = _this._keyboardMetrics != null || _this._keyboardEventsAreUnreliable();
-					return hasFocusedTextInput && softKeyboardMayBeOpen;
-				};
-				_this._softKeyboardIsDetached = function() {
-					return _this._keyboardMetrics != null && _this._keyboardMetrics.height === 0;
-				};
-				_this._keyboardEventsAreUnreliable = function() {
-					return Platform.OS === "android" && Platform.Version < 30;
-				};
-				_this._handleTouchEnd = function(e) {
-					var nativeEvent = e.nativeEvent;
-					_this._isTouching = nativeEvent.touches.length !== 0;
-					var { keyboardShouldPersistTaps:keyboardShouldPersistTaps } = _this.props,keyboardNeverPersistsTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never",currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
-					if (currentlyFocusedTextInput != null && e.target !== currentlyFocusedTextInput && _this._softKeyboardIsDetached() && _this._keyboardIsDismissible() && keyboardNeverPersistsTaps) {
-						TextInputState.blurTextInput(currentlyFocusedTextInput);
-					}
-					_this.props.onTouchEnd && _this.props.onTouchEnd(e);
-				};
-				_this._handleTouchCancel = function(e) {
-					_this._isTouching = false;
-					_this.props.onTouchCancel && _this.props.onTouchCancel(e);
-				};
-				_this._handleTouchStart = function(e) {
-					_this._isTouching = true;
-					_this.props.onTouchStart && _this.props.onTouchStart(e);
-				};
-				_this._handleTouchMove = function(e) {
-					_this.props.onTouchMove && _this.props.onTouchMove(e);
-				};
-			}
-			__assertThisInitialized(_this)._scrollAnimatedValue = new _default$47.Value(__assertThisInitialized(_this).props.contentOffset?.y ?? 0);
-			__assertThisInitialized(_this)._scrollAnimatedValue.setOffset(__assertThisInitialized(_this).props.contentInset?.top ?? 0);
-			return __assertThisInitialized(_this);
-		}
-		__extends(ScrollView, _super);
-		Object.defineProperty(ScrollView.prototype, "componentDidMount", { configurable: true, writable: true, value: function() {
-			if (typeof this.props.keyboardShouldPersistTaps === "boolean") {
-				console.warn(`'keyboardShouldPersistTaps={${this.props.keyboardShouldPersistTaps === true ? "true" : "false"}}' is deprecated. ` + `Use 'keyboardShouldPersistTaps="${this.props.keyboardShouldPersistTaps ? "always" : "never"}"' instead`);
-			}
-			this._keyboardMetrics = Keyboard.metrics();
-			this._additionalScrollOffset = 0;
-			this._subscriptionKeyboardWillShow = Keyboard.addListener("keyboardWillShow", this.scrollResponderKeyboardWillShow);
-			this._subscriptionKeyboardWillHide = Keyboard.addListener("keyboardWillHide", this.scrollResponderKeyboardWillHide);
-			this._subscriptionKeyboardDidShow = Keyboard.addListener("keyboardDidShow", this.scrollResponderKeyboardDidShow);
-			this._subscriptionKeyboardDidHide = Keyboard.addListener("keyboardDidHide", this.scrollResponderKeyboardDidHide);
-			this._updateAnimatedNodeAttachment();
-		} });
-		Object.defineProperty(ScrollView.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(prevProps) {
-			var prevContentInsetTop = prevProps.contentInset ? prevProps.contentInset.top : 0,newContentInsetTop = this.props.contentInset ? this.props.contentInset.top : 0;
-			if (prevContentInsetTop !== newContentInsetTop) {
-				this._scrollAnimatedValue.setOffset(newContentInsetTop || 0);
-			}
-			this._updateAnimatedNodeAttachment();
-		} });
-		Object.defineProperty(ScrollView.prototype, "componentWillUnmount", { configurable: true, writable: true, value: function() {
-			if (this._subscriptionKeyboardWillShow != null) {
-				this._subscriptionKeyboardWillShow.remove();
-			}
-			if (this._subscriptionKeyboardWillHide != null) {
-				this._subscriptionKeyboardWillHide.remove();
-			}
-			if (this._subscriptionKeyboardDidShow != null) {
-				this._subscriptionKeyboardDidShow.remove();
-			}
-			if (this._subscriptionKeyboardDidHide != null) {
-				this._subscriptionKeyboardDidHide.remove();
-			}
-			if (this._scrollAnimatedValueAttachment) {
-				this._scrollAnimatedValueAttachment.detach();
-			}
-		} });
-		Object.defineProperty(ScrollView.prototype, "_textInputFocusError", { configurable: true, writable: true, value: function() {
-			console.warn("Error measuring text field.");
-		} });
-		Object.defineProperty(ScrollView.prototype, "_getKeyForIndex", { configurable: true, writable: true, value: function(index,childArray) {
-			var child = childArray[index];
-			return child && child.key;
-		} });
-		Object.defineProperty(ScrollView.prototype, "_updateAnimatedNodeAttachment", { configurable: true, writable: true, value: function() {
-			if (this._scrollAnimatedValueAttachment) {
-				this._scrollAnimatedValueAttachment.detach();
-			}
-			if (this.props.stickyHeaderIndices && this.props.stickyHeaderIndices.length > 0) {
-				this._scrollAnimatedValueAttachment = _default$47.attachNativeEvent(this.getNativeScrollRef(), "onScroll", [{ nativeEvent: { contentOffset: { y: this._scrollAnimatedValue } } }]);
-			}
-		} });
-		Object.defineProperty(ScrollView.prototype, "_setStickyHeaderRef", { configurable: true, writable: true, value: function(key,ref) {
-			if (ref) {
-				this._stickyHeaderRefs.set(key, ref);
-			} else {
-				this._stickyHeaderRefs.delete(key);
-			}
-		} });
-		Object.defineProperty(ScrollView.prototype, "_onStickyHeaderLayout", { configurable: true, writable: true, value: function(index,event,key) {
-			var { stickyHeaderIndices:stickyHeaderIndices } = this.props;
-			if (!stickyHeaderIndices) {
-				return;
-			}
-			var childArray = React$24.Children.toArray(this.props.children);
-			if (key !== this._getKeyForIndex(index, childArray)) {
-				return;
-			}
-			var layoutY = event.nativeEvent.layout.y;
-			this._headerLayoutYs.set(key, layoutY);
-			var indexOfIndex = stickyHeaderIndices.indexOf(index),previousHeaderIndex = stickyHeaderIndices[indexOfIndex - 1];
-			if (previousHeaderIndex != null) {
-				var previousHeader = this._stickyHeaderRefs.get(this._getKeyForIndex(previousHeaderIndex, childArray));
-				previousHeader && previousHeader.setNextHeaderY && previousHeader.setNextHeaderY(layoutY);
-			}
-		} });
-		Object.defineProperty(ScrollView.prototype, "render", { configurable: true, writable: true, value: function() {
-			var _this = this,horizontal = this.props.horizontal === true,NativeScrollView = horizontal ? (init_react_native_src_private_components_scrollview_HScrollViewNativeComponents(), HScrollViewNativeComponent) : (init_react_native_src_private_components_scrollview_VScrollViewNativeComponents(), VScrollViewNativeComponent),NativeScrollContentView = horizontal ? (init_react_native_src_private_components_scrollview_HScrollViewNativeComponents(), HScrollContentViewNativeComponent) : (init_react_native_src_private_components_scrollview_VScrollViewNativeComponents(), VScrollContentViewNativeComponent),contentContainerStyle = [horizontal && styles$4.contentContainerHorizontal, this.props.contentContainerStyle];
-			;
-			;
-			;
-			;
-			var contentSizeChangeProps = this.props.onContentSizeChange == null ? null : { onLayout: this._handleContentOnLayout },{ stickyHeaderIndices:stickyHeaderIndices } = this.props,children = this.props.children;
-			;
-			;
-			children = React$24.Children.toArray(children);
-			if (stickyHeaderIndices != null && stickyHeaderIndices.length > 0) {
-				children = children.map(function(child,index) {
-					var indexOfIndex = child ? stickyHeaderIndices.indexOf(index) : -1;
-					if (indexOfIndex > -1) {
-						var key = child.key,nextIndex = stickyHeaderIndices[indexOfIndex + 1],StickyHeaderComponent = _this.props.StickyHeaderComponent || ScrollViewStickyHeader;
-						return (/* @__PURE__ */ React$24.createElement(StickyHeaderComponent, { key: key, ref: function(ref) {
-							return _this._setStickyHeaderRef(key, ref);
-						}, nextHeaderLayoutY: _this._headerLayoutYs.get(_this._getKeyForIndex(nextIndex, children)), onLayout: function(event) {
-							return _this._onStickyHeaderLayout(index, event, key);
-						}, scrollAnimatedValue: _this._scrollAnimatedValue, inverted: _this.props.invertStickyHeaders, hiddenOnScroll: _this.props.stickyHeaderHiddenOnScroll, scrollViewHeight: _this.state.layoutHeight }, child));
-					} else {
-						return child;
-					}
-				});
-			}
-			children = (/* @__PURE__ */ React$24.createElement(ScrollViewContext.Provider, { value: horizontal ? (init_react_native_Libraries_Components_ScrollView_ScrollViewContext(), HORIZONTAL) : (init_react_native_Libraries_Components_ScrollView_ScrollViewContext(), VERTICAL) }, children));
-			var hasStickyHeaders = Array.isArray(stickyHeaderIndices) && stickyHeaderIndices.length > 0,preserveChildren = this.props.maintainVisibleContentPosition != null || (Platform.OS === "android" && this.props.snapToAlignment != null),contentContainer = (/* @__PURE__ */ React$24.createElement(NativeScrollContentView, { ...contentSizeChangeProps, ref: this._innerView.getForwardingRef(this.props.innerViewRef), style: contentContainerStyle, removeClippedSubviews: Platform.OS === "android" && hasStickyHeaders ? false : this.props.removeClippedSubviews, collapsable: false, collapsableChildren: !preserveChildren }, children)),alwaysBounceHorizontal = this.props.alwaysBounceHorizontal !== undefined ? this.props.alwaysBounceHorizontal : this.props.horizontal,alwaysBounceVertical = this.props.alwaysBounceVertical !== undefined ? this.props.alwaysBounceVertical : !this.props.horizontal,baseStyle = horizontal ? styles$4.baseHorizontal : styles$4.baseVertical,{ experimental_endDraggingSensitivityMultiplier:experimental_endDraggingSensitivityMultiplier, maintainVisibleContentPosition:maintainVisibleContentPosition, ...otherProps } = this.props,props = { ...otherProps, alwaysBounceHorizontal, alwaysBounceVertical, style: StyleSheet.compose(baseStyle, this.props.style), onContentSizeChange: null, onLayout: this._handleLayout, onMomentumScrollBegin: this._handleMomentumScrollBegin, onMomentumScrollEnd: this._handleMomentumScrollEnd, onResponderGrant: this._handleResponderGrant, onResponderReject: this._handleResponderReject, onResponderRelease: this._handleResponderRelease, onResponderTerminationRequest: this._handleResponderTerminationRequest, onScrollBeginDrag: this._handleScrollBeginDrag, onScrollEndDrag: this._handleScrollEndDrag, onScrollShouldSetResponder: this._handleScrollShouldSetResponder, onStartShouldSetResponder: this._handleStartShouldSetResponder, onStartShouldSetResponderCapture: this._handleStartShouldSetResponderCapture, onTouchEnd: this._handleTouchEnd, onTouchMove: this._handleTouchMove, onTouchStart: this._handleTouchStart, onTouchCancel: this._handleTouchCancel, onScroll: this._handleScroll, endDraggingSensitivityMultiplier: experimental_endDraggingSensitivityMultiplier, scrollEventThrottle: hasStickyHeaders ? 1 : this.props.scrollEventThrottle, sendMomentumEvents: this.props.onMomentumScrollBegin || this.props.onMomentumScrollEnd ? true : false, snapToStart: this.props.snapToStart !== false, snapToEnd: this.props.snapToEnd !== false, pagingEnabled: Platform.select({ ios: this.props.pagingEnabled === true && this.props.snapToInterval == null && this.props.snapToOffsets == null, android: this.props.pagingEnabled === true || this.props.snapToInterval != null || this.props.snapToOffsets != null }), maintainVisibleContentPosition: disableMaintainVisibleContentPosition() ? undefined : this.props.maintainVisibleContentPosition },{ decelerationRate:decelerationRate } = this.props;
-			;
-			;
-			;
-			;
-			;
-			;
-			;
-			;
-			if (decelerationRate != null) {
-				props.decelerationRate = processDecelerationRate(decelerationRate);
-			}
-			var refreshControl = this.props.refreshControl,scrollViewRef = this._scrollView.getForwardingRef(this.props.scrollViewRef);
-			;
-			if (refreshControl != null) {
-				if (Platform.OS === "ios") {
-					return (/* @__PURE__ */ React$24.createElement(NativeScrollView, { ...props, ref: scrollViewRef }, refreshControl, contentContainer));
-				} else if (Platform.OS === "android") {
-					var { outer:outer, inner:inner } = splitLayoutProps(flattenStyle(props.style));
-					return require_react_index().cloneElement(refreshControl, { style: StyleSheet.compose(baseStyle, outer) }, /* @__PURE__ */ React$24.createElement(NativeScrollView, { ...props, style: StyleSheet.compose(baseStyle, inner), ref: scrollViewRef }, contentContainer));
-				}
-			}
-			return (/* @__PURE__ */ React$24.createElement(NativeScrollView, { ...props, ref: scrollViewRef }, contentContainer));
-		} });
-		Object.defineProperty(ScrollView, "Context", { configurable: true, enumerable: true, writable: true, value: ScrollViewContext });
-		return ScrollView;
-	})(React$24.Component);
-	styles$4 = StyleSheet.create({ baseVertical: { flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "scroll" }, baseHorizontal: { flexGrow: 1, flexShrink: 1, flexDirection: "row", overflow: "scroll" }, contentContainerHorizontal: { flexDirection: "row" } });
-	;
-	;
-	ScrollViewWrapper = function Wrapper({ ref:ref, ...props }) {
-		return ref == null ? (/* @__PURE__ */ React$24.createElement(ScrollView, { ...props })) : (/* @__PURE__ */ React$24.createElement(ScrollView, { ...props, scrollViewRef: ref }));
-	};
-	ScrollViewWrapper.displayName = "ScrollView";
-	ScrollViewWrapper.Context = ScrollViewContext;
-	
-	
-	}
-});
-//#endregion
 //#region VirtualizedListContext.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedListContext = {};
-var VirtualizedListContext, VirtualizedListContextResetter, VirtualizedListContextProvider, VirtualizedListCellContextProvider, React$25;
+var VirtualizedListContext, VirtualizedListContextResetter, VirtualizedListContextProvider, VirtualizedListCellContextProvider, React$21, createContext$3, useContext$2, useMemo$3;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedListContext, {
 	VirtualizedListContext: function() { return VirtualizedListContext; },
 	VirtualizedListContextResetter: function() { return VirtualizedListContextResetter; },
@@ -33158,24 +32914,28 @@ __export(exports__react_native_virtualized_lists_Lists_VirtualizedListContext, {
 var init__react_native_virtualized_lists_Lists_VirtualizedListContext = __esm({
 	"VirtualizedListContext.js"() {
 	VirtualizedListContextResetter = function({ children:children }) {
-		return (/* @__PURE__ */ React$25.createElement(VirtualizedListContext.Provider, { value: null }, children));
+		return (/* @__PURE__ */ React$21.createElement(VirtualizedListContext.Provider, { value: null }, children));
 	};
 	VirtualizedListContextProvider = function({ children:children, value:value }) {
-		var context = require_react_index().useMemo(function() {
+		var context = useMemo$3(function() {
 			return ({ cellKey: null, getScrollMetrics: value.getScrollMetrics, horizontal: value.horizontal, getOutermostParentListRef: value.getOutermostParentListRef, registerAsNestedChild: value.registerAsNestedChild, unregisterAsNestedChild: value.unregisterAsNestedChild });
 		}, [value.getScrollMetrics, value.horizontal, value.getOutermostParentListRef, value.registerAsNestedChild, value.unregisterAsNestedChild]);
-		return (/* @__PURE__ */ React$25.createElement(VirtualizedListContext.Provider, { value: context }, children));
+		return (/* @__PURE__ */ React$21.createElement(VirtualizedListContext.Provider, { value: context }, children));
 	};
 	VirtualizedListCellContextProvider = function({ cellKey:cellKey, children:children }) {
-		var currContext = require_react_index().useContext(VirtualizedListContext),context = require_react_index().useMemo(function() {
+		var currContext = useContext$2(VirtualizedListContext),context = useMemo$3(function() {
 			return (currContext == null ? null : { ...currContext, cellKey });
 		}, [currContext, cellKey]);
-		return (/* @__PURE__ */ React$25.createElement(VirtualizedListContext.Provider, { value: context }, children));
+		return (/* @__PURE__ */ React$21.createElement(VirtualizedListContext.Provider, { value: context }, children));
 	};
-		React$25 = __toESM(require_react_index());
+		require_react_index();
+	React$21 = __toESM(require_react_index());
+	createContext$3 = require_react_index().createContext;
+	useContext$2 = require_react_index().useContext;
+	useMemo$3 = require_react_index().useMemo;
 		
 	
-	VirtualizedListContext = require_react_index().createContext(null);
+	VirtualizedListContext = createContext$3(null);
 	;
 	
 	}
@@ -33183,7 +32943,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListContext = __esm({
 //#endregion
 //#region VirtualizeUtils.js
 var exports__react_native_virtualized_lists_Lists_VirtualizeUtils = {};
-var ReactNativeFeatureFlags$15, elementsThatOverlapOffsets, newRangeCount, computeWindowedRenderLimits, keyExtractor$2;
+var ReactNativeFeatureFlags$13, elementsThatOverlapOffsets, newRangeCount, computeWindowedRenderLimits, keyExtractor$2;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizeUtils, {
 	elementsThatOverlapOffsets: function() { return elementsThatOverlapOffsets; },
 	newRangeCount: function() { return newRangeCount; },
@@ -33263,17 +33023,17 @@ var init__react_native_virtualized_lists_Lists_VirtualizeUtils = __esm({
 		return { first, last };
 	};
 	keyExtractor$2 = function(item,index) {
-		if (typeof item === "object" && item?.key != null) {
+		if (typeof item == "object" && item?.key != null) {
 			return item.key;
 		}
-		if (typeof item === "object" && item?.id != null) {
+		if (typeof item == "object" && item?.id != null) {
 			return item.id;
 		}
 		return String(index);
 	};
 		init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 		"use strict";
-	ReactNativeFeatureFlags$15=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
+	ReactNativeFeatureFlags$13=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
 	}
 });
@@ -33320,20 +33080,21 @@ var init__react_native_virtualized_lists_Utilities_infoLog = __esm({
 //#endregion
 //#region CellRenderMask.js
 var exports__react_native_virtualized_lists_Lists_CellRenderMask = {};
-var CellRenderMask, __classCallCheck, invariant$31;
+var CellRenderMask, __classCallCheck, invariant$29;
 __export(exports__react_native_virtualized_lists_Lists_CellRenderMask, {
 	CellRenderMask: function() { return CellRenderMask; },
 });
 var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 	"CellRenderMask.js"() {
 	init_class_call_check();
-	invariant$31 = require_invariant_browser();
+	require_invariant_browser();
+	invariant$29 = require_invariant_browser();
 		
 	
 	CellRenderMask = (function() {
 		function CellRenderMask(numCells) {
 			__classCallCheck(this, CellRenderMask);
-			invariant$31(numCells >= 0, "CellRenderMask must contain a non-negative number os cells");
+			invariant$29(numCells >= 0, "CellRenderMask must contain a non-negative number os cells");
 			this._numCells = numCells;
 			if (numCells === 0) {
 				this._regions = [];
@@ -33345,7 +33106,7 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 			return this._regions;
 		} });
 		Object.defineProperty(CellRenderMask.prototype, "addCells", { configurable: true, writable: true, value: function(cells) {
-			invariant$31(cells.first >= 0 && cells.first < this._numCells && cells.last >= -1 && cells.last < this._numCells && cells.last >= cells.first - 1, "CellRenderMask.addCells called with invalid cell range");
+			invariant$29(cells.first >= 0 && cells.first < this._numCells && cells.last >= -1 && cells.last < this._numCells && cells.last >= cells.first - 1, "CellRenderMask.addCells called with invalid cell range");
 			if (cells.last < cells.first) {
 				return;
 			}
@@ -33391,7 +33152,7 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 					firstIdx = middleIdx + 1;
 				}
 			}
-			invariant$31(false, `A region was not found containing cellIdx ${cellIdx}`);
+			invariant$29(false, `A region was not found containing cellIdx ${cellIdx}`);
 		} });
 		return CellRenderMask;
 	})();
@@ -33402,14 +33163,15 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 //#endregion
 //#region ChildListCollection.js
 var exports__react_native_virtualized_lists_Lists_ChildListCollection = {};
-var ChildListCollection, __classCallCheck, invariant$32;
+var ChildListCollection, __classCallCheck, invariant$30;
 __export(exports__react_native_virtualized_lists_Lists_ChildListCollection, {
 	"default": function() { return ChildListCollection; },
 });
 var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 	"ChildListCollection.js"() {
 	init_class_call_check();
-	invariant$32 = require_invariant_browser();
+	require_invariant_browser();
+	invariant$30 = require_invariant_browser();
 		
 	
 	ChildListCollection = (function() {
@@ -33419,7 +33181,7 @@ var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 			this._childrenToCellKey = new Map();
 		}
 		Object.defineProperty(ChildListCollection.prototype, "add", { configurable: true, writable: true, value: function(list,cellKey) {
-			invariant$32(!this._childrenToCellKey.has(list), "Trying to add already present child list");
+			invariant$30(!this._childrenToCellKey.has(list), "Trying to add already present child list");
 			var cellLists = this._cellKeyToChildren.get(cellKey) ?? new Set();
 			cellLists.add(list);
 			this._cellKeyToChildren.set(cellKey, cellLists);
@@ -33427,10 +33189,10 @@ var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 		} });
 		Object.defineProperty(ChildListCollection.prototype, "remove", { configurable: true, writable: true, value: function(list) {
 			var cellKey = this._childrenToCellKey.get(list);
-			invariant$32(cellKey != null, "Trying to remove non-present child list");
+			invariant$30(cellKey != null, "Trying to remove non-present child list");
 			this._childrenToCellKey.delete(list);
 			var cellLists = this._cellKeyToChildren.get(cellKey);
-			invariant$32(cellLists, "_cellKeyToChildren should contain cellKey");
+			invariant$30(cellLists, "_cellKeyToChildren should contain cellKey");
 			cellLists.delete(list);
 			if (cellLists.size === 0) {
 				this._cellKeyToChildren.delete(cellKey);
@@ -33470,14 +33232,15 @@ var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 //#endregion
 //#region ListMetricsAggregator.js
 var exports__react_native_virtualized_lists_Lists_ListMetricsAggregator = {};
-var ListMetricsAggregator$1, __classCallCheck, invariant$33;
+var ListMetricsAggregator$1, __classCallCheck, invariant$31;
 __export(exports__react_native_virtualized_lists_Lists_ListMetricsAggregator, {
 	"default": function() { return ListMetricsAggregator$1; },
 });
 var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 	"ListMetricsAggregator.js"() {
 	init_class_call_check();
-	invariant$33 = require_invariant_browser();
+	require_invariant_browser();
+	invariant$31 = require_invariant_browser();
 		
 	
 	
@@ -33543,13 +33306,13 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 					offset = this._averageCellLength * index;
 				}
 				var { data:data, getItemCount:getItemCount } = props;
-				invariant$33(index >= 0 && index < getItemCount(data), "Tried to get frame for out of range index " + index);
+				invariant$31(index >= 0 && index < getItemCount(data), "Tried to get frame for out of range index " + index);
 				return { length: this._averageCellLength, offset, index, isMounted: false };
 			}
 		} });
 		Object.defineProperty(ListMetricsAggregator.prototype, "getCellMetrics", { configurable: true, writable: true, value: function(index,props) {
 			var { data:data, getItem:getItem, getItemCount:getItemCount, getItemLayout:getItemLayout } = props;
-			invariant$33(index >= 0 && index < getItemCount(data), "Tried to get metrics for out of range cell index " + index);
+			invariant$31(index >= 0 && index < getItemCount(data), "Tried to get metrics for out of range cell index " + index);
 			var keyExtractor = props.keyExtractor ?? (init__react_native_virtualized_lists_Lists_VirtualizeUtils(), keyExtractor$2),frame = this._cellMetrics.get(keyExtractor(getItem(data, index), index));
 			if (frame && frame.index === index) {
 				return frame;
@@ -33578,7 +33341,7 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 			var { horizontal:horizontal, rtl:rtl } = this._orientation;
 			if (horizontal && rtl) {
 				var contentLength = referenceContentLength ?? this._contentLength;
-				invariant$33(contentLength != null, "ListMetricsAggregator must be notified of list content layout before resolving offsets");
+				invariant$31(contentLength != null, "ListMetricsAggregator must be notified of list content layout before resolving offsets");
 				return (contentLength - (this._selectOffset(layout) + this._selectLength(layout)));
 			} else {
 				return this._selectOffset(layout);
@@ -33587,7 +33350,7 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 		Object.defineProperty(ListMetricsAggregator.prototype, "cartesianOffset", { configurable: true, writable: true, value: function(flowRelativeOffset) {
 			var { horizontal:horizontal, rtl:rtl } = this._orientation;
 			if (horizontal && rtl) {
-				invariant$33(this._contentLength != null, "ListMetricsAggregator must be notified of list content layout before resolving offsets");
+				invariant$31(this._contentLength != null, "ListMetricsAggregator must be notified of list content layout before resolving offsets");
 				return this._contentLength - flowRelativeOffset;
 			} else {
 				return flowRelativeOffset;
@@ -33784,7 +33547,7 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 //#endregion
 //#region StateSafePureComponent.js
 var exports__react_native_virtualized_lists_Lists_StateSafePureComponent = {};
-var StateSafePureComponent, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$34, React$26;
+var StateSafePureComponent, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$32, React$22;
 __export(exports__react_native_virtualized_lists_Lists_StateSafePureComponent, {
 	"default": function() { return StateSafePureComponent; },
 });
@@ -33794,8 +33557,10 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 	init_class_call_check();
 	init_call_super();
 	init_derived_constructor();
-	invariant$34 = require_invariant_browser();
-	React$26 = __toESM(require_react_index());
+	require_invariant_browser();
+	require_react_index();
+	invariant$32 = require_invariant_browser();
+	React$22 = __toESM(require_react_index());
 		
 	
 	
@@ -33817,7 +33582,7 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 		__extends(StateSafePureComponent, _super);
 		Object.defineProperty(StateSafePureComponent.prototype, "setState", { configurable: true, writable: true, value: function(partialState,callback) {
 			var _this = this;
-			if (typeof partialState === "function") {
+			if (typeof partialState == "function") {
 				_super.prototype.setState.call(this, function(state,props) {
 					_this._inAsyncStateUpdate = true;
 					var ret = void 0;
@@ -33837,20 +33602,20 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 		Object.defineProperty(StateSafePureComponent.prototype, "_installSetStateHooks", { configurable: true, writable: true, value: function() {
 			var that = this,{ props:props, state:state } = this;
 			Object.defineProperty(this, "props", { get() {
-				invariant$34(!that._inAsyncStateUpdate, "\"this.props\" should not be accessed during state updates");
+				invariant$32(!that._inAsyncStateUpdate, "\"this.props\" should not be accessed during state updates");
 				return props;
 			}, set(newProps) {
 				props = newProps;
 			} });
 			Object.defineProperty(this, "state", { get() {
-				invariant$34(!that._inAsyncStateUpdate, "\"this.state\" should not be acceessed during state updates");
+				invariant$32(!that._inAsyncStateUpdate, "\"this.state\" should not be acceessed during state updates");
 				return state;
 			}, set(newState) {
 				state = newState;
 			} });
 		} });
 		return StateSafePureComponent;
-	})(React$26.PureComponent);
+	})(React$22.PureComponent);
 	
 	
 	}
@@ -33858,7 +33623,7 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 //#endregion
 //#region ViewabilityHelper.js
 var exports__react_native_virtualized_lists_Lists_ViewabilityHelper = {};
-var invariant$35, ViewabilityHelper, _isViewable, _getPixelsVisible, _isEntirelyVisible, __classCallCheck;
+var invariant$33, ViewabilityHelper, _isViewable, _getPixelsVisible, _isEntirelyVisible, __classCallCheck;
 __export(exports__react_native_virtualized_lists_Lists_ViewabilityHelper, {
 	"default": function() { return ViewabilityHelper; },
 });
@@ -33884,7 +33649,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 		
 	"use strict";
 	
-	invariant$35 = require_invariant_browser();
+	invariant$33 = require_invariant_browser();
 	ViewabilityHelper = (function() {
 		function ViewabilityHelper(config) {
 			__classCallCheck(this, ViewabilityHelper);
@@ -33900,7 +33665,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 		} });
 		Object.defineProperty(ViewabilityHelper.prototype, "computeViewableItems", { configurable: true, writable: true, value: function(props,scrollOffset,viewportHeight,listMetrics,renderRange) {
 			var itemCount = props.getItemCount(props.data),{ itemVisiblePercentThreshold:itemVisiblePercentThreshold, viewAreaCoveragePercentThreshold:viewAreaCoveragePercentThreshold } = this._config,viewAreaMode = viewAreaCoveragePercentThreshold != null,viewablePercentThreshold = viewAreaMode ? viewAreaCoveragePercentThreshold : itemVisiblePercentThreshold;
-			invariant$35(viewablePercentThreshold != null && (itemVisiblePercentThreshold != null) !== (viewAreaCoveragePercentThreshold != null), "Must set exactly one of itemVisiblePercentThreshold or viewAreaCoveragePercentThreshold");
+			invariant$33(viewablePercentThreshold != null && (itemVisiblePercentThreshold != null) !== (viewAreaCoveragePercentThreshold != null), "Must set exactly one of itemVisiblePercentThreshold or viewAreaCoveragePercentThreshold");
 			var viewableIndices = [];
 			if (itemCount === 0) {
 				return viewableIndices;
@@ -33994,7 +33759,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 //#endregion
 //#region VirtualizedListCellRenderer.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = {};
-var CellRenderer, styles$5, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$36, React$27;
+var CellRenderer, styles$3, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$34, React$23, isValidElement$1, StyleSheet$4, View$5;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer, {
 	"default": function() { return CellRenderer; },
 });
@@ -34004,8 +33769,14 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = __e
 	init_class_call_check();
 	init_call_super();
 	init_derived_constructor();
-	invariant$36 = require_invariant_browser();
-	React$27 = __toESM(require_react_index());
+	require_invariant_browser();
+	require_react_index();
+	require_react_native_index();
+	invariant$34 = require_invariant_browser();
+	React$23 = __toESM(require_react_index());
+	isValidElement$1 = require_react_index().isValidElement;
+	StyleSheet$4 = require_react_native_index().StyleSheet;
+	View$5 = require_react_native_index().View;
 		
 	
 	
@@ -34059,28 +33830,28 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = __e
 				console.warn("VirtualizedList: Both ListItemComponent and renderItem props are present. ListItemComponent will take precedence over renderItem.");
 			}
 			if (ListItemComponent) {
-				return (/* @__PURE__ */ React$27.createElement(ListItemComponent, { item: item, index: index, separators: this._separators }));
+				return (/* @__PURE__ */ React$23.createElement(ListItemComponent, { item: item, index: index, separators: this._separators }));
 			}
 			if (renderItem) {
 				return renderItem({ item, index, separators: this._separators });
 			}
-			invariant$36(false, "VirtualizedList: Either ListItemComponent or renderItem props are required but none were found.");
+			invariant$34(false, "VirtualizedList: Either ListItemComponent or renderItem props are required but none were found.");
 		} });
 		Object.defineProperty(CellRenderer.prototype, "render", { configurable: true, writable: true, value: function() {
-			var { CellRendererComponent:CellRendererComponent, ItemSeparatorComponent:ItemSeparatorComponent, ListItemComponent:ListItemComponent, cellKey:cellKey, horizontal:horizontal, item:item, index:index, inversionStyle:inversionStyle, onCellLayout:onCellLayout, renderItem:renderItem } = this.props,element = this._renderElement(renderItem, ListItemComponent, item, index),itemSeparator = require_react_index().isValidElement(ItemSeparatorComponent) ? ItemSeparatorComponent : ItemSeparatorComponent && (/* @__PURE__ */ React$27.createElement(ItemSeparatorComponent, { ...this.state.separatorProps })),cellStyle = inversionStyle ? horizontal ? [styles$5.rowReverse, inversionStyle] : [styles$5.columnReverse, inversionStyle] : horizontal ? [styles$5.row, inversionStyle] : inversionStyle,result = !CellRendererComponent ? (/* @__PURE__ */ React$27.createElement(require_react_native_index().View, { style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator)) : (/* @__PURE__ */ React$27.createElement(CellRendererComponent, { cellKey: cellKey, index: index, item: item, style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator));
-			return (/* @__PURE__ */ React$27.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this.props.cellKey }, result));
+			var { CellRendererComponent:CellRendererComponent, ItemSeparatorComponent:ItemSeparatorComponent, ListItemComponent:ListItemComponent, cellKey:cellKey, horizontal:horizontal, item:item, index:index, inversionStyle:inversionStyle, onCellLayout:onCellLayout, renderItem:renderItem } = this.props,element = this._renderElement(renderItem, ListItemComponent, item, index),itemSeparator = isValidElement$1(ItemSeparatorComponent) ? ItemSeparatorComponent : ItemSeparatorComponent && (/* @__PURE__ */ React$23.createElement(ItemSeparatorComponent, { ...this.state.separatorProps })),cellStyle = inversionStyle ? horizontal ? [styles$3.rowReverse, inversionStyle] : [styles$3.columnReverse, inversionStyle] : horizontal ? [styles$3.row, inversionStyle] : inversionStyle,result = !CellRendererComponent ? (/* @__PURE__ */ React$23.createElement(View$5, { style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator)) : (/* @__PURE__ */ React$23.createElement(CellRendererComponent, { cellKey: cellKey, index: index, item: item, style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator));
+			return (/* @__PURE__ */ React$23.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this.props.cellKey }, result));
 		} });
 		return CellRenderer;
-	})(React$27.PureComponent);
+	})(React$23.PureComponent);
 	
-	styles$5 = require_react_native_index().StyleSheet.create({ row: { flexDirection: "row" }, rowReverse: { flexDirection: "row-reverse" }, columnReverse: { flexDirection: "column-reverse" } });
+	styles$3 = StyleSheet$4.create({ row: { flexDirection: "row" }, rowReverse: { flexDirection: "row-reverse" }, columnReverse: { flexDirection: "column-reverse" } });
 	
 	}
 });
 //#endregion
 //#region VirtualizedListProps.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedListProps = {};
-var horizontalOrDefault, initialNumToRenderOrDefault, maxToRenderPerBatchOrDefault, onStartReachedThresholdOrDefault, onEndReachedThresholdOrDefault, windowSizeOrDefault, React$28;
+var horizontalOrDefault, initialNumToRenderOrDefault, maxToRenderPerBatchOrDefault, onStartReachedThresholdOrDefault, onEndReachedThresholdOrDefault, windowSizeOrDefault, React$24;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedListProps, {
 	horizontalOrDefault: function() { return horizontalOrDefault; },
 	initialNumToRenderOrDefault: function() { return initialNumToRenderOrDefault; },
@@ -34109,7 +33880,8 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListProps = __esm({
 	windowSizeOrDefault = function(windowSize) {
 		return windowSize ?? 21;
 	};
-		React$28 = __toESM(require_react_index());
+		require_react_index();
+	React$24 = __toESM(require_react_index());
 		
 	
 	}
@@ -34117,7 +33889,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListProps = __esm({
 //#endregion
 //#region VirtualizedList.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedList = {};
-var ReactNativeFeatureFlags$16, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, getScrollingThreshold, VirtualizedList, styles$6, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$37, nullthrows$11, React$29;
+var ReactNativeFeatureFlags$14, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, getScrollingThreshold, VirtualizedList, styles$4, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$35, nullthrows$10, React$25, cloneElement$1, isValidElement$2, I18nManager, Platform$20, RefreshControl, ScrollView, StyleSheet$5, View$6, findNodeHandle$4;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedList, {
 	"default": function() { return VirtualizedList; },
 });
@@ -34138,10 +33910,23 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	init__react_native_virtualized_lists_Lists_StateSafePureComponent();
 	init__react_native_virtualized_lists_Lists_ViewabilityHelper();
 	init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer();
-	invariant$37 = require_invariant_browser();
-	nullthrows$11 = __toESM(require_nullthrows_nullthrows()).default;
-	React$29 = __toESM(require_react_index());
+	require_invariant_browser();
+	require_nullthrows_nullthrows();
+	require_react_index();
+	require_react_native_index();
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
+	invariant$35 = require_invariant_browser();
+	nullthrows$10 = __toESM(require_nullthrows_nullthrows()).default;
+	React$25 = __toESM(require_react_index());
+	cloneElement$1 = require_react_index().cloneElement;
+	isValidElement$2 = require_react_index().isValidElement;
+	I18nManager = require_react_native_index().I18nManager;
+	Platform$20 = require_react_native_index().Platform;
+	RefreshControl = require_react_native_index().RefreshControl;
+	ScrollView = require_react_native_index().ScrollView;
+	StyleSheet$5 = require_react_native_index().StyleSheet;
+	View$6 = require_react_native_index().View;
+	findNodeHandle$4 = require_react_native_index().findNodeHandle;
 		
 	
 	
@@ -34163,7 +33948,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	
 	
 	
-	ReactNativeFeatureFlags$16=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
+	ReactNativeFeatureFlags$14=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	ON_EDGE_REACHED_EPSILON = 0.001;
 	_usedIndexForKey = false;
 	_keylessItemComponentName = "";
@@ -34232,12 +34017,12 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 					var onRefresh = props.onRefresh;
 					if (_this._isNestedWithSameOrientation()) {
 						var { onContentSizeChange:onContentSizeChange, ...otherProps } = props;
-						return /* @__PURE__ */ React$29.createElement(require_react_native_index().View, { ...otherProps });
+						return /* @__PURE__ */ React$25.createElement(View$6, { ...otherProps });
 					} else if (onRefresh) {
-						invariant$37(typeof props.refreshing === "boolean", "`refreshing` prop must be set as a boolean in order to use `onRefresh`, but got `" + JSON.stringify(props.refreshing ?? "undefined") + "`");
-						return (/* @__PURE__ */ React$29.createElement(require_react_native_index().ScrollView, { ...props, refreshControl: props.refreshControl == null ? (/* @__PURE__ */ React$29.createElement(require_react_native_index().RefreshControl, { refreshing: props.refreshing, onRefresh: onRefresh, progressViewOffset: props.progressViewOffset })) : (props.refreshControl) }));
+						invariant$35(typeof props.refreshing == "boolean", "`refreshing` prop must be set as a boolean in order to use `onRefresh`, but got `" + JSON.stringify(props.refreshing ?? "undefined") + "`");
+						return (/* @__PURE__ */ React$25.createElement(ScrollView, { ...props, refreshControl: props.refreshControl == null ? (/* @__PURE__ */ React$25.createElement(RefreshControl, { refreshing: props.refreshing, onRefresh: onRefresh, progressViewOffset: props.progressViewOffset })) : (props.refreshControl) }));
 					} else {
-						return /* @__PURE__ */ React$29.createElement(require_react_native_index().ScrollView, { ...props });
+						return /* @__PURE__ */ React$25.createElement(ScrollView, { ...props });
 					}
 				};
 				_this._onCellLayout = function(e,cellKey,cellIndex) {
@@ -34429,11 +34214,11 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "scrollToIndex", { configurable: true, writable: true, value: function(params) {
 			var { data:data, getItemCount:getItemCount, getItemLayout:getItemLayout, onScrollToIndexFailed:onScrollToIndexFailed } = this.props,{ animated:animated, index:index, viewOffset:viewOffset, viewPosition:viewPosition } = params;
-			invariant$37(index >= 0, `scrollToIndex out of range: requested index ${index} but minimum is 0`);
-			invariant$37(getItemCount(data) >= 1, `scrollToIndex out of range: item length ${getItemCount(data)} but minimum is 1`);
-			invariant$37(index < getItemCount(data), `scrollToIndex out of range: requested index ${index} is out of 0 to ${getItemCount(data) - 1}`);
+			invariant$35(index >= 0, `scrollToIndex out of range: requested index ${index} but minimum is 0`);
+			invariant$35(getItemCount(data) >= 1, `scrollToIndex out of range: item length ${getItemCount(data)} but minimum is 1`);
+			invariant$35(index < getItemCount(data), `scrollToIndex out of range: requested index ${index} is out of 0 to ${getItemCount(data) - 1}`);
 			if (!getItemLayout && index > this._listMetrics.getHighestMeasuredCellIndex()) {
-				invariant$37(!!onScrollToIndexFailed, "scrollToIndex should be used in conjunction with getItemLayout or onScrollToIndexFailed, otherwise there is no way to know the location of offscreen indices or handle failures.");
+				invariant$35(!!onScrollToIndexFailed, "scrollToIndex should be used in conjunction with getItemLayout or onScrollToIndexFailed, otherwise there is no way to know the location of offscreen indices or handle failures.");
 				onScrollToIndexFailed({ averageItemLength: this._listMetrics.getAverageCellLength(), highestMeasuredFrameIndex: this._listMetrics.getHighestMeasuredCellIndex(), index });
 				return;
 			}
@@ -34498,7 +34283,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			if (this._scrollRef && this._scrollRef.getScrollableNode) {
 				return this._scrollRef.getScrollableNode();
 			} else {
-				return require_react_native_index().findNodeHandle(this._scrollRef);
+				return findNodeHandle$4(this._scrollRef);
 			}
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "getScrollRef", { configurable: true, writable: true, value: function() {
@@ -34521,9 +34306,9 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "_checkProps", { configurable: true, writable: true, value: function(props) {
 			var { onScroll:onScroll, windowSize:windowSize, getItemCount:getItemCount, data:data, initialScrollIndex:initialScrollIndex } = props;
-			invariant$37(!onScroll || !onScroll.__isNative, "Components based on VirtualizedList must be wrapped with Animated.createAnimatedComponent to support native onScroll events with useNativeDriver");
-			invariant$37((init__react_native_virtualized_lists_Lists_VirtualizedListProps(), windowSizeOrDefault)(windowSize) > 0, "VirtualizedList: The windowSize prop must be present and set to a value greater than 0.");
-			invariant$37(getItemCount, "VirtualizedList: The \"getItemCount\" prop must be provided");
+			invariant$35(!onScroll || !onScroll.__isNative, "Components based on VirtualizedList must be wrapped with Animated.createAnimatedComponent to support native onScroll events with useNativeDriver");
+			invariant$35((init__react_native_virtualized_lists_Lists_VirtualizedListProps(), windowSizeOrDefault)(windowSize) > 0, "VirtualizedList: The windowSize prop must be present and set to a value greater than 0.");
+			invariant$35(getItemCount, "VirtualizedList: The \"getItemCount\" prop must be provided");
 			var itemCount = getItemCount(data);
 			if (initialScrollIndex != null && !this._hasTriggeredInitialScrollToIndex && (initialScrollIndex < 0 || (itemCount > 0 && initialScrollIndex >= itemCount)) && !this._hasWarned.initialScrollIndex) {
 				console.warn(`initialScrollIndex "${initialScrollIndex}" is not valid (list has ${itemCount} items)`);
@@ -34553,7 +34338,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		} });
 		Object.defineProperty(VirtualizedList, "_createRenderMask", { configurable: true, writable: true, value: function(props,cellsAroundViewport,additionalRegions) {
 			var itemCount = props.getItemCount(props.data);
-			invariant$37(cellsAroundViewport.first >= 0 && cellsAroundViewport.last >= cellsAroundViewport.first - 1 && cellsAroundViewport.last < itemCount, `Invalid cells around viewport "[${cellsAroundViewport.first}, ${cellsAroundViewport.last}]" was passed to VirtualizedList._createRenderMask`);
+			invariant$35(cellsAroundViewport.first >= 0 && cellsAroundViewport.last >= cellsAroundViewport.first - 1 && cellsAroundViewport.last < itemCount, `Invalid cells around viewport "[${cellsAroundViewport.first}, ${cellsAroundViewport.last}]" was passed to VirtualizedList._createRenderMask`);
 			var renderMask = new ((init__react_native_virtualized_lists_Lists_CellRenderMask(), CellRenderMask))(itemCount);
 			if (itemCount > 0) {
 				var allRegions = [cellsAroundViewport, ...(additionalRegions ?? [])];
@@ -34596,7 +34381,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 					return cellsAroundViewport.last >= getItemCount(data) ? VirtualizedList._constrainToItemCount(cellsAroundViewport, props) : cellsAroundViewport;
 				}
 				newCellsAroundViewport = (init__react_native_virtualized_lists_Lists_VirtualizeUtils(), computeWindowedRenderLimits)(props, (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), maxToRenderPerBatchOrDefault)(props.maxToRenderPerBatch), (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), windowSizeOrDefault)(props.windowSize), cellsAroundViewport, this._listMetrics, this._scrollMetrics);
-				invariant$37(newCellsAroundViewport.last < getItemCount(data), "computeWindowedRenderLimits() should return range in-bounds");
+				invariant$35(newCellsAroundViewport.last < getItemCount(data), "computeWindowedRenderLimits() should return range in-bounds");
 			}
 			if (this._nestedChildLists.size() > 0) {
 				var childIdx = this._findFirstChildWithMore(newCellsAroundViewport.first, newCellsAroundViewport.last);
@@ -34660,7 +34445,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 					stickyHeaderIndices.push(cells.length);
 				}
 				var shouldListenForLayout = getItemLayout == null || debug || this._fillRateHelper.enabled();
-				cells.push(/* @__PURE__ */ React$29.createElement(CellRenderer, { CellRendererComponent: CellRendererComponent, ItemSeparatorComponent: ii < end ? ItemSeparatorComponent : undefined, ListItemComponent: ListItemComponent, cellKey: key, horizontal: horizontal, index: ii, inversionStyle: inversionStyle, item: item, key: key, prevCellKey: prevCellKey, onUpdateSeparators: this._onUpdateSeparators, onCellFocusCapture: this._onCellFocusCapture, onUnmount: this._onCellUnmount, ref: function(ref) {
+				cells.push(/* @__PURE__ */ React$25.createElement(CellRenderer, { CellRendererComponent: CellRendererComponent, ItemSeparatorComponent: ii < end ? ItemSeparatorComponent : undefined, ListItemComponent: ListItemComponent, cellKey: key, horizontal: horizontal, index: ii, inversionStyle: inversionStyle, item: item, key: key, prevCellKey: prevCellKey, onUpdateSeparators: this._onUpdateSeparators, onCellFocusCapture: this._onCellFocusCapture, onUnmount: this._onCellUnmount, ref: function(ref) {
 					_this._cellRefs[key] = ref;
 				}, renderItem: renderItem, ...(shouldListenForLayout && { onCellLayout: this._onCellLayout }) }));
 				prevCellKey = key;
@@ -34688,21 +34473,21 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			return key;
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "_renderEmptyComponent", { configurable: true, writable: true, value: function(element,inversionStyle) {
-			var _this = this,isFragment = element.type === React$29.Fragment;
+			var _this = this,isFragment = element.type === React$25.Fragment;
 			if (isFragment) {
 				return element;
 			}
-			return require_react_index().cloneElement(element, { onLayout: function(event) {
+			return cloneElement$1(element, { onLayout: function(event) {
 				_this._onLayoutEmpty(event);
 				if (element.props.onLayout) {
 					element.props.onLayout(event);
 				}
-			}, style: require_react_native_index().StyleSheet.compose(inversionStyle, element.props.style) });
+			}, style: StyleSheet$5.compose(inversionStyle, element.props.style) });
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "render", { configurable: true, writable: true, value: function() {
 			var _this = this;
 			this._checkProps(this.props);
-			var { ListEmptyComponent:ListEmptyComponent, ListFooterComponent:ListFooterComponent, ListHeaderComponent:ListHeaderComponent } = this.props,{ data:data, horizontal:horizontal } = this.props,inversionStyle = this.props.inverted ? (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal) ? styles$6.horizontallyInverted : styles$6.verticallyInverted : null,cells = [],stickyIndicesFromProps = new Set(this.props.stickyHeaderIndices),stickyHeaderIndices = [];
+			var { ListEmptyComponent:ListEmptyComponent, ListFooterComponent:ListFooterComponent, ListHeaderComponent:ListHeaderComponent } = this.props,{ data:data, horizontal:horizontal } = this.props,inversionStyle = this.props.inverted ? (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal) ? styles$4.horizontallyInverted : styles$4.verticallyInverted : null,cells = [],stickyIndicesFromProps = new Set(this.props.stickyHeaderIndices),stickyHeaderIndices = [];
 			;
 			;
 			;
@@ -34712,13 +34497,13 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				if (stickyIndicesFromProps.has(0)) {
 					stickyHeaderIndices.push(0);
 				}
-				var element = require_react_index().isValidElement(ListHeaderComponent) ? (ListHeaderComponent) : (/* @__PURE__ */ React$29.createElement(ListHeaderComponent, null));
-				cells.push(/* @__PURE__ */ React$29.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this._getCellKey() + "-header", key: "$header" }, /* @__PURE__ */ React$29.createElement(require_react_native_index().View, { collapsable: false, onLayout: this._onLayoutHeader, style: require_react_native_index().StyleSheet.compose(inversionStyle, this.props.ListHeaderComponentStyle) }, element)));
+				var element = isValidElement$2(ListHeaderComponent) ? (ListHeaderComponent) : (/* @__PURE__ */ React$25.createElement(ListHeaderComponent, null));
+				cells.push(/* @__PURE__ */ React$25.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this._getCellKey() + "-header", key: "$header" }, /* @__PURE__ */ React$25.createElement(View$6, { collapsable: false, onLayout: this._onLayoutHeader, style: StyleSheet$5.compose(inversionStyle, this.props.ListHeaderComponentStyle) }, element)));
 			}
 			var itemCount = this.props.getItemCount(data);
 			if (itemCount === 0 && ListEmptyComponent) {
-				var element = (require_react_index().isValidElement(ListEmptyComponent) ? (ListEmptyComponent) : (/* @__PURE__ */ React$29.createElement(ListEmptyComponent, null)));
-				cells.push(/* @__PURE__ */ React$29.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this._getCellKey() + "-empty", key: "$empty" }, this._renderEmptyComponent(element, inversionStyle)));
+				var element = (isValidElement$2(ListEmptyComponent) ? (ListEmptyComponent) : (/* @__PURE__ */ React$25.createElement(ListEmptyComponent, null)));
+				cells.push(/* @__PURE__ */ React$25.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this._getCellKey() + "-empty", key: "$empty" }, this._renderEmptyComponent(element, inversionStyle)));
 			}
 			if (itemCount > 0) {
 				_usedIndexForKey = false;
@@ -34730,7 +34515,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 							continue;
 						}
 						var isLastSpacer = section === lastSpacer,constrainToMeasured = isLastSpacer && !this.props.getItemLayout,last = constrainToMeasured ? clamp(section.first - 1, section.last, this._listMetrics.getHighestMeasuredCellIndex()) : section.last,firstMetrics = this._listMetrics.getCellMetricsApprox(section.first, this.props),lastMetrics = this._listMetrics.getCellMetricsApprox(last, this.props),spacerSize = lastMetrics.offset + lastMetrics.length - firstMetrics.offset;
-						cells.push(/* @__PURE__ */ React$29.createElement(require_react_native_index().View, { key: `$spacer-${section.first}`, style: { [spacerKey]: spacerSize } }));
+						cells.push(/* @__PURE__ */ React$25.createElement(View$6, { key: `$spacer-${section.first}`, style: { [spacerKey]: spacerSize } }));
 					} else {
 						this._pushCells(cells, stickyHeaderIndices, stickyIndicesFromProps, section.first, section.last, inversionStyle);
 					}
@@ -34741,16 +34526,16 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				}
 			}
 			if (ListFooterComponent) {
-				var element = require_react_index().isValidElement(ListFooterComponent) ? (ListFooterComponent) : (/* @__PURE__ */ React$29.createElement(ListFooterComponent, null));
-				cells.push(/* @__PURE__ */ React$29.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this._getFooterCellKey(), key: "$footer" }, /* @__PURE__ */ React$29.createElement(require_react_native_index().View, { onLayout: this._onLayoutFooter, style: require_react_native_index().StyleSheet.compose(inversionStyle, this.props.ListFooterComponentStyle) }, element)));
+				var element = isValidElement$2(ListFooterComponent) ? (ListFooterComponent) : (/* @__PURE__ */ React$25.createElement(ListFooterComponent, null));
+				cells.push(/* @__PURE__ */ React$25.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListCellContextProvider), { cellKey: this._getFooterCellKey(), key: "$footer" }, /* @__PURE__ */ React$25.createElement(View$6, { onLayout: this._onLayoutFooter, style: StyleSheet$5.compose(inversionStyle, this.props.ListFooterComponentStyle) }, element)));
 			}
 			var scrollProps = { ...this.props, onContentSizeChange: this._onContentSizeChange, onLayout: this._onLayout, onScroll: this._onScroll, onScrollBeginDrag: this._onScrollBeginDrag, onScrollEndDrag: this._onScrollEndDrag, onMomentumScrollBegin: this._onMomentumScrollBegin, onMomentumScrollEnd: this._onMomentumScrollEnd, scrollEventThrottle: this.props.scrollEventThrottle ?? 0.0001, invertStickyHeaders: this.props.invertStickyHeaders !== undefined ? this.props.invertStickyHeaders : this.props.inverted, stickyHeaderIndices, style: inversionStyle ? [inversionStyle, this.props.style] : this.props.style, isInvertedVirtualizedList: this.props.inverted, maintainVisibleContentPosition: this.props.maintainVisibleContentPosition != null ? { ...this.props.maintainVisibleContentPosition, minIndexForVisible: this.props.maintainVisibleContentPosition.minIndexForVisible + (this.props.ListHeaderComponent ? 1 : 0) } : undefined };
 			this._hasMore = this.state.cellsAroundViewport.last < itemCount - 1;
-			var innerRet = (/* @__PURE__ */ React$29.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListContextProvider), { value: { cellKey: null, getScrollMetrics: this._getScrollMetrics, horizontal: (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal), getOutermostParentListRef: this._getOutermostParentListRef, registerAsNestedChild: this._registerAsNestedChild, unregisterAsNestedChild: this._unregisterAsNestedChild } }, require_react_index().cloneElement((this.props.renderScrollComponent || this._defaultRenderScrollComponent)(scrollProps), { ref: this._captureScrollRef }, cells))),ret = innerRet;
+			var innerRet = (/* @__PURE__ */ React$25.createElement((init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListContextProvider), { value: { cellKey: null, getScrollMetrics: this._getScrollMetrics, horizontal: (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal), getOutermostParentListRef: this._getOutermostParentListRef, registerAsNestedChild: this._registerAsNestedChild, unregisterAsNestedChild: this._unregisterAsNestedChild } }, cloneElement$1((this.props.renderScrollComponent || this._defaultRenderScrollComponent)(scrollProps), { ref: this._captureScrollRef }, cells))),ret = innerRet;
 			;
 			;
 			if (this.props.debug) {
-				return (/* @__PURE__ */ React$29.createElement(require_react_native_index().View, { style: styles$6.debug }, ret, this._renderDebugOverlay()));
+				return (/* @__PURE__ */ React$25.createElement(View$6, { style: styles$4.debug }, ret, this._renderDebugOverlay()));
 			} else {
 				return ret;
 			}
@@ -34815,9 +34600,9 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				}
 			}
 			var windowTop = this._listMetrics.getCellMetricsApprox(this.state.cellsAroundViewport.first, this.props).offset,frameLast = this._listMetrics.getCellMetricsApprox(this.state.cellsAroundViewport.last, this.props),windowLen = frameLast.offset + frameLast.length - windowTop,visTop = this._scrollMetrics.offset,visLen = this._scrollMetrics.visibleLength;
-			return (/* @__PURE__ */ React$29.createElement(require_react_native_index().View, { style: [styles$6.debugOverlayBase, styles$6.debugOverlay] }, framesInLayout.map(function(f,ii) {
-				return (/* @__PURE__ */ React$29.createElement(require_react_native_index().View, { key: "f" + ii, style: [styles$6.debugOverlayBase, styles$6.debugOverlayFrame, { top: f.offset * normalize, height: f.length * normalize }] }));
-			}), /* @__PURE__ */ React$29.createElement(require_react_native_index().View, { style: [styles$6.debugOverlayBase, styles$6.debugOverlayFrameLast, { top: windowTop * normalize, height: windowLen * normalize }] }), /* @__PURE__ */ React$29.createElement(require_react_native_index().View, { style: [styles$6.debugOverlayBase, styles$6.debugOverlayFrameVis, { top: visTop * normalize, height: visLen * normalize }] })));
+			return (/* @__PURE__ */ React$25.createElement(View$6, { style: [styles$4.debugOverlayBase, styles$4.debugOverlay] }, framesInLayout.map(function(f,ii) {
+				return (/* @__PURE__ */ React$25.createElement(View$6, { key: "f" + ii, style: [styles$4.debugOverlayBase, styles$4.debugOverlayFrame, { top: f.offset * normalize, height: f.length * normalize }] }));
+			}), /* @__PURE__ */ React$25.createElement(View$6, { style: [styles$4.debugOverlayBase, styles$4.debugOverlayFrameLast, { top: windowTop * normalize, height: windowLen * normalize }] }), /* @__PURE__ */ React$25.createElement(View$6, { style: [styles$4.debugOverlayBase, styles$4.debugOverlayFrameVis, { top: visTop * normalize, height: visLen * normalize }] })));
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "_selectLength", { configurable: true, writable: true, value: function(metrics) {
 			return !(init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal) ? metrics.height : metrics.width;
@@ -34826,7 +34611,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			return this._orientation().horizontal ? x : y;
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "_orientation", { configurable: true, writable: true, value: function() {
-			return { horizontal: (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal), rtl: require_react_native_index().I18nManager.isRTL };
+			return { horizontal: (init__react_native_virtualized_lists_Lists_VirtualizedListProps(), horizontalOrDefault)(this.props.horizontal), rtl: I18nManager.isRTL };
 		} });
 		Object.defineProperty(VirtualizedList.prototype, "_maybeCallOnEdgeReached", { configurable: true, writable: true, value: function() {
 			var { data:data, getItemCount:getItemCount, onStartReached:onStartReached, onStartReachedThreshold:onStartReachedThreshold, onEndReached:onEndReached, onEndReachedThreshold:onEndReachedThreshold } = this.props;
@@ -34863,7 +34648,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			if (contentWidth > 0 && contentHeight > 0 && this.props.initialScrollIndex != null && this.props.initialScrollIndex > 0 && !this._hasTriggeredInitialScrollToIndex) {
 				if (this.props.contentOffset == null) {
 					if (this.props.initialScrollIndex < this.props.getItemCount(this.props.data)) {
-						this.scrollToIndex({ animated: false, index: nullthrows$11(this.props.initialScrollIndex) });
+						this.scrollToIndex({ animated: false, index: nullthrows$10(this.props.initialScrollIndex) });
 					} else {
 						this.scrollToEnd({ animated: false });
 					}
@@ -34940,7 +34725,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		Object.defineProperty(VirtualizedList, "contextType", { configurable: true, enumerable: true, writable: true, value: (init__react_native_virtualized_lists_Lists_VirtualizedListContext(), VirtualizedListContext) });
 		return VirtualizedList;
 	})(StateSafePureComponent);
-	styles$6 = require_react_native_index().StyleSheet.create({ verticallyInverted: require_react_native_index().Platform.OS === "android" ? { transform: [{ scale: -1 }] } : { transform: [{ scaleY: -1 }] }, horizontallyInverted: { transform: [{ scaleX: -1 }] }, debug: { flex: 1 }, debugOverlayBase: { position: "absolute", top: 0, right: 0 }, debugOverlay: { bottom: 0, width: 20, borderColor: "blue", borderWidth: 1 }, debugOverlayFrame: { left: 0, backgroundColor: "orange" }, debugOverlayFrameLast: { left: 0, borderColor: "green", borderWidth: 2 }, debugOverlayFrameVis: { left: 0, borderColor: "red", borderWidth: 2 } });
+	styles$4 = StyleSheet$5.create({ verticallyInverted: Platform$20.OS === "android" ? { transform: [{ scale: -1 }] } : { transform: [{ scaleY: -1 }] }, horizontallyInverted: { transform: [{ scaleX: -1 }] }, debug: { flex: 1 }, debugOverlayBase: { position: "absolute", top: 0, right: 0 }, debugOverlay: { bottom: 0, width: 20, borderColor: "blue", borderWidth: 1 }, debugOverlayFrame: { left: 0, backgroundColor: "orange" }, debugOverlayFrameLast: { left: 0, borderColor: "green", borderWidth: 2 }, debugOverlayFrameVis: { left: 0, borderColor: "red", borderWidth: 2 } });
 	;
 	
 	
@@ -34949,15 +34734,15 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 //#endregion
 //#region VirtualizedSectionList.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedSectionList = {};
-var VirtualizedSectionList, ItemWithSeparator, VirtualizedSectionListComponent, __extends, __classCallCheck, __callSuper, invariant$38, React$30;
+var VirtualizedSectionList, ItemWithSeparator, VirtualizedSectionListComponent, __extends, __classCallCheck, __callSuper, invariant$36, React$26, useEffect$2, useState$1;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedSectionList, {
 	"default": function() { return VirtualizedSectionListComponent; },
 });
 var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 	"VirtualizedSectionList.js"() {
 	ItemWithSeparator = function(props) {
-		var { LeadingSeparatorComponent:LeadingSeparatorComponent, SeparatorComponent:SeparatorComponent, cellKey:cellKey, prevCellKey:prevCellKey, setSelfHighlightCallback:setSelfHighlightCallback, updateHighlightFor:updateHighlightFor, setSelfUpdatePropsCallback:setSelfUpdatePropsCallback, updatePropsFor:updatePropsFor, item:item, index:index, section:section, inverted:inverted } = props,[leadingSeparatorHiglighted, setLeadingSeparatorHighlighted] = require_react_index().useState(false),[separatorHighlighted, setSeparatorHighlighted] = require_react_index().useState(false),[leadingSeparatorProps, setLeadingSeparatorProps] = require_react_index().useState({ leadingItem: props.leadingItem, leadingSection: props.leadingSection, section: props.section, trailingItem: props.item, trailingSection: props.trailingSection }),[separatorProps, setSeparatorProps] = require_react_index().useState({ leadingItem: props.item, leadingSection: props.leadingSection, section: props.section, trailingItem: props.trailingItem, trailingSection: props.trailingSection });
-		require_react_index().useEffect(function() {
+		var { LeadingSeparatorComponent:LeadingSeparatorComponent, SeparatorComponent:SeparatorComponent, cellKey:cellKey, prevCellKey:prevCellKey, setSelfHighlightCallback:setSelfHighlightCallback, updateHighlightFor:updateHighlightFor, setSelfUpdatePropsCallback:setSelfUpdatePropsCallback, updatePropsFor:updatePropsFor, item:item, index:index, section:section, inverted:inverted } = props,[leadingSeparatorHiglighted, setLeadingSeparatorHighlighted] = useState$1(false),[separatorHighlighted, setSeparatorHighlighted] = useState$1(false),[leadingSeparatorProps, setLeadingSeparatorProps] = useState$1({ leadingItem: props.leadingItem, leadingSection: props.leadingSection, section: props.section, trailingItem: props.item, trailingSection: props.trailingSection }),[separatorProps, setSeparatorProps] = useState$1({ leadingItem: props.item, leadingSection: props.leadingSection, section: props.section, trailingItem: props.trailingItem, trailingSection: props.trailingSection });
+		useEffect$2(function() {
 			setSelfHighlightCallback(cellKey, setSeparatorHighlighted);
 			setSelfUpdatePropsCallback(cellKey, setSeparatorProps);
 			return function() {
@@ -34987,15 +34772,19 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 			} else if (select === "trailing" && SeparatorComponent != null) {
 				setSeparatorProps({ ...separatorProps, ...newProps });
 			}
-		} },element = props.renderItem({ item, index, section, separators }),leadingSeparator = LeadingSeparatorComponent != null && (React$30.isValidElement(LeadingSeparatorComponent) ? (LeadingSeparatorComponent) : (/* @__PURE__ */ React$30.createElement(LeadingSeparatorComponent, { highlighted: leadingSeparatorHiglighted, ...leadingSeparatorProps }))),separator = SeparatorComponent != null && (React$30.isValidElement(SeparatorComponent) ? (SeparatorComponent) : (/* @__PURE__ */ React$30.createElement(SeparatorComponent, { highlighted: separatorHighlighted, ...separatorProps }))),RenderSeparator = leadingSeparator || separator,firstSeparator = inverted === false ? leadingSeparator : separator,secondSeparator = inverted === false ? separator : leadingSeparator;
-		return (/* @__PURE__ */ React$30.createElement(React$30.Fragment, null, RenderSeparator ? firstSeparator : null, element, RenderSeparator ? secondSeparator : null));
+		} },element = props.renderItem({ item, index, section, separators }),leadingSeparator = LeadingSeparatorComponent != null && (React$26.isValidElement(LeadingSeparatorComponent) ? (LeadingSeparatorComponent) : (/* @__PURE__ */ React$26.createElement(LeadingSeparatorComponent, { highlighted: leadingSeparatorHiglighted, ...leadingSeparatorProps }))),separator = SeparatorComponent != null && (React$26.isValidElement(SeparatorComponent) ? (SeparatorComponent) : (/* @__PURE__ */ React$26.createElement(SeparatorComponent, { highlighted: separatorHighlighted, ...separatorProps }))),RenderSeparator = leadingSeparator || separator,firstSeparator = inverted === false ? leadingSeparator : separator,secondSeparator = inverted === false ? separator : leadingSeparator;
+		return (/* @__PURE__ */ React$26.createElement(React$26.Fragment, null, RenderSeparator ? firstSeparator : null, element, RenderSeparator ? secondSeparator : null));
 	};
 		init_extends();
 	init_class_call_check();
 	init_call_super();
 	init__react_native_virtualized_lists_Lists_VirtualizedList();
-	invariant$38 = require_invariant_browser();
-	React$30 = __toESM(require_react_index());
+	require_invariant_browser();
+	require_react_index();
+	invariant$36 = require_invariant_browser();
+	React$26 = __toESM(require_react_index());
+	useEffect$2 = require_react_index().useEffect;
+	useState$1 = require_react_index().useState;
 		
 	
 	
@@ -35014,7 +34803,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 				return (info && info.key) || String(index);
 			};
 			_this._convertViewable = function(viewable) {
-				invariant$38(viewable.index != null, "Received a broken ViewToken");
+				invariant$36(viewable.index != null, "Received a broken ViewToken");
 				var info = _this._subExtractor(viewable.index);
 				if (!info) {
 					return null;
@@ -35046,8 +34835,8 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 						}
 					} else {
 						var renderItem = info.section.renderItem || _this.props.renderItem,SeparatorComponent = _this._getSeparatorComponent(index, info, listItemCount);
-						invariant$38(renderItem, "no renderItem!");
-						return (/* @__PURE__ */ React$30.createElement(ItemWithSeparator, { SeparatorComponent: SeparatorComponent, LeadingSeparatorComponent: infoIndex === 0 ? _this.props.SectionSeparatorComponent : undefined, cellKey: info.key, index: infoIndex, item: item, leadingItem: info.leadingItem, leadingSection: info.leadingSection, prevCellKey: (_this._subExtractor(index - 1) || {}).key, setSelfHighlightCallback: _this._setUpdateHighlightFor, setSelfUpdatePropsCallback: _this._setUpdatePropsFor, updateHighlightFor: _this._updateHighlightFor, updatePropsFor: _this._updatePropsFor, renderItem: renderItem, section: info.section, trailingItem: info.trailingItem, trailingSection: info.trailingSection, inverted: !!_this.props.inverted }));
+						invariant$36(renderItem, "no renderItem!");
+						return (/* @__PURE__ */ React$26.createElement(ItemWithSeparator, { SeparatorComponent: SeparatorComponent, LeadingSeparatorComponent: infoIndex === 0 ? _this.props.SectionSeparatorComponent : undefined, cellKey: info.key, index: infoIndex, item: item, leadingItem: info.leadingItem, leadingSection: info.leadingSection, prevCellKey: (_this._subExtractor(index - 1) || {}).key, setSelfHighlightCallback: _this._setUpdateHighlightFor, setSelfUpdatePropsCallback: _this._setUpdatePropsFor, updateHighlightFor: _this._updateHighlightFor, updatePropsFor: _this._updatePropsFor, renderItem: renderItem, section: info.section, trailingItem: info.trailingItem, trailingSection: info.trailingSection, inverted: !!_this.props.inverted }));
 					}
 				};
 			};
@@ -35118,7 +34907,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 				itemCount += this.props.getItemCount(section.data);
 			}
 			var renderItem = this._renderItem(itemCount);
-			return (/* @__PURE__ */ React$30.createElement(VirtualizedList, { ...passThroughProps, keyExtractor: this._keyExtractor, stickyHeaderIndices: stickyHeaderIndices, renderItem: renderItem, data: this.props.sections, getItem: function(sections,index) {
+			return (/* @__PURE__ */ React$26.createElement(VirtualizedList, { ...passThroughProps, keyExtractor: this._keyExtractor, stickyHeaderIndices: stickyHeaderIndices, renderItem: renderItem, data: this.props.sections, getItem: function(sections,index) {
 				return _this._getItem(_this.props, sections, index);
 			}, getItemCount: function() {
 				return itemCount;
@@ -35173,7 +34962,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 			return null;
 		} });
 		return VirtualizedSectionList;
-	})(React$30.PureComponent);
+	})(React$26.PureComponent);
 	VirtualizedSectionListComponent = VirtualizedSectionList;
 	
 	
@@ -35182,15 +34971,16 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 //#endregion
 //#region index.js
 var exports__react_native_virtualized_lists_index = {};
-var _default$55;
+var _default$49;
 __export(exports__react_native_virtualized_lists_index, {
-	"default": function() { return _default$55; },
+	"default": function() { return _default$49; },
 });
 var init__react_native_virtualized_lists_index = __esm({
 	"index.js"() {
-	"use strict";
+	init__react_native_virtualized_lists_Lists_VirtualizedListContext();
+		"use strict";
 	
-	_default$55={ keyExtractor: (init__react_native_virtualized_lists_Lists_VirtualizeUtils(), keyExtractor$2), get VirtualizedList() {
+	_default$49={ keyExtractor: (init__react_native_virtualized_lists_Lists_VirtualizeUtils(), keyExtractor$2), get VirtualizedList() {
 		return (init__react_native_virtualized_lists_Lists_VirtualizedList(), __toCommonJS(exports__react_native_virtualized_lists_Lists_VirtualizedList)).default;
 	}, get VirtualizedSectionList() {
 		return (init__react_native_virtualized_lists_Lists_VirtualizedSectionList(), __toCommonJS(exports__react_native_virtualized_lists_Lists_VirtualizedSectionList)).default;
@@ -35206,9 +34996,61 @@ var init__react_native_virtualized_lists_index = __esm({
 	}
 });
 //#endregion
+//#region memoize-one.cjs.js
+var require_memoize_one_dist_memoize_one_cjs = __commonJS({
+	"memoize-one.cjs.js"(exports, module) {
+var safeIsNaN = Number.isNaN || function ponyfill(value) {
+		return typeof value == "number" && value !== value;
+	};
+	function isEqual(first,second) {
+		if (first === second) {
+			return true;
+		}
+		if (safeIsNaN(first) && safeIsNaN(second)) {
+			return true;
+		}
+		return false;
+	}
+	function areInputsEqual(newInputs,lastInputs) {
+		if (newInputs.length !== lastInputs.length) {
+			return false;
+		}
+		for (var i = 0; i < newInputs.length; i++) {
+			if (!isEqual(newInputs[i], lastInputs[i])) {
+				return false;
+			}
+		}
+		return true;
+	}
+	function memoizeOne(resultFn,isEqual) {
+		if (isEqual === void 0) {
+			isEqual = areInputsEqual;
+		}
+		var lastThis,lastArgs = [],lastResult,calledOnce = false;
+		function memoized() {
+			var newArgs = [];
+			for (var _i = 0; _i < arguments.length; _i++) {
+				newArgs[_i] = arguments[_i];
+			}
+			if (calledOnce && lastThis === this && isEqual(newArgs, lastArgs)) {
+				return lastResult;
+			}
+			lastResult = resultFn.apply(this, newArgs);
+			calledOnce = true;
+			lastThis = this;
+			lastArgs = newArgs;
+			return lastResult;
+		}
+		return memoized;
+	}
+	module.exports = memoizeOne;
+	
+	}
+});
+//#endregion
 //#region FlatList.js
 var exports_react_native_Libraries_Lists_FlatList = {};
-var ReactNativeFeatureFlags$17, StyleSheet$6, deepDiffer$2, Platform$28, invariant$39, VirtualizedList$2, defaultKeyExtractor$3, removeClippedSubviewsOrDefault, numColumnsOrDefault, isArrayLike, FlatList, styles$7, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, memoizeOne, React$31;
+var ReactNativeFeatureFlags$15, StyleSheet$6, deepDiffer$2, Platform$21, invariant$37, VirtualizedList$2, defaultKeyExtractor$3, removeClippedSubviewsOrDefault, numColumnsOrDefault, isArrayLike, FlatList, styles$5, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, memoizeOne, React$27;
 __export(exports_react_native_Libraries_Lists_FlatList, {
 	"default": function() { return FlatList; },
 });
@@ -35218,14 +35060,14 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 		if (shouldUseRemoveClippedSubviewsAsDefaultOnIOS()) {
 			return removeClippedSubviews ?? true;
 		} else {
-			return removeClippedSubviews ?? Platform$28.OS === "android";
+			return removeClippedSubviews ?? Platform$21.OS === "android";
 		}
 	};
 	numColumnsOrDefault = function(numColumns) {
 		return numColumns ?? 1;
 	};
 	isArrayLike = function(data) {
-		return typeof Object(data).length === "number";
+		return typeof Object(data).length == "number";
 	};
 		init_extends();
 	init_class_call_check();
@@ -35234,23 +35076,25 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_Libraries_Components_View_View();
 	init__react_native_virtualized_lists_index();
+	require_memoize_one_dist_memoize_one_cjs();
+	require_react_index();
 	memoizeOne = require_memoize_one_dist_memoize_one_cjs();
-	React$31 = __toESM(require_react_index());
+	React$27 = __toESM(require_react_index());
 		
 	
 	
 	
-	ReactNativeFeatureFlags$17=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
+	ReactNativeFeatureFlags$15=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
 	
 	
 	
 	StyleSheet$6 = (init_react_native_Libraries_StyleSheet_StyleSheet(), __toCommonJS(exports_react_native_Libraries_StyleSheet_StyleSheet)).default;
 	deepDiffer$2 = (init_react_native_Libraries_Utilities_differ_deepDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_deepDiffer)).default;
-	Platform$28 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
-	invariant$39 = require_invariant_browser();
-	VirtualizedList$2 = _default$55.VirtualizedList;
-	defaultKeyExtractor$3 = _default$55.keyExtractor;
+	Platform$21 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	invariant$37 = require_invariant_browser();
+	VirtualizedList$2 = _default$49.VirtualizedList;
+	defaultKeyExtractor$3 = _default$49.keyExtractor;
 	;
 	;
 	;
@@ -35294,7 +35138,7 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 				_this._keyExtractor = function(items,index) {
 					var numColumns = numColumnsOrDefault(_this.props.numColumns),keyExtractor = _this.props.keyExtractor ?? defaultKeyExtractor$3;
 					if (numColumns > 1) {
-						invariant$39(Array.isArray(items), "FlatList: Encountered internal consistency error, expected each item to consist of an array with 1-%s columns; instead, received a single item.", numColumns);
+						invariant$37(Array.isArray(items), "FlatList: Encountered internal consistency error, expected each item to consist of an array with 1-%s columns; instead, received a single item.", numColumns);
 						return items.map(function(item,kk) {
 							return keyExtractor(item, index * numColumns + kk);
 						}).join(":");
@@ -35304,7 +35148,7 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 				_this._renderer = function(ListItemComponent,renderItem,columnWrapperStyle,numColumns,extraData) {
 					var cols = numColumnsOrDefault(numColumns),render = function(props) {
 						if (ListItemComponent) {
-							return /* @__PURE__ */ React$31.createElement(ListItemComponent, { ...props });
+							return /* @__PURE__ */ React$27.createElement(ListItemComponent, { ...props });
 						} else if (renderItem) {
 							return renderItem(props);
 						} else {
@@ -35313,10 +35157,10 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 					},renderProp = function(info) {
 						if (cols > 1) {
 							var { item:item, index:index } = info;
-							invariant$39(Array.isArray(item), "Expected array of items with numColumns > 1");
-							return (/* @__PURE__ */ React$31.createElement(View$1, { style: StyleSheet$6.compose(styles$7.row, columnWrapperStyle) }, item.map(function(it,kk) {
+							invariant$37(Array.isArray(item), "Expected array of items with numColumns > 1");
+							return (/* @__PURE__ */ React$27.createElement(View$1, { style: StyleSheet$6.compose(styles$5.row, columnWrapperStyle) }, item.map(function(it,kk) {
 								var element = render({ item: it, index: index * cols + kk, separators: info.separators });
-								return element != null ? (/* @__PURE__ */ React$31.createElement(React$31.Fragment, { key: kk }, element)) : null;
+								return element != null ? (/* @__PURE__ */ React$27.createElement(React$27.Fragment, { key: kk }, element)) : null;
 							})));
 						} else {
 							return render(info);
@@ -35333,7 +35177,7 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 				});
 			} else if (__assertThisInitialized(_this).props.onViewableItemsChanged) {
 				__assertThisInitialized(_this)._virtualizedListPairs.push({ viewabilityConfig: __assertThisInitialized(_this).props.viewabilityConfig, onViewableItemsChanged: __assertThisInitialized(_this)._createOnViewableItemsChanged(function(...args) {
-					invariant$39(_this.props.onViewableItemsChanged, "Changing the nullability of onViewableItemsChanged is not supported. Once a function or null is supplied that cannot be changed.");
+					invariant$37(_this.props.onViewableItemsChanged, "Changing the nullability of onViewableItemsChanged is not supported. Once a function or null is supplied that cannot be changed.");
 					return _this.props.onViewableItemsChanged(...args);
 				}) });
 			}
@@ -35391,26 +35235,26 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 			}
 		} });
 		Object.defineProperty(FlatList.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(prevProps) {
-			invariant$39(prevProps.numColumns === this.props.numColumns, "Changing numColumns on the fly is not supported. Change the key prop on FlatList when changing the number of columns to force a fresh render of the component.");
-			invariant$39((prevProps.onViewableItemsChanged == null) === (this.props.onViewableItemsChanged == null), "Changing onViewableItemsChanged nullability on the fly is not supported");
-			invariant$39(!deepDiffer$2(prevProps.viewabilityConfig, this.props.viewabilityConfig), "Changing viewabilityConfig on the fly is not supported");
-			invariant$39(prevProps.viewabilityConfigCallbackPairs === this.props.viewabilityConfigCallbackPairs, "Changing viewabilityConfigCallbackPairs on the fly is not supported");
+			invariant$37(prevProps.numColumns === this.props.numColumns, "Changing numColumns on the fly is not supported. Change the key prop on FlatList when changing the number of columns to force a fresh render of the component.");
+			invariant$37((prevProps.onViewableItemsChanged == null) === (this.props.onViewableItemsChanged == null), "Changing onViewableItemsChanged nullability on the fly is not supported");
+			invariant$37(!deepDiffer$2(prevProps.viewabilityConfig, this.props.viewabilityConfig), "Changing viewabilityConfig on the fly is not supported");
+			invariant$37(prevProps.viewabilityConfigCallbackPairs === this.props.viewabilityConfigCallbackPairs, "Changing viewabilityConfigCallbackPairs on the fly is not supported");
 			this._checkProps(this.props);
 		} });
 		Object.defineProperty(FlatList.prototype, "_checkProps", { configurable: true, writable: true, value: function(props) {
 			var { getItem:getItem, getItemCount:getItemCount, horizontal:horizontal, columnWrapperStyle:columnWrapperStyle, onViewableItemsChanged:onViewableItemsChanged, viewabilityConfigCallbackPairs:viewabilityConfigCallbackPairs } = props,numColumns = numColumnsOrDefault(this.props.numColumns);
-			invariant$39(!getItem && !getItemCount, "FlatList does not support custom data formats.");
+			invariant$37(!getItem && !getItemCount, "FlatList does not support custom data formats.");
 			if (numColumns > 1) {
-				invariant$39(!horizontal, "numColumns does not support horizontal.");
+				invariant$37(!horizontal, "numColumns does not support horizontal.");
 			} else {
-				invariant$39(!columnWrapperStyle, "columnWrapperStyle not supported for single column lists");
+				invariant$37(!columnWrapperStyle, "columnWrapperStyle not supported for single column lists");
 			}
-			invariant$39(!(onViewableItemsChanged && viewabilityConfigCallbackPairs), "FlatList does not support setting both onViewableItemsChanged and viewabilityConfigCallbackPairs.");
+			invariant$37(!(onViewableItemsChanged && viewabilityConfigCallbackPairs), "FlatList does not support setting both onViewableItemsChanged and viewabilityConfigCallbackPairs.");
 		} });
 		Object.defineProperty(FlatList.prototype, "_pushMultiColumnViewable", { configurable: true, writable: true, value: function(arr,v) {
 			var numColumns = numColumnsOrDefault(this.props.numColumns),keyExtractor = this.props.keyExtractor ?? defaultKeyExtractor$3;
 			v.item.forEach(function(item,ii) {
-				invariant$39(v.index != null, "Missing index!");
+				invariant$37(v.index != null, "Missing index!");
 				var index = v.index * numColumns + ii;
 				arr.push({ ...v, item, key: keyExtractor(item, index), index });
 			});
@@ -35437,11 +35281,11 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 		} });
 		Object.defineProperty(FlatList.prototype, "render", { configurable: true, writable: true, value: function() {
 			var { numColumns:numColumns, columnWrapperStyle:columnWrapperStyle, removeClippedSubviews:_removeClippedSubviews, strictMode:strictMode=false, ...restProps } = this.props,renderer = strictMode ? this._memoizedRenderer : this._renderer;
-			return (/* @__PURE__ */ React$31.createElement(VirtualizedList$2, { ...restProps, getItem: this._getItem, getItemCount: this._getItemCount, keyExtractor: this._keyExtractor, ref: this._captureRef, viewabilityConfigCallbackPairs: this._virtualizedListPairs, removeClippedSubviews: removeClippedSubviewsOrDefault(_removeClippedSubviews), ...renderer(this.props.ListItemComponent, this.props.renderItem, columnWrapperStyle, numColumns, this.props.extraData) }));
+			return (/* @__PURE__ */ React$27.createElement(VirtualizedList$2, { ...restProps, getItem: this._getItem, getItemCount: this._getItemCount, keyExtractor: this._keyExtractor, ref: this._captureRef, viewabilityConfigCallbackPairs: this._virtualizedListPairs, removeClippedSubviews: removeClippedSubviewsOrDefault(_removeClippedSubviews), ...renderer(this.props.ListItemComponent, this.props.renderItem, columnWrapperStyle, numColumns, this.props.extraData) }));
 		} });
 		return FlatList;
-	})(React$31.PureComponent);
-	styles$7 = StyleSheet$6.create({ row: { flexDirection: "row" } });
+	})(React$27.PureComponent);
+	styles$5 = StyleSheet$6.create({ row: { flexDirection: "row" } });
 	;
 	
 	
@@ -35450,35 +35294,73 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 //#endregion
 //#region AnimatedFlatList.js
 var exports_react_native_Libraries_Animated_components_AnimatedFlatList = {};
-var _default$56, React$32;
+var _default$50, React$28;
 __export(exports_react_native_Libraries_Animated_components_AnimatedFlatList, {
-	"default": function() { return _default$56; },
+	"default": function() { return _default$50; },
 });
 var init_react_native_Libraries_Animated_components_AnimatedFlatList = __esm({
 	"AnimatedFlatList.js"() {
 	init_react_native_Libraries_Lists_FlatList();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
-	React$32 = __toESM(require_react_index());
+	require_react_index();
+	React$28 = __toESM(require_react_index());
 		
 	
 	
-	_default$56=createAnimatedComponent(FlatList);
+	_default$50=createAnimatedComponent(FlatList);
+	
+	}
+});
+//#endregion
+//#region async
+var exports_async = {};
+var __async;
+__export(exports_async, {
+	__async: function() { return __async; },
+});
+var init_async = __esm({
+	"async"() {
+	__async = function(fn) {
+		return function() {
+			var args = Array.prototype.slice.call(arguments),self = this;
+			return new Promise(function(resolve,reject) {
+				var gen = fn.apply(self, args);
+				function step(key,arg) {
+					try {
+						var info = gen[key](arg),value = info.value;
+					} catch (error) {
+						reject(error);
+						return;
+					}
+					if (info.done)resolve(value); else Promise.resolve(value).then(function(val) {
+						step("next", val);
+					}, function(err) {
+						step("throw", err);
+					});
+				}
+				step("next");
+			});
+		};
+	};
+	
 	
 	}
 });
 //#endregion
 //#region ImageAnalyticsTagContext.js
 var exports_react_native_Libraries_Image_ImageAnalyticsTagContext = {};
-var Context, React$33;
+var Context, React$29, createContext$4;
 __export(exports_react_native_Libraries_Image_ImageAnalyticsTagContext, {
 	"default": function() { return Context; },
 });
 var init_react_native_Libraries_Image_ImageAnalyticsTagContext = __esm({
 	"ImageAnalyticsTagContext.js"() {
-	React$33 = __toESM(require_react_index());
+	require_react_index();
+	React$29 = __toESM(require_react_index());
+	createContext$4 = require_react_index().createContext;
 		
 	
-	Context = require_react_index().createContext(null);
+	Context = createContext$4(null);
 	;
 	
 	
@@ -35487,7 +35369,7 @@ var init_react_native_Libraries_Image_ImageAnalyticsTagContext = __esm({
 //#endregion
 //#region ImageInjection.js
 var exports_react_native_Libraries_Image_ImageInjection = {};
-var injectedImageComponentDecorator, unstable_setImageComponentDecorator, unstable_getImageComponentDecorator, imageAttachedCallbacks, unstable_registerImageAttachedCallback, unstable_unregisterImageAttachedCallback, useWrapRefWithImageAttachedCallbacks, React$34;
+var injectedImageComponentDecorator, unstable_setImageComponentDecorator, unstable_getImageComponentDecorator, imageAttachedCallbacks, unstable_registerImageAttachedCallback, unstable_unregisterImageAttachedCallback, useWrapRefWithImageAttachedCallbacks, React$30, useRef$4;
 __export(exports_react_native_Libraries_Image_ImageInjection, {
 	unstable_setImageComponentDecorator: function() { return unstable_setImageComponentDecorator; },
 	unstable_getImageComponentDecorator: function() { return unstable_getImageComponentDecorator; },
@@ -35510,7 +35392,7 @@ var init_react_native_Libraries_Image_ImageInjection = __esm({
 		imageAttachedCallbacks.delete(callback);
 	};
 	useWrapRefWithImageAttachedCallbacks = function(forwardedRef) {
-		var pendingCleanupCallbacks = require_react_index().useRef([]),imageAttachedCallbacksRef = require_react_index().useRef(null);
+		var pendingCleanupCallbacks = useRef$4([]),imageAttachedCallbacksRef = useRef$4(null);
 		if (imageAttachedCallbacksRef.current == null) {
 			imageAttachedCallbacksRef.current = function(node) {
 				if (node == null) {
@@ -35533,7 +35415,9 @@ var init_react_native_Libraries_Image_ImageInjection = __esm({
 		return useMergeRefs(forwardedRef, imageAttachedCallbacksRef.current);
 	};
 		init_react_native_Libraries_Utilities_useMergeRefs();
-	React$34 = __toESM(require_react_index());
+	require_react_index();
+	React$30 = __toESM(require_react_index());
+	useRef$4 = require_react_index().useRef;
 		
 	
 	
@@ -35614,10 +35498,10 @@ var init_react_native_Libraries_Image_ImageUtils = __esm({
 //#endregion
 //#region ImageViewNativeComponent.js
 var exports_react_native_Libraries_Image_ImageViewNativeComponent = {};
-var NativeComponentRegistry$8, Commands$5, __INTERNAL_VIEW_CONFIG$7, ImageViewNativeComponent;
+var NativeComponentRegistry$4, Commands$4, __INTERNAL_VIEW_CONFIG$3, ImageViewNativeComponent;
 __export(exports_react_native_Libraries_Image_ImageViewNativeComponent, {
-	Commands: function() { return Commands$5; },
-	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$7; },
+	Commands: function() { return Commands$4; },
+	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$3; },
 	"default": function() { return ImageViewNativeComponent; },
 });
 var init_react_native_Libraries_Image_ImageViewNativeComponent = __esm({
@@ -35625,14 +35509,14 @@ var init_react_native_Libraries_Image_ImageViewNativeComponent = __esm({
 	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
 	init_react_native_Libraries_Utilities_codegenNativeCommands();
 	init_react_native_Libraries_Utilities_Platform_ios();
-		NativeComponentRegistry$8=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
+		NativeComponentRegistry$4=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
 	
 	
 	
-	Commands$5 = codegenNativeCommands$2({ supportedCommands: ["setIsVisible_EXPERIMENTAL"] });
-	__INTERNAL_VIEW_CONFIG$7 = Platform.OS === "android" ? { uiViewClassName: "RCTImageView", bubblingEventTypes: {}, directEventTypes: { topLoadStart: { registrationName: "onLoadStart" }, topProgress: { registrationName: "onProgress" }, topError: { registrationName: "onError" }, topLoad: { registrationName: "onLoad" }, topLoadEnd: { registrationName: "onLoadEnd" } }, validAttributes: { blurRadius: true, defaultSource: true, internal_analyticTag: true, resizeMethod: true, resizeMode: true, resizeMultiplier: true, tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderBottomLeftRadius: true, borderTopLeftRadius: true, src: true, source: true, borderRadius: true, headers: true, shouldNotifyLoadEvents: true, overlayColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, accessible: true, progressiveRenderingEnabled: true, fadeDuration: true, borderBottomRightRadius: true, borderTopRightRadius: true, loadingIndicatorSrc: true } } : { uiViewClassName: "RCTImageView", bubblingEventTypes: {}, directEventTypes: { topLoadStart: { registrationName: "onLoadStart" }, topProgress: { registrationName: "onProgress" }, topError: { registrationName: "onError" }, topPartialLoad: { registrationName: "onPartialLoad" }, topLoad: { registrationName: "onLoad" }, topLoadEnd: { registrationName: "onLoadEnd" } }, validAttributes: { blurRadius: true, capInsets: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, defaultSource: { process: (init_react_native_Libraries_Image_resolveAssetSource(), __toCommonJS(exports_react_native_Libraries_Image_resolveAssetSource)).default }, internal_analyticTag: true, resizeMode: true, source: true, tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, ...(init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), ConditionallyIgnoredEventHandlers)({ onLoadStart: true, onLoad: true, onLoadEnd: true, onProgress: true, onError: true, onPartialLoad: true }) } };
+	Commands$4 = codegenNativeCommands$2({ supportedCommands: ["setIsVisible_EXPERIMENTAL"] });
+	__INTERNAL_VIEW_CONFIG$3 = Platform.OS === "android" ? { uiViewClassName: "RCTImageView", bubblingEventTypes: {}, directEventTypes: { topLoadStart: { registrationName: "onLoadStart" }, topProgress: { registrationName: "onProgress" }, topError: { registrationName: "onError" }, topLoad: { registrationName: "onLoad" }, topLoadEnd: { registrationName: "onLoadEnd" } }, validAttributes: { blurRadius: true, defaultSource: true, internal_analyticTag: true, resizeMethod: true, resizeMode: true, resizeMultiplier: true, tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderBottomLeftRadius: true, borderTopLeftRadius: true, src: true, source: true, borderRadius: true, headers: true, shouldNotifyLoadEvents: true, overlayColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, accessible: true, progressiveRenderingEnabled: true, fadeDuration: true, borderBottomRightRadius: true, borderTopRightRadius: true, loadingIndicatorSrc: true } } : { uiViewClassName: "RCTImageView", bubblingEventTypes: {}, directEventTypes: { topLoadStart: { registrationName: "onLoadStart" }, topProgress: { registrationName: "onProgress" }, topError: { registrationName: "onError" }, topPartialLoad: { registrationName: "onPartialLoad" }, topLoad: { registrationName: "onLoad" }, topLoadEnd: { registrationName: "onLoadEnd" } }, validAttributes: { blurRadius: true, capInsets: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, defaultSource: { process: (init_react_native_Libraries_Image_resolveAssetSource(), __toCommonJS(exports_react_native_Libraries_Image_resolveAssetSource)).default }, internal_analyticTag: true, resizeMode: true, source: true, tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, ...(init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), ConditionallyIgnoredEventHandlers)({ onLoadStart: true, onLoad: true, onLoadEnd: true, onProgress: true, onError: true, onPartialLoad: true }) } };
 	ImageViewNativeComponent = get$2("RCTImageView", function() {
-		return __INTERNAL_VIEW_CONFIG$7;
+		return __INTERNAL_VIEW_CONFIG$3;
 	});
 	
 	
@@ -35641,84 +35525,49 @@ var init_react_native_Libraries_Image_ImageViewNativeComponent = __esm({
 //#endregion
 //#region NativeImageLoaderIOS.js
 var exports_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS = {};
-var TurboModuleRegistry$26, _default$57;
+var TurboModuleRegistry$24, _default$51;
 __export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS, {
-	"default": function() { return _default$57; },
+	"default": function() { return _default$51; },
 });
 var init_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS = __esm({
 	"NativeImageLoaderIOS.js"() {
 	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
-		TurboModuleRegistry$26=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
-	_default$57=getEnforcing("ImageLoader");
+		TurboModuleRegistry$24=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$51=getEnforcing("ImageLoader");
 	
 	}
 });
 //#endregion
 //#region NativeImageLoaderIOS.js
 var exports_react_native_Libraries_Image_NativeImageLoaderIOS = {};
-var _default$58;
+var _default$52;
 __export(exports_react_native_Libraries_Image_NativeImageLoaderIOS, {
-	"default": function() { return _default$58; },
+	"default": function() { return _default$52; },
 });
 var init_react_native_Libraries_Image_NativeImageLoaderIOS = __esm({
 	"NativeImageLoaderIOS.js"() {
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS();
 		
 	
-	_default$58=_default$57;
-		_default$58 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS)).default;
-	
-	}
-});
-//#endregion
-//#region async
-var exports_async = {};
-var __async;
-__export(exports_async, {
-	__async: function() { return __async; },
-});
-var init_async = __esm({
-	"async"() {
-	__async = function(fn) {
-		return function() {
-			var args = Array.prototype.slice.call(arguments),self = this;
-			return new Promise(function(resolve,reject) {
-				var gen = fn.apply(self, args);
-				function step(key,arg) {
-					try {
-						var info = gen[key](arg),value = info.value;
-					} catch (error) {
-						reject(error);
-						return;
-					}
-					if (info.done)resolve(value); else Promise.resolve(value).then(function(val) {
-						step("next", val);
-					}, function(err) {
-						step("throw", err);
-					});
-				}
-				step("next");
-			});
-		};
-	};
-	
+	_default$52=_default$51;
+		_default$52 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS)).default;
 	
 	}
 });
 //#endregion
 //#region Image.ios.js
 var exports_react_native_Libraries_Image_Image_ios = {};
-var getSize, getSizeWithHeaders, prefetchWithMetadata, prefetch, queryCache, BaseImage, imageComponentDecorator, Image, styles$8, __async, __generator, React$35;
+var getSize, getSizeWithHeaders, prefetchWithMetadata, prefetch, queryCache, BaseImage, imageComponentDecorator, Image, styles$6, __async, __generator, React$31;
 __export(exports_react_native_Libraries_Image_Image_ios, {
 	"default": function() { return Image; },
 });
 var init_react_native_Libraries_Image_Image_ios = __esm({
 	"Image.ios.js"() {
 	getSize = function(uri,success,failure) {
-		var promise = _default$57.getSize(uri).then(function([width, height]) {
+		var promise = _default$51.getSize(uri).then(function([width, height]) {
 			return ({ width, height });
 		});
-		if (typeof success !== "function") {
+		if (typeof success != "function") {
 			return promise;
 		}
 		promise.then(function(sizes) {
@@ -35728,8 +35577,8 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 		});
 	};
 	getSizeWithHeaders = function(uri,headers,success,failure) {
-		var promise = _default$57.getSizeWithHeaders(uri, headers);
-		if (typeof success !== "function") {
+		var promise = _default$51.getSizeWithHeaders(uri, headers);
+		if (typeof success != "function") {
 			return promise;
 		}
 		promise.then(function(sizes) {
@@ -35739,21 +35588,21 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 		});
 	};
 	prefetchWithMetadata = function(url,queryRootName,rootTag) {
-		if (_default$57.prefetchImageWithMetadata) {
-			return _default$57.prefetchImageWithMetadata(url, queryRootName, rootTag != null ? rootTag : (init_react_native_Libraries_ReactNative_RootTag(), createRootTag)(0));
+		if (_default$51.prefetchImageWithMetadata) {
+			return _default$51.prefetchImageWithMetadata(url, queryRootName, rootTag != null ? rootTag : (init_react_native_Libraries_ReactNative_RootTag(), createRootTag)(0));
 		} else {
-			return _default$57.prefetchImage(url);
+			return _default$51.prefetchImage(url);
 		}
 	};
 	prefetch = function(url) {
-		return _default$57.prefetchImage(url);
+		return _default$51.prefetchImage(url);
 	};
 	queryCache = function(urls) {
 		return __async(function() {
 			return __generator(this, function(_state) {
 				switch (_state.label) {
 					case 0:
-						return [2, _default$57.queryCache(urls)];
+						return [2, _default$51.queryCache(urls)];
 				}
 			});
 		}).call(this);
@@ -35765,9 +35614,10 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 	init_react_native_Libraries_Image_ImageAnalyticsTagContext();
 	init_react_native_Libraries_Image_ImageViewNativeComponent();
 	init_react_native_Libraries_Image_NativeImageLoaderIOS();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS();
 	init_react_native_Libraries_Image_resolveAssetSource();
-	React$35 = __toESM(require_react_index());
+	require_react_index();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeImageLoaderIOS();
+	React$31 = __toESM(require_react_index());
 		
 	
 	
@@ -35784,7 +35634,7 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 	BaseImage = function({ ref:forwardedRef, ...props }) {
 		var source = (init_react_native_Libraries_Image_ImageSourceUtils(), getImageSourcesFromImageProps)(props) || { uri: undefined, width: undefined, height: undefined },style = void 0,sources = void 0;
 		if (Array.isArray(source)) {
-			style = [styles$8.base, props.style];
+			style = [styles$6.base, props.style];
 			sources = source;
 		} else {
 			var { uri:uri } = source;
@@ -35792,7 +35642,7 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 				console.warn("source.uri should not be an empty string");
 			}
 			var width = source.width ?? props.width,height = source.height ?? props.height;
-			style = [{ width, height }, styles$8.base, props.style];
+			style = [{ width, height }, styles$6.base, props.style];
 			sources = [source];
 		}
 		var flattenedStyle = flattenStyle(style),objectFit = (init_react_native_Libraries_Image_ImageUtils(), convertObjectFitToResizeMode)(flattenedStyle?.objectFit),resizeMode = objectFit || props.resizeMode || flattenedStyle?.resizeMode || "cover",tintColor = props.tintColor ?? flattenedStyle?.tintColor;
@@ -35800,8 +35650,8 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 			throw new Error("The <Image> component cannot contain children. If you want to render content on top of the image, consider using the <ImageBackground> component or absolute positioning.");
 		}
 		var { 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-selected':ariaSelected, 'aria-hidden':ariaHidden, src:src, ...restProps } = props,_accessibilityState = { busy: ariaBusy ?? props.accessibilityState?.busy, checked: ariaChecked ?? props.accessibilityState?.checked, disabled: ariaDisabled ?? props.accessibilityState?.disabled, expanded: ariaExpanded ?? props.accessibilityState?.expanded, selected: ariaSelected ?? props.accessibilityState?.selected },accessible = ariaHidden !== true && (props.alt !== undefined ? true : props.accessible),accessibilityLabel = props["aria-label"] ?? props.accessibilityLabel,actualRef = (init_react_native_Libraries_Image_ImageInjection(), useWrapRefWithImageAttachedCallbacks)(forwardedRef);
-		return (/* @__PURE__ */ React$35.createElement(Context.Consumer, null, function(analyticTag) {
-			return (/* @__PURE__ */ React$35.createElement(ImageViewNativeComponent, { accessibilityState: _accessibilityState, ...restProps, accessible: accessible, accessibilityLabel: accessibilityLabel ?? props.alt, ref: actualRef, style: style, resizeMode: resizeMode, tintColor: tintColor, source: sources, internal_analyticTag: analyticTag }));
+		return (/* @__PURE__ */ React$31.createElement(Context.Consumer, null, function(analyticTag) {
+			return (/* @__PURE__ */ React$31.createElement(ImageViewNativeComponent, { accessibilityState: _accessibilityState, ...restProps, accessible: accessible, accessibilityLabel: accessibilityLabel ?? props.alt, ref: actualRef, style: style, resizeMode: resizeMode, tintColor: tintColor, source: sources, internal_analyticTag: analyticTag }));
 		}));
 	};
 	imageComponentDecorator = (init_react_native_Libraries_Image_ImageInjection(), unstable_getImageComponentDecorator)();
@@ -35817,7 +35667,7 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 	Image.prefetchWithMetadata = prefetchWithMetadata;
 	Image.queryCache = queryCache;
 	Image.resolveAssetSource = resolveAssetSource;
-	styles$8 = StyleSheet.create({ base: { overflow: "hidden" } });
+	styles$6 = StyleSheet.create({ base: { overflow: "hidden" } });
 	
 	
 	}
@@ -35825,41 +35675,42 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 //#endregion
 //#region AnimatedImage.js
 var exports_react_native_Libraries_Animated_components_AnimatedImage = {};
-var _default$59, React$36;
+var _default$53, React$32;
 __export(exports_react_native_Libraries_Animated_components_AnimatedImage, {
-	"default": function() { return _default$59; },
+	"default": function() { return _default$53; },
 });
 var init_react_native_Libraries_Animated_components_AnimatedImage = __esm({
 	"AnimatedImage.js"() {
 	init_react_native_Libraries_Image_Image_ios();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
-	React$36 = __toESM(require_react_index());
+	require_react_index();
+	React$32 = __toESM(require_react_index());
 		
 	
 	
-	_default$59=createAnimatedComponent(Image);
+	_default$53=createAnimatedComponent(Image);
 	
 	}
 });
 //#endregion
 //#region AndroidSwipeRefreshLayoutNativeComponent.js
 var exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent = {};
-var NativeComponentRegistry$9, dispatchCommand$2, nativeComponentName$2, __INTERNAL_VIEW_CONFIG$8, Commands$6, _default$60;
+var NativeComponentRegistry$5, dispatchCommand$2, nativeComponentName$1, __INTERNAL_VIEW_CONFIG$4, Commands$5, _default$54;
 __export(exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent, {
-	Commands: function() { return Commands$6; },
-	"default": function() { return _default$60; },
+	Commands: function() { return Commands$5; },
+	"default": function() { return _default$54; },
 });
 var init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent = __esm({
 	"AndroidSwipeRefreshLayoutNativeComponent.js"() {
-	NativeComponentRegistry$9 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	NativeComponentRegistry$5 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
 	({ dispatchCommand:dispatchCommand$2 } = (init_react_native_Libraries_ReactNative_RendererProxy(), __toCommonJS(exports_react_native_Libraries_ReactNative_RendererProxy)));
-	nativeComponentName$2 = "AndroidSwipeRefreshLayout";
-	__INTERNAL_VIEW_CONFIG$8 = { uiViewClassName: "AndroidSwipeRefreshLayout", validAttributes: Object.assign({ enabled: true, colors: true, progressBackgroundColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, size: true, progressViewOffset: true, refreshing: true }, (init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), __toCommonJS(exports_react_native_Libraries_NativeComponent_ViewConfigIgnore)).ConditionallyIgnoredEventHandlers({ onRefresh: true })), directEventTypes: { topRefresh: { registrationName: "onRefresh" } } };
-	Commands$6 = { setNativeRefreshing(ref,value) {
+	nativeComponentName$1 = "AndroidSwipeRefreshLayout";
+	__INTERNAL_VIEW_CONFIG$4 = { uiViewClassName: "AndroidSwipeRefreshLayout", validAttributes: Object.assign({ enabled: true, colors: true, progressBackgroundColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, size: true, progressViewOffset: true, refreshing: true }, (init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), __toCommonJS(exports_react_native_Libraries_NativeComponent_ViewConfigIgnore)).ConditionallyIgnoredEventHandlers({ onRefresh: true })), directEventTypes: { topRefresh: { registrationName: "onRefresh" } } };
+	Commands$5 = { setNativeRefreshing(ref,value) {
 		dispatchCommand$2(ref, "setNativeRefreshing", [value]);
 	} };
-	_default$60=NativeComponentRegistry$9.get(nativeComponentName$2, function() {
-		return __INTERNAL_VIEW_CONFIG$8;
+	_default$54=NativeComponentRegistry$5.get(nativeComponentName$1, function() {
+		return __INTERNAL_VIEW_CONFIG$4;
 	});
 	
 	}
@@ -35867,38 +35718,39 @@ var init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefres
 //#endregion
 //#region AndroidSwipeRefreshLayoutNativeComponent.js
 var exports_react_native_Libraries_Components_RefreshControl_AndroidSwipeRefreshLayoutNativeComponent = {};
-var _default$61;
+var _default$55;
 __export(exports_react_native_Libraries_Components_RefreshControl_AndroidSwipeRefreshLayoutNativeComponent, {
-	"default": function() { return _default$61; },
+	"default": function() { return _default$55; },
 	Commands: function() { return (init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent(), exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent.Commands); },
 });
 var init_react_native_Libraries_Components_RefreshControl_AndroidSwipeRefreshLayoutNativeComponent = __esm({
 	"AndroidSwipeRefreshLayoutNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent();
+		
 	
-	
-		_default$61 = (init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent)).default;
+		_default$55 = (init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent)).default;
 	
 	}
 });
 //#endregion
 //#region PullToRefreshViewNativeComponent.js
 var exports_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent = {};
-var NativeComponentRegistry$10, dispatchCommand$3, nativeComponentName$3, __INTERNAL_VIEW_CONFIG$9, Commands$7, _default$62;
+var NativeComponentRegistry$6, dispatchCommand$3, nativeComponentName$2, __INTERNAL_VIEW_CONFIG$5, Commands$6, _default$56;
 __export(exports_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent, {
-	Commands: function() { return Commands$7; },
-	"default": function() { return _default$62; },
+	Commands: function() { return Commands$6; },
+	"default": function() { return _default$56; },
 });
 var init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent = __esm({
 	"PullToRefreshViewNativeComponent.js"() {
-	NativeComponentRegistry$10 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	NativeComponentRegistry$6 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
 	({ dispatchCommand:dispatchCommand$3 } = (init_react_native_Libraries_ReactNative_RendererProxy(), __toCommonJS(exports_react_native_Libraries_ReactNative_RendererProxy)));
-	nativeComponentName$3 = "RCTRefreshControl";
-	__INTERNAL_VIEW_CONFIG$9 = { uiViewClassName: "RCTRefreshControl", validAttributes: Object.assign({ tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, titleColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, title: true, progressViewOffset: true, refreshing: true }, (init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), __toCommonJS(exports_react_native_Libraries_NativeComponent_ViewConfigIgnore)).ConditionallyIgnoredEventHandlers({ onRefresh: true })), directEventTypes: { topRefresh: { registrationName: "onRefresh" } } };
-	Commands$7 = { setNativeRefreshing(ref,refreshing) {
+	nativeComponentName$2 = "RCTRefreshControl";
+	__INTERNAL_VIEW_CONFIG$5 = { uiViewClassName: "RCTRefreshControl", validAttributes: Object.assign({ tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, titleColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, title: true, progressViewOffset: true, refreshing: true }, (init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), __toCommonJS(exports_react_native_Libraries_NativeComponent_ViewConfigIgnore)).ConditionallyIgnoredEventHandlers({ onRefresh: true })), directEventTypes: { topRefresh: { registrationName: "onRefresh" } } };
+	Commands$6 = { setNativeRefreshing(ref,refreshing) {
 		dispatchCommand$3(ref, "setNativeRefreshing", [refreshing]);
 	} };
-	_default$62=NativeComponentRegistry$10.get(nativeComponentName$3, function() {
-		return __INTERNAL_VIEW_CONFIG$9;
+	_default$56=NativeComponentRegistry$6.get(nativeComponentName$2, function() {
+		return __INTERNAL_VIEW_CONFIG$5;
 	});
 	
 	}
@@ -35906,9 +35758,9 @@ var init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewN
 //#endregion
 //#region PullToRefreshViewNativeComponent.js
 var exports_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativeComponent = {};
-var _default$63;
+var _default$57;
 __export(exports_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativeComponent, {
-	"default": function() { return _default$63; },
+	"default": function() { return _default$57; },
 	Commands: function() { return (init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent(), exports_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent.Commands); },
 });
 var init_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativeComponent = __esm({
@@ -35916,17 +35768,17 @@ var init_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativ
 	init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent();
 		
 	
-	_default$63=_default$62;
-		_default$63 = (init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent)).default;
+	_default$57=_default$56;
+		_default$57 = (init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent)).default;
 	
 	}
 });
 //#endregion
 //#region RefreshControl.js
 var exports_react_native_Libraries_Components_RefreshControl_RefreshControl = {};
-var Platform$30, RefreshControl, __extends, __classCallCheck, __callSuper, React$37;
+var Platform$23, RefreshControl$1, __extends, __classCallCheck, __callSuper, React$33;
 __export(exports_react_native_Libraries_Components_RefreshControl_RefreshControl, {
-	"default": function() { return RefreshControl; },
+	"default": function() { return RefreshControl$1; },
 });
 var init_react_native_Libraries_Components_RefreshControl_RefreshControl = __esm({
 	"RefreshControl.js"() {
@@ -35934,18 +35786,19 @@ var init_react_native_Libraries_Components_RefreshControl_RefreshControl = __esm
 	init_class_call_check();
 	init_call_super();
 	init_react_native_Libraries_Components_RefreshControl_AndroidSwipeRefreshLayoutNativeComponent();
-	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent();
 	init_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativeComponent();
+	require_react_index();
+	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent();
 	init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent();
-	React$37 = __toESM(require_react_index());
+	React$33 = __toESM(require_react_index());
 		
 	
 	
 	
 	
 	
-	Platform$30 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
-	RefreshControl = (function(_super) {
+	Platform$23 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	RefreshControl$1 = (function(_super) {
 		function RefreshControl() {
 			__classCallCheck(this, RefreshControl);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
@@ -35969,26 +35822,1139 @@ var init_react_native_Libraries_Components_RefreshControl_RefreshControl = __esm
 			if (this.props.refreshing !== prevProps.refreshing) {
 				this._lastNativeRefreshing = this.props.refreshing;
 			} else if (this.props.refreshing !== this._lastNativeRefreshing && this._nativeRef) {
-				if (Platform$30.OS === "android") {
-					(init_react_native_Libraries_Components_RefreshControl_AndroidSwipeRefreshLayoutNativeComponent(), init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent(), Commands$6).setNativeRefreshing(this._nativeRef, this.props.refreshing);
+				if (Platform$23.OS === "android") {
+					(init_react_native_Libraries_Components_RefreshControl_AndroidSwipeRefreshLayoutNativeComponent(), init_react_native_src_private_specs_DEPRECATED_components_AndroidSwipeRefreshLayoutNativeComponent(), Commands$5).setNativeRefreshing(this._nativeRef, this.props.refreshing);
 				} else {
-					(init_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativeComponent(), init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent(), Commands$7).setNativeRefreshing(this._nativeRef, this.props.refreshing);
+					(init_react_native_Libraries_Components_RefreshControl_PullToRefreshViewNativeComponent(), init_react_native_src_private_specs_DEPRECATED_components_PullToRefreshViewNativeComponent(), Commands$6).setNativeRefreshing(this._nativeRef, this.props.refreshing);
 				}
 				this._lastNativeRefreshing = this.props.refreshing;
 			}
 		} });
 		Object.defineProperty(RefreshControl.prototype, "render", { configurable: true, writable: true, value: function() {
-			if (Platform$30.OS === "ios") {
+			if (Platform$23.OS === "ios") {
 				var { enabled:enabled, colors:colors, progressBackgroundColor:progressBackgroundColor, size:size, ...props } = this.props;
-				return (/* @__PURE__ */ React$37.createElement(_default$62, { ...props, ref: this._setNativeRef, onRefresh: this._onRefresh }));
+				return (/* @__PURE__ */ React$33.createElement(_default$56, { ...props, ref: this._setNativeRef, onRefresh: this._onRefresh }));
 			} else {
 				var { tintColor:tintColor, titleColor:titleColor, title:title, ...props } = this.props;
-				return (/* @__PURE__ */ React$37.createElement(_default$60, { ...props, ref: this._setNativeRef, onRefresh: this._onRefresh }));
+				return (/* @__PURE__ */ React$33.createElement(_default$54, { ...props, ref: this._setNativeRef, onRefresh: this._onRefresh }));
 			}
 		} });
 		return RefreshControl;
-	})(React$37.Component);
+	})(React$33.Component);
 	;
+	
+	
+	}
+});
+//#endregion
+//#region AndroidHorizontalScrollViewNativeComponent.js
+var exports_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent = {};
+var NativeComponentRegistry$7, __INTERNAL_VIEW_CONFIG$6, AndroidHorizontalScrollViewNativeComponent;
+__export(exports_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent, {
+	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$6; },
+	"default": function() { return AndroidHorizontalScrollViewNativeComponent; },
+});
+var init_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent = __esm({
+	"AndroidHorizontalScrollViewNativeComponent.js"() {
+	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
+		NativeComponentRegistry$7=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
+	__INTERNAL_VIEW_CONFIG$6 = { uiViewClassName: "AndroidHorizontalScrollView", bubblingEventTypes: {}, directEventTypes: {}, validAttributes: { decelerationRate: true, disableIntervalMomentum: true, maintainVisibleContentPosition: true, endFillColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, fadingEdgeLength: true, nestedScrollEnabled: true, overScrollMode: true, pagingEnabled: true, persistentScrollbar: true, horizontal: true, scrollEnabled: true, scrollEventThrottle: true, scrollPerfTag: true, sendMomentumEvents: true, showsHorizontalScrollIndicator: true, snapToAlignment: true, snapToEnd: true, snapToInterval: true, snapToStart: true, snapToOffsets: true, contentOffset: true, borderBottomLeftRadius: true, borderBottomRightRadius: true, borderRadius: true, borderStyle: true, borderRightColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderBottomColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderTopLeftRadius: true, borderTopColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, removeClippedSubviews: true, borderTopRightRadius: true, borderLeftColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, pointerEvents: true } };
+	AndroidHorizontalScrollViewNativeComponent = get$2("AndroidHorizontalScrollView", function() {
+		return __INTERNAL_VIEW_CONFIG$6;
+	});
+	
+	
+	}
+});
+//#endregion
+//#region ScrollContentViewNativeComponent.js
+var exports_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent = {};
+var NativeComponentRegistry$8, __INTERNAL_VIEW_CONFIG$7, ScrollContentViewNativeComponent;
+__export(exports_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent, {
+	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$7; },
+	"default": function() { return ScrollContentViewNativeComponent; },
+});
+var init_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent = __esm({
+	"ScrollContentViewNativeComponent.js"() {
+	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
+		NativeComponentRegistry$8=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
+	__INTERNAL_VIEW_CONFIG$7 = { uiViewClassName: "RCTScrollContentView", bubblingEventTypes: {}, directEventTypes: {}, validAttributes: {} };
+	ScrollContentViewNativeComponent = get$2("RCTScrollContentView", function() {
+		return __INTERNAL_VIEW_CONFIG$7;
+	});
+	
+	
+	}
+});
+//#endregion
+//#region ScrollViewNativeComponent.js
+var exports_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent = {};
+var NativeComponentRegistry$9, __INTERNAL_VIEW_CONFIG$8, ScrollViewNativeComponent;
+__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent, {
+	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$8; },
+	"default": function() { return ScrollViewNativeComponent; },
+});
+var init_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent = __esm({
+	"ScrollViewNativeComponent.js"() {
+	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
+	init_react_native_Libraries_Utilities_Platform_ios();
+		NativeComponentRegistry$9=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
+	
+	
+	__INTERNAL_VIEW_CONFIG$8 = Platform.OS === "android" ? { uiViewClassName: "RCTScrollView", bubblingEventTypes: {}, directEventTypes: { topMomentumScrollBegin: { registrationName: "onMomentumScrollBegin" }, topMomentumScrollEnd: { registrationName: "onMomentumScrollEnd" }, topScroll: { registrationName: "onScroll" }, topScrollBeginDrag: { registrationName: "onScrollBeginDrag" }, topScrollEndDrag: { registrationName: "onScrollEndDrag" } }, validAttributes: { contentOffset: { diff: (init_react_native_Libraries_Utilities_differ_pointsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_pointsDiffer)).default }, decelerationRate: true, disableIntervalMomentum: true, maintainVisibleContentPosition: true, pagingEnabled: true, scrollEnabled: true, showsVerticalScrollIndicator: true, snapToAlignment: true, snapToEnd: true, snapToInterval: true, snapToOffsets: true, snapToStart: true, borderBottomLeftRadius: true, borderBottomRightRadius: true, sendMomentumEvents: true, borderRadius: true, nestedScrollEnabled: true, scrollEventThrottle: true, borderStyle: true, borderRightColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, borderBottomColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, persistentScrollbar: true, horizontal: true, endFillColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, fadingEdgeLength: true, overScrollMode: true, borderTopLeftRadius: true, scrollPerfTag: true, borderTopColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, removeClippedSubviews: true, borderTopRightRadius: true, borderLeftColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, pointerEvents: true, isInvertedVirtualizedList: true } } : { uiViewClassName: "RCTScrollView", bubblingEventTypes: {}, directEventTypes: { topMomentumScrollBegin: { registrationName: "onMomentumScrollBegin" }, topMomentumScrollEnd: { registrationName: "onMomentumScrollEnd" }, topScroll: { registrationName: "onScroll" }, topScrollBeginDrag: { registrationName: "onScrollBeginDrag" }, topScrollEndDrag: { registrationName: "onScrollEndDrag" }, topScrollToTop: { registrationName: "onScrollToTop" } }, validAttributes: { alwaysBounceHorizontal: true, alwaysBounceVertical: true, automaticallyAdjustContentInsets: true, automaticallyAdjustKeyboardInsets: true, automaticallyAdjustsScrollIndicatorInsets: true, bounces: true, bouncesZoom: true, canCancelContentTouches: true, centerContent: true, contentInset: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, contentOffset: { diff: (init_react_native_Libraries_Utilities_differ_pointsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_pointsDiffer)).default }, contentInsetAdjustmentBehavior: true, decelerationRate: true, endDraggingSensitivityMultiplier: true, directionalLockEnabled: true, disableIntervalMomentum: true, indicatorStyle: true, inverted: true, keyboardDismissMode: true, maintainVisibleContentPosition: true, maximumZoomScale: true, minimumZoomScale: true, pagingEnabled: true, pinchGestureEnabled: true, scrollEnabled: true, scrollEventThrottle: true, scrollIndicatorInsets: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, scrollToOverflowEnabled: true, scrollsToTop: true, showsHorizontalScrollIndicator: true, showsVerticalScrollIndicator: true, snapToAlignment: true, snapToEnd: true, snapToInterval: true, snapToOffsets: true, snapToStart: true, verticalScrollIndicatorInsets: { diff: (init_react_native_Libraries_Utilities_differ_insetsDiffer(), __toCommonJS(exports_react_native_Libraries_Utilities_differ_insetsDiffer)).default }, zoomScale: true, ...(init_react_native_Libraries_NativeComponent_ViewConfigIgnore(), ConditionallyIgnoredEventHandlers)({ onScrollBeginDrag: true, onMomentumScrollEnd: true, onScrollEndDrag: true, onMomentumScrollBegin: true, onScrollToTop: true, onScroll: true }) } };
+	ScrollViewNativeComponent = get$2("RCTScrollView", function() {
+		return __INTERNAL_VIEW_CONFIG$8;
+	});
+	
+	
+	}
+});
+//#endregion
+//#region AndroidHorizontalScrollContentViewNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent = {};
+var NativeComponentRegistry$10, nativeComponentName$3, __INTERNAL_VIEW_CONFIG$9, _default$58;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent, {
+	"default": function() { return _default$58; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent = __esm({
+	"AndroidHorizontalScrollContentViewNativeComponent.js"() {
+	NativeComponentRegistry$10 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName$3 = "AndroidHorizontalScrollContentView";
+	__INTERNAL_VIEW_CONFIG$9 = { uiViewClassName: "AndroidHorizontalScrollContentView", validAttributes: { removeClippedSubviews: true } };
+	_default$58=NativeComponentRegistry$10.get(nativeComponentName$3, function() {
+		return __INTERNAL_VIEW_CONFIG$9;
+	});
+	
+	}
+});
+//#endregion
+//#region HScrollViewNativeComponents.js
+var exports_react_native_src_private_components_scrollview_HScrollViewNativeComponents = {};
+var HScrollViewNativeComponent, HScrollContentViewNativeComponent;
+__export(exports_react_native_src_private_components_scrollview_HScrollViewNativeComponents, {
+	HScrollViewNativeComponent: function() { return HScrollViewNativeComponent; },
+	HScrollContentViewNativeComponent: function() { return HScrollContentViewNativeComponent; },
+});
+var init_react_native_src_private_components_scrollview_HScrollViewNativeComponents = __esm({
+	"HScrollViewNativeComponents.js"() {
+	init_react_native_Libraries_Components_ScrollView_AndroidHorizontalScrollViewNativeComponent();
+	init_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent();
+	init_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_src_private_specs_DEPRECATED_components_AndroidHorizontalScrollContentViewNativeComponent();
+		
+	
+	
+	
+	
+	HScrollViewNativeComponent = Platform.OS === "android" ? AndroidHorizontalScrollViewNativeComponent : ScrollViewNativeComponent;
+	HScrollContentViewNativeComponent = Platform.OS === "android" ? _default$58 : ScrollContentViewNativeComponent;
+	
+	}
+});
+//#endregion
+//#region VScrollViewNativeComponents.js
+var exports_react_native_src_private_components_scrollview_VScrollViewNativeComponents = {};
+var VScrollViewNativeComponent, VScrollContentViewNativeComponent;
+__export(exports_react_native_src_private_components_scrollview_VScrollViewNativeComponents, {
+	VScrollViewNativeComponent: function() { return VScrollViewNativeComponent; },
+	VScrollContentViewNativeComponent: function() { return VScrollContentViewNativeComponent; },
+});
+var init_react_native_src_private_components_scrollview_VScrollViewNativeComponents = __esm({
+	"VScrollViewNativeComponents.js"() {
+	init_react_native_Libraries_Components_ScrollView_ScrollContentViewNativeComponent();
+	init_react_native_Libraries_Components_ScrollView_ScrollViewNativeComponent();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Utilities_Platform_ios();
+		
+	
+	
+	
+	VScrollViewNativeComponent = ScrollViewNativeComponent;
+	VScrollContentViewNativeComponent = Platform.OS === "android" ? View$1 : ScrollContentViewNativeComponent;
+	
+	}
+});
+//#endregion
+//#region NativeFrameRateLogger.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger = {};
+var TurboModuleRegistry$25, _default$59;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger, {
+	"default": function() { return _default$59; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger = __esm({
+	"NativeFrameRateLogger.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$25=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$59=get("FrameRateLogger");
+	
+	}
+});
+//#endregion
+//#region NativeFrameRateLogger.js
+var exports_react_native_Libraries_Interaction_NativeFrameRateLogger = {};
+var _default$60;
+__export(exports_react_native_Libraries_Interaction_NativeFrameRateLogger, {
+	"default": function() { return _default$60; },
+});
+var init_react_native_Libraries_Interaction_NativeFrameRateLogger = __esm({
+	"NativeFrameRateLogger.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger();
+		
+	
+	_default$60=_default$59;
+		_default$60 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger)).default;
+	
+	}
+});
+//#endregion
+//#region FrameRateLogger.js
+var exports_react_native_Libraries_Interaction_FrameRateLogger = {};
+var invariant$38, FrameRateLogger;
+__export(exports_react_native_Libraries_Interaction_FrameRateLogger, {
+	"default": function() { return FrameRateLogger; },
+});
+var init_react_native_Libraries_Interaction_FrameRateLogger = __esm({
+	"FrameRateLogger.js"() {
+	init_react_native_Libraries_Interaction_NativeFrameRateLogger();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeFrameRateLogger();
+		
+	invariant$38 = require_invariant_browser();
+	FrameRateLogger = { setGlobalOptions: function(options) {
+		if (options.debug !== undefined) {
+			invariant$38(_default$59, "Trying to debug FrameRateLogger without the native module!");
+		}
+		_default$59?.setGlobalOptions({ debug: !!options.debug });
+	}, setContext: function(context) {
+		_default$59?.setContext(context);
+	}, beginScroll() {
+		_default$59?.beginScroll();
+	}, endScroll() {
+		_default$59?.endScroll();
+	} };
+	
+	
+	}
+});
+//#endregion
+//#region splitLayoutProps.js
+var exports_react_native_Libraries_StyleSheet_splitLayoutProps = {};
+var splitLayoutProps;
+__export(exports_react_native_Libraries_StyleSheet_splitLayoutProps, {
+	"default": function() { return splitLayoutProps; },
+});
+var init_react_native_Libraries_StyleSheet_splitLayoutProps = __esm({
+	"splitLayoutProps.js"() {
+	splitLayoutProps = function(props) {
+		var outer = null,inner = null;
+		if (props != null) {
+			outer = {};
+			inner = {};
+			for (var prop of Object.keys(props)) {
+				switch (prop) {
+					case "margin":
+					case "marginHorizontal":
+					case "marginVertical":
+					case "marginBottom":
+					case "marginTop":
+					case "marginLeft":
+					case "marginRight":
+					case "flex":
+					case "flexGrow":
+					case "flexShrink":
+					case "flexBasis":
+					case "alignSelf":
+					case "height":
+					case "minHeight":
+					case "maxHeight":
+					case "width":
+					case "minWidth":
+					case "maxWidth":
+					case "position":
+					case "left":
+					case "right":
+					case "bottom":
+					case "top":
+					case "transform":
+					case "transformOrigin":
+					case "rowGap":
+					case "columnGap":
+					case "gap":
+						outer[prop] = props[prop];
+						break;
+					default:
+						inner[prop] = props[prop];
+						break;
+				}
+			}
+		}
+		return { outer, inner };
+	};
+	
+	}
+});
+//#endregion
+//#region dismissKeyboard.js
+var exports_react_native_Libraries_Utilities_dismissKeyboard = {};
+var TextInputState$2, dismissKeyboard;
+__export(exports_react_native_Libraries_Utilities_dismissKeyboard, {
+	"default": function() { return dismissKeyboard; },
+});
+var init_react_native_Libraries_Utilities_dismissKeyboard = __esm({
+	"dismissKeyboard.js"() {
+	dismissKeyboard = function() {
+		TextInputState$2.blurTextInput(TextInputState$2.currentlyFocusedInput());
+	};
+		"use strict";
+	TextInputState$2 = (init_react_native_Libraries_Components_TextInput_TextInputState(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_TextInputState)).default;
+	
+	
+	}
+});
+//#endregion
+//#region LayoutAnimation.js
+var exports_react_native_Libraries_LayoutAnimation_LayoutAnimation = {};
+var ReactNativeFeatureFlags$16, UIManager$5, isLayoutAnimationEnabled$1, setLayoutAnimationEnabled, configureNext, createLayoutAnimation, Presets, LayoutAnimation;
+__export(exports_react_native_Libraries_LayoutAnimation_LayoutAnimation, {
+	"default": function() { return LayoutAnimation; },
+});
+var init_react_native_Libraries_LayoutAnimation_LayoutAnimation = __esm({
+	"LayoutAnimation.js"() {
+	setLayoutAnimationEnabled = function(value) {
+		isLayoutAnimationEnabled$1 = isLayoutAnimationEnabled$1;
+	};
+	configureNext = function(config,onAnimationDidEnd,onAnimationDidFail) {
+		if (Platform.isDisableAnimations) {
+			return;
+		}
+		if (!isLayoutAnimationEnabled$1) {
+			return;
+		}
+		var animationCompletionHasRun = false,onAnimationComplete = function() {
+			if (animationCompletionHasRun) {
+				return;
+			}
+			animationCompletionHasRun = true;
+			clearTimeout(raceWithAnimationId);
+			onAnimationDidEnd?.();
+		},raceWithAnimationId = setTimeout(onAnimationComplete, (config.duration ?? 0) + 17),FabricUIManager = (init_react_native_Libraries_ReactNative_FabricUIManager(), getFabricUIManager)();
+		if (FabricUIManager?.configureNextLayoutAnimation) {
+			global?.nativeFabricUIManager?.configureNextLayoutAnimation(config, onAnimationComplete, onAnimationDidFail ?? function() {
+			});
+			return;
+		}
+		if (UIManager$5?.configureNextLayoutAnimation) {
+			UIManager$5.configureNextLayoutAnimation(config, onAnimationComplete ?? function() {
+			}, onAnimationDidFail ?? function() {
+			});
+		}
+	};
+	createLayoutAnimation = function(duration,type,property) {
+		return { duration, create: { type, property }, update: { type }, delete: { type, property } };
+	};
+		init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
+	init_react_native_Libraries_Utilities_Platform_ios();
+		"use strict";
+	ReactNativeFeatureFlags$16=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
+	
+	
+	UIManager$5 = (init_react_native_Libraries_ReactNative_UIManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_UIManager)).default;
+	isLayoutAnimationEnabled$1 = isLayoutAnimationEnabled();
+	Presets = { easeInEaseOut: createLayoutAnimation(300, "easeInEaseOut", "opacity"), linear: createLayoutAnimation(500, "linear", "opacity"), spring: { duration: 700, create: { type: "linear", property: "opacity" }, update: { type: "spring", springDamping: 0.4 }, delete: { type: "linear", property: "opacity" } } };
+	LayoutAnimation = { configureNext, create: createLayoutAnimation, Types: Object.freeze({ spring: "spring", linear: "linear", easeInEaseOut: "easeInEaseOut", easeIn: "easeIn", easeOut: "easeOut", keyboard: "keyboard" }), Properties: Object.freeze({ opacity: "opacity", scaleX: "scaleX", scaleY: "scaleY", scaleXY: "scaleXY" }), checkConfig(...args) {
+		console.error("LayoutAnimation.checkConfig(...) has been disabled.");
+	}, Presets, easeInEaseOut: configureNext.bind(null, Presets.easeInEaseOut), linear: configureNext.bind(null, Presets.linear), spring: configureNext.bind(null, Presets.spring), setEnabled: setLayoutAnimationEnabled };
+	
+	
+	}
+});
+//#endregion
+//#region NativeKeyboardObserver.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver = {};
+var TurboModuleRegistry$26, _default$61;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver, {
+	"default": function() { return _default$61; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver = __esm({
+	"NativeKeyboardObserver.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$26=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$61=get("KeyboardObserver");
+	
+	}
+});
+//#endregion
+//#region NativeKeyboardObserver.js
+var exports_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver = {};
+var _default$62;
+__export(exports_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver, {
+	"default": function() { return _default$62; },
+});
+var init_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver = __esm({
+	"NativeKeyboardObserver.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver();
+		
+	
+		_default$62 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver)).default;
+	
+	}
+});
+//#endregion
+//#region Keyboard.js
+var exports_react_native_Libraries_Components_Keyboard_Keyboard = {};
+var KeyboardImpl, Keyboard, __classCallCheck;
+__export(exports_react_native_Libraries_Components_Keyboard_Keyboard, {
+	"default": function() { return Keyboard; },
+});
+var init_react_native_Libraries_Components_Keyboard_Keyboard = __esm({
+	"Keyboard.js"() {
+	init_class_call_check();
+	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
+	init_react_native_Libraries_LayoutAnimation_LayoutAnimation();
+	init_react_native_Libraries_Utilities_dismissKeyboard();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_Keyboard_NativeKeyboardObserver();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeKeyboardObserver();
+		
+	
+	
+	
+	
+	
+	KeyboardImpl = (function() {
+		function KeyboardImpl() {
+			__classCallCheck(this, KeyboardImpl);
+			this._emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$61);
+			var _this = this;
+			this.addListener("keyboardDidShow", function(ev) {
+				_this._currentlyShowing = ev;
+			});
+			this.addListener("keyboardDidHide", function(_ev) {
+				_this._currentlyShowing = null;
+			});
+		}
+		Object.defineProperty(KeyboardImpl.prototype, "addListener", { configurable: true, writable: true, value: function(eventType,listener,context) {
+			return this._emitter.addListener(eventType, listener);
+		} });
+		Object.defineProperty(KeyboardImpl.prototype, "removeAllListeners", { configurable: true, writable: true, value: function(eventType) {
+			this._emitter.removeAllListeners(eventType);
+		} });
+		Object.defineProperty(KeyboardImpl.prototype, "dismiss", { configurable: true, writable: true, value: function() {
+			dismissKeyboard();
+		} });
+		Object.defineProperty(KeyboardImpl.prototype, "isVisible", { configurable: true, writable: true, value: function() {
+			return !!this._currentlyShowing;
+		} });
+		Object.defineProperty(KeyboardImpl.prototype, "metrics", { configurable: true, writable: true, value: function() {
+			return this._currentlyShowing?.endCoordinates;
+		} });
+		Object.defineProperty(KeyboardImpl.prototype, "scheduleLayoutAnimation", { configurable: true, writable: true, value: function(event) {
+			var { duration:duration, easing:easing } = event;
+			if (duration != null && duration !== 0) {
+				LayoutAnimation.configureNext({ duration: duration, update: { duration: duration, type: (easing != null && LayoutAnimation.Types[easing]) || "keyboard" } });
+			}
+		} });
+		return KeyboardImpl;
+	})();
+	Keyboard = new KeyboardImpl();
+	;
+	
+	
+	}
+});
+//#endregion
+//#region processDecelerationRate.js
+var exports_react_native_Libraries_Components_ScrollView_processDecelerationRate = {};
+var processDecelerationRate;
+__export(exports_react_native_Libraries_Components_ScrollView_processDecelerationRate, {
+	"default": function() { return processDecelerationRate; },
+});
+var init_react_native_Libraries_Components_ScrollView_processDecelerationRate = __esm({
+	"processDecelerationRate.js"() {
+	processDecelerationRate = function(decelerationRate) {
+		if (decelerationRate === "normal") {
+			return Platform.select({ ios: 0.998, android: 0.985 });
+		} else if (decelerationRate === "fast") {
+			return Platform.select({ ios: 0.99, android: 0.9 });
+		}
+		return decelerationRate;
+	};
+		init_react_native_Libraries_Utilities_Platform_ios();
+		
+	
+	
+	}
+});
+//#endregion
+//#region ScrollViewCommands.js
+var exports_react_native_Libraries_Components_ScrollView_ScrollViewCommands = {};
+var _default$63, React$34;
+__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewCommands, {
+	"default": function() { return _default$63; },
+});
+var init_react_native_Libraries_Components_ScrollView_ScrollViewCommands = __esm({
+	"ScrollViewCommands.js"() {
+	init_react_native_Libraries_Utilities_codegenNativeCommands();
+	require_react_index();
+	React$34 = __toESM(require_react_index());
+		
+	
+	_default$63=codegenNativeCommands$2({ supportedCommands: ["flashScrollIndicators", "scrollTo", "scrollToEnd", "zoomToRect"] });
+	
+	}
+});
+//#endregion
+//#region ScrollViewContext.js
+var exports_react_native_Libraries_Components_ScrollView_ScrollViewContext = {};
+var ScrollViewContext, HORIZONTAL, VERTICAL, React$35, createContext$5;
+__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewContext, {
+	"default": function() { return ScrollViewContext; },
+	HORIZONTAL: function() { return HORIZONTAL; },
+	VERTICAL: function() { return VERTICAL; },
+});
+var init_react_native_Libraries_Components_ScrollView_ScrollViewContext = __esm({
+	"ScrollViewContext.js"() {
+	require_react_index();
+	React$35 = __toESM(require_react_index());
+	createContext$5 = require_react_index().createContext;
+		
+	
+	ScrollViewContext = createContext$5(null);
+	;
+	
+	HORIZONTAL = Object.freeze({ horizontal: true });
+	VERTICAL = Object.freeze({ horizontal: false });
+	
+	}
+});
+//#endregion
+//#region ScrollViewStickyHeader.js
+var exports_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = {};
+var ScrollViewStickyHeader, styles$7, React$36, cloneElement$2, useCallback$3, useEffect$3, useMemo$4, useRef$5, useState$2;
+__export(exports_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader, {
+	"default": function() { return ScrollViewStickyHeader; },
+});
+var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = __esm({
+	"ScrollViewStickyHeader.js"() {
+	init_react_native_Libraries_Animated_Animated();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Utilities_useMergeRefs();
+	require_react_index();
+	React$36 = __toESM(require_react_index());
+	cloneElement$2 = require_react_index().cloneElement;
+	useCallback$3 = require_react_index().useCallback;
+	useEffect$3 = require_react_index().useEffect;
+	useMemo$4 = require_react_index().useMemo;
+	useRef$5 = require_react_index().useRef;
+	useState$2 = require_react_index().useState;
+		
+	
+	
+	
+	
+	
+	
+	ScrollViewStickyHeader = function({ ref:forwardedRef, ...props }) {
+		var { inverted:inverted, scrollViewHeight:scrollViewHeight, hiddenOnScroll:hiddenOnScroll, scrollAnimatedValue:scrollAnimatedValue, nextHeaderLayoutY:_nextHeaderLayoutY } = props,[measured, setMeasured] = useState$2(false),[layoutY, setLayoutY] = useState$2(0),[layoutHeight, setLayoutHeight] = useState$2(0),[translateY, setTranslateY] = useState$2(null),[nextHeaderLayoutY, setNextHeaderLayoutY] = useState$2(_nextHeaderLayoutY),[isFabric, setIsFabric] = useState$2(false),callbackRef = useCallback$3(function(ref) {
+			if (ref == null) {
+				return;
+			}
+			ref.setNextHeaderY = setNextHeaderLayoutY;
+			setIsFabric((init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabricPublicInstanceUtils(), isPublicInstance)(ref));
+		}, []),ref = useMergeRefs(callbackRef, forwardedRef),offset = useMemo$4(function() {
+			return hiddenOnScroll === true ? Animated$2.diffClamp(scrollAnimatedValue.interpolate({ extrapolateLeft: "clamp", inputRange: [layoutY, layoutY + 1], outputRange: [0, 1] }).interpolate({ inputRange: [0, 1], outputRange: [0, -1] }), -layoutHeight, 0) : null;
+		}, [scrollAnimatedValue, layoutHeight, layoutY, hiddenOnScroll]),[animatedTranslateY, setAnimatedTranslateY] = useState$2(function() {
+			var inputRange = [-1, 0],outputRange = [0, 0],initialTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
+			if (offset != null) {
+				return Animated$2.add(initialTranslateY, offset);
+			}
+			return initialTranslateY;
+		}),haveReceivedInitialZeroTranslateY = useRef$5(true),translateYDebounceTimer = useRef$5(null);
+		useEffect$3(function() {
+			if (translateY !== 0 && translateY != null) {
+				haveReceivedInitialZeroTranslateY.current = false;
+			}
+		}, [translateY]);
+		var animatedValueListener = useCallback$3(function({ value:value }) {
+			var debounceTimeout = Platform.OS === "android" ? 15 : 64;
+			if (value === 0 && !haveReceivedInitialZeroTranslateY.current) {
+				haveReceivedInitialZeroTranslateY.current = true;
+				return;
+			}
+			if (translateYDebounceTimer.current != null) {
+				clearTimeout(translateYDebounceTimer.current);
+			}
+			translateYDebounceTimer.current = setTimeout(function() {
+				return setTranslateY(value);
+			}, debounceTimeout);
+		}, []);
+		useEffect$3(function() {
+			var inputRange = [-1, 0],outputRange = [0, 0];
+			if (measured) {
+				if (inverted === true) {
+					if (scrollViewHeight != null) {
+						var stickStartPoint = layoutY + layoutHeight - scrollViewHeight;
+						if (stickStartPoint > 0) {
+							inputRange.push(stickStartPoint);
+							outputRange.push(0);
+							inputRange.push(stickStartPoint + 1);
+							outputRange.push(1);
+							var collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight - scrollViewHeight;
+							if (collisionPoint > stickStartPoint) {
+								inputRange.push(collisionPoint, collisionPoint + 1);
+								outputRange.push(collisionPoint - stickStartPoint, collisionPoint - stickStartPoint);
+							}
+						}
+					}
+				} else {
+					inputRange.push(layoutY);
+					outputRange.push(0);
+					var collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight;
+					if (collisionPoint >= layoutY) {
+						inputRange.push(collisionPoint, collisionPoint + 1);
+						outputRange.push(collisionPoint - layoutY, collisionPoint - layoutY);
+					} else {
+						inputRange.push(layoutY + 1);
+						outputRange.push(1);
+					}
+				}
+			}
+			var newAnimatedTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
+			if (offset != null) {
+				newAnimatedTranslateY = Animated$2.add(newAnimatedTranslateY, offset);
+			}
+			var animatedListenerId = void 0;
+			if (isFabric) {
+				animatedListenerId = newAnimatedTranslateY.addListener(animatedValueListener);
+			}
+			setAnimatedTranslateY(newAnimatedTranslateY);
+			return function() {
+				if (animatedListenerId) {
+					newAnimatedTranslateY.removeListener(animatedListenerId);
+				}
+				if (translateYDebounceTimer.current != null) {
+					clearTimeout(translateYDebounceTimer.current);
+				}
+			};
+		}, [nextHeaderLayoutY, measured, layoutHeight, layoutY, scrollViewHeight, scrollAnimatedValue, inverted, offset, animatedValueListener, isFabric]);
+		var _onLayout = function(event) {
+			setLayoutY(event.nativeEvent.layout.y);
+			setLayoutHeight(event.nativeEvent.layout.height);
+			setMeasured(true);
+			props.onLayout(event);
+			var child$1 = React$36.Children.only(props.children);
+			if (child$1.props.onLayout) {
+				child$1.props.onLayout(event);
+			}
+		},child = React$36.Children.only(props.children),passthroughAnimatedPropExplicitValues = isFabric && translateY != null ? { style: { transform: [{ translateY }] } } : null;
+		return (/* @__PURE__ */ React$36.createElement(Animated$2.View, { collapsable: false, nativeID: props.nativeID, onLayout: _onLayout, ref: ref, style: [child.props.style, styles$7.header, { transform: [{ translateY: animatedTranslateY }] }], passthroughAnimatedPropExplicitValues: passthroughAnimatedPropExplicitValues }, cloneElement$2(child, { onLayout: undefined, style: styles$7.fill })));
+	};
+	styles$7 = StyleSheet.create({ fill: { flex: 1 }, header: { zIndex: 10 } });
+	
+	
+	}
+});
+//#endregion
+//#region ScrollView.js
+var exports_react_native_Libraries_Components_ScrollView_ScrollView = {};
+var ReactNativeFeatureFlags$17, IS_ANIMATING_TOUCH_START_THRESHOLD_MS, ScrollView$1, styles$8, createRefForwarder, ScrollViewWrapper, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, invariant$39, memoize, nullthrows$11, React$37, cloneElement$3;
+__export(exports_react_native_Libraries_Components_ScrollView_ScrollView, {
+	"default": function() { return ScrollViewWrapper; },
+});
+var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
+	"ScrollView.js"() {
+	createRefForwarder = function(mutator) {
+		var state = { getForwardingRef: memoize(function(forwardedRef) {
+			return function(nativeInstance) {
+				var publicInstance = nativeInstance == null ? null : mutator(nativeInstance);
+				state.nativeInstance = nativeInstance;
+				state.publicInstance = publicInstance;
+				if (forwardedRef != null) {
+					if (typeof forwardedRef == "function") {
+						forwardedRef(publicInstance);
+					} else {
+						forwardedRef.current = publicInstance;
+					}
+				}
+			};
+		}), nativeInstance: null, publicInstance: null };
+		return state;
+	};
+		init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_derived_constructor();
+	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
+	init_react_native_Libraries_Animated_AnimatedImplementation();
+	init_react_native_Libraries_Interaction_FrameRateLogger();
+	init_react_native_Libraries_ReactNative_UIManager();
+	init_react_native_Libraries_StyleSheet_flattenStyle();
+	init_react_native_Libraries_StyleSheet_splitLayoutProps();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Utilities_Dimensions();
+	init_react_native_Libraries_Utilities_dismissKeyboard();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_Keyboard_Keyboard();
+	init_react_native_Libraries_Components_TextInput_TextInputState();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Components_ScrollView_processDecelerationRate();
+	init_react_native_Libraries_Components_ScrollView_ScrollViewCommands();
+	init_react_native_Libraries_Components_ScrollView_ScrollViewContext();
+	init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader();
+	require_invariant_browser();
+	require_memoize_one_dist_memoize_one_cjs();
+	require_nullthrows_nullthrows();
+	require_react_index();
+	invariant$39 = require_invariant_browser();
+	memoize = require_memoize_one_dist_memoize_one_cjs();
+	nullthrows$11 = __toESM(require_nullthrows_nullthrows()).default;
+	React$37 = __toESM(require_react_index());
+	cloneElement$3 = require_react_index().cloneElement;
+		
+	
+	
+	
+	
+	
+	ReactNativeFeatureFlags$17=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	IS_ANIMATING_TOUCH_START_THRESHOLD_MS = 16;
+	ScrollView$1 = (function(_super) {
+		function ScrollView(props) {
+			__classCallCheck(this, ScrollView);
+			var _newTarget = this.constructor,_this;
+			;
+			{
+				__assertThisUninitialized(_this),_this = __callSuper(_super, [props], _newTarget);
+				_this._scrollAnimatedValueAttachment = null;
+				_this._stickyHeaderRefs = new Map();
+				_this._headerLayoutYs = new Map();
+				_this._keyboardMetrics = null;
+				_this._additionalScrollOffset = 0;
+				_this._isTouching = false;
+				_this._lastMomentumScrollBeginTime = 0;
+				_this._lastMomentumScrollEndTime = 0;
+				_this._observedScrollSinceBecomingResponder = false;
+				_this._becameResponderWhileAnimating = false;
+				_this._preventNegativeScrollOffset = null;
+				_this._animated = null;
+				_this._subscriptionKeyboardWillShow = null;
+				_this._subscriptionKeyboardWillHide = null;
+				_this._subscriptionKeyboardDidShow = null;
+				_this._subscriptionKeyboardDidHide = null;
+				_this.state = { layoutHeight: null };
+				_this.getScrollResponder = function() {
+					return _this;
+				};
+				_this.getScrollableNode = function() {
+					return (init_react_native_Libraries_ReactNative_RendererProxy(), init_react_native_Libraries_ReactNative_RendererImplementation(), findNodeHandle$1)(_this.getNativeScrollRef());
+				};
+				_this.getInnerViewNode = function() {
+					return (init_react_native_Libraries_ReactNative_RendererProxy(), init_react_native_Libraries_ReactNative_RendererImplementation(), findNodeHandle$1)(_this._innerView.nativeInstance);
+				};
+				_this.getInnerViewRef = function() {
+					return _this._innerView.nativeInstance;
+				};
+				_this.getNativeScrollRef = function() {
+					return _this._scrollView.nativeInstance;
+				};
+				_this.scrollTo = function(options,deprecatedX,deprecatedAnimated) {
+					var x = void 0,y = void 0,animated = void 0;
+					if (typeof options == "number") {
+						console.warn("`scrollTo(y, x, animated)` is deprecated. Use `scrollTo({x: 5, y: 5, animated: true})` instead.");
+						y = options;
+						x = deprecatedX;
+						animated = deprecatedAnimated;
+					} else if (options) {
+						y = options.y;
+						x = options.x;
+						animated = options.animated;
+					}
+					var component = _this.getNativeScrollRef();
+					if (component == null) {
+						return;
+					}
+					_default$63.scrollTo(component, x || 0, y || 0, animated !== false);
+				};
+				_this.scrollToEnd = function(options) {
+					var animated = (options && options.animated) !== false,component = _this.getNativeScrollRef();
+					if (component == null) {
+						return;
+					}
+					_default$63.scrollToEnd(component, animated);
+				};
+				_this.flashScrollIndicators = function() {
+					var component = _this.getNativeScrollRef();
+					if (component == null) {
+						return;
+					}
+					_default$63.flashScrollIndicators(component);
+				};
+				_this.scrollResponderScrollNativeHandleToKeyboard = function(nodeHandle,additionalOffset,preventNegativeScrollOffset) {
+					_this._additionalScrollOffset = additionalOffset || 0;
+					_this._preventNegativeScrollOffset = !!preventNegativeScrollOffset;
+					if (_this._innerView.nativeInstance == null) {
+						return;
+					}
+					if (typeof nodeHandle == "number") {
+						UIManager.measureLayout(nodeHandle, nullthrows$11((init_react_native_Libraries_ReactNative_RendererProxy(), init_react_native_Libraries_ReactNative_RendererImplementation(), findNodeHandle$1)(_this)), _this._textInputFocusError, _this._inputMeasureAndScrollToKeyboard);
+					} else {
+						nodeHandle.measureLayout(_this._innerView.nativeInstance, _this._inputMeasureAndScrollToKeyboard, _this._textInputFocusError);
+					}
+				};
+				_this.scrollResponderZoomTo = function(rect,animated) {
+					invariant$39(Platform.OS === "ios", "zoomToRect is not implemented");
+					if ("animated" in rect) {
+						_this._animated = rect.animated;
+						delete rect.animated;
+					} else if (typeof animated < "u") {
+						console.warn("`scrollResponderZoomTo` `animated` argument is deprecated. Use `options.animated` instead");
+					}
+					var component = _this.getNativeScrollRef();
+					if (component == null) {
+						return;
+					}
+					_default$63.zoomToRect(component, rect, animated !== false);
+				};
+				_this._inputMeasureAndScrollToKeyboard = function(left,top,width,height) {
+					var keyboardScreenY = Dimensions.get("window").height,scrollTextInputIntoVisibleRect = function() {
+						if (_this._keyboardMetrics != null) {
+							keyboardScreenY = _this._keyboardMetrics.screenY;
+						}
+						var scrollOffsetY = top - keyboardScreenY + height + _this._additionalScrollOffset;
+						if (_this._preventNegativeScrollOffset === true) {
+							scrollOffsetY = Math.max(0, scrollOffsetY);
+						}
+						_this.scrollTo({ x: 0, y: scrollOffsetY, animated: true });
+						_this._additionalScrollOffset = 0;
+						_this._preventNegativeScrollOffset = false;
+					};
+					if (_this._keyboardMetrics == null) {
+						setTimeout(function() {
+							scrollTextInputIntoVisibleRect();
+						}, 0);
+					} else {
+						scrollTextInputIntoVisibleRect();
+					}
+				};
+				_this._handleScroll = function(e) {
+					_this._observedScrollSinceBecomingResponder = true;
+					_this.props.onScroll && _this.props.onScroll(e);
+				};
+				_this._handleLayout = function(e) {
+					if (_this.props.invertStickyHeaders === true) {
+						_this.setState({ layoutHeight: e.nativeEvent.layout.height });
+					}
+					if (_this.props.onLayout) {
+						_this.props.onLayout(e);
+					}
+				};
+				_this._handleContentOnLayout = function(e) {
+					var { width:width, height:height } = e.nativeEvent.layout;
+					_this.props.onContentSizeChange && _this.props.onContentSizeChange(width, height);
+				};
+				_this._innerView = createRefForwarder(function(instance) {
+					return instance;
+				});
+				_this._scrollView = createRefForwarder(function(nativeInstance) {
+					var publicInstance = Object.assign(nativeInstance, { getScrollResponder: _this.getScrollResponder, getScrollableNode: _this.getScrollableNode, getInnerViewNode: _this.getInnerViewNode, getInnerViewRef: _this.getInnerViewRef, getNativeScrollRef: _this.getNativeScrollRef, scrollTo: _this.scrollTo, scrollToEnd: _this.scrollToEnd, flashScrollIndicators: _this.flashScrollIndicators, scrollResponderZoomTo: _this.scrollResponderZoomTo, scrollResponderScrollNativeHandleToKeyboard: _this.scrollResponderScrollNativeHandleToKeyboard });
+					return publicInstance;
+				});
+				_this.scrollResponderKeyboardWillShow = function(e) {
+					_this._keyboardMetrics = e.endCoordinates;
+					_this.props.onKeyboardWillShow && _this.props.onKeyboardWillShow(e);
+				};
+				_this.scrollResponderKeyboardWillHide = function(e) {
+					_this._keyboardMetrics = null;
+					_this.props.onKeyboardWillHide && _this.props.onKeyboardWillHide(e);
+				};
+				_this.scrollResponderKeyboardDidShow = function(e) {
+					_this._keyboardMetrics = e.endCoordinates;
+					_this.props.onKeyboardDidShow && _this.props.onKeyboardDidShow(e);
+				};
+				_this.scrollResponderKeyboardDidHide = function(e) {
+					_this._keyboardMetrics = null;
+					_this.props.onKeyboardDidHide && _this.props.onKeyboardDidHide(e);
+				};
+				_this._handleMomentumScrollBegin = function(e) {
+					_this._lastMomentumScrollBeginTime = global.performance.now();
+					_this.props.onMomentumScrollBegin && _this.props.onMomentumScrollBegin(e);
+				};
+				_this._handleMomentumScrollEnd = function(e) {
+					FrameRateLogger.endScroll();
+					_this._lastMomentumScrollEndTime = global.performance.now();
+					_this.props.onMomentumScrollEnd && _this.props.onMomentumScrollEnd(e);
+				};
+				_this._handleScrollBeginDrag = function(e) {
+					FrameRateLogger.beginScroll();
+					if (Platform.OS === "android" && _this.props.keyboardDismissMode === "on-drag") {
+						dismissKeyboard();
+					}
+					_this.props.onScrollBeginDrag && _this.props.onScrollBeginDrag(e);
+				};
+				_this._handleScrollEndDrag = function(e) {
+					var { velocity:velocity } = e.nativeEvent;
+					if (!_this._isAnimating() && (!velocity || (velocity.x === 0 && velocity.y === 0))) {
+						FrameRateLogger.endScroll();
+					}
+					_this.props.onScrollEndDrag && _this.props.onScrollEndDrag(e);
+				};
+				_this._isAnimating = function() {
+					var now = global.performance.now(),timeSinceLastMomentumScrollEnd = now - _this._lastMomentumScrollEndTime,isAnimating = timeSinceLastMomentumScrollEnd < IS_ANIMATING_TOUCH_START_THRESHOLD_MS || _this._lastMomentumScrollEndTime < _this._lastMomentumScrollBeginTime;
+					return isAnimating;
+				};
+				_this._handleResponderGrant = function(e) {
+					_this._observedScrollSinceBecomingResponder = false;
+					_this.props.onResponderGrant && _this.props.onResponderGrant(e);
+					_this._becameResponderWhileAnimating = _this._isAnimating();
+				};
+				_this._handleResponderReject = function() {
+				};
+				_this._handleResponderRelease = function(e) {
+					_this._isTouching = e.nativeEvent.touches.length !== 0;
+					_this.props.onResponderRelease && _this.props.onResponderRelease(e);
+					if (typeof e.target == "number") {
+						;
+						return;
+					}
+					var currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
+					if (currentlyFocusedTextInput != null && _this.props.keyboardShouldPersistTaps !== true && _this.props.keyboardShouldPersistTaps !== "always" && _this._keyboardIsDismissible() && e.target !== currentlyFocusedTextInput && !_this._observedScrollSinceBecomingResponder && !_this._becameResponderWhileAnimating) {
+						TextInputState.blurTextInput(currentlyFocusedTextInput);
+					}
+				};
+				_this._handleResponderTerminationRequest = function() {
+					return !_this._observedScrollSinceBecomingResponder;
+				};
+				_this._handleScrollShouldSetResponder = function() {
+					if (_this.props.disableScrollViewPanResponder === true) {
+						return false;
+					}
+					return _this._isTouching;
+				};
+				_this._handleStartShouldSetResponder = function(e) {
+					if (_this.props.disableScrollViewPanResponder === true) {
+						return false;
+					}
+					var currentlyFocusedInput = TextInputState.currentlyFocusedInput();
+					if (_this.props.keyboardShouldPersistTaps === "handled" && _this._keyboardIsDismissible() && e.target !== currentlyFocusedInput) {
+						return true;
+					}
+					return false;
+				};
+				_this._handleStartShouldSetResponderCapture = function(e) {
+					if (_this._isAnimating()) {
+						return true;
+					}
+					if (_this.props.disableScrollViewPanResponder === true) {
+						return false;
+					}
+					var { keyboardShouldPersistTaps:keyboardShouldPersistTaps } = _this.props,keyboardNeverPersistTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never";
+					if (typeof e.target == "number") {
+						;
+						return false;
+					}
+					if (_this._softKeyboardIsDetached()) {
+						return false;
+					}
+					if (keyboardNeverPersistTaps && _this._keyboardIsDismissible() && e.target != null && !TextInputState.isTextInput(e.target)) {
+						return true;
+					}
+					return false;
+				};
+				_this._keyboardIsDismissible = function() {
+					var currentlyFocusedInput = TextInputState.currentlyFocusedInput(),hasFocusedTextInput = currentlyFocusedInput != null && TextInputState.isTextInput(currentlyFocusedInput),softKeyboardMayBeOpen = _this._keyboardMetrics != null || _this._keyboardEventsAreUnreliable();
+					return hasFocusedTextInput && softKeyboardMayBeOpen;
+				};
+				_this._softKeyboardIsDetached = function() {
+					return _this._keyboardMetrics != null && _this._keyboardMetrics.height === 0;
+				};
+				_this._keyboardEventsAreUnreliable = function() {
+					return Platform.OS === "android" && Platform.Version < 30;
+				};
+				_this._handleTouchEnd = function(e) {
+					var nativeEvent = e.nativeEvent;
+					_this._isTouching = nativeEvent.touches.length !== 0;
+					var { keyboardShouldPersistTaps:keyboardShouldPersistTaps } = _this.props,keyboardNeverPersistsTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never",currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
+					if (currentlyFocusedTextInput != null && e.target !== currentlyFocusedTextInput && _this._softKeyboardIsDetached() && _this._keyboardIsDismissible() && keyboardNeverPersistsTaps) {
+						TextInputState.blurTextInput(currentlyFocusedTextInput);
+					}
+					_this.props.onTouchEnd && _this.props.onTouchEnd(e);
+				};
+				_this._handleTouchCancel = function(e) {
+					_this._isTouching = false;
+					_this.props.onTouchCancel && _this.props.onTouchCancel(e);
+				};
+				_this._handleTouchStart = function(e) {
+					_this._isTouching = true;
+					_this.props.onTouchStart && _this.props.onTouchStart(e);
+				};
+				_this._handleTouchMove = function(e) {
+					_this.props.onTouchMove && _this.props.onTouchMove(e);
+				};
+			}
+			__assertThisInitialized(_this)._scrollAnimatedValue = new _default$47.Value(__assertThisInitialized(_this).props.contentOffset?.y ?? 0);
+			__assertThisInitialized(_this)._scrollAnimatedValue.setOffset(__assertThisInitialized(_this).props.contentInset?.top ?? 0);
+			return __assertThisInitialized(_this);
+		}
+		__extends(ScrollView, _super);
+		Object.defineProperty(ScrollView.prototype, "componentDidMount", { configurable: true, writable: true, value: function() {
+			if (typeof this.props.keyboardShouldPersistTaps == "boolean") {
+				console.warn(`'keyboardShouldPersistTaps={${this.props.keyboardShouldPersistTaps === true ? "true" : "false"}}' is deprecated. ` + `Use 'keyboardShouldPersistTaps="${this.props.keyboardShouldPersistTaps ? "always" : "never"}"' instead`);
+			}
+			this._keyboardMetrics = Keyboard.metrics();
+			this._additionalScrollOffset = 0;
+			this._subscriptionKeyboardWillShow = Keyboard.addListener("keyboardWillShow", this.scrollResponderKeyboardWillShow);
+			this._subscriptionKeyboardWillHide = Keyboard.addListener("keyboardWillHide", this.scrollResponderKeyboardWillHide);
+			this._subscriptionKeyboardDidShow = Keyboard.addListener("keyboardDidShow", this.scrollResponderKeyboardDidShow);
+			this._subscriptionKeyboardDidHide = Keyboard.addListener("keyboardDidHide", this.scrollResponderKeyboardDidHide);
+			this._updateAnimatedNodeAttachment();
+		} });
+		Object.defineProperty(ScrollView.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(prevProps) {
+			var prevContentInsetTop = prevProps.contentInset ? prevProps.contentInset.top : 0,newContentInsetTop = this.props.contentInset ? this.props.contentInset.top : 0;
+			if (prevContentInsetTop !== newContentInsetTop) {
+				this._scrollAnimatedValue.setOffset(newContentInsetTop || 0);
+			}
+			this._updateAnimatedNodeAttachment();
+		} });
+		Object.defineProperty(ScrollView.prototype, "componentWillUnmount", { configurable: true, writable: true, value: function() {
+			if (this._subscriptionKeyboardWillShow != null) {
+				this._subscriptionKeyboardWillShow.remove();
+			}
+			if (this._subscriptionKeyboardWillHide != null) {
+				this._subscriptionKeyboardWillHide.remove();
+			}
+			if (this._subscriptionKeyboardDidShow != null) {
+				this._subscriptionKeyboardDidShow.remove();
+			}
+			if (this._subscriptionKeyboardDidHide != null) {
+				this._subscriptionKeyboardDidHide.remove();
+			}
+			if (this._scrollAnimatedValueAttachment) {
+				this._scrollAnimatedValueAttachment.detach();
+			}
+		} });
+		Object.defineProperty(ScrollView.prototype, "_textInputFocusError", { configurable: true, writable: true, value: function() {
+			console.warn("Error measuring text field.");
+		} });
+		Object.defineProperty(ScrollView.prototype, "_getKeyForIndex", { configurable: true, writable: true, value: function(index,childArray) {
+			var child = childArray[index];
+			return child && child.key;
+		} });
+		Object.defineProperty(ScrollView.prototype, "_updateAnimatedNodeAttachment", { configurable: true, writable: true, value: function() {
+			if (this._scrollAnimatedValueAttachment) {
+				this._scrollAnimatedValueAttachment.detach();
+			}
+			if (this.props.stickyHeaderIndices && this.props.stickyHeaderIndices.length > 0) {
+				this._scrollAnimatedValueAttachment = _default$47.attachNativeEvent(this.getNativeScrollRef(), "onScroll", [{ nativeEvent: { contentOffset: { y: this._scrollAnimatedValue } } }]);
+			}
+		} });
+		Object.defineProperty(ScrollView.prototype, "_setStickyHeaderRef", { configurable: true, writable: true, value: function(key,ref) {
+			if (ref) {
+				this._stickyHeaderRefs.set(key, ref);
+			} else {
+				this._stickyHeaderRefs.delete(key);
+			}
+		} });
+		Object.defineProperty(ScrollView.prototype, "_onStickyHeaderLayout", { configurable: true, writable: true, value: function(index,event,key) {
+			var { stickyHeaderIndices:stickyHeaderIndices } = this.props;
+			if (!stickyHeaderIndices) {
+				return;
+			}
+			var childArray = React$37.Children.toArray(this.props.children);
+			if (key !== this._getKeyForIndex(index, childArray)) {
+				return;
+			}
+			var layoutY = event.nativeEvent.layout.y;
+			this._headerLayoutYs.set(key, layoutY);
+			var indexOfIndex = stickyHeaderIndices.indexOf(index),previousHeaderIndex = stickyHeaderIndices[indexOfIndex - 1];
+			if (previousHeaderIndex != null) {
+				var previousHeader = this._stickyHeaderRefs.get(this._getKeyForIndex(previousHeaderIndex, childArray));
+				previousHeader && previousHeader.setNextHeaderY && previousHeader.setNextHeaderY(layoutY);
+			}
+		} });
+		Object.defineProperty(ScrollView.prototype, "render", { configurable: true, writable: true, value: function() {
+			var _this = this,horizontal = this.props.horizontal === true,NativeScrollView = horizontal ? (init_react_native_src_private_components_scrollview_HScrollViewNativeComponents(), HScrollViewNativeComponent) : (init_react_native_src_private_components_scrollview_VScrollViewNativeComponents(), VScrollViewNativeComponent),NativeScrollContentView = horizontal ? (init_react_native_src_private_components_scrollview_HScrollViewNativeComponents(), HScrollContentViewNativeComponent) : (init_react_native_src_private_components_scrollview_VScrollViewNativeComponents(), VScrollContentViewNativeComponent),contentContainerStyle = [horizontal && styles$8.contentContainerHorizontal, this.props.contentContainerStyle];
+			;
+			;
+			;
+			;
+			var contentSizeChangeProps = this.props.onContentSizeChange == null ? null : { onLayout: this._handleContentOnLayout },{ stickyHeaderIndices:stickyHeaderIndices } = this.props,children = this.props.children;
+			;
+			;
+			children = React$37.Children.toArray(children);
+			if (stickyHeaderIndices != null && stickyHeaderIndices.length > 0) {
+				children = children.map(function(child,index) {
+					var indexOfIndex = child ? stickyHeaderIndices.indexOf(index) : -1;
+					if (indexOfIndex > -1) {
+						var key = child.key,nextIndex = stickyHeaderIndices[indexOfIndex + 1],StickyHeaderComponent = _this.props.StickyHeaderComponent || ScrollViewStickyHeader;
+						return (/* @__PURE__ */ React$37.createElement(StickyHeaderComponent, { key: key, ref: function(ref) {
+							return _this._setStickyHeaderRef(key, ref);
+						}, nextHeaderLayoutY: _this._headerLayoutYs.get(_this._getKeyForIndex(nextIndex, children)), onLayout: function(event) {
+							return _this._onStickyHeaderLayout(index, event, key);
+						}, scrollAnimatedValue: _this._scrollAnimatedValue, inverted: _this.props.invertStickyHeaders, hiddenOnScroll: _this.props.stickyHeaderHiddenOnScroll, scrollViewHeight: _this.state.layoutHeight }, child));
+					} else {
+						return child;
+					}
+				});
+			}
+			children = (/* @__PURE__ */ React$37.createElement(ScrollViewContext.Provider, { value: horizontal ? (init_react_native_Libraries_Components_ScrollView_ScrollViewContext(), HORIZONTAL) : (init_react_native_Libraries_Components_ScrollView_ScrollViewContext(), VERTICAL) }, children));
+			var hasStickyHeaders = Array.isArray(stickyHeaderIndices) && stickyHeaderIndices.length > 0,preserveChildren = this.props.maintainVisibleContentPosition != null || (Platform.OS === "android" && this.props.snapToAlignment != null),contentContainer = (/* @__PURE__ */ React$37.createElement(NativeScrollContentView, { ...contentSizeChangeProps, ref: this._innerView.getForwardingRef(this.props.innerViewRef), style: contentContainerStyle, removeClippedSubviews: Platform.OS === "android" && hasStickyHeaders ? false : this.props.removeClippedSubviews, collapsable: false, collapsableChildren: !preserveChildren }, children)),alwaysBounceHorizontal = this.props.alwaysBounceHorizontal !== undefined ? this.props.alwaysBounceHorizontal : this.props.horizontal,alwaysBounceVertical = this.props.alwaysBounceVertical !== undefined ? this.props.alwaysBounceVertical : !this.props.horizontal,baseStyle = horizontal ? styles$8.baseHorizontal : styles$8.baseVertical,{ experimental_endDraggingSensitivityMultiplier:experimental_endDraggingSensitivityMultiplier, maintainVisibleContentPosition:maintainVisibleContentPosition, ...otherProps } = this.props,props = { ...otherProps, alwaysBounceHorizontal, alwaysBounceVertical, style: StyleSheet.compose(baseStyle, this.props.style), onContentSizeChange: null, onLayout: this._handleLayout, onMomentumScrollBegin: this._handleMomentumScrollBegin, onMomentumScrollEnd: this._handleMomentumScrollEnd, onResponderGrant: this._handleResponderGrant, onResponderReject: this._handleResponderReject, onResponderRelease: this._handleResponderRelease, onResponderTerminationRequest: this._handleResponderTerminationRequest, onScrollBeginDrag: this._handleScrollBeginDrag, onScrollEndDrag: this._handleScrollEndDrag, onScrollShouldSetResponder: this._handleScrollShouldSetResponder, onStartShouldSetResponder: this._handleStartShouldSetResponder, onStartShouldSetResponderCapture: this._handleStartShouldSetResponderCapture, onTouchEnd: this._handleTouchEnd, onTouchMove: this._handleTouchMove, onTouchStart: this._handleTouchStart, onTouchCancel: this._handleTouchCancel, onScroll: this._handleScroll, endDraggingSensitivityMultiplier: experimental_endDraggingSensitivityMultiplier, scrollEventThrottle: hasStickyHeaders ? 1 : this.props.scrollEventThrottle, sendMomentumEvents: this.props.onMomentumScrollBegin || this.props.onMomentumScrollEnd ? true : false, snapToStart: this.props.snapToStart !== false, snapToEnd: this.props.snapToEnd !== false, pagingEnabled: Platform.select({ ios: this.props.pagingEnabled === true && this.props.snapToInterval == null && this.props.snapToOffsets == null, android: this.props.pagingEnabled === true || this.props.snapToInterval != null || this.props.snapToOffsets != null }), maintainVisibleContentPosition: disableMaintainVisibleContentPosition() ? undefined : this.props.maintainVisibleContentPosition },{ decelerationRate:decelerationRate } = this.props;
+			;
+			;
+			;
+			;
+			;
+			;
+			;
+			;
+			if (decelerationRate != null) {
+				props.decelerationRate = processDecelerationRate(decelerationRate);
+			}
+			var refreshControl = this.props.refreshControl,scrollViewRef = this._scrollView.getForwardingRef(this.props.scrollViewRef);
+			;
+			if (refreshControl != null) {
+				if (Platform.OS === "ios") {
+					return (/* @__PURE__ */ React$37.createElement(NativeScrollView, { ...props, ref: scrollViewRef }, refreshControl, contentContainer));
+				} else if (Platform.OS === "android") {
+					var { outer:outer, inner:inner } = splitLayoutProps(flattenStyle(props.style));
+					return cloneElement$3(refreshControl, { style: StyleSheet.compose(baseStyle, outer) }, /* @__PURE__ */ React$37.createElement(NativeScrollView, { ...props, style: StyleSheet.compose(baseStyle, inner), ref: scrollViewRef }, contentContainer));
+				}
+			}
+			return (/* @__PURE__ */ React$37.createElement(NativeScrollView, { ...props, ref: scrollViewRef }, contentContainer));
+		} });
+		Object.defineProperty(ScrollView, "Context", { configurable: true, enumerable: true, writable: true, value: ScrollViewContext });
+		return ScrollView;
+	})(React$37.Component);
+	styles$8 = StyleSheet.create({ baseVertical: { flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "scroll" }, baseHorizontal: { flexGrow: 1, flexShrink: 1, flexDirection: "row", overflow: "scroll" }, contentContainerHorizontal: { flexDirection: "row" } });
+	;
+	;
+	ScrollViewWrapper = function Wrapper({ ref:ref, ...props }) {
+		return ref == null ? (/* @__PURE__ */ React$37.createElement(ScrollView$1, { ...props })) : (/* @__PURE__ */ React$37.createElement(ScrollView$1, { ...props, scrollViewRef: ref }));
+	};
+	ScrollViewWrapper.displayName = "ScrollView";
+	ScrollViewWrapper.Context = ScrollViewContext;
 	
 	
 	}
@@ -36011,7 +36977,7 @@ var init_react_native_Libraries_Animated_useAnimatedProps = __esm({
 //#endregion
 //#region AnimatedScrollView.js
 var exports_react_native_Libraries_Animated_components_AnimatedScrollView = {};
-var AnimatedScrollView, AnimatedScrollViewWithInvertedRefreshControl, AnimatedScrollViewWithoutInvertedRefreshControl, React$38;
+var AnimatedScrollView, AnimatedScrollViewWithInvertedRefreshControl, AnimatedScrollViewWithoutInvertedRefreshControl, React$38, cloneElement$4, useMemo$5;
 __export(exports_react_native_Libraries_Animated_components_AnimatedScrollView, {
 	"default": function() { return AnimatedScrollView; },
 });
@@ -36026,7 +36992,10 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 	init_react_native_Libraries_Utilities_useMergeRefs();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
 	init_react_native_Libraries_Animated_useAnimatedProps();
+	require_react_index();
 	React$38 = __toESM(require_react_index());
+	cloneElement$4 = require_react_index().cloneElement;
+	useMemo$5 = require_react_index().useMemo;
 		
 	
 	
@@ -36046,10 +37015,10 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 		}
 	};
 	AnimatedScrollViewWithInvertedRefreshControl = function({ ref:forwardedRef, ...props }) {
-		var { intermediatePropsForRefreshControl:intermediatePropsForRefreshControl, intermediatePropsForScrollView:intermediatePropsForScrollView } = require_react_index().useMemo(function() {
+		var { intermediatePropsForRefreshControl:intermediatePropsForRefreshControl, intermediatePropsForScrollView:intermediatePropsForScrollView } = useMemo$5(function() {
 			var { outer:outer, inner:inner } = splitLayoutProps(flattenStyle(props.style));
 			return { intermediatePropsForRefreshControl: { style: outer }, intermediatePropsForScrollView: { ...props, style: inner } };
-		}, [props]),[refreshControlAnimatedProps, refreshControlRef] = _default$64(intermediatePropsForRefreshControl),refreshControl = require_react_index().cloneElement(props.refreshControl, { ...refreshControlAnimatedProps, ref: refreshControlRef }),[scrollViewAnimatedProps, scrollViewRef] = _default$64(intermediatePropsForScrollView),ref = useMergeRefs(scrollViewRef, forwardedRef);
+		}, [props]),[refreshControlAnimatedProps, refreshControlRef] = _default$64(intermediatePropsForRefreshControl),refreshControl = cloneElement$4(props.refreshControl, { ...refreshControlAnimatedProps, ref: refreshControlRef }),[scrollViewAnimatedProps, scrollViewRef] = _default$64(intermediatePropsForScrollView),ref = useMergeRefs(scrollViewRef, forwardedRef);
 		return (/* @__PURE__ */ React$38.createElement(ScrollViewWrapper, { ...scrollViewAnimatedProps, ref: ref, refreshControl: refreshControl, style: StyleSheet.compose(scrollViewAnimatedProps.style, refreshControlAnimatedProps.style) }));
 	};
 	AnimatedScrollViewWithoutInvertedRefreshControl = createAnimatedComponent(ScrollViewWrapper);
@@ -36071,6 +37040,7 @@ var init_react_native_Libraries_Lists_SectionList = __esm({
 	init_call_super();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init__react_native_virtualized_lists_index();
+	require_react_index();
 	React$39 = __toESM(require_react_index());
 		
 	
@@ -36079,7 +37049,7 @@ var init_react_native_Libraries_Lists_SectionList = __esm({
 	
 	
 	
-	VirtualizedSectionList$1 = _default$55.VirtualizedSectionList;
+	VirtualizedSectionList$1 = _default$49.VirtualizedSectionList;
 	SectionList = (function(_super) {
 		function SectionList() {
 			__classCallCheck(this, SectionList);
@@ -36148,6 +37118,7 @@ var init_react_native_Libraries_Animated_components_AnimatedSectionList = __esm(
 	"AnimatedSectionList.js"() {
 	init_react_native_Libraries_Lists_SectionList();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
+	require_react_index();
 	React$40 = __toESM(require_react_index());
 		
 	
@@ -36167,6 +37138,7 @@ var init_react_native_Libraries_Animated_components_AnimatedText = __esm({
 	"AnimatedText.js"() {
 	init_react_native_Libraries_Text_Text();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
+	require_react_index();
 	React$41 = __toESM(require_react_index());
 		
 	
@@ -36186,6 +37158,7 @@ var init_react_native_Libraries_Animated_components_AnimatedView = __esm({
 	"AnimatedView.js"() {
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
+	require_react_index();
 	React$42 = __toESM(require_react_index());
 		
 	
@@ -36258,6 +37231,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableOpacity = __esm({
 	init_react_native_Libraries_Pressability_Pressability();
 	init_react_native_Libraries_StyleSheet_flattenStyle();
 	init_react_native_Libraries_Utilities_Platform_ios();
+	require_react_index();
 	React$43 = __toESM(require_react_index());
 		
 	
@@ -36318,7 +37292,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableOpacity = __esm({
 		} });
 		Object.defineProperty(TouchableOpacity.prototype, "_getChildStyleOpacityWithDefault", { configurable: true, writable: true, value: function() {
 			var opacity = flattenStyle(this.props.style)?.opacity;
-			return typeof opacity === "number" ? opacity : 1;
+			return typeof opacity == "number" ? opacity : 1;
 		} });
 		Object.defineProperty(TouchableOpacity.prototype, "render", { configurable: true, writable: true, value: function() {
 			var { onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers(),_accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
@@ -36365,6 +37339,8 @@ var init_react_native_Libraries_Components_Button = __esm({
 	init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback();
 	init_react_native_Libraries_Components_Touchable_TouchableOpacity();
 	init_react_native_Libraries_Components_View_View();
+	require_invariant_browser();
+	require_react_index();
 	invariant$40 = require_invariant_browser();
 	React$44 = __toESM(require_react_index());
 		"use strict";
@@ -36392,7 +37368,7 @@ var init_react_native_Libraries_Components_Button = __esm({
 			buttonStyles.push(styles$9.buttonDisabled);
 			textStyles.push(styles$9.textDisabled);
 		}
-		invariant$40(typeof title === "string", "The title prop of a Button must be a string");
+		invariant$40(typeof title == "string", "The title prop of a Button must be a string");
 		var formattedTitle = Platform.OS === "android" ? title.toUpperCase() : title,_importantForAccessibility = importantForAccessibility === "no" ? "no-hide-descendants" : importantForAccessibility;
 		return (/* @__PURE__ */ React$44.createElement(NativeTouchable, { accessible: accessible, accessibilityActions: accessibilityActions, onAccessibilityAction: onAccessibilityAction, accessibilityLabel: ariaLabel || accessibilityLabel, accessibilityHint: accessibilityHint, accessibilityLanguage: accessibilityLanguage, accessibilityRole: "button", accessibilityState: _accessibilityState, importantForAccessibility: _importantForAccessibility, hasTVPreferredFocus: hasTVPreferredFocus, nextFocusDown: nextFocusDown, nextFocusForward: nextFocusForward, nextFocusLeft: nextFocusLeft, nextFocusRight: nextFocusRight, nextFocusUp: nextFocusUp, testID: testID, disabled: disabled, onPress: onPress, touchSoundDisabled: touchSoundDisabled, ref: ref }, /* @__PURE__ */ React$44.createElement(View$1, { style: buttonStyles }, /* @__PURE__ */ React$44.createElement(TextImpl, { style: textStyles, disabled: disabled }, formattedTitle))));
 	};
@@ -36415,6 +37391,7 @@ var init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFall
 	init_class_call_check();
 	init_call_super();
 	init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView();
+	require_react_index();
 	React$45 = __toESM(require_react_index());
 		
 	
@@ -36495,6 +37472,7 @@ var init_react_native_Libraries_Image_ImageBackground = __esm({
 	init_react_native_Libraries_StyleSheet_flattenStyle();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_Image_Image_ios();
+	require_react_index();
 	React$46 = __toESM(require_react_index());
 		
 	
@@ -36559,7 +37537,8 @@ __export(exports_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewN
 });
 var init_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewNativeComponent = __esm({
 	"RCTSafeAreaViewNativeComponent.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent();
+		
 	
 		_default$71 = (init_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent)).default;
 	
@@ -36576,6 +37555,7 @@ var init_react_native_Libraries_Components_SafeAreaView_SafeAreaView = __esm({
 	"SafeAreaView.js"() {
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Components_View_View();
+	require_react_index();
 	React$47 = __toESM(require_react_index());
 		
 	
@@ -36588,17 +37568,17 @@ var init_react_native_Libraries_Components_SafeAreaView_SafeAreaView = __esm({
 //#endregion
 //#region useWindowDimensions.js
 var exports_react_native_Libraries_Utilities_useWindowDimensions = {};
-var useWindowDimensions;
+var useWindowDimensions, useEffect$4, useState$3;
 __export(exports_react_native_Libraries_Utilities_useWindowDimensions, {
 	"default": function() { return useWindowDimensions; },
 });
 var init_react_native_Libraries_Utilities_useWindowDimensions = __esm({
 	"useWindowDimensions.js"() {
 	useWindowDimensions = function() {
-		var [dimensions, setDimensions] = require_react_index().useState(function() {
+		var [dimensions, setDimensions] = useState$3(function() {
 			return Dimensions.get("window");
 		});
-		require_react_index().useEffect(function() {
+		useEffect$4(function() {
 			function handleChange({ window:window }) {
 				if (dimensions.width !== window.width || dimensions.height !== window.height || dimensions.scale !== window.scale || dimensions.fontScale !== window.fontScale) {
 					setDimensions(window);
@@ -36613,6 +37593,10 @@ var init_react_native_Libraries_Utilities_useWindowDimensions = __esm({
 		return dimensions;
 	};
 		init_react_native_Libraries_Utilities_Dimensions();
+	init_react_native_Libraries_Utilities_NativeDeviceInfo();
+	require_react_index();
+	useEffect$4 = require_react_index().useEffect;
+	useState$3 = require_react_index().useState;
 		
 	
 	
@@ -36645,7 +37629,8 @@ __export(exports_react_native_Libraries_Components_TextInput_RCTInputAccessoryVi
 });
 var init_react_native_Libraries_Components_TextInput_RCTInputAccessoryViewNativeComponent = __esm({
 	"RCTInputAccessoryViewNativeComponent.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent();
+		
 	
 		_default$73 = (init_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent)).default;
 	
@@ -36665,6 +37650,7 @@ var init_react_native_Libraries_Components_TextInput_InputAccessoryView = __esm(
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Utilities_useWindowDimensions();
 	init_react_native_Libraries_Components_TextInput_RCTInputAccessoryViewNativeComponent();
+	require_react_index();
 	init_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent();
 	React$48 = __toESM(require_react_index());
 		
@@ -36714,7 +37700,8 @@ __export(exports_react_native_Libraries_Components_AccessibilityInfo_NativeAcces
 });
 var init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityInfo = __esm({
 	"NativeAccessibilityInfo.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo();
+		
 	
 		_default$75 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo)).default;
 	
@@ -36733,8 +37720,8 @@ var init_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo =
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Components_AccessibilityInfo_legacySendAccessibilityEvent_ios();
 	init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityInfo();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo();
 	init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager();
 		
 	
@@ -36930,7 +37917,7 @@ var init_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo =
 //#endregion
 //#region KeyboardAvoidingView.js
 var exports_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = {};
-var _a$5, _b$2, KeyboardAvoidingView, __async, __extends, __generator, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, React$49;
+var KeyboardAvoidingView, __async, __extends, __generator, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, React$49, createRef;
 __export(exports_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView, {
 	"default": function() { return KeyboardAvoidingView; },
 });
@@ -36948,8 +37935,18 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 	init_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo();
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_Components_Keyboard_Keyboard();
+	require_react_index();
 	React$49 = __toESM(require_react_index());
+	createRef = require_react_index().createRef;
 		
+	
+	
+	
+	
+	
+	
+	
+	
 	
 	
 	
@@ -37043,7 +38040,7 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 				};
 			}
 			__assertThisInitialized(_this).state = { bottom: 0 };
-			__assertThisInitialized(_this).viewRef = require_react_index().createRef();
+			__assertThisInitialized(_this).viewRef = createRef();
 			return __assertThisInitialized(_this);
 		}
 		__extends(KeyboardAvoidingView, _super);
@@ -37128,15 +38125,6 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 	})(React$49.Component);
 	
 	
-	
-	
-	
-	
-	
-	
-	;
-	
-	
 	}
 });
 //#endregion
@@ -37175,6 +38163,7 @@ var init_react_native_Libraries_Components_LayoutConformance_LayoutConformance =
 	};
 		init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_Components_LayoutConformance_LayoutConformanceNativeComponent();
+	require_react_index();
 	React$50 = __toESM(require_react_index());
 		
 	
@@ -37328,7 +38317,7 @@ var init_react_native_Libraries_ReactNative_I18nManager = __esm({
 //#endregion
 //#region Modal.js
 var exports_react_native_Libraries_Modal_Modal = {};
-var ScrollView$2, View$13, AppContainer$3, I18nManager, RootTagContext$2, StyleSheet$14, Platform$40, VirtualizedListContextResetter$1, ModalEventEmitter, uniqueModalIdentifier, confirmProps, Modal, side, styles$12, Wrapper, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, React$51;
+var ScrollView$3, View$15, AppContainer$3, I18nManager$1, RootTagContext$2, StyleSheet$16, Platform$41, VirtualizedListContextResetter$1, ModalEventEmitter, uniqueModalIdentifier, confirmProps, Modal, side, styles$12, Wrapper, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, React$51;
 __export(exports_react_native_Libraries_Modal_Modal, {
 	"default": function() { return Wrapper; },
 });
@@ -37346,10 +38335,11 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 	init_derived_constructor();
 	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
 	init_react_native_Libraries_Modal_NativeModalManager();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager();
 	init_react_native_Libraries_Modal_RCTModalHostViewNativeComponent();
-	init_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent();
 	init__react_native_virtualized_lists_index();
+	require_react_index();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager();
+	init_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent();
 	React$51 = __toESM(require_react_index());
 		
 	
@@ -37360,15 +38350,15 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 	
 	
 	
-	ScrollView$2 = (init_react_native_Libraries_Components_ScrollView_ScrollView(), __toCommonJS(exports_react_native_Libraries_Components_ScrollView_ScrollView)).default;
-	View$13 = (init_react_native_Libraries_Components_View_View(), __toCommonJS(exports_react_native_Libraries_Components_View_View)).default;
+	ScrollView$3 = (init_react_native_Libraries_Components_ScrollView_ScrollView(), __toCommonJS(exports_react_native_Libraries_Components_ScrollView_ScrollView)).default;
+	View$15 = (init_react_native_Libraries_Components_View_View(), __toCommonJS(exports_react_native_Libraries_Components_View_View)).default;
 	AppContainer$3 = (init_react_native_Libraries_ReactNative_AppContainer(), __toCommonJS(exports_react_native_Libraries_ReactNative_AppContainer)).default;
-	I18nManager = (init_react_native_Libraries_ReactNative_I18nManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_I18nManager)).default;
+	I18nManager$1 = (init_react_native_Libraries_ReactNative_I18nManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_I18nManager)).default;
 	({ RootTagContext:RootTagContext$2 } = (init_react_native_Libraries_ReactNative_RootTag(), __toCommonJS(exports_react_native_Libraries_ReactNative_RootTag)));
-	StyleSheet$14 = (init_react_native_Libraries_StyleSheet_StyleSheet(), __toCommonJS(exports_react_native_Libraries_StyleSheet_StyleSheet)).default;
-	Platform$40 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
-	VirtualizedListContextResetter$1 = _default$55.VirtualizedListContextResetter;
-	ModalEventEmitter = Platform$40.OS === "ios" && _default$77 != null ? new NativeEventEmitter(Platform$40.OS !== "ios" ? null : _default$77) : null;
+	StyleSheet$16 = (init_react_native_Libraries_StyleSheet_StyleSheet(), __toCommonJS(exports_react_native_Libraries_StyleSheet_StyleSheet)).default;
+	Platform$41 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	VirtualizedListContextResetter$1 = _default$49.VirtualizedListContextResetter;
+	ModalEventEmitter = Platform$41.OS === "ios" && _default$77 != null ? new NativeEventEmitter(Platform$41.OS !== "ios" ? null : _default$77) : null;
 	uniqueModalIdentifier = 0;
 	;
 	;
@@ -37404,7 +38394,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 			}
 		} });
 		Object.defineProperty(Modal.prototype, "componentWillUnmount", { configurable: true, writable: true, value: function() {
-			if (Platform$40.OS === "ios") {
+			if (Platform$41.OS === "ios") {
 				this.setState({ isRendered: false });
 			}
 			if (this._eventSubscription) {
@@ -37418,7 +38408,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 			;
 		} });
 		Object.defineProperty(Modal.prototype, "_shouldShowModal", { configurable: true, writable: true, value: function() {
-			if (Platform$40.OS === "ios") {
+			if (Platform$41.OS === "ios") {
 				return this.props.visible === true || this.state.isRendered === true;
 			}
 			return this.props.visible === true;
@@ -37438,7 +38428,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 				}
 			}
 			var innerChildren = (this.props.children),onDismiss = function() {
-				if (Platform$40.OS === "ios") {
+				if (Platform$41.OS === "ios") {
 					_this.setState({ isRendered: false }, function() {
 						if (_this.props.onDismiss) {
 							_this.props.onDismiss();
@@ -37447,7 +38437,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 				}
 			};
 			;
-			return (/* @__PURE__ */ React$51.createElement(_default$79, { animationType: animationType, presentationStyle: presentationStyle, transparent: this.props.transparent, hardwareAccelerated: this.props.hardwareAccelerated, onRequestClose: this.props.onRequestClose, onShow: this.props.onShow, onDismiss: onDismiss, ref: this.props.modalRef, visible: this.props.visible, statusBarTranslucent: this.props.statusBarTranslucent, navigationBarTranslucent: this.props.navigationBarTranslucent, identifier: this._identifier, style: styles$12.modal, onStartShouldSetResponder: this._shouldSetResponder, supportedOrientations: this.props.supportedOrientations, onOrientationChange: this.props.onOrientationChange, allowSwipeDismissal: this.props.allowSwipeDismissal, testID: this.props.testID }, /* @__PURE__ */ React$51.createElement(VirtualizedListContextResetter$1, null, /* @__PURE__ */ React$51.createElement(ScrollView$2.Context.Provider, { value: null }, /* @__PURE__ */ React$51.createElement(View$13, { style: [styles$12.container, containerStyles], collapsable: false }, innerChildren)))));
+			return (/* @__PURE__ */ React$51.createElement(_default$79, { animationType: animationType, presentationStyle: presentationStyle, transparent: this.props.transparent, hardwareAccelerated: this.props.hardwareAccelerated, onRequestClose: this.props.onRequestClose, onShow: this.props.onShow, onDismiss: onDismiss, ref: this.props.modalRef, visible: this.props.visible, statusBarTranslucent: this.props.statusBarTranslucent, navigationBarTranslucent: this.props.navigationBarTranslucent, identifier: this._identifier, style: styles$12.modal, onStartShouldSetResponder: this._shouldSetResponder, supportedOrientations: this.props.supportedOrientations, onOrientationChange: this.props.onOrientationChange, allowSwipeDismissal: this.props.allowSwipeDismissal, testID: this.props.testID }, /* @__PURE__ */ React$51.createElement(VirtualizedListContextResetter$1, null, /* @__PURE__ */ React$51.createElement(ScrollView$3.Context.Provider, { value: null }, /* @__PURE__ */ React$51.createElement(View$15, { style: [styles$12.container, containerStyles], collapsable: false }, innerChildren)))));
 		} });
 		Object.defineProperty(Modal.prototype, "_shouldSetResponder", { configurable: true, writable: true, value: function() {
 			return true;
@@ -37456,8 +38446,8 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 		Object.defineProperty(Modal, "contextType", { configurable: true, enumerable: true, writable: true, value: RootTagContext$2 });
 		return Modal;
 	})(React$51.Component);
-	side = I18nManager.getConstants().isRTL ? "right" : "left";
-	styles$12 = StyleSheet$14.create({ modal: { position: "absolute" }, container: { [side]: 0, top: 0, flex: 1 } });
+	side = I18nManager$1.getConstants().isRTL ? "right" : "left";
+	styles$12 = StyleSheet$16.create({ modal: { position: "absolute" }, container: { [side]: 0, top: 0, flex: 1 } });
 	;
 	;
 	Wrapper.displayName = "Modal";
@@ -37469,7 +38459,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 //#endregion
 //#region useAndroidRippleForView.js
 var exports_react_native_Libraries_Components_Pressable_useAndroidRippleForView = {};
-var useAndroidRippleForView, invariant$41, React$52;
+var useAndroidRippleForView, invariant$41, React$52, useMemo$6;
 __export(exports_react_native_Libraries_Components_Pressable_useAndroidRippleForView, {
 	"default": function() { return useAndroidRippleForView; },
 });
@@ -37477,10 +38467,10 @@ var init_react_native_Libraries_Components_Pressable_useAndroidRippleForView = _
 	"useAndroidRippleForView.js"() {
 	useAndroidRippleForView = function(rippleConfig,viewRef) {
 		var { color:color, borderless:borderless, radius:radius, foreground:foreground } = rippleConfig ?? {};
-		return require_react_index().useMemo(function() {
+		return useMemo$6(function() {
 			if (Platform.OS === "android" && (color != null || borderless != null || radius != null)) {
 				var processedColor = processColor(color);
-				invariant$41(processedColor == null || typeof processedColor === "number", "Unexpected color given for Ripple color");
+				invariant$41(processedColor == null || typeof processedColor == "number", "Unexpected color given for Ripple color");
 				var nativeRippleValue = { type: "RippleAndroid", color: processedColor, borderless: borderless === true, rippleRadius: radius };
 				return { viewProps: foreground === true ? { nativeForegroundAndroid: nativeRippleValue } : { nativeBackgroundAndroid: nativeRippleValue }, onPressIn(event) {
 					var view = viewRef.current;
@@ -37506,8 +38496,11 @@ var init_react_native_Libraries_Components_Pressable_useAndroidRippleForView = _
 		init_react_native_Libraries_StyleSheet_processColor();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Components_View_View();
+	require_invariant_browser();
+	require_react_index();
 	invariant$41 = require_invariant_browser();
 	React$52 = __toESM(require_react_index());
+	useMemo$6 = require_react_index().useMemo;
 		
 	
 	
@@ -37521,16 +38514,16 @@ var init_react_native_Libraries_Components_Pressable_useAndroidRippleForView = _
 //#endregion
 //#region Pressable.js
 var exports_react_native_Libraries_Components_Pressable_Pressable = {};
-var Pressable, usePressState, MemoedPressable, React$53;
+var Pressable, usePressState, MemoedPressable, React$53, memo, useMemo$7, useRef$6, useState$4;
 __export(exports_react_native_Libraries_Components_Pressable_Pressable, {
 	"default": function() { return MemoedPressable; },
 });
 var init_react_native_Libraries_Components_Pressable_Pressable = __esm({
 	"Pressable.js"() {
 	Pressable = function({ ref:forwardedRef, ...props }) {
-		var { accessible:accessible, accessibilityState:accessibilityState, 'aria-live':ariaLive, android_disableSound:android_disableSound, android_ripple:android_ripple, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, blockNativeResponder:blockNativeResponder, cancelable:cancelable, children:children, delayHoverIn:delayHoverIn, delayHoverOut:delayHoverOut, delayLongPress:delayLongPress, disabled:disabled, focusable:focusable, hitSlop:hitSlop, onBlur:onBlur, onFocus:onFocus, onHoverIn:onHoverIn, onHoverOut:onHoverOut, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressMove:onPressMove, onPressOut:onPressOut, pressRetentionOffset:pressRetentionOffset, style:style, testOnly_pressed:testOnly_pressed, unstable_pressDelay:unstable_pressDelay, ...restProps } = props,viewRef = require_react_index().useRef(null),mergedRef = useMergeRefs(forwardedRef, viewRef),android_rippleConfig = useAndroidRippleForView(android_ripple, viewRef),[pressed, setPressed] = usePressState(testOnly_pressed === true),shouldUpdatePressed = typeof children === "function" || typeof style === "function",_accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected };
+		var { accessible:accessible, accessibilityState:accessibilityState, 'aria-live':ariaLive, android_disableSound:android_disableSound, android_ripple:android_ripple, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, blockNativeResponder:blockNativeResponder, cancelable:cancelable, children:children, delayHoverIn:delayHoverIn, delayHoverOut:delayHoverOut, delayLongPress:delayLongPress, disabled:disabled, focusable:focusable, hitSlop:hitSlop, onBlur:onBlur, onFocus:onFocus, onHoverIn:onHoverIn, onHoverOut:onHoverOut, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressMove:onPressMove, onPressOut:onPressOut, pressRetentionOffset:pressRetentionOffset, style:style, testOnly_pressed:testOnly_pressed, unstable_pressDelay:unstable_pressDelay, ...restProps } = props,viewRef = useRef$6(null),mergedRef = useMergeRefs(forwardedRef, viewRef),android_rippleConfig = useAndroidRippleForView(android_ripple, viewRef),[pressed, setPressed] = usePressState(testOnly_pressed === true),shouldUpdatePressed = typeof children == "function" || typeof style == "function",_accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected };
 		_accessibilityState = disabled != null ? { ..._accessibilityState, disabled } : _accessibilityState;
-		var accessibilityValue = { max: props["aria-valuemax"] ?? props.accessibilityValue?.max, min: props["aria-valuemin"] ?? props.accessibilityValue?.min, now: props["aria-valuenow"] ?? props.accessibilityValue?.now, text: props["aria-valuetext"] ?? props.accessibilityValue?.text },accessibilityLiveRegion = ariaLive === "off" ? "none" : (ariaLive ?? props.accessibilityLiveRegion),accessibilityLabel = ariaLabel ?? props.accessibilityLabel,restPropsWithDefaults = { ...restProps, ...android_rippleConfig?.viewProps, accessible: accessible !== false, accessibilityViewIsModal: restProps["aria-modal"] ?? restProps.accessibilityViewIsModal, accessibilityLiveRegion, accessibilityLabel, accessibilityState: _accessibilityState, focusable: focusable !== false, accessibilityValue, hitSlop },config = require_react_index().useMemo(function() {
+		var accessibilityValue = { max: props["aria-valuemax"] ?? props.accessibilityValue?.max, min: props["aria-valuemin"] ?? props.accessibilityValue?.min, now: props["aria-valuenow"] ?? props.accessibilityValue?.now, text: props["aria-valuetext"] ?? props.accessibilityValue?.text },accessibilityLiveRegion = ariaLive === "off" ? "none" : (ariaLive ?? props.accessibilityLiveRegion),accessibilityLabel = ariaLabel ?? props.accessibilityLabel,restPropsWithDefaults = { ...restProps, ...android_rippleConfig?.viewProps, accessible: accessible !== false, accessibilityViewIsModal: restProps["aria-modal"] ?? restProps.accessibilityViewIsModal, accessibilityLiveRegion, accessibilityLabel, accessibilityState: _accessibilityState, focusable: focusable !== false, accessibilityValue, hitSlop },config = useMemo$7(function() {
 			return ({ cancelable, disabled, hitSlop, pressRectOffset: pressRetentionOffset, android_disableSound, delayHoverIn, delayHoverOut, delayLongPress, delayPressIn: unstable_pressDelay, onBlur, onFocus, onHoverIn, onHoverOut, onLongPress, onPress, onPressIn(event) {
 				if (android_rippleConfig != null) {
 					android_rippleConfig.onPressIn(event);
@@ -37554,17 +38547,22 @@ var init_react_native_Libraries_Components_Pressable_Pressable = __esm({
 				}
 			}, blockNativeResponder });
 		}, [android_disableSound, android_rippleConfig, blockNativeResponder, cancelable, delayHoverIn, delayHoverOut, delayLongPress, disabled, hitSlop, onBlur, onFocus, onHoverIn, onHoverOut, onLongPress, onPress, onPressIn, onPressMove, onPressOut, pressRetentionOffset, setPressed, shouldUpdatePressed, unstable_pressDelay]),eventHandlers = usePressability(config);
-		return (/* @__PURE__ */ React$53.createElement(View$1, { ...restPropsWithDefaults, ...eventHandlers, ref: mergedRef, style: typeof style === "function" ? style({ pressed }) : style, collapsable: false }, typeof children === "function" ? children({ pressed }) : children, null));
+		return (/* @__PURE__ */ React$53.createElement(View$1, { ...restPropsWithDefaults, ...eventHandlers, ref: mergedRef, style: typeof style == "function" ? style({ pressed }) : style, collapsable: false }, typeof children == "function" ? children({ pressed }) : children, null));
 	};
 	usePressState = function(forcePressed) {
-		var [pressed, setPressed] = require_react_index().useState(false);
+		var [pressed, setPressed] = useState$4(false);
 		return [pressed || forcePressed, setPressed];
 	};
 		init_react_native_Libraries_Pressability_usePressability();
 	init_react_native_Libraries_Utilities_useMergeRefs();
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_Components_Pressable_useAndroidRippleForView();
+	require_react_index();
 	React$53 = __toESM(require_react_index());
+	memo = require_react_index().memo;
+	useMemo$7 = require_react_index().useMemo;
+	useRef$6 = require_react_index().useRef;
+	useState$4 = require_react_index().useState;
 		
 	
 	
@@ -37572,7 +38570,7 @@ var init_react_native_Libraries_Components_Pressable_Pressable = __esm({
 	
 	
 	
-	MemoedPressable = require_react_index().memo(Pressable);
+	MemoedPressable = memo(Pressable);
 	MemoedPressable.displayName = "Pressable";
 	
 	
@@ -37618,7 +38616,8 @@ __export(exports_react_native_Libraries_Components_StatusBar_NativeStatusBarMana
 });
 var init_react_native_Libraries_Components_StatusBar_NativeStatusBarManagerAndroid = __esm({
 	"NativeStatusBarManagerAndroid.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerAndroid();
+		
 	
 		_default$84 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerAndroid(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerAndroid)).default;
 	
@@ -37668,7 +38667,8 @@ __export(exports_react_native_Libraries_Components_StatusBar_NativeStatusBarMana
 });
 var init_react_native_Libraries_Components_StatusBar_NativeStatusBarManagerIOS = __esm({
 	"NativeStatusBarManagerIOS.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerIOS();
+		
 	
 		_default$85 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerIOS(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerIOS)).default;
 	
@@ -37703,8 +38703,10 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 	init_react_native_Libraries_StyleSheet_processColor();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Components_StatusBar_NativeStatusBarManagerAndroid();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerAndroid();
 	init_react_native_Libraries_Components_StatusBar_NativeStatusBarManagerIOS();
+	require_invariant_browser();
+	require_react_index();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerAndroid();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeStatusBarManagerIOS();
 	invariant$42 = require_invariant_browser();
 	React$54 = __toESM(require_react_index());
@@ -37764,7 +38766,7 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 				console.warn(`\`StatusBar.setBackgroundColor\`: Color ${String(color)} parsed to null or undefined`);
 				return;
 			}
-			invariant$42(typeof processedColor === "number", "Unexpected color given for StatusBar.setBackgroundColor");
+			invariant$42(typeof processedColor == "number", "Unexpected color given for StatusBar.setBackgroundColor");
 			NativeStatusBarManager.setColor(processedColor, animated);
 		} });
 		Object.defineProperty(StatusBar, "setTranslucent", { configurable: true, writable: true, value: function(translucent) {
@@ -37837,7 +38839,7 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 					if (processedColor == null) {
 						console.warn(`\`StatusBar._updatePropsStack\`: Color ${mergedProps.backgroundColor.value} parsed to null or undefined`);
 					} else {
-						invariant$42(typeof processedColor === "number", "Unexpected color given in StatusBar._updatePropsStack");
+						invariant$42(typeof processedColor == "number", "Unexpected color given in StatusBar._updatePropsStack");
 						NativeStatusBarManager.setColor(processedColor, mergedProps.backgroundColor.animated);
 					}
 					if (!oldProps || oldProps.hidden?.value !== mergedProps.hidden.value) {
@@ -37889,7 +38891,8 @@ __export(exports_react_native_Libraries_Components_Switch_AndroidSwitchNativeCom
 });
 var init_react_native_Libraries_Components_Switch_AndroidSwitchNativeComponent = __esm({
 	"AndroidSwitchNativeComponent.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent();
+		
 	
 		_default$87 = (init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent)).default;
 	
@@ -37928,7 +38931,8 @@ __export(exports_react_native_Libraries_Components_Switch_SwitchNativeComponent,
 });
 var init_react_native_Libraries_Components_Switch_SwitchNativeComponent = __esm({
 	"SwitchNativeComponent.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent();
+		
 	
 		_default$89 = (init_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent)).default;
 	
@@ -37937,7 +38941,7 @@ var init_react_native_Libraries_Components_Switch_SwitchNativeComponent = __esm(
 //#endregion
 //#region Switch.js
 var exports_react_native_Libraries_Components_Switch_Switch = {};
-var returnsFalse, returnsTrue, Switch, React$55;
+var returnsFalse, returnsTrue, Switch, React$55, useLayoutEffect, useRef$7, useState$5;
 __export(exports_react_native_Libraries_Components_Switch_Switch, {
 	"default": function() { return Switch; },
 });
@@ -37947,10 +38951,14 @@ var init_react_native_Libraries_Components_Switch_Switch = __esm({
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Utilities_useMergeRefs();
 	init_react_native_Libraries_Components_Switch_AndroidSwitchNativeComponent();
-	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent();
 	init_react_native_Libraries_Components_Switch_SwitchNativeComponent();
+	require_react_index();
+	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent();
 	init_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent();
 	React$55 = __toESM(require_react_index());
+	useLayoutEffect = require_react_index().useLayoutEffect;
+	useRef$7 = require_react_index().useRef;
+	useState$5 = require_react_index().useState;
 		
 	
 	
@@ -37965,12 +38973,12 @@ var init_react_native_Libraries_Components_Switch_Switch = __esm({
 		return true;
 	};
 	Switch = function({ ref:forwardedRef, ...props }) {
-		var { disabled:disabled, ios_backgroundColor:ios_backgroundColor, onChange:onChange, onValueChange:onValueChange, style:style, thumbColor:thumbColor, trackColor:trackColor, value:value, ...restProps } = props,trackColorForFalse = trackColor?.false,trackColorForTrue = trackColor?.true,nativeSwitchRef = require_react_index().useRef(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),[native, setNative] = require_react_index().useState({ value: null }),handleChange = function(event) {
+		var { disabled:disabled, ios_backgroundColor:ios_backgroundColor, onChange:onChange, onValueChange:onValueChange, style:style, thumbColor:thumbColor, trackColor:trackColor, value:value, ...restProps } = props,trackColorForFalse = trackColor?.false,trackColorForTrue = trackColor?.true,nativeSwitchRef = useRef$7(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),[native, setNative] = useState$5({ value: null }),handleChange = function(event) {
 			onChange?.(event);
 			onValueChange?.(event.nativeEvent.value);
 			setNative({ value: event.nativeEvent.value });
 		};
-		require_react_index().useLayoutEffect(function() {
+		useLayoutEffect(function() {
 			var jsValue = value === true,shouldUpdateNativeSwitch = native.value != null && native.value !== jsValue;
 			if (shouldUpdateNativeSwitch && nativeSwitchRef.current?.setNativeProps != null) {
 				if (Platform.OS === "android") {
@@ -38021,17 +39029,17 @@ var init_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNative
 //#endregion
 //#region TextInput.js
 var exports_react_native_Libraries_Components_TextInput_TextInput = {};
-var AndroidTextInput, AndroidTextInputCommands$1, RCTSinglelineTextInputView, RCTSinglelineTextInputNativeCommands, RCTMultilineTextInputView, RCTMultilineTextInputNativeCommands, emptyFunctionThatReturnsTrue, useTextInputStateSynchronization, InternalTextInput, enterKeyHintToReturnTypeMap, inputModeToKeyboardTypeMap, autoCompleteWebToAutoCompleteAndroidMap, autoCompleteWebToTextContentTypeMap, TextInput, styles$13, verticalAlignToTextAlignVerticalMap$1, invariant$43, nullthrows$12, React$56;
+var AndroidTextInput, AndroidTextInputCommands$1, RCTSinglelineTextInputView, RCTSinglelineTextInputNativeCommands, RCTMultilineTextInputView, RCTMultilineTextInputNativeCommands, emptyFunctionThatReturnsTrue, useTextInputStateSynchronization, InternalTextInput, enterKeyHintToReturnTypeMap, inputModeToKeyboardTypeMap, autoCompleteWebToAutoCompleteAndroidMap, autoCompleteWebToTextContentTypeMap, TextInput, styles$13, verticalAlignToTextAlignVerticalMap$1, invariant$43, nullthrows$12, React$56, useCallback$4, useLayoutEffect$1, useMemo$8, useRef$8, useState$6;
 __export(exports_react_native_Libraries_Components_TextInput_TextInput, {
 	"default": function() { return TextInput; },
 });
 var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 	"TextInput.js"() {
 	useTextInputStateSynchronization = function({ props:props, mostRecentEventCount:mostRecentEventCount, selection:selection, inputRef:inputRef, text:text, viewCommands:viewCommands }) {
-		var [lastNativeText, setLastNativeText] = require_react_index().useState(props.value),[lastNativeSelectionState, setLastNativeSelection] = require_react_index().useState({ selection: { start: -1, end: -1 }, mostRecentEventCount: mostRecentEventCount }),lastNativeSelection = lastNativeSelectionState.selection;
-		require_react_index().useLayoutEffect(function() {
+		var [lastNativeText, setLastNativeText] = useState$6(props.value),[lastNativeSelectionState, setLastNativeSelection] = useState$6({ selection: { start: -1, end: -1 }, mostRecentEventCount: mostRecentEventCount }),lastNativeSelection = lastNativeSelectionState.selection;
+		useLayoutEffect$1(function() {
 			var nativeUpdate = {};
-			if (lastNativeText !== props.value && typeof props.value === "string") {
+			if (lastNativeText !== props.value && typeof props.value == "string") {
 				nativeUpdate.text = props.value;
 				setLastNativeText(props.value);
 			}
@@ -38049,8 +39057,8 @@ var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 		return { setLastNativeText, setLastNativeSelection };
 	};
 	InternalTextInput = function(props) {
-		var { 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-selected':ariaSelected, accessibilityState:accessibilityState, id:id, tabIndex:tabIndex, selection:propsSelection, selectionColor:selectionColor, selectionHandleColor:selectionHandleColor, cursorColor:cursorColor, ...otherProps } = props,inputRef = require_react_index().useRef(null),selection = propsSelection == null ? null : { start: propsSelection.start, end: propsSelection.end ?? propsSelection.start },text = typeof props.value === "string" ? props.value : typeof props.defaultValue === "string" ? props.defaultValue : undefined,viewCommands = AndroidTextInputCommands$1 || (props.multiline === true ? RCTMultilineTextInputNativeCommands : RCTSinglelineTextInputNativeCommands),[mostRecentEventCount, setMostRecentEventCount] = require_react_index().useState(0),{ setLastNativeText:setLastNativeText, setLastNativeSelection:setLastNativeSelection } = useTextInputStateSynchronization({ props, inputRef, mostRecentEventCount, selection, text, viewCommands });
-		require_react_index().useLayoutEffect(function() {
+		var { 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-selected':ariaSelected, accessibilityState:accessibilityState, id:id, tabIndex:tabIndex, selection:propsSelection, selectionColor:selectionColor, selectionHandleColor:selectionHandleColor, cursorColor:cursorColor, ...otherProps } = props,inputRef = useRef$8(null),selection = propsSelection == null ? null : { start: propsSelection.start, end: propsSelection.end ?? propsSelection.start },text = typeof props.value == "string" ? props.value : typeof props.defaultValue == "string" ? props.defaultValue : undefined,viewCommands = AndroidTextInputCommands$1 || (props.multiline === true ? RCTMultilineTextInputNativeCommands : RCTSinglelineTextInputNativeCommands),[mostRecentEventCount, setMostRecentEventCount] = useState$6(0),{ setLastNativeText:setLastNativeText, setLastNativeSelection:setLastNativeSelection } = useTextInputStateSynchronization({ props, inputRef, mostRecentEventCount, selection, text, viewCommands });
+		useLayoutEffect$1(function() {
 			var inputRefValue = inputRef.current;
 			if (inputRefValue != null) {
 				TextInputState.registerInput(inputRefValue);
@@ -38062,7 +39070,7 @@ var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 				};
 			}
 		}, []);
-		var setLocalRef = require_react_index().useCallback(function(instance) {
+		var setLocalRef = useCallback$4(function(instance) {
 			inputRef.current = instance;
 			if (instance != null) {
 				TextInputState.registerInput(instance);
@@ -38127,7 +39135,7 @@ var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 				submitBehavior = "submit";
 			}
 		}
-		var accessible = props.accessible !== false,focusable = props.focusable !== false,{ editable:editable, hitSlop:hitSlop, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, rejectResponderTermination:rejectResponderTermination } = props,config = require_react_index().useMemo(function() {
+		var accessible = props.accessible !== false,focusable = props.focusable !== false,{ editable:editable, hitSlop:hitSlop, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, rejectResponderTermination:rejectResponderTermination } = props,config = useMemo$8(function() {
 			return ({ hitSlop, onPress: function(event) {
 				onPress?.(event);
 				if (editable !== false) {
@@ -38147,7 +39155,7 @@ var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 		var _style = props.style,flattenedStyle = flattenStyle(props.style);
 		if (flattenedStyle != null) {
 			var overrides = null;
-			if (typeof flattenedStyle?.fontWeight === "number") {
+			if (typeof flattenedStyle?.fontWeight == "number") {
 				overrides = overrides || {};
 				overrides.fontWeight = flattenedStyle.fontWeight.toString();
 			}
@@ -38182,9 +39190,17 @@ var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Utilities_useMergeRefs();
 	init_react_native_Libraries_Components_TextInput_TextInputState();
+	require_invariant_browser();
+	require_nullthrows_nullthrows();
+	require_react_index();
 	invariant$43 = require_invariant_browser();
 	nullthrows$12 = __toESM(require_nullthrows_nullthrows()).default;
 	React$56 = __toESM(require_react_index());
+	useCallback$4 = require_react_index().useCallback;
+	useLayoutEffect$1 = require_react_index().useLayoutEffect;
+	useMemo$8 = require_react_index().useMemo;
+	useRef$8 = require_react_index().useRef;
+	useState$6 = require_react_index().useState;
 		
 	
 	
@@ -38239,6 +39255,7 @@ __export(exports_react_native_Libraries_Components_Touchable_PooledClass, {
 });
 var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 	"PooledClass.js"() {
+	require_invariant_browser();
 	invariant$44 = require_invariant_browser();
 		"use strict";
 	
@@ -38376,6 +39393,7 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 	init_react_native_Libraries_Components_Sound_SoundManager();
 	init_react_native_Libraries_Components_Touchable_BoundingDimensions();
 	init_react_native_Libraries_Components_Touchable_Position();
+	require_react_index();
 	React$57 = __toESM(require_react_index());
 		
 	
@@ -38479,7 +39497,7 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 		if (responderID == null) {
 			return;
 		}
-		if (typeof responderID === "number") {
+		if (typeof responderID == "number") {
 			UIManager.measure(responderID, this._handleQueryLayout);
 		} else {
 			responderID.measure(this._handleQueryLayout);
@@ -38587,7 +39605,7 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 //#endregion
 //#region TouchableHighlight.js
 var exports_react_native_Libraries_Components_Touchable_TouchableHighlight = {};
-var TouchableHighlightImpl, TouchableHighlight, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, React$58;
+var TouchableHighlightImpl, TouchableHighlight, __extends, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, React$58, cloneElement$5;
 __export(exports_react_native_Libraries_Components_Touchable_TouchableHighlight, {
 	"default": function() { return TouchableHighlight; },
 });
@@ -38601,7 +39619,9 @@ var init_react_native_Libraries_Components_Touchable_TouchableHighlight = __esm(
 	init_react_native_Libraries_Pressability_Pressability();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_Utilities_Platform_ios();
+	require_react_index();
 	React$58 = __toESM(require_react_index());
+	cloneElement$5 = require_react_index().cloneElement;
 		
 	
 	
@@ -38702,7 +39722,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableHighlight = __esm(
 		} });
 		Object.defineProperty(TouchableHighlightImpl.prototype, "render", { configurable: true, writable: true, value: function() {
 			var child = React$58.Children.only(this.props.children),{ onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers(),accessibilityState = this.props.disabled != null ? { ...this.props.accessibilityState, disabled: this.props.disabled } : this.props.accessibilityState,accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text },accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion),accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
-			return (/* @__PURE__ */ React$58.createElement(View$1, { accessible: this.props.accessible !== false, accessibilityLabel: accessibilityLabel, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityRole: this.props.accessibilityRole, accessibilityState: accessibilityState, accessibilityValue: accessibilityValue, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, style: StyleSheet.compose(this.props.style, this.state.extraStyles?.underlay), onLayout: this.props.onLayout, hitSlop: this.props.hitSlop, hasTVPreferredFocus: this.props.hasTVPreferredFocus, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, testID: this.props.testID, ref: this.props.hostRef, ...eventHandlersWithoutBlurAndFocus }, require_react_index().cloneElement(child, { style: StyleSheet.compose(child.props.style, this.state.extraStyles?.child) }), null));
+			return (/* @__PURE__ */ React$58.createElement(View$1, { accessible: this.props.accessible !== false, accessibilityLabel: accessibilityLabel, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityRole: this.props.accessibilityRole, accessibilityState: accessibilityState, accessibilityValue: accessibilityValue, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, style: StyleSheet.compose(this.props.style, this.state.extraStyles?.underlay), onLayout: this.props.onLayout, hitSlop: this.props.hitSlop, hasTVPreferredFocus: this.props.hasTVPreferredFocus, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, testID: this.props.testID, ref: this.props.hostRef, ...eventHandlersWithoutBlurAndFocus }, cloneElement$5(child, { style: StyleSheet.compose(child.props.style, this.state.extraStyles?.child) }), null));
 		} });
 		Object.defineProperty(TouchableHighlightImpl.prototype, "componentDidMount", { configurable: true, writable: true, value: function() {
 			this._isMounted = true;
@@ -38730,24 +39750,16 @@ var init_react_native_Libraries_Components_Touchable_TouchableHighlight = __esm(
 	}
 });
 //#endregion
-//#region ViewAccessibility.js
-var require_react_native_Libraries_Components_View_ViewAccessibility = __commonJS({
-	"ViewAccessibility.js"(exports, module) {
-"use strict";
-	
-	}
-});
-//#endregion
 //#region TouchableWithoutFeedback.js
 var exports_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback = {};
-var PASSTHROUGH_PROPS, TouchableWithoutFeedback, React$59;
+var PASSTHROUGH_PROPS, TouchableWithoutFeedback, React$59, cloneElement$6, useMemo$9;
 __export(exports_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback, {
 	"default": function() { return TouchableWithoutFeedback; },
 });
 var init_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback = __esm({
 	"TouchableWithoutFeedback.js"() {
 	TouchableWithoutFeedback = function(props) {
-		var { disabled:disabled, rejectResponderTermination:rejectResponderTermination, 'aria-disabled':ariaDisabled, accessibilityState:accessibilityState, hitSlop:hitSlop, delayLongPress:delayLongPress, delayPressIn:delayPressIn, delayPressOut:delayPressOut, pressRetentionOffset:pressRetentionOffset, touchSoundDisabled:touchSoundDisabled, onBlur:_onBlur, onFocus:_onFocus, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut } = props,pressabilityConfig = require_react_index().useMemo(function() {
+		var { disabled:disabled, rejectResponderTermination:rejectResponderTermination, 'aria-disabled':ariaDisabled, accessibilityState:accessibilityState, hitSlop:hitSlop, delayLongPress:delayLongPress, delayPressIn:delayPressIn, delayPressOut:delayPressOut, pressRetentionOffset:pressRetentionOffset, touchSoundDisabled:touchSoundDisabled, onBlur:_onBlur, onFocus:_onFocus, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut } = props,pressabilityConfig = useMemo$9(function() {
 			return ({ cancelable: !rejectResponderTermination, disabled: disabled !== null ? disabled : (ariaDisabled ?? accessibilityState?.disabled), hitSlop: hitSlop, delayLongPress: delayLongPress, delayPressIn: delayPressIn, delayPressOut: delayPressOut, minPressDuration: 0, pressRectOffset: pressRetentionOffset, android_disableSound: touchSoundDisabled, onBlur: _onBlur, onFocus: _onFocus, onLongPress: onLongPress, onPress: onPress, onPressIn: onPressIn, onPressOut: onPressOut });
 		}, [rejectResponderTermination, disabled, ariaDisabled, accessibilityState?.disabled, hitSlop, delayLongPress, delayPressIn, delayPressOut, pressRetentionOffset, touchSoundDisabled, _onBlur, _onFocus, onLongPress, onPress, onPressIn, onPressOut]),eventHandlers = usePressability(pressabilityConfig),element = React$59.Children.only(props.children),children = [element.props.children],ariaLive = props["aria-live"];
 		;
@@ -38757,11 +39769,14 @@ var init_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback = 
 				elementProps[prop] = props[prop];
 			}
 		}
-		return require_react_index().cloneElement(element, elementProps, ...children);
+		return cloneElement$6(element, elementProps, ...children);
 	};
 		init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_Pressability_usePressability();
+	require_react_index();
 	React$59 = __toESM(require_react_index());
+	cloneElement$6 = require_react_index().cloneElement;
+	useMemo$9 = require_react_index().useMemo;
 		
 	
 	
@@ -38783,7 +39798,7 @@ var init_react_native_Libraries_Lists_VirtualizedList = __esm({
 	init__react_native_virtualized_lists_index();
 		"use strict";
 	
-	VirtualizedListComponent = _default$55.VirtualizedList;
+	VirtualizedListComponent = _default$49.VirtualizedList;
 	
 	
 	}
@@ -38800,7 +39815,7 @@ var init_react_native_Libraries_Lists_VirtualizedSectionList = __esm({
 	init__react_native_virtualized_lists_index();
 		"use strict";
 	
-	VirtualizedSectionList$2 = _default$55.VirtualizedSectionList;
+	VirtualizedSectionList$2 = _default$49.VirtualizedSectionList;
 	
 	
 	}
@@ -38846,7 +39861,7 @@ var init_react_native_src_private_components_virtualview_VirtualViewNativeCompon
 var require_flow_enums_runtime_index = __commonJS({
 	"index.js"(exports, module) {
 "use strict";
-	var hasOwnProperty = Object.prototype.hasOwnProperty,reverseMapCache = typeof WeakMap === "function" ? new WeakMap() : new Map();
+	var hasOwnProperty = Object.prototype.hasOwnProperty,reverseMapCache = typeof WeakMap == "function" ? new WeakMap() : new Map();
 	function getReverseMap(enumObject) {
 		var reverseMap = reverseMapCache.get(enumObject);
 		if (reverseMap !== undefined) {
@@ -38878,7 +39893,7 @@ var require_flow_enums_runtime_index = __commonJS({
 		return Object.freeze(o);
 	}
 	var EnumMirroredPrototype = Object.freeze(Object.defineProperties(Object.create(null), { isValid: { value: function(x) {
-		if (typeof x === "string") {
+		if (typeof x == "string") {
 			return hasOwnProperty.call(this, x);
 		}
 		return false;
@@ -38902,7 +39917,7 @@ var require_flow_enums_runtime_index = __commonJS({
 //#endregion
 //#region VirtualView.js
 var exports_react_native_src_private_components_virtualview_VirtualView = {};
-var ReactNativeFeatureFlags$18, VirtualViewNativeComponent, NotHidden, defaultHiddenStyle, createVirtualView, _default$93, createHiddenVirtualView, _logs, nullthrows$13, React$60;
+var ReactNativeFeatureFlags$18, VirtualViewNativeComponent, NotHidden, defaultHiddenStyle, createVirtualView, _default$93, createHiddenVirtualView, _logs, nullthrows$13, React$60, useState$7;
 __export(exports_react_native_src_private_components_virtualview_VirtualView, {
 	"default": function() { return _default$93; },
 	createHiddenVirtualView: function() { return createHiddenVirtualView; },
@@ -38916,7 +39931,7 @@ var init_react_native_src_private_components_virtualview_VirtualView = __esm({
 	createVirtualView = function(initialState) {
 		var initialHidden = initialState !== NotHidden;
 		function VirtualView_withRef({ children:children, hiddenStyle:hiddenStyle=defaultHiddenStyle, nativeID:nativeID, style:style, onModeChange:onModeChange, removeClippedSubviews:removeClippedSubviews },ref) {
-			var _a,_b,[state, setState] = require_react_index().useState(initialState);
+			var _a,_b,[state, setState] = useState$7(initialState);
 			;
 			var isHidden = state !== NotHidden,handleModeChange = function(event) {
 				var mode = nullthrows$13(VirtualViewMode.cast(event.nativeEvent.mode)),emitModeChange = onModeChange == null ? null : onModeChange.bind(null, { mode, target: event.currentTarget, targetRect: event.nativeEvent.targetRect, thresholdRect: event.nativeEvent.thresholdRect });
@@ -38924,16 +39939,21 @@ var init_react_native_src_private_components_virtualview_VirtualView = __esm({
 					if (_a === VirtualViewMode.Visible) {
 						setState(NotHidden);
 						emitModeChange?.();
-					} else if (_a === VirtualViewMode.Prerender) {
+						return;
+					}
+					if (_a === VirtualViewMode.Prerender) {
 						startTransition(function() {
 							setState(NotHidden);
 							emitModeChange?.();
 						});
-					} else if (_a === VirtualViewMode.Hidden) {
+						return;
+					}
+					if (_a === VirtualViewMode.Hidden) {
 						startTransition(function() {
 							setState(hiddenStyle(event.nativeEvent.targetRect) ?? {});
 							emitModeChange?.();
 						});
+						return;
 					}
 				})(mode);
 			};
@@ -38941,9 +39961,11 @@ var init_react_native_src_private_components_virtualview_VirtualView = __esm({
 			return (/* @__PURE__ */ React$60.createElement(VirtualViewNativeComponent, { initialHidden: initialHidden, nativeID: nativeID, ref: ref, removeClippedSubviews: removeClippedSubviews, renderState: (isHidden ? VirtualViewRenderState.None : VirtualViewRenderState.Rendered), style: isHidden ? StyleSheet.compose(style, nullthrows$13(state)) : style, onModeChange: handleModeChange }, (function(_b) {
 				if (_b === "activity-without-mode") {
 					return /* @__PURE__ */ React$60.createElement(Activity, null, isHidden ? null : children);
-				} else if (_b === "activity-with-hidden-mode") {
+				}
+				if (_b === "activity-with-hidden-mode") {
 					return /* @__PURE__ */ React$60.createElement(Activity, { mode: isHidden ? "hidden" : "visible" }, children);
-				} else if (_b === "no-activity" | _) {
+				}
+				if (_b === "no-activity" || true) {
 					return isHidden ? null : children;
 				}
 			})(virtualViewActivityBehavior())));
@@ -38958,8 +39980,11 @@ var init_react_native_src_private_components_virtualview_VirtualView = __esm({
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_src_private_components_virtualview_VirtualViewExperimentalNativeComponent();
 	init_react_native_src_private_components_virtualview_VirtualViewNativeComponent();
+	require_nullthrows_nullthrows();
+	require_react_index();
 	nullthrows$13 = __toESM(require_nullthrows_nullthrows()).default;
 	React$60 = __toESM(require_react_index());
+	useState$7 = require_react_index().useState;
 		
 	ReactNativeFeatureFlags$18=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
@@ -39023,29 +40048,29 @@ var init_react_native_Libraries_ActionSheetIOS_ActionSheetIOS = __esm({
 	processColor$13 = (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default;
 	invariant$45 = require_invariant_browser();
 	ActionSheetIOS = { showActionSheetWithOptions(options,callback) {
-		invariant$45(typeof options === "object" && options !== null, "Options must be a valid object");
-		invariant$45(typeof callback === "function", "Must provide a valid callback");
+		invariant$45(typeof options == "object" && options !== null, "Options must be a valid object");
+		invariant$45(typeof callback == "function", "Must provide a valid callback");
 		invariant$45(_default$94, "ActionSheetManager doesn't exist");
 		var { tintColor:tintColor, cancelButtonTintColor:cancelButtonTintColor, disabledButtonTintColor:disabledButtonTintColor, destructiveButtonIndex:destructiveButtonIndex, ...remainingOptions } = options,destructiveButtonIndices = null;
 		if (Array.isArray(destructiveButtonIndex)) {
 			destructiveButtonIndices = destructiveButtonIndex;
-		} else if (typeof destructiveButtonIndex === "number") {
+		} else if (typeof destructiveButtonIndex == "number") {
 			destructiveButtonIndices = [destructiveButtonIndex];
 		}
 		var processedTintColor = processColor$13(tintColor),processedCancelButtonTintColor = processColor$13(cancelButtonTintColor),processedDisabledButtonTintColor = processColor$13(disabledButtonTintColor);
-		invariant$45(processedTintColor == null || typeof processedTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions tintColor");
-		invariant$45(processedCancelButtonTintColor == null || typeof processedCancelButtonTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions cancelButtonTintColor");
-		invariant$45(processedDisabledButtonTintColor == null || typeof processedDisabledButtonTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions disabledButtonTintColor");
+		invariant$45(processedTintColor == null || typeof processedTintColor == "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions tintColor");
+		invariant$45(processedCancelButtonTintColor == null || typeof processedCancelButtonTintColor == "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions cancelButtonTintColor");
+		invariant$45(processedDisabledButtonTintColor == null || typeof processedDisabledButtonTintColor == "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions disabledButtonTintColor");
 		_default$94.showActionSheetWithOptions({ ...remainingOptions, tintColor: processedTintColor, cancelButtonTintColor: processedCancelButtonTintColor, disabledButtonTintColor: processedDisabledButtonTintColor, destructiveButtonIndices }, callback);
 	}, showShareActionSheetWithOptions(options,failureCallback,successCallback) {
-		invariant$45(typeof options === "object" && options !== null, "Options must be a valid object");
-		invariant$45(typeof failureCallback === "function", "Must provide a valid failureCallback");
-		invariant$45(typeof successCallback === "function", "Must provide a valid successCallback");
+		invariant$45(typeof options == "object" && options !== null, "Options must be a valid object");
+		invariant$45(typeof failureCallback == "function", "Must provide a valid failureCallback");
+		invariant$45(typeof successCallback == "function", "Must provide a valid successCallback");
 		invariant$45(_default$94, "ActionSheetManager doesn't exist");
 		_default$94.showShareActionSheetWithOptions({ ...options, tintColor: processColor$13(options.tintColor) }, failureCallback, successCallback);
 	}, dismissActionSheet: function() {
 		invariant$45(_default$94, "ActionSheetManager doesn't exist");
-		if (typeof _default$94.dismissActionSheet === "function") {
+		if (typeof _default$94.dismissActionSheet == "function") {
 			_default$94.dismissActionSheet();
 		}
 	} };
@@ -39300,7 +40325,8 @@ __export(exports_react_native_Libraries_Components_Clipboard_NativeClipboard, {
 });
 var init_react_native_Libraries_Components_Clipboard_NativeClipboard = __esm({
 	"NativeClipboard.js"() {
-	
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard();
+		
 	
 		_default$101 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard)).default;
 	
@@ -39473,8 +40499,8 @@ var init_react_native_Libraries_Utilities_DevSettings = __esm({
 	"DevSettings.js"() {
 	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
 	init_react_native_Libraries_NativeModules_specs_NativeDevSettings();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings();
 	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings();
 		
 	
 	
@@ -39521,10 +40547,10 @@ var init_react_native_Libraries_Interaction_InteractionManager = __esm({
 	InteractionManagerStub = { Events: { interactionStart: "interactionStart", interactionComplete: "interactionComplete" }, runAfterInteractions(task) {
 		var immediateID = void 0,promise = new Promise(function(resolve) {
 			immediateID = setImmediate(function() {
-				if (typeof task === "object" && task !== null) {
-					if (typeof task.gen === "function") {
+				if (typeof task == "object" && task !== null) {
+					if (typeof task.gen == "function") {
 						task.gen().then(resolve, reject);
-					} else if (typeof task.run === "function") {
+					} else if (typeof task.run == "function") {
 						try {
 							task.run();
 							resolve();
@@ -39534,7 +40560,7 @@ var init_react_native_Libraries_Interaction_InteractionManager = __esm({
 					} else {
 						reject(new TypeError(`Task "${task.name}" missing gen or run.`));
 					}
-				} else if (typeof task === "function") {
+				} else if (typeof task == "function") {
 					try {
 						task();
 						resolve();
@@ -39642,8 +40668,10 @@ var init_react_native_Libraries_Linking_Linking = __esm({
 	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Linking_NativeIntentAndroid();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid();
 	init_react_native_Libraries_Linking_NativeLinkingManager();
+	require_invariant_browser();
+	require_nullthrows_nullthrows();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager();
 	invariant$47 = require_invariant_browser();
 	nullthrows$14 = __toESM(require_nullthrows_nullthrows()).default;
@@ -39705,7 +40733,7 @@ var init_react_native_Libraries_Linking_Linking = __esm({
 			}
 		} });
 		Object.defineProperty(LinkingImpl.prototype, "_validateURL", { configurable: true, writable: true, value: function(url) {
-			invariant$47(typeof url === "string", "Invalid URL: should be a string. Was: " + url);
+			invariant$47(typeof url == "string", "Invalid URL: should be a string. Was: " + url);
 			invariant$47(url, "Invalid URL: cannot be empty");
 		} });
 		return LinkingImpl;
@@ -39727,6 +40755,7 @@ var init_react_native_Libraries_LogBox_LogBox = __esm({
 	"LogBox.js"() {
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Utilities_RCTLog();
+	require_react_index();
 	React$61 = __toESM(require_react_index());
 		
 	
@@ -39768,7 +40797,7 @@ var init_react_native_Libraries_Interaction_TouchHistoryMath = __esm({
 		} else {
 			for (var i = 0; i < touchBank.length; i++) {
 				var touchTrack = touchBank[i];
-				if (touchTrack !== null && touchTrack !== undefined && touchTrack.touchActive && touchTrack.currentTimeStamp >= touchesChangedAfter) {
+				if (touchTrack != null && touchTrack.touchActive && touchTrack.currentTimeStamp >= touchesChangedAfter) {
 					var toAdd = void 0;
 					if (ofCurrent && isXAxis) {
 						toAdd = touchTrack.currentPageX;
@@ -39940,7 +40969,7 @@ var init_react_native_Libraries_PermissionsAndroid_NativePermissionsAndroid = __
 //#endregion
 //#region PermissionsAndroid.js
 var exports_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = {};
-var Platform$51, PERMISSION_REQUEST_RESULT, PERMISSIONS, PermissionsAndroidImpl, PermissionsAndroidInstance, __async, __generator, __classCallCheck, invariant$48;
+var Platform$52, PERMISSION_REQUEST_RESULT, PERMISSIONS, PermissionsAndroidImpl, PermissionsAndroidInstance, __async, __generator, __classCallCheck, invariant$48;
 __export(exports_react_native_Libraries_PermissionsAndroid_PermissionsAndroid, {
 	"default": function() { return PermissionsAndroidInstance; },
 });
@@ -39950,8 +40979,9 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 	init_generator();
 	init_class_call_check();
 	init_react_native_Libraries_NativeModules_specs_NativeDialogManagerAndroid();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeDialogManagerAndroid();
 	init_react_native_Libraries_PermissionsAndroid_NativePermissionsAndroid();
+	require_invariant_browser();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeDialogManagerAndroid();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid();
 	invariant$48 = require_invariant_browser();
 		
@@ -39960,7 +40990,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 	
 	
 	
-	Platform$51 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	Platform$52 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
 	PERMISSION_REQUEST_RESULT = Object.freeze({ GRANTED: "granted", DENIED: "denied", NEVER_ASK_AGAIN: "never_ask_again" });
 	PERMISSIONS = Object.freeze({ READ_CALENDAR: "android.permission.READ_CALENDAR", WRITE_CALENDAR: "android.permission.WRITE_CALENDAR", CAMERA: "android.permission.CAMERA", READ_CONTACTS: "android.permission.READ_CONTACTS", WRITE_CONTACTS: "android.permission.WRITE_CONTACTS", GET_ACCOUNTS: "android.permission.GET_ACCOUNTS", ACCESS_FINE_LOCATION: "android.permission.ACCESS_FINE_LOCATION", ACCESS_COARSE_LOCATION: "android.permission.ACCESS_COARSE_LOCATION", ACCESS_BACKGROUND_LOCATION: "android.permission.ACCESS_BACKGROUND_LOCATION", RECORD_AUDIO: "android.permission.RECORD_AUDIO", READ_PHONE_STATE: "android.permission.READ_PHONE_STATE", CALL_PHONE: "android.permission.CALL_PHONE", READ_CALL_LOG: "android.permission.READ_CALL_LOG", WRITE_CALL_LOG: "android.permission.WRITE_CALL_LOG", ADD_VOICEMAIL: "com.android.voicemail.permission.ADD_VOICEMAIL", READ_VOICEMAIL: "com.android.voicemail.permission.READ_VOICEMAIL", WRITE_VOICEMAIL: "com.android.voicemail.permission.WRITE_VOICEMAIL", USE_SIP: "android.permission.USE_SIP", PROCESS_OUTGOING_CALLS: "android.permission.PROCESS_OUTGOING_CALLS", BODY_SENSORS: "android.permission.BODY_SENSORS", BODY_SENSORS_BACKGROUND: "android.permission.BODY_SENSORS_BACKGROUND", SEND_SMS: "android.permission.SEND_SMS", RECEIVE_SMS: "android.permission.RECEIVE_SMS", READ_SMS: "android.permission.READ_SMS", RECEIVE_WAP_PUSH: "android.permission.RECEIVE_WAP_PUSH", RECEIVE_MMS: "android.permission.RECEIVE_MMS", READ_EXTERNAL_STORAGE: "android.permission.READ_EXTERNAL_STORAGE", READ_MEDIA_IMAGES: "android.permission.READ_MEDIA_IMAGES", READ_MEDIA_VIDEO: "android.permission.READ_MEDIA_VIDEO", READ_MEDIA_AUDIO: "android.permission.READ_MEDIA_AUDIO", READ_MEDIA_VISUAL_USER_SELECTED: "android.permission.READ_MEDIA_VISUAL_USER_SELECTED", WRITE_EXTERNAL_STORAGE: "android.permission.WRITE_EXTERNAL_STORAGE", BLUETOOTH_CONNECT: "android.permission.BLUETOOTH_CONNECT", BLUETOOTH_SCAN: "android.permission.BLUETOOTH_SCAN", BLUETOOTH_ADVERTISE: "android.permission.BLUETOOTH_ADVERTISE", ACCESS_MEDIA_LOCATION: "android.permission.ACCESS_MEDIA_LOCATION", ACCEPT_HANDOVER: "android.permission.ACCEPT_HANDOVER", ACTIVITY_RECOGNITION: "android.permission.ACTIVITY_RECOGNITION", ANSWER_PHONE_CALLS: "android.permission.ANSWER_PHONE_CALLS", READ_PHONE_NUMBERS: "android.permission.READ_PHONE_NUMBERS", UWB_RANGING: "android.permission.UWB_RANGING", POST_NOTIFICATIONS: "android.permission.POST_NOTIFICATIONS", NEARBY_WIFI_DEVICES: "android.permission.NEARBY_WIFI_DEVICES" });
 	PermissionsAndroidImpl = (function() {
@@ -39971,7 +41001,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 		}
 		Object.defineProperty(PermissionsAndroidImpl.prototype, "checkPermission", { configurable: true, writable: true, value: function(permission) {
 			console.warn("\"PermissionsAndroid.checkPermission\" is deprecated. Use \"PermissionsAndroid.check\" instead");
-			if (Platform$51.OS !== "android") {
+			if (Platform$52.OS !== "android") {
 				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
 				return Promise.resolve(false);
 			}
@@ -39979,7 +41009,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 			return _default$111.checkPermission(permission);
 		} });
 		Object.defineProperty(PermissionsAndroidImpl.prototype, "check", { configurable: true, writable: true, value: function(permission) {
-			if (Platform$51.OS !== "android") {
+			if (Platform$52.OS !== "android") {
 				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
 				return Promise.resolve(false);
 			}
@@ -39993,7 +41023,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 					switch (_state.label) {
 						case 0:
 							console.warn("\"PermissionsAndroid.requestPermission\" is deprecated. Use \"PermissionsAndroid.request\" instead");
-							if (!(Platform$51.OS !== "android")) {
+							if (!(Platform$52.OS !== "android")) {
 								return [3, 1];
 							}
 							console.warn("\"PermissionsAndroid\" module works only for Android platform.");
@@ -40013,7 +41043,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 				return __generator(this, function(_state) {
 					switch (_state.label) {
 						case 0:
-							if (!(Platform$51.OS !== "android")) {
+							if (!(Platform$52.OS !== "android")) {
 								return [3, 1];
 							}
 							console.warn("\"PermissionsAndroid\" module works only for Android platform.");
@@ -40046,7 +41076,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 			}).call(this);
 		} });
 		Object.defineProperty(PermissionsAndroidImpl.prototype, "requestMultiple", { configurable: true, writable: true, value: function(permissions) {
-			if (Platform$51.OS !== "android") {
+			if (Platform$52.OS !== "android") {
 				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
 				return Promise.resolve({});
 			}
@@ -40109,6 +41139,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_PushNotificationIOS_NativePushNotificationManagerIOS();
+	require_invariant_browser();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS();
 	invariant$49 = require_invariant_browser();
 		
@@ -40238,7 +41269,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 			_default$113.abandonPermissions();
 		} });
 		Object.defineProperty(PushNotificationIOS, "checkPermissions", { configurable: true, writable: true, value: function(callback) {
-			invariant$49(typeof callback === "function", "Must provide a valid callback");
+			invariant$49(typeof callback == "function", "Must provide a valid callback");
 			invariant$49(_default$113, "PushNotificationManager is not available.");
 			_default$113.checkPermissions(callback);
 		} });
@@ -40370,6 +41401,7 @@ var init_react_native_Libraries_Settings_Settings_ios = __esm({
 	"Settings.ios.js"() {
 	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
 	init_react_native_Libraries_Settings_NativeSettingsManager();
+	require_invariant_browser();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager();
 	invariant$50 = require_invariant_browser();
 		
@@ -40382,7 +41414,7 @@ var init_react_native_Libraries_Settings_Settings_ios = __esm({
 		this._settings = Object.assign(this._settings, settings);
 		_default$115.setValues(settings);
 	}, watchKeys(keys,callback) {
-		if (typeof keys === "string") {
+		if (typeof keys == "string") {
 			keys = [keys];
 		}
 		invariant$50(Array.isArray(keys), "keys should be a string or array of strings");
@@ -40447,7 +41479,7 @@ var init_react_native_Libraries_Share_NativeShareModule = __esm({
 //#endregion
 //#region Share.js
 var exports_react_native_Libraries_Share_Share = {};
-var processColor$14, Platform$53, invariant$51, Share, __classCallCheck;
+var processColor$14, Platform$54, invariant$51, Share, __classCallCheck;
 __export(exports_react_native_Libraries_Share_Share, {
 	"default": function() { return Share; },
 });
@@ -40455,36 +41487,36 @@ var init_react_native_Libraries_Share_Share = __esm({
 	"Share.js"() {
 	init_class_call_check();
 	init_react_native_Libraries_ActionSheetIOS_NativeActionSheetManager();
-	init_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager();
 	init_react_native_Libraries_Share_NativeShareModule();
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule();
 		
 	
 	
 	processColor$14 = (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default;
-	Platform$53 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	Platform$54 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
 	invariant$51 = require_invariant_browser();
 	Share = (function() {
 		function Share() {
 			__classCallCheck(this, Share);
 		}
 		Object.defineProperty(Share, "share", { configurable: true, writable: true, value: function(content,options={}) {
-			invariant$51(typeof content === "object" && content !== null, "Content to share must be a valid object");
-			invariant$51(typeof content.url === "string" || typeof content.message === "string", "At least one of URL or message is required");
-			invariant$51(typeof options === "object" && options !== null, "Options must be a valid object");
-			if (Platform$53.OS === "android") {
+			invariant$51(typeof content == "object" && content !== null, "Content to share must be a valid object");
+			invariant$51(typeof content.url == "string" || typeof content.message == "string", "At least one of URL or message is required");
+			invariant$51(typeof options == "object" && options !== null, "Options must be a valid object");
+			if (Platform$54.OS === "android") {
 				invariant$51(_default$117, "ShareModule should be registered on Android.");
-				invariant$51(content.title == null || typeof content.title === "string", "Invalid title: title should be a string.");
-				var newContent = { title: content.title, message: typeof content.message === "string" ? content.message : undefined };
+				invariant$51(content.title == null || typeof content.title == "string", "Invalid title: title should be a string.");
+				var newContent = { title: content.title, message: typeof content.message == "string" ? content.message : undefined };
 				return _default$117.share(newContent, options.dialogTitle).then(function(result) {
 					return ({ activityType: null, ...result });
 				});
-			} else if (Platform$53.OS === "ios") {
+			} else if (Platform$54.OS === "ios") {
 				return new Promise(function(resolve,reject) {
 					var tintColor = processColor$14(options.tintColor);
-					invariant$51(tintColor == null || typeof tintColor === "number", "Unexpected color given for options.tintColor");
+					invariant$51(tintColor == null || typeof tintColor == "number", "Unexpected color given for options.tintColor");
 					invariant$51(_default$94, "NativeActionSheetManager is not registered on iOS, but it should be.");
-					_default$94.showShareActionSheetWithOptions({ message: typeof content.message === "string" ? content.message : undefined, url: typeof content.url === "string" ? content.url : undefined, subject: options.subject, tintColor: typeof tintColor === "number" ? tintColor : undefined, anchor: typeof options.anchor === "number" ? options.anchor : undefined, excludedActivityTypes: options.excludedActivityTypes }, function(error) {
+					_default$94.showShareActionSheetWithOptions({ message: typeof content.message == "string" ? content.message : undefined, url: typeof content.url == "string" ? content.url : undefined, subject: options.subject, tintColor: typeof tintColor == "number" ? tintColor : undefined, anchor: typeof options.anchor == "number" ? options.anchor : undefined, excludedActivityTypes: options.excludedActivityTypes }, function(error) {
 						return reject(error);
 					}, function(success,activityType) {
 						if (success) {
@@ -40549,20 +41581,22 @@ var init_react_native_Libraries_Components_ToastAndroid_ToastAndroid_ios = __esm
 //#endregion
 //#region useAnimatedValue.js
 var exports_react_native_Libraries_Animated_useAnimatedValue = {};
-var useAnimatedValue;
+var useAnimatedValue, useRef$9;
 __export(exports_react_native_Libraries_Animated_useAnimatedValue, {
 	"default": function() { return useAnimatedValue; },
 });
 var init_react_native_Libraries_Animated_useAnimatedValue = __esm({
 	"useAnimatedValue.js"() {
 	useAnimatedValue = function(initialValue,config) {
-		var ref = require_react_index().useRef(null);
+		var ref = useRef$9(null);
 		if (ref.current == null) {
 			ref.current = new Animated$2.Value(initialValue, config);
 		}
 		return ref.current;
 	};
 		init_react_native_Libraries_Animated_Animated();
+	require_react_index();
+	useRef$9 = require_react_index().useRef;
 		
 	
 	
@@ -40571,15 +41605,17 @@ var init_react_native_Libraries_Animated_useAnimatedValue = __esm({
 //#endregion
 //#region useColorScheme.js
 var exports_react_native_Libraries_Utilities_useColorScheme = {};
-var subscribe, useColorScheme;
+var subscribe, useColorScheme, useSyncExternalStore;
 __export(exports_react_native_Libraries_Utilities_useColorScheme, {
 	"default": function() { return useColorScheme; },
 });
 var init_react_native_Libraries_Utilities_useColorScheme = __esm({
 	"useColorScheme.js"() {
 	useColorScheme = function() {
-		return require_react_index().useSyncExternalStore(subscribe, (init_react_native_Libraries_Utilities_Appearance(), getColorScheme));
+		return useSyncExternalStore(subscribe, (init_react_native_Libraries_Utilities_Appearance(), getColorScheme));
 	};
+		require_react_index();
+	useSyncExternalStore = require_react_index().useSyncExternalStore;
 		"use strict";
 	
 	
@@ -40643,7 +41679,7 @@ var init_react_native_Libraries_Vibration_NativeVibration = __esm({
 //#endregion
 //#region Vibration.js
 var exports_react_native_Libraries_Vibration_Vibration = {};
-var Platform$54, _vibrating, _id, _default_vibration_length, vibrateByPattern, vibrateScheduler, Vibration;
+var Platform$55, _vibrating, _id, _default_vibration_length, vibrateByPattern, vibrateScheduler, Vibration;
 __export(exports_react_native_Libraries_Vibration_Vibration, {
 	"default": function() { return Vibration; },
 });
@@ -40686,13 +41722,13 @@ var init_react_native_Libraries_Vibration_Vibration = __esm({
 		init_react_native_Libraries_Vibration_NativeVibration();
 	init_react_native_src_private_specs_DEPRECATED_modules_NativeVibration();
 		
-	Platform$54 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	Platform$55 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
 	_vibrating = false;
 	_id = 0;
 	_default_vibration_length = 400;
 	Vibration = { vibrate: function(pattern=_default_vibration_length,repeat=false) {
-		if (Platform$54.OS === "android") {
-			if (typeof pattern === "number") {
+		if (Platform$55.OS === "android") {
+			if (typeof pattern == "number") {
 				_default$120.vibrate(pattern);
 			} else if (Array.isArray(pattern)) {
 				_default$120.vibrateByPattern(pattern, repeat ? 0 : -1);
@@ -40703,7 +41739,7 @@ var init_react_native_Libraries_Vibration_Vibration = __esm({
 			if (_vibrating) {
 				return;
 			}
-			if (typeof pattern === "number") {
+			if (typeof pattern == "number") {
 				_default$120.vibrate(pattern);
 			} else if (Array.isArray(pattern)) {
 				vibrateByPattern(pattern, repeat);
@@ -40712,7 +41748,7 @@ var init_react_native_Libraries_Vibration_Vibration = __esm({
 			}
 		}
 	}, cancel: function() {
-		if (Platform$54.OS === "ios") {
+		if (Platform$55.OS === "ios") {
 			_vibrating = false;
 		} else {
 			_default$120.cancel();
@@ -40932,7 +41968,7 @@ var init__react_native_new_app_screen_src_Links = __esm({
 //#endregion
 //#region Theme.js
 var exports__react_native_new_app_screen_src_Theme = {};
-var COLORS, useTheme, ThemedText, React$62;
+var COLORS, useTheme, ThemedText, React$62, Text$3, useColorScheme$1;
 __export(exports__react_native_new_app_screen_src_Theme, {
 	useTheme: function() { return useTheme; },
 	ThemedText: function() { return ThemedText; },
@@ -40940,14 +41976,18 @@ __export(exports__react_native_new_app_screen_src_Theme, {
 var init__react_native_new_app_screen_src_Theme = __esm({
 	"Theme.js"() {
 	useTheme = function() {
-		var colorScheme = require_react_native_index().useColorScheme();
+		var colorScheme = useColorScheme$1();
 		return { colors: COLORS[colorScheme === "dark" ? "dark" : "light"] };
 	};
 	ThemedText = function({ color:color, style:style, ...props }) {
 		var { colors:colors } = useTheme();
-		return (/* @__PURE__ */ React$62.createElement(require_react_native_index().Text, { style: [{ color: color === "secondary" ? colors.textSecondary : colors.textPrimary }, style], ...props }));
+		return (/* @__PURE__ */ React$62.createElement(Text$3, { style: [{ color: color === "secondary" ? colors.textSecondary : colors.textPrimary }, style], ...props }));
 	};
-		React$62 = __toESM(require_react_index());
+		require_react_index();
+	require_react_native_index();
+	React$62 = __toESM(require_react_index());
+	Text$3 = require_react_native_index().Text;
+	useColorScheme$1 = require_react_native_index().useColorScheme;
 		
 	
 	COLORS = { light: { background: "#f3f3f3", backgroundHighlight: "#cfe6ee", cardBackground: "#fff", cardOutline: "#dae1e7", textPrimary: "#000", textSecondary: "#404756" }, dark: { background: "#000", backgroundHighlight: "#193c47", cardBackground: "#222", cardOutline: "#444", textPrimary: "#fff", textSecondary: "#c0c1c4" } };
@@ -41006,7 +42046,8 @@ __export(exports_react_native_Libraries_Image_AssetRegistry, {
 });
 var init_react_native_Libraries_Image_AssetRegistry = __esm({
 	"AssetRegistry.js"() {
-	
+	require__react_native_assets_registry_registry();
+		
 	
 	}
 });
@@ -41029,22 +42070,22 @@ module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJ
 //#endregion
 //#region NewAppScreen.js
 var exports__react_native_new_app_screen_src_NewAppScreen = {};
-var NewAppScreen, getVersionLabel, getHermesLabel, styles$14, React$63;
+var NewAppScreen, getVersionLabel, getHermesLabel, styles$14, React$63, Image$3, ReactNativeVersion$1, ScrollView$4, StyleSheet$21, Text$4, TouchableHighlight$1, View$20, useColorScheme$2, useWindowDimensions$2;
 __export(exports__react_native_new_app_screen_src_NewAppScreen, {
 	"default": function() { return NewAppScreen; },
 });
 var init__react_native_new_app_screen_src_NewAppScreen = __esm({
 	"NewAppScreen.js"() {
 	NewAppScreen = function({ templateFileName:templateFileName="App.tsx", safeAreaInsets:safeAreaInsets={ top: 0, bottom: 0, left: 0, right: 0 } }) {
-		var { colors:colors } = (init__react_native_new_app_screen_src_Theme(), useTheme)(),isDarkMode = require_react_native_index().useColorScheme() === "dark",isLargeScreen = require_react_native_index().useWindowDimensions().width > 600;
-		return (/* @__PURE__ */ React$63.createElement(require_react_native_index().View, { style: { backgroundColor: colors.background, paddingTop: safeAreaInsets.top, paddingLeft: safeAreaInsets.left, paddingRight: safeAreaInsets.right } }, /* @__PURE__ */ React$63.createElement(require_react_native_index().ScrollView, { style: { paddingBottom: safeAreaInsets.bottom } }, /* @__PURE__ */ React$63.createElement(require_react_native_index().View, { style: styles$14.container }, /* @__PURE__ */ React$63.createElement(require_react_native_index().View, { style: styles$14.header }, /* @__PURE__ */ React$63.createElement(require_react_native_index().Image, { style: styles$14.logo, source: isDarkMode ? require__react_native_new_app_screen_src_assets_react_dark() : require__react_native_new_app_screen_src_assets_react_light() }), /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: styles$14.title }, "Welcome to React Native"), getVersionLabel(), getHermesLabel(), /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: [styles$14.callout, { backgroundColor: colors.backgroundHighlight }] }, "💡 Open", " ", /* @__PURE__ */ React$63.createElement(require_react_native_index().Text, { style: styles$14.calloutEmphasis }, templateFileName), "to get started")), /* @__PURE__ */ React$63.createElement(require_react_native_index().View, { style: styles$14.linksContainer }, /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: styles$14.linksTitle }, "Learn & Explore"), Links.map(function({ title:title, description:description, url:url },i) {
-			return (/* @__PURE__ */ React$63.createElement(require_react_native_index().TouchableHighlight, { key: i, activeOpacity: 0.6, underlayColor: colors.background, onPress: function() {
+		var { colors:colors } = (init__react_native_new_app_screen_src_Theme(), useTheme)(),isDarkMode = useColorScheme$2() === "dark",isLargeScreen = useWindowDimensions$2().width > 600;
+		return (/* @__PURE__ */ React$63.createElement(View$20, { style: { backgroundColor: colors.background, paddingTop: safeAreaInsets.top, paddingLeft: safeAreaInsets.left, paddingRight: safeAreaInsets.right } }, /* @__PURE__ */ React$63.createElement(ScrollView$4, { style: { paddingBottom: safeAreaInsets.bottom } }, /* @__PURE__ */ React$63.createElement(View$20, { style: styles$14.container }, /* @__PURE__ */ React$63.createElement(View$20, { style: styles$14.header }, /* @__PURE__ */ React$63.createElement(Image$3, { style: styles$14.logo, source: isDarkMode ? require__react_native_new_app_screen_src_assets_react_dark() : require__react_native_new_app_screen_src_assets_react_light() }), /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: styles$14.title }, "Welcome to React Native"), getVersionLabel(), getHermesLabel(), /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: [styles$14.callout, { backgroundColor: colors.backgroundHighlight }] }, "💡 Open", " ", /* @__PURE__ */ React$63.createElement(Text$4, { style: styles$14.calloutEmphasis }, templateFileName), "to get started")), /* @__PURE__ */ React$63.createElement(View$20, { style: styles$14.linksContainer }, /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: styles$14.linksTitle }, "Learn & Explore"), Links.map(function({ title:title, description:description, url:url },i) {
+			return (/* @__PURE__ */ React$63.createElement(TouchableHighlight$1, { key: i, activeOpacity: 0.6, underlayColor: colors.background, onPress: function() {
 				return openURLInBrowser(url);
-			}, style: [styles$14.link, { maxWidth: isLargeScreen ? 240 : 360, borderColor: colors.cardOutline, backgroundColor: colors.cardBackground }] }, /* @__PURE__ */ React$63.createElement(require_react_native_index().View, null, /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: styles$14.linkText }, title), /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: { color: colors.textSecondary } }, description))));
+			}, style: [styles$14.link, { maxWidth: isLargeScreen ? 240 : 360, borderColor: colors.cardOutline, backgroundColor: colors.cardBackground }] }, /* @__PURE__ */ React$63.createElement(View$20, null, /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: styles$14.linkText }, title), /* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { style: { color: colors.textSecondary } }, description))));
 		}))))));
 	};
 	getVersionLabel = function() {
-		return (/* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { color: "secondary", style: styles$14.label }, "Version:", require_react_native_index().ReactNativeVersion.getVersionString()));
+		return (/* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { color: "secondary", style: styles$14.label }, "Version:", ReactNativeVersion$1.getVersionString()));
 	};
 	getHermesLabel = function() {
 		if (global.HermesInternal == null) {
@@ -41053,14 +42094,25 @@ var init__react_native_new_app_screen_src_NewAppScreen = __esm({
 		return (/* @__PURE__ */ React$63.createElement((init__react_native_new_app_screen_src_Theme(), ThemedText), { color: "secondary", style: styles$14.label }, "JS Engine: Hermes (", global.HermesInternal.getRuntimeProperties?.()["OSS Release Version"], ")"));
 	};
 		init__react_native_new_app_screen_src_Links();
-	React$63 = __toESM(require_react_index());
+	require_react_index();
+	require_react_native_index();
 	init_react_native_Libraries_Core_Devtools_openURLInBrowser();
+	React$63 = __toESM(require_react_index());
+	Image$3 = require_react_native_index().Image;
+	ReactNativeVersion$1 = require_react_native_index().ReactNativeVersion;
+	ScrollView$4 = require_react_native_index().ScrollView;
+	StyleSheet$21 = require_react_native_index().StyleSheet;
+	Text$4 = require_react_native_index().Text;
+	TouchableHighlight$1 = require_react_native_index().TouchableHighlight;
+	View$20 = require_react_native_index().View;
+	useColorScheme$2 = require_react_native_index().useColorScheme;
+	useWindowDimensions$2 = require_react_native_index().useWindowDimensions;
 		
 	
 	
 	
 	
-	styles$14 = require_react_native_index().StyleSheet.create({ container: { flexGrow: 1, alignItems: "center", paddingHorizontal: 24 }, header: { width: "100%", alignItems: "center", marginTop: 64, marginBottom: 48 }, logo: { height: 80, aspectRatio: 1, marginBottom: 24 }, title: { fontSize: 24, fontWeight: "600", marginBottom: 24 }, label: { fontSize: 14, marginBottom: 8 }, callout: { width: "100%", maxWidth: 320, marginTop: 36, paddingVertical: 16, paddingHorizontal: 20, paddingLeft: 16, borderRadius: 12, fontSize: 16, textAlign: "center" }, calloutEmphasis: { fontWeight: "bold" }, linksContainer: { flex: 1, flexWrap: "wrap", flexDirection: "row", justifyContent: "center", columnGap: 12, rowGap: 12, maxWidth: 800, marginBottom: 48 }, linksTitle: { width: "100%", fontSize: 18, fontWeight: "600", textAlign: "center", marginBottom: 20 }, link: { width: "100%", paddingVertical: 20, paddingHorizontal: 24, borderRadius: 12, borderWidth: 1, boxShadow: "0 4px 8px rgba(0, 0, 0, .03)" }, linkText: { marginBottom: 4, fontSize: 16, fontWeight: "600" } });
+	styles$14 = StyleSheet$21.create({ container: { flexGrow: 1, alignItems: "center", paddingHorizontal: 24 }, header: { width: "100%", alignItems: "center", marginTop: 64, marginBottom: 48 }, logo: { height: 80, aspectRatio: 1, marginBottom: 24 }, title: { fontSize: 24, fontWeight: "600", marginBottom: 24 }, label: { fontSize: 14, marginBottom: 8 }, callout: { width: "100%", maxWidth: 320, marginTop: 36, paddingVertical: 16, paddingHorizontal: 20, paddingLeft: 16, borderRadius: 12, fontSize: 16, textAlign: "center" }, calloutEmphasis: { fontWeight: "bold" }, linksContainer: { flex: 1, flexWrap: "wrap", flexDirection: "row", justifyContent: "center", columnGap: 12, rowGap: 12, maxWidth: 800, marginBottom: 48 }, linksTitle: { width: "100%", fontSize: 18, fontWeight: "600", textAlign: "center", marginBottom: 20 }, link: { width: "100%", paddingVertical: 20, paddingHorizontal: 24, borderRadius: 12, borderWidth: 1, boxShadow: "0 4px 8px rgba(0, 0, 0, .03)" }, linkText: { marginBottom: 4, fontSize: 16, fontWeight: "600" } });
 	
 	}
 });
@@ -41068,7 +42120,7 @@ var init__react_native_new_app_screen_src_NewAppScreen = __esm({
 //#region index.js
 var exports__react_native_new_app_screen_src_index = {};
 __export(exports__react_native_new_app_screen_src_index, {
-	NewAppScreen: function() { return NewAppScreen$1; },
+	NewAppScreen: function() { return (init__react_native_new_app_screen_src_NewAppScreen(), exports__react_native_new_app_screen_src_NewAppScreen.default); },
 });
 var init__react_native_new_app_screen_src_index = __esm({
 	"index.js"() {
@@ -41090,7 +42142,7 @@ module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJ
 //#region NativeSafeAreaProvider.tsx
 var exports_react_native_safe_area_context_src_NativeSafeAreaProvider = {};
 __export(exports_react_native_safe_area_context_src_NativeSafeAreaProvider, {
-	NativeSafeAreaProvider: function() { return NativeSafeAreaProvider; },
+	NativeSafeAreaProvider: function() { return _default$122; },
 });
 var init_react_native_safe_area_context_src_NativeSafeAreaProvider = __esm({
 	"NativeSafeAreaProvider.tsx"() {
@@ -41103,19 +42155,16 @@ var init_react_native_safe_area_context_src_NativeSafeAreaProvider = __esm({
 //#region index.tsx
 var exports_react_native_safe_area_context_src_index = {};
 __export(exports_react_native_safe_area_context_src_index, {
-	useSafeAreaInsets: function() { return useSafeAreaInsets; },
 	SafeAreaConsumer: function() { return SafeAreaConsumer; },
-	SafeAreaFrameContext: function() { return SafeAreaFrameContext; },
-	SafeAreaListener: function() { return SafeAreaListener; },
 	SafeAreaContext: function() { return SafeAreaContext; },
-	withSafeAreaInsets: function() { return withSafeAreaInsets; },
+	SafeAreaFrameContext: function() { return SafeAreaFrameContext; },
 	SafeAreaInsetsContext: function() { return SafeAreaInsetsContext; },
+	SafeAreaListener: function() { return SafeAreaListener; },
+	SafeAreaProvider: function() { return SafeAreaProvider; },
 	useSafeArea: function() { return useSafeArea; },
 	useSafeAreaFrame: function() { return useSafeAreaFrame; },
-	SafeAreaProvider: function() { return SafeAreaProvider; },
-	SafeAreaView: function() { return SafeAreaView$2; },
-	initialWindowSafeAreaInsets: function() { return initialWindowSafeAreaInsets; },
-	initialWindowMetrics: function() { return initialWindowMetrics; },
+	useSafeAreaInsets: function() { return useSafeAreaInsets; },
+	withSafeAreaInsets: function() { return withSafeAreaInsets; },
 });
 var init_react_native_safe_area_context_src_index = __esm({
 	"index.tsx"() {
@@ -41130,20 +42179,20 @@ var init_react_native_safe_area_context_src_index = __esm({
 //#endregion
 //#region App.tsx
 var exports_App = {};
-var testIcon, App, AppContent, styles$16;
+var testIcon, App, AppContent, styles$16, useEffect$5, useState$8, StatusBar$1, StyleSheet$23, useColorScheme$3, View$21, Text$5, Image$4, TouchableOpacity$2, Alert$1;
 __export(exports_App, {
 	"default": function() { return App; },
 });
 var init_App = __esm({
 	"App.tsx"() {
 	App = function() {
-		var isDarkMode = require_react_native_index().useColorScheme() === "dark";
-		return (/* @__PURE__ */ React.createElement((init_react_native_safe_area_context_src_index(), SafeAreaProvider), null, /* @__PURE__ */ React.createElement(require_react_native_index().StatusBar, { barStyle: isDarkMode ? "light-content" : "dark-content" }), /* @__PURE__ */ React.createElement(AppContent, null)));
+		var isDarkMode = useColorScheme$3() === "dark";
+		return (/* @__PURE__ */ React.createElement((init_react_native_safe_area_context_src_index(), SafeAreaProvider), null, /* @__PURE__ */ React.createElement(StatusBar$1, { barStyle: isDarkMode ? "light-content" : "dark-content" }), /* @__PURE__ */ React.createElement(AppContent, null)));
 	};
 	AppContent = function() {
-		var safeAreaInsets = (init_react_native_safe_area_context_src_index(), useSafeAreaInsets)(),[bundlerInfo, setBundlerInfo] = require_react_index().useState(null),[hermesEnabled, setHermesEnabled] = require_react_index().useState(null);
-		require_react_index().useEffect(function() {
-			var isBungae = typeof globalThis.__BUNGAE_BUNDLER__ !== "undefined" && globalThis.__BUNGAE_BUNDLER__ === true,bungaeVersion = globalThis.__BUNGAE_VERSION__,info = { name: isBungae ? "Bungae" : "Metro", version: isBungae ? bungaeVersion : undefined, isBungae };
+		var safeAreaInsets = (init_react_native_safe_area_context_src_index(), useSafeAreaInsets)(),[bundlerInfo, setBundlerInfo] = useState$8(null),[hermesEnabled, setHermesEnabled] = useState$8(null);
+		useEffect$5(function() {
+			var isBungae = typeof globalThis.__BUNGAE_BUNDLER__ < "u" && globalThis.__BUNGAE_BUNDLER__ === true,bungaeVersion = globalThis.__BUNGAE_VERSION__,info = { name: isBungae ? "Bungae" : "Metro", version: isBungae ? bungaeVersion : undefined, isBungae };
 			setBundlerInfo(info);
 			var isHermes = !!globalThis.HermesInternal;
 			setHermesEnabled(isHermes);
@@ -41158,15 +42207,15 @@ var init_App = __esm({
 			}
 			;
 			console.log("\n=== Bungae Bundle Debug Info ===");
-			console.log("1. Bundle loaded:", { hasBungaeBundler: typeof globalThis.__BUNGAE_BUNDLER__ !== "undefined", bundlerValue: globalThis.__BUNGAE_BUNDLER__, hasBungaeVersion: typeof globalThis.__BUNGAE_VERSION__ !== "undefined", bungaeVersion: globalThis.__BUNGAE_VERSION__, isDev: false });
-			console.log("2. Module system:", { hasDefine: typeof globalThis.__d !== "undefined", hasRequire: typeof globalThis.__r !== "undefined", hasClear: typeof globalThis.__c !== "undefined", metroRequire: typeof globalThis.metroRequire !== "undefined" });
+			console.log("1. Bundle loaded:", { hasBungaeBundler: typeof globalThis.__BUNGAE_BUNDLER__ < "u", bundlerValue: globalThis.__BUNGAE_BUNDLER__, hasBungaeVersion: typeof globalThis.__BUNGAE_VERSION__ < "u", bungaeVersion: globalThis.__BUNGAE_VERSION__, isDev: false });
+			console.log("2. Module system:", { hasDefine: typeof globalThis.__d < "u", hasRequire: typeof globalThis.__r < "u", hasClear: typeof globalThis.__c < "u", metroRequire: typeof globalThis.metroRequire < "u" });
 			try {
 				var RN = require_react_native_index();
 				console.log("3. React Native components:");
-				console.log("   - TouchableOpacity:", { exists: typeof RN.TouchableOpacity !== "undefined", type: typeof RN.TouchableOpacity, isFunction: typeof RN.TouchableOpacity === "function" });
-				console.log("   - Button:", { exists: typeof RN.Button !== "undefined", type: typeof RN.Button, isFunction: typeof RN.Button === "function" });
-				console.log("   - View:", { exists: typeof RN.View !== "undefined", type: typeof RN.View });
-				console.log("   - Text:", { exists: typeof RN.Text !== "undefined", type: typeof RN.Text });
+				console.log("   - TouchableOpacity:", { exists: typeof RN.TouchableOpacity < "u", type: typeof RN.TouchableOpacity, isFunction: typeof RN.TouchableOpacity == "function" });
+				console.log("   - Button:", { exists: typeof RN.Button < "u", type: typeof RN.Button, isFunction: typeof RN.Button == "function" });
+				console.log("   - View:", { exists: typeof RN.View < "u", type: typeof RN.View });
+				console.log("   - Text:", { exists: typeof RN.Text < "u", type: typeof RN.Text });
 			} catch (e) {
 				console.error("   - Failed to load React Native:", e);
 			}
@@ -41174,22 +42223,22 @@ var init_App = __esm({
 			try {
 				var NewAppScreenModule = (init__react_native_new_app_screen_src_index(), __toCommonJS(exports__react_native_new_app_screen_src_index));
 				console.log("   - Module loaded:", !!NewAppScreenModule);
-				console.log("   - Default export:", { exists: typeof NewAppScreenModule.default !== "undefined", type: typeof NewAppScreenModule.default, isFunction: typeof NewAppScreenModule.default === "function" });
-				console.log("   - Named export:", { exists: typeof NewAppScreenModule.NewAppScreen !== "undefined", type: typeof NewAppScreenModule.NewAppScreen });
+				console.log("   - Default export:", { exists: typeof NewAppScreenModule.default < "u", type: typeof NewAppScreenModule.default, isFunction: typeof NewAppScreenModule.default == "function" });
+				console.log("   - Named export:", { exists: typeof NewAppScreenModule.NewAppScreen < "u", type: typeof NewAppScreenModule.NewAppScreen });
 			} catch (e) {
 				console.error("   - Failed to load NewAppScreen:", e);
 			}
 			try {
 				var RN = require_react_native_index(),{ UIManager:UIManager } = RN;
 				console.log("5. Event system:");
-				console.log("   - UIManager:", { exists: typeof UIManager !== "undefined", type: typeof UIManager });
-				console.log("   - NativeModules:", { exists: typeof RN.NativeModules !== "undefined", type: typeof RN.NativeModules, keys: typeof RN.NativeModules !== "undefined" ? Object.keys(RN.NativeModules).slice(0, 5) : [] });
+				console.log("   - UIManager:", { exists: typeof UIManager < "u", type: typeof UIManager });
+				console.log("   - NativeModules:", { exists: typeof RN.NativeModules < "u", type: typeof RN.NativeModules, keys: typeof RN.NativeModules < "u" ? Object.keys(RN.NativeModules).slice(0, 5) : [] });
 			} catch (e) {
 				console.error("   - Failed to check event system:", e);
 			}
 			try {
 				var metroRequire = globalThis.__r || globalThis.metroRequire;
-				if (metroRequire && typeof metroRequire.getModules === "function") {
+				if (metroRequire && typeof metroRequire.getModules == "function") {
 					var modules = metroRequire.getModules();
 					console.log("6. Module count:", { total: modules ? Object.keys(modules).length : "unknown", hasModules: !!modules });
 				} else {
@@ -41202,12 +42251,12 @@ var init_App = __esm({
 			var testHandler = function() {
 				console.log("✅ Test event handler called!");
 			};
-			console.log("   - Handler function:", { type: typeof testHandler, isFunction: typeof testHandler === "function" });
+			console.log("   - Handler function:", { type: typeof testHandler, isFunction: typeof testHandler == "function" });
 			console.log("=== End Debug Info ===\n");
 		}, []);
 		var handleTestPress = function() {
 			console.log("✅ Test button pressed!");
-			require_react_native_index().Alert.alert("Success", "Button press event is working!", [{ text: "OK", onPress: function() {
+			Alert$1.alert("Success", "Button press event is working!", [{ text: "OK", onPress: function() {
 				return console.log("Alert dismissed");
 			} }]);
 		},handleSourceMapTest = function() {
@@ -41225,7 +42274,7 @@ var init_App = __esm({
 			} catch (error) {
 				console.error("❌ Error caught (this is expected for source map testing):", error);
 				console.error("Stack trace:", error instanceof Error ? error.stack : String(error));
-				require_react_native_index().Alert.alert("Source Map Test Error", `Error thrown for source map testing.\n\n` + `Check the console for stack trace.\n` + `If source maps work, you should see:\n` + `- App.tsx with correct line number\n` + `- Original source code in debugger`, [{ text: "View Stack Trace", onPress: function() {
+				Alert$1.alert("Source Map Test Error", `Error thrown for source map testing.\n\n` + `Check the console for stack trace.\n` + `If source maps work, you should see:\n` + `- App.tsx with correct line number\n` + `- Original source code in debugger`, [{ text: "View Stack Trace", onPress: function() {
 					console.log("\n=== Full Stack Trace ===");
 					if (error instanceof Error) {
 						console.log(error.stack);
@@ -41234,14 +42283,26 @@ var init_App = __esm({
 				} }, { text: "OK" }]);
 			}
 		};
-		return (/* @__PURE__ */ React.createElement(require_react_native_index().View, { style: styles$16.container }, /* @__PURE__ */ React.createElement((init__react_native_new_app_screen_src_index(), init__react_native_new_app_screen_src_NewAppScreen(), NewAppScreen), { templateFileName: "App.tsx", safeAreaInsets: safeAreaInsets }), bundlerInfo && (/* @__PURE__ */ React.createElement(require_react_native_index().View, { style: [styles$16.bundlerBadge, { backgroundColor: bundlerInfo.isBungae ? "rgba(251, 191, 36, 0.9)" : "rgba(59, 130, 246, 0.9)" }] }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$16.bundlerText }, bundlerInfo.isBungae ? "⚡" : "📦", bundlerInfo.name, bundlerInfo.version && ` v${bundlerInfo.version}`))), hermesEnabled !== null && (/* @__PURE__ */ React.createElement(require_react_native_index().View, { style: [styles$16.hermesBadge, { backgroundColor: hermesEnabled ? "rgba(34, 197, 94, 0.9)" : "rgba(239, 68, 68, 0.9)" }] }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$16.bundlerText }, hermesEnabled ? "✅ Hermes" : "❌ JSC (No Hermes)"))), /* @__PURE__ */ React.createElement(require_react_native_index().View, { style: styles$16.assetBadge }, /* @__PURE__ */ React.createElement(require_react_native_index().Image, { source: testIcon, style: styles$16.testIcon }), /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$16.assetText }, "Asset OK")), /* @__PURE__ */ React.createElement(require_react_native_index().TouchableOpacity, { onPress: handleTestPress, style: styles$16.testButton, activeOpacity: 0.7 }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$16.testButtonText }, "🧪 Test Button (Event Handler Test)")), /* @__PURE__ */ React.createElement(require_react_native_index().TouchableOpacity, { onPress: handleSourceMapTest, style: styles$16.sourceMapTestButton, activeOpacity: 0.7 }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$16.sourceMapTestButtonText }, "🗺️ Source Map Test (Error Test)"))));
+		return (/* @__PURE__ */ React.createElement(View$21, { style: styles$16.container }, /* @__PURE__ */ React.createElement((init__react_native_new_app_screen_src_index(), init__react_native_new_app_screen_src_NewAppScreen(), NewAppScreen), { templateFileName: "App.tsx", safeAreaInsets: safeAreaInsets }), bundlerInfo && (/* @__PURE__ */ React.createElement(View$21, { style: [styles$16.bundlerBadge, { backgroundColor: bundlerInfo.isBungae ? "rgba(251, 191, 36, 0.9)" : "rgba(59, 130, 246, 0.9)" }] }, /* @__PURE__ */ React.createElement(Text$5, { style: styles$16.bundlerText }, bundlerInfo.isBungae ? "⚡" : "📦", bundlerInfo.name, bundlerInfo.version && ` v${bundlerInfo.version}`))), hermesEnabled !== null && (/* @__PURE__ */ React.createElement(View$21, { style: [styles$16.hermesBadge, { backgroundColor: hermesEnabled ? "rgba(34, 197, 94, 0.9)" : "rgba(239, 68, 68, 0.9)" }] }, /* @__PURE__ */ React.createElement(Text$5, { style: styles$16.bundlerText }, hermesEnabled ? "✅ Hermes" : "❌ JSC (No Hermes)"))), /* @__PURE__ */ React.createElement(View$21, { style: styles$16.assetBadge }, /* @__PURE__ */ React.createElement(Image$4, { source: testIcon, style: styles$16.testIcon }), /* @__PURE__ */ React.createElement(Text$5, { style: styles$16.assetText }, "Asset OK")), /* @__PURE__ */ React.createElement(TouchableOpacity$2, { onPress: handleTestPress, style: styles$16.testButton, activeOpacity: 0.7 }, /* @__PURE__ */ React.createElement(Text$5, { style: styles$16.testButtonText }, "🧪 Test Button (Event Handler Test)")), /* @__PURE__ */ React.createElement(TouchableOpacity$2, { onPress: handleSourceMapTest, style: styles$16.sourceMapTestButton, activeOpacity: 0.7 }, /* @__PURE__ */ React.createElement(Text$5, { style: styles$16.sourceMapTestButtonText }, "🗺️ Source Map Test (Error Test)"))));
 	};
+		require_react_index();
+	require_react_native_index();
+	useEffect$5 = require_react_index().useEffect;
+	useState$8 = require_react_index().useState;
+	StatusBar$1 = require_react_native_index().StatusBar;
+	StyleSheet$23 = require_react_native_index().StyleSheet;
+	useColorScheme$3 = require_react_native_index().useColorScheme;
+	View$21 = require_react_native_index().View;
+	Text$5 = require_react_native_index().Text;
+	Image$4 = require_react_native_index().Image;
+	TouchableOpacity$2 = require_react_native_index().TouchableOpacity;
+	Alert$1 = require_react_native_index().Alert;
 		
 	
 	
 	testIcon = require_test_icon();
 	
-	styles$16 = require_react_native_index().StyleSheet.create({ container: { flex: 1 }, assetBadge: { position: "absolute", top: 120, right: 16, flexDirection: "row", alignItems: "center", backgroundColor: "rgba(99, 102, 241, 0.9)", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, gap: 6 }, testIcon: { width: 24, height: 24 }, assetText: { color: "#fff", fontSize: 12, fontWeight: "600" }, bundlerBadge: { position: "absolute", top: 50, right: 16, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, hermesBadge: { position: "absolute", top: 85, right: 16, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, bundlerText: { color: "#000", fontSize: 12, fontWeight: "600" }, testButton: { position: "absolute", bottom: 160, left: 20, right: 20, backgroundColor: "#007AFF", padding: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, testButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" }, sourceMapTestButton: { position: "absolute", bottom: 100, left: 20, right: 20, backgroundColor: "#FF3B30", padding: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, sourceMapTestButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" } });
+	styles$16 = StyleSheet$23.create({ container: { flex: 1 }, assetBadge: { position: "absolute", top: 120, right: 16, flexDirection: "row", alignItems: "center", backgroundColor: "rgba(99, 102, 241, 0.9)", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, gap: 6 }, testIcon: { width: 24, height: 24 }, assetText: { color: "#fff", fontSize: 12, fontWeight: "600" }, bundlerBadge: { position: "absolute", top: 50, right: 16, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, hermesBadge: { position: "absolute", top: 85, right: 16, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, bundlerText: { color: "#000", fontSize: 12, fontWeight: "600" }, testButton: { position: "absolute", bottom: 160, left: 20, right: 20, backgroundColor: "#007AFF", padding: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, testButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" }, sourceMapTestButton: { position: "absolute", bottom: 100, left: 20, right: 20, backgroundColor: "#FF3B30", padding: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }, sourceMapTestButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" } });
 	
 	
 	}
@@ -41249,13 +42310,16 @@ var init_App = __esm({
 //#endregion
 //#region index.js
 var exports_index = {};
+var AppRegistry$1;
 var init_index = __esm({
 	"index.js"() {
+	require_react_native_index();
 	init_App();
+	AppRegistry$1 = require_react_native_index().AppRegistry;
 		
 	
 	
-	require_react_native_index().AppRegistry.registerComponent(name, function() {
+	AppRegistry$1.registerComponent(name, function() {
 		return App;
 	});
 	
@@ -41271,7 +42335,7 @@ var _default$122 = NativeComponentRegistry$20.get(nativeComponentName$11, functi
 //#region SafeAreaContext.tsx
 var React$64 = __toESM(require_react_index());
 var Dimensions$4 = require_react_native_index().Dimensions;
-var StyleSheet$19 = require_react_native_index().StyleSheet;
+var StyleSheet$22 = require_react_native_index().StyleSheet;
 init_react_native_safe_area_context_src_NativeSafeAreaProvider();
 var isDev = false;
 var SafeAreaInsetsContext = React$64.createContext(null);
@@ -41302,7 +42366,7 @@ function SafeAreaProvider({ children:children, initialMetrics:initialMetrics, in
 	}, []);
 	return (/* @__PURE__ */ React$64.createElement(_default$122, { style: [styles$15.fill, style], onInsetsChange: onInsetsChange, ...others }, insets != null ? (/* @__PURE__ */ React$64.createElement(SafeAreaFrameContext.Provider, { value: frame }, /* @__PURE__ */ React$64.createElement(SafeAreaInsetsContext.Provider, { value: insets }, children))) : null));
 }
-var styles$15 = StyleSheet$19.create({ fill: { flex: 1 } });
+var styles$15 = StyleSheet$22.create({ fill: { flex: 1 } });
 function useParentSafeAreaInsets() {
 	return React$64.useContext(SafeAreaInsetsContext);
 }
