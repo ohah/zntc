@@ -179,7 +179,7 @@ fn copyBytesOrEmpty(alloc: std.mem.Allocator, data_ptr: ?*anyopaque, byte_len: u
 /// (`getStringArg` 와 동일 root cause). 정확히 `count` 길이로 줄여 반환한다.
 /// 1차 시도 `alloc.realloc` (대부분 in-place shrink); 실패 시 새 alloc + memcpy
 /// + 옛 free fallback. element 값 (slice 등 sub-alloc) 은 그대로 보존된다.
-fn shrinkSlice(comptime T: type, alloc: std.mem.Allocator, result: []T, count: usize) ?[]T {
+pub fn shrinkSlice(comptime T: type, alloc: std.mem.Allocator, result: []T, count: usize) ?[]T {
     if (count == result.len) return result;
     return alloc.realloc(result, count) catch blk: {
         const shrunk = alloc.alloc(T, count) catch {
