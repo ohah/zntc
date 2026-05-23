@@ -24,17 +24,24 @@ pub inline fn unwrapNapi(comptime T: type, env: c.napi_env, value: c.napi_value)
 }
 
 /// JS string 인자를 Zig 슬라이스로 추출. 빈 문자열이면 null 반환.
+///
+/// NAPI 가 NUL terminator 를 끝에 쓰므로 `len+1` 임시 alloc 이 필요하지만, 반환
+/// slice 는 NUL 미포함 `actual` 바이트라 그대로 free 하면 alloc(len+1) vs
+/// free(actual) size mismatch — Zig `Allocator` API contract 위반. 현재
+/// `c_allocator` (NAPI 기본) 는 free 시 size 인자를 무시해 silent 통과하지만,
+/// `DebugAllocator` / arena / page 등 size-tracking allocator 로 전환하는 순간
+/// invalid-free panic. 정확 크기로 `dupe` 후 임시 buf 즉시 free 해 contract 준수.
 pub fn getStringArg(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) ?[]const u8 {
     var len: usize = 0;
     if (c.napi_get_value_string_utf8(env, value, null, 0, &len) != c.napi_ok) return null;
     if (len == 0) return null;
-    const buf = alloc.alloc(u8, len + 1) catch return null;
+    const tmp = alloc.alloc(u8, len + 1) catch return null;
+    defer alloc.free(tmp);
     var actual: usize = 0;
-    if (c.napi_get_value_string_utf8(env, value, buf.ptr, len + 1, &actual) != c.napi_ok) {
-        alloc.free(buf);
+    if (c.napi_get_value_string_utf8(env, value, tmp.ptr, len + 1, &actual) != c.napi_ok) {
         return null;
     }
-    return buf[0..actual];
+    return alloc.dupe(u8, tmp[0..actual]) catch null;
 }
 
 pub fn getNamedProperty(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8) ?c.napi_value {
@@ -91,13 +98,15 @@ pub fn getObjectBytes(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, al
         if (len == 0) {
             return alloc.alloc(u8, 0) catch null;
         }
-        const buf = alloc.alloc(u8, len + 1) catch return null;
+        // NUL terminator 용 +1 임시 alloc → 실제 byte 수 (NUL 제외) 로 dupe.
+        // (`getStringArg` 와 동일 이유 — size-mismatch leak 회피.)
+        const tmp = alloc.alloc(u8, len + 1) catch return null;
+        defer alloc.free(tmp);
         var actual: usize = 0;
-        if (c.napi_get_value_string_utf8(env, val, buf.ptr, len + 1, &actual) != c.napi_ok) {
-            alloc.free(buf);
+        if (c.napi_get_value_string_utf8(env, val, tmp.ptr, len + 1, &actual) != c.napi_ok) {
             return null;
         }
-        return buf[0..actual];
+        return alloc.dupe(u8, tmp[0..actual]) catch null;
     }
     // Node.js Buffer: napi_is_buffer 가 권위 있음. 일부 런타임에서 napi_is_typedarray 가
     // false 일 가능성 있어 별도 처리.
@@ -130,6 +139,24 @@ fn copyBytesOrEmpty(alloc: std.mem.Allocator, data_ptr: ?*anyopaque, byte_len: u
     return out;
 }
 
+/// `alloc(T, len)` 후 일부 element 만 채운 채 `result[0..count]` 를 반환하면
+/// caller 가 그대로 free 시 alloc-size(`len`) vs free-size(`count`) mismatch
+/// (`getStringArg` 와 동일 root cause). 정확히 `count` 길이로 줄여 반환한다.
+/// 1차 시도 `alloc.realloc` (대부분 in-place shrink); 실패 시 새 alloc + memcpy
+/// + 옛 free fallback. element 값 (slice 등 sub-alloc) 은 그대로 보존된다.
+fn shrinkSlice(comptime T: type, alloc: std.mem.Allocator, result: []T, count: usize) ?[]T {
+    if (count == result.len) return result;
+    return alloc.realloc(result, count) catch blk: {
+        const shrunk = alloc.alloc(T, count) catch {
+            alloc.free(result);
+            return null;
+        };
+        @memcpy(shrunk, result[0..count]);
+        alloc.free(result);
+        break :blk shrunk;
+    };
+}
+
 pub fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const []const u8 {
     const val = getNamedProperty(env, obj, key) orelse return null;
     return parseStringArray(env, val, alloc);
@@ -158,7 +185,7 @@ pub fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Alloc
         alloc.free(result);
         return null;
     }
-    return result[0..count];
+    return shrinkSlice([]const u8, alloc, result, count);
 }
 
 /// JS 객체의 키-값 쌍을 [2][]const u8 배열로 추출. { "key": "value", ... }
@@ -198,7 +225,7 @@ pub fn getObjectKeyValuePairs(env: c.napi_env, obj: c.napi_value, key: [*:0]cons
         alloc.free(result);
         return null;
     }
-    return result[0..count];
+    return shrinkSlice([2][]const u8, alloc, result, count);
 }
 
 /// fallback 옵션용 — 값이 boolean false이면 null 저장, 문자열이면 그대로. 그 외엔 스킵.
@@ -254,7 +281,7 @@ pub fn getObjectKeyValuePairsWithNullable(
         alloc.free(result);
         return null;
     }
-    return result[0..count];
+    return shrinkSlice(NullableStringPair, alloc, result, count);
 }
 
 pub fn setDoubleProp(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, value: f64) void {
