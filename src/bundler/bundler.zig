@@ -1880,6 +1880,14 @@ pub const Bundler = struct {
                         css_output_files.append(self.allocator, css_out) catch {};
                     }
                 }
+                // 두 entry 가 같은 stem(예: pages/a/index.tsx + pages/b/index.tsx)
+                // 이면 emitCssBundle 가 둘 다 같은 path 의 OutputFile 을 반환 →
+                // writeFileSync 가 한쪽을 overwrite (silent CSS 손실). splitting
+                // 경로(planCssChunks 내부 disambiguatePathCollisions)와 같은
+                // 정책으로 비-splitting 경로도 충돌 그룹에 한해 content-hash
+                // disambiguator 를 자동 부여한다. CSS 실패는 번들 실패로 번지지
+                // 않게 흡수(기존 css emit 의 관용과 동일).
+                css_emit.disambiguateOutputFilePaths(self.allocator, css_output_files.items) catch {};
             }
         }
 

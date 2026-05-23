@@ -205,4 +205,63 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
     expect(pickCssByMarker(r1, '.det-a')).toBe(pickCssByMarker(r2, '.det-a'));
     expect(pickCssByMarker(r1, '.det-b')).toBe(pickCssByMarker(r2, '.det-b'));
   });
+
+  // 회귀 가드: splitting:false (=비-splitting / preserve-modules) 모드에서도
+  // 두 entry 가 같은 stem 이면 CSS 출력 경로가 충돌 → 한쪽 silent 손실되던
+  // pre-existing 버그. splitting:true 경로는 PR #3686 에서 처리됐고, 본 가드
+  // 는 비-splitting 경로(`bundler.zig:1879` 의 emitCssBundle 루프) 도 같은
+  // disambiguator 정책을 따르는지 검증한다.
+  test('splitting:false + CSS — 두 entry 동일 stem 시 CSS path 충돌 회피', async () => {
+    mkdirSync(join(dir, 'ns-a'), { recursive: true });
+    mkdirSync(join(dir, 'ns-b'), { recursive: true });
+    writeFileSync(join(dir, 'ns-a', 'index.ts'), 'import "./s.css";\nconst a = 1;\n');
+    writeFileSync(join(dir, 'ns-a', 's.css'), '.ns-a { color: red; }\n');
+    writeFileSync(join(dir, 'ns-b', 'index.ts'), 'import "./s.css";\nconst b = 2;\n');
+    writeFileSync(join(dir, 'ns-b', 's.css'), '.ns-b { color: blue; }\n');
+
+    const result = await build({
+      entryPoints: [join(dir, 'ns-a', 'index.ts'), join(dir, 'ns-b', 'index.ts')],
+      splitting: false,
+      entryNames: '[name]',
+    });
+    expect(result.errors.length).toBe(0);
+
+    const css = result.outputFiles.filter((f) => f.path.endsWith('.css'));
+    const aCss = css.find((c) => c.text.includes('.ns-a'));
+    const bCss = css.find((c) => c.text.includes('.ns-b'));
+    // 두 entry CSS 모두 보존(충돌 silent 손실 금지).
+    expect(aCss).toBeDefined();
+    expect(bCss).toBeDefined();
+    // 서로 다른 path 여야 한다.
+    expect(aCss!.path).not.toBe(bCss!.path);
+    // 전체 outputFiles 안에 중복 path 가 없어야 한다(전반적 invariant).
+    const cssPathSet = new Set(css.map((c) => c.path));
+    expect(cssPathSet.size).toBe(css.length);
+  });
+
+  // 회귀 가드: 비-splitting 모드의 disambiguator 결정성 — 같은 input 두 번
+  // 빌드해도 동일한 disambiguated path 가 나와야 한다(splitting 경로의 결정성
+  // 가드와 같은 invariant 를 비-splitting 경로에도 적용).
+  test('splitting:false + CSS — disambiguator 결과는 결정적(두 번 빌드 동일 path)', async () => {
+    mkdirSync(join(dir, 'nsd-a'), { recursive: true });
+    mkdirSync(join(dir, 'nsd-b'), { recursive: true });
+    writeFileSync(join(dir, 'nsd-a', 'index.ts'), 'import "./s.css";\nconst a = 1;\n');
+    writeFileSync(join(dir, 'nsd-a', 's.css'), '.nsd-a { color: red; }\n');
+    writeFileSync(join(dir, 'nsd-b', 'index.ts'), 'import "./s.css";\nconst b = 2;\n');
+    writeFileSync(join(dir, 'nsd-b', 's.css'), '.nsd-b { color: blue; }\n');
+
+    const opts = {
+      entryPoints: [join(dir, 'nsd-a', 'index.ts'), join(dir, 'nsd-b', 'index.ts')],
+      splitting: false,
+      entryNames: '[name]',
+    };
+    const r1 = await build(opts);
+    const r2 = await build(opts);
+    expect(r1.errors.length).toBe(0);
+    expect(r2.errors.length).toBe(0);
+    const pickCssByMarker = (r: typeof r1, marker: string) =>
+      r.outputFiles.find((f) => f.path.endsWith('.css') && f.text.includes(marker))!.path;
+    expect(pickCssByMarker(r1, '.nsd-a')).toBe(pickCssByMarker(r2, '.nsd-a'));
+    expect(pickCssByMarker(r1, '.nsd-b')).toBe(pickCssByMarker(r2, '.nsd-b'));
+  });
 });

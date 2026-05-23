@@ -234,20 +234,61 @@ pub fn planCssChunks(
     return out_list.toOwnedSlice(allocator);
 }
 
-/// out_list 안에서 같은 `path` 를 가지면서 `contents` 가 서로 다른 항목들에
-/// 한해 content-hash disambiguator 를 자동 부여한다. 같은 path + 같은 contents
-/// 인 그룹은 그대로 둔다(disk write last-wins 가 무해).
-///
-/// 두 패스로 처리한다:
-/// 1패스: items[i].path 만 읽어 groups + new_paths(인덱스 i → 새 path 또는 null).
-/// 2패스: groups 를 *완전히 폐기* 한 뒤 items[i].path 를 free 하고 new_path 로 swap.
-/// 이렇게 분리하면 groups 의 키(= items[i].path 슬라이스) 가 살아있는 동안엔
-/// free 가 발생하지 않아 use-after-free 가능성이 원천 차단된다 — 향후
-/// disambiguate 본문에 groups 재조회를 추가하는 패치에도 안전.
+/// `planCssChunks` 내부에서 호출되는 CssChunkPlanEntry 용 wrapper.
+/// 정책/메커니즘은 `disambiguatePathCollisionsGeneric` docstring 참조.
 fn disambiguatePathCollisions(
     allocator: std.mem.Allocator,
     items: []CssChunkPlanEntry,
 ) !void {
+    return disambiguatePathCollisionsGeneric(CssChunkPlanEntry, allocator, items);
+}
+
+/// `disambiguatePathCollisions` 의 OutputFile 용 wrapper. 비-splitting /
+/// preserve-modules 경로(`bundler.zig` 의 `emitCssBundle` 루프) 가 entry 별
+/// 단일 CSS 를 `css_output_files` 에 모은 뒤, splitting 경로와 같은 정책으로
+/// path 충돌을 처리한다.
+///
+/// **호출자 계약** (`pub` 이지만 강한 invariant 의존):
+/// - `items[i].path` 와 `items[i].contents` 는 모두 인자 `allocator` 가 alloc 한
+///   슬라이스여야 한다 — 함수가 in-place 로 path 를 `free` + 새 path 로 swap.
+///   static literal/arena/다른 allocator 슬라이스를 섞으면 mismatched-free 로 UB.
+/// - `items` 안에 `.path` 외 다른 필드가 같은 path 문자열을 *참조* 하면(예:
+///   sourcemap 의 file:, module_ids 가 entry path 를 borrow), swap 이후
+///   그 참조는 stale 이 된다. 현재 CSS OutputFile 은 sourcemap/imports 등이
+///   default 이라 안전 — 향후 채우는 PR 은 같이 update 또는 dedup 정책 명시 필요.
+pub fn disambiguateOutputFilePaths(
+    allocator: std.mem.Allocator,
+    items: []OutputFile,
+) !void {
+    return disambiguatePathCollisionsGeneric(OutputFile, allocator, items);
+}
+
+/// path 충돌(`items[i].path` 가 동일 + `contents` 가 다름) 인 그룹에 한해
+/// content-hash disambiguator(`<stem>-<wyhash8>.css`) 를 자동 부여한다.
+/// 같은 path + 같은 contents 인 그룹은 그대로 둔다 — disk write last-wins
+/// 가 무해하고, app-builder HTML link rewrite 의 안정 파일명 invariant 유지.
+///
+/// `T` 는 `.path: []const u8` 와 `.contents: []const u8` 두 필드를 갖는
+/// 구조체여야 한다(`CssChunkPlanEntry`, `OutputFile`). 호출자가 잘못된 T 를
+/// 넘기지 않도록 함수 시작에서 `comptime` 가드한다.
+///
+/// **두 패스 정책** — StringHashMap key-lifetime safety:
+/// - 1패스: `items[i].path` 만 읽어 groups + new_paths(인덱스 i → 새 path 또는 null).
+/// - 2패스: groups 를 *완전히 폐기* 한 뒤 `items[i].path` 를 free 하고 new_path 로 swap.
+/// 이렇게 분리하면 groups 의 키(= `items[i].path` 슬라이스)가 살아있는 동안엔
+/// free 가 발생하지 않아 use-after-free 가능성이 원천 차단된다 — 향후 본문에
+/// groups 재조회를 추가하는 패치에도 안전. **2패스 본문에 fallible 호출을
+/// 추가하지 말 것** — `new_paths[i] = null` 로 비우기 전에 error 가 나면
+/// `errdefer` 가 swap 된 new path 를 again free 해 double-free 가 된다.
+fn disambiguatePathCollisionsGeneric(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    items: []T,
+) !void {
+    comptime {
+        if (!@hasField(T, "path")) @compileError("disambiguatePathCollisionsGeneric: T must have field 'path'");
+        if (!@hasField(T, "contents")) @compileError("disambiguatePathCollisionsGeneric: T must have field 'contents'");
+    }
     if (items.len < 2) return;
 
     // 새 path 후보(없으면 null) — 1패스 결과를 2패스로 전달.
@@ -749,4 +790,39 @@ test "disambiguatePathCollisions: 3 way 충돌 + 부분 contents 동일" {
     // 같은 contents 인 0,1 은 같은 hash → 같은 path (디스크 overwrite 무해)
     try std.testing.expectEqualStrings(items[0].path, items[1].path);
     try std.testing.expect(!std.mem.eql(u8, items[0].path, items[2].path));
+}
+
+test "disambiguateOutputFilePaths: OutputFile 충돌 그룹에도 동일 정책" {
+    const a = std.testing.allocator;
+    var items = [_]OutputFile{
+        .{ .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".a{}") },
+        .{ .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".b{}") },
+    };
+    defer {
+        for (items) |e| {
+            a.free(e.path);
+            a.free(e.contents);
+        }
+    }
+    try disambiguateOutputFilePaths(a, &items);
+    try std.testing.expect(!std.mem.eql(u8, items[0].path, items[1].path));
+    try std.testing.expect(std.mem.startsWith(u8, items[0].path, "index-"));
+    try std.testing.expect(std.mem.startsWith(u8, items[1].path, "index-"));
+}
+
+test "disambiguateOutputFilePaths: 같은 contents 면 stable 파일명 유지" {
+    const a = std.testing.allocator;
+    var items = [_]OutputFile{
+        .{ .path = try a.dupe(u8, "shared.css"), .contents = try a.dupe(u8, ".s{}") },
+        .{ .path = try a.dupe(u8, "shared.css"), .contents = try a.dupe(u8, ".s{}") },
+    };
+    defer {
+        for (items) |e| {
+            a.free(e.path);
+            a.free(e.contents);
+        }
+    }
+    try disambiguateOutputFilePaths(a, &items);
+    try std.testing.expectEqualStrings("shared.css", items[0].path);
+    try std.testing.expectEqualStrings("shared.css", items[1].path);
 }
