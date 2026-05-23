@@ -416,9 +416,9 @@ pub fn emitChunks(
         // PR B-4b-1: stack buf → ArrayList reuse. loop 안 단일 alloc amortize.
         var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer dep_buf.deinit(allocator);
-        // F5 post-review fix: importer chunk 의 *최종 stem* (pattern 적용 + baked-in
-        // slash 포함) 의 dirname 을 src_dir 로 사용. chunk.name_dir 만 보면 패턴
-        // `'static/[name]'` 같은 baked-in dir 를 놓침.
+        // src_dir 는 importer chunk 의 *최종 stem* (pattern + baked-in slash 포함)
+        // 의 dirname. chunk.name_dir 만 보면 `'static/[name]'` 같은 baked-in
+        // dir 를 놓침.
         var importer_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer importer_buf.deinit(allocator);
         try chunkPlaceholderStem(chunk, &importer_buf, allocator, options);
@@ -441,17 +441,14 @@ pub fn emitChunks(
             const resolved_path = if (reg_split)
                 try allocator.dupe(u8, "")
             else if (dep_chunk.explicit_file_name) |efn|
-                // F5 post-review fix — efn 도 importer_dir 기준 relative.
-                // 옛 `./{efn}` 평면은 efn 가 dir 포함 시 importer 위치 무시.
+                // efn 도 importer_dir 기준 상대 경로 — efn 가 dir 포함 시 importer
+                // 위치를 무시하면 runtime resolve 가 importer dir 기준으로 잘못 해석.
                 try computeRelativePath(allocator, importer_dir, efn, "")
             else if (options.preserve_modules) blk: {
                 const src_path = chunk.rel_dir orelse "./";
                 const dep_path = dep_chunk.rel_dir orelse "./";
                 break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
             } else blk: {
-                // F5 post-review fix — *항상* importer chunk *stem dir* 기준 relative
-                // 계산. importer_dir 는 chunkPlaceholderStem(chunk) 결과의 dirname
-                // 으로 baked-in slash (`'static/[name]'`) 까지 포함.
                 break :blk try computeRelativePath(allocator, importer_dir, dep_stem, ext);
             };
             defer allocator.free(resolved_path);
@@ -920,20 +917,18 @@ pub fn emitChunks(
             try format_wrapper.emitFormatEpilogue(&chunk_output, allocator, options.format, &.{});
 
         // Plugin: renderChunk 훅 — 청크 완성 후, footer 전.
-        // F8 post-review fix — plugin 에 전달되는 chunk_name 을 *실제 filename 의
-        // stem* 과 동기. 옛 코드는 chunkPlaceholderStem 결과 (entry_names 패턴 적용)
-        // 만 보내 preserve_modules / explicit_file_name 시 filename 과 drift —
-        // plugin (예: visualizer manifest) 이 chunk_name 으로 path 만들면 실제
-        // 파일과 mismatch.
+        // chunk_name 은 *실제 filename 의 stem* 과 동기 — preserve_modules /
+        // explicit_file_name 시 filename 과 drift 되면 plugin (visualizer 등) 이
+        // chunk_name 으로 path 복원 시 mismatch.
         if (options.plugins.len > 0) {
             const runner = plugin_mod.PluginRunner.init(options.plugins);
             var rc_stem_buf: std.ArrayListUnmanaged(u8) = .empty;
             defer rc_stem_buf.deinit(allocator);
             const rc_chunk_name: []const u8 = blk: {
                 if (chunk.explicit_file_name) |efn| {
-                    // explicit fileName 의 stem (실제 ext 제외) — efn 의 ext 가
-                    // options.out_extension_js 와 다를 수 있어 `std.fs.path.extension`
-                    // 으로 실제 ext 추출 (review F1 fix).
+                    // explicit fileName 의 stem (실제 ext 제외). efn 의 ext 가
+                    // options.out_extension_js 와 다를 수 있으므로
+                    // `std.fs.path.extension` 으로 실제 ext 추출.
                     const efn_ext = std.fs.path.extension(efn);
                     const stem_part = efn[0 .. efn.len - efn_ext.len];
                     try rc_stem_buf.appendSlice(allocator, stem_part);
@@ -1129,7 +1124,7 @@ fn emitRunBeforeMainCrossImports(
 ) !void {
     var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer dep_buf.deinit(allocator);
-    // F5 post-review fix: importer chunk 의 *최종 stem* dirname 으로 src_dir 계산.
+    // src_dir 는 importer chunk 의 *최종 stem* (baked-in slash 포함) 의 dirname.
     var importer_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer importer_buf.deinit(allocator);
     try chunkPlaceholderStem(current_chunk, &importer_buf, allocator, options);
@@ -1143,11 +1138,8 @@ fn emitRunBeforeMainCrossImports(
             const dep_path = dep_chunk.rel_dir orelse "./";
             break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
         } else if (dep_chunk.explicit_file_name) |efn|
-            // F5 post-review fix — efn 도 importer_dir 기준 relative.
             try computeRelativePath(allocator, importer_dir, efn, "")
         else blk: {
-            // F5 post-review fix — RBM cross-chunk import 도 importer chunk stem dir
-            // (baked-in slash 포함) 기준 relative.
             break :blk try computeRelativePath(allocator, importer_dir, dep_stem, ext);
         };
         defer allocator.free(resolved_path);
@@ -1385,9 +1377,9 @@ fn rewriteDynamicImports(
     defer stem_buf.deinit(allocator);
 
     const src_chunk_idx = chunk_graph.getModuleChunk(module.index);
-    // F5 post-review fix: importer chunk *stem* (pattern + baked-in slash) 의
-    // dirname 사용 — name_dir 만 보면 entry_names/chunk_names 의 baked-in dir
-    // 미감지로 import path 가 importer 위치 기준 잘못 계산됨.
+    // src_dir 는 importer chunk *stem* (pattern + baked-in slash 포함) 의
+    // dirname. name_dir 만 보면 baked-in dir 를 못 보고 import path 가
+    // importer 위치 기준 잘못 계산됨.
     var importer_stem_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer importer_stem_buf.deinit(allocator);
     const src_chunk_dir: []const u8 = if (src_chunk_idx.isNone())
@@ -1513,13 +1505,12 @@ fn rewriteDynamicImports(
             (if (public_path.len > 0)
                 try std.fmt.allocPrint(allocator, "{s}{s}", .{ public_path, efn })
             else
-                // F5 post-review fix — efn 도 src_chunk_dir 기준 relative.
                 try computeRelativePath(allocator, src_chunk_dir, efn, ""))
         else if (public_path.len > 0)
             try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ public_path, stem, out_ext })
         else blk: {
-            // F5 post-review fix — dynamic import 도 *항상* importer chunk dir
-            // 기준 relative. 패턴 baked-in slash 케이스 가드.
+            // dynamic import 도 importer chunk dir 기준 상대 경로 — pattern
+            // baked-in slash (`'static/[name]'`) 케이스에서 runtime resolve 정합.
             break :blk try computeRelativePath(allocator, src_chunk_dir, stem, out_ext);
         };
         defer allocator.free(replacement);
@@ -1885,7 +1876,7 @@ fn chunkPlaceholderStem(
     allocator: std.mem.Allocator,
     options: *const EmitOptions,
 ) !void {
-    // F5 post-review — Rollup parity:
+    // Rollup parity — 청크 종류별 패턴 적용:
     // - *static* entry (사용자 `entryPoints` 로 명시): entry_names + name_dir
     // - *dynamic* entry (`import()` 로 생성된 entry chunk, `is_dynamic=true`):
     //   chunk_names + dir 강제 "" (Rollup `chunkFileNames`)
@@ -2439,10 +2430,9 @@ fn computeRelativePath(
         matched_full = i + 1;
         if (src_dir[i] == '/') common_len = i + 1;
     }
-    // F5 post-review fix: src_dir 가 dep_path 의 *진짜* prefix 일 때만 segment
-    // 매치로 인정 — 옛 코드는 byte 일치 검사 없이 src_dir.len 기반 가정 →
-    // src_dir="static", dep_path="chunks/..." 같이 무관한 path 도 prefix 로
-    // 잘못 인식해 dep_remaining 손실.
+    // src_dir 가 dep_path 의 진짜 prefix 일 때만 segment 매치 (matched_full 로 byte
+    // 일치 보장). 길이만 보면 `src_dir="static"`, `dep="chunks/..."` 같이 무관한
+    // path 도 prefix 로 잘못 인식해 dep_remaining 손실.
     if (matched_full == src_dir.len and (dep_path_no_ext.len == src_dir.len or
         (dep_path_no_ext.len > src_dir.len and dep_path_no_ext[src_dir.len] == '/')))
     {
