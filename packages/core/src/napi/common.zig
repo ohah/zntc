@@ -207,17 +207,21 @@ fn copyBytesOrEmpty(alloc: std.mem.Allocator, data_ptr: ?*anyopaque, byte_len: u
 /// (`getStringArg` 와 동일 root cause). 정확히 `count` 길이로 줄여 반환한다.
 /// 1차 시도 `alloc.realloc` (대부분 in-place shrink); 실패 시 새 alloc + memcpy
 /// + 옛 free fallback. element 값 (slice 등 sub-alloc) 은 그대로 보존된다.
-pub fn shrinkSlice(comptime T: type, alloc: std.mem.Allocator, result: []T, count: usize) ?[]T {
+///
+/// **OOM 시 `result` 미 free** — caller 가 `catch` 로 받아 element-specific
+/// inner cleanup (element 가 owned sub-alloc 보유 시) 후 `alloc.free(result)`
+/// 호출 책임. 이전 design 은 OOM 시 outer 만 free 하고 inner element 누수 —
+/// PR #3691 review max 의 잔여 finding (rare 지만 contract 정확성).
+pub fn shrinkSlice(comptime T: type, alloc: std.mem.Allocator, result: []T, count: usize) std.mem.Allocator.Error![]T {
     if (count == result.len) return result;
-    return alloc.realloc(result, count) catch blk: {
-        const shrunk = alloc.alloc(T, count) catch {
-            alloc.free(result);
-            return null;
-        };
+    if (alloc.realloc(result, count)) |shrunk| return shrunk else |_| {
+        // realloc 실패 (희박) → 새 alloc + memcpy + 옛 free. 새 alloc 도 실패
+        // 시 OOM error 반환 (result 유지, caller 가 cleanup).
+        const shrunk = try alloc.alloc(T, count);
         @memcpy(shrunk, result[0..count]);
         alloc.free(result);
-        break :blk shrunk;
-    };
+        return shrunk;
+    }
 }
 
 pub fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -248,7 +252,11 @@ pub fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Alloc
         alloc.free(result);
         return null;
     }
-    return shrinkSlice([]const u8, alloc, result, count);
+    return shrinkSlice([]const u8, alloc, result, count) catch {
+        for (result[0..count]) |s| alloc.free(s);
+        alloc.free(result);
+        return null;
+    };
 }
 
 /// JS 객체의 키-값 쌍을 [2][]const u8 배열로 추출. { "key": "value", ... }
@@ -288,7 +296,14 @@ pub fn getObjectKeyValuePairs(env: c.napi_env, obj: c.napi_value, key: [*:0]cons
         alloc.free(result);
         return null;
     }
-    return shrinkSlice([2][]const u8, alloc, result, count);
+    return shrinkSlice([2][]const u8, alloc, result, count) catch {
+        for (result[0..count]) |pair| {
+            alloc.free(pair[0]);
+            alloc.free(pair[1]);
+        }
+        alloc.free(result);
+        return null;
+    };
 }
 
 /// fallback 옵션용 — 값이 boolean false이면 null 저장, 문자열이면 그대로. 그 외엔 스킵.
@@ -344,7 +359,14 @@ pub fn getObjectKeyValuePairsWithNullable(
         alloc.free(result);
         return null;
     }
-    return shrinkSlice(NullableStringPair, alloc, result, count);
+    return shrinkSlice(NullableStringPair, alloc, result, count) catch {
+        for (result[0..count]) |pair| {
+            alloc.free(pair[0]);
+            if (pair[1]) |v| alloc.free(v);
+        }
+        alloc.free(result);
+        return null;
+    };
 }
 
 pub fn setDoubleProp(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, value: f64) void {

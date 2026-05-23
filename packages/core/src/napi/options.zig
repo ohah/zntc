@@ -513,7 +513,12 @@ pub fn parseBuildOptions(
         if (valid_count == 0) {
             native_alloc.free(overrides);
         } else {
-            loader_overrides = common.shrinkSlice(bundler_mod.types.LoaderOverride, native_alloc, overrides, valid_count) orelse return null;
+            // LoaderOverride.ext 는 owned_strings borrow, .loader/.module_type 은
+            // enum value — inner sub-alloc 없음. OOM catch 시 outer 만 free.
+            loader_overrides = common.shrinkSlice(bundler_mod.types.LoaderOverride, native_alloc, overrides, valid_count) catch {
+                native_alloc.free(overrides);
+                return null;
+            };
         }
     }
 
