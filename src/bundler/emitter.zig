@@ -151,8 +151,10 @@ pub const EmitOptions = struct {
     output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력
     charset_utf8: bool = false,
-    /// 엔트리 청크 파일명 패턴 (예: "[name]", "[name]-[hash]", "[dir]/[name]-[hash]")
-    entry_names: []const u8 = "[name]",
+    /// 엔트리 청크 파일명 패턴 (예: "[dir]/[name]", "[name]-[hash]").
+    /// PR B-4b sub-2: default 가 `[name]` 에서 `[dir]/[name]` 로 변경 (bundler.zig
+    /// 와 동기). 청크 path collision 자동 회피 (esbuild parity).
+    entry_names: []const u8 = "[dir]/[name]",
     /// 공통 청크 파일명 패턴 (예: "[name]-[hash]", "chunks/[name]-[hash]")
     chunk_names: []const u8 = "[name]-[hash]",
     /// 에셋 파일명 패턴 (예: "[name]-[hash]", "assets/[name]-[hash]")

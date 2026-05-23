@@ -368,6 +368,7 @@ pub fn parseBuildOptions(
     const entry_names = ownStr(env, opts_obj, "entryNames", owned_strings);
     const chunk_names = ownStr(env, opts_obj, "chunkNames", owned_strings);
     const asset_names = ownStr(env, opts_obj, "assetNames", owned_strings);
+    const css_names = ownStr(env, opts_obj, "cssNames", owned_strings);
     // assetRegistry: string (경로), null/undefined (플랫폼 프리셋 결정), false (명시적 off).
     // false를 구분하기 위해 boolean 타입을 별도 체크.
     const asset_registry: ?[]const u8 = blk: {
@@ -792,9 +793,13 @@ pub fn parseBuildOptions(
         .global_name = global_name,
         .globals = globals,
         .public_path = public_path orelse "",
-        .entry_names = entry_names orelse "[name]",
+        // PR B-4b sub-2 (breaking): default `[name]` → `[dir]/[name]` (esbuild parity).
+        .entry_names = entry_names orelse "[dir]/[name]",
         .chunk_names = chunk_names orelse "[name]-[hash]",
         .asset_names = asset_names orelse "[name]-[hash]",
+        // cssNames: PR B-2 부터 Zig field 는 있었지만 NAPI 매핑이 누락돼 사용자
+        // 명시값이 무시되던 pre-existing bug 동반 fix (PR B-4b sub-2 root cause).
+        .css_names = css_names orelse "[dir]/[name]",
         .asset_registry = asset_registry,
         .jsx_runtime = jsx_runtime_eff,
         .jsx_factory = jsx_factory_eff,

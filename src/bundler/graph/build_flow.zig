@@ -28,9 +28,13 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
     // 워커 스레드에서 호출하기 전 단일 thread 진입점에서 1회만.
     graph_plugins.ensureBuiltinPlugins(self);
 
-    // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
+    // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
+    // PR B-4b sub-2: esbuild `outbase` 자동 추론과 동치 — 모든 entry 의
+    // dirname 의 longest common parent. 옛 동작(첫 entry dirname 만 보던)은
+    // multi-entry monorepo 에서 sibling entry 들이 entry_dir 외부로 잡혀
+    // `[dir]/[name]` default 가 무효였다.
     if (self.entry_dir.len == 0 and entry_points.len > 0) {
-        self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        self.entry_dir = computeEntryDir(entry_points);
     }
     // project_root 자동 감지 (미지정 시): entry_dir에서 위로 올라가며 첫 package.json
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
@@ -652,9 +656,14 @@ pub fn buildIncremental(
     graph_plugins.ensureBuiltinPlugins(self);
 
     // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
+    // PR B-4b sub-2: esbuild `outbase` 자동 추론과 동치 — 모든 entry 의
+    // dirname 의 longest common parent. 옛 동작(첫 entry dirname 만 보던)은
+    // multi-entry monorepo 에서 sibling entry 들이 entry_dir 외부로 잡혀
+    // `[dir]/[name]` default 가 무효였다.
     if (self.entry_dir.len == 0 and entry_points.len > 0) {
-        self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        self.entry_dir = computeEntryDir(entry_points);
     }
+    // project_root 자동 감지 (미지정 시): entry_dir에서 위로 올라가며 첫 package.json
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
         self.project_root = graph_project_root.findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
     }
@@ -897,4 +906,128 @@ pub fn transferModulesToStore(self: *ModuleGraph, store: *module_store.Persisten
         const mtime = if (m.mtime != 0) m.mtime else (getMtime(m.path) catch 0);
         store.putModule(m.path, m, mtime);
     }
+}
+
+inline fn isPathSep(c: u8) bool {
+    return c == '/' or c == '\\';
+}
+
+/// 두 절대/상대 path 의 공통 prefix 를 segment 경계에서 잘라 반환.
+///
+/// `entry_dir` 계산용 헬퍼 — esbuild `outbase` 자동 추론과 동치.
+/// - mid-segment cut 회피(예: `/x/def-a` vs `/x/def-b` → `/x/def-` 가 아닌 `/x`).
+/// - 한쪽이 다른 쪽의 정확한 dir prefix 면 그쪽 반환(`/x/y` vs `/x/y/z` → `/x/y`).
+/// - 절대 경로가 root `/` 만 공유하면 root sep 보존(`/a` vs `/b` → `/`) —
+///   F1 가드(없으면 절대 entry sibling 들이 entry_dir="" 폴백돼 [dir] 토큰 무효화).
+fn commonPathPrefix(a: []const u8, b: []const u8) []const u8 {
+    var i: usize = 0;
+    const min_len = @min(a.len, b.len);
+    while (i < min_len and a[i] == b[i]) : (i += 1) {}
+    if (i == a.len and i == b.len) return a;
+    if (i == a.len and i < b.len and isPathSep(b[i])) return a;
+    if (i == b.len and i < a.len and isPathSep(a[i])) return b;
+    // i 까지 본 byte 중 마지막 separator 직전까지 잘라 segment 경계 보장.
+    // separator 가 첫 byte(root sep) 라면 root prefix `/` 를 유지.
+    var cut: usize = 0;
+    var has_root_sep = false;
+    var j: usize = 0;
+    while (j < i) : (j += 1) {
+        if (isPathSep(a[j])) {
+            if (j == 0) has_root_sep = true else cut = j;
+        }
+    }
+    if (cut == 0 and has_root_sep) return a[0..1];
+    return a[0..cut];
+}
+
+/// entry_points 의 dirname 들의 longest common parent 를 반환.
+/// 모든 entry 의 dirname 을 segment 경계에서 교집합 — esbuild `outbase` 동치.
+/// 빈 slice 반환 = 공통 부모 없음 → 평면 emit fallback.
+fn computeEntryDir(entry_points: []const []const u8) []const u8 {
+    if (entry_points.len == 0) return "";
+    var common: []const u8 = std.fs.path.dirname(entry_points[0]) orelse "";
+    var i: usize = 1;
+    while (i < entry_points.len) : (i += 1) {
+        const dir = std.fs.path.dirname(entry_points[i]) orelse "";
+        common = commonPathPrefix(common, dir);
+        if (common.len == 0) break;
+    }
+    return common;
+}
+
+test "commonPathPrefix — sibling dirs cut at segment boundary" {
+    const r = commonPathPrefix("/tmp/x/def-a", "/tmp/x/def-b");
+    try std.testing.expectEqualStrings("/tmp/x", r);
+}
+
+test "commonPathPrefix — exact prefix returns shorter" {
+    try std.testing.expectEqualStrings("/x/y", commonPathPrefix("/x/y", "/x/y/z"));
+    try std.testing.expectEqualStrings("/x/y", commonPathPrefix("/x/y/z", "/x/y"));
+}
+
+test "commonPathPrefix — identical paths" {
+    try std.testing.expectEqualStrings("/a/b/c", commonPathPrefix("/a/b/c", "/a/b/c"));
+}
+
+test "commonPathPrefix — disjoint absolute paths share root sep" {
+    // F1 가드: 둘 다 root-anchored 이면 root `/` 공유. esbuild parity.
+    try std.testing.expectEqualStrings("/", commonPathPrefix("/a/b", "/c/d"));
+}
+
+test "commonPathPrefix — disjoint relative paths return empty" {
+    // root sep 없는 경우엔 빈 결과 — 평면 fallback.
+    try std.testing.expectEqualStrings("", commonPathPrefix("a/b", "c/d"));
+}
+
+test "commonPathPrefix — root-only siblings keep root sep (F1)" {
+    try std.testing.expectEqualStrings("/", commonPathPrefix("/a", "/b"));
+}
+
+test "commonPathPrefix — Windows-style separators" {
+    const r = commonPathPrefix("C:\\repo\\a", "C:\\repo\\b");
+    try std.testing.expectEqualStrings("C:\\repo", r);
+}
+
+test "computeEntryDir — single entry returns its dirname" {
+    const entries = [_][]const u8{"/tmp/x/def-a/index.ts"};
+    try std.testing.expectEqualStrings("/tmp/x/def-a", computeEntryDir(&entries));
+}
+
+test "computeEntryDir — two sibling entries returns common parent" {
+    const entries = [_][]const u8{
+        "/tmp/x/def-a/index.ts",
+        "/tmp/x/def-b/index.ts",
+    };
+    try std.testing.expectEqualStrings("/tmp/x", computeEntryDir(&entries));
+}
+
+test "computeEntryDir — disjoint absolute entries share root" {
+    // F1: 둘 다 root-anchored 라 root `/` 가 entry_dir. esbuild parity.
+    const entries = [_][]const u8{
+        "/foo/a/index.ts",
+        "/bar/b/index.ts",
+    };
+    try std.testing.expectEqualStrings("/", computeEntryDir(&entries));
+}
+
+test "computeEntryDir — relative entries with no common dir return empty" {
+    const entries = [_][]const u8{
+        "src/a/x.ts",
+        "lib/b/y.ts",
+    };
+    try std.testing.expectEqualStrings("", computeEntryDir(&entries));
+}
+
+test "computeEntryDir — empty input returns empty" {
+    const entries = [_][]const u8{};
+    try std.testing.expectEqualStrings("", computeEntryDir(&entries));
+}
+
+test "computeEntryDir — nested + sibling combination" {
+    // entries: /repo/src/a/x.ts, /repo/src/b/y/z.ts → common = /repo/src
+    const entries = [_][]const u8{
+        "/repo/src/a/x.ts",
+        "/repo/src/b/y/z.ts",
+    };
+    try std.testing.expectEqualStrings("/repo/src", computeEntryDir(&entries));
 }

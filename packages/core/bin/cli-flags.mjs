@@ -116,6 +116,7 @@ export const FLAG_REGISTRY = [
   { kind: 'string', flag: '--entry-names', target: 'entryNames', forms: ['equal'] },
   { kind: 'string', flag: '--chunk-names', target: 'chunkNames', forms: ['equal'] },
   { kind: 'string', flag: '--asset-names', target: 'assetNames', forms: ['equal'] },
+  { kind: 'string', flag: '--css-names', target: 'cssNames', forms: ['equal'] },
   { kind: 'string', flag: '--quotes', target: 'quotes', forms: ['equal'] },
   { kind: 'string', flag: '--log-level', target: 'logLevel', forms: ['equal'] },
   { kind: 'string', flag: '--legal-comments', target: 'legalComments', forms: ['equal'] },

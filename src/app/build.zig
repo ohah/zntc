@@ -148,9 +148,14 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .code_splitting = opts.splitting,
         .sourcemap = .{ .enable = opts.sourcemap },
         .public_path = base,
+        // PR B-4b sub-2: zntc bundler default 가 `[dir]/[name]` 으로 변경됐으나
+        // app-builder 는 HTML link rewrite(`href="/src/main.css"`) 호환 위해
+        // flat `[name]` 유지 — 별도 명시. 동기화는 sub-3 에서 (app-builder
+        // semver/UX 정책 결정과 함께).
         .entry_names = if (opts.splitting) "[name]-[hash]" else "[name]",
         .chunk_names = "[name]-[hash]",
         .asset_names = "[name]-[hash]",
+        .css_names = "[name]",
         .output_filename = "bundle.js",
         .root_dir = root,
         .jsx_runtime = opts.jsx.runtime,

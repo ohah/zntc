@@ -54,7 +54,11 @@ pub fn emitCssBundle(
     // 출력 파일명 결정
     const entry_mod = graph.getModule(entry_idx) orelse return null;
     const entry_path = entry_mod.path;
-    const css_path = applyCssNamingPattern(allocator, css_names, entry_path) catch return null;
+    // PR B-4b sub-2: [dir] 토큰은 entry_dir-relative dir 로 치환. graph.entry_dir
+    // 가 없으면(non-bundling 단일 emit) 빈 dir 폴백 — 토큰 + 인접 '/' skip.
+    const entry_abs_dir = std.fs.path.dirname(entry_path) orelse "";
+    const raw_dir = chunk_mod.entryRelativeDir(graph.entry_dir, entry_abs_dir);
+    const css_path = applyCssNamingPattern(allocator, css_names, entry_path, raw_dir) catch return null;
 
     return .{
         .path = css_path,
@@ -602,8 +606,17 @@ fn collectCssModules(
 }
 
 /// CSS 출력 파일명 패턴 적용.
-/// [name] → 엔트리 파일의 basename (확장자 제거) + .css
-fn applyCssNamingPattern(allocator: std.mem.Allocator, pattern: []const u8, entry_path: []const u8) ![]const u8 {
+/// `[name]` → 엔트리 파일의 basename (확장자 제거).
+/// `[dir]`  → entry_dir-relative dir (caller 가 entryRelativeDir 로 계산해 전달).
+/// `[hash]` 는 본 entry-단위 single-bundle 경로에선 미지원 — content-hash 가
+/// 필요한 사용자는 splitting:true (planCssChunks 경로) 사용.
+/// 빈 `dir` 폴백: 토큰 + 인접 `/` 함께 skip — esbuild parity (applyCssChunkNameWithDir 와 동일 규칙).
+fn applyCssNamingPattern(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    entry_path: []const u8,
+    dir: []const u8,
+) ![]const u8 {
     // 엔트리 파일의 basename 추출 (확장자 제거)
     const basename = std.fs.path.basename(entry_path);
     const name = if (std.mem.lastIndexOf(u8, basename, ".")) |dot|
@@ -611,15 +624,33 @@ fn applyCssNamingPattern(allocator: std.mem.Allocator, pattern: []const u8, entr
     else
         basename;
 
-    // [name] 패턴 치환
-    if (std.mem.indexOf(u8, pattern, "[name]")) |idx| {
-        const before = pattern[0..idx];
-        const after = pattern[idx + 6 ..]; // "[name]".len = 6
-        return std.fmt.allocPrint(allocator, "{s}{s}{s}.css", .{ before, name, after });
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < pattern.len) {
+        if (std.mem.startsWith(u8, pattern[i..], "[name]")) {
+            try out.appendSlice(allocator, name);
+            i += "[name]".len;
+        } else if (std.mem.startsWith(u8, pattern[i..], "[dir]")) {
+            if (dir.len > 0) {
+                for (dir) |c| try out.append(allocator, if (c == '\\') '/' else c);
+                i += "[dir]".len;
+            } else {
+                i += "[dir]".len;
+                if (i < pattern.len and pattern[i] == '/') i += 1;
+            }
+        } else {
+            try out.append(allocator, pattern[i]);
+            i += 1;
+        }
     }
-
-    // 패턴에 [name] 없으면 그대로 + .css
-    return std.fmt.allocPrint(allocator, "{s}.css", .{pattern});
+    try out.appendSlice(allocator, ".css");
+    // degenerate (e.g. pattern="[dir]" + 빈 dir → ".css") fallback.
+    if (out.items.len <= ".css".len) {
+        out.clearRetainingCapacity();
+        try out.appendSlice(allocator, "chunk.css");
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 // ============================================================
@@ -627,15 +658,29 @@ fn applyCssNamingPattern(allocator: std.mem.Allocator, pattern: []const u8, entr
 // ============================================================
 
 test "applyCssNamingPattern: default pattern" {
-    const result = try applyCssNamingPattern(std.testing.allocator, "[name]", "/app/src/index.ts");
+    const result = try applyCssNamingPattern(std.testing.allocator, "[name]", "/app/src/index.ts", "");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("index.css", result);
 }
 
 test "applyCssNamingPattern: custom pattern" {
-    const result = try applyCssNamingPattern(std.testing.allocator, "styles/[name]", "/app/src/main.tsx");
+    const result = try applyCssNamingPattern(std.testing.allocator, "styles/[name]", "/app/src/main.tsx", "");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("styles/main.css", result);
+}
+
+test "applyCssNamingPattern: [dir] token + entry-relative dir" {
+    const r = try applyCssNamingPattern(std.testing.allocator, "[dir]/[name]", "/app/src/pages-a/index.ts", "pages-a");
+    defer std.testing.allocator.free(r);
+    try std.testing.expectEqualStrings("pages-a/index.css", r);
+}
+
+test "applyCssNamingPattern: [dir]/[name] with empty dir skips token + slash" {
+    // F7 회귀 가드: 새 default `[dir]/[name]` + 빈 dir → literal `[dir]/` 가
+    // 파일명에 baked 되던 버그. 빈 dir 시 토큰 + 인접 `/` 함께 skip.
+    const r = try applyCssNamingPattern(std.testing.allocator, "[dir]/[name]", "/app/src/index.ts", "");
+    defer std.testing.allocator.free(r);
+    try std.testing.expectEqualStrings("index.css", r);
 }
 
 test "applyCssChunkName: empty stem → 'chunk.css' fallback (PR B-3 — silent collision 차단)" {
