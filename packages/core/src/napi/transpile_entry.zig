@@ -9,7 +9,7 @@ const common = @import("common.zig");
 const tsconfig_cache_mod = @import("tsconfig_cache.zig");
 const c = common.c;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 
 const throwError = common.throwError;
 const getStringArg = common.getStringArg;

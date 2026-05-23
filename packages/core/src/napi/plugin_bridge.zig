@@ -8,7 +8,7 @@ const common = @import("common.zig");
 const result_mod = @import("result.zig");
 const c = common.c;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 const getStringArg = common.getStringArg;
 const getNamedProperty = common.getNamedProperty;
 const getObjectBool = common.getObjectBool;

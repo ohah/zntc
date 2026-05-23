@@ -6,7 +6,7 @@ const common = @import("common.zig");
 const c = common.c;
 
 const TsconfigCache = zntc_lib.tsconfig_cache.TsconfigCache;
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 const throwError = common.throwError;
 const unwrapNapi = common.unwrapNapi;
 

@@ -1,6 +1,7 @@
 //! Shared NAPI helpers for the `@zntc/core` native entry.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const c = @cImport({
     @cDefine("NAPI_VERSION", "8");
@@ -8,6 +9,40 @@ pub const c = @cImport({
 });
 
 pub const NullableStringPair = struct { []const u8, ?[]const u8 };
+
+// ── NAPI 공용 allocator (#dev-leak-investigation) ─────────────────────────
+// debug 빌드: DebugAllocator → process 종료 시 atexit 으로 leak 리포트(stack
+// trace 포함) 를 stderr 로 dump. RSS 폭증의 root site 식별이 목적이므로 영구
+// 변경이 아닌 임시 측정 인프라다.
+// release 빌드: c_allocator 그대로 (overhead 0, 기존 동작 유지).
+//
+// 모든 NAPI 파일이 `common.nativeAlloc()` 1개 인스턴스를 공유해야 cross-file
+// alloc/free (예: watch.zig 가 transpile_entry 결과 free) 시 false leak 이
+// 안 뜬다.
+var debug_gpa: std.heap.DebugAllocator(.{ .stack_trace_frames = 16 }) = .init;
+
+pub fn nativeAlloc() std.mem.Allocator {
+    if (comptime builtin.mode == .Debug) return debug_gpa.allocator();
+    return std.heap.c_allocator;
+}
+
+extern fn atexit(?*const fn () callconv(.c) void) c_int;
+
+fn dumpLeaksAtExit() callconv(.c) void {
+    if (comptime builtin.mode != .Debug) return;
+    _ = debug_gpa.deinit();
+}
+
+var leak_dump_registered: bool = false;
+
+/// napi_register_module_v1 에서 1회 호출. SIGTERM/정상 exit 시 atexit handler
+/// 가 GPA.deinit() 를 호출해 leak 리포트(stack trace) 를 stderr 에 출력한다.
+pub fn registerLeakDump() void {
+    if (comptime builtin.mode != .Debug) return;
+    if (leak_dump_registered) return;
+    leak_dump_registered = true;
+    _ = atexit(&dumpLeaksAtExit);
+}
 
 pub fn throwError(env: c.napi_env, msg: [*:0]const u8) c.napi_value {
     _ = c.napi_throw_error(env, null, msg);
