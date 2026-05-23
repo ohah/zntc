@@ -351,6 +351,45 @@ pub const ChunkGraph = struct {
 };
 
 // ============================================================
+// entryRelativeDir — abs path → entry_dir 기준 relative
+// ============================================================
+
+/// dirname(entry path) 를 graph.entry_dir 기준 *상대 디렉토리* 로 변환.
+/// PR B-4b sub-1b 의 핵심 안전망 — 사용자 머신 절대경로(예:
+/// `Users/me/proj/src/pages`) 가 `[dir]` 토큰 출력에 누설되는 사고 차단.
+///
+/// **정책**:
+/// 1. entry_dir 가 빈 문자열이면 fallback `""`.
+/// 2. abs_dir 가 entry_dir 의 *디렉토리 경계* prefix 가 아니면 fallback `""`
+///    — `entry_dir="src/pages"` 가 `abs_dir="src/pages2/a"` 와 byte-startsWith
+///    match 해도 sibling dir 라 *false prefix*. boundary 조건: prefix 직후가
+///    path-separator(`/`/`\`)이거나 정확히 같은 길이.
+/// 3. Windows/POSIX path-separator 양쪽 (`/`/`\`) 정규화 — 양쪽 dir 의 byte
+///    비교를 separator-aware 로.
+///
+/// **반환**: borrow slice (abs_dir 또는 ""). caller 가 sanitize/dupe.
+pub fn entryRelativeDir(entry_dir: []const u8, abs_dir: []const u8) []const u8 {
+    if (entry_dir.len == 0) return "";
+    if (abs_dir.len < entry_dir.len) return "";
+
+    // separator-agnostic byte 비교 (`/`/`\\` 둘 다 separator 로 동등).
+    var i: usize = 0;
+    while (i < entry_dir.len) : (i += 1) {
+        const a = entry_dir[i];
+        const b = abs_dir[i];
+        const a_norm: u8 = if (a == '\\') '/' else a;
+        const b_norm: u8 = if (b == '\\') '/' else b;
+        if (a_norm != b_norm) return "";
+    }
+    // boundary 검사: prefix 직후가 separator 거나 정확히 entry_dir 와 같은 길이.
+    if (abs_dir.len == entry_dir.len) return "";
+    const sep = abs_dir[entry_dir.len];
+    if (sep != '/' and sep != '\\') return ""; // sibling-prefix 차단
+    // leading separator 한 개 skip 후 반환.
+    return abs_dir[entry_dir.len + 1 ..];
+}
+
+// ============================================================
 // sanitizeNameDir — Chunk.name_dir 채울 raw dir 정규화
 // ============================================================
 
@@ -762,11 +801,13 @@ pub fn generateChunks(
         chunk.name = name;
         chunk.explicit_file_name = explicit_file_name;
 
-        // PR B-1: [dir] 토큰 치환용 raw dir 정보 채움. dirname(entry path) 를
-        // sanitize 거쳐 저장. 현재 PR scope 에선 호출자(chunkPlaceholderStem)가
-        // 이 값을 사용하지 않으므로 영향 0 — PR B-4 의 default 변경과 함께
-        // 활성화될 예정. entry_dir-relative 계산은 PR B-4 로 미룬다.
-        const raw_dir = std.fs.path.dirname(entry_mod.path) orelse "";
+        // PR B-1: [dir] 토큰 치환용 raw dir. PR B-4b sub-1b: dirname(entry path)
+        // 를 *graph.entry_dir 기준 relative* 로 변환해 사용자 머신 절대경로
+        // 누설 차단 + sibling-prefix(`src/pages` vs `src/pages2/`) boundary
+        // 가드 + Windows 백슬래시 separator 정규화. `entryRelativeDir` 가
+        // 모든 invariant 캡슐화 — 회귀 가드 단위 테스트 동반.
+        const abs_dir = std.fs.path.dirname(entry_mod.path) orelse "";
+        const raw_dir = entryRelativeDir(graph.entry_dir, abs_dir);
         chunk.name_dir = sanitizeNameDir(allocator, raw_dir) catch null;
         // addChunk 가 OOM 으로 실패하면 chunk 가 graph 로 옮겨가지 않아 local
         // chunk 의 name_dir alloc 이 leak. errdefer 로 보호.
@@ -1122,9 +1163,10 @@ pub fn generatePreserveModulesChunks(
         // PR B-1: [dir] 토큰 치환용 raw dir. preserve-modules 의 `rel_dir` 은
         // 모듈 절대경로+파일명+ext 의 misnomer 라 [dir] 토큰에 직접 노출하면
         // 출력이 깨진다. 안전한 신규 필드 `name_dir` 에는 *dirname* 만 sanitize
-        // 거쳐 저장. virtual helper id 는 sanitize 가 NUL 발견 시 빈 문자열로
-        // 떨어뜨려 안전. 현재 PR scope 에선 호출자 미사용 — PR B-4 가 활성화.
-        const raw_dir_pm = std.fs.path.dirname(m.path) orelse "";
+        // 거쳐 저장. PR B-4b sub-1b: entry_dir 기준 relative + boundary 가드 +
+        // 백슬래시 정규화 (entry 분기와 동일 helper).
+        const abs_dir_pm = std.fs.path.dirname(m.path) orelse "";
+        const raw_dir_pm = entryRelativeDir(graph.entry_dir, abs_dir_pm);
         chunk.name_dir = sanitizeNameDir(allocator, raw_dir_pm) catch null;
         // addChunk OOM 시 leak 방지(entry chunk 분기와 대칭). ownership transfer
         // 후 local pointer 를 null 로 비워 후속 try 실패 시 double-free 차단.
@@ -1780,4 +1822,73 @@ test "sanitizeNameDir: literal dot 이 segment 안에 있으면 보존" {
     const r = try sanitizeNameDir(a, "src/.config/dist");
     defer a.free(r);
     try std.testing.expectEqualStrings("src/.config/dist", r);
+}
+
+// PR B-4b sub-1b: entryRelativeDir 회귀 가드 — abs path → entry_dir-relative.
+
+test "entryRelativeDir: 기본 — abs 가 entry_dir 안에 있으면 relative" {
+    try std.testing.expectEqualStrings(
+        "a",
+        entryRelativeDir("/proj/src", "/proj/src/a"),
+    );
+    try std.testing.expectEqualStrings(
+        "a/b/c",
+        entryRelativeDir("/proj/src", "/proj/src/a/b/c"),
+    );
+}
+
+test "entryRelativeDir: abs == entry_dir → 빈 문자열" {
+    try std.testing.expectEqualStrings("", entryRelativeDir("/proj/src", "/proj/src"));
+}
+
+test "entryRelativeDir: entry_dir 빈 문자열 → 빈 fallback" {
+    try std.testing.expectEqualStrings("", entryRelativeDir("", "/proj/src/a"));
+}
+
+test "entryRelativeDir: abs 가 entry_dir 보다 짧으면 빈 fallback" {
+    try std.testing.expectEqualStrings("", entryRelativeDir("/proj/src", "/proj"));
+}
+
+test "entryRelativeDir: F1 sibling-prefix 차단 (CRITICAL)" {
+    // entry_dir='src/pages' 가 abs='src/pages2/a' 의 byte-startsWith match
+    // 하지만 separator boundary 안 맞으므로 빈 fallback. 옛 코드는 잘못된
+    // rel='2/a' 만들었음. 회귀 시 sibling dir 가 잘못 묶임.
+    try std.testing.expectEqualStrings(
+        "",
+        entryRelativeDir("src/pages", "src/pages2/a"),
+    );
+    try std.testing.expectEqualStrings(
+        "",
+        entryRelativeDir("/proj/src", "/proj/src-tests/x"),
+    );
+}
+
+test "entryRelativeDir: Windows 백슬래시 separator 정규화" {
+    // entry_dir 가 forward slash, abs 가 backslash 인 (Windows OS API) 케이스 —
+    // separator-agnostic byte 비교로 정상 match.
+    try std.testing.expectEqualStrings(
+        "Card.tsx",
+        entryRelativeDir("C:/proj/src", "C:\\proj\\src\\Card.tsx"),
+    );
+    // 반대 방향 — entry_dir 백슬래시, abs forward slash.
+    try std.testing.expectEqualStrings(
+        "Card.tsx",
+        entryRelativeDir("C:\\proj\\src", "C:/proj/src/Card.tsx"),
+    );
+}
+
+test "entryRelativeDir: nested abs 가 깊은 경로면 깊이 보존" {
+    try std.testing.expectEqualStrings(
+        "pages/a/components",
+        entryRelativeDir("/proj/src", "/proj/src/pages/a/components"),
+    );
+}
+
+test "entryRelativeDir: 결과는 sanitizeNameDir 와 호환" {
+    // entryRelativeDir 결과를 sanitizeNameDir 에 통과 — 일관성 검증.
+    const a = std.testing.allocator;
+    const rel = entryRelativeDir("/proj/src", "/proj/src/pages/a");
+    const s = try sanitizeNameDir(a, rel);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("pages/a", s);
 }
