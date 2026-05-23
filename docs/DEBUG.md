@@ -490,4 +490,11 @@ zig build napi --cache-dir .zig-cache-napi
 
 ### CI 영향
 
-CI (`ci.yml` 의 `test` job) 는 `zig build` 후 `zig build test` 가 *순차* 실행이라 concurrent 트리거 없음 — 영향 0.
+현재 CI 는 napi 와 test 가 *별도 job* (또는 같은 job 안 sequential) 실행이라 concurrent 트리거 없음 — race 측면 영향 0.
+
+CI workflows 의 모든 `zig build napi` 호출은 *일관성 + 향후 parallelize 대비* 로 `--cache-dir .zig-cache-napi` 적용(ci.yml/release.yml/benchmark.yml/actions/setup-zntc). trade-off:
+
+- `mlugg/setup-zig@v2` 의 GH cache 가 default `.zig-cache/` 만 cache → `.zig-cache-napi/` 는 매 run cold. NAPI 빌드 wall-time 분 단위 증가 가능.
+- setup-zntc composite action 은 `zig build` (core) 와 `zig build napi` 가 다른 cache dir 사용 → src/ 의 같은 module/.o 재사용 손실.
+
+후속(별도 PR 후보): `actions/cache@v4` 로 `.zig-cache-napi/` 명시 cache 추가해 cold cache 회피.

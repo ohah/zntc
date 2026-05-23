@@ -141,11 +141,11 @@ jobs:
 
       - name: Build NAPI module (Windows, MinGW ABI)
         if: runner.os == 'Windows'
-        run: zig build napi -Dtarget=x86_64-windows-gnu
+        run: zig build napi --cache-dir .zig-cache-napi -Dtarget=x86_64-windows-gnu
 
       - name: Build NAPI module
         if: runner.os != 'Windows'
-        run: zig build napi
+        run: zig build napi --cache-dir .zig-cache-napi
 
       # JS + dts 둘 다 emit. dts 는 web/server 의 `tsc --emitDeclarationOnly`
       # 가 `import { prepareAppDevSync } from "@zntc/core"` 의 declaration 을
@@ -269,9 +269,9 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ matrix.host_zig_target }}" ]; then
-            zig build napi -Dtarget=${{ matrix.host_zig_target }}
+            zig build napi --cache-dir .zig-cache-napi -Dtarget=${{ matrix.host_zig_target }}
           else
-            zig build napi
+            zig build napi --cache-dir .zig-cache-napi
           fi
           cp zig-out/lib/zntc.node packages/core/zntc.node
 
@@ -283,7 +283,7 @@ jobs:
       - name: Build platform NAPI (cross)
         if: matrix.zig_target != 'native' && matrix.zig_target != matrix.host_zig_target
         shell: bash
-        run: zig build napi -Dtarget=${{ matrix.zig_target }}
+        run: zig build napi --cache-dir .zig-cache-napi -Dtarget=${{ matrix.zig_target }}
 
       - name: Copy .node into platform sub-package
         shell: bash
