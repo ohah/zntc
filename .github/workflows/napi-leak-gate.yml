@@ -96,9 +96,7 @@ jobs:
 
       - name: NAPI smoke test (self-host Debug build 부팅 검증)
         # 본격 build:js 전에 Debug NAPI 가 정상 dlopen + symbol resolve 되는지
-        # smoke. SIGSEGV 가 여기서 노출되면 build:js fail 보다 진단이 단순.
-        # 이전 run #26336187926 이 build:js:cjs (node + Debug zntc.node self-host)
-        # 단계에서 SIGSEGV — 진짜 원인 분리에 필요.
+        # smoke. 이전 run #26336685916 통과 → dlopen + init 정상.
         run: |
           node -e "
             const addon = require('./packages/core/zntc.node');
@@ -106,7 +104,34 @@ jobs:
             console.log('NAPI smoke: dlopen + symbol resolve OK');
           "
 
+      - name: NAPI atexit smoke (Linux-specific dumpLeaksAtExit 검증)
+        # 가장 light path — require + process exit (atexit 발화) 만.
+        # SIGSEGV 시 atexit 의 dumpLeaksAtExit/detectLeaks 가 Linux 환경
+        # 특이 문제 (DWARF/stderr fd/stack trace) — PR #3713 의 mutex.tryLock
+        # + detectLeaks fix 가 Linux glibc 환경에서 다른 동작 가능성.
+        run: |
+          node -e "
+            const addon = require('./packages/core/zntc.node');
+            console.log('atexit smoke: require done, exiting...');
+          " || { echo "::error::atexit smoke SIGSEGV — dumpLeaksAtExit Linux 문제"; exit 1; }
+          echo "atexit smoke: process exit clean"
+
+      - name: NAPI tokenize smoke (NAPI call path 검증)
+        # tokenize 는 가장 단순 NAPI call — string in/out, 다른 NAPI helpers
+        # (parseBuildOptions 등) 안 거침. SIGSEGV 시 transpile/tokenize 자체
+        # NAPI 경로의 latent bug. 통과 시 build:js 의 더 복잡한 옵션 path 문제.
+        run: |
+          node -e "
+            const addon = require('./packages/core/zntc.node');
+            const result = addon.tokenize('var x = 1;', 'test.js');
+            console.log('tokenize OK:', typeof result, Array.isArray(result) ? 'len=' + result.length : '');
+          " || { echo "::error::tokenize smoke SIGSEGV — NAPI tokenize/transpile path 문제"; exit 1; }
+          echo "tokenize smoke: NAPI call OK"
+
       - name: Build JS wrapper + dts
+        # 이전 run #26336187926 + #26336685916 모두 이 step 에서 SIGSEGV.
+        # 위 atexit/tokenize smoke 가 통과했다면 build:js:cjs 의 `node bin/zntc.mjs
+        # --bundle` 의 더 복잡한 NAPI call path (napiBuild/napiBuildSync) 문제.
         run: cd packages/core && bun run build:js && bun run build:dts
 
       - name: 1-min dev probe (Bun graceful exit)
