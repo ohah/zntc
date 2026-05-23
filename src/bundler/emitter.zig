@@ -1197,6 +1197,7 @@ const chunks = @import("emitter/chunks.zig");
 pub const emitChunks = chunks.emitChunks;
 pub const contentHash = chunks.contentHash;
 pub const applyNamingPattern = chunks.applyNamingPattern;
+pub const applyNamingPatternWithDir = chunks.applyNamingPatternWithDir;
 const computeAllUsedNames = chunks.computeAllUsedNames;
 
 /// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
