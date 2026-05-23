@@ -120,8 +120,9 @@ pub fn SuperProps(comptime Transformer: type) type {
 
         /// super.method(args) → Parent.prototype.method.call(this, args)
         /// static method 안에서는 Parent.method.call(this, args)
+        /// V2/V5: non-derived class (current_super_class=null) 도 lowering — buildSuperBaseRef 가
+        /// Object.prototype / Function.prototype 으로 fallback.
         pub fn lowerSuperMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            _ = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
             const args_start = self.readU32(e, 1);
@@ -278,8 +279,28 @@ pub fn SuperProps(comptime Transformer: type) type {
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
 
+        /// V2/V5/V6 fix: non-derived class (current_super_class=null) 에서도 spec 상
+        /// super 가 valid 하므로 home object [[Prototype]] 으로 fallback emit.
+        /// - instance method: `globalThis.Object.prototype`
+        /// - static method:   `globalThis.Function.prototype`
+        ///   (class 자체가 함수이므로 D.[[Prototype]] = Function.prototype.)
+        /// `globalThis` 사용으로 user 의 `const Object = ...` shadow 에 영향 안 받음
+        /// (ES2017 표준). 우리 transpile 타깃이 ES2017 이하면 일반 `Object` 로 fallback 가능하나
+        /// 현 시점 default target 은 ES2021+ 이라 globalThis 안전.
+        fn buildNonDerivedSuperBase(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            const root_name = if (self.current_super_is_static) "Function" else "Object";
+            const global_ref = try es_helpers.makeIdentifierRef(self, "globalThis");
+            const root_ref = try es_helpers.makeIdentifierRef(self, root_name);
+            const proto_ref = try es_helpers.makeIdentifierRef(self, "prototype");
+            const global_root = try es_helpers.makeStaticMember(self, global_ref, root_ref, span);
+            return es_helpers.makeStaticMember(self, global_root, proto_ref, span);
+        }
+
         fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return NodeIndex.none;
+            const super_class_span = self.current_super_class orelse {
+                // non-derived class — fallback to spec home object [[Prototype]]
+                return buildNonDerivedSuperBase(self, span);
+            };
             if (self.current_super_is_static) {
                 return self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
             }
@@ -299,7 +320,8 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         fn buildSuperPropGet(self: *Transformer, prop_arg: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            _ = self.current_super_class orelse return prop_arg;
+            // V2/V5: current_super_class=null 인 non-derived 케이스도 lowering — buildSuperBaseRef
+            // 가 Object.prototype / Function.prototype 으로 fallback.
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__superGet");
             const base = try buildSuperBaseRef(self, span);
             const receiver = try buildSuperReceiver(self, span);
@@ -308,7 +330,6 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         fn buildSuperPropSet(self: *Transformer, prop_arg: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            _ = self.current_super_class orelse return value;
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__superSet");
             const base = try buildSuperBaseRef(self, span);
             const receiver = try buildSuperReceiver(self, span);
@@ -506,8 +527,8 @@ pub fn SuperProps(comptime Transformer: type) type {
 
         /// super["method"](args) → Parent.prototype["method"].call(this, args)
         /// static method 안에서는 Parent["method"].call(this, args)
+        /// V2/V5: non-derived class 도 lowering — buildSuperBaseRef fallback.
         pub fn lowerSuperComputedMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            _ = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
             const args_start = self.readU32(e, 1);

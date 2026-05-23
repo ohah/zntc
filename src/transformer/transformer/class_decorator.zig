@@ -49,6 +49,13 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     }
     defer self.current_super_class = saved_super_class;
     defer self.current_super_class_old_idx = saved_super_class_old_idx;
+    // V4 fix: es2015_class.zig (IIFE path) parity — outer is_static/static_receiver 누수 차단.
+    const saved_super_is_static = self.current_super_is_static;
+    const saved_super_static_receiver = self.current_super_static_receiver;
+    self.current_super_is_static = false;
+    self.current_super_static_receiver = null;
+    defer self.current_super_is_static = saved_super_is_static;
+    defer self.current_super_static_receiver = saved_super_static_receiver;
     // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
     const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
     self.current_super_in_extracted_fn = false;
@@ -119,6 +126,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
             has_super,
             class_name_text,
             true, // skip_visit_and_keep_private — public member 는 classifyClassMember 가 단일 visit.
+            // V1 fix: class_declaration 위치이면 static descriptor trailing emit.
+            node.tag == .class_declaration,
         );
         if (had_any) body_idx = new_body_pl;
     }

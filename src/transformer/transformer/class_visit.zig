@@ -24,7 +24,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         else
             try self.visitNode(raw_name_idx);
         const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
-        const new_super = try self.visitNode(super_idx);
+        var new_super = try self.visitNode(super_idx);
 
         const saved_super_class = self.current_super_class;
         const saved_super_class_old_idx = self.current_super_class_old_idx;
@@ -32,15 +32,44 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         // 끊어야 한다 (else null reset 누락 시 outer Base 누수 → 새 flag 로 silent miscompile).
         // F6: fast path 도 super_class 와 동시에 old_idx 를 set — 새 flag 로 fast path 에서도 super
         // lowering 이 활성화되니 symbol propagation (minify rename 등) 을 위해 필요.
+        // V8: extends 표현식이 단순 식별자가 아니면 (`extends getBase()` / `extends pkg.Base` 등)
+        // current_super_class 를 raw span 으로 set 시 매 super-prop access 마다 표현식 텍스트가
+        // inline 되어 side effect 가 중복 평가됨. class_declaration 위치에서는 temp 변수로 hoist:
+        //   `var _<n> = <super expr>; class D extends _<n> {...}` 형태.
+        // class_expression 위치는 statement hoist 불가 → fallback 으로 raw super 그대로 두되
+        // current_super_class 만 set (호출자가 super-prop 을 inline 평가하는 비용 감수).
         if (!super_idx.isNone()) {
-            self.current_super_class = self.ast.getNode(super_idx).span;
-            self.current_super_class_old_idx = super_idx;
+            const super_node = self.ast.getNode(super_idx);
+            const is_simple_id = super_node.tag == .identifier_reference or super_node.tag == .binding_identifier;
+            if (!is_simple_id and node.tag == .class_declaration) {
+                const tmp_span = try es_helpers.makeTempVarSpan(self);
+                const tmp_binding = try es_helpers.makeBindingIdentifier(self, tmp_span);
+                const declarator = try es_helpers.makeDeclarator(self, tmp_binding, new_super, node.span);
+                const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
+                try self.pending_nodes.append(self.allocator, var_decl);
+                new_super = try es_helpers.makeIdentifierRefFromSpan(self, tmp_span);
+                self.current_super_class = tmp_span;
+                self.current_super_class_old_idx = .none;
+            } else {
+                self.current_super_class = super_node.span;
+                self.current_super_class_old_idx = super_idx;
+            }
         } else {
             self.current_super_class = null;
             self.current_super_class_old_idx = .none;
         }
         defer self.current_super_class = saved_super_class;
         defer self.current_super_class_old_idx = saved_super_class_old_idx;
+        // V4 fix: es2015_class.zig (IIFE path) 와 일관성 — class 진입 시 is_static/static_receiver
+        // 도 outer 의 누수 차단. 예: outer static private field init (V3 시나리오) 에서 inner class
+        // 진입 시 is_static=true 가 그대로 leak 되면 inner instance method 가 static form 으로 잘못
+        // lowering 됨.
+        const saved_super_is_static = self.current_super_is_static;
+        const saved_super_static_receiver = self.current_super_static_receiver;
+        self.current_super_is_static = false;
+        self.current_super_static_receiver = null;
+        defer self.current_super_is_static = saved_super_is_static;
+        defer self.current_super_static_receiver = saved_super_static_receiver;
         // #3680: 우리가 outer standalone fn body 안에서 visit 중이라도 inner class body 의
         // `super` 는 lexical 로 valid 하므로 flag 를 reset. (inner private method 가 다시
         // 추출되면 buildStandaloneFunc 가 다시 true 로 set.)
@@ -101,6 +130,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 has_super,
                 class_name_text,
                 false, // fast path 는 lowerPrivateMembers 가 통째 visit + 복원 (기존 동작).
+                // V1 fix: class_declaration 위치이면 static descriptor 를 trailing 으로 emit.
+                node.tag == .class_declaration,
             );
             if (had_any) {
                 current_body_idx = new_body;

@@ -21,7 +21,12 @@ const Span = token_mod.Span;
 /// #3680-F1: descriptor 는 class body 밖 (모듈 top-level / IIFE) 에 emit 되므로 init 안의
 /// `super.x` 는 raw 로 두면 SyntaxError. init visit 동안 `current_super_in_extracted_fn=true`
 /// + `current_super_is_static=true` 로 강제 lowering (static private field → static super 의미).
-pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span) !NodeIndex {
+///
+/// V1 fix: `class_name_span` 이 주어지면 init visit 동안 current_super_static_receiver 를
+/// 그 class 의 이름으로 set — 그러면 buildSuperReceiver 가 raw `this` 가 아닌 class 식별자를
+/// receiver 로 사용. 추출 위치가 module top-level (this=undefined in ESM) 인 점을 보정한다.
+/// `null` 이면 호출자가 class 이름 없는 컨텍스트 (익명 IIFE 등) — fallback 으로 raw `this` 유지.
+pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span, class_name_span: ?Span) !NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -38,13 +43,17 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
         .data = .{ .binary = .{ .left = writable_key, .right = true_val, .flags = 0 } },
     }));
 
-    // #3680-F1: init 안 super 강제 lowering 컨텍스트 (static, extracted)
+    // #3680-F1: init 안 super 강제 lowering 컨텍스트 (static, extracted).
+    // V1 fix: class_name_span 으로 static_receiver 설정 — module top-level this=undefined 문제 해결.
     const saved_in_extracted = self.current_super_in_extracted_fn;
     const saved_super_is_static = self.current_super_is_static;
+    const saved_super_static_receiver = self.current_super_static_receiver;
     self.current_super_in_extracted_fn = true;
     self.current_super_is_static = true;
+    if (class_name_span) |s| self.current_super_static_receiver = s;
     defer self.current_super_in_extracted_fn = saved_in_extracted;
     defer self.current_super_is_static = saved_super_is_static;
+    defer self.current_super_static_receiver = saved_super_static_receiver;
 
     const value_key = try makeIdentifierRef(self, "value");
     const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
@@ -1329,27 +1338,19 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
     self.current_super_in_extracted_fn = true;
     defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
-    // #3680-F3: static private method 의 super 는 instance form 이 아닌 static form
-    // (`Base.x.call(this)`) 으로 lowering 되어야 한다. method flags 에서 static-ness 를
-    // 읽어 current_super_is_static 도 동기.
+    // #3680-F3 (post-review V3): static private method 의 super 는 instance form 이 아닌
+    // static form (`Base.x.call(this)`) 으로 lowering 되어야 한다. method flags 에서
+    // static-ness 를 읽어 current_super_is_static 도 동기.
+    // V3 fix: outer scope 의 is_static=true (예: outer static private field init / static method)
+    // 가 inner non-static method 로 leak 되지 않도록 *unconditional clamp* — 항상 method 의
+    // 실제 static-ness 로 set (이전: static 일 때만 true set, instance 일 때 outer 값 그대로 유지).
     const saved_super_is_static = self.current_super_is_static;
-    if ((method_flags & ast_mod.MethodFlags.is_static) != 0) {
-        self.current_super_is_static = true;
-    }
+    self.current_super_is_static = (method_flags & ast_mod.MethodFlags.is_static) != 0;
     defer self.current_super_is_static = saved_super_is_static;
-    // #3680-F2: non-derived class 의 method 안 `super.x` 도 spec valid — home object 의
-    // [[Prototype]] 은 Object.prototype (또는 static method 면 Function.prototype, 우리는
-    // 클래스 자체가 함수이므로 동일 base 사용). current_super_class==null 인 채로
-    // standalone fn 으로 추출되면 raw `super.x` 가 leak 되어 SyntaxError. 임시로
-    // "Object" span 을 set 해 buildSuperBaseRef 가 Object.prototype 을 만들도록 한다.
-    const saved_super_class = self.current_super_class;
-    const saved_super_class_old_idx = self.current_super_class_old_idx;
-    if (self.current_super_class == null) {
-        self.current_super_class = try self.ast.addString("Object");
-        self.current_super_class_old_idx = .none;
-    }
-    defer self.current_super_class = saved_super_class;
-    defer self.current_super_class_old_idx = saved_super_class_old_idx;
+    // V2/V5/V6 후속 fix: 이전 F2 의 'Object' span hijack 은 제거. buildSuperBaseRef 가
+    // current_super_class=null 인 경우 spec home object [[Prototype]] (Object.prototype /
+    // Function.prototype) 으로 fallback 하도록 super_props.zig 에서 처리. 여기선 super_class 를
+    // 그대로 두고 (null 인 채로 needsSuperLowering 통과) lowering pipeline 가 알아서 처리.
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
