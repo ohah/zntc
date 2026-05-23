@@ -1785,17 +1785,24 @@ fn chunkRegistryId(
 /// cross-chunk import 등 content가 아직 없는 시점에서 사용.
 /// 최종 출력 시 placeholder를 content hash로 치환한다.
 ///
-/// **현재 정책 (PR A)**: `[dir]` 토큰을 `applyNamingPatternWithDir` 가 인식·
-/// 처리는 하지만, 이 호출 시점에선 항상 빈 dir 전달 → 패턴에 `[dir]` 가 있어도
-/// 토큰+인접 슬래시가 함께 제거된다(leading-slash 방지). 즉 PR A 는
-/// 기존 동작(literal `[dir]` 가 패턴에 있을 일은 없음)을 *정확히* 보존하고,
-/// `[dir]` 의 실제 dir 채우기는 PR B 가 안전한 신규 필드와 함께 도입한다.
+/// **현재 정책 (PR B-4a)**: `[dir]` 토큰을 `chunk.name_dir` 로 채운다(PR B-1
+/// 의 sanitize 거친 안전한 entry-relative dir; null/`""` 면 빈 dir 분기로
+/// leading-slash skip). default 패턴엔 `[dir]` 가 없어 사용자 영향 0 — 사용자가
+/// 명시적으로 `[dir]` 토큰을 entry_names/chunk_names 에 넣었을 때만 활성화.
+/// (`chunk.rel_dir` 은 preserve-modules 의 *절대 경로+파일명+ext* misnomer 라
+/// 사용 금지 — `chunk.name_dir` 은 PR B-1 이 도입한 분리된 안전 필드.)
 ///
-/// `chunk.rel_dir` 을 raw 로 전달하지 않는 이유: preserve-modules 에서
-/// `rel_dir` 은 *원본 모듈의 절대 경로(.ts/.tsx 확장자 포함)* 로 misnomer
-/// (chunk.zig:205, :999). 그대로 `[dir]` 에 노출하면 stem 에 절대경로+ext 가
-/// raw 로 들어가 출력이 망가진다(`/abs/foo.ts/foo.js` 류). PR B 가 의미 명확한
-/// entry-relative dir 필드와 함께 이 호출도 갱신할 예정.
+/// **PR B-4b (default 변경) 이전 필수 해소 — opt-in 사용자도 즉시 영향**:
+/// 1. cross-chunk import 의 `./{stem}{ext}` specifier(line ~438) 와 dynamic
+///    import rewrite(line ~1441) 의 relative base 가 importer chunk dir
+///    기준이 아니라 outDir 기준 — 두 청크가 서로 다른 dir 면 import 404.
+///    preserve-modules 분기는 `computeRelativeImportPath` 적용; splitting
+///    분기는 평면 `./` prefix 라 [dir] 활성화 시 깨짐.
+/// 2. 128B stack stem_buf 가 깊은 monorepo 경로(pages/admin/users/details/
+///    edit + [name]-[hash]+[ext]) 에서 silent truncation 가능. ArrayList 로
+///    교체 또는 buf 확장 필요.
+/// 3. manual chunk 의 name_dir 가 null — entry chunk 와 정책 비대칭. 같은
+///    name 의 entry/manual chunk 가 다른 path 로 emit 되는 surprise 가능.
 fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOptions) []const u8 {
     const is_entry = chunk.name != null;
     const base_name = chunk.name orelse "chunk";
@@ -1804,7 +1811,7 @@ fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOpti
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);
 
-    return applyNamingPatternWithDir(buf, pattern, base_name, &hash_buf, "");
+    return applyNamingPatternWithDir(buf, pattern, base_name, &hash_buf, chunk.name_dir orelse "");
 }
 
 /// 모듈 인덱스 기반 해시 (placeholder 식별자용, content hash 아님).

@@ -465,12 +465,16 @@ fn cssPathForChunk(
     css_names: []const u8,
     contents: []const u8,
 ) ![]const u8 {
-    if (chunk.name) |n| return applyCssChunkName(allocator, css_names, n, contents);
-    if (chunk.filename) |f| return applyCssChunkName(allocator, css_names, std.fs.path.stem(f), contents);
+    // PR B-4a: chunk.name_dir 활성화 — `[dir]` 토큰이 패턴에 있으면 sanitize
+    // 거친 entry-relative dir 가 치환된다. default 패턴(`[name]`) 엔 [dir] 토큰이
+    // 없어 사용자 영향 0.
+    const dir = chunk.name_dir orelse "";
+    if (chunk.name) |n| return applyCssChunkNameWithDir(allocator, css_names, n, contents, dir);
+    if (chunk.filename) |f| return applyCssChunkNameWithDir(allocator, css_names, std.fs.path.stem(f), contents, dir);
     // "chunk" (5) + u32 십진 최대 10자리 = 15 < 16 → bufPrint 실패 불가.
     var idx_buf: [16]u8 = undefined;
     const idx_name = std.fmt.bufPrint(&idx_buf, "chunk{d}", .{@intFromEnum(chunk.index)}) catch unreachable;
-    return applyCssChunkName(allocator, css_names, idx_name, contents);
+    return applyCssChunkNameWithDir(allocator, css_names, idx_name, contents, dir);
 }
 
 /// `css_names` 패턴의 `[name]`/`[hash]` 를 충실히 치환하고 `.css` 확장자를
