@@ -9,7 +9,7 @@ const transpile_mod = zntc_lib.transpile;
 const profile_mod = zntc_lib.profile;
 const bench_mod = zntc_lib.bench;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 const throwError = common.throwError;
 const getObjectString = common.getObjectString;
 const getObjectStringArray = common.getObjectStringArray;

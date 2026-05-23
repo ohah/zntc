@@ -21,7 +21,7 @@ const config_mod = zntc_lib.config;
 const TsConfig = config_mod.TsConfig;
 const tsconfig_merge = zntc_lib.tsconfig_merge;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 
 const throwError = common.throwError;
 const getStringArg = common.getStringArg;

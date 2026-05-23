@@ -13,7 +13,7 @@ const options_mod = @import("options.zig");
 const plugin_bridge = @import("plugin_bridge.zig");
 const c = common.c;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 const throwError = common.throwError;
 const unwrapNapi = common.unwrapNapi;
 const getStringArg = common.getStringArg;

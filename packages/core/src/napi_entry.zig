@@ -22,7 +22,7 @@ const benchmark_mod = @import("napi/benchmark.zig");
 const profile_napi_mod = @import("napi/profile.zig");
 const c = common.c;
 
-const native_alloc = std.heap.c_allocator;
+const native_alloc = common.nativeAlloc();
 
 const transpile_entry = @import("napi/transpile_entry.zig");
 const build_sync_entry = @import("napi/build_sync_entry.zig");
@@ -34,6 +34,11 @@ const napiWatch = watch_mod.napiWatch;
 // ─── 모듈 등록 ───
 
 export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi_value {
+    // Debug 빌드 한정: DebugAllocator leak 리포트(stack trace) 를 process 종료 시
+    // stderr 로 dump 하는 atexit handler 1회 등록 (#dev-leak-investigation).
+    // ReleaseFast 에서는 no-op.
+    common.registerLeakDump();
+
     // ZNTC_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
     // 개별 build/watch 호출마다 BundleOptions.debug 로 카테고리 추가 가능.
     @import("zntc_lib").debug_log.initFromEnv(native_alloc);
