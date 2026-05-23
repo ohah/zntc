@@ -1091,76 +1091,124 @@ test "content hash: ignores placeholders in content" {
     try std.testing.expectEqualStrings(&hash1, &hash2);
 }
 
+// PR B-4b-1: stack buf → ArrayList API. caller 가 out ArrayList 소유,
+// 함수가 clearRetainingCapacity + append. loop 안에서 reuse 시 단일 alloc
+// amortize, deep path truncate 0.
+
 test "naming pattern: [name] only" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPattern(&buf, "[name]", "index", "abcdef01");
-    try std.testing.expectEqualStrings("index", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPattern(&out, a, "[name]", "index", "abcdef01");
+    try std.testing.expectEqualStrings("index", out.items);
 }
 
 test "naming pattern: [name]-[hash]" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPattern(&buf, "[name]-[hash]", "chunk", "abcdef01");
-    try std.testing.expectEqualStrings("chunk-abcdef01", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPattern(&out, a, "[name]-[hash]", "chunk", "abcdef01");
+    try std.testing.expectEqualStrings("chunk-abcdef01", out.items);
 }
 
 test "naming pattern: directory prefix" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPattern(&buf, "chunks/[name]-[hash]", "chunk", "12345678");
-    try std.testing.expectEqualStrings("chunks/chunk-12345678", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPattern(&out, a, "chunks/[name]-[hash]", "chunk", "12345678");
+    try std.testing.expectEqualStrings("chunks/chunk-12345678", out.items);
 }
 
 test "naming pattern: no placeholders" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPattern(&buf, "bundle", "index", "abcdef01");
-    try std.testing.expectEqualStrings("bundle", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPattern(&out, a, "bundle", "index", "abcdef01");
+    try std.testing.expectEqualStrings("bundle", out.items);
 }
 
 // PR A: [dir] 토큰 지원 — applyNamingPatternWithDir 회귀 가드.
-// 기존 applyNamingPattern 시그니처는 그대로 유지하면서 dir 정보를 받는 변형
-// 추가. default 변경(별도 PR)의 기술적 토대.
 
 test "naming pattern: [dir]/[name] with dir" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]", "index", "abcdef01", "pages-a");
-    try std.testing.expectEqualStrings("pages-a/index", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPatternWithDir(&out, a, "[dir]/[name]", "index", "abcdef01", "pages-a");
+    try std.testing.expectEqualStrings("pages-a/index", out.items);
 }
 
 test "naming pattern: empty dir → leading slash 제거" {
-    // 단일 entry cwd 루트 또는 entry_dir 미설정 → dir == "" → [dir]/ 토큰이
-    // leading slash 만들지 않도록 [dir]+다음 '/' 를 함께 skip 한다(esbuild parity).
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]", "main", "abc12345", "");
-    try std.testing.expectEqualStrings("main", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPatternWithDir(&out, a, "[dir]/[name]", "main", "abc12345", "");
+    try std.testing.expectEqualStrings("main", out.items);
 }
 
 test "naming pattern: 중간 [dir]+빈 문자열 → 인접 '/' skip" {
-    // "dist/[dir]/[name]" 같이 [dir] 가 다른 path 컴포넌트 사이에 있을 때
-    // 빈 dir 면 "dist//main" 이 아니라 "dist/main" 이 되어야 한다.
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPatternWithDir(&buf, "dist/[dir]/[name]", "main", "abc12345", "");
-    try std.testing.expectEqualStrings("dist/main", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPatternWithDir(&out, a, "dist/[dir]/[name]", "main", "abc12345", "");
+    try std.testing.expectEqualStrings("dist/main", out.items);
 }
 
 test "naming pattern: [dir]/[name]-[hash] 전 토큰 결합" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]-[hash]", "index", "abcdef01", "pages-b");
-    try std.testing.expectEqualStrings("pages-b/index-abcdef01", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPatternWithDir(&out, a, "[dir]/[name]-[hash]", "index", "abcdef01", "pages-b");
+    try std.testing.expectEqualStrings("pages-b/index-abcdef01", out.items);
 }
 
 test "naming pattern: windows 백슬래시 정규화" {
-    var buf: [128]u8 = undefined;
-    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]", "x", "h", "win\\sub");
-    try std.testing.expectEqualStrings("win/sub/x", result);
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPatternWithDir(&out, a, "[dir]/[name]", "x", "h", "win\\sub");
+    try std.testing.expectEqualStrings("win/sub/x", out.items);
 }
 
-test "naming pattern: applyNamingPattern (기존 시그니처) 호환 — dir 없는 호출은 그대로" {
-    // 옛 API 호환: dir 인자가 없는 4-arg 호출은 [dir] 토큰이 패턴에 있어도
-    // 빈 dir 로 동작 — leading-slash 정리 동일 적용.
-    var buf: [128]u8 = undefined;
-    const r1 = emitter.applyNamingPattern(&buf, "[name]", "x", "h");
-    try std.testing.expectEqualStrings("x", r1);
-    const r2 = emitter.applyNamingPattern(&buf, "[dir]/[name]", "x", "h");
-    try std.testing.expectEqualStrings("x", r2);
+test "naming pattern: applyNamingPattern (4-arg) 호환 — dir 없는 호출은 빈 dir 동작" {
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPattern(&out, a, "[name]", "x", "h");
+    try std.testing.expectEqualStrings("x", out.items);
+    try emitter.applyNamingPattern(&out, a, "[dir]/[name]", "x", "h");
+    try std.testing.expectEqualStrings("x", out.items);
+}
+
+test "naming pattern: ArrayList reuse — clearRetainingCapacity (단일 alloc amortize)" {
+    // 호출자 reuse 패턴 회귀 가드 — 두 번째 호출에서 capacity 재사용으로
+    // alloc 없이 동작해야 한다(out.items 만 갱신).
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPattern(&out, a, "[name]-[hash]", "first", "h1234567");
+    try std.testing.expectEqualStrings("first-h1234567", out.items);
+    const cap_after_first = out.capacity;
+    try emitter.applyNamingPattern(&out, a, "[name]-[hash]", "next", "h7654321");
+    try std.testing.expectEqualStrings("next-h7654321", out.items);
+    try std.testing.expect(out.capacity >= cap_after_first); // capacity 재사용 또는 grow
+}
+
+test "naming pattern: deep path 안전 (1024+ char dir, ArrayList 자동 grow)" {
+    // 기존 [128]u8 stack buf 시대엔 truncation 위험. ArrayList 는 capacity
+    // 자동 grow 라 임의 깊이 안전.
+    const a = std.testing.allocator;
+    var deep_dir = std.ArrayListUnmanaged(u8){};
+    defer deep_dir.deinit(a);
+    var n: usize = 0;
+    while (n < 50) : (n += 1) {
+        try deep_dir.appendSlice(a, "very-long-dir/");
+    }
+    // 50 × 14 = 700 chars + 추가 토큰 ~ 약 750+ chars (1024 stack 한계 가까움).
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    try emitter.applyNamingPatternWithDir(&out, a, "[dir]/[name]-[hash]", "main", "abcdef01", deep_dir.items[0 .. deep_dir.items.len - 1]);
+    try std.testing.expect(std.mem.startsWith(u8, out.items, "very-long-dir/"));
+    try std.testing.expect(std.mem.endsWith(u8, out.items, "/main-abcdef01"));
 }
 
 test "naming pattern: entry-names with hash" {
