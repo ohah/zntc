@@ -87,6 +87,26 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     self.needs_this_var = false;
     self.needs_arguments_var = false;
     self.super_call_this_alias = false;
+    // V7 fix: object literal method 의 super 는 home object [[Prototype]]=Object.prototype
+    // 기준이라 outer class super 와 무관. 이 method 가 object literal 의 일부이면
+    // (in_object_literal_depth>0) super context 5종을 reset 한다. class method 면 no-op.
+    const saved_super_class_v7 = self.current_super_class;
+    const saved_super_class_old_idx_v7 = self.current_super_class_old_idx;
+    const saved_super_is_static_v7 = self.current_super_is_static;
+    const saved_super_static_receiver_v7 = self.current_super_static_receiver;
+    const saved_super_in_extracted_fn_v7 = self.current_super_in_extracted_fn;
+    if (self.in_object_literal_depth > 0) {
+        self.current_super_class = null;
+        self.current_super_class_old_idx = .none;
+        self.current_super_is_static = false;
+        self.current_super_static_receiver = null;
+        self.current_super_in_extracted_fn = false;
+    }
+    defer self.current_super_class = saved_super_class_v7;
+    defer self.current_super_class_old_idx = saved_super_class_old_idx_v7;
+    defer self.current_super_is_static = saved_super_is_static_v7;
+    defer self.current_super_static_receiver = saved_super_static_receiver_v7;
+    defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn_v7;
 
     const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and
         es_helpers.isConstructorKey(self, self.readNodeIdx(e, ast_mod.MethodExtra.key));

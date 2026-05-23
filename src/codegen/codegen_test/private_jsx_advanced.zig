@@ -1356,8 +1356,8 @@ test "#3680-F2: non-derived class 의 private method 안 super → Object.protot
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn") != null);
     // raw super 가 standalone fn 안에 남으면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super.toString") == null);
-    // Object.prototype 기준 lowering (__superGet 인자 base = Object.prototype)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(Object.prototype,\"toString\"") != null);
+    // Object.prototype 기준 lowering — V6 fix 로 globalThis.Object.prototype 사용 (user shadow 차단).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "globalThis.Object.prototype") != null);
 }
 
 // #3680 post-review F3: static private method 안 super 는 instance form 이 아닌 static form.
@@ -1441,6 +1441,155 @@ test "#3680-F7: object literal method 의 super 가 outer class 로 leak 방지 
     defer r.deinit();
     // object literal method 안에서 outer Base.prototype 으로 lowering 되면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.greet") == null);
+}
+
+// === post-review 2nd-round V1~V8 회귀 가드 ===
+
+// V1: F1 이 current_super_static_receiver 미설정 → module top-level this=undefined.
+// 정답: descriptor 의 .call(this) 가 아니라 class 자체를 receiver 로 사용 (D 의 span).
+test "#3680-V1: static private field init 의 super.method() receiver 가 class 이름 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { static factor(){return this?.name ?? "no-this"} }
+        \\class D extends Base {
+        \\  static #x = super.factor();
+        \\  static get() { return D.#x; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // descriptor 가 module top-level 로 빠지므로 receiver 는 D 여야 함.
+    // .call(this) 가 아니라 .call(D) (또는 __superGet 의 receiver 인자 D).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(this)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(D)") != null);
+}
+
+// V2: F1 의 non-derived class 의 static private field init 안 super → 'Object'/'Function.prototype' fallback.
+test "#3680-V2: non-derived class 의 static private field init 안 super → fallback (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class D {
+        \\  static #x = super.toString;
+        \\  static run() { return typeof D.#x; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // raw super 가 module top-level 로 leak 되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:super.toString") == null);
+    // static 컨텍스트에서 non-derived 의 home object [[Prototype]] 은 Function.prototype.
+    // 그러나 D 자체는 함수이므로 D.[[Prototype]] = Function.prototype.
+    // 따라서 super.toString 은 Function.prototype.toString 또는 D.__proto__.toString.
+    // 정답: __superGet/등이 Function.prototype 을 base 로 lowering. ('Object' 만 emit 되면 V5 와 동일 fail.)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Function.prototype") != null);
+}
+
+// V3: F3 의 conditional set 으로 outer is_static=true 가 inner non-static method 로 leak.
+test "#3680-V3: outer static private method 안 inner instance method → 정상 instance lowering (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Other { foo(){return "INSTANCE_FOO"} static foo(){return "STATIC_FOO"} }
+        \\class D {
+        \\  static #m() {
+        \\    class Inner extends Other {
+        \\      #n() { return super.foo(); }
+        \\      run() { return this.#n(); }
+        \\    }
+        \\    return new Inner();
+        \\  }
+        \\  static call() { return D.#m().run(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // Inner 의 _n_fn body 는 instance form: Other.prototype.foo.call(this)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _n_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Other.prototype.foo.call(this)") != null);
+    // static form 으로 emit 되면 안 됨
+    const tmp_idx = std.mem.indexOf(u8, r.output, "function _n_fn") orelse unreachable;
+    const tail = r.output[tmp_idx..];
+    try std.testing.expect(std.mem.indexOf(u8, tail, "Other.foo.call(this)") == null);
+}
+
+// V4: V3 와 동일 root cause — visitClass fast path 가 is_static/static_receiver 미reset.
+// V3 가 pass 하면 V4 의 fix 도 적용된 셈이지만, fast-path entry 의 reset 자체를 직접 확인.
+test "#3680-V4: outer static method 안 inner derived class → instance method 정상 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class B { greet(){return "INSTANCE"} static greet(){return "STATIC"} }
+        \\class O {
+        \\  static call() {
+        \\    class I extends B { run(){ return super.greet(); } }
+        \\    return new I().run();
+        \\  }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // I 의 run() 은 native ES2021 라 raw super.greet() 그대로 (lowering 안 됨).
+    // 다만 inner is_static leak 이 있다면 lowering 활성화돼 잘못된 form emit 됨.
+    // raw super.greet() 만 emit 돼야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.greet()") != null);
+    // B.greet.call(this) (static form) 이 emit 되면 leak 발생.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "B.greet.call(this)") == null);
+}
+
+// V5: non-derived class static private method 안 super 가 Function.prototype 기준 lowering.
+test "#3680-V5: non-derived class static private method 안 super → Function.prototype (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class D {
+        \\  static #m() { return typeof super.toString; }
+        \\  static run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // 정답: Function.prototype 기준. raw `Object` (no .prototype) 만 emit 되면 spec 위반.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Function.prototype") != null);
+}
+
+// V6: F2 의 'Object' identifier 가 user-shadow 에 안전한 root-scope symbol 사용.
+// codegen 출력 자체로는 검증 어려움 — runtime 검증을 위해 별도 e2e 시나리오 작성 가능하나
+// 단위 테스트 측면에선 globalThis 사용 또는 symbol_id 부착 확인.
+test "#3680-V6: F2 의 super-base ref 는 globalThis.Object 또는 root-scope binding (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class D {
+        \\  #m() { return super.toString.call(this); }
+        \\  run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // user 가 같은 모듈에 `const Object = ...` shadow 했을 때도 safe 하려면
+    // globalThis.Object.prototype 또는 root-scope-attached Object 가 emit 되어야 함.
+    // 단순화: globalThis.Object 형태 검증 (안전한 방법 중 하나).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "globalThis.Object.prototype") != null);
+}
+
+// V7: F7 reset 이 method body 안에서만 적용되도록 — property VALUE position 의 super 는 보존.
+test "#3680-V7: class 내 object literal property value super → outer class lowering 유지 (es5)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { foo(){return "BASE_FOO"} }
+        \\class D extends Base {
+        \\  m() { return { y: super.foo() }; }
+        \\}
+    , .es5);
+    defer r.deinit();
+    // value position 의 super.foo() 는 enclosing class 의 super 로 lowering.
+    // raw `super.foo()` 가 emit 되면 ES5 lowered output 안에서 SyntaxError.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.foo()") == null);
+}
+
+// V8: F6 의 member-expression extends — side effect 가 super-prop access 마다 중복되지 않도록 temp alias.
+test "#3680-V8: extends getBase() 의 side effect 가 super.x access 마다 중복 안 됨 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\let count = 0;
+        \\function getBase() { count++; return class { foo(){return "X"} }; }
+        \\class D extends getBase() {
+        \\  #m() { return super.foo() + "|" + super.foo(); }
+        \\  run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // _m_fn body 안에서 `getBase()` 호출이 직접 inline 되면 부작용 중복.
+    // temp alias 가 적용되면 _super (또는 temp 변수) 이름이 사용되어 getBase() 는
+    // class extends 자리에서 1회만 evaluated 됨.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn") != null);
+    // `getBase().prototype.foo` 같은 직접 inline 이 _m_fn 안에서 발생하면 fail.
+    const fn_idx = std.mem.indexOf(u8, r.output, "function _m_fn") orelse unreachable;
+    const fn_tail = r.output[fn_idx..];
+    try std.testing.expect(std.mem.indexOf(u8, fn_tail, "getBase()") == null);
 }
 
 // nested class: standalone fn 안의 *inner* class body 의 `super.x` 는

@@ -298,6 +298,10 @@ pub fn ES2022(comptime Transformer: type) type {
             // 하고 current_private_* 를 호출자가 set/restore 한다(이중-visit 회피, decorator strip
             // 방지). fast path 는 false(기존 동작: visit + defer 복원).
             skip_visit_and_keep_private: bool,
+            // V1 fix (#3680 post-review): class_declaration 위치이면 static descriptor 를
+            // trailing_nodes 로 emit (class 뒤). class_expression 위치이면 false — expression
+            // context 라 trailing comma-stitching 발생하므로 pre_stmts 유지.
+            static_descriptors_trailing: bool,
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -388,11 +392,19 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.current_private_fields = saved_private_fields;
             };
 
+            // V1 fix: static descriptor 는 receiver=D 를 사용하므로 D 가 init 된 *뒤* 에
+            // 평가되어야 한다 (descriptor 가 class 앞에 emit 되면 TDZ ReferenceError).
+            // class_declaration 위치이면 trailing_nodes 에 emit 해 class 뒤에 stitching.
+            // class_expression 위치이면 expression context 라 trailing 가 comma stitching 발생
+            // (`const W = (...)(),var _m = ...`) → pre_stmts 그대로 두고 receiver=D 사용 자체가
+            // IIFE 안의 `_a` (class 의 local binding) 라 trailing 불필요.
+            // caller hint `static_descriptors_trailing` 로 분기.
+            const desc_target = if (static_descriptors_trailing) &self.trailing_nodes else pre_stmts;
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
-                if (m.class_name != null) {
-                    // static: `var _x = { writable: true, value: init };` — init이 descriptor 내부.
-                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span);
-                    try pre_stmts.append(self.allocator, desc);
+                if (m.class_name) |cname| {
+                    const cname_span = try self.ast.addString(cname);
+                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span, cname_span);
+                    try desc_target.append(self.allocator, desc);
                     self.runtime_helpers.class_static_private_field = true;
                 } else {
                     const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
@@ -400,10 +412,11 @@ pub fn ES2022(comptime Transformer: type) type {
                 }
             }
             for (method_mappings.items) |m| {
-                if (m.class_name != null) {
+                if (m.class_name) |cname| {
                     const fn_ref = try es_helpers.makeIdentifierRef(self, m.func_name);
-                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.weakset_name, fn_ref, span);
-                    try pre_stmts.append(self.allocator, desc);
+                    const cname_span = try self.ast.addString(cname);
+                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.weakset_name, fn_ref, span, cname_span);
+                    try desc_target.append(self.allocator, desc);
                     self.runtime_helpers.class_static_private_field = true;
                 } else {
                     const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);

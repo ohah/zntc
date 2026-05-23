@@ -149,25 +149,15 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // object_expression: spread(ES2018) / method shorthand / computed property(ES2015) 다운레벨링
         .object_expression => {
-            // #3680-F7: object literal method 의 super 는 home object ([[Prototype]]=Object.prototype)
-            // 기준이라 outer class super context 와 무관. 추출된 private method body 안에 nested
-            // object literal 이 있을 때 outer class super 가 method body 로 누수돼 잘못 lowering
-            // 되는 것을 막기 위해 object literal 진입 시 super context 를 완전히 reset/restore.
-            const saved_super_class = self.current_super_class;
-            const saved_super_class_old_idx = self.current_super_class_old_idx;
-            const saved_super_is_static = self.current_super_is_static;
-            const saved_super_static_receiver = self.current_super_static_receiver;
-            const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
-            self.current_super_class = null;
-            self.current_super_class_old_idx = .none;
-            self.current_super_is_static = false;
-            self.current_super_static_receiver = null;
-            self.current_super_in_extracted_fn = false;
-            defer self.current_super_class = saved_super_class;
-            defer self.current_super_class_old_idx = saved_super_class_old_idx;
-            defer self.current_super_is_static = saved_super_is_static;
-            defer self.current_super_static_receiver = saved_super_static_receiver;
-            defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
+            // V7 fix: 이전 F7 가 object_expression 진입 시 super context 5종을 일괄 reset 했으나,
+            // 그러면 object 의 property VALUE 위치 (`{ y: super.foo() }`) 의 super 도 reset 되어
+            // outer class 의 super lowering 이 비활성화됨 → ES5 등 class-lowering 타깃에서 raw super
+            // leak. spec: object literal METHOD body 만 home object [[Prototype]]=Object.prototype
+            // 으로 super 가 다르고, VALUE position 의 super 는 enclosing class 의 super 그대로.
+            // 따라서 reset 은 method 진입 시점 (visitMethodDefinition) 으로 좁히고, 여기서는
+            // depth 만 증감해 method 가 자신이 object literal 의 일부인지 알 수 있게 한다.
+            self.in_object_literal_depth += 1;
+            defer self.in_object_literal_depth -= 1;
 
             // Plugin visitor 훅 — 기본 방문 전 선취권 (null 반환 시 default 진행)
             if (try self.dispatchVisitor(.on_object_expression, idx)) |replacement| return replacement;

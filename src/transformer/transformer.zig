@@ -155,6 +155,12 @@ pub const Transformer = struct {
     /// nested class body 진입 시 (visitClass) false 로 reset (inner class lexical
     /// context 는 super 키워드가 valid).
     current_super_in_extracted_fn: bool = false,
+    /// V7: object literal 안에서 visit 중인지 (nested 가능). visitMethodDefinition 이
+    /// 이 flag 를 보고 method body 의 super context 를 reset 한다 — object literal method
+    /// 의 super 는 home object [[Prototype]] 기준이라 outer class super 와 무관.
+    /// property VALUE 위치는 enclosing class 의 super 를 그대로 사용해야 하므로
+    /// object_expression dispatch 가 아닌 method_definition 진입 시에만 reset.
+    in_object_literal_depth: u32 = 0,
 
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
@@ -270,9 +276,15 @@ pub const Transformer = struct {
     ///   IIFE/`Class.foo = …` 로 들어내져 super 가 더 이상 lexical 로 의미를 가지지 않음
     /// - `current_super_in_extracted_fn`: ES2022 private method 가 standalone fn 으로
     ///   추출돼 class body 밖에서 정의되는 동안 (#3680) — super 키워드 자체가 invalid
-    /// - `current_super_class != null`: derived class 안 (extends 가 있어 super 의미 자체가 존재)
+    ///
+    /// V2/V5 fix: 기존 `current_super_class != null` 후행 가드 제거. non-derived class 의
+    /// extracted method/static field init 도 super lowering 이 필요하며 (super 는 spec 상
+    /// home object [[Prototype]] = Object.prototype 또는 Function.prototype 으로 valid),
+    /// 이 경우 buildSuperBaseRef 가 fallback 으로 적절한 base 를 생성한다. derived class 가
+    /// 아닌데 위 3 flag 도 모두 false 면 (즉 평범한 native class method) 어차피 false 반환 ⇒
+    /// 가드 제거가 일반 native class method 의 raw super 를 건드릴 위험 없음.
     pub inline fn needsSuperLowering(self: *const Transformer) bool {
-        return (self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn) and self.current_super_class != null;
+        return self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn;
     }
 
     /// 현재 scope 의 private field 가 `WeakMap.get/set` lowering 대상인지 판정.

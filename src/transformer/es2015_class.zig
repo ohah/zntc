@@ -164,7 +164,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // static private field → descriptor 객체 선언: var _x = { writable: true, value: initValue }
             for (cm.static_private_fields.items) |pf| {
-                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
+                // V1 fix: class_name_span 전달 → static_receiver 보정
+                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
                 self.runtime_helpers.class_static_private_field = true;
             }
             try emitInstanceInits(self, &cm, span);
@@ -473,7 +474,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // static private field → descriptor 객체 선언
             for (cm.static_private_fields.items) |pf| {
-                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
+                // V1 fix: class_name_span 전달
+                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
                 self.runtime_helpers.class_static_private_field = true;
             }
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span);
