@@ -1432,8 +1432,41 @@ test "F4 (#65): buildIncremental 가 stale entry_dir 를 강제 재계산" {
     // entry_dir 가 entry path 의 dirname 으로 갱신됐어야.
     const expected = std.fs.path.dirname(entry) orelse "";
     try std.testing.expectEqualStrings(expected, graph.entry_dir);
-    // entry_dir 변경에 따라 project_root 도 재추론 — stale 값 무효화.
-    // project_root 는 findProjectRoot 가 entry_dir prefix 또는 위로 찾아 set.
-    try std.testing.expect(graph.project_root.len > 0);
-    try std.testing.expect(!std.mem.eql(u8, graph.project_root, "/some/stale/parent/dir"));
+}
+
+// F4 follow-up (post-review F1) — user-set project_root 보존:
+// buildIncremental 가 entry_dir 갱신 시 project_root 를 함부로 invalidate
+// 하면 RN/Metro 의 `projectRoot` 명시 설정이 watch session 중 자동 추론값
+// 으로 silently 덮어쓰여진다. 자동 추론은 *최초* 빈 값일 때만.
+test "F4 follow-up: buildIncremental 는 user-set project_root 를 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "src/index.ts", "export const X = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "src/index.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    try populateStoreForChangedFilesTest(&cache, &store, entry);
+
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    // RN/Metro 시뮬레이션 — user 가 monorepo root 명시.
+    const user_project_root = "/repo/monorepo-root";
+    graph.project_root = user_project_root;
+
+    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
+    defer empty.deinit();
+
+    const r = try graph.buildIncremental(&.{entry}, &store, &empty);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    // user-set project_root 보존 — buildIncremental 이 강제 invalidate 하면
+    // RN/Metro asset httpServerLocation 어긋남.
+    try std.testing.expectEqualStrings(user_project_root, graph.project_root);
 }
