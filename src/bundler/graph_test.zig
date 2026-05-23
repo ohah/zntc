@@ -1397,3 +1397,43 @@ test "renumber: orphan modules sorted by path regardless of add order" {
     try std.testing.expectEqual(@as(u32, 0), graph.modules.at(0).index.toU32());
     try std.testing.expectEqual(@as(u32, 2), graph.modules.at(2).index.toU32());
 }
+
+// F4 (Issue #65, PR #3704) 회귀 가드 — `buildIncremental` 가 stale entry_dir 를
+// 강제 재계산해야 watch 모드에서 entry 추가/삭제 후 [dir] 토큰이 정확.
+// 옛 코드는 `entry_dir.len == 0` 가드로 첫 build 후 영구 보존 → stale.
+test "F4 (#65): buildIncremental 가 stale entry_dir 를 강제 재계산" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "src/a/index.ts", "export const X = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "src/a/index.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    try populateStoreForChangedFilesTest(&cache, &store, entry);
+
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    // stale entry_dir 시뮬레이션 — 무관한 dir 로 set. 옛 코드는 보존 (bug),
+    // 새 코드는 entry_points 로부터 강제 재계산.
+    graph.entry_dir = "/some/stale/parent/dir";
+
+    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
+    defer empty.deinit();
+
+    const r = try graph.buildIncremental(&.{entry}, &store, &empty);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    // entry_dir 가 entry path 의 dirname 으로 갱신됐어야.
+    const expected = std.fs.path.dirname(entry) orelse "";
+    try std.testing.expectEqualStrings(expected, graph.entry_dir);
+    // entry_dir 변경에 따라 project_root 도 재추론 — stale 값 무효화.
+    // project_root 는 findProjectRoot 가 entry_dir prefix 또는 위로 찾아 set.
+    try std.testing.expect(graph.project_root.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, graph.project_root, "/some/stale/parent/dir"));
+}

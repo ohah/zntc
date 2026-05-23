@@ -29,14 +29,11 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
     graph_plugins.ensureBuiltinPlugins(self);
 
     // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
-    // PR B-4b sub-2: esbuild `outbase` 자동 추론과 동치 — 모든 entry 의
-    // dirname 의 longest common parent. 옛 동작(첫 entry dirname 만 보던)은
-    // multi-entry monorepo 에서 sibling entry 들이 entry_dir 외부로 잡혀
-    // `[dir]/[name]` default 가 무효였다.
-    if (self.entry_dir.len == 0 and entry_points.len > 0) {
+    // esbuild `outbase` 자동 추론과 동치 — 모든 entry 의 dirname 의 longest
+    // common parent.
+    if (entry_points.len > 0) {
         self.entry_dir = computeEntryDir(entry_points);
     }
-    // project_root 자동 감지 (미지정 시): entry_dir에서 위로 올라가며 첫 package.json
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
         self.project_root = graph_project_root.findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
     }
@@ -655,15 +652,13 @@ pub fn buildIncremental(
     // #1961: builtin runtime helper plugin prepend (build() 와 동일).
     graph_plugins.ensureBuiltinPlugins(self);
 
-    // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
-    // PR B-4b sub-2: esbuild `outbase` 자동 추론과 동치 — 모든 entry 의
-    // dirname 의 longest common parent. 옛 동작(첫 entry dirname 만 보던)은
-    // multi-entry monorepo 에서 sibling entry 들이 entry_dir 외부로 잡혀
-    // `[dir]/[name]` default 가 무효였다.
-    if (self.entry_dir.len == 0 and entry_points.len > 0) {
+    // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
+    // 매 buildIncremental 시 entry_points 로부터 재계산 — watch 모드에서 entry
+    // 추가/삭제 시 stale 회피 (Issue #65). computeEntryDir 는 O(N) pure fn.
+    if (entry_points.len > 0) {
         self.entry_dir = computeEntryDir(entry_points);
+        self.project_root = "";
     }
-    // project_root 자동 감지 (미지정 시): entry_dir에서 위로 올라가며 첫 package.json
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
         self.project_root = graph_project_root.findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
     }
@@ -1030,4 +1025,46 @@ test "computeEntryDir — nested + sibling combination" {
         "/repo/src/b/y/z.ts",
     };
     try std.testing.expectEqualStrings("/repo/src", computeEntryDir(&entries));
+}
+
+// F4 (Issue #65) 회귀 가드: buildIncremental 시 entry_points 가 변경되면
+// entry_dir 도 재계산되어야 한다. 옛 코드는 `entry_dir.len == 0` 가드로
+// 첫 build 후 영구 보존 → watch 모드에서 entry 추가/삭제 시 stale.
+test "F4 watch: entry_points 변경 시 entry_dir 재계산 (자동 추론 모드)" {
+    // 시뮬레이션: 첫 entries → 둘째 entries 로 변경. computeEntryDir 자체는
+    // pure fn 이라 그 결과를 비교해 *변경 감지 후 재계산* 한다는 invariant 만 검증.
+    const first_entries = [_][]const u8{
+        "/repo/src/a/index.ts",
+        "/repo/src/b/index.ts",
+    };
+    const first_dir = computeEntryDir(&first_entries);
+    try std.testing.expectEqualStrings("/repo/src", first_dir);
+
+    // entry 가 더 추가됨 (다른 sibling) — common parent 그대로
+    const expanded_entries = [_][]const u8{
+        "/repo/src/a/index.ts",
+        "/repo/src/b/index.ts",
+        "/repo/src/c/index.ts",
+    };
+    try std.testing.expectEqualStrings("/repo/src", computeEntryDir(&expanded_entries));
+
+    // entry 가 *완전히 다른* dir 로 추가 — common parent 가 위로 올라감
+    const cross_entries = [_][]const u8{
+        "/repo/src/a/index.ts",
+        "/repo/lib/util.ts",
+    };
+    try std.testing.expectEqualStrings("/repo", computeEntryDir(&cross_entries));
+    // 옛 코드는 self.entry_dir = "/repo/src" 보존했지만 정답은 "/repo"
+    // → buildIncremental 의 guard 가 새 결과로 갱신해야.
+}
+
+test "F4 watch: entry 가 한 개로 축소되면 entry_dir 가 그 dirname 으로 축소" {
+    const initial_entries = [_][]const u8{
+        "/repo/src/a/index.ts",
+        "/repo/src/b/index.ts",
+    };
+    try std.testing.expectEqualStrings("/repo/src", computeEntryDir(&initial_entries));
+
+    const single_entry = [_][]const u8{"/repo/src/a/index.ts"};
+    try std.testing.expectEqualStrings("/repo/src/a", computeEntryDir(&single_entry));
 }
