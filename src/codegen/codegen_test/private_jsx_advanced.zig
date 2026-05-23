@@ -1321,6 +1321,128 @@ test "#3680: private method 내 super.method = v 쓰기 → __superSet (es2021)"
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(Base.prototype,\"y\"") != null);
 }
 
+// #3680 post-review F1: static private field initializer 안의 super 는
+// descriptor `var _x = { value: <init> }` 로 빠지면서 module top-level 에 emit 되므로
+// super lowering 필요. (review C3: raw `super.factor()` 가 top-level 로 leak → SyntaxError.)
+test "#3680-F1: static private field init 안의 super → static form lowering (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { static factor(){return 7} }
+        \\class D extends Base {
+        \\  static #x = super.factor();
+        \\  static get() { return D.#x; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // descriptor 형태 — value 위치
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") != null);
+    // raw super 가 남지 않음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:super.factor") == null);
+    // static super 는 Base.factor (instance form Base.prototype.factor 가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.factor") == null);
+}
+
+// #3680 post-review F2: extends 없는 class 의 private method 안의 super 도 spec valid
+// (home object [[Prototype]] = Object.prototype). 추출된 standalone fn 에 raw super
+// 남으면 SyntaxError. (review S2.)
+test "#3680-F2: non-derived class 의 private method 안 super → Object.prototype lowering (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class D {
+        \\  #m() { return super.toString.call(this); }
+        \\  run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn") != null);
+    // raw super 가 standalone fn 안에 남으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.toString") == null);
+    // Object.prototype 기준 lowering (__superGet 인자 base = Object.prototype)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(Object.prototype,\"toString\"") != null);
+}
+
+// #3680 post-review F3: static private method 안 super 는 instance form 이 아닌 static form.
+// (review C1: `static #m(){ super.x }` → `Base.prototype.x.call(this)` (instance) → TypeError.)
+test "#3680-F3: static private method 안 super → static form (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { static greet(){return "static-base"} }
+        \\class D extends Base {
+        \\  static #call() { return super.greet(); }
+        \\  static run() { return D.#call(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _call_fn") != null);
+    // static super 는 Base.greet (instance Base.prototype.greet 아님)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.greet.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.greet") == null);
+}
+
+// #3680 post-review F4: update_expression `super.x++` outer guard 가 needsSuperLowering 누락.
+// 추출된 standalone fn body 안에서도 lowering 진입해야 함. (review S1.)
+test "#3680-F4: extracted fn 안 super.x++ → lowering (chrome 80 target)" {
+    var r = try e2eFull(std.testing.allocator,
+        \\class Base { constructor(){ this.x = 10 } }
+        \\class D extends Base {
+        \\  #m() { return super.x++; }
+        \\  run() { return this.#m(); }
+        \\}
+    , .{ .unsupported = helpers.compat.browserslistToUnsupported("chrome 80").? }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn") != null);
+    // raw `super.x++` 가 남으면 안 됨, invalid LHS `__superGet(...)++` 형태도 fail
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.x++") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ")++") == null);
+    // update_expression lowering 흔적: __superSet
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(Base.prototype,\"x\"") != null);
+}
+
+// #3680 post-review F5: outer derived class 의 추출된 private method 안에 inner non-derived class.
+// inner 의 super 는 Object.prototype 기준이어야 하고, outer 의 Base 로 leak 되면 안 됨.
+// (review C6.)
+test "#3680-F5: inner non-derived class 가 outer Base 누수 방지 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { greet(){return "FROM_BASE"} }
+        \\class Outer extends Base {
+        \\  #m() {
+        \\    class Inner {
+        \\      #n() { return typeof super.greet === "function" ? super.greet() : "no-greet"; }
+        \\      run() { return this.#n(); }
+        \\    }
+        \\    return new Inner().run();
+        \\  }
+        \\  run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _n_fn") != null);
+    // inner 의 standalone fn 이 outer Base.prototype 으로 lowering 되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.greet") == null);
+    // inner 는 non-derived 라 super.greet → Object.prototype.greet (없음) lowering 되거나
+    // 또는 그대로 inner class body 안에서 native 유지
+    try std.testing.expect(
+        std.mem.indexOf(u8, r.output, "Object.prototype.greet") != null or
+        std.mem.indexOf(u8, r.output, "super.greet") != null);
+}
+
+// #3680 post-review F7: 추출된 private method body 안의 object literal method 의 super 는
+// outer class 가 아닌 object 의 home object 기준 — outer Base 로 leak 되면 안 됨.
+// (review C8.)
+test "#3680-F7: object literal method 의 super 가 outer class 로 leak 방지 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { greet(){return "FROM_BASE"} }
+        \\class D extends Base {
+        \\  #m() {
+        \\    const o = { foo(){ return typeof super.greet === "function" ? super.greet() : "no-greet"; } };
+        \\    return o.foo();
+        \\  }
+        \\  run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // object literal method 안에서 outer Base.prototype 으로 lowering 되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.greet") == null);
+}
+
 // nested class: standalone fn 안의 *inner* class body 의 `super.x` 는
 // inner class lexical context 가 valid 하므로 inner super 로 lowering 돼야 한다.
 // outer extracted fn flag 가 inner class 안으로 새지 않는지 회귀 가드.

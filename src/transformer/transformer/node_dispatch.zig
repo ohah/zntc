@@ -149,6 +149,26 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // object_expression: spread(ES2018) / method shorthand / computed property(ES2015) 다운레벨링
         .object_expression => {
+            // #3680-F7: object literal method 의 super 는 home object ([[Prototype]]=Object.prototype)
+            // 기준이라 outer class super context 와 무관. 추출된 private method body 안에 nested
+            // object literal 이 있을 때 outer class super 가 method body 로 누수돼 잘못 lowering
+            // 되는 것을 막기 위해 object literal 진입 시 super context 를 완전히 reset/restore.
+            const saved_super_class = self.current_super_class;
+            const saved_super_class_old_idx = self.current_super_class_old_idx;
+            const saved_super_is_static = self.current_super_is_static;
+            const saved_super_static_receiver = self.current_super_static_receiver;
+            const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+            self.current_super_class = null;
+            self.current_super_class_old_idx = .none;
+            self.current_super_is_static = false;
+            self.current_super_static_receiver = null;
+            self.current_super_in_extracted_fn = false;
+            defer self.current_super_class = saved_super_class;
+            defer self.current_super_class_old_idx = saved_super_class_old_idx;
+            defer self.current_super_is_static = saved_super_is_static;
+            defer self.current_super_static_receiver = saved_super_static_receiver;
+            defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
+
             // Plugin visitor 훅 — 기본 방문 전 선취권 (null 반환 시 default 진행)
             if (try self.dispatchVisitor(.on_object_expression, idx)) |replacement| return replacement;
             if (self.options.unsupported.object_spread) {

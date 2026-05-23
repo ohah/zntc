@@ -27,10 +27,20 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         const new_super = try self.visitNode(super_idx);
 
         const saved_super_class = self.current_super_class;
+        const saved_super_class_old_idx = self.current_super_class_old_idx;
+        // #3680-F5/F6: inner class 가 extends 없으면 outer 의 current_super_class 를 명시적으로 null 로
+        // 끊어야 한다 (else null reset 누락 시 outer Base 누수 → 새 flag 로 silent miscompile).
+        // F6: fast path 도 super_class 와 동시에 old_idx 를 set — 새 flag 로 fast path 에서도 super
+        // lowering 이 활성화되니 symbol propagation (minify rename 등) 을 위해 필요.
         if (!super_idx.isNone()) {
             self.current_super_class = self.ast.getNode(super_idx).span;
+            self.current_super_class_old_idx = super_idx;
+        } else {
+            self.current_super_class = null;
+            self.current_super_class_old_idx = .none;
         }
         defer self.current_super_class = saved_super_class;
+        defer self.current_super_class_old_idx = saved_super_class_old_idx;
         // #3680: 우리가 outer standalone fn body 안에서 visit 중이라도 inner class body 의
         // `super` 는 lexical 로 valid 하므로 flag 를 reset. (inner private method 가 다시
         // 추출되면 buildStandaloneFunc 가 다시 true 로 set.)

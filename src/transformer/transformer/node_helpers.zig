@@ -201,14 +201,20 @@ pub fn visitUnaryExtra(self: anytype, node: Node) Error!NodeIndex {
     const op_flags = self.readU32(e, 1);
 
     // private field update: this.#x++ -> _x.set(this, _x.get(this) + 1)
-    if (node.tag == .update_expression and (self.options.unsupported.class or self.options.unsupported.class_private_field)) {
+    // super property update: super.x++ -> __superSet 기반 lowering
+    // (#3680-F4) needsSuperLowering 케이스도 outer 가드에 포함 — 추출된 standalone fn body
+    // 안에서 `super.x++` 가 그대로 leak 되면 raw `super` SyntaxError 또는 invalid LHS `(__superGet(...))++`
+    // 가 emit 된다. 두 lowering 은 독립적으로 가드한다 (super 와 private field 는 서로 다른 operand).
+    if (node.tag == .update_expression) {
         const operand = self.ast.getNode(operand_idx);
         if (self.needsSuperLowering()) {
             if (es2015_class.ES2015Class(Transformer).lowerSuperPropertyUpdate(self, operand, op_flags, node.span)) |result| {
                 return try result;
             }
         }
-        if (operand.tag == .private_field_expression) {
+        if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and
+            operand.tag == .private_field_expression)
+        {
             if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {
                 return try result;
             }
