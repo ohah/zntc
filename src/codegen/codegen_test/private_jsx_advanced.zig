@@ -1419,8 +1419,7 @@ test "#3680-F5: inner non-derived class 가 outer Base 누수 방지 (es2021)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.prototype.greet") == null);
     // inner 는 non-derived 라 super.greet → Object.prototype.greet (없음) lowering 되거나
     // 또는 그대로 inner class body 안에서 native 유지
-    try std.testing.expect(
-        std.mem.indexOf(u8, r.output, "Object.prototype.greet") != null or
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.prototype.greet") != null or
         std.mem.indexOf(u8, r.output, "super.greet") != null);
 }
 
