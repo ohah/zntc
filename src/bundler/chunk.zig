@@ -205,6 +205,17 @@ pub const Chunk = struct {
     /// preserve-modules: 원본 모듈의 절대 경로 (출력 디렉토리 구조 결정용).
     /// null이면 일반 청크 (preserve-modules 아님).
     rel_dir: ?[]const u8 = null,
+    /// 출력 경로 패턴 `[dir]` 토큰 치환용 — entry 의 `entry_dir` 기준 상대
+    /// 디렉토리. `rel_dir`(= 절대경로 + 파일명 + ext, preserve-modules 한정)
+    /// 의 misnomer 와 분리된 안전한 필드. sanitize 거친 결과:
+    ///   - Windows 백슬래시 → `/` 정규화
+    ///   - leading/trailing `/` 제거
+    ///   - `..` 세그먼트 / NUL 발견 시 빈 문자열(불안전 거부)
+    /// **소유권**: `sanitizeNameDir` 가 alloc 한 메모리 — chunk 가 own,
+    /// `Chunk.deinit` 에서 free. (`chunk.rel_dir` 와 다름 — 그쪽은 빌림.)
+    /// 현재 PR(B-1)에서는 채워두기만 하고, `chunkPlaceholderStem` 등
+    /// 호출자가 활성화하는 시점은 PR B-4 (default 변경) 에서.
+    name_dir: ?[]const u8 = null,
 
     // Cross-chunk linking
     /// 이 청크가 import하는 다른 청크 목록
@@ -249,6 +260,10 @@ pub const Chunk = struct {
         }
         self.imports_from.deinit(allocator);
         self.exports_to.deinit(allocator);
+        // PR B-1: name_dir 은 sanitizeNameDir 의 결과 — chunk 가 owning.
+        // doc 의 "빌림" 표현은 부정확 — 실제로는 chunk lifetime 와 일치하므로
+        // 여기서 free 한다(chunk.rel_dir 와 달리 항상 alloc 된 메모리).
+        if (self.name_dir) |nd| allocator.free(nd);
     }
 
     /// 청크에 모듈을 추가한다.
@@ -334,6 +349,63 @@ pub const ChunkGraph = struct {
         return self.chunks.items.len;
     }
 };
+
+// ============================================================
+// sanitizeNameDir — Chunk.name_dir 채울 raw dir 정규화
+// ============================================================
+
+/// Chunk.name_dir 채우기 전에 raw dir 슬라이스를 안전 형태로 변환한다.
+/// 정책:
+///   - Windows 백슬래시 → forward `/`
+///   - leading `/` 제거 (절대경로 흡수 → 상대 경로화)
+///   - trailing `/` 제거 (`[dir]/[name]` 패턴에서 double-slash 방지)
+///   - `..` 세그먼트가 발견되면 빈 문자열 반환(filesystem-literal `..` 만,
+///     URL-encoded/Unicode lookalike 는 거부 안 함 — raw 가 fs path 이므로
+///     해당 케이스가 도달 불가)
+///   - NUL 바이트 발견되면 빈 문자열 반환(fs/URL invariant)
+/// **소유권 / 해제**: 반환 슬라이스는 항상 `allocator` 가 alloc 한 owned
+/// 메모리(빈 문자열 `""` 도 0-len allocation). caller 는 반드시 `allocator.free`
+/// 또는 owning struct 의 deinit 으로 해제해야 한다(길이 0 라도 free 호출은 안전).
+/// `Chunk.name_dir` 에 저장 시 `Chunk.deinit` 가 일괄 free.
+/// 추후 follow-up (PR B-3): Windows drive letter (`C:`), control byte
+/// (`\r\n\t...`), Windows-reserved char (`<>:\"|?*`), mid-path empty segments
+/// (`a//b`), 단일 `.` 등 추가 sanitize 는 별도 PR.
+pub fn sanitizeNameDir(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    // 빠른 거부: NUL 또는 `..` segment.
+    if (std.mem.indexOfScalar(u8, raw, 0) != null) {
+        return allocator.dupe(u8, "");
+    }
+    // `..` 가 단일 segment 인지 확인: 시작/끝 또는 `/`/`\\` 로 둘러싸여 있음.
+    if (raw.len >= 2) {
+        var i: usize = 0;
+        while (i + 1 < raw.len) : (i += 1) {
+            if (raw[i] != '.' or raw[i + 1] != '.') continue;
+            const before_ok = (i == 0) or raw[i - 1] == '/' or raw[i - 1] == '\\';
+            const after_ok = (i + 2 == raw.len) or raw[i + 2] == '/' or raw[i + 2] == '\\';
+            if (before_ok and after_ok) return allocator.dupe(u8, "");
+        }
+    }
+
+    // 정규화: 백슬래시 → `/`, leading/trailing `/` 제거.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.ensureTotalCapacity(allocator, raw.len);
+    for (raw) |c| {
+        buf.appendAssumeCapacity(if (c == '\\') '/' else c);
+    }
+    // leading `/` 일괄 제거.
+    var start: usize = 0;
+    while (start < buf.items.len and buf.items[start] == '/') start += 1;
+    // trailing `/` 일괄 제거.
+    var end: usize = buf.items.len;
+    while (end > start and buf.items[end - 1] == '/') end -= 1;
+    if (start > 0 or end < buf.items.len) {
+        const trimmed = try allocator.dupe(u8, buf.items[start..end]);
+        buf.deinit(allocator);
+        return trimmed;
+    }
+    return try buf.toOwnedSlice(allocator);
+}
 
 // ============================================================
 // generateChunks — 모듈 그래프에서 청크 생성
@@ -658,6 +730,18 @@ pub fn generateChunks(
         } }, bits);
         chunk.name = name;
         chunk.explicit_file_name = explicit_file_name;
+
+        // PR B-1: [dir] 토큰 치환용 raw dir 정보 채움. dirname(entry path) 를
+        // sanitize 거쳐 저장. 현재 PR scope 에선 호출자(chunkPlaceholderStem)가
+        // 이 값을 사용하지 않으므로 영향 0 — PR B-4 의 default 변경과 함께
+        // 활성화될 예정. entry_dir-relative 계산은 PR B-4 로 미룬다.
+        const raw_dir = std.fs.path.dirname(entry_mod.path) orelse "";
+        chunk.name_dir = sanitizeNameDir(allocator, raw_dir) catch null;
+        // addChunk 가 OOM 으로 실패하면 chunk 가 graph 로 옮겨가지 않아 local
+        // chunk 의 name_dir alloc 이 leak. errdefer 로 보호 — addChunk 성공
+        // 시 ownership 이 graph 의 chunk copy 로 이전되고 그 copy 가 chunk_graph
+        // .deinit 에서 free 한다.
+        errdefer if (chunk.name_dir) |nd| allocator.free(nd);
 
         const ci = try chunk_graph.addChunk(chunk);
         try bits_to_chunk.put(allocator, bits, ci);
@@ -1000,6 +1084,16 @@ pub fn generatePreserveModulesChunks(
             helper_modules.sanitizeId(allocator, m.path) catch m.path
         else
             m.path;
+
+        // PR B-1: [dir] 토큰 치환용 raw dir. preserve-modules 의 `rel_dir` 은
+        // 모듈 절대경로+파일명+ext 의 misnomer 라 [dir] 토큰에 직접 노출하면
+        // 출력이 깨진다. 안전한 신규 필드 `name_dir` 에는 *dirname* 만 sanitize
+        // 거쳐 저장. virtual helper id 는 sanitize 가 NUL 발견 시 빈 문자열로
+        // 떨어뜨려 안전. 현재 PR scope 에선 호출자 미사용 — PR B-4 가 활성화.
+        const raw_dir_pm = std.fs.path.dirname(m.path) orelse "";
+        chunk.name_dir = sanitizeNameDir(allocator, raw_dir_pm) catch null;
+        // addChunk OOM 시 leak 방지(entry chunk 분기와 대칭).
+        errdefer if (chunk.name_dir) |nd| allocator.free(nd);
 
         const ci = try chunk_graph.addChunk(chunk);
         chunk_graph.assignModuleToChunk(mod_idx, ci);
@@ -1434,4 +1528,88 @@ test "BitSet.isSubsetOf: differing entries length safe" {
     try std.testing.expect(short.isSubsetOf(long));
     // long 의 set 비트가 short 범위 밖이면 long ⊄ short
     try std.testing.expect(!long.isSubsetOf(short));
+}
+
+test "sanitizeNameDir: 기본 — 그대로" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "src/pages");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("src/pages", r);
+}
+
+test "sanitizeNameDir: leading slash 제거(절대경로 흡수)" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "/abs/path");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("abs/path", r);
+}
+
+test "sanitizeNameDir: trailing slash 제거" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "src/");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("src", r);
+}
+
+test "sanitizeNameDir: 양쪽 slash 제거" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "/src/");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("src", r);
+}
+
+test "sanitizeNameDir: Windows 백슬래시 정규화" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "win\\sub");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("win/sub", r);
+}
+
+test "sanitizeNameDir: mixed backslash + leading/trailing" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "\\abs\\foo\\");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("abs/foo", r);
+}
+
+test "sanitizeNameDir: .. 세그먼트 거부 — 빈 문자열" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "src/../etc");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "sanitizeNameDir: literal `..` 가 segment 안에 있으면 허용" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "foo..bar");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("foo..bar", r);
+}
+
+test "sanitizeNameDir: NUL 바이트 거부" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "src\x00bad");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "sanitizeNameDir: 빈 입력 → 빈 출력" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "sanitizeNameDir: 시작에 .. 거부" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "../etc");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "sanitizeNameDir: 끝에 .. 거부" {
+    const a = std.testing.allocator;
+    const r = try sanitizeNameDir(a, "foo/..");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("", r);
 }
