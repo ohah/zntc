@@ -33,14 +33,22 @@ fn dumpLeaksAtExit() callconv(.c) void {
     _ = debug_gpa.deinit();
 }
 
-var leak_dump_registered: bool = false;
+/// `napi_register_module_v1` 의 중복 호출 race 방지 atomic flag. Node
+/// `worker_threads` / Vitest `pool='threads'` 등 한 process 안에서 다중 isolate
+/// 가 같은 .node 를 load 시 module init 이 동시에 호출될 수 있고, 공유 static
+/// 인 이 flag 의 non-atomic read+write 면 둘 다 false 관찰 → 둘 다 atexit
+/// 등록 → process 종료 시 `dumpLeaksAtExit` 두 번 호출 → 첫 deinit 가 `self.* =
+/// undefined` 로 GPA 무효화 후 두 번째 deinit 가 undefined memory deref →
+/// segfault. `.acq_rel` swap 으로 하나의 caller 만 등록 진입 보장.
+var leak_dump_registered: std.atomic.Value(bool) = .init(false);
 
 /// napi_register_module_v1 에서 1회 호출. SIGTERM/정상 exit 시 atexit handler
 /// 가 GPA.deinit() 를 호출해 leak 리포트(stack trace) 를 stderr 에 출력한다.
 pub fn registerLeakDump() void {
     if (comptime builtin.mode != .Debug) return;
-    if (leak_dump_registered) return;
-    leak_dump_registered = true;
+    // swap 결과가 이미 true 면 다른 caller 가 등록 완료한 상태 — skip. acq_rel
+    // 로 register 후 read 가 write 와 happens-before 정렬.
+    if (leak_dump_registered.swap(true, .acq_rel)) return;
     _ = atexit(&dumpLeaksAtExit);
 }
 
