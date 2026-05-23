@@ -413,10 +413,14 @@ pub fn emitChunks(
         const cjs_split = options.format == .cjs and !options.preserve_modules;
         const cjs_require = pm_cjs or cjs_split;
 
+        // PR B-4b-1: stack buf → ArrayList reuse. loop 안 단일 alloc amortize.
+        var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer dep_buf.deinit(allocator);
+
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
-            var dep_buf: [128]u8 = undefined;
-            const dep_stem = chunkPlaceholderStem(dep_chunk, &dep_buf, options);
+            try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
+            const dep_stem = dep_buf.items;
             const dep_ci = @intFromEnum(dep_chunk_idx);
 
             // IIFE splitting: 청크 경계는 레지스트리 — 경로 대신 dep 청크의
@@ -435,7 +439,20 @@ pub fn emitChunks(
                 const src_path = chunk.rel_dir orelse "./";
                 const dep_path = dep_chunk.rel_dir orelse "./";
                 break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
-            } else try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+            } else blk: {
+                // PR B-4b-1 blocker #1: dep_stem 이 [dir] 토큰 활성화로 dir 를
+                // 포함하면 importer chunk dir 기준 relative 계산. default
+                // 패턴(`[name]`)에선 chunk.name_dir 가 채워져 있어도 *패턴에
+                // [dir] 토큰이 없으면* dep_stem 은 평면 — 옛 `./{stem}{ext}`
+                // 동작 유지로 회귀 방지. 패턴 검사로 활성화.
+                const has_dir_token = std.mem.indexOf(u8, options.entry_names, "[dir]") != null or
+                    std.mem.indexOf(u8, options.chunk_names, "[dir]") != null;
+                if (has_dir_token) {
+                    const src_dir = chunk.name_dir orelse "";
+                    break :blk try computeRelativePath(allocator, src_dir, dep_stem, ext);
+                }
+                break :blk try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+            };
             defer allocator.free(resolved_path);
 
             // 청크 경계 결합 형태: esm `import{}from""` / cjs `const{}=require("")`
@@ -904,8 +921,10 @@ pub fn emitChunks(
         // Plugin: renderChunk 훅 — 청크 완성 후, footer 전
         if (options.plugins.len > 0) {
             const runner = plugin_mod.PluginRunner.init(options.plugins);
-            var rc_stem_buf: [128]u8 = undefined;
-            const rc_chunk_name = chunkPlaceholderStem(chunk, &rc_stem_buf, options);
+            var rc_stem_buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer rc_stem_buf.deinit(allocator);
+            try chunkPlaceholderStem(chunk, &rc_stem_buf, allocator, options);
+            const rc_chunk_name = rc_stem_buf.items;
             var hook_ctx: plugin_mod.HookContext = .{};
             defer hook_ctx.deinit();
             const chunk_rc_result = runner.runRenderChunk(chunk_output.items, rc_chunk_name, allocator, &hook_ctx) catch |err| switch (err) {
@@ -944,9 +963,10 @@ pub fn emitChunks(
             try computePreserveModulesPath(allocator, chunk.rel_dir.?, ext, options.preserve_modules_root)
         else blk: {
             // 일반 code splitting: "{stem}{ext}" (placeholder hash 포함, 나중에 치환)
-            var stem_buf: [128]u8 = undefined;
-            const stem = chunkPlaceholderStem(chunk, &stem_buf, options);
-            break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext });
+            var stem_buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer stem_buf.deinit(allocator);
+            try chunkPlaceholderStem(chunk, &stem_buf, allocator, options);
+            break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem_buf.items, ext });
         };
         errdefer allocator.free(filename);
 
@@ -1081,10 +1101,12 @@ fn emitRunBeforeMainCrossImports(
     options: *const EmitOptions,
     ext: []const u8,
 ) !void {
+    var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer dep_buf.deinit(allocator);
     for (imports) |imp| {
         const dep_chunk = chunk_graph.getChunk(imp.source_chunk);
-        var dep_buf: [128]u8 = undefined;
-        const dep_stem = chunkPlaceholderStem(dep_chunk, &dep_buf, options);
+        try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
+        const dep_stem = dep_buf.items;
         const resolved_path = if (options.preserve_modules) blk: {
             const src_path = current_chunk.rel_dir orelse "./";
             const dep_path = dep_chunk.rel_dir orelse "./";
@@ -1092,8 +1114,18 @@ fn emitRunBeforeMainCrossImports(
         } else if (dep_chunk.explicit_file_name) |efn|
             // PR7-2d: 명시 fileName chunk 는 verbatim 참조.
             try std.fmt.allocPrint(allocator, "./{s}", .{efn})
-        else
-            try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+        else blk: {
+            // PR B-4b-1 blocker #1: [dir] 토큰이 entry/chunk_names 에 있을
+            // 때만 importer chunk dir 기준 relative 계산. default 패턴은
+            // 옛 평면 `./{stem}{ext}` 유지.
+            const has_dir_token = std.mem.indexOf(u8, options.entry_names, "[dir]") != null or
+                std.mem.indexOf(u8, options.chunk_names, "[dir]") != null;
+            if (has_dir_token) {
+                const src_dir = current_chunk.name_dir orelse "";
+                break :blk try computeRelativePath(allocator, src_dir, dep_stem, ext);
+            }
+            break :blk try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+        };
         defer allocator.free(resolved_path);
 
         if (!options.minify_whitespace) {
@@ -1321,6 +1353,19 @@ fn rewriteDynamicImports(
         return try allocator.dupe(u8, code);
     }
 
+    // PR B-4b-1 blocker #1: importer(현재 module 의) chunk dir 정보 캐싱 —
+    // 동적 import 결과 path 를 importer chunk dir 기준 relative 로 계산할 때
+    // 사용. [dir] 토큰 비활성 시 src_dir="" 이라 결과는 평면 `./stem.ext`.
+    // stem_buf 는 ArrayList — loop 안에서 reuse 로 단일 alloc amortize.
+    var stem_buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer stem_buf.deinit(allocator);
+
+    const src_chunk_idx = chunk_graph.getModuleChunk(module.index);
+    const src_chunk_dir: []const u8 = if (src_chunk_idx.isNone())
+        ""
+    else
+        chunk_graph.getChunk(src_chunk_idx).name_dir orelse "";
+
     // 리라이트할 레코드가 있는지 먼저 확인 (불필요한 할당 방지)
     var has_dynamic = false;
     for (module.import_records) |rec| {
@@ -1426,10 +1471,13 @@ fn rewriteDynamicImports(
 
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
-        // 청크 파일명 생성: public_path가 있으면 "{public_path}{stem}{ext}", 없으면 "./{stem}{ext}"
+        // 청크 파일명 생성: public_path가 있으면 "{public_path}{stem}{ext}", 없으면
+        // importer chunk dir 기준 상대 경로(`computeRelativePath`).
         // PR7-2d: 명시 fileName chunk 는 verbatim(패턴/hash 우회) — public_path 만 prefix.
-        var stem_buf: [128]u8 = undefined;
-        const stem = chunkPlaceholderStem(target_chunk, &stem_buf, emit_options);
+        // PR B-4b-1 blocker #1: dynamic import 도 [dir] 토큰 활성화 시 dep_stem
+        // 이 dir 포함 — importer chunk dir 기준 relative 계산.
+        try chunkPlaceholderStem(target_chunk, &stem_buf, allocator, emit_options);
+        const stem = stem_buf.items;
         const replacement = if (target_chunk.explicit_file_name) |efn|
             (if (public_path.len > 0)
                 try std.fmt.allocPrint(allocator, "{s}{s}", .{ public_path, efn })
@@ -1437,8 +1485,16 @@ fn rewriteDynamicImports(
                 try std.fmt.allocPrint(allocator, "./{s}", .{efn}))
         else if (public_path.len > 0)
             try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ public_path, stem, out_ext })
-        else
-            try std.fmt.allocPrint(allocator, "./{s}{s}", .{ stem, out_ext });
+        else blk: {
+            // PR B-4b-1 blocker #1: [dir] 토큰 활성 시만 importer dir 기준
+            // relative — default 패턴은 옛 평면 `./{stem}{ext}` 유지.
+            const has_dir_token = std.mem.indexOf(u8, emit_options.entry_names, "[dir]") != null or
+                std.mem.indexOf(u8, emit_options.chunk_names, "[dir]") != null;
+            if (has_dir_token) {
+                break :blk try computeRelativePath(allocator, src_chunk_dir, stem, out_ext);
+            }
+            break :blk try std.fmt.allocPrint(allocator, "./{s}{s}", .{ stem, out_ext });
+        };
         defer allocator.free(replacement);
 
         // cjs+splitting(P3-B): 네이티브 import() 가 없으므로 호출 전체를
@@ -1776,14 +1832,19 @@ fn chunkRegistryId(
         },
         .common, .manual => {},
     }
-    var buf: [128]u8 = undefined;
-    const stem = chunkPlaceholderStem(chunk, &buf, options);
-    return allocator.dupe(u8, stem);
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+    try chunkPlaceholderStem(chunk, &buf, allocator, options);
+    return allocator.dupe(u8, buf.items);
 }
 
-/// 청크의 placeholder stem을 반환한다 (확장자 없음).
+/// 청크의 placeholder stem을 caller 가 소유한 `out` ArrayList 에 채운다 (확장자 없음).
 /// cross-chunk import 등 content가 아직 없는 시점에서 사용.
 /// 최종 출력 시 placeholder를 content hash로 치환한다.
+///
+/// **PR B-4b-1: stack buf → ArrayList** — caller 가 loop 안에서 `out` 을 reuse
+/// 하면 단일 alloc amortize, capacity 자동 grow 로 deep monorepo 경로 truncate
+/// 0. 결과는 `out.items` 로 caller 가 슬라이스 참조 (out 가 살아있는 동안 유효).
 ///
 /// **현재 정책 (PR B-4a)**: `[dir]` 토큰을 `chunk.name_dir` 로 채운다(PR B-1
 /// 의 sanitize 거친 안전한 entry-relative dir; null/`""` 면 빈 dir 분기로
@@ -1791,19 +1852,12 @@ fn chunkRegistryId(
 /// 명시적으로 `[dir]` 토큰을 entry_names/chunk_names 에 넣었을 때만 활성화.
 /// (`chunk.rel_dir` 은 preserve-modules 의 *절대 경로+파일명+ext* misnomer 라
 /// 사용 금지 — `chunk.name_dir` 은 PR B-1 이 도입한 분리된 안전 필드.)
-///
-/// **PR B-4b (default 변경) 이전 필수 해소 — opt-in 사용자도 즉시 영향**:
-/// 1. cross-chunk import 의 `./{stem}{ext}` specifier(line ~438) 와 dynamic
-///    import rewrite(line ~1441) 의 relative base 가 importer chunk dir
-///    기준이 아니라 outDir 기준 — 두 청크가 서로 다른 dir 면 import 404.
-///    preserve-modules 분기는 `computeRelativeImportPath` 적용; splitting
-///    분기는 평면 `./` prefix 라 [dir] 활성화 시 깨짐.
-/// 2. 128B stack stem_buf 가 깊은 monorepo 경로(pages/admin/users/details/
-///    edit + [name]-[hash]+[ext]) 에서 silent truncation 가능. ArrayList 로
-///    교체 또는 buf 확장 필요.
-/// 3. manual chunk 의 name_dir 가 null — entry chunk 와 정책 비대칭. 같은
-///    name 의 entry/manual chunk 가 다른 path 로 emit 되는 surprise 가능.
-fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOptions) []const u8 {
+fn chunkPlaceholderStem(
+    chunk: *const Chunk,
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    options: *const EmitOptions,
+) !void {
     const is_entry = chunk.name != null;
     const base_name = chunk.name orelse "chunk";
     const pattern = if (is_entry) options.entry_names else options.chunk_names;
@@ -1811,7 +1865,7 @@ fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOpti
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);
 
-    return applyNamingPatternWithDir(buf, pattern, base_name, &hash_buf, chunk.name_dir orelse "");
+    try applyNamingPatternWithDir(out, allocator, pattern, base_name, &hash_buf, chunk.name_dir orelse "");
 }
 
 /// 모듈 인덱스 기반 해시 (placeholder 식별자용, content hash 아님).
@@ -1938,13 +1992,24 @@ fn replacePlaceholders(allocator: std.mem.Allocator, input: []const u8, placehol
 }
 
 /// naming pattern을 적용한다.
-/// [name] → base_name, [hash] → hash_str 로 치환.
-/// buf에 결과를 쓰고 슬라이스를 반환.
+/// [name] → base_name, [hash] → hash_str 로 치환. caller 가 소유한 `out`
+/// ArrayList 에 결과를 append (clearRetainingCapacity 로 시작 — caller 가
+/// loop 안에서 reuse 가능, 단일 alloc amortize).
 /// [dir] 토큰을 지원하려면 `applyNamingPatternWithDir` 를 사용한다 — 이
 /// 4-arg 변형은 dir = "" 로 위임하므로 패턴에 [dir] 가 있어도 빈 dir 정리
 /// 규칙(leading-slash 제거)이 동일 적용된다.
-pub fn applyNamingPattern(buf: []u8, pattern: []const u8, name: []const u8, hash_str: []const u8) []const u8 {
-    return applyNamingPatternWithDir(buf, pattern, name, hash_str, "");
+///
+/// **PR B-4b-1: stack buf → ArrayList 전환** (`[]u8` slice 시그니처는 deep
+/// monorepo 경로 시 silent truncate 위험). capacity 자동 grow 로 100% 안전 +
+/// caller reuse 로 단일 alloc amortize → typical 빌드 영향 0.
+pub fn applyNamingPattern(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    name: []const u8,
+    hash_str: []const u8,
+) !void {
+    return applyNamingPatternWithDir(out, allocator, pattern, name, hash_str, "");
 }
 
 /// `applyNamingPattern` 의 [dir] 토큰 지원 변형.
@@ -1956,32 +2021,31 @@ pub fn applyNamingPattern(buf: []u8, pattern: []const u8, name: []const u8, hash
 /// 슬래시도 함께 skip 한다. 단일 entry 가 cwd 루트에 있거나(entry_dir
 /// 미설정) 패턴이 `dist/[dir]/[name]` 같이 중간에 [dir] 가 있을 때
 /// leading/double-slash 가 생기지 않도록.
+///
+/// caller 가 `out` 소유 — 매 호출 `clearRetainingCapacity()` 로 시작.
+/// 결과는 `out.items` 로 caller 가 슬라이스 참조 (out 가 살아있는 동안 유효).
 pub fn applyNamingPatternWithDir(
-    buf: []u8,
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
     pattern: []const u8,
     name: []const u8,
     hash_str: []const u8,
     dir: []const u8,
-) []const u8 {
-    var dst: usize = 0;
+) !void {
+    out.clearRetainingCapacity();
     var i: usize = 0;
     while (i < pattern.len) {
         if (i + "[name]".len <= pattern.len and std.mem.eql(u8, pattern[i..][0.."[name]".len], "[name]")) {
-            const end = @min(dst + name.len, buf.len);
-            @memcpy(buf[dst..end], name[0 .. end - dst]);
-            dst = end;
+            try out.appendSlice(allocator, name);
             i += "[name]".len;
         } else if (i + "[hash]".len <= pattern.len and std.mem.eql(u8, pattern[i..][0.."[hash]".len], "[hash]")) {
-            const end = @min(dst + hash_str.len, buf.len);
-            @memcpy(buf[dst..end], hash_str[0 .. end - dst]);
-            dst = end;
+            try out.appendSlice(allocator, hash_str);
             i += "[hash]".len;
         } else if (i + "[dir]".len <= pattern.len and std.mem.eql(u8, pattern[i..][0.."[dir]".len], "[dir]")) {
             if (dir.len > 0) {
+                try out.ensureUnusedCapacity(allocator, dir.len);
                 for (dir) |c| {
-                    if (dst >= buf.len) break;
-                    buf[dst] = if (c == '\\') '/' else c;
-                    dst += 1;
+                    out.appendAssumeCapacity(if (c == '\\') '/' else c);
                 }
                 i += "[dir]".len;
             } else {
@@ -1990,14 +2054,10 @@ pub fn applyNamingPatternWithDir(
                 if (i < pattern.len and pattern[i] == '/') i += 1;
             }
         } else {
-            if (dst < buf.len) {
-                buf[dst] = pattern[i];
-                dst += 1;
-            }
+            try out.append(allocator, pattern[i]);
             i += 1;
         }
     }
-    return buf[0..dst];
 }
 
 /// used_names 사전 계산 결과.
