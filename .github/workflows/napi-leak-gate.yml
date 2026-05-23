@@ -76,12 +76,38 @@ jobs:
         # default ReleaseFast 라 명시적 Debug 필수.
         run: zig build napi --cache-dir .zig-cache-napi -Dnapi-optimize=Debug
 
+      - name: Verify Debug NAPI build artifact (fail-fast)
+        # `|| true` 로 cp 실패를 마스킹하면 stale binary 로 진행 → 진단 불가.
+        # Debug NAPI 산출물 부재 시 즉시 fail-fast 로 환경 차이 즉시 노출.
+        run: |
+          ls -la zig-out/lib/
+          test -f zig-out/lib/zntc.node || { echo "::error::Debug NAPI build did not produce zig-out/lib/zntc.node"; exit 1; }
+          file zig-out/lib/zntc.node || true
+          ls -la zig-out/lib/zntc.node
+
+      - name: Copy .node to package (BEFORE build:js — Debug NAPI self-host)
+        # build:js:cjs 가 zntc self-host 로 bundle (`node bin/zntc.mjs --bundle`).
+        # `packages/core/index.ts:findAddon()` 이 `zig-out/lib/zntc.node` 를
+        # 최우선 resolve 라 사실 cp 안 해도 self-host 는 zig-out 의 .node 사용.
+        # 그래도 packages/core/zntc.node 도 명시 일치시켜 dev probe step 의
+        # examples/web 의 `bun run dev` (predev=build:js, zntc dev) 가 동일
+        # Debug binary 보장. `|| true` 제거 — cp 실패 시 fail-fast.
+        run: cp zig-out/lib/zntc.node packages/core/zntc.node
+
+      - name: NAPI smoke test (self-host Debug build 부팅 검증)
+        # 본격 build:js 전에 Debug NAPI 가 정상 dlopen + symbol resolve 되는지
+        # smoke. SIGSEGV 가 여기서 노출되면 build:js fail 보다 진단이 단순.
+        # 이전 run #26336187926 이 build:js:cjs (node + Debug zntc.node self-host)
+        # 단계에서 SIGSEGV — 진짜 원인 분리에 필요.
+        run: |
+          node -e "
+            const addon = require('./packages/core/zntc.node');
+            console.log('NAPI keys:', Object.keys(addon).slice(0, 5).join(','), '...');
+            console.log('NAPI smoke: dlopen + symbol resolve OK');
+          "
+
       - name: Build JS wrapper + dts
         run: cd packages/core && bun run build:js && bun run build:dts
-
-      - name: Copy .node to package
-        # ci.yml napi job 과 동일하게 `|| true` 로 path 차이 tolerate
-        run: cp zig-out/lib/zntc.node packages/core/zntc.node 2>/dev/null || true
 
       - name: 1-min dev probe (Bun graceful exit)
         run: |
