@@ -919,13 +919,38 @@ pub fn emitChunks(
             (options.format == .umd or options.format == .amd))
             try format_wrapper.emitFormatEpilogue(&chunk_output, allocator, options.format, &.{});
 
-        // Plugin: renderChunk 훅 — 청크 완성 후, footer 전
+        // Plugin: renderChunk 훅 — 청크 완성 후, footer 전.
+        // F8 post-review fix — plugin 에 전달되는 chunk_name 을 *실제 filename 의
+        // stem* 과 동기. 옛 코드는 chunkPlaceholderStem 결과 (entry_names 패턴 적용)
+        // 만 보내 preserve_modules / explicit_file_name 시 filename 과 drift —
+        // plugin (예: visualizer manifest) 이 chunk_name 으로 path 만들면 실제
+        // 파일과 mismatch.
         if (options.plugins.len > 0) {
             const runner = plugin_mod.PluginRunner.init(options.plugins);
             var rc_stem_buf: std.ArrayListUnmanaged(u8) = .empty;
             defer rc_stem_buf.deinit(allocator);
-            try chunkPlaceholderStem(chunk, &rc_stem_buf, allocator, options);
-            const rc_chunk_name = rc_stem_buf.items;
+            const rc_chunk_name: []const u8 = blk: {
+                if (chunk.explicit_file_name) |efn| {
+                    // explicit fileName 의 stem (실제 ext 제외) — efn 의 ext 가
+                    // options.out_extension_js 와 다를 수 있어 `std.fs.path.extension`
+                    // 으로 실제 ext 추출 (review F1 fix).
+                    const efn_ext = std.fs.path.extension(efn);
+                    const stem_part = efn[0 .. efn.len - efn_ext.len];
+                    try rc_stem_buf.appendSlice(allocator, stem_part);
+                    break :blk rc_stem_buf.items;
+                }
+                if (options.preserve_modules and chunk.rel_dir != null) {
+                    // preserve-modules: computePreserveModulesPath 결과의 stem.
+                    const pm_path = try computePreserveModulesPath(allocator, chunk.rel_dir.?, ext, options.preserve_modules_root);
+                    defer allocator.free(pm_path);
+                    const pm_ext = std.fs.path.extension(pm_path);
+                    const stem_part = pm_path[0 .. pm_path.len - pm_ext.len];
+                    try rc_stem_buf.appendSlice(allocator, stem_part);
+                    break :blk rc_stem_buf.items;
+                }
+                try chunkPlaceholderStem(chunk, &rc_stem_buf, allocator, options);
+                break :blk rc_stem_buf.items;
+            };
             var hook_ctx: plugin_mod.HookContext = .{};
             defer hook_ctx.deinit();
             const chunk_rc_result = runner.runRenderChunk(chunk_output.items, rc_chunk_name, allocator, &hook_ctx) catch |err| switch (err) {
