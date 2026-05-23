@@ -222,7 +222,96 @@ pub fn planCssChunks(
         });
     }
 
+    // 두 entry 가 같은 stem(예: pages/a/index.tsx + pages/b/index.tsx) 이면
+    // cssPathForChunk 가 둘 다 같은 path 를 반환해 writeOutputFiles 가 한쪽을
+    // overwrite — silent CSS 손실. JS 청크 placeholder 와 달리 CSS 는 안정
+    // 파일명(app-builder HTML link rewrite 호환) 을 위해 hash 를 강제하지 않는
+    // 정책이라, 충돌이 *발생한 그룹에 한해서만* content-hash 를 자동 부여한다.
+    // 그룹 내 contents 가 모두 같으면(우연한 동일 emit) overwrite 가 무해하므로
+    // 건드리지 않는다 — 안정 파일명 invariant 유지.
+    try disambiguatePathCollisions(allocator, out_list.items);
+
     return out_list.toOwnedSlice(allocator);
+}
+
+/// out_list 안에서 같은 `path` 를 가지면서 `contents` 가 서로 다른 항목들에
+/// 한해 content-hash disambiguator 를 자동 부여한다. 같은 path + 같은 contents
+/// 인 그룹은 그대로 둔다(disk write last-wins 가 무해).
+///
+/// 두 패스로 처리한다:
+/// 1패스: items[i].path 만 읽어 groups + new_paths(인덱스 i → 새 path 또는 null).
+/// 2패스: groups 를 *완전히 폐기* 한 뒤 items[i].path 를 free 하고 new_path 로 swap.
+/// 이렇게 분리하면 groups 의 키(= items[i].path 슬라이스) 가 살아있는 동안엔
+/// free 가 발생하지 않아 use-after-free 가능성이 원천 차단된다 — 향후
+/// disambiguate 본문에 groups 재조회를 추가하는 패치에도 안전.
+fn disambiguatePathCollisions(
+    allocator: std.mem.Allocator,
+    items: []CssChunkPlanEntry,
+) !void {
+    if (items.len < 2) return;
+
+    // 새 path 후보(없으면 null) — 1패스 결과를 2패스로 전달.
+    const new_paths = try allocator.alloc(?[]const u8, items.len);
+    defer allocator.free(new_paths);
+    @memset(new_paths, null);
+    // 1패스 도중 alloc 한 new_path 중 2패스에 도달 못한(=중간 OOM) 것을 정리.
+    errdefer for (new_paths) |p| if (p) |s| allocator.free(s);
+
+    {
+        var groups = std.StringHashMap(std.ArrayListUnmanaged(usize)).init(allocator);
+        defer {
+            var vit = groups.valueIterator();
+            while (vit.next()) |list| list.deinit(allocator);
+            groups.deinit();
+        }
+        for (items, 0..) |e, i| {
+            const gop = try groups.getOrPut(e.path);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(allocator, i);
+        }
+
+        var git = groups.iterator();
+        while (git.next()) |grp| {
+            const idxs = grp.value_ptr.items;
+            if (idxs.len < 2) continue;
+            const ref = items[idxs[0]].contents;
+            var all_same = true;
+            for (idxs[1..]) |i| {
+                if (!std.mem.eql(u8, items[i].contents, ref)) {
+                    all_same = false;
+                    break;
+                }
+            }
+            if (all_same) continue;
+
+            for (idxs) |i| {
+                // 1패스에선 alloc 만 — items[i].path 는 아직 안 건드린다.
+                new_paths[i] = try insertContentHash(allocator, items[i].path, items[i].contents);
+            }
+        }
+        // 여기서 defer 블록이 돌며 groups 를 완전 해제. 이 시점 이후엔 groups 가
+        // items[i].path 를 더 이상 키로 보지 않으므로 2패스의 free 가 안전.
+    }
+
+    // 2패스: 1패스에서 new_path 가 할당된 인덱스만 old 를 free 하고 swap.
+    for (items, 0..) |*e, i| {
+        if (new_paths[i]) |np| {
+            allocator.free(e.path);
+            e.path = np;
+            new_paths[i] = null; // 더 이상 errdefer 가 회수하지 않게 비운다.
+        }
+    }
+}
+
+/// `path` 의 마지막 `.css` 확장자 직전에 `-<hash8>` 를 삽입한다. 확장자가
+/// 없으면 끝에 그대로 붙인다(현재 경로 생성기는 항상 `.css` 보장).
+fn insertContentHash(allocator: std.mem.Allocator, path: []const u8, contents: []const u8) ![]const u8 {
+    const h = wyhash.hashHex8(contents);
+    if (std.mem.endsWith(u8, path, ".css")) {
+        const stem = path[0 .. path.len - 4];
+        return std.fmt.allocPrint(allocator, "{s}-{s}.css", .{ stem, h });
+    }
+    return std.fmt.allocPrint(allocator, "{s}-{s}", .{ path, h });
 }
 
 /// `plan` 의 path/contents 소유권을 OutputFile 로 이전한다(plan 컨테이너는
@@ -551,4 +640,113 @@ test "cssPathForChunk: falls back to filename stem then chunk index" {
     const r2 = try cssPathForChunk(a, &ch2, "[name]-[hash]", "c");
     defer a.free(r2);
     try std.testing.expect(std.mem.startsWith(u8, r2, "chunk7-"));
+}
+
+test "insertContentHash: .css 확장자 직전에 -<hash> 삽입" {
+    const a = std.testing.allocator;
+    const r = try insertContentHash(a, "index.css", ".x{}");
+    defer a.free(r);
+    const h = wyhash.hashHex8(".x{}");
+    const expect = try std.fmt.allocPrint(a, "index-{s}.css", .{h});
+    defer a.free(expect);
+    try std.testing.expectEqualStrings(expect, r);
+}
+
+test "insertContentHash: subdir 보존" {
+    const a = std.testing.allocator;
+    const r = try insertContentHash(a, "assets/page.css", ".y{}");
+    defer a.free(r);
+    const h = wyhash.hashHex8(".y{}");
+    const expect = try std.fmt.allocPrint(a, "assets/page-{s}.css", .{h});
+    defer a.free(expect);
+    try std.testing.expectEqualStrings(expect, r);
+}
+
+test "insertContentHash: 확장자 없으면 끝에 -<hash>" {
+    const a = std.testing.allocator;
+    const r = try insertContentHash(a, "noext", ".z{}");
+    defer a.free(r);
+    const h = wyhash.hashHex8(".z{}");
+    const expect = try std.fmt.allocPrint(a, "noext-{s}", .{h});
+    defer a.free(expect);
+    try std.testing.expectEqualStrings(expect, r);
+}
+
+test "disambiguatePathCollisions: 같은 path + 다른 contents 면 양쪽에 hash 부여" {
+    const a = std.testing.allocator;
+    var items = [_]CssChunkPlanEntry{
+        .{ .chunk_index = 0, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".a{}") },
+        .{ .chunk_index = 1, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".b{}") },
+    };
+    defer {
+        for (items) |e| {
+            a.free(e.path);
+            a.free(e.contents);
+        }
+    }
+    try disambiguatePathCollisions(a, &items);
+    // 둘 다 path 가 변경(hash 부여) 됐어야 한다.
+    try std.testing.expect(!std.mem.eql(u8, items[0].path, items[1].path));
+    try std.testing.expect(std.mem.startsWith(u8, items[0].path, "index-"));
+    try std.testing.expect(std.mem.startsWith(u8, items[1].path, "index-"));
+    try std.testing.expect(std.mem.endsWith(u8, items[0].path, ".css"));
+    try std.testing.expect(std.mem.endsWith(u8, items[1].path, ".css"));
+}
+
+test "disambiguatePathCollisions: 같은 path + 같은 contents 면 그대로(stable 파일명 유지)" {
+    const a = std.testing.allocator;
+    var items = [_]CssChunkPlanEntry{
+        .{ .chunk_index = 0, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".a{}") },
+        .{ .chunk_index = 1, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".a{}") },
+    };
+    defer {
+        for (items) |e| {
+            a.free(e.path);
+            a.free(e.contents);
+        }
+    }
+    try disambiguatePathCollisions(a, &items);
+    try std.testing.expectEqualStrings("index.css", items[0].path);
+    try std.testing.expectEqualStrings("index.css", items[1].path);
+}
+
+test "disambiguatePathCollisions: 충돌 없는 그룹은 그대로" {
+    const a = std.testing.allocator;
+    var items = [_]CssChunkPlanEntry{
+        .{ .chunk_index = 0, .path = try a.dupe(u8, "a.css"), .contents = try a.dupe(u8, ".a{}") },
+        .{ .chunk_index = 1, .path = try a.dupe(u8, "b.css"), .contents = try a.dupe(u8, ".b{}") },
+    };
+    defer {
+        for (items) |e| {
+            a.free(e.path);
+            a.free(e.contents);
+        }
+    }
+    try disambiguatePathCollisions(a, &items);
+    try std.testing.expectEqualStrings("a.css", items[0].path);
+    try std.testing.expectEqualStrings("b.css", items[1].path);
+}
+
+test "disambiguatePathCollisions: 3 way 충돌 + 부분 contents 동일" {
+    const a = std.testing.allocator;
+    var items = [_]CssChunkPlanEntry{
+        .{ .chunk_index = 0, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".a{}") },
+        .{ .chunk_index = 1, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".a{}") },
+        .{ .chunk_index = 2, .path = try a.dupe(u8, "index.css"), .contents = try a.dupe(u8, ".c{}") },
+    };
+    defer {
+        for (items) |e| {
+            a.free(e.path);
+            a.free(e.contents);
+        }
+    }
+    try disambiguatePathCollisions(a, &items);
+    // 그룹 안 contents 가 *모두 같지는 않으므로* 전원에 hash 부여.
+    // (부분 동일을 미세하게 처리하면 결정성 + 단순성 모두 깨짐.)
+    try std.testing.expect(std.mem.startsWith(u8, items[0].path, "index-"));
+    try std.testing.expect(std.mem.startsWith(u8, items[1].path, "index-"));
+    try std.testing.expect(std.mem.startsWith(u8, items[2].path, "index-"));
+    // 같은 contents 인 0,1 은 같은 hash → 같은 path (디스크 overwrite 무해)
+    try std.testing.expectEqualStrings(items[0].path, items[1].path);
+    try std.testing.expect(!std.mem.eql(u8, items[0].path, items[2].path));
 }

@@ -6,6 +6,7 @@ import {
   describe,
   expect,
   join,
+  mkdirSync,
   removeOptionCombinationFixture,
   test,
   writeFileSync,
@@ -111,5 +112,97 @@ describe('옵션 조합 통합 테스트 - core options - splitting', () => {
     // 는 `new URL("./<basename>",import.meta.url)` 형태이므로 그대로 검증.
     const dynCssFullBase = dynCss!.path.split(/[\\/]/).pop() ?? '';
     expect(dynJs!.text).toContain(`new URL("./${dynCssFullBase}",import.meta.url)`);
+  });
+
+  // 회귀 가드: 두 entry 가 같은 stem(예: pages/a/index.tsx + pages/b/index.tsx)
+  // 일 때 chunkNames='[name]' 기본 패턴이 두 청크 모두 'index' 로 만들어 CSS
+  // 출력 경로 'index.css' 가 충돌 → writeFileSync last-write-wins 로 한쪽 CSS
+  // 가 silent 손실되던 pre-existing 버그(multi-owner 화 이후 표면 확대).
+  // fix 후: 충돌이 발생하는 청크 그룹 안에서만 content-hash disambiguator 가
+  // 자동 부여돼 둘 다 보존된다(같은 stem 그룹 밖의 청크는 안정 파일명 유지).
+  test('splitting + CSS — 두 entry 동일 stem 시 CSS path 충돌 회피(자동 hash)', async () => {
+    mkdirSync(join(dir, 'pages-a'), { recursive: true });
+    mkdirSync(join(dir, 'pages-b'), { recursive: true });
+    writeFileSync(
+      join(dir, 'pages-a', 'index.ts'),
+      'import "./styles.css";\nexport const a = 1;\n',
+    );
+    writeFileSync(join(dir, 'pages-a', 'styles.css'), '.page-a { color: red; }\n');
+    writeFileSync(
+      join(dir, 'pages-b', 'index.ts'),
+      'import "./styles.css";\nexport const b = 2;\n',
+    );
+    writeFileSync(join(dir, 'pages-b', 'styles.css'), '.page-b { color: blue; }\n');
+
+    const result = await build({
+      entryPoints: [join(dir, 'pages-a', 'index.ts'), join(dir, 'pages-b', 'index.ts')],
+      splitting: true,
+      entryNames: '[name]',
+      chunkNames: '[name]',
+      // cssNames 는 기본('[name]') — 의도적으로 충돌 조건을 만든다.
+    });
+    expect(result.errors.length).toBe(0);
+
+    const css = result.outputFiles.filter((f) => f.path.endsWith('.css'));
+    const js = result.outputFiles.filter((f) => f.path.endsWith('.js'));
+    // 두 entry 의 CSS 가 모두 outputFiles 에 보존돼야 한다(충돌 silent 손실 금지).
+    const aCss = css.find((c) => c.text.includes('.page-a'));
+    const bCss = css.find((c) => c.text.includes('.page-b'));
+    expect(aCss).toBeDefined();
+    expect(bCss).toBeDefined();
+
+    // 그리고 *서로 다른* path 여야 한다(같은 path 면 디스크 쓰기 시 last-wins).
+    expect(aCss!.path).not.toBe(bCss!.path);
+
+    // outputFiles 안에 중복 path 가 없어야 한다(전반적 invariant).
+    const cssPathSet = new Set(css.map((c) => c.path));
+    expect(cssPathSet.size).toBe(css.length);
+
+    // ★ prologue href 정합: 각 entry JS 의 link prologue 가 *자기* 청크의
+    // disambiguated CSS basename 을 가리켜야 한다(엉뚱한 청크 CSS 참조 시 cascade
+    // 깨짐 + 404 가능). 두 entry 모두 같은 stem 'index' 이므로 JS path 만으론
+    // 구별 불가 → 자기 모듈 본문 마커 (transformer 후 'const a = 1' / 'const b = 2'
+    // + 'export { a }' / 'export { b }') 로 식별. multi-owner 정책상 entry JS
+    // 청크는 자기 CSS link 를 가진다.
+    const aJs = js.find((j) => j.text.includes('const a = 1'));
+    const bJs = js.find((j) => j.text.includes('const b = 2'));
+    expect(aJs).toBeDefined();
+    expect(bJs).toBeDefined();
+    const aCssBase = aCss!.path.split(/[\\/]/).pop()!;
+    const bCssBase = bCss!.path.split(/[\\/]/).pop()!;
+    expect(aJs!.text).toContain(`new URL("./${aCssBase}",import.meta.url)`);
+    expect(bJs!.text).toContain(`new URL("./${bCssBase}",import.meta.url)`);
+    // 그리고 cross-reference 가 *없어야* 한다 — aJs 에 bCss basename, bJs 에
+    // aCss basename 이 들어가면 disambiguator 가 잘못된 그룹을 매핑한 것.
+    expect(aJs!.text).not.toContain(bCssBase);
+    expect(bJs!.text).not.toContain(aCssBase);
+  });
+
+  // 회귀 가드: disambiguator 결정성 — 같은 input 두 번 빌드해도 동일한 path
+  // 가 나와야 한다(content-hash 기반이라 결정적이어야 함). HashMap 순회 순서
+  // 등으로 비결정성이 새어들면 CI 가 떨어지거나 CDN 캐시 히트율이 무너진다.
+  test('splitting + CSS — disambiguator 결과는 결정적(두 번 빌드 동일 path)', async () => {
+    mkdirSync(join(dir, 'det-a'), { recursive: true });
+    mkdirSync(join(dir, 'det-b'), { recursive: true });
+    writeFileSync(join(dir, 'det-a', 'index.ts'), 'import "./s.css";\nexport const a = 1;\n');
+    writeFileSync(join(dir, 'det-a', 's.css'), '.det-a { color: red; }\n');
+    writeFileSync(join(dir, 'det-b', 'index.ts'), 'import "./s.css";\nexport const b = 2;\n');
+    writeFileSync(join(dir, 'det-b', 's.css'), '.det-b { color: blue; }\n');
+
+    const opts = {
+      entryPoints: [join(dir, 'det-a', 'index.ts'), join(dir, 'det-b', 'index.ts')],
+      splitting: true,
+      entryNames: '[name]',
+      chunkNames: '[name]',
+    };
+    const r1 = await build(opts);
+    const r2 = await build(opts);
+    expect(r1.errors.length).toBe(0);
+    expect(r2.errors.length).toBe(0);
+
+    const pickCssByMarker = (r: typeof r1, marker: string) =>
+      r.outputFiles.find((f) => f.path.endsWith('.css') && f.text.includes(marker))!.path;
+    expect(pickCssByMarker(r1, '.det-a')).toBe(pickCssByMarker(r2, '.det-a'));
+    expect(pickCssByMarker(r1, '.det-b')).toBe(pickCssByMarker(r2, '.det-b'));
   });
 });

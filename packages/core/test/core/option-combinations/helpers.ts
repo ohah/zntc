@@ -8,6 +8,7 @@ export {
   describe,
   expect,
   join,
+  mkdirSync,
   readFileSync,
   rmSync,
   test,
