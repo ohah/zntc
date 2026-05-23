@@ -1858,14 +1858,22 @@ fn chunkPlaceholderStem(
     allocator: std.mem.Allocator,
     options: *const EmitOptions,
 ) !void {
-    const is_entry = chunk.name != null;
+    // PR B-4b sub-3: 정확한 discriminator 는 `chunk.kind`. 옛 `chunk.name != null`
+    // 검사는 manualChunks 청크도 name 이 set 돼 있어 entry_names 패턴이 잘못
+    // 적용 → manualChunks 청크 path 가 `[dir]/[name]` (sub-2 새 default) 로
+    // 변환되며 dir="" 라 stem="vendor" 만 남음. lazy 청크와 cross-chunk import
+    // 계산 시 src_dir="vendor" == dep_stem="vendor" → `./.js` 깨짐.
+    const is_entry = chunk.kind == .entry_point;
     const base_name = chunk.name orelse "chunk";
     const pattern = if (is_entry) options.entry_names else options.chunk_names;
+    // manualChunks / common 청크는 dir 정보 없음(entry-relative dir 미상). entry
+    // 청크만 name_dir 사용해 `[dir]/[name]` 효과 발현.
+    const dir = if (is_entry) (chunk.name_dir orelse "") else "";
 
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);
 
-    try applyNamingPatternWithDir(out, allocator, pattern, base_name, &hash_buf, chunk.name_dir orelse "");
+    try applyNamingPatternWithDir(out, allocator, pattern, base_name, &hash_buf, dir);
 }
 
 /// 모듈 인덱스 기반 해시 (placeholder 식별자용, content hash 아님).
