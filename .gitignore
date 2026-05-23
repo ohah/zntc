@@ -2,6 +2,9 @@
 zig-out/
 zig-cache/
 .zig-cache/
+# Issue #54: napi build 는 별도 cache root — `zig build napi` 와 `zig build test`
+# 동시 실행 시 cache 슬롯 corruption 으로 25 fail flaky (ast_walk_test 등) 회피.
+.zig-cache-napi/
 
 # Node/Bun
 node_modules/

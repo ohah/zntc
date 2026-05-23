@@ -59,7 +59,7 @@
     }
   },
   "scripts": {
-    "build:napi": "cd ../.. && zig build napi",
+    "build:napi": "cd ../.. && zig build napi --cache-dir .zig-cache-napi",
     "build:js:esm": "bun build index.ts --outdir dist --format esm --target node",
     "build:js:cjs": "node bin/zntc.mjs --bundle index.ts --outfile dist/index.cjs --format=cjs --platform=node --packages=external",
     "build:js": "bun run build:js:esm && bun run build:js:cjs",
