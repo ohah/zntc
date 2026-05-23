@@ -1226,16 +1226,24 @@ pub const NapiManualChunksResolver = struct {
             return;
         }
 
-        // UTF-8 길이 측정 → 할당 → 복사. CallContext.result 는 native_alloc 소유.
+        // UTF-8 길이 측정 → NUL terminator 용 +1 임시 alloc → 정확 크기로 dupe →
+        // 임시 즉시 free. `bufsize=len+1` 호출이 buf 끝에 NUL 을 작성하므로
+        // alloc 크기 < bufsize 면 1바이트 OOB write (#dev-leak-investigation
+        // sweep). `common.getStringArg` 와 동일 root cause / contract.
         var len: usize = 0;
         _ = c.napi_get_value_string_utf8(env, js_result, null, 0, &len);
-        const buf = native_alloc.alloc(u8, len) catch {
+        const tmp = native_alloc.alloc(u8, len + 1) catch {
             signalResult(ctx, null);
             return;
         };
+        defer native_alloc.free(tmp);
         var written: usize = 0;
-        _ = c.napi_get_value_string_utf8(env, js_result, buf.ptr, len + 1, &written);
-        signalResult(ctx, buf[0..written]);
+        _ = c.napi_get_value_string_utf8(env, js_result, tmp.ptr, len + 1, &written);
+        const out = native_alloc.dupe(u8, tmp[0..written]) catch {
+            signalResult(ctx, null);
+            return;
+        };
+        signalResult(ctx, out);
     }
 
     fn signalResult(ctx: *CallContext, result: ?[]const u8) void {
