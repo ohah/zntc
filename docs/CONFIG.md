@@ -53,7 +53,7 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `plugins`                                    |  `--plugin path` (plugins 배열만)  |               ✅               |            ❌             | concat — config plugins + `--plugin` plugins                       |
 | `banner` / `footer`                          |         `--banner:js=` 등          |               ✅               |            ❌             | scalar                                                             |
 | `intro` / `outro`                            |      `--intro=` / `--outro=`       |               ✅               |            ❌             | 포맷 wrapper 내부 코드 삽입                                        |
-| `entryNames` / `chunkNames` / `assetNames`   |                flag                |               ✅               |            ❌             | scalar                                                             |
+| `entryNames` / `chunkNames` / `assetNames` / `cssNames` |       flag         |               ✅               |            ❌             | scalar. `entryNames` / `cssNames` default `[dir]/[name]` (sub-2 부터, breaking) |
 | `globalName`                                 |          `--global-name=`          |               ✅               |            ❌             | iife/umd 시 사용                                                   |
 | `globals`                                    |        `--global:SPEC=NAME`        |               ✅               |            ❌             | external specifier → IIFE/UMD global                               |
 | `publicPath`                                 |          `--public-path=`          |               ✅               |            ❌             | asset URL prefix                                                   |

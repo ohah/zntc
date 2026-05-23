@@ -326,10 +326,35 @@ pub const CjsExportFact = struct {
 - 작은 common 청크 자동 병합: `minChunkSize` (Rollup `experimentalMinChunkSize` 류).
   `src.bits ⊆ dst.bits`(over-fetch 없음)인 경우만 병합, entry/manual/dynamic 보존
 - CSS 청크: JS 청크별 CSS 분리, CSS→CSS `@import` 는 쓰는 청크마다 인라인,
-  동적 청크는 런타임 `<link>` 자동 주입. **알려진 한계**: `css_names` 가
-  디렉터리를 포함(`assets/[name]`)하면 동적 청크의 런타임 `<link>` href 는
-  basename 만 사용(평면 출력 가정) → JS 청크와 다른 디렉터리에 CSS 가 놓이면
-  경로가 어긋남. 평면(default `[name]`) 출력에서는 정상. 비평면은 후속 과제
+  동적 청크는 런타임 `<link>` 자동 주입. **알려진 한계**: `cssNames` 가
+  *동일 entry 의 JS 와 다른 디렉터리* 를 강제하면(예: `entryNames: '[name]'`
+  + `cssNames: 'assets/[name]'`) 동적 청크의 런타임 `<link>` href 는
+  basename 만 사용해 경로가 어긋남. 새 default `[dir]/[name]` 는 entry-relative
+  dir 을 양쪽에 동일 적용해 자연 정합. 의도적인 dir 분리는 후속 과제 (publicPath
+  기반 절대 href 또는 cross-dir 상대 path 계산)
+
+### Naming 옵션 default (esbuild parity)
+
+`entryNames` / `cssNames` 의 default 는 `[dir]/[name]` (PR B-4b sub-2 부터,
+semver-major). entry source path 의 `entry_dir` (모든 entry 의 longest
+common parent — esbuild `outbase` 동치) 기준 relative dir 이 path 에 prefix.
+
+| 패턴 토큰 | 의미 |
+|---|---|
+| `[name]`  | entry 모듈의 basename (확장자 제거) |
+| `[hash]`  | content hash (8자리 hex). 명시한 패턴에만 부여 |
+| `[dir]`   | entry-relative dir. 빈 dir 시 토큰 + 인접 `/` 함께 skip (esbuild parity) |
+
+옛 default `[name]` 평면 동작이 필요하면 명시적 opt-out:
+```js
+// zntc.config.ts
+export default { entryNames: '[name]', cssNames: '[name]' };
+```
+
+`chunkNames` (`[name]-[hash]`) / `assetNames` (`[name]-[hash]`) 는 dir 정보
+없는 청크 (manualChunks / common / asset) 에 적용되어 미변경. manualChunks
+청크는 `chunk.kind == .entry_point` 가 아니므로 entry_names 가 적용되지
+않는다 (PR B-4b sub-3 fix).
 - 순환 참조: 같은 청크로 묶기
 - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
 
