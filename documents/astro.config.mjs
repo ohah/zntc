@@ -210,6 +210,11 @@ export default defineConfig({
             },
             { label: '벤치마크', slug: 'reference/benchmarks', translations: { en: 'Benchmarks' } },
             { label: 'Metafile 분석', link: '/analyze/', translations: { en: 'Metafile Analyze' } },
+            {
+              label: 'NAPI 누수 측정 (Debug GPA)',
+              slug: 'guides/debug-napi-leaks',
+              translations: { en: 'NAPI Leak Detector (Debug GPA)' },
+            },
             { label: '로드맵', slug: 'roadmap', translations: { en: 'Roadmap' } },
             {
               label: '에러 코드',
