@@ -104,6 +104,42 @@ jobs:
             console.log('NAPI smoke: dlopen + symbol resolve OK');
           "
 
+      - name: NAPI configureProfile smoke (NAPI string getter path 검증)
+        # `configureProfile(['none'])` — non-empty 1-element 로 `parseStringArray`
+        # + `napi_get_value_string_utf8` (review max F5) 까지 cover.
+        # empty `[]` 면 fast path 라 string getter 미실행 → SIGSEGV isolation 약함.
+        # stderr 캡쳐 (review max F6) — failure 시 root cause 분석 가능.
+        run: |
+          mkdir -p /tmp/leak-probe
+          node -e "
+            const addon = require('./packages/core/zntc.node');
+            addon.configureProfile(['none']);
+            console.log('configureProfile OK');
+          " 2> /tmp/leak-probe/configureProfile.stderr.log
+          rc=$?
+          if [ $rc -eq 139 ]; then echo "::error::configureProfile SIGSEGV (139)"; cat /tmp/leak-probe/configureProfile.stderr.log; exit 1
+          elif [ $rc -ne 0 ]; then echo "::error::configureProfile non-zero exit ($rc)"; cat /tmp/leak-probe/configureProfile.stderr.log; exit 1
+          fi
+          echo "configureProfile smoke: OK"
+
+      - name: NAPI transpile smoke (full transpile path — Scanner + transformer + emitter)
+        # `transpile(source, filename)` 는 NAPI 진입점 중 가장 무겁다 (Scanner
+        # + parser + transformer + emitter chain). tokenize 보다 더 많은 NAPI
+        # path 거침. tokenize SIGSEGV (이전 run #26337129125) 가 Scanner-only
+        # 인지 더 깊은 path 인지 분기. exit code 139 (SIGSEGV) 와 다른 throw
+        # (exit 1) 구분 (review max F4).
+        run: |
+          node -e "
+            const addon = require('./packages/core/zntc.node');
+            const result = addon.transpile('var x = 1;', 'test.js');
+            console.log('transpile OK:', typeof result, result && result.code ? 'code.len=' + result.code.length : '');
+          " 2> /tmp/leak-probe/transpile.stderr.log
+          rc=$?
+          if [ $rc -eq 139 ]; then echo "::error::transpile SIGSEGV (139)"; cat /tmp/leak-probe/transpile.stderr.log; exit 1
+          elif [ $rc -ne 0 ]; then echo "::error::transpile non-zero exit ($rc) — NAPI throw or assertion"; cat /tmp/leak-probe/transpile.stderr.log; exit 1
+          fi
+          echo "transpile smoke: OK"
+
       - name: NAPI atexit smoke (Linux-specific dumpLeaksAtExit 검증)
         # 가장 light path — require + process exit (atexit 발화) 만.
         # SIGSEGV 시 atexit 의 dumpLeaksAtExit/detectLeaks 가 Linux 환경
