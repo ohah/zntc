@@ -1784,6 +1784,18 @@ fn chunkRegistryId(
 /// 청크의 placeholder stem을 반환한다 (확장자 없음).
 /// cross-chunk import 등 content가 아직 없는 시점에서 사용.
 /// 최종 출력 시 placeholder를 content hash로 치환한다.
+///
+/// **현재 정책 (PR A)**: `[dir]` 토큰을 `applyNamingPatternWithDir` 가 인식·
+/// 처리는 하지만, 이 호출 시점에선 항상 빈 dir 전달 → 패턴에 `[dir]` 가 있어도
+/// 토큰+인접 슬래시가 함께 제거된다(leading-slash 방지). 즉 PR A 는
+/// 기존 동작(literal `[dir]` 가 패턴에 있을 일은 없음)을 *정확히* 보존하고,
+/// `[dir]` 의 실제 dir 채우기는 PR B 가 안전한 신규 필드와 함께 도입한다.
+///
+/// `chunk.rel_dir` 을 raw 로 전달하지 않는 이유: preserve-modules 에서
+/// `rel_dir` 은 *원본 모듈의 절대 경로(.ts/.tsx 확장자 포함)* 로 misnomer
+/// (chunk.zig:205, :999). 그대로 `[dir]` 에 노출하면 stem 에 절대경로+ext 가
+/// raw 로 들어가 출력이 망가진다(`/abs/foo.ts/foo.js` 류). PR B 가 의미 명확한
+/// entry-relative dir 필드와 함께 이 호출도 갱신할 예정.
 fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOptions) []const u8 {
     const is_entry = chunk.name != null;
     const base_name = chunk.name orelse "chunk";
@@ -1792,7 +1804,7 @@ fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOpti
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);
 
-    return applyNamingPattern(buf, pattern, base_name, &hash_buf);
+    return applyNamingPatternWithDir(buf, pattern, base_name, &hash_buf, "");
 }
 
 /// 모듈 인덱스 기반 해시 (placeholder 식별자용, content hash 아님).
@@ -1921,7 +1933,29 @@ fn replacePlaceholders(allocator: std.mem.Allocator, input: []const u8, placehol
 /// naming pattern을 적용한다.
 /// [name] → base_name, [hash] → hash_str 로 치환.
 /// buf에 결과를 쓰고 슬라이스를 반환.
+/// [dir] 토큰을 지원하려면 `applyNamingPatternWithDir` 를 사용한다 — 이
+/// 4-arg 변형은 dir = "" 로 위임하므로 패턴에 [dir] 가 있어도 빈 dir 정리
+/// 규칙(leading-slash 제거)이 동일 적용된다.
 pub fn applyNamingPattern(buf: []u8, pattern: []const u8, name: []const u8, hash_str: []const u8) []const u8 {
+    return applyNamingPatternWithDir(buf, pattern, name, hash_str, "");
+}
+
+/// `applyNamingPattern` 의 [dir] 토큰 지원 변형.
+/// [name] → name, [hash] → hash_str, [dir] → dir 로 치환.
+/// dir 안 Windows 백슬래시는 URL 구분자 `/` 로 정규화한다.
+///
+/// **빈 dir 정리 규칙** — esbuild 와 동일 의미:
+/// [dir] 가 빈 문자열로 치환될 때, 토큰 *바로 다음* 문자가 `/` 면 그
+/// 슬래시도 함께 skip 한다. 단일 entry 가 cwd 루트에 있거나(entry_dir
+/// 미설정) 패턴이 `dist/[dir]/[name]` 같이 중간에 [dir] 가 있을 때
+/// leading/double-slash 가 생기지 않도록.
+pub fn applyNamingPatternWithDir(
+    buf: []u8,
+    pattern: []const u8,
+    name: []const u8,
+    hash_str: []const u8,
+    dir: []const u8,
+) []const u8 {
     var dst: usize = 0;
     var i: usize = 0;
     while (i < pattern.len) {
@@ -1935,6 +1969,19 @@ pub fn applyNamingPattern(buf: []u8, pattern: []const u8, name: []const u8, hash
             @memcpy(buf[dst..end], hash_str[0 .. end - dst]);
             dst = end;
             i += "[hash]".len;
+        } else if (i + "[dir]".len <= pattern.len and std.mem.eql(u8, pattern[i..][0.."[dir]".len], "[dir]")) {
+            if (dir.len > 0) {
+                for (dir) |c| {
+                    if (dst >= buf.len) break;
+                    buf[dst] = if (c == '\\') '/' else c;
+                    dst += 1;
+                }
+                i += "[dir]".len;
+            } else {
+                // 빈 dir — 토큰만 skip + 인접한 '/' 도 함께 skip (esbuild parity).
+                i += "[dir]".len;
+                if (i < pattern.len and pattern[i] == '/') i += 1;
+            }
         } else {
             if (dst < buf.len) {
                 buf[dst] = pattern[i];

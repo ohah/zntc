@@ -1115,6 +1115,54 @@ test "naming pattern: no placeholders" {
     try std.testing.expectEqualStrings("bundle", result);
 }
 
+// PR A: [dir] 토큰 지원 — applyNamingPatternWithDir 회귀 가드.
+// 기존 applyNamingPattern 시그니처는 그대로 유지하면서 dir 정보를 받는 변형
+// 추가. default 변경(별도 PR)의 기술적 토대.
+
+test "naming pattern: [dir]/[name] with dir" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]", "index", "abcdef01", "pages-a");
+    try std.testing.expectEqualStrings("pages-a/index", result);
+}
+
+test "naming pattern: empty dir → leading slash 제거" {
+    // 단일 entry cwd 루트 또는 entry_dir 미설정 → dir == "" → [dir]/ 토큰이
+    // leading slash 만들지 않도록 [dir]+다음 '/' 를 함께 skip 한다(esbuild parity).
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]", "main", "abc12345", "");
+    try std.testing.expectEqualStrings("main", result);
+}
+
+test "naming pattern: 중간 [dir]+빈 문자열 → 인접 '/' skip" {
+    // "dist/[dir]/[name]" 같이 [dir] 가 다른 path 컴포넌트 사이에 있을 때
+    // 빈 dir 면 "dist//main" 이 아니라 "dist/main" 이 되어야 한다.
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPatternWithDir(&buf, "dist/[dir]/[name]", "main", "abc12345", "");
+    try std.testing.expectEqualStrings("dist/main", result);
+}
+
+test "naming pattern: [dir]/[name]-[hash] 전 토큰 결합" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]-[hash]", "index", "abcdef01", "pages-b");
+    try std.testing.expectEqualStrings("pages-b/index-abcdef01", result);
+}
+
+test "naming pattern: windows 백슬래시 정규화" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPatternWithDir(&buf, "[dir]/[name]", "x", "h", "win\\sub");
+    try std.testing.expectEqualStrings("win/sub/x", result);
+}
+
+test "naming pattern: applyNamingPattern (기존 시그니처) 호환 — dir 없는 호출은 그대로" {
+    // 옛 API 호환: dir 인자가 없는 4-arg 호출은 [dir] 토큰이 패턴에 있어도
+    // 빈 dir 로 동작 — leading-slash 정리 동일 적용.
+    var buf: [128]u8 = undefined;
+    const r1 = emitter.applyNamingPattern(&buf, "[name]", "x", "h");
+    try std.testing.expectEqualStrings("x", r1);
+    const r2 = emitter.applyNamingPattern(&buf, "[dir]/[name]", "x", "h");
+    try std.testing.expectEqualStrings("x", r2);
+}
+
 test "naming pattern: entry-names with hash" {
     // --entry-names=[name]-[hash] 설정 시 엔트리 청크에도 hash가 붙는지 확인
     var tmp = std.testing.tmpDir(.{});
