@@ -1,0 +1,200 @@
+name: NAPI Leak Gate
+
+# dev/watch RSS 누수 회귀 가드 (PR #3691~#3713 epic 후속).
+# Debug GPA leak detector (`packages/core/src/napi/common.zig` 의 debug_gpa) 가
+# 1분 dev probe 후 process 종료 시 stack trace 포함 leak 리포트 dump. 회귀
+# 발생 시 leak entries > 0 또는 panic 으로 즉시 차단.
+#
+# 매 PR 마다 돌리면 NAPI Build job 에 5분+ 추가 → main push + nightly + 수동
+# 트리거로 분리. PR 회귀 의심 시 `workflow_dispatch` 수동 실행 가능.
+#
+# **임시 측정 인프라**: Debug NAPI 빌드 한정. ReleaseFast (production) 영향 0.
+# 기대값: leak entries=0, panics=0, rebuilt≥5 (touch-probe 정상 작동 검증).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # NAPI / measurement infra / 메모리 ownership 가능 영역 (review max 의
+      # path filter 보강 — bundler 외 parser/transformer/codegen 도 cover).
+      - "packages/core/src/napi/**"
+      - "src/bundler/**"
+      - "src/parser/**"
+      - "src/transformer/**"
+      - "src/codegen/**"
+      - "src/transpile.zig"
+      - "examples/web/**"
+      - ".github/workflows/napi-leak-gate.yml"
+  workflow_dispatch:
+  schedule:
+    # 매일 04:00 UTC (KST 13:00) — main 의 매일 1회 검증 (path filter 무관 cover)
+    - cron: "0 4 * * *"
+
+concurrency:
+  group: napi-leak-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  measure:
+    name: dev probe leak entries == 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          cache-key: napi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: ./.github/actions/bun-cache
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build NAPI (Debug — leak detector 활성)
+        # `-Dnapi-optimize=Debug` 는 build.zig:233 의 napi_optimize option.
+        # default ReleaseFast 라 명시적 Debug 필수.
+        run: zig build napi --cache-dir .zig-cache-napi -Dnapi-optimize=Debug
+
+      - name: Build JS wrapper + dts
+        run: cd packages/core && bun run build:js && bun run build:dts
+
+      - name: Copy .node to package
+        # ci.yml napi job 과 동일하게 `|| true` 로 path 차이 tolerate
+        run: cp zig-out/lib/zntc.node packages/core/zntc.node 2>/dev/null || true
+
+      - name: 1-min dev probe (Bun graceful exit)
+        run: |
+          mkdir -p /tmp/leak-probe
+          cd examples/web
+
+          # touch-probe marker (CI fresh checkout 라 항상 없음)
+          echo "// touch-probe 0" >> src/App.tsx
+
+          # dev background. Bun 의 SIGTERM handler 가 process.exit() 호출 →
+          # atexit 발화. C atexit 은 POSIX SIGTERM default 에선 발화 안 함 —
+          # Bun runtime 의 graceful shutdown 에 의존. 실측 PR #3713 검증됨.
+          nohup bun run dev > /tmp/leak-probe/stdout.log 2> /tmp/leak-probe/stderr.log &
+          DEV_PID=$!
+          echo "DEV_PID=$DEV_PID"
+
+          # Ready signal polling — sleep fixed 대신 dev server 출력으로 판단.
+          # ZNTC 의 `[serve] http://localhost:NNNN` 또는 `bundled` 메시지를 기다림.
+          # timeout 30s 후 강제 진행 (warmup floor).
+          ready=0
+          for i in $(seq 1 60); do
+            if grep -qE "\[serve\]|listening|bundled.*modules" /tmp/leak-probe/stdout.log /tmp/leak-probe/stderr.log 2>/dev/null; then
+              ready=1
+              echo "Dev server ready after ~${i}*0.5s"
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::warning::dev server ready signal not found within 30s — proceeding anyway"
+          fi
+          # 추가 buffer (watcher arm 시간)
+          sleep 2
+
+          # 3s 간격 touch × 20회 = 1분. `sed -i` (GNU, no .bak) — watcher 가
+          # .bak 도 트리거 가능성 차단 (review max F8).
+          for i in $(seq 1 20); do
+            sed -i "s|// touch-probe .*|// touch-probe $i|" src/App.tsx
+            sleep 3
+          done
+
+          # SIGTERM → Bun graceful shutdown → atexit → leak dump.
+          # wait-with-timeout pattern (review max F4): SIGKILL 은 fallback 만.
+          kill -TERM $DEV_PID 2>/dev/null || true
+          for i in $(seq 1 20); do
+            if ! kill -0 $DEV_PID 2>/dev/null; then
+              echo "Dev process exited gracefully after ~${i}s"
+              break
+            fi
+            sleep 1
+          done
+          # 만약 graceful 안 되면 SIGKILL (dump 손실 가능 → leak count 부정확)
+          if kill -0 $DEV_PID 2>/dev/null; then
+            echo "::warning::dev process did not exit within 20s after SIGTERM — forcing SIGKILL (leak dump may be truncated)"
+            kill -KILL $DEV_PID 2>/dev/null || true
+          fi
+          wait $DEV_PID 2>/dev/null || true
+
+      - name: Assert leak entries == 0
+        run: |
+          # `grep -c` no-match 시 exit 1 + "0" 출력 — `|| echo 0` 만 쓰면
+          # capture 가 "0\n0" 2 줄이 됨 (review max F2/F3 CRITICAL catch).
+          # 별도 line 으로 분리 + `|| true` 로 exit code 무시.
+          set +e
+          LEAK=$(grep -c "error(gpa): memory address" /tmp/leak-probe/stderr.log 2>/dev/null)
+          [ -z "$LEAK" ] && LEAK=0
+          PANIC=$(grep -ciE "^thread [0-9]+ panic:|^panic:|^Segmentation fault|^Bus error|^Aborted|invalid free|allocator mismatch" /tmp/leak-probe/stderr.log 2>/dev/null)
+          [ -z "$PANIC" ] && PANIC=0
+          REBUILT=$(grep -cE "\[serve\] rebuilt|\[watch\] rebuilt" /tmp/leak-probe/stderr.log 2>/dev/null)
+          [ -z "$REBUILT" ] && REBUILT=0
+          set -e
+
+          echo "=== NAPI Leak Gate Result ==="
+          echo "leak entries: $LEAK"
+          echo "panics:       $PANIC"
+          echo "rebuilt:      $REBUILT"
+          echo ""
+          echo "=== Top leak stack frames (if any) ==="
+          # DebugAllocator stack trace 줄 형식: `<spaces>0x<addr> in <name> (<file>)`
+          # review max F9 의 grep pattern fix.
+          grep -E "^\s+0x[0-9a-f]+ in " /tmp/leak-probe/stderr.log 2>/dev/null | sort | uniq -c | sort -rn | head -20 || echo "(no stack frames matched)"
+
+          # Assertion
+          FAIL=0
+          if [ "$LEAK" != "0" ]; then
+            echo "::error::Leak regression: $LEAK entries detected. Check docs/DEBUG.md 의 'NAPI 누수 측정' 섹션 + 위 stack frame 분포."
+            FAIL=1
+          fi
+          if [ "$PANIC" != "0" ]; then
+            echo "::error::Panic/abort detected: $PANIC. Check stderr.log 의 panic message + stack trace."
+            FAIL=1
+          fi
+          if [ "$REBUILT" -lt 5 ]; then
+            echo "::error::Watch trigger insufficient: rebuilt=$REBUILT (expected >=5). dev server / watcher 회귀 가능성."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" != "0" ]; then
+            echo ""
+            echo "=== Full stderr (last 200 lines) ==="
+            tail -200 /tmp/leak-probe/stderr.log 2>/dev/null || echo "(stderr.log unavailable)"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ NAPI leak gate PASS"
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leak-probe-logs
+          path: |
+            /tmp/leak-probe/stderr.log
+            /tmp/leak-probe/stdout.log
+          retention-days: 7
