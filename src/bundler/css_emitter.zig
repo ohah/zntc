@@ -478,6 +478,9 @@ fn cssPathForChunk(
 /// 강제 삽입은 app-builder 의 안정 파일명(`[name]`→`main.css`, HTML link
 /// rewrite) 기대를 깨므로 하지 않는다. 캐시 버스팅이 필요하면 css_names 에
 /// `[hash]` 를 넣는다(JS 청크의 entry_names/chunk_names 와 동일 계약).
+/// `[dir]` 토큰을 지원하려면 `applyCssChunkNameWithDir` 를 사용한다 — 이
+/// 4-arg 변형은 dir = "" 로 위임하므로 패턴에 [dir] 가 있어도 빈 dir 정리
+/// 규칙(leading-slash 제거)이 동일 적용된다.
 /// chunks.zig 의 `applyNamingPattern` 과 분리 유지 — 그쪽은 buffer 기반·[ext]
 /// 처리이고 여기는 CSS 전용(.css 보장)이라 의미가 다르다.
 fn applyCssChunkName(
@@ -485,6 +488,28 @@ fn applyCssChunkName(
     pattern: []const u8,
     stem: []const u8,
     contents: []const u8,
+) ![]const u8 {
+    return applyCssChunkNameWithDir(allocator, pattern, stem, contents, "");
+}
+
+/// `applyCssChunkName` 의 [dir] 토큰 지원 변형. JS 의
+/// `chunks.applyNamingPatternWithDir` 와 동일 규칙으로 [dir] 을 처리해 JS/
+/// CSS naming 일관성을 유지한다(F5: PR B-2 의 목적).
+///
+/// **빈 dir 정리 규칙** — esbuild parity:
+/// [dir] 가 빈 문자열로 치환될 때, 토큰 *바로 다음* 문자가 `/` 면 그
+/// 슬래시도 함께 skip 해 leading/double-slash 를 방지한다.
+/// dir 안 Windows 백슬래시는 URL 구분자 `/` 로 정규화한다.
+///
+/// 현재 PR(B-2)에선 `applyCssChunkName` 만 새 함수에 위임하고, 호출자
+/// (`cssPathForChunk`) 는 여전히 4-arg 시그니처로 dir 정보 미전달 — PR B-4
+/// 가 호출자도 `chunk.name_dir` 활용하도록 활성화 예정.
+fn applyCssChunkNameWithDir(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    stem: []const u8,
+    contents: []const u8,
+    dir: []const u8,
 ) ![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -497,6 +522,17 @@ fn applyCssChunkName(
             const h = wyhash.hashHex8(contents);
             try out.appendSlice(allocator, &h);
             i += "[hash]".len;
+        } else if (std.mem.startsWith(u8, pattern[i..], "[dir]")) {
+            if (dir.len > 0) {
+                for (dir) |c| {
+                    try out.append(allocator, if (c == '\\') '/' else c);
+                }
+                i += "[dir]".len;
+            } else {
+                // 빈 dir — 토큰만 skip + 인접한 '/' 도 함께 skip (esbuild parity).
+                i += "[dir]".len;
+                if (i < pattern.len and pattern[i] == '/') i += 1;
+            }
         } else {
             try out.append(allocator, pattern[i]);
             i += 1;
@@ -637,6 +673,64 @@ test "applyCssChunkName: hash depends only on contents (determinism + sensitivit
     const h = wyhash.hashHex8(".s{color:red}");
     try std.testing.expect(std.mem.indexOf(u8, r1, &h) != null);
     try std.testing.expect(std.mem.indexOf(u8, r4, &h) != null);
+}
+
+// PR B-2: applyCssChunkNameWithDir — JS chunks 의 applyNamingPatternWithDir
+// 와 동일한 [dir] 토큰 정책을 CSS naming 에도 적용. 기존 applyCssChunkName
+// 시그니처는 보존(dir = "" 로 위임). 호출자(cssPathForChunk) 가 활성화하는
+// 시점은 PR B-4 — 본 PR scope 에선 함수만 추가, 영향 0.
+
+test "applyCssChunkNameWithDir: [dir]/[name] with dir" {
+    const a = std.testing.allocator;
+    const r = try applyCssChunkNameWithDir(a, "[dir]/[name]", "main", ".x{}", "pages-a");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("pages-a/main.css", r);
+}
+
+test "applyCssChunkNameWithDir: 빈 dir → leading slash 제거" {
+    // 단일 entry cwd 루트 또는 entry_dir 미설정 → dir == "" → [dir]/ 토큰이
+    // leading slash 만들지 않도록 [dir]+다음 '/' 를 함께 skip (esbuild parity).
+    const a = std.testing.allocator;
+    const r = try applyCssChunkNameWithDir(a, "[dir]/[name]", "main", ".x{}", "");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("main.css", r);
+}
+
+test "applyCssChunkNameWithDir: 중간 [dir]+빈 문자열 → 인접 '/' skip" {
+    // "assets/[dir]/[name]" + 빈 dir → "assets/main.css" (double-slash 방지).
+    const a = std.testing.allocator;
+    const r = try applyCssChunkNameWithDir(a, "assets/[dir]/[name]", "main", ".x{}", "");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("assets/main.css", r);
+}
+
+test "applyCssChunkNameWithDir: [dir]/[name]-[hash] 전 토큰 결합" {
+    const a = std.testing.allocator;
+    const h = wyhash.hashHex8(".x{}");
+    const r = try applyCssChunkNameWithDir(a, "[dir]/[name]-[hash]", "main", ".x{}", "pages-b");
+    defer a.free(r);
+    const expect = try std.fmt.allocPrint(a, "pages-b/main-{s}.css", .{h});
+    defer a.free(expect);
+    try std.testing.expectEqualStrings(expect, r);
+}
+
+test "applyCssChunkNameWithDir: Windows 백슬래시 정규화" {
+    const a = std.testing.allocator;
+    const r = try applyCssChunkNameWithDir(a, "[dir]/[name]", "x", ".x{}", "win\\sub");
+    defer a.free(r);
+    try std.testing.expectEqualStrings("win/sub/x.css", r);
+}
+
+test "applyCssChunkName (기존 시그니처) 호환 — dir 없는 호출은 그대로" {
+    // 옛 API 호환: dir 인자가 없는 4-arg 호출은 [dir] 토큰이 패턴에 있어도
+    // 빈 dir 로 동작 — leading-slash 정리 동일 적용.
+    const a = std.testing.allocator;
+    const r1 = try applyCssChunkName(a, "[name]", "x", ".x{}");
+    defer a.free(r1);
+    try std.testing.expectEqualStrings("x.css", r1);
+    const r2 = try applyCssChunkName(a, "[dir]/[name]", "x", ".x{}");
+    defer a.free(r2);
+    try std.testing.expectEqualStrings("x.css", r2);
 }
 
 test "cssPathForChunk: [name] → chunk.name.css (안정 파일명, 강제 hash 없음)" {
