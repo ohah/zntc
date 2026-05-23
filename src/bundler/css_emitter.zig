@@ -100,7 +100,9 @@ fn emitCssModuleTree(
 ) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
-    visited.put(idx, {}) catch return;
+    // 함수가 `!void` 라 OOM 은 propagate — `catch return` 으로 삼키면 silent skip 되어
+    // @import 서브트리가 emit 누락된다.
+    try visited.put(idx, {});
     const mod = graph.getModule(idx) orelse return;
     if (mod.module_type != .css) return;
     for (mod.dependencies.items) |dep| {
@@ -124,11 +126,14 @@ pub const CssChunkPlanEntry = struct {
 /// 청크 prologue 에 주입할 수 있다. CSS 파일명은 CSS 내용 해시 기반이라 JS
 /// 청크 해시와 독립적으로 이 시점에 확정된다.
 ///
-/// 각 CSS 모듈은 그것을 import 하는 JS 모듈이 속한 청크 중
-/// `(chunk.exec_order, importer.exec_index)` 가 가장 앞서는 단 하나의 청크에
-/// 귀속된다(전역 dedup — 공유 CSS 가 여러 청크에 복제되지 않음).
-/// CSS→CSS(@import) 의존은 같은 귀속 청크로 함께 묶인다.
-/// 반환 슬라이스/각 항목의 path/contents 는 모두 `allocator` 소유.
+/// 각 CSS 모듈은 그것을 import 하는 JS 모듈이 속한 *모든* 청크에 인라인
+/// 복제된다(esbuild/webpack 동치 — single-owner min-rank dedup 폐기). 이유:
+/// shared CSS 가 한 owner 청크에만 들어가면 다른 페이지/동적 청크가 단독
+/// 진입될 때 그 규칙이 cascade 에 없어 미적용. dedup 은 청크 단위로만
+/// (같은 청크 안에서 여러 JS 모듈이 같은 CSS 도달해도 1회).
+/// CSS→CSS(@import) 의존은 emit 시점에 청크별로 다시 인라인된다(쓰는 곳마다
+/// 존재 — #3321 P0-4). 반환 슬라이스/각 항목의 path/contents 는 모두
+/// `allocator` 소유.
 pub fn planCssChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -138,11 +143,22 @@ pub fn planCssChunks(
     const n_chunks = chunk_graph.chunkCount();
     if (n_chunks == 0) return allocator.alloc(CssChunkPlanEntry, 0);
 
-    // 1패스: CSS 모듈 → 귀속 청크(최소 rank 우승). owner_rank/visited 는 DFS 중에만 필요.
-    var owner = std.AutoHashMap(ModuleIndex, ChunkIndex).init(allocator);
-    defer owner.deinit();
-    var owner_rank = std.AutoHashMap(ModuleIndex, u64).init(allocator);
-    defer owner_rank.deinit();
+    // 1패스: CSS 모듈 → 도달 가능한 *모든* 청크에 등재(esbuild/webpack 동치 —
+    // single-owner dedup 폐기). 이유: ① b 페이지가 a-only 인 shared 규칙을
+    // 잃어 .common 미적용 ② 동적 청크가 부모 청크 owner 의 CSS 에만 의존해
+    // 단독 진입 시 스타일 미적용 — cascade 와 청크 독립 로드 의미가 깨졌다.
+    // dedup 은 청크 단위로만(같은 청크 내 같은 CSS 가 여러 JS 모듈 경로로
+    // 도달해도 1번). 청크 간 복제는 허용 — 동적 청크가 자기 CSS 를
+    // <link> 로 가져가도록 `chunk_css_hrefs` 도 자동으로 채워진다.
+    var chunk_mods = std.AutoHashMap(u32, std.ArrayListUnmanaged(*const Module)).init(allocator);
+    defer {
+        var vit = chunk_mods.valueIterator();
+        while (vit.next()) |list| list.deinit(allocator);
+        chunk_mods.deinit();
+    }
+    // (chunk_idx, css_module_idx) 쌍 dedup — 한 청크 내 같은 CSS 1회.
+    var chunk_seen = std.AutoHashMap(ChunkCssKey, void).init(allocator);
+    defer chunk_seen.deinit();
     var visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
     defer visited.deinit();
 
@@ -151,31 +167,13 @@ pub fn planCssChunks(
         if (m.module_type == .css) continue;
         const ci = chunk_graph.getModuleChunk(m.index);
         if (ci.isNone()) continue;
-        const ch = chunk_graph.getChunk(ci);
-        const rank: u64 = (@as(u64, ch.exec_order) << 32) | @as(u64, m.exec_index);
         visited.clearRetainingCapacity();
         for (m.dependencies.items) |dep| {
-            walkCssOwner(graph, chunk_graph, dep, ci, rank, &owner, &owner_rank, &visited);
+            try walkCssOwner(allocator, graph, chunk_graph, dep, ci, &chunk_mods, &chunk_seen, &visited);
         }
     }
 
-    if (owner.count() == 0) return allocator.alloc(CssChunkPlanEntry, 0);
-
-    // owner 를 청크별 역색인으로 1회 변환 (청크마다 owner 전체를 재스캔하지 않도록).
-    var chunk_mods = std.AutoHashMap(u32, std.ArrayListUnmanaged(*const Module)).init(allocator);
-    defer {
-        var vit = chunk_mods.valueIterator();
-        while (vit.next()) |list| list.deinit(allocator);
-        chunk_mods.deinit();
-    }
-    var oit = owner.iterator();
-    while (oit.next()) |e| {
-        const mm = graph.getModule(e.key_ptr.*) orelse continue;
-        if (mm.module_type != .css or mm.css_data == null) continue;
-        const gop = try chunk_mods.getOrPut(@intFromEnum(e.value_ptr.*));
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(allocator, mm);
-    }
+    if (chunk_mods.count() == 0) return allocator.alloc(CssChunkPlanEntry, 0);
 
     var out_list: std.ArrayListUnmanaged(CssChunkPlanEntry) = .empty;
     errdefer {
@@ -214,6 +212,9 @@ pub fn planCssChunks(
         const css_path = try cssPathForChunk(allocator, chunk_graph.getChunk(cidx), css_names, buf.items);
         errdefer allocator.free(css_path);
         const contents = try buf.toOwnedSlice(allocator);
+        // toOwnedSlice 후 buf 가 비워지므로 defer buf.deinit 은 contents 를 회수하지 않는다.
+        // out_list.append 가 실패하면 contents 는 어디에도 매여 있지 않아 누수 — errdefer 보호.
+        errdefer allocator.free(contents);
         try out_list.append(allocator, .{
             .chunk_index = @intCast(chunk_idx),
             .path = css_path,
@@ -269,39 +270,50 @@ pub fn emitCssChunks(
     return planToOutputFiles(allocator, plan);
 }
 
-/// CSS 서브그래프를 DFS 하며 각 CSS 모듈의 귀속 청크를 최소 rank 로 갱신한다.
-/// 자체 chunk 를 가진 JS 모듈은 멈춘다(호출부 개별 순회가 처리 — 과귀속 방지).
-/// 단 chunk 미할당 JS(= tree-shaken 된 `.css.js` 류 side-effect proxy: Sass/CSS
-/// Modules 가 `import "./x.scss"` → proxy → `import "./x.css"` 로 생성)는 통과해
-/// 그 너머 CSS 를 현재 청크에 귀속한다 — 통과 안 하면 splitting 경로에서 CSS 가
-/// 통째로 누락된다(#3330).
-/// `visited` 는 JS 모듈(루트)마다 clear 되며 `rank` 는 한 루트 안에서 불변 →
-/// 같은 루트 내 재방문은 정보가 없어 skip 해도 안전하고, 다른 루트(다른 rank)
-/// 에서는 visited 가 비워져 재평가되므로 최소 rank 가 누락되지 않는다.
+/// `chunk_mods`/`chunk_seen` 의 청크 dedup 키. AutoHashMap 이 자동 hash/eql.
+const ChunkCssKey = struct { chunk: u32, css: ModuleIndex };
+
+/// CSS 서브그래프를 DFS 하며 각 JS 청크 `ci` 가 도달 가능한 CSS 모듈을
+/// `chunk_mods[ci]` 에 등재한다(per-chunk dedup). single-owner min-rank 정책은
+/// 페이지/동적 청크 독립 로드 시 cascade 와 적용성을 깨므로 폐기 — 도달 모든
+/// 청크에 인라인 복제(esbuild/webpack 동치). 자체 chunk 를 가진 JS 모듈에서
+/// 멈추는 것은 그대로(과귀속 방지: 그 청크는 자기 순회에서 자기 CSS 를
+/// 등재한다). chunk 미할당 JS(= tree-shaken 된 `.css.js` 류 side-effect proxy:
+/// Sass/CSS Modules 가 `import "./x.scss"` → proxy → `import "./x.css"` 로
+/// 생성)는 통과해 그 너머 CSS 를 현재 청크에 귀속한다 — 통과 안 하면
+/// splitting 경로에서 CSS 가 통째로 누락된다(#3330).
+/// `visited` 는 JS 모듈(루트)마다 clear — 한 루트 안 재방문은 새 정보 없음.
+/// 다른 청크 루트에서는 visited 가 비워져 재평가되므로 누락되지 않는다.
+/// JS 가 import 한 CSS 는 등재하고 멈춘다 — 그 CSS 가 @import 한 CSS 는
+/// emit 시점에 `emitCssModuleTree` 가 인라인(@import 의미: 쓰는 곳마다 존재,
+/// #3321 P0-4).
 fn walkCssOwner(
+    allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
     idx: ModuleIndex,
     ci: ChunkIndex,
-    rank: u64,
-    owner: *std.AutoHashMap(ModuleIndex, ChunkIndex),
-    owner_rank: *std.AutoHashMap(ModuleIndex, u64),
+    chunk_mods: *std.AutoHashMap(u32, std.ArrayListUnmanaged(*const Module)),
+    chunk_seen: *std.AutoHashMap(ChunkCssKey, void),
     visited: *std.AutoHashMap(ModuleIndex, void),
-) void {
+) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
-    visited.put(idx, {}) catch return;
+    // 함수가 `!void` 로 바뀌었으니 visited.put OOM 도 try 로 propagate.
+    // 옛 `catch return` 은 silent skip → CSS 서브트리 누락 + 호출자가 OOM 도
+    // 감지 못함. 같은 함수 내 chunk_seen/chunk_mods 가 try 를 쓰는 것과도 일관.
+    try visited.put(idx, {});
     const mod = graph.getModule(idx) orelse return;
 
     if (mod.module_type == .css) {
-        // JS 가 import 한 CSS 만 소유(min-rank 단일 소유 = dedup). 그 CSS 가
-        // @import 한 CSS 는 여기서 소유하지 않는다 — emit 시 청크별로 인라인
-        // 복제(@import 의미: 쓰는 곳마다 존재)되어야 하므로(#3321 P0-4).
-        const better = if (owner_rank.get(idx)) |r| rank < r else true;
-        if (better) {
-            owner.put(idx, ci) catch return;
-            owner_rank.put(idx, rank) catch return;
-        }
+        if (mod.css_data == null) return;
+        const ci_u32 = @intFromEnum(ci);
+        // 청크 단위 dedup — 같은 청크 안에서 여러 JS 모듈이 같은 CSS 도달해도 1회.
+        const seen_gop = try chunk_seen.getOrPut(.{ .chunk = ci_u32, .css = idx });
+        if (seen_gop.found_existing) return;
+        const list_gop = try chunk_mods.getOrPut(ci_u32);
+        if (!list_gop.found_existing) list_gop.value_ptr.* = .empty;
+        try list_gop.value_ptr.append(allocator, mod);
         return;
     }
 
@@ -309,7 +321,7 @@ fn walkCssOwner(
     // chunk 미할당(tree-shaken side-effect proxy)만 통과해 너머 CSS 를 찾는다.
     if (!chunk_graph.getModuleChunk(mod.index).isNone()) return;
     for (mod.dependencies.items) |dep| {
-        walkCssOwner(graph, chunk_graph, dep, ci, rank, owner, owner_rank, visited);
+        try walkCssOwner(allocator, graph, chunk_graph, dep, ci, chunk_mods, chunk_seen, visited);
     }
 }
 

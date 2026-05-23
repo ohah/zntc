@@ -65,7 +65,12 @@ describe('CSS code splitting (per-chunk CSS)', () => {
     expect(aCss!.path).not.toBe(bCss!.path);
   });
 
-  test('여러 라우트가 공유하는 CSS 는 중복 없이 한 청크에만 들어간다', async () => {
+  // 두 동적 라우트가 같은 shared.css 를 import 한다. 두 라우트는 서로 독립
+  // 로드되므로(엔트리에서 정적으로 shared 를 import 하지 않음), shared 규칙은
+  // 도달 가능한 *모든* 청크(여기서는 양쪽 라우트 청크)에 인라인 복제돼야
+  // 한다. esbuild/webpack 동치 — single-owner dedup 은 한쪽 페이지에서
+  // .shared 미적용을 일으켜 cascade 와 청크 독립 로드 의미가 깨졌었다.
+  test('여러 라우트가 공유하는 CSS 는 도달 모든 청크에 인라인 복제된다', async () => {
     const fixture = await createFixture({
       'entry.ts': `
         export async function load(which: string) {
@@ -88,8 +93,14 @@ describe('CSS code splitting (per-chunk CSS)', () => {
 
     const css = cssFiles(result.outputFiles!);
     const sharedHits = css.filter((c) => c.text.includes('color: green'));
-    // shared.css 규칙은 정확히 한 청크 CSS 에만 존재해야 한다 (중복 금지)
-    expect(sharedHits.length).toBe(1);
+    // shared 규칙이 양쪽 라우트 청크 CSS 에 모두 들어가야 한다(복제 ≥ 2).
+    expect(sharedHits.length).toBeGreaterThanOrEqual(2);
+    // 동시에 단일 청크 내에서 중복 emit 은 없어야 한다(per-chunk dedup).
+    for (const c of sharedHits) {
+      const m = c.text.match(/color:\s*green/g);
+      expect(m).not.toBeNull();
+      expect(m!.length).toBe(1);
+    }
   });
 
   // P0-4 (#3321): 서로 다른 청크의 CSS 가 같은 CSS 를 @import 하면, 그
