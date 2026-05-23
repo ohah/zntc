@@ -1039,6 +1039,28 @@ pub const NapiSyncPlugin = struct {
 
 pub const NapiManualChunksResolver = struct {
     tsfn: c.napi_threadsafe_function,
+    /// JS resolver 가 반환한 chunk name 의 dedup cache. parseJsResult 가
+    /// `native_alloc.dupe` 한 owned slice 를 보관, 같은 이름이 다시 반환되면
+    /// cache hit 으로 기존 slice 재사용 → 중복 alloc 0. chunk graph 가 이
+    /// slice 들을 borrow 하지만 free 책임은 없음 (record-form `mc.name` 와
+    /// 동일 borrow 패턴). resolver.deinit 에서 일괄 free.
+    ///
+    /// **Lifetime invariant**: `chunk_graph` (Bundler.bundle() 내부 local) 의
+    /// lifetime 동안 cache 가 유지되어야 borrow 가 안전. build_async/build_sync
+    /// 는 build 마다 새 resolver 생성·소멸. watch 는 watch session 동안 동일
+    /// resolver 재사용 → rebuild 마다 cache 가 단조 증가 (bounded by unique JS
+    /// 반환 name 집합 — 일반 사용 시 'vendor'/'react' 등 소수, 악의적 JS 가
+    /// rebuild-varying name 반환 시만 unbounded). rebuild N+1 시작 시 N 의
+    /// chunk_graph 는 이미 deinit 되어 cache slice borrow 없음 — 단, 의도적
+    /// dedup 정책상 clear 안 함.
+    ///
+    /// **TSFN UAF 회피**: `napi_release_threadsafe_function(release)` 는 비동기
+    /// 라 deinit 직후 `destroy(self)` 가 in-flight callJsCallback (self 를
+    /// ctx_ptr 로 deref) 와 race 가능. 호출자가 'deinit 시점에 in-flight TSFN
+    /// 없음' invariant 보장 — buildCompleteTsfn 은 worker 의 동기 resolve() 가
+    /// 모두 끝나고 completion_tsfn 받은 후에 실행, WatchAsyncData.deinit 도
+    /// stop_flag 로 worker 종료 후. 향후 caller flow 변경 시 이 invariant 보전.
+    name_cache: std.StringHashMap(void),
 
     const CallContext = struct {
         id: []const u8,
@@ -1179,8 +1201,9 @@ pub const NapiManualChunksResolver = struct {
     }
 
     /// threadsafe function 의 call_js 콜백 (main thread).
-    fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+    fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, ctx_ptr: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
         const ctx: *CallContext = @ptrCast(@alignCast(data.?));
+        const self: *NapiManualChunksResolver = @ptrCast(@alignCast(ctx_ptr.?));
 
         var js_id: c.napi_value = undefined;
         _ = c.napi_create_string_utf8(env, ctx.id.ptr, ctx.id.len, &js_id);
@@ -1239,11 +1262,31 @@ pub const NapiManualChunksResolver = struct {
         defer native_alloc.free(tmp);
         var written: usize = 0;
         _ = c.napi_get_value_string_utf8(env, js_result, tmp.ptr, len + 1, &written);
-        const out = native_alloc.dupe(u8, tmp[0..written]) catch {
+        const slice = tmp[0..written];
+
+        // dedup cache: 같은 chunk name 이 반복 반환되어도 alloc 1회. chunk_graph
+        // 가 이 slice 를 borrow (deinit 시 free 안 함) — resolver.deinit 가 일괄
+        // 회수. ZNTC 일반 사용 시 manualChunks resolver 가 'vendor' / 'react'
+        // 같은 소수의 group name 을 N 개 모듈에 반복 반환 → cache hit 비율 매우
+        // 높음.
+        const gop = self.name_cache.getOrPut(slice) catch {
             signalResult(ctx, null);
             return;
         };
-        signalResult(ctx, out);
+        if (gop.found_existing) {
+            signalResult(ctx, gop.key_ptr.*);
+            return;
+        }
+        const owned = native_alloc.dupe(u8, slice) catch {
+            // miss-but-OOM: 방금 추가한 reserved slot 제거 (slice tmp 는 곧 free).
+            _ = self.name_cache.remove(slice);
+            signalResult(ctx, null);
+            return;
+        };
+        // hashmap key 를 owned slice 로 update — getOrPut 직후의 borrow (tmp) 가
+        // defer 로 곧 free 되므로 owned 로 갈아끼우지 않으면 dangling key 가 됨.
+        gop.key_ptr.* = owned;
+        signalResult(ctx, owned);
     }
 
     fn signalResult(ctx: *CallContext, result: ?[]const u8) void {
@@ -1273,6 +1316,12 @@ pub const NapiManualChunksResolver = struct {
 
     pub fn deinit(self: *NapiManualChunksResolver) void {
         _ = c.napi_release_threadsafe_function(self.tsfn, c.napi_tsfn_release);
+        // dedup cache 의 owned chunk name slice 들 free + map deinit. chunk_graph
+        // 가 이 resolver 의 lifetime 동안만 cache 의 slice 를 borrow 하므로
+        // 안전.
+        var it = self.name_cache.keyIterator();
+        while (it.next()) |k| native_alloc.free(k.*);
+        self.name_cache.deinit();
         native_alloc.destroy(self);
     }
 };
@@ -1285,7 +1334,10 @@ pub fn installManualChunksResolver(
     opts: *BundleOptions,
 ) ?*NapiManualChunksResolver {
     const resolver = native_alloc.create(NapiManualChunksResolver) catch return null;
-    resolver.* = .{ .tsfn = undefined };
+    resolver.* = .{
+        .tsfn = undefined,
+        .name_cache = std.StringHashMap(void).init(native_alloc),
+    };
 
     var resource_name: c.napi_value = undefined;
     _ = c.napi_create_string_utf8(env, "zntc_manual_chunks", "zntc_manual_chunks".len, &resource_name);
@@ -1302,6 +1354,9 @@ pub fn installManualChunksResolver(
         NapiManualChunksResolver.callJsCallback,
         &resolver.tsfn,
     ) != c.napi_ok) {
+        // StringHashMap.init 은 zero-alloc 이라 현재 leak 0 이지만, 추후 init
+        // 변경 시 fragile — defensive deinit.
+        resolver.name_cache.deinit();
         native_alloc.destroy(resolver);
         return null;
     }
