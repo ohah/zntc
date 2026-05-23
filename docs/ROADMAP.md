@@ -113,7 +113,7 @@
 ## ⏳ 미완료
 
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
-- **SIMD 확장** — 렉서에 `@Vector(16, u8)` 부분 적용 완료 (공백/식별자 스캔). 추가 확장 여지 있음
+- **SIMD 확장** — 렉서에 `@Vector(16, u8)` 부분 적용 완료 (공백/식별자 스캔). 추가 lookup table / 키워드 조회 항목은 BACKLOG 실측 상 ROI 0 확정(scan 은 메모리 바운드, A/B 가 noise floor 아래)
 - **WASM 공개 AST API** — AST 안정화 후
 
 ## ✅ 최근 추가 (Dev Server 확장)
@@ -392,7 +392,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | 파서 inline scan                | ✅ 완료      | import/binding scanner AST 재순회 제거 (#919)                                       |
 | StmtInfo semantic 사전 구축     | ✅ 완료      | tree-shake 29.8→5.6ms (-81%), total 82.7→56.9ms (-31%) (#920)                       |
 | resolveExportChain 메모이제이션 | ✅ 완료      | re-export chain 조건부 캐시 (#918)                                                  |
-| SIMD                            | ✅ 부분 적용 | `@Vector(16, u8)` 공백/식별자 스캔 적용 완료 (scanner.zig). 추가 확장 여지 있음     |
+| SIMD                            | ✅ 부분 적용 | `@Vector(16, u8)` 공백/식별자 스캔 적용 완료 (scanner.zig). 추가 lookup table/키워드 조회는 BACKLOG 실측 ROI 0 (scan 메모리 바운드) |
 
 ## 프로덕션 로드맵
 
