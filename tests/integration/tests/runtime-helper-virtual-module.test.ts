@@ -52,8 +52,12 @@ describe('runtime helper virtual module (#1961)', () => {
 
     const fs = await import('node:fs');
     const files = fs.readdirSync(outDir).filter((f) => f.endsWith('.js'));
+    // dynamic chunk(`greet`) 와 common helper chunk 는 모두 chunk_names 패턴
+    // `[name]-[hash]` (Rollup parity, F5 post-review). stem 으로 찾는다.
+    const greetName = files.find((f) => f === 'greet.js' || f.startsWith('greet-'));
+    expect(greetName).toBeDefined();
     const main = fs.readFileSync(join(outDir, 'main.js'), 'utf8');
-    const greet = fs.readFileSync(join(outDir, 'greet.js'), 'utf8');
+    const greet = fs.readFileSync(join(outDir, greetName!), 'utf8');
 
     const helperChunkName = files.find((f) => f.startsWith('chunk-'));
     expect(helperChunkName).toBeDefined();

@@ -1741,18 +1741,28 @@ fn resolveContentHashes(
 ) !void {
     if (outputs.len == 0) return;
 
-    // 1단계: 각 청크의 placeholder hash와 content hash를 계산
+    // 1단계: 각 청크의 placeholder hash와 content hash를 계산.
+    // emitChunks 가 `chunk.modules.items.len == 0` 청크(mergeSmallChunks /
+    // manualChunks 흡수 후 빈 entry chunk 등)를 skip 하므로 sorted_indices
+    // 와 outputs 는 1:1 이 아니다. *비어있지 않은* 청크만 outputs 순서대로
+    // 매칭해야 path 의 placeholder 가 올바른 chunk index hash 로 빌드되어
+    // 치환된다.
     var infos = try allocator.alloc(PlaceholderInfo, outputs.len);
     defer allocator.free(infos);
 
-    for (sorted_indices, 0..) |ci, out_idx| {
+    var chunks_to_outputs = try allocator.alloc(usize, outputs.len);
+    defer allocator.free(chunks_to_outputs);
+
+    var out_idx: usize = 0;
+    for (sorted_indices) |ci| {
         if (out_idx >= outputs.len) break;
         const chunk = &chunk_graph.chunks.items[ci];
+        if (chunk.modules.items.len == 0) continue;
 
         buildPlaceholder(chunk, &infos[out_idx].placeholder);
-
-        // content hash 계산
         contentHash(outputs[out_idx].contents, &infos[out_idx].real_hash);
+        chunks_to_outputs[out_idx] = ci;
+        out_idx += 1;
     }
 
     // 2단계: 모든 출력에서 모든 placeholder를 content hash로 단일패스 치환.
@@ -1775,17 +1785,16 @@ fn resolveContentHashes(
 
     // 3단계: imports 메타 채우기 (rolldown `chunk.imports` 호환).
     // path 가 content-hash 까지 확정된 이후에 각 chunk 의 cross_chunk_imports 를
-    // 최종 filename 배열로 변환. chunk idx → output idx 역매핑으로 O(N) lookup.
+    // 최종 filename 배열로 변환. 1단계의 `chunks_to_outputs` (out_idx → chunk_idx)
+    // 를 역매핑해 빈 청크 skip 과 일관된 매핑을 유지한다.
     var chunk_to_out = try allocator.alloc(?usize, chunk_graph.chunks.items.len);
     defer allocator.free(chunk_to_out);
     @memset(chunk_to_out, null);
-    for (sorted_indices, 0..) |ci, out_idx| {
-        if (out_idx >= outputs.len) break;
-        chunk_to_out[ci] = out_idx;
+    for (chunks_to_outputs[0..out_idx], 0..) |ci, oi| {
+        chunk_to_out[ci] = oi;
     }
 
-    for (sorted_indices, 0..) |ci, out_idx| {
-        if (out_idx >= outputs.len) break;
+    for (chunks_to_outputs[0..out_idx], 0..) |ci, oi| {
         const chunk = &chunk_graph.chunks.items[ci];
         if (chunk.cross_chunk_imports.items.len == 0) continue;
 
@@ -1798,7 +1807,7 @@ fn resolveContentHashes(
             const dep_out = chunk_to_out[@intFromEnum(dep_ci)] orelse continue;
             try imps.append(allocator, try allocator.dupe(u8, outputs[dep_out].path));
         }
-        outputs[out_idx].imports = try imps.toOwnedSlice(allocator);
+        outputs[oi].imports = try imps.toOwnedSlice(allocator);
     }
 }
 
