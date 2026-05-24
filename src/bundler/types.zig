@@ -718,6 +718,12 @@ pub const ImportRecord = struct {
     /// (#2681). graph reachability 분석이 이 flag 를 보고 호출 사이트가 reachable
     /// 일 때만 source 모듈을 included 처리.
     in_lazy_callback: bool = false,
+    /// CSS `@import` 의 specifier 끝 이후 ~ `;` 직전 까지의 raw tail
+    /// (예: ` print`, ` layer(reset)`, ` supports(display:flex) screen`).
+    /// `is_external` external @import 보존 시 그대로 재출력해 media-query/
+    /// layer/supports semantic 을 유지 (esbuild parity). JS record 는 미사용
+    /// — 빈 string default.
+    css_condition_tail: []const u8 = "",
 };
 
 // ============================================================

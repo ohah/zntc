@@ -57,6 +57,11 @@ pub fn parseCssModule(self: *ModuleGraph, module: *Module) void {
                 .specifier = imp.specifier,
                 .kind = .side_effect,
                 .span = imp.span,
+                // External URL (`http:`/`https:`/`//`/`data:`) — resolver 가 skip
+                // 하고 emitter 가 출력 CSS 상단에 보존 (esbuild parity, #3321 P0-3).
+                .is_external = imp.is_external,
+                // media-query/layer/supports tail 보존 — external 재emit 시 사용.
+                .css_condition_tail = imp.condition_tail,
             };
         }
         module.import_records = records;

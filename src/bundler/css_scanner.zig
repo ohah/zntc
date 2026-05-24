@@ -12,7 +12,38 @@ pub const CssImportRecord = struct {
     specifier: []const u8,
     /// 소스 코드에서의 위치 (@import 시작 ~ 세미콜론)
     span: Span,
+    /// External URL (`http:`/`https:`/`//` prefix) 여부. true 면 resolver 가
+    /// 건너뛰고 emitter 가 출력 CSS 상단에 그대로 보존한다 (esbuild parity).
+    is_external: bool = false,
+    /// specifier 끝 이후 ~ `;` 직전 까지의 raw tail (예: ` print`,
+    /// ` layer(reset)`, ` supports(display:flex) screen`). leading 공백 포함.
+    /// external @import 보존 시 그대로 재출력해 media-query/layer/supports
+    /// semantic 을 유지 (esbuild parity). 일반(inline) @import 에선 사용 안 함.
+    /// source 슬라이스 — 모듈 수명 내 유효.
+    condition_tail: []const u8 = "",
 };
+
+/// ASCII case-insensitive prefix 매칭. RFC3986: URL scheme 은 case-insensitive.
+fn startsWithIgnoreCaseAscii(s: []const u8, prefix: []const u8) bool {
+    if (s.len < prefix.len) return false;
+    for (prefix, 0..) |c, i| {
+        if (std.ascii.toLower(s[i]) != std.ascii.toLower(c)) return false;
+    }
+    return true;
+}
+
+/// CSS `@import` specifier 가 external URL 인지 판정.
+/// esbuild 기준: `http:`/`https:` protocol-prefixed 또는 `//` protocol-relative.
+/// data: URL 도 spec 상 valid `@import` 대상이라 external 로 처리해 resolver 우회.
+/// scheme 은 case-insensitive (RFC3986) — `HTTPS://` 도 external.
+pub fn isExternalCssSpecifier(specifier: []const u8) bool {
+    if (specifier.len < 2) return false;
+    if (std.mem.startsWith(u8, specifier, "//")) return true;
+    if (startsWithIgnoreCaseAscii(specifier, "http://")) return true;
+    if (startsWithIgnoreCaseAscii(specifier, "https://")) return true;
+    if (startsWithIgnoreCaseAscii(specifier, "data:")) return true;
+    return false;
+}
 
 /// CSS 소스에서 @import 규칙을 추출한다.
 /// @charset, 공백, 주석은 건너뛰고, 첫 번째 non-import 규칙에서 중단.
@@ -65,12 +96,29 @@ pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []con
 
             // url("...") 또는 "..." 또는 '...' 파싱
             const spec = extractSpecifier(source, pos, len) orelse break;
+            const tail_start = spec.end_pos;
             pos = skipToSemicolon(source, spec.end_pos, len);
+            // condition_tail = specifier 끝 이후 ~ `;` 직전 까지. external @import
+            // 재emit 시 media-query/layer/supports clause 보존용. `;` 자체는 제외
+            // — emitter 가 `";\n"` 으로 따로 붙임 (포함하면 double semicolon).
+            // `skipToSemicolon` 은 `;` *다음* 위치 반환 (source[pos-1]==';'), 또는
+            // `;` 미발견 시 len. trailing 공백/CR 은 함께 잡혀도 valid CSS 라 무해.
+            const tail_end: u32 = blk: {
+                if (pos > tail_start and pos <= len and source[pos - 1] == ';') break :blk pos - 1;
+                break :blk pos;
+            };
+            const tail_slice: []const u8 = if (tail_end > tail_start)
+                source[tail_start..tail_end]
+            else
+                "";
 
             if (count < MAX_IMPORTS) {
+                const specifier_slice = source[spec.start..spec.end];
                 results[count] = .{
-                    .specifier = source[spec.start..spec.end],
+                    .specifier = specifier_slice,
                     .span = .{ .start = start, .end = pos },
+                    .is_external = isExternalCssSpecifier(specifier_slice),
+                    .condition_tail = tail_slice,
                 };
                 count += 1;
             }
@@ -93,6 +141,23 @@ const SpecifierResult = struct {
     end_pos: u32,
 };
 
+/// CSS quoted string 의 닫는 quote 위치를 찾는다.
+/// CSS spec §4.3.5: `\` 다음 한 글자는 escape 로 specifier 종료 quote 가 아님.
+/// `\` 가 source 끝이면 자기 자신만 1바이트 소비 (방어).
+fn findClosingQuote(source: []const u8, start: u32, len: u32, quote: u8) u32 {
+    var p = start;
+    while (p < len) {
+        if (source[p] == '\\') {
+            // escape 다음 1바이트 skip (data: URL 에 `\"x\"` 같은 패턴 보존).
+            p += 2;
+            continue;
+        }
+        if (source[p] == quote) return p;
+        p += 1;
+    }
+    return p;
+}
+
 fn extractSpecifier(source: []const u8, pos: u32, len: u32) ?SpecifierResult {
     var p = pos;
     if (p >= len) return null;
@@ -107,7 +172,7 @@ fn extractSpecifier(source: []const u8, pos: u32, len: u32) ?SpecifierResult {
             const quote = source[p];
             p += 1;
             const start = p;
-            while (p < len and source[p] != quote) : (p += 1) {}
+            p = findClosingQuote(source, p, len, quote);
             const end = p;
             if (p < len) p += 1; // 닫는 따옴표
             p = skipWhitespace(source, p, len);
@@ -128,7 +193,7 @@ fn extractSpecifier(source: []const u8, pos: u32, len: u32) ?SpecifierResult {
         const quote = source[p];
         p += 1;
         const start = p;
-        while (p < len and source[p] != quote) : (p += 1) {}
+        p = findClosingQuote(source, p, len, quote);
         const end = p;
         if (p < len) p += 1; // 닫는 따옴표
         return .{ .start = start, .end = end, .end_pos = p };
