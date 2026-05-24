@@ -98,17 +98,27 @@ pub const NamespaceAccessIndex = struct {
         span_start: u32,
     };
 
-    /// 기본 `build` — 옛 linker 동작 유지 (모든 nodes 순회).
-    /// 새 caller (binding_scanner) 는 `buildOpt(..., true)` 명시 → orphan 제외, reachable only.
+    /// 기본 `build` — 옛 linker 동작 유지 (모든 nodes 순회, 모든 ident text 색인).
+    /// 새 caller (binding_scanner) 는 `buildOpt(..., true, &interest_set)` 명시 → orphan 제외, gating 활성.
     pub fn build(allocator: std.mem.Allocator, ast: *const Ast) std.mem.Allocator.Error!NamespaceAccessIndex {
-        return buildOpt(allocator, ast, false);
+        return buildOpt(allocator, ast, false, null);
     }
 
     /// computed_member_expression (e.g. `M[dyn]`) 의 obj 가 identifier_reference 인 set.
     /// text-only mode 의 dynamic-access escape 감지에 사용.
     pub const ComputedObj = struct { obj_text_span_start: u32 };
 
-    pub fn buildOpt(allocator: std.mem.Allocator, ast: *const Ast, reachable_only: bool) std.mem.Allocator.Error!NamespaceAccessIndex {
+    /// `buildOpt` (C5 perf, PR #3737): `interest_text_set` 가 주어지면 ident text 색인 시
+    /// 그 set 에 있는 text 만 색인 — 큰 모듈 (10k+ LOC, 5-20k unique ident text) 에서
+    /// `idents_by_text` / `accesses_by_obj_text` / `computed_by_obj_text` 메모리 X10~X100 절감.
+    /// null 이면 옛 동작 (모든 text 색인).
+    /// `prop_by_obj` 와 `decl_ranges` 는 interest 무관 (정확성 필요).
+    pub fn buildOpt(
+        allocator: std.mem.Allocator,
+        ast: *const Ast,
+        reachable_only: bool,
+        interest_text_set: ?*const std.StringHashMapUnmanaged(void),
+    ) std.mem.Allocator.Error!NamespaceAccessIndex {
         var self: NamespaceAccessIndex = .{};
         errdefer self.deinit(allocator);
         const node_count = ast.nodes.items.len;
@@ -161,6 +171,7 @@ pub const NamespaceAccessIndex = struct {
                 if (obj_node.tag != .identifier_reference) continue;
                 const obj_text = ast.getText(obj_node.span);
                 if (obj_text.len == 0) continue;
+                if (interest_text_set) |s| if (!s.contains(obj_text)) continue;
                 const gop = try self.accesses_by_obj_text.getOrPut(allocator, obj_text);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(allocator, .{
@@ -177,6 +188,7 @@ pub const NamespaceAccessIndex = struct {
                 if (obj_node.tag != .identifier_reference) continue;
                 const obj_text = ast.getText(obj_node.span);
                 if (obj_text.len == 0) continue;
+                if (interest_text_set) |s| if (!s.contains(obj_text)) continue;
                 const gop = try self.computed_by_obj_text.getOrPut(allocator, obj_text);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(allocator, .{
@@ -186,6 +198,7 @@ pub const NamespaceAccessIndex = struct {
                 // F1 fix: escape 검사용 — 모든 identifier_reference 의 text 색인.
                 const text = ast.getText(node.span);
                 if (text.len == 0) continue;
+                if (interest_text_set) |s| if (!s.contains(text)) continue;
                 const gop = try self.idents_by_text.getOrPut(allocator, text);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(allocator, .{

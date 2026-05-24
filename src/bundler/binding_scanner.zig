@@ -575,10 +575,20 @@ pub fn collectNamespaceAccesses(
     if (!has_namespace) return;
 
     const ns_module = @import("linker/namespace_access.zig");
+    // C5 perf (PR #3737): interest set — namespace local name 만 색인.
+    // 큰 모듈 (10k+ LOC) 에서 모든 ident text 색인의 X10-X100 메모리 절약.
+    var interest: std.StringHashMapUnmanaged(void) = .{};
+    defer interest.deinit(allocator);
+    for (bindings) |ib| {
+        if (ib.kind == .namespace and ib.local_name.len > 0) {
+            try interest.put(allocator, ib.local_name, {});
+        }
+    }
+
     // C1 fix (#3736): binding_scanner 는 옛 동작 유지 — reachable_only=true.
     // 옛 collectNamespaceAccesses 가 `ast_walk.collectReachableNodeIndices` 사용했음.
     // `build` (= linker default) 는 reachable_only=false 라 binding_scanner 와 의미 다름.
-    var index = try ns_module.NamespaceAccessIndex.buildOpt(allocator, ast, true);
+    var index = try ns_module.NamespaceAccessIndex.buildOpt(allocator, ast, true, &interest);
     defer index.deinit(allocator);
 
     for (bindings) |*ib| {
