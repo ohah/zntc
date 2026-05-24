@@ -515,11 +515,51 @@ pub const Module = struct {
     /// `local_name` 으로 module-scope binding 을 찾아 declaration stmt reachability
     /// 검사. semantic / scope_maps 가 없으면 true. namespace getter 빌더 (esm_wrap,
     /// shared_namespace) 가 사용.
+    ///
+    /// `local_name` 이 *post-rename final name* (e.g. cross-module collision 회피 후
+    /// `counter$4`) 인 경우 scope_maps lookup 이 fail (scope_maps 는 source name index).
+    /// fallback 으로 root-scope symbol 들의 nameText 와 비교 — symbol.nameText 가
+    /// rename 결과를 반영하므로 final name 매칭 가능. 이 fallback 이 없으면 namespace
+    /// getter 가 dead declaration 을 reference (effect-ts 의 `counter$4 is not defined`
+    /// 회귀 케이스).
     pub fn isLocalBindingAlive(self: *const Module, local_name: []const u8) bool {
         const sem = self.semantic orelse return true;
         if (sem.scope_maps.len == 0) return true;
-        const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
-        return self.isStatementAliveBySym(sym_idx);
+        if (sem.scope_maps[0].get(local_name)) |sym_idx| {
+            return self.isStatementAliveBySym(sym_idx);
+        }
+        // Fallback 1: scope_maps lookup 실패 (post-rename name 등). root-scope symbol 들의
+        // nameText 와 비교. symbol.nameText 가 rename 결과를 반영하므로 final name 매칭.
+        for (sem.symbols.items, 0..) |sym, i| {
+            if (!sym.scope_id.isNone()) {
+                if (sym.scope_id.toIndex() != 0) continue;
+            }
+            const name = self.symbolText(&sym) orelse continue;
+            if (std.mem.eql(u8, name, local_name)) {
+                return self.isStatementAliveBySym(i);
+            }
+        }
+        // Fallback 2: cross-module collision avoidance suffix (`$N`) 제거 후 다시 scope_maps
+        // lookup. effect-ts 같이 다른 module 의 동일 export 와 충돌해 `counter$4` 같이 rename
+        // 된 경우 — original `counter` 가 scope_maps 에 있어 정확한 reachability 판정 가능.
+        var trimmed = local_name;
+        if (std.mem.lastIndexOfScalar(u8, local_name, '$')) |dollar_idx| {
+            const tail = local_name[dollar_idx + 1 ..];
+            var all_digits = tail.len > 0;
+            for (tail) |c| {
+                if (c < '0' or c > '9') {
+                    all_digits = false;
+                    break;
+                }
+            }
+            if (all_digits) trimmed = local_name[0..dollar_idx];
+        }
+        if (!std.mem.eql(u8, trimmed, local_name)) {
+            if (sem.scope_maps[0].get(trimmed)) |sym_idx| {
+                return self.isStatementAliveBySym(sym_idx);
+            }
+        }
+        return true; // 모두 실패 — conservative true (false negative 회피)
     }
 
     /// exported_name으로 ExportBinding을 찾는다. #1338 Phase 4c-1 Export Registry.
