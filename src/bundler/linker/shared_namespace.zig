@@ -102,6 +102,8 @@ pub fn registerNamespaceRewrites(
 
     var seen_exports = std.StringHashMap(void).init(self.allocator);
     defer seen_exports.deinit();
+    // PR #3741 (C7 perf): capacity hint — cached_exports.len 만큼 미리 알loc 해서 rehash 회피.
+    try seen_exports.ensureTotalCapacity(@intCast(cached_exports.len));
     for (cached_exports) |exp| {
         try seen_exports.put(exp.exported, {});
     }
@@ -117,6 +119,8 @@ pub fn registerNamespaceRewrites(
     var inner_map = std.StringHashMap([]const u8).init(self.allocator);
     var inner_map_transferred = false;
     errdefer if (!inner_map_transferred) inner_map.deinit();
+    // PR #3741 (C7 perf): capacity hint — cached_exports.len entries 예상.
+    try inner_map.ensureTotalCapacity(@intCast(cached_exports.len));
     var has_shadow = false;
     // target_init 은 target_mod_idx 에만 의존하므로 export 마다 재계산할 필요가 없다.
     // dev lazy runtime 에서는 access site 가 package entry 도 깨워야 하므로 target init 을
@@ -145,8 +149,29 @@ pub fn registerNamespaceRewrites(
     // `Linker.nsMemberRewriteSafe` docstring. `ZNTC_NO_NS_REWRITE` 는 회귀 시
     // 강제 비활성(kill-switch) — 안전 경로에서도 끌 수만 있고 켤 수는 없다.
     const ns_rewrite = !nsRewriteDisabled() and self.nsMemberRewriteSafe();
+
+    // PR #3741 (C7 perf): nested bindings 사전 set — `hasNestedBinding` 가 cached_exports
+    // 마다 *모든 nested scope 순회* (O(exports × scopes × names)). 호출 1회 precompute 후
+    // contains O(1) lookup 으로 변경 (O(scopes × names) + O(exports)).
+    // ns_rewrite=true 면 호출 자체 안 함 → skip.
+    var nested_bindings: std.StringHashMap(void) = std.StringHashMap(void).init(self.allocator);
+    defer nested_bindings.deinit();
+    if (!ns_rewrite) {
+        if (self.getModule(importer_mod_idx)) |importer_mod| {
+            if (importer_mod.semantic) |sem| {
+                for (sem.scope_maps, 0..) |scope_map, scope_idx| {
+                    if (scope_idx == 0) continue;
+                    var it = scope_map.iterator();
+                    while (it.next()) |entry| {
+                        try nested_bindings.put(entry.key_ptr.*, {});
+                    }
+                }
+            }
+        }
+    }
+
     for (cached_exports) |exp| {
-        if (!ns_rewrite and self.hasNestedBinding(importer_mod_idx, exp.exported)) {
+        if (!ns_rewrite and nested_bindings.contains(exp.exported)) {
             has_shadow = true;
             continue;
         }
