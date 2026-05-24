@@ -1967,7 +1967,16 @@ pub const Linker = struct {
                 // 접근된 멤버를 namespace_used_properties에 복사.
                 // 문자열은 source buffer 참조 (ast.getText 결과) — module.parse_arena 수명 동안 유효.
                 // 슬라이스 자체도 arena로 할당해 deinit 시 자동 해제.
+                //
+                // counter$4 진짜 근본 fix: analyzer 가 *post-transform symbol_id* 로 namespace
+                // local 추적. transformer 가 namespace local 의 symbol_id 를 rebind (e.g.
+                // `metric` → `metric_ns` 같이 rename 후 다른 symbol) 하면 analyzer 가 access 못
+                // 잡아 access.members.count()=0 (empty). 이 empty 결과로 binding_scanner 의
+                // 1차 결과 (non-empty) 를 덮어쓰면 → tree-shake namespace import seed 0회 →
+                // namespace getter dangling (effect-ts `counter$4 is not defined`).
+                // 따라서 empty result 면 binding_scanner 결과 유지.
                 const count = access.members.count();
+                if (count == 0) continue;
                 const props = arena.alloc([]const u8, count) catch continue;
                 const prop_stmts: ?[][]const u32 = if (stmt_spans_opt != null)
                     (arena.alloc([]const u32, count) catch null)

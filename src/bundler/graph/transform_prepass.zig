@@ -421,8 +421,57 @@ pub fn resyncAfterAstMutation(
         // 등) 이 정식 import 노드로 대체됐다 — post-transform AST 에서 일반 binding 으로
         // 추출되므로 previous 에서 따로 보존할 synthetic binding 이 없다.
         const helper_refs: ?[]const u32 = if (module.transform_cache) |cache| cache.helper_ref_nodes else null;
+
+        // counter$4 진짜 근본 fix: 1차 (parse 단계 parser_metadata.zig) 의
+        // collectNamespaceAccesses 결과를 local→props 맵으로 백업. transformer 가
+        // `metric.counter(...)` 같은 namespace access 를 inline / helper substitution 으로
+        // 변형하면 2차 collectNamespaceAccesses (post-transform AST 기반) 가 못 잡아
+        // `namespace_used_properties=&.{}` (length=0) 로 reset → tree-shake 가 그 module 의
+        // export reachable seed 안 함 → namespace getter dangling (effect-ts 의
+        // `counter$4 is not defined`). 1차 가 잡은 props 를 2차 결과와 union 으로 keep.
+        var prev_props_map = std.StringHashMapUnmanaged([]const []const u8){};
+        defer prev_props_map.deinit(arena_alloc);
+        for (module.import_bindings) |ib_prev| {
+            if (ib_prev.kind != .namespace) continue;
+            if (ib_prev.namespace_used_properties) |props| {
+                if (props.len > 0) {
+                    prev_props_map.put(arena_alloc, ib_prev.local_name, props) catch continue;
+                }
+            }
+        }
+
         module.import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records, helper_refs);
         try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
+
+        // 1차 결과와 union: 2차 가 못 잡은 access 도 keep.
+        for (module.import_bindings) |*ib_new| {
+            if (ib_new.kind != .namespace) continue;
+            const new_props = ib_new.namespace_used_properties orelse continue;
+            const prev_props = prev_props_map.get(ib_new.local_name) orelse continue;
+            if (new_props.len == 0) {
+                ib_new.namespace_used_properties = prev_props;
+                continue;
+            }
+            // 둘 다 non-empty — union.
+            var seen = std.StringHashMapUnmanaged(void){};
+            defer seen.deinit(arena_alloc);
+            for (new_props) |p| seen.put(arena_alloc, p, {}) catch {};
+            var added: usize = 0;
+            for (prev_props) |p| {
+                if (!seen.contains(p)) added += 1;
+            }
+            if (added == 0) continue;
+            const merged = arena_alloc.alloc([]const u8, new_props.len + added) catch continue;
+            @memcpy(merged[0..new_props.len], new_props);
+            var mi: usize = new_props.len;
+            for (prev_props) |p| {
+                if (!seen.contains(p)) {
+                    merged[mi] = p;
+                    mi += 1;
+                }
+            }
+            ib_new.namespace_used_properties = merged;
+        }
     }
 
     {
