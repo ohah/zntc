@@ -1454,3 +1454,63 @@ test "Scanner: profile .scan 비활성 시 누적 없음 (zero-cost)" {
     try std.testing.expectEqual(@as(u32, 0), profile.count(.scan));
     try std.testing.expectEqual(@as(u64, 0), profile.totalNs(.scan));
 }
+
+// PR perf: peekIsNextByteSameLine 회귀 가드
+// 변경: arrow lookahead 의 fast byte prefilter. 다음 non-WS byte 가 target 일치 여부.
+// happy path + edge case (block comment / line comment / newline / non-ASCII) 검증.
+test "peekIsNextByteSameLine: 즉시 target 일치" {
+    var scanner = try Scanner.init(std.testing.allocator, "=>...");
+    defer scanner.deinit();
+    try std.testing.expect(scanner.peekIsNextByteSameLine('='));
+    try std.testing.expect(!scanner.peekIsNextByteSameLine('+'));
+}
+
+test "peekIsNextByteSameLine: whitespace skip" {
+    var scanner = try Scanner.init(std.testing.allocator, "   \t  =>");
+    defer scanner.deinit();
+    try std.testing.expect(scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: newline → false (ASI)" {
+    var scanner = try Scanner.init(std.testing.allocator, "  \n=>");
+    defer scanner.deinit();
+    try std.testing.expect(!scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: line comment → false (ASI)" {
+    var scanner = try Scanner.init(std.testing.allocator, " // comment\n=>");
+    defer scanner.deinit();
+    try std.testing.expect(!scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: block comment same-line → 통과" {
+    // test262 회귀 가드: `let h = /* before */a /* a */ => 0;`
+    var scanner = try Scanner.init(std.testing.allocator, " /* comment */ =>");
+    defer scanner.deinit();
+    try std.testing.expect(scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: block comment with newline → false (ASI)" {
+    var scanner = try Scanner.init(std.testing.allocator, " /* multi\nline */ =>");
+    defer scanner.deinit();
+    try std.testing.expect(!scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: 연속 block comment → 통과" {
+    var scanner = try Scanner.init(std.testing.allocator, " /* a */ /* b */ =>");
+    defer scanner.deinit();
+    try std.testing.expect(scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: non-ASCII byte → 보수적 false" {
+    // NBSP (U+00A0 = C2 A0) — unicode WS 이지만 보수적으로 false (full UTF-8 decode trade-off)
+    var scanner = try Scanner.init(std.testing.allocator, "\xC2\xA0=>");
+    defer scanner.deinit();
+    try std.testing.expect(!scanner.peekIsNextByteSameLine('='));
+}
+
+test "peekIsNextByteSameLine: unterminated block comment → false" {
+    var scanner = try Scanner.init(std.testing.allocator, " /* never closed");
+    defer scanner.deinit();
+    try std.testing.expect(!scanner.peekIsNextByteSameLine('='));
+}

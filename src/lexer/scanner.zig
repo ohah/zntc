@@ -186,6 +186,57 @@ pub const Scanner = struct {
         return self.current >= self.source.len;
     }
 
+    /// fast byte-level lookahead: 다음 *비공백/비주석* 문자가 주어진 byte 와 일치하는지.
+    /// arrow prefilter 용 — saveState/scanner.next 의 큰 비용 회피. self.current 는 mutate 안 됨.
+    ///
+    /// 처리:
+    /// - ASCII whitespace (` `, `\t`, 0x0B, 0x0C) → skip
+    /// - `\n`/`\r` → false (ASI / arrow 는 same-line)
+    /// - line comment `//...` → false (line comment 후 newline 으로만 끝남 → ASI)
+    /// - block comment `/* ... */` (same-line) → skip 후 계속.
+    ///   test262 `let h = /* before */a /* a */ => 0;` 합법 case 지원.
+    ///   block comment 안 newline 만나면 false (ASI trigger).
+    /// - non-ASCII byte → 보수적 false (NBSP/IDEOGRAPHIC SPACE 등 unicode WS 가능,
+    ///   full UTF-8 디코드는 perf trade-off, 실용 케이스 드뭄)
+    pub fn peekIsNextByteSameLine(self: *const Scanner, target: u8) bool {
+        var i = self.current;
+        while (i < self.source.len) : (i += 1) {
+            const c = self.source[i];
+            switch (c) {
+                ' ', '\t', 0x0B, 0x0C => continue,
+                '\n', '\r' => return false,
+                '/' => {
+                    if (i + 1 >= self.source.len) return c == target;
+                    const c2 = self.source[i + 1];
+                    if (c2 == '/') return false; // line comment → ASI
+                    if (c2 == '*') {
+                        // block comment — `*/` 까지 skip. newline 만나면 false.
+                        var j = i + 2;
+                        const found_end = blk: {
+                            while (j + 1 < self.source.len) : (j += 1) {
+                                const cj = self.source[j];
+                                if (cj == '\n' or cj == '\r') return false;
+                                if (cj == '*' and self.source[j + 1] == '/') {
+                                    break :blk true;
+                                }
+                            }
+                            break :blk false;
+                        };
+                        if (!found_end) return false; // unterminated — 보수적 false
+                        i = j + 1; // for-step (+1) 이 추가로 적용 → i = j+2 = `*/` 다음 위치
+                        continue;
+                    }
+                    return c == target;
+                },
+                else => {
+                    if (c >= 0x80) return false;
+                    return c == target;
+                },
+            }
+        }
+        return false;
+    }
+
     /// 현재 토큰의 소스 텍스트를 반환한다.
     pub fn tokenText(self: *const Scanner) []const u8 {
         return self.source[self.start..self.current];

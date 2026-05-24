@@ -247,7 +247,10 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
     }
 
     // 단일 식별자 + => → arrow function (간단한 형태: x => x + 1)
-    if (self.current() == .identifier) {
+    // PR perf: arrow prefilter — 매 identifier expression 마다 saveState/advance/restoreState
+    // (count 44k+) 가 hot. 다음 byte 가 `=` 가 아니면 arrow 가능성 0 → block 자체 skip.
+    // `=` 인 경우: arrow (`=>`), assignment (`=`), equality (`==`) — full lookahead 그대로.
+    if (self.current() == .identifier and self.scanner.peekIsNextByteSameLine('=')) {
         const id_span = self.currentSpan();
         const saved = self.saveState();
 
