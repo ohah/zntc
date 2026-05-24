@@ -24,7 +24,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         else
             try self.visitNode(raw_name_idx);
         const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
-        var new_super = try self.visitNode(super_idx);
+        const new_super = try self.visitNode(super_idx);
 
         const saved_super_class = self.current_super_class;
         const saved_super_class_old_idx = self.current_super_class_old_idx;
@@ -32,28 +32,18 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         // 끊어야 한다 (else null reset 누락 시 outer Base 누수 → 새 flag 로 silent miscompile).
         // F6: fast path 도 super_class 와 동시에 old_idx 를 set — 새 flag 로 fast path 에서도 super
         // lowering 이 활성화되니 symbol propagation (minify rename 등) 을 위해 필요.
-        // V8: extends 표현식이 단순 식별자가 아니면 (`extends getBase()` / `extends pkg.Base` 등)
-        // current_super_class 를 raw span 으로 set 시 매 super-prop access 마다 표현식 텍스트가
-        // inline 되어 side effect 가 중복 평가됨. class_declaration 위치에서는 temp 변수로 hoist:
-        //   `var _<n> = <super expr>; class D extends _<n> {...}` 형태.
-        // class_expression 위치는 statement hoist 불가 → fallback 으로 raw super 그대로 두되
-        // current_super_class 만 set (호출자가 super-prop 을 inline 평가하는 비용 감수).
+        //
+        // V8 revert: extends 표현식이 non-identifier 일 때 temp 변수로 hoist 하던 동작을
+        // 되돌린다. hoisted `var _<n> = <super expr>` 가 bundler tree-shaker 의 reachability
+        // graph 에 포함되지 않아 RHS 의 reference (예: effect-ts 의 `TaggedError`) 가
+        // dead-code-eliminated → `TaggedError is not defined` ReferenceError. 정밀 fix
+        // (bundler reference 분석 강화 또는 hoist 를 linker 후 단계로 이동) 는 별도 PR.
+        // 결과: `extends getBase()` 의 side-effect 가 super-prop access 마다 중복 평가될 수
+        // 있는 V8 의 silent regression 은 다시 노출되지만, effect-ts 같은 실제 패키지의
+        // SyntaxError 보다 영향 범위가 작다.
         if (!super_idx.isNone()) {
-            const super_node = self.ast.getNode(super_idx);
-            const is_simple_id = super_node.tag == .identifier_reference or super_node.tag == .binding_identifier;
-            if (!is_simple_id and node.tag == .class_declaration) {
-                const tmp_span = try es_helpers.makeTempVarSpan(self);
-                const tmp_binding = try es_helpers.makeBindingIdentifier(self, tmp_span);
-                const declarator = try es_helpers.makeDeclarator(self, tmp_binding, new_super, node.span);
-                const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
-                try self.pending_nodes.append(self.allocator, var_decl);
-                new_super = try es_helpers.makeIdentifierRefFromSpan(self, tmp_span);
-                self.current_super_class = tmp_span;
-                self.current_super_class_old_idx = .none;
-            } else {
-                self.current_super_class = super_node.span;
-                self.current_super_class_old_idx = super_idx;
-            }
+            self.current_super_class = self.ast.getNode(super_idx).span;
+            self.current_super_class_old_idx = super_idx;
         } else {
             self.current_super_class = null;
             self.current_super_class_old_idx = .none;

@@ -392,14 +392,15 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.current_private_fields = saved_private_fields;
             };
 
-            // V1 fix: static descriptor 는 receiver=D 를 사용하므로 D 가 init 된 *뒤* 에
-            // 평가되어야 한다 (descriptor 가 class 앞에 emit 되면 TDZ ReferenceError).
-            // class_declaration 위치이면 trailing_nodes 에 emit 해 class 뒤에 stitching.
-            // class_expression 위치이면 expression context 라 trailing 가 comma stitching 발생
-            // (`const W = (...)(),var _m = ...`) → pre_stmts 그대로 두고 receiver=D 사용 자체가
-            // IIFE 안의 `_a` (class 의 local binding) 라 trailing 불필요.
-            // caller hint `static_descriptors_trailing` 로 분기.
-            const desc_target = if (static_descriptors_trailing) &self.trailing_nodes else pre_stmts;
+            // V1 의 descriptor trailing reorder 는 revert: static block IIFE 가 descriptor 를
+            // 참조하는 경우 (예: `static { S.#n += 10 }`) IIFE 도 trailing 위치에 emit 되어
+            // descriptor 보다 *앞에* 평가되면서 `attempted to get private static field before
+            // its declaration` TypeError. 따라서 descriptor 는 pre_stmts 유지 (class 앞).
+            // 결과: descriptor 안 super.foo() 의 receiver `this` 가 module top-level 에서
+            // undefined 가 되는 spec 위반은 다시 노출되나, static block 사용 케이스 (실제 코드)
+            // 가 더 흔하다.
+            _ = static_descriptors_trailing;
+            const desc_target = pre_stmts;
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
                 if (m.class_name) |cname| {
                     const cname_span = try self.ast.addString(cname);
