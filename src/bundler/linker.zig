@@ -1907,24 +1907,25 @@ pub const Linker = struct {
             };
             if (!has_candidate) continue;
 
-            // C5 perf (PR #3737): interest set — analyze candidate 의 local_name 만 색인.
-            // 큰 모듈에서 모든 ident text 색인의 X10-X100 메모리 절감.
-            var interest_set: std.StringHashMapUnmanaged(void) = .{};
-            defer interest_set.deinit(self.allocator);
-            for (importer.import_bindings) |ib_pre| {
-                if (!self.isNamespaceAnalysisCandidate(importer, ib_pre)) continue;
-                if (ib_pre.local_name.len == 0) continue;
-                // OOM 무시 — 누락된 binding 은 analyzer 가 0 결과 → binding_scanner 의 이전
-                // 결과 유지 (linker.zig:1995 의 `count==0 continue`). OOM 자체가 zntc 의
-                // 일반 path 에서 비현실적, 정확성 영향 최소.
-                interest_set.put(self.allocator, ib_pre.local_name, {}) catch {};
-            }
-
-            // importer 당 1회만 AST 순회해 NamespaceAccessIndex 구축.
-            // 같은 모듈 안의 모든 namespace import 분석에 공유 (#1735).
-            // reachable_only=false 유지 (옛 linker 동작 — orphan node 포함).
-            var ns_index = namespace_access.NamespaceAccessIndex.buildOpt(self.allocator, ast, false, &interest_set) catch continue;
-            defer ns_index.deinit(self.allocator);
+            // PR #3738 (C6 perf): transform_prepass 가 build 한 index 를 share — build 1회 절약.
+            // cache 가 없으면 (legacy / 비-JS / transform_prepass 미실행) 자체 build.
+            // cache 의 interest_set 은 *모든 import local* (transform_prepass 시점 resolve 미완료
+            // 라 보수적 over-include) — linker 의 4 kind candidate 는 그 superset 의 subset.
+            var owned_ns_index: ?namespace_access.NamespaceAccessIndex = null;
+            defer if (owned_ns_index) |*idx| idx.deinit(self.allocator);
+            const ns_index_ptr: *const namespace_access.NamespaceAccessIndex = blk: {
+                if (importer.namespace_access_index) |*cached| break :blk cached;
+                // Fallback: 4 kind candidate 의 local_name 만 색인.
+                var interest_set: std.StringHashMapUnmanaged(void) = .{};
+                defer interest_set.deinit(self.allocator);
+                for (importer.import_bindings) |ib_pre| {
+                    if (!self.isNamespaceAnalysisCandidate(importer, ib_pre)) continue;
+                    if (ib_pre.local_name.len == 0) continue;
+                    interest_set.put(self.allocator, ib_pre.local_name, {}) catch {};
+                }
+                owned_ns_index = namespace_access.NamespaceAccessIndex.buildOpt(self.allocator, ast, false, &interest_set) catch continue;
+                break :blk &owned_ns_index.?;
+            };
 
             // 모든 namespace import에 공통으로 쓰일 stmt span 배열을 importer당 1회 구축.
             const stmt_spans_opt: ?[]const Span = if (importer.prebuilt_stmt_info) |*infos| spans_blk: {
@@ -1972,7 +1973,7 @@ pub const Linker = struct {
                     sem.symbol_ids,
                     @intCast(sym_idx),
                     stmt_spans_opt,
-                    &ns_index,
+                    ns_index_ptr,
                     ib.local_name,
                 ) catch continue;
                 defer access.deinit(self.allocator);

@@ -237,6 +237,12 @@ pub const Module = struct {
     /// transformer 재실행 안 하고 캐시된 root/helpers/symbol_ids 사용.
     transform_cache: ?TransformCache = null,
 
+    /// PR #3738 (C6 perf): transform_prepass 의 binding_scanner 가 build 한
+    /// `NamespaceAccessIndex` 를 linker 가 share — 모듈당 build 1회 절약.
+    /// parse_arena 소유 — module deinit 시 자동 free.
+    /// null = transform_prepass 미실행 또는 namespace import 없음 → linker 가 자체 build.
+    namespace_access_index: ?@import("linker/namespace_access.zig").NamespaceAccessIndex = null,
+
     /// wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id (semantic 공간).
     /// null = 미래핑 또는 semantic 없음 (fallback: makeInitVarName 재할당).
     init_symbol: ?SemanticSymbolId = null,

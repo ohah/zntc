@@ -565,18 +565,38 @@ pub fn collectNamespaceAccesses(
     ast: *const Ast,
     bindings: []ImportBinding,
 ) !void {
-    var has_namespace = false;
-    for (bindings) |ib| {
-        if (ib.kind == .namespace) {
-            has_namespace = true;
-            break;
+    var index = try collectNamespaceAccessesAndBuildIndex(allocator, ast, bindings, &.{}, .{});
+    index.deinit(allocator);
+}
+
+/// PR #3738 (C6 perf): `collectNamespaceAccesses` 와 동일 분석 + index 반환.
+/// `extra_interest_locals` 가 주어지면 (linker 의 named/cjs/esm 같이) 그 local 들도 색인 →
+/// linker 가 같은 index 를 share 가능.
+/// `opts.reachable_only` 가 false 면 모든 nodes 색인 (linker 호환).
+///
+/// caller 가 index ownership — `defer index.deinit(allocator)` 또는 module 에 store.
+pub fn collectNamespaceAccessesAndBuildIndex(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    bindings: []ImportBinding,
+    extra_interest_locals: []const []const u8,
+    opts: struct { reachable_only: bool = true },
+) !@import("linker/namespace_access.zig").NamespaceAccessIndex {
+    const ns_module = @import("linker/namespace_access.zig");
+
+    var has_any_interest = extra_interest_locals.len > 0;
+    if (!has_any_interest) {
+        for (bindings) |ib| {
+            if (ib.kind == .namespace) {
+                has_any_interest = true;
+                break;
+            }
         }
     }
-    if (!has_namespace) return;
+    // 빈 index 반환 — caller 가 deinit (no-op).
+    if (!has_any_interest) return .{};
 
-    const ns_module = @import("linker/namespace_access.zig");
-    // C5 perf (PR #3737): interest set — namespace local name 만 색인.
-    // 큰 모듈 (10k+ LOC) 에서 모든 ident text 색인의 X10-X100 메모리 절약.
+    // interest set — namespace local + extra (linker 의 named/cjs/esm).
     var interest: std.StringHashMapUnmanaged(void) = .{};
     defer interest.deinit(allocator);
     for (bindings) |ib| {
@@ -584,12 +604,12 @@ pub fn collectNamespaceAccesses(
             try interest.put(allocator, ib.local_name, {});
         }
     }
+    for (extra_interest_locals) |name| {
+        if (name.len > 0) try interest.put(allocator, name, {});
+    }
 
-    // C1 fix (#3736): binding_scanner 는 옛 동작 유지 — reachable_only=true.
-    // 옛 collectNamespaceAccesses 가 `ast_walk.collectReachableNodeIndices` 사용했음.
-    // `build` (= linker default) 는 reachable_only=false 라 binding_scanner 와 의미 다름.
-    var index = try ns_module.NamespaceAccessIndex.buildOpt(allocator, ast, true, &interest);
-    defer index.deinit(allocator);
+    var index = try ns_module.NamespaceAccessIndex.buildOpt(allocator, ast, opts.reachable_only, &interest);
+    errdefer index.deinit(allocator);
 
     for (bindings) |*ib| {
         if (ib.kind != .namespace) continue;
@@ -619,6 +639,7 @@ pub fn collectNamespaceAccesses(
         }.lessThan);
         ib.namespace_used_properties = props;
     }
+    return index;
 }
 
 /// 모든 ExportBinding의 `symbol` 필드를 채운다. 세 경로:

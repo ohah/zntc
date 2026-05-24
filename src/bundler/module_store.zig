@@ -117,6 +117,9 @@ pub const PersistentModuleStore = struct {
         // shallow copy 라 양쪽이 같은 HashMap backing 가리킴, graph.deinit 이 free 하면
         // store 쪽 dangling. ownership 을 store 로 이전 (graph 쪽 nullify).
         module.export_index_by_name = null;
+        // PR #3738: namespace_access_index 도 동일 — parse_arena 안 HashMap backing 이라
+        // arena 양도 시 store 쪽이 (arena, index) 짝 소유. graph 쪽 dangling 방지.
+        module.namespace_access_index = null;
         module.import_records = &.{};
         module.resolved_deps = .empty;
 

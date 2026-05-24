@@ -265,6 +265,11 @@ fn markConstMaterializedAndResync(self: *TreeShaker, m: *Module) void {
     self.graph.resyncModuleMetadataAfterConstMaterialization(m, m.parse_arena.?.allocator()) catch {
         m.prebuilt_stmt_info = null;
     };
+    // PR #3738: AST mutation 후 cached namespace_access_index 는 stale (node_idx 매핑 + text key
+    // 모두 invalidate 가능). linker.refreshAfterAstMutation → populateNamespaceAccesses 가 fallback
+    // build path 로 가도록 cache 무효화. parse_arena 가 backing 소유 — null 만으로 충분 (memory leak
+    // 없음, arena 통째 free).
+    m.namespace_access_index = null;
     self.ast_mutated_after_link = true;
 }
 
