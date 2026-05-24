@@ -150,6 +150,8 @@ pub fn classifyPropertyDefinition(
     if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
         const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
         const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
+        const key_node_pre = self.ast.getNode(key_idx);
+        const is_private = key_node_pre.tag == .private_identifier;
         if (!init_idx.isNone()) {
             const new_key = try self.visitNode(key_idx);
             // super class가 있으면 field value의 this → _this 치환
@@ -165,6 +167,36 @@ pub fn classifyPropertyDefinition(
                 .is_computed = is_computed,
                 .span = member.span,
             });
+            // Private field: class body 의 declaration 도 유지해야 JS engine 이 인식. fall through
+            // 해서 아래 `visitNode` 분기로 가서 `#x;` (또는 init 까지 포함된) declaration emit.
+            // (constructor 안 assignment 와 별개 — `#x = 1;` 형태는 declaration `#x;` 도 필요.)
+            if (is_private) {
+                // init 은 constructor 로 옮겼으니 declaration 만 남기기 위해 PropertyExtra.init 을
+                // .none 으로 emit. 직접 새 노드 build:
+                const empty_init = ast_mod.NodeIndex.none;
+                const new_prop_extra = try self.ast.addExtras(&.{
+                    @intFromEnum(new_key),
+                    @intFromEnum(empty_init),
+                    flags,
+                    self.readU32(me, ast_mod.PropertyExtra.deco_start),
+                    self.readU32(me, ast_mod.PropertyExtra.deco_len),
+                });
+                const new_prop = try self.ast.addNode(.{
+                    .tag = .property_definition,
+                    .span = member.span,
+                    .data = .{ .extra = new_prop_extra },
+                });
+                try ctx.class_members.append(self.allocator, new_prop);
+            }
+            return;
+        }
+        // init 이 없으면 — public field 는 elide 가능 (default void 0), private field 는 declaration
+        // 유지 필수. 그래서 private 인 경우만 그대로 emit.
+        if (is_private) {
+            const new_member = try self.visitNode(@enumFromInt(raw_idx));
+            if (!new_member.isNone()) {
+                try ctx.class_members.append(self.allocator, new_member);
+            }
         }
         return;
     }

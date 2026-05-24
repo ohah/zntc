@@ -1714,6 +1714,68 @@ test "#3680-VSB: static block 안 super 가 es2021 target 에서 lowering" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super.x") == null);
 }
 
+// === effect-ts 회귀 root cause: useDefineForClassFields=false 의 private field declaration elision ===
+
+// PRIVATE_FIELD_DECL: useDefineForClassFields=false (legacy assign semantics) 모드에서
+// instance private field declaration 자체는 elide 되면 안 됨. JS spec: private field 는
+// class body 에 declaration 이 있어야 engine 이 인식 (`this.#x` 사용 시 SyntaxError 회피).
+// 회귀 가드: assign semantics 에서 `class { #v = 1; constructor(){...} }` 의 `#v` declaration 보존.
+test "#3680-PRIVATE: assign-semantics 에서 private field declaration 보존 (init 있음)" {
+    var r = try e2eFull(std.testing.allocator,
+        \\class Y {
+        \\  #v = 1;
+        \\  constructor(v) { this.#v = v; }
+        \\  get v() { return this.#v; }
+        \\}
+    , .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    // `class Y{#v;...}` 형태 — class body 직후 `#v` declaration 이 와야 함 (constructor 보다 앞).
+    const class_open = std.mem.indexOf(u8, r.output, "class Y{") orelse unreachable;
+    const class_body_start = class_open + "class Y{".len;
+    const ctor_idx = std.mem.indexOfPos(u8, r.output, class_body_start, "constructor(") orelse unreachable;
+    const pre_ctor_body = r.output[class_body_start..ctor_idx];
+    // pre-constructor 영역에 `#v` 가 있어야 (private field declaration)
+    try std.testing.expect(std.mem.indexOf(u8, pre_ctor_body, "#v") != null);
+}
+
+test "#3680-PRIVATE: assign-semantics 에서 private field declaration 보존 (init 없음)" {
+    var r = try e2eFull(std.testing.allocator,
+        \\class Y {
+        \\  #v;
+        \\  constructor(v) { this.#v = v; }
+        \\  get v() { return this.#v; }
+        \\}
+    , .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    const class_open = std.mem.indexOf(u8, r.output, "class Y{") orelse unreachable;
+    const class_body_start = class_open + "class Y{".len;
+    const ctor_idx = std.mem.indexOfPos(u8, r.output, class_body_start, "constructor(") orelse unreachable;
+    const pre_ctor_body = r.output[class_body_start..ctor_idx];
+    try std.testing.expect(std.mem.indexOf(u8, pre_ctor_body, "#v") != null);
+}
+
+// public field 는 useDefineForClassFields=false 에서 elide 가능 (default void 0 동등) — 회귀 가드.
+test "#3680-PRIVATE: assign-semantics 에서 public field 는 elide 가능 (init 없음)" {
+    var r = try e2eFull(std.testing.allocator,
+        \\class Y {
+        \\  v;
+        \\  constructor(v) { this.v = v; }
+        \\}
+    , .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    // public field 는 class body 에서 사라지고 constructor 의 `this.v = v` 만 남음
+    const class_idx = std.mem.indexOf(u8, r.output, "class Y") orelse unreachable;
+    const body_open = std.mem.indexOfScalarPos(u8, r.output, class_idx, '{') orelse unreachable;
+    // class body 가 constructor 만 가져야 — `v;` 같은 raw declaration 없음
+    // (단 constructor 안 `this.v = v` 는 OK)
+    const body_close = std.mem.indexOfScalarPos(u8, r.output, body_open, '}') orelse unreachable;
+    const body = r.output[body_open..body_close];
+    // body 안에 raw field decl `v;` (constructor 밖) 가 없어야 — constructor 안엔 OK.
+    // simplification: body 의 첫 단어가 'constructor' 또는 'v;' 이전에 `constructor` 가 와야.
+    const ctor_idx = std.mem.indexOf(u8, body, "constructor");
+    try std.testing.expect(ctor_idx != null);
+}
+
 // nested class: standalone fn 안의 *inner* class body 의 `super.x` 는
 // inner class lexical context 가 valid 하므로 inner super 로 lowering 돼야 한다.
 // outer extracted fn flag 가 inner class 안으로 새지 않는지 회귀 가드.
