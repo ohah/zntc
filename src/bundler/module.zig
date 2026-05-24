@@ -317,6 +317,10 @@ pub const Module = struct {
     /// `TreeShaker.analyze` 가 finalize 후 set. 기본 false 라 tree-shaking 비활성 시
     /// 의미 없음 — chunk gen 단계에서도 `m.side_effects or entry_set.isSet` 으로 항상 alive 처리.
     is_included: bool = false,
+    /// counter$4 fix: tree_shaker.analyze 가 finalize 시점에 mirror — true 면 tree-shaker 가
+    /// active 라 `is_included`/`reachable_stmts` 가 의미 있다. false 면 tree_shaking=false /
+    /// dev_mode → 두 field 의 default 가 false/null 이라 잘못 dead 판정하면 안 됨 (fallback alive).
+    tree_shaker_active: bool = false,
     /// 이 모듈의 statement-level reachability bitset. tree_shaker 가 mirror 한 borrowed
     /// 참조 — owner 는 `TreeShaker.reachable_stmts`. tree_shaker.deinit 후엔 dangling
     /// 이므로 mangle / link 단계에서만 사용. null 이면 tree-shake 미수행 / 정보 없음.
@@ -506,7 +510,17 @@ pub const Module = struct {
     /// borrowed pointer 가 dangling — caller 가 lifetime 관리.
     pub fn isStatementAliveBySym(self: *const Module, sym_idx: usize) bool {
         const s2s = self.symbol_to_stmt orelse return true;
-        const rs = self.reachable_stmts orelse return true;
+        // counter$4 진짜 root cause: tree-shaker BFS 가 module 별 reachable_stmts 를 lazy-init
+        // (seed 된 module 만). seed 안 된 module 은 reachable_stmts=null — *그 module 의 어떤
+        // stmt 도 reachable 표시 안 됐다는 의미*.
+        // tree_shaker_active=true 케이스: rs=null 이면 module 자체가 BFS 에서 unreached →
+        //   진짜 dead. fallback true 는 false positive (namespace getter dangling 원인).
+        // tree_shaker_active=false 케이스 (tree_shaking=false / dev_mode): 모든 module 의 rs=null
+        //   이지만 *모두 alive*. fallback true 가 정답.
+        const rs = self.reachable_stmts orelse {
+            if (self.tree_shaker_active) return false; // active + unreached = dead
+            return true; // inactive — fallback alive
+        };
         if (sym_idx >= s2s.len) return true;
         const stmt_idx = s2s[sym_idx] orelse return true;
         return stmt_idx >= rs.capacity() or rs.isSet(stmt_idx);
@@ -523,13 +537,11 @@ pub const Module = struct {
     /// getter 가 dead declaration 을 reference (effect-ts 의 `counter$4 is not defined`
     /// 회귀 케이스).
     pub fn isLocalBindingAlive(self: *const Module, local_name: []const u8) bool {
-        // counter$4 진짜 fix: tree-shaker 가 active (reachable_stmts non-null) 일 때
-        // module 자체가 included=false 면 어떤 stmt 도 emit 안 됨 → 모든 binding dead.
-        // 이전엔 stmt-level reachable 만 봤지만 module 전체 drop 케이스 (effect-ts 의
-        // `internal/metric.js` 가 namespace 합성 후 module 자체 drop) 에서 false negative.
-        // tree-shaker 비활성 (tree_shaking=false / dev_mode) 면 is_included default false 라
-        // 잘못 dead 표시 — reachable_stmts 가 set 됐을 때만 included 체크.
-        if (self.reachable_stmts != null and !self.is_included) return false;
+        // counter$4 진짜 fix: tree_shaker_active && !is_included 면 module 자체가 emit 안 됨 →
+        // 모든 binding dead. 이전엔 stmt-level reachable 만 봤지만 module 전체 drop 케이스
+        // (effect-ts 의 `internal/metric.js` 가 namespace 합성 후 module 자체 drop) 에서
+        // false negative — namespace getter 가 dangling.
+        if (self.tree_shaker_active and !self.is_included) return false;
         const sem = self.semantic orelse return true;
         if (sem.scope_maps.len == 0) return true;
         if (sem.scope_maps[0].get(local_name)) |sym_idx| {
