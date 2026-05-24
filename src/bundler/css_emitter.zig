@@ -44,17 +44,27 @@ pub fn emitCssBundle(
     }.lessThan);
 
     // CSS 소스 연결 (@import strip).
-    // external @import URL 은 strip 후 별도 보존 — 출력 최상단에 emit.
+    // 보존 emit 영역 (출력 상단, CSS spec 순서):
+    //   1. @charset (있으면 첫 byte 여야 함, 첫 모듈의 것만)
+    //   2. external @import URL (#3321 P0-3)
+    //   3. bare @layer 선언 (#3747)
+    //   4. 본문 (strip_end 이후)
     // OOM 시 silent drop 회피 — collect / appendTo / appendCssModules 모두
-    // error 시 null 반환 (사용자가 빌드 실패로 인지). planCssChunks 의 try
-    // 패턴과 일치.
+    // error 시 null 반환.
     var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
+
+    var prefix_decls = PrefixDeclCollector.init();
+    defer prefix_decls.deinit(allocator);
+    for (css_modules.items) |mod| prefix_decls.collectFromModule(allocator, mod) catch return null;
+    prefix_decls.appendCharsetTo(allocator, &output) catch return null;
 
     var ext_imports = ExternalImportCollector.init(allocator);
     defer ext_imports.deinit(allocator);
     for (css_modules.items) |mod| ext_imports.collectFromModule(allocator, mod) catch return null;
     ext_imports.appendTo(allocator, &output) catch return null;
+
+    prefix_decls.appendLayersTo(allocator, &output) catch return null;
 
     appendCssModules(allocator, &output, css_modules.items) catch return null;
 
@@ -179,6 +189,61 @@ const ExternalImportCollector = struct {
     }
 };
 
+/// 파일 상단 `@charset` / bare `@layer` 선언 보존 collector (#3747).
+///
+/// **@charset**: CSS spec 상 파일의 첫 byte 여야 valid, 1 stylesheet 에 1 개만
+/// 효력. 번들에서 첫 발견 모듈의 charset 만 emit, 이후는 silent drop.
+///
+/// **@layer (bare)**: cascade layer 순서 정의. 모듈 등장 순서대로 모두 emit
+/// (CSS spec: 추가 bare `@layer` 는 첫 등장이 ordering 고정 후 no-op 이라
+/// 안전).
+const PrefixDeclCollector = struct {
+    /// 첫 발견 @charset text (예: `@charset "UTF-8"`). null = 미발견.
+    charset_text: ?[]const u8 = null,
+    /// bare @layer 선언 텍스트 등장 순서.
+    layer_texts: std.ArrayListUnmanaged([]const u8) = .empty,
+
+    fn init() PrefixDeclCollector {
+        return .{};
+    }
+
+    fn deinit(self: *PrefixDeclCollector, allocator: std.mem.Allocator) void {
+        self.layer_texts.deinit(allocator);
+    }
+
+    fn collectFromModule(self: *PrefixDeclCollector, allocator: std.mem.Allocator, mod: *const Module) !void {
+        const cd = mod.css_data orelse return;
+        for (cd.prefix_decls) |pd| {
+            switch (pd.kind) {
+                .charset => {
+                    if (self.charset_text == null) self.charset_text = pd.text;
+                    // 이후 charset 은 silent drop (CSS spec: 1 개만 효력).
+                },
+                .layer_bare => {
+                    try self.layer_texts.append(allocator, pd.text);
+                },
+            }
+        }
+    }
+
+    /// emit 순서: @charset (있으면 1줄) → caller 가 그 다음에 external @import +
+    /// @layer 를 emit. 본 함수는 *charset* 만 prepend — @layer 는 별도 호출.
+    /// (CSS spec: @charset 은 반드시 첫 byte. @layer 와 @import 는 상호 자유 순서.)
+    fn appendCharsetTo(self: *const PrefixDeclCollector, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
+        if (self.charset_text) |t| {
+            try buf.appendSlice(allocator, t);
+            try buf.appendSlice(allocator, ";\n");
+        }
+    }
+
+    fn appendLayersTo(self: *const PrefixDeclCollector, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
+        for (self.layer_texts.items) |t| {
+            try buf.appendSlice(allocator, t);
+            try buf.appendSlice(allocator, ";\n");
+        }
+    }
+};
+
 /// CSS double-quoted string literal 안전 escape. `"` → `\22 `, `\` → `\\`.
 /// CSS spec §4.3.5 (Escape): hex escape `\<1-6 hex digits>` 다음 공백 1개로
 /// terminate. 다음 문자가 hex 면 ambiguity → 항상 trailing space 부착.
@@ -200,6 +265,29 @@ fn appendCssModules(
     css_modules: []const *const Module,
 ) !void {
     for (css_modules) |mod| try appendCssModule(allocator, buf, mod);
+}
+
+/// CSS 모듈 트리를 dep-first 로 순회하며 @charset / @layer prefix decl 을
+/// collector 에 모은다 (#3747). external @import 와 동일한 deps-first 순회.
+fn collectPrefixDeclsTree(
+    graph: *const ModuleGraph,
+    idx: ModuleIndex,
+    collector: *PrefixDeclCollector,
+    visited: *std.AutoHashMap(ModuleIndex, void),
+    allocator: std.mem.Allocator,
+) !void {
+    if (idx.isNone()) return;
+    if (visited.contains(idx)) return;
+    try visited.put(idx, {});
+    const mod = graph.getModule(idx) orelse return;
+    if (mod.module_type != .css) return;
+    for (mod.dependencies.items) |dep| {
+        if (graph.getModule(dep)) |dm| {
+            if (dm.module_type == .css)
+                try collectPrefixDeclsTree(graph, dep, collector, visited, allocator);
+        }
+    }
+    try collector.collectFromModule(allocator, mod);
 }
 
 /// CSS 모듈 트리를 dep-first 로 순회하며 external @import URL 을 collector
@@ -342,23 +430,34 @@ pub fn planCssChunks(
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(allocator);
 
-        // External @import URL 을 chunk 단위 dedup 수집 후 chunk 본문 상단에
-        // emit (CSS spec: 모든 @import 가 일반 규칙보다 앞). chunk 간 emit 은
-        // 허용 (모듈이 여러 chunk 에 인라인되면 같은 external URL 도 각
-        // chunk 의 상단에 1번씩 등장 — 런타임 fetch dedup 은 브라우저 책임).
+        // 보존 emit 영역 (chunk 단위 dedup, CSS spec 순서):
+        //   1. @charset (chunk 첫 모듈의 것, #3747)
+        //   2. external @import URL (#3321 P0-3)
+        //   3. bare @layer (#3747)
+        //   4. 본문
+        // chunk 간 emit 은 허용 (모듈이 여러 chunk 에 인라인되면 각 chunk 의
+        // 상단에 1 번씩 등장 — 런타임 fetch dedup 은 브라우저 책임).
+        var prefix_decls = PrefixDeclCollector.init();
+        defer prefix_decls.deinit(allocator);
         var ext_imports = ExternalImportCollector.init(allocator);
         defer ext_imports.deinit(allocator);
 
         emit_visited.clearRetainingCapacity();
-        // external collect 는 emit 과 동일 dep 트리 순회 — emitCssModuleTree 가
-        // 본문 emit 도중 visited 를 마킹해 같은 dep 가 2번 walk 되지 않는다.
-        // 따라서 external 수집은 emit 전에 별도 일회 순회로 처리한다.
+        // prefix decl / external collect 는 emit 과 동일 dep 트리 순회 —
+        // emitCssModuleTree 가 본문 emit 도중 visited 를 마킹해 같은 dep 가
+        // 2번 walk 되지 않으므로 별도 일회 순회.
         var collect_visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
         defer collect_visited.deinit();
         for (list.items) |mod| {
+            try collectPrefixDeclsTree(graph, mod.index, &prefix_decls, &collect_visited, allocator);
+        }
+        collect_visited.clearRetainingCapacity();
+        for (list.items) |mod| {
             try collectExternalImportsTree(graph, mod.index, &ext_imports, &collect_visited, allocator);
         }
+        try prefix_decls.appendCharsetTo(allocator, &buf);
         try ext_imports.appendTo(allocator, &buf);
+        try prefix_decls.appendLayersTo(allocator, &buf);
 
         for (list.items) |mod| {
             try emitCssModuleTree(allocator, graph, mod.index, &buf, &emit_visited);

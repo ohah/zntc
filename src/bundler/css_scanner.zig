@@ -23,6 +23,34 @@ pub const CssImportRecord = struct {
     condition_tail: []const u8 = "",
 };
 
+/// CSS 파일 상단의 `@charset` / bare `@layer` 선언. strip_end 가 통째로 잘라
+/// 버리던 항목들을 캡처해 emitter 가 본문 앞에 보존 emit (#3747).
+///
+/// `@charset "UTF-8"` — UA 가 인코딩 판정용, 파일 첫 byte 여야 valid. 번들엔
+/// 1개만 (첫 모듈 의 것). 추가는 silent drop.
+///
+/// bare `@layer reset, base, theme` — cascade layer 순서 정의. 본문 규칙
+/// 보다 *앞* 에 와야 의도된 순서 효력. 여러 모듈 의 bare @layer 는 source
+/// 등장 순서 보존.
+pub const CssPrefixDeclKind = enum { charset, layer_bare };
+pub const CssPrefixDecl = struct {
+    kind: CssPrefixDeclKind,
+    /// `@charset "UTF-8"` 또는 `@layer reset, base, theme` 형식의 raw text
+    /// (마지막 `;` 미포함 — emitter 가 통일된 `;\n` 부착).
+    text: []const u8,
+};
+
+/// CSS at-keyword 직후 byte 가 word boundary 인지 판정 — CSS whitespace
+/// (`' '`/`'\t'`/`'\n'`/`'\r'`/`'\x0c'`) 또는 `;` 또는 EOF.
+/// `startsWithAt(... "charset")` / `startsWithAt(... "layer")` 직후 가드로
+/// `@charsetXYZ`/`@layerOTHER` 같은 다른 at-rule 오인 차단 + multi-line
+/// `@layer\nreset, base;` 형식 보존.
+fn isAtKeywordBoundary(source: []const u8, pos_after_keyword: u32, len: u32) bool {
+    if (pos_after_keyword >= len) return true; // EOF
+    const c = source[pos_after_keyword];
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0c or c == ';';
+}
+
 /// ASCII case-insensitive prefix 매칭. RFC3986: URL scheme 은 case-insensitive.
 fn startsWithIgnoreCaseAscii(s: []const u8, prefix: []const u8) bool {
     if (s.len < prefix.len) return false;
@@ -45,13 +73,24 @@ pub fn isExternalCssSpecifier(specifier: []const u8) bool {
     return false;
 }
 
-/// CSS 소스에서 @import 규칙을 추출한다.
-/// @charset, 공백, 주석은 건너뛰고, 첫 번째 non-import 규칙에서 중단.
-/// 반환된 specifier는 source의 슬라이스. 결과 배열은 allocator로 할당.
-pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []const CssImportRecord {
+/// CSS 소스에서 @import 규칙 + @charset/@layer prefix 선언을 추출한다.
+/// @charset, bare @layer, 공백, 주석은 건너뛰고, 첫 번째 non-import-like 규칙
+/// 에서 중단. 반환된 specifier/text 는 source 의 슬라이스 — caller (parse_arena)
+/// 가 소유. 결과 배열은 allocator 로 할당.
+///
+/// 이전 (#3747 fix 전): @charset / bare @layer 가 strip_end 영역에 들어가
+/// silent drop. 본 함수가 두 종류를 prefix_decls 로 캡처해 emitter 가 보존
+/// 가능하도록 함.
+pub fn extractCssImportsWithPrefixes(allocator: std.mem.Allocator, source: []const u8) struct {
+    imports: []const CssImportRecord,
+    prefix_decls: []const CssPrefixDecl,
+} {
     const MAX_IMPORTS = 64;
-    var results: [MAX_IMPORTS]CssImportRecord = undefined;
-    var count: usize = 0;
+    const MAX_PREFIX = 32;
+    var imp_buf: [MAX_IMPORTS]CssImportRecord = undefined;
+    var pre_buf: [MAX_PREFIX]CssPrefixDecl = undefined;
+    var imp_count: usize = 0;
+    var pre_count: usize = 0;
 
     var pos: u32 = 0;
     const len: u32 = @intCast(source.len);
@@ -67,22 +106,49 @@ pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []con
             continue;
         }
 
-        // @charset 스킵
-        if (startsWithAt(source, pos, len, "charset")) {
-            pos = skipToSemicolon(source, pos, len);
+        // @charset 캡처 — 선언 텍스트 보존 (마지막 `;` 미포함)
+        // word-boundary 가드: `@charsetXYZ` 같은 다른 at-rule 을 charset 으로
+        // 오인하지 않도록 다음 byte 가 CSS whitespace 또는 `;` 또는 EOF 일 때만
+        // 진입 (code-review max — Angle B2).
+        if (startsWithAt(source, pos, len, "charset") and isAtKeywordBoundary(source, pos + 8, len)) {
+            const start = pos;
+            const after_semi = skipToSemicolon(source, pos, len);
+            // skipToSemicolon 은 `;` *다음* 위치 반환. 텍스트는 `;` 제외.
+            const text_end: u32 = if (after_semi > start and after_semi <= len and source[after_semi - 1] == ';')
+                after_semi - 1
+            else
+                after_semi;
+            if (pre_count < MAX_PREFIX) {
+                pre_buf[pre_count] = .{ .kind = .charset, .text = source[start..text_end] };
+                pre_count += 1;
+            }
+            pos = after_semi;
             continue;
         }
 
-        // @layer (bare, 세미콜론으로 끝나는 형태만) 스킵
+        // @layer (bare, 세미콜론으로 끝나는 형태만) 캡처 — block-form 은 본문 규칙
         if (startsWithAt(source, pos, len, "layer")) {
-            // @layer가 블록 { 을 포함하면 non-import 규칙이므로 중단
-            const after = pos + 6; // "@layer" 길이
-            if (after < len and source[after] != ' ' and source[after] != '\t' and source[after] != ';') {
-                break; // @layer가 아닌 다른 at-rule
+            // word-boundary: `@layer` 다음은 CSS whitespace(LF/CR 포함) / `;` / EOF
+            // 여야 함. `@layerOTHER` 는 break (code-review max — Angle B1 fix:
+            // 옛 코드가 `' '/'\\t'/';'` 만 허용 → `@layer\\nreset;` 가 캡처
+            // 실패 + 후속 @import 까지 break 로 silent drop).
+            if (!isAtKeywordBoundary(source, pos + 6, len)) {
+                break; // @layer 가 아닌 다른 at-rule
             }
-            // 세미콜론까지만 스킵 (block @layer는 중단)
+            // 세미콜론까지 또는 `{` (block-form) 위치 찾기
             const semi_pos = skipToSemicolonOrBrace(source, pos, len);
-            if (semi_pos < len and source[semi_pos] == '{') break;
+            if (semi_pos < len and source[semi_pos] == '{') break; // block-form → 본문
+            const start = pos;
+            // skipToSemicolonOrBrace 는 `;` 발견 시 *다음* 위치 (source[pos-1]==';'),
+            // `{` 발견 시 `{` *직전* 위치 반환. 여기선 ; case 만 진입.
+            const text_end: u32 = if (semi_pos > start and semi_pos <= len and source[semi_pos - 1] == ';')
+                semi_pos - 1
+            else
+                semi_pos;
+            if (pre_count < MAX_PREFIX) {
+                pre_buf[pre_count] = .{ .kind = .layer_bare, .text = source[start..text_end] };
+                pre_count += 1;
+            }
             pos = semi_pos;
             continue;
         }
@@ -112,15 +178,15 @@ pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []con
             else
                 "";
 
-            if (count < MAX_IMPORTS) {
+            if (imp_count < MAX_IMPORTS) {
                 const specifier_slice = source[spec.start..spec.end];
-                results[count] = .{
+                imp_buf[imp_count] = .{
                     .specifier = specifier_slice,
                     .span = .{ .start = start, .end = pos },
                     .is_external = isExternalCssSpecifier(specifier_slice),
                     .condition_tail = tail_slice,
                 };
-                count += 1;
+                imp_count += 1;
             }
             continue;
         }
@@ -129,10 +195,31 @@ pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []con
         break;
     }
 
-    if (count == 0) return &.{};
-    const owned = allocator.alloc(CssImportRecord, count) catch return &.{};
-    @memcpy(owned, results[0..count]);
-    return owned;
+    const imports_out: []const CssImportRecord = if (imp_count == 0)
+        &.{}
+    else blk: {
+        const owned = allocator.alloc(CssImportRecord, imp_count) catch break :blk &.{};
+        @memcpy(owned, imp_buf[0..imp_count]);
+        break :blk owned;
+    };
+    const prefix_out: []const CssPrefixDecl = if (pre_count == 0)
+        &.{}
+    else blk: {
+        const owned = allocator.alloc(CssPrefixDecl, pre_count) catch break :blk &.{};
+        @memcpy(owned, pre_buf[0..pre_count]);
+        break :blk owned;
+    };
+    return .{ .imports = imports_out, .prefix_decls = prefix_out };
+}
+
+/// 기존 호출부 호환 wrapper — @import 만 반환. caller 가 prefix_decls 를 안
+/// 보므로 wrapper 가 즉시 해제 (안 하면 caller 의 `defer allocator.free(imports)`
+/// 가 prefix_decls 메모리는 그대로 leak — GPA 가 잡음). 신규 콜러는
+/// `extractCssImportsWithPrefixes` 사용 권장.
+pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []const CssImportRecord {
+    const result = extractCssImportsWithPrefixes(allocator, source);
+    if (result.prefix_decls.len > 0) allocator.free(result.prefix_decls);
+    return result.imports;
 }
 
 const SpecifierResult = struct {
