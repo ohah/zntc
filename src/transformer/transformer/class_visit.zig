@@ -26,6 +26,20 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
         const new_super = try self.visitNode(super_idx);
 
+        // VANON fix: anonymous class_expression + static private member 일 때 tmp name 부여를
+        // V8 fix 보다 *앞* 으로 이동. 그러면 V8 fix 의 class_name_span_opt 가 새로 합성된 tmp
+        // 이름을 보고 proto_chain 활성화 → super-prop access 시 raw extends inline (side-effect
+        // 중복) 회피. body_idx 만 미리 읽어 classBodyHasStaticPrivateMember 검사.
+        const _anon_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+        const _lower_pm_pre = self.options.unsupported.class_private_method;
+        const _lower_pf_pre = self.options.unsupported.class_private_field;
+        if ((_lower_pm_pre or _lower_pf_pre) and node.tag == .class_expression and new_name.isNone() and
+            classBodyHasStaticPrivateMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre))
+        {
+            const tmp_span = try es_helpers.makeTempVarSpan(self);
+            new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+        }
+
         const saved_super_class = self.current_super_class;
         const saved_super_class_old_idx = self.current_super_class_old_idx;
         // #3680-F5/F6: inner class 가 extends 없으면 outer 의 current_super_class 를 명시적으로 null 로
@@ -45,14 +59,39 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         const saved_super_via_proto_chain = self.current_super_via_proto_chain;
         self.current_super_via_proto_chain = false;
         defer self.current_super_via_proto_chain = saved_super_via_proto_chain;
+        // VSHADOW: V8 fix trigger 시 alias var decl 을 별도 array 에 reserve, class 뒤에 emit.
+        // method body 안 super-prop access 는 alias 식별자 (unique tmp name) 참조 → local
+        // `let D = 1` shadow 영향 차단. alias init 식은 class 와 *같은* outer scope 에서 평가되어
+        // raw class binding D 를 정확히 참조.
+        var super_proto_alias_decl: ?NodeIndex = null;
         if (!super_idx.isNone()) {
             const super_node = self.ast.getNode(super_idx);
             const is_simple_id = super_node.tag == .identifier_reference or super_node.tag == .binding_identifier;
             // class self name: raw_name_idx (source 의 binding) 우선, 없으면 visit 결과 new_name.
             const class_name_span_opt: ?Span = self.getClassNameSpan(raw_name_idx) orelse self.getClassNameSpan(new_name);
             if (!is_simple_id and class_name_span_opt != null) {
-                self.current_super_class = class_name_span_opt;
-                self.current_super_class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
+                // VSHADOW: alias var 생성 — `var _<n>_super = globalThis.Object.getPrototypeOf(D.prototype)`
+                // (instance) 또는 `... = globalThis.Object.getPrototypeOf(D)` (static, 단 fast path
+                // class 진입 시 is_static=false 로 reset 되므로 instance form 만 emit; static private
+                // method body 안에서 V8 trigger 되는 케이스는 buildStandaloneFunc 의 is_static set 이
+                // 별도 처리 — 여기 alias 는 instance prototype 기준).
+                const alias_span = try es_helpers.makeTempVarSpan(self);
+                const alias_binding = try es_helpers.makeBindingIdentifier(self, alias_span);
+                const class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
+                const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span_opt.?, class_old_idx);
+                const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
+                const class_proto = try es_helpers.makeStaticMember(self, class_ref, proto_prop, node.span);
+                const global_ref = try es_helpers.makeIdentifierRef(self, "globalThis");
+                const object_ref = try es_helpers.makeIdentifierRef(self, "Object");
+                const get_proto = try es_helpers.makeIdentifierRef(self, "getPrototypeOf");
+                const global_object = try es_helpers.makeStaticMember(self, global_ref, object_ref, node.span);
+                const callee = try es_helpers.makeStaticMember(self, global_object, get_proto, node.span);
+                const init_call = try es_helpers.makeCallExpr(self, callee, &.{class_proto}, node.span);
+                const declarator = try es_helpers.makeDeclarator(self, alias_binding, init_call, node.span);
+                super_proto_alias_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
+                // super-prop access 가 alias 식별자 그대로 참조하도록 set.
+                self.current_super_class = alias_span;
+                self.current_super_class_old_idx = .none;
                 self.current_super_via_proto_chain = true;
             } else {
                 self.current_super_class = super_node.span;
@@ -105,12 +144,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         const lower_pm = self.options.unsupported.class_private_method;
         const lower_pf = self.options.unsupported.class_private_field;
-        if ((lower_pm or lower_pf) and node.tag == .class_expression and new_name.isNone() and
-            classBodyHasStaticPrivateMember(self, current_body_idx, lower_pm, lower_pf))
-        {
-            const tmp_span = try es_helpers.makeTempVarSpan(self);
-            new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
-        }
+        // VANON fix: tmp name 합성은 이미 V8 fix 앞에서 처리됨 (위 _anon_body_idx 블록). 여기선 no-op.
         var had_private_methods = false;
         var had_private_fields = false;
 
@@ -127,10 +161,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             else
                 null;
             var new_body: NodeIndex = .none;
-            // class_declaration 위치에서만 별도 array 사용 (class_expression 은 expression
-            // context 라 별도 statement emit 불가 — pre_stmts 유지).
-            const desc_out: ?*std.ArrayList(NodeIndex) =
-                if (node.tag == .class_declaration) &static_descriptors else null;
+            // V_EXPR fix: class_declaration 과 class_expression 모두 별도 array 사용.
+            // class_expression 의 경우 wrapClassExprInIIFE 가 post_stmts 위치 (IIFE 안 class_decl
+            // 뒤) 로 emit 하므로 TDZ 회피.
+            const desc_out: ?*std.ArrayList(NodeIndex) = &static_descriptors;
             const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
                 self,
                 current_body_idx,
@@ -184,12 +218,19 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 });
 
                 if (node.tag == .class_expression) {
+                    // V_EXPR fix: post_stmts = super_alias + static_descriptors + static_block_iifes
+                    // — alias/descriptor 가 IIFE 안에서 class_decl 뒤에 emit (receiver=D TDZ 회피).
+                    const scratch_top_e = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top_e);
+                    if (super_proto_alias_decl) |alias_decl| try self.scratch.append(self.allocator, alias_decl);
+                    try self.scratch.appendSlice(self.allocator, static_descriptors.items);
+                    try self.scratch.appendSlice(self.allocator, static_block_iifes.items);
                     return wrapClassExprInIIFE(
                         self,
                         static_key_memos.items,
                         pre_stmts.items,
                         class_result,
-                        static_block_iifes.items,
+                        self.scratch.items[scratch_top_e..],
                         new_name,
                         node.span,
                     );
@@ -202,6 +243,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     try self.pending_nodes.append(self.allocator, stmt);
                 }
                 try self.pending_nodes.append(self.allocator, class_result);
+                // VSHADOW: V8 fix 의 super-prop alias 를 class 뒤에 emit (D init 후 평가되도록).
+                if (super_proto_alias_decl) |alias_decl| try self.pending_nodes.append(self.allocator, alias_decl);
                 // V1 정밀 fix: static descriptor 는 class 뒤, static block IIFE 앞에 emit.
                 // receiver=D 가 init 후 평가됨 + IIFE 가 descriptor (_n 등) 참조 가능.
                 for (static_descriptors.items) |desc| {
@@ -224,12 +267,17 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             });
 
             if (node.tag == .class_expression) {
+                // V_EXPR + VSHADOW fix: super_alias + descriptor 를 IIFE 안 class_decl 뒤에 emit.
+                const scratch_top_e2 = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top_e2);
+                if (super_proto_alias_decl) |alias_decl| try self.scratch.append(self.allocator, alias_decl);
+                try self.scratch.appendSlice(self.allocator, static_descriptors.items);
                 return wrapClassExprInIIFE(
                     self,
                     &.{},
                     pre_stmts.items,
                     class_result,
-                    &.{},
+                    self.scratch.items[scratch_top_e2..],
                     new_name,
                     node.span,
                 );
@@ -239,6 +287,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 try self.pending_nodes.append(self.allocator, stmt);
             }
             try self.pending_nodes.append(self.allocator, class_result);
+            // VSHADOW: super-prop alias 를 class 뒤에 emit.
+            if (super_proto_alias_decl) |alias_decl| try self.pending_nodes.append(self.allocator, alias_decl);
             // V1 정밀 fix: static descriptor 를 class 뒤에 emit (static block 없이 private
             // member 만 있는 경로).
             for (static_descriptors.items) |desc| {

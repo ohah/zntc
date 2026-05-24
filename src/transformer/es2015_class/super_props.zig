@@ -297,25 +297,19 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         /// V8 정밀 fix: extends 가 non-identifier (e.g. `extends getBase()`) 일 때
-        /// `Object.getPrototypeOf(<ClassName>.prototype)` 형태로 emit — class declaration
-        /// 시 고정된 prototype chain 을 1회 참조로 활용.
-        fn buildSuperBaseViaProtoChain(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            // base = ClassName.prototype (instance) / ClassName (static)
-            const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, self.current_super_class_old_idx);
-            const arg = if (self.current_super_is_static) class_ref else blk: {
-                const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
-                break :blk try es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
-            };
-            // Object.getPrototypeOf(arg) — V6 와 동일하게 globalThis.Object 사용해 user shadow 차단.
-            const global_ref = try es_helpers.makeIdentifierRef(self, "globalThis");
-            const object_ref = try es_helpers.makeIdentifierRef(self, "Object");
-            const get_proto_ref = try es_helpers.makeIdentifierRef(self, "getPrototypeOf");
-            const global_object = try es_helpers.makeStaticMember(self, global_ref, object_ref, span);
-            const callee = try es_helpers.makeStaticMember(self, global_object, get_proto_ref, span);
-            return es_helpers.makeCallExpr(self, callee, &.{arg}, span);
+        /// `<alias_name>` (alias 식별자) 만 반환 — class_visit 이 미리 hoist 한
+        /// `var <alias_name> = Object.getPrototypeOf(<ClassName>.prototype)` (instance) 또는
+        /// `var <alias_name> = Object.getPrototypeOf(<ClassName>)` (static) 를 참조.
+        /// VSHADOW: method body 안 `let D = 1` 같은 local shadow 가 발생해도 alias 는
+        /// outer scope 의 unique binding 이라 영향 받지 않는다 (raw `D.prototype` reference 회피).
+        fn buildSuperBaseViaProtoChain(self: *Transformer, alias_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            _ = span;
+            return es_helpers.makeIdentifierRefFromSpan(self, alias_name_span);
         }
 
-        fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+        /// V_OPT fix: es2020.zig (optional chain super lowering) 도 이 helper 를 호출해
+        /// via_proto_chain / non-derived / is_static 분기를 일관되게 처리해야 한다.
+        pub fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse {
                 // non-derived class — fallback to spec home object [[Prototype]]
                 return buildNonDerivedSuperBase(self, span);

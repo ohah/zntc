@@ -545,6 +545,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const super_props_mod = class_super_props.SuperProps(Transformer);
         pub const isSuperCall = super_props_mod.isSuperCall;
         pub const lowerSuperCall = super_props_mod.lowerSuperCall;
+        pub const buildSuperBaseRef = super_props_mod.buildSuperBaseRef;
         pub const isSuperMethodCall = super_props_mod.isSuperMethodCall;
         pub const lowerSuperMethodCall = super_props_mod.lowerSuperMethodCall;
         pub const isSuperMember = super_props_mod.isSuperMember;
