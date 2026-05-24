@@ -49,11 +49,75 @@ pub const node_builtins: []const []const u8 = &.{
 /// 직렬화되던 걸 분산 — `hash(cache_key) % N` 로 샤드를 골라 서로 다른 cache line 을 쓰게 한다.
 const num_resolve_cache_shards = 16;
 
+/// Path string interning pool (PR resolve interning, oxc/parcel 패턴).
+///
+/// 모든 resolve 결과의 path string 을 단일 pool 에 저장. 같은 path 가 여러 cache 엔트리,
+/// caller (Module / CachedResolvedDep) 에서 등장해도 *동일 slice 참조*.
+///
+/// 메모리 lifetime:
+/// - `arena` 가 모든 interned bytes 소유. `ResolveCache.deinit` 시 한 번에 free.
+/// - 모든 caller 가 *borrow only* — `allocator.free(interned_path)` 호출 금지.
+///
+/// thread-safety: `mutex` 로 보호. `intern` 호출이 hot path 이므로 향후 shard 분리 가능.
+pub const PathInternPool = struct {
+    arena: std.heap.ArenaAllocator,
+    /// interned bytes set. key = slice into `arena`. value = void.
+    set: std.StringHashMapUnmanaged(void) = .{},
+    mutex: std.Thread.Mutex = .{},
+
+    pub fn init(parent_allocator: std.mem.Allocator) PathInternPool {
+        return .{ .arena = std.heap.ArenaAllocator.init(parent_allocator) };
+    }
+
+    pub fn deinit(self: *PathInternPool, parent_allocator: std.mem.Allocator) void {
+        self.set.deinit(parent_allocator);
+        self.arena.deinit();
+    }
+
+    /// path 가 pool 에 있으면 그 slice 반환, 없으면 dupe 후 추가.
+    /// 반환된 slice 의 lifetime = pool 의 lifetime (= ResolveCache lifetime).
+    pub fn intern(self: *PathInternPool, parent_allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.set.getKey(path)) |existing| return existing;
+        const owned = try self.arena.allocator().dupe(u8, path);
+        try self.set.put(parent_allocator, owned, {});
+        return owned;
+    }
+
+    /// 같은 lock 안에서 두 path 를 batch intern — re-locking 회피.
+    pub fn internPair(
+        self: *PathInternPool,
+        parent_allocator: std.mem.Allocator,
+        path1: []const u8,
+        path2: ?[]const u8,
+    ) std.mem.Allocator.Error!struct { []const u8, ?[]const u8 } {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const p1 = blk: {
+            if (self.set.getKey(path1)) |e| break :blk e;
+            const owned = try self.arena.allocator().dupe(u8, path1);
+            try self.set.put(parent_allocator, owned, {});
+            break :blk owned;
+        };
+        const p2: ?[]const u8 = if (path2) |p| blk: {
+            if (self.set.getKey(p)) |e| break :blk e;
+            const owned = try self.arena.allocator().dupe(u8, p);
+            try self.set.put(parent_allocator, owned, {});
+            break :blk owned;
+        } else null;
+        return .{ p1, p2 };
+    }
+};
+
 pub const ResolveCache = struct {
     allocator: std.mem.Allocator,
     resolver: Resolver,
     /// 병렬 resolve 결과 캐시 — `num_resolve_cache_shards` 개의 (mutex + map) 로 샤딩.
     cache_shards: [num_resolve_cache_shards]CacheShard,
+    /// PR resolve interning: 모든 resolved path 의 single-source-of-truth pool.
+    /// caller 는 *borrow only*, free 안 함. `deinit` 시 일괄 reclaim.
+    path_pool: PathInternPool,
     external_patterns: []const []const u8,
     platform: Platform,
     packages_external: bool = false,
@@ -262,6 +326,7 @@ pub const ResolveCache = struct {
             .allocator = allocator,
             .resolver = r,
             .cache_shards = cache_shards,
+            .path_pool = PathInternPool.init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
             .packages_external = options.packages_external,
@@ -281,18 +346,17 @@ pub const ResolveCache = struct {
         self.realpath_cache.deinit();
         self.pkg_json_cache.deinit();
 
-        // 캐시된 경로 문자열 해제
+        // 캐시된 cache_key 만 free — value 의 path/resolve_dir 는 path_pool 소유 (자동 reclaim).
         for (&self.cache_shards) |*shard| {
             var it = shard.map.iterator();
             while (it.next()) |entry| {
                 self.allocator.free(entry.key_ptr.*);
-                switch (entry.value_ptr.*) {
-                    .resolved => |m| self.freeCachedResolvedModule(m),
-                    .not_found => {},
-                }
             }
             shard.map.deinit();
         }
+
+        // PR resolve interning: path pool 일괄 reclaim.
+        self.path_pool.deinit(self.allocator);
 
         // browser overrides 캐시 해제
         var bd_it = self.browser_overrides_cache.iterator();
@@ -382,19 +446,11 @@ pub const ResolveCache = struct {
             defer if (thread_safe) cache_shard.mutex.unlock();
             if (cache_shard.map.get(cache_key)) |cached| {
                 return switch (cached) {
-                    // Phase 1 의 cache 는 file/disabled 만 저장 (putCache 호출처 검증).
-                    // path 만 caller 소유로 dupe — 다른 필드는 by-value copy.
+                    // PR resolve interning: cache 의 path/resolve_dir 는 *interned* — caller 가
+                    // borrow only. dupe 회피.
                     .resolved => |m| switch (m) {
-                        .file => |f| fileResult(
-                            self.allocator.dupe(u8, f.path) catch return error.OutOfMemory,
-                            try self.dupeOptional(f.resolve_dir),
-                            f.module_type,
-                            f.is_module_field,
-                        ),
-                        .disabled => |d| disabledResult(
-                            self.allocator.dupe(u8, d.path) catch return error.OutOfMemory,
-                            d.module_type,
-                        ),
+                        .file => |f| fileResult(f.path, f.resolve_dir, f.module_type, f.is_module_field),
+                        .disabled => |d| disabledResult(d.path, d.module_type),
                         .virtual, .dataurl, .external, .custom => unreachable,
                     },
                     .not_found => error.ModuleNotFound,
@@ -418,15 +474,14 @@ pub const ResolveCache = struct {
                     switch (self.getBareModuleOverride(source_dir, effective_spec)) {
                         .disabled => {
                             const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
+                            // interning: pool 에 store + 원본 free. cache + caller 둘 다 interned.
+                            const result = try self.internDisabled(disabled_path, .js, true);
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
                             if (thread_safe) cache_shard.mutex.lock();
                             defer if (thread_safe) cache_shard.mutex.unlock();
-                            self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
-                                .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
-                                .module_type = .js,
-                            } } }) catch {};
-                            return disabledResult(disabled_path, .js);
+                            self.putCache(cache_key, .{ .resolved = result }) catch {};
+                            return result;
                         },
                         .remap => |rep| {
                             remap_buf[remap_depth] = effective_spec;
@@ -477,15 +532,13 @@ pub const ResolveCache = struct {
         // 반환한 경우 — disabled variant 로 캐싱 + 반환. 이 분기 없이는 `.file` 로
         // cache 되어 graph 단계에서 일반 파싱 시도 → "No loader configured" 에러.
         if (result.disabled) {
+            // interning: result.path free + pool intern + cache & caller borrow.
+            const disabled = try self.internDisabled(result.path, result.module_type, true);
+            if (result.resolve_dir) |dir| self.allocator.free(dir);
             var store_scope = profile.begin(.resolve_cache_store);
             defer store_scope.end();
-            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-            self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
-                .path = cache_path,
-                .module_type = result.module_type,
-            } } }) catch {};
-            if (result.resolve_dir) |dir| self.allocator.free(dir);
-            return disabledResult(result.path, result.module_type);
+            self.putCache(cache_key, .{ .resolved = disabled }) catch {};
+            return disabled;
         }
 
         if (self.platform.isBrowserLike()) {
@@ -494,50 +547,38 @@ pub const ResolveCache = struct {
             const override = self.getBrowserOverride(result.path);
             switch (override) {
                 .disabled => {
+                    const disabled = try self.internDisabled(result.path, result.module_type, true);
+                    if (result.resolve_dir) |dir| self.allocator.free(dir);
                     var store_scope = profile.begin(.resolve_cache_store);
                     defer store_scope.end();
-                    const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                    self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
-                        .path = cache_path,
-                        .module_type = result.module_type,
-                    } } }) catch {};
-                    if (result.resolve_dir) |dir| self.allocator.free(dir);
-                    return disabledResult(result.path, result.module_type);
+                    self.putCache(cache_key, .{ .resolved = disabled }) catch {};
+                    return disabled;
                 },
                 .remap => |rep| {
                     // rep 는 package-root 상대. Resolver.resolve(pkg_root, "./rep") 로
                     // 확장자 / directory index 등 정상 resolve path 재사용. 성공 시 대체 결과 반환.
                     if (findPackageDirPath(result.path)) |pkg_root| {
                         const spec_buf = std.fmt.allocPrint(self.allocator, "./{s}", .{rep}) catch {
-                            // fallthrough
+                            // fallthrough — interning: result intern + cache store.
+                            const file_result = try self.internAndFreeFile(result);
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
-                            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                            const cache_resolve_dir = try self.dupeOptional(result.resolve_dir);
-                            self.putCache(cache_key, .{ .resolved = .{ .file = .{
-                                .path = cache_path,
-                                .resolve_dir = cache_resolve_dir,
-                                .module_type = result.module_type,
-                            } } }) catch {};
-                            return fileResult(result.path, result.resolve_dir, result.module_type, result.is_module_field);
+                            self.putCache(cache_key, .{ .resolved = file_result }) catch {};
+                            return file_result;
                         };
                         defer self.allocator.free(spec_buf);
                         if (thread_safe) cache_shard.mutex.unlock();
                         const maybe_replaced = self.resolver.resolve(pkg_root, spec_buf);
                         if (thread_safe) cache_shard.mutex.lock();
                         if (maybe_replaced) |replaced| {
+                            // 원본 result free — replaced 가 새 owner.
                             self.allocator.free(result.path);
                             if (result.resolve_dir) |dir| self.allocator.free(dir);
+                            const file_result = try self.internAndFreeFile(replaced);
                             var store_scope = profile.begin(.resolve_cache_store);
                             defer store_scope.end();
-                            const cache_path = self.allocator.dupe(u8, replaced.path) catch return error.OutOfMemory;
-                            const cache_resolve_dir = try self.dupeOptional(replaced.resolve_dir);
-                            self.putCache(cache_key, .{ .resolved = .{ .file = .{
-                                .path = cache_path,
-                                .resolve_dir = cache_resolve_dir,
-                                .module_type = replaced.module_type,
-                            } } }) catch {};
-                            return fileResult(replaced.path, replaced.resolve_dir, replaced.module_type, replaced.is_module_field);
+                            self.putCache(cache_key, .{ .resolved = file_result }) catch {};
+                            return file_result;
                         } else |_| {
                             // fallthrough — replacement 해결 실패 시 원본 사용.
                         }
@@ -547,22 +588,16 @@ pub const ResolveCache = struct {
             }
         }
 
+        const file_result = try self.internAndFreeFile(result);
         {
             var store_scope = profile.begin(.resolve_cache_store);
             defer store_scope.end();
-            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-            const cache_resolve_dir = try self.dupeOptional(result.resolve_dir);
-            self.putCache(cache_key, .{ .resolved = .{ .file = .{
-                .path = cache_path,
-                .resolve_dir = cache_resolve_dir,
-                .module_type = result.module_type,
-            } } }) catch {};
+            self.putCache(cache_key, .{ .resolved = file_result }) catch {};
         }
-
-        return fileResult(result.path, result.resolve_dir, result.module_type, result.is_module_field);
+        return file_result;
     }
 
-    /// path 는 caller 가 이미 dupe 한 것을 전달 — caller 가 메모리 owner.
+    /// path 는 *interned* (path_pool 소유). caller 는 borrow only — free 안 함.
     fn fileResult(path: []const u8, resolve_dir: ?[]const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
         return .{ .file = .{
             .path = path,
@@ -576,32 +611,42 @@ pub const ResolveCache = struct {
         return .{ .disabled = .{ .path = path, .module_type = module_type } };
     }
 
-    fn dupeOptional(self: *ResolveCache, value: ?[]const u8) error{OutOfMemory}!?[]const u8 {
-        return if (value) |v| self.allocator.dupe(u8, v) catch return error.OutOfMemory else null;
-    }
-
-    fn freeCachedResolvedModule(self: *ResolveCache, m: ResolvedModule) void {
-        switch (m) {
-            .file => |f| {
-                self.allocator.free(f.path);
-                if (f.resolve_dir) |dir| self.allocator.free(dir);
-            },
-            .disabled => |d| self.allocator.free(d.path),
-            else => {},
+    /// PR resolve interning helper — resolver 가 alloc 한 path 를 intern + 원본 free.
+    /// 반환된 ResolvedModule 의 path 는 path_pool 소유 (caller borrow only).
+    /// **OOM 시 input 도 free** (errdefer) — single-owner invariant 일관.
+    fn internAndFreeFile(self: *ResolveCache, result: resolver_mod.ResolveResult) error{OutOfMemory}!ResolvedModule {
+        errdefer {
+            self.allocator.free(result.path);
+            if (result.resolve_dir) |dir| self.allocator.free(dir);
         }
+        const paths = try self.path_pool.internPair(self.allocator, result.path, result.resolve_dir);
+        // resolver 원본 free — pool 이 단일 owner.
+        self.allocator.free(result.path);
+        if (result.resolve_dir) |dir| self.allocator.free(dir);
+        return .{ .file = .{
+            .path = paths[0],
+            .resolve_dir = paths[1],
+            .module_type = result.module_type,
+            .is_module_field = result.is_module_field,
+        } };
     }
 
-    /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
+    /// disabled variant 용 — path 단일 intern. `owns_input=true` 면 원본 free.
+    /// **OOM 시 input 도 free** (errdefer) — single-owner invariant 일관.
+    fn internDisabled(self: *ResolveCache, path: []const u8, module_type: ModuleType, owns_input: bool) error{OutOfMemory}!ResolvedModule {
+        errdefer if (owns_input) self.allocator.free(path);
+        const interned = try self.path_pool.intern(self.allocator, path);
+        if (owns_input) self.allocator.free(path);
+        return .{ .disabled = .{ .path = interned, .module_type = module_type } };
+    }
+
+    /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키 free (value 의 path 는 pool 소유).
     /// 호출자는 `cacheShardFor(cache_key)` 의 mutex 를 쥔 상태여야 한다 (resolveInner 가 그렇게 한다).
     fn putCache(self: *ResolveCache, cache_key: []const u8, value: CachedResult) !void {
         const map = &self.cacheShardFor(cache_key).map;
-        // 기존 엔트리가 있으면 해제
+        // 기존 엔트리가 있으면 key 만 free (value 의 path 는 path_pool 소유).
         if (map.fetchRemove(cache_key)) |old| {
             self.allocator.free(old.key);
-            switch (old.value) {
-                .resolved => |m| self.freeCachedResolvedModule(m),
-                .not_found => {},
-            }
         }
         const key_owned = self.allocator.dupe(u8, cache_key) catch return error.OutOfMemory;
         map.put(key_owned, value) catch return error.OutOfMemory;
@@ -772,6 +817,40 @@ pub const ResolveCache = struct {
     /// 슬라이스는 여전히 **borrow**(소유모델 불변) — 호출자(Bundler)가
     /// combined 버퍼 소유·해제. MF seam 을 옵션 레이어가 아닌 번들러
     /// 단일 지점에서 주입하는 데 사용.
+    /// PR resolve interning: 외부 (plugin) ResolvedModule 의 path 를 pool 로 옮김.
+    /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
+    /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
+    ///
+    /// **interning 적용 variant**: `.file`, `.disabled` (caller borrow only, free 금지).
+    /// **pass-through variant** (`.virtual`, `.dataurl`, `.external`, `.custom`): m 그대로 반환.
+    /// 이 variant 들은 *runtime_helper_modules* (virtual) / future plugin layer 에서 사용.
+    /// path 의 owner = plugin context (lifetime borrow per resolve_imports.zig:338-342 contract).
+    /// **간 leak 경고**: plugin path 가 단명 allocator alloc 면 누수. 향후 PR 5 에서 interning.
+    pub fn internResolvedModule(self: *ResolveCache, m: ResolvedModule) !ResolvedModule {
+        return switch (m) {
+            .file => |f| blk: {
+                // errdefer: OOM 시 input 도 free (single-owner invariant 유지).
+                errdefer {
+                    self.allocator.free(f.path);
+                    if (f.resolve_dir) |d| self.allocator.free(d);
+                }
+                const paths = try self.path_pool.internPair(self.allocator, f.path, f.resolve_dir);
+                self.allocator.free(f.path);
+                if (f.resolve_dir) |d| self.allocator.free(d);
+                break :blk .{ .file = .{
+                    .path = paths[0],
+                    .resolve_dir = paths[1],
+                    .module_type = f.module_type,
+                    .is_module_field = f.is_module_field,
+                } };
+            },
+            .disabled => |d| try self.internDisabled(d.path, d.module_type, true),
+            // virtual/dataurl/external/custom — 옛 동작 유지 (runtime_helper_modules 등 정상 path).
+            // path owner = plugin context. interning 은 PR 5 plugin layer 영역.
+            .virtual, .dataurl, .external, .custom => m,
+        };
+    }
+
     pub fn setExternalPatterns(self: *ResolveCache, patterns: []const []const u8) void {
         self.external_patterns = patterns;
     }

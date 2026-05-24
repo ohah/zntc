@@ -167,10 +167,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
         };
         if (resolved) |m| switch (m) {
             .file => |f| {
-                defer {
-                    self.allocator.free(f.path);
-                    if (f.resolve_dir) |dir| self.allocator.free(dir);
-                }
+                // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only, free 금지).
                 const dep_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
                 _ = try graph_requested_exports.requestAll(self, dep_idx);
                 // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
@@ -185,8 +182,8 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
                 });
                 try self.linkDependency(mod_index, dep_idx);
             },
-            // require.context 의 disabled / virtual 등 variant 는 Phase 1 cache 에서 반환되지 않음.
-            .disabled => |d| self.allocator.free(d.path),
+            // require.context 의 disabled / virtual 등 variant — path_pool borrow only.
+            .disabled => {},
             .virtual, .dataurl, .external, .custom => unreachable,
         };
     }
@@ -289,11 +286,7 @@ pub fn applyResolveResult(
         // virtual/dataurl/external/custom 은 PR 5 plugin layer 도입 시 처리.
         switch (m) {
             .file => |f| {
-                defer {
-                    self.allocator.free(f.path);
-                    if (f.resolve_dir) |dir| self.allocator.free(dir);
-                }
-
+                // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only).
                 // Worker: 메인 그래프에 모듈로 추가하지 않고 경로만 수집
                 if (record.kind == .worker) {
                     const path_dupe = try self.allocator.dupe(u8, f.path);
@@ -330,7 +323,8 @@ pub fn applyResolveResult(
                 if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
             },
             .disabled => |d| {
-                defer self.allocator.free(d.path);
+                // PR resolve interning: d.path 는 path_pool 소유 (borrow only).
+                _ = d;
                 const dep_idx = try self.addDisabledModule(record.specifier);
                 _ = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, dep_idx);
                 try appendResolvedDep(self, mod_idx, .{
@@ -458,13 +452,15 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
                     },
                     error.OutOfMemory => return error.OutOfMemory,
                 };
-                // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
+                // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀.
+                // PR resolve interning: plugin 결과를 cache 의 path_pool 로 intern (caller borrow 일관).
                 if (resolve_result) |plugin_result| {
+                    const interned = try self.resolve_cache.internResolvedModule(plugin_result);
                     if (should_link) {
-                        try applyResolveResult(self, mod_idx, rec_i, record, plugin_result, false);
+                        try applyResolveResult(self, mod_idx, rec_i, record, interned, false);
                     } else {
                         self.markRecordLazyResolved(mod_idx, rec_i);
-                        self.discardResolvedModule(plugin_result);
+                        self.discardResolvedModule(interned);
                     }
                     continue;
                 }

@@ -366,18 +366,8 @@ pub const NapiPlugin = struct {
         }
 
         const resolved = (resolve_cache.resolveThreadSafe(source_dir, source, .static_import) catch return js_null) orelse return js_null;
-        // resolveThreadSafe 는 path(+file.resolve_dir)를 self.allocator 로 dupe → caller free 책임.
-        defer switch (resolved) {
-            .file => |f| {
-                resolve_cache.allocator.free(f.path);
-                if (f.resolve_dir) |rd| resolve_cache.allocator.free(rd);
-            },
-            .virtual => |v| resolve_cache.allocator.free(v.path),
-            .external => |e| resolve_cache.allocator.free(e.path),
-            .disabled => |d| resolve_cache.allocator.free(d.path),
-            .custom => |cm| resolve_cache.allocator.free(cm.path),
-            .dataurl => {},
-        };
+        // PR resolve interning: file/disabled 의 path 는 path_pool 소유 (borrow only) — free 금지.
+        // virtual/external/custom/dataurl variant 는 cache 가 반환 안 함 (plugin 만 생성, 여기 도달 안 함).
 
         const id_path: ?[]const u8 = switch (resolved) {
             .file => |f| f.path,

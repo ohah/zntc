@@ -148,7 +148,12 @@ pub fn scanModule(self: *ModuleGraph, idx: ModuleIndex) ScanResult {
                         },
                     };
                     if (resolve_result) |plugin_result| {
-                        results[rec_i] = .{ .resolved = plugin_result, .is_error = false, .skipped = !should_link };
+                        // PR resolve interning: plugin path → cache.path_pool 로 옮김 (caller borrow 일관).
+                        const interned = self.resolve_cache.internResolvedModule(plugin_result) catch |err| {
+                            self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, @errorName(err), record.specifier);
+                            continue;
+                        };
+                        results[rec_i] = .{ .resolved = interned, .is_error = false, .skipped = !should_link };
                         continue;
                     }
                 }
