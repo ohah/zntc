@@ -405,3 +405,96 @@ test "F1: text fallback escape detection — member-obj only 면 escape 아님 (
     defer h.deinit(std.testing.allocator);
     try expectMembers(&h.access, &.{ "a", "b" });
 }
+
+// PR #3736: analyzeNamespaceAccessTextOnly — 통합 분석기의 text-only mode (binding_scanner 동치).
+// 옛 collectNamespaceAccesses 의 분석 의미를 그대로 표현.
+
+fn runTextOnly(allocator: std.mem.Allocator, source: []const u8, ns_name: []const u8) !struct {
+    scanner: Scanner,
+    parser: Parser,
+    access: NamespaceAccess,
+    fn deinit(self: *@This(), a: std.mem.Allocator) void {
+        self.access.deinit(a);
+        self.parser.deinit();
+        self.scanner.deinit();
+    }
+} {
+    const namespace_access_mod = @import("linker/namespace_access.zig");
+    var scanner = try Scanner.init(allocator, source);
+    errdefer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    errdefer parser.deinit();
+    _ = try parser.parse();
+    var index = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true);
+    defer index.deinit(allocator);
+    const access = try namespace_access_mod.analyzeNamespaceAccessTextOnly(allocator, &parser.ast, &index, ns_name, null);
+    return .{ .scanner = scanner, .parser = parser, .access = access };
+}
+
+test "TextOnly: computed access → opaque" {
+    var h = try runTextOnly(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.foo();
+        \\const k = 'bar'; M[k];
+    , "M");
+    defer h.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
+}
+
+test "TextOnly: escape (value position) → opaque" {
+    var h = try runTextOnly(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.foo();
+        \\const r = M;
+    , "M");
+    defer h.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
+}
+
+test "TextOnly: member-only → 정확 props 수집" {
+    var h = try runTextOnly(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.foo();
+        \\M.bar();
+    , "M");
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{ "foo", "bar" });
+}
+
+test "TextOnly: 사용 안 됨 → empty member_only" {
+    var h = try runTextOnly(std.testing.allocator,
+        \\import * as M from './mod';
+        \\export const x = 1;
+    , "M");
+    defer h.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.member_only, h.access.kind);
+    try std.testing.expectEqual(@as(usize, 0), h.access.members.count());
+}
+
+// PR #3736: buildOpt(reachable_only=false) — 옛 linker 동작 (모든 nodes 순회).
+// 통합 PR 의 default `build` 가 옛 동작 유지함을 검증 (linker call-site 회귀 방지).
+test "PR #3736: buildOpt(reachable_only=false) — 모든 nodes 색인 (옛 linker 동작)" {
+    const namespace_access_mod = @import("linker/namespace_access.zig");
+    const allocator = std.testing.allocator;
+    const src =
+        \\import * as M from './mod';
+        \\M.foo();
+        \\M.bar();
+    ;
+    var scanner = try Scanner.init(allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var idx_all = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, false);
+    defer idx_all.deinit(allocator);
+    var idx_reach = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true);
+    defer idx_reach.deinit(allocator);
+
+    // 두 mode 모두 동일한 namespace member access 색인 (이 fixture 는 orphan 없음).
+    try std.testing.expectEqual(idx_all.accesses_by_obj_text.count(), idx_reach.accesses_by_obj_text.count());
+    // 둘 다 'M' 키 가짐.
+    try std.testing.expect(idx_all.accesses_by_obj_text.contains("M"));
+    try std.testing.expect(idx_reach.accesses_by_obj_text.contains("M"));
+}

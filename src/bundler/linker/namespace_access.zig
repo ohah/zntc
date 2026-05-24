@@ -1,8 +1,16 @@
-//! Namespace import access analysis used by linker metadata.
+//! Namespace import access analysis — *unified* analyzer for binding_scanner
+//! (parse-time, text-based) and linker (link-time, symbol-aware) paths.
+//!
+//! 통합 설계 (#3680 PR #3736): 두 path 가 동일 함수 `analyzeNamespaceAccessWithIndex` 호출.
+//! `symbol_ids` 가 null 이면 text-only mode (binding_scanner 동치),
+//! 있으면 symbol-aware mode + text fallback (옵션 A).
+//!
+//! 둘 다 같은 `NamespaceAccessIndex` 사용 — 두 path 의 결과가 *동일 입력에 대해 동일* 보장.
 
 const std = @import("std");
 const Span = @import("../../lexer/token.zig").Span;
 const Ast = @import("../../parser/ast.zig").Ast;
+const ast_walk = @import("../../parser/ast_walk.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 
 /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
@@ -74,6 +82,9 @@ pub const NamespaceAccessIndex = struct {
     /// text fallback 진입 시 `idents_by_text[local_name]` 의 각 node_idx 가 `prop_by_obj` 에
     /// 있으면 member-obj, 없으면 escape (value position) — opaque return 으로 over-prune 회피.
     idents_by_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentRef)) = .{},
+    /// computed_member_expression 의 obj 가 identifier_reference 인 경우 `text → [...]`.
+    /// `M[dyn]` 같은 dynamic access — text-only mode 의 escape 감지에 사용 (binding_scanner 동치).
+    computed_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ComputedObj)) = .{},
 
     pub const DeclRange = struct { start: u32, end: u32 };
 
@@ -87,11 +98,57 @@ pub const NamespaceAccessIndex = struct {
         span_start: u32,
     };
 
+    /// 기본 `build` — 옛 linker 동작 유지 (모든 nodes 순회).
+    /// 새 caller (binding_scanner) 는 `buildOpt(..., true)` 명시 → orphan 제외, reachable only.
     pub fn build(allocator: std.mem.Allocator, ast: *const Ast) std.mem.Allocator.Error!NamespaceAccessIndex {
+        return buildOpt(allocator, ast, false);
+    }
+
+    /// computed_member_expression (e.g. `M[dyn]`) 의 obj 가 identifier_reference 인 set.
+    /// text-only mode 의 dynamic-access escape 감지에 사용.
+    pub const ComputedObj = struct { obj_text_span_start: u32 };
+
+    pub fn buildOpt(allocator: std.mem.Allocator, ast: *const Ast, reachable_only: bool) std.mem.Allocator.Error!NamespaceAccessIndex {
         var self: NamespaceAccessIndex = .{};
         errdefer self.deinit(allocator);
         const node_count = ast.nodes.items.len;
-        for (ast.nodes.items, 0..) |node, node_i| {
+
+        // 두 path 정합 — binding_scanner 가 reachable 만 봐서 일치시켜야.
+        var reachable_buf: []u32 = &.{};
+        var owns_reachable = false;
+        defer if (owns_reachable) allocator.free(reachable_buf);
+
+        const NodeIter = struct {
+            mode: enum { reachable, all },
+            reach: []const u32,
+            all_len: usize,
+            i: usize = 0,
+            pub fn next(it: *@This()) ?u32 {
+                if (it.mode == .reachable) {
+                    if (it.i >= it.reach.len) return null;
+                    const ni = it.reach[it.i];
+                    it.i += 1;
+                    return ni;
+                }
+                if (it.i >= it.all_len) return null;
+                const ni: u32 = @intCast(it.i);
+                it.i += 1;
+                return ni;
+            }
+        };
+        var iter: NodeIter = blk: {
+            if (reachable_only) {
+                reachable_buf = try ast_walk.collectReachableNodeIndices(allocator, ast);
+                // ast_walk 가 node_count==0 시 comptime &.{} 반환 — 그건 free 불필요 (사용자 alloc 안 함).
+                owns_reachable = reachable_buf.len > 0;
+                break :blk .{ .mode = .reachable, .reach = reachable_buf, .all_len = node_count };
+            }
+            break :blk .{ .mode = .all, .reach = &.{}, .all_len = node_count };
+        };
+
+        while (iter.next()) |node_i| {
+            if (node_i >= node_count) continue;
+            const node = ast.nodes.items[node_i];
             if (node.tag == .static_member_expression or node.tag == .private_field_expression) {
                 const e = node.data.extra;
                 if (!ast.hasExtra(e, 2)) continue;
@@ -110,6 +167,21 @@ pub const NamespaceAccessIndex = struct {
                     .prop_node_idx = prop_idx,
                     .obj_span_start = obj_node.span.start,
                 });
+            } else if (node.tag == .computed_member_expression) {
+                // dynamic access — text-only mode 의 escape 감지에 활용.
+                const e = node.data.extra;
+                if (!ast.hasExtra(e, 0)) continue;
+                const obj_idx = ast.readExtra(e, 0);
+                if (obj_idx >= node_count) continue;
+                const obj_node = ast.nodes.items[obj_idx];
+                if (obj_node.tag != .identifier_reference) continue;
+                const obj_text = ast.getText(obj_node.span);
+                if (obj_text.len == 0) continue;
+                const gop = try self.computed_by_obj_text.getOrPut(allocator, obj_text);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(allocator, .{
+                    .obj_text_span_start = obj_node.span.start,
+                });
             } else if (node.tag == .identifier_reference) {
                 // F1 fix: escape 검사용 — 모든 identifier_reference 의 text 색인.
                 const text = ast.getText(node.span);
@@ -117,7 +189,7 @@ pub const NamespaceAccessIndex = struct {
                 const gop = try self.idents_by_text.getOrPut(allocator, text);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(allocator, .{
-                    .node_idx = @intCast(node_i),
+                    .node_idx = node_i,
                     .span_start = node.span.start,
                 });
             } else if (node.tag == .import_declaration) {
@@ -136,6 +208,9 @@ pub const NamespaceAccessIndex = struct {
         var it2 = self.idents_by_text.valueIterator();
         while (it2.next()) |list| list.deinit(allocator);
         self.idents_by_text.deinit(allocator);
+        var it3 = self.computed_by_obj_text.valueIterator();
+        while (it3.next()) |list| list.deinit(allocator);
+        self.computed_by_obj_text.deinit(allocator);
     }
 };
 
@@ -262,6 +337,59 @@ fn isInDecl(start: u32, end: u32, decl_ranges: []const NamespaceAccessIndex.Decl
         if (start >= r.start and end <= r.end) return true;
     }
     return false;
+}
+
+/// text-only namespace access 분석 (binding_scanner 동치, PR #3736 통합).
+/// `symbol_ids = null` 인 호출자가 사용. computed access / escape 검사 포함.
+///
+/// 결과:
+/// - opaque (escape 또는 computed access 존재) → kind=.@"opaque", members={}
+/// - member-only → kind=.member_only, members={prop1, prop2, ...}
+/// - 사용 안 됨 → kind=.member_only, members={} (= `&.{}` 표현)
+pub fn analyzeNamespaceAccessTextOnly(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    index: *const NamespaceAccessIndex,
+    ns_local_name: []const u8,
+    stmt_spans: ?[]const Span,
+) std.mem.Allocator.Error!NamespaceAccess {
+    var access: NamespaceAccess = .{ .kind = .member_only };
+    errdefer access.deinit(allocator);
+    if (ns_local_name.len == 0) return access;
+
+    // 1. computed access — `M[dyn]` 발견 시 즉시 opaque (binding_scanner 동치 line 624-637).
+    if (index.computed_by_obj_text.get(ns_local_name)) |list| {
+        for (list.items) |co| {
+            if (isInDecl(co.obj_text_span_start, co.obj_text_span_start + 1, index.decl_ranges.items)) continue;
+            access.deinit(allocator);
+            access.members = .{};
+            access.kind = .@"opaque";
+            return access;
+        }
+    }
+
+    // 2. escape — identifier_reference 가 member_obj 가 아닌 위치에서 사용 (binding_scanner 동치 line 642-649).
+    if (index.idents_by_text.get(ns_local_name)) |refs| {
+        for (refs.items) |ir| {
+            if (isInDecl(ir.span_start, ir.span_start + 1, index.decl_ranges.items)) continue;
+            if (!index.prop_by_obj.contains(ir.node_idx)) {
+                access.deinit(allocator);
+                access.members = .{};
+                access.kind = .@"opaque";
+                return access;
+            }
+        }
+    }
+
+    // 3. member access 수집.
+    if (index.accesses_by_obj_text.get(ns_local_name)) |list| {
+        for (list.items) |ia| {
+            if (isInDecl(ia.obj_span_start, ia.obj_span_start + 1, index.decl_ranges.items)) continue;
+            try recordAccess(allocator, &access, ast, ia.prop_node_idx, ia.obj_span_start, stmt_spans);
+        }
+    }
+
+    return access;
 }
 
 fn recordAccess(

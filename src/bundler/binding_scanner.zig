@@ -553,117 +553,61 @@ fn extractBindingPatternNames(
 ///
 /// namespace가 member access 외의 방식으로 사용되면 (함수 인자, 대입 등)
 /// fallback으로 null (전체 사용)을 유지한다.
+/// 통합 namespace access 분석 (#3680 PR #3736).
+/// 옛 collectNamespaceAccesses 의 text-based 로직을 `linker/namespace_access.zig` 의
+/// `analyzeNamespaceAccessTextOnly` 로 위임 — 두 path 가 동일 분석기 사용.
+/// 결과 매핑:
+///   - opaque (escape / computed access) → `namespace_used_properties = null`
+///   - member_only with props → `namespace_used_properties = [props...]`
+///   - member_only empty → `namespace_used_properties = &.{}`
 pub fn collectNamespaceAccesses(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     bindings: []ImportBinding,
 ) !void {
-    var ns_map: std.StringHashMapUnmanaged(usize) = .{};
-    defer ns_map.deinit(allocator);
-    for (bindings, 0..) |ib, i| {
+    var has_namespace = false;
+    for (bindings) |ib| {
         if (ib.kind == .namespace) {
-            try ns_map.put(allocator, ib.local_name, i);
+            has_namespace = true;
+            break;
         }
     }
-    if (ns_map.count() == 0) return;
+    if (!has_namespace) return;
 
-    // member access의 object로 사용된 identifier 노드 인덱스
-    var member_obj_set = std.AutoHashMap(u32, void).init(allocator);
-    defer member_obj_set.deinit();
+    const ns_module = @import("linker/namespace_access.zig");
+    // C1 fix (#3736): binding_scanner 는 옛 동작 유지 — reachable_only=true.
+    // 옛 collectNamespaceAccesses 가 `ast_walk.collectReachableNodeIndices` 사용했음.
+    // `build` (= linker default) 는 reachable_only=false 라 binding_scanner 와 의미 다름.
+    var index = try ns_module.NamespaceAccessIndex.buildOpt(allocator, ast, true);
+    defer index.deinit(allocator);
 
-    // binding index → 사용된 프로퍼티 이름 (자연 중복 제거)
-    var props_map = std.AutoHashMap(usize, std.StringHashMapUnmanaged(void)).init(allocator);
-    defer {
-        var it = props_map.valueIterator();
-        while (it.next()) |set| set.deinit(allocator);
-        props_map.deinit();
-    }
-
-    // 탈출된 namespace identifier 노드 인덱스 (후처리용)
-    const EscapedRef = struct { ni: u32, binding_idx: usize };
-    var escaped_refs: std.ArrayListUnmanaged(EscapedRef) = .empty;
-    defer escaped_refs.deinit(allocator);
-
-    // 단일 패스: member access 수집 + 탈출 후보 기록
-    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
-    defer allocator.free(reachable);
-
-    for (reachable) |ni| {
-        const node = ast.nodes.items[ni];
-        switch (node.tag) {
-            .static_member_expression => {
-                const me = node.data.extra;
-                if (!ast.hasExtra(me, 1)) continue;
-
-                const obj_idx = ast.readExtraNode(me, 0);
-                const obj_ni = @intFromEnum(obj_idx);
-                if (obj_ni >= ast.nodes.items.len) continue;
-                const obj = ast.nodes.items[obj_ni];
-                if (obj.tag != .identifier_reference) continue;
-
-                const obj_name = ast.getText(obj.span);
-                const binding_idx = ns_map.get(obj_name) orelse continue;
-
-                const prop_idx = ast.readExtraNode(me, 1);
-                const prop_ni = @intFromEnum(prop_idx);
-                if (prop_ni >= ast.nodes.items.len) continue;
-                const prop = ast.nodes.items[prop_ni];
-
-                try member_obj_set.put(@intCast(obj_ni), {});
-
-                const entry = try props_map.getOrPut(binding_idx);
-                if (!entry.found_existing) entry.value_ptr.* = .{};
-                try entry.value_ptr.put(allocator, ast.getText(prop.span), {});
-            },
-            .identifier_reference => {
-                const name = ast.getText(node.span);
-                if (ns_map.get(name)) |binding_idx| {
-                    try escaped_refs.append(allocator, .{ .ni = ni, .binding_idx = binding_idx });
-                }
-            },
-            .computed_member_expression => {
-                // v[dynamic] → namespace 탈출
-                const me = node.data.extra;
-                if (!ast.hasExtra(me, 0)) continue;
-                const obj_idx = ast.readExtraNode(me, 0);
-                const obj_ni = @intFromEnum(obj_idx);
-                if (obj_ni >= ast.nodes.items.len) continue;
-                const obj = ast.nodes.items[obj_ni];
-                if (obj.tag != .identifier_reference) continue;
-                if (ns_map.get(ast.getText(obj.span))) |binding_idx| {
-                    bindings[binding_idx].namespace_used_properties = null;
-                    _ = ns_map.remove(ast.getText(obj.span));
-                }
-            },
-            else => {},
-        }
-    }
-
-    // 후처리: member access object가 아닌 identifier_reference → 탈출
-    for (escaped_refs.items) |ref| {
-        if (!ns_map.contains(bindings[ref.binding_idx].local_name)) continue;
-        if (!member_obj_set.contains(ref.ni)) {
-            bindings[ref.binding_idx].namespace_used_properties = null;
-            _ = ns_map.remove(bindings[ref.binding_idx].local_name);
-        }
-    }
-
-    // 결과를 ImportBinding에 반영
-    for (bindings, 0..) |*ib, idx| {
+    for (bindings) |*ib| {
         if (ib.kind != .namespace) continue;
-        if (!ns_map.contains(ib.local_name)) continue; // 탈출됨 → null 유지
+        var access = try ns_module.analyzeNamespaceAccessTextOnly(allocator, ast, &index, ib.local_name, null);
+        defer access.deinit(allocator);
 
-        if (props_map.getPtr(idx)) |set| {
-            const props = try allocator.alloc([]const u8, set.count());
-            var i: usize = 0;
-            var kit = set.keyIterator();
-            while (kit.next()) |key| : (i += 1) {
-                props[i] = key.*;
-            }
-            ib.namespace_used_properties = props;
-        } else {
-            ib.namespace_used_properties = &.{};
+        if (access.kind == .@"opaque") {
+            ib.namespace_used_properties = null;
+            continue;
         }
+        const count = access.members.count();
+        if (count == 0) {
+            ib.namespace_used_properties = &.{};
+            continue;
+        }
+        const props = try allocator.alloc([]const u8, count);
+        var i: usize = 0;
+        var it = access.members.iterator();
+        while (it.next()) |entry| : (i += 1) {
+            props[i] = entry.key_ptr.*;
+        }
+        // C4 fix (#3736): 결정성 — HashMap iter 순서 → sort 로 stable.
+        std.mem.sort([]const u8, props, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+        ib.namespace_used_properties = props;
     }
 }
 
