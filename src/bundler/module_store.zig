@@ -7,7 +7,19 @@
 const std = @import("std");
 const Module_mod = @import("module.zig");
 const Module = Module_mod.Module;
+const PathRef = Module_mod.PathRef;
 const types = @import("types.zig");
+
+/// PR #3749 Phase 3 (C): cache-borrowed (interned) PathRef 를 store-owned 로 clone.
+/// specifier/plugin 은 별도 lifetime (parse_arena 양도 + plugin context) — clone 안 함.
+/// owned 는 이미 자체 owner — clone 안 함.
+/// **명시 enumeration** (M3): 새 PathRef variant 추가 시 compile error 로 결정 강제.
+fn clonePathRefIfNeeded(allocator: std.mem.Allocator, ref: PathRef) !PathRef {
+    return switch (ref) {
+        .interned => |s| .{ .owned = try allocator.dupe(u8, s) },
+        .specifier, .plugin, .owned => ref,
+    };
+}
 
 pub const PersistentModuleStore = struct {
     allocator: std.mem.Allocator,
@@ -60,8 +72,8 @@ pub const PersistentModuleStore = struct {
         cached.module.dynamic_importers.deinit(self.allocator);
         if (cached.module.resolve_dir) |dir| self.allocator.free(dir);
         for (cached.module.resolved_deps.items) |dep| {
-            self.allocator.free(dep.path);
-            if (dep.resolve_dir) |dir| self.allocator.free(dir);
+            dep.path.deinit(self.allocator);
+            if (dep.resolve_dir) |dir| dir.deinit(self.allocator);
         }
         cached.module.resolved_deps.deinit(self.allocator);
         // import_specifiers 해제
@@ -98,6 +110,40 @@ pub const PersistentModuleStore = struct {
         cached_module.importers = .empty;
         cached_module.dynamic_imports = .empty;
         cached_module.dynamic_importers = .empty;
+
+        // PR #3749 Phase 3 (C): cache-borrowed (interned) path 를 store-owned 로 clone.
+        // cache 가 build 종료 시 deinit 되므로 (per-build Bundler 패턴) store 가 *자체 owner*
+        // 가 되어야 dangling 안 됨. specifier (parse_arena) / plugin variant 는 별도 lifetime
+        // 관리 — Module.parse_arena 가 store 로 양도 + plugin context 는 외부 lifetime.
+        //
+        // H1 fix: OOM 시 swallow 금지 — partial clone 으로 .interned 가 store 에 남으면
+        // path_pool 사망 시 UAF. 실패 시 *전체 putModule abort* (이미 처리된 dep 의 owned
+        // alloc 은 leak 이지만 store 에 진입 안 함 → cache lifetime 안 후속 read 없음).
+        for (cached_module.resolved_deps.items, 0..) |*dep, i| {
+            const new_path = clonePathRefIfNeeded(self.allocator, dep.path) catch {
+                // 부분 clone rollback: 이미 owned 로 변환된 entry 정리.
+                var j: usize = 0;
+                while (j < i) : (j += 1) {
+                    cached_module.resolved_deps.items[j].path.deinit(self.allocator);
+                    if (cached_module.resolved_deps.items[j].resolve_dir) |rd| rd.deinit(self.allocator);
+                }
+                return;
+            };
+            const new_rd = if (dep.resolve_dir) |rd|
+                clonePathRefIfNeeded(self.allocator, rd) catch {
+                    new_path.deinit(self.allocator);
+                    var j: usize = 0;
+                    while (j < i) : (j += 1) {
+                        cached_module.resolved_deps.items[j].path.deinit(self.allocator);
+                        if (cached_module.resolved_deps.items[j].resolve_dir) |rd2| rd2.deinit(self.allocator);
+                    }
+                    return;
+                }
+            else
+                null;
+            dep.path = new_path;
+            dep.resolve_dir = new_rd;
+        }
         // #3664: implicitlyLoadedAfterOneOf 양방향 관계 리스트도 ModuleIndex ArrayList backing 을
         // graph module 과 공유 → 위 4개와 동일하게 store 복사본은 빈 상태로(graph deinit 이 원본
         // 해제, store 가 dangling 안 되도록). 다음 rebuild 의 injectEmittedChunks 가 재구성.

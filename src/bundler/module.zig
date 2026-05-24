@@ -36,12 +36,40 @@ pub const OPTIONAL_MISSING_MODULE_PREFIX = "(optional-missing):";
 /// `ImportRecord.resolved` 는 빌드마다 새로 배정되는 ModuleIndex라 다음 rebuild에서
 /// 직접 재사용할 수 없다. 대신 resolve 결과를 path/specifier 기반으로 보존했다가
 /// cache-hit 모듈에서 graph edge를 다시 구성한다.
+/// PR #3749 Phase 3: path slice 의 *lifetime invariant* 를 type system 으로 강제.
+/// 각 variant 는 *path 의 ownership* 명시:
+///   - interned: `ResolveCache.path_pool` 소유 — borrow, free 금지 (cache.deinit 시 reclaim).
+///   - specifier: `Module.parse_arena` 소유 — borrow, free 금지 (module.deinit 시 destroyParseArena).
+///   - plugin: plugin context lifetime — borrow, free 금지 (plugin 이 own).
+///   - owned: caller (graph allocator) alloc — free 필수.
+pub const PathRef = union(enum) {
+    interned: []const u8,
+    specifier: []const u8,
+    plugin: []const u8,
+    owned: []const u8,
+
+    /// variant 무관 byte slice 접근.
+    pub inline fn bytes(self: PathRef) []const u8 {
+        return switch (self) {
+            inline else => |s| s,
+        };
+    }
+
+    /// variant 별 free. owned 만 실제 free, 나머지 no-op.
+    pub fn deinit(self: PathRef, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .owned => |s| allocator.free(s),
+            else => {},
+        }
+    }
+};
+
 pub const CachedResolvedDep = struct {
     record_index: ?u32 = null,
     kind: types.ImportKind,
     target: Target,
-    path: []const u8,
-    resolve_dir: ?[]const u8 = null,
+    path: PathRef,
+    resolve_dir: ?PathRef = null,
     target_is_module_field: bool = false,
     is_context_dep: bool = false,
 
@@ -733,8 +761,8 @@ pub const Module = struct {
         if (self.resolve_dir) |dir| allocator.free(dir);
         if (self.federation_id) |id| allocator.free(id); // #3318 P1-1 (setBoundary alloc)
         for (self.resolved_deps.items) |dep| {
-            allocator.free(dep.path);
-            if (dep.resolve_dir) |dir| allocator.free(dir);
+            dep.path.deinit(allocator);
+            if (dep.resolve_dir) |dir| dir.deinit(allocator);
         }
         self.resolved_deps.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
