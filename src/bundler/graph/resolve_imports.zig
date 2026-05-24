@@ -21,16 +21,11 @@ fn appendResolvedDep(
     mod_idx: usize,
     dep: CachedResolvedDep,
 ) !void {
+    // PR #3749 Phase 3 (C): dep.path 는 PathRef variant — caller 가 lifetime 명시.
+    // graph 가 추가 dupe 안 함. interned/specifier/plugin variant 는 borrow,
+    // owned variant 는 caller-alloc + module.deinit 시 자동 free.
     const mod_ptr = self.modules.at(mod_idx);
-    const path_owned = try self.allocator.dupe(u8, dep.path);
-    errdefer self.allocator.free(path_owned);
-    const resolve_dir_owned = if (dep.resolve_dir) |dir| try self.allocator.dupe(u8, dir) else null;
-    errdefer if (resolve_dir_owned) |dir| self.allocator.free(dir);
-
-    var owned_dep = dep;
-    owned_dep.path = path_owned;
-    owned_dep.resolve_dir = resolve_dir_owned;
-    try mod_ptr.resolved_deps.append(self.allocator, owned_dep);
+    try mod_ptr.resolved_deps.append(self.allocator, dep);
 }
 
 pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
@@ -42,7 +37,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
         switch (dep.target) {
             .file, .virtual => {
                 var s_am = profile.begin(.graph_discover_incr_replay_add_module);
-                const dep_idx = try self.addModuleWithResolveDir(dep.path, dep.resolve_dir);
+                const dep_idx = try self.addModuleWithResolveDir(dep.path.bytes(), if (dep.resolve_dir) |rd| rd.bytes() else null);
                 s_am.end();
                 if (dep.target_is_module_field or mod_ptr.is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
@@ -57,13 +52,13 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
                 // (inclusive totals 가 합쳐져 percentage 가 100% 초과). addDisabledModule
                 // 만 _other 로 측정하고 link 부분은 replayLinkResolvedDep 가 자체 측정.
                 var s_o = profile.begin(.graph_discover_incr_replay_other);
-                const dep_idx = try self.addDisabledModule(dep.path);
+                const dep_idx = try self.addDisabledModule(dep.path.bytes());
                 s_o.end();
                 try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
             },
             .optional_missing => {
                 var s_o = profile.begin(.graph_discover_incr_replay_other);
-                const dep_idx = try self.addOptionalMissingModule(dep.path);
+                const dep_idx = try self.addOptionalMissingModule(dep.path.bytes());
                 s_o.end();
                 try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
             },
@@ -71,7 +66,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
                 // external 은 replayLinkResolvedDep 를 거치지 않고 inline 하므로
                 // 동일한 sub-phase 로 명시 분해 (다른 분기와 측정 대칭성 유지).
                 var s_am = profile.begin(.graph_discover_incr_replay_add_module);
-                const ext_idx = try self.addExternalModule(dep.path);
+                const ext_idx = try self.addExternalModule(dep.path.bytes());
                 s_am.end();
                 if (dep.record_index) |rec_idx| {
                     if (rec_idx < mod_ptr.import_records.len) {
@@ -94,7 +89,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
                 var s_o = profile.begin(.graph_discover_incr_replay_other);
                 defer s_o.end();
                 const rec_idx = dep.record_index orelse continue;
-                const path_dupe = try self.allocator.dupe(u8, dep.path);
+                const path_dupe = try self.allocator.dupe(u8, dep.path.bytes());
                 try self.worker_entries.append(self.allocator, .{
                     .resolved_path = path_dupe,
                     .source_module = mod_index,
@@ -175,8 +170,8 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
                 try appendResolvedDep(self, mod_idx, .{
                     .kind = dep.kind,
                     .target = .file,
-                    .path = f.path,
-                    .resolve_dir = f.resolve_dir,
+                    .path = .{ .interned = f.path },
+                    .resolve_dir = if (f.resolve_dir) |d| .{ .interned = d } else null,
                     .target_is_module_field = f.is_module_field,
                     .is_context_dep = true,
                 });
@@ -236,7 +231,7 @@ pub fn applyResolveResult(
                 .record_index = @intCast(rec_i),
                 .kind = record.kind,
                 .target = .disabled,
-                .path = record.specifier,
+                .path = .{ .specifier = record.specifier },
             });
             try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
             return;
@@ -251,7 +246,7 @@ pub fn applyResolveResult(
                 .record_index = @intCast(rec_i),
                 .kind = record.kind,
                 .target = .optional_missing,
-                .path = record.specifier,
+                .path = .{ .specifier = record.specifier },
             });
             try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
             return;
@@ -271,7 +266,7 @@ pub fn applyResolveResult(
                 .record_index = @intCast(rec_i),
                 .kind = record.kind,
                 .target = .disabled,
-                .path = record.specifier,
+                .path = .{ .specifier = record.specifier },
             });
             try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
             return;
@@ -299,8 +294,8 @@ pub fn applyResolveResult(
                         .record_index = @intCast(rec_i),
                         .kind = record.kind,
                         .target = .worker,
-                        .path = f.path,
-                        .resolve_dir = f.resolve_dir,
+                        .path = .{ .interned = f.path },
+                        .resolve_dir = if (f.resolve_dir) |d| .{ .interned = d } else null,
                         .target_is_module_field = f.is_module_field,
                     });
                     return;
@@ -315,8 +310,8 @@ pub fn applyResolveResult(
                     .record_index = @intCast(rec_i),
                     .kind = record.kind,
                     .target = .file,
-                    .path = f.path,
-                    .resolve_dir = f.resolve_dir,
+                    .path = .{ .interned = f.path },
+                    .resolve_dir = if (f.resolve_dir) |d| .{ .interned = d } else null,
                     .target_is_module_field = f.is_module_field,
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
@@ -331,7 +326,7 @@ pub fn applyResolveResult(
                     .record_index = @intCast(rec_i),
                     .kind = record.kind,
                     .target = .disabled,
-                    .path = record.specifier,
+                    .path = .{ .specifier = record.specifier },
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
             },
@@ -346,7 +341,7 @@ pub fn applyResolveResult(
                     .record_index = @intCast(rec_i),
                     .kind = record.kind,
                     .target = .virtual,
-                    .path = v.path,
+                    .path = .{ .plugin = v.path },
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
@@ -367,7 +362,7 @@ pub fn applyResolveResult(
             .record_index = @intCast(rec_i),
             .kind = record.kind,
             .target = .external,
-            .path = record.specifier,
+            .path = .{ .specifier = record.specifier },
         });
         if (record.kind == .dynamic_import) {
             try self.linkDynamicImport(mod_index, ext_idx);
