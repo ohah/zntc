@@ -1444,23 +1444,11 @@ test "#3680-F7: object literal method 의 super 가 outer class 로 leak 방지 
 
 // === post-review 2nd-round V1~V8 회귀 가드 ===
 
-// V1: F1 이 current_super_static_receiver 미설정 → module top-level this=undefined.
-// 정답: descriptor 의 .call(this) 가 아니라 class 자체를 receiver 로 사용 (D 의 span).
-test "#3680-V1: static private field init 의 super.method() receiver 가 class 이름 (es2021)" {
-    var r = try e2eTarget(std.testing.allocator,
-        \\class Base { static factor(){return this?.name ?? "no-this"} }
-        \\class D extends Base {
-        \\  static #x = super.factor();
-        \\  static get() { return D.#x; }
-        \\}
-    , .es2021);
-    defer r.deinit();
-    // descriptor 가 module top-level 로 빠지므로 receiver 는 D 여야 함.
-    // .call(this) 가 아니라 .call(D) (또는 __superGet 의 receiver 인자 D).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(this)") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(D)") != null);
-}
+// V1 revert (receiver 부분): descriptor 를 trailing 으로 옮기는 fix 가 static block IIFE
+// 의 descriptor 참조 (예: `static { S.#n += 10 }`) 를 TDZ 위반으로 깨뜨려 revert. 결과로
+// descriptor 의 init 안 super.method() receiver 가 module top-level `this=undefined` 인
+// spec 위반은 다시 노출되나, static block 사용 케이스가 더 빈번하므로 trade-off.
+// 별도 PR 로 정밀 fix 추적 (descriptor 와 IIFE 의 emit 순서 정밀 control 필요).
 
 // V2: F1 의 non-derived class 의 static private field init 안 super → 'Object'/'Function.prototype' fallback.
 test "#3680-V2: non-derived class 의 static private field init 안 super → fallback (es2021)" {
@@ -1570,26 +1558,12 @@ test "#3680-V7: class 내 object literal property value super → outer class lo
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super.foo()") == null);
 }
 
-// V8: F6 의 member-expression extends — side effect 가 super-prop access 마다 중복되지 않도록 temp alias.
-test "#3680-V8: extends getBase() 의 side effect 가 super.x access 마다 중복 안 됨 (es2021)" {
-    var r = try e2eTarget(std.testing.allocator,
-        \\let count = 0;
-        \\function getBase() { count++; return class { foo(){return "X"} }; }
-        \\class D extends getBase() {
-        \\  #m() { return super.foo() + "|" + super.foo(); }
-        \\  run() { return this.#m(); }
-        \\}
-    , .es2021);
-    defer r.deinit();
-    // _m_fn body 안에서 `getBase()` 호출이 직접 inline 되면 부작용 중복.
-    // temp alias 가 적용되면 _super (또는 temp 변수) 이름이 사용되어 getBase() 는
-    // class extends 자리에서 1회만 evaluated 됨.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn") != null);
-    // `getBase().prototype.foo` 같은 직접 inline 이 _m_fn 안에서 발생하면 fail.
-    const fn_idx = std.mem.indexOf(u8, r.output, "function _m_fn") orelse unreachable;
-    const fn_tail = r.output[fn_idx..];
-    try std.testing.expect(std.mem.indexOf(u8, fn_tail, "getBase()") == null);
-}
+// V8 revert: 이전 fix (extends 표현식 temp hoist) 는 bundler tree-shaker 의 reachability
+// 분석을 깨뜨려 effect-ts 의 `class extends TaggedError(...)` 같은 패턴에서 silent
+// dead-code-eliminate 발생 (`TaggedError is not defined` ReferenceError). 정밀 fix
+// (bundler reference 분석 강화 또는 hoist 를 linker 후 단계로 이동) 는 별도 PR 추적.
+// 회귀 가드 후퇴 — `extends getBase()` 의 side-effect 중복 평가는 다시 노출되나
+// effect-ts 의 SyntaxError 보다 영향 범위가 작다.
 
 // nested class: standalone fn 안의 *inner* class body 의 `super.x` 는
 // inner class lexical context 가 valid 하므로 inner super 로 lowering 돼야 한다.
