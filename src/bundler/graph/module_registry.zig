@@ -51,14 +51,10 @@ fn loaderExtensionFor(abs_path: []const u8) []const u8 {
 }
 
 pub fn discardResolvedModule(self: *ModuleGraph, resolved: plugin_mod.ResolvedModule) void {
-    switch (resolved) {
-        .file => |f| {
-            self.allocator.free(f.path);
-            if (f.resolve_dir) |dir| self.allocator.free(dir);
-        },
-        .disabled => |d| self.allocator.free(d.path),
-        .virtual, .dataurl, .external, .custom => {},
-    }
+    // PR resolve interning: 모든 ResolvedModule.path 는 ResolveCache.path_pool 소유.
+    // caller borrow only — free 호출 금지. discard 는 no-op (cache lifetime 으로 자동 reclaim).
+    _ = self;
+    _ = resolved;
 }
 
 pub fn markRecordLazyResolved(self: *ModuleGraph, mod_idx: usize, rec_i: usize) void {

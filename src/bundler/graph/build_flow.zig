@@ -272,12 +272,7 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
                 };
                 switch (m_union) {
                     .file => |f| {
-                        // f.path/f.resolve_dir 는 graph allocator 소유 → addModuleWithResolveDir 가
-                        // dupe(path→arena, resolve_dir→allocator) 한 뒤 caller 가 free (resolve_imports.zig 동형).
-                        defer {
-                            self.allocator.free(f.path);
-                            if (f.resolve_dir) |dir| self.allocator.free(dir);
-                        }
+                        // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only).
                         const new_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
                         const nei = @intFromEnum(new_idx);
                         if (nei >= self.modules.count()) continue;
@@ -301,7 +296,7 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
                         nm.is_emitted_chunk_entry = true;
                     },
                     .disabled => |d| {
-                        self.allocator.free(d.path);
+                        _ = d;
                         self.addDiag(
                             .plugin_error,
                             .@"error",
@@ -405,16 +400,10 @@ fn resolveExistingModuleIndex(self: *ModuleGraph, source_dir: []const u8, id: []
     const m_union = resolved orelse return null;
     switch (m_union) {
         .file => |f| {
-            defer {
-                self.allocator.free(f.path);
-                if (f.resolve_dir) |d| self.allocator.free(d);
-            }
+            // PR resolve interning: f.path 는 path_pool 소유 (borrow only).
             return self.path_to_module.get(f.path);
         },
-        .disabled => |d| {
-            self.allocator.free(d.path);
-            return null;
-        },
+        .disabled => return null,
         else => return null,
     }
 }

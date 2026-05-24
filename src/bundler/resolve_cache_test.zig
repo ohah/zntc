@@ -168,27 +168,28 @@ test "resolve: cache hit" {
     var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
 
-    // 첫 번째 호출 (캐시 미스) — caller 소유
+    // PR resolve interning: 결과의 path 는 cache.path_pool 소유 (borrow only, free 금지).
+    // cache.deinit() 시 pool 도 일괄 reclaim.
+
+    // 첫 번째 호출 (캐시 미스)
     const result1 = (try cache.resolve(dir_path, "./foo", .static_import)).?;
-    defer freeResolvedPath(result1);
     const path1 = switch (result1) {
         .file => |f| f.path,
         else => return error.TestUnexpectedResult,
     };
     try std.testing.expect(std.mem.endsWith(u8, path1, "foo.ts"));
 
-    // 두 번째 호출 (캐시 히트) — 별도 할당, caller 소유
+    // 두 번째 호출 (캐시 히트) — interning 후엔 *동일 ptr* 반환.
     const result2 = (try cache.resolve(dir_path, "./foo", .static_import)).?;
-    defer freeResolvedPath(result2);
     const path2 = switch (result2) {
         .file => |f| f.path,
         else => return error.TestUnexpectedResult,
     };
     try std.testing.expect(std.mem.endsWith(u8, path2, "foo.ts"));
 
-    // 내용은 같지만 포인터는 다름 (각각 독립 할당)
+    // interning: 내용 동일 + ptr 동일 (single source of truth).
     try std.testing.expectEqualStrings(path1, path2);
-    try std.testing.expect(path1.ptr != path2.ptr);
+    try std.testing.expect(path1.ptr == path2.ptr);
 }
 
 test "resolve: not found cached" {
@@ -238,20 +239,11 @@ test "resolve: profile .resolve 비활성 시 누적 없음" {
     try std.testing.expectEqual(@as(u64, 0), profile.totalNs(.resolve));
 }
 
-// resolve API (#1885 PR 4c-1) — ResolvedModule 직접 반환
-
+// resolve API (#1885 PR 4c-1) — ResolvedModule 직접 반환.
+// PR resolve interning: ResolvedModule.path 는 cache.path_pool 소유 (borrow only).
+// 옛 freeResolvedPath helper 제거 — caller 가 free 호출 안 함, cache.deinit() 이 일괄 reclaim.
 fn freeResolvedPath(m: ResolvedModule) void {
-    switch (m) {
-        .file => |f| {
-            std.testing.allocator.free(f.path);
-            if (f.resolve_dir) |dir| std.testing.allocator.free(dir);
-        },
-        .disabled => |d| std.testing.allocator.free(d.path),
-        // Phase 1 cache 는 file/disabled 만 저장 — virtual/dataurl/external/custom variant
-        // 가 cache 에서 반환되지 않음. 향후 그 variant 검증 테스트 추가 시 plugin_data
-        // 등 payload 별 cleanup 을 helper 에 추가.
-        else => {},
-    }
+    _ = m;
 }
 
 test "resolve: 일반 파일 → .file variant" {

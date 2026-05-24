@@ -85,13 +85,11 @@ pub fn expandRecords(self: *ModuleGraph, mod_idx: usize) void {
                         // default null — file variant 만 dupe 성공 시 덮어씀.
                         paths[i] = null;
                         if (self.resolve_cache.resolveThreadSafe(source_dir, joined, .require) catch null) |res| switch (res) {
-                            // resolve_cache 가 self.allocator 로 path 할당 → arena 로 dupe 후 free.
+                            // PR resolve interning: f.path 는 path_pool 소유 (borrow only). arena 로만 dupe.
                             .file => |f| {
                                 paths[i] = arena_alloc.dupe(u8, f.path) catch null;
-                                self.allocator.free(f.path);
-                                if (f.resolve_dir) |dir| self.allocator.free(dir);
                             },
-                            .disabled => |d| self.allocator.free(d.path),
+                            .disabled => {},
                             .virtual, .dataurl, .external, .custom => {},
                         };
                     }
