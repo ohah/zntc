@@ -70,6 +70,11 @@ pub const NamespaceAccessIndex = struct {
     /// 즉 build → analyze 동안 ast 가 mutate (transformer 의 addString 등) 되면 invalidate. 단일 단계 사용 강제.
     accesses_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentAccess)) = .{},
 
+    /// escape 색인 (F1 fix): 모든 identifier_reference 의 `text → [(node_idx, span_start)...]`.
+    /// text fallback 진입 시 `idents_by_text[local_name]` 의 각 node_idx 가 `prop_by_obj` 에
+    /// 있으면 member-obj, 없으면 escape (value position) — opaque return 으로 over-prune 회피.
+    idents_by_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentRef)) = .{},
+
     pub const DeclRange = struct { start: u32, end: u32 };
 
     pub const IdentAccess = struct {
@@ -77,11 +82,16 @@ pub const NamespaceAccessIndex = struct {
         obj_span_start: u32,
     };
 
+    pub const IdentRef = struct {
+        node_idx: u32,
+        span_start: u32,
+    };
+
     pub fn build(allocator: std.mem.Allocator, ast: *const Ast) std.mem.Allocator.Error!NamespaceAccessIndex {
         var self: NamespaceAccessIndex = .{};
         errdefer self.deinit(allocator);
         const node_count = ast.nodes.items.len;
-        for (ast.nodes.items) |node| {
+        for (ast.nodes.items, 0..) |node, node_i| {
             if (node.tag == .static_member_expression or node.tag == .private_field_expression) {
                 const e = node.data.extra;
                 if (!ast.hasExtra(e, 2)) continue;
@@ -100,6 +110,16 @@ pub const NamespaceAccessIndex = struct {
                     .prop_node_idx = prop_idx,
                     .obj_span_start = obj_node.span.start,
                 });
+            } else if (node.tag == .identifier_reference) {
+                // F1 fix: escape 검사용 — 모든 identifier_reference 의 text 색인.
+                const text = ast.getText(node.span);
+                if (text.len == 0) continue;
+                const gop = try self.idents_by_text.getOrPut(allocator, text);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(allocator, .{
+                    .node_idx = @intCast(node_i),
+                    .span_start = node.span.start,
+                });
             } else if (node.tag == .import_declaration) {
                 try self.decl_ranges.append(allocator, .{ .start = node.span.start, .end = node.span.end });
             }
@@ -113,6 +133,9 @@ pub const NamespaceAccessIndex = struct {
         var it = self.accesses_by_obj_text.valueIterator();
         while (it.next()) |list| list.deinit(allocator);
         self.accesses_by_obj_text.deinit(allocator);
+        var it2 = self.idents_by_text.valueIterator();
+        while (it2.next()) |list| list.deinit(allocator);
+        self.idents_by_text.deinit(allocator);
     }
 };
 
@@ -200,6 +223,24 @@ pub fn analyzeNamespaceAccessWithIndex(
     if (symbol_matched == 0) {
         if (ns_local_name) |local_name| {
             if (local_name.len > 0) {
+                // F1 fix: escape 검사 — `idents_by_text[local]` 의 어떤 identifier_reference 가
+                // `prop_by_obj` 에 없으면 (member-obj 아닌 value-position 사용) opaque 로 처리.
+                // 예: `import * as M from 'x'; const ref = M; ref.foo()` — `M` 이 const init 의
+                // RHS 로 escape. 안 잡으면 over-prune 으로 dangling.
+                if (index.idents_by_text.get(local_name)) |refs| {
+                    for (refs.items) |ir| {
+                        // decl range 안의 identifier (import specifier 자체 등) 는 skip.
+                        if (isInDecl(ir.span_start, ir.span_start + 1, index.decl_ranges.items)) continue;
+                        if (!index.prop_by_obj.contains(ir.node_idx)) {
+                            // escape detected — over-prune 방지 위해 opaque.
+                            access.deinit(allocator);
+                            access.members = .{};
+                            access.kind = .@"opaque";
+                            return access;
+                        }
+                    }
+                }
+
                 if (index.accesses_by_obj_text.get(local_name)) |list| {
                     for (list.items) |ia| {
                         // decl range 의 identifier (import specifier 자체) 는 skip.

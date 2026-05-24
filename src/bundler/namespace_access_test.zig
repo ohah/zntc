@@ -371,3 +371,37 @@ test "옵션 A: symbol matched = 0 (rebind 시뮬레이션) 일 때만 fallback 
     defer h.deinit(std.testing.allocator);
     try expectMembers(&h.access, &.{ "counter", "histogram" });
 }
+
+// F1 fix (PR #3735): text fallback escape 검출 — value-position 사용 시 opaque.
+// 옵션 B 의 회귀 case: symbol_matched=0 + escape 동시 발생 시 옛 코드는 member_only 로
+// over-prune. 새 코드는 escape 감지해서 opaque 반환 → 모든 export 살림.
+test "F1: text fallback escape detection — namespace 가 const init 의 RHS 로 escape 하면 opaque" {
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\const ref = M;
+        \\export const x = M.a;
+    , "M", true);
+    defer h.deinit(std.testing.allocator);
+    // escape 감지 → opaque (members 무관)
+    try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
+}
+
+test "F1: text fallback escape detection — namespace 가 function call argument 로 escape 하면 opaque" {
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\sink(M);
+        \\M.x();
+    , "M", true);
+    defer h.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
+}
+
+test "F1: text fallback escape detection — member-obj only 면 escape 아님 (정상 member_only)" {
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.a();
+        \\M.b();
+    , "M", true);
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{ "a", "b" });
+}
