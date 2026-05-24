@@ -1,12 +1,13 @@
 ---
 title: NAPI 누수 측정 (Debug GPA leak detector)
-description: dev/watch RSS 누수 / NAPI native_alloc 누수 추적용 측정 도구 사용법 — Debug 빌드 한정 std.heap.DebugAllocator + atexit dump
+description: dev/watch RSS 누수 / NAPI native_alloc 누수 추적용 측정 도구 사용법 — Debug 빌드 한정 std.heap.DebugAllocator + NAPI env cleanup hook dump
 ---
 
 ZNTC 내부 contributor 용 측정 인프라. `packages/core/src/napi/common.zig` 의
 `debug_gpa` (Debug 빌드 한정, `std.heap.DebugAllocator`) 가 모든 NAPI 진입점
-의 `native_alloc` 을 공유, process 종료 시 `atexit` 가 `detectLeaks()` 호출
-→ stack trace 포함 leak 리포트를 stderr 로 dump.
+의 `native_alloc` 을 공유, process 정상 종료 시 NAPI env cleanup hook
+(`napi_add_env_cleanup_hook`) 가 `detectLeaks()` 호출 → stack trace 포함
+leak 리포트를 stderr 로 dump.
 
 **Production 사용자 영향 0** — ReleaseFast 빌드는 `comptime builtin.mode != .Debug`
 early-out 으로 dead code 제거, `std.heap.c_allocator` 그대로 사용.
@@ -50,7 +51,7 @@ for i in $(seq 1 20); do
   sleep 3
 done
 
-# SIGTERM → atexit 발화 → leak dump
+# SIGTERM → Node 정상 종료 → env cleanup hook 발화 → leak dump
 kill -TERM $DEV_PID
 sleep 3
 kill -KILL $DEV_PID 2>/dev/null
@@ -102,8 +103,8 @@ bottom-up stack trace — NAPI 진입점 (가장 깊은 프레임) 부터 실제
   **직접 비교 금지**. Debug↔Debug, before↔after fix delta 만 valid
 - **perf 왜곡**: `thread_safe=true` mutex 로 모든 alloc 직렬화. wall-clock /
   sub-phase ns 절대값 무의미, 상대 ratio 만
-- **SIGTERM atexit 발동**: 호스트 런타임 의존. Bun 환경 검증, Node 환경에선
-  `process.exit(0)` 명시 권장
+- **NAPI env cleanup hook 발동**: 호스트 런타임의 정상 종료 경로 의존
+  (Node/Bun 모두 env destroy 시 자동 호출). SIGKILL 등 비정상 종료에선 미발화
 - **`tryLock`-based detectLeaks**: worker thread 가 mid-alloc 시 leak dump
   일부 손실 (희박, deadlock 회피 trade-off)
 - **shutdown noise**: watch 의 long-lived cache (`PersistentModuleStore` /
@@ -156,6 +157,6 @@ assertion 추가 가능 (현재 수동).
 
 - 저장소 내부: [`docs/DEBUG.md`](https://github.com/ohah/zntc/blob/main/docs/DEBUG.md) 의 동일 섹션
 - 측정 인프라 코드: [`packages/core/src/napi/common.zig`](https://github.com/ohah/zntc/blob/main/packages/core/src/napi/common.zig)
-  의 `debug_gpa` / `nativeAlloc` / `dumpLeaksAtExit` / `registerLeakDump`
+  의 `debug_gpa` / `nativeAlloc` / `dumpLeaksOnEnvCleanup` / `registerLeakDump`
 - 9 PR EPIC history: PR #3691 / #3695 / #3696 / #3705 / #3707 / #3709 / #3711 /
   #3713

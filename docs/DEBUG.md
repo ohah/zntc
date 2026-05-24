@@ -506,8 +506,8 @@ CI workflows 의 모든 `zig build napi` 호출은 *일관성 + 향후 paralleli
 dev/watch RSS 누수 / NAPI native_alloc 누수 추적용 임시 측정 인프라.
 `packages/core/src/napi/common.zig` 의 `debug_gpa` (Debug 빌드 한정,
 `std.heap.DebugAllocator`) 가 모든 NAPI 진입점 의 `native_alloc` 을 공유,
-process 종료 시 `atexit` 가 `detectLeaks()` 호출 → stack trace 포함 leak
-리포트를 stderr 로 dump.
+process 정상 종료 시 NAPI env cleanup hook (`napi_add_env_cleanup_hook`) 가
+`detectLeaks()` 호출 → stack trace 포함 leak 리포트를 stderr 로 dump.
 
 ### 배경 (#dev-leak-investigation, 2026-05-23)
 
@@ -589,8 +589,8 @@ HashMap 내부 6 프레임에 caller 가 다 가려져 불충분.
   직접 비교 금지. **Debug↔Debug, before↔after fix delta** 만 valid
 - **perf 왜곡**: `thread_safe=true` mutex 로 모든 alloc 직렬화. wall-clock /
   sub-phase ns 절대값 무의미, 상대 ratio 만
-- **SIGTERM atexit 발동**: 호스트 런타임 의존. Bun 환경 검증, Node 환경에선
-  `process.exit(0)` 명시 권장
+- **NAPI env cleanup hook 발동**: 호스트 런타임의 정상 종료 경로 의존
+  (Node/Bun 모두 env destroy 시 자동 호출). SIGKILL 등 비정상 종료에선 미발화
 - **`tryLock`-based detectLeaks**: worker thread 가 mid-alloc 시 leak dump 일부
   손실 (희박, deadlock 회피 trade-off)
 - **shutdown noise**: watch 의 long-lived cache (PersistentModuleStore 등)
