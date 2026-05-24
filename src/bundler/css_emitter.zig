@@ -43,11 +43,20 @@ pub fn emitCssBundle(
         }
     }.lessThan);
 
-    // CSS 소스 연결 (@import strip)
+    // CSS 소스 연결 (@import strip).
+    // external @import URL 은 strip 후 별도 보존 — 출력 최상단에 emit.
+    // OOM 시 silent drop 회피 — collect / appendTo / appendCssModules 모두
+    // error 시 null 반환 (사용자가 빌드 실패로 인지). planCssChunks 의 try
+    // 패턴과 일치.
     var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
-    appendCssModules(allocator, &output, css_modules.items) catch {};
+    var ext_imports = ExternalImportCollector.init(allocator);
+    defer ext_imports.deinit(allocator);
+    for (css_modules.items) |mod| ext_imports.collectFromModule(allocator, mod) catch return null;
+    ext_imports.appendTo(allocator, &output) catch return null;
+
+    appendCssModules(allocator, &output, css_modules.items) catch return null;
 
     if (output.items.len == 0) return null;
 
@@ -74,12 +83,114 @@ fn appendCssModule(
     mod: *const Module,
 ) !void {
     const strip_end: u32 = if (mod.css_data) |cd| cd.strip_end else 0;
-    const stripped = if (strip_end > 0 and strip_end < mod.source.len) mod.source[strip_end..] else mod.source;
+    // strip_end == source.len 케이스: @import 들로만 채워진 CSS (예: index aggregator
+    // 가 모두 external @import). 옛 가드 `strip_end < source.len` 은 false →
+    // 원본 통째 emit → ExternalImportCollector 의 prepend 와 합쳐져 같은 @import
+    // 2회 출력. `<=` 로 boundary 포함시 빈 슬라이스 반환 → trimmed.len == 0 으로
+    // early return.
+    const stripped = if (strip_end > 0 and strip_end <= mod.source.len) mod.source[strip_end..] else mod.source;
     const trimmed = std.mem.trim(u8, stripped, " \t\n\r");
     if (trimmed.len == 0) return;
     try buf.appendSlice(allocator, stripped);
     if (stripped.len > 0 and stripped[stripped.len - 1] != '\n') {
         try buf.append(allocator, '\n');
+    }
+}
+
+/// External @import URL (`http:`/`https:`/`//`/`data:`) 을 dedup 수집 + 출력 CSS
+/// 상단에 보존 (#3321 P0-3, esbuild parity). CSS spec 상 모든 @import 는 모든
+/// 일반 규칙보다 *앞* 에 와야 하므로 chunk 본문 emit 보다 먼저 호출.
+///
+/// dedup key = (specifier, condition_tail) tuple — `@import "x" print` 와
+/// `@import "x" screen` 은 서로 다른 항목 (media-query 별 lookup 동작이 달라
+/// silent drop 금지). condition_tail 도 함께 보존 emit.
+///
+/// 등장 순서 (모듈 emit 순회 시 첫 발견) 보존 — 결정적.
+const ExternalImportEntry = struct {
+    specifier: []const u8,
+    condition_tail: []const u8,
+};
+const ExternalImportCollector = struct {
+    /// key = "<specifier>\x00<condition_tail>" — `\x00` 은 CSS spec 상 합법
+    /// URL/condition 에 등장 불가라 안전한 separator.
+    seen: std.StringHashMap(void),
+    list: std.ArrayListUnmanaged(ExternalImportEntry),
+
+    fn init(allocator: std.mem.Allocator) ExternalImportCollector {
+        return .{
+            .seen = std.StringHashMap(void).init(allocator),
+            .list = .empty,
+        };
+    }
+
+    fn deinit(self: *ExternalImportCollector, allocator: std.mem.Allocator) void {
+        var kit = self.seen.keyIterator();
+        while (kit.next()) |k| allocator.free(k.*);
+        self.seen.deinit();
+        self.list.deinit(allocator);
+    }
+
+    /// 모듈의 import_records 에서 external @import specifier 를 수집.
+    /// entry 의 specifier/condition_tail 슬라이스는 record 가 가리키는 모듈
+    /// parse_arena 소유 — chunk emit 동안만 사용하므로 안전.
+    ///
+    /// OOM 안전성: list.append 가 먼저 성공해야 seen.put 한다. 순서 반대면
+    /// seen 만 들어가고 list 비어 `found_existing` 으로 영구 skip → silent
+    /// drop 회귀.
+    fn collectFromModule(self: *ExternalImportCollector, allocator: std.mem.Allocator, mod: *const Module) !void {
+        for (mod.import_records) |rec| {
+            if (!rec.is_external) continue;
+            if (rec.specifier.len == 0) continue;
+            const composite_key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ rec.specifier, rec.css_condition_tail });
+            errdefer allocator.free(composite_key);
+            const gop = try self.seen.getOrPut(composite_key);
+            if (gop.found_existing) {
+                allocator.free(composite_key);
+                continue;
+            }
+            // append 실패하면 errdefer 가 key 회수 + getOrPut 한 entry 도 제거.
+            self.list.append(allocator, .{
+                .specifier = rec.specifier,
+                .condition_tail = rec.css_condition_tail,
+            }) catch |e| {
+                _ = self.seen.remove(composite_key);
+                return e;
+            };
+        }
+    }
+
+    /// 수집된 external specifier 를 `@import "<url>"<tail>;\n` 형태로 buf 에
+    /// prepend 가능한 위치(보통 buf 시작 또는 banner 직후)에 emit. 호출자가
+    /// buf 의 적절한 시점에 호출해야 한다.
+    ///
+    /// specifier 안의 `"` 는 CSS spec 의 `\22` escape (16진수+공백) 로 안전
+    /// 출력 — `data:text/css,body{content:"x"}` 같은 quote-포함 URL 도 invalid
+    /// CSS / injection 표면 없이 보존.
+    fn appendTo(self: *const ExternalImportCollector, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
+        for (self.list.items) |entry| {
+            try buf.appendSlice(allocator, "@import \"");
+            try appendCssStringEscaped(allocator, buf, entry.specifier);
+            try buf.append(allocator, '"');
+            if (entry.condition_tail.len > 0) {
+                try buf.appendSlice(allocator, entry.condition_tail);
+            }
+            try buf.appendSlice(allocator, ";\n");
+        }
+    }
+};
+
+/// CSS double-quoted string literal 안전 escape. `"` → `\22 `, `\` → `\\`.
+/// CSS spec §4.3.5 (Escape): hex escape `\<1-6 hex digits>` 다음 공백 1개로
+/// terminate. 다음 문자가 hex 면 ambiguity → 항상 trailing space 부착.
+fn appendCssStringEscaped(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\22 "),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\A "),
+            '\r' => try buf.appendSlice(allocator, "\\D "),
+            else => try buf.append(allocator, c),
+        }
     }
 }
 
@@ -89,6 +200,30 @@ fn appendCssModules(
     css_modules: []const *const Module,
 ) !void {
     for (css_modules) |mod| try appendCssModule(allocator, buf, mod);
+}
+
+/// CSS 모듈 트리를 dep-first 로 순회하며 external @import URL 을 collector
+/// 에 모은다. emit 트리 순회와 동일한 deps-before-importer 순서로 등장 순서
+/// 결정성을 유지 (collector 의 list 가 first-seen order 보존).
+fn collectExternalImportsTree(
+    graph: *const ModuleGraph,
+    idx: ModuleIndex,
+    collector: *ExternalImportCollector,
+    visited: *std.AutoHashMap(ModuleIndex, void),
+    allocator: std.mem.Allocator,
+) !void {
+    if (idx.isNone()) return;
+    if (visited.contains(idx)) return;
+    try visited.put(idx, {});
+    const mod = graph.getModule(idx) orelse return;
+    if (mod.module_type != .css) return;
+    for (mod.dependencies.items) |dep| {
+        if (graph.getModule(dep)) |dm| {
+            if (dm.module_type == .css)
+                try collectExternalImportsTree(graph, dep, collector, visited, allocator);
+        }
+    }
+    try collector.collectFromModule(allocator, mod);
 }
 
 /// 한 CSS 모듈을 그 @import(css→css) 의존을 먼저 인라인한 뒤 emit 한다.
@@ -206,7 +341,25 @@ pub fn planCssChunks(
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(allocator);
+
+        // External @import URL 을 chunk 단위 dedup 수집 후 chunk 본문 상단에
+        // emit (CSS spec: 모든 @import 가 일반 규칙보다 앞). chunk 간 emit 은
+        // 허용 (모듈이 여러 chunk 에 인라인되면 같은 external URL 도 각
+        // chunk 의 상단에 1번씩 등장 — 런타임 fetch dedup 은 브라우저 책임).
+        var ext_imports = ExternalImportCollector.init(allocator);
+        defer ext_imports.deinit(allocator);
+
         emit_visited.clearRetainingCapacity();
+        // external collect 는 emit 과 동일 dep 트리 순회 — emitCssModuleTree 가
+        // 본문 emit 도중 visited 를 마킹해 같은 dep 가 2번 walk 되지 않는다.
+        // 따라서 external 수집은 emit 전에 별도 일회 순회로 처리한다.
+        var collect_visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
+        defer collect_visited.deinit();
+        for (list.items) |mod| {
+            try collectExternalImportsTree(graph, mod.index, &ext_imports, &collect_visited, allocator);
+        }
+        try ext_imports.appendTo(allocator, &buf);
+
         for (list.items) |mod| {
             try emitCssModuleTree(allocator, graph, mod.index, &buf, &emit_visited);
         }

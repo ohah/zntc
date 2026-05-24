@@ -496,4 +496,190 @@ describe('CSS Bundling', () => {
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css.indexOf('.a')).toBeLessThan(css.indexOf('.b'));
   });
+
+  // ── external @import URL preservation (#3321 P0-3 cross-chunk @import 재작성) ──
+  // esbuild parity: protocol-prefixed (`http:`/`https:`) 또는 protocol-relative
+  // (`//`) @import 는 *resolve 대상이 아님* — bundler 가 graph 에 등록 시도
+  // 하면 "Cannot resolve module" 로 실패. 정석은 external 로 인식해 출력
+  // CSS 상단에 그대로 보존 (런타임 fetch). 멀티 청크 / 멀티 importer 시에도
+  // 각 출력에서 dedup 된 1회 emit.
+  it('external http(s) @import URL → resolve 시도 안 함 + 출력에 보존', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';\nconsole.log("ok");`,
+      'style.css':
+        `@import "https://fonts.googleapis.com/css?family=Inter";\n` +
+        `.btn { font-family: "Inter"; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    // 빌드는 성공해야 함 (esbuild parity)
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // external @import URL 은 출력에 보존
+    expect(css).toContain('@import "https://fonts.googleapis.com/css?family=Inter"');
+    expect(css).toContain('.btn');
+    // CSS spec: 모든 @import 는 모든 일반 규칙보다 먼저 와야 함
+    expect(css.indexOf('@import')).toBeLessThan(css.indexOf('.btn'));
+  });
+
+  it('protocol-relative // @import URL → 보존', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';\nconsole.log("ok");`,
+      'style.css': `@import "//cdn.example.com/reset.css";\n.app { color: red; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    expect(css).toContain('@import "//cdn.example.com/reset.css"');
+  });
+
+  it('external + 일반 @import 혼합 → external 보존, 일반 inline', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './main.css';\nconsole.log("ok");`,
+      'main.css':
+        `@import "https://example.com/normalize.css";\n` +
+        `@import "./local.css";\n` +
+        `.main { color: black; }`,
+      'local.css': `.local { color: blue; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // external 보존
+    expect(css).toContain('@import "https://example.com/normalize.css"');
+    // 일반 @import 는 inline 됐으므로 제거
+    expect(css).not.toContain('./local.css');
+    expect(css).toContain('.local');
+    expect(css).toContain('.main');
+    // external @import 이 일반 규칙보다 앞에 있어야 함
+    expect(css.indexOf('@import')).toBeLessThan(css.indexOf('.main'));
+  });
+
+  // code-review max post-review 회귀 가드.
+  it('uppercase HTTPS scheme → external 로 인식, resolve 실패 안 함', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';\nconsole.log("ok");`,
+      'style.css': `@import "HTTPS://cdn.example.com/x.css";\n.a {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    expect(css).toContain('@import "HTTPS://cdn.example.com/x.css"');
+  });
+
+  it('external @import + media query → media clause 보존 (semantic preserve)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';\nconsole.log("ok");`,
+      'style.css':
+        `@import "https://cdn/print.css" print;\n` +
+        `@import "https://cdn/screen.css" screen and (max-width: 600px);\n` +
+        `.app {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // print 키워드 / media query 가 specifier 뒤에 살아있어야 함
+    expect(css).toMatch(/@import\s+"https:\/\/cdn\/print\.css"\s+print\s*;/);
+    expect(css).toMatch(
+      /@import\s+"https:\/\/cdn\/screen\.css"\s+screen\s+and\s+\(max-width:\s*600px\)\s*;/,
+    );
+  });
+
+  it('순수 external @import 만 있는 CSS → 같은 @import 가 한 번만 출력 (double-emit 회피)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './only-ext.css';\nconsole.log("ok");`,
+      'only-ext.css': `@import "https://cdn/normalize.css";`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    const matches = css.match(/@import\s+"https:\/\/cdn\/normalize\.css"/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  it('같은 external URL 을 여러 모듈이 @import → chunk 내 1회 emit (dedup)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './a.css';\nimport './b.css';\nconsole.log("ok");`,
+      'a.css': `@import "https://cdn/normalize.css";\n.a {}`,
+      'b.css': `@import "https://cdn/normalize.css";\n.b {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    const matches = css.match(/@import\s+"https:\/\/cdn\/normalize\.css"/g) ?? [];
+    expect(matches.length).toBe(1);
+    expect(css).toContain('.a');
+    expect(css).toContain('.b');
+  });
+
+  it('data: URL with embedded escaped quote — backslash escape 보존 + emit 시 hex escape', async () => {
+    // scanner 가 `\"` 를 string terminator 로 오인하면 specifier 절단 → broken CSS.
+    // findClosingQuote 가 `\<char>` 를 escape sequence 로 인식해 다음 1바이트 skip
+    // 해야 한다. emitter 의 appendCssStringEscaped 가 `"` → `\22 ` 로 변환해
+    // round-trip 정확성 유지.
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';\nconsole.log("ok");`,
+      'style.css': `@import "data:text/css,body{content:\\"x\\"}";\n.app {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // specifier 가 절단되지 않고 끝까지 보존 + closing `}` 와 `";` 가 모두 같은 라인에
+    expect(css).toContain('@import "data:text/css,body{content:');
+    expect(css).toContain('}";');
+    // 백슬래시 escape 가 CSS hex escape 로 변환됨 (\22 는 `"`, \\ 는 `\`)
+    expect(css).toMatch(/\\22/);
+    // 절단 후 dangling 본문이 emit 되지 않음 — 닫는 quote 다음에 `";\n` 만
+    const importLine = css.match(/^@import[^\n]+/m);
+    expect(importLine?.[0].endsWith('";')).toBe(true);
+  });
+
+  it('같은 URL 의 다른 media query → 서로 다른 @import 로 둘 다 emit (dedup key=specifier+tail)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';\nconsole.log("ok");`,
+      'style.css':
+        `@import "https://cdn/x.css" print;\n` +
+        `@import "https://cdn/x.css" screen;\n` +
+        `.app {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    expect(css).toMatch(/@import\s+"https:\/\/cdn\/x\.css"\s+print\s*;/);
+    expect(css).toMatch(/@import\s+"https:\/\/cdn\/x\.css"\s+screen\s*;/);
+  });
 });
