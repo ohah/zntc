@@ -664,6 +664,140 @@ describe('CSS Bundling', () => {
     expect(importLine?.[0].endsWith('";')).toBe(true);
   });
 
+  // ── #3747 CSS @charset / @layer top-of-file 선언 보존 ──
+  // strip_end 가 마지막 @import 의 end 까지 전체를 잘라 그 앞의 @charset / 바
+  // @layer 선언이 silent drop. 루트커즈 fix: scanner 가 두 종류도 캡처하고
+  // emitter 가 본문 앞에 보존 emit. esbuild parity.
+  it('#3747 @charset "UTF-8"; 가 출력에 보존된다 (silent drop 회귀)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': `@charset "UTF-8";\n@import "./other.css";\nbody { color: red; }`,
+      'other.css': `.other {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // @charset 은 파일의 첫 byte 여야 함 (CSS spec)
+    expect(css.trimStart().startsWith('@charset "UTF-8"')).toBe(true);
+    expect(css).toContain('.other');
+    expect(css).toContain('color: red');
+  });
+
+  it('#3747 bare @layer reset, base, theme; 가 출력에 보존된다', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': `@layer reset, base, theme;\n@import "./other.css";\n.app { color: red; }`,
+      'other.css': `.other {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // @layer 선언이 출력에 살아있어야 함 — cascade layer 순서 정의용
+    expect(css).toMatch(/@layer\s+reset\s*,\s*base\s*,\s*theme/);
+    // 본문 보다 앞에 위치
+    expect(css.indexOf('@layer')).toBeLessThan(css.indexOf('.app'));
+  });
+
+  it('#3747 @charset + @layer + external @import 혼합 → 모두 보존, 순서 정확', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css':
+        `@charset "UTF-8";\n` +
+        `@layer reset, base;\n` +
+        `@import "https://cdn/x.css";\n` +
+        `.app { color: blue; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    expect(css).toContain('@charset "UTF-8"');
+    expect(css).toMatch(/@layer\s+reset\s*,\s*base/);
+    expect(css).toContain('@import "https://cdn/x.css"');
+    expect(css).toContain('.app');
+    // 순서 invariant: charset → (layer/import 둘 다 가능) → body
+    expect(css.indexOf('@charset')).toBeLessThan(css.indexOf('.app'));
+    expect(css.indexOf('@layer')).toBeLessThan(css.indexOf('.app'));
+    expect(css.indexOf('@import')).toBeLessThan(css.indexOf('.app'));
+  });
+
+  it('#3747 multi-line @layer (`@layer\\nreset, base;`) → newline boundary 인식, 캡처 + 후속 @import 정상', async () => {
+    // code-review max Angle B1: 옛 boundary 가드가 `\n` 미인식 → break 로
+    // @layer + 후속 @import 둘 다 silent drop. fix 후 multi-line valid CSS 도
+    // 정상 캡처되어야 한다.
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': `@layer\nreset, base;\n@import "./other.css";\n.app {}`,
+      'other.css': `.other {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // @layer 캡처 (newline 으로 분리된 형식)
+    expect(css).toMatch(/@layer\s+reset\s*,\s*base/);
+    // @import 가 inline 됨 — 캡처 가드가 break 로 빠지지 않아 후속 @import 까지 처리
+    expect(css).toContain('.other');
+    // raw `@import "./other.css"` 가 출력에 남지 않아야 함 (inline 됐다는 증거)
+    expect(css).not.toContain('@import "./other.css"');
+  });
+
+  it('#3747 @charsetXYZ (word-boundary 없는 fake at-rule) → charset 으로 캡처 안 됨', async () => {
+    // code-review max Angle B2: `@charsetXYZ "evil";` 가 `@charset` 으로
+    // 오인 캡처되어 출력 상단 hoist 되던 버그. word-boundary 가드 추가.
+    // 두 모듈 시나리오 — hoist 시 a 의 @charsetXYZ 가 b 본문보다 *앞* 으로
+    // 가고, fix 시엔 a 본문에 그대로 남아 b 본문 *뒤* 에 emit.
+    const fixture = await createFixture({
+      'index.ts': `import './b.css';\nimport './a.css';`,
+      'a.css': `@charsetXYZ "evil";\n.a {}`,
+      'b.css': `.b {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // 핵심 invariant: @charsetXYZ 가 hoist 안 되면 a 본문에 머물러 b 본문 뒤에 위치.
+    const bIdx = css.indexOf('.b');
+    const fakeCharsetIdx = css.indexOf('@charsetXYZ');
+    expect(bIdx).toBeGreaterThanOrEqual(0);
+    expect(fakeCharsetIdx).toBeGreaterThanOrEqual(0);
+    expect(fakeCharsetIdx).toBeGreaterThan(bIdx);
+  });
+
+  it('#3747 여러 모듈의 @charset → 첫 발견 1개만 emit (CSS spec: 1개만 valid)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './a.css';\nimport './b.css';`,
+      'a.css': `@charset "UTF-8";\n.a {}`,
+      'b.css': `@charset "UTF-8";\n.b {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    const matches = css.match(/@charset/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
   it('같은 URL 의 다른 media query → 서로 다른 @import 로 둘 다 emit (dedup key=specifier+tail)', async () => {
     const fixture = await createFixture({
       'index.ts': `import './style.css';\nconsole.log("ok");`,

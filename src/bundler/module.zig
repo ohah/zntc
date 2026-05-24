@@ -437,6 +437,10 @@ pub const Module = struct {
         import_count: u32,
         /// 마지막 @import 규칙 끝의 byte offset. emit 시 이 위치 이후부터 출력.
         strip_end: u32 = 0,
+        /// 파일 상단 `@charset` / bare `@layer` 선언. strip_end 가 통째로
+        /// 잘라 silent drop 되던 것을 emitter 가 본문 앞에 보존 emit 하도록
+        /// 캡처 (#3747). parse_arena 소유 슬라이스, 모듈 수명 내 유효.
+        prefix_decls: []const @import("css_scanner.zig").CssPrefixDecl = &.{},
     };
 
     pub const State = enum {

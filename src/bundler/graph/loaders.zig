@@ -42,8 +42,9 @@ pub fn parseCssModule(self: *ModuleGraph, module: *Module) void {
         module.source = readModuleSourceWithMtime(self, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
     }
 
-    // @import 규칙 추출 (arena에 할당)
-    const raw_imports = css_scanner_mod.extractCssImports(arena_alloc, module.source);
+    // @import 규칙 + @charset / @layer prefix 선언 추출 (arena 에 할당, #3747)
+    const scan_result = css_scanner_mod.extractCssImportsWithPrefixes(arena_alloc, module.source);
+    const raw_imports = scan_result.imports;
     const import_count: u32 = @intCast(raw_imports.len);
 
     if (import_count > 0) {
@@ -67,8 +68,22 @@ pub fn parseCssModule(self: *ModuleGraph, module: *Module) void {
         module.import_records = records;
     }
 
-    const strip_end: u32 = if (import_count > 0) raw_imports[import_count - 1].span.end else 0;
-    module.css_data = .{ .import_count = import_count, .strip_end = strip_end };
+    // strip_end = max(last @import end, last prefix decl end + `;`) — 캡처되어
+    // emitter 가 별도 보존 emit 하는 모든 영역을 본문 source 에서 제외해 double
+    // emit 회피. prefix decl 의 `text` 슬라이스가 source slice 이므로 pointer
+    // 산술로 end offset 복원 (text + `;` 분 1 추가).
+    var strip_end: u32 = if (import_count > 0) raw_imports[import_count - 1].span.end else 0;
+    for (scan_result.prefix_decls) |pd| {
+        const text_end_offset: usize = @intFromPtr(pd.text.ptr) - @intFromPtr(module.source.ptr) + pd.text.len;
+        // `;` 다음까지 포함 (text 는 `;` 미포함 — emitter 가 따로 부착)
+        const decl_end: u32 = @intCast(@min(text_end_offset + 1, module.source.len));
+        if (decl_end > strip_end) strip_end = decl_end;
+    }
+    module.css_data = .{
+        .import_count = import_count,
+        .strip_end = strip_end,
+        .prefix_decls = scan_result.prefix_decls,
+    };
     module.exports_kind = .esm; // CSS는 ESM side-effect import로 처리
     module.side_effects = true; // CSS는 항상 side-effect
     module.state = .parsed;
