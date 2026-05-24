@@ -1949,6 +1949,7 @@ pub const Linker = struct {
                     @intCast(sym_idx),
                     stmt_spans_opt,
                     &ns_index,
+                    ib.local_name,
                 ) catch continue;
                 defer access.deinit(self.allocator);
 

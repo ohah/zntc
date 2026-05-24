@@ -62,28 +62,46 @@ pub const NamespaceAccessIndex = struct {
     prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .{},
     /// import declaration span 범위 — 이 안의 identifier_reference 는 선언이므로 skip.
     decl_ranges: std.ArrayListUnmanaged(DeclRange) = .empty,
+    /// text-fallback 색인 (#3680 옵션 A): obj 가 identifier_reference 인 member access 를
+    /// `obj_text → [IdentAccess...]` 로 색인. transformer 가 namespace local 의 symbol_id 를
+    /// rebind/invalidate 해서 symbol_id 매칭이 0건이 되는 case 의 fallback 전용.
+    ///
+    /// 키 lifetime: `ast.getText` 결과 (source buffer 또는 string_table 슬라이스). ast 수명 동안만 유효.
+    /// 즉 build → analyze 동안 ast 가 mutate (transformer 의 addString 등) 되면 invalidate. 단일 단계 사용 강제.
+    accesses_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentAccess)) = .{},
 
     pub const DeclRange = struct { start: u32, end: u32 };
+
+    pub const IdentAccess = struct {
+        prop_node_idx: u32,
+        obj_span_start: u32,
+    };
 
     pub fn build(allocator: std.mem.Allocator, ast: *const Ast) std.mem.Allocator.Error!NamespaceAccessIndex {
         var self: NamespaceAccessIndex = .{};
         errdefer self.deinit(allocator);
         const node_count = ast.nodes.items.len;
         for (ast.nodes.items) |node| {
-            switch (node.tag) {
-                .static_member_expression, .private_field_expression => {
-                    const e = node.data.extra;
-                    if (!ast.hasExtra(e, 2)) continue;
-                    const obj_idx = ast.readExtra(e, 0);
-                    const prop_idx = ast.readExtra(e, 1);
-                    if (obj_idx < node_count and prop_idx < node_count) {
-                        try self.prop_by_obj.put(allocator, obj_idx, prop_idx);
-                    }
-                },
-                .import_declaration => {
-                    try self.decl_ranges.append(allocator, .{ .start = node.span.start, .end = node.span.end });
-                },
-                else => {},
+            if (node.tag == .static_member_expression or node.tag == .private_field_expression) {
+                const e = node.data.extra;
+                if (!ast.hasExtra(e, 2)) continue;
+                const obj_idx = ast.readExtra(e, 0);
+                const prop_idx = ast.readExtra(e, 1);
+                if (obj_idx >= node_count or prop_idx >= node_count) continue;
+                try self.prop_by_obj.put(allocator, obj_idx, prop_idx);
+                // text fallback 색인: obj 가 identifier_reference 인 경우만.
+                const obj_node = ast.nodes.items[obj_idx];
+                if (obj_node.tag != .identifier_reference) continue;
+                const obj_text = ast.getText(obj_node.span);
+                if (obj_text.len == 0) continue;
+                const gop = try self.accesses_by_obj_text.getOrPut(allocator, obj_text);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(allocator, .{
+                    .prop_node_idx = prop_idx,
+                    .obj_span_start = obj_node.span.start,
+                });
+            } else if (node.tag == .import_declaration) {
+                try self.decl_ranges.append(allocator, .{ .start = node.span.start, .end = node.span.end });
             }
         }
         return self;
@@ -92,6 +110,9 @@ pub const NamespaceAccessIndex = struct {
     pub fn deinit(self: *NamespaceAccessIndex, allocator: std.mem.Allocator) void {
         self.prop_by_obj.deinit(allocator);
         self.decl_ranges.deinit(allocator);
+        var it = self.accesses_by_obj_text.valueIterator();
+        while (it.next()) |list| list.deinit(allocator);
+        self.accesses_by_obj_text.deinit(allocator);
     }
 };
 
@@ -117,11 +138,19 @@ pub fn analyzeNamespaceAccess(
 ) std.mem.Allocator.Error!NamespaceAccess {
     var index = try NamespaceAccessIndex.build(allocator, ast);
     defer index.deinit(allocator);
-    return analyzeNamespaceAccessWithIndex(allocator, ast, symbol_ids, ns_sym_id, stmt_spans, &index);
+    return analyzeNamespaceAccessWithIndex(allocator, ast, symbol_ids, ns_sym_id, stmt_spans, &index, null);
 }
 
 /// `analyzeNamespaceAccess` 의 ns_sym_id-의존 후반부만 분리.
 /// 호출자가 `NamespaceAccessIndex` 를 한 번 구축해 여러 namespace 심볼에 재사용 (#1735).
+///
+/// `ns_local_name` 이 주어지면 (#3680 옵션 A) text fallback 활성화:
+/// transformer 가 namespace local 의 symbol_id 를 rebind/invalidate 해 *symbol_id 매칭 0건* 인 경우만
+/// text 매칭으로 보강. **symbol_id 매칭이 1건이라도 있으면 fallback skip** — symbol_id 가 정확하다고
+/// 신뢰. 이렇게 게이팅 하지 않으면 function param / block-scope 의 같은 이름 binding 도 잡혀
+/// shadow false-positive (counter$4 fix 후 #1603 wrapper-barrel lazy 정밀성 회귀).
+///
+/// 즉 fallback 은 "정상 case (symbol matched > 0) 는 영향 없음, rebind case 만 회복" 의 narrow recovery.
 pub fn analyzeNamespaceAccessWithIndex(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -129,12 +158,15 @@ pub fn analyzeNamespaceAccessWithIndex(
     ns_sym_id: u32,
     stmt_spans: ?[]const Span,
     index: *const NamespaceAccessIndex,
+    ns_local_name: ?[]const u8,
 ) std.mem.Allocator.Error!NamespaceAccess {
     const node_count = ast.nodes.items.len;
     var access: NamespaceAccess = .{ .kind = .member_only };
     errdefer access.deinit(allocator);
     if (node_count == 0) return access;
 
+    // symbol_id 매칭 — symbol_ids 가 정확하면 가장 정확. transformer rebind 시 누락 가능.
+    var symbol_matched: usize = 0;
     for (symbol_ids, 0..) |maybe_sid, node_i| {
         const sid = maybe_sid orelse continue;
         if (sid != ns_sym_id) continue;
@@ -150,36 +182,11 @@ pub fn analyzeNamespaceAccessWithIndex(
         if (tag == .import_namespace_specifier or tag == .import_default_specifier or
             tag == .import_specifier or tag == .binding_identifier) continue;
 
-        var in_decl = false;
-        for (index.decl_ranges.items) |r| {
-            if (node.span.start >= r.start and node.span.end <= r.end) {
-                in_decl = true;
-                break;
-            }
-        }
-        if (in_decl) continue;
+        if (isInDecl(node.span.start, node.span.end, index.decl_ranges.items)) continue;
 
+        symbol_matched += 1;
         if (index.prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
-            const prop_node = ast.nodes.items[prop_node_idx];
-            const name = ast.getText(prop_node.span);
-            if (name.len == 0) continue;
-
-            const gop = try access.members.getOrPut(allocator, name);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-
-            if (stmt_spans) |spans| {
-                if (stmt_info_mod.findStmtForPos(spans, node.span.start)) |stmt_idx| {
-                    const list = gop.value_ptr;
-                    var exists = false;
-                    for (list.items) |existing| {
-                        if (existing == stmt_idx) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) try list.append(allocator, stmt_idx);
-                }
-            }
+            try recordAccess(allocator, &access, ast, prop_node_idx, node.span.start, stmt_spans);
         } else {
             access.deinit(allocator);
             access.members = .{};
@@ -188,5 +195,54 @@ pub fn analyzeNamespaceAccessWithIndex(
         }
     }
 
+    // text fallback (#3680 옵션 A): **symbol matched = 0 일 때만** 활성화.
+    // symbol_id 가 1건이라도 잡았다면 그게 정확 — fallback 으로 shadow 까지 끌어오는 대신 신뢰.
+    if (symbol_matched == 0) {
+        if (ns_local_name) |local_name| {
+            if (local_name.len > 0) {
+                if (index.accesses_by_obj_text.get(local_name)) |list| {
+                    for (list.items) |ia| {
+                        // decl range 의 identifier (import specifier 자체) 는 skip.
+                        if (isInDecl(ia.obj_span_start, ia.obj_span_start + 1, index.decl_ranges.items)) continue;
+                        try recordAccess(allocator, &access, ast, ia.prop_node_idx, ia.obj_span_start, stmt_spans);
+                    }
+                }
+            }
+        }
+    }
+
     return access;
+}
+
+/// `[start, end)` 가 `decl_ranges` 중 하나의 `[r.start, r.end)` 안에 완전히 포함되는지.
+/// span 은 half-open `[start, end)` 컨벤션 — 두 path (symbol_id + text fallback) 의 비교 통일.
+fn isInDecl(start: u32, end: u32, decl_ranges: []const NamespaceAccessIndex.DeclRange) bool {
+    for (decl_ranges) |r| {
+        if (start >= r.start and end <= r.end) return true;
+    }
+    return false;
+}
+
+fn recordAccess(
+    allocator: std.mem.Allocator,
+    access: *NamespaceAccess,
+    ast: *const Ast,
+    prop_node_idx: u32,
+    obj_span_start: u32,
+    stmt_spans: ?[]const Span,
+) std.mem.Allocator.Error!void {
+    const prop_node = ast.nodes.items[prop_node_idx];
+    const name = ast.getText(prop_node.span);
+    if (name.len == 0) return;
+
+    const gop = try access.members.getOrPut(allocator, name);
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+
+    if (stmt_spans) |spans| {
+        if (stmt_info_mod.findStmtForPos(spans, obj_span_start)) |stmt_idx| {
+            const list = gop.value_ptr;
+            for (list.items) |existing| if (existing == stmt_idx) return;
+            try list.append(allocator, stmt_idx);
+        }
+    }
 }

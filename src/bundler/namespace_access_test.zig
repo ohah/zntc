@@ -249,3 +249,125 @@ test "analyzeNamespaceAccess: default import computed access → opaque" {
     defer h.deinit(std.testing.allocator);
     try std.testing.expectEqual(NamespaceAccess.Kind.@"opaque", h.access.kind);
 }
+
+// ============================================================
+// 옵션 A — text fallback (#3680, effect-ts `counter$4 is not defined` 회귀 방지).
+// `analyzeNamespaceAccessWithIndex` 에 `ns_local_name` 을 전달하면
+// transformer 가 namespace local 의 `symbol_id` 를 rebind/invalidate 한 경우에도
+// text 매칭 fallback 으로 member access 를 정확히 추적.
+// ============================================================
+
+fn runAccessWithFallback(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    ns_name: []const u8,
+    /// true 면 ns_sym_id 를 일부러 잘못된 값(존재하지 않는 id) 으로 호출 — symbol_id 매칭은 0 건이지만
+    /// text fallback 이 정상 동작하는지 검증.
+    use_invalid_sym: bool,
+) !struct {
+    scanner: Scanner,
+    parser: Parser,
+    analyzer: SemanticAnalyzer,
+    access: NamespaceAccess,
+
+    fn deinit(self: *@This(), a: std.mem.Allocator) void {
+        self.access.deinit(a);
+        self.analyzer.deinit();
+        self.parser.deinit();
+        self.scanner.deinit();
+    }
+} {
+    const namespace_access_mod = @import("linker/namespace_access.zig");
+    var scanner = try Scanner.init(allocator, source);
+    errdefer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    errdefer parser.deinit();
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    errdefer analyzer.deinit();
+    try analyzer.analyze();
+
+    var ns_sym_id: u32 = std.math.maxInt(u32);
+    if (!use_invalid_sym) {
+        const ast = &parser.ast;
+        for (ast.nodes.items, 0..) |node, i| {
+            if (node.tag != .import_namespace_specifier) continue;
+            if (!std.mem.eql(u8, ast.getText(node.span), ns_name)) continue;
+            if (i < analyzer.symbol_ids.items.len) {
+                if (analyzer.symbol_ids.items[i]) |sid| {
+                    ns_sym_id = sid;
+                    break;
+                }
+            }
+        }
+    }
+
+    var index = try namespace_access_mod.NamespaceAccessIndex.build(allocator, &parser.ast);
+    defer index.deinit(allocator);
+    const access = try namespace_access_mod.analyzeNamespaceAccessWithIndex(
+        allocator,
+        &parser.ast,
+        analyzer.symbol_ids.items,
+        ns_sym_id,
+        null,
+        &index,
+        ns_name,
+    );
+    return .{ .scanner = scanner, .parser = parser, .analyzer = analyzer, .access = access };
+}
+
+test "옵션 A: symbol_id 매칭 정상 + text fallback union (중복 제거)" {
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.counter();
+        \\M.tagged();
+    , "M", false);
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{ "counter", "tagged" });
+}
+
+test "옵션 A: symbol_id rebind 시뮬레이션 (invalid sid) — text fallback 만으로 access 복원" {
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.counter();
+        \\M.histogram();
+        \\M.tagged();
+    , "M", true);
+    defer h.deinit(std.testing.allocator);
+    // symbol_id 매칭 0 건 — text fallback 으로 3 개 prop 잡힘.
+    try expectMembers(&h.access, &.{ "counter", "histogram", "tagged" });
+}
+
+test "옵션 A: symbol matched > 0 면 fallback skip — function param shadow false-positive 방지" {
+    // 가장 critical 한 게이팅 검증: symbol_id 매칭이 정확하므로 fallback skip,
+    // 함수 파라미터 M 의 inner access (shadow) 는 namespace prop 으로 안 잡힘.
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.foo();
+        \\export const fn = (M) => M.shadow_only();
+    , "M", false);
+    defer h.deinit(std.testing.allocator);
+    // 정확히 foo 만. shadow_only 가 들어가면 wrapper-barrel lazy 가 회귀.
+    try expectMembers(&h.access, &.{"foo"});
+}
+
+test "옵션 A: symbol matched > 0 면 fallback skip — block-scope const shadow 방지" {
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.counter();
+        \\{ const M = { y: 1 }; M.y; }
+    , "M", false);
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{"counter"});
+}
+
+test "옵션 A: symbol matched = 0 (rebind 시뮬레이션) 일 때만 fallback 활성화" {
+    // use_invalid_sym=true → symbol_id 매칭 0건 → fallback 작동.
+    var h = try runAccessWithFallback(std.testing.allocator,
+        \\import * as M from './mod';
+        \\M.counter();
+        \\M.histogram();
+    , "M", true);
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{ "counter", "histogram" });
+}
