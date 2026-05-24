@@ -55,57 +55,69 @@ const num_resolve_cache_shards = 16;
 /// caller (Module / CachedResolvedDep) 에서 등장해도 *동일 slice 참조*.
 ///
 /// 메모리 lifetime:
-/// - `arena` 가 모든 interned bytes 소유. `ResolveCache.deinit` 시 한 번에 free.
+/// - `shard.arena` 가 interned bytes 소유. `ResolveCache.deinit` 시 한 번에 free.
 /// - 모든 caller 가 *borrow only* — `allocator.free(interned_path)` 호출 금지.
 ///
-/// thread-safety: `mutex` 로 보호. `intern` 호출이 hot path 이므로 향후 shard 분리 가능.
+/// thread-safety (PR #3750): 16-shard. hash(path) % 16 으로 shard 선택. cache_shards 와
+/// 같은 N — single mutex 회귀 회복. 같은 path 는 항상 같은 shard (uniqueness 보장).
 pub const PathInternPool = struct {
-    arena: std.heap.ArenaAllocator,
-    /// interned bytes set. key = slice into `arena`. value = void.
-    set: std.StringHashMapUnmanaged(void) = .{},
-    mutex: std.Thread.Mutex = .{},
+    pub const num_shards = 16;
+
+    shards: [num_shards]Shard = blk: {
+        var arr: [num_shards]Shard = undefined;
+        for (&arr) |*s| s.* = .{};
+        break :blk arr;
+    },
+
+    pub const Shard = struct {
+        arena: ?std.heap.ArenaAllocator = null,
+        /// interned bytes set. key = slice into `arena`. value = void.
+        set: std.StringHashMapUnmanaged(void) = .{},
+        mutex: std.Thread.Mutex = .{},
+    };
 
     pub fn init(parent_allocator: std.mem.Allocator) PathInternPool {
-        return .{ .arena = std.heap.ArenaAllocator.init(parent_allocator) };
+        var pool: PathInternPool = .{};
+        for (&pool.shards) |*s| {
+            s.arena = std.heap.ArenaAllocator.init(parent_allocator);
+        }
+        return pool;
     }
 
     pub fn deinit(self: *PathInternPool, parent_allocator: std.mem.Allocator) void {
-        self.set.deinit(parent_allocator);
-        self.arena.deinit();
+        for (&self.shards) |*s| {
+            s.set.deinit(parent_allocator);
+            if (s.arena) |*a| a.deinit();
+        }
+    }
+
+    /// path → shard 선택. hash 의 high bits 사용 — cache_shards 의 hash 와 같은 분포.
+    inline fn shardFor(self: *PathInternPool, path: []const u8) *Shard {
+        const h = std.hash_map.hashString(path);
+        return &self.shards[h % num_shards];
     }
 
     /// path 가 pool 에 있으면 그 slice 반환, 없으면 dupe 후 추가.
     /// 반환된 slice 의 lifetime = pool 의 lifetime (= ResolveCache lifetime).
     pub fn intern(self: *PathInternPool, parent_allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error![]const u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.set.getKey(path)) |existing| return existing;
-        const owned = try self.arena.allocator().dupe(u8, path);
-        try self.set.put(parent_allocator, owned, {});
+        const shard = self.shardFor(path);
+        shard.mutex.lock();
+        defer shard.mutex.unlock();
+        if (shard.set.getKey(path)) |existing| return existing;
+        const owned = try shard.arena.?.allocator().dupe(u8, path);
+        try shard.set.put(parent_allocator, owned, {});
         return owned;
     }
 
-    /// 같은 lock 안에서 두 path 를 batch intern — re-locking 회피.
+    /// 두 path 를 batch intern. 각 path 가 *서로 다른 shard* 일 수 있어 별도 lock.
     pub fn internPair(
         self: *PathInternPool,
         parent_allocator: std.mem.Allocator,
         path1: []const u8,
         path2: ?[]const u8,
     ) std.mem.Allocator.Error!struct { []const u8, ?[]const u8 } {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const p1 = blk: {
-            if (self.set.getKey(path1)) |e| break :blk e;
-            const owned = try self.arena.allocator().dupe(u8, path1);
-            try self.set.put(parent_allocator, owned, {});
-            break :blk owned;
-        };
-        const p2: ?[]const u8 = if (path2) |p| blk: {
-            if (self.set.getKey(p)) |e| break :blk e;
-            const owned = try self.arena.allocator().dupe(u8, p);
-            try self.set.put(parent_allocator, owned, {});
-            break :blk owned;
-        } else null;
+        const p1 = try self.intern(parent_allocator, path1);
+        const p2: ?[]const u8 = if (path2) |p| try self.intern(parent_allocator, p) else null;
         return .{ p1, p2 };
     }
 };
