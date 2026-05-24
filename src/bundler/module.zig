@@ -523,6 +523,13 @@ pub const Module = struct {
     /// getter 가 dead declaration 을 reference (effect-ts 의 `counter$4 is not defined`
     /// 회귀 케이스).
     pub fn isLocalBindingAlive(self: *const Module, local_name: []const u8) bool {
+        // counter$4 진짜 fix: tree-shaker 가 active (reachable_stmts non-null) 일 때
+        // module 자체가 included=false 면 어떤 stmt 도 emit 안 됨 → 모든 binding dead.
+        // 이전엔 stmt-level reachable 만 봤지만 module 전체 drop 케이스 (effect-ts 의
+        // `internal/metric.js` 가 namespace 합성 후 module 자체 drop) 에서 false negative.
+        // tree-shaker 비활성 (tree_shaking=false / dev_mode) 면 is_included default false 라
+        // 잘못 dead 표시 — reachable_stmts 가 set 됐을 때만 included 체크.
+        if (self.reachable_stmts != null and !self.is_included) return false;
         const sem = self.semantic orelse return true;
         if (sem.scope_maps.len == 0) return true;
         if (sem.scope_maps[0].get(local_name)) |sym_idx| {
