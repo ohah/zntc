@@ -213,7 +213,10 @@ pub fn emitChunks(
 
     for (sorted_indices) |ci| {
         const chunk = &chunk_graph.chunks.items[ci];
-        // mergeSmallChunks 로 비워진 청크는 출력하지 않는다(entry 는 비지 않음).
+        // 비워진 청크는 출력하지 않는다 — mergeSmallChunks 가 비운 common 청크,
+        // manualChunks 가 모듈을 흡수해 비어버린 entry 청크 모두 포함. 동일한
+        // skip 이 resolveContentHashes 에서도 반복돼야 outputs↔sorted_indices
+        // 매핑이 어긋나지 않는다 (placeholder 치환 누락 회귀 가드).
         if (chunk.modules.items.len == 0) continue;
 
         var chunk_output: std.ArrayList(u8) = .empty;
@@ -1767,15 +1770,21 @@ fn resolveContentHashes(
 
     // 2단계: 모든 출력에서 모든 placeholder를 content hash로 단일패스 치환.
     // O(N*M) → O(M) (M=content 길이, N=청크 수).
+    // `infos[0..out_idx]` 슬라이스로 매칭 — 빈 청크 skip 으로 미초기화 trailing
+    // entry 가 생기는 경우(현재 invariant 상 미발생, 미래 predicate drift 가드)
+    // 가 replaceAllPlaceholders 의 byte-window 매칭에서 garbage 와 충돌해 silent
+    // corruption 을 일으키지 않게 한다. chunks_to_outputs[0..out_idx] 슬라이싱과
+    // 동형.
     const ph_total = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+    const infos_init = infos[0..out_idx];
     for (outputs) |*out| {
         // contents: 모든 placeholder를 한 번의 스캔으로 치환
-        const new_contents = try replaceAllPlaceholders(allocator, out.contents, infos, ph_total);
+        const new_contents = try replaceAllPlaceholders(allocator, out.contents, infos_init, ph_total);
         allocator.free(out.contents);
         out.contents = new_contents;
 
         // path도 동일하게 치환
-        const new_path = try replaceAllPlaceholders(allocator, out.path, infos, ph_total);
+        const new_path = try replaceAllPlaceholders(allocator, out.path, infos_init, ph_total);
         allocator.free(out.path);
         out.path = new_path;
 
