@@ -126,8 +126,10 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
             has_super,
             class_name_text,
             true, // skip_visit_and_keep_private — public member 는 classifyClassMember 가 단일 visit.
-            // V1 fix: class_declaration 위치이면 static descriptor trailing emit.
-            node.tag == .class_declaration,
+            // V1 정밀 fix: assign-semantics path 는 emit 흐름이 복잡 (decorator __decorateClass
+            // 호출과 얽힘) — 단순 분리로는 부족하니 별도 array 사용 안 하고 기존 pre_stmts 유지.
+            // descriptor 의 receiver=D TDZ 문제는 이 path 에서는 별도로 처리하지 않음 (덜 빈번).
+            null,
         );
         if (had_any) body_idx = new_body_pl;
     }

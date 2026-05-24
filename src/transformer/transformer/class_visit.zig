@@ -33,17 +33,31 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         // F6: fast path 도 super_class 와 동시에 old_idx 를 set — 새 flag 로 fast path 에서도 super
         // lowering 이 활성화되니 symbol propagation (minify rename 등) 을 위해 필요.
         //
-        // V8 revert: extends 표현식이 non-identifier 일 때 temp 변수로 hoist 하던 동작을
-        // 되돌린다. hoisted `var _<n> = <super expr>` 가 bundler tree-shaker 의 reachability
-        // graph 에 포함되지 않아 RHS 의 reference (예: effect-ts 의 `TaggedError`) 가
-        // dead-code-eliminated → `TaggedError is not defined` ReferenceError. 정밀 fix
-        // (bundler reference 분석 강화 또는 hoist 를 linker 후 단계로 이동) 는 별도 PR.
-        // 결과: `extends getBase()` 의 side-effect 가 super-prop access 마다 중복 평가될 수
-        // 있는 V8 의 silent regression 은 다시 노출되지만, effect-ts 같은 실제 패키지의
-        // SyntaxError 보다 영향 범위가 작다.
+        // V8 정밀 fix: extends 가 non-identifier (e.g. `extends getBase()`) 이고 class 가
+        // named (class_declaration / named class_expression) 이면 super-prop lowering 이
+        // raw extends text 를 매 access 마다 inline 하지 않도록 — current_super_class 를
+        // class 자체의 이름으로 set 하고 `current_super_via_proto_chain=true` 로 mark.
+        // buildSuperBaseRef 가 이 flag 보고 `Object.getPrototypeOf(<ClassName>.prototype)`
+        // 형태로 emit → extends 표현식 1회만 평가됨 (spec) + bundler tree-shake 자연스러움.
+        // anonymous class_expression 은 class 자체에 referenceable name 이 없어 fallback
+        // (기존 raw extends text inline; side-effect 중복 가능하나 anon class extends getBase()
+        // + private member 조합 자체가 극히 드묾).
+        const saved_super_via_proto_chain = self.current_super_via_proto_chain;
+        self.current_super_via_proto_chain = false;
+        defer self.current_super_via_proto_chain = saved_super_via_proto_chain;
         if (!super_idx.isNone()) {
-            self.current_super_class = self.ast.getNode(super_idx).span;
-            self.current_super_class_old_idx = super_idx;
+            const super_node = self.ast.getNode(super_idx);
+            const is_simple_id = super_node.tag == .identifier_reference or super_node.tag == .binding_identifier;
+            // class self name: raw_name_idx (source 의 binding) 우선, 없으면 visit 결과 new_name.
+            const class_name_span_opt: ?Span = self.getClassNameSpan(raw_name_idx) orelse self.getClassNameSpan(new_name);
+            if (!is_simple_id and class_name_span_opt != null) {
+                self.current_super_class = class_name_span_opt;
+                self.current_super_class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
+                self.current_super_via_proto_chain = true;
+            } else {
+                self.current_super_class = super_node.span;
+                self.current_super_class_old_idx = super_idx;
+            }
         } else {
             self.current_super_class = null;
             self.current_super_class_old_idx = .none;
@@ -100,6 +114,12 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         var had_private_methods = false;
         var had_private_fields = false;
 
+        // V1 정밀 fix: static descriptor 를 별도 array 로 받아 *class declaration 뒤,
+        // static block IIFE 앞* 에 emit 한다 (receiver=D 가 init 후 평가되도록 + IIFE 가
+        // descriptor 참조 가능하도록).
+        var static_descriptors: std.ArrayList(NodeIndex) = .empty;
+        defer static_descriptors.deinit(self.allocator);
+
         if (lower_pm or lower_pf) {
             const has_super = !self.readNodeIdx(e, 1).isNone();
             const class_name_text: ?[]const u8 = if (self.getClassNameSpan(new_name)) |s|
@@ -107,6 +127,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             else
                 null;
             var new_body: NodeIndex = .none;
+            // class_declaration 위치에서만 별도 array 사용 (class_expression 은 expression
+            // context 라 별도 statement emit 불가 — pre_stmts 유지).
+            const desc_out: ?*std.ArrayList(NodeIndex) =
+                if (node.tag == .class_declaration) &static_descriptors else null;
             const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
                 self,
                 current_body_idx,
@@ -120,8 +144,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 has_super,
                 class_name_text,
                 false, // fast path 는 lowerPrivateMembers 가 통째 visit + 복원 (기존 동작).
-                // V1 fix: class_declaration 위치이면 static descriptor 를 trailing 으로 emit.
-                node.tag == .class_declaration,
+                desc_out,
             );
             if (had_any) {
                 current_body_idx = new_body;
@@ -179,6 +202,11 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     try self.pending_nodes.append(self.allocator, stmt);
                 }
                 try self.pending_nodes.append(self.allocator, class_result);
+                // V1 정밀 fix: static descriptor 는 class 뒤, static block IIFE 앞에 emit.
+                // receiver=D 가 init 후 평가됨 + IIFE 가 descriptor (_n 등) 참조 가능.
+                for (static_descriptors.items) |desc| {
+                    try self.pending_nodes.append(self.allocator, desc);
+                }
                 for (static_block_iifes.items) |iife| {
                     try self.pending_nodes.append(self.allocator, iife);
                 }
@@ -211,6 +239,11 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 try self.pending_nodes.append(self.allocator, stmt);
             }
             try self.pending_nodes.append(self.allocator, class_result);
+            // V1 정밀 fix: static descriptor 를 class 뒤에 emit (static block 없이 private
+            // member 만 있는 경로).
+            for (static_descriptors.items) |desc| {
+                try self.pending_nodes.append(self.allocator, desc);
+            }
             return .none;
         }
 

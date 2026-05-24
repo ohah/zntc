@@ -1444,11 +1444,25 @@ test "#3680-F7: object literal method 의 super 가 outer class 로 leak 방지 
 
 // === post-review 2nd-round V1~V8 회귀 가드 ===
 
-// V1 revert (receiver 부분): descriptor 를 trailing 으로 옮기는 fix 가 static block IIFE
-// 의 descriptor 참조 (예: `static { S.#n += 10 }`) 를 TDZ 위반으로 깨뜨려 revert. 결과로
-// descriptor 의 init 안 super.method() receiver 가 module top-level `this=undefined` 인
-// spec 위반은 다시 노출되나, static block 사용 케이스가 더 빈번하므로 trade-off.
-// 별도 PR 로 정밀 fix 추적 (descriptor 와 IIFE 의 emit 순서 정밀 control 필요).
+// V1 정밀 fix (post-merge): descriptor 를 class declaration 뒤, static block IIFE 앞에
+// 명시적으로 emit (lowerPrivateMembers 가 별도 array `static_descriptors_out` 으로
+// caller 에게 넘김). receiver=D 가 init 후 평가되어 spec valid + IIFE 가 descriptor 의
+// _x 등 참조 가능.
+test "#3680-V1: static private field init 의 super.method() receiver 가 class 이름 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { static factor(){return this?.name ?? "no-this"} }
+        \\class D extends Base {
+        \\  static #x = super.factor();
+        \\  static get() { return D.#x; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // descriptor 가 emit 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") != null);
+    // receiver 가 raw this 가 아니라 class 식별자 D
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(this)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(D)") != null);
+}
 
 // V2: F1 의 non-derived class 의 static private field init 안 super → 'Object'/'Function.prototype' fallback.
 test "#3680-V2: non-derived class 의 static private field init 안 super → fallback (es2021)" {
@@ -1558,12 +1572,32 @@ test "#3680-V7: class 내 object literal property value super → outer class lo
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super.foo()") == null);
 }
 
-// V8 revert: 이전 fix (extends 표현식 temp hoist) 는 bundler tree-shaker 의 reachability
-// 분석을 깨뜨려 effect-ts 의 `class extends TaggedError(...)` 같은 패턴에서 silent
-// dead-code-eliminate 발생 (`TaggedError is not defined` ReferenceError). 정밀 fix
-// (bundler reference 분석 강화 또는 hoist 를 linker 후 단계로 이동) 는 별도 PR 추적.
-// 회귀 가드 후퇴 — `extends getBase()` 의 side-effect 중복 평가는 다시 노출되나
-// effect-ts 의 SyntaxError 보다 영향 범위가 작다.
+// V8 정밀 fix (post-merge): extends 표현식이 non-identifier (e.g. `extends getBase()`)
+// 일 때 super-prop lowering 을 `Object.getPrototypeOf(<ClassName>.prototype).foo.call(this)`
+// 형태로 emit. extends 표현식 자체는 class declaration 위치에서 1회만 평가되고 (spec
+// 준수), super-prop access 마다 class 의 prototype chain (고정값) 만 참조 → 부작용 없음.
+// bundler tree-shaker 도 ClassName identifier reference 만 보면 되므로 자연스럽게 추적.
+test "#3680-V8: extends getBase() 의 side effect 가 super.x access 마다 중복 안 됨 (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\let count = 0;
+        \\function getBase() { count++; return class { foo(){return "X"} }; }
+        \\class D extends getBase() {
+        \\  #m() { return super.foo() + "|" + super.foo(); }
+        \\  run() { return this.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn") != null);
+    // _m_fn body 만 추출 (function _m_fn(...) { ... } 안쪽) — class D extends getBase() 의 매치 회피.
+    const fn_start = std.mem.indexOf(u8, r.output, "function _m_fn") orelse unreachable;
+    const body_open = std.mem.indexOfScalarPos(u8, r.output, fn_start, '{') orelse unreachable;
+    const body_close = std.mem.indexOfScalarPos(u8, r.output, body_open, '}') orelse unreachable;
+    const fn_body = r.output[body_open .. body_close + 1];
+    // _m_fn body 안에 `getBase()` 가 inline 되면 부작용 중복 (회귀).
+    try std.testing.expect(std.mem.indexOf(u8, fn_body, "getBase()") == null);
+    // prototype chain 통해 base 참조
+    try std.testing.expect(std.mem.indexOf(u8, fn_body, "Object.getPrototypeOf(D.prototype)") != null);
+}
 
 // nested class: standalone fn 안의 *inner* class body 의 `super.x` 는
 // inner class lexical context 가 valid 하므로 inner super 로 lowering 돼야 한다.

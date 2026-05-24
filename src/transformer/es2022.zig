@@ -298,10 +298,11 @@ pub fn ES2022(comptime Transformer: type) type {
             // 하고 current_private_* 를 호출자가 set/restore 한다(이중-visit 회피, decorator strip
             // 방지). fast path 는 false(기존 동작: visit + defer 복원).
             skip_visit_and_keep_private: bool,
-            // V1 fix (#3680 post-review): class_declaration 위치이면 static descriptor 를
-            // trailing_nodes 로 emit (class 뒤). class_expression 위치이면 false — expression
-            // context 라 trailing comma-stitching 발생하므로 pre_stmts 유지.
-            static_descriptors_trailing: bool,
+            // V1 정밀 fix (#3680 post-merge): static private field/method descriptor 를
+            // 별도 array 로 받음 — caller 가 emit 순서를 제어. null 이면 pre_stmts 에 그대로
+            // (기존 동작). non-null 이면 caller 가 class declaration 뒤, static block IIFE
+            // 앞에 emit 해야 한다 (receiver=D 가 init 후 평가 + IIFE 가 descriptor 참조 가능).
+            static_descriptors_out: ?*std.ArrayList(NodeIndex),
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -392,15 +393,10 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.current_private_fields = saved_private_fields;
             };
 
-            // V1 의 descriptor trailing reorder 는 revert: static block IIFE 가 descriptor 를
-            // 참조하는 경우 (예: `static { S.#n += 10 }`) IIFE 도 trailing 위치에 emit 되어
-            // descriptor 보다 *앞에* 평가되면서 `attempted to get private static field before
-            // its declaration` TypeError. 따라서 descriptor 는 pre_stmts 유지 (class 앞).
-            // 결과: descriptor 안 super.foo() 의 receiver `this` 가 module top-level 에서
-            // undefined 가 되는 spec 위반은 다시 노출되나, static block 사용 케이스 (실제 코드)
-            // 가 더 흔하다.
-            _ = static_descriptors_trailing;
-            const desc_target = pre_stmts;
+            // V1 정밀 fix: static descriptor 를 caller 가 지정한 별도 array 로 분리. caller 는
+            // class declaration 뒤, static block IIFE 앞에 emit 해야 한다. caller 가 별도 array
+            // 를 주지 않으면 (e.g. assign-semantics path) pre_stmts 사용 (기존 동작).
+            const desc_target = static_descriptors_out orelse pre_stmts;
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
                 if (m.class_name) |cname| {
                     const cname_span = try self.ast.addString(cname);
