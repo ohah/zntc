@@ -470,6 +470,17 @@ pub const Linker = struct {
         return src.wrap_kind != .cjs and src.default_export_named_local;
     }
 
+    /// `populateNamespaceAccesses` 의 analyze 대상 판별 — 4 kind 중 하나.
+    /// PR #3737 의 `has_candidate` / `interest_set` / `should_analyze_binding` 가
+    /// 동일한 판별을 사용하도록 helper 추출 (drift 방지).
+    fn isNamespaceAnalysisCandidate(self: *const Linker, importer: *const Module, ib: ImportBinding) bool {
+        if (ib.kind == .namespace) return true;
+        if (ib.kind == .named and ib.namespace_used_properties == null) return true;
+        if (self.isCjsDefaultBinding(importer, ib)) return true;
+        if (self.isEsmWrapperDefaultBinding(importer, ib)) return true;
+        return false;
+    }
+
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
     pub fn link(self: *Linker) !void {
         try self.buildExportMap();
@@ -1886,20 +1897,33 @@ pub const Linker = struct {
 
             // 분석 대상 (namespace, virtual-namespace named, 또는 CJS default) import 가 하나도 없으면
             // index 구축 전에 outer skip — AST 전체 순회 비용 회피 (#1735).
+            // helper `isNamespaceAnalysisCandidate` 로 has_candidate / interest_set / 분석 loop 의
+            // predicate 통일 (PR #3737 drift 방지).
             const has_candidate = blk: {
                 for (importer.import_bindings) |ib| {
-                    if (ib.kind == .namespace) break :blk true;
-                    if (ib.kind == .named and ib.namespace_used_properties == null) break :blk true;
-                    if (self.isCjsDefaultBinding(importer, ib)) break :blk true;
-                    if (self.isEsmWrapperDefaultBinding(importer, ib)) break :blk true;
+                    if (self.isNamespaceAnalysisCandidate(importer, ib)) break :blk true;
                 }
                 break :blk false;
             };
             if (!has_candidate) continue;
 
+            // C5 perf (PR #3737): interest set — analyze candidate 의 local_name 만 색인.
+            // 큰 모듈에서 모든 ident text 색인의 X10-X100 메모리 절감.
+            var interest_set: std.StringHashMapUnmanaged(void) = .{};
+            defer interest_set.deinit(self.allocator);
+            for (importer.import_bindings) |ib_pre| {
+                if (!self.isNamespaceAnalysisCandidate(importer, ib_pre)) continue;
+                if (ib_pre.local_name.len == 0) continue;
+                // OOM 무시 — 누락된 binding 은 analyzer 가 0 결과 → binding_scanner 의 이전
+                // 결과 유지 (linker.zig:1995 의 `count==0 continue`). OOM 자체가 zntc 의
+                // 일반 path 에서 비현실적, 정확성 영향 최소.
+                interest_set.put(self.allocator, ib_pre.local_name, {}) catch {};
+            }
+
             // importer 당 1회만 AST 순회해 NamespaceAccessIndex 구축.
             // 같은 모듈 안의 모든 namespace import 분석에 공유 (#1735).
-            var ns_index = namespace_access.NamespaceAccessIndex.build(self.allocator, ast) catch continue;
+            // reachable_only=false 유지 (옛 linker 동작 — orphan node 포함).
+            var ns_index = namespace_access.NamespaceAccessIndex.buildOpt(self.allocator, ast, false, &interest_set) catch continue;
             defer ns_index.deinit(self.allocator);
 
             // 모든 namespace import에 공통으로 쓰일 stmt span 배열을 importer당 1회 구축.

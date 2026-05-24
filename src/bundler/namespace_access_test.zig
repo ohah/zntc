@@ -425,7 +425,7 @@ fn runTextOnly(allocator: std.mem.Allocator, source: []const u8, ns_name: []cons
     var parser = Parser.init(allocator, &scanner);
     errdefer parser.deinit();
     _ = try parser.parse();
-    var index = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true);
+    var index = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true, null);
     defer index.deinit(allocator);
     const access = try namespace_access_mod.analyzeNamespaceAccessTextOnly(allocator, &parser.ast, &index, ns_name, null);
     return .{ .scanner = scanner, .parser = parser, .access = access };
@@ -487,9 +487,9 @@ test "PR #3736: buildOpt(reachable_only=false) — 모든 nodes 색인 (옛 link
     defer parser.deinit();
     _ = try parser.parse();
 
-    var idx_all = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, false);
+    var idx_all = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, false, null);
     defer idx_all.deinit(allocator);
-    var idx_reach = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true);
+    var idx_reach = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true, null);
     defer idx_reach.deinit(allocator);
 
     // 두 mode 모두 동일한 namespace member access 색인 (이 fixture 는 orphan 없음).
@@ -497,4 +497,73 @@ test "PR #3736: buildOpt(reachable_only=false) — 모든 nodes 색인 (옛 link
     // 둘 다 'M' 키 가짐.
     try std.testing.expect(idx_all.accesses_by_obj_text.contains("M"));
     try std.testing.expect(idx_reach.accesses_by_obj_text.contains("M"));
+}
+
+// PR #3737 C5 perf: interest_text_set gating — interest 안 local 만 색인.
+test "PR #3737: interest gating — set 안 local 만 색인" {
+    const namespace_access_mod = @import("linker/namespace_access.zig");
+    const allocator = std.testing.allocator;
+    const src =
+        \\import * as M from './m';
+        \\import * as N from './n';
+        \\M.foo();
+        \\N.bar();
+    ;
+    var scanner = try Scanner.init(allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var interest: std.StringHashMapUnmanaged(void) = .{};
+    defer interest.deinit(allocator);
+    try interest.put(allocator, "M", {});
+
+    var idx_gated = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true, &interest);
+    defer idx_gated.deinit(allocator);
+    var idx_full = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true, null);
+    defer idx_full.deinit(allocator);
+
+    // gated: M 만 색인 (N 제외).
+    try std.testing.expect(idx_gated.accesses_by_obj_text.contains("M"));
+    try std.testing.expect(!idx_gated.accesses_by_obj_text.contains("N"));
+    // full: 둘 다.
+    try std.testing.expect(idx_full.accesses_by_obj_text.contains("M"));
+    try std.testing.expect(idx_full.accesses_by_obj_text.contains("N"));
+
+    // M 의 분석 결과는 두 mode 일치 (interest 안에 있으므로).
+    var a_gated = try namespace_access_mod.analyzeNamespaceAccessTextOnly(allocator, &parser.ast, &idx_gated, "M", null);
+    defer a_gated.deinit(allocator);
+    var a_full = try namespace_access_mod.analyzeNamespaceAccessTextOnly(allocator, &parser.ast, &idx_full, "M", null);
+    defer a_full.deinit(allocator);
+    try std.testing.expectEqual(a_gated.kind, a_full.kind);
+    try std.testing.expectEqual(a_gated.members.count(), a_full.members.count());
+}
+
+test "PR #3737: interest gating — set 밖 local 분석 시 0 결과 (caller 책임)" {
+    // 회귀 방지: interest set 빠뜨린 binding 은 analyzer 가 0 결과. caller (linker/binding_scanner)
+    // 가 항상 interest 에 모든 분석 대상 local 포함해야.
+    const namespace_access_mod = @import("linker/namespace_access.zig");
+    const allocator = std.testing.allocator;
+    const src =
+        \\import * as M from './m';
+        \\M.foo();
+    ;
+    var scanner = try Scanner.init(allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var empty_interest: std.StringHashMapUnmanaged(void) = .{};
+    defer empty_interest.deinit(allocator);
+    var idx = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true, &empty_interest);
+    defer idx.deinit(allocator);
+
+    // M 이 interest 에 없으므로 색인 안 됨 → 분석 결과 empty.
+    try std.testing.expect(!idx.accesses_by_obj_text.contains("M"));
+    var a = try namespace_access_mod.analyzeNamespaceAccessTextOnly(allocator, &parser.ast, &idx, "M", null);
+    defer a.deinit(allocator);
+    try std.testing.expectEqual(NamespaceAccess.Kind.member_only, a.kind);
+    try std.testing.expectEqual(@as(usize, 0), a.members.count());
 }
