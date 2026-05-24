@@ -161,6 +161,16 @@ pub const Transformer = struct {
     /// property VALUE 위치는 enclosing class 의 super 를 그대로 사용해야 하므로
     /// object_expression dispatch 가 아닌 method_definition 진입 시에만 reset.
     in_object_literal_depth: u32 = 0,
+    /// V8 정밀 fix: `class D extends getBase()` 같은 non-identifier extends 의 super
+    /// lowering 시 `getBase().prototype.foo.call(this)` 형태로 inline 하면 super-prop
+    /// access 마다 extends 표현식 (getBase()) 이 재평가됨 (spec 위반 — class declaration
+    /// 시점에 1회만 평가되어야). 또한 hoisted `var _<n> = getBase()` 도 bundler
+    /// tree-shaker reachability graph 와 충돌. 해결: current_super_class 를 class 자체의
+    /// 이름으로 set 하고 이 flag 를 true 로 set → buildSuperBaseRef 가 instance 의 경우
+    /// `Object.getPrototypeOf(D.prototype)`, static 의 경우 `Object.getPrototypeOf(D)`
+    /// 형태로 emit. D 의 prototype chain 은 class declaration 시 고정되므로 1회 평가 보장
+    /// + bundler 도 D identifier 의 reference 추적이 자연스러움.
+    current_super_via_proto_chain: bool = false,
 
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
