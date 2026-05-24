@@ -58,18 +58,30 @@ const num_resolve_cache_shards = 16;
 /// - `shard.arena` 가 interned bytes 소유. `ResolveCache.deinit` 시 한 번에 free.
 /// - 모든 caller 가 *borrow only* — `allocator.free(interned_path)` 호출 금지.
 ///
-/// thread-safety (PR #3750): 16-shard. `hash(path) % num_shards` (low bits) 로 shard
-/// 선택 — `cacheShardFor` 와 동일. 같은 path 는 항상 같은 shard 에 landing 하므로
+/// thread-safety (PR #3750): 16-shard. `hash(path) & (num_shards - 1)` (low bits) 로
+/// shard 선택 — `cacheShardFor` 와 동일. 같은 path 는 항상 같은 shard 에 landing 하므로
 /// uniqueness 보장. single mutex 회귀 회복.
 pub const PathInternPool = struct {
     pub const num_shards = 16;
+
+    comptime {
+        // num_shards 는 power-of-two — `& (num_shards - 1)` mask 유효성 보장.
+        std.debug.assert(@popCount(@as(u32, num_shards)) == 1);
+        // sweep review: cache_shards 와 같은 N 유지 — drift 시 hash 분포 invariant 깨짐.
+        std.debug.assert(num_shards == num_resolve_cache_shards);
+    }
 
     /// 모든 필드 non-optional — `PathInternPool{}` 직접 초기화를 compile-time 차단,
     /// `init()` 호출 강제. (5-angle review 일치: optional + default 로 두면 첫 intern 에서
     /// null unwrap panic 가능.)
     shards: [num_shards]Shard,
+    /// init 시 받은 allocator 영구 보관 — intern/deinit 가 다른 allocator 를 받아 set
+    /// 의 bucket 이 mismatched 한 allocator 로 free 되는 footgun 차단 (sweep review).
+    parent_allocator: std.mem.Allocator,
 
-    pub const Shard = struct {
+    /// `pub` 으로 노출하지 않음 — 외부에서 `PathInternPool.Shard{...}` 직접 생성으로
+    /// init() 강제를 우회하는 것을 차단 (sweep review).
+    const Shard = struct {
         arena: std.heap.ArenaAllocator,
         /// interned bytes set. key = slice into `arena`. value = void.
         set: std.StringHashMapUnmanaged(void) = .{},
@@ -77,7 +89,10 @@ pub const PathInternPool = struct {
     };
 
     pub fn init(parent_allocator: std.mem.Allocator) PathInternPool {
-        var pool: PathInternPool = undefined;
+        var pool: PathInternPool = .{
+            .shards = undefined,
+            .parent_allocator = parent_allocator,
+        };
         for (&pool.shards) |*s| {
             s.* = .{
                 .arena = std.heap.ArenaAllocator.init(parent_allocator),
@@ -88,29 +103,30 @@ pub const PathInternPool = struct {
         return pool;
     }
 
-    pub fn deinit(self: *PathInternPool, parent_allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *PathInternPool) void {
         for (&self.shards) |*s| {
-            s.set.deinit(parent_allocator);
+            s.set.deinit(self.parent_allocator);
             s.arena.deinit();
         }
     }
 
-    /// path → shard 선택. `hash % num_shards` (low bits) — `cacheShardFor` 와 동일 방식.
+    /// path → shard 선택. `hash & (num_shards - 1)` (low bits) — `cacheShardFor` 와 동일.
+    /// power-of-two assert 가 위 comptime block 에서 보장됨.
     inline fn shardFor(self: *PathInternPool, path: []const u8) *Shard {
         const h = std.hash_map.hashString(path);
-        const idx: usize = @intCast(h % num_shards);
+        const idx: usize = @intCast(h & (num_shards - 1));
         return &self.shards[idx];
     }
 
     /// path 가 pool 에 있으면 그 slice 반환, 없으면 dupe 후 추가.
     /// 반환된 slice 의 lifetime = pool 의 lifetime (= ResolveCache lifetime).
-    pub fn intern(self: *PathInternPool, parent_allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error![]const u8 {
+    pub fn intern(self: *PathInternPool, path: []const u8) std.mem.Allocator.Error![]const u8 {
         const shard = self.shardFor(path);
         shard.mutex.lock();
         defer shard.mutex.unlock();
         if (shard.set.getKey(path)) |existing| return existing;
         const owned = try shard.arena.allocator().dupe(u8, path);
-        try shard.set.put(parent_allocator, owned, {});
+        try shard.set.put(self.parent_allocator, owned, {});
         return owned;
     }
 
@@ -119,12 +135,11 @@ pub const PathInternPool = struct {
     /// 로 해제. 부분 commit 된 interned bytes 는 pool deinit 시 일괄 reclaim.)
     pub fn internPair(
         self: *PathInternPool,
-        parent_allocator: std.mem.Allocator,
         path1: []const u8,
         path2: ?[]const u8,
     ) std.mem.Allocator.Error!struct { []const u8, ?[]const u8 } {
-        const p1 = try self.intern(parent_allocator, path1);
-        const p2: ?[]const u8 = if (path2) |p| try self.intern(parent_allocator, p) else null;
+        const p1 = try self.intern(path1);
+        const p2: ?[]const u8 = if (path2) |p| try self.intern(p) else null;
         return .{ p1, p2 };
     }
 };
@@ -375,7 +390,7 @@ pub const ResolveCache = struct {
         }
 
         // PR resolve interning: path pool 일괄 reclaim.
-        self.path_pool.deinit(self.allocator);
+        self.path_pool.deinit();
 
         // browser overrides 캐시 해제
         var bd_it = self.browser_overrides_cache.iterator();
@@ -638,7 +653,7 @@ pub const ResolveCache = struct {
             self.allocator.free(result.path);
             if (result.resolve_dir) |dir| self.allocator.free(dir);
         }
-        const paths = try self.path_pool.internPair(self.allocator, result.path, result.resolve_dir);
+        const paths = try self.path_pool.internPair(result.path, result.resolve_dir);
         // resolver 원본 free — pool 이 단일 owner.
         self.allocator.free(result.path);
         if (result.resolve_dir) |dir| self.allocator.free(dir);
@@ -654,7 +669,7 @@ pub const ResolveCache = struct {
     /// **OOM 시 input 도 free** (errdefer) — single-owner invariant 일관.
     fn internDisabled(self: *ResolveCache, path: []const u8, module_type: ModuleType, owns_input: bool) error{OutOfMemory}!ResolvedModule {
         errdefer if (owns_input) self.allocator.free(path);
-        const interned = try self.path_pool.intern(self.allocator, path);
+        const interned = try self.path_pool.intern(path);
         if (owns_input) self.allocator.free(path);
         return .{ .disabled = .{ .path = interned, .module_type = module_type } };
     }
@@ -853,7 +868,7 @@ pub const ResolveCache = struct {
                     self.allocator.free(f.path);
                     if (f.resolve_dir) |d| self.allocator.free(d);
                 }
-                const paths = try self.path_pool.internPair(self.allocator, f.path, f.resolve_dir);
+                const paths = try self.path_pool.internPair(f.path, f.resolve_dir);
                 self.allocator.free(f.path);
                 if (f.resolve_dir) |d| self.allocator.free(d);
                 break :blk .{ .file = .{
