@@ -205,6 +205,24 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         // 문자열 비교로 판별한다.
         .identifier => blk: {
             const text = self.tokenText();
+            // PR perf: first-byte prefilter — 대부분의 identifier (foo, bar, result, ...) 가
+            // contextual keyword 가 아님. 첫 byte 가 contextual 가능 char 아니면 즉시 skip,
+            // 매 std.mem.eql + peekNext 호출 회피.
+            //
+            // **IMPORTANT**: 새 contextual keyword 추가 시 아래 switch 와 length 범위 둘 다
+            // 업데이트할 것. 누락 시 silent skip → 회귀.
+            // 현재 contextual 후보 (9개, length 4..9):
+            //   - type (4) / declare (7) / global (6)        : mode 무관
+            //   - opaque (6) / component (9) / hook (4)      : Flow 전용
+            //   - namespace (9) / module (6) / abstract (8)  : TS 전용
+            const may_be_contextual: bool = text.len >= 4 and text.len <= 9 and switch (text[0]) {
+                't', 'd', 'g' => true,
+                'o', 'c', 'h' => self.is_flow,
+                'n', 'm', 'a' => !self.is_flow,
+                else => false,
+            };
+            if (!may_be_contextual) break :blk parseExpressionOrLabeledStatement(self);
+
             if (std.mem.eql(u8, text, "type")) {
                 // type Foo = ... → TS type alias declaration
                 // type = 1, type.x, type() → expression statement (변수로 사용)
