@@ -58,28 +58,32 @@ const num_resolve_cache_shards = 16;
 /// - `shard.arena` 가 interned bytes 소유. `ResolveCache.deinit` 시 한 번에 free.
 /// - 모든 caller 가 *borrow only* — `allocator.free(interned_path)` 호출 금지.
 ///
-/// thread-safety (PR #3750): 16-shard. hash(path) % 16 으로 shard 선택. cache_shards 와
-/// 같은 N — single mutex 회귀 회복. 같은 path 는 항상 같은 shard (uniqueness 보장).
+/// thread-safety (PR #3750): 16-shard. `hash(path) % num_shards` (low bits) 로 shard
+/// 선택 — `cacheShardFor` 와 동일. 같은 path 는 항상 같은 shard 에 landing 하므로
+/// uniqueness 보장. single mutex 회귀 회복.
 pub const PathInternPool = struct {
     pub const num_shards = 16;
 
-    shards: [num_shards]Shard = blk: {
-        var arr: [num_shards]Shard = undefined;
-        for (&arr) |*s| s.* = .{};
-        break :blk arr;
-    },
+    /// 모든 필드 non-optional — `PathInternPool{}` 직접 초기화를 compile-time 차단,
+    /// `init()` 호출 강제. (5-angle review 일치: optional + default 로 두면 첫 intern 에서
+    /// null unwrap panic 가능.)
+    shards: [num_shards]Shard,
 
     pub const Shard = struct {
-        arena: ?std.heap.ArenaAllocator = null,
+        arena: std.heap.ArenaAllocator,
         /// interned bytes set. key = slice into `arena`. value = void.
         set: std.StringHashMapUnmanaged(void) = .{},
         mutex: std.Thread.Mutex = .{},
     };
 
     pub fn init(parent_allocator: std.mem.Allocator) PathInternPool {
-        var pool: PathInternPool = .{};
+        var pool: PathInternPool = undefined;
         for (&pool.shards) |*s| {
-            s.arena = std.heap.ArenaAllocator.init(parent_allocator);
+            s.* = .{
+                .arena = std.heap.ArenaAllocator.init(parent_allocator),
+                .set = .{},
+                .mutex = .{},
+            };
         }
         return pool;
     }
@@ -87,14 +91,15 @@ pub const PathInternPool = struct {
     pub fn deinit(self: *PathInternPool, parent_allocator: std.mem.Allocator) void {
         for (&self.shards) |*s| {
             s.set.deinit(parent_allocator);
-            if (s.arena) |*a| a.deinit();
+            s.arena.deinit();
         }
     }
 
-    /// path → shard 선택. hash 의 high bits 사용 — cache_shards 의 hash 와 같은 분포.
+    /// path → shard 선택. `hash % num_shards` (low bits) — `cacheShardFor` 와 동일 방식.
     inline fn shardFor(self: *PathInternPool, path: []const u8) *Shard {
         const h = std.hash_map.hashString(path);
-        return &self.shards[h % num_shards];
+        const idx: usize = @intCast(h % num_shards);
+        return &self.shards[idx];
     }
 
     /// path 가 pool 에 있으면 그 slice 반환, 없으면 dupe 후 추가.
@@ -104,12 +109,14 @@ pub const PathInternPool = struct {
         shard.mutex.lock();
         defer shard.mutex.unlock();
         if (shard.set.getKey(path)) |existing| return existing;
-        const owned = try shard.arena.?.allocator().dupe(u8, path);
+        const owned = try shard.arena.allocator().dupe(u8, path);
         try shard.set.put(parent_allocator, owned, {});
         return owned;
     }
 
-    /// 두 path 를 batch intern. 각 path 가 *서로 다른 shard* 일 수 있어 별도 lock.
+    /// 두 path 를 intern. 각각 별도 shard 일 수 있어 두 번 lock. (single-lock atomicity
+    /// 의존 없음 — caller 는 즉시 ResolvedModule 구성, OOM 시 input string 만 errdefer
+    /// 로 해제. 부분 commit 된 interned bytes 는 pool deinit 시 일괄 reclaim.)
     pub fn internPair(
         self: *PathInternPool,
         parent_allocator: std.mem.Allocator,
