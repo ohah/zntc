@@ -248,6 +248,9 @@ pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
             self.runTransformerPrePass(module, arena_alloc);
         } else {
             module.transform_cache = null;
+            // PR #3738: prepass 미실행 — parser_metadata.zig:111 의 1차 index 가 module.
+            // namespace_access_index 에 이미 store 됨. pre-transform AST = post-transform AST
+            // (no mutation) → 그대로 linker 가 fetch.
             suppressRuntimeHelperInternalUnresolved(module);
         }
     }

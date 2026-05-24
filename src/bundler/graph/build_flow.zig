@@ -775,6 +775,9 @@ pub fn buildIncremental(
                 // 만 free, 다음 rebuild 의 populate 가 cached.module 의 export_bindings 로
                 // 재build. cached.module 쪽 stale 포인터 회피.
                 cached.module.export_index_by_name = null;
+                // PR #3738: namespace_access_index 도 동일 — parse_arena 안 HashMap backing 이라
+                // arena 양도 시 graph 쪽이 (arena, index) 짝 소유. store 쪽 dangling 방지.
+                cached.module.namespace_access_index = null;
                 // canonical_name 은 이전 Build 의 Linker 가 소유한 문자열을
                 // 가리키는데, 그 Linker.deinit 이후 이미 freed 상태다.
                 // 다음 Linker 가 conflict 마다 새로 assign 하므로 stale 한

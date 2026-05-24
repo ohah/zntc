@@ -111,7 +111,25 @@ pub fn materialize(
     {
         var namespace_scope = profile.begin(.graph_discover_pm_post_namespace_access);
         defer namespace_scope.end();
-        binding_scanner.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+        // PR #3738: index 를 module 에 store — linker 가 fetch (build 1회 절약).
+        // transform_prepass 가 실행되면 post-transform AST 로 덮어씀. 미실행 모듈은
+        // 이 1차 index 유지 (pre-transform = post-transform 동일).
+        // 4 kind interest = 모든 import local (namespace 외도 linker 의 named/cjs/esm 분석).
+        var extra_locals: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer extra_locals.deinit(arena_alloc);
+        for (module.import_bindings) |ib_extra| {
+            if (ib_extra.kind == .namespace) continue;
+            if (ib_extra.local_name.len > 0) extra_locals.append(arena_alloc, ib_extra.local_name) catch {};
+        }
+        if (binding_scanner.collectNamespaceAccessesAndBuildIndex(
+            arena_alloc,
+            &parser.ast,
+            module.import_bindings,
+            extra_locals.items,
+            .{ .reachable_only = false }, // linker 호환
+        )) |idx| {
+            module.namespace_access_index = idx;
+        } else |_| {}
     }
 
     // Phase 1-3b (#1328): 합성 심볼 테이블 초기화 + re_export_alias 등록

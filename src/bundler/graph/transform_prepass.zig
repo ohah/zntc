@@ -441,7 +441,27 @@ pub fn resyncAfterAstMutation(
         }
 
         module.import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records, helper_refs);
-        try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
+
+        // PR #3738 (C6 perf): namespace 외 모든 import local 도 interest 에 추가 — linker 의
+        // .named / cjs default / esm wrapper default 분석에 share. transform_prepass 시점에는
+        // resolve 미완료라 정확한 4 kind 판별 불가, 보수적으로 모든 import local 색인.
+        // 일반 모듈은 import binding 수가 작아 (수개~수십개) 색인 size 영향 무시 가능.
+        var extra_locals: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer extra_locals.deinit(arena_alloc);
+        for (module.import_bindings) |ib_extra| {
+            if (ib_extra.kind == .namespace) continue;
+            if (ib_extra.local_name.len > 0) try extra_locals.append(arena_alloc, ib_extra.local_name);
+        }
+        // index 를 module 에 store — linker 가 fetch (모듈당 build 1회 절약).
+        const ns_idx = try binding_scanner_mod.collectNamespaceAccessesAndBuildIndex(
+            arena_alloc,
+            ast,
+            module.import_bindings,
+            extra_locals.items,
+            .{ .reachable_only = false }, // linker 호환 (orphan node 포함)
+        );
+        // 옛 index 는 parse_arena 소유 — 별도 deinit 불필요 (arena 통째 free). null 으로만 덮어씀.
+        module.namespace_access_index = ns_idx;
 
         // 1차 결과와 union: 2차 가 못 잡은 access 도 keep.
         for (module.import_bindings) |*ib_new| {
