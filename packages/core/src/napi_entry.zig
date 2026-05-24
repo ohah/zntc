@@ -37,7 +37,7 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     // Debug 빌드 한정: DebugAllocator leak 리포트(stack trace) 를 process 종료 시
     // stderr 로 dump 하는 atexit handler 1회 등록 (#dev-leak-investigation).
     // ReleaseFast 에서는 no-op.
-    common.registerLeakDump();
+    common.registerLeakDump(env);
 
     // ZNTC_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
     // 개별 build/watch 호출마다 BundleOptions.debug 로 카테고리 추가 가능.
