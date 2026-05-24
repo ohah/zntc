@@ -410,6 +410,11 @@ pub fn buildMetadataForAst(
     var ns_target_to_var = std.AutoHashMap(u32, []const u8).init(self.allocator);
     defer ns_target_to_var.deinit();
 
+    // PR #3742 (C7 F3 follow-up): nested bindings set 도 caller-owned cache.
+    // 같은 importer 안 N 개 ns import → per-importer 1회 build (lazy init).
+    var nested_bindings_cache: ?std.StringHashMap(void) = null;
+    defer if (nested_bindings_cache) |*c| c.deinit();
+
     // CJS 모듈별 require_xxx 변수명 캐시 (같은 모듈에서 여러 named import 시 중복 생성 방지)
     var cjs_var_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
     defer {
@@ -822,6 +827,7 @@ pub fn buildMetadataForAst(
                     &ns_inline_list,
                     &owned_nested_renames,
                     &ns_target_to_var,
+                    &nested_bindings_cache,
                     force_inline,
                     false,
                     module_index,
@@ -886,6 +892,7 @@ pub fn buildMetadataForAst(
                                                 &ns_inline_list,
                                                 &owned_nested_renames,
                                                 &ns_target_to_var,
+                                                &nested_bindings_cache,
                                                 nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(import_sym_id), module_index, ib.local_name),
                                                 false,
                                                 module_index,
@@ -917,6 +924,7 @@ pub fn buildMetadataForAst(
                                     &ns_inline_list,
                                     &owned_nested_renames,
                                     &ns_target_to_var,
+                                    &nested_bindings_cache,
                                     nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(imp_sym), module_index, ib.local_name),
                                     true,
                                     module_index,

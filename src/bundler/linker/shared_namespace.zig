@@ -50,6 +50,11 @@ pub fn registerNamespaceRewrites(
     /// 같은 importer 안에서 여러 namespace import 가 같은 target source 의 inline ns_var
     /// 를 공유하도록 caller 가 owned. `cjs_var_cache` 와 같은 패턴 (`metadata.zig`).
     ns_target_to_var: *std.AutoHashMap(u32, []const u8),
+    /// PR #3742 (C7 F3 follow-up): nested bindings set 도 caller-owned cache.
+    /// 같은 importer 안 N 개 ns import 가 동일한 set 재build 회피 (per-importer 1회).
+    /// null 으로 시작, 첫 호출에서 lazy build. caller 가 `defer if (cache) |*c| c.deinit()`.
+    /// per-thread — emit thread 마다 별도 buildMetadataForAst → 별도 cache (caller stack frame).
+    nested_bindings_cache: *?std.StringHashMap(void),
     force_inline: bool,
     force_target_init: bool,
     importer_mod_idx: u32,
@@ -150,28 +155,40 @@ pub fn registerNamespaceRewrites(
     // 강제 비활성(kill-switch) — 안전 경로에서도 끌 수만 있고 켤 수는 없다.
     const ns_rewrite = !nsRewriteDisabled() and self.nsMemberRewriteSafe();
 
-    // PR #3741 (C7 perf): nested bindings 사전 set — `hasNestedBinding` 가 cached_exports
-    // 마다 *모든 nested scope 순회* (O(exports × scopes × names)). 호출 1회 precompute 후
-    // contains O(1) lookup 으로 변경 (O(scopes × names) + O(exports)).
-    // ns_rewrite=true 면 호출 자체 안 함 → skip.
-    var nested_bindings: std.StringHashMap(void) = std.StringHashMap(void).init(self.allocator);
-    defer nested_bindings.deinit();
-    if (!ns_rewrite) {
+    // PR #3741 (C7) + #3742 (F3 follow-up): caller-owned nested bindings cache.
+    // 같은 importer 의 N 개 ns import → cache 1회 build, 이후 fetch (per-importer 1회).
+    // ns_rewrite=true 면 cache 빌드 자체 skip — `nested_bindings_cache.*` 가 null 유지.
+    if (!ns_rewrite and nested_bindings_cache.* == null) {
         if (self.getModule(importer_mod_idx)) |importer_mod| {
             if (importer_mod.semantic) |sem| {
+                var nb = std.StringHashMap(void).init(self.allocator);
+                errdefer nb.deinit();
+                // F2: capacity hint — non-module-scope 의 entry 합 추정.
+                var est: usize = 0;
+                for (sem.scope_maps, 0..) |scope_map, scope_idx| {
+                    if (scope_idx == 0) continue;
+                    est += scope_map.count();
+                }
+                try nb.ensureTotalCapacity(@intCast(est));
                 for (sem.scope_maps, 0..) |scope_map, scope_idx| {
                     if (scope_idx == 0) continue;
                     var it = scope_map.iterator();
                     while (it.next()) |entry| {
-                        try nested_bindings.put(entry.key_ptr.*, {});
+                        try nb.put(entry.key_ptr.*, {});
                     }
                 }
+                nested_bindings_cache.* = nb;
             }
         }
     }
 
     for (cached_exports) |exp| {
-        if (!ns_rewrite and nested_bindings.contains(exp.exported)) {
+        const is_shadow = blk: {
+            if (ns_rewrite) break :blk false;
+            const nb = nested_bindings_cache.* orelse break :blk false;
+            break :blk nb.contains(exp.exported);
+        };
+        if (is_shadow) {
             has_shadow = true;
             continue;
         }
