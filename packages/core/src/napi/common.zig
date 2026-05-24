@@ -46,23 +46,24 @@ pub fn nativeAlloc() std.mem.Allocator {
     return std.heap.c_allocator;
 }
 
-extern fn atexit(?*const fn () callconv(.c) void) c_int;
-
-fn dumpLeaksAtExit() callconv(.c) void {
+/// NAPI env cleanup hook (signature: `fn (?*anyopaque) callconv(.c) void`).
+///
+/// **Linux 호환성 fix (이전 `extern fn atexit` 에서 전환)**: Linux dynamic
+/// shared library (`.node`) 는 libc `atexit` symbol 을 dlopen 시 resolve 안
+/// 함 → `Error: undefined symbol: atexit` 으로 ERR_DLOPEN_FAILED. macOS
+/// dynamic linker 는 자동 resolve 하지만 Linux ld 는 crt symbol 을 dynamic
+/// link 안 함. `napi_add_env_cleanup_hook` 은 NAPI 표준 API — 양쪽 환경
+/// 모두 호환. (Linux x86_64 + libc + DebugAllocator 의 더 깊은 호환성 문제는
+/// Zig stdlib issue #25025 — 0.16.0 milestone fix. issue #1514 참고.)
+///
+/// `detectLeaks()` (debug_allocator.zig:449) 는 leak stack trace 만 stderr 에
+/// dump 하고 state 유지 → 동시 in-flight alloc/free 가 후속에 진행해도 안전.
+/// 단, detectLeaks 자체가 `self.buckets` / `self.large_allocations` 를 lock
+/// 없이 iterate → 동시 alloc/free 가 mutate 하면 torn pointer read / iterator
+/// desync 위험. `mutex.tryLock` 으로 best-effort serialize: worker 가
+/// mid-alloc 이면 skip (leak dump 일부 손실) → deadlock 보다 안전.
+fn dumpLeaksOnEnvCleanup(_: ?*anyopaque) callconv(.c) void {
     if (comptime builtin.mode != .Debug) return;
-    // `deinit()` (stdlib debug_allocator.zig:500) 가 detectLeaks 후 `self.* =
-    // undefined` 로 GPA 상태 무효화 → atexit 발화 시점에 detached watch worker
-    // (`thread.detach()`, watch.zig) / TsconfigCache napi_wrap finalizer / late
-    // libc destructor 가 후속 native_alloc.alloc/free 호출 시 undefined memory
-    // dereference → segfault (PR #3695 review HIGH #1).
-    //
-    // `detectLeaks()` (debug_allocator.zig:449) 는 leak stack trace 만 stderr 에
-    // dump 하고 state 유지 → 동시 in-flight alloc/free 가 후속에 진행해도 안전.
-    // 단, detectLeaks 자체가 `self.buckets` / `self.large_allocations` 를 lock
-    // 없이 iterate → 동시 alloc/free 가 mutate 하면 torn pointer read / iterator
-    // desync 위험 (review max HIGH catch). `mutex.tryLock` 으로 best-effort
-    // serialize: worker 가 mid-alloc 이면 skip (leak dump 일부 손실) → deadlock
-    // 보다 안전 (`lock` 은 worker 가 강제 kill 시 영구 hang).
     if (debug_gpa.mutex.tryLock()) {
         defer debug_gpa.mutex.unlock();
         _ = debug_gpa.detectLeaks();
@@ -74,20 +75,19 @@ fn dumpLeaksAtExit() callconv(.c) void {
 /// `napi_register_module_v1` 의 중복 호출 race 방지 atomic flag. Node
 /// `worker_threads` / Vitest `pool='threads'` 등 한 process 안에서 다중 isolate
 /// 가 같은 .node 를 load 시 module init 이 동시에 호출될 수 있고, 공유 static
-/// 인 이 flag 의 non-atomic read+write 면 둘 다 false 관찰 → 둘 다 atexit
-/// 등록 → process 종료 시 `dumpLeaksAtExit` 두 번 호출 → 첫 deinit 가 `self.* =
-/// undefined` 로 GPA 무효화 후 두 번째 deinit 가 undefined memory deref →
-/// segfault. `.acq_rel` swap 으로 하나의 caller 만 등록 진입 보장.
+/// 인 이 flag 의 non-atomic read+write 면 둘 다 false 관찰 → 둘 다 cleanup hook
+/// 등록 → env destroy 시 `dumpLeaksOnEnvCleanup` 두 번 호출 → 첫 deinit 가
+/// `self.* = undefined` 로 GPA 무효화 후 두 번째 deinit 가 undefined memory
+/// deref → segfault. `.acq_rel` swap 으로 하나의 caller 만 등록 진입 보장.
 var leak_dump_registered: std.atomic.Value(bool) = .init(false);
 
-/// napi_register_module_v1 에서 1회 호출. SIGTERM/정상 exit 시 atexit handler
-/// 가 GPA.deinit() 를 호출해 leak 리포트(stack trace) 를 stderr 에 출력한다.
-pub fn registerLeakDump() void {
+/// `napi_register_module_v1` 에서 1회 호출 (env 인자 전달). Node env (isolate)
+/// destroy 시 cleanup hook 이 `detectLeaks` 호출 → stack trace 포함 leak
+/// 리포트를 stderr 로 dump. process 정상 종료 시 env 도 destroy 되므로 동등.
+pub fn registerLeakDump(env: c.napi_env) void {
     if (comptime builtin.mode != .Debug) return;
-    // swap 결과가 이미 true 면 다른 caller 가 등록 완료한 상태 — skip. acq_rel
-    // 로 register 후 read 가 write 와 happens-before 정렬.
     if (leak_dump_registered.swap(true, .acq_rel)) return;
-    _ = atexit(&dumpLeaksAtExit);
+    _ = c.napi_add_env_cleanup_hook(env, &dumpLeaksOnEnvCleanup, null);
 }
 
 pub fn throwError(env: c.napi_env, msg: [*:0]const u8) c.napi_value {

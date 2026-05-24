@@ -1,34 +1,38 @@
-name: NAPI Leak Gate
+name: NAPI Leak Gate (disabled until Zig 0.16)
 
 # dev/watch RSS 누수 회귀 가드 (PR #3691~#3713 epic 후속).
 # Debug GPA leak detector (`packages/core/src/napi/common.zig` 의 debug_gpa) 가
 # 1분 dev probe 후 process 종료 시 stack trace 포함 leak 리포트 dump. 회귀
 # 발생 시 leak entries > 0 또는 panic 으로 즉시 차단.
 #
-# 매 PR 마다 돌리면 NAPI Build job 에 5분+ 추가 → main push + nightly + 수동
-# 트리거로 분리. PR 회귀 의심 시 `workflow_dispatch` 수동 실행 가능.
+# **현재 비활성화** — Zig 0.15.2 + Linux x86_64 + libc shared library 의
+# DebugAllocator `captureStackTrace` 가 frame pointer chain unwinding 시 SEGV
+# (Zig issue #25025). 0.16.0 milestone 에서 fix 됐으나 ZTS 는 0.15.2 사용.
+# Zig 0.16 업그레이드 epic (issue #1514) 머지 후 다시 활성화 — 그 때 아래
+# `on:` 트리거 (`push.branches`, `schedule.cron`) 의 주석을 제거.
+#
+# **macOS local 측정은 정상 동작** — `docs/DEBUG.md` / Starlight guide 의
+# 1분 dev probe 스크립트로 직접 사용 가능. 회귀 의심 시 macOS 에서 수동 측정.
 #
 # **임시 측정 인프라**: Debug NAPI 빌드 한정. ReleaseFast (production) 영향 0.
 # 기대값: leak entries=0, panics=0, rebuilt≥5 (touch-probe 정상 작동 검증).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      # NAPI / measurement infra / 메모리 ownership 가능 영역 (review max 의
-      # path filter 보강 — bundler 외 parser/transformer/codegen 도 cover).
-      - "packages/core/src/napi/**"
-      - "src/bundler/**"
-      - "src/parser/**"
-      - "src/transformer/**"
-      - "src/codegen/**"
-      - "src/transpile.zig"
-      - "examples/web/**"
-      - ".github/workflows/napi-leak-gate.yml"
+  # push / schedule 비활성. workflow_dispatch 만 유지 — Zig 0.16 후 수동 검증.
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "packages/core/src/napi/**"
+  #     - "src/bundler/**"
+  #     - "src/parser/**"
+  #     - "src/transformer/**"
+  #     - "src/codegen/**"
+  #     - "src/transpile.zig"
+  #     - "examples/web/**"
+  #     - ".github/workflows/napi-leak-gate.yml"
   workflow_dispatch:
-  schedule:
-    # 매일 04:00 UTC (KST 13:00) — main 의 매일 1회 검증 (path filter 무관 cover)
-    - cron: "0 4 * * *"
+  # schedule:
+  #   - cron: "0 4 * * *"
 
 concurrency:
   group: napi-leak-gate-${{ github.ref }}
