@@ -781,6 +781,20 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.this_depth = saved_this_depth;
             }
 
+            // VSB fix: static block 의 body 는 class body 안에서 평가되지만 lowering 시 IIFE 로 빠져
+            // module top-level 에 emit → super 키워드가 SyntaxError. is_static=true + static_receiver
+            // = class_name 으로 set 하고 in_extracted_fn=true 로 super lowering 강제. spec: static
+            // block 의 super 는 class.[[Prototype]] (parent class) 참조.
+            const saved_super_is_static = self.current_super_is_static;
+            const saved_super_static_receiver = self.current_super_static_receiver;
+            const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+            self.current_super_is_static = true;
+            if (class_name_span) |s| self.current_super_static_receiver = s;
+            self.current_super_in_extracted_fn = true;
+            defer self.current_super_is_static = saved_super_is_static;
+            defer self.current_super_static_receiver = saved_super_static_receiver;
+            defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
+
             // static block의 body를 방문
             const new_body = try self.visitNode(static_block_node.data.unary.operand);
 

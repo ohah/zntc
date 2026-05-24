@@ -83,6 +83,10 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     const lower_pf = self.options.unsupported.class_private_field;
     var priv_pre_stmts: std.ArrayList(NodeIndex) = .empty;
     defer priv_pre_stmts.deinit(self.allocator);
+    // V_ASSIGN fix: assign-semantics path 도 static descriptor 를 별도 array 로 받아
+    // class declaration 뒤에 emit — receiver=D 의 TDZ 회피.
+    var assign_static_descriptors: std.ArrayList(NodeIndex) = .empty;
+    defer assign_static_descriptors.deinit(self.allocator);
     var pm_mappings: std.ArrayList(PrivateMethodMapping) = .empty;
     defer {
         for (pm_mappings.items) |pm| {
@@ -126,10 +130,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
             has_super,
             class_name_text,
             true, // skip_visit_and_keep_private — public member 는 classifyClassMember 가 단일 visit.
-            // V1 정밀 fix: assign-semantics path 는 emit 흐름이 복잡 (decorator __decorateClass
-            // 호출과 얽힘) — 단순 분리로는 부족하니 별도 array 사용 안 하고 기존 pre_stmts 유지.
-            // descriptor 의 receiver=D TDZ 문제는 이 path 에서는 별도로 처리하지 않음 (덜 빈번).
-            null,
+            // V_ASSIGN fix: descriptor 를 별도 array 로 받아 class 뒤에 emit (TDZ 회피).
+            &assign_static_descriptors,
         );
         if (had_any) body_idx = new_body_pl;
     }
@@ -352,6 +354,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
+        // V_ASSIGN fix: private static descriptor 는 class 뒤, static field 할당과 IIFE 의 앞에.
+        for (assign_static_descriptors.items) |desc| try self.pending_nodes.append(self.allocator, desc);
         // static field: Foo.z = 2;
         for (static_field_assignments.items) |field| {
             const stmt = try self.buildStaticFieldAssignment(new_name, field);
@@ -366,7 +370,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     // #3/#4: private member 다운레벨이 있었으면 weakset 선언(priv_pre_stmts)을 class 앞에 emit.
     // class_expression 은 statement 위치가 아니므로 IIFE 로 래핑(fast path 와 동일), class_declaration
     // 은 pending 에 prelude + class 를 순서대로 넣는다.
-    if (priv_pre_stmts.items.len > 0) {
+    // V_ASSIGN fix: descriptor 만 있고 priv_pre_stmts 가 비어도 emit 경로 활성화.
+    if (priv_pre_stmts.items.len > 0 or assign_static_descriptors.items.len > 0) {
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
@@ -378,13 +383,15 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
                 &.{},
                 priv_pre_stmts.items,
                 class_result,
-                &.{},
+                assign_static_descriptors.items,
                 new_name,
                 node.span,
             );
         }
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
+        // V_ASSIGN fix: descriptor 를 class 뒤에 emit.
+        for (assign_static_descriptors.items) |desc| try self.pending_nodes.append(self.allocator, desc);
         return .none;
     }
 

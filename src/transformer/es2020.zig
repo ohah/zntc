@@ -431,13 +431,11 @@ pub fn ES2020(comptime Transformer: type) type {
             const new_flags = member_flags & ~ast_mod.MemberFlags.optional_chain;
 
             if (self.needsSuperLowering()) {
-                const super_class_span = self.current_super_class.?;
-                // static method super → bare class identifier (`Parent.m()`),
-                // instance super → prototype access (`Parent.prototype.m()`).
-                const super_base = if (self.current_super_is_static)
-                    try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx)
-                else
-                    try makePrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+                // V_OPT fix: buildSuperBaseRef 로 위임 — current_super_via_proto_chain / non-derived /
+                // is_static 분기를 super_props 에서 일관 처리. 이전엔 여기서 직접 raw class id 또는
+                // makePrototypeRef 만 했어서 via_proto_chain flag 가 활성 상태일 때 잘못된 base
+                // (D 자체의 prototype) 가 emit 됨 → method shadow 시 wrong dispatch.
+                const super_base = try es2015_class.ES2015Class(Transformer).buildSuperBaseRef(self, span);
                 return switch (member_tag) {
                     .static_member_expression => helpers.makeStaticMember(self, super_base, new_prop, span),
                     .computed_member_expression => helpers.makeComputedMember(self, super_base, new_prop, span),
