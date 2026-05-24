@@ -69,7 +69,20 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             const is_simple_id = super_node.tag == .identifier_reference or super_node.tag == .binding_identifier;
             // class self name: raw_name_idx (source 의 binding) 우선, 없으면 visit 결과 new_name.
             const class_name_span_opt: ?Span = self.getClassNameSpan(raw_name_idx) orelse self.getClassNameSpan(new_name);
-            if (!is_simple_id and class_name_span_opt != null) {
+            // V8 alias 의 실제 emit 은 `had_static_blocks` 또는 `had_private_methods/fields`
+            // 분기 안에서만 일어난다 (아래 line 225/247/273/291). 옵션이 활성이어도 body 에
+            // 변환 대상이 없으면 두 분기 모두 false → alias 는 만들어도 버려지고, 그 사이
+            // `makeTempVarSpan` 이 bump 한 counter 가 hoistTempVars 에서 `var _a;` (uninit
+            // declarator) 로 program top 에 leak (TSC: expressions thisInInvalidContexts /
+            // thisInInvalidContextsExternalModule 회귀).
+            // → 옵션 활성 *AND* body 에 실제 lowering 대상이 있을 때만 V8 path 진입.
+            const lower_pm_pre = self.options.unsupported.class_private_method;
+            const lower_pf_pre = self.options.unsupported.class_private_field;
+            const lower_sb_pre = self.options.unsupported.class_static_block;
+            const probe_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+            const v8_alias_emittable = (lower_pm_pre or lower_pf_pre or lower_sb_pre) and
+                classBodyHasLowerableMember(self, probe_body_idx, lower_pm_pre, lower_pf_pre, lower_sb_pre);
+            if (!is_simple_id and class_name_span_opt != null and v8_alias_emittable) {
                 // VSHADOW: alias var 생성 — `var _<n>_super = globalThis.Object.getPrototypeOf(D.prototype)`
                 // (instance) 또는 `... = globalThis.Object.getPrototypeOf(D)` (static, 단 fast path
                 // class 진입 시 is_static=false 로 reset 되므로 instance form 만 emit; static private
@@ -308,6 +321,55 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     }
 
     return self.visitClassWithAssignSemantics(node);
+}
+
+/// V8 super_proto_alias 가 emit 될 수 있는 body 인지 probe.
+/// alias 실 emit 분기 (line 225/247/273/291) 는 `had_static_blocks` 또는
+/// `had_private_methods/fields` 둘 중 하나가 true 여야 진입. 두 변수는 각각
+/// `lowerStaticBlocks` / `lowerPrivateMembers` 가 body 를 실제 변환했을 때만
+/// true. 따라서 body 에 *변환 대상* 멤버가 하나라도 없으면 alias 는 만들어도
+/// 버려진다 → counter 만 소비해 `var _a;` leak. 이 probe 는 옵션 활성 × body
+/// 매칭의 결합으로 V8 path 진입 자체를 결정한다.
+pub fn classBodyHasLowerableMember(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    lower_pm: bool,
+    lower_pf: bool,
+    lower_static_block: bool,
+) bool {
+    if (body_idx.isNone()) return false;
+    const body_node = self.ast.getNode(body_idx);
+    if (body_node.tag != .class_body) return false;
+
+    const start = body_node.data.list.start;
+    const len = body_node.data.list.len;
+    if (start + len > self.ast.extra_data.items.len) return false;
+
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+        switch (member.tag) {
+            .method_definition => {
+                if (!lower_pm) continue;
+                const e = member.data.extra;
+                if (e + ast_mod.MethodExtra.key >= self.ast.extra_data.items.len) continue;
+                const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) return true;
+            },
+            .property_definition => {
+                if (!lower_pf) continue;
+                const e = member.data.extra;
+                if (e + ast_mod.PropertyExtra.key >= self.ast.extra_data.items.len) continue;
+                const key = self.readNodeIdx(e, ast_mod.PropertyExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) return true;
+            },
+            .static_block => {
+                if (lower_static_block) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 pub fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, lower_methods: bool, lower_fields: bool) bool {
