@@ -1692,6 +1692,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
   const APP_DEV_HMR_CLIENT_PATH = web?.APP_DEV_HMR_CLIENT_PATH;
   const APP_DEV_HMR_WS_PATH = web?.APP_DEV_HMR_WS_PATH;
   let serverHandle = null;
+  // #3779 follow-up — restart 시 stop 호출용. opts.bundle+watch+appDev+hmr 분기 안에서만 할당.
+  let nativeWatchHandle = null;
   const mimeTypes = {
     '.html': 'text/html',
     '.js': 'application/javascript',
@@ -1885,6 +1887,17 @@ async function runServe(opts, config, { appDev = null } = {}) {
   }
 
   async function closeServerForRestart() {
+    // #3779 follow-up — native watch worker thread 가 child process spawn 후에도 살아남으면
+    // outdir 출력이 부모/자식 두 곳에서 일어나 race. emitRestartAfter 의 child spawn 전에 stop.
+    // stop 자체가 throw 해도 server.close 는 시도 (HTTP 포트 해제 우선).
+    if (nativeWatchHandle) {
+      try {
+        nativeWatchHandle.stop();
+      } catch (err) {
+        console.error('[serve] native watch stop 실패:', err);
+      }
+      nativeWatchHandle = null;
+    }
     if (!serverHandle) return;
     if (typeof serverHandle.stop === 'function') {
       await serverHandle.stop();
@@ -1928,7 +1941,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         }
       };
       try {
-        watch(watchBuildOpts);
+        nativeWatchHandle = watch(watchBuildOpts);
       } catch (err) {
         // watch 시작 실패해도 fsWatch + drain (CSS path) 는 계속 동작 — incremental HMR 만 비활성.
         console.error('[serve] native watch 시작 실패 (incremental HMR 비활성):', err);
