@@ -1,4 +1,5 @@
 const std = @import("std");
+const boringssl_build = @import("build/boringssl.zig");
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -88,6 +89,18 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // BoringSSL: 정적 lib (vendor/boringssl, asm 제외 OPENSSL_NO_ASM=1).
+    // dev server TLS 의 토대 — handshake/cert/SSL_CTX 등은 후속 PR (#2538 4-2).
+    // lib 1개 build + caller 별 linkLibrary — exe / lib_unit_tests / exe_unit_tests 가
+    // 같은 .a 를 공유 (중복 컴파일 회피).
+    const boringssl_lib = boringssl_build.build(b, target, optimize) catch |err| {
+        std.debug.panic(
+            "boringssl.build failed ({}): vendor/boringssl/gen/sources.json 형식 변경 또는 OOM 의심",
+            .{err},
+        );
+    };
+    boringssl_build.attach(exe, boringssl_lib, b);
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
@@ -124,6 +137,7 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_mod,
         .filters = test_filters,
     });
+    boringssl_build.attach(lib_unit_tests, boringssl_lib, b);
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
@@ -131,6 +145,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
         .filters = test_filters,
     });
+    boringssl_build.attach(exe_unit_tests, boringssl_lib, b);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 

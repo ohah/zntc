@@ -6,6 +6,7 @@ pub const TrackedFileSet = @import("tracked_file_set.zig").TrackedFileSet;
 pub const mime = @import("mime.zig");
 pub const watch_scan = @import("watch_scan.zig");
 pub const events = @import("events.zig");
+pub const boringssl = @import("boringssl.zig");
 
 test {
     _ = @import("dev_server.zig");
@@ -14,6 +15,7 @@ test {
     _ = @import("mime.zig");
     _ = @import("watch_scan.zig");
     _ = @import("events.zig");
+    _ = @import("boringssl.zig");
 
     // test files
     _ = @import("dev_server_test.zig");
