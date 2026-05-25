@@ -1,9 +1,12 @@
 [submodule "tests/test262"]
 	path = tests/test262
 	url = https://github.com/nicolo-ribaudo/test262.git
+	shallow = true
 [submodule "vendor/mimalloc"]
 	path = vendor/mimalloc
 	url = https://github.com/microsoft/mimalloc.git
+	shallow = true
 [submodule "vendor/boringssl"]
 	path = vendor/boringssl
-	url = https://github.com/google/boringssl
+	url = https://github.com/google/boringssl.git
+	shallow = true

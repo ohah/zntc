@@ -1,0 +1,56 @@
+ZNTC
+Copyright 2026 ohah
+
+Licensed under the MIT License (see LICENSE).
+
+This product distributes (statically links, when built) third-party software
+listed below. Each is governed by its own license — see the corresponding
+vendor directory or upstream link for full text.
+
+================================================================================
+BoringSSL
+================================================================================
+
+Vendor path : vendor/boringssl
+Upstream    : https://boringssl.googlesource.com/boringssl
+Pin         : commit d8be2b4a71155bf82da092ef543176351eeb59ff
+              upstream author date 2026-01-23 (committer date 2026-04-06),
+              describe `0.20260327.0-21-gd8be2b4a7`, picked into Chromium 148
+              stable channel (branch-heads/7778) DEPS as boringssl_revision.
+
+Primary license: Apache License, Version 2.0 (see vendor/boringssl/LICENSE).
+Portions are governed by the OpenSSL License, the SSLeay License, and the ISC
+License — full text in the same LICENSE file.
+
+Notable required notices (per Apache-2.0 §4(d) and OpenSSL/SSLeay credits):
+
+  Copyright (c) Google Inc.
+  Copyright (c) The OpenSSL Project.
+  Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+  Copyright (c) 1995, 1996 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
+  All rights reserved.
+
+  "This product includes software developed by the OpenSSL Project for use in
+   the OpenSSL Toolkit (http://www.openssl.org/)"
+  "This product includes cryptographic software written by Eric Young
+   (eay@cryptsoft.com)"
+
+================================================================================
+mimalloc
+================================================================================
+
+Vendor path : vendor/mimalloc
+Upstream    : https://github.com/microsoft/mimalloc
+License     : MIT License (see vendor/mimalloc/LICENSE).
+
+  Copyright (c) 2018-2024 Microsoft Corporation, Daan Leijen.
+
+================================================================================
+node-api-headers
+================================================================================
+
+Vendor path : vendor/node-api-headers
+Upstream    : https://github.com/nodejs/node-api-headers
+License     : MIT License (see vendor/node-api-headers/LICENSE).
+
+  Copyright (c) Node-API contributors.

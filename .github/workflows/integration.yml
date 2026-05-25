@@ -56,9 +56,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-zntc
       - uses: ./.github/actions/setup-zntc
         with:
           cpu: baseline
@@ -81,9 +79,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-zntc
       - uses: ./.github/actions/setup-zntc
         with:
           cpu: baseline
@@ -104,9 +100,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-zntc
       - uses: ./.github/actions/setup-zntc
         with:
           install: "false"

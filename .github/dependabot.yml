@@ -1,0 +1,20 @@
+# dependabot config — submodule pin (BoringSSL, mimalloc, test262) 의 weekly
+# head-bump PR 자동 생성. BoringSSL 의 'live at head' 정책 (tagged release 비권장,
+# vendoring + 주기적 head bump 권장) 을 따라가는 메커니즘.
+#
+# 한계: dependabot 의 보안 advisory 자동 PR (security update) 는 manifest 기반
+# ecosystem (npm/pypi/등) 한정 — `gitsubmodule` ecosystem 은 advisory DB 매칭이
+# 없어 'BoringSSL CVE 발생 시 즉시 자동 PR' 은 미지원. CVE/advisory 모니터링은
+# 별도 (BoringSSL upstream announce + Chromium security advisories) subscribe 필요.
+# 참조: #2538 4-1 (BoringSSL vendoring) review follow-up.
+
+version: 2
+updates:
+  - package-ecosystem: 'gitsubmodule'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    labels:
+      - 'dependencies'
+    commit-message:
+      prefix: 'chore(deps)'

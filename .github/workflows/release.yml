@@ -66,9 +66,7 @@ jobs:
             zig_target: x86-windows-msvc
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-zntc
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -138,9 +136,7 @@ jobs:
             artifact: zntc-x86-windows
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-zntc
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -156,6 +152,11 @@ jobs:
 
       - name: Build CLI (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      # NOTICE = BoringSSL Apache-2.0 §4(d) attribution. CLI tarball 에도 포함
+      # (#2538 4-1 review follow-up).
+      - name: Stage NOTICE into CLI artifact dir
+        run: cp NOTICE zig-out/bin/NOTICE
 
       - uses: actions/upload-artifact@v4
         with:
@@ -176,9 +177,7 @@ jobs:
       MAIN_BUILD_NAPI_PLATFORM: linux-x64-gnu
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-zntc
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -211,10 +210,13 @@ jobs:
 
       # build-napi 매트릭스의 artifact 디렉토리 자체를 glob — platform 이름 hardcoded
       # 제거 (PLATFORMS 가 늘면 release.yml 매트릭스만 추가하면 자동 픽업).
-      - name: Distribute zntc.node into platform sub-packages
+      - name: Distribute zntc.node + NOTICE into platform sub-packages
         shell: bash
         run: |
           set -euo pipefail
+          # NOTICE = BoringSSL Apache-2.0 §4(d) attribution. 각 sub-package files
+          # 에 등록돼 있지만 root NOTICE 가 repo 에만 있어 publish 직전 cp 필요
+          # (#2538 4-1 review follow-up).
           for dir in napi-artifacts/zntc-node-*/; do
             platform="${dir#napi-artifacts/zntc-node-}"
             platform="${platform%/}"
@@ -229,8 +231,9 @@ jobs:
               exit 1
             fi
             cp "$src" "$dst"
+            cp NOTICE "packages/core-${platform}/NOTICE"
             size=$(stat -c%s "$dst" 2>/dev/null || stat -f%z "$dst")
-            echo "✓ ${dst} (${size} bytes)"
+            echo "✓ ${dst} (${size} bytes) + NOTICE"
           done
 
       # main `@zntc/core` publish 의 prepublishOnly 가 build:js:cjs 단계에서
