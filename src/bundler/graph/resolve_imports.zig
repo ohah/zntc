@@ -331,17 +331,17 @@ pub fn applyResolveResult(
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
             },
             .virtual => |v| {
-                // #1961: virtual module 은 plugin 의 load 훅이 source 채움. addModule 이
-                // path 를 dupe 하므로 graph 가 owner. v.path 는 plugin 이 borrow 한
-                // specifier (runtime_helper_modules) 일 수 있어 free 안 함 — plugin 이
-                // alloc 했으면 plugin context lifetime 동안 살아있어야 한다는 규약.
+                // #1961 + #3759: virtual module 은 plugin 의 load 훅이 source 채움.
+                // addModule 이 path 를 dupe 하므로 graph 가 owner. v.path 는 이미
+                // `internResolvedModule` 이 path_pool 에 intern 한 borrow slice → .interned
+                // 로 wrap (의미 정합 + putModule clone 비용 절감).
                 const dep_idx = try self.addModule(v.path);
                 const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, dep_idx);
                 try appendResolvedDep(self, mod_idx, .{
                     .record_index = @intCast(rec_i),
                     .kind = record.kind,
                     .target = .virtual,
-                    .path = .{ .plugin = v.path },
+                    .path = .{ .interned = v.path },
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);

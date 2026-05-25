@@ -720,6 +720,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 if (graph_plugins_mod.isPluginVirtualId(path)) {
                     return .{ .virtual = .{
                         .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                        .owns_path = true, // (#3759) bundler 가 intern 후 원본 free.
                     } };
                 }
                 return .{ .file = .{
