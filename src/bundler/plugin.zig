@@ -180,33 +180,39 @@ fn deepMergeMetaValue(base: *std.json.Value, add: std.json.Value) std.mem.Alloca
 /// Plugin resolveId 응답의 통합 모델 (#1885).
 ///
 /// origin 별 type-safe 분기 — esbuild 의 string namespace 보다 컴파일 타임 안전.
+/// path/payload ownership discriminator. `bool` trap 해소 — `.owned/.borrowed` 가
+/// `true/false` 보다 self-documenting (deferred 3).
+/// - `.owned`: caller 가 자체 alloc → `internResolvedModule` 가 intern 후 원본 free
+/// - `.borrowed`: static literal / parse_arena slice 등 — bundler 가 free 시도 금지
+pub const Owner = enum { owned, borrowed };
+
 /// rolldown 의 풍부한 ResolvedId 와 비슷하지만 tag 가 fs.Namespace 와 통일.
 pub const ResolvedModule = union(fs.Namespace) {
     /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
-    /// `owns_path` (default 없음): caller 가 명시 강제 — true 면 자체 alloc
-    /// (`internResolvedModule` 가 intern 후 원본 free), false 면 borrow (static literal /
+    /// `owner` (default 없음): caller 가 명시 강제 — `.owned` 면 자체 alloc
+    /// (`internResolvedModule` 가 intern 후 원본 free), `.borrowed` 면 (static literal /
     /// parse_arena slice).
     file: struct {
         path: []const u8,
         resolve_dir: ?[]const u8 = null,
         module_type: ModuleType = .unknown,
         is_module_field: bool = false,
-        owns_path: bool, // default 없음 — caller 명시 강제 (silent leak/panic 차단)
+        owner: Owner, // default 없음 — caller 명시 강제 (silent leak/panic 차단)
     },
     /// 메모리 모듈 (plugin only). plugin_data 로 plugin context 전달.
-    /// `owns_path` (default 없음): caller 강제 명시.
+    /// `owner` (default 없음): caller 강제 명시.
     virtual: struct {
         path: []const u8,
         plugin_data: ?*anyopaque = null,
-        owns_path: bool,
+        owner: Owner,
     },
     /// data: URL — 인라인 base64 asset.
-    /// `owns_payload` (default 없음): mime + data 둘 다 동일 owner 가정. data 가 base64
+    /// `owner` (default 없음): mime + data 둘 다 동일 owner 가정. data 가 base64
     /// 큰 메모리라 path_pool intern 부적합 — `internResolvedModule` 가 mime 만 intern,
-    /// data 는 그대로. owns_payload=true 면 mime + data 원본 free.
-    /// **invariant** (review finding): owns_payload=true 시 `mime.ptr != data.ptr` —
+    /// data 는 그대로. `.owned` 면 mime + data 원본 free.
+    /// **invariant** (review finding): `.owned` 시 `mime.ptr != data.ptr` —
     /// 같은 slice aliasing 시 double-free (debug assert 차단).
-    /// **caller contract** (owns_payload=false): data 의 lifetime 이 *ResolveCache lifetime
+    /// **caller contract** (`.borrowed`): data 의 lifetime 이 *ResolveCache lifetime
     /// 이상* 이어야 함 — internResolvedModule 후 반환 ResolvedModule 의 data 가 caller
     /// borrow 그대로 (mime 만 pool 소유). 다른 variant 와 비대칭이라 caller 가 주의 필요.
     /// 현재 `resolve_imports.zig:349` 가 unreachable 라 production 도달 안 함 — future
@@ -214,33 +220,33 @@ pub const ResolvedModule = union(fs.Namespace) {
     dataurl: struct {
         mime: []const u8,
         data: []const u8,
-        owns_payload: bool,
+        owner: Owner, // 통일: payload (mime+data) owner
     },
     /// 번들 미포함 — 런타임 import 유지.
-    /// `owns_path` (default 없음): caller 강제 명시.
+    /// `owner` (default 없음): caller 강제 명시.
     external: struct {
         path: []const u8,
-        owns_path: bool,
+        owner: Owner,
     },
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
     /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
-    /// `owns_path` (default 없음): caller 강제 명시.
+    /// `owner` (default 없음): caller 강제 명시.
     disabled: struct {
         path: []const u8,
         module_type: ModuleType = .unknown,
-        owns_path: bool,
+        owner: Owner,
     },
     /// 사용자 plugin 의 자유 namespace.
-    /// `owns_path`: path *및* name 둘 다 동일 owner 가정 (단일 flag).
-    /// **invariant**: `owns_path=true` 시 `name.ptr != path.ptr` — 같은 slice 를 둘 다
+    /// `owner`: path *및* name 둘 다 동일 owner 가정 (단일 flag).
+    /// **invariant**: `.owned` 시 `name.ptr != path.ptr` — 같은 slice 를 둘 다
     /// 가리키면 `internResolvedModule` 가 double-free 시도 (debug assert 로 잡힘).
-    /// mixed owner (name borrow + path owned 등) 필요하면 future RFC (`owns_name`/`owns_path`
+    /// mixed owner (name borrow + path owned 등) 필요하면 future RFC (`owner_name`/`owner_path`
     /// 분리).
     custom: struct {
         name: []const u8,
         path: []const u8,
         plugin_data: ?*anyopaque = null,
-        owns_path: bool,
+        owner: Owner,
     },
 };
 

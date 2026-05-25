@@ -707,7 +707,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 return .{ .disabled = .{
                     .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
                     .module_type = .js,
-                    .owns_path = true, // (retro review) default 와 동일하지만 명시 — default flip 방지.
+                    .owner = .owned, // (retro review) default 와 동일하지만 명시 — default flip 방지.
                 } };
             }
 
@@ -721,13 +721,13 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 if (graph_plugins_mod.isPluginVirtualId(path)) {
                     return .{ .virtual = .{
                         .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
-                        .owns_path = true, // (#3759) bundler 가 intern 후 원본 free.
+                        .owner = .owned, // (#3759) bundler 가 intern 후 원본 free.
                     } };
                 }
                 return .{ .file = .{
                     .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
                     .module_type = .js,
-                    .owns_path = true, // (retro review) default 와 동일하지만 명시 — default flip 방지.
+                    .owner = .owned, // (retro review) default 와 동일하지만 명시 — default flip 방지.
                 } };
             }
             return null;
