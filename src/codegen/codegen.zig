@@ -153,22 +153,33 @@ pub const Codegen = struct {
 
     /// AST를 JS 문자열로 출력한다.
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
-        var scope = @import("../profile.zig").begin(.codegen);
+        const profile = @import("../profile.zig");
+        var scope = profile.begin(.codegen);
         defer scope.end();
 
         if (self.options.assert_no_raw_private_syntax) {
             std.debug.assert(!hasRawPrivateSyntax(self.ast, root));
         }
 
+        // (C1 도구 보강) sub-phase 측정 — generate() 의 어느 단계가 hot 한지 분리.
+        var setup_scope = profile.begin(.codegen_setup);
         // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
 
         // namespace var 중복 제거: top-level 선언 이름 사전 수집
         self.collectTopLevelDeclNames(root);
+        setup_scope.end();
         // function map: program 진입 시 <global> frame
         if (self.fn_map_builder != null) try self.fnMapEnter("<global>");
-        try self.emitNode(root);
+        {
+            var emit_scope = profile.begin(.codegen_emit);
+            defer emit_scope.end();
+            try self.emitNode(root);
+        }
         if (self.fn_map_builder != null) try self.fnMapExit();
+
+        var finalize_scope = profile.begin(.codegen_finalize);
+        defer finalize_scope.end();
 
         // keepNames: 수집된 entries를 코드 끝에 __name() 호출로 append (복사 없음)
         // #1621: minify 시 __name → $nm 축약.

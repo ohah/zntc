@@ -32,6 +32,10 @@ pub fn generateSourceMapWithFunctionMap(self: anytype, output_file: []const u8) 
 
 pub fn addSourceMapping(self: anytype, span: Span) !void {
     if (self.sm_builder) |*sm| {
+        // (C1 도구 보강) sourcemap mapping 누적 측정. sm_builder 가 있을 때만 측정 —
+        // sourcemap 비활성 빌드는 overhead 0.
+        var scope = @import("../profile.zig").begin(.codegen_sm_add);
+        defer scope.end();
         // 합성 노드 (string_table 참조) 와 zero-width span 은 발행 안 함 (zero span 도 포함).
         // 호출자가 emitter 첫 줄에서 부담 없이 호출하도록 가드 일원화.
         if (span.start & Ast.STRING_TABLE_BIT != 0) return;
