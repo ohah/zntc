@@ -17,6 +17,9 @@ describe('HMR_MSG enum', () => {
     expect(HMR_MSG.ClearError).toBe('clear-error');
     expect(HMR_MSG.Error).toBe('error');
     expect(HMR_MSG.FullReload).toBe('full-reload');
+    expect(HMR_MSG.UpdateStart).toBe('update-start');
+    expect(HMR_MSG.Update).toBe('update');
+    expect(HMR_MSG.UpdateDone).toBe('update-done');
   });
 
   test('frozen 객체로 런타임 변경 불가', () => {
@@ -72,6 +75,30 @@ describe('HmrMessage type 의 round-trip', () => {
     expect(JSON.parse(JSON.stringify(msg))).toEqual({
       type: 'full-reload',
       timestamp: 9,
+    });
+  });
+
+  test('UpdateStart / UpdateDone 는 type 만', () => {
+    const start: HmrMessage = { type: HMR_MSG.UpdateStart };
+    const done: HmrMessage = { type: HMR_MSG.UpdateDone };
+    expect(JSON.parse(JSON.stringify(start))).toEqual({ type: 'update-start' });
+    expect(JSON.parse(JSON.stringify(done))).toEqual({ type: 'update-done' });
+  });
+
+  test('Update 는 modules 배열 (id/code)', () => {
+    const msg: HmrMessage = {
+      type: HMR_MSG.Update,
+      modules: [
+        { id: 'src/a.ts', code: 'export const a = 1;' },
+        { id: 'src/b.ts', code: 'export const b = 2;' },
+      ],
+    };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual({
+      type: 'update',
+      modules: [
+        { id: 'src/a.ts', code: 'export const a = 1;' },
+        { id: 'src/b.ts', code: 'export const b = 2;' },
+      ],
     });
   });
 });
