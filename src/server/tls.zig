@@ -42,24 +42,24 @@ pub const TlsContext = struct {
         var err_buf: [256]u8 = undefined;
 
         if (boringssl.SSL_CTX_set_min_proto_version(ctx, boringssl.TLS1_2_VERSION) != 1) {
-            std.log.err("TLS: set_min_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
+            std.log.warn("TLS: set_min_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
             return Error.SslCtxConfigFailed;
         }
         if (boringssl.SSL_CTX_set_max_proto_version(ctx, boringssl.TLS1_3_VERSION) != 1) {
-            std.log.err("TLS: set_max_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
+            std.log.warn("TLS: set_max_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
             return Error.SslCtxConfigFailed;
         }
 
         if (boringssl.SSL_CTX_use_certificate_file(ctx, &cert_z, boringssl.SSL_FILETYPE_PEM) != 1) {
-            std.log.err("TLS: certificate '{s}' 로드 실패: {s}", .{ cert_path, boringssl.lastErrorString(&err_buf) });
+            std.log.warn("TLS: certificate '{s}' 로드 실패: {s}", .{ cert_path, boringssl.lastErrorString(&err_buf) });
             return Error.CertLoadFailed;
         }
         if (boringssl.SSL_CTX_use_PrivateKey_file(ctx, &key_z, boringssl.SSL_FILETYPE_PEM) != 1) {
-            std.log.err("TLS: private key '{s}' 로드 실패: {s}", .{ key_path, boringssl.lastErrorString(&err_buf) });
+            std.log.warn("TLS: private key '{s}' 로드 실패: {s}", .{ key_path, boringssl.lastErrorString(&err_buf) });
             return Error.KeyLoadFailed;
         }
         if (boringssl.SSL_CTX_check_private_key(ctx) != 1) {
-            std.log.err("TLS: private key 와 certificate 불일치: {s}", .{boringssl.lastErrorString(&err_buf)});
+            std.log.warn("TLS: private key 와 certificate 불일치: {s}", .{boringssl.lastErrorString(&err_buf)});
             return Error.KeyMismatch;
         }
 
@@ -89,7 +89,7 @@ pub const TlsConnection = struct {
         const rc = boringssl.SSL_accept(ssl);
         if (rc != 1) {
             var buf: [256]u8 = undefined;
-            std.log.err("TLS handshake 실패: {s}", .{boringssl.lastErrorString(&buf)});
+            std.log.warn("TLS handshake 실패: {s}", .{boringssl.lastErrorString(&buf)});
             return Error.HandshakeFailed;
         }
         return .{ .ssl = ssl };
