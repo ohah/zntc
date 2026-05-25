@@ -1738,6 +1738,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
   const serveDir = resolve(opts.outdir || opts.serveDir);
   const base = normalizeBase(opts.base ?? '/');
 
+  // #3799 — HMR Update modules 의 sourceMappingURL 이 가리키는 lazy sourcemap endpoint.
+  // dev_overlay_client.js 의 __zntc_apply_update 가 eval 한 module code 끝의 주석을 DevTools
+  // 가 fetch 함. RN bridge 의 `/__zntc_hmr_map/<id>` 와 동일 path.
+  const HMR_MAP_PATH = '/__zntc_hmr_map/';
+
   function handleRequest(reqUrl, accept = '') {
     let pathname = new URL(reqUrl, 'http://localhost').pathname;
     if (appDev && pathname === APP_DEV_HMR_CLIENT_PATH) {
@@ -1746,6 +1751,22 @@ async function runServe(opts, config, { appDev = null } = {}) {
         body: APP_DEV_HMR_CLIENT,
         type: 'application/javascript',
       };
+    }
+    // #3799 — HMR module 별 sourcemap. nativeWatchHandle 이 lazy cache 한 V3 JSON 을
+    // moduleId 로 조회. handle 가 stop 됐거나 module 미수집 시 null → 404. 사용자
+    // app 의 routing 우선순위 (base prefix 처리) 보다 앞에 위치 — `__zntc_hmr_map/`
+    // 는 internal prefix 라 base 영향 무관.
+    if (appDev && pathname.startsWith(HMR_MAP_PATH) && nativeWatchHandle) {
+      const moduleId = decodeURIComponent(pathname.slice(HMR_MAP_PATH.length));
+      try {
+        const sm = nativeWatchHandle.getHmrSourceMap(moduleId);
+        if (sm) {
+          return { status: 200, body: sm, type: 'application/json' };
+        }
+      } catch {
+        // handle stop 또는 unwrap 실패 — 404
+      }
+      return { status: 404, body: 'Not Found', type: 'text/plain' };
     }
     if (base && base !== '/' && pathname.startsWith(base)) {
       pathname = '/' + pathname.slice(base.length);
@@ -1958,7 +1979,20 @@ async function runServe(opts, config, { appDev = null } = {}) {
                 console.error('[serve] graph 변경 outdir 재출력 실패:', cssErr);
               }
             }
-            web.broadcastRebuildEvent(hmr, event);
+            // #3799 — Update modules 의 code 끝에 sourceMappingURL 주석 append. eval 된
+            // module 의 stack trace 가 원본 source 좌표로 매핑되도록 DevTools 가 lazy fetch
+            // (`/__zntc_hmr_map/<id>` route). RN bridge (hmr-bridge.ts:42) 와 같은 패턴.
+            const annotated =
+              event && event.success && event.updates && event.updates.length > 0
+                ? {
+                    ...event,
+                    updates: event.updates.map((u) => ({
+                      ...u,
+                      code: `${u.code}\n//# sourceMappingURL=${HMR_MAP_PATH}${encodeURIComponent(u.id)}\n`,
+                    })),
+                  }
+                : event;
+            web.broadcastRebuildEvent(hmr, annotated);
           } catch (err) {
             console.error('[serve] hmr broadcast error:', err);
           }
