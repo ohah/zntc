@@ -14,6 +14,7 @@ import {
   rewriteCssModuleClasses,
   rewriteCssModuleReferences,
   scanCssModuleClassTokens,
+  transformCssModules,
 } from './css-modules.ts';
 
 let dir: string;
@@ -224,5 +225,84 @@ describe('rewriteCssModuleReferences', () => {
     const path = touch('entry.ts', `import './x.module.css';`);
     rewriteCssModuleReferences([path]);
     expect(readFileSync(path, 'utf8')).toBe(`import './x.module.css.js';`);
+  });
+});
+
+// a1-#2 (RFC #3833): plain `{}` 의 prototype shadowing 가드.
+// `.constructor` / `.toString` / `.__proto__` / `.hasOwnProperty` 같은
+// Object.prototype 메서드 이름이 CSS class 로 쓰일 시, mapping = {} 의 lookup
+// 이 native function 반환 → `if (!mapping[token.local])` truthy → 매핑 누락 +
+// rewrite 가 native fn 을 stringify 해 CSS 에 garbage 삽입.
+// fix: `Object.create(null)` 로 prototype-less mapping. lookup 안전.
+describe('transformCssModules — prototype-shadowing class name (a1-#2 가드)', () => {
+  function makeFixture(filename: string, css: string): { root: string; file: string } {
+    const file = join(dir, filename);
+    writeFileSync(file, css);
+    return { root: dir, file };
+  }
+
+  test('class name `.constructor` 도 정상 scoping (prototype shadowing 회귀 가드)', () => {
+    const { root, file } = makeFixture(
+      'a.module.css',
+      '.constructor { color: red; }\n.toString { color: blue; }\n.regular { color: green; }',
+    );
+    transformCssModules(root, [file], [], 'silent');
+
+    // generated .module.zntc.css 에 scoped 클래스가 모두 있어야 (native fn stringify 가 아니라)
+    const generated = readFileSync(file.replace(/\.module\.css$/, '.module.zntc.css'), 'utf8');
+    expect(generated).toMatch(/\.a_constructor__[A-Za-z0-9_-]{8}/);
+    expect(generated).toMatch(/\.a_toString__[A-Za-z0-9_-]{8}/);
+    expect(generated).toMatch(/\.a_regular__[A-Za-z0-9_-]{8}/);
+    // native fn stringify garbage 없음
+    expect(generated).not.toMatch(/native code|function Object|function toString/);
+
+    // proxy module 의 default mapping 에 prototype-shadowing 키도 own property 로 포함
+    const proxy = readFileSync(`${file}.js`, 'utf8');
+    expect(proxy).toContain('"constructor"');
+    expect(proxy).toContain('"toString"');
+    expect(proxy).toContain('"regular"');
+  });
+
+  test('class name `.__proto__` / `.hasOwnProperty` 도 정상 (다른 prototype-shadowing 케이스)', () => {
+    const { root, file } = makeFixture(
+      'b.module.css',
+      '.__proto__ { color: red; }\n.hasOwnProperty { color: blue; }',
+    );
+    transformCssModules(root, [file], [], 'silent');
+
+    const generated = readFileSync(file.replace(/\.module\.css$/, '.module.zntc.css'), 'utf8');
+    // __proto__ 는 sha hash 가 다른 형식. SAFE_LOCAL_RE 가 _ 로 치환하지 않음 (alnum + _ 라).
+    // 따라서 fileName_local__hash 가 fileName___proto____hash 가 됨 (4 underscores).
+    expect(generated).toMatch(/\.b___proto____[A-Za-z0-9_-]{8}/);
+    expect(generated).toMatch(/\.b_hasOwnProperty__[A-Za-z0-9_-]{8}/);
+    expect(generated).not.toMatch(/native code|\[object/);
+  });
+
+  test('regular class 만 있는 케이스도 회귀 없음 (사전 존재 동작 보존)', () => {
+    const { root, file } = makeFixture(
+      'c.module.css',
+      '.primary { color: red; }\n.danger { color: darkred; }',
+    );
+    transformCssModules(root, [file], [], 'silent');
+
+    const generated = readFileSync(file.replace(/\.module\.css$/, '.module.zntc.css'), 'utf8');
+    expect(generated).toMatch(/\.c_primary__[A-Za-z0-9_-]{8}/);
+    expect(generated).toMatch(/\.c_danger__[A-Za-z0-9_-]{8}/);
+  });
+
+  // public `rewriteCssModuleClasses` (line 99 export) 가 외부 caller-supplied
+  // plain `{}` mapping 받아도 안전 — Object.hasOwn 가드로 prototype lookup 무력화.
+  test('public rewriteCssModuleClasses + plain {} mapping → prototype lookup 무력화', () => {
+    const css = '.constructor { color: red; }\n.toString { color: blue; }\n.regular { color: green; }';
+    const mapping: Record<string, string> = { regular: 'scoped-regular' };
+    // 의도적으로 plain {} (Object.prototype 상속) 사용. caller 가 잘못 만들어도 안전.
+    const out = rewriteCssModuleClasses(css, mapping);
+    // .regular 만 scope 적용 (mapping 의 own property)
+    expect(out).toContain('.scoped-regular { color: green; }');
+    // .constructor / .toString 은 mapping own property 아님 → 원본 그대로 (skip, 변경 X)
+    expect(out).toContain('.constructor { color: red; }');
+    expect(out).toContain('.toString { color: blue; }');
+    // native fn stringify garbage 없음
+    expect(out).not.toMatch(/native code|function Object|function toString|\[object/);
   });
 });
