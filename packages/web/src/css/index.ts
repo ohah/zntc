@@ -75,7 +75,11 @@ export function css(options: CssPluginOptions = {}): ZntcPlugin {
         // override 가 있으면 그 plugins 사용. 미지정 시 postcss.config 자동 발견.
         const root = options.root ?? process.cwd();
         const fallbackRequire = createRequire(import.meta.url);
-        const mode = options.mode ?? ((process.env.NODE_ENV === 'production' ? 'production' : 'development') as 'development' | 'production');
+        const mode =
+          options.mode ??
+          ((process.env.NODE_ENV === 'production' ? 'production' : 'development') as
+            | 'development'
+            | 'production');
 
         let plugins: unknown[];
         let postcssOptions: Record<string, unknown>;
