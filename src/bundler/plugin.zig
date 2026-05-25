@@ -183,11 +183,16 @@ fn deepMergeMetaValue(base: *std.json.Value, add: std.json.Value) std.mem.Alloca
 /// rolldown 의 풍부한 ResolvedId 와 비슷하지만 tag 가 fs.Namespace 와 통일.
 pub const ResolvedModule = union(fs.Namespace) {
     /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
+    /// `owns_path` (default true): caller 가 path/resolve_dir 를 자체 alloc 했음 →
+    /// `internResolvedModule` 가 intern 후 원본 free. static literal / parse_arena borrow
+    /// 면 false 명시. 모든 production caller (native resolver + NAPI bridge + plugin_test)
+    /// 가 dupe 이므로 true 가 호환 default. future plugin layer 의 borrow 케이스만 false.
     file: struct {
         path: []const u8,
         resolve_dir: ?[]const u8 = null,
         module_type: ModuleType = .unknown,
         is_module_field: bool = false,
+        owns_path: bool = true,
     },
     /// 메모리 모듈 (plugin only). plugin_data 로 plugin context 전달.
     /// (#3759) `owns_path`: plugin 이 path 를 자체 alloc 했으면 true → bundler 가 intern
@@ -208,9 +213,11 @@ pub const ResolvedModule = union(fs.Namespace) {
     },
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
     /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
+    /// `owns_path` (default true): `.file` 과 동일 시맨틱.
     disabled: struct {
         path: []const u8,
         module_type: ModuleType = .unknown,
+        owns_path: bool = true,
     },
     /// 사용자 plugin 의 자유 namespace.
     custom: struct {

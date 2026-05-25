@@ -632,17 +632,19 @@ pub const ResolveCache = struct {
     }
 
     /// path 는 *interned* (path_pool 소유). caller 는 borrow only — free 안 함.
+    /// owns_path=false 명시로 caller-borrow 시맨틱 type-level 표명.
     fn fileResult(path: []const u8, resolve_dir: ?[]const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
         return .{ .file = .{
             .path = path,
             .resolve_dir = resolve_dir,
             .module_type = module_type,
             .is_module_field = is_module_field,
+            .owns_path = false,
         } };
     }
 
     fn disabledResult(path: []const u8, module_type: ModuleType) ResolvedModule {
-        return .{ .disabled = .{ .path = path, .module_type = module_type } };
+        return .{ .disabled = .{ .path = path, .module_type = module_type, .owns_path = false } };
     }
 
     /// PR resolve interning helper — resolver 가 alloc 한 path 를 intern + 원본 free.
@@ -662,6 +664,7 @@ pub const ResolveCache = struct {
             .resolve_dir = paths[1],
             .module_type = result.module_type,
             .is_module_field = result.is_module_field,
+            .owns_path = false,
         } };
     }
 
@@ -671,7 +674,7 @@ pub const ResolveCache = struct {
         errdefer if (owns_input) self.allocator.free(path);
         const interned = try self.path_pool.intern(path);
         if (owns_input) self.allocator.free(path);
-        return .{ .disabled = .{ .path = interned, .module_type = module_type } };
+        return .{ .disabled = .{ .path = interned, .module_type = module_type, .owns_path = false } };
     }
 
     /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키 free (value 의 path 는 pool 소유).
@@ -855,37 +858,43 @@ pub const ResolveCache = struct {
     /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
     /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
     ///
-    /// **interning 적용 variant**: `.file`, `.disabled`, `.virtual` (owns_path=true)
-    /// — caller borrow only, free 금지.
-    /// **pass-through**: `.virtual` (owns_path=false, runtime_helper_modules 등 borrow),
-    /// `.dataurl`/`.external`/`.custom` (resolve_imports.zig:349 unreachable — 현재 미사용).
+    /// **interning 적용 variant**: `.file`, `.disabled`, `.virtual` — owns_path discriminator
+    /// 로 borrow vs owned 분기.
+    /// **pass-through**: `.dataurl`/`.external`/`.custom` (resolve_imports.zig:349
+    /// unreachable — 현재 미사용. future plugin layer 활성화 시 동일 패턴 적용).
     ///
-    /// #3759 fix: `.virtual` 의 owner ambiguity 해소 — `owns_path: bool` discriminator.
-    /// - NAPI bridge (plugin_bridge.zig:722): graph_allocator dupe → `owns_path=true`.
-    /// - runtime_helper_modules (resolveIdHook): specifier borrow → `owns_path=false`.
+    /// owner ambiguity 해소 — `owns_path: bool` discriminator (.file/.disabled default
+    /// true, .virtual default false):
+    /// - `owns_path=true` 면 intern + 원본 free (NAPI bridge / native resolver dupe).
+    /// - `owns_path=false` 면 intern 만 (runtime_helper / borrow specifier).
     ///
-    /// `owns_path=true` 면 intern + 원본 free (single-owner invariant).
-    /// `owns_path=false` 면 intern 만 (caller 가 owner 유지 — graph 가 dupe).
+    /// 반환된 ResolvedModule 의 path 는 항상 path_pool 의 interned slice (caller borrow
+    /// only) — owns_path=false 로 명시.
     pub fn internResolvedModule(self: *ResolveCache, m: ResolvedModule) !ResolvedModule {
         return switch (m) {
             .file => |f| blk: {
-                // errdefer: OOM 시 input 도 free (single-owner invariant 유지).
-                errdefer {
+                // errdefer 와 explicit free 분리 — sub-scope 로 errdefer 영역 격리.
+                const paths = pool: {
+                    errdefer if (f.owns_path) {
+                        self.allocator.free(f.path);
+                        if (f.resolve_dir) |d| self.allocator.free(d);
+                    };
+                    break :pool try self.path_pool.internPair(f.path, f.resolve_dir);
+                };
+                if (f.owns_path) {
                     self.allocator.free(f.path);
                     if (f.resolve_dir) |d| self.allocator.free(d);
                 }
-                const paths = try self.path_pool.internPair(f.path, f.resolve_dir);
-                self.allocator.free(f.path);
-                if (f.resolve_dir) |d| self.allocator.free(d);
                 break :blk .{ .file = .{
                     .path = paths[0],
                     .resolve_dir = paths[1],
                     .module_type = f.module_type,
                     .is_module_field = f.is_module_field,
+                    .owns_path = false,
                 } };
             },
-            .disabled => |d| try self.internDisabled(d.path, d.module_type, true),
-            // #3759: owner ambiguity 해소 — owns_path=true 만 free.
+            .disabled => |d| try self.internDisabled(d.path, d.module_type, d.owns_path),
+            // owner ambiguity 해소 — owns_path=true 만 free.
             // intern 실패 시 errdefer 가 free, 성공 시 explicit free 후 break — explicit
             // free 와 errdefer 가 같은 slice 를 노리지 않도록 errdefer 는 intern 호출
             // 영역만 감싼다 (sub-scope blk 로 격리).
