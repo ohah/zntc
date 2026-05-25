@@ -10,6 +10,7 @@ export {
   readdirSync,
   readFileSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 export { tmpdir } from 'node:os';

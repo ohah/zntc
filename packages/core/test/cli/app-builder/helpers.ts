@@ -12,6 +12,7 @@ export {
   rmSync,
   existsSync,
   mkdirSync,
+  unlinkSync,
   tmpdir,
   join,
   CLI,
