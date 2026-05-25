@@ -687,6 +687,32 @@ fn NapiPluginAdapter(comptime Self: type) type {
             return null;
         }
 
+        /// (deferred 4) plugin response → owned ResolvedModule builder. dupe + `.owned`
+        /// 패턴 한 곳에 모아 drift 방지 — 한 site 만 dupe 빠뜨려도 owner 와 mismatch 면
+        /// bundler 가 borrowed slice 를 free 시도 → panic.
+        fn buildOwnedFile(alloc: std.mem.Allocator, path: []const u8) PluginError!plugin_mod.ResolvedModule {
+            return .{ .file = .{
+                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                .module_type = .js,
+                .owner = .owned,
+            } };
+        }
+
+        fn buildOwnedVirtual(alloc: std.mem.Allocator, path: []const u8) PluginError!plugin_mod.ResolvedModule {
+            return .{ .virtual = .{
+                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                .owner = .owned,
+            } };
+        }
+
+        fn buildOwnedDisabled(alloc: std.mem.Allocator, path: []const u8) PluginError!plugin_mod.ResolvedModule {
+            return .{ .disabled = .{
+                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                .module_type = .js,
+                .owner = .owned,
+            } };
+        }
+
         fn pluginResolveId(
             ctx: ?*anyopaque,
             specifier: []const u8,
@@ -703,12 +729,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
             // disabled: 빈 모듈로 처리. path는 식별용 — resolved_path 또는 specifier 그대로.
             // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
             if (resp.is_disabled) {
-                const id_path = resp.resolved_path orelse specifier;
-                return .{ .disabled = .{
-                    .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
-                    .module_type = .js,
-                    .owner = .owned, // (retro review) default 와 동일하지만 명시 — default flip 방지.
-                } };
+                return try buildOwnedDisabled(alloc, resp.resolved_path orelse specifier);
             }
 
             if (resp.resolved_path) |path| {
@@ -719,16 +740,9 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 // (#3022 — vue/svelte SFC 의 `\0plugin-vue:...` 및 `?vue&type=style&lang.css`)
                 // 술어는 graph/plugins.zig 와 동일 — 한 곳에서만 정의 (drift 방지).
                 if (graph_plugins_mod.isPluginVirtualId(path)) {
-                    return .{ .virtual = .{
-                        .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
-                        .owner = .owned, // (#3759) bundler 가 intern 후 원본 free.
-                    } };
+                    return try buildOwnedVirtual(alloc, path);
                 }
-                return .{ .file = .{
-                    .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
-                    .module_type = .js,
-                    .owner = .owned, // (retro review) default 와 동일하지만 명시 — default flip 방지.
-                } };
+                return try buildOwnedFile(alloc, path);
             }
             return null;
         }
