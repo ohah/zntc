@@ -858,15 +858,15 @@ pub const ResolveCache = struct {
     /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
     /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
     ///
-    /// **interning 적용 variant**: `.file`, `.disabled`, `.virtual` — owns_path discriminator
-    /// 로 borrow vs owned 분기.
-    /// **pass-through**: `.dataurl`/`.external`/`.custom` (resolve_imports.zig:349
-    /// unreachable — 현재 미사용. future plugin layer 활성화 시 동일 패턴 적용).
+    /// **interning 적용 variant**: `.file`, `.disabled`, `.virtual`, `.external`, `.custom`
+    /// — owns_path discriminator 로 borrow vs owned 분기.
+    /// **pass-through**: `.dataurl` (data 가 base64 큰 메모리라 pool 부적합 — 별도 RFC).
     ///
-    /// owner ambiguity 해소 — `owns_path: bool` discriminator (.file/.disabled default
-    /// true, .virtual default false):
-    /// - `owns_path=true` 면 intern + 원본 free (NAPI bridge / native resolver dupe).
-    /// - `owns_path=false` 면 intern 만 (runtime_helper / borrow specifier).
+    /// owner ambiguity 해소 — `owns_path: bool` discriminator:
+    /// - `.file/.disabled/.external/.custom` default true (native resolver / NAPI bridge dupe)
+    /// - `.virtual` default false (runtime_helper borrow 가 더 흔함)
+    /// - `owns_path=true` 면 intern + 원본 free
+    /// - `owns_path=false` 면 intern 만 (caller 가 owner 유지)
     ///
     /// 반환된 ResolvedModule 의 path 는 항상 path_pool 의 interned slice (caller borrow
     /// only) — owns_path=false 로 명시.
@@ -906,10 +906,40 @@ pub const ResolveCache = struct {
                 if (v.owns_path) self.allocator.free(v.path);
                 break :blk .{ .virtual = .{ .path = interned, .plugin_data = v.plugin_data, .owns_path = false } };
             },
-            // external/custom — resolve_imports.zig:349 가 unreachable 로 닫혀 있어 현재
-            // 도달 안 함. dataurl 도 동일. pass-through 유지 (future plugin layer 가
-            // 활성화 시 owns_path 패턴 동일 적용).
-            .dataurl, .external, .custom => m,
+            // (#3763 후속) .external/.custom 도 .virtual 와 같은 owns_path 패턴 — intern +
+            // 조건부 free. 현재 resolve_imports.zig:349 가 unreachable 라 도달 안 함이지만,
+            // future plugin layer 활성화 시 dangling/leak 방지 가능.
+            .external => |e| blk: {
+                const interned = pool: {
+                    errdefer if (e.owns_path) self.allocator.free(e.path);
+                    break :pool try self.path_pool.intern(e.path);
+                };
+                if (e.owns_path) self.allocator.free(e.path);
+                break :blk .{ .external = .{ .path = interned, .owns_path = false } };
+            },
+            .custom => |c| blk: {
+                // name + path 모두 같은 owner 가정 (owns_path discriminator).
+                const paths = pool: {
+                    errdefer if (c.owns_path) {
+                        self.allocator.free(c.name);
+                        self.allocator.free(c.path);
+                    };
+                    break :pool try self.path_pool.internPair(c.name, c.path);
+                };
+                if (c.owns_path) {
+                    self.allocator.free(c.name);
+                    self.allocator.free(c.path);
+                }
+                break :blk .{ .custom = .{
+                    .name = paths[0],
+                    .path = paths[1].?,
+                    .plugin_data = c.plugin_data,
+                    .owns_path = false,
+                } };
+            },
+            // .dataurl — mime + data 별도 lifecycle. data 가 base64 큰 메모리라 path_pool
+            // 부적합. 현 resolve_imports.zig:349 unreachable. 별도 RFC 에서 처리.
+            .dataurl => m,
         };
     }
 
