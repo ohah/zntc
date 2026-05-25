@@ -15,6 +15,10 @@ const types = @import("types.zig");
 /// slot 들의 alloc 을 free + shared backing 이 graph 쪽 module 과 공유라는 점을 고려해
 /// .specifier="" (PathRef.deinit no-op variant) 로 sanitize. 그렇지 않으면 graph
 /// 쪽 module.deinit 가 같은 freed slice 를 또 free → double-free.
+///
+/// **Caller invariant**: `transferModulesToStore` (유일한 caller) 는 putModule 호출
+/// 후 module.resolved_deps 를 다시 사용하지 않는다 (loop 다음은 graph.deinit). 그러므로
+/// sanitize 된 .specifier="" 가 caller-visible silent corruption 으로 표면화하지 않음.
 fn rollbackOomCloned(items: []CachedResolvedDep, allocator: std.mem.Allocator) void {
     for (items) |*dep| {
         dep.path.deinit(allocator);
@@ -108,7 +112,10 @@ pub const PersistentModuleStore = struct {
         // import specifiers 복제 (store allocator 소유)
         const specs = self.extractImportSpecifiers(module) catch return;
 
-        // 기존 캐시가 있으면 제거
+        // 기존 캐시가 있으면 제거. (#3755 sweep) freeCachedModule 가 contents 만 free
+        // 하므로 entry 자체는 그대로 — 다음 단계에서 map.put 으로 *값* 만 update.
+        // OOM rollback 으로 put 에 도달 못하면 entry 가 dangling 으로 남기 때문에
+        // rollback 분기에서 반드시 `modules.remove(path)` 호출 필요.
         const had_existing = self.modules.contains(path);
         if (had_existing) {
             if (self.modules.getPtr(path)) |old| {
@@ -146,12 +153,14 @@ pub const PersistentModuleStore = struct {
         for (cached_module.resolved_deps.items, 0..) |*dep, i| {
             const new_path = clonePathRefIfNeeded(self.allocator, dep.path) catch {
                 rollbackOomCloned(cached_module.resolved_deps.items[0..i], self.allocator);
+                self.abortPutModule(path, had_existing, specs);
                 return;
             };
             const new_rd = if (dep.resolve_dir) |rd|
                 clonePathRefIfNeeded(self.allocator, rd) catch {
                     new_path.deinit(self.allocator);
                     rollbackOomCloned(cached_module.resolved_deps.items[0..i], self.allocator);
+                    self.abortPutModule(path, had_existing, specs);
                     return;
                 }
             else
@@ -211,6 +220,22 @@ pub const PersistentModuleStore = struct {
                 self.freeCachedModule(&orphan);
             };
         }
+    }
+
+    /// (#3755 sweep) putModule rollback 통합 cleanup. 다음 두 P0 시나리오 차단:
+    /// 1) had_existing 케이스에서 freeCachedModule(old) 만 했고 map.remove 안 했으면
+    ///    dangling CachedModule entry — 다음 getIfFresh UAF + 다음 putModule 의 freeCachedModule 가
+    ///    이미 freed 메모리 또 free → double-free. fetchRemove 로 key 까지 회수.
+    /// 2) specs (extractImportSpecifiers 결과) 가 N dupe + 1 slice alloc 인데 rollback
+    ///    early return 으로 free 안 됨 → 매 OOM 마다 누적 leak.
+    fn abortPutModule(self: *PersistentModuleStore, path: []const u8, had_existing: bool, specs: []const []const u8) void {
+        if (had_existing) {
+            if (self.modules.fetchRemove(path)) |kv| {
+                self.allocator.free(kv.key);
+            }
+        }
+        for (specs) |s| self.allocator.free(s);
+        self.allocator.free(specs);
     }
 
     fn extractImportSpecifiers(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
@@ -386,11 +411,49 @@ test "PersistentModuleStore: putModule OOM rollback double-free 차단 (#3755)" 
 
     // module.resolved_deps.items 는 sanitize 되어 .specifier 또는 .interned 만 남아
     // module.deinit 의 dep.path.deinit 가 no-op. (.owned 였다면 freed slice 재 free).
-    for (module.resolved_deps.items) |dep| {
-        switch (dep.path) {
-            .owned => return error.RollbackLeftOwnedDangling,
-            else => {},
-        }
-    }
+    // sweep review: 단순 .owned 부재만이 아닌 *positive content* 검증 — 알로케이터 instrumentation
+    // 비의존 회귀 검출.
+    try testing.expect(module.resolved_deps.items[0].path == .specifier);
+    try testing.expectEqual(@as(usize, 0), module.resolved_deps.items[0].path.specifier.len);
+    try testing.expect(module.resolved_deps.items[1].path == .specifier);
+    try testing.expectEqual(@as(usize, 0), module.resolved_deps.items[1].path.specifier.len);
+    // i=2 슬롯은 clone 이 OOM 으로 mutate 전 → 원본 .interned 그대로 유지.
+    try testing.expect(module.resolved_deps.items[2].path == .interned);
+    try testing.expectEqualStrings("e/f", module.resolved_deps.items[2].path.interned);
     // module.deinit 는 defer 에서 호출 — double-free 발생 시 testing.allocator 가 패닉.
+}
+
+// Regression #3755 sweep: had_existing 경로 + clone OOM rollback 조합 시 map 에 dangling
+// CachedModule entry 가 남는다. 다음 getIfFresh 가 freed 메모리 반환 → UAF.
+test "PersistentModuleStore: putModule had_existing + OOM rollback 시 map entry 제거 (#3755)" {
+    const testing = std.testing;
+
+    var store = PersistentModuleStore.init(testing.allocator);
+    defer store.deinit();
+
+    // 첫 putModule — 정상 저장 (deps 없이).
+    var mod1 = Module.init(@enumFromInt(0), "/virtual/oom-had-existing.ts");
+    defer mod1.deinit(testing.allocator);
+    store.putModule("/virtual/oom-had-existing.ts", &mod1, 1);
+    try testing.expect(store.modules.contains("/virtual/oom-had-existing.ts"));
+
+    // 두번째 putModule — had_existing=true, clone loop 에서 OOM 유도. FailingAllocator 는
+    // alloc 만 fail injection 하고 free 는 underlying (testing.allocator) 로 passthrough
+    // 이므로, store.allocator 만 mid-test swap 해도 ledger 일관성 유지.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    const orig_alloc = store.allocator;
+    store.allocator = failing.allocator();
+    defer store.allocator = orig_alloc; // deinit 도 testing.allocator 로 free 일관.
+
+    var mod2 = Module.init(@enumFromInt(0), "/virtual/oom-had-existing.ts");
+    var deps2: std.ArrayListUnmanaged(CachedResolvedDep) = .empty;
+    defer mod2.deinit(testing.allocator);
+    try deps2.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "x/y" } });
+    mod2.resolved_deps = deps2;
+    // 이 putModule 안: extractImportSpecifiers (empty import_records → 0 alloc),
+    // freeCachedModule(old) (alloc 0, free 만), cached_module = module.* (0 alloc),
+    // clone loop 첫 iter dupe → fail_index=0 OOM → rollback 분기 → abortPutModule.
+    store.putModule("/virtual/oom-had-existing.ts", &mod2, 2);
+    // 핵심 검증: rollback 가 map.remove 를 수행해 dangling entry 제거.
+    try testing.expect(!store.modules.contains("/virtual/oom-had-existing.ts"));
 }
