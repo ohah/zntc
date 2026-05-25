@@ -423,6 +423,13 @@ export interface AppDevController {
   isPostcssConfig(absPath: string): boolean;
   isCssOnlyChange(absPath: string): boolean;
   isSassOnlyChange(absPath: string): boolean;
+  /**
+   * #3801 — drain else 분기의 CSS-derived 판정 단일 소스. inline literal endsWith 가
+   * `.less` 같은 미지원 확장자나 `.styl/.pcss` 누락으로 drift 하던 회귀 방지. CSS / Sass /
+   * postcss config / CSS Module / Sass Module 등 native watch graph 밖이라 incremental
+   * update 가 트리거되지 않는 변경을 cover.
+   */
+  isCssLikeChange(absPath: string): boolean;
   rebuildScssIncremental(absPath: string): Promise<string | null>;
   hrefFor(absPath: string): string;
 }
@@ -572,6 +579,17 @@ export function createAppDevController(
     },
     isPostcssConfig(absPath) {
       return isPostcssConfigFile(absPath);
+    },
+    isCssLikeChange(absPath) {
+      // #3801 — 단일 진실 소스. isCssFile (.css 만) / isCssPreprocessorFile (.scss/.sass)
+      // / isCssModuleFile (*.module.css) / isCssModulePreprocessorFile (*.module.scss/.sass)
+      // / postcss config 모두 cover. .less / .styl / .pcss 같이 코드베이스 미지원 확장자는
+      // 명시적으로 false — 사용자가 third-party plugin 으로 처리해도 native watch 의 graph
+      // 안에 있으면 자동 trigger 됨, graph 밖이면 별도 issue.
+      if (isPostcssConfigFile(absPath)) return true;
+      if (isCssFile(absPath) || isCssPreprocessorFile(absPath)) return true;
+      if (isCssModuleFile(absPath) || isCssModulePreprocessorFile(absPath)) return true;
+      return false;
     },
     isCssOnlyChange(absPath) {
       // CSS Modules 는 class 이름 매핑이 변할 수 있어 JS proxy 도 같이 재생성 필요 →
