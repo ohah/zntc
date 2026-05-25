@@ -64,7 +64,9 @@ pub const DevServer = struct {
     /// dev overlay client — raw template (overlay_client_template) 의 `__ZNTC_HMR_*__`
     /// sentinel 을 protocol 상수로 치환한 결과. init 에서 1회 생성, deinit 에서 free.
     /// JS 측 packages/web/runtime/dev-overlay-client.mjs 와 같은 source/치환표 사용 (#2538 4-3).
-    overlay_client: []u8 = &.{},
+    /// default 미제공 — partial-init 인스턴스가 serveAppDevClient 로 빈 body 응답하는
+    /// silent regression 차단 (event_ring 과 같은 invariant).
+    overlay_client: []u8,
 
     pub const ProxyRule = struct {
         /// 매칭할 경로 prefix (예: "/api")
@@ -118,13 +120,18 @@ pub const DevServer = struct {
             getLog().print("zntc: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
         };
+        // 이후 ! 반환은 모두 root_dir 을 닫아야 함 (open 직후 ownership 이 init 에
+        // 있어 호출자가 deinit 못 호출). errdefer 한 줄로 통일해 향후 init 후반에
+        // 추가될 fallible 자원이 leak 을 발생시키지 않도록 가드 (#2538 4-3 review).
+        errdefer {
+            var dir_copy = root_dir;
+            dir_copy.close();
+        }
 
         var abs_entry: ?[]const u8 = null;
         if (options.entry_point) |ep| {
             abs_entry = std.fs.cwd().realpathAlloc(allocator, ep) catch |err| {
                 getLog().print("zntc: cannot resolve entry '{s}': {}\n", .{ ep, err }) catch {};
-                var dir_copy = root_dir;
-                dir_copy.close();
                 return err;
             };
         }
@@ -132,8 +139,6 @@ pub const DevServer = struct {
 
         const overlay_client = substituteOverlayPlaceholders(allocator) catch |err| {
             getLog().print("zntc: failed to prepare dev overlay client: {}\n", .{err}) catch {};
-            var dir_copy = root_dir;
-            dir_copy.close();
             return err;
         };
 
@@ -163,7 +168,8 @@ pub const DevServer = struct {
     pub fn deinit(self: *DevServer) void {
         if (self.tcp_server) |*s| s.deinit();
         if (self.abs_entry) |ae| self.allocator.free(ae);
-        if (self.overlay_client.len > 0) self.allocator.free(self.overlay_client);
+        // overlay_client 는 init 에서 반드시 알록된 owned slice (default 미제공).
+        self.allocator.free(self.overlay_client);
         self.root_dir.close();
         self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
@@ -191,7 +197,18 @@ pub const DevServer = struct {
         for (subs) |s| {
             const next_size = std.mem.replacementSize(u8, current, s.token, s.value);
             const next = try allocator.alloc(u8, next_size);
-            _ = std.mem.replace(u8, current, s.token, s.value, next);
+            const count = std.mem.replace(u8, current, s.token, s.value, next);
+            // sentinel 이 정본에 없다 = subs 의 token 이 정본과 어긋남 (정본은
+            // src/server/dev_overlay_client.js). 단위 test 가 결과를 검증하지만
+            // 빌드/init 시점에 즉시 잡히면 디버깅이 명확.
+            if (count == 0) {
+                allocator.free(next);
+                getLog().print(
+                    "zntc: dev overlay client sentinel '{s}' 가 정본에 없음 — subs 표와 src/server/dev_overlay_client.js 동기 확인 필요\n",
+                    .{s.token},
+                ) catch {};
+                return error.OverlaySentinelMissing;
+            }
             allocator.free(current);
             current = next;
         }

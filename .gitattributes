@@ -1,2 +1,8 @@
 references/** linguist-vendored=true
 tests/codegen-snapshots/**/golden/** linguist-generated=true
+
+# dev overlay client 정본 + JS publish 미러 — Windows autocrlf 등으로 EOL 이 변환
+# 되면 둘이 byte-equal 가드는 통과해도 Zig @embedFile 결과와 mismatch 가 잠재.
+# LF 로 고정 (#2538 4-3 follow-up).
+src/server/dev_overlay_client.js text eol=lf
+packages/web/runtime/dev-overlay-client.raw.js text eol=lf
