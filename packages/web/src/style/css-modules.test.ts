@@ -293,7 +293,8 @@ describe('transformCssModules — prototype-shadowing class name (a1-#2 가드)'
   // public `rewriteCssModuleClasses` (line 99 export) 가 외부 caller-supplied
   // plain `{}` mapping 받아도 안전 — Object.hasOwn 가드로 prototype lookup 무력화.
   test('public rewriteCssModuleClasses + plain {} mapping → prototype lookup 무력화', () => {
-    const css = '.constructor { color: red; }\n.toString { color: blue; }\n.regular { color: green; }';
+    const css =
+      '.constructor { color: red; }\n.toString { color: blue; }\n.regular { color: green; }';
     const mapping: Record<string, string> = { regular: 'scoped-regular' };
     // 의도적으로 plain {} (Object.prototype 상속) 사용. caller 가 잘못 만들어도 안전.
     const out = rewriteCssModuleClasses(css, mapping);
