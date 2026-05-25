@@ -75,6 +75,11 @@ const WatchAsyncData = struct {
     ready_tsfn: c.napi_threadsafe_function,
     rebuild_tsfn: c.napi_threadsafe_function,
     stop_flag: std.atomic.Value(bool),
+    /// #3794 — worker thread 가 stop_flag 감지 + 자원 정리 (TSFN release / deinit 직전)
+    /// 까지 완료하면 set. `napiWatchStop` 가 wait 해 caller (closeServerForRestart) 가
+    /// child process spawn 전에 부모 worker 가 outdir 쓰기를 완전히 멈췄음을 보장.
+    /// fire-and-forget 였던 stop() 의 race window 봉인.
+    stop_complete: std.Thread.ResetEvent = .{},
     /// Metro watchFolders 호환. 그래프 밖 감시 루트(절대/상대 경로).
     watch_roots: []const []const u8 = &.{},
     /// watch_roots 스캔 시 포함할 파일 glob (루트 기준 상대).
@@ -95,6 +100,11 @@ const WatchAsyncData = struct {
     emit_disk_sourcemap: bool = true,
 
     fn deinit(self: *WatchAsyncData) void {
+        // #3794 — worker 종료 신호 우선 set (모든 early-return / 정상 종료 path 가 deinit 을
+        // 거치므로 한 곳에서 가드). `napiWatchStop` 의 stop_complete.wait() 가 깨어나 caller
+        // (closeServerForRestart) 에게 안전 신호. wait 한 thread 는 즉시 return — `self`
+        // 메모리 접근 없음, 아래 cleanup 후 free 해도 race 없음.
+        self.stop_complete.set();
         // 소유된 문자열 해제
         for (self.owned_strings.items) |s| native_alloc.free(s);
         self.owned_strings.deinit(native_alloc);
@@ -1103,6 +1113,11 @@ fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     if (async_data_ptr) |ptr| {
         const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr));
         async_data.stop_flag.store(true, .release);
+        // #3794 — worker thread 가 polling cycle 마다 stop_flag 를 체크해 종료하므로 fire-and-forget
+        // 이었다. caller (closeServerForRestart) 가 child process spawn 전에 부모 worker 의 outdir
+        // 쓰기가 완전히 멈췄음을 보장하려면 worker 의 deinit 진입까지 wait 해야 함. 5초 timeout 으로
+        // deadlock 방어 — polling timeout (수십~수백ms) 의 충분한 배수.
+        async_data.stop_complete.timedWait(5 * std.time.ns_per_s) catch {};
     }
 
     var js_undefined: c.napi_value = undefined;
