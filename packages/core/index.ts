@@ -3355,6 +3355,11 @@ export function watch(options: BuildOptions): WatchHandle {
   const n = ensureNative();
 
   const { napiOptions: nativeOpts, cleanup } = prepareNapiOptions(options);
+  // #3795 — `prepareNapiOptions` 가 `outdir` 를 delete 함 (build/buildSync 케이스는 JS-side
+  // writeOutputFiles 가 outdir 처리). 그러나 watch worker thread 는 NAPI 안에서 직접
+  // `o.path` (bundler 가 outdir-relative 로 생성) 로 createFile/writeAll 수행하므로 outdir
+  // 정보가 필요. 사용자가 명시한 outdir 를 watch path 에 한해 다시 주입.
+  if (options.outdir !== undefined) nativeOpts.outdir = options.outdir;
   const dispatcher = resolveDispatcher(options);
 
   if (dispatcher) {
