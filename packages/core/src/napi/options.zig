@@ -553,6 +553,9 @@ pub fn parseBuildOptions(
         .{};
 
     const outfile = ownStr(env, opts_obj, "outfile", owned_strings);
+    // #3795 — `watch()` 경로에서 worker thread 가 outdir-relative output path 를 결합할 때 사용.
+    // build/buildSync 는 JS 측 writeOutputFiles 가 처리하므로 bundler/emitter 는 이 필드를 보지 않음.
+    const outdir = ownStr(env, opts_obj, "outdir", owned_strings);
     const outbase = ownStr(env, opts_obj, "outbase", owned_strings);
     const tsconfig_raw = ownStr(env, opts_obj, "tsconfigRaw", owned_strings);
     const tsconfig_path_js = ownStr(env, opts_obj, "tsconfigPath", owned_strings);
@@ -818,6 +821,8 @@ pub fn parseBuildOptions(
         .main_fields = main_fields orelse &.{},
         .unsupported = unsupported,
         .output_filename = outfile orelse "bundle.js",
+        // #3795 — watch worker thread 가 outputs[].path 를 outdir 와 결합하기 위해 사용.
+        .outdir = outdir orelse "",
         .outbase = outbase,
         .packages_external = getObjectBool(env, opts_obj, "packagesExternal", false),
         .preserve_symlinks = getObjectBool(env, opts_obj, "preserveSymlinks", false),

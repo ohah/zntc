@@ -520,6 +520,32 @@ fn writeSourcemapFile(
     sm_file.writeAll(sm) catch {};
 }
 
+/// #3795 — `o.path` 를 outdir 와 결합해 최종 path 를 반환. outdir 가 빈 문자열이면 o_path
+/// 그대로 (caller-allocated). o_path 가 이미 absolute 면 outdir 무시 (esbuild 동일). caller
+/// 가 alloc 된 결과를 free 해야 함.
+fn resolveOutdirPath(allocator: std.mem.Allocator, outdir: []const u8, o_path: []const u8) ![]u8 {
+    if (outdir.len == 0) return try allocator.dupe(u8, o_path);
+    if (std.fs.path.isAbsolute(o_path)) return try allocator.dupe(u8, o_path);
+    return try std.fs.path.join(allocator, &.{ outdir, o_path });
+}
+
+/// #3795 — output 한 개를 outdir+path 로 결합해 write. dirname makePath + createFile +
+/// writeAll. 실패는 swallow (worker thread 가 다음 output 으로 계속 진행). bundler/emitter 가
+/// outdir 를 모르므로 path 가 entry-relative 라도 outdir 명시 시 정확한 디스크 위치로 결합.
+fn writeOutputToOutdir(
+    allocator: std.mem.Allocator,
+    outdir: []const u8,
+    o_path: []const u8,
+    contents: []const u8,
+) void {
+    const full_path = resolveOutdirPath(allocator, outdir, o_path) catch return;
+    defer allocator.free(full_path);
+    if (std.fs.path.dirname(full_path)) |dir| std.fs.cwd().makePath(dir) catch {};
+    const file = std.fs.cwd().createFile(full_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(contents) catch {};
+}
+
 fn watchWorkerThread(async_data: *WatchAsyncData) void {
     const allocator = native_alloc;
     const bundle_opts = async_data.options;
@@ -663,24 +689,23 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     if (result.outputs) |outputs| {
         for (outputs) |o| initial_bytes += o.contents.len;
         if (write_initial) {
-            // code splitting: 각 output의 path로 직접 쓰기
+            // code splitting: 각 output의 path 로 직접 쓰기 (#3795 — outdir 가 명시되면 결합).
             for (outputs) |o| {
-                if (std.fs.path.dirname(o.path)) |dir| std.fs.cwd().makePath(dir) catch {};
-                const file = std.fs.cwd().createFile(o.path, .{}) catch continue;
-                defer file.close();
-                file.writeAll(o.contents) catch continue;
+                writeOutputToOutdir(allocator, bundle_opts.outdir, o.path, o.contents);
             }
         }
     } else {
         initial_bytes = result.output.len;
-        // 단일 파일: output_filename으로 쓰기 (skip_initial_output 활성 시 skip)
+        // 단일 파일: output_filename으로 쓰기 (skip_initial_output 활성 시 skip).
+        // #3795 — outdir 명시 시 output_filename 도 outdir-relative 로 처리.
         if (write_initial and bundle_opts.output_filename.len > 0) {
-            if (std.fs.path.dirname(bundle_opts.output_filename)) |dir| std.fs.cwd().makePath(dir) catch {};
-            if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
-                defer file.close();
-                file.writeAll(result.output) catch {};
-                writeSourcemapFile(allocator, bundle_opts.output_filename, result.sourcemap, async_data.emit_disk_sourcemap);
-            } else |_| {}
+            writeOutputToOutdir(allocator, bundle_opts.outdir, bundle_opts.output_filename, result.output);
+            const final_path = resolveOutdirPath(allocator, bundle_opts.outdir, bundle_opts.output_filename) catch null;
+            if (final_path) |p| {
+                defer allocator.free(p);
+                writeSourcemapFile(allocator, p, result.sourcemap, async_data.emit_disk_sourcemap);
+            }
+            // 빈 placeholder if 분기 — 기존 else 패턴 호환 (sourcemap helper 호출 후).
         }
     }
 
@@ -781,28 +806,27 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         async_data.compiled_cache.logStats("");
 
-        // 출력 파일 쓰기 + 바이트 수 계산
+        // 출력 파일 쓰기 + 바이트 수 계산 (#3795 — outdir 명시 시 결합).
         var output_bytes: usize = 0;
         if (rebuild_result.outputs) |outputs| {
             for (outputs) |o| output_bytes += o.contents.len;
             for (outputs) |o| {
-                if (std.fs.path.dirname(o.path)) |dir| std.fs.cwd().makePath(dir) catch {};
-                const file = std.fs.cwd().createFile(o.path, .{}) catch continue;
-                defer file.close();
-                file.writeAll(o.contents) catch continue;
+                writeOutputToOutdir(allocator, bundle_opts.outdir, o.path, o.contents);
             }
         } else {
             output_bytes = rebuild_result.output.len;
             if (bundle_opts.output_filename.len > 0) {
-                if (std.fs.path.dirname(bundle_opts.output_filename)) |dir| std.fs.cwd().makePath(dir) catch {};
-                if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
-                    defer file.close();
-                    file.writeAll(rebuild_result.output) catch {};
+                writeOutputToOutdir(allocator, bundle_opts.outdir, bundle_opts.output_filename, rebuild_result.output);
+                const sm_path = resolveOutdirPath(allocator, bundle_opts.outdir, bundle_opts.output_filename) catch null;
+                if (sm_path) |p| {
+                    defer allocator.free(p);
                     // lazy 는 `rebuild_result.sourcemap == null` 이라 helper 안에서 자동 skip.
                     // eager + `emit_disk_sourcemap=false` 도 skip — bungae 처럼 dev server 가
                     // 직접 lazy 라우트를 제공하는 경우.
-                    writeSourcemapFile(allocator, bundle_opts.output_filename, rebuild_result.sourcemap, async_data.emit_disk_sourcemap);
-                } else |_| {}
+                    writeSourcemapFile(allocator, p, rebuild_result.sourcemap, async_data.emit_disk_sourcemap);
+                }
+                // sourcemap helper 호출 후 — 빈 placeholder if 분기 (기존 else 패턴 호환).
+                if (false) {}
             }
         }
 

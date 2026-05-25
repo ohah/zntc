@@ -252,6 +252,12 @@ pub const BundleOptions = struct {
     sourcemap: @import("../codegen/sourcemap.zig").SourceMapOptions = .{},
     /// 출력 파일명 (소스맵 참조용)
     output_filename: []const u8 = "bundle.js",
+    /// 출력 디렉터리 (#3795). `watch()` worker 가 outputs[].path 를 outdir-relative 로
+    /// 받아도 outdir 정보가 없으면 cwd 기준 fallback — JS 측 caller 가 명시한 outdir 와
+    /// 어긋날 위험. 기본 빈 문자열 = "디렉터리 명시 없음". bundler 자체는 path 생성 시
+    /// 이 필드를 보지 않고 (entry-relative 그대로), `watch.zig` 의 createFile 호출에서
+    /// outdir 와 join 한다.
+    outdir: []const u8 = "",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
     /// 엔트리 청크 파일명 패턴 (--entry-names, 기본: "[dir]/[name]")
