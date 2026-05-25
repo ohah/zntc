@@ -572,13 +572,17 @@ test "internResolvedModule: .dataurl .owned / .borrowed 모두 cache-owned data 
 
     // .borrowed + heap-alloc — caller borrow 라도 data 는 *cache 가 dupe* 해 lifetime
     // 독립. caller 가 그 사이 free 해도 cache 반환값 안전 (이전 PR #3767 보다 더 강화).
+    //
+    // (review finding) 실제 lifetime 독립을 증명: dupe 직후 borrow_data 를 *즉시* free
+    // 한 다음 du.data 를 사용. dupe 누락 회귀 시 testing.allocator 가 freed read 잡아냄
+    // (이전엔 defer 라 test 종료 시점에만 free → false-positive).
     const borrow_data = try testing.allocator.dupe(u8, "heap-borrow-data");
-    defer testing.allocator.free(borrow_data);
     const r3 = try cache.internResolvedModule(.{ .dataurl = .{
         .mime = "application/octet-stream",
         .data = borrow_data,
         .owner = .borrowed,
     } });
+    testing.allocator.free(borrow_data); // 즉시 free — du.data 가 진짜 독립인지 확인
     switch (r3) {
         .dataurl => |du| {
             try testing.expect(du.data.ptr != borrow_data.ptr); // arena dupe (lifetime 독립)

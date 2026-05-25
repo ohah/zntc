@@ -155,6 +155,17 @@ pub const ResolveCache = struct {
     /// (deferred 5) `.dataurl.data` 전용 arena. data 가 base64 큰 메모리라 path_pool
     /// (StringHashMap dedup) 부적합 — 별도 arena 로 caller-borrow 일관성 확보 + ""
     /// placeholder 위험 제거. dedup 없음 (data 가 모듈마다 다르고 hash 매칭 거의 없음).
+    ///
+    /// **Memory bound**: monotonic 증가. `IncrementalBundler` 의 N rebuild 마다 ResolveCache
+    /// 재생성 (PR #3756) 으로 자동 reclaim — watch mode 무한 누적 방지.
+    ///
+    /// **Lock order** (ResolveCache 의 모든 mutex):
+    ///   1. `cache_shards[i].mutex` (resolve cache shard)
+    ///   2. `path_pool.shards[i].mutex` (path intern shard)
+    ///   3. `dataurl_arena_mutex` (this)
+    ///   4. `browser_cache_mutex`
+    /// 잠금 시 *반드시 위 순서* — 역순/중첩 잠금 금지 (deadlock). 현재 코드는 각 mutex
+    /// 가 짧은 critical section 안에서만 잠겨 상호배제 영향 없지만 future 추가 시 enforce.
     dataurl_arena: std.heap.ArenaAllocator,
     dataurl_arena_mutex: std.Thread.Mutex = .{},
     external_patterns: []const []const u8,
@@ -866,9 +877,9 @@ pub const ResolveCache = struct {
     /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
     /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
     ///
-    /// **interning 적용 variant**: 모든 variant — Owner discriminator
-    /// 로 borrow vs owned 분기.
-    /// `.dataurl` 는 mime 만 intern (data 는 base64 큰 메모리, pool 부적합).
+    /// **interning 적용 variant**: 모든 variant — Owner discriminator 로 borrow vs owned 분기.
+    /// `.dataurl` 는 mime 은 path_pool, data 는 별도 `dataurl_arena` 에 dupe (deferred 5) —
+    /// data 가 base64 큰 메모리라 dedup 부적합이지만 cache lifetime 동안 valid 보장.
     ///
     /// owner ambiguity 해소 — Owner enum discriminator:
     /// - `.file/.disabled/.external/.custom` default true (native resolver / NAPI bridge dupe)
