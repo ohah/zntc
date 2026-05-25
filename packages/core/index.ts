@@ -1165,6 +1165,12 @@ export type BuildOptions =
 export interface WatchReadyEvent {
   files: number;
   bytes: number;
+  /**
+   * #3796 — initial 빌드의 output 파일 path 목록. caller (예: `runServe`) 가 outdir scan 없이
+   * 정확한 outputFiles 정보를 받아 후속 hook (예: `injectBundleCssLinks`) 호출 가능. contents
+   * 는 메모리 비용이 커 path 만 노출 — caller 가 fs read 또는 path 기반 분기.
+   */
+  outputs?: string[];
 }
 
 export interface WatchRebuildEvent {

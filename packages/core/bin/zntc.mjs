@@ -1344,6 +1344,12 @@ async function buildBundleOptions(opts, config) {
 
   return {
     entryPoints: opts.entryPoints.map((e) => resolve(e)),
+    // #3795/#3796 — watch handle 이 outdir 알아야 worker thread 의 createFile 가 정확한 위치에
+    // 출력. `prepareNapiOptions` 가 build/buildSync 케이스에서 outdir 를 delete 하지만 watch()
+    // wrapper (index.ts:3358) 가 명시 outdir 받아 NAPI 로 restore. 그러므로 BuildOptions 의
+    // outdir/outfile 필드 자체는 enrich 해서 보내야 함.
+    outdir: opts.outdir,
+    outfile: opts.outfile,
     format: opts.format,
     platform: opts.platform,
     target: opts.target,
@@ -1715,11 +1721,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
     '.map': 'application/json',
   };
 
-  // 번들 모드면 먼저 빌드 — cold-start 시점에 outdir 채움 보장 (사용자 첫 fetch 가 build
-  // 완료 전 도착해도 정상 응답). watch handle 의 initial 은 #3787 의 skipInitialOutput 으로
-  // outdir 출력 skip. #3796/#3798 의 watch 단독화 시도가 test race 노출 — 별도 큰 epic 으로
-  // 분리 (HTTP server listen 을 watch.onReady 까지 wait + onReady 가 outputFiles 메타 노출
-  // 같은 architectural 변경이 선행).
+  // 번들 모드면 먼저 빌드 — cold-start 시점에 outdir 채움 보장 (사용자 첫 fetch 가 build 완료
+  // 전 도착해도 정상 응답). watch handle 의 initial 은 #3787 의 skipInitialOutput 으로 outdir
+  // 출력 skip. #3796/#3798 의 watch 단독화 시도는 bundler 의 outputs[].path 가 absolute 라 outdir
+  // join 안 됨 (새 회귀). 완전 fix 는 bundler 의 path generation 변경이 선행 — 별도 큰 epic.
   if (opts.bundle && opts.entryPoints.length > 0) {
     opts.outdir = opts.outdir || join(opts.serveDir, '.zntc-serve');
     const bundleResult = await runBundle(opts, config);
@@ -1957,22 +1962,19 @@ async function runServe(opts, config, { appDev = null } = {}) {
     let rebuilding = false;
     const dirty = new Set();
 
-    // #3779 — JS module 변경 시 incremental HMR update broadcast.
-    // appDev + hmr 모드일 때만 native watch handle 을 띄워 onRebuild 콜백에서
-    // graph change → FullReload, modules 변경 → UpdateStart/Update/UpdateDone 송출.
-    // fsWatch + drain 은 CSS/sass/postcss/restart 만 처리 — JS 분기는 noop (중복 컴파일 회피).
-    // 첫 빌드는 위쪽 `runBundle` 가 이미 수행 — watch handle 은 `skipInitialOutput: true`
-    // 로 initial 빌드의 outdir 출력만 skip (graph/cache 는 정상 구성). 중복 출력 race 회피.
+    // #3779 — JS module 변경 시 incremental HMR update broadcast. appDev + hmr 모드에서만
+    // native watch handle 을 띄워 onRebuild 콜백에서 graph change → FullReload, modules 변경
+    // → UpdateStart/Update/UpdateDone 송출. fsWatch + drain 은 CSS/sass/postcss/restart 만 처리
+    // — JS 분기는 noop. 첫 빌드는 위쪽 `runBundle` 가 이미 수행 — watch handle 은
+    // `skipInitialOutput: true` 로 initial output 만 skip (graph/cache 는 정상 구성).
     if (appDev && hmr) {
       const watchBuildOpts = await buildBundleOptions(opts, config);
       watchBuildOpts.devMode = true;
       watchBuildOpts.skipInitialOutput = true;
       watchBuildOpts.onRebuild = (event) => {
-        // #3813 — graphChanged 시 새 chunk/CSS 출력 필요. dev_mode + collect_module_codes
-        // 인 incremental rebuild 는 skip_bundle_output 자동 활성이라 outdir 갱신 안 함.
-        // workaround 로 runBundle 한 번 호출해 outdir 채운 후 css link 재주입. 사용자 plugin
-        // setup 이 graphChanged 시점에 2회 호출 (watch + runBundle) — cold-start 의 plugin
-        // double setup 회귀 없음 (initial 은 watch 1회).
+        // #3813 — graphChanged 시 새 chunk/CSS 출력 필요. dev_mode + collect_module_codes 인
+        // incremental rebuild 는 skip_bundle_output 자동 활성이라 outdir 갱신 안 함. workaround
+        // 로 runBundle 한 번 호출해 outdir 채운 후 css link 재주입.
         void (async () => {
           try {
             if (event && event.success && event.graphChanged) {
@@ -1983,9 +1985,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
                 console.error('[serve] graph-change outdir rebuild failed:', cssErr);
               }
             }
-            // #3799 — Update modules 의 code 끝에 sourceMappingURL 주석 append. eval 된
-            // module 의 stack trace 가 원본 source 좌표로 매핑되도록 DevTools 가 lazy fetch
-            // (`/__zntc_hmr_map/<id>` route). RN bridge (hmr-bridge.ts:42) 와 같은 패턴.
+            // #3799 — Update modules.code 끝에 sourceMappingURL 주석 append.
             const annotated =
               event && event.success && event.updates && event.updates.length > 0
                 ? {
@@ -2005,7 +2005,6 @@ async function runServe(opts, config, { appDev = null } = {}) {
       try {
         nativeWatchHandle = watch(watchBuildOpts);
       } catch (err) {
-        // watch 시작 실패해도 fsWatch + drain (CSS path) 는 계속 동작 — incremental HMR 만 비활성.
         console.error('[serve] native watch failed to start (incremental HMR disabled):', err);
       }
     }
