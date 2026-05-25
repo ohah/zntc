@@ -670,10 +670,20 @@ function getAutoConfigSearchDir(opts) {
 }
 
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
-  if (config?.plugins?.length || opts.pluginPaths.length > 0) {
-    throw new Error(
-      'zntc build app mode does not support JS plugins yet; use --bundle for plugin builds',
-    );
+  // JS plugin 로드 — bundle pipeline 의 buildBundleOptions 와 동일 패턴. app
+  // pipeline 도 plugin dispatcher 통과 (#2538 4-4 PR-1).
+  const appPlugins = [];
+  if (config && Array.isArray(config.plugins)) {
+    appPlugins.push(...config.plugins);
+  }
+  for (const pluginPath of opts.pluginPaths) {
+    const absPath = resolve(pluginPath);
+    const cfg = await importAndResolveDefault(absPath);
+    if (Array.isArray(cfg.plugins)) {
+      appPlugins.push(...cfg.plugins);
+    } else if (typeof cfg.setup === 'function') {
+      appPlugins.push(cfg);
+    }
   }
   const web = await loadWebModule();
   const root = resolve(opts.appRoot ?? '.');
@@ -708,6 +718,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       jsxFactory: opts.jsxFactory,
       jsxFragment: opts.jsxFragment,
       compiler: config?.compiler,
+      plugins: appPlugins.length > 0 ? appPlugins : undefined,
     });
     const htmlEnv = loadEnv(
       configEnv.mode,

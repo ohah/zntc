@@ -5,6 +5,7 @@ const transformer_mod = @import("../transformer/transformer.zig");
 
 const Bundler = bundler_mod.Bundler;
 const BundleOptions = bundler_mod.BundleOptions;
+const Plugin = bundler_mod.plugin.Plugin;
 const DefineEntry = transformer_mod.DefineEntry;
 const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
 
@@ -62,6 +63,10 @@ pub const AppBuildOptions = struct {
     emotion_extra_css_sources: []const []const u8 = &.{},
     /// emotion.importMap re-export 케이스 단순화 — vendored emotion styled source.
     emotion_extra_styled_sources: []const []const u8 = &.{},
+    /// JS plugin dispatcher 들 — `napiBuildAppSync` 의 `_pluginDispatcherSync` 를
+    /// 통해 전달. 비어 있으면 plugin 없는 build. bundle pipeline 의 Bundler.init 에
+    /// 그대로 전달 (#2538 4-4 PR-1).
+    plugins: []const Plugin = &.{},
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -177,6 +182,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .emotion_label_format = opts.emotion_label_format,
         .emotion_extra_css_sources = opts.emotion_extra_css_sources,
         .emotion_extra_styled_sources = opts.emotion_extra_styled_sources,
+        .plugins = opts.plugins,
     });
     defer bundler.deinit();
 

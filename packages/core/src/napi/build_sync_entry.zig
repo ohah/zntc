@@ -185,6 +185,33 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
     if (ownStr(env, opts_obj, "jsxFactory", &owned_strings)) |s| jsx_cfg.factory = s;
     if (ownStr(env, opts_obj, "jsxFragment", &owned_strings)) |s| jsx_cfg.fragment = s;
 
+    // JS plugin dispatcher — `napiBuildSync` 의 동일 패턴. `_pluginDispatcherSync`
+    // 미지정 시 plugin 없는 build. AppBuildOptions.plugins 로 전달돼 buildApp 의
+    // Bundler.init 이 받는다 (#2538 4-4 PR-1).
+    var sync_plugin: ?*NapiSyncPlugin = null;
+    defer if (sync_plugin) |sp| sp.deinit();
+    var sync_plugin_storage: [1]Plugin = undefined;
+    var plugins_slice: []const Plugin = &.{};
+    if (getNamedProperty(env, opts_obj, "_pluginDispatcherSync")) |dispatcher_fn| {
+        const sp = native_alloc.create(NapiSyncPlugin) catch return throwError(env, "OutOfMemory");
+        sp.* = .{
+            .name = native_alloc.dupe(u8, "js-plugin") catch {
+                native_alloc.destroy(sp);
+                return throwError(env, "OutOfMemory");
+            },
+            .env = env,
+            .callback_ref = undefined,
+        };
+        if (c.napi_create_reference(env, dispatcher_fn, 1, &sp.callback_ref) != c.napi_ok) {
+            native_alloc.free(sp.name);
+            native_alloc.destroy(sp);
+            return throwError(env, "failed to create plugin reference");
+        }
+        sync_plugin = sp;
+        sync_plugin_storage[0] = sp.toPlugin();
+        plugins_slice = sync_plugin_storage[0..1];
+    }
+
     const output_count = zntc_lib.app.build.buildApp(native_alloc, .{
         .root = root,
         .outdir = outdir,
@@ -214,6 +241,7 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
         .emotion_extra_css_sources = emotion_extra_css orelse &.{},
         .emotion_extra_styled_sources = emotion_extra_styled orelse &.{},
         .jsx = jsx_cfg,
+        .plugins = plugins_slice,
     }) catch |err| {
         return throwError(env, @errorName(err));
     };

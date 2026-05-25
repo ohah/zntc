@@ -1494,6 +1494,12 @@ export interface AppBuildOptions {
    * the same option representation.
    */
   compiler?: CompilerOptions;
+  /**
+   * Rollup-compatible JS plugins. Same `resolveId`/`load`/`transform` hooks as
+   * `BuildOptions.plugins` — app build pipeline 도 같은 dispatcher 를 받는다
+   * (#2538 4-4 PR-1).
+   */
+  plugins?: ZntcPlugin[];
 }
 
 /**
@@ -2764,20 +2770,47 @@ async function buildMultiFormat(options: BuildOptions): Promise<BuildResult> {
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   const n = ensureNative();
-  const { publicDir, compiler, ...rest } = options;
-  return wrapOutputFiles(
-    n.buildAppSync({
-      ...rest,
-      define: withDefaultAppBuildDefines(options),
-      ...(publicDir === false
-        ? { disablePublicDir: true }
-        : publicDir !== undefined
-          ? { publicDir }
-          : {}),
-      // compiler.* → flat NAPI fields. `prepareNapiOptions` 와 동일 변환을 한 곳에서.
-      ...buildCompilerNapiFields(compiler),
-    }),
-  );
+  // plugins 는 JS-only — napi 로 spread 시 closure marshalling 비용/타입 mismatch
+  // 잠재. 명시 strip (prepareNapiOptions 와 동일 정책).
+  const { publicDir, compiler, plugins: _plugins, ...rest } = options;
+  void _plugins;
+  // JS plugin dispatcher — bundle pipeline 의 `buildSync` 와 동일 패턴.
+  // resolveDispatcher 가 옵션의 plugins 를 native 가 호출할 sync dispatcher 로
+  // wrap. 미지정 시 plugin 없는 build (#2538 4-4 PR-1).
+  const dispatcher = resolveDispatcher(options as unknown as BuildOptions, 'sync');
+  const napiOptions: Record<string, unknown> = {
+    ...rest,
+    define: withDefaultAppBuildDefines(options),
+    ...(publicDir === false
+      ? { disablePublicDir: true }
+      : publicDir !== undefined
+        ? { publicDir }
+        : {}),
+    // compiler.* → flat NAPI fields. `prepareNapiOptions` 와 동일 변환을 한 곳에서.
+    ...buildCompilerNapiFields(compiler),
+  };
+  if (dispatcher) napiOptions._pluginDispatcherSync = dispatcher;
+  // buildSync 와 동일한 lifecycle 후처리: native 호출 후 takeLifecycleFailures /
+  // takePluginWarnings 동기화 + closeBundle 발화 (NapiPluginAdapter.closeBundle 는
+  // null 이라 native 가 자체 호출 X — JS dispatcher 가 직접 발화해야 user plugin
+  // 의 closeBundle hook 이 동작).
+  const result: BuildResult = wrapOutputFiles(n.buildAppSync(napiOptions));
+  if (dispatcher) {
+    for (const failure of dispatcher.takeLifecycleFailures()) {
+      result.errors.push(pluginFailureToDiagnostic(failure));
+    }
+    for (const warning of dispatcher.takePluginWarnings()) {
+      result.warnings.push(warning);
+    }
+    dispatcher('closeBundle', undefined, null);
+    for (const failure of dispatcher.takeLifecycleFailures()) {
+      result.errors.push(pluginFailureToDiagnostic(failure));
+    }
+    for (const warning of dispatcher.takePluginWarnings()) {
+      result.warnings.push(warning);
+    }
+  }
+  return result;
 }
 
 /// `compiler.styledComponents` / `compiler.emotion` (boolean / 객체 form) 를 평면 NAPI
