@@ -451,3 +451,79 @@ test "internResolvedModule: .disabled owns_path=true / false" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+// .external / .custom owns_path 대칭화 — future plugin layer 안전성.
+test "internResolvedModule: .external owns_path=true / false" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // owns_path=true
+    const dup_path = try testing.allocator.dupe(u8, "react");
+    const r1 = try cache.internResolvedModule(.{ .external = .{
+        .path = dup_path,
+        .owns_path = true,
+    } });
+    switch (r1) {
+        .external => |e| {
+            try testing.expectEqualStrings("react", e.path);
+            try testing.expect(e.path.ptr != dup_path.ptr);
+            try testing.expect(!e.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // owns_path=false
+    const static_path: []const u8 = "node:fs";
+    const r2 = try cache.internResolvedModule(.{ .external = .{
+        .path = static_path,
+        .owns_path = false,
+    } });
+    switch (r2) {
+        .external => |e| {
+            try testing.expectEqualStrings("node:fs", e.path);
+            try testing.expect(!e.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "internResolvedModule: .custom owns_path=true / false (name + path)" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // owns_path=true — name + path 모두 free.
+    const dup_name = try testing.allocator.dupe(u8, "my-ns");
+    const dup_path = try testing.allocator.dupe(u8, "/abs/custom");
+    const r1 = try cache.internResolvedModule(.{ .custom = .{
+        .name = dup_name,
+        .path = dup_path,
+        .owns_path = true,
+    } });
+    switch (r1) {
+        .custom => |c| {
+            try testing.expectEqualStrings("my-ns", c.name);
+            try testing.expectEqualStrings("/abs/custom", c.path);
+            try testing.expect(c.name.ptr != dup_name.ptr);
+            try testing.expect(c.path.ptr != dup_path.ptr);
+            try testing.expect(!c.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // owns_path=false — borrow.
+    const r2 = try cache.internResolvedModule(.{ .custom = .{
+        .name = "static-ns",
+        .path = "/abs/static",
+        .owns_path = false,
+    } });
+    switch (r2) {
+        .custom => |c| {
+            try testing.expectEqualStrings("static-ns", c.name);
+            try testing.expectEqualStrings("/abs/static", c.path);
+            try testing.expect(!c.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}

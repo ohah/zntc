@@ -208,8 +208,10 @@ pub const ResolvedModule = union(fs.Namespace) {
         data: []const u8,
     },
     /// 번들 미포함 — 런타임 import 유지.
+    /// `owns_path` (default true): `.file` 과 동일 시맨틱 (PR #3763 후속).
     external: struct {
         path: []const u8,
+        owns_path: bool = true,
     },
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
     /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
@@ -220,10 +222,14 @@ pub const ResolvedModule = union(fs.Namespace) {
         owns_path: bool = true,
     },
     /// 사용자 plugin 의 자유 namespace.
+    /// `owns_path` (default true): path *및* name 둘 다 동일 owner 가정 — 모든
+    /// 기존/예상 caller 가 같은 allocator 로 dupe 또는 둘 다 borrow. 분리 필요 시 future
+    /// RFC.
     custom: struct {
         name: []const u8,
         path: []const u8,
         plugin_data: ?*anyopaque = null,
+        owns_path: bool = true,
     },
 };
 
