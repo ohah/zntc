@@ -883,5 +883,24 @@
   - `parseFunctionTypeParamList` 호출자 (Flow function type 4 path) — 동일.
 - **codegen plugin (#2462) 효과**: `extractCommandParams` 의 source-text 기반 depth-aware paren split fallback 제거 가능 → AST 기반으로 단순화.
 
+### D104: ResolveCache + ResolvedModule owner discipline (2026-05-25)
+- **결정**: `ResolvedModule` 의 모든 path-bearing variant 가 `owner: Owner { owned, borrowed }` discriminator 보유 — default 없음, caller 명시 강제. `PathRef` 3-variant (`.interned`/`.specifier`/`.owned`) 로 slice lifetime 을 type system 으로 표명. `internResolvedModule` 가 모든 plugin 결과 path 를 `path_pool` (mime) / `dataurl_arena` (data) 로 cache-owned slice 변환 — 반환값은 항상 caller borrow only.
+- **이유**:
+  1. **silent leak / panic 차단**: bool 또는 default 가 있으면 caller 가 owner 명시 누락 시 silent leak (free 안 함) 또는 panic (static literal free). enum + no-default 로 compile-time 강제.
+  2. **NAPI plugin path leak 해소**: `internResolvedModule` 의 `.virtual` 등 pass-through 가 plugin alloc 한 path 를 free 하지 않아 매 build 마다 leak. owner discriminator + intern 으로 일관 해소.
+  3. **OOM rollback 안전성**: `putModule` 의 partial-clone rollback 이 shared backing 의 `.owned` slice 를 double-free 하던 버그를 `rollbackOomCloned` 의 `.specifier=""` sanitize 로 차단. 모든 path-bearing variant 에 OOM injection 회귀 가드 추가.
+  4. **PathInternPool 16-shard**: resolve hot path 의 mutex 경합 해소 — 5051 module monorepo 에서 resolve 단계 -31% (969→671ms). `cache_shards` 와 동일 N, hash low-bit mask 로 shard 선택.
+  5. **Watch mode RSS bound**: `IncrementalBundler` 가 N-rebuild 마다 ResolveCache 재생성 — `path_pool.arena` / `dataurl_arena` 의 monotonic growth 차단.
+- **trade-off**:
+  - default 없음 = caller 추가 명시 부담 (모든 ResolvedModule literal 에 `.owner = .owned/.borrowed`). 비용보다 안전성 이득 큼 (silent UB > verbose 명시).
+  - `dataurl_arena` 가 dedup 없음 (base64 큰 데이터 hash 매칭 거의 없음) — IncrementalBundler reset 으로 bound 보장.
+  - 모든 mutex (cache_shard / path_pool shard / dataurl_arena / browser_cache) 의 lock order 명시 (deadlock 방지).
+- **영향 범위**:
+  - `internResolvedModule` (resolve_cache.zig:873) — 모든 variant 분기 추가
+  - NAPI bridge `pluginResolveId` (packages/core/src/napi/plugin_bridge.zig) — `buildOwnedFile/Virtual/Disabled` 헬퍼로 dupe+owner atomic 보장
+  - `runtime_helper_modules.resolveIdHook` — borrow specifier → `.owner = .borrowed`
+  - `clonePathRefIfNeeded` (module_store.zig) — `.interned` 만 store-owned 로 clone (others pass-through)
+  - resolve_imports.zig:182/350 `unreachable` → `std.debug.panic` (release UB → meaningful diagnostic)
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)

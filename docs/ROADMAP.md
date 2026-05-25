@@ -143,6 +143,27 @@
 - **Plugin API 확장** — `onResolve` 훅이 `{ disabled: true }` 반환 허용 (49955634)
 - **BuildOptions 보완** — `strictExecutionOrder`, `scopeHoist`, `workletTransform` 추가 (eb909fcc)
 
+## ✅ 최근 추가 (2026-05 resolve safety + perf)
+
+ResolveCache + plugin resolve 경로 전반의 type-safety 강화 + perf 개선 시리즈.
+
+**성능** (5051-module monorepo, ReleaseFast 실측):
+- resolve 단계 -31% (969ms → 671ms) — PathInternPool 16-shard 로 mutex 경합 해소
+- wall p95 -4%
+- watch mode 무한 RSS 누적 방지 (N-rebuild 마다 ResolveCache 자동 reclaim)
+
+**Correctness**:
+- `putModule` OOM rollback 시 shared backing 더블 free 차단
+- plugin 이 alloc 한 path 의 leak 차단 (NAPI bridge 등 모든 진입점)
+- `had_existing` 분기 + OOM 조합의 dangling map entry 차단
+
+**Type 안전성** (compile-time):
+- `Owner enum { owned, borrowed }` — 모든 path-bearing variant 가 명시 강제 (default 없음). bool trap 차단.
+- `PathRef` 3-variant (`.interned`/`.specifier`/`.owned`) — slice lifetime invariant 를 type system 으로 표명.
+- `.custom` name+path aliasing → debug assert.
+- `.dataurl.data` 도 cache-owned (별도 arena, base64 큰 메모리 대응).
+- 모든 path-bearing variant 의 OOM errdefer 경로 회귀 가드 (FailingAllocator 주입).
+
 ## ✅ 최근 추가 (2026-04 transformer / bundler)
 
 - **Runtime helper virtual module** (#1961, PR 1a~1h, 2026-04-26) — splitting + single-bundle 양쪽에서 helper 를 가상 모듈로 모델링 (`__esm`, `__commonJS` 등). HelperBit enum 화 (#1982) 등 후속 정리 5건.
