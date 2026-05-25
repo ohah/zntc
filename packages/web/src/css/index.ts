@@ -19,7 +19,7 @@ import type { ZntcPlugin } from '@zntc/core';
 import { loadPostcssConfig } from '../style/postcss.ts';
 
 export interface CssPluginOptions {
-  /** plugin 전체 비활성. `ZNTC_NO_CSS_DEFAULTS=1` env 대신 명시적 disable. */
+  /** plugin 전체 비활성. 사용자가 `plugins:[css()]` 명시했지만 특정 빌드에서 끄고 싶을 때. */
   disabled?: boolean;
   /**
    * PostCSS override. 미지정 시 ZTS 가 postcss.config.js 자동 발견 (Vite 패턴).
