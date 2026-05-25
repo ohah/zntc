@@ -2031,22 +2031,37 @@ async function runServe(opts, config, { appDev = null } = {}) {
               if (opts.logLevel !== 'silent') console.error('[serve] css updated');
             }
           } else {
-            // #3779 — paths 의 CSS-derived 변경 (CSS Module / Sass Module / 그 외 CSS-like)
-            // 은 native watch 의 module graph 밖이라 incremental update 가 트리거되지 않는다.
-            // class 이름 매핑이나 JS proxy 가 재생성돼야 하므로 full pipeline rebuild + FullReload.
-            // 순수 JS/TS 변경은 native watch handle 이 incremental Update / FullReload 단독 처리
-            // — drain 은 noop (중복 컴파일/output race 회피).
-            const cssDerived = paths.some(
-              (p) =>
-                p.endsWith('.css') ||
-                p.endsWith('.scss') ||
-                p.endsWith('.sass') ||
-                p.endsWith('.less') ||
-                appDev.isPostcssConfig(p),
-            );
-            if (cssDerived) {
+            // #3797 — paths 의 종류에 따라 3분기:
+            // - 전부 CSS-derived (CSS Module / Sass Module / postcss): native watch 의 module
+            //   graph 밖이라 incremental update 트리거 안 됨 → full pipeline + FullReload.
+            // - JS module (.ts/.tsx/.js 등) 섞임: native watch 가 단독 처리. drain noop
+            //   (중복 컴파일/output race 회피).
+            // - 그 외 (HTML / JSON / static asset 등 native watch graph 밖 + non-CSS): fallback
+            //   FullReload broadcast. pre-#3779 의 unconditional rebuildAppDevFull 회귀 가드.
+            const isCssDerived = (p) =>
+              p.endsWith('.css') ||
+              p.endsWith('.scss') ||
+              p.endsWith('.sass') ||
+              p.endsWith('.less') ||
+              appDev.isPostcssConfig(p);
+            const isJsModule = (p) =>
+              p.endsWith('.ts') ||
+              p.endsWith('.tsx') ||
+              p.endsWith('.js') ||
+              p.endsWith('.jsx') ||
+              p.endsWith('.mjs') ||
+              p.endsWith('.cjs');
+            const allCssDerived = paths.every(isCssDerived);
+            const hasJs = paths.some(isJsModule);
+            if (allCssDerived) {
               await rebuildAppDevFull(paths);
+            } else if (!hasJs) {
+              // HTML/JSON/asset 변경 — native watch 가 안 보는 변경에 대한 reload 신호.
+              hmr?.clearError();
+              hmr?.broadcast({ type: HMR_MSG.FullReload, timestamp: Date.now() });
+              if (opts.logLevel !== 'silent') console.error('[serve] file changed, full reload');
             }
+            // hasJs=true: native watch handle 의 onRebuild 가 단독 broadcast. drain noop.
           }
         }
       } catch (err) {
