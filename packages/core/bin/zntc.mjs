@@ -1715,7 +1715,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
     '.map': 'application/json',
   };
 
-  // 번들 모드면 먼저 빌드
+  // 번들 모드면 먼저 빌드 — cold-start 시점에 outdir 채움 보장 (사용자 첫 fetch 가 build
+  // 완료 전 도착해도 정상 응답). watch handle 의 initial 은 #3787 의 skipInitialOutput 으로
+  // outdir 출력 skip. #3796/#3798 의 watch 단독화 시도가 test race 노출 — 별도 큰 epic 으로
+  // 분리 (HTTP server listen 을 watch.onReady 까지 wait + onReady 가 outputFiles 메타 노출
+  // 같은 architectural 변경이 선행).
   if (opts.bundle && opts.entryPoints.length > 0) {
     opts.outdir = opts.outdir || join(opts.serveDir, '.zntc-serve');
     const bundleResult = await runBundle(opts, config);
@@ -1924,7 +1928,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         nativeWatchHandle.stop();
         nativeWatchHandle = null;
       } catch (err) {
-        console.error('[serve] native watch stop 실패 (다음 호출에서 재시도):', err);
+        console.error('[serve] native watch stop failed (will retry on next invocation):', err);
       }
     }
     if (!serverHandle) return;
@@ -1962,13 +1966,13 @@ async function runServe(opts, config, { appDev = null } = {}) {
     if (appDev && hmr) {
       const watchBuildOpts = await buildBundleOptions(opts, config);
       watchBuildOpts.devMode = true;
-      // #3779 follow-up — runBundle 이 outdir 를 이미 채웠으므로 watch initial 출력은 skip.
       watchBuildOpts.skipInitialOutput = true;
       watchBuildOpts.onRebuild = (event) => {
-        // #3813 — graphChanged 시 outdir 새 chunk/CSS 갱신이 필요한데, skipInitialOutput=true
-        // + #3802 의 incremental skip_bundle_output 강제로 native watch 가 outdir 안 씀.
-        // workaround: graphChanged 면 추가 runBundle 호출로 outdir 채운 후 HTML `<link>`
-        // 재주입. (architectural cleanup 은 #3796/#3798 epic 에서 watch 단독화로 풀 예정.)
+        // #3813 — graphChanged 시 새 chunk/CSS 출력 필요. dev_mode + collect_module_codes
+        // 인 incremental rebuild 는 skip_bundle_output 자동 활성이라 outdir 갱신 안 함.
+        // workaround 로 runBundle 한 번 호출해 outdir 채운 후 css link 재주입. 사용자 plugin
+        // setup 이 graphChanged 시점에 2회 호출 (watch + runBundle) — cold-start 의 plugin
+        // double setup 회귀 없음 (initial 은 watch 1회).
         void (async () => {
           try {
             if (event && event.success && event.graphChanged) {
@@ -1976,7 +1980,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
                 const r = await runBundle(opts, config);
                 if (r.errors.length === 0) appDev.injectBundleCssLinks(r);
               } catch (cssErr) {
-                console.error('[serve] graph 변경 outdir 재출력 실패:', cssErr);
+                console.error('[serve] graph-change outdir rebuild failed:', cssErr);
               }
             }
             // #3799 — Update modules 의 code 끝에 sourceMappingURL 주석 append. eval 된
@@ -2002,7 +2006,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         nativeWatchHandle = watch(watchBuildOpts);
       } catch (err) {
         // watch 시작 실패해도 fsWatch + drain (CSS path) 는 계속 동작 — incremental HMR 만 비활성.
-        console.error('[serve] native watch 시작 실패 (incremental HMR 비활성):', err);
+        console.error('[serve] native watch failed to start (incremental HMR disabled):', err);
       }
     }
 
