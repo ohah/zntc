@@ -395,6 +395,11 @@ function parseArgs(argv) {
     opts.serve = true;
     opts.bundle = true;
     opts.watch = true;
+    // #3793 — `zntc dev` 는 incremental HMR 활성 (__zntc_apply_update / __esm register
+    // 주입) 이 필수. 명시 안 set 시 initial bundle 이 production 모드로 빌드돼 HMR
+    // 런타임 누락 → broadcast 된 Update 가 client 에서 fallback reload. user 가
+    // 명시적으로 `--dev=false` 줘서 override 하기 전엔 dev 모드 default 보장.
+    opts.devMode = true;
   } else if (appCommand === 'build') {
     opts.bundle = true;
   } else if (appCommand === 'preview') {
