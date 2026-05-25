@@ -39,10 +39,11 @@ describe('dev overlay client mirror', () => {
   });
 });
 
-// 본문 (comment 제외) 만 추출 — comment 안의 sentinel 설명 문구가 검증에 끼지
-// 않도록 한다.
+// 본문 (line + block comment 제외) 만 추출 — comment 안의 sentinel 설명 문구가
+// not.toContain 가드에 false-positive 로 잡히지 않도록 한다.
 function codeOnly(source: string): string {
   return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
