@@ -1,7 +1,16 @@
 // #3803 — `BuildOptionsCommon.skipInitialOutput` 은 watch()-only. build()/buildSync()
 // 가 무시하지만 사용자가 잘못 전달하면 silent. console.warn 으로 surface.
 
-import { describe, expect, test, mkdtempSync, writeFileSync, rmSync, join, tmpdir } from './helpers';
+import {
+  describe,
+  expect,
+  test,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  join,
+  tmpdir,
+} from './helpers';
 import { build, buildSync } from '../../../index';
 
 describe('build*/skipInitialOutput silent ignore warn (#3803)', () => {
