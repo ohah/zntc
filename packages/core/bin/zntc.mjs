@@ -58,7 +58,7 @@ const {
   init,
   transpile,
   build,
-  buildAppSync,
+  buildApp,
   buildSync,
   watch,
   envToDefine,
@@ -722,7 +722,10 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       { fallbackRequire: requireFromCli, cliNodeModules },
     );
     pipelineRoot = pipeline?.tempRoot ?? null;
-    const result = buildAppSync({
+    // RFC #3833 v2-A — async `buildApp` 호출로 전환. sync dispatcher × async
+    // plugin onLoad 의 silent failure 회피 (PR-3a dead-code 원인). `buildAppSync`
+    // export 는 thin sync wrapper 로 유지 (Vite adapter / NAPI 직접 호출 보존).
+    const result = await buildApp({
       root: pipelineRoot ?? root,
       outdir,
       entryHtml: opts.entryHtml ?? 'index.html',

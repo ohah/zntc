@@ -181,6 +181,7 @@ interface NativeModule {
   buildAppSync(options: Record<string, unknown>): NativeBuildResult & { outputCount?: number };
   prepareAppDevSync(options: Record<string, unknown>): { entryPath: string; outputCount?: number };
   build(options: Record<string, unknown>): Promise<NativeBuildResult>;
+  buildApp(options: Record<string, unknown>): Promise<NativeBuildResult & { outputCount?: number }>;
   watch(options: Record<string, unknown>): NativeWatchHandle;
   benchmark(options: Record<string, unknown>): {
     phases: Record<
@@ -2803,6 +2804,54 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       result.warnings.push(warning);
     }
     dispatcher('closeBundle', undefined, null);
+    for (const failure of dispatcher.takeLifecycleFailures()) {
+      result.errors.push(pluginFailureToDiagnostic(failure));
+    }
+    for (const warning of dispatcher.takePluginWarnings()) {
+      result.warnings.push(warning);
+    }
+  }
+  return result;
+}
+
+/**
+ * `buildAppSync` 의 async 대응 (RFC #3833 v2-A / D1a). `zntc build --app` 의 CLI
+ * 경로는 본 함수를 호출 — sync dispatcher × async plugin onLoad 의 silent failure
+ * (PR-3a dead-code 원인) 회피. `buildAppSync` export 자체는 thin sync wrapper 유지
+ * (Vite adapter / NAPI 직접 호출 사용자 보존).
+ *
+ * native `buildApp` 진입점 (build_async_entry.napiBuildApp) 가 async TSFN 패턴으로
+ * `app.build.buildApp` 호출. plugin dispatcher 는 async slot `_pluginDispatcher`
+ * 사용 — `build()` 와 동일.
+ */
+export async function buildApp(options: AppBuildOptions = {}): Promise<BuildResult> {
+  const n = ensureNative();
+  const { publicDir, compiler, plugins: _plugins, ...rest } = options;
+  void _plugins;
+  // async dispatcher — `build()` 와 동일. async hook (예: PostCSS) 정상 지원.
+  const dispatcher = resolveDispatcher(options as unknown as BuildOptions);
+  const napiOptions: Record<string, unknown> = {
+    ...rest,
+    define: withDefaultAppBuildDefines(options),
+    ...(publicDir === false
+      ? { disablePublicDir: true }
+      : publicDir !== undefined
+        ? { publicDir }
+        : {}),
+    ...buildCompilerNapiFields(compiler),
+  };
+  if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
+  // app build 의 disk write 는 native 안에서 끝남 — outputFiles 가 비어 있어
+  // `writeOutputFiles`/`postProcessCssOutputs` 호출 금지 (buildAppSync 와 일치).
+  const result: BuildResult = wrapOutputFiles(await n.buildApp(napiOptions));
+  if (dispatcher) {
+    for (const failure of dispatcher.takeLifecycleFailures()) {
+      result.errors.push(pluginFailureToDiagnostic(failure));
+    }
+    for (const warning of dispatcher.takePluginWarnings()) {
+      result.warnings.push(warning);
+    }
+    await dispatcher('closeBundle', undefined, null);
     for (const failure of dispatcher.takeLifecycleFailures()) {
       result.errors.push(pluginFailureToDiagnostic(failure));
     }

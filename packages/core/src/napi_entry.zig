@@ -93,6 +93,10 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     _ = c.napi_create_function(env, "build", "build".len, build_async_entry.napiBuild, null, &build_fn);
     _ = c.napi_set_named_property(env, exports, "build", build_fn);
 
+    var build_app_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "buildApp", "buildApp".len, build_async_entry.napiBuildApp, null, &build_app_fn);
+    _ = c.napi_set_named_property(env, exports, "buildApp", build_app_fn);
+
     var watch_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "watch", "watch".len, napiWatch, null, &watch_fn);
     _ = c.napi_set_named_property(env, exports, "watch", watch_fn);
