@@ -59,6 +59,11 @@ examples/react-native-*/test-icon-*.png
 /bundle.js
 /bundle.js.map
 
+# Zig `zig test` 의 emit-bin 산출물 (`zig test foo.zig` 가 cwd 에 `test_<stem>` 실행파일을
+# 떨어뜨림). 과거 PR 사이클에서 test_default / test_stem / test_union_default 등 commit 된
+# 사례가 있어 root prefix 로 ignore.
+/test_*
+
 # Build artifacts
 *.o
 check_inferred
