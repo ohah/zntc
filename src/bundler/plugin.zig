@@ -225,8 +225,9 @@ pub const ResolvedModule = union(fs.Namespace) {
     ///   독립, deferred 5 fix). caller 가 mid-build free 해도 cache 반환값 안전.
     /// **invariant**: `.owned` 시 `mime.ptr != data.ptr` — aliasing 시 double-free (debug
     /// assert 차단).
-    /// **반환**: 항상 cache-owned (mime 은 path_pool, data 는 dataurl_arena) → caller 는
-    /// borrow only. 다른 variant 와 lifetime 일관.
+    /// **반환 lifetime**: 모두 cache-owned — caller borrow only. valid 까지:
+    /// `ResolveCache.deinit()` 또는 (future) dataurl_arena 자체 reset. caller 가 build
+    /// session 너머 보유하려면 자체 clone 필수.
     dataurl: struct {
         mime: []const u8,
         data: []const u8,
