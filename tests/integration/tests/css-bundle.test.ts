@@ -816,4 +816,120 @@ describe('CSS Bundling', () => {
     expect(css).toMatch(/@import\s+"https:\/\/cdn\/x\.css"\s+print\s*;/);
     expect(css).toMatch(/@import\s+"https:\/\/cdn\/x\.css"\s+screen\s*;/);
   });
+
+  // ── post-merge 검증 (manual repro 로 통과 확인) 영구 회귀 가드. PR #3746
+  // (#3321 P0-3 external @import) + #3752 (#3747 @charset/@layer) 의 보존
+  // 메커니즘이 단일 bundle 경로 외에도 정확히 작동하는지 확정.
+  it('#3747 nested 3-level @import — 각 단계의 @charset/@layer 가 deps-first 순서로 보존', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './top.css';`,
+      'deep.css': `@charset "UTF-8";\n@layer deep_reset;\n.deep {}`,
+      'mid.css': `@import "./deep.css";\n@layer mid_layer;\n.mid {}`,
+      'top.css': `@import "./mid.css";\n@layer top_layer;\n.top {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // @charset 살아있고 첫 byte
+    expect(css.trimStart().startsWith('@charset "UTF-8"')).toBe(true);
+    // 3 단계 @layer 모두 보존 + deps-first (deep → mid → top)
+    const deepIdx = css.indexOf('@layer deep_reset');
+    const midIdx = css.indexOf('@layer mid_layer');
+    const topIdx = css.indexOf('@layer top_layer');
+    expect(deepIdx).toBeGreaterThanOrEqual(0);
+    expect(midIdx).toBeGreaterThanOrEqual(0);
+    expect(topIdx).toBeGreaterThanOrEqual(0);
+    expect(deepIdx).toBeLessThan(midIdx);
+    expect(midIdx).toBeLessThan(topIdx);
+    // 본문도 deps-first
+    expect(css.indexOf('.deep')).toBeLessThan(css.indexOf('.mid'));
+    expect(css.indexOf('.mid')).toBeLessThan(css.indexOf('.top'));
+  });
+
+  it('#3747 multi-chunk (--splitting) — 각 chunk 가 자기 모듈의 @charset/@layer 캡처', async () => {
+    const fixture = await createFixture({
+      'entry-a.ts': `import './a.css';\nconsole.log("a");`,
+      'entry-b.ts': `import './b.css';\nconsole.log("b");`,
+      'a.css': `@charset "UTF-8";\n@layer reset, base;\n.a {}`,
+      'b.css': `@charset "UTF-8";\n@layer theme;\n.b {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const distDir = join(fixture.dir, 'dist');
+    await import('node:fs/promises').then((m) => m.mkdir(distDir, { recursive: true }));
+    const result = await runZntc([
+      '--bundle',
+      join(fixture.dir, 'entry-a.ts'),
+      join(fixture.dir, 'entry-b.ts'),
+      '--splitting',
+      '--outdir',
+      distDir,
+      '--format=esm',
+    ]);
+    expect(result.exitCode).toBe(0);
+
+    const cssA = await readFile(join(distDir, 'entry-a.css'), 'utf-8');
+    const cssB = await readFile(join(distDir, 'entry-b.css'), 'utf-8');
+    // 각 chunk 자기 @charset + @layer
+    expect(cssA.trimStart().startsWith('@charset "UTF-8"')).toBe(true);
+    expect(cssA).toMatch(/@layer\s+reset\s*,\s*base/);
+    expect(cssA).toContain('.a');
+    expect(cssA).not.toContain('.b');
+    expect(cssB.trimStart().startsWith('@charset "UTF-8"')).toBe(true);
+    expect(cssB).toContain('@layer theme');
+    expect(cssB).not.toContain('@layer reset');
+    expect(cssB).toContain('.b');
+    expect(cssB).not.toContain('.a');
+  });
+
+  it('#3321 P0-3 @import url() + layer() + supports() 복합 condition_tail 보존', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css':
+        `@import url("https://cdn/x.css") layer(reset);\n` +
+        `@import url("https://cdn/y.css") layer(theme) supports(display: grid);\n` +
+        `.app {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // layer() / supports() condition tail 보존 (url() form 은 quoted form 으로 정규화)
+    expect(css).toMatch(/@import\s+"https:\/\/cdn\/x\.css"\s+layer\(reset\)\s*;/);
+    expect(css).toMatch(
+      /@import\s+"https:\/\/cdn\/y\.css"\s+layer\(theme\)\s+supports\(display:\s*grid\)\s*;/,
+    );
+  });
+
+  it('#3747 bare @layer + block-form @layer 공존 — bare 만 상단 prepend, block-form 은 본문', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css':
+        `@layer reset, base;\n` + `@layer reset {\n  .reset { margin: 0; }\n}\n` + `.app {}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // bare 선언 + block-form 둘 다 출력에 살아있음
+    const bareIdx = css.search(/@layer\s+reset\s*,\s*base\s*;/);
+    const blockIdx = css.search(/@layer\s+reset\s*\{/);
+    expect(bareIdx).toBeGreaterThanOrEqual(0);
+    expect(blockIdx).toBeGreaterThanOrEqual(0);
+    // bare 가 block-form 보다 앞 (prepend 동작)
+    expect(bareIdx).toBeLessThan(blockIdx);
+    // body 본문도 살아있음
+    expect(css).toContain('.reset { margin: 0; }');
+    expect(css).toContain('.app');
+  });
 });
