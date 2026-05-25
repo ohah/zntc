@@ -61,6 +61,10 @@ pub const DevServer = struct {
         mutex: std.Thread.Mutex = .{},
         data: ?[]const u8 = null,
     } = .{},
+    /// dev overlay client — raw template (overlay_client_template) 의 `__ZNTC_HMR_*__`
+    /// sentinel 을 protocol 상수로 치환한 결과. init 에서 1회 생성, deinit 에서 free.
+    /// JS 측 packages/web/runtime/dev-overlay-client.mjs 와 같은 source/치환표 사용 (#2538 4-3).
+    overlay_client: []u8 = &.{},
 
     pub const ProxyRule = struct {
         /// 매칭할 경로 prefix (예: "/api")
@@ -94,7 +98,12 @@ pub const DevServer = struct {
     const hmr_path = "/__hmr";
     const app_dev_client_path = "/__zntc_app_dev_client__";
     const watch_interval_ms = 500;
-    const app_dev_client_js = @embedFile("dev_overlay_client.js");
+    /// dev overlay client 의 raw template — `__ZNTC_HMR_*__` sentinel 들이 박힌 상태.
+    /// 그대로는 동작하지 않음. init 의 substituteOverlayPlaceholders 가 치환한 결과를
+    /// self.overlay_client 에 보유한다. 정본은 한 파일 — JS 측 (@zntc/web) 도 이
+    /// 동일 raw 의 사본 (packages/web/runtime/dev-overlay-client.raw.js) 을 읽어
+    /// 같은 치환을 적용한다 (#2538 4-3).
+    const overlay_client_template = @embedFile("dev_overlay_client.js");
 
     const js_headers = cors_headers ++ [_]http.Header{
         .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
@@ -119,6 +128,14 @@ pub const DevServer = struct {
                 return err;
             };
         }
+        errdefer if (abs_entry) |ae| allocator.free(ae);
+
+        const overlay_client = substituteOverlayPlaceholders(allocator) catch |err| {
+            getLog().print("zntc: failed to prepare dev overlay client: {}\n", .{err}) catch {};
+            var dir_copy = root_dir;
+            dir_copy.close();
+            return err;
+        };
 
         return .{
             .allocator = allocator,
@@ -139,15 +156,46 @@ pub const DevServer = struct {
             .jsx_factory = options.jsx_factory,
             .jsx_fragment = options.jsx_fragment,
             .event_ring = EventRing.init(allocator),
+            .overlay_client = overlay_client,
         };
     }
 
     pub fn deinit(self: *DevServer) void {
         if (self.tcp_server) |*s| s.deinit();
         if (self.abs_entry) |ae| self.allocator.free(ae);
+        if (self.overlay_client.len > 0) self.allocator.free(self.overlay_client);
         self.root_dir.close();
         self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
+    }
+
+    /// dev overlay client raw template 의 `__ZNTC_HMR_*__` sentinel 들을
+    /// `@zntc/server/protocol` 의 실제 값으로 치환한다. JS 측
+    /// `packages/web/runtime/dev-overlay-client.mjs` 의 PLACEHOLDERS 배열과
+    /// 같은 표 — 양쪽이 같은 raw 를 같은 치환으로 변환해 같은 client 송신 (#2538 4-3).
+    fn substituteOverlayPlaceholders(allocator: std.mem.Allocator) ![]u8 {
+        const Sub = struct { token: []const u8, value: []const u8 };
+        const subs = [_]Sub{
+            .{ .token = "__ZNTC_HMR_WS_PATH__", .value = "/__hmr" },
+            .{ .token = "__ZNTC_HMR_MSG_ERROR__", .value = "error" },
+            .{ .token = "__ZNTC_HMR_MSG_CLEAR_ERROR__", .value = "clear-error" },
+            .{ .token = "__ZNTC_HMR_MSG_UPDATE_START__", .value = "update-start" },
+            .{ .token = "__ZNTC_HMR_MSG_UPDATE_DONE__", .value = "update-done" },
+            .{ .token = "__ZNTC_HMR_MSG_UPDATE__", .value = "update" },
+            .{ .token = "__ZNTC_HMR_MSG_FULL_RELOAD__", .value = "full-reload" },
+            .{ .token = "__ZNTC_HMR_MSG_CSS_UPDATE__", .value = "css-update" },
+        };
+
+        var current = try allocator.dupe(u8, overlay_client_template);
+        errdefer allocator.free(current);
+        for (subs) |s| {
+            const next_size = std.mem.replacementSize(u8, current, s.token, s.value);
+            const next = try allocator.alloc(u8, next_size);
+            _ = std.mem.replace(u8, current, s.token, s.value, next);
+            allocator.free(current);
+            current = next;
+        }
+        return current;
     }
 
     pub fn start(self: *DevServer) !void {
@@ -1259,8 +1307,8 @@ pub const DevServer = struct {
         }
     }
 
-    fn serveAppDevClient(_: *DevServer, request: *http.Server.Request) !void {
-        try request.respond(app_dev_client_js, .{
+    fn serveAppDevClient(self: *DevServer, request: *http.Server.Request) !void {
+        try request.respond(self.overlay_client, .{
             .extra_headers = &js_headers,
         });
         getLog().print("  200 {s}\n", .{app_dev_client_path}) catch {};
@@ -1580,4 +1628,37 @@ test "buildHmrUpdateFromModules: 모듈 2개 → 콤마로 구분된 배열" {
 
     // 전체 JSON이 올바르게 닫히는지 확인
     try testing.expect(std.mem.endsWith(u8, json, "]}"));
+}
+
+test "substituteOverlayPlaceholders: raw sentinel 들이 protocol 값으로 치환됨" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const result = try DevServer.substituteOverlayPlaceholders(allocator);
+    defer allocator.free(result);
+
+    // 모든 sentinel 토큰이 사라져야 함.
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_WS_PATH__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_ERROR__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_CLEAR_ERROR__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_UPDATE_START__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_UPDATE_DONE__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_UPDATE__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_FULL_RELOAD__") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "__ZNTC_HMR_MSG_CSS_UPDATE__") == null);
+
+    // 치환된 protocol 값들이 본문 어딘가에 string literal 로 박혀야 함
+    // (const 선언 라인 또는 사용처). @zntc/server/protocol 과 동기.
+    try testing.expect(std.mem.indexOf(u8, result, "\"/__hmr\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"error\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"clear-error\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"update-start\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"update-done\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"update\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"full-reload\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"css-update\"") != null);
+
+    // 핵심 분기 (update / css-update / __zntc_apply_update) 보존.
+    try testing.expect(std.mem.indexOf(u8, result, "__zntc_apply_update") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "new WebSocket(") != null);
 }

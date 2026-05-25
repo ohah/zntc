@@ -9,12 +9,18 @@ export const HMR_MSG: Readonly<{
   ClearError: 'clear-error';
   Error: 'error';
   FullReload: 'full-reload';
+  UpdateStart: 'update-start';
+  Update: 'update';
+  UpdateDone: 'update-done';
 }> = Object.freeze({
   Connected: 'connected',
   CssUpdate: 'css-update',
   ClearError: 'clear-error',
   Error: 'error',
   FullReload: 'full-reload',
+  UpdateStart: 'update-start',
+  Update: 'update',
+  UpdateDone: 'update-done',
 } as const);
 
 export type HmrMessageType = (typeof HMR_MSG)[keyof typeof HMR_MSG];
@@ -50,12 +56,39 @@ export interface HmrFullReloadMessage {
   timestamp: number;
 }
 
+// Zig dev server (src/server/dev_server.zig:574,586) 의 hot-update broadcast.
+// `update-start` / `update-done` 는 client 가 overlay 를 정리할 신호이고, 본
+// 업데이트 `update` 의 modules 는 dev overlay client 의 `__zntc_apply_update`
+// 가 평가한다 (없으면 location.reload fallback).
+export interface HmrUpdateStartMessage {
+  type: typeof HMR_MSG.UpdateStart;
+}
+
+export interface HmrUpdateModule {
+  /** Module identifier — bundler graph 의 모듈 식별자 (path 또는 stable id). */
+  id: string;
+  /** 새 모듈 wrapper 코드 — runtime 의 apply_update 가 evaluate. */
+  code: string;
+}
+
+export interface HmrUpdateMessage {
+  type: typeof HMR_MSG.Update;
+  modules: HmrUpdateModule[];
+}
+
+export interface HmrUpdateDoneMessage {
+  type: typeof HMR_MSG.UpdateDone;
+}
+
 export type HmrMessage =
   | HmrConnectedMessage
   | HmrCssUpdateMessage
   | HmrClearErrorMessage
   | HmrErrorMessage
-  | HmrFullReloadMessage;
+  | HmrFullReloadMessage
+  | HmrUpdateStartMessage
+  | HmrUpdateMessage
+  | HmrUpdateDoneMessage;
 
 export const APP_DEV_HMR_CLIENT_PATH = '/__zntc_app_dev_hmr__';
 export const APP_DEV_HMR_WS_PATH = '/__hmr';
