@@ -115,11 +115,19 @@ pub const IncrementalBundler = struct {
 
     /// 외부에서 캐시 전체 무효화 (Control API `/reset-cache` 등).
     /// 다음 rebuild()는 초기 빌드와 동일한 전체 재번들.
+    /// (#3751) `resolve_cache` 와 `rebuild_count` 도 reset — 자동 reset 과 대칭.
+    /// 사용자가 RSS 증가를 이유로 수동 reset 호출 시 path_pool arena 가 해제되지
+    /// 않는 비대칭을 차단 (/code-review max Angle B + E finding).
     pub fn reset(self: *IncrementalBundler) void {
         self.clearCache();
         self.persistent_store.deinit();
         self.persistent_store = module_store.PersistentModuleStore.init(self.allocator);
         self.compiled_cache.clear();
+        if (self.resolve_cache) |*rc| {
+            rc.deinit();
+            self.resolve_cache = null;
+        }
+        self.rebuild_count = 0;
         self.needs_full_rebuild = true;
     }
 
@@ -150,9 +158,14 @@ pub const IncrementalBundler = struct {
 
     fn doBuild(self: *IncrementalBundler, is_first: bool) !RebuildResult {
         // (#3751) N rebuild 마다 resolve_cache reset — arena monotonic growth 차단.
-        // is_first 가 아닌 경우에만, 그리고 reset_interval 도달 시. 빌드 *사이* 에서만
-        // 실행 (in-flight CachedResolvedDep 가 모두 store 로 owned-clone 된 상태).
-        if (!is_first and self.rebuild_reset_interval > 0 and
+        // 빌드 *사이* 에서만 실행 (in-flight CachedResolvedDep 가 모두 store 로 owned-clone
+        // 된 상태).
+        //
+        // is_first 가드 없이 `resolve_cache != null` 만 검사 — review Angle B/E finding:
+        // build_error → needs_full_rebuild=true 패턴에서 다음 rebuild 가 is_first=true 라
+        // `!is_first` 가드를 쓰면 영원히 reset skip 가능. resolve_cache 존재 여부로만
+        // 판단해야 cold/warm 무관하게 N 마다 trigger 됨.
+        if (self.resolve_cache != null and self.rebuild_reset_interval > 0 and
             self.rebuild_count >= self.rebuild_reset_interval)
         {
             if (self.resolve_cache) |*rc| {

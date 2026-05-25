@@ -1052,9 +1052,13 @@ test "IncrementalBundler: ResolveCache resets after rebuild_reset_interval rebui
             else => return error.TestUnexpectedResult,
         }
     }
-    const cache_after_first = &ib.resolve_cache.?;
+    // path_pool 의 *내용* fingerprint — entry path 를 intern 해 ptr 보관.
+    // ib.resolve_cache.? 자체 주소는 optional 의 in-place storage 라 reset 후에도
+    // 같은 주소를 갖는다 (review Angle A/D finding). 따라서 cache content 의 stable
+    // 식별자 — intern 한 slice 가 가리키는 arena 안 주소 — 로 reset 여부를 검증.
+    const interned_before = try ib.resolve_cache.?.path_pool.intern("/__test_fingerprint_3751");
 
-    // 2-3 번째 rebuild: 같은 cache 재사용.
+    // 2-3 번째 rebuild: 같은 cache 재사용 → 같은 path intern 은 같은 slice 반환.
     var i: usize = 0;
     while (i < 2) : (i += 1) {
         const r = try ib.rebuild();
@@ -1062,7 +1066,8 @@ test "IncrementalBundler: ResolveCache resets after rebuild_reset_interval rebui
             .success => |s| freeChanged(s.changed_modules),
             else => return error.TestUnexpectedResult,
         }
-        try std.testing.expectEqual(cache_after_first, &ib.resolve_cache.?);
+        const interned_again = try ib.resolve_cache.?.path_pool.intern("/__test_fingerprint_3751");
+        try std.testing.expectEqual(interned_before.ptr, interned_again.ptr);
     }
 
     // 4번째 rebuild = interval 도달 → reset 이 일어나야 함. resolve_cache 재생성으로
@@ -1077,4 +1082,39 @@ test "IncrementalBundler: ResolveCache resets after rebuild_reset_interval rebui
     }
     // rebuild_count 가 reset 후 1 로 복귀했어야 함.
     try std.testing.expect(ib.rebuild_count < ib.rebuild_reset_interval);
+    // 새 arena 에서 같은 path 를 intern → 이전 slice 와 *다른* ptr 이어야 함 (reset 입증).
+    const interned_after_reset = try ib.resolve_cache.?.path_pool.intern("/__test_fingerprint_3751");
+    try std.testing.expect(interned_before.ptr != interned_after_reset.ptr);
+}
+
+test "IncrementalBundler: reset() Control API 도 resolve_cache 같이 비움 (#3751)" {
+    // Angle B + E finding: 사용자 수동 reset 이 path_pool 을 안 건드리면 RSS 회복 안 됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('hi');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드.
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(ib.resolve_cache != null);
+    try std.testing.expect(ib.rebuild_count > 0);
+
+    // 수동 reset — resolve_cache 와 rebuild_count 모두 정리되어야 함.
+    ib.reset();
+    try std.testing.expect(ib.resolve_cache == null);
+    try std.testing.expectEqual(@as(usize, 0), ib.rebuild_count);
 }
