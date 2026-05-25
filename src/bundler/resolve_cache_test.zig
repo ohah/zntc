@@ -364,3 +364,90 @@ test "internResolvedModule: .virtual owns_path=false 시 borrow 유지 (#3759)" 
     // 만약 fix 가 owns_path 무시하고 항상 free 했다면 static literal free → panic.
     // 통과 자체가 borrow 시맨틱 보존 증거.
 }
+
+// .file / .disabled owns_path 대칭화 (multi-angle finding) — .virtual 와 같은 패턴.
+test "internResolvedModule: .file owns_path=true 시 원본 free + intern" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    const dup_path = try testing.allocator.dupe(u8, "/abs/file.ts");
+    const dup_rd = try testing.allocator.dupe(u8, "/abs");
+
+    const result = try cache.internResolvedModule(.{ .file = .{
+        .path = dup_path,
+        .resolve_dir = dup_rd,
+        .module_type = .js,
+        .owns_path = true,
+    } });
+
+    switch (result) {
+        .file => |f| {
+            try testing.expectEqualStrings("/abs/file.ts", f.path);
+            try testing.expect(f.path.ptr != dup_path.ptr);
+            try testing.expect(f.resolve_dir != null);
+            try testing.expect(f.resolve_dir.?.ptr != dup_rd.ptr);
+            try testing.expect(!f.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // testing.allocator leak detection: dup_path/dup_rd 가 free 안 되면 fail.
+}
+
+test "internResolvedModule: .file owns_path=false 시 borrow 유지" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // future plugin 이 static literal / parse_arena borrow path 를 .file 로 반환하는 케이스.
+    const static_path: []const u8 = "/abs/borrowed.ts";
+
+    const result = try cache.internResolvedModule(.{ .file = .{
+        .path = static_path,
+        .module_type = .js,
+        .owns_path = false,
+    } });
+
+    switch (result) {
+        .file => |f| {
+            try testing.expectEqualStrings("/abs/borrowed.ts", f.path);
+            try testing.expect(f.path.ptr != static_path.ptr); // intern 됐음
+            try testing.expect(!f.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // static literal free 안 됐다는 게 통과 자체로 증명 (free 시 panic).
+}
+
+test "internResolvedModule: .disabled owns_path=true / false" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // owns_path=true (현 production 동작 — 모든 caller dupe).
+    const dup_path = try testing.allocator.dupe(u8, "/disabled/mod");
+    const r1 = try cache.internResolvedModule(.{ .disabled = .{
+        .path = dup_path,
+        .module_type = .js,
+        .owns_path = true,
+    } });
+    switch (r1) {
+        .disabled => |d| try testing.expect(d.path.ptr != dup_path.ptr),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // owns_path=false (future borrow).
+    const static_path: []const u8 = "/disabled/static";
+    const r2 = try cache.internResolvedModule(.{ .disabled = .{
+        .path = static_path,
+        .module_type = .js,
+        .owns_path = false,
+    } });
+    switch (r2) {
+        .disabled => |d| {
+            try testing.expectEqualStrings("/disabled/static", d.path);
+            try testing.expect(!d.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
