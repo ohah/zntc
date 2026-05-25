@@ -766,13 +766,8 @@ async function loadWebModule() {
       // @zntc/web 의 module 평가가 dev-overlay-client.raw.js 를 readFileSync 한다
       // (#2538 4-3). dist 가 incomplete 한 경우 (build:bundle 의 copy 누락 / 일부만
       // 추출된 tarball) 가 ENOENT 로 throw — 친절 핸들 분기.
-      if (
-        code === 'ENOENT' &&
-        /dev-overlay-client\.raw\.js/.test(message)
-      ) {
-        console.error(
-          'error: @zntc/web 의 dist/dev-overlay-client.raw.js 가 누락됐습니다.',
-        );
+      if (code === 'ENOENT' && /dev-overlay-client\.raw\.js/.test(message)) {
+        console.error('error: @zntc/web 의 dist/dev-overlay-client.raw.js 가 누락됐습니다.');
         console.error('');
         console.error(
           'help: `bun --cwd <repo>/packages/web run build` 로 재빌드하거나 @zntc/web 을 재설치하세요.',
