@@ -300,6 +300,11 @@ pub const Category = enum {
     codegen,
     codegen_walk,
     codegen_sourcemap,
+    // (C1 도구 보강) sub-phase 측정
+    codegen_setup, // collectTopLevelDeclNames + ensureTotalCapacity
+    codegen_emit, // emitNode (program 전체)
+    codegen_finalize, // keep_names + finalize
+    codegen_sm_add, // addSourceMapping 누적 (매 노드)
 
     // ── Top-level emit ──
     emit,
