@@ -130,10 +130,7 @@ describe('CLI: Vite-style app builder > dev HMR > 종합 E2E (#3779 → #3826)',
       // (#3813 limitation) → update-done 도 acceptable.
       const origMain = readFileSync(join(dir, 'src', 'main.ts'), 'utf8');
       writeFileSync(join(dir, 'src', 'added.ts'), 'export const x = "new";\n');
-      const graphP = listen(
-        port,
-        (m) => m.type === 'full-reload' || m.type === 'update-done',
-      );
+      const graphP = listen(port, (m) => m.type === 'full-reload' || m.type === 'update-done');
       await sleep(300);
       writeFileSync(
         join(dir, 'src', 'main.ts'),
