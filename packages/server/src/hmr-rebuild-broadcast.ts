@@ -24,7 +24,9 @@ export interface RebuildEventLike {
  * - `success=false` → `reportError`
  * - `graphChanged=true` → `clearError` + `FullReload`
  * - `updates` 있음 → `clearError` + `UpdateStart` → `Update(modules)` → `UpdateDone`
- * - 그 외 (code 변경 없음) → no-op (`clearError` 도 호출 안 함 — 이전 error latch 보존)
+ * - 그 외 (code 변경 없음) → `clearError` 만 호출 (#3799 — success 한 rebuild 라 이전 error
+ *   latch 도 자동 해제. 사용자가 syntax error 를 whitespace-only edit 등으로 fix 했을 때
+ *   overlay 가 stuck 안 되도록.)
  *
  * Return: 어떤 분기로 갔는지 — 호출자가 로그/메트릭에 사용. Test 에서 분기 검증.
  */
@@ -53,5 +55,9 @@ export function broadcastRebuildEvent(
     hmr.broadcast({ type: HMR_MSG.UpdateDone });
     return 'update';
   }
+  // #3799 — 성공한 rebuild + code 변경 없음 (whitespace-only edit 등 bytewise-identical
+  // output). 이전 error latch 도 자동 해제 — 사용자가 fix 한 셈. clearError 자체는 broadcast
+  // 아님 (state mutation only), 다음 연결되는 client 에게 stale error 가 안 전달되도록 가드.
+  hmr.clearError();
   return 'noop';
 }
