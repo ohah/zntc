@@ -27,7 +27,6 @@ import {
   buildRnDevServerInput,
 } from './rn-dev-input.mjs';
 import { applyColorPreference, printZntcBanner } from './banner.mjs';
-import { isEnvTruthy, resolveAppPlugins } from './app-default-plugins.mjs';
 
 function isMissingBuiltCore(error) {
   if (!error || error.code !== 'ERR_MODULE_NOT_FOUND') return false;
@@ -673,40 +672,19 @@ function getAutoConfigSearchDir(opts) {
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   // JS plugin 로드 — bundle pipeline 의 buildBundleOptions 와 동일 패턴. app
   // pipeline 도 plugin dispatcher 통과 (#2538 4-4 PR-1).
-  const userPlugins = [];
+  const appPlugins = [];
   if (config && Array.isArray(config.plugins)) {
-    userPlugins.push(...config.plugins);
+    appPlugins.push(...config.plugins);
   }
   for (const pluginPath of opts.pluginPaths) {
     const absPath = resolve(pluginPath);
     const cfg = await importAndResolveDefault(absPath);
     if (Array.isArray(cfg.plugins)) {
-      userPlugins.push(...cfg.plugins);
+      appPlugins.push(...cfg.plugins);
     } else if (typeof cfg.setup === 'function') {
-      userPlugins.push(cfg);
+      appPlugins.push(cfg);
     }
   }
-  // default css() plugin 자동 prepend — Vite `vite:css` 패턴 (#2538 4-4 PR-3a).
-  // ZNTC_NO_CSS_DEFAULTS (1/true/yes/on) 또는 config.appPlugins?.disableDefaults
-  // 로 opt-out. dev 모드 (runAppDev) 의 default css 는 PR-3b.
-  const disableCssDefaults =
-    isEnvTruthy(process.env.ZNTC_NO_CSS_DEFAULTS) || config?.appPlugins?.disableDefaults === true;
-  const webCss = disableCssDefaults ? null : await loadWebCssModule();
-  // css() factory throw 방어 — postcss/postcss-load-config 미설치 같은 init 실패
-  // 케이스에서 build 전체 죽지 않게. loadWebCssModule 의 friendly handler 와 동등.
-  let cssPlugin = null;
-  if (webCss?.css) {
-    try {
-      cssPlugin = webCss.css() ?? null;
-    } catch (err) {
-      console.error(`warning: @zntc/web/css 의 default plugin 초기화 실패 — pass-through. ${err}`);
-    }
-  }
-  const appPlugins = resolveAppPlugins({
-    userPlugins,
-    disableDefaults: disableCssDefaults,
-    cssPlugin,
-  });
   const web = await loadWebModule();
   const root = resolve(opts.appRoot ?? '.');
   const outdir = resolve(opts.outdir ?? join(root, 'dist'));
@@ -817,37 +795,6 @@ async function loadWebModule() {
     }
   })();
   return webModulePromise;
-}
-
-// `@zntc/web/css` sub-export — runAppBuild/runAppDev 의 default css() plugin.
-// loadWebModule 과 분리: main `@zntc/web` 은 dev-controller / HMR 정도라 항상
-// 로드되지만, css sub-export 는 plugin chain 진입할 때만. lazy.
-let webCssModulePromise = null;
-async function loadWebCssModule() {
-  if (webCssModulePromise) return webCssModulePromise;
-  webCssModulePromise = (async () => {
-    try {
-      return await import('@zntc/web/css');
-    } catch (err) {
-      // sub-export 누락 시도 친절 메시지 — main `@zntc/web` 은 있는데 ./css 가
-      // dist 에 없는 경우 (build:bundle 의 css entry 누락 등).
-      const code = err?.code;
-      const message = String(err?.message ?? '');
-      // 정확 매칭 — Node 의 ERR_PACKAGE_PATH_NOT_EXPORTED (구버전 @zntc/web 에 ./css
-      // sub-export 부재) 또는 ERR_MODULE_NOT_FOUND (build:bundle 의 css entry 누락)
-      // 만 friendly. 그 외 (sub-dependency 등) 는 throw — 진짜 에러 silent 방지.
-      if (
-        code === 'ERR_PACKAGE_PATH_NOT_EXPORTED' ||
-        (code === 'ERR_MODULE_NOT_FOUND' && /@zntc\/web\/css/.test(message))
-      ) {
-        console.error('warning: @zntc/web/css sub-export 미발견 — default CSS plugin 미적용.');
-        console.error('help: @zntc/web 을 최신 버전으로 업그레이드 (>= 0.x sub-export 도입).');
-        return null;
-      }
-      throw err;
-    }
-  })();
-  return webCssModulePromise;
 }
 
 // RN 모드 (`zntc bundle --platform=react-native`) — @zntc/react-native 을 lazy
