@@ -136,14 +136,17 @@ pub const PersistentModuleStore = struct {
         cached_module.dynamic_imports = .empty;
         cached_module.dynamic_importers = .empty;
 
-        // PR #3749 Phase 3 (C): cache-borrowed (interned) path 를 store-owned 로 clone.
-        // cache 가 build 종료 시 deinit 되므로 (per-build Bundler 패턴) store 가 *자체 owner*
-        // 가 되어야 dangling 안 됨. specifier (parse_arena) / plugin variant 는 별도 lifetime
-        // 관리 — Module.parse_arena 가 store 로 양도 + plugin context 는 외부 lifetime.
+        // PR #3749 Phase 3 (C) + H2 #3755: cache/plugin-borrowed path 를 store-owned 로
+        // clone.
+        // - .interned: cache (path_pool) 가 build 종료 시 deinit (per-build Bundler) →
+        //   store 가 *자체 owner* 가 되어야 dangling 안 됨.
+        // - .plugin (H2): plugin 이 alloc 한 path (graph_allocator 경유) → graph deinit
+        //   시 dangling 위험 → clone.
+        // - .specifier (parse_arena), .owned (자체) 는 store 와 같은 lifetime → clone 안 함.
         //
-        // H1 fix: OOM 시 swallow 금지 — partial clone 으로 .interned 가 store 에 남으면
-        // path_pool 사망 시 UAF. 실패 시 *전체 putModule abort* (이미 처리된 dep 의 owned
-        // alloc 은 leak 이지만 store 에 진입 안 함 → cache lifetime 안 후속 read 없음).
+        // H1 fix: OOM 시 swallow 금지. rollback 은 (1) partial-cloned slot sanitize
+        // (rollbackOomCloned) + (2) had_existing dangling map entry 제거 + specs leak
+        // 차단 (abortPutModule).
         // (#3755) shared backing 주의: `cached_module = module.*` shallow copy 라
         // `cached_module.resolved_deps.items` 가 `module.resolved_deps.items` 와 같은
         // 백킹을 가리킨다. clone 루프가 `dep.path = new_path` 로 element 를 mutate 하면
@@ -483,13 +486,41 @@ test "PersistentModuleStore: plugin variant 가 store-owned 로 clone (H2)" {
     defer module.deinit(testing.allocator);
 
     store.putModule("/virtual/h2.ts", &module, 1);
-    // 핵심: store 에 들어간 dep.path 가 .owned (store-owned) 이어야 한다.
-    // 만약 .plugin 그대로면 graph deinit (= module.deinit) 후 plugin_path free 시 store 에
-    // dangling — 그러나 본 테스트는 plugin_path 를 defer testing.allocator.free 로 관리해
-    // 의도적으로 graph lifetime 종료를 시뮬레이트.
+    // 핵심: store 에 들어간 dep.path 가 .owned (store-owned) + 원본 plugin_path 와 *다른*
+    // 포인터여야 한다 (review sweep — ptr identity 검증으로 alias-vs-dupe 회귀 검출).
     const cached = store.modules.getPtr("/virtual/h2.ts") orelse return error.CacheMiss;
     try testing.expect(cached.module.resolved_deps.items.len == 1);
     const cached_path = cached.module.resolved_deps.items[0].path;
     try testing.expect(cached_path == .owned); // ← clone 강제 검증
+    try testing.expect(cached_path.owned.ptr != plugin_path.ptr); // ← deep-copy 검증
     try testing.expectEqualStrings("\x00plugin:virtual-mod", cached_path.owned);
+}
+
+// Regression H2 + #3755: .plugin variant 의 clone OOM rollback. .interned 경로만
+// 회귀 test 가 있고 .plugin 경로는 없어 rollbackOomCloned 의 .plugin 처리 회귀
+// 시 silent (sweep review).
+test "PersistentModuleStore: putModule .plugin variant OOM rollback (H2 + #3755)" {
+    const testing = std.testing;
+
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 2 });
+    const alloc = failing.allocator();
+    var store = PersistentModuleStore.init(alloc);
+    defer store.deinit();
+
+    var module = Module.init(@enumFromInt(0), "/virtual/plugin-oom.ts");
+    var deps: std.ArrayListUnmanaged(CachedResolvedDep) = .empty;
+    defer module.deinit(testing.allocator);
+    // 혼합: .interned + .plugin — 두 variant 모두 clone 대상.
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "a/b" } });
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .virtual, .path = .{ .plugin = "\x00plug:x" } });
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "c/d" } });
+    module.resolved_deps = deps;
+
+    // OOM 3번째 alloc → items[0..1] 가 clone 됨 (.owned), 3번째에서 실패 → rollback.
+    store.putModule("/virtual/plugin-oom.ts", &module, 1);
+
+    // sanitize 검증: items[0..1] 가 .specifier="" 로 정리되어 module.deinit 가 no-op.
+    try testing.expect(module.resolved_deps.items[0].path == .specifier);
+    try testing.expect(module.resolved_deps.items[1].path == .specifier);
+    try testing.expect(module.resolved_deps.items[2].path == .interned); // 미처리 슬롯 원본 보존
 }
