@@ -220,11 +220,11 @@ pub const ResolvedModule = union(fs.Namespace) {
         owns_path: bool,
     },
     /// 사용자 plugin 의 자유 namespace.
-    /// `owns_path` (default 없음): path *및* name 둘 다 동일 owner 가정.
+    /// `owns_path`: path *및* name 둘 다 동일 owner 가정 (단일 flag).
     /// **invariant**: `owns_path=true` 시 `name.ptr != path.ptr` — 같은 slice 를 둘 다
     /// 가리키면 `internResolvedModule` 가 double-free 시도 (debug assert 로 잡힘).
     /// mixed owner (name borrow + path owned 등) 필요하면 future RFC (`owns_name`/`owns_path`
-    /// 분리). 현재 모든 caller 가 동일 owner 라 단일 flag 충분.
+    /// 분리).
     custom: struct {
         name: []const u8,
         path: []const u8,
