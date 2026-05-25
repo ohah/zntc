@@ -45,6 +45,10 @@ pub const CliOptions = struct {
     serve_port: u16 = 12300,
     serve_host: []const u8 = "localhost",
     serve_open: bool = false,
+    /// `--certfile` — TLS cert (PEM). `serve_key_path` 와 함께 둘 다 set 되면 HTTPS.
+    serve_cert_path: ?[]const u8 = null,
+    /// `--keyfile` — TLS private key (PEM). `serve_cert_path` 와 짝.
+    serve_key_path: ?[]const u8 = null,
     splitting: bool = false,
     external_list: std.ArrayList([]const u8) = .empty,
     define_list: std.ArrayList(DefineEntry) = .empty,
@@ -624,6 +628,22 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             }
         } else if (std.mem.eql(u8, arg, "--open")) {
             opts.serve_open = true;
+        } else if (std.mem.eql(u8, arg, "--certfile")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.serve_cert_path = args[i];
+            } else {
+                try stderr.print("zntc: --certfile requires a path argument\n", .{});
+                std.process.exit(1);
+            }
+        } else if (std.mem.eql(u8, arg, "--keyfile")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.serve_key_path = args[i];
+            } else {
+                try stderr.print("zntc: --keyfile requires a path argument\n", .{});
+                std.process.exit(1);
+            }
         } else if (std.mem.eql(u8, arg, "--proxy")) {
             if (i + 1 < args.len) {
                 i += 1;

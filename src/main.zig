@@ -362,6 +362,8 @@ pub fn main() !void {
             .host = opts.serve_host,
             .open = opts.serve_open,
             .proxy = opts.proxy_list.items,
+            .cert_path = opts.serve_cert_path,
+            .key_path = opts.serve_key_path,
         });
     }
 
