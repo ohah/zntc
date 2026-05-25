@@ -290,11 +290,14 @@ pub const Category = enum {
 
     // ── Transform ──
     transform,
-    transform_ts_strip,
-    transform_jsx,
-    transform_class_field,
-    transform_decorator,
-    transform_pass2,
+    transform_ts_strip, // (placeholder — visitor 내부 분리는 별도 작업)
+    transform_jsx, // (placeholder — visitor 내부 분리는 별도 작업)
+    transform_class_field, // (placeholder — visitor 내부 분리는 별도 작업)
+    transform_decorator, // (placeholder — visitor 내부 분리는 별도 작업)
+    transform_pass2, // ES2015 params lowering (lowerAllFunctionParams)
+    // (T1 도구 보강) sub-phase 측정
+    transform_visit, // visitNode (program 전체) — visitor 안의 ts_strip/jsx/class_field/decorator 합산
+    transform_finalize, // hoistTempVars + tagged_template_fns + helper imports + jsx imports + refresh
 
     // ── Codegen ──
     codegen,
