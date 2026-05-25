@@ -527,3 +527,44 @@ test "internResolvedModule: .custom owns_path=true / false (name + path)" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+// .dataurl owns_payload — mime 만 intern, data 는 caller lifecycle (deferred 2).
+test "internResolvedModule: .dataurl owns_payload=true / false" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // owns_payload=true: caller alloc 한 mime + data 둘 다 free, mime 만 intern.
+    const dup_mime = try testing.allocator.dupe(u8, "image/png");
+    const dup_data = try testing.allocator.dupe(u8, "BASE64DATA");
+    const r1 = try cache.internResolvedModule(.{ .dataurl = .{
+        .mime = dup_mime,
+        .data = dup_data,
+        .owns_payload = true,
+    } });
+    switch (r1) {
+        .dataurl => |du| {
+            try testing.expectEqualStrings("image/png", du.mime);
+            try testing.expect(du.mime.ptr != dup_mime.ptr); // mime intern
+            try testing.expect(!du.owns_payload);
+            // data 는 free 됐으므로 "" 반환 (future RFC 까지 안전 placeholder).
+            try testing.expectEqualStrings("", du.data);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // owns_payload=false: static literal — bundler 가 free 안 함.
+    const r2 = try cache.internResolvedModule(.{ .dataurl = .{
+        .mime = "text/plain",
+        .data = "literal-data",
+        .owns_payload = false,
+    } });
+    switch (r2) {
+        .dataurl => |du| {
+            try testing.expectEqualStrings("text/plain", du.mime);
+            try testing.expectEqualStrings("literal-data", du.data);
+            try testing.expect(!du.owns_payload);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
