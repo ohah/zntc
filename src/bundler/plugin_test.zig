@@ -656,7 +656,7 @@ test "ResolvedModule: file variant 보존" {
 
 test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" {
     // 모든 fixture 가 static literal — owns_path=false 로 borrow 명시.
-    const v: ResolvedModule = .{ .virtual = .{ .path = "virtual:foo" } };
+    const v: ResolvedModule = .{ .virtual = .{ .path = "virtual:foo", .owns_path = false } };
     switch (v) {
         .virtual => |x| try std.testing.expectEqualStrings("virtual:foo", x.path),
         else => return error.TestUnexpectedResult,

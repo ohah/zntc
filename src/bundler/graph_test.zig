@@ -907,7 +907,7 @@ fn countedResolveHook(
     const counter: *ResolveCounter = @ptrCast(@alignCast(ctx.?));
     counter.count += 1;
     if (std.mem.eql(u8, specifier, "alias:dep")) {
-        return .{ .file = .{ .path = try allocator.dupe(u8, counter.target) } };
+        return .{ .file = .{ .path = try allocator.dupe(u8, counter.target), .owns_path = true } };
     }
     return null;
 }

@@ -183,24 +183,22 @@ fn deepMergeMetaValue(base: *std.json.Value, add: std.json.Value) std.mem.Alloca
 /// rolldown 의 풍부한 ResolvedId 와 비슷하지만 tag 가 fs.Namespace 와 통일.
 pub const ResolvedModule = union(fs.Namespace) {
     /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
-    /// `owns_path` (default true): caller 가 path/resolve_dir 를 자체 alloc 했음 →
-    /// `internResolvedModule` 가 intern 후 원본 free. static literal / parse_arena borrow
-    /// 면 false 명시. 모든 production caller (native resolver + NAPI bridge + plugin_test)
-    /// 가 dupe 이므로 true 가 호환 default. future plugin layer 의 borrow 케이스만 false.
+    /// `owns_path` (default 없음): caller 가 명시 강제 — true 면 자체 alloc
+    /// (`internResolvedModule` 가 intern 후 원본 free), false 면 borrow (static literal /
+    /// parse_arena slice).
     file: struct {
         path: []const u8,
         resolve_dir: ?[]const u8 = null,
         module_type: ModuleType = .unknown,
         is_module_field: bool = false,
-        owns_path: bool = true,
+        owns_path: bool, // default 없음 — caller 명시 강제 (silent leak/panic 차단)
     },
     /// 메모리 모듈 (plugin only). plugin_data 로 plugin context 전달.
-    /// (#3759) `owns_path`: plugin 이 path 를 자체 alloc 했으면 true → bundler 가 intern
-    /// 후 원본 free. static literal / borrowed specifier 면 false (default).
+    /// `owns_path` (default 없음): caller 강제 명시.
     virtual: struct {
         path: []const u8,
         plugin_data: ?*anyopaque = null,
-        owns_path: bool = false,
+        owns_path: bool,
     },
     /// data: URL — 인라인 base64 asset.
     dataurl: struct {
@@ -208,21 +206,21 @@ pub const ResolvedModule = union(fs.Namespace) {
         data: []const u8,
     },
     /// 번들 미포함 — 런타임 import 유지.
-    /// `owns_path` (default true): `.file` 과 동일 시맨틱 (PR #3763 후속).
+    /// `owns_path` (default 없음): caller 강제 명시.
     external: struct {
         path: []const u8,
-        owns_path: bool = true,
+        owns_path: bool,
     },
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
     /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
-    /// `owns_path` (default true): `.file` 과 동일 시맨틱.
+    /// `owns_path` (default 없음): caller 강제 명시.
     disabled: struct {
         path: []const u8,
         module_type: ModuleType = .unknown,
-        owns_path: bool = true,
+        owns_path: bool,
     },
     /// 사용자 plugin 의 자유 namespace.
-    /// `owns_path` (default true): path *및* name 둘 다 동일 owner 가정.
+    /// `owns_path` (default 없음): path *및* name 둘 다 동일 owner 가정.
     /// **invariant**: `owns_path=true` 시 `name.ptr != path.ptr` — 같은 slice 를 둘 다
     /// 가리키면 `internResolvedModule` 가 double-free 시도 (debug assert 로 잡힘).
     /// mixed owner (name borrow + path owned 등) 필요하면 future RFC (`owns_name`/`owns_path`
@@ -231,7 +229,7 @@ pub const ResolvedModule = union(fs.Namespace) {
         name: []const u8,
         path: []const u8,
         plugin_data: ?*anyopaque = null,
-        owns_path: bool = true,
+        owns_path: bool,
     },
 };
 
