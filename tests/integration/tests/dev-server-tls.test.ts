@@ -51,12 +51,17 @@ async function waitForHttps(port: number, maxRetries = 50, intervalMs = 100): Pr
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(`Zig dev server not reachable on https://localhost:${port}/ after ${maxRetries * intervalMs}ms`);
+  throw new Error(
+    `Zig dev server not reachable on https://localhost:${port}/ after ${maxRetries * intervalMs}ms`,
+  );
 }
 
 function createFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'zntc-zig-tls-'));
-  writeFileSync(join(dir, 'index.html'), '<!doctype html><html><body><h1>Zig TLS OK</h1></body></html>');
+  writeFileSync(
+    join(dir, 'index.html'),
+    '<!doctype html><html><body><h1>Zig TLS OK</h1></body></html>',
+  );
   writeFileSync(join(dir, 'app.css'), 'body { background: #abc; }');
   const certFile = join(dir, 'cert.pem');
   const keyFile = join(dir, 'key.pem');
@@ -232,7 +237,10 @@ describe('Zig dev server TLS (#2538 4-2)', () => {
             const merged = Buffer.concat(accum);
             if (merged.length >= 22) {
               socket.destroy();
-              resolve({ response: responseStr.slice(0, responseStr.indexOf('\r\n\r\n')), firstFrame: merged });
+              resolve({
+                response: responseStr.slice(0, responseStr.indexOf('\r\n\r\n')),
+                firstFrame: merged,
+              });
             }
           }
         });
@@ -251,7 +259,10 @@ describe('Zig dev server TLS (#2538 4-2)', () => {
     expect(lower).toContain('upgrade: websocket');
     // RFC 6455 의 Sec-WebSocket-Accept = base64(sha1(key + GUID))
     const guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-    const expectedAccept = crypto.createHash('sha1').update(wsKey + guid).digest('base64');
+    const expectedAccept = crypto
+      .createHash('sha1')
+      .update(wsKey + guid)
+      .digest('base64');
     expect(lower).toContain(`sec-websocket-accept: ${expectedAccept.toLowerCase()}`);
 
     // 첫 frame = HMR_MSG.Connected JSON text. RFC 6455 §5.2 frame format
