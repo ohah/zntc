@@ -690,6 +690,15 @@ fn NapiPluginAdapter(comptime Self: type) type {
         /// (deferred 4) plugin response → owned ResolvedModule builder. dupe + `.owned`
         /// 패턴 한 곳에 모아 drift 방지 — 한 site 만 dupe 빠뜨려도 owner 와 mismatch 면
         /// bundler 가 borrowed slice 를 free 시도 → panic.
+        ///
+        /// **Invariants** (review finding):
+        /// - `module_type = .js`: 현재 module_registry.zig:100 `fromExtension(ext)` 가
+        ///   덮어쓰므로 dead — 향후 plugin 제공 module_type 을 trust 하면 caller 명시
+        ///   파라미터로 확장 필요.
+        /// - `.virtual.plugin_data`: null 고정 — Rollup pluginContext meta thread 도입 시
+        ///   시그니처 확장 필요.
+        /// - NAPI 가 향후 `.external/.custom/.dataurl` 변환을 노출하면 동일한 buildOwnedX
+        ///   helper 추가 (inline alloc.dupe + .owner=.owned 패턴 회귀 차단).
         fn buildOwnedFile(alloc: std.mem.Allocator, path: []const u8) PluginError!plugin_mod.ResolvedModule {
             return .{ .file = .{
                 .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
