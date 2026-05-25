@@ -244,6 +244,10 @@ pub const RealpathCache = struct {
 
     comptime {
         std.debug.assert(@popCount(@as(u32, num_shards)) == 1);
+        // (review) cross-pool drift 방지 — PathInternPool / cache_shards 와 같은 N (16).
+        // resolve_cache 가 cyclic import 라 직접 비교 못해 hard-coded 16 assert. 변경 시
+        // resolve_cache.zig 의 `num_resolve_cache_shards` + `PathInternPool.num_shards` 도 동시 변경 필요.
+        std.debug.assert(num_shards == 16);
     }
 
     shards: [num_shards]Shard,
