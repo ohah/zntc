@@ -43,11 +43,13 @@ test "PluginRunner: empty plugins is no-op" {
 
 fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator, _: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     if (std.mem.eql(u8, specifier, "virtual:config")) {
-        return .{ .file = .{
-            .path = try allocator.dupe(u8, "/virtual/config.js"),
-            .module_type = .js,
-            .owns_path = true, // default 와 동일하지만 명시 — alloc.dupe 의도 표기.
-        } };
+        return .{
+            .file = .{
+                .path = try allocator.dupe(u8, "/virtual/config.js"),
+                .module_type = .js,
+                .owns_path = true, // default 와 동일하지만 명시 — alloc.dupe 의도 표기.
+            },
+        };
     }
     return null;
 }
