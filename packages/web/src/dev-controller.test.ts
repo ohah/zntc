@@ -142,6 +142,27 @@ describe('createAppDevController', () => {
     expect(c.isCssOnlyChange('/x/main.ts')).toBe(false);
   });
 
+  test('isCssLikeChange — CSS / Sass / postcss / CSS Module 전부 true, JS/HTML false (#3801)', () => {
+    const c = controller();
+    // 일반 CSS / Sass
+    expect(c.isCssLikeChange('/x/style.css')).toBe(true);
+    expect(c.isCssLikeChange('/x/style.scss')).toBe(true);
+    expect(c.isCssLikeChange('/x/style.sass')).toBe(true);
+    // CSS Modules / Sass Modules — drain 에서 full pipeline rebuild 가 필요한 케이스
+    expect(c.isCssLikeChange('/x/style.module.css')).toBe(true);
+    expect(c.isCssLikeChange('/x/style.module.scss')).toBe(true);
+    // postcss config
+    expect(c.isCssLikeChange('/x/postcss.config.js')).toBe(true);
+    // 미지원 확장자 (.less / .styl / .pcss): 코드베이스에 pipeline 없음 → false. drift 가드.
+    expect(c.isCssLikeChange('/x/style.less')).toBe(false);
+    expect(c.isCssLikeChange('/x/style.styl')).toBe(false);
+    expect(c.isCssLikeChange('/x/style.pcss')).toBe(false);
+    // JS / HTML / asset — 명확히 false
+    expect(c.isCssLikeChange('/x/main.ts')).toBe(false);
+    expect(c.isCssLikeChange('/x/index.html')).toBe(false);
+    expect(c.isCssLikeChange('/x/data.json')).toBe(false);
+  });
+
   test('isSassOnlyChange — non-module .scss/.sass 만 true', () => {
     const c = controller();
     expect(c.isSassOnlyChange('/x/style.scss')).toBe(true);

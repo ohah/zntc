@@ -2038,12 +2038,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
             //   (중복 컴파일/output race 회피).
             // - 그 외 (HTML / JSON / static asset 등 native watch graph 밖 + non-CSS): fallback
             //   FullReload broadcast. pre-#3779 의 unconditional rebuildAppDevFull 회귀 가드.
-            const isCssDerived = (p) =>
-              p.endsWith('.css') ||
-              p.endsWith('.scss') ||
-              p.endsWith('.sass') ||
-              p.endsWith('.less') ||
-              appDev.isPostcssConfig(p);
+            // #3801 — appDev 의 isCssLikeChange 가 단일 진실 소스. inline literal endsWith
+            // 가 `.less` (미지원) 포함하거나 `.styl/.pcss` 누락하던 drift 회귀 방지.
             const isJsModule = (p) =>
               p.endsWith('.ts') ||
               p.endsWith('.tsx') ||
@@ -2051,7 +2047,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
               p.endsWith('.jsx') ||
               p.endsWith('.mjs') ||
               p.endsWith('.cjs');
-            const allCssDerived = paths.every(isCssDerived);
+            const allCssDerived = paths.every((p) => appDev.isCssLikeChange(p));
             const hasJs = paths.some(isJsModule);
             if (allCssDerived) {
               await rebuildAppDevFull(paths);
