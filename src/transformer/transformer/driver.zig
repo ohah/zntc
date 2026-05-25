@@ -6,7 +6,8 @@ const NodeIndex = ast_mod.NodeIndex;
 const Error = std.mem.Allocator.Error;
 
 pub fn transform(self: anytype) Error!NodeIndex {
-    var scope = @import("../../profile.zig").begin(.transform);
+    const profile = @import("../../profile.zig");
+    var scope = profile.begin(.transform);
     defer scope.end();
 
     // #1961: graph parse 단계의 pre-pass 가 이미 transform 한 ast 면 cached root 반환.
@@ -30,12 +31,25 @@ pub fn transform(self: anytype) Error!NodeIndex {
     const saved_temp_counter = self.temp_var_counter;
     // worklet anonymous naming counter — Transformer 인스턴스 재사용 시 매 transform당 0부터 시작.
     self.plugins.worklet.anonymous_counter = 0;
-    var root = try self.visitNode(root_idx);
+
+    // (T1 도구 보강) sub-phase 측정: visit pass + pass2 + finalize. visitor 내부의
+    // ts_strip / jsx / class_field / decorator 분리는 별도 작업 (visitor 코드 수정 필요).
+    var root: NodeIndex = undefined;
+    {
+        var visit_scope = profile.begin(.transform_visit);
+        defer visit_scope.end();
+        root = try self.visitNode(root_idx);
+    }
 
     // Pass 2: ES2015 params lowering 일괄 적용
     if (self.options.unsupported.default_params) {
+        var pass2_scope = profile.begin(.transform_pass2);
+        defer pass2_scope.end();
         try lowerAllFunctionParams(self);
     }
+
+    var finalize_scope = profile.begin(.transform_finalize);
+    defer finalize_scope.end();
 
     // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
     if (self.temp_var_counter > saved_temp_counter and !root.isNone()) {
