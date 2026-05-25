@@ -233,26 +233,54 @@ pub const DirEntryCache = struct {
 /// 뒤 basename join 이라 따라가지 못한다. ZNTC 가 import 하는 일반 source/dep
 /// 경로는 이 패턴이 거의 없어 영향 없음. preserve_symlinks=true 면 어차피 cache
 /// 우회 (기존 동작 동일).
+/// dir-level realpath cache. 같은 dir 의 여러 path 가 자주 호출되므로 dir 만 realpath
+/// 한 후 basename join (R2 #3745 — symlink-heavy workspace 에서 syscall 80%+ 감소).
+///
+/// thread-safety (R2): 16-shard. `hash(dir) & (num_shards - 1)` 로 shard 선택 —
+/// `PathInternPool` / `cacheShardFor` 와 동일 방식. resolve hot path 에서 worker
+/// 들이 single mutex 에 직렬화되던 걸 분산.
 pub const RealpathCache = struct {
-    /// dir 절대 경로 → realpath(dir). value 는 allocator 소유.
-    cache: std.StringHashMap([]const u8),
-    mutex: std.Thread.Mutex = .{},
+    pub const num_shards = 16;
+
+    comptime {
+        std.debug.assert(@popCount(@as(u32, num_shards)) == 1);
+    }
+
+    shards: [num_shards]Shard,
     allocator: std.mem.Allocator,
 
+    const Shard = struct {
+        cache: std.StringHashMap([]const u8),
+        mutex: std.Thread.Mutex = .{},
+    };
+
     pub fn init(allocator: std.mem.Allocator) RealpathCache {
-        return .{
-            .cache = std.StringHashMap([]const u8).init(allocator),
+        var rc: RealpathCache = .{
+            .shards = undefined,
             .allocator = allocator,
         };
+        for (&rc.shards) |*s| {
+            s.* = .{ .cache = std.StringHashMap([]const u8).init(allocator) };
+        }
+        return rc;
     }
 
     pub fn deinit(self: *RealpathCache) void {
-        var it = self.cache.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
+        for (&self.shards) |*s| {
+            var it = s.cache.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            s.cache.deinit();
         }
-        self.cache.deinit();
+    }
+
+    /// dir → shard. `PathInternPool.shardFor` 와 동일 패턴.
+    inline fn shardFor(self: *RealpathCache, dir: []const u8) *Shard {
+        const h = std.hash_map.hashString(dir);
+        const idx: usize = @intCast(h & (num_shards - 1));
+        return &self.shards[idx];
     }
 
     /// path 의 realpath 를 owned slice 로 반환.
@@ -263,19 +291,20 @@ pub const RealpathCache = struct {
             return self.allocator.dupe(u8, path);
         };
         const basename = std.fs.path.basename(path);
+        const shard = self.shardFor(dir);
 
-        self.mutex.lock();
-        const cached_dir: ?[]const u8 = if (self.cache.get(dir)) |v| v else null;
-        self.mutex.unlock();
+        shard.mutex.lock();
+        const cached_dir: ?[]const u8 = if (shard.cache.get(dir)) |v| v else null;
+        shard.mutex.unlock();
 
         const resolved_dir = cached_dir orelse blk: {
             const new_dir = fs.realpath(self.allocator, dir) catch
                 self.allocator.dupe(u8, dir) catch return error.OutOfMemory;
 
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            shard.mutex.lock();
+            defer shard.mutex.unlock();
             // race: 다른 thread 가 먼저 넣었을 수 있음.
-            if (self.cache.get(dir)) |existing| {
+            if (shard.cache.get(dir)) |existing| {
                 self.allocator.free(new_dir);
                 break :blk existing;
             }
@@ -283,7 +312,7 @@ pub const RealpathCache = struct {
                 self.allocator.free(new_dir);
                 return error.OutOfMemory;
             };
-            self.cache.put(key, new_dir) catch {
+            shard.cache.put(key, new_dir) catch {
                 self.allocator.free(key);
                 self.allocator.free(new_dir);
                 return error.OutOfMemory;

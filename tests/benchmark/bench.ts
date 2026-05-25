@@ -15,7 +15,7 @@ import { computeMetricStats, formatMetric, type MetricStats } from './stats';
 const ROOT = resolve(__dirname, '../..');
 const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const BIN = join(ROOT, 'node_modules/.bin');
-const ITERATIONS = 5;
+const ITERATIONS = Number(process.env.BENCH_ITERATIONS ?? '5');
 
 // ============================================================
 // CLI 바이너리 경로
