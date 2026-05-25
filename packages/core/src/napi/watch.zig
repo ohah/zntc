@@ -786,6 +786,14 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // 다시 concat 할 필요가 없다 — RN HMR client 는 dev_codes 만 사용. wall 시간이
         // emit_concat (~38ms) + emit_sourcemap_finalize (~19ms) 를 절감한다.
         if (bundle_opts.dev_mode and bundle_opts.collect_module_codes) incremental_opts.skip_bundle_output = true;
+        // #3802 — `skip_initial_output=true` 가 caller 가 outdir 단독 owner 임을 명시한 케이스.
+        // dev_mode 가 false 인 등의 이유로 위 조건이 false 라도, initial-skip 의 invariant
+        // "caller 가 outdir 의 owner" 가 incremental rebuild 부터 갑자기 깨지면 사용자 mental
+        // model 위반. skip_initial_output=true 면 incremental 도 출력 skip (즉 강제 emit_concat
+        // skip). caller 가 outdir 를 단독으로 관리. 단 dev_mode=false + skip_initial_output=true
+        // 조합은 incremental rebuild 시 module_dev_codes 도 비어있어 HMR client 가 받을 데이터 없음
+        // — 그 조합은 그 자체로 비정상 사용 (caller responsibility).
+        if (bundle_opts.skip_initial_output) incremental_opts.skip_bundle_output = true;
         var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
         defer rebundler.deinit();
 
