@@ -22,7 +22,7 @@ fn appendResolvedDep(
     dep: CachedResolvedDep,
 ) !void {
     // PR #3749 Phase 3 (C): dep.path 는 PathRef variant — caller 가 lifetime 명시.
-    // graph 가 추가 dupe 안 함. interned/specifier/plugin variant 는 borrow,
+    // graph 가 추가 dupe 안 함. interned/specifier variant 는 borrow,
     // owned variant 는 caller-alloc + module.deinit 시 자동 free.
     const mod_ptr = self.modules.at(mod_idx);
     try mod_ptr.resolved_deps.append(self.allocator, dep);
@@ -335,7 +335,7 @@ pub fn applyResolveResult(
                 // addModule 이 path 를 dupe 하므로 graph 가 owner. v.path 는 이미
                 // `internResolvedModule` 이 path_pool 에 intern 한 borrow slice → .interned
                 // 로 wrap (PathRef 의미 정합: .interned = path_pool 소유, caller borrow).
-                // clone 비용은 .plugin 과 동일 (clonePathRefIfNeeded 가 둘 다 .owned 로 dupe).
+                // putModule 의 clonePathRefIfNeeded 가 .interned → .owned dupe.
                 const dep_idx = try self.addModule(v.path);
                 const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, dep_idx);
                 try appendResolvedDep(self, mod_idx, .{
