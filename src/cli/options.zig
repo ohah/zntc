@@ -1073,3 +1073,37 @@ const DefineEntry = lib.transformer.DefineEntry;
 test {
     _ = @import("options_test.zig");
 }
+
+// ─── --certfile / --keyfile parsing tests (#2538 4-2 PR-3b backfill) ────────
+
+test "parseArgs: --certfile cert.pem 단독 parsing" {
+    const args = [_][]const u8{ "zntc", "--certfile", "cert.pem" };
+    var opts = (parseCliArguments(&args, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer opts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("cert.pem", opts.serve_cert_path.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), opts.serve_key_path);
+}
+
+test "parseArgs: --keyfile key.pem 단독 parsing" {
+    const args = [_][]const u8{ "zntc", "--keyfile", "key.pem" };
+    var opts = (parseCliArguments(&args, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer opts.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?[]const u8, null), opts.serve_cert_path);
+    try std.testing.expectEqualStrings("key.pem", opts.serve_key_path.?);
+}
+
+test "parseArgs: --certfile + --keyfile 같이" {
+    const args = [_][]const u8{ "zntc", "--certfile", "/path/cert.pem", "--keyfile", "/path/key.pem" };
+    var opts = (parseCliArguments(&args, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer opts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/path/cert.pem", opts.serve_cert_path.?);
+    try std.testing.expectEqualStrings("/path/key.pem", opts.serve_key_path.?);
+}
+
+test "parseArgs: cert/key 미지정 시 둘 다 null (plain HTTP 기본)" {
+    const args = [_][]const u8{ "zntc", "--serve", "--port", "8080" };
+    var opts = (parseCliArguments(&args, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer opts.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?[]const u8, null), opts.serve_cert_path);
+    try std.testing.expectEqual(@as(?[]const u8, null), opts.serve_key_path);
+}
