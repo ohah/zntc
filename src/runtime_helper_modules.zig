@@ -398,7 +398,7 @@ fn resolveIdHook(
     if (findModule(short) == null) return null;
     // specifier 는 Module.import_records[i].specifier slice 의 borrow — parse_arena 소유.
     // owns_path=false: bundler 가 free 시도 금지.
-    return .{ .virtual = .{ .path = specifier, .owns_path = false } };
+    return .{ .virtual = .{ .path = specifier, .owner = .borrowed } };
 }
 
 fn loadHook(

@@ -322,7 +322,7 @@ test "internResolvedModule: .virtual owns_path=true 시 원본 free + intern (#3
 
     const result = try cache.internResolvedModule(.{ .virtual = .{
         .path = dup_path,
-        .owns_path = true,
+        .owner = .owned,
     } });
 
     // 반환된 path 는 path_pool 의 interned slice — dup_path 와 *다른* 포인터.
@@ -330,7 +330,7 @@ test "internResolvedModule: .virtual owns_path=true 시 원본 free + intern (#3
         .virtual => |v| {
             try testing.expectEqualStrings("\x00plugin:virtual-mod", v.path);
             try testing.expect(v.path.ptr != dup_path.ptr); // ← intern 확인
-            try testing.expect(!v.owns_path); // ← 반환값은 항상 owns_path=false (caller borrow)
+            try testing.expect(v.owner == .borrowed); // ← 반환값은 항상 owns_path=false (caller borrow)
         },
         else => return error.TestUnexpectedResult,
     }
@@ -348,7 +348,7 @@ test "internResolvedModule: .virtual owns_path=false 시 borrow 유지 (#3759)" 
     const result = try cache.internResolvedModule(.{
         .virtual = .{
             .path = static_path,
-            .owns_path = false, // ← borrow only — bundler 가 free 시도 금지
+            .owner = .borrowed, // ← borrow only — bundler 가 free 시도 금지
         },
     });
 
@@ -357,7 +357,7 @@ test "internResolvedModule: .virtual owns_path=false 시 borrow 유지 (#3759)" 
             try testing.expectEqualStrings("\x00zntc:runtime/extends", v.path);
             // path_pool 에 dupe 되어 *다른* slice 반환.
             try testing.expect(v.path.ptr != static_path.ptr);
-            try testing.expect(!v.owns_path);
+            try testing.expect(v.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -378,7 +378,7 @@ test "internResolvedModule: .file owns_path=true 시 원본 free + intern" {
         .path = dup_path,
         .resolve_dir = dup_rd,
         .module_type = .js,
-        .owns_path = true,
+        .owner = .owned,
     } });
 
     switch (result) {
@@ -387,7 +387,7 @@ test "internResolvedModule: .file owns_path=true 시 원본 free + intern" {
             try testing.expect(f.path.ptr != dup_path.ptr);
             try testing.expect(f.resolve_dir != null);
             try testing.expect(f.resolve_dir.?.ptr != dup_rd.ptr);
-            try testing.expect(!f.owns_path);
+            try testing.expect(f.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -405,14 +405,14 @@ test "internResolvedModule: .file owns_path=false 시 borrow 유지" {
     const result = try cache.internResolvedModule(.{ .file = .{
         .path = static_path,
         .module_type = .js,
-        .owns_path = false,
+        .owner = .borrowed,
     } });
 
     switch (result) {
         .file => |f| {
             try testing.expectEqualStrings("/abs/borrowed.ts", f.path);
             try testing.expect(f.path.ptr != static_path.ptr); // intern 됐음
-            try testing.expect(!f.owns_path);
+            try testing.expect(f.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -429,7 +429,7 @@ test "internResolvedModule: .disabled owns_path=true / false" {
     const r1 = try cache.internResolvedModule(.{ .disabled = .{
         .path = dup_path,
         .module_type = .js,
-        .owns_path = true,
+        .owner = .owned,
     } });
     switch (r1) {
         .disabled => |d| try testing.expect(d.path.ptr != dup_path.ptr),
@@ -441,12 +441,12 @@ test "internResolvedModule: .disabled owns_path=true / false" {
     const r2 = try cache.internResolvedModule(.{ .disabled = .{
         .path = static_path,
         .module_type = .js,
-        .owns_path = false,
+        .owner = .borrowed,
     } });
     switch (r2) {
         .disabled => |d| {
             try testing.expectEqualStrings("/disabled/static", d.path);
-            try testing.expect(!d.owns_path);
+            try testing.expect(d.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -462,13 +462,13 @@ test "internResolvedModule: .external owns_path=true / false" {
     const dup_path = try testing.allocator.dupe(u8, "react");
     const r1 = try cache.internResolvedModule(.{ .external = .{
         .path = dup_path,
-        .owns_path = true,
+        .owner = .owned,
     } });
     switch (r1) {
         .external => |e| {
             try testing.expectEqualStrings("react", e.path);
             try testing.expect(e.path.ptr != dup_path.ptr);
-            try testing.expect(!e.owns_path);
+            try testing.expect(e.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -477,12 +477,12 @@ test "internResolvedModule: .external owns_path=true / false" {
     const static_path: []const u8 = "node:fs";
     const r2 = try cache.internResolvedModule(.{ .external = .{
         .path = static_path,
-        .owns_path = false,
+        .owner = .borrowed,
     } });
     switch (r2) {
         .external => |e| {
             try testing.expectEqualStrings("node:fs", e.path);
-            try testing.expect(!e.owns_path);
+            try testing.expect(e.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -499,7 +499,7 @@ test "internResolvedModule: .custom owns_path=true / false (name + path)" {
     const r1 = try cache.internResolvedModule(.{ .custom = .{
         .name = dup_name,
         .path = dup_path,
-        .owns_path = true,
+        .owner = .owned,
     } });
     switch (r1) {
         .custom => |c| {
@@ -507,7 +507,7 @@ test "internResolvedModule: .custom owns_path=true / false (name + path)" {
             try testing.expectEqualStrings("/abs/custom", c.path);
             try testing.expect(c.name.ptr != dup_name.ptr);
             try testing.expect(c.path.ptr != dup_path.ptr);
-            try testing.expect(!c.owns_path);
+            try testing.expect(c.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -516,13 +516,13 @@ test "internResolvedModule: .custom owns_path=true / false (name + path)" {
     const r2 = try cache.internResolvedModule(.{ .custom = .{
         .name = "static-ns",
         .path = "/abs/static",
-        .owns_path = false,
+        .owner = .borrowed,
     } });
     switch (r2) {
         .custom => |c| {
             try testing.expectEqualStrings("static-ns", c.name);
             try testing.expectEqualStrings("/abs/static", c.path);
-            try testing.expect(!c.owns_path);
+            try testing.expect(c.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -540,13 +540,13 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
     const r1 = try cache.internResolvedModule(.{ .dataurl = .{
         .mime = dup_mime,
         .data = dup_data,
-        .owns_payload = true,
+        .owner = .owned,
     } });
     switch (r1) {
         .dataurl => |du| {
             try testing.expectEqualStrings("image/png", du.mime);
             try testing.expect(du.mime.ptr != dup_mime.ptr); // mime intern
-            try testing.expect(!du.owns_payload);
+            try testing.expect(du.owner == .borrowed);
             // data 는 free 됐으므로 "" 반환 (future RFC 까지 안전 placeholder).
             try testing.expectEqualStrings("", du.data);
         },
@@ -557,13 +557,13 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
     const r2 = try cache.internResolvedModule(.{ .dataurl = .{
         .mime = "text/plain",
         .data = "literal-data",
-        .owns_payload = false,
+        .owner = .borrowed,
     } });
     switch (r2) {
         .dataurl => |du| {
             try testing.expectEqualStrings("text/plain", du.mime);
             try testing.expectEqualStrings("literal-data", du.data);
-            try testing.expect(!du.owns_payload);
+            try testing.expect(du.owner == .borrowed);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -575,7 +575,7 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
     const r3 = try cache.internResolvedModule(.{ .dataurl = .{
         .mime = "application/octet-stream",
         .data = borrow_data,
-        .owns_payload = false,
+        .owner = .borrowed,
     } });
     switch (r3) {
         .dataurl => |du| {

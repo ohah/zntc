@@ -47,7 +47,7 @@ fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allo
             .file = .{
                 .path = try allocator.dupe(u8, "/virtual/config.js"),
                 .module_type = .js,
-                .owns_path = true, // default 와 동일하지만 명시 — alloc.dupe 의도 표기.
+                .owner = .owned, // default 와 동일하지만 명시 — alloc.dupe 의도 표기.
             },
         };
     }
@@ -642,7 +642,7 @@ test "ResolvedModule: file variant 보존" {
         .path = "/abs/foo.ts",
         .module_type = .ts,
         .is_module_field = true,
-        .owns_path = false,
+        .owner = .borrowed,
     } };
     switch (m) {
         .file => |f| {
@@ -656,13 +656,13 @@ test "ResolvedModule: file variant 보존" {
 
 test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" {
     // 모든 fixture 가 static literal — owns_path=false 로 borrow 명시.
-    const v: ResolvedModule = .{ .virtual = .{ .path = "virtual:foo", .owns_path = false } };
+    const v: ResolvedModule = .{ .virtual = .{ .path = "virtual:foo", .owner = .borrowed } };
     switch (v) {
         .virtual => |x| try std.testing.expectEqualStrings("virtual:foo", x.path),
         else => return error.TestUnexpectedResult,
     }
 
-    const d: ResolvedModule = .{ .dataurl = .{ .mime = "image/png", .data = "AAAA", .owns_payload = false } };
+    const d: ResolvedModule = .{ .dataurl = .{ .mime = "image/png", .data = "AAAA", .owner = .borrowed } };
     switch (d) {
         .dataurl => |x| {
             try std.testing.expectEqualStrings("image/png", x.mime);
@@ -671,13 +671,13 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const e: ResolvedModule = .{ .external = .{ .path = "react", .owns_path = false } };
+    const e: ResolvedModule = .{ .external = .{ .path = "react", .owner = .borrowed } };
     switch (e) {
         .external => |x| try std.testing.expectEqualStrings("react", x.path),
         else => return error.TestUnexpectedResult,
     }
 
-    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .js, .owns_path = false } };
+    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .js, .owner = .borrowed } };
     switch (dis) {
         .disabled => |x| {
             try std.testing.expectEqualStrings("/abs/disabled.js", x.path);
@@ -686,7 +686,7 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const c: ResolvedModule = .{ .custom = .{ .name = "my-plugin", .path = "/x", .owns_path = false } };
+    const c: ResolvedModule = .{ .custom = .{ .name = "my-plugin", .path = "/x", .owner = .borrowed } };
     switch (c) {
         .custom => |x| {
             try std.testing.expectEqualStrings("my-plugin", x.name);
