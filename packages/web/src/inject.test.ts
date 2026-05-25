@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import {
   injectAppDevBundleCssLinks,
+  injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
   injectIntoDevHtml,
@@ -181,6 +182,35 @@ describe('injectAppDevPipelineCssLinks', () => {
     writeHtml(original);
     injectAppDevPipelineCssLinks(outdir, '/', []);
     expect(readHtml()).toBe(original);
+  });
+
+  test('injectAppDevBundleCssLinksFromOutdir — outdir 의 .css 파일 스캔해 link 주입 (#3813)', () => {
+    writeHtml('<html><head></head></html>');
+    writeFileSync(join(outdir, 'bundle.js'), '// js, ignored');
+    writeFileSync(join(outdir, 'style-a.css'), 'a {}');
+    writeFileSync(join(outdir, 'style-b.css'), 'b {}');
+    injectAppDevBundleCssLinksFromOutdir(outdir, '/');
+    const html = readHtml();
+    expect(html).toMatch(/<link[^>]+rel="stylesheet"[^>]+href="\/style-a\.css"/);
+    expect(html).toMatch(/<link[^>]+rel="stylesheet"[^>]+href="\/style-b\.css"/);
+    // .js 는 무시
+    expect(html).not.toMatch(/href="\/bundle\.js"/);
+  });
+
+  test('injectAppDevBundleCssLinksFromOutdir — 이미 있는 link 는 중복 추가 안 함', () => {
+    writeHtml('<html><head><link rel="stylesheet" href="/a.css"></head></html>');
+    writeFileSync(join(outdir, 'a.css'), 'a {}');
+    injectAppDevBundleCssLinksFromOutdir(outdir, '/');
+    const html = readHtml();
+    expect(html.match(/href="\/a\.css"/g)?.length).toBe(1);
+  });
+
+  test('injectAppDevBundleCssLinksFromOutdir — outdir 미존재 시 silent skip', () => {
+    writeHtml('<html><head></head></html>');
+    // outdir 안 만든 nested 경로
+    injectAppDevBundleCssLinksFromOutdir(join(outdir, 'no-such-subdir'), '/');
+    // HTML 그대로
+    expect(readHtml()).toBe('<html><head></head></html>');
   });
 
   test('Windows path separator 를 forward slash 로 변환', () => {

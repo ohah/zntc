@@ -1944,11 +1944,25 @@ async function runServe(opts, config, { appDev = null } = {}) {
       // #3779 follow-up — runBundle 이 outdir 를 이미 채웠으므로 watch initial 출력은 skip.
       watchBuildOpts.skipInitialOutput = true;
       watchBuildOpts.onRebuild = (event) => {
-        try {
-          web.broadcastRebuildEvent(hmr, event);
-        } catch (err) {
-          console.error('[serve] hmr broadcast error:', err);
-        }
+        // #3813 — graphChanged 시 outdir 새 chunk/CSS 갱신이 필요한데, skipInitialOutput=true
+        // + #3802 의 incremental skip_bundle_output 강제로 native watch 가 outdir 안 씀.
+        // workaround: graphChanged 면 추가 runBundle 호출로 outdir 채운 후 HTML `<link>`
+        // 재주입. (architectural cleanup 은 #3796/#3798 epic 에서 watch 단독화로 풀 예정.)
+        void (async () => {
+          try {
+            if (event && event.success && event.graphChanged) {
+              try {
+                const r = await runBundle(opts, config);
+                if (r.errors.length === 0) appDev.injectBundleCssLinks(r);
+              } catch (cssErr) {
+                console.error('[serve] graph 변경 outdir 재출력 실패:', cssErr);
+              }
+            }
+            web.broadcastRebuildEvent(hmr, event);
+          } catch (err) {
+            console.error('[serve] hmr broadcast error:', err);
+          }
+        })();
       };
       try {
         nativeWatchHandle = watch(watchBuildOpts);
