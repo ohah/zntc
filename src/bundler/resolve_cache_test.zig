@@ -567,4 +567,20 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
         },
         else => return error.TestUnexpectedResult,
     }
+
+    // owns_payload=false + heap-alloc borrow case (review finding) — caller 가 alloc
+    // 한 data 슬라이스의 ptr identity 가 보존되어야 함 (intern 회귀 검출).
+    const borrow_data = try testing.allocator.dupe(u8, "heap-borrow-data");
+    defer testing.allocator.free(borrow_data);
+    const r3 = try cache.internResolvedModule(.{ .dataurl = .{
+        .mime = "application/octet-stream",
+        .data = borrow_data,
+        .owns_payload = false,
+    } });
+    switch (r3) {
+        .dataurl => |du| {
+            try testing.expect(du.data.ptr == borrow_data.ptr); // borrow 무손상
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
