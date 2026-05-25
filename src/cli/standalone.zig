@@ -72,6 +72,10 @@ pub const ServeOptions = struct {
     host: []const u8,
     open: bool,
     proxy: []const lib.server.DevServer.ProxyRule,
+    /// TLS cert/key — 둘 다 set 되면 HTTPS, 둘 다 null 이면 plain. 한쪽만 set 은
+    /// DevServer.init 에서 명시적 error.TlsKeyMissing.
+    cert_path: ?[]const u8 = null,
+    key_path: ?[]const u8 = null,
 };
 
 pub fn runServe(allocator: std.mem.Allocator, opts: ServeOptions) !void {
@@ -96,6 +100,8 @@ pub fn runServe(allocator: std.mem.Allocator, opts: ServeOptions) !void {
         .open = opts.open,
         .entry_point = entry,
         .proxy = opts.proxy,
+        .cert_path = opts.cert_path,
+        .key_path = opts.key_path,
     }) catch |err| {
         try stderr.print("zntc: failed to start dev server: {}\n", .{err});
         std.process.exit(1);

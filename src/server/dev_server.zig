@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const http = std.http;
 const mime = @import("mime.zig");
 const FileWatcher = @import("file_watcher.zig").FileWatcher;
+const tls = @import("tls.zig");
 const lib = @import("../root.zig");
 const Bundler = lib.bundler.Bundler;
 const BundleOptions = lib.bundler.BundleOptions;
@@ -67,6 +68,9 @@ pub const DevServer = struct {
     /// default 미제공 — partial-init 인스턴스가 serveAppDevClient 로 빈 body 응답하는
     /// silent regression 차단 (event_ring 과 같은 invariant).
     overlay_client: []u8,
+    /// TLS context — `--certfile`/`--keyfile` 양쪽 다 설정된 경우만. null 이면 plain
+    /// HTTP. dev server scope 라 1개 cert 만 — SNI multi-cert 는 별도 epic (#2538 4-2).
+    tls_ctx: ?tls.TlsContext = null,
 
     pub const ProxyRule = struct {
         /// 매칭할 경로 prefix (예: "/api")
@@ -93,6 +97,10 @@ pub const DevServer = struct {
         jsx_import_source: []const u8 = "react",
         jsx_factory: []const u8 = "React.createElement",
         jsx_fragment: []const u8 = "React.Fragment",
+        /// TLS cert (PEM) 의 file path. `key_path` 와 함께 둘 다 set 되면 HTTPS 활성,
+        /// 둘 다 null 이면 plain HTTP. 한쪽만 set 하면 init error (`error.TlsKeyMissing`).
+        cert_path: ?[]const u8 = null,
+        key_path: ?[]const u8 = null,
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
@@ -141,6 +149,21 @@ pub const DevServer = struct {
             getLog().print("zntc: failed to prepare dev overlay client: {}\n", .{err}) catch {};
             return err;
         };
+        errdefer allocator.free(overlay_client);
+
+        // TLS — cert + key 양쪽 다 set 일 때만 활성. 한쪽만 set 은 명백 misconfig 라
+        // 명시적 error 로 빠르게 fail.
+        var tls_ctx: ?tls.TlsContext = null;
+        if (options.cert_path != null and options.key_path != null) {
+            tls_ctx = tls.TlsContext.init(options.cert_path.?, options.key_path.?) catch |err| {
+                getLog().print("zntc: TLS context init failed: {}\n", .{err}) catch {};
+                return err;
+            };
+        } else if (options.cert_path != null or options.key_path != null) {
+            getLog().print("zntc: --certfile 와 --keyfile 은 둘 다 필요 (한쪽만 지정됨)\n", .{}) catch {};
+            return error.TlsKeyMissing;
+        }
+        errdefer if (tls_ctx) |*c| c.deinit();
 
         return .{
             .allocator = allocator,
@@ -162,6 +185,7 @@ pub const DevServer = struct {
             .jsx_fragment = options.jsx_fragment,
             .event_ring = EventRing.init(allocator),
             .overlay_client = overlay_client,
+            .tls_ctx = tls_ctx,
         };
     }
 
@@ -170,6 +194,7 @@ pub const DevServer = struct {
         if (self.abs_entry) |ae| self.allocator.free(ae);
         // overlay_client 는 init 에서 반드시 알록된 owned slice (default 미제공).
         self.allocator.free(self.overlay_client);
+        if (self.tls_ctx) |*c| c.deinit();
         self.root_dir.close();
         self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
@@ -230,10 +255,11 @@ pub const DevServer = struct {
         };
 
         const w = getLog();
+        const scheme: []const u8 = if (self.tls_ctx != null) "https" else "http";
         w.print("\n  zntc dev server\n\n", .{}) catch {};
-        w.print("  Local: http://{s}:{d}/\n", .{ self.host, self.port }) catch {};
+        w.print("  Local: {s}://{s}:{d}/\n", .{ scheme, self.host, self.port }) catch {};
         if (std.mem.eql(u8, self.host, "0.0.0.0")) {
-            w.print("  Network: http://0.0.0.0:{d}/\n", .{self.port}) catch {};
+            w.print("  Network: {s}://0.0.0.0:{d}/\n", .{ scheme, self.port }) catch {};
         }
         w.print("  Root:  {s}\n", .{self.root_path}) catch {};
         if (self.entry_point) |ep| {
@@ -350,7 +376,8 @@ pub const DevServer = struct {
     }
 
     fn openBrowser(self: *DevServer) void {
-        const url_buf = std.fmt.allocPrint(self.allocator, "http://{s}:{d}/", .{ self.host, self.port }) catch return;
+        const scheme: []const u8 = if (self.tls_ctx != null) "https" else "http";
+        const url_buf = std.fmt.allocPrint(self.allocator, "{s}://{s}:{d}/", .{ scheme, self.host, self.port }) catch return;
         defer self.allocator.free(url_buf);
         // macOS: open, Linux: xdg-open
         var child = std.process.Child.init(
@@ -401,10 +428,31 @@ pub const DevServer = struct {
 
         var send_buf: [8192]u8 = undefined;
         var recv_buf: [8192]u8 = undefined;
-        var conn_reader = connection.stream.reader(&recv_buf);
-        var conn_writer = connection.stream.writer(&send_buf);
-        var server: http.Server = .init(conn_reader.interface(), &conn_writer.interface);
 
+        if (self.tls_ctx) |*ctx| {
+            // HTTPS path — SSL_accept handshake 후 TlsReader/TlsWriter 어댑터로 http.Server.
+            var tls_conn = tls.TlsConnection.init(ctx, connection.stream.handle) catch |err| {
+                getLog().print("zntc: TLS handshake failed: {}\n", .{err}) catch {};
+                return;
+            };
+            defer tls_conn.deinit();
+
+            var tls_reader = tls_conn.reader(&recv_buf);
+            var tls_writer = tls_conn.writer(&send_buf);
+            var server: http.Server = .init(&tls_reader.interface, &tls_writer.interface);
+            self.serveOnConnection(&server, &tls_writer.interface);
+        } else {
+            // plain HTTP path.
+            var conn_reader = connection.stream.reader(&recv_buf);
+            var conn_writer = connection.stream.writer(&send_buf);
+            var server: http.Server = .init(conn_reader.interface(), &conn_writer.interface);
+            self.serveOnConnection(&server, &conn_writer.interface);
+        }
+    }
+
+    /// HTTP loop — TLS / plain 양쪽 진입점. http.Server 와 ws upgrade 시 사용할
+    /// `*Io.Writer` 만 추상화로 받음. 나머지는 기존 handleConnection 동일.
+    fn serveOnConnection(self: *DevServer, server: *http.Server, writer: *std.Io.Writer) void {
         while (true) {
             var request = server.receiveHead() catch |err| switch (err) {
                 error.HttpConnectionClosing => return,
@@ -436,7 +484,7 @@ pub const DevServer = struct {
                         getLog().print("zntc: WebSocket handshake failed\n", .{}) catch {};
                         return;
                     };
-                    self.handleWebSocket(&ws, &conn_writer.interface);
+                    self.handleWebSocket(&ws, writer);
                     return;
                 },
                 .other => {
@@ -1678,4 +1726,60 @@ test "substituteOverlayPlaceholders: raw sentinel 들이 protocol 값으로 치�
     // 핵심 분기 (update / css-update / __zntc_apply_update) 보존.
     try testing.expect(std.mem.indexOf(u8, result, "__zntc_apply_update") != null);
     try testing.expect(std.mem.indexOf(u8, result, "new WebSocket(") != null);
+}
+
+test "DevServer.init: cert 만 set + key 없음 → error.TlsKeyMissing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    const result = DevServer.init(std.testing.allocator, .{
+        .root_dir = dir_path,
+        .cert_path = "/some/cert.pem",
+        // key_path = null
+    });
+    try std.testing.expectError(error.TlsKeyMissing, result);
+}
+
+test "DevServer.init: key 만 set + cert 없음 → error.TlsKeyMissing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    const result = DevServer.init(std.testing.allocator, .{
+        .root_dir = dir_path,
+        .key_path = "/some/key.pem",
+        // cert_path = null
+    });
+    try std.testing.expectError(error.TlsKeyMissing, result);
+}
+
+test "DevServer.init: 둘 다 set + 존재하지 않는 파일 → CertLoadFailed (TlsContext init fail propagate)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    const result = DevServer.init(std.testing.allocator, .{
+        .root_dir = dir_path,
+        .cert_path = "/nonexistent/cert.pem",
+        .key_path = "/nonexistent/key.pem",
+    });
+    // tls.Error.CertLoadFailed 가 그대로 propagate
+    try std.testing.expectError(error.CertLoadFailed, result);
+}
+
+test "DevServer.init: cert/key 둘 다 null → plain HTTP (tls_ctx null)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{
+        .root_dir = dir_path,
+    });
+    defer dev_server.deinit();
+    try std.testing.expect(dev_server.tls_ctx == null);
 }

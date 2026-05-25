@@ -142,7 +142,7 @@ pub const TlsReader = struct {
         if (n <= 0) {
             const e = boringssl.SSL_get_error(self.ssl, n);
             if (e == boringssl.SSL_ERROR_ZERO_RETURN) return error.EndOfStream;
-            self.error_state = .TlsRead;
+            self.error_state = Error.TlsRead;
             return error.ReadFailed;
         }
         io_w.advance(@intCast(n));
@@ -183,7 +183,7 @@ pub const TlsWriter = struct {
         const max: c_int = @intCast(@min(slice.len, @as(usize, std.math.maxInt(c_int))));
         const n = boringssl.SSL_write(self.ssl, slice.ptr, max);
         if (n <= 0) {
-            self.error_state = .TlsWrite;
+            self.error_state = Error.TlsWrite;
             return error.WriteFailed;
         }
         return @intCast(n);
