@@ -28,14 +28,18 @@ fn rollbackOomCloned(items: []CachedResolvedDep, allocator: std.mem.Allocator) v
     }
 }
 
-/// PR #3749 Phase 3 (C): cache-borrowed (interned) PathRef 를 store-owned 로 clone.
-/// specifier/plugin 은 별도 lifetime (parse_arena 양도 + plugin context) — clone 안 함.
-/// owned 는 이미 자체 owner — clone 안 함.
+/// PR #3749 Phase 3 (C) + H2 (plugin layer): cache/plugin-borrowed PathRef 를 store-owned
+/// 로 clone.
+/// - `.interned`: path_pool (cache) 소유 — cache deinit 시 dangling 위험 → clone.
+/// - `.plugin`: plugin context (build) 소유 — graph deinit 시 dangling 위험 → clone (H2).
+/// - `.specifier`: parse_arena 소유 — parse_arena 가 store 로 양도되어 store 와 같은
+///   lifetime → clone 안 함.
+/// - `.owned`: 이미 자체 owner → clone 안 함.
 /// **명시 enumeration** (M3): 새 PathRef variant 추가 시 compile error 로 결정 강제.
 fn clonePathRefIfNeeded(allocator: std.mem.Allocator, ref: PathRef) !PathRef {
     return switch (ref) {
-        .interned => |s| .{ .owned = try allocator.dupe(u8, s) },
-        .specifier, .plugin, .owned => ref,
+        .interned, .plugin => |s| .{ .owned = try allocator.dupe(u8, s) },
+        .specifier, .owned => ref,
     };
 }
 
@@ -456,4 +460,36 @@ test "PersistentModuleStore: putModule had_existing + OOM rollback 시 map entry
     store.putModule("/virtual/oom-had-existing.ts", &mod2, 2);
     // 핵심 검증: rollback 가 map.remove 를 수행해 dangling entry 제거.
     try testing.expect(!store.modules.contains("/virtual/oom-had-existing.ts"));
+}
+
+// Regression H2 (#3755 deferred → 본 PR 5 plugin layer): clonePathRefIfNeeded 가
+// .plugin variant 를 pass-through 하면 plugin context 가 free 한 후 store 에 dangling.
+// 시나리오: plugin 이 alloc 한 virtual path 가 .plugin 으로 dep 에 들어감 → putModule →
+// 같은 path 의 graph_allocator slice 가 graph deinit 시 free → store 에 dangling.
+// Fix: clonePathRefIfNeeded 가 .plugin 도 .owned 로 clone.
+test "PersistentModuleStore: plugin variant 가 store-owned 로 clone (H2)" {
+    const testing = std.testing;
+
+    var store = PersistentModuleStore.init(testing.allocator);
+    defer store.deinit();
+
+    var module = Module.init(@enumFromInt(0), "/virtual/h2.ts");
+    var deps: std.ArrayListUnmanaged(CachedResolvedDep) = .empty;
+    // .plugin variant — graph_allocator alloc 가정.
+    const plugin_path = try testing.allocator.dupe(u8, "\x00plugin:virtual-mod");
+    defer testing.allocator.free(plugin_path);
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .virtual, .path = .{ .plugin = plugin_path } });
+    module.resolved_deps = deps;
+    defer module.deinit(testing.allocator);
+
+    store.putModule("/virtual/h2.ts", &module, 1);
+    // 핵심: store 에 들어간 dep.path 가 .owned (store-owned) 이어야 한다.
+    // 만약 .plugin 그대로면 graph deinit (= module.deinit) 후 plugin_path free 시 store 에
+    // dangling — 그러나 본 테스트는 plugin_path 를 defer testing.allocator.free 로 관리해
+    // 의도적으로 graph lifetime 종료를 시뮬레이트.
+    const cached = store.modules.getPtr("/virtual/h2.ts") orelse return error.CacheMiss;
+    try testing.expect(cached.module.resolved_deps.items.len == 1);
+    const cached_path = cached.module.resolved_deps.items[0].path;
+    try testing.expect(cached_path == .owned); // ← clone 강제 검증
+    try testing.expectEqualStrings("\x00plugin:virtual-mod", cached_path.owned);
 }
