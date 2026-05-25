@@ -13,7 +13,13 @@ import type { HmrChannel } from './hmr-channel.ts';
  */
 export interface RebuildEventLike {
   readonly success: boolean;
+  /** Single error tag (catch path) — multi-error 가 있으면 errors 우선. */
   readonly error?: string;
+  /**
+   * #3799 — Multiple bundler diagnostics (success-but-errors path). file/message 둘 다 보존
+   * 해 overlay 가 다중 error + location 정보 표시. 빈 배열이거나 미정의면 `error` fallback.
+   */
+  readonly errors?: ReadonlyArray<{ readonly file: string; readonly message: string }>;
   readonly graphChanged?: boolean;
   readonly updates?: ReadonlyArray<{ readonly id: string; readonly code: string }>;
 }
@@ -37,7 +43,13 @@ export function broadcastRebuildEvent(
   event: RebuildEventLike,
 ): RebuildBroadcastOutcome {
   if (!event.success) {
-    hmr.reportError([{ text: event.error ?? 'Unknown build error' }]);
+    // #3799 — multi-error 가 있으면 file/message 둘 다 전달. 단일 `error` 는 catch path 의
+    // Zig error tag (예: 'OutOfMemory') 라 fallback.
+    if (event.errors && event.errors.length > 0) {
+      hmr.reportError(event.errors.map((e) => ({ text: e.message, location: { file: e.file } })));
+    } else {
+      hmr.reportError([{ text: event.error ?? 'Unknown build error' }]);
+    }
     return 'error';
   }
   if (event.graphChanged) {

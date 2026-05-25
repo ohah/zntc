@@ -285,12 +285,22 @@ const WatchRebuildEvent = struct {
     reparsed_modules: ?usize = null,
     // 실패 시
     error_msg: ?[]const u8 = null,
+    /// #3799 — bundler diagnostics 의 multi-error 보존. `@errorName(err)` 단일 문자열
+    /// (`error_msg`) 와 달리 file path + message 둘 다 보존. caller (broadcastRebuildEvent)
+    /// 가 우선 사용, 없으면 error_msg fallback.
+    errors: ?[]const ErrorEntry = null,
 
     const ModuleUpdate = struct {
         id: []const u8,
         code: []const u8,
         /// 모듈별 standalone source map (V3 JSON). null이면 미수집 (Issue #1248).
         map: ?[]const u8 = null,
+    };
+
+    /// #3799 — bundler diagnostics 의 1건. file/message 둘 다 native_alloc 으로 dupe.
+    const ErrorEntry = struct {
+        file: []const u8,
+        message: []const u8,
     };
 
     fn deinit(self: *WatchRebuildEvent) void {
@@ -307,6 +317,13 @@ const WatchRebuildEvent = struct {
             native_alloc.free(upd);
         }
         if (self.error_msg) |msg| native_alloc.free(msg);
+        if (self.errors) |errs| {
+            for (errs) |e| {
+                native_alloc.free(e.file);
+                native_alloc.free(e.message);
+            }
+            native_alloc.free(errs);
+        }
         native_alloc.destroy(self);
     }
 };
@@ -460,11 +477,28 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
             _ = c.napi_set_named_property(env, js_event, "reparsedModules", js_n);
         }
     } else {
-        // error: string
+        // error: string (catch 분기)
         if (event.error_msg) |msg| {
             var js_err: c.napi_value = undefined;
             _ = c.napi_create_string_utf8(env, msg.ptr, msg.len, &js_err);
             _ = c.napi_set_named_property(env, js_event, "error", js_err);
+        }
+        // #3799 — errors: Array<{file, message}> (success 후 diagnostics 분기)
+        if (event.errors) |errs| {
+            var js_errors: c.napi_value = undefined;
+            _ = c.napi_create_array_with_length(env, errs.len, &js_errors);
+            for (errs, 0..) |e, idx| {
+                var js_entry: c.napi_value = undefined;
+                _ = c.napi_create_object(env, &js_entry);
+                var js_file: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, e.file.ptr, e.file.len, &js_file);
+                _ = c.napi_set_named_property(env, js_entry, "file", js_file);
+                var js_msg: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, e.message.ptr, e.message.len, &js_msg);
+                _ = c.napi_set_named_property(env, js_entry, "message", js_msg);
+                _ = c.napi_set_element(env, js_errors, @intCast(idx), js_entry);
+            }
+            _ = c.napi_set_named_property(env, js_event, "errors", js_errors);
         }
     }
 
@@ -505,6 +539,48 @@ fn addWatchRootFiles(
 /// 단일 파일 빌드 산출물의 `.map` 을 디스크에 기록. lazy 경로 (`sourcemap_json == null`)
 /// 이거나 `enabled == false` 이면 no-op. 실패는 silently ignore — dev server 경로에서
 /// disk I/O 장애가 빌드 흐름을 막으면 안 됨.
+/// #3799 — `bundler.bundle()` 가 성공했지만 result.diagnostics 에 error severity 가 있으면
+/// `WatchRebuildEvent.errors` 로 변환. throw 케이스 (catch 분기) 는 별도 `error_msg` 사용.
+/// caller 가 entries 를 deinit 책임. 실패 (OOM 등) 시 null 반환.
+fn collectErrorsFromResult(
+    allocator: std.mem.Allocator,
+    result: *const bundler_mod.BundleResult,
+) ?[]const WatchRebuildEvent.ErrorEntry {
+    const diags = result.getDiagnostics();
+    var count: usize = 0;
+    for (diags) |d| {
+        if (d.severity == .@"error") count += 1;
+    }
+    if (count == 0) return null;
+    const entries = allocator.alloc(WatchRebuildEvent.ErrorEntry, count) catch return null;
+    var i: usize = 0;
+    var has_failed = false;
+    for (diags) |d| {
+        if (d.severity != .@"error") continue;
+        const file_dup = allocator.dupe(u8, d.file_path) catch {
+            has_failed = true;
+            break;
+        };
+        const msg_dup = allocator.dupe(u8, d.message) catch {
+            allocator.free(file_dup);
+            has_failed = true;
+            break;
+        };
+        entries[i] = .{ .file = file_dup, .message = msg_dup };
+        i += 1;
+    }
+    if (has_failed) {
+        // 부분 free
+        for (entries[0..i]) |e| {
+            allocator.free(e.file);
+            allocator.free(e.message);
+        }
+        allocator.free(entries);
+        return null;
+    }
+    return entries;
+}
+
 fn writeSourcemapFile(
     allocator: std.mem.Allocator,
     output_filename: []const u8,
@@ -593,6 +669,29 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         return;
     };
     defer result.deinit(allocator);
+
+    // #3799 — initial 빌드 자체는 성공했지만 result.diagnostics 에 error severity 가 있으면
+    // multi-error event 발화 후 worker 종료. caller (broadcastRebuildEvent) 가 errors 배열을
+    // reportError 로 전달 — 다중 error + file/message 정보 보존.
+    if (result.hasErrors()) {
+        const event = allocator.create(WatchRebuildEvent) catch {
+            _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+            _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+            async_data.deinit();
+            return;
+        };
+        event.* = .{
+            .success = false,
+            .errors = collectErrorsFromResult(allocator, &result),
+        };
+        if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
+            event.deinit();
+        }
+        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+        async_data.deinit();
+        return;
+    }
 
     // dev mode: per-module code 캐시 (HMR diff용)
     var module_code_cache = std.StringHashMap([]const u8).init(allocator);
@@ -811,6 +910,20 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             continue;
         };
         defer rebuild_result.deinit(allocator);
+
+        // #3799 — rebuild 성공했지만 diagnostics 에 errors 있으면 multi-error event 발화.
+        // 다음 rebuild 사이클로 계속 (worker 종료 안 함 — file 수정으로 사용자 fix 가능).
+        if (rebuild_result.hasErrors()) {
+            const event = allocator.create(WatchRebuildEvent) catch continue;
+            event.* = .{
+                .success = false,
+                .errors = collectErrorsFromResult(allocator, &rebuild_result),
+            };
+            if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
+                event.deinit();
+            }
+            continue;
+        }
 
         async_data.compiled_cache.logStats("");
 
