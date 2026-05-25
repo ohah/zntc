@@ -1,19 +1,21 @@
 # ZNTC
 
-> **Zig Native Transpiler & Compiler** — JavaScript / TypeScript / Flow 를 네이티브 속도로 처리하는 트랜스파일러 + 번들러.
+English · **[한국어](./README_KO.md)**
+
+> **Zig Native Transpiler & Compiler** — a transpiler and bundler for JavaScript / TypeScript / Flow, written in Zig and shipped as a native NAPI addon.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-ohah.github.io/zntc-2b6cb0.svg)](https://ohah.github.io/zntc)
 [![Test262](https://img.shields.io/badge/Test262-50,504%20/%2050,504-brightgreen.svg)](https://github.com/ohah/zntc/tree/main/docs/TESTING.md)
 [![Status](https://img.shields.io/badge/status-pre--release-orange.svg)](#status)
 
-ZNTC 는 SWC / oxc / esbuild 수준의 프로덕션 품질을 목표로 만들어진 단일 패스 툴체인입니다. 트랜스파일과 번들링이 같은 파이프라인을 공유하고, **Babel 없이도** styled-components / emotion / Reanimated worklets / Flow 같은 1st-party transform 을 본체에 내장합니다.
+ZNTC is a single-pass toolchain targeting the production quality of SWC / oxc / esbuild. Transpile and bundle share the same pipeline, and 1st-party transforms like styled-components / emotion / Reanimated worklets / Flow are built into the core — **no Babel required**.
 
-- 📦 **Single dependency** — `@zntc/core` 하나로 transpile + bundle + dev server (`zntc` CLI 포함)
-- ⚡ **Native speed** — SIMD 렉서, Arena + mimalloc, 인덱스 기반 24B 고정 AST, Producer-Consumer 파이프라인
-- 🔌 **Plugin compat** — Rollup / Vite 호환 훅 (`resolveId` / `load` / `transform`) + esbuild 호환 CLI / 옵션
-- 📱 **React Native 1st-class** — Metro 호환 번들링, Flow, Reanimated worklets, Hermes 타겟, dev server
-- 🌐 **Runs anywhere** — Node 24+, Bun 1.3+, 브라우저 WASM (transpile-only + bundler 포함)
+- 📦 **Single dependency** — `@zntc/core` covers transpile + bundle + dev server (ships the `zntc` CLI)
+- ⚡ **Native speed** — SIMD lexer, arena + mimalloc, index-based 24B fixed-size AST, producer-consumer pipeline
+- 🔌 **Plugin compatible** — Rollup / Vite hooks (`resolveId` / `load` / `transform`) + esbuild-compatible CLI / options
+- 📱 **React Native first-class** — Metro-compatible bundling, Flow, Reanimated worklets, Hermes target, dev server
+- 🌐 **Runs anywhere** — Node 24+, Bun 1.3+, browser WASM (transpile-only and full bundler builds)
 
 ---
 
@@ -26,42 +28,42 @@ bun add -D @zntc/core
 # pnpm add -D @zntc/core
 ```
 
-| 시나리오 | 추가로 필요한 패키지 |
+| Scenario | Additional package |
 |---|---|
-| transpile / bundle (라이브러리 모드) | `@zntc/core` 단독 |
+| transpile / bundle (library mode) | `@zntc/core` only |
 | dev / preview / build (postcss · sass · CSS Modules · HMR overlay) | `+ @zntc/web` |
-| Vite 사용자 — esbuild transform 만 ZNTC 로 교체 | `@zntc/vite-plugin` |
+| Vite users — replace just the esbuild transform with ZNTC | `@zntc/vite-plugin` |
 | React Native (init / preset / dev server) | `+ @zntc/react-native` |
-| 브라우저 playground / Workers | `@zntc/wasm` |
+| Browser playground / Workers | `@zntc/wasm` |
 
-> **Status**: pre-release. NAPI 바이너리는 macOS / Linux / Windows × x64 / arm64 사전 빌드. 자세한 빌드 매트릭스는 [docs/PUBLISH.md](./docs/PUBLISH.md).
+> **Status**: pre-release. Prebuilt NAPI binaries are provided for macOS / Linux / Windows × x64 / arm64. See [docs/PUBLISH.md](./docs/PUBLISH.md) for the full build matrix.
 
 ## Quick start
 
 ### CLI
 
 ```bash
-# 단일 파일 트랜스파일 (.ts → .js, sourcemap 동반)
+# Transpile a single file (.ts → .js, sourcemap included)
 npx zntc src/index.ts --outdir dist
 
-# 번들 (esbuild 호환 옵션)
+# Bundle (esbuild-compatible options)
 npx zntc src/index.ts --bundle --outdir dist --format=esm --target=es2022
 
 # Dev server + HMR + Fast Refresh
 npx zntc serve src/main.tsx --port 5173
 
-# React Native (Metro 호환)
+# React Native (Metro-compatible)
 npx zntc --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
 ```
 
-`zntc --help` 로 전체 옵션 확인.
+Run `zntc --help` for the full list of options.
 
 ### `@zntc/core` JS / NAPI API
 
 ```ts
 import { transpile, build } from "@zntc/core";
 
-// 단일 파일 트랜스파일 — NAPI 바인딩은 첫 호출 시 자동 로드
+// Single-file transpile — the NAPI binding is loaded lazily on first use
 const { code, map } = transpile(source, {
   filename: "input.ts",
   jsx: "automatic",
@@ -69,7 +71,7 @@ const { code, map } = transpile(source, {
   sourcemap: true,
 });
 
-// 번들링 (esbuild / Vite / Rollup 호환 플러그인 훅)
+// Bundle (esbuild / Vite / Rollup-compatible plugin hooks)
 const result = await build({
   entryPoints: ["src/index.ts"],
   bundle: true,
@@ -89,7 +91,7 @@ const result = await build({
 });
 ```
 
-### Vite 통합
+### Vite integration
 
 ```ts
 // vite.config.ts
@@ -101,80 +103,80 @@ export default defineConfig({
 });
 ```
 
-Vite 의 esbuild transform 단계가 ZNTC 로 교체되어 TS / JSX / Flow / 1st-party transform 까지 단일 패스로 처리됩니다.
+Vite's esbuild transform step is swapped out for ZNTC, so TS / JSX / Flow and 1st-party transforms all flow through a single pass.
 
-### React Native CLI 프로젝트 부착
+### Attaching to a React Native CLI project
 
 ```bash
 npx @zntc/init
 ```
 
-기존 RN CLI 앱의 `start` / `bundle:*` 스크립트를 ZNTC 로 교체합니다 (Metro fallback 은 보존). 자세한 절차는 [React Native 가이드](https://ohah.github.io/zntc/guides/react-native/)와 [`zntc.config.ts` 예시](./docs/CONFIG.md#react-native-config-예제)를 참고합니다.
+This rewrites the `start` / `bundle:*` scripts of an existing RN CLI app to use ZNTC (Metro fallback is preserved). See the [React Native guide](https://ohah.github.io/zntc/guides/react-native/) and the [`zntc.config.ts` example](./docs/CONFIG.md#react-native-config-예제) for details.
 
 ## Features
 
-### Babel 없이 1st-party transform
+### 1st-party transforms — no Babel
 
-다른 번들러에서 별도 Babel 플러그인이 필요한 변환을 ZNTC 는 본체에 내장합니다.
+Transforms that require separate Babel plugins in other bundlers are built into the ZNTC core.
 
 ```ts
 // zntc.config.ts
 import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
-  platform: "react-native",      // flow / worklets / RN preset 자동
+  platform: "react-native",      // auto-enables flow / worklets / RN preset
   jsxImportSource: "@emotion/react",
   compiler: {
-    styledComponents: true,      // babel-plugin-styled-components 대응
-    emotion: { autoLabel: "dev-only" },  // @emotion/babel-plugin 대응
+    styledComponents: true,      // covers babel-plugin-styled-components
+    emotion: { autoLabel: "dev-only" },  // covers @emotion/babel-plugin
   },
 });
 ```
 
-| Babel 플러그인 | ZNTC 옵션 |
+| Babel plugin | ZNTC option |
 |---|---|
 | `babel-plugin-styled-components` | `compiler.styledComponents` |
 | `@emotion/babel-plugin` | `compiler.emotion` |
-| `react-native-worklets/plugin` | `workletTransform` (RN 자동) |
-| `@babel/preset-flow` | `flow: true` (RN 자동) |
+| `react-native-worklets/plugin` | `workletTransform` (automatic on RN) |
+| `@babel/preset-flow` | `flow: true` (automatic on RN) |
 | `@babel/preset-env` | `target: "es2020"` / `target: "hermes0.70"` |
 
-자세한 사용법: [네이티브 트랜스폼 가이드](https://ohah.github.io/zntc/guides/native-transforms/).
+Details: [native transforms guide](https://ohah.github.io/zntc/guides/native-transforms/).
 
-### Plugin / 옵션 호환
+### Plugin / options compatibility
 
-- **Rollup / Vite 스타일 훅**: `resolveId`, `load`, `transform` (filter 함수 / RegExp / string 모두 지원)
-- **esbuild 호환 옵션 surface**: `entryPoints`, `bundle`, `format`, `target`, `define`, `loader`, `external`, `metafile`
-- **Vite alias 호환**: object `Record<string, string>` + array `{ find, replacement }` 형태 모두
-- **`zntc.config.{ts,js,json}`** + tsconfig + `.env` + CLI flag 우선순위 머지 ([docs/CONFIG.md](./docs/CONFIG.md))
+- **Rollup / Vite-style hooks**: `resolveId`, `load`, `transform` (supports filter functions, RegExp, and string)
+- **esbuild-compatible option surface**: `entryPoints`, `bundle`, `format`, `target`, `define`, `loader`, `external`, `metafile`
+- **Vite alias compatible**: both `Record<string, string>` and `{ find, replacement }` array forms
+- **`zntc.config.{ts,js,json}`** + tsconfig + `.env` + CLI flag with documented merge precedence ([docs/CONFIG.md](./docs/CONFIG.md))
 
-### 성능
+### Performance
 
-| 항목 | 결과 |
+| Metric | Result |
 |---|---|
-| Test262 TC39 정합성 | **50,504 / 50,504 통과 (100%, 0 fail)** |
-| 144 npm 패키지 스모크 (build + execute) | esbuild 대비 평균 **0.82x bundle size** |
-| 합성 벤치 (parse + emit) | ZNTC **7ms** · Bun 10ms · esbuild 13ms · rolldown 62ms |
-| RN core (`react-native` 0.74) | 410 개 `@flow` 파일 회귀 통과 |
+| Test262 TC39 conformance | **50,504 / 50,504 pass (100%, 0 fail)** |
+| 144-package npm smoke (build + execute) | average **0.82x bundle size** vs esbuild |
+| Synthetic bench (parse + emit) | ZNTC **7ms** · Bun 10ms · esbuild 13ms · rolldown 62ms |
+| RN core (`react-native` 0.74) | 410 `@flow` files pass regression |
 | HMR warm rebuild | **< 100ms** (PR #1747) |
 
-자세한 데이터: [docs/ROADMAP.md](./docs/ROADMAP.md) · [docs/TESTING.md](./docs/TESTING.md) · [벤치마크 사이트](https://ohah.github.io/zntc/reference/benchmarks/).
+Full data: [docs/ROADMAP.md](./docs/ROADMAP.md) · [docs/TESTING.md](./docs/TESTING.md) · [benchmark site](https://ohah.github.io/zntc/reference/benchmarks/).
 
 ## Documentation
 
-📚 **공식 문서 사이트: <https://ohah.github.io/zntc>**
+📚 **Official docs: <https://ohah.github.io/zntc>**
 
-주요 가이드:
+Key guides:
 
-- [소개](https://ohah.github.io/zntc/guides/introduction/) · [설치](https://ohah.github.io/zntc/guides/installation/) · [빠른 시작](https://ohah.github.io/zntc/guides/quick-start/)
-- [설정 파일](https://ohah.github.io/zntc/guides/config-file/) · [네이티브 트랜스폼 (Babel 없이)](https://ohah.github.io/zntc/guides/native-transforms/)
-- [번들링 개요](https://ohah.github.io/zntc/guides/bundling/) · [트리쉐이킹](https://ohah.github.io/zntc/guides/tree-shaking/) · [구조와 동작 원리](https://ohah.github.io/zntc/guides/bundler-deep-dive/)
-- [React Native](https://ohah.github.io/zntc/guides/react-native/) · [Flow 지원](https://ohah.github.io/zntc/guides/flow-support/) · [Babel 이관](https://ohah.github.io/zntc/guides/babel-migration/)
-- [플러그인](https://ohah.github.io/zntc/guides/plugins/) · [플러그인 레시피](https://ohah.github.io/zntc/guides/plugin-recipes/) · [Rspack / Webpack 통합](https://ohah.github.io/zntc/guides/rspack-loader/)
-- [도구 비교](https://ohah.github.io/zntc/guides/comparison/) · [다른 도구에서 이관](https://ohah.github.io/zntc/guides/migration/)
-- [CLI 레퍼런스](https://ohah.github.io/zntc/reference/cli/) · [NAPI / JS API](https://ohah.github.io/zntc/reference/napi/) · [Transpile 옵션](https://ohah.github.io/zntc/reference/options/)
+- [Introduction](https://ohah.github.io/zntc/guides/introduction/) · [Installation](https://ohah.github.io/zntc/guides/installation/) · [Quick start](https://ohah.github.io/zntc/guides/quick-start/)
+- [Config file](https://ohah.github.io/zntc/guides/config-file/) · [Native transforms (without Babel)](https://ohah.github.io/zntc/guides/native-transforms/)
+- [Bundling overview](https://ohah.github.io/zntc/guides/bundling/) · [Tree shaking](https://ohah.github.io/zntc/guides/tree-shaking/) · [Bundler deep dive](https://ohah.github.io/zntc/guides/bundler-deep-dive/)
+- [React Native](https://ohah.github.io/zntc/guides/react-native/) · [Flow support](https://ohah.github.io/zntc/guides/flow-support/) · [Migrating from Babel](https://ohah.github.io/zntc/guides/babel-migration/)
+- [Plugins](https://ohah.github.io/zntc/guides/plugins/) · [Plugin recipes](https://ohah.github.io/zntc/guides/plugin-recipes/) · [Rspack / Webpack integration](https://ohah.github.io/zntc/guides/rspack-loader/)
+- [Tooling comparison](https://ohah.github.io/zntc/guides/comparison/) · [Migrating from other tools](https://ohah.github.io/zntc/guides/migration/)
+- [CLI reference](https://ohah.github.io/zntc/reference/cli/) · [NAPI / JS API](https://ohah.github.io/zntc/reference/napi/) · [Transpile options](https://ohah.github.io/zntc/reference/options/)
 
-기여자용 내부 문서 (저장소 내):
+Contributor docs (in-tree):
 
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [docs/BUNDLER.md](./docs/BUNDLER.md) · [docs/HMR.md](./docs/HMR.md) · [docs/PLUGINS.md](./docs/PLUGINS.md)
 - [docs/ROADMAP.md](./docs/ROADMAP.md) · [docs/TESTING.md](./docs/TESTING.md) · [docs/DECISIONS.md](./docs/DECISIONS.md) · [docs/INVARIANTS.md](./docs/INVARIANTS.md)
@@ -182,71 +184,71 @@ export default defineConfig({
 
 ## Packages
 
-| 패키지 | 역할 |
+| Package | Role |
 |---|---|
-| **`@zntc/core`** | NAPI .node 바인딩 + Node / Bun CLI (`zntc`) + transpile / bundle / lightningcss |
+| **`@zntc/core`** | NAPI `.node` binding + Node / Bun CLI (`zntc`) + transpile / bundle / lightningcss |
 | **`@zntc/web`** | dev server + HMR overlay + postcss / sass pipeline + dev controller |
-| **`@zntc/vite-plugin`** | Vite 의 esbuild transform 을 ZNTC 로 교체 (`@zntc/core` 만 사용) |
-| **`@zntc/rspack-loader`** | Rspack / Webpack 의 TS/JSX/Flow loader (swc-loader / esbuild-loader 대체) |
-| **`@zntc/react-native`** | RN preset + Metro 호환 dev server + Reanimated worklets / Flow / Hermes |
-| **`@zntc/init`** | `npx @zntc/init` — 신규 프로젝트 scaffold + 기존 RN CLI 앱 overlay |
-| **`@zntc/wasm`** | WASM 빌드 (브라우저 playground / Deno / Workers) |
-| `@zntc/server` | private — protocol / WS frame / watcher / HMR channel (web 의 dist 에 inline, 사용자 install 불필요) |
+| **`@zntc/vite-plugin`** | Replace Vite's esbuild transform with ZNTC (only depends on `@zntc/core`) |
+| **`@zntc/rspack-loader`** | TS / JSX / Flow loader for Rspack / Webpack (drop-in replacement for swc-loader / esbuild-loader) |
+| **`@zntc/react-native`** | RN preset + Metro-compatible dev server + Reanimated worklets / Flow / Hermes |
+| **`@zntc/init`** | `npx @zntc/init` — scaffold new projects or overlay an existing RN CLI app |
+| **`@zntc/wasm`** | WASM build (browser playground / Deno / Workers) |
+| `@zntc/server` | private — protocol / WS frame / watcher / HMR channel (inlined into `@zntc/web` dist; users do not install directly) |
 
 ## Status
 
-**Phase 1–6 전반 완료** — 렉서 / 파서 / 세만틱 / 트랜스포머 / 코드젠 / 번들러 / Dev 서버 / HMR.
+**Phase 1–6 largely complete** — lexer / parser / semantic / transformer / codegen / bundler / dev server / HMR.
 
 - Test262: **50,504 / 50,504 (100%)**, 0 fail
-- npm 패키지 스모크: **144 / 144** 통과 (esbuild / rolldown / rspack 비교)
-- RN core (`react-native` 0.74) 410 개 `@flow` 파일 회귀 통과
+- npm package smoke: **144 / 144** passing (compared against esbuild / rolldown / rspack)
+- RN core (`react-native` 0.74) 410 `@flow` files pass regression
 
-미해결 이슈와 백로그는 [docs/ROADMAP.md](./docs/ROADMAP.md) · [docs/BACKLOG.md](./docs/BACKLOG.md) · [GitHub Issues](https://github.com/ohah/zntc/issues).
+Open issues and backlog: [docs/ROADMAP.md](./docs/ROADMAP.md) · [docs/BACKLOG.md](./docs/BACKLOG.md) · [GitHub Issues](https://github.com/ohah/zntc/issues).
 
 ## Contributing
 
-ZNTC 의 핵심은 Zig 로 작성되어 있습니다. 소스에서 빌드하려면 Zig 0.15.2 가 필요합니다 (mise 권장).
+The core of ZNTC is written in Zig. You need Zig 0.15.2 to build from source (mise is recommended).
 
 ```bash
 git clone https://github.com/ohah/zntc.git
 cd zntc
 mise install
 
-# 빌드
+# Build
 zig build                          # zntc CLI + lib (Debug)
-zig build -Doptimize=ReleaseFast   # 성능 측정용
-zig build run -- src/index.ts      # CLI 직접 실행
+zig build -Doptimize=ReleaseFast   # for performance measurement
+zig build run -- src/index.ts      # invoke the CLI directly
 
-# 테스트
-zig build test                     # Zig 유닛 / 통합 테스트
-zig build test262-run              # Test262 50,504건 실행
-zig build napi                     # @zntc/core 용 NAPI .node
+# Test
+zig build test                     # Zig unit / integration tests
+zig build test262-run              # run the 50,504 Test262 cases
+zig build napi                     # NAPI .node for @zntc/core
 zig build wasm                     # transpile-only WASM
-zig build wasm-bundler             # bundler 포함 WASM (wasm32-wasi + threads)
-zig build schema                   # BuildOptions JSON 스키마 자동 생성
+zig build wasm-bundler             # bundler-inclusive WASM (wasm32-wasi + threads)
+zig build schema                   # auto-generate the BuildOptions JSON schema
 ```
 
-JS 사이드 테스트:
+JS-side tests:
 
 ```bash
-cd tests/integration && bun test       # CLI / NAPI 통합 테스트
+cd tests/integration && bun test       # CLI / NAPI integration
 cd tests/e2e && bun test               # Playwright E2E
-cd tests/benchmark && bun run smoke.ts # 144 패키지 빌드+실행 vs esbuild/rolldown/rspack
+cd tests/benchmark && bun run smoke.ts # build + execute 144 packages vs esbuild / rolldown / rspack
 ```
 
-기여 워크플로 — [CLAUDE.md](./CLAUDE.md): feature branch → PR → merge. main 직접 push 금지. PR 제목은 `feat(lexer): add numeric literal tokenization` 형식, 본문 한국어.
+Workflow — see [CLAUDE.md](./CLAUDE.md): feature branch → PR → merge. Direct pushes to `main` are not allowed. PR titles use the `feat(lexer): add numeric literal tokenization` style; PR descriptions are written in Korean.
 
 ## References
 
-- [Bun JS Parser](https://github.com/oven-sh/bun) (Zig, MIT) — 파서 / 렉서 / SIMD
-- [oxc](https://github.com/oxc-project/oxc) (Rust, MIT) — 트랜스포머 / Reference flags
-- [SWC](https://github.com/swc-project/swc) (Rust, Apache-2.0) — 다운레벨 비교
-- [esbuild](https://github.com/evanw/esbuild) (Go, MIT) — 번들러 아키텍처 / 호환
-- [Rolldown](https://github.com/rolldown/rolldown) (Rust, MIT) — Rollup 호환 / Vite 통합
-- [Hermes](https://github.com/facebook/hermes) (C++, MIT) — Flow 파서 임베딩 + RN 런타임
-- [Metro](https://github.com/facebook/metro) (JS, MIT) — React Native 번들러 호환
-- [TypeScript](https://github.com/microsoft/TypeScript) (TS, Apache-2.0) — 다운레벨 / decorator 케이스
-- [Test262](https://github.com/tc39/test262) — TC39 정합성 50,504건
+- [Bun JS Parser](https://github.com/oven-sh/bun) (Zig, MIT) — parser / lexer / SIMD
+- [oxc](https://github.com/oxc-project/oxc) (Rust, MIT) — transformer / reference flags
+- [SWC](https://github.com/swc-project/swc) (Rust, Apache-2.0) — downlevel reference
+- [esbuild](https://github.com/evanw/esbuild) (Go, MIT) — bundler architecture / compatibility surface
+- [Rolldown](https://github.com/rolldown/rolldown) (Rust, MIT) — Rollup-compatible / Vite integration
+- [Hermes](https://github.com/facebook/hermes) (C++, MIT) — embedded Flow parser + RN runtime
+- [Metro](https://github.com/facebook/metro) (JS, MIT) — React Native bundler compatibility
+- [TypeScript](https://github.com/microsoft/TypeScript) (TS, Apache-2.0) — downlevel / decorator cases
+- [Test262](https://github.com/tc39/test262) — TC39 conformance, 50,504 cases
 
 ## License
 
