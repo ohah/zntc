@@ -886,9 +886,14 @@ pub const ResolveCache = struct {
             },
             .disabled => |d| try self.internDisabled(d.path, d.module_type, true),
             // #3759: owner ambiguity 해소 — owns_path=true 만 free.
+            // intern 실패 시 errdefer 가 free, 성공 시 explicit free 후 break — explicit
+            // free 와 errdefer 가 같은 slice 를 노리지 않도록 errdefer 는 intern 호출
+            // 영역만 감싼다 (sub-scope blk 로 격리).
             .virtual => |v| blk: {
-                errdefer if (v.owns_path) self.allocator.free(v.path);
-                const interned = try self.path_pool.intern(v.path);
+                const interned = pool: {
+                    errdefer if (v.owns_path) self.allocator.free(v.path);
+                    break :pool try self.path_pool.intern(v.path);
+                };
                 if (v.owns_path) self.allocator.free(v.path);
                 break :blk .{ .virtual = .{ .path = interned, .plugin_data = v.plugin_data, .owns_path = false } };
             },

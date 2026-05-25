@@ -334,7 +334,8 @@ pub fn applyResolveResult(
                 // #1961 + #3759: virtual module 은 plugin 의 load 훅이 source 채움.
                 // addModule 이 path 를 dupe 하므로 graph 가 owner. v.path 는 이미
                 // `internResolvedModule` 이 path_pool 에 intern 한 borrow slice → .interned
-                // 로 wrap (의미 정합 + putModule clone 비용 절감).
+                // 로 wrap (PathRef 의미 정합: .interned = path_pool 소유, caller borrow).
+                // clone 비용은 .plugin 과 동일 (clonePathRefIfNeeded 가 둘 다 .owned 로 dupe).
                 const dep_idx = try self.addModule(v.path);
                 const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, dep_idx);
                 try appendResolvedDep(self, mod_idx, .{

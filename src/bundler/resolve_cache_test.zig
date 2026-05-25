@@ -307,3 +307,58 @@ test "resolveThreadSafe: 동작 검증" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+// ============================================================
+// #3759 — internResolvedModule .virtual owns_path discriminator
+// ============================================================
+
+test "internResolvedModule: .virtual owns_path=true 시 원본 free + intern (#3759)" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // NAPI bridge 처럼 graph_allocator (= testing.allocator) 로 dupe 한 path 시뮬레이트.
+    const dup_path = try testing.allocator.dupe(u8, "\x00plugin:virtual-mod");
+
+    const result = try cache.internResolvedModule(.{ .virtual = .{
+        .path = dup_path,
+        .owns_path = true,
+    } });
+
+    // 반환된 path 는 path_pool 의 interned slice — dup_path 와 *다른* 포인터.
+    switch (result) {
+        .virtual => |v| {
+            try testing.expectEqualStrings("\x00plugin:virtual-mod", v.path);
+            try testing.expect(v.path.ptr != dup_path.ptr); // ← intern 확인
+            try testing.expect(!v.owns_path); // ← 반환값은 항상 owns_path=false (caller borrow)
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // testing.allocator 의 leak detection: dup_path 가 free 안 되었다면 test fail.
+}
+
+test "internResolvedModule: .virtual owns_path=false 시 borrow 유지 (#3759)" {
+    const testing = std.testing;
+    var cache = ResolveCache.init(testing.allocator, .{});
+    defer cache.deinit();
+
+    // runtime_helper_modules 처럼 static literal / parse_arena borrow 시뮬레이트.
+    const static_path: []const u8 = "\x00zntc:runtime/extends";
+
+    const result = try cache.internResolvedModule(.{ .virtual = .{
+        .path = static_path,
+        .owns_path = false, // ← borrow only — bundler 가 free 시도 금지
+    } });
+
+    switch (result) {
+        .virtual => |v| {
+            try testing.expectEqualStrings("\x00zntc:runtime/extends", v.path);
+            // path_pool 에 dupe 되어 *다른* slice 반환.
+            try testing.expect(v.path.ptr != static_path.ptr);
+            try testing.expect(!v.owns_path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // 만약 fix 가 owns_path 무시하고 항상 free 했다면 static literal free → panic.
+    // 통과 자체가 borrow 시맨틱 보존 증거.
+}
