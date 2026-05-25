@@ -179,7 +179,14 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
             },
             // require.context 의 disabled / virtual 등 variant — path_pool borrow only.
             .disabled => {},
-            .virtual, .dataurl, .external, .custom => unreachable,
+            // (deferred 6) future plugin layer 가 이들 variant 를 require.context 결과로
+            // 반환할 가능성은 현재 없음 (resolver 는 .file/.disabled 만 emit). 그러나
+            // unreachable 는 release build 에서 UB → explicit panic 으로 의미 있는
+            // diagnostic 제공. 활성화 시 별도 RFC 필요.
+            .virtual, .dataurl, .external, .custom => std.debug.panic(
+                "require.context resolver returned unsupported variant — only .file/.disabled supported here (got {s})",
+                .{@tagName(m)},
+            ),
         };
     }
 }
@@ -347,7 +354,14 @@ pub fn applyResolveResult(
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
             },
-            .dataurl, .external, .custom => unreachable,
+            // (deferred 6) `.external` 은 phantom external 경로 (line 354 의 else 분기) 가
+            // 별도로 처리하지만, plugin 이 resolveId 에서 직접 `.external` 반환하는 경로는
+            // 아직 미설계. `.dataurl` / `.custom` 도 동일 — production 도달 시 별도 RFC 후
+            // 명시적 활성화. 그 전까지 release build 의 silent UB 방지 위해 explicit panic.
+            .dataurl, .external, .custom => std.debug.panic(
+                "resolved variant not yet wired into resolve_imports — plugin returned unsupported variant for specifier '{s}' (got {s})",
+                .{ record.specifier, @tagName(m) },
+            ),
         }
     } else {
         // external — phantom Module 로 graph 에 등록 + 양방향 link.
