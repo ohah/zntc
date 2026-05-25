@@ -6,3 +6,4 @@ export * from './protocol.ts';
 export * from './ws-frame.ts';
 export * from './watcher.ts';
 export * from './hmr-channel.ts';
+export * from './hmr-rebuild-broadcast.ts';

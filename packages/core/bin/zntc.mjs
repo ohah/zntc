@@ -59,6 +59,7 @@ const {
   build,
   buildAppSync,
   buildSync,
+  watch,
   envToDefine,
   filterWorkspaces,
   findConfigPath,
@@ -1312,9 +1313,12 @@ function mergeCliRuntimeTargets(runtimePolyfills, runtimeTargetQueries) {
   return runtimePolyfills;
 }
 
-async function runBundle(opts, config) {
-  // config 자동 탐색 + 머지는 main() 에서 모든 모드에 대해 사전 적용된다.
-  // 여기서는 plugins 만 추가로 합친다 (config 의 plugins → --plugin <path> 의 plugins).
+/**
+ * `runBundle` / `startBundleWatch` 가 공유하는 NAPI BuildOptions 생성 helper.
+ * plugins 머지 + applySingleFileDynamicImportDefault + 옵션 매핑을 한 곳에 모아
+ * runBundle (single-shot) 와 watch (incremental HMR, #3779) 의 옵션 drift 차단.
+ */
+async function buildBundleOptions(opts, config) {
   const plugins = [];
   if (config && Array.isArray(config.plugins)) {
     plugins.push(...config.plugins);
@@ -1333,7 +1337,7 @@ async function runBundle(opts, config) {
 
   applySingleFileDynamicImportDefault(opts);
 
-  const buildOpts = {
+  return {
     entryPoints: opts.entryPoints.map((e) => resolve(e)),
     format: opts.format,
     platform: opts.platform,
@@ -1445,8 +1449,12 @@ async function runBundle(opts, config) {
     // (native CLI 만 zntc.config.json mf 를 직접 읽어 동작했던 갭).
     mf: config?.mf,
   };
+}
 
-  const result = plugins.length > 0 ? await build(buildOpts) : buildSync(buildOpts);
+async function runBundle(opts, config) {
+  const buildOpts = await buildBundleOptions(opts, config);
+  const hasPlugins = Array.isArray(buildOpts.plugins) && buildOpts.plugins.length > 0;
+  const result = hasPlugins ? await build(buildOpts) : buildSync(buildOpts);
 
   printResultDiagnostics(result, opts.logLevel);
 
@@ -1903,6 +1911,30 @@ async function runServe(opts, config, { appDev = null } = {}) {
     let rebuilding = false;
     const dirty = new Set();
 
+    // #3779 — JS module 변경 시 incremental HMR update broadcast.
+    // appDev + hmr 모드일 때만 native watch handle 을 띄워 onRebuild 콜백에서
+    // graph change → FullReload, modules 변경 → UpdateStart/Update/UpdateDone 송출.
+    // fsWatch + drain 은 CSS/sass/postcss/restart 만 처리 — JS 분기는 noop (중복 컴파일 회피).
+    // 첫 빌드는 위쪽 `runBundle` 가 이미 수행 — watch handle 의 initial 은 outdir 덮어쓰기.
+    // 작은 cold-start 중복이 있지만 정확성/소유권 단순화 우선 (follow-up: NAPI initial-skip 옵션).
+    if (appDev && hmr) {
+      const watchBuildOpts = await buildBundleOptions(opts, config);
+      watchBuildOpts.devMode = true;
+      watchBuildOpts.onRebuild = (event) => {
+        try {
+          web.broadcastRebuildEvent(hmr, event);
+        } catch (err) {
+          console.error('[serve] hmr broadcast error:', err);
+        }
+      };
+      try {
+        watch(watchBuildOpts);
+      } catch (err) {
+        // watch 시작 실패해도 fsWatch + drain (CSS path) 는 계속 동작 — incremental HMR 만 비활성.
+        console.error('[serve] native watch 시작 실패 (incremental HMR 비활성):', err);
+      }
+    }
+
     async function rebuildAppDevCss(changedPath) {
       await appDev.afterBundle({ changedPath });
       hmr?.clearError();
@@ -1914,6 +1946,9 @@ async function runServe(opts, config, { appDev = null } = {}) {
       if (opts.logLevel !== 'silent') console.error('[serve] css updated');
     }
 
+    // #3779 — sass partial / 다중 sass 변경 (drain 의 sass 분기) 전용. SCSS dependents
+    // 까지 재컴파일해야 하므로 full pipeline + FullReload. JS module 변경은 native watch
+    // handle 이 단독 처리 — 이 함수는 더 이상 JS 분기에서 호출되지 않는다.
     async function rebuildAppDevFull(dirtyPaths = null) {
       const prepared = await appDev.prepare(dirtyPaths);
       opts.entryPoints = [prepared.entryPath];
@@ -1976,7 +2011,22 @@ async function runServe(opts, config, { appDev = null } = {}) {
               if (opts.logLevel !== 'silent') console.error('[serve] css updated');
             }
           } else {
-            await rebuildAppDevFull(paths);
+            // #3779 — paths 의 CSS-derived 변경 (CSS Module / Sass Module / 그 외 CSS-like)
+            // 은 native watch 의 module graph 밖이라 incremental update 가 트리거되지 않는다.
+            // class 이름 매핑이나 JS proxy 가 재생성돼야 하므로 full pipeline rebuild + FullReload.
+            // 순수 JS/TS 변경은 native watch handle 이 incremental Update / FullReload 단독 처리
+            // — drain 은 noop (중복 컴파일/output race 회피).
+            const cssDerived = paths.some(
+              (p) =>
+                p.endsWith('.css') ||
+                p.endsWith('.scss') ||
+                p.endsWith('.sass') ||
+                p.endsWith('.less') ||
+                appDev.isPostcssConfig(p),
+            );
+            if (cssDerived) {
+              await rebuildAppDevFull(paths);
+            }
           }
         }
       } catch (err) {
