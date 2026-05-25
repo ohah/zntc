@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 
 import { APP_DEV_HMR_CLIENT_PATH } from '@zntc/server';
@@ -54,6 +54,32 @@ export function injectAppDevBundleCssLinks(
     for (const file of bundleResult?.outputFiles ?? []) {
       if (!file?.path || !isCssFile(file.path)) continue;
       const href = joinUrl(base, basename(file.path));
+      if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
+    }
+    if (cssHrefs.length === 0) return null;
+    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n');
+  });
+}
+
+/**
+ * #3813 — outdir 의 `.css` 파일을 file system 스캔해 HTML `<link>` 주입. `injectAppDevBundleCssLinks`
+ * 가 `bundleResult.outputFiles` 를 받는 것과 달리 file system 기반. caller (`runServe`) 가
+ * native watch onRebuild 에서 호출 — bundleResult 가 없는 graphChanged 경로의 stale link 회귀
+ * 가드. outdir 의 first-level `*.css` 만 스캔 (chunk subdirectory 미포함 — bundler 의 entry_names
+ * `[dir]/[name]` default 가 emit 한 결과 위치 기준).
+ */
+export function injectAppDevBundleCssLinksFromOutdir(outdir: string, base: string | undefined): void {
+  injectIntoDevHtml(outdir, (html) => {
+    let entries: string[];
+    try {
+      entries = readdirSync(outdir);
+    } catch {
+      return null;
+    }
+    const cssHrefs: string[] = [];
+    for (const name of entries) {
+      if (!isCssFile(name)) continue;
+      const href = joinUrl(base, name);
       if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
     }
     if (cssHrefs.length === 0) return null;

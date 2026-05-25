@@ -36,6 +36,7 @@ export {
 export {
   type BundleResult,
   injectAppDevBundleCssLinks,
+  injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
   injectIntoDevHtml,

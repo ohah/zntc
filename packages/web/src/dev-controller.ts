@@ -18,6 +18,7 @@ import { applyHtmlEnvTokens } from './html-env.ts';
 import {
   type BundleResult,
   injectAppDevBundleCssLinks,
+  injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
 } from './inject.ts';
@@ -420,6 +421,13 @@ export interface AppDevController {
     processed: number;
   }>;
   injectBundleCssLinks(bundleResult: BundleResult): void;
+  /**
+   * #3813 — outdir 의 `.css` 파일을 file system 스캔해 HTML `<link>` 주입.
+   * `injectBundleCssLinks` 가 bundleResult 를 받는 것과 달리 native watch onRebuild 의
+   * graphChanged 분기처럼 bundleResult 가 없는 경로용. JS 변경이 새 CSS import 추가했을 때
+   * stale `<link>` 회귀 가드.
+   */
+  injectBundleCssLinksFromOutdir(): void;
   isPostcssConfig(absPath: string): boolean;
   isCssOnlyChange(absPath: string): boolean;
   isSassOnlyChange(absPath: string): boolean;
@@ -576,6 +584,12 @@ export function createAppDevController(
       // 하도록 확장하거나 metafile inputs 기반 정밀 dedup 으로 follow-up.
       if (hasPipelineCss) return;
       injectAppDevBundleCssLinks(outdir, base, bundleResult);
+    },
+    injectBundleCssLinksFromOutdir() {
+      // #3813 — native watch onRebuild 의 graphChanged 분기처럼 bundleResult 가 없는 경로용.
+      // pipeline CSS 우선 정책은 동일 — pipeline 이 inject 했으면 outdir scan skip.
+      if (hasPipelineCss) return;
+      injectAppDevBundleCssLinksFromOutdir(outdir, base);
     },
     isPostcssConfig(absPath) {
       return isPostcssConfigFile(absPath);
