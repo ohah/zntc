@@ -152,6 +152,11 @@ pub const ResolveCache = struct {
     /// PR resolve interning: 모든 resolved path 의 single-source-of-truth pool.
     /// caller 는 *borrow only*, free 안 함. `deinit` 시 일괄 reclaim.
     path_pool: PathInternPool,
+    /// (deferred 5) `.dataurl.data` 전용 arena. data 가 base64 큰 메모리라 path_pool
+    /// (StringHashMap dedup) 부적합 — 별도 arena 로 caller-borrow 일관성 확보 + ""
+    /// placeholder 위험 제거. dedup 없음 (data 가 모듈마다 다르고 hash 매칭 거의 없음).
+    dataurl_arena: std.heap.ArenaAllocator,
+    dataurl_arena_mutex: std.Thread.Mutex = .{},
     external_patterns: []const []const u8,
     platform: Platform,
     packages_external: bool = false,
@@ -361,6 +366,7 @@ pub const ResolveCache = struct {
             .resolver = r,
             .cache_shards = cache_shards,
             .path_pool = PathInternPool.init(allocator),
+            .dataurl_arena = std.heap.ArenaAllocator.init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
             .packages_external = options.packages_external,
@@ -391,6 +397,8 @@ pub const ResolveCache = struct {
 
         // PR resolve interning: path pool 일괄 reclaim.
         self.path_pool.deinit();
+        // (deferred 5) dataurl.data arena 일괄 reclaim.
+        self.dataurl_arena.deinit();
 
         // browser overrides 캐시 해제
         var bd_it = self.browser_overrides_cache.iterator();
@@ -945,13 +953,18 @@ pub const ResolveCache = struct {
                     .owner = .borrowed,
                 } };
             },
-            // (deferred 2) .dataurl mime 만 intern (짧고 재사용 가능), data 는 그대로 (base64
-            // 큰 메모리, pool 부적합). `.owned` 면 둘 다 free.
-            // 현 resolve_imports.zig:349 unreachable — production 도달 안 함이지만
-            // future plugin layer 활성화 시 owner discipline 보장.
+            // (deferred 2 + 5) .dataurl: mime 은 path_pool intern (짧고 재사용 가능),
+            // data 는 별도 `dataurl_arena` 에 dupe (base64 큰 메모리라 path_pool dedup
+            // 부적합, 그러나 cache lifetime 유지 위해 자체 arena 필요).
+            // - `.owned`: mime + data 원본 free (intern/dupe 후 store 가 owner)
+            // - `.borrowed`: caller-borrow 유지하되, dataurl_arena 에 dupe 해 cache lifetime
+            //   동안 valid 보장 (caller 가 그 사이 free 해도 안전).
+            //
+            // ★ 일관성: 모든 variant 가 반환 시 cache-owned slice → caller 가 borrow
+            //   하기만 하면 됨. 이전 PR (#3767) 의 "" placeholder 위험 제거.
             //
             // (review finding) `.custom` 처럼 mime.ptr == data.ptr aliasing 시 double-free
-            // → debug assert 로 차단. errdefer 도 같은 두 free 라 동일 위험.
+            // → debug assert 로 차단.
             .dataurl => |du| blk: {
                 if (du.owner.isOwned()) std.debug.assert(du.mime.ptr != du.data.ptr);
                 const interned_mime = pool: {
@@ -961,19 +974,23 @@ pub const ResolveCache = struct {
                     };
                     break :pool try self.path_pool.intern(du.mime);
                 };
+                const interned_data = data_blk: {
+                    errdefer if (du.owner.isOwned()) {
+                        self.allocator.free(du.mime);
+                        self.allocator.free(du.data);
+                    };
+                    self.dataurl_arena_mutex.lock();
+                    defer self.dataurl_arena_mutex.unlock();
+                    break :data_blk try self.dataurl_arena.allocator().dupe(u8, du.data);
+                };
                 if (du.owner.isOwned()) {
                     self.allocator.free(du.mime);
-                    // data 는 caller 가 borrow 시점 결정 — 본 PR 은 intern 안 함. `.owned`
-                    // 면 원본도 free (caller 가 임시 alloc 했다는 의미).
                     self.allocator.free(du.data);
                 }
                 break :blk .{
                     .dataurl = .{
                         .mime = interned_mime,
-                        // data 는 caller 가 free 했으므로 dangling 슬라이스 반환 안 됨 —
-                        // future RFC: data 도 path_pool 외 별도 arena 로 intern 또는 emitter
-                        // 가 즉시 consume. 현재 unreachable 이라 안전.
-                        .data = if (du.owner.isOwned()) "" else du.data,
+                        .data = interned_data, // cache-owned (dataurl_arena, dedup 없음)
                         .owner = .borrowed,
                     },
                 };
