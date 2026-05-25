@@ -90,7 +90,11 @@ describe('broadcastRebuildEvent', () => {
     const outcome = broadcastRebuildEvent(ch, event);
     expect(outcome).toBe('update');
     const msgs = parsed(client);
-    expect(msgs.map((m) => m.type)).toEqual([HMR_MSG.UpdateStart, HMR_MSG.Update, HMR_MSG.UpdateDone]);
+    expect(msgs.map((m) => m.type)).toEqual([
+      HMR_MSG.UpdateStart,
+      HMR_MSG.Update,
+      HMR_MSG.UpdateDone,
+    ]);
     expect(msgs[1].modules).toEqual([
       { id: '/src/a.ts', code: 'export const a = 1;' },
       { id: '/src/b.ts', code: 'export const b = 2;' },
