@@ -1,6 +1,6 @@
 //! mimalloc Zig Allocator 래퍼
 //!
-//! Microsoft mimalloc (v3.2.8)을 Zig의 std.mem.Allocator 인터페이스로 래핑한다.
+//! Microsoft mimalloc (v3.3.2)을 Zig의 std.mem.Allocator 인터페이스로 래핑한다.
 //! ReleaseFast/ReleaseSafe에서 GPA/c_allocator 대신 사용하여
 //! 스레드별 힙 격리, 페이지 캐싱, 슬랩 할당의 이점을 얻는다.
 
