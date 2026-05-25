@@ -949,7 +949,11 @@ pub const ResolveCache = struct {
             // 큰 메모리, pool 부적합). owns_payload=true 면 둘 다 free.
             // 현 resolve_imports.zig:349 unreachable — production 도달 안 함이지만
             // future plugin layer 활성화 시 owner discipline 보장.
+            //
+            // (review finding) `.custom` 처럼 mime.ptr == data.ptr aliasing 시 double-free
+            // → debug assert 로 차단. errdefer 도 같은 두 free 라 동일 위험.
             .dataurl => |du| blk: {
+                if (du.owns_payload) std.debug.assert(du.mime.ptr != du.data.ptr);
                 const interned_mime = pool: {
                     errdefer if (du.owns_payload) {
                         self.allocator.free(du.mime);
