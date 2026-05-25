@@ -67,9 +67,14 @@ pub fn build(b: *std.Build) void {
     });
     exe.linkLibC();
 
-    // mimalloc: 고성능 메모리 할당자 (vendor/mimalloc, static.c 단일 컴파일)
+    // mimalloc: 고성능 메모리 할당자 (vendor/mimalloc, static.c 단일 컴파일).
+    // CI #3795 — MSVC ARM64 target 에서 mimalloc atomic.h 가 C 로 컴파일되면 `__ldar64` /
+    // `__stlr64` 같은 ARM64 MSVC intrinsic 호출 → Zig libc 헤더에 미선언 → 빌드 fail.
+    // mimalloc 권장대로 (`atomic.h:161`) MSVC target 은 C++ 컴파일 — `__cplusplus` 분기가
+    // std::atomic 사용해 intrinsic 회피. shim 파일이 `extern "C" { #include static.c }` 로
+    // mimalloc unity build 를 C++ 컴파일러로 처리.
     exe.addCSourceFile(.{
-        .file = b.path("vendor/mimalloc/src/static.c"),
+        .file = b.path("vendor/mimalloc-shim.cpp"),
         .flags = &.{
             "-DMI_SKIP_COLLECT_ON_EXIT=1",
             "-DMI_OVERRIDE=0",
@@ -78,6 +83,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     exe.addIncludePath(b.path("vendor/mimalloc/include"));
+    exe.addIncludePath(b.path("vendor")); // shim 의 "mimalloc/src/static.c" include path
 
     // macOS 를 -Dtarget 으로 cross 빌드하면 zig 가 SDK 의 usr/include 를 자동 포함하지
     // 않아 mimalloc(prim.c)의 <CommonCrypto/CommonCryptoError.h> 를 못 찾는다.
