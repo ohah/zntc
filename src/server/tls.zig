@@ -13,7 +13,20 @@
 //! error 로 처리 (non-blocking 은 별도 epic).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const boringssl = @import("boringssl.zig");
+
+/// BoringSSL 진단 정보 — production 에서는 `std.log.err` 그대로 운영자 가시화
+/// (ReleaseFast/Safe default log level=`.err` 통과). test 환경에서는 zig test
+/// runner 가 `std.log.err` 호출 자체를 detection 해 `expectError` 통과 후에도
+/// fail 마크. test runner 의 `std_options.logFn` override 가 사용자 root 보다
+/// 우선이라 우회 불가 — `builtin.is_test` 분기로 호출 자체 skip (#2538 4-2).
+const log = struct {
+    fn err(comptime fmt: []const u8, args: anytype) void {
+        if (builtin.is_test) return;
+        std.log.err(fmt, args);
+    }
+};
 
 pub const Error = error{
     SslCtxNewFailed,
@@ -42,24 +55,24 @@ pub const TlsContext = struct {
         var err_buf: [256]u8 = undefined;
 
         if (boringssl.SSL_CTX_set_min_proto_version(ctx, boringssl.TLS1_2_VERSION) != 1) {
-            std.log.warn("TLS: set_min_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
+            log.err("TLS: set_min_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
             return Error.SslCtxConfigFailed;
         }
         if (boringssl.SSL_CTX_set_max_proto_version(ctx, boringssl.TLS1_3_VERSION) != 1) {
-            std.log.warn("TLS: set_max_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
+            log.err("TLS: set_max_proto_version 실패: {s}", .{boringssl.lastErrorString(&err_buf)});
             return Error.SslCtxConfigFailed;
         }
 
         if (boringssl.SSL_CTX_use_certificate_file(ctx, &cert_z, boringssl.SSL_FILETYPE_PEM) != 1) {
-            std.log.warn("TLS: certificate '{s}' 로드 실패: {s}", .{ cert_path, boringssl.lastErrorString(&err_buf) });
+            log.err("TLS: certificate '{s}' 로드 실패: {s}", .{ cert_path, boringssl.lastErrorString(&err_buf) });
             return Error.CertLoadFailed;
         }
         if (boringssl.SSL_CTX_use_PrivateKey_file(ctx, &key_z, boringssl.SSL_FILETYPE_PEM) != 1) {
-            std.log.warn("TLS: private key '{s}' 로드 실패: {s}", .{ key_path, boringssl.lastErrorString(&err_buf) });
+            log.err("TLS: private key '{s}' 로드 실패: {s}", .{ key_path, boringssl.lastErrorString(&err_buf) });
             return Error.KeyLoadFailed;
         }
         if (boringssl.SSL_CTX_check_private_key(ctx) != 1) {
-            std.log.warn("TLS: private key 와 certificate 불일치: {s}", .{boringssl.lastErrorString(&err_buf)});
+            log.err("TLS: private key 와 certificate 불일치: {s}", .{boringssl.lastErrorString(&err_buf)});
             return Error.KeyMismatch;
         }
 
@@ -89,7 +102,7 @@ pub const TlsConnection = struct {
         const rc = boringssl.SSL_accept(ssl);
         if (rc != 1) {
             var buf: [256]u8 = undefined;
-            std.log.warn("TLS handshake 실패: {s}", .{boringssl.lastErrorString(&buf)});
+            log.err("TLS handshake 실패: {s}", .{boringssl.lastErrorString(&buf)});
             return Error.HandshakeFailed;
         }
         return .{ .ssl = ssl };
@@ -135,20 +148,55 @@ pub const TlsReader = struct {
         limit: std.Io.Limit,
     ) std.Io.Reader.StreamError!usize {
         const self: *TlsReader = @alignCast(@fieldParentPtr("interface", io_r));
-        const dst = limit.slice(try io_w.writableSliceGreedy(1));
-        if (dst.len == 0) return 0;
+        return streamReadAndAdvance(io_w, limit, .{
+            .ctx = self,
+            .read = sslReadAdapter,
+        });
+    }
+
+    fn sslReadAdapter(ctx: *anyopaque, dst: []u8) ReadResult {
+        const self: *TlsReader = @ptrCast(@alignCast(ctx));
         const max: c_int = @intCast(@min(dst.len, @as(usize, std.math.maxInt(c_int))));
         const n = boringssl.SSL_read(self.ssl, dst.ptr, max);
-        if (n <= 0) {
-            const e = boringssl.SSL_get_error(self.ssl, n);
-            if (e == boringssl.SSL_ERROR_ZERO_RETURN) return error.EndOfStream;
-            self.error_state = Error.TlsRead;
-            return error.ReadFailed;
-        }
-        io_w.advance(@intCast(n));
-        return @intCast(n);
+        if (n > 0) return .{ .ok = @intCast(n) };
+        const e = boringssl.SSL_get_error(self.ssl, n);
+        if (e == boringssl.SSL_ERROR_ZERO_RETURN) return .end_of_stream;
+        self.error_state = Error.TlsRead;
+        return .failed;
     }
 };
+
+/// streamFn 의 SSL 의존 없는 generic 로직 — io_w 의 writable slice 확보 + read
+/// callback 호출 + advance. drainBufferedAndData 와 동일 패턴으로 test 가능.
+pub const ReadResult = union(enum) {
+    ok: usize, // bytes read (>0)
+    end_of_stream,
+    failed,
+};
+
+pub const ReadCallback = struct {
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, dst: []u8) ReadResult,
+};
+
+pub fn streamReadAndAdvance(
+    io_w: *std.Io.Writer,
+    limit: std.Io.Limit,
+    cb: ReadCallback,
+) std.Io.Reader.StreamError!usize {
+    const dst = limit.slice(try io_w.writableSliceGreedy(1));
+    if (dst.len == 0) return 0;
+    const result = cb.read(cb.ctx, dst);
+    switch (result) {
+        .ok => |n| {
+            if (n == 0) return error.EndOfStream;
+            io_w.advance(n);
+            return n;
+        },
+        .end_of_stream => return error.EndOfStream,
+        .failed => return error.ReadFailed,
+    }
+}
 
 /// SSL_write 변종 — std.http.Server 가 받는 *Io.Writer.
 pub const TlsWriter = struct {
@@ -383,6 +431,136 @@ test "drainBufferedAndData: empty data + empty pattern + splat=0 → 0 return" {
     });
     try std.testing.expectEqual(@as(usize, 0), consumed_zero_splat);
     try std.testing.expectEqual(@as(usize, 0), sink.received.items.len);
+}
+
+// ─── streamReadAndAdvance test (mock read callback) ────────────────────────
+// PR-3a 의 TlsReader.streamFn 의 SSL 의존 없는 generic 부분 검증.
+
+const MockSource = struct {
+    chunks: []const []const u8,
+    index: usize = 0,
+    behavior: enum { ok, end_of_stream, failed } = .ok,
+
+    fn read(ctx: *anyopaque, dst: []u8) ReadResult {
+        const self: *MockSource = @ptrCast(@alignCast(ctx));
+        if (self.behavior == .end_of_stream) return .end_of_stream;
+        if (self.behavior == .failed) return .failed;
+        if (self.index >= self.chunks.len) return .{ .ok = 0 };
+        const src = self.chunks[self.index];
+        self.index += 1;
+        const n = @min(src.len, dst.len);
+        @memcpy(dst[0..n], src[0..n]);
+        return .{ .ok = n };
+    }
+};
+
+const InMemoryWriter = struct {
+    writer: std.Io.Writer,
+
+    fn init(buf: []u8) InMemoryWriter {
+        return .{ .writer = .{
+            .vtable = &dummy_vtable,
+            .buffer = buf,
+            .end = 0,
+        } };
+    }
+};
+
+test "streamReadAndAdvance: ok n>0 → io_w.advance(n) + return n" {
+    var src: MockSource = .{ .chunks = &.{"hello"} };
+    var buf: [16]u8 = undefined;
+    var iw = InMemoryWriter.init(&buf);
+
+    const n = try streamReadAndAdvance(&iw.writer, .unlimited, .{
+        .ctx = &src,
+        .read = MockSource.read,
+    });
+    try std.testing.expectEqual(@as(usize, 5), n);
+    try std.testing.expectEqual(@as(usize, 5), iw.writer.end);
+    try std.testing.expectEqualStrings("hello", iw.writer.buffer[0..iw.writer.end]);
+}
+
+test "streamReadAndAdvance: end_of_stream → error.EndOfStream" {
+    var src: MockSource = .{ .chunks = &.{}, .behavior = .end_of_stream };
+    var buf: [16]u8 = undefined;
+    var iw = InMemoryWriter.init(&buf);
+
+    const result = streamReadAndAdvance(&iw.writer, .unlimited, .{
+        .ctx = &src,
+        .read = MockSource.read,
+    });
+    try std.testing.expectError(error.EndOfStream, result);
+    try std.testing.expectEqual(@as(usize, 0), iw.writer.end); // advance 안 호출
+}
+
+test "streamReadAndAdvance: failed → error.ReadFailed" {
+    var src: MockSource = .{ .chunks = &.{}, .behavior = .failed };
+    var buf: [16]u8 = undefined;
+    var iw = InMemoryWriter.init(&buf);
+
+    const result = streamReadAndAdvance(&iw.writer, .unlimited, .{
+        .ctx = &src,
+        .read = MockSource.read,
+    });
+    try std.testing.expectError(error.ReadFailed, result);
+}
+
+test "streamReadAndAdvance: ok n=0 → EndOfStream (zig Io contract — 0 byte read = EOS)" {
+    // MockSource 의 chunks 가 비어 .ok=0 반환 시 streamReadAndAdvance 가 EndOfStream
+    // 로 변환 (read syscall 의 0 return 이 EOF 와 동일 의미).
+    var src: MockSource = .{ .chunks = &.{} };
+    var buf: [16]u8 = undefined;
+    var iw = InMemoryWriter.init(&buf);
+
+    const result = streamReadAndAdvance(&iw.writer, .unlimited, .{
+        .ctx = &src,
+        .read = MockSource.read,
+    });
+    try std.testing.expectError(error.EndOfStream, result);
+}
+
+test "drainBufferedAndData: buffered + data 동시 → buffered 만 처리 후 return 0 (data 미진입)" {
+    var sink: MockSink = .{ .received = .empty };
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    @memcpy(buf[0..3], "AB!");
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 3,
+    };
+
+    // buffered=3 + data=[xyz] + splat=2 — drain 의 phase 1 만 발동, phase 2/3 미진입.
+    // 다음 drain 호출에서 data 가 새로 들어와야 처리됨.
+    const consumed = try drainBufferedAndData(&io_w, &[_][]const u8{"xyz"}, 2, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 0), consumed); // data consume = 0
+    try std.testing.expectEqualStrings("AB!", sink.received.items); // buffered 만
+    try std.testing.expectEqual(@as(usize, 0), io_w.end); // buffer 비워짐
+}
+
+test "drainBufferedAndData: data 중간 chunk empty → 다음 chunk 로 fall-through" {
+    var sink: MockSink = .{ .received = .empty };
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 0,
+    };
+
+    // data = ["", "", "xyz", "pattern"] + splat=1
+    // phase 2 (data[0..len-1] = ["", "", "xyz"]): "" 두 번 skip (continue), "xyz" 에서 단일 return.
+    const consumed = try drainBufferedAndData(&io_w, &[_][]const u8{ "", "", "xyz", "pattern" }, 1, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 3), consumed); // xyz 만
+    try std.testing.expectEqualStrings("xyz", sink.received.items);
 }
 
 test "drainBufferedAndData: buffered partial → io_w.consume 가 memmove + return 0" {
