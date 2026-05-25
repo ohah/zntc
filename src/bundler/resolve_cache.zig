@@ -632,7 +632,7 @@ pub const ResolveCache = struct {
     }
 
     /// path 는 *interned* (path_pool 소유). caller 는 borrow only — free 안 함.
-    /// owns_path=false 명시로 caller-borrow 시맨틱 type-level 표명.
+    /// `.borrowed` 명시로 caller-borrow 시맨틱 type-level 표명.
     fn fileResult(path: []const u8, resolve_dir: ?[]const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
         return .{ .file = .{
             .path = path,
@@ -668,12 +668,12 @@ pub const ResolveCache = struct {
         } };
     }
 
-    /// disabled variant 용 — path 단일 intern. `owner == .owned` 면 원본 free.
+    /// disabled variant 용 — path 단일 intern. `owner.isOwned()` 면 원본 free.
     /// **OOM 시 input 도 free** (errdefer) — single-owner invariant 일관.
     fn internDisabled(self: *ResolveCache, path: []const u8, module_type: ModuleType, owner: plugin_mod.Owner) error{OutOfMemory}!ResolvedModule {
-        errdefer if (owner == .owned) self.allocator.free(path);
+        errdefer if (owner.isOwned()) self.allocator.free(path);
         const interned = try self.path_pool.intern(path);
-        if (owner == .owned) self.allocator.free(path);
+        if (owner.isOwned()) self.allocator.free(path);
         return .{ .disabled = .{ .path = interned, .module_type = module_type, .owner = .borrowed } };
     }
 
@@ -858,30 +858,30 @@ pub const ResolveCache = struct {
     /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
     /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
     ///
-    /// **interning 적용 variant**: 모든 variant — owns_path/owns_payload discriminator
+    /// **interning 적용 variant**: 모든 variant — Owner discriminator
     /// 로 borrow vs owned 분기.
     /// `.dataurl` 는 mime 만 intern (data 는 base64 큰 메모리, pool 부적합).
     ///
-    /// owner ambiguity 해소 — `owns_path: bool` discriminator:
+    /// owner ambiguity 해소 — Owner enum discriminator:
     /// - `.file/.disabled/.external/.custom` default true (native resolver / NAPI bridge dupe)
     /// - `.virtual` default false (runtime_helper borrow 가 더 흔함)
-    /// - `owns_path=true` 면 intern + 원본 free
-    /// - `owns_path=false` 면 intern 만 (caller 가 owner 유지)
+    /// - ``.owned`` 면 intern + 원본 free
+    /// - ``.borrowed`` 면 intern 만 (caller 가 owner 유지)
     ///
     /// 반환된 ResolvedModule 의 path 는 항상 path_pool 의 interned slice (caller borrow
-    /// only) — owns_path=false 로 명시.
+    /// only) — `.borrowed` 로 명시.
     pub fn internResolvedModule(self: *ResolveCache, m: ResolvedModule) !ResolvedModule {
         return switch (m) {
             .file => |f| blk: {
                 // errdefer 와 explicit free 분리 — sub-scope 로 errdefer 영역 격리.
                 const paths = pool: {
-                    errdefer if (f.owner == .owned) {
+                    errdefer if (f.owner.isOwned()) {
                         self.allocator.free(f.path);
                         if (f.resolve_dir) |d| self.allocator.free(d);
                     };
                     break :pool try self.path_pool.internPair(f.path, f.resolve_dir);
                 };
-                if (f.owner == .owned) {
+                if (f.owner.isOwned()) {
                     self.allocator.free(f.path);
                     if (f.resolve_dir) |d| self.allocator.free(d);
                 }
@@ -897,44 +897,44 @@ pub const ResolveCache = struct {
             // 패턴 보유 (line 670-675). 다른 variant 의 inline blk 패턴과 다르지만 동작 동일.
             .disabled => |d| try self.internDisabled(d.path, d.module_type, d.owner),
             // (이하 .virtual/.external/.custom) inline sub-scope 패턴:
-            // owner ambiguity 해소 — owns_path=true 만 free.
+            // owner ambiguity 해소 — `.owned` 만 free.
             // intern 실패 시 errdefer 가 free, 성공 시 explicit free 후 break — explicit
             // free 와 errdefer 가 같은 slice 를 노리지 않도록 errdefer 는 intern 호출
             // 영역만 감싼다 (sub-scope blk 로 격리).
             .virtual => |v| blk: {
                 const interned = pool: {
-                    errdefer if (v.owner == .owned) self.allocator.free(v.path);
+                    errdefer if (v.owner.isOwned()) self.allocator.free(v.path);
                     break :pool try self.path_pool.intern(v.path);
                 };
-                if (v.owner == .owned) self.allocator.free(v.path);
+                if (v.owner.isOwned()) self.allocator.free(v.path);
                 break :blk .{ .virtual = .{ .path = interned, .plugin_data = v.plugin_data, .owner = .borrowed } };
             },
-            // (#3763 후속) .external/.custom 도 .virtual 와 같은 owns_path 패턴 — intern +
+            // (#3763 후속) .external/.custom 도 .virtual 와 같은 Owner 패턴 — intern +
             // 조건부 free. 현재 resolve_imports.zig:349 가 unreachable 라 도달 안 함이지만,
             // future plugin layer 활성화 시 dangling/leak 방지 가능.
             .external => |e| blk: {
                 const interned = pool: {
-                    errdefer if (e.owner == .owned) self.allocator.free(e.path);
+                    errdefer if (e.owner.isOwned()) self.allocator.free(e.path);
                     break :pool try self.path_pool.intern(e.path);
                 };
-                if (e.owner == .owned) self.allocator.free(e.path);
+                if (e.owner.isOwned()) self.allocator.free(e.path);
                 break :blk .{ .external = .{ .path = interned, .owner = .borrowed } };
             },
             .custom => |c| blk: {
-                // (retro review P0) name + path 둘 다 같은 owner 가정 (owns_path 단일).
-                // c.name.ptr == c.path.ptr (aliasing) + owns_path=true 면 free 두 번 →
+                // (retro review P0) name + path 둘 다 같은 owner 가정 (Owner 단일).
+                // c.name.ptr == c.path.ptr (aliasing) + `.owned` 면 free 두 번 →
                 // double-free. invariant: caller 가 동일 slice 를 둘 다 가리키지 않게 하거나
-                // owns_path=false 로 borrow 명시. mixed owner 케이스는 future RFC (owns_name
-                // + owns_path 분리).
-                if (c.owner == .owned) std.debug.assert(c.name.ptr != c.path.ptr);
+                // `.borrowed` 로 borrow 명시. mixed owner 케이스는 future RFC (owner_name +
+                // owner_path 분리).
+                if (c.owner.isOwned()) std.debug.assert(c.name.ptr != c.path.ptr);
                 const paths = pool: {
-                    errdefer if (c.owner == .owned) {
+                    errdefer if (c.owner.isOwned()) {
                         self.allocator.free(c.name);
                         self.allocator.free(c.path);
                     };
                     break :pool try self.path_pool.internPair(c.name, c.path);
                 };
-                if (c.owner == .owned) {
+                if (c.owner.isOwned()) {
                     self.allocator.free(c.name);
                     self.allocator.free(c.path);
                 }
@@ -946,24 +946,24 @@ pub const ResolveCache = struct {
                 } };
             },
             // (deferred 2) .dataurl mime 만 intern (짧고 재사용 가능), data 는 그대로 (base64
-            // 큰 메모리, pool 부적합). owns_payload=true 면 둘 다 free.
+            // 큰 메모리, pool 부적합). `.owned` 면 둘 다 free.
             // 현 resolve_imports.zig:349 unreachable — production 도달 안 함이지만
             // future plugin layer 활성화 시 owner discipline 보장.
             //
             // (review finding) `.custom` 처럼 mime.ptr == data.ptr aliasing 시 double-free
             // → debug assert 로 차단. errdefer 도 같은 두 free 라 동일 위험.
             .dataurl => |du| blk: {
-                if (du.owner == .owned) std.debug.assert(du.mime.ptr != du.data.ptr);
+                if (du.owner.isOwned()) std.debug.assert(du.mime.ptr != du.data.ptr);
                 const interned_mime = pool: {
-                    errdefer if (du.owner == .owned) {
+                    errdefer if (du.owner.isOwned()) {
                         self.allocator.free(du.mime);
                         self.allocator.free(du.data);
                     };
                     break :pool try self.path_pool.intern(du.mime);
                 };
-                if (du.owner == .owned) {
+                if (du.owner.isOwned()) {
                     self.allocator.free(du.mime);
-                    // data 는 caller 가 borrow 시점 결정 — 본 PR 은 intern 안 함. owns_payload=true
+                    // data 는 caller 가 borrow 시점 결정 — 본 PR 은 intern 안 함. `.owned`
                     // 면 원본도 free (caller 가 임시 alloc 했다는 의미).
                     self.allocator.free(du.data);
                 }
@@ -973,7 +973,7 @@ pub const ResolveCache = struct {
                         // data 는 caller 가 free 했으므로 dangling 슬라이스 반환 안 됨 —
                         // future RFC: data 도 path_pool 외 별도 arena 로 intern 또는 emitter
                         // 가 즉시 consume. 현재 unreachable 이라 안전.
-                        .data = if (du.owner == .owned) "" else du.data,
+                        .data = if (du.owner.isOwned()) "" else du.data,
                         .owner = .borrowed,
                     },
                 };

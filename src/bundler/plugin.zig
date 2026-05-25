@@ -177,15 +177,26 @@ fn deepMergeMetaValue(base: *std.json.Value, add: std.json.Value) std.mem.Alloca
     }
 }
 
-/// Plugin resolveId 응답의 통합 모델 (#1885).
-///
-/// origin 별 type-safe 분기 — esbuild 의 string namespace 보다 컴파일 타임 안전.
-/// path/payload ownership discriminator. `bool` trap 해소 — `.owned/.borrowed` 가
+/// Path/payload ownership discriminator. `bool` trap 해소 — `.owned/.borrowed` 가
 /// `true/false` 보다 self-documenting (deferred 3).
 /// - `.owned`: caller 가 자체 alloc → `internResolvedModule` 가 intern 후 원본 free
 /// - `.borrowed`: static literal / parse_arena slice 등 — bundler 가 free 시도 금지
-pub const Owner = enum { owned, borrowed };
+pub const Owner = enum {
+    owned,
+    borrowed,
 
+    pub inline fn isOwned(self: Owner) bool {
+        return self == .owned;
+    }
+
+    pub inline fn isBorrowed(self: Owner) bool {
+        return self == .borrowed;
+    }
+};
+
+/// Plugin resolveId 응답의 통합 모델 (#1885).
+///
+/// origin 별 type-safe 분기 — esbuild 의 string namespace 보다 컴파일 타임 안전.
 /// rolldown 의 풍부한 ResolvedId 와 비슷하지만 tag 가 fs.Namespace 와 통일.
 pub const ResolvedModule = union(fs.Namespace) {
     /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
