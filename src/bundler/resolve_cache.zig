@@ -893,7 +893,10 @@ pub const ResolveCache = struct {
                     .owns_path = false,
                 } };
             },
+            // .disabled — internDisabled helper 가 동일 errdefer + sub-scope-equivalent
+            // 패턴 보유 (line 670-675). 다른 variant 의 inline blk 패턴과 다르지만 동작 동일.
             .disabled => |d| try self.internDisabled(d.path, d.module_type, d.owns_path),
+            // (이하 .virtual/.external/.custom) inline sub-scope 패턴:
             // owner ambiguity 해소 — owns_path=true 만 free.
             // intern 실패 시 errdefer 가 free, 성공 시 explicit free 후 break — explicit
             // free 와 errdefer 가 같은 slice 를 노리지 않도록 errdefer 는 intern 호출
@@ -918,7 +921,12 @@ pub const ResolveCache = struct {
                 break :blk .{ .external = .{ .path = interned, .owns_path = false } };
             },
             .custom => |c| blk: {
-                // name + path 모두 같은 owner 가정 (owns_path discriminator).
+                // (retro review P0) name + path 둘 다 같은 owner 가정 (owns_path 단일).
+                // c.name.ptr == c.path.ptr (aliasing) + owns_path=true 면 free 두 번 →
+                // double-free. invariant: caller 가 동일 slice 를 둘 다 가리키지 않게 하거나
+                // owns_path=false 로 borrow 명시. mixed owner 케이스는 future RFC (owns_name
+                // + owns_path 분리).
+                if (c.owns_path) std.debug.assert(c.name.ptr != c.path.ptr);
                 const paths = pool: {
                     errdefer if (c.owns_path) {
                         self.allocator.free(c.name);

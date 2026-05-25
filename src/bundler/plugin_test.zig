@@ -46,6 +46,7 @@ fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allo
         return .{ .file = .{
             .path = try allocator.dupe(u8, "/virtual/config.js"),
             .module_type = .js,
+            .owns_path = true, // default 와 동일하지만 명시 — alloc.dupe 의도 표기.
         } };
     }
     return null;
@@ -633,10 +634,13 @@ const ResolvedModule = plugin_mod.ResolvedModule;
 const ModuleType = @import("types.zig").ModuleType;
 
 test "ResolvedModule: file variant 보존" {
+    // (retro review) static literal fixture — owns_path=false 명시. default true 라
+    // 누군가 이 fixture 를 internResolvedModule 에 넘기면 static literal free → panic.
     const m: ResolvedModule = .{ .file = .{
         .path = "/abs/foo.ts",
         .module_type = .ts,
         .is_module_field = true,
+        .owns_path = false,
     } };
     switch (m) {
         .file => |f| {
@@ -649,6 +653,7 @@ test "ResolvedModule: file variant 보존" {
 }
 
 test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" {
+    // 모든 fixture 가 static literal — owns_path=false 로 borrow 명시.
     const v: ResolvedModule = .{ .virtual = .{ .path = "virtual:foo" } };
     switch (v) {
         .virtual => |x| try std.testing.expectEqualStrings("virtual:foo", x.path),
@@ -664,13 +669,13 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const e: ResolvedModule = .{ .external = .{ .path = "react" } };
+    const e: ResolvedModule = .{ .external = .{ .path = "react", .owns_path = false } };
     switch (e) {
         .external => |x| try std.testing.expectEqualStrings("react", x.path),
         else => return error.TestUnexpectedResult,
     }
 
-    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .js } };
+    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .js, .owns_path = false } };
     switch (dis) {
         .disabled => |x| {
             try std.testing.expectEqualStrings("/abs/disabled.js", x.path);
@@ -679,7 +684,7 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const c: ResolvedModule = .{ .custom = .{ .name = "my-plugin", .path = "/x" } };
+    const c: ResolvedModule = .{ .custom = .{ .name = "my-plugin", .path = "/x", .owns_path = false } };
     switch (c) {
         .custom => |x| {
             try std.testing.expectEqualStrings("my-plugin", x.name);
