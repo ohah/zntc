@@ -171,42 +171,15 @@ pub const TlsWriter = struct {
         data: []const []const u8,
         splat: usize,
     ) std.Io.Writer.Error!usize {
-        // VTable.drain contract (Writer.zig L38): "Number of bytes consumed
-        // from `data` is returned, excluding bytes from `buffer`." buffered
-        // 처리는 io_w.consume() 가 buffer end 관리 + return 값에 미포함.
         const self: *TlsWriter = @alignCast(@fieldParentPtr("interface", io_w));
-
-        // 1. buffered (io_w.buffer[0..end]) 가 있으면 우선 처리 후 단일 호출 종료.
-        // consume(n) 가 partial 시 잔여 memmove + end 갱신 + return 0.
-        const buffered = io_w.buffered();
-        if (buffered.len > 0) {
-            const written = try writeSlice(self, buffered);
-            return io_w.consume(written);
-        }
-
-        // 2. data 의 첫 (data.len-1) chunk 처리 — single SSL_write 후 즉시 return
-        // (caller 가 다음 chunk 를 다음 drain 호출에서 받음).
-        if (data.len == 0) return 0;
-        for (data[0 .. data.len - 1]) |chunk| {
-            if (chunk.len == 0) continue;
-            return try writeSlice(self, chunk);
-        }
-
-        // 3. data 의 마지막 element 는 pattern — splat 횟수 만큼 반복. partial write
-        // 시 즉시 break.
-        const pattern = data[data.len - 1];
-        if (pattern.len == 0 or splat == 0) return 0;
-        var written: usize = 0;
-        var remaining: usize = splat;
-        while (remaining > 0) : (remaining -= 1) {
-            const n = try writeSlice(self, pattern);
-            written += n;
-            if (n < pattern.len) return written;
-        }
-        return written;
+        return drainBufferedAndData(io_w, data, splat, .{
+            .ctx = self,
+            .write = sslWriteAdapter,
+        });
     }
 
-    fn writeSlice(self: *TlsWriter, slice: []const u8) std.Io.Writer.Error!usize {
+    fn sslWriteAdapter(ctx: *anyopaque, slice: []const u8) std.Io.Writer.Error!usize {
+        const self: *TlsWriter = @ptrCast(@alignCast(ctx));
         const max: c_int = @intCast(@min(slice.len, @as(usize, std.math.maxInt(c_int))));
         const n = boringssl.SSL_write(self.ssl, slice.ptr, max);
         if (n <= 0) {
@@ -217,7 +190,220 @@ pub const TlsWriter = struct {
     }
 };
 
+/// drainFn 의 SSL 의존 없는 generic 로직 — buffered + data + splat 처리. test
+/// 에서 mock write_fn 으로 contract 검증 가능 (test backfill #2538 4-2 review).
+pub const WriteCallback = struct {
+    ctx: *anyopaque,
+    write: *const fn (ctx: *anyopaque, slice: []const u8) std.Io.Writer.Error!usize,
+};
+
+pub fn drainBufferedAndData(
+    io_w: *std.Io.Writer,
+    data: []const []const u8,
+    splat: usize,
+    cb: WriteCallback,
+) std.Io.Writer.Error!usize {
+    // VTable.drain contract (Writer.zig L38): "Number of bytes consumed from
+    // `data` is returned, excluding bytes from `buffer`." buffered 처리는
+    // io_w.consume() 가 buffer end 관리 + return 값에 미포함.
+
+    // 1. buffered (io_w.buffer[0..end]) 가 있으면 우선 처리 후 단일 호출 종료.
+    // consume(n) 가 partial 시 잔여 memmove + end 갱신 + return 0.
+    const buffered = io_w.buffered();
+    if (buffered.len > 0) {
+        const written = try cb.write(cb.ctx, buffered);
+        return io_w.consume(written);
+    }
+
+    // 2. data 의 첫 (data.len-1) chunk 처리 — single 호출 후 즉시 return
+    // (caller 가 다음 chunk 를 다음 drain 호출에서 받음).
+    if (data.len == 0) return 0;
+    for (data[0 .. data.len - 1]) |chunk| {
+        if (chunk.len == 0) continue;
+        return try cb.write(cb.ctx, chunk);
+    }
+
+    // 3. data 의 마지막 element 는 pattern — splat 횟수 만큼 반복. partial write
+    // 시 즉시 break.
+    const pattern = data[data.len - 1];
+    if (pattern.len == 0 or splat == 0) return 0;
+    var written: usize = 0;
+    var remaining: usize = splat;
+    while (remaining > 0) : (remaining -= 1) {
+        const n = try cb.write(cb.ctx, pattern);
+        written += n;
+        if (n < pattern.len) return written;
+    }
+    return written;
+}
+
 test "TlsContext: init 실패 (없는 cert 파일)" {
     const ctx_result = TlsContext.init("/nonexistent/cert.pem", "/nonexistent/key.pem");
     try std.testing.expectError(Error.CertLoadFailed, ctx_result);
+}
+
+// ─── drainBufferedAndData test (mock write callback) ────────────────────────
+// PR-3a 의 /code-review max HIGH #1/#2 fix 의 직접 검증 — drain VTable contract
+// 의 buffered/data/splat 처리. SSL 의존 없이 in-memory writer 로 검증.
+
+/// drainBufferedAndData test 의 io_w 는 호출자가 io_w.vtable.drain 을 직접
+/// 호출하지 않으므로 (drainBufferedAndData 가 cb.write 만 호출, vtable 미진입)
+/// dummy vtable 로 충분.
+const dummy_vtable: std.Io.Writer.VTable = .{
+    .drain = struct {
+        fn drain(_: *std.Io.Writer, _: []const []const u8, _: usize) std.Io.Writer.Error!usize {
+            return error.WriteFailed;
+        }
+    }.drain,
+};
+
+const MockSink = struct {
+    received: std.ArrayList(u8),
+    partial_at: ?usize = null, // 누적 byte 이 이 이상이면 partial write
+
+    fn write(ctx: *anyopaque, slice: []const u8) std.Io.Writer.Error!usize {
+        const self: *MockSink = @ptrCast(@alignCast(ctx));
+        const max_write = if (self.partial_at) |limit| blk: {
+            if (self.received.items.len + slice.len > limit) {
+                break :blk limit - self.received.items.len;
+            }
+            break :blk slice.len;
+        } else slice.len;
+        self.received.appendSlice(std.testing.allocator, slice[0..max_write]) catch return error.WriteFailed;
+        return max_write;
+    }
+};
+
+test "drainBufferedAndData: buffered 만 (data 빈) — io_w.consume 후 return 0" {
+    var sink: MockSink = .{ .received = .empty };
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    @memcpy(buf[0..5], "hello");
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 5,
+    };
+
+    const consumed = try drainBufferedAndData(&io_w, &.{}, 0, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 0), consumed); // data 에서 consume = 0
+    try std.testing.expectEqualStrings("hello", sink.received.items);
+    try std.testing.expectEqual(@as(usize, 0), io_w.end); // buffer 비워짐
+}
+
+test "drainBufferedAndData: data 첫 chunk 만 — return = chunk.len, splat 의 last 미진입" {
+    var sink: MockSink = .{ .received = .empty };
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 0,
+    };
+
+    const consumed = try drainBufferedAndData(&io_w, &[_][]const u8{ "abc", "_pattern" }, 3, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 3), consumed); // 첫 chunk "abc" 만
+    try std.testing.expectEqualStrings("abc", sink.received.items);
+}
+
+test "drainBufferedAndData: splat 처리 — pattern N회 반복" {
+    var sink: MockSink = .{ .received = .empty };
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 0,
+    };
+
+    // data = [pattern] 단일 element + splat=4 → 4회 반복
+    const consumed = try drainBufferedAndData(&io_w, &[_][]const u8{"ab"}, 4, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 8), consumed); // 2 byte × 4
+    try std.testing.expectEqualStrings("abababab", sink.received.items);
+}
+
+test "drainBufferedAndData: splat 중 partial write 시 즉시 break" {
+    var sink: MockSink = .{ .received = .empty, .partial_at = 3 }; // 3 byte 초과 시 truncate
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 0,
+    };
+
+    // pattern "ab" + splat=4 — 1회차 "ab" (sink 2/3), 2회차 "a" 만 (partial, break)
+    const consumed = try drainBufferedAndData(&io_w, &[_][]const u8{"ab"}, 4, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 3), consumed); // ab + a
+    try std.testing.expectEqualStrings("aba", sink.received.items);
+}
+
+test "drainBufferedAndData: empty data + empty pattern + splat=0 → 0 return" {
+    var sink: MockSink = .{ .received = .empty };
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 0,
+    };
+
+    const consumed_empty_data = try drainBufferedAndData(&io_w, &.{}, 0, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 0), consumed_empty_data);
+
+    const consumed_empty_pattern = try drainBufferedAndData(&io_w, &[_][]const u8{""}, 5, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 0), consumed_empty_pattern);
+
+    const consumed_zero_splat = try drainBufferedAndData(&io_w, &[_][]const u8{"x"}, 0, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 0), consumed_zero_splat);
+    try std.testing.expectEqual(@as(usize, 0), sink.received.items.len);
+}
+
+test "drainBufferedAndData: buffered partial → io_w.consume 가 memmove + return 0" {
+    var sink: MockSink = .{ .received = .empty, .partial_at = 3 }; // 3 byte 만 받음
+    defer sink.received.deinit(std.testing.allocator);
+
+    var buf: [16]u8 = undefined;
+    @memcpy(buf[0..6], "hello!");
+    var io_w: std.Io.Writer = .{
+        .vtable = &dummy_vtable,
+        .buffer = &buf,
+        .end = 6,
+    };
+
+    // sink 가 "hel" 까지만 받음 → consume(3) → buf 의 "lo!" 가 [0..3] 으로 memmove + end=3
+    const consumed = try drainBufferedAndData(&io_w, &.{}, 0, .{
+        .ctx = &sink,
+        .write = MockSink.write,
+    });
+    try std.testing.expectEqual(@as(usize, 0), consumed); // data 미사용
+    try std.testing.expectEqualStrings("hel", sink.received.items);
+    try std.testing.expectEqual(@as(usize, 3), io_w.end); // partial: 잔여 3 byte
+    try std.testing.expectEqualStrings("lo!", io_w.buffer[0..io_w.end]);
 }
