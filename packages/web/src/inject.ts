@@ -68,7 +68,10 @@ export function injectAppDevBundleCssLinks(
  * 가드. outdir 의 first-level `*.css` 만 스캔 (chunk subdirectory 미포함 — bundler 의 entry_names
  * `[dir]/[name]` default 가 emit 한 결과 위치 기준).
  */
-export function injectAppDevBundleCssLinksFromOutdir(outdir: string, base: string | undefined): void {
+export function injectAppDevBundleCssLinksFromOutdir(
+  outdir: string,
+  base: string | undefined,
+): void {
   injectIntoDevHtml(outdir, (html) => {
     let entries: string[];
     try {
