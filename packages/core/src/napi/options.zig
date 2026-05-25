@@ -858,6 +858,9 @@ pub fn parseBuildOptions(
         .emotion_extra_css_sources = emotion_extra_css orelse &.{},
         .emotion_extra_styled_sources = emotion_extra_styled orelse &.{},
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
+        // #3779 follow-up — watch handle 의 initial 빌드가 outdir 출력을 skip. caller
+        // (`runServe`) 가 이미 별도 `runBundle` 로 outdir 를 채운 후 watch 만 띄우는 패턴.
+        .skip_initial_output = getObjectBool(env, opts_obj, "skipInitialOutput", false),
         // RN 프리셋(bundler.zig의 RN_BOOL_PRESET 단일 소스): platform=react-native이면
         // 사용자가 명시하지 않아도 CLI와 동일하게 auto-enable. worklet_transform 없이는
         // node_modules/react-native-reanimated의 'worklet' directive가 serialize되지

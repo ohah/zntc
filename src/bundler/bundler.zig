@@ -176,6 +176,13 @@ pub const BundleOptions = struct {
     /// 사용하므로 풀 bundle 은 첫 빌드에서만 필요. wall ~57ms 절감 (565 module fixture
     /// 측정). caller 가 outfile 을 dev server 에서 file-based serve 하면 활성화 금지.
     skip_bundle_output: bool = false,
+    /// `watch()` API 의 *initial* 빌드 결과를 outdir 에 쓰지 않는다 (#3779 follow-up).
+    /// caller 가 이미 별도 `build()` 로 outdir 를 채워 둔 상태에서 watch handle 만 띄울 때
+    /// 사용 — runServe 가 그 패턴 (`runBundle` 1회 + `watch()`). incremental rebuild 의 출력
+    /// 동작은 `skip_bundle_output` (incremental 자동 설정) 으로 별도 제어되므로, 본 옵션은
+    /// 오직 initial 단계만 영향. caller 가 outdir 를 미리 준비하지 않으면 dev server 가
+    /// 404 — 위험은 caller 책임. bundler 자체는 이 옵션을 보지 않고 watch.zig 만 사용.
+    skip_initial_output: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// legacy decorator 변환 (--experimental-decorators / tsconfig)

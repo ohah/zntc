@@ -1928,11 +1928,13 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // appDev + hmr 모드일 때만 native watch handle 을 띄워 onRebuild 콜백에서
     // graph change → FullReload, modules 변경 → UpdateStart/Update/UpdateDone 송출.
     // fsWatch + drain 은 CSS/sass/postcss/restart 만 처리 — JS 분기는 noop (중복 컴파일 회피).
-    // 첫 빌드는 위쪽 `runBundle` 가 이미 수행 — watch handle 의 initial 은 outdir 덮어쓰기.
-    // 작은 cold-start 중복이 있지만 정확성/소유권 단순화 우선 (follow-up: NAPI initial-skip 옵션).
+    // 첫 빌드는 위쪽 `runBundle` 가 이미 수행 — watch handle 은 `skipInitialOutput: true`
+    // 로 initial 빌드의 outdir 출력만 skip (graph/cache 는 정상 구성). 중복 출력 race 회피.
     if (appDev && hmr) {
       const watchBuildOpts = await buildBundleOptions(opts, config);
       watchBuildOpts.devMode = true;
+      // #3779 follow-up — runBundle 이 outdir 를 이미 채웠으므로 watch initial 출력은 skip.
+      watchBuildOpts.skipInitialOutput = true;
       watchBuildOpts.onRebuild = (event) => {
         try {
           web.broadcastRebuildEvent(hmr, event);

@@ -34,6 +34,7 @@ export const NAPI_INTERNAL_ONLY_KEYS = [
   'runBeforeMain',
   'scopeHoist',
   'silentConsoleErrorPatterns',
+  'skipInitialOutput',
   'strictExecutionOrder',
   'watchExclude',
   'watchFolders',

@@ -1020,6 +1020,15 @@ interface BuildOptionsCommon {
   reactRefresh?: boolean;
   /** Collect dev mode per-module codes (for HMR rebuilds). */
   collectModuleCodes?: boolean;
+  /**
+   * `watch()` 가 *initial* 빌드 결과를 outdir 에 쓰지 않는다 (#3779 follow-up).
+   * caller 가 이미 별도 `build()` / `buildSync()` 로 outdir 를 채워 둔 상태에서
+   * watch handle 만 띄울 때 사용 — `runServe` 가 `runBundle` 1회 후 `watch()` 를
+   * 띄우는 패턴. caller 가 outdir 를 미리 준비하지 않으면 dev server 가 404 — 위험은
+   * caller 책임. incremental rebuild 의 출력 동작은 watch handle 이 자동으로 별도
+   * 제어. 기본 false (RN dev 등 기존 단독 watch 사용자 호환).
+   */
+  skipInitialOutput?: boolean;
   /** Add configurable: true to Object.defineProperty (RN/Hermes-compatible). */
   configurableExports?: boolean;
   /** Guarantee ESM execution order — downgrade function declarations to
