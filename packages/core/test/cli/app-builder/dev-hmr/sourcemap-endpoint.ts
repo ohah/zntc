@@ -24,10 +24,7 @@ describe('CLI: Vite-style app builder > dev HMR > sourcemap endpoint (#3799)', (
   test('Update modules.code 에 sourceMappingURL 주석 + endpoint 응답', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-sm-endpoint-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
-    writeFileSync(
-      join(dir, 'index.html'),
-      '<script type="module" src="/src/main.ts"></script>',
-    );
+    writeFileSync(join(dir, 'index.html'), '<script type="module" src="/src/main.ts"></script>');
     writeFileSync(join(dir, 'src', 'main.ts'), 'export const x = 1;');
 
     const port = await findFreePort();
