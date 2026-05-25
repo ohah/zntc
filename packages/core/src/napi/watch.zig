@@ -214,6 +214,31 @@ const LazySourceMapCache = struct {
 const WatchReadyEvent = struct {
     files: usize,
     bytes: usize,
+    /// #3796 — initial 빌드의 output 파일 path 목록. caller (`runServe`) 가 outdir scan 없이
+    /// 정확한 outputFiles 정보를 받아 `appDev.injectBundleCssLinks` 호출 가능. contents 는
+    /// 메모리 비용 큼 + caller 가 보통 path 만 본다 (`inject.ts` 의 `isCssFile(file.path)` 만
+    /// 검사) — path 만 노출. null 이면 outputs 없음 (단일 파일 빌드 등).
+    outputs: ?[]const []const u8 = null,
+    /// #3799 root-cause — initial bundle() 이 success 반환 + diagnostics 에 error severity
+    /// (missing import 등 placeholder 처리된 partial build). 이전엔 worker 종료 — 잘못된 design.
+    /// `success` 는 watch lifecycle 자체에 보존, errors 는 별도 노출. consumer (runServe) 가
+    /// reportError 호출.
+    errors: ?[]const WatchRebuildEvent.ErrorEntry = null,
+
+    fn deinit(self: *WatchReadyEvent, allocator: std.mem.Allocator) void {
+        if (self.outputs) |paths| {
+            for (paths) |p| allocator.free(p);
+            allocator.free(paths);
+        }
+        if (self.errors) |errs| {
+            for (errs) |e| {
+                allocator.free(e.file);
+                allocator.free(e.message);
+            }
+            allocator.free(errs);
+        }
+        allocator.destroy(self);
+    }
 };
 
 /// HMR rebuild phase 별 소요시간 (밀리초). Issue #1223 관측성.
@@ -337,11 +362,11 @@ fn getFileMtime(path: []const u8) !i128 {
 /// onReady TSFN 콜백 — 메인 스레드에서 실행
 fn watchReadyTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
     const event: *WatchReadyEvent = @ptrCast(@alignCast(data.?));
-    defer native_alloc.destroy(event);
+    defer event.deinit(native_alloc);
 
     if (js_func == null) return;
 
-    // {files: N, bytes: N} 객체 생성
+    // {files: N, bytes: N, outputs?: string[]} 객체 생성
     var js_event: c.napi_value = undefined;
     if (c.napi_create_object(env, &js_event) != c.napi_ok) return;
 
@@ -352,6 +377,36 @@ fn watchReadyTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data: 
     var js_bytes: c.napi_value = undefined;
     _ = c.napi_create_int64(env, @intCast(event.bytes), &js_bytes);
     _ = c.napi_set_named_property(env, js_event, "bytes", js_bytes);
+
+    // #3796 — outputs: Array<string> (initial 빌드의 output 파일 path 목록).
+    if (event.outputs) |paths| {
+        var js_outputs: c.napi_value = undefined;
+        _ = c.napi_create_array_with_length(env, paths.len, &js_outputs);
+        for (paths, 0..) |p, idx| {
+            var js_str: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, p.ptr, p.len, &js_str);
+            _ = c.napi_set_element(env, js_outputs, @intCast(idx), js_str);
+        }
+        _ = c.napi_set_named_property(env, js_event, "outputs", js_outputs);
+    }
+
+    // #3799 root-cause — errors: Array<{file, message}> (initial diagnostics 의 error 목록).
+    if (event.errors) |errs| {
+        var js_errors: c.napi_value = undefined;
+        _ = c.napi_create_array_with_length(env, errs.len, &js_errors);
+        for (errs, 0..) |e, idx| {
+            var js_entry: c.napi_value = undefined;
+            _ = c.napi_create_object(env, &js_entry);
+            var js_file: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, e.file.ptr, e.file.len, &js_file);
+            _ = c.napi_set_named_property(env, js_entry, "file", js_file);
+            var js_msg: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, e.message.ptr, e.message.len, &js_msg);
+            _ = c.napi_set_named_property(env, js_entry, "message", js_msg);
+            _ = c.napi_set_element(env, js_errors, @intCast(idx), js_entry);
+        }
+        _ = c.napi_set_named_property(env, js_event, "errors", js_errors);
+    }
 
     // onReady(event) 호출
     var js_undefined: c.napi_value = undefined;
@@ -477,29 +532,30 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
             _ = c.napi_set_named_property(env, js_event, "reparsedModules", js_n);
         }
     } else {
-        // error: string (catch 분기)
+        // error: string (catch 분기 — bundle() 자체가 throw 한 케이스)
         if (event.error_msg) |msg| {
             var js_err: c.napi_value = undefined;
             _ = c.napi_create_string_utf8(env, msg.ptr, msg.len, &js_err);
             _ = c.napi_set_named_property(env, js_event, "error", js_err);
         }
-        // #3799 — errors: Array<{file, message}> (success 후 diagnostics 분기)
-        if (event.errors) |errs| {
-            var js_errors: c.napi_value = undefined;
-            _ = c.napi_create_array_with_length(env, errs.len, &js_errors);
-            for (errs, 0..) |e, idx| {
-                var js_entry: c.napi_value = undefined;
-                _ = c.napi_create_object(env, &js_entry);
-                var js_file: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(env, e.file.ptr, e.file.len, &js_file);
-                _ = c.napi_set_named_property(env, js_entry, "file", js_file);
-                var js_msg: c.napi_value = undefined;
-                _ = c.napi_create_string_utf8(env, e.message.ptr, e.message.len, &js_msg);
-                _ = c.napi_set_named_property(env, js_entry, "message", js_msg);
-                _ = c.napi_set_element(env, js_errors, @intCast(idx), js_entry);
-            }
-            _ = c.napi_set_named_property(env, js_event, "errors", js_errors);
+    }
+    // #3799 root-cause — errors 는 success/false 두 분기에서 모두 채워질 수 있다. success=true
+    // + errors 는 missing import 같은 partial build 시그널 (build 자체는 성공, output 있음).
+    if (event.errors) |errs| {
+        var js_errors: c.napi_value = undefined;
+        _ = c.napi_create_array_with_length(env, errs.len, &js_errors);
+        for (errs, 0..) |e, idx| {
+            var js_entry: c.napi_value = undefined;
+            _ = c.napi_create_object(env, &js_entry);
+            var js_file: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, e.file.ptr, e.file.len, &js_file);
+            _ = c.napi_set_named_property(env, js_entry, "file", js_file);
+            var js_msg: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, e.message.ptr, e.message.len, &js_msg);
+            _ = c.napi_set_named_property(env, js_entry, "message", js_msg);
+            _ = c.napi_set_element(env, js_errors, @intCast(idx), js_entry);
         }
+        _ = c.napi_set_named_property(env, js_event, "errors", js_errors);
     }
 
     // onRebuild(event) 호출
@@ -670,28 +726,12 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     };
     defer result.deinit(allocator);
 
-    // #3799 — initial 빌드 자체는 성공했지만 result.diagnostics 에 error severity 가 있으면
-    // multi-error event 발화 후 worker 종료. caller (broadcastRebuildEvent) 가 errors 배열을
-    // reportError 로 전달 — 다중 error + file/message 정보 보존.
-    if (result.hasErrors()) {
-        const event = allocator.create(WatchRebuildEvent) catch {
-            _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
-            _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-            async_data.deinit();
-            return;
-        };
-        event.* = .{
-            .success = false,
-            .errors = collectErrorsFromResult(allocator, &result),
-        };
-        if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
-            event.deinit();
-        }
-        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
-        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-        async_data.deinit();
-        return;
-    }
+    // #3799 root-cause fix — initial bundle() 가 success 반환 (output 생성됨) 이지만
+    // diagnostics 에 error severity 가 있을 수 있다 (missing import 등 placeholder 처리된 partial
+    // build). 이전 코드는 worker 종료해 dev server 첫 빌드 실패 시 restart 까지 죽음 — 사용자가
+    // syntax error 만 만져도 watch 끊김. 정확한 design 은 *success 유지 + ready_event.errors
+    // 로 별도 노출* — consumer (runServe) 가 reportError + 정상 흐름 (module_code_cache 채움,
+    // file output 등) 둘 다 처리. worker 는 정상 계속.
 
     // dev mode: per-module code 캐시 (HMR diff용)
     var module_code_cache = std.StringHashMap([]const u8).init(allocator);
@@ -811,12 +851,47 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     // ready 이벤트 전송
     {
         const ready_event = allocator.create(WatchReadyEvent) catch return;
+        // #3796 — outputs path 목록 복사 (initial 빌드의 산출 path). single-file 경로
+        // (`output_filename`) 도 same shape 으로 일관 노출 → caller (`runServe`) 가 통일 처리.
+        var outputs_copy: ?[]const []const u8 = null;
+        if (result.outputs) |outputs| {
+            const arr = allocator.alloc([]const u8, outputs.len) catch null;
+            if (arr) |paths| {
+                var fill: usize = 0;
+                for (outputs) |o| {
+                    const dup = allocator.dupe(u8, o.path) catch break;
+                    paths[fill] = dup;
+                    fill += 1;
+                }
+                if (fill == outputs.len) {
+                    outputs_copy = paths;
+                } else {
+                    // partial alloc 실패 — cleanup
+                    for (paths[0..fill]) |p| allocator.free(p);
+                    allocator.free(paths);
+                }
+            }
+        } else if (bundle_opts.output_filename.len > 0) {
+            const arr = allocator.alloc([]const u8, 1) catch null;
+            if (arr) |paths| {
+                if (allocator.dupe(u8, bundle_opts.output_filename)) |dup| {
+                    paths[0] = dup;
+                    outputs_copy = paths;
+                } else |_| {
+                    allocator.free(paths);
+                }
+            }
+        }
         ready_event.* = .{
             .files = initial_watch_count,
             .bytes = initial_bytes,
+            .outputs = outputs_copy,
+            // #3799 root-cause — initial build 의 diagnostics 에 error 가 있으면 별도 노출.
+            // success/lifecycle 영향 없음, consumer (runServe onReady) 가 reportError 처리.
+            .errors = if (result.hasErrors()) collectErrorsFromResult(allocator, &result) else null,
         };
         if (c.napi_call_threadsafe_function(async_data.ready_tsfn, @ptrCast(ready_event), c.napi_tsfn_blocking) != c.napi_ok) {
-            allocator.destroy(ready_event);
+            ready_event.deinit(allocator);
         }
     }
 
@@ -911,19 +986,11 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         };
         defer rebuild_result.deinit(allocator);
 
-        // #3799 — rebuild 성공했지만 diagnostics 에 errors 있으면 multi-error event 발화.
-        // 다음 rebuild 사이클로 계속 (worker 종료 안 함 — file 수정으로 사용자 fix 가능).
-        if (rebuild_result.hasErrors()) {
-            const event = allocator.create(WatchRebuildEvent) catch continue;
-            event.* = .{
-                .success = false,
-                .errors = collectErrorsFromResult(allocator, &rebuild_result),
-            };
-            if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
-                event.deinit();
-            }
-            continue;
-        }
+        // #3799 root-cause fix — rebuild_result.hasErrors() 면 이전 코드는 별도 early-event +
+        // continue 였다. 그러나 그러면 module_code_cache / file output / lazy sourcemap swap 등
+        // state update path 가 skip 돼 다음 rebuild 가 stale base 위에서 시작. 정확한 design:
+        // *success=true 유지* + event.errors 별도 노출 → consumer 가 reportError + Update broadcast
+        // 동시 처리. 정상 흐름 그대로 진행.
 
         async_data.compiled_cache.logStats("");
 
@@ -967,6 +1034,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         event.* = .{
             .success = true,
             .bytes = output_bytes,
+            // #3799 root-cause — rebuild_result.diagnostics 의 error severity 를 같이 노출.
+            // success=true 유지 (output / module_code_cache 모두 정상). consumer 가 reportError
+            // + Update broadcast 둘 다 처리.
+            .errors = if (rebuild_result.hasErrors()) collectErrorsFromResult(allocator, &rebuild_result) else null,
         };
 
         // changed 파일 목록 복사

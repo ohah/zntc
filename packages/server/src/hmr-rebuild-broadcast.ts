@@ -43,8 +43,8 @@ export function broadcastRebuildEvent(
   event: RebuildEventLike,
 ): RebuildBroadcastOutcome {
   if (!event.success) {
-    // #3799 — multi-error 가 있으면 file/message 둘 다 전달. 단일 `error` 는 catch path 의
-    // Zig error tag (예: 'OutOfMemory') 라 fallback.
+    // catch path (bundle() throw) — error tag 단일 string. multi-error 가 있어도 build 가
+    // 진행 못 한 상태라 reportError 로 통일.
     if (event.errors && event.errors.length > 0) {
       hmr.reportError(event.errors.map((e) => ({ text: e.message, location: { file: e.file } })));
     } else {
@@ -52,13 +52,22 @@ export function broadcastRebuildEvent(
     }
     return 'error';
   }
+  // #3799 root-cause — success=true + errors 는 partial build (missing import 같은 diagnostic
+  // 이 있지만 output 자체는 생성됨). 사용자 overlay 에 error 표시 + 정상 incremental broadcast
+  // 둘 다 진행 — 후속 graphChanged/updates 분기는 그대로.
+  if (event.errors && event.errors.length > 0) {
+    hmr.reportError(event.errors.map((e) => ({ text: e.message, location: { file: e.file } })));
+  }
   if (event.graphChanged) {
-    hmr.clearError();
+    // errors 가 있다면 reportError 가 latch — clearError 호출 안 함 (overlay 유지).
+    if (!event.errors || event.errors.length === 0) hmr.clearError();
     hmr.broadcast({ type: HMR_MSG.FullReload, timestamp: Date.now() });
     return 'full-reload';
   }
   if (event.updates && event.updates.length > 0) {
-    hmr.clearError();
+    // errors 가 있다면 clearError 호출 안 함 (overlay 유지) — partial build 의 incremental
+    // update 는 진행하되 사용자에게 error 도 동시 표시.
+    if (!event.errors || event.errors.length === 0) hmr.clearError();
     hmr.broadcast({ type: HMR_MSG.UpdateStart });
     hmr.broadcast({
       type: HMR_MSG.Update,
@@ -67,9 +76,8 @@ export function broadcastRebuildEvent(
     hmr.broadcast({ type: HMR_MSG.UpdateDone });
     return 'update';
   }
-  // #3799 — 성공한 rebuild + code 변경 없음 (whitespace-only edit 등 bytewise-identical
-  // output). 이전 error latch 도 자동 해제 — 사용자가 fix 한 셈. clearError 자체는 broadcast
-  // 아님 (state mutation only), 다음 연결되는 client 에게 stale error 가 안 전달되도록 가드.
-  hmr.clearError();
+  // #3799 — 성공한 rebuild + code 변경 없음. 이전 error latch 자동 해제 — 단 본 event 의 errors
+  // 가 있으면 그것이 새 latch (위에서 reportError 호출). errors 있으면 clearError 안 함.
+  if (!event.errors || event.errors.length === 0) hmr.clearError();
   return 'noop';
 }
