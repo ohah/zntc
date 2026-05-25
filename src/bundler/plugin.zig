@@ -218,16 +218,15 @@ pub const ResolvedModule = union(fs.Namespace) {
         owner: Owner,
     },
     /// data: URL — 인라인 base64 asset.
-    /// `owner` (default 없음): mime + data 둘 다 동일 owner 가정. data 가 base64
-    /// 큰 메모리라 path_pool intern 부적합 — `internResolvedModule` 가 mime 만 intern,
-    /// data 는 그대로. `.owned` 면 mime + data 원본 free.
-    /// **invariant** (review finding): `.owned` 시 `mime.ptr != data.ptr` —
-    /// 같은 slice aliasing 시 double-free (debug assert 차단).
-    /// **caller contract** (`.borrowed`): data 의 lifetime 이 *ResolveCache lifetime
-    /// 이상* 이어야 함 — internResolvedModule 후 반환 ResolvedModule 의 data 가 caller
-    /// borrow 그대로 (mime 만 pool 소유). 다른 variant 와 비대칭이라 caller 가 주의 필요.
-    /// 현재 `resolve_imports.zig:349` 가 unreachable 라 production 도달 안 함 — future
-    /// plugin layer 활성화 시 별도 RFC (data 도 별도 arena intern 또는 emitter 즉시 consume).
+    /// `owner` (default 없음): mime + data 둘 다 동일 owner.
+    /// - `.owned`: caller alloc → `internResolvedModule` 가 mime 은 path_pool intern,
+    ///   data 는 별도 `dataurl_arena` 에 dupe + 원본 free
+    /// - `.borrowed`: caller borrow → mime intern, data 도 `dataurl_arena` dupe (lifetime
+    ///   독립, deferred 5 fix). caller 가 mid-build free 해도 cache 반환값 안전.
+    /// **invariant**: `.owned` 시 `mime.ptr != data.ptr` — aliasing 시 double-free (debug
+    /// assert 차단).
+    /// **반환**: 항상 cache-owned (mime 은 path_pool, data 는 dataurl_arena) → caller 는
+    /// borrow only. 다른 variant 와 lifetime 일관.
     dataurl: struct {
         mime: []const u8,
         data: []const u8,

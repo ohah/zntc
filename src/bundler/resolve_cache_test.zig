@@ -528,13 +528,13 @@ test "internResolvedModule: .custom owns_path=true / false (name + path)" {
     }
 }
 
-// .dataurl owns_payload — mime 만 intern, data 는 caller lifecycle (deferred 2).
-test "internResolvedModule: .dataurl owns_payload=true / false" {
+// .dataurl Owner — mime 은 path_pool intern, data 는 dataurl_arena dupe (deferred 5).
+test "internResolvedModule: .dataurl .owned / .borrowed 모두 cache-owned data 반환" {
     const testing = std.testing;
     var cache = ResolveCache.init(testing.allocator, .{});
     defer cache.deinit();
 
-    // owns_payload=true: caller alloc 한 mime + data 둘 다 free, mime 만 intern.
+    // .owned: caller alloc → 원본 free, mime/data 모두 cache 가 자체 owner.
     const dup_mime = try testing.allocator.dupe(u8, "image/png");
     const dup_data = try testing.allocator.dupe(u8, "BASE64DATA");
     const r1 = try cache.internResolvedModule(.{ .dataurl = .{
@@ -545,15 +545,17 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
     switch (r1) {
         .dataurl => |du| {
             try testing.expectEqualStrings("image/png", du.mime);
-            try testing.expect(du.mime.ptr != dup_mime.ptr); // mime intern
-            try testing.expect(du.owner == .borrowed);
-            // data 는 free 됐으므로 "" 반환 (future RFC 까지 안전 placeholder).
-            try testing.expectEqualStrings("", du.data);
+            try testing.expect(du.mime.ptr != dup_mime.ptr); // mime intern (path_pool)
+            try testing.expect(du.owner == .borrowed); // 반환은 항상 cache-borrow
+            // (deferred 5 fix) data 는 더 이상 "" placeholder 가 아닌 *실제* data — cache
+            // 의 dataurl_arena 에 dupe 됨.
+            try testing.expectEqualStrings("BASE64DATA", du.data);
+            try testing.expect(du.data.ptr != dup_data.ptr); // 별도 arena dupe
         },
         else => return error.TestUnexpectedResult,
     }
 
-    // owns_payload=false: static literal — bundler 가 free 안 함.
+    // .borrowed: static literal — 원본 free 안 함. data 는 dataurl_arena dupe.
     const r2 = try cache.internResolvedModule(.{ .dataurl = .{
         .mime = "text/plain",
         .data = "literal-data",
@@ -568,8 +570,8 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
         else => return error.TestUnexpectedResult,
     }
 
-    // owns_payload=false + heap-alloc borrow case (review finding) — caller 가 alloc
-    // 한 data 슬라이스의 ptr identity 가 보존되어야 함 (intern 회귀 검출).
+    // .borrowed + heap-alloc — caller borrow 라도 data 는 *cache 가 dupe* 해 lifetime
+    // 독립. caller 가 그 사이 free 해도 cache 반환값 안전 (이전 PR #3767 보다 더 강화).
     const borrow_data = try testing.allocator.dupe(u8, "heap-borrow-data");
     defer testing.allocator.free(borrow_data);
     const r3 = try cache.internResolvedModule(.{ .dataurl = .{
@@ -579,7 +581,8 @@ test "internResolvedModule: .dataurl owns_payload=true / false" {
     } });
     switch (r3) {
         .dataurl => |du| {
-            try testing.expect(du.data.ptr == borrow_data.ptr); // borrow 무손상
+            try testing.expect(du.data.ptr != borrow_data.ptr); // arena dupe (lifetime 독립)
+            try testing.expectEqualStrings("heap-borrow-data", du.data);
         },
         else => return error.TestUnexpectedResult,
     }
