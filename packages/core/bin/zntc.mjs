@@ -1895,13 +1895,16 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // #3779 follow-up — native watch worker thread 가 child process spawn 후에도 살아남으면
     // outdir 출력이 부모/자식 두 곳에서 일어나 race. emitRestartAfter 의 child spawn 전에 stop.
     // stop 자체가 throw 해도 server.close 는 시도 (HTTP 포트 해제 우선).
+    // #3803 — stop() throw 시 nativeWatchHandle 을 null 하지 않고 유지 → 다음 호출에서 retry
+    // 가능. 정상 path 에서만 null 로 갱신. idempotent stop (#3794 의 napi_remove_wrap) 라
+    // 다음 시도도 안전.
     if (nativeWatchHandle) {
       try {
         nativeWatchHandle.stop();
+        nativeWatchHandle = null;
       } catch (err) {
-        console.error('[serve] native watch stop 실패:', err);
+        console.error('[serve] native watch stop 실패 (다음 호출에서 재시도):', err);
       }
-      nativeWatchHandle = null;
     }
     if (!serverHandle) return;
     if (typeof serverHandle.stop === 'function') {

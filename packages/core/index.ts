@@ -2315,6 +2315,18 @@ function withDefaultBuildDefines(options: BuildOptions): Record<string, string> 
   return Object.keys(define).length > 0 ? define : undefined;
 }
 
+/**
+ * #3803 — `BuildOptionsCommon` 의 watch-only 옵션이 build()/buildSync() 에 silent 무시되는
+ * 위험을 stderr warn 으로 surface. 사용자가 잘못 호출했을 때 디버깅 도움.
+ */
+function warnIfWatchOnlyOption(options: BuildOptions, fnName: string): void {
+  if (options.skipInitialOutput) {
+    console.warn(
+      `@zntc/core: ${fnName}() does not honor skipInitialOutput (watch()-only option). It is silently ignored. If you meant to use this with a separate build, call watch() instead.`,
+    );
+  }
+}
+
 function withDefaultAppBuildDefines(options: AppBuildOptions): Record<string, string> | undefined {
   const define = { ...options.define };
   if (define['process.env.NODE_ENV'] === undefined) {
@@ -2564,6 +2576,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const n = ensureNative();
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
+  warnIfWatchOnlyOption(options, 'build');
 
   if (options.output && options.output.length >= 2) {
     return buildMultiFormat(options);
@@ -2615,6 +2628,7 @@ export function buildSync(options: BuildOptions): BuildResult {
   const n = ensureNative();
   if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
+  warnIfWatchOnlyOption(options, 'buildSync');
 
   const { napiOptions, cleanup } = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options, 'sync');
