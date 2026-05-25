@@ -23,6 +23,13 @@
 export function resolveAppPlugins({ userPlugins, disableDefaults, cssPlugin }) {
   if (disableDefaults) return [...userPlugins];
   if (!cssPlugin) return [...userPlugins];
+  // 사용자가 이미 `@zntc/web/css` 를 명시 전달했으면 default 재주입 금지 (#3836).
+  // 같은 filter regex 가 두 onLoad 등록 → PostCSS 가 같은 .css 2번 실행 → 사용자
+  // override 가 silent shadow 또는 double-run. name 정확 일치만 — '@zntc/web/css-modules'
+  // 같은 다른 plugin 은 영향 X.
+  if (userPlugins.some((p) => p?.name === '@zntc/web/css')) {
+    return [...userPlugins];
+  }
   return [cssPlugin, ...userPlugins];
 }
 

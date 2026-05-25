@@ -86,6 +86,55 @@ describe('resolveAppPlugins', () => {
     expect(result).not.toBe(userPlugins); // 새 array
     expect(result).toEqual(userPlugins); // content 동등
   });
+
+  // dedup — 사용자가 이미 @zntc/web/css 를 명시 전달한 경우 default 재주입 금지
+  // (#3836 fix). 두 cssPlugin 동시 활성 시 같은 filter regex 가 두 onLoad 등록 →
+  // PostCSS 가 같은 .css 에 2번 실행, 사용자 override 가 silent shadow 또는 double-run.
+  test('user 가 이미 @zntc/web/css 를 명시 → default 미주입 (dedup)', () => {
+    const userCssExplicit = { name: '@zntc/web/css', setup: () => {} };
+    const result = resolveAppPlugins({
+      userPlugins: [userPluginA, userCssExplicit, userPluginB],
+      disableDefaults: false,
+      cssPlugin: cssDefault,
+    });
+    // default cssPlugin 미주입 — userPlugins 그대로 (순서 보존)
+    expect(result.length).toBe(3);
+    expect(result.map((p) => p.name)).toEqual(['user:a', '@zntc/web/css', 'user:b']);
+    // dedup 후 user 의 explicit css 가 그대로 (default 인스턴스 아님)
+    expect(result[1]).toBe(userCssExplicit);
+  });
+
+  test('user 가 @zntc/web/css 명시 + 다른 user plugin 도 있음 → 회귀 가드 (default skip 만 영향)', () => {
+    // 다른 name 의 user plugin 만 있을 때는 default 정상 prepend
+    const resultA = resolveAppPlugins({
+      userPlugins: [userPluginA, userPluginB],
+      disableDefaults: false,
+      cssPlugin: cssDefault,
+    });
+    expect(resultA.map((p) => p.name)).toEqual(['@zntc/web/css', 'user:a', 'user:b']);
+
+    // 비교 — @zntc/web/css 가 user 에 포함되면 default skip
+    const userCssExplicit = { name: '@zntc/web/css', setup: () => {} };
+    const resultB = resolveAppPlugins({
+      userPlugins: [userPluginA, userCssExplicit, userPluginB],
+      disableDefaults: false,
+      cssPlugin: cssDefault,
+    });
+    expect(resultB.map((p) => p.name)).toEqual(['user:a', '@zntc/web/css', 'user:b']);
+  });
+
+  test('dedup 은 name 정확 일치 — 비슷한 name (예: @zntc/web/css-modules) 은 영향 없음', () => {
+    const userPluginLike = { name: '@zntc/web/css-modules', setup: () => {} };
+    const result = resolveAppPlugins({
+      userPlugins: [userPluginLike],
+      disableDefaults: false,
+      cssPlugin: cssDefault,
+    });
+    // userPluginLike 가 name 다르므로 default 정상 prepend
+    expect(result.length).toBe(2);
+    expect(result[0]!.name).toBe('@zntc/web/css');
+    expect(result[1]!.name).toBe('@zntc/web/css-modules');
+  });
 });
 
 describe('isEnvTruthy', () => {
