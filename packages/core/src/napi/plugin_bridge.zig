@@ -707,6 +707,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 return .{ .disabled = .{
                     .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
                     .module_type = .js,
+                    .owns_path = true, // (retro review) default 와 동일하지만 명시 — default flip 방지.
                 } };
             }
 
@@ -726,6 +727,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 return .{ .file = .{
                     .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
                     .module_type = .js,
+                    .owns_path = true, // (retro review) default 와 동일하지만 명시 — default flip 방지.
                 } };
             }
             return null;
