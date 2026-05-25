@@ -40,12 +40,14 @@ pub const OPTIONAL_MISSING_MODULE_PREFIX = "(optional-missing):";
 /// 각 variant 는 *path 의 ownership* 명시:
 ///   - interned: `ResolveCache.path_pool` 소유 — borrow, free 금지 (cache.deinit 시 reclaim).
 ///   - specifier: `Module.parse_arena` 소유 — borrow, free 금지 (module.deinit 시 destroyParseArena).
-///   - plugin: plugin context lifetime — borrow, free 금지 (plugin 이 own).
 ///   - owned: caller (graph allocator) alloc — free 필수.
+///
+/// (#3759 sweep) `.plugin` variant 제거: PR #3761 후 `internResolvedModule` 가 plugin
+/// 경로의 path 도 path_pool 로 intern → caller 는 `.interned` 로 wrap. production 에서
+/// `.plugin` set 위치 0.
 pub const PathRef = union(enum) {
     interned: []const u8,
     specifier: []const u8,
-    plugin: []const u8,
     owned: []const u8,
 
     /// variant 무관 byte slice 접근.
