@@ -162,8 +162,9 @@ pub const ResolveCache = struct {
     /// **Lock order** (ResolveCache 의 모든 mutex):
     ///   1. `cache_shards[i].mutex` (resolve cache shard)
     ///   2. `path_pool.shards[i].mutex` (path intern shard)
-    ///   3. `dataurl_arena_mutex` (this)
-    ///   4. `browser_cache_mutex`
+    ///   3. `realpath_cache.shards[i].mutex` (realpath dir cache shard) — R2 (#3745)
+    ///   4. `dataurl_arena_mutex` (this)
+    ///   5. `browser_cache_mutex`
     /// 잠금 시 *반드시 위 순서* — 역순/중첩 잠금 금지 (deadlock). 현재 코드는 각 mutex
     /// 가 짧은 critical section 안에서만 잠겨 상호배제 영향 없지만 future 추가 시 enforce.
     dataurl_arena: std.heap.ArenaAllocator,
