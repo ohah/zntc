@@ -1169,7 +1169,14 @@ export interface WatchReadyEvent {
 
 export interface WatchRebuildEvent {
   success: boolean;
+  /** Single error tag from native `@errorName(err)` (catch path). */
   error?: string;
+  /**
+   * #3799 — Multiple error diagnostics from bundler (success-but-errors path). When the
+   * bundler 자체가 throw 하지 않고 success-결과를 반환했지만 diagnostics 에 error severity
+   * 가 있는 경우 채워진다. `error` (single tag) 와 별개 — `errors` 가 있으면 우선 사용.
+   */
+  errors?: Array<{ file: string; message: string }>;
   changed?: string[];
   graphChanged?: boolean;
   updates?: Array<{

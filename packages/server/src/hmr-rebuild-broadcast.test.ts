@@ -51,6 +51,28 @@ describe('broadcastRebuildEvent', () => {
     expect(msgs[0].errors).toEqual([{ file: '', message: 'parse failed' }]);
   });
 
+  test('success=false + errors 배열 → multi-error 보존 (#3799)', () => {
+    const { ch, client } = attach();
+    const event: RebuildEventLike = {
+      success: false,
+      errors: [
+        { file: '/src/a.ts', message: 'parse error 1' },
+        { file: '/src/b.ts', message: 'parse error 2' },
+      ],
+    };
+    const outcome = broadcastRebuildEvent(ch, event);
+    expect(outcome).toBe('error');
+    const msgs = parsed(client);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].type).toBe(HMR_MSG.Error);
+    const errors = msgs[0].errors as Array<{ file: string; message: string }>;
+    expect(errors).toHaveLength(2);
+    expect(errors[0].file).toBe('/src/a.ts');
+    expect(errors[0].message).toBe('parse error 1');
+    expect(errors[1].file).toBe('/src/b.ts');
+    expect(errors[1].message).toBe('parse error 2');
+  });
+
   test('success=false 인데 error 문자열 없음 → fallback 메시지', () => {
     const { ch, client } = attach();
     const outcome = broadcastRebuildEvent(ch, { success: false });
