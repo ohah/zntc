@@ -76,6 +76,15 @@ pub const IncrementalBundler = struct {
     /// 첫 빌드 시엔 mtime 이 아직 Module 에 주입되지 않아 miss 만 발생 (B3 에서 확장).
     compiled_cache: CompiledOutputCache,
 
+    /// (#3751) `rebuild_reset_interval` 마다 `resolve_cache` 를 deinit + 재생성.
+    /// `PathInternPool.arena` 가 monotonic — file rename / 임시 .ts→.tsx / dynamic
+    /// import 패턴 → 옛 path 가 영원히 arena 에 남아 장기 watch (30+ 분) 후 RSS 단방향
+    /// 증가. Phase 3 (#3749) 후 `PersistentModuleStore` 가 `PathRef.owned` 으로
+    /// self-clone 하므로 reset 안전.
+    rebuild_count: usize = 0,
+    /// reset 주기. test 가 override 가능. 0 = reset 비활성.
+    rebuild_reset_interval: usize = 100,
+
     /// 모듈 단위 dev/HMR 캐시 엔트리.
     /// `code` = `__zntc_register` wrapper (HMR 경로).
     /// `compiled` / `input_hash` = compiled output cache 재사용용 (populate 는 별도 PR).
@@ -140,7 +149,20 @@ pub const IncrementalBundler = struct {
     }
 
     fn doBuild(self: *IncrementalBundler, is_first: bool) !RebuildResult {
-        // resolve_cache 초기화 (첫 빌드 시) 또는 재사용
+        // (#3751) N rebuild 마다 resolve_cache reset — arena monotonic growth 차단.
+        // is_first 가 아닌 경우에만, 그리고 reset_interval 도달 시. 빌드 *사이* 에서만
+        // 실행 (in-flight CachedResolvedDep 가 모두 store 로 owned-clone 된 상태).
+        if (!is_first and self.rebuild_reset_interval > 0 and
+            self.rebuild_count >= self.rebuild_reset_interval)
+        {
+            if (self.resolve_cache) |*rc| {
+                rc.deinit();
+                self.resolve_cache = null;
+            }
+            self.rebuild_count = 0;
+        }
+
+        // resolve_cache 초기화 (첫 빌드 시 또는 위 reset 직후) 또는 재사용
         if (self.resolve_cache == null) {
             self.resolve_cache = Bundler.initResolveCacheFromOptions(self.allocator, self.options);
         }
@@ -216,6 +238,9 @@ pub const IncrementalBundler = struct {
 
         self.updateCache(&result);
         if (is_first) self.needs_full_rebuild = false;
+        // (#3751) reset interval 카운터 — 빌드 *완료* 후 증가. error/fatal 경로는 카운트
+        // 안 함 (broken state 가 reset 시점을 좌우하지 않도록).
+        self.rebuild_count += 1;
 
         self.compiled_cache.logStats(if (is_first) "first=true " else "first=false ");
 

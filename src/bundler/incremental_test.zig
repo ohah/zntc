@@ -1020,3 +1020,61 @@ test "IncrementalBundler: compiled_cache invalidates on file change" {
     // 모듈 수 변동 없으므로 엔트리 개수는 유지 (put 이 기존 entry 교체).
     try std.testing.expectEqual(entries_before, ib.compiled_cache.entries.count());
 }
+
+// ============================================================
+// #3751 — watch mode arena monotonic growth 방지
+// ============================================================
+
+test "IncrementalBundler: ResolveCache resets after rebuild_reset_interval rebuilds (#3751)" {
+    // 옵션 A: N rebuild 마다 resolve_cache deinit + 재생성.
+    // path_pool arena 가 monotonic 으로 자라는 것을 막아 watch mode RSS bound.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('hi');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer ib.deinit();
+
+    // 테스트 가속 — 기본 100 대신 3 rebuild 마다 reset.
+    ib.rebuild_reset_interval = 3;
+
+    // 첫 빌드 (resolve_cache 생성).
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    const cache_after_first = &ib.resolve_cache.?;
+
+    // 2-3 번째 rebuild: 같은 cache 재사용.
+    var i: usize = 0;
+    while (i < 2) : (i += 1) {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+        try std.testing.expectEqual(cache_after_first, &ib.resolve_cache.?);
+    }
+
+    // 4번째 rebuild = interval 도달 → reset 이 일어나야 함. resolve_cache 재생성으로
+    // 내부 path_pool / cache_shards / dir_cache 모두 fresh. 다음 build 가 cold 지만
+    // arena 무한 증가 차단.
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // rebuild_count 가 reset 후 1 로 복귀했어야 함.
+    try std.testing.expect(ib.rebuild_count < ib.rebuild_reset_interval);
+}
