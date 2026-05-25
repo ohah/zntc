@@ -591,3 +591,107 @@ test "internResolvedModule: .dataurl .owned / .borrowed 모두 cache-owned data 
         else => return error.TestUnexpectedResult,
     }
 }
+
+// ============================================================
+// deferred 7 — OOM injection: errdefer / rollback 경로 회귀 가드
+// ============================================================
+//
+// 모든 variant 의 .owned 경로에서 intern 실패 시 errdefer 가 원본 input 을 free
+// 하는지 검증. testing.allocator leak detector 가 input 슬라이스 미해제 시 fail.
+
+test "internResolvedModule: .file OOM 시 errdefer 가 path + resolve_dir 둘 다 free" {
+    const testing = std.testing;
+    // fail_index=0: 첫 alloc (internPair 안 path 또는 resolve_dir dupe) 부터 OOM.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = ResolveCache.init(failing.allocator(), .{});
+    defer cache.deinit();
+
+    const dup_path = try testing.allocator.dupe(u8, "/abs/file.ts");
+    const dup_rd = try testing.allocator.dupe(u8, "/abs");
+    // cache.allocator 가 failing 이라 path_pool.intern (path_pool 의 arena.dupe) 가 OOM.
+    const r = cache.internResolvedModule(.{ .file = .{
+        .path = dup_path,
+        .resolve_dir = dup_rd,
+        .module_type = .js,
+        .owner = .owned,
+    } });
+    // OOM 반환 후, cache 내부 errdefer 가 dup_path/dup_rd 를 cache.allocator=failing
+    // 으로 free 시도 → testing.allocator passthrough → ledger 일관.
+    try testing.expectError(error.OutOfMemory, r);
+}
+
+test "internResolvedModule: .virtual OOM 시 errdefer 가 path free" {
+    const testing = std.testing;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = ResolveCache.init(failing.allocator(), .{});
+    defer cache.deinit();
+
+    const dup_path = try testing.allocator.dupe(u8, "\x00plugin:foo");
+    const r = cache.internResolvedModule(.{ .virtual = .{
+        .path = dup_path,
+        .owner = .owned,
+    } });
+    try testing.expectError(error.OutOfMemory, r);
+}
+
+test "internResolvedModule: .external OOM 시 errdefer 가 path free" {
+    const testing = std.testing;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = ResolveCache.init(failing.allocator(), .{});
+    defer cache.deinit();
+
+    const dup_path = try testing.allocator.dupe(u8, "react");
+    const r = cache.internResolvedModule(.{ .external = .{
+        .path = dup_path,
+        .owner = .owned,
+    } });
+    try testing.expectError(error.OutOfMemory, r);
+}
+
+test "internResolvedModule: .custom OOM 시 errdefer 가 name + path 둘 다 free" {
+    const testing = std.testing;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = ResolveCache.init(failing.allocator(), .{});
+    defer cache.deinit();
+
+    const dup_name = try testing.allocator.dupe(u8, "my-ns");
+    const dup_path = try testing.allocator.dupe(u8, "/abs/custom");
+    const r = cache.internResolvedModule(.{ .custom = .{
+        .name = dup_name,
+        .path = dup_path,
+        .owner = .owned,
+    } });
+    try testing.expectError(error.OutOfMemory, r);
+}
+
+test "internResolvedModule: .disabled OOM 시 errdefer 가 path free" {
+    const testing = std.testing;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = ResolveCache.init(failing.allocator(), .{});
+    defer cache.deinit();
+
+    const dup_path = try testing.allocator.dupe(u8, "/disabled/mod");
+    const r = cache.internResolvedModule(.{ .disabled = .{
+        .path = dup_path,
+        .module_type = .js,
+        .owner = .owned,
+    } });
+    try testing.expectError(error.OutOfMemory, r);
+}
+
+test "internResolvedModule: .dataurl mime OOM 시 errdefer 가 mime + data 둘 다 free" {
+    const testing = std.testing;
+    // mime intern 단계에서 OOM (path_pool 의 첫 alloc).
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = ResolveCache.init(failing.allocator(), .{});
+    defer cache.deinit();
+
+    const dup_mime = try testing.allocator.dupe(u8, "image/png");
+    const dup_data = try testing.allocator.dupe(u8, "BASE64DATA");
+    const r = cache.internResolvedModule(.{ .dataurl = .{
+        .mime = dup_mime,
+        .data = dup_data,
+        .owner = .owned,
+    } });
+    try testing.expectError(error.OutOfMemory, r);
+}
