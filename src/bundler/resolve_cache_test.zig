@@ -345,10 +345,12 @@ test "internResolvedModule: .virtual owns_path=false 시 borrow 유지 (#3759)" 
     // runtime_helper_modules 처럼 static literal / parse_arena borrow 시뮬레이트.
     const static_path: []const u8 = "\x00zntc:runtime/extends";
 
-    const result = try cache.internResolvedModule(.{ .virtual = .{
-        .path = static_path,
-        .owns_path = false, // ← borrow only — bundler 가 free 시도 금지
-    } });
+    const result = try cache.internResolvedModule(.{
+        .virtual = .{
+            .path = static_path,
+            .owns_path = false, // ← borrow only — bundler 가 free 시도 금지
+        },
+    });
 
     switch (result) {
         .virtual => |v| {
