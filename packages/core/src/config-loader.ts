@@ -25,6 +25,14 @@ import { init, isPlainObject, transpile } from '../index';
  */
 export type UserConfig = Partial<BuildOptions> & {
   extends?: string | string[];
+  /**
+   * `zntc build/dev --app` (Vite-style app pipeline) 의 default plugin 제어
+   * (#2538 4-4). 현재는 `disableDefaults` 만 — 모든 default plugin (현 시점
+   * `@zntc/web/css`) 자동 주입 끄기. `ZNTC_NO_CSS_DEFAULTS=1` env 와 동등.
+   */
+  appPlugins?: {
+    disableDefaults?: boolean;
+  };
 };
 
 /**
