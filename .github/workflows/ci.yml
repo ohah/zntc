@@ -21,9 +21,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -51,9 +49,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -114,9 +110,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -230,9 +224,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -340,9 +332,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       # setup-zntc 가 zig + bun + ZNTC core build + NAPI module + core JS wrapper
       # 까지 처리. publish-smoke 는 추가로 wasm binary + JS wrapper, 그리고
@@ -387,9 +377,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2

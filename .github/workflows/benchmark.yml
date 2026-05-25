@@ -27,9 +27,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        uses: ./.github/actions/checkout-zntc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
