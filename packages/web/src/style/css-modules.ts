@@ -233,7 +233,11 @@ export function transformCssModules(
     const tokens = scanCssModuleClassTokens(css);
     const rel = relative(root, file).replaceAll(sep, '/');
     const fileName = basename(file, '.module.css').replace(SAFE_LOCAL_RE, '_');
-    const mapping: Record<string, string> = {};
+    // a1-#2 (RFC #3833): plain `{}` 은 Object.prototype 상속 → `.constructor`/
+    // `.toString`/`.__proto__` 같은 class name 시 `!mapping[token.local]` 가 truthy
+    // (native function lookup) → 매핑 누락 + rewrite 가 native fn 을 stringify 해
+    // CSS 에 garbage 삽입. `Object.create(null)` 은 prototype-less 라 안전.
+    const mapping: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const token of tokens) {
       if (!mapping[token.local]) {
         mapping[token.local] = cssModuleLocalNameWithCachedFile(rel, fileName, token.local);
@@ -265,6 +269,13 @@ function rewriteCssModuleClassesWithTokens(
   let out = '';
   let offset = 0;
   for (const token of tokens) {
+    // a1-#2 (RFC #3833): public `rewriteCssModuleClasses` (line 99) 가 caller-
+    // supplied mapping 받음. caller 가 plain `{}` 전달 시 `mapping[token.local]`
+    // 의 prototype lookup 으로 `.constructor`/`.toString` 같은 native fn 이 truthy
+    // 반환 → `if (!scoped)` 통과 → CSS 에 garbage 삽입. `Object.hasOwn` 가드로
+    // mapping shape 무관 안전 (transformCssModules 의 Object.create(null) 와
+    // 이중 가드).
+    if (!Object.hasOwn(mapping, token.local)) continue;
     const scoped = mapping[token.local];
     if (!scoped) continue;
     out += css.slice(offset, token.start);
