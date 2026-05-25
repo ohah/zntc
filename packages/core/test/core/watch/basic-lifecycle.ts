@@ -3,3 +3,4 @@ import './basic-lifecycle/plugin-order';
 import './basic-lifecycle/callback-failures';
 import './basic-lifecycle/diagnostics';
 import './basic-lifecycle/close-bundle-errors';
+import './basic-lifecycle/stop-sync';
