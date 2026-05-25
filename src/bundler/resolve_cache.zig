@@ -858,9 +858,9 @@ pub const ResolveCache = struct {
     /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
     /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
     ///
-    /// **interning 적용 variant**: `.file`, `.disabled`, `.virtual`, `.external`, `.custom`
-    /// — owns_path discriminator 로 borrow vs owned 분기.
-    /// **pass-through**: `.dataurl` (data 가 base64 큰 메모리라 pool 부적합 — 별도 RFC).
+    /// **interning 적용 variant**: 모든 variant — owns_path/owns_payload discriminator
+    /// 로 borrow vs owned 분기.
+    /// `.dataurl` 는 mime 만 intern (data 는 base64 큰 메모리, pool 부적합).
     ///
     /// owner ambiguity 해소 — `owns_path: bool` discriminator:
     /// - `.file/.disabled/.external/.custom` default true (native resolver / NAPI bridge dupe)
@@ -945,9 +945,33 @@ pub const ResolveCache = struct {
                     .owns_path = false,
                 } };
             },
-            // .dataurl — mime + data 별도 lifecycle. data 가 base64 큰 메모리라 path_pool
-            // 부적합. 현 resolve_imports.zig:349 unreachable. 별도 RFC 에서 처리.
-            .dataurl => m,
+            // (deferred 2) .dataurl mime 만 intern (짧고 재사용 가능), data 는 그대로 (base64
+            // 큰 메모리, pool 부적합). owns_payload=true 면 둘 다 free.
+            // 현 resolve_imports.zig:349 unreachable — production 도달 안 함이지만
+            // future plugin layer 활성화 시 owner discipline 보장.
+            .dataurl => |du| blk: {
+                const interned_mime = pool: {
+                    errdefer if (du.owns_payload) {
+                        self.allocator.free(du.mime);
+                        self.allocator.free(du.data);
+                    };
+                    break :pool try self.path_pool.intern(du.mime);
+                };
+                if (du.owns_payload) {
+                    self.allocator.free(du.mime);
+                    // data 는 caller 가 borrow 시점 결정 — 본 PR 은 intern 안 함. owns_payload=true
+                    // 면 원본도 free (caller 가 임시 alloc 했다는 의미).
+                    self.allocator.free(du.data);
+                }
+                break :blk .{ .dataurl = .{
+                    .mime = interned_mime,
+                    // data 는 caller 가 free 했으므로 dangling 슬라이스 반환 안 됨 —
+                    // future RFC: data 도 path_pool 외 별도 arena 로 intern 또는 emitter
+                    // 가 즉시 consume. 현재 unreachable 이라 안전.
+                    .data = if (du.owns_payload) "" else du.data,
+                    .owns_payload = false,
+                } };
+            },
         };
     }
 

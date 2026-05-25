@@ -201,9 +201,15 @@ pub const ResolvedModule = union(fs.Namespace) {
         owns_path: bool,
     },
     /// data: URL — 인라인 base64 asset.
+    /// `owns_payload` (default 없음): mime + data 둘 다 동일 owner 가정. data 가 base64
+    /// 큰 메모리라 path_pool intern 부적합 — `internResolvedModule` 가 mime 만 intern,
+    /// data 는 그대로. owns_payload=true 면 mime + data 원본 free.
+    /// 현재 `resolve_imports.zig:349` 가 unreachable 라 production 도달 안 함 — future
+    /// plugin layer 활성화 시 처리 RFC.
     dataurl: struct {
         mime: []const u8,
         data: []const u8,
+        owns_payload: bool,
     },
     /// 번들 미포함 — 런타임 import 유지.
     /// `owns_path` (default 없음): caller 강제 명시.

@@ -662,7 +662,7 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const d: ResolvedModule = .{ .dataurl = .{ .mime = "image/png", .data = "AAAA" } };
+    const d: ResolvedModule = .{ .dataurl = .{ .mime = "image/png", .data = "AAAA", .owns_payload = false } };
     switch (d) {
         .dataurl => |x| {
             try std.testing.expectEqualStrings("image/png", x.mime);
