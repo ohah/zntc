@@ -967,14 +967,16 @@ pub const ResolveCache = struct {
                     // 면 원본도 free (caller 가 임시 alloc 했다는 의미).
                     self.allocator.free(du.data);
                 }
-                break :blk .{ .dataurl = .{
-                    .mime = interned_mime,
-                    // data 는 caller 가 free 했으므로 dangling 슬라이스 반환 안 됨 —
-                    // future RFC: data 도 path_pool 외 별도 arena 로 intern 또는 emitter
-                    // 가 즉시 consume. 현재 unreachable 이라 안전.
-                    .data = if (du.owns_payload) "" else du.data,
-                    .owns_payload = false,
-                } };
+                break :blk .{
+                    .dataurl = .{
+                        .mime = interned_mime,
+                        // data 는 caller 가 free 했으므로 dangling 슬라이스 반환 안 됨 —
+                        // future RFC: data 도 path_pool 외 별도 arena 로 intern 또는 emitter
+                        // 가 즉시 consume. 현재 unreachable 이라 안전.
+                        .data = if (du.owns_payload) "" else du.data,
+                        .owns_payload = false,
+                    },
+                };
             },
         };
     }
