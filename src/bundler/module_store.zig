@@ -8,7 +8,21 @@ const std = @import("std");
 const Module_mod = @import("module.zig");
 const Module = Module_mod.Module;
 const PathRef = Module_mod.PathRef;
+const CachedResolvedDep = Module_mod.CachedResolvedDep;
 const types = @import("types.zig");
+
+/// (#3755) putModule clone OOM rollback helper. 이미 .owned 로 변환된 partial
+/// slot 들의 alloc 을 free + shared backing 이 graph 쪽 module 과 공유라는 점을 고려해
+/// .specifier="" (PathRef.deinit no-op variant) 로 sanitize. 그렇지 않으면 graph
+/// 쪽 module.deinit 가 같은 freed slice 를 또 free → double-free.
+fn rollbackOomCloned(items: []CachedResolvedDep, allocator: std.mem.Allocator) void {
+    for (items) |*dep| {
+        dep.path.deinit(allocator);
+        if (dep.resolve_dir) |rd| rd.deinit(allocator);
+        dep.path = .{ .specifier = "" };
+        dep.resolve_dir = null;
+    }
+}
 
 /// PR #3749 Phase 3 (C): cache-borrowed (interned) PathRef 를 store-owned 로 clone.
 /// specifier/plugin 은 별도 lifetime (parse_arena 양도 + plugin context) — clone 안 함.
@@ -119,24 +133,25 @@ pub const PersistentModuleStore = struct {
         // H1 fix: OOM 시 swallow 금지 — partial clone 으로 .interned 가 store 에 남으면
         // path_pool 사망 시 UAF. 실패 시 *전체 putModule abort* (이미 처리된 dep 의 owned
         // alloc 은 leak 이지만 store 에 진입 안 함 → cache lifetime 안 후속 read 없음).
+        // (#3755) shared backing 주의: `cached_module = module.*` shallow copy 라
+        // `cached_module.resolved_deps.items` 가 `module.resolved_deps.items` 와 같은
+        // 백킹을 가리킨다. clone 루프가 `dep.path = new_path` 로 element 를 mutate 하면
+        // graph 쪽 module 도 함께 .owned 로 바뀐다. OOM 시 rollback 가 그 .owned 를 free
+        // 해도 graph 쪽 module 에 그대로 dangling 으로 남아 graph.deinit 가 같은 슬라이스
+        // 를 또 free → double-free.
+        //
+        // Fix: rollback 시 해당 슬롯을 `.specifier = ""` (PathRef.deinit no-op variant)
+        // 로 sanitize. graph 쪽 module.deinit 의 `dep.path.deinit(allocator)` 는 .specifier
+        // 분기라 free 안 함. resolve_dir 도 null 로.
         for (cached_module.resolved_deps.items, 0..) |*dep, i| {
             const new_path = clonePathRefIfNeeded(self.allocator, dep.path) catch {
-                // 부분 clone rollback: 이미 owned 로 변환된 entry 정리.
-                var j: usize = 0;
-                while (j < i) : (j += 1) {
-                    cached_module.resolved_deps.items[j].path.deinit(self.allocator);
-                    if (cached_module.resolved_deps.items[j].resolve_dir) |rd| rd.deinit(self.allocator);
-                }
+                rollbackOomCloned(cached_module.resolved_deps.items[0..i], self.allocator);
                 return;
             };
             const new_rd = if (dep.resolve_dir) |rd|
                 clonePathRefIfNeeded(self.allocator, rd) catch {
                     new_path.deinit(self.allocator);
-                    var j: usize = 0;
-                    while (j < i) : (j += 1) {
-                        cached_module.resolved_deps.items[j].path.deinit(self.allocator);
-                        if (cached_module.resolved_deps.items[j].resolve_dir) |rd2| rd2.deinit(self.allocator);
-                    }
+                    rollbackOomCloned(cached_module.resolved_deps.items[0..i], self.allocator);
                     return;
                 }
             else
@@ -329,4 +344,53 @@ test "PersistentModuleStore: parse_arena ownership 왕복 후 alloc 정상 (#269
 
     store.putModule("\x00zntc:runtime/extends", &mod2, 2);
     mod2.deinit(allocator);
+}
+
+// Regression #3755: putModule OOM rollback 시 cached_module = module.* shallow copy 의
+// resolved_deps shared backing 에 partial-cloned .owned 슬라이스가 남아 graph.deinit
+// (= 여기 module.deinit) 에서 double-free.
+//
+// 시나리오:
+//   1) module.resolved_deps 에 .interned variant N 개 등록.
+//   2) FailingAllocator 로 N 번째 clone 에서 OOM 유도.
+//   3) putModule 의 rollback 이 items[0..K] 의 .owned 를 free.
+//   4) 과거 버그: module.resolved_deps.items[0..K] 가 같은 backing 이라 .owned (freed)
+//      를 그대로 가리킴 → 이어지는 module.deinit 가 또 .deinit 호출 → double-free.
+//   Fix: rollback 시 해당 슬롯을 .specifier="" (no-op variant) 로 덮어 graph 쪽이
+//        free 시도하지 않도록 sanitize.
+test "PersistentModuleStore: putModule OOM rollback double-free 차단 (#3755)" {
+    const testing = std.testing;
+
+    // FailingAllocator — extractImportSpecifiers (import_records 비어 alloc 0) + clone
+    // 0/1 성공 후 clone 2 (= 3번째 dupe) 에서 OOM. rollback 가 items[0..1] free.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 2 });
+    const alloc = failing.allocator();
+
+    var store = PersistentModuleStore.init(alloc);
+    defer store.deinit();
+
+    var module = Module.init(@enumFromInt(0), "/virtual/oom.ts");
+    // resolved_deps 3개를 .interned variant 로 등록 — clone 시 .owned 로 변환 시도.
+    // FailingAllocator 가 중간에서 OOM → rollback 실행.
+    var deps: std.ArrayListUnmanaged(CachedResolvedDep) = .empty;
+    defer module.deinit(testing.allocator); // ← 의도된 free path. double-free 면 GPA panic.
+    // module 의 backing 은 testing.allocator (graph) 가 책임 — Module.init 의 default
+    // ArrayList 는 unmanaged 이므로 caller alloc 선택.
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "a/b" } });
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "c/d" } });
+    try deps.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "e/f" } });
+    module.resolved_deps = deps;
+
+    // OOM 가 putModule 안에서 발생해도 panic/crash 없이 return — graph 쪽 deinit 안전.
+    store.putModule("/virtual/oom.ts", &module, 1);
+
+    // module.resolved_deps.items 는 sanitize 되어 .specifier 또는 .interned 만 남아
+    // module.deinit 의 dep.path.deinit 가 no-op. (.owned 였다면 freed slice 재 free).
+    for (module.resolved_deps.items) |dep| {
+        switch (dep.path) {
+            .owned => return error.RollbackLeftOwnedDangling,
+            else => {},
+        }
+    }
+    // module.deinit 는 defer 에서 호출 — double-free 발생 시 testing.allocator 가 패닉.
 }
