@@ -115,6 +115,23 @@ describe('broadcastRebuildEvent', () => {
     expect(client.received).toHaveLength(0);
   });
 
+  test('noop branch 도 clearError 호출 — 이전 error latch 자동 해제 (#3799)', () => {
+    const { ch, client } = attach();
+    // 1) 이전 빌드 error 가 latched
+    ch.reportError([{ text: 'syntax error before' }]);
+    client.received.length = 0;
+    // 2) 성공 + code 변경 없는 noop rebuild (사용자가 whitespace-only edit 으로 fix)
+    const outcome = broadcastRebuildEvent(ch, { success: true });
+    expect(outcome).toBe('noop');
+    // broadcast 자체는 0건 (clearError 가 메시지 송출 안 함 — state mutation only)
+    expect(client.received).toHaveLength(0);
+    // 그러나 latch 는 해제됐어야 — 새 client 연결 시 connected 만 받음 (error 메시지 안 전달)
+    const fresh = makeClient();
+    ch.addBunClient(fresh);
+    const freshTypes = fresh.received.map((t) => JSON.parse(t).type);
+    expect(freshTypes).toEqual([HMR_MSG.Connected]);
+  });
+
   test('graphChanged=true 이면 updates 있어도 FullReload 만 (분기 mutually exclusive)', () => {
     const { ch, client } = attach();
     const event: RebuildEventLike = {
