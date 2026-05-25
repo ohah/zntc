@@ -22,7 +22,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: ./.github/actions/checkout-zntc
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -40,7 +42,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: ./.github/actions/checkout-zntc
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -102,7 +106,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: ./.github/actions/checkout-zntc
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2

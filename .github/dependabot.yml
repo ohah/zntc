@@ -18,3 +18,12 @@ updates:
       - 'dependencies'
     commit-message:
       prefix: 'chore(deps)'
+    ignore:
+      # BoringSSL 은 dependabot 의 upstream HEAD auto-bump 와 ZTS 의 "Chromium
+      # stable channel 따라가기" 정책 (docs/ROADMAP.md) 가 충돌. dependabot 이
+      # 일주일마다 google/boringssl HEAD 로 bump PR 을 올리는데, 그건 ZTS 가
+      # 검증 안 한 commit. BoringSSL pin 갱신은 manual (Chromium stable DEPS
+      # 확인 + 검증 후) 로 진행. 보안 CVE 인지는 별도 subscribe 채널.
+      - dependency-name: 'vendor/boringssl'
+      # test262 도 같은 이유 — test fixture 라 의도된 commit pin 만 사용.
+      - dependency-name: 'tests/test262'
