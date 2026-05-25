@@ -298,13 +298,13 @@ pub const Category = enum {
 
     // ── Codegen ──
     codegen,
-    codegen_walk,
-    codegen_sourcemap,
+    codegen_walk, // (legacy placeholder — no callsite, kept for ABI)
+    codegen_sourcemap, // (legacy placeholder — no callsite, kept for ABI)
     // (C1 도구 보강) sub-phase 측정
     codegen_setup, // collectTopLevelDeclNames + ensureTotalCapacity
-    codegen_emit, // emitNode (program 전체)
+    codegen_emit, // emitNode (program 전체) + fn_map enter/exit
     codegen_finalize, // keep_names + finalize
-    codegen_sm_add, // addSourceMapping 누적 (매 노드)
+    codegen_sm_add, // addSourceMapping 누적 (가드 통과 후만)
 
     // ── Top-level emit ──
     emit,

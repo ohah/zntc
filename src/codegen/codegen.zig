@@ -161,22 +161,25 @@ pub const Codegen = struct {
             std.debug.assert(!hasRawPrivateSyntax(self.ast, root));
         }
 
-        // (C1 도구 보강) sub-phase 측정 — generate() 의 어느 단계가 hot 한지 분리.
-        var setup_scope = profile.begin(.codegen_setup);
-        // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
-        try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
-
-        // namespace var 중복 제거: top-level 선언 이름 사전 수집
-        self.collectTopLevelDeclNames(root);
-        setup_scope.end();
-        // function map: program 진입 시 <global> frame
-        if (self.fn_map_builder != null) try self.fnMapEnter("<global>");
+        // (C1 도구 보강 + review fix) sub-phase 측정 — review P1: defer 패턴으로 OOM 시
+        // scope leak 방지. fnMap enter/exit 는 emit_scope 안으로 옮겨 sub-phase 합 정확화.
+        {
+            var setup_scope = profile.begin(.codegen_setup);
+            defer setup_scope.end();
+            // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
+            try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
+            // namespace var 중복 제거: top-level 선언 이름 사전 수집
+            self.collectTopLevelDeclNames(root);
+        }
         {
             var emit_scope = profile.begin(.codegen_emit);
             defer emit_scope.end();
+            // function map: program 진입 시 <global> frame — sub-phase 합 정확성 위해
+            // emit_scope 안에 포함 (review P2).
+            if (self.fn_map_builder != null) try self.fnMapEnter("<global>");
             try self.emitNode(root);
+            if (self.fn_map_builder != null) try self.fnMapExit();
         }
-        if (self.fn_map_builder != null) try self.fnMapExit();
 
         var finalize_scope = profile.begin(.codegen_finalize);
         defer finalize_scope.end();
