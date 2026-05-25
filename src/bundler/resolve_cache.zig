@@ -855,11 +855,17 @@ pub const ResolveCache = struct {
     /// 원본 path / resolve_dir 는 free, pool 의 interned slice 가리키는 ResolvedModule 반환.
     /// plugin runner 가 alloc 한 결과를 caller-borrow invariant 에 맞춤.
     ///
-    /// **interning 적용 variant**: `.file`, `.disabled` (caller borrow only, free 금지).
-    /// **pass-through variant** (`.virtual`, `.dataurl`, `.external`, `.custom`): m 그대로 반환.
-    /// 이 variant 들은 *runtime_helper_modules* (virtual) / future plugin layer 에서 사용.
-    /// path 의 owner = plugin context (lifetime borrow per resolve_imports.zig:338-342 contract).
-    /// **간 leak 경고**: plugin path 가 단명 allocator alloc 면 누수. 향후 PR 5 에서 interning.
+    /// **interning 적용 variant**: `.file`, `.disabled`, `.virtual` (owns_path=true)
+    /// — caller borrow only, free 금지.
+    /// **pass-through**: `.virtual` (owns_path=false, runtime_helper_modules 등 borrow),
+    /// `.dataurl`/`.external`/`.custom` (resolve_imports.zig:349 unreachable — 현재 미사용).
+    ///
+    /// #3759 fix: `.virtual` 의 owner ambiguity 해소 — `owns_path: bool` discriminator.
+    /// - NAPI bridge (plugin_bridge.zig:722): graph_allocator dupe → `owns_path=true`.
+    /// - runtime_helper_modules (resolveIdHook): specifier borrow → `owns_path=false`.
+    ///
+    /// `owns_path=true` 면 intern + 원본 free (single-owner invariant).
+    /// `owns_path=false` 면 intern 만 (caller 가 owner 유지 — graph 가 dupe).
     pub fn internResolvedModule(self: *ResolveCache, m: ResolvedModule) !ResolvedModule {
         return switch (m) {
             .file => |f| blk: {
@@ -879,9 +885,17 @@ pub const ResolveCache = struct {
                 } };
             },
             .disabled => |d| try self.internDisabled(d.path, d.module_type, true),
-            // virtual/dataurl/external/custom — 옛 동작 유지 (runtime_helper_modules 등 정상 path).
-            // path owner = plugin context. interning 은 PR 5 plugin layer 영역.
-            .virtual, .dataurl, .external, .custom => m,
+            // #3759: owner ambiguity 해소 — owns_path=true 만 free.
+            .virtual => |v| blk: {
+                errdefer if (v.owns_path) self.allocator.free(v.path);
+                const interned = try self.path_pool.intern(v.path);
+                if (v.owns_path) self.allocator.free(v.path);
+                break :blk .{ .virtual = .{ .path = interned, .plugin_data = v.plugin_data, .owns_path = false } };
+            },
+            // external/custom — resolve_imports.zig:349 가 unreachable 로 닫혀 있어 현재
+            // 도달 안 함. dataurl 도 동일. pass-through 유지 (future plugin layer 가
+            // 활성화 시 owns_path 패턴 동일 적용).
+            .dataurl, .external, .custom => m,
         };
     }
 

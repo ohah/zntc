@@ -190,9 +190,12 @@ pub const ResolvedModule = union(fs.Namespace) {
         is_module_field: bool = false,
     },
     /// 메모리 모듈 (plugin only). plugin_data 로 plugin context 전달.
+    /// (#3759) `owns_path`: plugin 이 path 를 자체 alloc 했으면 true → bundler 가 intern
+    /// 후 원본 free. static literal / borrowed specifier 면 false (default).
     virtual: struct {
         path: []const u8,
         plugin_data: ?*anyopaque = null,
+        owns_path: bool = false,
     },
     /// data: URL — 인라인 base64 asset.
     dataurl: struct {
