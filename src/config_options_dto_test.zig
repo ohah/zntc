@@ -266,6 +266,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "rootDir", // 프로젝트 root
     "runBeforeMain", // entry 전 실행 코드
     "silentConsoleErrorPatterns", // RN log 필터
+    "skipInitialOutput", // #3779 follow-up — watch 의 initial 빌드 outdir 출력 skip
     "watchExclude", // watch 제외 glob
     "watchFolders", // watch 추가 디렉토리 (Metro 호환)
     "watchInclude", // watch 포함 glob

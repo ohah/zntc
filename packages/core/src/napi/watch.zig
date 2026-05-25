@@ -644,21 +644,27 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         );
     }
 
-    // 초기 빌드 결과를 파일에 쓰기 (onReady 전에 완료해야 서버가 읽을 수 있음)
+    // 초기 빌드 결과를 파일에 쓰기 (onReady 전에 완료해야 서버가 읽을 수 있음).
+    // #3779 follow-up — `skip_initial_output=true` 면 caller 가 별도 `build()` 로 이미
+    // outdir 를 채워둔 상태이므로 출력 skip. bytes 카운트는 onReady event 메타용이라
+    // outputs 가 있으면 계속 합산한다 (bytes 자체는 출력 여부와 무관).
+    const write_initial = !bundle_opts.skip_initial_output;
     var initial_bytes: usize = 0;
     if (result.outputs) |outputs| {
         for (outputs) |o| initial_bytes += o.contents.len;
-        // code splitting: 각 output의 path로 직접 쓰기
-        for (outputs) |o| {
-            if (std.fs.path.dirname(o.path)) |dir| std.fs.cwd().makePath(dir) catch {};
-            const file = std.fs.cwd().createFile(o.path, .{}) catch continue;
-            defer file.close();
-            file.writeAll(o.contents) catch continue;
+        if (write_initial) {
+            // code splitting: 각 output의 path로 직접 쓰기
+            for (outputs) |o| {
+                if (std.fs.path.dirname(o.path)) |dir| std.fs.cwd().makePath(dir) catch {};
+                const file = std.fs.cwd().createFile(o.path, .{}) catch continue;
+                defer file.close();
+                file.writeAll(o.contents) catch continue;
+            }
         }
     } else {
         initial_bytes = result.output.len;
-        // 단일 파일: output_filename으로 쓰기
-        if (bundle_opts.output_filename.len > 0) {
+        // 단일 파일: output_filename으로 쓰기 (skip_initial_output 활성 시 skip)
+        if (write_initial and bundle_opts.output_filename.len > 0) {
             if (std.fs.path.dirname(bundle_opts.output_filename)) |dir| std.fs.cwd().makePath(dir) catch {};
             if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
                 defer file.close();
