@@ -7,6 +7,7 @@ pub const mime = @import("mime.zig");
 pub const watch_scan = @import("watch_scan.zig");
 pub const events = @import("events.zig");
 pub const boringssl = @import("boringssl.zig");
+pub const tls = @import("tls.zig");
 
 test {
     _ = @import("dev_server.zig");
@@ -16,6 +17,7 @@ test {
     _ = @import("watch_scan.zig");
     _ = @import("events.zig");
     _ = @import("boringssl.zig");
+    _ = @import("tls.zig");
 
     // test files
     _ = @import("dev_server_test.zig");
