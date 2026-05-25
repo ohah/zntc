@@ -41,6 +41,35 @@ A-1 attempt 의 추가 architectural finding (활성화 시 발화):
 
 v1 RFC 의 옵션 A/B/C 는 모두 sync/async dispatcher 충돌 미고려 → **v2 부터 재설계의 핵심 axis 는 sync/async dispatcher**.
 
+## 1.6. v2-A (D1a 구현 시도) 의 회귀 — v3 추가
+
+PR #3839 (close) 가 v2-A D1a (`runAppBuild` 가 async `buildApp` 호출 + Zig 측 `napiBuildApp` 진입점 신설) 구현 시도. CI + local 재현으로 **명확한 회귀** 발견:
+
+**증상** (Tailwind v4 fixture 로 재현):
+- main baseline (PR-3a revert + JS only, Zig 미적용): `[postcss] processed 1 CSS file(s)` 정상 + `n.buildApp is not a function` (예상, native 미구현)
+- v2-A (Zig + JS 다 적용): `[postcss] processed 1 CSS file(s)` 정상 + **native bundler 가 raw `@import "tailwindcss";` 를 받아 JS parser 로 시도 → `parse_error` → BundleFailed**
+
+즉 `prepareAppCssPipelineRoot` 가 tempRoot 의 `.css` 를 PostCSS 처리하는데, **async worker thread 의 `buildApp` 이 그 결과를 못 보고 raw CSS 사용**. CI 의 6 styles tests (`PostCSS`/`Sass`/`CSS Modules basics`/`build collisions`) 모두 동일 패턴 fail.
+
+**가능한 근본 원인** (추가 조사 필요):
+- worker thread fs cache (POSIX 무관일 수 있으나 검증 필요)
+- async `buildApp` 의 옵션 파싱이 `buildAppSync` 와 미세 차이 (예: mode/define/jsx 누락 → 다른 분기 진입)
+- prepare 와 buildApp 의 root path 처리 미세 차이
+- `prepareAppCssPipelineRoot` 가 PostCSS 결과를 in-place write 대신 별도 결과 객체 반환하는데, sync caller 는 그것 사용하고 async caller 는 못 받는 가능성
+
+**결정**: v2-A revert. D1a 단순 구현이 회귀 → 대안 design 검토.
+
+### 대안 design 후보 (v3)
+
+| 대안 | 설명 | 비용 | trade-off |
+|---|---|---|---|
+| **D1a' — prepare 결과 명시 전달** | `prepareAppCssPipelineRoot` 가 결과를 explicit hash/manifest 로 반환. `buildApp` 가 그것을 namedArg 로 받아 worker thread 에서 fs view 보정. async worker 에서도 동일 결과 보장 | M+ — prepare API 변경 + buildApp 옵션 확장 + native side 동기화 |
+| **D1d — sync+async variant** | 기존 `buildAppSync` 유지 + 새 `buildApp` async = sync 의 thin wrapper (정확한 same call, 단 Promise 로 wrap). worker thread 사용 안 함. CLI 만 새 async path. plugin 의 async hook 은 caller 측에서 await 후 sync dispatcher 로 main thread blocking — sync dispatcher × async hook 충돌 여전 미해결 | S — wrapper 만. 단 핵심 문제 (PR-3a dead-code 원인) 해결 못 함 — design 무효 |
+| **D1a'' — buildAppSync 호출 path 안에 plugin pre-warm** | `runAppBuild` 가 prepare 후, plugin 의 async hook 을 별도 pass (예: PostCSS 호출 main thread async) 로 실행해 결과를 tempRoot 에 commit. 그 후 buildAppSync 호출 — sync dispatcher 안전 | L — 새 pre-warm 단계 + plugin 의 async hook 우회 호출 protocol |
+| **D1c — cssOnLoad sync 강제 + caller 측 async pre-warm** | cssPlugin 의 onLoad 가 sync 만 (PostCSS sync 호출만 — async plugin 없을 때만 동작). PostCSS 의 async 처리는 사용자가 `runAppBuild` 호출 전 별도 단계로 | S — cssPlugin 단순화. 단 async plugin 사용자 (tailwind v4 등) 미지원 |
+
+D1a' 가 가장 정합 (worker thread 가 prepare 결과를 명시 받음 — fs side-effect 의존 제거). 단 native side 변경 더 큼. 구현 spike 필요.
+
 ## 2. 핵심 문제 — sass→postcss→css-modules invariant
 
 `dev-controller.ts:351-357` 주석 (통합테스트 `Sass output flows through PostCSS before CSS Modules scoping` 이 가드):
