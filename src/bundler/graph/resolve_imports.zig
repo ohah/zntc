@@ -183,6 +183,8 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
             // 반환할 가능성은 현재 없음 (resolver 는 .file/.disabled 만 emit). 그러나
             // unreachable 는 release build 에서 UB → explicit panic 으로 의미 있는
             // diagnostic 제공. 활성화 시 별도 RFC 필요.
+            // (review note) site 2 (line ~357) 와 달리 require.context 는 `.virtual` 도
+            // 미지원 — `.virtual` 까지 panic arm 에 포함.
             .virtual, .dataurl, .external, .custom => std.debug.panic(
                 "require.context resolver returned unsupported variant — only .file/.disabled supported here (got {s})",
                 .{@tagName(m)},
