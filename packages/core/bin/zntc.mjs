@@ -1721,28 +1721,31 @@ async function runServe(opts, config, { appDev = null } = {}) {
     '.map': 'application/json',
   };
 
-  // 번들 모드면 먼저 빌드 — cold-start 시점에 outdir 채움 보장 (사용자 첫 fetch 가 build 완료
-  // 전 도착해도 정상 응답). watch handle 의 initial 은 #3787 의 skipInitialOutput 으로 outdir
-  // 출력 skip. #3796/#3798 의 watch 단독화 시도는 bundler 의 outputs[].path 가 absolute 라 outdir
-  // join 안 됨 (새 회귀). 완전 fix 는 bundler 의 path generation 변경이 선행 — 별도 큰 epic.
+  // #3796/#3798 root-cause — cold-start 시 runBundle 호출 제거. native watch 가 initial
+  // 빌드 + outdir 출력 + appDev hooks 전부 담당. plugin.setup() 1회만 invoke (cold-start
+  // 시점). race 회피는 HTTP server listen 을 watch.onReady 까지 wait — `napi_tsfn_blocking`
+  // 모드라 worker 가 outdir 출력 완료 후 ready_event firing, JS callback 안에서 markWatchReady.
   if (opts.bundle && opts.entryPoints.length > 0) {
     opts.outdir = opts.outdir || join(opts.serveDir, '.zntc-serve');
-    const bundleResult = await runBundle(opts, config);
-    if (appDev) {
-      if (bundleResult.errors.length > 0) {
-        hmr?.reportError(bundleResult.errors);
-      } else {
-        hmr?.clearError();
-        appDev.injectBundleCssLinks(bundleResult);
-        await appDev.afterBundle();
-      }
-    }
-
-    // watch도 같이
     if (!opts.watch) {
       opts.watch = true;
     }
   }
+
+  // #3796 — watch.onReady 까지 HTTP listen 이 wait 할 수 있게 promise. appDev + hmr 모드만
+  // 의미 — 그 외 모드는 markWatchReady 즉시 호출 → promise 가 처음부터 resolved.
+  let watchReadyResolve;
+  const watchReadyPromise = new Promise((r) => {
+    watchReadyResolve = r;
+  });
+  let watchReadyResolved = false;
+  const markWatchReady = () => {
+    if (!watchReadyResolved) {
+      watchReadyResolved = true;
+      watchReadyResolve();
+    }
+  };
+  if (!(opts.bundle && opts.watch && appDev && hmr)) markWatchReady();
 
   const serveDir = resolve(opts.outdir || opts.serveDir);
   const base = normalizeBase(opts.base ?? '/');
@@ -1804,6 +1807,75 @@ async function runServe(opts, config, { appDev = null } = {}) {
   }
 
   const useTls = opts.certfile && opts.keyfile;
+
+  // #3796/#3798 root-cause — watch handle 을 HTTP listen 전에 띄움. cold-start runBundle 제거
+  // 후 watch worker 가 outdir 출력 + appDev hooks 담당. HTTP listen 은 watchReadyPromise 까지
+  // wait → server listen 시점에 outdir 채워진 상태 (race-free).
+  if (opts.bundle && opts.watch && appDev && hmr) {
+    const watchBuildOpts = await buildBundleOptions(opts, config);
+    watchBuildOpts.devMode = true;
+    watchBuildOpts.onReady = async (event) => {
+      try {
+        // #3799 root-cause — initial build 의 diagnostics 의 error 도 reportError.
+        if (event && event.errors && event.errors.length > 0) {
+          hmr.reportError(
+            event.errors.map((e) => ({ text: e.message, location: { file: e.file } })),
+          );
+        } else {
+          hmr.clearError();
+        }
+        // #3796 — event.outputs (path 목록) 를 BundleResult shape 으로 변환해 injectBundleCssLinks.
+        const mockResult = {
+          outputFiles: (event && event.outputs ? event.outputs : []).map((p) => ({ path: p })),
+        };
+        appDev.injectBundleCssLinks(mockResult);
+        await appDev.afterBundle();
+      } catch (err) {
+        console.error('[serve] initial appDev hooks failed:', err);
+      } finally {
+        markWatchReady();
+      }
+    };
+    watchBuildOpts.onRebuild = (event) => {
+      // dev_mode + collect_module_codes 인 incremental rebuild 는 skip_bundle_output 자동
+      // 활성이라 outdir 갱신 안 함. graphChanged 시 추가 runBundle 호출 (plugin.setup 2회
+      // 시점 — cold-start 는 watch 1회만).
+      void (async () => {
+        try {
+          if (event && event.success && event.graphChanged) {
+            try {
+              const r = await runBundle(opts, config);
+              if (r.errors.length === 0) appDev.injectBundleCssLinks(r);
+            } catch (cssErr) {
+              console.error('[serve] graph-change outdir rebuild failed:', cssErr);
+            }
+          }
+          const annotated =
+            event && event.success && event.updates && event.updates.length > 0
+              ? {
+                  ...event,
+                  updates: event.updates.map((u) => ({
+                    ...u,
+                    code: `${u.code}\n//# sourceMappingURL=${HMR_MAP_PATH}${encodeURIComponent(u.id)}\n`,
+                  })),
+                }
+              : event;
+          web.broadcastRebuildEvent(hmr, annotated);
+        } catch (err) {
+          console.error('[serve] hmr broadcast error:', err);
+        }
+      })();
+    };
+    try {
+      nativeWatchHandle = watch(watchBuildOpts);
+    } catch (err) {
+      console.error('[serve] native watch failed to start (incremental HMR disabled):', err);
+      markWatchReady();
+    }
+  }
+
+  // #3796 — HTTP listen 을 watch.onReady 까지 wait (5초 timeout 으로 deadlock 방어).
+  await Promise.race([watchReadyPromise, new Promise((r) => setTimeout(r, 5000))]);
 
   if (isBun) {
     // Bun.serve
@@ -1962,52 +2034,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
     let rebuilding = false;
     const dirty = new Set();
 
-    // #3779 — JS module 변경 시 incremental HMR update broadcast. appDev + hmr 모드에서만
-    // native watch handle 을 띄워 onRebuild 콜백에서 graph change → FullReload, modules 변경
-    // → UpdateStart/Update/UpdateDone 송출. fsWatch + drain 은 CSS/sass/postcss/restart 만 처리
-    // — JS 분기는 noop. 첫 빌드는 위쪽 `runBundle` 가 이미 수행 — watch handle 은
-    // `skipInitialOutput: true` 로 initial output 만 skip (graph/cache 는 정상 구성).
-    if (appDev && hmr) {
-      const watchBuildOpts = await buildBundleOptions(opts, config);
-      watchBuildOpts.devMode = true;
-      watchBuildOpts.skipInitialOutput = true;
-      watchBuildOpts.onRebuild = (event) => {
-        // #3813 — graphChanged 시 새 chunk/CSS 출력 필요. dev_mode + collect_module_codes 인
-        // incremental rebuild 는 skip_bundle_output 자동 활성이라 outdir 갱신 안 함. workaround
-        // 로 runBundle 한 번 호출해 outdir 채운 후 css link 재주입.
-        void (async () => {
-          try {
-            if (event && event.success && event.graphChanged) {
-              try {
-                const r = await runBundle(opts, config);
-                if (r.errors.length === 0) appDev.injectBundleCssLinks(r);
-              } catch (cssErr) {
-                console.error('[serve] graph-change outdir rebuild failed:', cssErr);
-              }
-            }
-            // #3799 — Update modules.code 끝에 sourceMappingURL 주석 append.
-            const annotated =
-              event && event.success && event.updates && event.updates.length > 0
-                ? {
-                    ...event,
-                    updates: event.updates.map((u) => ({
-                      ...u,
-                      code: `${u.code}\n//# sourceMappingURL=${HMR_MAP_PATH}${encodeURIComponent(u.id)}\n`,
-                    })),
-                  }
-                : event;
-            web.broadcastRebuildEvent(hmr, annotated);
-          } catch (err) {
-            console.error('[serve] hmr broadcast error:', err);
-          }
-        })();
-      };
-      try {
-        nativeWatchHandle = watch(watchBuildOpts);
-      } catch (err) {
-        console.error('[serve] native watch failed to start (incremental HMR disabled):', err);
-      }
-    }
+    // #3796 — native watch handle 은 HTTP listen 전에 띄움 (위쪽 코드). 이 블록은
+    // fsWatch + drain (CSS / sass / postcss / restart) 만 — JS 변경은 native watch 가 단독 처리.
 
     async function rebuildAppDevCss(changedPath) {
       await appDev.afterBundle({ changedPath });
