@@ -39,6 +39,9 @@ pub const Error = error{
     HandshakeFailed,
     TlsRead,
     TlsWrite,
+    /// Windows 의 std.posix.fd_t = HANDLE (*anyopaque) 라 boringssl 의
+    /// `SSL_set_fd(c_int)` 어댑터 부재. winsock SOCKET 어댑터는 별도 epic (#3841).
+    WindowsTlsUnsupported,
 };
 
 /// SSL_CTX wrapper — 1개 dev server 가 1개 context 공유. cert/key 로드는 init 시 1회.
@@ -85,17 +88,41 @@ pub const TlsContext = struct {
 };
 
 /// per-connection SSL wrapper. accept 후 1회 생성 — handshake 완료 후 reader/writer.
-pub const TlsConnection = struct {
+///
+/// Platform 분기 (RFC #3833 root-cause fix, issue #3841 winsock SOCKET 어댑터):
+/// Windows 의 std.posix.fd_t = HANDLE (*anyopaque) → boringssl 의 `SSL_set_fd(c_int)`
+/// 에 직접 cast 불가. 사전에는 `@compileError` 로 Windows 빌드 자체 차단했으나 (PR #3842
+/// 의 mitigation 까지 누적), 본 fix 는 struct 자체를 comptime 분기해 Windows 빌드
+/// 통과 + runtime 시 `WindowsTlsUnsupported` error 반환. `dev_server.zig:158/434` 의
+/// catch handler 가 이미 처리. winsock 어댑터 (#3841 Phase 2) 머지 시 분기 제거.
+pub const TlsConnection = if (builtin.os.tag == .windows) WindowsTlsConnectionStub else PosixTlsConnection;
+
+/// Windows 한정 stub — init 가 즉시 error 반환. reader/writer 는 init error 가드 후
+/// 호출 안 되지만 type signature 만족 위해 undefined-backed stub 제공.
+const WindowsTlsConnectionStub = struct {
     ssl: *boringssl.SSL,
 
-    pub fn init(ctx: *TlsContext, fd: std.posix.fd_t) Error!TlsConnection {
-        // Windows 에서 std.posix.fd_t = HANDLE (*anyopaque) 라 c_int cast 불가.
-        // BoringSSL on Windows 는 winsock SOCKET (ULONG_PTR) 을 c_int truncate
-        // 하는 별도 footgun + ZTS 의 dev_server Windows 지원은 별도 phase. 명시
-        // 차단 — 향후 windows TLS 지원 시 winsock 어댑터 추가.
-        if (@import("builtin").os.tag == .windows) {
-            @compileError("TLS adapter: Windows dev server TLS 는 별도 epic 진행 필요 (winsock SOCKET 어댑터)");
-        }
+    pub fn init(_: *TlsContext, _: std.posix.fd_t) Error!WindowsTlsConnectionStub {
+        log.err("TLS adapter: Windows dev server TLS 미지원 (winsock SOCKET 어댑터 별도 epic — issue #3841).", .{});
+        return Error.WindowsTlsUnsupported;
+    }
+
+    pub fn deinit(_: *WindowsTlsConnectionStub) void {}
+
+    pub fn reader(_: *WindowsTlsConnectionStub, buffer: []u8) TlsReader {
+        // init Error 후 reader 호출 unreachable — type 만족용.
+        return .init(undefined, buffer);
+    }
+
+    pub fn writer(_: *WindowsTlsConnectionStub, buffer: []u8) TlsWriter {
+        return .init(undefined, buffer);
+    }
+};
+
+const PosixTlsConnection = struct {
+    ssl: *boringssl.SSL,
+
+    pub fn init(ctx: *TlsContext, fd: std.posix.fd_t) Error!PosixTlsConnection {
         const ssl = boringssl.SSL_new(ctx.ctx) orelse return Error.SslNewFailed;
         errdefer boringssl.SSL_free(ssl);
         if (boringssl.SSL_set_fd(ssl, @intCast(fd)) != 1) return Error.SslSetFdFailed;
@@ -108,17 +135,17 @@ pub const TlsConnection = struct {
         return .{ .ssl = ssl };
     }
 
-    pub fn deinit(self: *TlsConnection) void {
+    pub fn deinit(self: *PosixTlsConnection) void {
         // graceful shutdown — 0 (진행 중) / 1 (완료) / <0 (error) 모두 cleanup 진행.
         _ = boringssl.SSL_shutdown(self.ssl);
         boringssl.SSL_free(self.ssl);
     }
 
-    pub fn reader(self: *TlsConnection, buffer: []u8) TlsReader {
+    pub fn reader(self: *PosixTlsConnection, buffer: []u8) TlsReader {
         return .init(self.ssl, buffer);
     }
 
-    pub fn writer(self: *TlsConnection, buffer: []u8) TlsWriter {
+    pub fn writer(self: *PosixTlsConnection, buffer: []u8) TlsWriter {
         return .init(self.ssl, buffer);
     }
 };
