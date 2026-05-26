@@ -206,6 +206,10 @@ export interface AppDevPostcssOptions {
   base: string | undefined;
   changedPath?: string | null;
   fallbackRequire: NodeRequire;
+  /** caller-side pre-warm 으로 전달되는 PostCSS override (RFC #3833 v3 D1a''
+   *  Phase 2). build path 의 `runPostcssIfConfigured` 와 동일 시맨틱 — truthy
+   *  면 자동발견 skip, plugins.length === 0 면 explicit no-op. */
+  postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
 }
 
 export interface AppDevPostcssResult {
@@ -223,20 +227,53 @@ export interface AppDevPostcssResult {
 export async function runPostcssForAppDev(
   options: AppDevPostcssOptions,
 ): Promise<AppDevPostcssResult> {
-  const { root, outdir, configEnv, logLevel, base, changedPath = null, fallbackRequire } = options;
+  const {
+    root,
+    outdir,
+    configEnv,
+    logLevel,
+    base,
+    changedPath = null,
+    fallbackRequire,
+    postcssOverride = null,
+  } = options;
   const deps = new Set<string>();
   const dirDeps = new Set<string>();
   let primaryHref: string | null = null;
-  const configPath = findPostcssConfig(root);
-  if (!configPath) {
+  // override 가 있으면 자동발견 skip. plugins.length === 0 면 explicit no-op
+  // (build path 의 runPostcssIfConfigured 와 동일 시맨틱).
+  const configPath = postcssOverride ? null : findPostcssConfig(root);
+  if (!configPath && !postcssOverride) {
     const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
     if (first) primaryHref = joinUrl(base, relative(root, first));
     return { deps, dirDeps, primaryHref, processed: 0 };
   }
 
-  const loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
+  let loaded: LoadedPostcss | null;
+  if (postcssOverride) {
+    if (postcssOverride.plugins.length === 0) {
+      // explicit no-op — primaryHref 만 첫 CSS 로 채워 link 유지.
+      const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
+      if (first) primaryHref = joinUrl(base, relative(root, first));
+      return { deps, dirDeps, primaryHref, processed: 0 };
+    }
+    let postcssModule: { default?: LoadedPostcss['postcss'] } & LoadedPostcss['postcss'];
+    try {
+      postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as typeof postcssModule;
+    } catch {
+      if (logLevel !== 'silent') {
+        console.error('[postcss] override path (dev): postcss require 실패 — skip');
+      }
+      return { deps, dirDeps, primaryHref, processed: 0 };
+    }
+    const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
+    loaded = { postcss, plugins: postcssOverride.plugins, options: postcssOverride.options ?? {}, configFile: null };
+  } else {
+    loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
+  }
   if (!loaded) return { deps, dirDeps, primaryHref, processed: 0 };
-  deps.add(resolve(loaded.configFile ?? configPath));
+  if (loaded.configFile) deps.add(resolve(loaded.configFile));
+  else if (configPath) deps.add(resolve(configPath));
 
   mkdirSync(outdir, { recursive: true });
   const allCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
