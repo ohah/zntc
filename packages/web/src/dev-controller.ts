@@ -68,6 +68,12 @@ export interface AppDevControllerOptions {
   envDir?: string | undefined;
   envPrefixes?: readonly string[] | undefined;
   logLevel?: string | undefined;
+  /** caller-side pre-warm PostCSS override (RFC #3833 v3 D1a'' Phase 2). 사용자
+   *  explicit `plugins: [css({postcss:{...override}})]` 의 옵션을 runAppDev 가
+   *  추출해 controller 에 전달. prepare 의 `postcssOverride` + afterBundle 의
+   *  `runPostcssForAppDev` override 둘 다에 동일 값. build path 와 dev path 의
+   *  PostCSS plugin set 일치 (dev/build divergence 해소). */
+  postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
 }
 
 export interface AppDevControllerDeps {
@@ -518,6 +524,10 @@ export function createAppDevController(
       ) {
         pipelineCache = null;
       }
+      // RFC #3833 v3 D1a'' Phase 2: build path (runAppBuild) 와 동일하게 caller
+      // (runAppDev) 의 explicit `css({postcss:{...override}})` 를 prepare 의
+      // PostCSS 단계에 전달. dev/build divergence 해소.
+      const postcssOverride = opts.postcssOverride ?? null;
       const pipeline = await prepareAppCssPipelineRoot(
         root,
         outdir,
@@ -526,8 +536,14 @@ export function createAppDevController(
         'dev',
         deps,
         reuseRoot
-          ? { existingTempRoot: pipelineRoot, dirtyPaths, cache: pipelineCache, sassReverseDep }
-          : { sassReverseDep },
+          ? {
+              existingTempRoot: pipelineRoot,
+              dirtyPaths,
+              cache: pipelineCache,
+              sassReverseDep,
+              postcssOverride,
+            }
+          : { sassReverseDep, postcssOverride },
       );
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
@@ -578,6 +594,8 @@ export function createAppDevController(
       return prepared;
     },
     async afterBundle({ changedPath = null } = {}) {
+      // RFC #3833 v3 D1a'' Phase 2: prepare 와 동일 override 를 afterBundle 에도
+      // 전달 — 일관된 PostCSS plugin set (build path 와 시맨틱 일치).
       const result = await runPostcssForAppDev({
         root,
         outdir,
@@ -586,6 +604,7 @@ export function createAppDevController(
         base,
         changedPath,
         fallbackRequire,
+        postcssOverride: opts.postcssOverride ?? null,
       });
       cssDeps = result.deps;
       cssDirDeps = result.dirDeps;
