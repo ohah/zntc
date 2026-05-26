@@ -14,7 +14,6 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -1831,55 +1830,62 @@ async function emitRestartAfter(opts, reason, beforeSpawn) {
 // ─── Serve 모드 ───
 
 /**
- * #3858 — raw root 와 outdir 의 `.css` set diff → outdir 에만 있는 .css unlink.
- * dev mode 에서 사용자가 raw root 의 .css 를 삭제했을 때 outdir 의 mirror file
- * 도 stale 잔존 회피. native event 의 race / circular event 와 무관하게 fs
- * truth 로 reconcile. cost: O(n) walk, typical CSS count 작아 무시할 수준.
+ * #3858 — raw root .css 의 diff 기반 reconcile. 이전 scan 결과와 비교해
+ * **사라진 path** 만 outdir 에서 unlink. 이전 design (raw vs outdir set diff)
+ * 은 outdir 의 bundler/sass/css-modules 가 emit 한 transient file (chunk.css,
+ * Button.module.zntc.css 등) 을 stale 오판 → unlink 회귀 (/code-review max #4/#5).
+ *
+ * caller 가 closure 로 prevRawSet 보관 — 매 cycle current scan + diff:
+ *   - removed = prev ∖ current → outdir 의 동일 rel path unlink
+ *   - prev := current
+ *
+ * .scss/.sass 는 sass pipeline 이 별도 outdir 에 emit, raw root 의 .scss 자체
+ * 삭제 시 sass 산출물도 dev_controller 가 cleanup. reconcile 은 plain raw .css
+ * 만 cover (사용자가 직접 만든 .css 파일).
+ *
+ * cost: O(raw .css count) walk per rebuild — 일반적 small (dozens).
  */
-function reconcileOutdirCss(rawRoot, outdir) {
-  const rawCssSet = new Set();
-  function walkRaw(dir, relBase) {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      // node_modules / .git / outdir 의 sub-tree skip — outdir 가 rawRoot 안에 있을 수 있음.
-      if (e.name === 'node_modules' || e.name === '.git') continue;
-      if (e.name.startsWith('.zntc-')) continue;
-      const full = join(dir, e.name);
-      const rel = relBase ? `${relBase}/${e.name}` : e.name;
-      if (e.isDirectory()) walkRaw(full, rel);
-      else if (e.isFile() && e.name.endsWith('.css')) rawCssSet.add(rel);
-    }
-  }
-  walkRaw(rawRoot, '');
+function createReconcileOutdirCss(rawRoot, outdir) {
+  let prevRawSet = new Set();
 
-  function walkOutdir(dir, relBase) {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      const rel = relBase ? `${relBase}/${e.name}` : e.name;
-      if (e.isDirectory()) walkOutdir(full, rel);
-      else if (e.isFile() && e.name.endsWith('.css')) {
-        if (!rawCssSet.has(rel)) {
-          try {
-            unlinkSync(full);
-          } catch {
-            // best-effort
-          }
-        }
+  function scanRawCss() {
+    const set = new Set();
+    function walk(dir, relBase) {
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.name === 'node_modules' || e.name === '.git') continue;
+        if (e.name.startsWith('.zntc-')) continue;
+        const rel = relBase ? `${relBase}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(join(dir, e.name), rel);
+        else if (e.isFile() && e.name.endsWith('.css')) set.add(rel);
       }
     }
+    walk(rawRoot, '');
+    return set;
   }
-  walkOutdir(outdir, '');
+
+  // 첫 호출 시 prev 를 현재 raw scan 으로 초기화 — 첫 reconcile cycle 에서
+  // 모든 outdir .css 가 stale 로 오판되는 것 회피.
+  prevRawSet = scanRawCss();
+
+  return function reconcile() {
+    const current = scanRawCss();
+    for (const rel of prevRawSet) {
+      if (current.has(rel)) continue;
+      const target = join(outdir, rel);
+      try {
+        unlinkSync(target);
+      } catch {
+        // best-effort — file 이 없거나 race
+      }
+    }
+    prevRawSet = current;
+  };
 }
 
 async function runServe(opts, config, { appDev = null } = {}) {
@@ -2016,6 +2022,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // native watcher (TrackedFileSet 의 dir-watch) 가 처리하도록 root_dir 등록.
     // opts._appWatchRoot 는 runAppDev 가 stash 한 사용자 source code root (outdir
     // 아닌 진짜 src/ 컨테이너). 사용자 명시 watchFolders 가 있으면 union — 우선순위 유지.
+    let reconcileOutdir = null;
     if (opts._appWatchRoot) {
       const autoWatchRoot = resolve(opts._appWatchRoot);
       const existing = Array.isArray(watchBuildOpts.watchFolders)
@@ -2023,6 +2030,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
         : [];
       if (!existing.includes(autoWatchRoot)) {
         watchBuildOpts.watchFolders = [...existing, autoWatchRoot];
+      }
+      // issue #3858 — reconcileOutdir factory 생성 (closure 가 prev/current raw
+      // .css set 추적). onRebuild 마다 호출 — sass/.module/.chunk emit 영향 0.
+      if (opts.outdir) {
+        reconcileOutdir = createReconcileOutdirCss(autoWatchRoot, resolve(opts.outdir));
       }
     }
     watchBuildOpts.onReady = async (event) => {
@@ -2058,11 +2070,6 @@ async function runServe(opts, config, { appDev = null } = {}) {
           // sync 가 필요 (afterBundle 의 mirror 가 tempRoot 만 scan). prepare 가
           // dirty=cssChanges 받아 tempRoot 에 새 .css cpSync + PostCSS process.
           // graphChanged 면 아래 runBundle 분기가 처리 — 중복 회피.
-          // issue #3858 — changed 에 .css 가 포함되어 있고 graphChanged 아니면
-          // prepare + afterBundle 호출. graph 외 신규 .css 는 prepare 의 tempRoot
-          // sync 가 필요 (afterBundle 의 mirror 가 tempRoot 만 scan). prepare 가
-          // dirty=cssChanges 받아 tempRoot 에 새 .css cpSync + PostCSS process.
-          // graphChanged 면 아래 runBundle 분기가 처리 — 중복 회피.
           if (event && event.success && Array.isArray(event.changed) && !event.graphChanged) {
             const cssChanges = event.changed.filter(
               (p) =>
@@ -2078,11 +2085,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
               }
             }
           }
-          // issue #3858 — 매 rebuild 마다 outdir reconcile (raw root .css 와 diff
-          // 후 outdir stale unlink). native delete event 의 race / circular event
-          // 회피. cost: O(.css count) walk per rebuild — 일반적 small.
-          if (event && event.success && opts._appWatchRoot && opts.outdir) {
-            reconcileOutdirCss(opts._appWatchRoot, opts.outdir);
+          // issue #3858 — 매 rebuild 마다 outdir reconcile (raw root .css diff
+          // 후 사라진 path 만 outdir unlink). closure factory 의 prev/current
+          // diff 로 outdir 의 sass/.module/.chunk emit 영향 0.
+          if (event && event.success && reconcileOutdir) {
+            reconcileOutdir();
           }
           if (event && event.success && event.graphChanged) {
             try {
