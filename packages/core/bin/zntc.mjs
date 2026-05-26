@@ -1416,7 +1416,7 @@ function mergeCliRuntimeTargets(runtimePolyfills, runtimeTargetQueries) {
  * plugins 머지 + applySingleFileDynamicImportDefault + 옵션 매핑을 한 곳에 모아
  * runBundle (single-shot) 와 watch (incremental HMR, #3779) 의 옵션 drift 차단.
  */
-async function buildBundleOptions(opts, config) {
+async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false } = {}) {
   const plugins = [];
   if (config && Array.isArray(config.plugins)) {
     plugins.push(...config.plugins);
@@ -1433,9 +1433,15 @@ async function buildBundleOptions(opts, config) {
     }
   }
   // RFC #3833 v3 D1a'' caller-side pre-warm — dropCallerPreWarmedCssPlugin helper
-  // 로 sentinel 가진 css plugin 을 dispatcher chain 에서 제거. runAppBuild 와
-  // 동일 logic 공유 (drift 방지).
-  const dispatchPlugins = dropCallerPreWarmedCssPlugin(plugins);
+  // 로 sentinel 가진 css plugin 을 dispatcher chain 에서 제거. **app caller
+  // (runServe with appDev) 만 적용** — bundle/transpile 모드 사용자가 css()
+  // 명시한 경우 무조건 drop 하면 PostCSS 효과 0 silent regression (review #2).
+  // app 모드만 caller-pre-warm 로 prepare 가 처리하므로 dispatcher dispatch 차단
+  // 필요, bundle 모드는 native async dispatcher 가 onLoad 호출 (단 caller-pre-warm
+  // 없어 PostCSS 적용 안 되지만 사용자 의도 그대로 dispatcher 에 전달).
+  const dispatchPlugins = filterCallerPreWarmCss
+    ? dropCallerPreWarmedCssPlugin(plugins)
+    : plugins;
 
   applySingleFileDynamicImportDefault(opts);
 
@@ -1909,7 +1915,12 @@ async function runServe(opts, config, { appDev = null } = {}) {
   // 후 watch worker 가 outdir 출력 + appDev hooks 담당. HTTP listen 은 watchReadyPromise 까지
   // wait → server listen 시점에 outdir 채워진 상태 (race-free).
   if (opts.bundle && opts.watch && appDev && hmr) {
-    const watchBuildOpts = await buildBundleOptions(opts, config);
+    // app dev path (appDev 활성) — caller-pre-warm 으로 prepare 가 처리한
+    // css plugin 을 dispatcher 에서 제거 필요. bundle 모드 (appDev=null) 는
+    // filter false (사용자 명시 css() 가 dispatcher 에 정상 전달).
+    const watchBuildOpts = await buildBundleOptions(opts, config, {
+      filterCallerPreWarmCss: true,
+    });
     watchBuildOpts.devMode = true;
     watchBuildOpts.onReady = async (event) => {
       try {
