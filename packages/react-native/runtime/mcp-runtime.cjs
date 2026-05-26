@@ -46,11 +46,15 @@ function startMcpRuntime(g) {
 
   var url = g.__ZNTC_MCP_APP_WS_URL__ || DEFAULT_URL;
   var handlers = Object.create(null);
+  // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
+  // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
+  // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.
   var state = {
     ws: null,
     connectionState: 'closed',
     reconnectMs: RECONNECT_MIN_MS,
     closedExplicitly: false,
+    protocolMismatch: false,
   };
 
   // public API surface — 후속 PR 이 `runtime.handlers[name] = fn` 으로 tool 추가.
@@ -75,15 +79,9 @@ function startMcpRuntime(g) {
     },
   };
 
-  function dispatch(text) {
-    var msg;
-    try {
-      msg = JSON.parse(text);
-    } catch (_) {
-      return;
-    }
-    if (!msg || typeof msg !== 'object') return;
-
+  // `msg` 는 이미 parse 된 object. onmessage 가 parse 1회 후 hello 분기 + 일반 dispatch
+  // 양쪽에 같은 결과 forward.
+  function dispatch(msg) {
     // server 가 보낸 request (id + method) — handler 호출 → response.
     if (typeof msg.method === 'string' && msg.id != null) {
       var fn = handlers[msg.method];
@@ -134,7 +132,7 @@ function startMcpRuntime(g) {
   }
 
   function scheduleReconnect() {
-    if (state.closedExplicitly) return;
+    if (state.closedExplicitly || state.protocolMismatch) return;
     var delay = state.reconnectMs;
     state.reconnectMs = Math.min(state.reconnectMs * 2, RECONNECT_MAX_MS);
     // `g.setTimeout` 명시 — runtime 안에서 bare `setTimeout` 은 closure 의
@@ -165,20 +163,29 @@ function startMcpRuntime(g) {
     ws.onmessage = function (ev) {
       var data = ev && ev.data;
       if (typeof data !== 'string') return;
-      // hello 메시지 — protocol version 검증.
-      // wire contract (Zig 측) 기준 단 1회 도착. 이후는 일반 RPC.
-      if (data.indexOf('"method":"connected"') !== -1) {
-        // protocol 식별자 mismatch 시 close — 향후 spec 변경 시 graceful 대응.
-        if (data.indexOf('"protocol":"' + EXPECTED_PROTOCOL + '"') === -1) {
-          state.closedExplicitly = true;
+      // 단 1회 parse — substring 검사 (false-positive 위험) 대신 typed check.
+      var msg;
+      try {
+        msg = JSON.parse(data);
+      } catch (_) {
+        return;
+      }
+      if (!msg || typeof msg !== 'object') return;
+
+      // hello 메시지 — top-level `method === "connected"` 만 검출. nested object 의
+      // `method` field 가 우연히 "connected" 여도 영향 없음.
+      if (msg.method === 'connected' && msg.id == null) {
+        var serverProtocol =
+          msg.params && typeof msg.params.protocol === 'string' ? msg.params.protocol : null;
+        if (serverProtocol !== EXPECTED_PROTOCOL) {
+          state.protocolMismatch = true;
           try {
             ws.close();
           } catch (_) {}
-          return;
         }
         return;
       }
-      dispatch(data);
+      dispatch(msg);
     };
 
     ws.onerror = function () {
