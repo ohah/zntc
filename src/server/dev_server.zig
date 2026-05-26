@@ -39,8 +39,8 @@ pub const DevServer = struct {
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
     /// MCP app channel — `/__mcp-app` WS 연결로 RN 앱과 양방향 통신.
-    /// 후속 PR 가 request/response Map 을 여기에 추가.
-    app_channel: mcp_app_channel_mod.AppChannel = .{},
+    /// init/deinit 필수 (pending request Map 보유).
+    app_channel: mcp_app_channel_mod.AppChannel,
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -191,6 +191,7 @@ pub const DevServer = struct {
             .event_ring = EventRing.init(allocator),
             .overlay_client = overlay_client,
             .tls_ctx = tls_ctx,
+            .app_channel = mcp_app_channel_mod.AppChannel.init(allocator),
         };
     }
 
@@ -203,6 +204,9 @@ pub const DevServer = struct {
         self.root_dir.close();
         self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
+        // pending requests 모두 fail (caller waiter 깨움) + pending map storage 해제.
+        self.app_channel.disconnect();
+        self.app_channel.deinit();
     }
 
     /// dev overlay client raw template 의 `__ZNTC_HMR_*__` sentinel 들을
@@ -598,7 +602,38 @@ pub const DevServer = struct {
 
             switch (msg.opcode) {
                 .text => {
-                    getLog().print("  [mcp-app] recv: {s}\n", .{msg.data}) catch {};
+                    // JSON parse 후 response (`id` + `result`/`error`) 면 pending 매칭 →
+                    // AppChannel.resolveResponse 호출. method 가 있으면 app → server
+                    // request — 후속 PR 에서 server-side handler dispatch.
+                    var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, msg.data, .{}) catch {
+                        getLog().print("  [mcp-app] invalid JSON: {s}\n", .{msg.data}) catch {};
+                        continue;
+                    };
+                    defer parsed.deinit();
+                    const root = parsed.value;
+                    const id_val = switch (root) {
+                        .object => |o| o.get("id") orelse .null,
+                        else => .null,
+                    };
+                    const has_result_or_error = switch (root) {
+                        .object => |o| o.get("result") != null or o.get("error") != null,
+                        else => false,
+                    };
+                    if (has_result_or_error) {
+                        // response — id 를 u64 로 추출 후 pending 매칭.
+                        const id_u64: ?u64 = switch (id_val) {
+                            .integer => |n| if (n >= 0) @intCast(n) else null,
+                            else => null,
+                        };
+                        if (id_u64) |id| {
+                            self.app_channel.resolveResponse(id, msg.data);
+                        } else {
+                            getLog().print("  [mcp-app] response 의 id 가 invalid (non-integer)\n", .{}) catch {};
+                        }
+                    } else {
+                        // method 있고 result 없음 — app 측 request. 후속 PR 에서 dispatch.
+                        getLog().print("  [mcp-app] app→server request (not yet handled): {s}\n", .{msg.data}) catch {};
+                    }
                 },
                 .connection_close => break,
                 else => {},
