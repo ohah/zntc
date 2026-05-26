@@ -1159,14 +1159,25 @@ pub const DevServer = struct {
             // 새 event 도착 즉시 반환 (HOL blocking 완화) — 매 100ms 마다 seq 증가
             // 확인. duration 까지 새 event 없으면 그때 빈 배열 반환. 이전엔 무조건
             // duration 동안 sleep 해서 stdio loop 의 다음 request 도 차단됐다.
+            //
+            // Monotonic 시간 (`std.time.Instant`) 사용 — NTP/DST/수동 시간 조정 등
+            // wall-clock 점프에 영향 받지 않도록. `std.time.nanoTimestamp()` 는
+            // wall-clock 이라 시계가 거꾸로 가면 polling 이 stuck 가능.
             const chunk_ns: u64 = 100 * std.time.ns_per_ms;
-            const deadline_ns: u64 = @intCast(std.time.nanoTimestamp() + @as(i128, @intCast(duration_ms * std.time.ns_per_ms)));
-            while (true) {
-                if (self.loadSeq() > start_seq) break;
-                const now_ns: u64 = @intCast(std.time.nanoTimestamp());
-                if (now_ns >= deadline_ns) break;
-                const remaining = deadline_ns - now_ns;
-                std.Thread.sleep(@min(chunk_ns, remaining));
+            const total_ns: u64 = duration_ms * std.time.ns_per_ms;
+            if (std.time.Instant.now()) |start_time| {
+                while (true) {
+                    if (self.loadSeq() > start_seq) break;
+                    const now = std.time.Instant.now() catch break;
+                    const elapsed = now.since(start_time);
+                    if (elapsed >= total_ns) break;
+                    const remaining = total_ns - elapsed;
+                    std.Thread.sleep(@min(chunk_ns, remaining));
+                }
+            } else |_| {
+                // monotonic clock 미지원 환경 → 단일 sleep (기존 동작, 시계 점프 영향
+                // 1-shot 으로 제한). 정상 OS 에서는 도달 안 함.
+                std.Thread.sleep(total_ns);
             }
             const records = self.event_ring.snapshotSince(self.allocator, start_seq) catch {
                 try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[]\"}]}");
