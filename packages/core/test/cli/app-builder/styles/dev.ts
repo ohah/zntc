@@ -257,12 +257,11 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
     }
   });
 
-  // #3858 의 DELETE case 는 design 적용됨 (reconcileOutdirCss diff-based factory).
-  // 실 환경 (`/private/tmp/...` manual test) 에선 작동 (unlink 후 fetch 404). 단
-  // test 환경 (`/var/folders/...` macOS tmpdir) 에선 unlink 후에도 readdirSync/
-  // dev server fetch 가 stale dirent 봐 200 반환 — APFS dirent cache 또는 spawn
-  // child 와 test process 의 fs visibility 차이. 별도 follow-up issue #3861.
-  test.todo('dev: 신규 .css add+delete cycle (#3858 follow-up)', async () => {
+  // #3858/#3861 회귀 가드 — add+delete cycle. native onRebuild 의 prepare 와
+  // drain (fs.watch) 의 rebuildAppDevCss 가 dual watch → race. drain 도
+  // prepare 호출하도록 fix (#3861). reconcileOutdirCss factory 와 함께 cycle
+  // 후 outdir mirror 자동 정리.
+  test('dev: 신규 .css add+delete cycle (#3861)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-cssdel-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
     writeFileSync(
