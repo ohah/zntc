@@ -488,6 +488,15 @@ export interface AppDevController {
   readonly outdir: string;
   readonly base: string;
   prepare(dirtyPaths?: readonly string[] | null): Promise<AppDevPrepareResult>;
+  /**
+   * issue #3861 follow-up — drain (fs.watch) 의 CSS incremental path 가 PostCSS
+   * 재실행 없이 tempRoot 만 raw root 와 동기시키기 위한 minimal sync. prepare 가
+   * full pipeline (sync + PostCSS reprocess) 라 단일 CSS modify 시 전체 .css
+   * reprocess 회귀. PostCSS 는 afterBundle 의 changedPath 분기가 incremental
+   * 처리 — sync 만 충분. dirtyPaths 가 modify 면 cpSync, delete 면 rmSync
+   * (sync flow 는 prepare 와 동일 invariant).
+   */
+  syncDirty(dirtyPaths: readonly string[]): void;
   afterBundle(options?: { changedPath?: string | null }): Promise<{
     deps: Set<string>;
     dirDeps: Set<string>;
@@ -670,10 +679,24 @@ export function createAppDevController(
       }
       return prepared;
     },
+    syncDirty(dirtyPaths) {
+      // issue #3861 follow-up — drain CSS incremental 의 PostCSS 재실행 회피.
+      // prepare 의 syncDirtyFilesIntoTempRoot 와 동일 logic, PostCSS skip.
+      // pipelineRoot 가 null (prepare 미경유) 시 noop — 그 경우 drain 의
+      // rebuildAppDevCss 가 afterBundle 의 mirror 만 호출하면 충분.
+      if (!pipelineRoot) return;
+      syncDirtyFilesIntoTempRoot(root, pipelineRoot, dirtyPaths);
+    },
     async afterBundle({ changedPath = null } = {}) {
       // RFC #3833 v3 D1a'' Phase 2: prepare 와 동일 override 를 afterBundle 에도
       // 전달. issue #3847: prepare 가 PostCSS 처리한 경우 skipPostcssRun=true 로
       // redundant pass 차단 (zero-config double-pass + caller-pre-warm 모두).
+      // issue #3861 follow-up — changedPath 명시 시 single-file PostCSS dispatch.
+      // skipPostcssRun=true 라도 changedPath 의 단일 .css 만 reprocess —
+      // dev-hmr/postcss test 의 "processed 1 CSS file" incremental 만족 + 신규
+      // .css 의 PostCSS 적용 보장. changedPath 없을 때만 skipPostcssRun 적용
+      // (initial / bundler emit / full mirror cycle).
+      const skipPostcssRun = preparePostcssApplied && !changedPath;
       const result = await runPostcssForAppDev({
         root,
         outdir,
@@ -683,7 +706,7 @@ export function createAppDevController(
         changedPath,
         fallbackRequire,
         postcssOverride: opts.postcssOverride ?? null,
-        skipPostcssRun: preparePostcssApplied,
+        skipPostcssRun,
         // issue #3847 — mirror 의 source 가 prepare 의 tempRoot (PostCSS 처리됨)
         sourceRoot: pipelineRoot ?? root,
         // issue #3857 — auto-discover path 의 search base forward

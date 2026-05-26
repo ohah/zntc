@@ -274,13 +274,11 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
 
     const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
-    const stderrChunks: string[] = [];
-    proc.stderr?.on('data', (chunk) => stderrChunks.push(chunk.toString()));
     await waitForServer(port);
     try {
       // (1) 신규 .css 추가 + 200 검증
       writeFileSync(join(dir, 'src', 'tmp.css'), '.tmp{color:blue}');
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 1500));
       const r1 = await fetch(`http://localhost:${port}/src/tmp.css`);
       expect(r1.status).toBe(200);
 
