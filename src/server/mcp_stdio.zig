@@ -46,8 +46,10 @@ pub fn serveStdio(
         const line = maybe_line orelse return; // EOF
         if (line.len == 0) continue; // 빈 줄 skip
 
-        try dev_server.dispatchMcpRequest(line, writer);
-        try writer.writeByte('\n');
+        // notification (JSON-RPC 2.0 spec: 응답 금지) 이면 newline 도 안 보냄 — stdio
+        // 의 빈 줄은 client 가 skip 하지만, spec 상 byte 도 안 보내는 게 정석.
+        const kind = try dev_server.dispatchMcpRequest(line, writer);
+        if (kind == .response) try writer.writeByte('\n');
     }
 }
 
@@ -326,6 +328,44 @@ test "serveStdio: LineTooLong → -32600 응답 + 다음 줄 정상 처리 (resy
         nl_count += 1;
     };
     try std.testing.expectEqual(@as(usize, 2), nl_count);
+}
+
+test "serveStdio: notification 은 응답/newline 0 byte (JSON-RPC spec)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    // notification 1개 + 일반 method 1개 — notification 은 0 byte, initialize 는 1줄 응답
+    var mr = MockReader{
+        .data =
+        \\{"jsonrpc":"2.0","method":"notifications/initialized"}
+        \\{"jsonrpc":"2.0","id":5,"method":"initialize"}
+        \\
+        ,
+    };
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    var line_buf: [64 * 1024]u8 = undefined;
+    try serveStdio(&dev_server, &mr, w, &line_buf);
+
+    // notification 응답 prefix 가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":null") == null);
+    // initialize 응답은 있음
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"protocolVersion\"") != null);
+    // 정확히 1 newline (notification 0 byte + initialize 1줄)
+    var nl_count: usize = 0;
+    for (resp.items) |b| if (b == '\n') {
+        nl_count += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), nl_count);
 }
 
 test "serveStdio: invalid JSON 줄 → -32700 응답 후 다음 줄 처리 계속" {
