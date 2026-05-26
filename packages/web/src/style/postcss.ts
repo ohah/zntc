@@ -267,7 +267,12 @@ export async function runPostcssForAppDev(
       return { deps, dirDeps, primaryHref, processed: 0 };
     }
     const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
-    loaded = { postcss, plugins: postcssOverride.plugins, options: postcssOverride.options ?? {}, configFile: null };
+    loaded = {
+      postcss,
+      plugins: postcssOverride.plugins,
+      options: postcssOverride.options ?? {},
+      configFile: null,
+    };
   } else {
     loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
   }
