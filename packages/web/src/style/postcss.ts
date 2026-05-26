@@ -153,6 +153,12 @@ export interface RunPostcssIfConfiguredResult {
   /** issue #3850 — PostCSS message 의 dir-dep tracking. tailwind v4 의
    *  @source "../html" 같은 directory watch. */
   dirDeps: Set<string>;
+  /** review #1 — PostCSS 가 실제로 .css 파일들에 process 를 적용했는지.
+   *  override.plugins=[] / postcss 미설치 / config 부재 / cssFiles 0 등의
+   *  early-return 은 false. caller (dev-controller) 가 sass-only app 의
+   *  redundant afterBundle PostCSS pass 를 false 판단으로 허용해야 함
+   *  (skipPostcssRun 을 truthy 로 잘못 set 하지 않도록). */
+  applied: boolean;
 }
 
 export async function runPostcssIfConfigured(
@@ -176,7 +182,7 @@ export async function runPostcssIfConfigured(
   if (override) {
     // explicit override path. plugins 가 빈 배열이면 PostCSS process 자체 skip
     // (Vite 식 'explicit no-op' — auto-discover 로 fallback 안 함).
-    if (override.plugins.length === 0) return { deps, dirDeps };
+    if (override.plugins.length === 0) return { deps, dirDeps, applied: false };
     // postcss 자체만 require (app-first / fallback-second).
     // issue #3851 — override.root 가 있으면 그것 use, 아니면 root.
     const requireBase = override.root ?? root;
@@ -193,7 +199,7 @@ export async function runPostcssIfConfigured(
       if (logLevel !== 'silent') {
         console.error('[postcss] override path: postcss require 실패 — skip');
       }
-      return { deps, dirDeps };
+      return { deps, dirDeps, applied: false };
     }
     const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
     loaded = {
@@ -205,8 +211,9 @@ export async function runPostcssIfConfigured(
   } else {
     loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
   }
-  if (!loaded) return { deps, dirDeps };
+  if (!loaded) return { deps, dirDeps, applied: false };
   const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
+  if (cssFiles.length === 0) return { deps, dirDeps, applied: false };
   await Promise.all(
     cssFiles.map(async (file) => {
       const input = readFileSync(file, 'utf8');
@@ -223,7 +230,7 @@ export async function runPostcssIfConfigured(
     }),
   );
   logPostcssProcessed(logLevel, cssFiles.length, loaded.configFile);
-  return { deps, dirDeps };
+  return { deps, dirDeps, applied: true };
 }
 
 export interface AppDevPostcssOptions {
