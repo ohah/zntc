@@ -152,7 +152,13 @@ export async function runPostcssIfConfigured(
   configEnv: ConfigEnv,
   logLevel: string | undefined,
   fallbackRequire: NodeRequire,
-  override?: { plugins: unknown[]; options?: Record<string, unknown> } | null,
+  override?: {
+    plugins: unknown[];
+    options?: Record<string, unknown>;
+    /** issue #3851 — css({root}) 의 root override. postcss module require 의
+     *  base. 미지정 시 root 인자 사용. */
+    root?: string;
+  } | null,
 ): Promise<void> {
   let loaded: LoadedPostcss | null;
   if (override) {
@@ -160,9 +166,15 @@ export async function runPostcssIfConfigured(
     // (Vite 식 'explicit no-op' — auto-discover 로 fallback 안 함).
     if (override.plugins.length === 0) return;
     // postcss 자체만 require (app-first / fallback-second).
+    // issue #3851 — override.root 가 있으면 그것 use, 아니면 root.
+    const requireBase = override.root ?? root;
     let postcssModule: { default?: LoadedPostcss['postcss'] } & LoadedPostcss['postcss'];
     try {
-      postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as typeof postcssModule;
+      postcssModule = requireFromAppRoot(
+        requireBase,
+        fallbackRequire,
+        'postcss',
+      ) as typeof postcssModule;
     } catch {
       // postcss 미설치. 자동 발견 path 는 silent skip 인데 override path 는
       // 사용자 explicit intent 라 silent 가 silent-bug 가능 — warn 후 skip.
@@ -208,8 +220,13 @@ export interface AppDevPostcssOptions {
   fallbackRequire: NodeRequire;
   /** caller-side pre-warm 으로 전달되는 PostCSS override (RFC #3833 v3 D1a''
    *  Phase 2). build path 의 `runPostcssIfConfigured` 와 동일 시맨틱 — truthy
-   *  면 자동발견 skip, plugins.length === 0 면 explicit no-op. */
-  postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
+   *  면 자동발견 skip, plugins.length === 0 면 explicit no-op. issue #3851:
+   *  root override 도 routing (postcss require base). */
+  postcssOverride?: {
+    plugins: unknown[];
+    options?: Record<string, unknown>;
+    root?: string;
+  } | null;
   /** dev path zero-config double-pass 회피 (issue #3847). controller 의
    *  prepare 가 PostCSS 처리 (auto-discover 또는 override) 했음을 caller 가
    *  알린 경우 true — runPostcssForAppDev 가 PostCSS 호출 skip + sourceRoot
@@ -305,9 +322,15 @@ export async function runPostcssForAppDev(
       if (allCssFiles[0]) primaryHref = joinUrl(base, relative(root, allCssFiles[0]));
       return { deps, dirDeps, primaryHref, processed: 0 };
     }
+    // issue #3851 — override.root 가 있으면 그것 use, 아니면 root.
+    const requireBase = postcssOverride.root ?? root;
     let postcssModule: { default?: LoadedPostcss['postcss'] } & LoadedPostcss['postcss'];
     try {
-      postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as typeof postcssModule;
+      postcssModule = requireFromAppRoot(
+        requireBase,
+        fallbackRequire,
+        'postcss',
+      ) as typeof postcssModule;
     } catch {
       if (logLevel !== 'silent') {
         console.error('[postcss] override path (dev): postcss require 실패 — skip');
