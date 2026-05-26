@@ -293,10 +293,20 @@ function buildMcpWebViewAliases(
   projectRoot: string,
   dev: boolean,
   mcpEnabled: boolean,
+  explicitOn = false,
 ): Record<string, string> {
   if (!dev || !mcpEnabled) return {};
   const webviewRoot = tryResolvePackageRoot('react-native-webview', projectRoot);
-  if (!webviewRoot) return {};
+  if (!webviewRoot) {
+    if (explicitOn) {
+      // mcp=true 명시했는데 react-native-webview 가 없으면 디버깅 hint — wrapper alias
+      // 가 어떤 디버깅 시도 없이 silent skip 되는 걸 막는다.
+      console.warn(
+        "[zntc:rn] mcp WebView wrapper 비활성 — 'react-native-webview' 가 projectRoot 에서 resolve 안 됨.",
+      );
+    }
+    return {};
+  }
   const zntcRnRoot = tryResolvePackageRoot('@zntc/react-native', projectRoot);
   if (!zntcRnRoot) return {};
   const wrapperPath = resolve(zntcRnRoot, 'runtime/webview-wrapper.cjs');
@@ -307,6 +317,21 @@ function buildMcpWebViewAliases(
     // 자기 자신으로 돌아오는 무한 루프 회피.
     __zntc_webview_original__: webviewRoot,
   };
+}
+
+/**
+ * `buildMcpWebViewAliases` 가 등록한 alias 중 prefix matching 을 꺼야 하는 from list.
+ * `react-native-webview` 는 단일 파일 wrapper 라 subpath import 가 깨지므로 exact only.
+ * `__zntc_webview_original__` 은 escape specifier 라 wrapper 외 사용처 없음, 그래도
+ * 안전상 exact only.
+ */
+function buildMcpWebViewAliasExactList(
+  projectRoot: string,
+  dev: boolean,
+  mcpEnabled: boolean,
+): string[] {
+  const aliases = buildMcpWebViewAliases(projectRoot, dev, mcpEnabled);
+  return Object.keys(aliases);
 }
 
 /**
@@ -573,8 +598,13 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     // 다시 실행되어 Fabric 이 깨질 수 있다.
     alias: {
       ...buildRnSingletonAliases(projectRoot),
-      ...buildMcpWebViewAliases(projectRoot, dev, extra?.mcp !== false),
+      ...buildMcpWebViewAliases(projectRoot, dev, extra?.mcp !== false, extra?.mcp === true),
     },
+    // MCP WebView wrapper alias 는 단일 .cjs 파일이라 prefix matching 으로 subpath
+    // import (`react-native-webview/lib/X`) 가 깨진다. exact 매칭만 적용해 subpath
+    // 는 원본 패키지로 resolve. wrapper 가 미등록된 경우 (prod / opt-out / 미설치)
+    // 에는 list 가 비어 무영향.
+    aliasExact: buildMcpWebViewAliasExactList(projectRoot, dev, extra?.mcp !== false),
     // Metro 설정과 맞춰 pnpm symlink 를 처리한다. resolver 는 표준 pnpm package
     // symlink 의 module identity 를 실제 .pnpm package path 로 정규화하되, workspace
     // symlink 는 logical path 를 유지한다.

@@ -449,14 +449,29 @@ pub fn parseBuildOptions(
     }
 
     // alias: { "from": "to" } → []AliasEntry (tsconfig paths 는 tsconfig 로드 후 아래에서 append).
+    // `aliasExact: ["from1", "from2"]` — prefix-match 를 끄는 from 목록. wrapper 같은
+    // 단일 파일 alias 가 subpath import 를 깨뜨리지 않도록 명시적 opt-in.
     const alias_pairs = getObjectKeyValuePairs(env, opts_obj, "alias", native_alloc);
+    const alias_exact = getObjectStringArray(env, opts_obj, "aliasExact", native_alloc);
+    if (alias_exact) |list| for (list) |item| if (!trackStr(owned_strings, item)) return null;
+    defer if (alias_exact) |list| native_alloc.free(list);
     var alias_list: std.ArrayList(bundler_mod.types.AliasEntry) = .empty;
     if (alias_pairs) |pairs| {
         defer native_alloc.free(pairs);
         for (pairs) |pair| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
-            alias_list.append(native_alloc, .{ .from = pair[0], .to = pair[1] }) catch return null;
+            const is_exact = blk: {
+                if (alias_exact) |list| for (list) |ex| {
+                    if (std.mem.eql(u8, ex, pair[0])) break :blk true;
+                };
+                break :blk false;
+            };
+            alias_list.append(native_alloc, .{
+                .from = pair[0],
+                .to = pair[1],
+                .exact = is_exact,
+            }) catch return null;
         }
     }
 
