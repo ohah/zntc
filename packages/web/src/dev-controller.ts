@@ -114,14 +114,6 @@ export interface AppCssPipelineResult {
    *  path 가 watch trigger 정합 위해 사용 (tailwind `@source` 같은 dir-dep). */
   postcssDeps?: Set<string>;
   postcssDirDeps?: Set<string>;
-  /** review #1 — PostCSS 가 **실제로** 적용됐는지(`runPostcssIfConfigured` 의
-   *  early-return 이 아니라 cssFiles 에 process 가 돌아간 경우만 true). controller
-   *  의 `preparePostcssApplied` flag 가 sass-only app(prepare 진입했으나 PostCSS
-   *  미실행)에서 잘못 skipPostcssRun=true 로 set 되어 afterBundle 의 PostCSS pass
-   *  를 부당하게 skip 하지 않도록. postcssRelevant=false(incremental + 비-CSS dirty)
-   *  면 prepare 가 PostCSS 호출 자체를 skip — 그 경우 undefined → controller 가
-   *  이전 prep 의 값을 carry-over 한다. */
-  postcssApplied?: boolean;
 }
 
 function normalizeBase(base: string | undefined): string {
@@ -406,7 +398,6 @@ export async function prepareAppCssPipelineRoot(
   // 하면 .ts 파일 1개 edit 만 해도 tailwind @source dir-dep 손실.
   let postcssDeps: Set<string> | undefined;
   let postcssDirDeps: Set<string> | undefined;
-  let postcssApplied: boolean | undefined;
   if (postcssRelevant) {
     const postcssResult = await runPostcssIfConfigured(
       tempRoot,
@@ -419,7 +410,6 @@ export async function prepareAppCssPipelineRoot(
     );
     postcssDeps = postcssResult.deps;
     postcssDirDeps = postcssResult.dirDeps;
-    postcssApplied = postcssResult.applied;
   }
   // `*.module.scss` 는 위 sass 단계에서 `*.module.css` 가 새로 만들어지므로, 사전 walk
   // 가 본 모듈 리스트엔 빠져 있다. preprocessor 출력 경로를 재계산해 보강.
@@ -451,7 +441,6 @@ export async function prepareAppCssPipelineRoot(
     cache: { stylePipelineFiles, styleSourceFiles },
     postcssDeps,
     postcssDirDeps,
-    postcssApplied,
   };
 }
 
@@ -583,15 +572,10 @@ export function createAppDevController(
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
       hasPipelineCss = (pipeline?.generatedCssAbsPaths.length ?? 0) > 0;
-      // issue #3847 / review #1 — PostCSS 가 **실제로** 적용된 경우에만 flag set.
-      // `pipeline` 자체는 sass-only / css-modules-only 진입 시도 truthy 라
-      // `!!pipeline` 은 false-positive. `prepareAppCssPipelineRoot` 가 노출하는
-      // `postcssApplied` (cssFiles 에 process 가 돌아갔는지) 를 신뢰. undefined =
-      // postcssRelevant=false 면 carry-over (이전 prep 의 값 유지) — incremental
-      // 비-CSS dirty rebuild 가 flag 를 잘못 false 로 reset 하지 않도록.
-      if (pipeline?.postcssApplied !== undefined) {
-        preparePostcssApplied = pipeline.postcssApplied;
-      }
+      // issue #3847 — pipeline truthy = prepareAppCssPipelineRoot 진입 →
+      // runPostcssIfConfigured 호출됨 (override 또는 자동발견 어느 path 든 PostCSS
+      // 처리 가능). afterBundle 가 redundant pass 차단할 수 있도록 flag set.
+      preparePostcssApplied = !!pipeline;
       // issue #3850 — prepare result 의 postcssDeps/postcssDirDeps 보존.
       // afterBundle skipPostcssRun path 가 watch trigger 정합 위해 사용.
       // **carry-over (review #1)**: pipeline.postcssDeps 가 undefined 면
