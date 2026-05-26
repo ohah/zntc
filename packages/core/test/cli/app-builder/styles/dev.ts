@@ -232,11 +232,19 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
     try {
       // bundle.js 안에 CSS Modules mapping inline (bundler 가 proxy 처리)
       const bundle = await fetch(`http://localhost:${port}/bundle.js`).then((r) => r.text());
-      // scoped class names + mapping key 양쪽 검증
+      // 404/HTML fallback 회피 가드 (review #2)
+      expect(bundle).not.toContain('<html');
+      expect(bundle).not.toMatch(/Not\s*Found/i);
+      // scoped class names — generated CSS Modules 결과
       expect(bundle).toMatch(/Button_primary__[A-Za-z0-9_-]{8}/);
       expect(bundle).toMatch(/Button_danger__[A-Za-z0-9_-]{8}/);
-      expect(bundle).toContain('primary');
-      expect(bundle).toContain('danger');
+      // mapping shape — proxy module 의 default mapping 이 JSON-literal 로
+      // `{ "primary": "Button_primary__<hash>", "danger": "..." }` 형태 inline
+      // (bundler 가 whitespace 보존). 단순 substring `primary`/`danger` 는
+      // scoped 이름 안에 포함되어 false-green — JSON key 패턴 (`:\s*` 허용) 명시
+      // 검증 (review #1).
+      expect(bundle).toMatch(/"primary":\s*"Button_primary__[A-Za-z0-9_-]{8}"/);
+      expect(bundle).toMatch(/"danger":\s*"Button_danger__[A-Za-z0-9_-]{8}"/);
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });

@@ -708,13 +708,21 @@ function extractCssPostcssOverride(plugins) {
 
 /**
  * RFC #3833 v3 D1a'' — caller-pre-warm sentinel (`__cssOptions !== undefined`)
- * 가진 css plugin 을 dispatcher plugin chain 에서 제거. caller (runAppBuild /
- * runAppDev) 가 옵션 추출해 prepare 의 PostCSS 단계에서 이미 처리한 plugin —
- * dispatcher 에 또 보내면:
- *   - build (sync dispatcher): async onLoad → syncPluginPromiseFailure → BundleFailed
- *   - dev (async dispatcher): 같은 PostCSS 두 번 실행 → double-pass
- * 양쪽 모두 본 helper 의 filter 로 해소. extractCssPostcssOverride 와 같은
- * sentinel match 조건 (predicate 일관) — drift 위험 차단.
+ * 가진 css plugin 을 native dispatcher plugin chain 에서 제거.
+ *
+ * Caller paths:
+ *   - **runAppBuild**: buildAppSync 의 sync dispatcher 가 async onLoad 받으면
+ *     syncPluginPromiseFailure → BundleFailed. 본 helper 로 dispatch 차단.
+ *   - **buildBundleOptions** (runBundle/watch/runServe): native async dispatcher
+ *     가 onLoad 호출 → prepare 와 같은 PostCSS 두 번 실행 (double-pass). 본
+ *     helper 로 dispatch 차단.
+ *
+ * **runAppDev 는 본 helper 미경유** — controller (createAppDevController) 에
+ * postcssOverride 만 전달, plugin chain 자체는 runServe → buildBundleOptions
+ * 경로에서 처리. 따라서 dev path 의 filter 는 buildBundleOptions 가 cover.
+ *
+ * extractCssPostcssOverride 와 동일 sentinel match 조건 (predicate 일관) —
+ * drift 위험 차단.
  *
  * @param {Array<{name?:string,__cssOptions?:object}>} plugins
  * @returns {Array<unknown>} caller-pre-warm 활성 css plugin 제거된 새 array
@@ -745,9 +753,12 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
   // RFC #3833 v3 D1a'' caller-side pre-warm — extractCssPostcssOverride helper 참조.
   const postcssOverride = extractCssPostcssOverride(appPlugins);
-  // dropCallerPreWarmedCssPlugin: caller-pre-warm 활성화 시 그 css plugin 을
-  // dispatcher 에서 제거. buildBundleOptions 와 동일 logic 공유 (drift 방지).
-  const dispatchPlugins = postcssOverride ? dropCallerPreWarmedCssPlugin(appPlugins) : appPlugins;
+  // dropCallerPreWarmedCssPlugin: sentinel 가진 css plugin 을 항상 dispatcher 에서
+  // 제거 (buildBundleOptions 와 동일 무조건 적용). /code-review max #5: 조건부
+  // (postcssOverride truthy 시만) 분기는 비대칭 — 사용자가 sentinel 만 가진
+  // plugin (예: `__cssOptions:{someFutureKey}` — extract null) 등록 시
+  // BundleFailed 회귀 가능. 무조건 drop 으로 future-key 안전 + 양쪽 path 일관.
+  const dispatchPlugins = dropCallerPreWarmedCssPlugin(appPlugins);
   let pipelineRoot = null;
   try {
     const pipeline = await web.prepareAppCssPipelineRoot(
