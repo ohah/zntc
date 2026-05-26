@@ -540,47 +540,33 @@ describe('mcp-runtime.cjs (PR-F1) — find_element', () => {
     expect(r.component).toBe('A');
   });
 
-  test('refMap LRU cap — 256 entry 후 oldest evicted (review F3 회귀 잠금)', () => {
-    // 매우 큰 트리는 비현실 — root child chain 으로 LRU 검증.
-    // 257번째 find 시 e1 이 evicted, e2~e257 + e258 살아있음.
-    // walkFiber 가 stack 기반 DFS — child 만 따라가는 chain 만들기.
-    function makeChain(n: number): FakeFiber {
-      let last: FakeFiber = {
-        type: 'Text',
-        memoizedProps: { children: 'leaf' },
-      };
-      for (let i = 0; i < n; i++) {
-        last = {
-          type: { displayName: 'C' + i },
-          memoizedProps: {},
-          child: last,
-        };
-      }
-      return last;
-    }
+  test('refMap LRU cap — 1024 entry 후 oldest evicted (review F3 회귀 잠금)', () => {
+    // PR-F5: REF_MAP_MAX 256 → 1024 로 raise (take_snapshot 의 단일 call 이 자기
+    // 자신의 ref 를 evict 하지 않게). LRU 동작 자체는 변경 없음.
+    const fiber: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'leaf' },
+    };
     const root: FakeFiber = {
       type: { name: 'Root' },
       memoizedProps: {},
-      child: makeChain(1),
+      child: fiber,
     };
     makeFiberHook(g, [{ current: root }]);
 
     loadRuntime(g);
     const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
-    // 260번 find — 같은 'leaf' 매칭. 매 호출마다 새 ref. e1~e260.
-    const refs: string[] = [];
-    for (let i = 0; i < 260; i++) {
-      const r = rt.handlers.find_element({ by: 'text', value: 'leaf' }) as { ref: string };
-      refs.push(r.ref);
+    // 1028번 find — 같은 'leaf' 매칭. 매 호출마다 새 ref. e1~e1028.
+    for (let i = 0; i < 1028; i++) {
+      rt.handlers.find_element({ by: 'text', value: 'leaf' });
     }
-    expect(refs.length).toBe(260);
-    // 256 cap — e1~e4 evicted, e5~e260 살아있음.
     const has = (ref: string) =>
       (rt.handlers.__getFiberByRef({ ref }) as { has?: boolean }).has === true;
+    // 1024 cap — e1~e4 evicted, e5~e1028 살아있음.
     expect(has('e1')).toBe(false);
     expect(has('e4')).toBe(false);
     expect(has('e5')).toBe(true);
-    expect(has('e260')).toBe(true);
+    expect(has('e1028')).toBe(true);
   });
 
   test('__getFiberByRef — 등록된 ref 는 has:true, 없는 ref 는 has:false', () => {
@@ -1523,5 +1509,201 @@ describe('mcp-runtime.cjs (PR-F4) — get_logs', () => {
     (g as any).console.warn('keep-going');
     expect(calls.length).toBe(1);
     expect(calls[0].args).toEqual(['keep-going']);
+  });
+});
+
+// PR-F5 — take_snapshot. fiber tree 전체 (또는 ref subtree) 의 nested summary.
+describe('mcp-runtime.cjs (PR-F5) — take_snapshot', () => {
+  // 공용 fiber tree fixture:
+  //   App
+  //   ├─ View (group)
+  //   │   ├─ Text "Hello"
+  //   │   └─ Button (label "Submit")
+  //   └─ Footer
+  function buildBasicTree(): FakeFiber {
+    const text: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'Hello' },
+    };
+    const button: FakeFiber = {
+      type: { displayName: 'Button' },
+      memoizedProps: { accessibilityLabel: 'Submit', accessibilityRole: 'button' },
+    };
+    text.sibling = button;
+    const view: FakeFiber = {
+      type: 'View',
+      memoizedProps: { accessibilityRole: 'group' },
+      child: text,
+    };
+    const footer: FakeFiber = {
+      type: { displayName: 'Footer' },
+      memoizedProps: {},
+    };
+    view.sibling = footer;
+    const app: FakeFiber = {
+      type: { displayName: 'App' },
+      memoizedProps: {},
+      child: view,
+    };
+    return app;
+  }
+
+  test('DevTools hook 없음 → throw: no React fiber root', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.take_snapshot({})).toThrow(/no React fiber root/);
+  });
+
+  test('unknown ref → throw: not found', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.take_snapshot({ ref: 'e9999' })).toThrow(/not found/);
+  });
+
+  test('전체 tree — roots[].children 의 nested 구조 + 각 node 의 ref', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.take_snapshot({}) as {
+      roots: Array<any>;
+      nodes: number;
+      truncated: boolean;
+    };
+    expect(r.truncated).toBe(false);
+    // App > View > [Text, Button], App > Footer → 총 5 node
+    expect(r.nodes).toBe(5);
+    expect(r.roots.length).toBe(1);
+    const app = r.roots[0];
+    expect(app.component).toBe('App');
+    expect(app.ref).toMatch(/^e\d+$/);
+    expect(app.children.length).toBe(2); // View + Footer
+    const view = app.children[0];
+    expect(view.component).toBe('View');
+    expect(view.role).toBe('group');
+    expect(view.children.length).toBe(2);
+    expect(view.children[0].component).toBe('Text');
+    expect(view.children[0].text).toBe('Hello');
+    expect(view.children[1].component).toBe('Button');
+    expect(view.children[1].label).toBe('Submit');
+  });
+
+  test('ref subtree — 해당 fiber 부터만 snapshot', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // 먼저 find_element 로 View 의 ref 획득
+    const v = rt.handlers.find_element({ by: 'component', value: 'View' }) as { ref: string };
+    const r = rt.handlers.take_snapshot({ ref: v.ref }) as { root: any; nodes: number };
+    // View + Text + Button = 3 node
+    expect(r.nodes).toBe(3);
+    expect(r.root.component).toBe('View');
+    expect(r.root.children.length).toBe(2);
+    expect(r.root.children[0].component).toBe('Text');
+  });
+
+  test('max_depth — 한도 초과 노드는 __depth_truncated marker + ref (review F4)', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // depth 1 — App 의 children (View, Footer) 까지만, 그 children 은 truncate.
+    const r = rt.handlers.take_snapshot({ max_depth: 1 }) as { roots: Array<any> };
+    const app = r.roots[0];
+    expect(app.children.length).toBe(2);
+    // View 노드는 정상 depth 1, 그 children (Text/Button) 는 depth 2 — truncate
+    // marker. F4: marker 도 ref 가 있어 follow-up take_snapshot({ref}) 로 expand 가능.
+    const view = app.children[0];
+    expect(view.children).toBeDefined();
+    for (const c of view.children) {
+      expect(c.__depth_truncated).toBe(true);
+      expect(typeof c.ref).toBe('string');
+      expect(c.ref).toMatch(/^e\d+$/);
+    }
+    // marker 의 ref 로 expand
+    const expanded = rt.handlers.take_snapshot({
+      ref: view.children[0].ref,
+      max_depth: 2,
+    }) as { root: any };
+    expect(expanded.root.component).toBe('Text');
+  });
+
+  test('max_nodes — 한도 도달 시 truncated:true + partial snapshot', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // 2 nodes 만 허용 — App + View 까지
+    const r = rt.handlers.take_snapshot({ max_nodes: 2 }) as {
+      roots: Array<any>;
+      nodes: number;
+      truncated: boolean;
+    };
+    expect(r.truncated).toBe(true);
+    expect(r.nodes).toBe(2);
+  });
+
+  test('depth/node cap — schema 의 hard cap (max_depth=100, max_nodes=99999) 적용', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // 사용자가 schema 우회해서 큰 값 보내도 hard cap (32 / 1024) 안 넘게.
+    // 동작 sanity 만 — clamp 되어 정상 동작 확인.
+    const r = rt.handlers.take_snapshot({ max_depth: 100, max_nodes: 99999 }) as {
+      truncated: boolean;
+      nodes: number;
+    };
+    expect(r.truncated).toBe(false);
+    expect(r.nodes).toBe(5);
+  });
+
+  test('multi-root truncation — 첫 root 만 처리되고 나머지 skip 시 truncated:true (review F2)', () => {
+    // root[0] 가 maxNodes 정확히 채우면 root[1] 시도조차 안 함 — 이전에는 silent
+    // partial 이었지만 fix 후 truncated:true.
+    const root1 = buildBasicTree(); // 5 nodes
+    const root2: FakeFiber = {
+      type: { displayName: 'Modal' },
+      memoizedProps: {},
+    };
+    makeFiberHook(g, [{ current: root1 }, { current: root2 }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.take_snapshot({ max_nodes: 5 }) as {
+      roots: Array<any>;
+      nodes: number;
+      truncated: boolean;
+    };
+    expect(r.roots.length).toBe(1); // root2 skip
+    expect(r.nodes).toBe(5);
+    expect(r.truncated).toBe(true);
+  });
+
+  test('각 node 의 ref 가 refMap 에 등록 → 후속 inspect_state 가능', () => {
+    makeFiberHook(g, [{ current: buildBasicTree() }]);
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.take_snapshot({}) as { roots: Array<any> };
+    const textNode = r.roots[0].children[0].children[0];
+    expect(textNode.component).toBe('Text');
+    // inspect_state 가 같은 ref 로 조회 가능해야 함
+    const inspect = rt.handlers.inspect_state({ ref: textNode.ref }) as { component: string };
+    expect(inspect.component).toBe('Text');
+  });
+
+  test('multi-root — 두 fiber root 모두 roots[] 에 등록', () => {
+    const root1 = buildBasicTree();
+    const root2: FakeFiber = {
+      type: { displayName: 'Modal' },
+      memoizedProps: {},
+    };
+    makeFiberHook(g, [{ current: root1 }, { current: root2 }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.take_snapshot({}) as { roots: Array<any>; nodes: number };
+    expect(r.roots.length).toBe(2);
+    expect(r.roots[0].component).toBe('App');
+    expect(r.roots[1].component).toBe('Modal');
+    // App tree(5) + Modal(1) = 6 nodes
+    expect(r.nodes).toBe(6);
   });
 });

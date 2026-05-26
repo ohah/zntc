@@ -74,12 +74,15 @@ function startMcpRuntime(g) {
   // 가 stale ref 받아도 inspect_state 가 null 응답. RN fast-refresh 시 tree 재구성
   // 되어도 동작.
   //
-  // refMap 의 unbounded growth 방지 — REF_MAP_MAX (256) 도달 시 가장 오래된 entry
-  // 를 FIFO 로 evict. Map 의 insertion-order 보장 사용 (ES2015+). fiber 는 strong
-  // reference 라 evict 안 하면 unmount 된 subtree 까지 GC 못 함 — 디버그 세션에서
-  // find_element 를 hot loop 로 호출하면 누적. 256 은 동시 inspect 대상 가정 평균
-  // (Playwright MCP 도 비슷한 ref 회전 사용).
-  var REF_MAP_MAX = 256;
+  // refMap 의 unbounded growth 방지 — REF_MAP_MAX 도달 시 가장 오래된 entry 를 FIFO
+  // 로 evict. Map 의 insertion-order 보장 사용 (ES2015+). fiber 는 strong reference
+  // 라 evict 안 하면 unmount 된 subtree 까지 GC 못 함 — 디버그 세션에서 find_element
+  // 를 hot loop 로 호출하면 누적.
+  //
+  // PR-F5 fix: 1024 — take_snapshot 가 단일 call 로 최대 1024 node 까지 ref 발급
+  // 가능하므로 그 만큼 cap 도 함께 보장해야 즉시 evict 되지 않음. (이전 256 은
+  // single snapshot 1000 node 가 첫 ~744 ref 를 evict 시켰음).
+  var REF_MAP_MAX = 1024;
   var refMap = new Map(); // ref string → fiber pointer (insertion-ordered)
   var refIdCounter = 1;
 
@@ -673,6 +676,119 @@ function startMcpRuntime(g) {
       nextCursor: sliced.length > 0 ? sliced[sliced.length - 1].seq : cursorSeq,
       dropped: logDropped,
       total: logRing.length,
+    };
+  };
+
+  // ─── take_snapshot (PR-F5) ───
+  //
+  // fiber tree 전체 (또는 ref 의 subtree) 를 nested summary 로 직렬화. find_element
+  // 의 single-shot 결과와 달리 화면 전체 구조 한 번에 파악 — LLM 의 "이 화면에 뭐
+  // 있어?" 질의 대응.
+  //
+  // 각 node 는 serializeFiber 와 같은 shape (component, text, role, label, testID,
+  // source) + children. 매 node 마다 fresh ref 부여 → 후속 inspect_state / eval_code
+  // / tap 등이 그 ref 로 target 가능. (refMap 의 256-cap 이 적용되어 큰 tree 일 때
+  // 오래된 ref 가 evict 될 수 있음 — caller 가 받자마자 사용 권장.)
+  //
+  // depth / node cap 으로 폭주 방지. 초과 시 partial snapshot + truncated:true 또는
+  // __depth_truncated:true marker.
+  var SNAPSHOT_DEFAULT_DEPTH = 12;
+  var SNAPSHOT_MAX_DEPTH_CAP = 32;
+  // refMap 의 REF_MAP_MAX 와 align — snapshot 결과의 ref 가 즉시 evict 되지 않게.
+  // 더 큰 화면이 필요하면 ref 기반 subtree snapshot 으로 나누어 호출.
+  var SNAPSHOT_DEFAULT_NODES = 256;
+  var SNAPSHOT_MAX_NODES_CAP = REF_MAP_MAX;
+
+  function snapshotFiber(fiber, depth, maxDepth, state) {
+    if (state.nodes >= state.maxNodes) {
+      state.truncated = true;
+      return null;
+    }
+    if (depth > maxDepth) {
+      // depth-truncated node — fresh ref 부여해 caller 가 후속 take_snapshot({ref})
+      // 로 그 subtree 를 expand 할 수 있게 (review F4). state.nodes 도 카운트 —
+      // refMap 쓰는 entry 와 1:1 align (truncated 마커도 ref slot 차지).
+      state.nodes += 1;
+      var truncRef = nextRefId();
+      rememberRef(truncRef, fiber);
+      return { ref: truncRef, __depth_truncated: true };
+    }
+    state.nodes += 1;
+    var ref = nextRefId();
+    rememberRef(ref, fiber);
+    var node = serializeFiber(fiber, ref);
+    // children — fiber.child 의 sibling chain 순회.
+    var child = fiber.child;
+    if (child) {
+      var children = [];
+      while (child) {
+        if (state.nodes >= state.maxNodes) {
+          // 더 처리할 child 가 남았는데 한도 도달 — truncated 명시.
+          state.truncated = true;
+          break;
+        }
+        var c = snapshotFiber(child, depth + 1, maxDepth, state);
+        if (c != null) children.push(c);
+        child = child.sibling;
+      }
+      if (children.length > 0) node.children = children;
+    }
+    return node;
+  }
+
+  handlers.take_snapshot = function (params) {
+    var p = params || {};
+
+    // option 정규화 + 범위 enforce.
+    var maxDepth =
+      typeof p.max_depth === 'number' && p.max_depth >= 1
+        ? Math.min(Math.floor(p.max_depth), SNAPSHOT_MAX_DEPTH_CAP)
+        : SNAPSHOT_DEFAULT_DEPTH;
+    var maxNodes =
+      typeof p.max_nodes === 'number' && p.max_nodes >= 1
+        ? Math.min(Math.floor(p.max_nodes), SNAPSHOT_MAX_NODES_CAP)
+        : SNAPSHOT_DEFAULT_NODES;
+
+    var state = { nodes: 0, maxNodes: maxNodes, truncated: false };
+
+    // ref 있으면 그 subtree 만, 없으면 모든 fiber root.
+    if (typeof p.ref === 'string') {
+      var fiber = refMap.get(p.ref);
+      if (!fiber) {
+        throw new Error('take_snapshot: ref `' + p.ref + '` not found (expired or unknown)');
+      }
+      var node = snapshotFiber(fiber, 0, maxDepth, state);
+      return {
+        root: node,
+        nodes: state.nodes,
+        truncated: state.truncated,
+      };
+    }
+
+    var roots = getFiberRoots();
+    if (roots.length === 0) {
+      throw new Error(
+        'take_snapshot: no React fiber root found (DevTools hook not installed or React not mounted yet)',
+      );
+    }
+
+    var trees = [];
+    for (var i = 0; i < roots.length; i++) {
+      // 한도 도달 후 남은 root 가 있으면 truncated 표시 — silent partial 방지
+      // (review F2). 단순 loop predicate 만으로는 truncated flag 가 false 로 남음.
+      if (state.nodes >= state.maxNodes) {
+        state.truncated = true;
+        break;
+      }
+      var rootCurrent = roots[i].current;
+      if (!rootCurrent) continue;
+      var tree = snapshotFiber(rootCurrent, 0, maxDepth, state);
+      if (tree != null) trees.push(tree);
+    }
+    return {
+      roots: trees,
+      nodes: state.nodes,
+      truncated: state.truncated,
     };
   };
 
