@@ -94,4 +94,51 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // RFC #3833 v3 D1a'' Phase 2 — dev path 도 caller-side pre-warm. 사용자 explicit
+  // `plugins:[css({postcss:{...override}})]` 가 controller 의 postcssOverride 로
+  // 전달되어 prepare 의 PostCSS 단계에 적용. build path 와 동일 시맨틱 검증.
+  test('dev applies user explicit css({postcss}) override (D1a Phase 2)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-override-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev-override</title><link rel="stylesheet" href="/src/style.css"><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, 'src', 'main.ts'), 'console.log("ok");');
+    writeFileSync(join(dir, 'src', 'style.css'), '.x{color:red}');
+    // postcss.config 부재 → 자동발견 path null. override 만 활성화 확인.
+    writeFileSync(
+      join(dir, 'zntc.config.mjs'),
+      [
+        'export default {',
+        '  plugins: [',
+        '    {',
+        "      name: '@zntc/web/css',",
+        '      __cssOptions: {',
+        '        postcss: {',
+        '          plugins: [',
+        "            { postcssPlugin: 'dev-override-marker', Once(root) { root.append({ selector: '.dev-override-applied', nodes: [] }); } },",
+        '          ],',
+        '        },',
+        '      },',
+        '      setup() {},',
+        '    },',
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const css = await fetch(`http://localhost:${port}/src/style.css`).then((r) => r.text());
+      expect(css).toContain('.dev-override-applied');
+      expect(css).toContain('.x');
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

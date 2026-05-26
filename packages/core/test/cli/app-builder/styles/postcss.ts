@@ -96,6 +96,85 @@ describe('CLI: Vite-style app builder > styles > PostCSS', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // D1a'' 의 disabled:true 분기 — 사용자 명시적으로 PostCSS 끄기. postcss.config 가
+  // 있어도 자동발견 차단되어야 (extractCssPostcssOverride 가 {plugins:[]} 반환 →
+  // prepare 의 length 0 skip).
+  test('explicit css({disabled:true}) — auto-discover 차단 (D1a)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-css-disabled-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<div class="card">disabled</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, 'src', 'main.ts'), 'import "./style.css";');
+    writeFileSync(join(dir, 'src', 'style.css'), '.card { color: red; }\n');
+    // postcss.config 있음 — 자동발견 path 가 평소엔 적용되지만 disabled:true 가
+    // override path 진입시켜 차단해야.
+    writeFileSync(
+      join(dir, 'postcss.config.mjs'),
+      [
+        'export default {',
+        '  plugins: [',
+        "    { postcssPlugin: 'auto-marker', Once(root) { root.append({ selector: '.should-not-appear', nodes: [] }); } },",
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'zntc.config.mjs'),
+      [
+        'export default {',
+        '  plugins: [',
+        "    { name: '@zntc/web/css', __cssOptions: { disabled: true }, setup() {} },",
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+
+    const outdir = join(dir, 'dist');
+    const { exitCode } = runCli(['build', dir, '--outdir', outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    const css = readFileSync(join(outdir, 'main.css'), 'utf8');
+    // disabled 가 자동발견 차단 → marker 안 나타남
+    expect(css).not.toContain('.should-not-appear');
+    expect(css).toContain('.card');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // D1a'' 의 findLast 분기 — user explicit css() 가 default prepend 보다 winner.
+  // 본 fixture 는 두 css() 명시 — 마지막 (override marker) 만 적용 확인.
+  test('findLast — 마지막 css() 가 winner (default + user override 동시)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-css-findlast-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<div class="card">findLast</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, 'src', 'main.ts'), 'import "./style.css";');
+    writeFileSync(join(dir, 'src', 'style.css'), '.card { color: red; }\n');
+    // 두 css() — 첫 번째 가 default-like (plugins=[]), 마지막 이 user override.
+    // findLast 가 마지막 winner → .winner-marker 만 적용, .default-marker 미적용.
+    writeFileSync(
+      join(dir, 'zntc.config.mjs'),
+      [
+        'export default {',
+        '  plugins: [',
+        "    { name: '@zntc/web/css', __cssOptions: { postcss: { plugins: [{ postcssPlugin: 'default-marker', Once(root) { root.append({ selector: '.default-marker', nodes: [] }); } }] } }, setup() {} },",
+        "    { name: '@zntc/web/css', __cssOptions: { postcss: { plugins: [{ postcssPlugin: 'winner-marker', Once(root) { root.append({ selector: '.winner-marker', nodes: [] }); } }] } }, setup() {} },",
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+
+    const outdir = join(dir, 'dist');
+    const { exitCode } = runCli(['build', dir, '--outdir', outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    const css = readFileSync(join(outdir, 'main.css'), 'utf8');
+    expect(css).toContain('.winner-marker'); // findLast = 마지막 winner
+    expect(css).not.toContain('.default-marker');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test('Tailwind v4 @tailwindcss/postcss app fixture', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-tailwind-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
