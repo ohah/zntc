@@ -503,6 +503,14 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     expect(opts.alias?.['__zntc_webview_original__']).toBeUndefined();
   });
 
+  test('alias — react-native-webview 가 RN_SINGLETON_PACKAGES 에 없음 (wrapper override 회귀 가드, PR-D F8)', async () => {
+    // RN_SINGLETON_PACKAGES 에 react-native-webview 가 추가되면 buildRnSingletonAliases
+    // 의 alias 가 buildMcpWebViewAliases 의 wrapper alias 를 spread merge 시 덮어쓰는
+    // 회귀 위험. singleton 추가 의도 시 wrapper alias 도 명시 우선 처리 필요.
+    const { RN_SINGLETON_PACKAGES } = await import('./rn-constants.ts');
+    expect(RN_SINGLETON_PACKAGES).not.toContain('react-native-webview');
+  });
+
   test('alias — react-native-webview 미설치 시 silent fallback (alias 자체가 안 등록)', () => {
     mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
     writeFileSync(

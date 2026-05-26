@@ -9,6 +9,12 @@
 //
 // production 빌드에는 inject 안 됨 (`dev: false`).
 //
+// **Runtime 적용 범위 — JS thread only**:
+//   본 runtime 은 RN 의 main JS thread (RN 앱 main bundle) 에서만 동작.
+//   Reanimated worklet runtime / UI thread / Hermes worker 등 별도 realm 에는
+//   `__ZNTC_MCP_RUNTIME__` 등록 안 됨. 후속 PR 가 worklet runtime 의 fiber tree
+//   직렬화를 지원하려면 별도 inject 전략 (worklet preamble) 필요.
+//
 // Wire contract (Zig 측 `src/server/mcp_app_channel.zig` 참조):
 //   - URL path: `/__mcp-app`
 //   - server hello: `{"jsonrpc":"2.0","method":"connected","params":{"protocol":"mcp-app-1"}}`
@@ -58,6 +64,12 @@ function startMcpRuntime(g) {
   };
 
   // public API surface — 후속 PR 이 `runtime.handlers[name] = fn` 으로 tool 추가.
+  //
+  // **의도된 mutable assignment** (Object.defineProperty 의 freeze 안 함):
+  //   HMR 재평가 시 새 startMcpRuntime 호출 가능해야 reconfigure 가능. idempotent 분기
+  //   (`loaded === true` early return) 가 두 번째 호출은 막지만, user 가 `loaded = false`
+  //   로 reset 후 재 init 하는 escape hatch 필요. 또한 `connectionState` getter 같은
+  //   accessor 패턴 유지를 위해 일반 assignment 가 더 단순.
   g.__ZNTC_MCP_RUNTIME__ = {
     version: '0.1.0',
     loaded: true,
