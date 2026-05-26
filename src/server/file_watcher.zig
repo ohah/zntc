@@ -231,6 +231,11 @@ const InotifyBackend = struct {
     inotify_fd: i32,
     /// 감시 대상 파일 경로 (allocator 소유)
     watched_files: std.StringHashMap(void),
+    /// 감시 대상 디렉토리 경로 (allocator 소유). dir 자체가 watch 대상이면
+    /// dir entry 변화(IN.CREATE/IN.DELETE/IN.MOVED_*) 시 dir path 의
+    /// ChangeEvent emit — caller 가 rescan 으로 신규 file 발견.
+    /// issue #3858 — graph 외 .css 파일의 add/delete 감지를 위한 dir-watch.
+    watched_dirs: std.StringHashMap(void),
     /// 디렉토리 → wd 매핑
     dir_wds: std.StringHashMap(i32),
     /// wd → 디렉토리 경로 역매핑
@@ -252,6 +257,7 @@ const InotifyBackend = struct {
         return .{
             .inotify_fd = fd,
             .watched_files = std.StringHashMap(void).init(allocator),
+            .watched_dirs = std.StringHashMap(void).init(allocator),
             .dir_wds = std.StringHashMap(i32).init(allocator),
             .wd_dirs = std.AutoHashMap(i32, []const u8).init(allocator),
             .result_buf = .empty,
@@ -264,6 +270,11 @@ const InotifyBackend = struct {
         while (fit.next()) |key| allocator.free(key.*);
         self.watched_files.deinit();
 
+        // watched_dirs 키 해제 (dir_wds 의 키와는 별도 dupe)
+        var wdit = self.watched_dirs.keyIterator();
+        while (wdit.next()) |key| allocator.free(key.*);
+        self.watched_dirs.deinit();
+
         // dir_wds 키 해제 (wd_dirs의 value와 같은 메모리)
         var dit = self.dir_wds.keyIterator();
         while (dit.next()) |key| allocator.free(key.*);
@@ -275,7 +286,23 @@ const InotifyBackend = struct {
     }
 
     fn addPath(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) !void {
-        if (self.watched_files.contains(path)) return;
+        if (self.watched_files.contains(path) or self.watched_dirs.contains(path)) return;
+
+        // issue #3858 — path 가 dir 면 dir-watch (entry 변화 시 dir path emit),
+        // file 이면 기존처럼 parent dir watch + watched_files 등록.
+        const stat = std.fs.cwd().statFile(path) catch return;
+        if (stat.kind == .directory) {
+            // dir 자체를 inotify_add_watch — IN.CREATE/IN.DELETE/IN.MOVED_* event 받음.
+            if (!self.dir_wds.contains(path)) {
+                const wd = posix.inotify_add_watch(self.inotify_fd, path, dir_mask) catch return;
+                const dir_owned = try allocator.dupe(u8, path);
+                try self.dir_wds.put(dir_owned, wd);
+                try self.wd_dirs.put(wd, dir_owned);
+            }
+            const path_owned = try allocator.dupe(u8, path);
+            try self.watched_dirs.put(path_owned, {});
+            return;
+        }
 
         // 파일의 부모 디렉토리 추출
         const dir_path = std.fs.path.dirname(path) orelse return;
@@ -296,13 +323,22 @@ const InotifyBackend = struct {
         if (self.watched_files.fetchRemove(path)) |kv| {
             allocator.free(kv.key);
         }
-        // 디렉토리 watch는 유지 (다른 파일이 같은 디렉토리에 있을 수 있으므로)
+        // issue #3858 — dir-watch entry 도 remove. 단 inotify_rm_watch 는 caller 가
+        // 다른 file 도 같은 dir 안 watch 할 수 있어 보수적으로 dir_wds 는 유지.
+        if (self.watched_dirs.fetchRemove(path)) |kv| {
+            allocator.free(kv.key);
+        }
     }
 
     fn clearPaths(self: *InotifyBackend, allocator: std.mem.Allocator) void {
         var fit = self.watched_files.keyIterator();
         while (fit.next()) |key| allocator.free(key.*);
         self.watched_files.clearRetainingCapacity();
+
+        // dir-watch entry 도 clear
+        var wdit = self.watched_dirs.keyIterator();
+        while (wdit.next()) |key| allocator.free(key.*);
+        self.watched_dirs.clearRetainingCapacity();
 
         // 디렉토리 watch도 해제
         var dit = self.dir_wds.iterator();
@@ -332,13 +368,27 @@ const InotifyBackend = struct {
             const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(&self.read_buf[offset]));
             offset += @sizeOf(std.os.linux.inotify_event) + event.len;
 
+            const dir_path = self.wd_dirs.get(event.wd) orelse continue;
+
+            // issue #3858 — dir-watch (watched_dirs) 모드: dir entry 변화
+            // (IN.CREATE/IN.DELETE/IN.MOVED_*) 시 dir path 자체의 ChangeEvent
+            // emit. caller 가 rescan 으로 신규 file 발견 → addPath. file watch
+            // (아래) 와 별개 — 동일 event 가 두 path 로 dispatch 가능.
+            if (self.watched_dirs.getKey(dir_path)) |dir_owned_path| {
+                const is_create = event.mask & std.os.linux.IN.CREATE != 0;
+                const is_delete = event.mask & std.os.linux.IN.DELETE != 0;
+                const is_moved = event.mask & (std.os.linux.IN.MOVED_FROM | std.os.linux.IN.MOVED_TO) != 0;
+                if (is_create or is_delete or is_moved) {
+                    const kind: ChangeKind = if (is_delete) .deleted else if (is_create) .created else .modified;
+                    try self.result_buf.append(allocator, .{ .path = dir_owned_path, .kind = kind });
+                }
+            }
+
             // 이벤트에서 파일 이름 추출
             if (event.len == 0) continue;
             const name_ptr: [*]const u8 = @ptrCast(@as([*]const u8, @ptrCast(event)) + @sizeOf(std.os.linux.inotify_event));
             const name = std.mem.sliceTo(name_ptr[0..event.len], 0);
             if (name.len == 0) continue;
-
-            const dir_path = self.wd_dirs.get(event.wd) orelse continue;
 
             // 디렉토리 + "/" + 파일명 → 절대 경로 (memcpy, bufPrint 오버헤드 회피)
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -361,7 +411,7 @@ const InotifyBackend = struct {
     }
 
     fn watchCount(self: *const InotifyBackend) usize {
-        return self.watched_files.count();
+        return self.watched_files.count() + self.watched_dirs.count();
     }
 };
 
