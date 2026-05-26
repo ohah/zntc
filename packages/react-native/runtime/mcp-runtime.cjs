@@ -434,6 +434,124 @@ function startMcpRuntime(g) {
     }
     return snapshot;
   };
+
+  // ─── eval_code (PR-F3) ───
+  //
+  // user 가 보낸 JavaScript expression 을 RN main JS thread 에서 평가. ref 가 있으면
+  // 그 fiber 의 context (stateNode → class 인스턴스 / host NativeView / 없으면 props/
+  // state snapshot) 를 `this` + `$ctx` 양쪽에 바인딩.
+  //
+  // **중요한 contract**:
+  //   - 동기 expression 전용 — `await` / `yield` 는 SyntaxError. `new Function` 이라
+  //     async function 안 됨. Promise 반환 가능 (resolve 안 기다림, marker 직렬화).
+  //   - 평가는 RN main JS thread 에서 발생 — **side-effect 가능**. `this.setState(...)`
+  //     로 컴포넌트 mutate, `globalThis.foo = ...` 로 global 변경. dev 디버거 console
+  //     처럼 동작 (pure observer 아님).
+  //   - 'use strict' — sloppy mode 의 묵시적 global 변수 생성 차단. props 가 frozen
+  //     이면 `this.props = {}` 가 TypeError 로 표면화.
+  //
+  // 보안: arbitrary code 평가 — dev 빌드에만 inject 되므로 production 우려 없음.
+  //
+  // Hermes 호환: 일부 Hermes 빌드는 `enableEval = false` 라 `new Function` 자체가 throw.
+  // 첫 호출 시 1회 probe → unsupported kind 로 의미 있는 메시지 반환 (모든 eval_code
+  // 호출이 cryptic "syntax error" 로 보이는 anti-pattern 회피).
+  //
+  // 에러 분류:
+  //   - system error (params 누락, unknown ref) → throw → dispatcher 가 -32603 wrap.
+  //     find_element / inspect_state 와 동일 contract.
+  //   - runtime / syntax error → {ok:false, error, kind, stack} 으로 result 안에. user
+  //     input 의 결과는 result 채널로 — IDE / repl 의 통상 동작.
+  //   - JS engine 이 eval 비허용 → {ok:false, kind:'unsupported', error}. 다른 tool
+  //     (inspect_state) 로 대체 안내.
+
+  // 1회 probe — install time. typeof Function 자체는 항상 있지만 `new Function('...')`
+  // 가 Hermes enableEval=false 일 때 throw. 매 호출마다 probe 하면 매번 overhead +
+  // exception throw 비용이라 cached.
+  var EVAL_SUPPORTED = (function () {
+    try {
+      // 부작용 0 — 그냥 빈 함수 만들기만.
+      new Function('return 0;');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  handlers.eval_code = function (params) {
+    if (!params || typeof params.expression !== 'string') {
+      throw new Error('eval_code: params requires `expression` (string)');
+    }
+    if (!EVAL_SUPPORTED) {
+      return {
+        ok: false,
+        kind: 'unsupported',
+        error:
+          'eval_code unavailable -- JS engine disables `new Function` (typically Hermes ' +
+          'enableEval=false). Use inspect_state for read-only fiber inspection.',
+      };
+    }
+    var expr = params.expression;
+    var ctx = null;
+    if (typeof params.ref === 'string') {
+      var fiber = refMap.get(params.ref);
+      if (!fiber) {
+        throw new Error('eval_code: ref `' + params.ref + '` not found (expired or unknown)');
+      }
+      // class → component 인스턴스 (this.props/this.state 접근 + setState 호출 가능),
+      // host (type=string) → NativeView (stateNode), 그 외 (function/forwardRef/memo/
+      // Fragment) → props + memoizedState snapshot. function component 의 memoizedState
+      // 는 Hook linked list 라 일반 `state.x` 접근은 inspect_state 결과 보고 따로.
+      if (
+        fiber.stateNode &&
+        typeof fiber.stateNode === 'object' &&
+        fiber.stateNode.isReactComponent
+      ) {
+        ctx = fiber.stateNode;
+      } else if (typeof fiber.type === 'string') {
+        // host fiber 가 pre-mount 면 stateNode null — `this` 가 undefined 라 user
+        // 코드의 `this.foo` 가 runtime error. acceptable (감지 가능).
+        ctx = fiber.stateNode || null;
+      } else {
+        // forwardRef / memo / Fragment / function component — stateNode null.
+        // memoizedState 는 hook chain (function component) 일 수 있어 raw 노출이지만
+        // 일반 inspect 용도로는 충분.
+        ctx = { props: fiber.memoizedProps, memoizedState: fiber.memoizedState };
+      }
+    }
+
+    var fn;
+    try {
+      // `new Function` body — expression 을 괄호로 감싸 statement 와 구분.
+      // `$ctx` 는 명시 파라미터, `this` 는 .call 의 first arg 로 동시 바인딩.
+      fn = new Function('$ctx', '"use strict"; return (' + expr + ');');
+    } catch (synErr) {
+      return {
+        ok: false,
+        error: (synErr && synErr.message) || String(synErr),
+        kind: 'syntax',
+      };
+    }
+
+    try {
+      var result = fn.call(ctx, ctx);
+      return {
+        ok: true,
+        value: safeSerialize(result, new Set(), 0),
+        type: typeof result,
+      };
+    } catch (runErr) {
+      // stack 은 길어질 수 있어 cap (2KB) — fiber tree 같은 거대 객체 사용 안 했지만 안전.
+      var stack = runErr && runErr.stack ? String(runErr.stack) : null;
+      if (stack && stack.length > 2000) stack = stack.slice(0, 2000) + '...';
+      return {
+        ok: false,
+        error: (runErr && runErr.message) || String(runErr),
+        kind: 'runtime',
+        stack: stack,
+      };
+    }
+  };
+
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.

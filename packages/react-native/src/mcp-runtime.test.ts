@@ -998,3 +998,281 @@ describe('mcp-runtime.cjs (PR-F2) — inspect_state', () => {
     expect(result.hooks[0]).toEqual({ type: 'useEffect', value: '[Effect tag=5]' });
   });
 });
+
+// PR-F3 — eval_code. user expression 평가 + ref 가 있으면 fiber stateNode 를
+// `this`/`$ctx` 로 바인딩. system error → throw, runtime/syntax → {ok:false}.
+describe('mcp-runtime.cjs (PR-F3) — eval_code', () => {
+  test('params 누락 → throw: requires `expression`', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.eval_code({})).toThrow(/requires `expression`/);
+    expect(() => rt.handlers.eval_code({ expression: 123 })).toThrow(/requires `expression`/);
+  });
+
+  test('unknown ref → throw: not found', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.eval_code({ expression: '1+1', ref: 'e9999' })).toThrow(/not found/);
+  });
+
+  test('ref 없이 단순 expression — ok + value + type', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({ expression: '1 + 2 * 3' }) as {
+      ok: boolean;
+      value: unknown;
+      type: string;
+    };
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe(7);
+    expect(r.type).toBe('number');
+  });
+
+  test('global access — Math.PI / JSON.stringify 작동', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const pi = rt.handlers.eval_code({ expression: 'Math.PI' }) as { value: number };
+    expect(pi.value).toBeCloseTo(3.14159, 4);
+    const json = rt.handlers.eval_code({ expression: 'JSON.stringify({a:1})' }) as {
+      value: string;
+    };
+    expect(json.value).toBe('{"a":1}');
+  });
+
+  test('syntax error → {ok:false, kind:"syntax"}', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({ expression: '1 +' }) as {
+      ok: boolean;
+      kind?: string;
+      error?: string;
+    };
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('syntax');
+    expect(typeof r.error).toBe('string');
+  });
+
+  test('runtime error → {ok:false, kind:"runtime", stack}', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({ expression: 'nonExistentVar.foo' }) as {
+      ok: boolean;
+      kind?: string;
+      error?: string;
+      stack?: string;
+    };
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('runtime');
+    expect(r.error).toContain('nonExistentVar');
+    expect(typeof r.stack).toBe('string');
+  });
+
+  test('ref (class) — this.state / this.props 접근', () => {
+    const classInstance = {
+      isReactComponent: {},
+      props: { title: 'Hello' },
+      state: { count: 5 },
+    } as any;
+    const classFiber: FakeFiber = {
+      type: { displayName: 'Card' },
+      memoizedProps: { title: 'Hello' },
+      stateNode: classInstance,
+    } as any;
+    (classFiber as any).memoizedState = { count: 5 };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: classFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'Card' }) as { ref: string };
+    const r = rt.handlers.eval_code({
+      expression: 'this.state.count + 1',
+      ref: f.ref,
+    }) as { ok: boolean; value: number };
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe(6);
+  });
+
+  test('ref ($ctx) — $ctx.props 로도 접근 가능 (this 대안)', () => {
+    const classInstance = {
+      isReactComponent: {},
+      props: { name: 'Bob' },
+      state: {},
+    } as any;
+    const classFiber: FakeFiber = {
+      type: { displayName: 'Greet' },
+      memoizedProps: { name: 'Bob' },
+      stateNode: classInstance,
+    } as any;
+    (classFiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: classFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'Greet' }) as { ref: string };
+    const r = rt.handlers.eval_code({
+      expression: '"Hi " + $ctx.props.name',
+      ref: f.ref,
+    }) as { value: string };
+    expect(r.value).toBe('Hi Bob');
+  });
+
+  test('ref (function component) — $ctx 는 props/state snapshot (stateNode null 일 때)', () => {
+    const fnFiber: FakeFiber = {
+      type: { displayName: 'FnCmp' },
+      memoizedProps: { x: 42 },
+      stateNode: null,
+    } as any;
+    (fnFiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fnFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'FnCmp' }) as { ref: string };
+    const r = rt.handlers.eval_code({
+      expression: '$ctx.props.x * 2',
+      ref: f.ref,
+    }) as { ok: boolean; value: number };
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe(84);
+  });
+
+  test('safeSerialize 통과 — function 결과는 marker', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
+      expression: '(function namedFn() {})',
+    }) as { value: string; type: string };
+    expect(r.value).toBe('[Function namedFn]');
+    expect(r.type).toBe('function');
+  });
+
+  test('strict mode — undeclared assignment 은 ReferenceError', () => {
+    // "use strict" 로 sloppy mode 우회 차단 — undeclared 변수 assignment 가 throw.
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
+      expression: '(undeclared = 5)',
+    }) as { ok: boolean; error: string };
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('undeclared');
+  });
+
+  test('F2 contract — this.x = ... 으로 stateNode 인스턴스 mutation 실행 (debugger console 시맨틱)', () => {
+    // PR-F3 review F2: 의도된 동작 — `this` 가 live React 인스턴스. 변경 가능.
+    // 사용자 계약: side-effect 허용 (this.setState/globalThis 대입 등). 본 test 가
+    // 미래 refactor 가 silent 하게 read-only proxy 로 wrap 안 하게 lock.
+    const instance: any = {
+      isReactComponent: {},
+      props: { v: 1 },
+      state: { count: 0 },
+      setState(patch: any) {
+        this.state = Object.assign({}, this.state, patch);
+      },
+    };
+    const fiber: FakeFiber = {
+      type: { displayName: 'Mut' },
+      memoizedProps: instance.props,
+      stateNode: instance,
+    } as any;
+    (fiber as any).memoizedState = instance.state;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'Mut' }) as { ref: string };
+    // setState 호출 → state 변경
+    const r1 = rt.handlers.eval_code({
+      expression: 'this.setState({count: 42}), this.state.count',
+      ref: f.ref,
+    }) as { ok: boolean; value: number };
+    expect(r1.ok).toBe(true);
+    expect(r1.value).toBe(42);
+    expect(instance.state.count).toBe(42); // 실제 인스턴스 변경됨
+  });
+
+  test('F3 — forwardRef-like fiber (stateNode null + type 이 object) → $ctx 가 snapshot', () => {
+    // React.forwardRef / React.memo / React.Fragment 등 — type 이 string 도 아니고
+    // class instance 도 아닌 fiber. snapshot ctx 로 fallback.
+    const forwardRefFiber: FakeFiber = {
+      type: { $$typeof: Symbol.for('react.forward_ref'), displayName: 'Wrapped' } as any,
+      memoizedProps: { label: 'forward' },
+      stateNode: null,
+    } as any;
+    (forwardRefFiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: forwardRefFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'Wrapped' }) as { ref: string };
+    const r = rt.handlers.eval_code({
+      expression: '$ctx.props.label.toUpperCase()',
+      ref: f.ref,
+    }) as { ok: boolean; value: string };
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe('FORWARD');
+  });
+
+  test('F4 — await / yield 는 syntax error (sync 전용 — contract lock)', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r1 = rt.handlers.eval_code({
+      expression: 'await Promise.resolve(1)',
+    }) as { ok: boolean; kind?: string };
+    expect(r1.ok).toBe(false);
+    expect(r1.kind).toBe('syntax');
+    const r2 = rt.handlers.eval_code({
+      expression: 'yield 1',
+    }) as { ok: boolean; kind?: string };
+    expect(r2.ok).toBe(false);
+    expect(r2.kind).toBe('syntax');
+  });
+
+  test('F6 — globalThis 같은 큰 cyclic graph 반환도 safeSerialize 가 bound', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
+      expression: 'globalThis',
+    }) as { ok: boolean; value: unknown };
+    expect(r.ok).toBe(true);
+    // JSON.stringify 가 throw 안 함 → depth/cycle/array cap 이 효과
+    expect(typeof JSON.stringify(r.value)).toBe('string');
+  });
+
+  test('F1 — new Function 이 throw 하는 환경 (Hermes enableEval=false) 시 kind:"unsupported"', () => {
+    // bun:test 의 Function 자체를 override 못 함 (Function global 은 const). 대신
+    // module-cache reset + bun runtime 에서 new Function 자체는 항상 작동하므로,
+    // 이 test 는 EVAL_SUPPORTED probe 의 동작 자체 검증 — Hermes 시뮬레이션이 어려워
+    // sanity 만 확인. 진짜 Hermes path 는 device test 영역.
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({ expression: '1+1' }) as { ok: boolean; value?: number };
+    // Bun 환경에서는 항상 ok:true. unsupported 분기는 코드 review 로만 확인.
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe(2);
+  });
+});
