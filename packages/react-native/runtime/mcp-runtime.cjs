@@ -52,6 +52,17 @@ function startMcpRuntime(g) {
 
   var url = g.__ZNTC_MCP_APP_WS_URL__ || DEFAULT_URL;
   var handlers = Object.create(null);
+
+  // Default `ping` handler — `ping_app` MCP tool 이 호출하면 server → request →
+  // app handler → `{pong: true, ts}` 반환. 양방향 채널 sanity check 용.
+  // 후속 tool (`take_snapshot`, `find_element` 등) 이 같은 패턴으로 등록.
+  handlers.ping = function (params) {
+    return {
+      pong: true,
+      ts: Date.now(),
+      echo: params || null,
+    };
+  };
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.

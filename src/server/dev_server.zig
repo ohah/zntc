@@ -582,6 +582,12 @@ pub const DevServer = struct {
         }
         defer self.app_channel.disconnect();
 
+        // ws ptr 을 channel 에 보관 — dispatcher 가 별도 인자 없이 requestStored 호출.
+        // clearCurrentWs 는 read loop 종료 직전 실행 (inflight write 가 write_mutex 잡고
+        // 있다면 끝날 때까지 wait → ws ptr 가 dangling 안 됨).
+        self.app_channel.setCurrentWs(ws);
+        defer self.app_channel.clearCurrentWs();
+
         getLog().print("  [mcp-app] 앱 연결 (count={})\n", .{self.app_channel.stats().connect_count}) catch {};
 
         // 핸드셰이크 hello — 클라이언트가 connect 완료 확인용.
@@ -1212,7 +1218,8 @@ pub const DevServer = struct {
                 \\"result":{"tools":[
                 \\{"name":"reset_cache","description":"Clear the build cache. Next build will be a full rebuild.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
                 \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}},
-                \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}}
+                \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}},
+                \\{"name":"ping_app","description":"Ping the connected RN app's MCP runtime over the /__mcp-app WebSocket. Returns the app's pong response (verifies bi-directional channel).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}
                 \\]}
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
@@ -1246,6 +1253,49 @@ pub const DevServer = struct {
             try w.writeAll(
                 \\"result":{"content":[{"type":"text","text":"Cache reset requested; next build will be a full rebuild."}]}
             );
+            return;
+        }
+
+        if (std.mem.eql(u8, tool_name, "ping_app")) {
+            // 앱 MCP runtime 의 `handlers.ping` 호출. 5초 timeout — typical RN handler
+            // 는 ms 단위 응답이라 충분.
+            const resp_json = self.app_channel.requestStored("ping", "{}", 5000) catch |err| {
+                const msg = switch (err) {
+                    mcp_app_channel_mod.RequestError.NotConnected => "app not connected on /__mcp-app",
+                    mcp_app_channel_mod.RequestError.Timeout => "app response timeout (5s)",
+                    mcp_app_channel_mod.RequestError.AppDisconnected => "app disconnected mid-request",
+                    mcp_app_channel_mod.RequestError.WriteFailed => "ws write failed",
+                    mcp_app_channel_mod.RequestError.OutOfMemory => "out of memory",
+                };
+                try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"");
+                try writeJsonEscaped(w, msg);
+                try w.writeAll("\"}");
+                return;
+            };
+            defer self.allocator.free(resp_json);
+
+            // 앱 response 는 JSON-RPC envelope `{jsonrpc, id, result/error}`. result 만
+            // 추출해 MCP client 에 forward (content text 로 raw JSON 직렬화).
+            var resp_parsed = std.json.parseFromSlice(std.json.Value, self.allocator, resp_json, .{}) catch {
+                try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response was not valid JSON\"}");
+                return;
+            };
+            defer resp_parsed.deinit();
+            const result_val = switch (resp_parsed.value) {
+                .object => |o| o.get("result"),
+                else => null,
+            };
+            if (result_val == null) {
+                try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response missing 'result'\"}");
+                return;
+            }
+            // result 를 다시 JSON 직렬화 (text content 의 raw text)
+            const result_str = try std.json.Stringify.valueAlloc(self.allocator, result_val.?, .{});
+            defer self.allocator.free(result_str);
+
+            try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+            try writeJsonEscaped(w, result_str);
+            try w.writeAll("\"}]}");
             return;
         }
 
