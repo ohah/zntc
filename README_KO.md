@@ -50,7 +50,9 @@ npx zntc src/index.ts --outdir dist
 npx zntc src/index.ts --bundle --outdir dist --format=esm --target=es2022
 
 # Dev server + HMR + Fast Refresh
-npx zntc serve src/main.tsx --port 5173
+npx zntc --serve --bundle src/main.tsx --port 5173
+# 또는 `dev` 서브커맨드 (root 기준):
+# npx zntc dev --port 5173
 
 # React Native (Metro 호환)
 npx zntc --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
