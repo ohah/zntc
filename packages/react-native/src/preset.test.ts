@@ -503,12 +503,33 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     expect(opts.alias?.['__zntc_webview_original__']).toBeUndefined();
   });
 
-  test('alias — react-native-webview 가 RN_SINGLETON_PACKAGES 에 없음 (wrapper override 회귀 가드, PR-D F8)', async () => {
-    // RN_SINGLETON_PACKAGES 에 react-native-webview 가 추가되면 buildRnSingletonAliases
-    // 의 alias 가 buildMcpWebViewAliases 의 wrapper alias 를 spread merge 시 덮어쓰는
-    // 회귀 위험. singleton 추가 의도 시 wrapper alias 도 명시 우선 처리 필요.
-    const { RN_SINGLETON_PACKAGES } = await import('./rn-constants.ts');
-    expect(RN_SINGLETON_PACKAGES).not.toContain('react-native-webview');
+  test('alias — wrapper alias 가 RN singleton alias 보다 우선 (PR-D F8 정확화)', () => {
+    // 회귀 시나리오: RN_SINGLETON_PACKAGES 에 react-native-webview 가 추가되면
+    // buildRnSingletonAliases 가 alias 에 webview → singleton path 매핑을 넣고,
+    // 그 뒤 spread merge 의 buildMcpWebViewAliases 가 wrapper.cjs 로 override 한다.
+    // 즉 wrapper 가 singleton 보다 **나중에 merge** 되는 ordering 이 invariant.
+    // 본 test 는 invariant 자체를 행동으로 검증 — 실제 정상 setup 에서 alias 의
+    // 최종 값이 wrapper path 인지. negative assertion (`not.toContain`) 만으론
+    // 누군가 의도적으로 list 추가 시 fail 메시지가 잘못된 방향 가리킴.
+    mkdirSync(join(dir, 'node_modules/react-native-webview'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/react-native-webview/package.json'),
+      '{"name":"react-native-webview"}',
+    );
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    // wrapper.cjs 로 resolve 되는지 — singleton path 가 아닌
+    expect(opts.alias?.['react-native-webview']).toBe(
+      join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'),
+    );
+    // exact match 도 보장 — 단일 파일 alias 의 subpath import 가 깨지지 않도록
+    expect(opts.aliasExact).toContain('react-native-webview');
   });
 
   test('alias — react-native-webview 미설치 시 silent fallback (alias 자체가 안 등록)', () => {
