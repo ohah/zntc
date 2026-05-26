@@ -1156,7 +1156,18 @@ pub const DevServer = struct {
                 else => {},
             }
             const start_seq = self.loadSeq();
-            std.Thread.sleep(duration_ms * std.time.ns_per_ms);
+            // 새 event 도착 즉시 반환 (HOL blocking 완화) — 매 100ms 마다 seq 증가
+            // 확인. duration 까지 새 event 없으면 그때 빈 배열 반환. 이전엔 무조건
+            // duration 동안 sleep 해서 stdio loop 의 다음 request 도 차단됐다.
+            const chunk_ns: u64 = 100 * std.time.ns_per_ms;
+            const deadline_ns: u64 = @intCast(std.time.nanoTimestamp() + @as(i128, @intCast(duration_ms * std.time.ns_per_ms)));
+            while (true) {
+                if (self.loadSeq() > start_seq) break;
+                const now_ns: u64 = @intCast(std.time.nanoTimestamp());
+                if (now_ns >= deadline_ns) break;
+                const remaining = deadline_ns - now_ns;
+                std.Thread.sleep(@min(chunk_ns, remaining));
+            }
             const records = self.event_ring.snapshotSince(self.allocator, start_seq) catch {
                 try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[]\"}]}");
                 return;
@@ -2185,6 +2196,45 @@ test "dispatchMcpRequest: tools/call reset_cache → cache_reset_requested 플�
     try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":3") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp.items, "Cache reset requested") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
+}
+
+test "dispatchMcpRequest: get_build_events 가 새 event 도착 시 일찍 반환 (HOL blocking 완화)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    // Background thread — dispatcher 호출 ~100ms 후 event 한 통 publish.
+    // 이전 코드는 duration 전체 (1초) sleep 후에야 응답 → ~1000ms 소요.
+    // 새 코드는 polling chunk 끝에서 즉시 break → ~100-200ms 안에 응답.
+    const Ctx = struct {
+        server: *DevServer,
+        fn run(ctx: @This()) void {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+            ctx.server.publishEvent(EventType.cache_reset, "{\"type\":\"test\"}");
+        }
+    };
+    var thread = try std.Thread.spawn(.{}, Ctx.run, .{Ctx{ .server = &dev_server }});
+    defer thread.join();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    const t0 = std.time.milliTimestamp();
+    _ = try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_build_events","arguments":{"duration":1000}}}
+    , w);
+    const elapsed_ms = std.time.milliTimestamp() - t0;
+
+    // duration=1000ms 인데 100ms 후 event 도착 → ~200ms 안에 응답 와야 함 (chunk_ns=100ms 라 최대 200ms).
+    // 700ms 까지 통과 허용 (CI noise) — 이전 코드는 1000ms 풀로 sleep 함.
+    try std.testing.expect(elapsed_ms < 700);
+    // event 한 통 (seq, type, data) 포함 검증
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\\\"seq\\\":") != null);
 }
 
 test "dispatchMcpRequest: tools/call unknown tool → -32602" {
