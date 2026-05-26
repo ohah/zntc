@@ -728,6 +728,14 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
   // RFC #3833 v3 D1a'' caller-side pre-warm — extractCssPostcssOverride helper 참조.
   const postcssOverride = extractCssPostcssOverride(appPlugins);
+  // **caller-pre-warm 활성화 시 그 css plugin 을 dispatcher 에 보내지 않음**:
+  // buildAppSync 의 sync dispatcher 가 css() 의 async onLoad 받으면 즉시
+  // `syncPluginPromiseFailure` → BundleFailed. caller 가 옵션 추출 후 그
+  // plugin 자체를 dispatcher 에서 제거 — onLoad 가 dispatch 안 됨. 다른
+  // user plugin (non-css) 은 그대로.
+  const dispatchPlugins = postcssOverride
+    ? appPlugins.filter((p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined))
+    : appPlugins;
   let pipelineRoot = null;
   try {
     const pipeline = await web.prepareAppCssPipelineRoot(
@@ -758,7 +766,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       jsxFactory: opts.jsxFactory,
       jsxFragment: opts.jsxFragment,
       compiler: config?.compiler,
-      plugins: appPlugins.length > 0 ? appPlugins : undefined,
+      plugins: dispatchPlugins.length > 0 ? dispatchPlugins : undefined,
     });
     const htmlEnv = loadEnv(
       configEnv.mode,
@@ -1401,6 +1409,15 @@ async function buildBundleOptions(opts, config) {
       plugins.push(cfg);
     }
   }
+  // RFC #3833 v3 D1a'' caller-side pre-warm — `__cssOptions` sentinel 가진
+  // css plugin 은 caller (runAppBuild/runAppDev) 가 옵션 추출해 prepare 의
+  // PostCSS 단계에서 이미 처리. dispatcher 에 또 보내면:
+  //  - build (sync dispatcher): async onLoad 가 syncPluginPromiseFailure → BundleFailed
+  //  - dev (async dispatcher): onLoad 가 같은 PostCSS 한 번 더 실행 → double-pass
+  // 양쪽 모두 caller-pre-warm 활성 plugin filter 로 해소 (issue #3847 root cause).
+  const dispatchPlugins = plugins.filter(
+    (p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined),
+  );
 
   applySingleFileDynamicImportDefault(opts);
 
@@ -1512,7 +1529,7 @@ async function buildBundleOptions(opts, config) {
     watchExclude: opts.watchExclude?.length ? opts.watchExclude : undefined,
     jobs: opts.jobs,
     outbase: opts.outbase,
-    plugins: plugins.length > 0 ? plugins : undefined,
+    plugins: dispatchPlugins.length > 0 ? dispatchPlugins : undefined,
     // compiler.styledComponents / compiler.emotion 도 bundle 모드에서 forward.
     // 누락 시 `zntc.config.json` 의 `compiler` 설정이 silently drop 돼 1st-party transform
     // (autoLabel 등) 이 활성화 안 됨.
