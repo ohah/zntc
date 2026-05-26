@@ -978,33 +978,59 @@ pub const DevServer = struct {
         defer resp.deinit(self.allocator);
         const w = resp.writer(self.allocator);
 
-        try self.dispatchMcpRequest(body, w);
+        const kind = try self.dispatchMcpRequest(body, w);
 
-        request.respond(resp.items, .{
-            .status = .ok,
-            .extra_headers = &json_headers,
-        }) catch {};
+        switch (kind) {
+            .response => request.respond(resp.items, .{
+                .status = .ok,
+                .extra_headers = &json_headers,
+            }) catch {},
+            .notification => request.respond("", .{
+                .status = .no_content,
+                .extra_headers = &json_headers,
+            }) catch {},
+        }
     }
 
     /// Transport-agnostic JSON-RPC 2.0 dispatcher.
     /// HTTP 와 (예정된) stdio 양쪽이 공유. body 한 통을 받아 응답 한 통을 `writer` 에 쓴다.
     ///
+    /// JSON-RPC 2.0 spec: notification (method 가 `notifications/*` 인 경우) 에는 응답을
+    /// 보내지 않는다 ("The Server MUST NOT reply to a Notification"). dispatcher 의 결과를
+    /// caller (HTTP / stdio transport) 가 분기해 처리할 수 있도록 enum 반환.
+    pub const DispatchResult = enum {
+        /// 응답 1통이 writer 에 쓰임. caller 는 transport 별 framing (HTTP 200 body /
+        /// stdio newline) 으로 client 에 forward.
+        response,
+        /// notification — writer 에 아무것도 쓰이지 않음. caller 는 응답/framing 안 보냄
+        /// (HTTP: 204 No Content, stdio: newline 안 추가).
+        notification,
+    };
+
     /// 응답을 내부 임시 buffer 에 먼저 build 한 뒤 한 번에 `writer` 로 flush.
     /// build 도중 error 발생 시 buffer 를 폐기하고 `-32603 Internal error` fallback 을
     /// 새로 build 해서 보낸다 → transport wrapper 의 outer catch 없이도 항상 완결된
     /// 응답 1통이 writer 에 쓰이는 것을 보장 (stdio 의 frame 깨짐 방지).
-    pub fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !void {
+    ///
+    /// 반환:
+    /// - `.response` — writer 에 응답 1통 쓰임
+    /// - `.notification` — writer 변경 없음 (JSON-RPC notification, 응답 금지)
+    pub fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !DispatchResult {
         var resp: std.ArrayList(u8) = .empty;
         defer resp.deinit(self.allocator);
         const inner = resp.writer(self.allocator);
 
-        self.buildMcpResponse(body, inner) catch |err| {
+        const kind = self.buildMcpResponse(body, inner) catch |err| blk: {
             getLog().print("  [mcp] dispatch error: {}, sending -32603 fallback\n", .{err}) catch {};
             // partial 응답 폐기 후 -32603 fallback 새로 build.
             // 이 단계도 OOM 으로 fail 하면 caller 가 처리 (마지막 안전망 — transport wrapper).
             resp.clearRetainingCapacity();
             try inner.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}");
+            break :blk DispatchResult.response;
         };
+
+        // notification 이면 응답 byte 가 0 — writer 에 아무것도 안 쓰고 즉시 반환.
+        if (kind == .notification) return .notification;
 
         // 응답을 single-line 으로 정규화 — `tools/list` 등이 가독성 위해 multi-line raw
         // string 으로 작성됐기 때문에 응답 buffer 에 raw `\n` 이 섞일 수 있다.
@@ -1028,18 +1054,21 @@ pub const DevServer = struct {
         } else {
             try writer.writeAll(resp.items);
         }
+        return .response;
     }
 
     /// dispatcher 본문 — JSON parse + method dispatch + response build.
     /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events,
-    /// verify_in_chrome), notifications/initialized. 그 외 → -32601 Method not found.
-    /// JSON parse 실패 → -32700 Parse error (응답을 writer 에 쓰고 정상 종료).
+    /// verify_in_chrome). 그 외 → -32601 Method not found.
+    /// `notifications/*` (예: `notifications/initialized`, `notifications/cancelled`) →
+    /// JSON-RPC 2.0 spec 상 응답 없음. writer 변경 없이 `.notification` 반환.
+    /// JSON parse 실패 → -32700 Parse error (응답을 writer 에 쓰고 `.response` 반환).
     /// 그 외 error 는 propagate — caller (`dispatchMcpRequest`) 가 -32603 fallback 처리.
-    fn buildMcpResponse(self: *DevServer, body: []const u8, writer: anytype) !void {
+    fn buildMcpResponse(self: *DevServer, body: []const u8, writer: anytype) !DispatchResult {
         // JSON 파싱
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
             try writer.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}");
-            return;
+            return .response;
         };
         defer parsed.deinit();
         const root = parsed.value;
@@ -1055,6 +1084,12 @@ pub const DevServer = struct {
             .object => |o| o.get("id") orelse .null,
             else => .null,
         };
+
+        // JSON-RPC 2.0: notification 은 응답 금지. method namespace `notifications/`
+        // 로 식별 (MCP spec 의 모든 notification 이 이 prefix 사용).
+        if (std.mem.startsWith(u8, method, "notifications/")) {
+            return .notification;
+        }
 
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
         try writeJsonValue(writer, id_val);
@@ -1074,13 +1109,11 @@ pub const DevServer = struct {
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
             try self.handleToolsCall(writer, root);
-        } else if (std.mem.eql(u8, method, "notifications/initialized")) {
-            // MCP 클라이언트 initialized 통지는 응답 없음 (notification)
-            try writer.writeAll("\"result\":{}");
         } else {
             try writer.writeAll("\"error\":{\"code\":-32601,\"message\":\"Method not found\"}");
         }
         try writer.writeAll("}");
+        return .response;
     }
 
     fn handleToolsCall(self: *DevServer, w: anytype, root: std.json.Value) !void {
@@ -1952,7 +1985,7 @@ test "dispatchMcpRequest: initialize → protocolVersion + serverInfo + id 보�
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest(
+    _ = try dev_server.dispatchMcpRequest(
         \\{"jsonrpc":"2.0","id":42,"method":"initialize"}
     , w);
 
@@ -1979,7 +2012,7 @@ test "dispatchMcpRequest: tools/list → 3개 tool 명세 포함" {
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest(
+    _ = try dev_server.dispatchMcpRequest(
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
     , w);
 
@@ -1989,7 +2022,7 @@ test "dispatchMcpRequest: tools/list → 3개 tool 명세 포함" {
     try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
 }
 
-test "dispatchMcpRequest: notifications/initialized → result:{} 응답" {
+test "dispatchMcpRequest: notifications/initialized → .notification + 응답 0 byte (JSON-RPC spec)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -2002,12 +2035,56 @@ test "dispatchMcpRequest: notifications/initialized → result:{} 응답" {
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest(
+    const kind = try dev_server.dispatchMcpRequest(
         \\{"jsonrpc":"2.0","method":"notifications/initialized"}
     , w);
 
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"result\":{}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
+    // JSON-RPC 2.0: notification 은 응답 금지. writer 변경 0, kind 가 .notification.
+    try std.testing.expectEqual(DevServer.DispatchResult.notification, kind);
+    try std.testing.expectEqual(@as(usize, 0), resp.items.len);
+}
+
+test "dispatchMcpRequest: 임의 notifications/* prefix → .notification + 응답 0 byte" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    // initialized 외 다른 notification (cancelled, progress 등) 도 동일하게 응답 0 byte.
+    const kind = try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}
+    , w);
+
+    try std.testing.expectEqual(DevServer.DispatchResult.notification, kind);
+    try std.testing.expectEqual(@as(usize, 0), resp.items.len);
+}
+
+test "dispatchMcpRequest: regular method → .response 반환" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    const kind = try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize"}
+    , w);
+
+    try std.testing.expectEqual(DevServer.DispatchResult.response, kind);
+    try std.testing.expect(resp.items.len > 0);
 }
 
 test "dispatchMcpRequest: unknown method → -32601 Method not found" {
@@ -2023,7 +2100,7 @@ test "dispatchMcpRequest: unknown method → -32601 Method not found" {
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest(
+    _ = try dev_server.dispatchMcpRequest(
         \\{"jsonrpc":"2.0","id":7,"method":"completely/unknown"}
     , w);
 
@@ -2046,7 +2123,7 @@ test "dispatchMcpRequest: invalid JSON body → -32700 Parse error + id null" {
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest("not-a-json{", w);
+    _ = try dev_server.dispatchMcpRequest("not-a-json{", w);
 
     try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32700") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"Parse error\"") != null);
@@ -2070,7 +2147,7 @@ test "dispatchMcpRequest: tools/call reset_cache → cache_reset_requested 플�
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest(
+    _ = try dev_server.dispatchMcpRequest(
         \\{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reset_cache","arguments":{}}}
     , w);
 
@@ -2095,7 +2172,7 @@ test "dispatchMcpRequest: tools/call unknown tool → -32602" {
     defer resp.deinit(std.testing.allocator);
     const w = resp.writer(std.testing.allocator);
 
-    try dev_server.dispatchMcpRequest(
+    _ = try dev_server.dispatchMcpRequest(
         \\{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"nope","arguments":{}}}
     , w);
 
