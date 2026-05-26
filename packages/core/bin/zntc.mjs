@@ -706,6 +706,25 @@ function extractCssPostcssOverride(plugins) {
   return null;
 }
 
+/**
+ * RFC #3833 v3 D1a'' — caller-pre-warm sentinel (`__cssOptions !== undefined`)
+ * 가진 css plugin 을 dispatcher plugin chain 에서 제거. caller (runAppBuild /
+ * runAppDev) 가 옵션 추출해 prepare 의 PostCSS 단계에서 이미 처리한 plugin —
+ * dispatcher 에 또 보내면:
+ *   - build (sync dispatcher): async onLoad → syncPluginPromiseFailure → BundleFailed
+ *   - dev (async dispatcher): 같은 PostCSS 두 번 실행 → double-pass
+ * 양쪽 모두 본 helper 의 filter 로 해소. extractCssPostcssOverride 와 같은
+ * sentinel match 조건 (predicate 일관) — drift 위험 차단.
+ *
+ * @param {Array<{name?:string,__cssOptions?:object}>} plugins
+ * @returns {Array<unknown>} caller-pre-warm 활성 css plugin 제거된 새 array
+ */
+function dropCallerPreWarmedCssPlugin(plugins) {
+  return plugins.filter(
+    (p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined),
+  );
+}
+
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   // JS plugin 로드 — bundle pipeline 의 buildBundleOptions 와 동일 패턴. app
   // pipeline 도 plugin dispatcher 통과 (#2538 4-4 PR-1).
@@ -728,13 +747,10 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
   // RFC #3833 v3 D1a'' caller-side pre-warm — extractCssPostcssOverride helper 참조.
   const postcssOverride = extractCssPostcssOverride(appPlugins);
-  // **caller-pre-warm 활성화 시 그 css plugin 을 dispatcher 에 보내지 않음**:
-  // buildAppSync 의 sync dispatcher 가 css() 의 async onLoad 받으면 즉시
-  // `syncPluginPromiseFailure` → BundleFailed. caller 가 옵션 추출 후 그
-  // plugin 자체를 dispatcher 에서 제거 — onLoad 가 dispatch 안 됨. 다른
-  // user plugin (non-css) 은 그대로.
+  // dropCallerPreWarmedCssPlugin: caller-pre-warm 활성화 시 그 css plugin 을
+  // dispatcher 에서 제거. buildBundleOptions 와 동일 logic 공유 (drift 방지).
   const dispatchPlugins = postcssOverride
-    ? appPlugins.filter((p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined))
+    ? dropCallerPreWarmedCssPlugin(appPlugins)
     : appPlugins;
   let pipelineRoot = null;
   try {
@@ -1409,15 +1425,10 @@ async function buildBundleOptions(opts, config) {
       plugins.push(cfg);
     }
   }
-  // RFC #3833 v3 D1a'' caller-side pre-warm — `__cssOptions` sentinel 가진
-  // css plugin 은 caller (runAppBuild/runAppDev) 가 옵션 추출해 prepare 의
-  // PostCSS 단계에서 이미 처리. dispatcher 에 또 보내면:
-  //  - build (sync dispatcher): async onLoad 가 syncPluginPromiseFailure → BundleFailed
-  //  - dev (async dispatcher): onLoad 가 같은 PostCSS 한 번 더 실행 → double-pass
-  // 양쪽 모두 caller-pre-warm 활성 plugin filter 로 해소 (issue #3847 root cause).
-  const dispatchPlugins = plugins.filter(
-    (p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined),
-  );
+  // RFC #3833 v3 D1a'' caller-side pre-warm — dropCallerPreWarmedCssPlugin helper
+  // 로 sentinel 가진 css plugin 을 dispatcher chain 에서 제거. runAppBuild 와
+  // 동일 logic 공유 (drift 방지).
+  const dispatchPlugins = dropCallerPreWarmedCssPlugin(plugins);
 
   applySingleFileDynamicImportDefault(opts);
 
