@@ -156,6 +156,15 @@ export interface RnBundleInput {
      * dev server 터미널로 forwarding. 기본 true.
      */
     forwardClientLogs?: boolean;
+    /**
+     * MCP (Model Context Protocol) runtime preamble 활성화. 기본 true — dev 빌드일
+     * 때 `@zntc/react-native/runtime/mcp-runtime.cjs` 가 `runBeforeMain` 에 추가되어
+     * 앱 시작 시 global registry (`__ZNTC_MCP_RUNTIME__`) 를 등록한다.
+     * `false` 로 명시 시 inject 우회 — CI bundle 분석 같은 noise 회피, 또는
+     * `@zntc/react-native` 미설치 환경에서 silent fallback 외 명시적 opt-out.
+     * production 빌드 (`dev: false`) 는 옵션과 무관하게 inject 안 됨.
+     */
+    mcp?: boolean;
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -460,9 +469,22 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     projectRoot,
   );
   if (initCore) runBeforeMain.push(initCore);
+  // MCP runtime preamble — dev 빌드 한정. `@zntc/react-native/runtime/mcp-runtime.cjs`
+  // 가 InitializeCore 직후 실행되어 global registry (`__ZNTC_MCP_RUNTIME__`) 등록.
+  // 후속 PR-E 가 같은 slot 에 실제 WS connect / Fiber 직렬화 / network 캡처 등
+  // 본격 runtime 채움. production 빌드에는 inject 안 됨.
+  // `extra?.mcp === false` 로 명시적 opt-out 가능 (CI bundle 분석 등 noise 회피).
+  if (dev && extra?.mcp !== false) {
+    const mcpRuntime = tryResolvePackageFile(
+      '@zntc/react-native',
+      'runtime/mcp-runtime.cjs',
+      projectRoot,
+    );
+    if (mcpRuntime) runBeforeMain.push(mcpRuntime);
+  }
   if (extra?.prelude && extra.prelude.length > 0) {
-    // 사용자 추가 prelude — InitializeCore 이후에 실행. 절대/상대 모두 projectRoot
-    // 기준으로 정규화.
+    // 사용자 추가 prelude — InitializeCore + MCP runtime 이후에 실행. 절대/상대 모두
+    // projectRoot 기준으로 정규화.
     for (const p of extra.prelude) runBeforeMain.push(resolve(projectRoot, p));
   }
 

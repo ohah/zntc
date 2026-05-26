@@ -343,6 +343,72 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     ]);
   });
 
+  test('runBeforeMain — dev 시 @zntc/react-native/runtime/mcp-runtime.cjs 자동 inject (PR-C)', () => {
+    // InitializeCore + mcp-runtime.cjs 두 path 가 runBeforeMain 에 포함되어야 함.
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    expect(opts.runBeforeMain).toEqual([
+      join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'),
+      join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'),
+    ]);
+  });
+
+  test('runBeforeMain — prod 빌드 (dev=false) 는 mcp-runtime inject 안 됨', () => {
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: false }));
+    // production 빌드는 InitializeCore 만 (mcp-runtime 제외)
+    expect(opts.runBeforeMain).toEqual([
+      join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'),
+    ]);
+  });
+
+  test('runBeforeMain — extra.mcp=false 는 dev 빌드라도 mcp-runtime inject 안 됨 (opt-out)', () => {
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true, extra: { mcp: false } }));
+    expect(opts.runBeforeMain).toEqual([
+      join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'),
+    ]);
+  });
+
+  test('runBeforeMain — @zntc/react-native 미설치 시 silent fallback (inject 안 함, throw 없음)', () => {
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+    // @zntc/react-native 패키지 부재
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    expect(opts.runBeforeMain).toEqual([
+      join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'),
+    ]);
+  });
+
   test('extra.prelude — 사용자 prelude 가 projectRoot 기준 절대화 + runBeforeMain 에 append', () => {
     const opts = buildRnBundleOptions(
       baseInput({ extra: { prelude: ['./shims/extra-prelude.js'] } }),
