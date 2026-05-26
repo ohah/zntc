@@ -284,6 +284,33 @@ describe('mcp-runtime.cjs (PR-E2) — reconnect', () => {
     expect(reconnects[reconnects.length - 1].ms).toBe(1000);
   });
 
+  test('send drop warn — WS 닫힘 후 응답 send 시 console.warn (F7 deferred)', () => {
+    const warnings: unknown[] = [];
+    g.console = {
+      warn: (...args: unknown[]) => warnings.push(args),
+      log: () => {},
+      error: () => {},
+    } as unknown as Console;
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // handler 가 동기 응답을 send 시도 — 그 사이 WS 가 닫혀 있다면?
+    rt.handlers.echo = () => ({ ok: true });
+
+    lastWs!.triggerOpen();
+    // close 먼저 발생 후 dispatcher 가 try send.
+    lastWs!.triggerClose();
+    // close 후 message 받으면 — runtime 의 dispatch 가 호출되어 handler → send 시도.
+    // 단 onmessage 가 close 후엔 호출 안 됨 (mockWs 의 spec). 직접 send 호출 시뮬레이션:
+    // runtime 의 내부 send 는 직접 access 불가 — handler 호출 시뮬레이션 어려움.
+    // 대신 onmessage 가 closed 상태에서 호출됐을 때 send 가 warn 하는지 검증:
+    lastWs!.onmessage?.({ data: '{"jsonrpc":"2.0","id":1,"method":"echo"}' });
+    // send 호출 시 state.connectionState !== 'open' 라 warn + return false
+    const warnedCount = warnings.filter(
+      (w) => Array.isArray(w) && typeof w[0] === 'string' && w[0].includes('send drop'),
+    ).length;
+    expect(warnedCount).toBeGreaterThanOrEqual(1);
+  });
+
   test('close() 호출 — reconnect 안 함', () => {
     loadRuntime(g);
     lastWs!.triggerOpen();

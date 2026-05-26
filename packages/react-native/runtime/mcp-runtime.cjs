@@ -122,7 +122,18 @@ function startMcpRuntime(g) {
   }
 
   function send(obj) {
-    if (!state.ws || state.connectionState !== 'open') return false;
+    if (!state.ws || state.connectionState !== 'open') {
+      // handler 실행 중 / 직후에 onclose 발화 race — pending response 손실.
+      // dev console.warn 으로 디버깅 hint (서버는 timeout 까지 hang). 후속 PR 에서
+      // pending response queue 또는 retry 로 강화 가능.
+      if (typeof g.console !== 'undefined' && typeof g.console.warn === 'function') {
+        var idHint = obj && obj.id != null ? ' id=' + String(obj.id) : '';
+        g.console.warn(
+          '[zntc:mcp:runtime] send drop — WS 닫힘 (state=' + state.connectionState + ')' + idHint,
+        );
+      }
+      return false;
+    }
     try {
       state.ws.send(JSON.stringify(obj));
       return true;
@@ -210,10 +221,15 @@ function startMcpRuntime(g) {
 }
 
 // Auto-execute — RN preamble (runBeforeMain) 으로 inject 시 자동 실행.
-// **RN-only guard**: `navigator.product === 'ReactNative'` 가 RN 환경의 표준 detection.
-// Node test runner / Bun / 일반 브라우저 환경에서는 skip — 그 환경엔 polyfill WebSocket
-// 이 있어도 ws://localhost:12300 으로 실제 connect 시도가 process hang 유발 (reconnect
-// loop) 가능. test 는 `require('mcp-runtime.cjs').startMcpRuntime(mockG)` 로 직접 호출.
+//
+// **RN-only guard**: `navigator.product === 'ReactNative'` 가 RN 환경 표준 detection.
+// Node test runner / Bun / 일반 브라우저는 skip — 그 환경엔 polyfill WebSocket 이
+// 있어도 ws://localhost:12300 으로 실제 connect 시도가 process hang 유발 가능.
+//
+// **Opt-out**: 사용자 / jest setup 이 `globalThis.__ZNTC_DISABLE_MCP_RUNTIME__ = true`
+// 로 명시 설정 시 RN 환경이라도 skip. jest-environment-node + react-native preset 가
+// `navigator.product = 'ReactNative'` 를 set 해서 RN detection 이 false-positive
+// 인 unit test 시나리오 대응.
 function __zntcIsReactNative(g) {
   return (
     g != null &&
@@ -223,9 +239,14 @@ function __zntcIsReactNative(g) {
   );
 }
 
+function __zntcShouldAutoStart(g) {
+  if (!g || g.__ZNTC_DISABLE_MCP_RUNTIME__ === true) return false;
+  return __zntcIsReactNative(g);
+}
+
 var __zntcAutoG =
   typeof globalThis !== 'undefined' ? globalThis : typeof global !== 'undefined' ? global : null;
-if (__zntcAutoG && __zntcIsReactNative(__zntcAutoG)) startMcpRuntime(__zntcAutoG);
+if (__zntcShouldAutoStart(__zntcAutoG)) startMcpRuntime(__zntcAutoG);
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { startMcpRuntime: startMcpRuntime };
