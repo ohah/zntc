@@ -54,6 +54,11 @@ pub const DevServer = struct {
     event_ring: EventRing,
     /// shutdown() 호출 시 set; acceptLoop가 다음 iteration에서 종료.
     shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// 현재 살아있는 connection (handleConnection thread) 수. deinit 가 0 까지 wait —
+    /// reader thread 가 AppChannel.resolveResponse 호출 중인데 main thread 가
+    /// app_channel.deinit() 호출하면 mutex/pending Map UAF. counter 로 graceful
+    /// 종료 보장.
+    active_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     base_path: []const u8 = "/",
@@ -196,7 +201,29 @@ pub const DevServer = struct {
     }
 
     pub fn deinit(self: *DevServer) void {
+        // shutdown_requested set + tcp_server close — 새 connection 안 받음.
+        self.shutdown_requested.store(true, .release);
         if (self.tcp_server) |*s| s.deinit();
+        // 살아있는 connection (handleConnection thread) 가 종료할 때까지 wait —
+        // reader thread 가 app_channel mutex/pending Map 사용 중인데 deinit 가
+        // 그것 free 하면 UAF. 최대 2초 wait (best-effort) — production 은 process
+        // exit 직전 deinit 라 그 시점엔 thread 종료된 상태가 일반적. 2초 넘어가면
+        // log + 그대로 진행 (RN app 의 keep-alive WS 가 idle 상태인 경우 등).
+        const DEINIT_TIMEOUT_MS: u64 = 2000;
+        const start_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
+        const deadline_ns: u128 = start_ns + DEINIT_TIMEOUT_MS * std.time.ns_per_ms;
+        while (self.active_connections.load(.acquire) > 0) {
+            const now_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
+            if (now_ns >= deadline_ns) {
+                getLog().print(
+                    "  [deinit] connection thread {d} 개 아직 살아있음 — 2초 timeout, deinit 진행 (UAF 위험)\n",
+                    .{self.active_connections.load(.acquire)},
+                ) catch {};
+                break;
+            }
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+
         if (self.abs_entry) |ae| self.allocator.free(ae);
         // overlay_client 는 init 에서 반드시 알록된 owned slice (default 미제공).
         self.allocator.free(self.overlay_client);
@@ -205,6 +232,7 @@ pub const DevServer = struct {
         self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
         // pending requests 모두 fail (caller waiter 깨움) + pending map storage 해제.
+        // 위 active_connections wait 이 reader thread 종료 보장 — race 0.
         self.app_channel.disconnect();
         self.app_channel.deinit();
     }
@@ -433,6 +461,10 @@ pub const DevServer = struct {
     }
 
     fn handleConnection(self: *DevServer, connection: std.net.Server.Connection) void {
+        // DevServer.deinit 가 reader thread (이 connection) 가 종료할 때까지 wait —
+        // app_channel 의 mutex/pending Map 사용 중인 thread 와 race 회피.
+        _ = self.active_connections.fetchAdd(1, .acq_rel);
+        defer _ = self.active_connections.fetchSub(1, .acq_rel);
         defer connection.stream.close();
 
         var send_buf: [8192]u8 = undefined;
