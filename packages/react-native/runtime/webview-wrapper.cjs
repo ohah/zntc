@@ -11,7 +11,11 @@
 //
 // 핵심 invariant:
 //   - JSX 안 건드림 (Babel plugin 0)
-//   - 사용자가 직접 단 ref 와 wrapper 의 inner ref 가 충돌하지 않도록 mergeRefs
+//   - callback ref 패턴 — useEffect commit phase 지연 race 회피, attach/detach
+//     정확한 시점에 registry update (StrictMode double-mount 안전)
+//   - `_nextId` 가 global counter — HMR module 재평가 시 ID monotonic 유지 (충돌 회피)
+//   - 사용자 ref (function/object) forwardRef contract 그대로 (callback ref 안에서
+//     사용자 ref 도 호출/할당)
 //   - 원본 패키지의 named exports (WebViewMessageEvent 등) 모두 spread re-export
 //   - production 빌드에는 alias 가 적용 안 됨 — 사용자 코드는 원본 그대로
 //   - registry global 은 mcp-runtime 의 `__ZNTC_MCP_RUNTIME__` 과 분리 (PR-E 가
@@ -20,11 +24,14 @@
 const React = require('react');
 const Original = require('__zntc_webview_original__');
 
+// `globalThis` 위에 두 값을 둔다 — wrapper module 이 HMR 로 재평가돼도 counter 와
+// registry 가 살아남아 ID 충돌 회피.
+const _g = typeof globalThis !== 'undefined' ? globalThis : global;
+
 const _registry = (() => {
-  const g = typeof globalThis !== 'undefined' ? globalThis : global;
-  if (g.__ZNTC_WEBVIEW_REGISTRY__) return g.__ZNTC_WEBVIEW_REGISTRY__;
+  if (_g.__ZNTC_WEBVIEW_REGISTRY__) return _g.__ZNTC_WEBVIEW_REGISTRY__;
   const map = new Map();
-  Object.defineProperty(g, '__ZNTC_WEBVIEW_REGISTRY__', {
+  Object.defineProperty(_g, '__ZNTC_WEBVIEW_REGISTRY__', {
     value: map,
     writable: false,
     configurable: false,
@@ -33,15 +40,12 @@ const _registry = (() => {
   return map;
 })();
 
-let _nextId = 1;
-
-function mergeRefs(...refs) {
-  return (value) => {
-    for (const ref of refs) {
-      if (typeof ref === 'function') ref(value);
-      else if (ref != null) ref.current = value;
-    }
-  };
+// _nextId 도 global — module-local 로 두면 HMR 재평가 시 1 부터 다시 시작해서
+// 기존 registry 의 ID 와 충돌 (overwrite). global counter 는 monotonic.
+function _nextWvId() {
+  const cur = _g.__ZNTC_WEBVIEW_NEXT_ID__ || 1;
+  _g.__ZNTC_WEBVIEW_NEXT_ID__ = cur + 1;
+  return 'wv_' + cur;
 }
 
 // CJS / ESM interop: 원본 패키지가 named `WebView`, default, 또는 `module.exports = WebView`
@@ -59,22 +63,34 @@ if (!OriginalWebView) {
 }
 
 const ZntcWebView = React.forwardRef(function ZntcWebView(props, userRef) {
-  const innerRef = React.useRef(null);
+  // callback ref 패턴 — useEffect (commit phase 지연) 대신 attach/detach 정확한
+  // 시점에 registry update. RN strict mode 의 double-mount 도 정확히 등록/해제.
+  // 사용자 ref (function 또는 object) 와 동시 forwarding.
   const idRef = React.useRef(null);
 
-  React.useEffect(() => {
-    const id = 'wv_' + _nextId++;
-    idRef.current = id;
-    _registry.set(id, innerRef.current);
-    return () => {
-      _registry.delete(id);
-      idRef.current = null;
-    };
-  }, []);
+  const onRef = React.useCallback(
+    (instance) => {
+      // 이전 instance 의 registry entry 정리 (StrictMode 의 unmount → remount 안전)
+      if (idRef.current) {
+        _registry.delete(idRef.current);
+        idRef.current = null;
+      }
+      // 새 instance 등록 (null 이면 detach 의미 — register 안 함)
+      if (instance) {
+        const id = _nextWvId();
+        idRef.current = id;
+        _registry.set(id, instance);
+      }
+      // 사용자 ref 도 같이 forward — forwardRef 의 contract 보존.
+      if (typeof userRef === 'function') userRef(instance);
+      else if (userRef != null) userRef.current = instance;
+    },
+    [userRef],
+  );
 
   return React.createElement(OriginalWebView, {
     ...props,
-    ref: mergeRefs(innerRef, userRef),
+    ref: onRef,
   });
 });
 ZntcWebView.displayName = 'ZntcWebView';
