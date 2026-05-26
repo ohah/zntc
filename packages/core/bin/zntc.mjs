@@ -185,7 +185,8 @@ function usageLines(command) {
     '       zntc dev [root]',
     '       zntc build [root]',
     '       zntc preview [outdir]',
-    '       zntc mcp                          MCP stdio transport (Cursor/Claude Code)',
+    '       zntc mcp [root]                   MCP stdio transport (Cursor/Claude Code)',
+    '                                         root: positional > ZNTC_ROOT env > cwd',
     '',
     'Options:',
     '  --bundle                   Bundle dependencies',
@@ -427,7 +428,7 @@ function parseArgs(argv) {
 
     // positional (파일 경로)
     if (!arg.startsWith('-')) {
-      if (opts.appCommand === 'dev' || opts.appCommand === 'build') {
+      if (opts.appCommand === 'dev' || opts.appCommand === 'build' || opts.appCommand === 'mcp') {
         opts.appRoot = opts.appRoot ?? arg;
       } else if (opts.appCommand === 'preview') {
         opts.previewDir = opts.previewDir ?? arg;
@@ -2723,9 +2724,15 @@ async function main() {
   // Claude Code / Claude Desktop 등 stdio MCP 클라이언트가 `npx zntc mcp` 형태로
   // spawn. config / build pipeline 우회 — DevServer in-memory state (cache_reset 등)
   // 만 띄움 (HTTP listener 없음).
+  //
+  // root 결정 우선순위 (Cursor/Claude Desktop spawn cwd 불확실 회피):
+  //   1) positional arg (`zntc mcp /path/to/project`)
+  //   2) ZNTC_ROOT 환경변수
+  //   3) process.cwd()  (default)
   if (opts.appCommand === 'mcp') {
     try {
-      coreModule.mcpStdioServe({ rootDir: resolve('.') });
+      const rootDir = resolve(opts.appRoot ?? process.env.ZNTC_ROOT ?? '.');
+      coreModule.mcpStdioServe({ rootDir });
       process.exit(0);
     } catch (err) {
       console.error(`error: ${err.message}`);
