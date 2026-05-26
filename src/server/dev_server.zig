@@ -37,6 +37,9 @@ pub const DevServer = struct {
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
+    /// MCP app channel — `/__mcp-app` WS 연결로 RN 앱과 양방향 통신.
+    /// 후속 PR 가 request/response Map 을 여기에 추가.
+    app_channel: @import("mcp_app_channel.zig").AppChannel = .{},
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -106,6 +109,7 @@ pub const DevServer = struct {
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
     const hmr_path = "/__hmr";
+    const mcp_app_path = "/__mcp-app";
     const app_dev_client_path = "/__zntc_app_dev_client__";
     const watch_interval_ms = 500;
     /// dev overlay client 의 raw template — `__ZNTC_HMR_*__` sentinel 들이 박힌 상태.
@@ -469,10 +473,13 @@ pub const DevServer = struct {
                         return;
                     };
 
-                    // /__hmr 경로에서만 WebSocket 허용
+                    // 허용 path: /__hmr (HMR broadcast) 또는 /__mcp-app (MCP app channel)
                     const target = request.head.target;
                     const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
-                    if (!std.mem.eql(u8, target[0..path_end], hmr_path)) {
+                    const ws_path = target[0..path_end];
+                    const is_hmr = std.mem.eql(u8, ws_path, hmr_path);
+                    const is_mcp_app = std.mem.eql(u8, ws_path, mcp_app_path);
+                    if (!is_hmr and !is_mcp_app) {
                         request.respond("400 Bad Request", .{
                             .status = .bad_request,
                             .extra_headers = &cors_headers,
@@ -484,7 +491,11 @@ pub const DevServer = struct {
                         getLog().print("zntc: WebSocket handshake failed\n", .{}) catch {};
                         return;
                     };
-                    self.handleWebSocket(&ws, writer);
+                    if (is_mcp_app) {
+                        self.handleMcpAppWebSocket(&ws);
+                    } else {
+                        self.handleWebSocket(&ws, writer);
+                    }
                     return;
                 },
                 .other => {
@@ -537,6 +548,56 @@ pub const DevServer = struct {
         }
 
         getLog().print("  [ws] client disconnected\n", .{}) catch {};
+    }
+
+    /// MCP app channel WebSocket handler — RN 앱 안 mcp-runtime.cjs 가 핸드셰이크
+    /// 후 메시지 loop 에 들어온다. 본 PR-E1 은 핸드셰이크 + 단순 echo log 까지만.
+    /// 후속 PR 이 request/response 매칭 (`AppChannel.request(method, params)`) + tool
+    /// dispatch forwarding 을 추가.
+    fn handleMcpAppWebSocket(self: *DevServer, ws: *http.Server.WebSocket) void {
+        const accepted = self.app_channel.connect();
+        if (!accepted) {
+            // 이미 다른 앱이 연결돼 있음 — first-wins 정책. 핸드셰이크 close.
+            getLog().print("  [mcp-app] 이미 연결된 앱 있음, 새 연결 거절\n", .{}) catch {};
+            ws.writeMessage(
+                "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"another app already connected\"}}",
+                .text,
+            ) catch {};
+            return;
+        }
+        defer self.app_channel.disconnect();
+
+        getLog().print("  [mcp-app] 앱 연결 (count={})\n", .{self.app_channel.stats().connect_count}) catch {};
+
+        // 핸드셰이크 hello — 클라이언트가 connect 완료 확인용.
+        ws.writeMessage(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"connected\",\"params\":{\"protocol\":\"mcp-app-1\"}}",
+            .text,
+        ) catch {
+            getLog().print("  [mcp-app] hello send 실패\n", .{}) catch {};
+            return;
+        };
+
+        // 메시지 loop — 본 PR 은 단순 echo log. 후속 PR 가 JSON-RPC dispatch.
+        while (true) {
+            const msg = ws.readSmallMessage() catch |err| {
+                switch (err) {
+                    error.ConnectionClose => {},
+                    else => getLog().print("  [mcp-app] read 에러: {}\n", .{err}) catch {},
+                }
+                break;
+            };
+
+            switch (msg.opcode) {
+                .text => {
+                    getLog().print("  [mcp-app] recv: {s}\n", .{msg.data}) catch {};
+                },
+                .connection_close => break,
+                else => {},
+            }
+        }
+
+        getLog().print("  [mcp-app] 앱 연결 종료\n", .{}) catch {};
     }
 
     fn watchLoop(self: *DevServer) void {
