@@ -552,6 +552,130 @@ function startMcpRuntime(g) {
     }
   };
 
+  // ─── get_logs (PR-F4) ───
+  //
+  // RN 의 console.log/info/warn/error/debug 를 intercept 해 ring buffer 에 누적.
+  // get_logs handler 로 cursor/since/level/limit filter + snapshot 반환. LLM 이
+  // 디버깅 시 RN 화면을 직접 못 봐도 console 출력을 통해 상태 추적 가능.
+  //
+  // 설계:
+  //   - 원본 console method 보존 — intercept 안에서 forward 호출 (RN dev 표시 유지).
+  //   - args 는 safeSerialize 통과 — function/cycle/typed-array 등 안전.
+  //     args 는 **call time** 에 직렬화 — Promise 는 `[Promise]` marker (resolve 안
+  //     기다림). 각 arg 별 독립 cycle 추적 (Set per-arg). 같은 sub-object 가 두 arg
+  //     에 걸쳐 있어도 각각 직렬화 — `[Circular]` 는 한 arg 안의 cycle 만.
+  //   - ring buffer 1000 entries, FIFO. 초과 시 oldest drop + `dropped` counter
+  //     누적 (cumulative — runtime install 이후 evict 된 총합).
+  //   - 각 entry 에 monotonic `seq` 부여. **pagination 은 seq 기반 cursor 사용 추천**
+  //     — `ts` (Date.now ms) 는 1ms 안에 여러 entry 있으면 same-ms 가 lost.
+  //   - intercept 는 idempotent — 한 번만. RN HMR 시 startMcpRuntime 가 early-return
+  //     하므로 자연스럽게 1회 wrap.
+  //
+  // **Wrap order contract**: 본 wrap 은 startMcpRuntime 가 실행되는 시점 (앱 entry
+  // preamble — `InitializeCore` 이후) 에 적용. RN LogBox / DevTools 가 wrap 만 하고
+  // replace 안 하면 그들이 outer chain 으로 호출됨 (LogBox(wrapped(original))) — ring
+  // buffer 는 여전히 entry 캡처. 누군가 console.log 를 **replace** (덮어쓰기) 하면
+  // ring buffer 끊김 — 주의.
+  //
+  // **Side-effect**: globalThis.console 의 5개 method 가 wrap 됨. 다른 라이브러리가
+  // console.log.toString() 등으로 native check 하면 다를 수 있음 (드문 케이스).
+  var LOG_RING_MAX = 1000;
+  var LOG_DEFAULT_LIMIT = 100; // schema description 의 default 와 single source.
+  var logRing = []; // entries: {seq, ts, level, args}
+  var logSeq = 0;
+  var logDropped = 0; // 누적 drop 카운터 (overflow eviction, runtime install 이후 monotonic)
+  var LOG_LEVELS = ['log', 'info', 'warn', 'error', 'debug'];
+
+  function appendLog(level, argsArray) {
+    if (logRing.length >= LOG_RING_MAX) {
+      logRing.shift();
+      logDropped += 1;
+    }
+    var serialized = [];
+    for (var i = 0; i < argsArray.length; i++) {
+      // 각 arg 독립적으로 직렬화 — circular 가 한 arg 에 갇혀 옆 arg 영향 X.
+      serialized.push(safeSerialize(argsArray[i], new Set(), 0));
+    }
+    logSeq += 1;
+    logRing.push({
+      seq: logSeq,
+      ts: Date.now(),
+      level: level,
+      args: serialized,
+    });
+  }
+
+  // console method 가 console 자체에 있는지 (Hermes 일부 env 가 console null/undefined)
+  // 확인 후 wrap. wrap 의 closure 가 `original` 보존.
+  if (g.console && typeof g.console === 'object') {
+    for (var li = 0; li < LOG_LEVELS.length; li++) {
+      (function (level) {
+        var original = g.console[level];
+        if (typeof original !== 'function') return;
+        // 이미 wrap 됐으면 (HMR 가 startMcpRuntime 안 통하고 import 만 갱신한 edge case)
+        // 다시 wrap 하면 double-log → marker 로 idempotency 보장.
+        if (original.__zntcMcpWrapped === true) return;
+        var wrapped = function () {
+          // arguments → array
+          var argsArr = new Array(arguments.length);
+          for (var i = 0; i < arguments.length; i++) argsArr[i] = arguments[i];
+          try {
+            appendLog(level, argsArr);
+          } catch (_) {
+            /* ring buffer 자체 throw 면 RN 콘솔 영향 안 받게 swallow */
+          }
+          return original.apply(this, arguments);
+        };
+        wrapped.__zntcMcpWrapped = true;
+        g.console[level] = wrapped;
+      })(LOG_LEVELS[li]);
+    }
+  }
+
+  handlers.get_logs = function (params) {
+    var p = params || {};
+    // cursor (seq) 가 same-ms 손실 없는 정확한 pagination — caller 가 response 의
+    // `nextCursor` 를 다음 호출의 `cursor` 로 넘기면 lossless.
+    // since (ts) 는 사람이 timestamp 로 자르고 싶을 때 — coarse filter.
+    var cursorSeq = typeof p.cursor === 'number' ? p.cursor : -Infinity;
+    var sinceTs = typeof p.since === 'number' ? p.since : -Infinity;
+    var levelFilter = null;
+    if (typeof p.level === 'string') {
+      if (LOG_LEVELS.indexOf(p.level) === -1) {
+        throw new Error('get_logs: invalid `level` -- must be one of log/info/warn/error/debug');
+      }
+      levelFilter = p.level;
+    }
+    if (p.limit != null) {
+      if (typeof p.limit !== 'number' || !isFinite(p.limit) || p.limit < 1) {
+        throw new Error('get_logs: invalid `limit` -- must be a positive number');
+      }
+    }
+    var limit = typeof p.limit === 'number' ? Math.floor(p.limit) : LOG_DEFAULT_LIMIT;
+    if (limit > LOG_RING_MAX) limit = LOG_RING_MAX;
+
+    // Forward 순회 (oldest → newest) 로 cursor/since/level filter 후 newest limit
+    // 슬라이스. cursor 와 since 둘 다 있으면 AND (cursor 우선 — strictly newer).
+    var filtered = [];
+    for (var i = 0; i < logRing.length; i++) {
+      var e = logRing[i];
+      if (e.seq <= cursorSeq) continue;
+      if (e.ts <= sinceTs) continue;
+      if (levelFilter != null && e.level !== levelFilter) continue;
+      filtered.push(e);
+    }
+    // newest limit 반환 — 끝에서 N개 (LLM context 효율).
+    var sliced = filtered.length > limit ? filtered.slice(filtered.length - limit) : filtered;
+    return {
+      entries: sliced,
+      // 다음 호출에 `cursor: nextCursor` 로 넘기면 lossless 이어보기. entries 가 비어도
+      // 마지막 seq 유지 (단조 증가 보장).
+      nextCursor: sliced.length > 0 ? sliced[sliced.length - 1].seq : cursorSeq,
+      dropped: logDropped,
+      total: logRing.length,
+    };
+  };
+
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.

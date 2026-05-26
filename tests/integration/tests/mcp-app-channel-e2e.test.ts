@@ -485,6 +485,73 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
     expect(result.error.message).toContain('requires `expression`');
   });
 
+  test('tools/list — get_logs 노출', async () => {
+    const server = await setupServer();
+    const result = await mcpCall(server.port, { jsonrpc: '2.0', id: 30, method: 'tools/list' });
+    const names = result.result.tools.map((t: any) => t.name);
+    expect(names).toContain('get_logs');
+  });
+
+  test('get_logs — since/level/limit forward + 결과 round-trip', async () => {
+    const server = await setupServer();
+    let receivedParams: any = null;
+    mockApp = connectMockApp(server.port, {
+      get_logs: (params) => {
+        receivedParams = params;
+        return {
+          entries: [
+            { seq: 1, ts: 1000, level: 'warn', args: ['hello'] },
+            { seq: 2, ts: 1100, level: 'warn', args: ['world'] },
+          ],
+          dropped: 0,
+          total: 2,
+        };
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 31,
+      method: 'tools/call',
+      params: {
+        name: 'get_logs',
+        arguments: { since: 500, level: 'warn', limit: 10 },
+      },
+    });
+
+    expect(receivedParams).toEqual({ since: 500, level: 'warn', limit: 10 });
+    expect(result.error).toBeUndefined();
+    const inner = JSON.parse(result.result.content[0].text);
+    expect(inner.entries.length).toBe(2);
+    expect(inner.entries[0].level).toBe('warn');
+    expect(inner.entries[0].args).toEqual(['hello']);
+    expect(inner.total).toBe(2);
+  });
+
+  test('get_logs — invalid level → app throw → -32603 + 원본 메시지', async () => {
+    const server = await setupServer();
+    mockApp = connectMockApp(server.port, {
+      get_logs: () => {
+        throw new Error('get_logs: invalid `level` -- must be one of log/info/warn/error/debug');
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 32,
+      method: 'tools/call',
+      params: { name: 'get_logs', arguments: { level: 'verbose' } },
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain('invalid `level`');
+  });
+
   test('app 두 번째 연결 — first-wins 거절', async () => {
     const server = await setupServer();
     mockApp = connectMockApp(server.port, {});
