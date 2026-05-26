@@ -60,8 +60,12 @@ export interface CssPluginOptions {
  * export default defineConfig({ plugins: [css({ disabled: true })] });
  * ```
  */
-/** ZntcPlugin + caller-side pre-warm sentinel (RFC #3833 v3 D1a'', @internal). */
-export type CssZntcPlugin = ZntcPlugin & { readonly __cssOptions: CssPluginOptions };
+/**
+ * ZntcPlugin + caller-side pre-warm sentinel (RFC #3833 v3 D1a'').
+ * @internal — caller (runAppBuild) 만 사용. 사용자 type-import 차단 위해 unexported.
+ * sentinel 은 string property 라 runtime 위장 방어 0 — 의도 매치용.
+ */
+type CssZntcPlugin = ZntcPlugin & { readonly __cssOptions: CssPluginOptions };
 
 export function css(options: CssPluginOptions = {}): CssZntcPlugin {
   // RFC #3833 v3 D1a'' (caller-side pre-warm): `__cssOptions` sentinel 로 caller
