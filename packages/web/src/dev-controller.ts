@@ -93,6 +93,11 @@ export interface PrepareAppCssPipelineRootOptions {
    *  소유하고 prep 마다 갱신/조회한다. dirty 한 sass 가 다른 root scss 의 dep 이면 그 root 도 재컴파일
    *  대상에 transitive 추가 — partial(`_x.scss`) 변경 시 stale CSS 방지 (#71). */
   sassReverseDep?: Map<string, Set<string>> | null;
+  /** caller-side pre-warm 으로 전달되는 PostCSS override (RFC #3833 v3 D1a''). 사용자
+   *  explicit `plugins: [css({ postcss: {...override} })]` 의 옵션을 runAppBuild 가
+   *  추출해 prepareAppCssPipelineRoot 로 전달. truthy + plugins.length>0 면 자동 발견
+   *  skip 후 override 직접 사용. sync dispatcher × async onLoad 충돌 회피용 path. */
+  postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
 }
 
 export interface AppCssPipelineResult {
@@ -278,9 +283,11 @@ export async function prepareAppCssPipelineRoot(
     dirtyPaths = null,
     cache = null,
     sassReverseDep = null,
+    postcssOverride = null,
   } = options;
   const { fallbackRequire, cliNodeModules } = deps;
-  const configPath = findPostcssConfig(root);
+  // configPath 자동 발견은 override 없을 때만 필요. override 가 있으면 자동 발견 skip.
+  const configPath = postcssOverride ? null : findPostcssConfig(root);
   // F1 cache: 이전 prep 의 stylePipelineFiles 를 재사용. 호출자가 구조 변화 (.scss/.module.css
   // 추가/삭제) 시 cache=null 로 무효화한다. 재사용이면 full tree walk 를 통째 회피.
   const stylePipelineFiles =
@@ -293,7 +300,9 @@ export async function prepareAppCssPipelineRoot(
   const moduleFiles = stylePipelineFiles.filter(isCssModuleFile);
   const needsSource = preprocessorFiles.length > 0 || moduleFiles.length > 0;
 
-  if (!configPath && !needsSource) return null;
+  // configPath 자동 발견 결과 + needsSource(sass/css-modules) + override 셋 중 하나라도
+  // 있어야 prepare 진행. override 가 있으면 configPath 가 null 이어도 prepare 필요.
+  if (!configPath && !needsSource && !postcssOverride) return null;
   // Incremental: existing tempRoot 가 있으면 dirty 파일만 sync (BACKLOG #70). 초기 빌드는
   // 전체 cpSync. dirtyPaths 가 null 이면 안전쪽 fallback 으로 간주해 full sync.
   const tempRoot = existingTempRoot ?? copyAppRootForPostcss(root, outdir, phase, cliNodeModules);
@@ -372,7 +381,15 @@ export async function prepareAppCssPipelineRoot(
     (dirtyPaths !== null &&
       dirtyPaths.some((p) => isCssFile(p) || isCssPreprocessorFile(p) || isPostcssConfigFile(p)));
   if (postcssRelevant) {
-    await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel, fallbackRequire);
+    await runPostcssIfConfigured(
+      tempRoot,
+      tempRoot,
+      null,
+      configEnv,
+      logLevel,
+      fallbackRequire,
+      postcssOverride,
+    );
   }
   // `*.module.scss` 는 위 sass 단계에서 `*.module.css` 가 새로 만들어지므로, 사전 walk
   // 가 본 모듈 리스트엔 빠져 있다. preprocessor 출력 경로를 재계산해 보강.

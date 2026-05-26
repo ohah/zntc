@@ -60,9 +60,18 @@ export interface CssPluginOptions {
  * export default defineConfig({ plugins: [css({ disabled: true })] });
  * ```
  */
-export function css(options: CssPluginOptions = {}): ZntcPlugin {
+/** ZntcPlugin + caller-side pre-warm sentinel (RFC #3833 v3 D1a'', @internal). */
+export type CssZntcPlugin = ZntcPlugin & { readonly __cssOptions: CssPluginOptions };
+
+export function css(options: CssPluginOptions = {}): CssZntcPlugin {
+  // RFC #3833 v3 D1a'' (caller-side pre-warm): `__cssOptions` sentinel 로 caller
+  // (runAppBuild) 가 사용자 explicit `css({...override})` 의 옵션을 extract 해서
+  // `prepareAppCssPipelineRoot` 의 PostCSS 단계로 전달. sync dispatcher × async
+  // onLoad 충돌 회피 — Vite/esbuild 의 main thread pre-process → sync bundle 패턴.
+  // dispatcher 는 name/setup 만 사용 — `__cssOptions` 무영향.
   return {
     name: '@zntc/web/css',
+    __cssOptions: options,
     setup(build) {
       if (options.disabled) return;
 

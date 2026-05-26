@@ -689,6 +689,19 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   const root = resolve(opts.appRoot ?? '.');
   const outdir = resolve(opts.outdir ?? join(root, 'dist'));
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
+  // RFC #3833 v3 D1a'' (caller-side pre-warm): 사용자 explicit `plugins: [css({...})]`
+  // 의 옵션을 prepare 에 전달. buildAppSync 의 sync dispatcher × async onLoad 충돌
+  // 우회 — `css()` factory 가 `__cssOptions` sentinel 로 노출 (web/css/index.ts).
+  // name 매치 + sentinel 존재 둘 다 검사 (third-party 가장 plugin 방어).
+  const cssPlugin = appPlugins.find(
+    (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
+  );
+  const postcssOverride = cssPlugin?.__cssOptions?.postcss?.plugins?.length
+    ? {
+        plugins: cssPlugin.__cssOptions.postcss.plugins,
+        options: cssPlugin.__cssOptions.postcss.options,
+      }
+    : null;
   let pipelineRoot = null;
   try {
     const pipeline = await web.prepareAppCssPipelineRoot(
@@ -698,6 +711,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       opts.logLevel,
       'build',
       { fallbackRequire: requireFromCli, cliNodeModules },
+      { postcssOverride },
     );
     pipelineRoot = pipeline?.tempRoot ?? null;
     const result = buildAppSync({
