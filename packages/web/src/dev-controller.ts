@@ -73,7 +73,14 @@ export interface AppDevControllerOptions {
    *  추출해 controller 에 전달. prepare 의 `postcssOverride` + afterBundle 의
    *  `runPostcssForAppDev` override 둘 다에 동일 값. build path 와 dev path 의
    *  PostCSS plugin set 일치 (dev/build divergence 해소). */
-  postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
+  postcssOverride?: {
+    plugins: unknown[];
+    options?: Record<string, unknown>;
+    /** issue #3851 — css({root}) override 가 controller path 로 전달될 때 type
+     *  보존 (TS 사용자가 명시적으로 root 줄 수 있도록). runtime 은 prepare →
+     *  runPostcssIfConfigured 가 동일 field name 으로 read. */
+    root?: string;
+  } | null;
 }
 
 export interface AppDevControllerDeps {
@@ -103,7 +110,14 @@ export interface PrepareAppCssPipelineRootOptions {
    *  explicit `plugins: [css({ postcss: {...override} })]` 의 옵션을 runAppBuild 가
    *  추출해 prepareAppCssPipelineRoot 로 전달. truthy + plugins.length>0 면 자동 발견
    *  skip 후 override 직접 사용. sync dispatcher × async onLoad 충돌 회피용 path. */
-  postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
+  postcssOverride?: {
+    plugins: unknown[];
+    options?: Record<string, unknown>;
+    /** issue #3851 — css({root}) override 의 postcss require base. 미지정 시
+     *  root 인자 fallback. AppDevControllerOptions.postcssOverride.root 와 동일
+     *  field — controller 가 forward. */
+    root?: string;
+  } | null;
 }
 
 export interface AppCssPipelineResult {
