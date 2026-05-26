@@ -2731,7 +2731,10 @@ async function main() {
   //   3) process.cwd()  (default)
   if (opts.appCommand === 'mcp') {
     try {
-      const rootDir = resolve(opts.appRoot ?? process.env.ZNTC_ROOT ?? '.');
+      // `||` 사용 — `ZNTC_ROOT=""` (빈 값) 처럼 truthy 가 아닌 입력은 cwd 로 fallback.
+      // `??` 는 `''` 도 채택해 `resolve('')` (cwd) 로 떨어지긴 하나, 의도가 cwd 면
+      // 명시적 fallback 이 더 안전.
+      const rootDir = resolve(opts.appRoot || process.env.ZNTC_ROOT || '.');
       coreModule.mcpStdioServe({ rootDir });
       process.exit(0);
     } catch (err) {
