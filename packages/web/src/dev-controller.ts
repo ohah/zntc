@@ -81,6 +81,10 @@ export interface AppDevControllerOptions {
      *  runPostcssIfConfigured 가 동일 field name 으로 read. */
     root?: string;
   } | null;
+  /** issue #3857 — css({root}) 단독 명시 시 findPostcssConfig search base.
+   *  controller 가 prepareAppCssPipelineRoot 의 cssAutoDiscoverRoot 옵션으로
+   *  forward. monorepo edge (app 이 sub-package, postcss.config 가 monorepo root). */
+  cssAutoDiscoverRoot?: string | null;
 }
 
 export interface AppDevControllerDeps {
@@ -118,6 +122,11 @@ export interface PrepareAppCssPipelineRootOptions {
      *  field — controller 가 forward. */
     root?: string;
   } | null;
+  /** issue #3857 — css({root}) 단독 명시 (postcss override 없이) 시 root 가
+   *  auto-discover path 의 findPostcssConfig 시작 base 로 사용되게 caller 가
+   *  전달. monorepo edge: app 이 sub-package, postcss.config 가 monorepo root.
+   *  미지정 시 root 인자 사용 — 기존 동작 유지. */
+  cssAutoDiscoverRoot?: string | null;
 }
 
 export interface AppCssPipelineResult {
@@ -308,10 +317,13 @@ export async function prepareAppCssPipelineRoot(
     cache = null,
     sassReverseDep = null,
     postcssOverride = null,
+    cssAutoDiscoverRoot = null,
   } = options;
   const { fallbackRequire, cliNodeModules } = deps;
   // configPath 자동 발견은 override 없을 때만 필요. override 가 있으면 자동 발견 skip.
-  const configPath = postcssOverride ? null : findPostcssConfig(root);
+  // issue #3857 — cssAutoDiscoverRoot 가 있으면 그것을 findPostcssConfig 시작 base
+  // 로 사용 (monorepo edge: app 이 sub-package, postcss.config 가 monorepo root).
+  const configPath = postcssOverride ? null : findPostcssConfig(cssAutoDiscoverRoot ?? root);
   // F1 cache: 이전 prep 의 stylePipelineFiles 를 재사용. 호출자가 구조 변화 (.scss/.module.css
   // 추가/삭제) 시 cache=null 로 무효화한다. 재사용이면 full tree walk 를 통째 회피.
   const stylePipelineFiles =
@@ -421,6 +433,7 @@ export async function prepareAppCssPipelineRoot(
       logLevel,
       fallbackRequire,
       postcssOverride,
+      cssAutoDiscoverRoot,
     );
     postcssDeps = postcssResult.deps;
     postcssDirDeps = postcssResult.dirDeps;
@@ -566,6 +579,8 @@ export function createAppDevController(
       // (runAppDev) 의 explicit `css({postcss:{...override}})` 를 prepare 의
       // PostCSS 단계에 전달. dev/build divergence 해소.
       const postcssOverride = opts.postcssOverride ?? null;
+      // issue #3857 — controller 가 cssAutoDiscoverRoot 도 prepare 로 forward.
+      const cssAutoDiscoverRoot = opts.cssAutoDiscoverRoot ?? null;
       const pipeline = await prepareAppCssPipelineRoot(
         root,
         outdir,
@@ -580,8 +595,9 @@ export function createAppDevController(
               cache: pipelineCache,
               sassReverseDep,
               postcssOverride,
+              cssAutoDiscoverRoot,
             }
-          : { sassReverseDep, postcssOverride },
+          : { sassReverseDep, postcssOverride, cssAutoDiscoverRoot },
       );
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
@@ -662,6 +678,8 @@ export function createAppDevController(
         skipPostcssRun: preparePostcssApplied,
         // issue #3847 — mirror 의 source 가 prepare 의 tempRoot (PostCSS 처리됨)
         sourceRoot: pipelineRoot ?? root,
+        // issue #3857 — auto-discover path 의 search base forward
+        cssAutoDiscoverRoot: opts.cssAutoDiscoverRoot ?? null,
       });
       cssDeps = result.deps;
       cssDirDeps = result.dirDeps;

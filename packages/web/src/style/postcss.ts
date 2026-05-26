@@ -169,6 +169,11 @@ export async function runPostcssIfConfigured(
      *  base. 미지정 시 root 인자 사용. */
     root?: string;
   } | null,
+  /** issue #3857 — css({root}) 단독 명시 시 auto-discover path 의 search base.
+   *  override 없을 때 loadPostcssConfig(cssAutoDiscoverRoot ?? root) 로 호출 →
+   *  postcss.config 가 monorepo root 에 있고 app 이 sub-package 인 시나리오 cover.
+   *  미지정 시 root 인자 사용 — 기존 동작 유지. */
+  cssAutoDiscoverRoot?: string | null,
 ): Promise<RunPostcssIfConfiguredResult> {
   const deps = new Set<string>();
   const dirDeps = new Set<string>();
@@ -203,7 +208,9 @@ export async function runPostcssIfConfigured(
       configFile: null,
     };
   } else {
-    loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
+    // issue #3857 — auto-discover path 의 search base. cssAutoDiscoverRoot
+    // (monorepo root 등) 가 있으면 그것 사용, 없으면 root 인자 (tempRoot).
+    loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire);
   }
   if (!loaded) return { deps, dirDeps };
   const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
@@ -252,6 +259,10 @@ export interface AppDevPostcssOptions {
   /** skipPostcssRun=true 시 mirror 의 source root (prepare 의 tempRoot 또는
    *  raw root). 미지정 시 root 사용. controller 가 pipelineRoot 전달. */
   sourceRoot?: string;
+  /** issue #3857 — auto-discover path 의 findPostcssConfig/loadPostcssConfig
+   *  search base. monorepo edge: app 이 sub-package, postcss.config 가
+   *  monorepo root. 미지정 시 root 인자 사용. */
+  cssAutoDiscoverRoot?: string | null;
 }
 
 export interface AppDevPostcssResult {
@@ -280,6 +291,7 @@ export async function runPostcssForAppDev(
     postcssOverride = null,
     skipPostcssRun = false,
     sourceRoot,
+    cssAutoDiscoverRoot = null,
   } = options;
   // issue #3853 — skipPostcssRun=true 시 sourceRoot 명시 의무화. fallback (raw
   // root) 으로 silent 떨어지면 PostCSS 미적용 .css 가 outdir 로 copy → dev server
@@ -319,7 +331,9 @@ export async function runPostcssForAppDev(
   }
   // override 가 있으면 자동발견 skip. plugins.length === 0 면 explicit no-op
   // (build path 의 runPostcssIfConfigured 와 동일 시맨틱).
-  const configPath = postcssOverride ? null : findPostcssConfig(root);
+  // issue #3857 — auto-discover path 의 search base. cssAutoDiscoverRoot 가
+  // 있으면 그것 사용 (monorepo edge).
+  const configPath = postcssOverride ? null : findPostcssConfig(cssAutoDiscoverRoot ?? root);
   if (!configPath && !postcssOverride) {
     const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
     if (first) primaryHref = joinUrl(base, relative(root, first));
@@ -361,7 +375,8 @@ export async function runPostcssForAppDev(
       configFile: null,
     };
   } else {
-    loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
+    // issue #3857 — auto-discover path 의 search base.
+    loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire);
   }
   if (!loaded) return { deps, dirDeps, primaryHref, processed: 0 };
   if (loaded.configFile) deps.add(resolve(loaded.configFile));

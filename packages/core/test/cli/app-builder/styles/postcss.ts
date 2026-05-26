@@ -181,6 +181,97 @@ describe('CLI: Vite-style app builder > styles > PostCSS', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // issue #3857 — `css({root})` 단독 명시 (postcss override 없이) 시 root 가
+  // auto-discover path 의 findPostcssConfig/loadPostcssConfig search base 로
+  // 사용. monorepo edge: app 이 sub-package (`apps/web/`), postcss.config 는
+  // monorepo root (`./postcss.config.mjs`). 기존 동작 = app 안에서만 search
+  // → 발견 0 → PostCSS no-op. fix 후 = root 명시로 monorepo root 의 config
+  // 발견 → PostCSS marker 적용.
+  test('css({root: monorepoRoot}) — auto-discover path 의 root 위치 search (#3857)', () => {
+    const monorepoRoot = mkdtempSync(join(tmpdir(), 'zntc-app-monorepo-'));
+    const appDir = join(monorepoRoot, 'apps', 'web');
+    mkdirSync(join(appDir, 'src'), { recursive: true });
+
+    // monorepo root 에만 postcss.config.mjs
+    writeFileSync(
+      join(monorepoRoot, 'postcss.config.mjs'),
+      [
+        'export default {',
+        '  plugins: [',
+        "    { postcssPlugin: 'monorepo-root-marker', Once(root) { root.append({ selector: '.monorepo-applied', nodes: [] }); } },",
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+
+    // app 안 zntc.config.mjs — css({root: monorepoRoot}) 만 명시 (override X)
+    // monorepoRoot 의 절대 경로를 JSON.stringify 로 safely embed.
+    writeFileSync(
+      join(appDir, 'index.html'),
+      '<div class="card">monorepo</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(appDir, 'src', 'main.ts'), 'import "./style.css";');
+    writeFileSync(join(appDir, 'src', 'style.css'), '.card { color: red; }\n');
+    writeFileSync(
+      join(appDir, 'zntc.config.mjs'),
+      [
+        `import { css } from ${JSON.stringify(CSS_FACTORY_URL)};`,
+        'export default {',
+        '  plugins: [',
+        `    css({ root: ${JSON.stringify(monorepoRoot)} }),`,
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+
+    const outdir = join(appDir, 'dist');
+    const { exitCode, stderr } = runCli(['build', appDir, '--outdir', outdir], { cwd: appDir });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain('[postcss] processed 1 CSS file');
+    const css = readFileSync(join(outdir, 'main.css'), 'utf8');
+    // monorepo root 의 postcss.config 가 적용됨 → marker 존재
+    expect(css).toContain('.monorepo-applied');
+    expect(css).toContain('.card');
+    rmSync(monorepoRoot, { recursive: true, force: true });
+  });
+
+  // 회귀 가드 — css({root}) 미명시 시 기존 동작 유지 (app root 만 search).
+  // monorepo root 에 postcss.config 있어도 app 안에서 search 못 찾으면 no-op.
+  test('css() root 미명시 — 기존 app-only search 동작 유지 (#3857 회귀)', () => {
+    const monorepoRoot = mkdtempSync(join(tmpdir(), 'zntc-app-monorepo-noopt-'));
+    const appDir = join(monorepoRoot, 'apps', 'web');
+    mkdirSync(join(appDir, 'src'), { recursive: true });
+
+    writeFileSync(
+      join(monorepoRoot, 'postcss.config.mjs'),
+      [
+        'export default {',
+        '  plugins: [',
+        "    { postcssPlugin: 'should-not-apply', Once(root) { root.append({ selector: '.should-not-apply', nodes: [] }); } },",
+        '  ],',
+        '};',
+      ].join('\n'),
+    );
+
+    writeFileSync(
+      join(appDir, 'index.html'),
+      '<div class="card">noopt</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(appDir, 'src', 'main.ts'), 'import "./style.css";');
+    writeFileSync(join(appDir, 'src', 'style.css'), '.card { color: red; }\n');
+    // zntc.config 없음 → css() 도 없음 → cssAutoDiscoverRoot 없음
+    // → findPostcssConfig 가 app root 만 search
+
+    const outdir = join(appDir, 'dist');
+    const { exitCode } = runCli(['build', appDir, '--outdir', outdir], { cwd: appDir });
+    expect(exitCode).toBe(0);
+    const css = readFileSync(join(outdir, 'main.css'), 'utf8');
+    // monorepo root 의 marker 가 적용되지 않아야 (search base = app root)
+    expect(css).not.toContain('.should-not-apply');
+    expect(css).toContain('.card');
+    rmSync(monorepoRoot, { recursive: true, force: true });
+  });
+
   test('Tailwind v4 @tailwindcss/postcss app fixture', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-tailwind-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
