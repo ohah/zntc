@@ -110,6 +110,10 @@ export interface AppCssPipelineResult {
   tempRoot: string;
   generatedCssAbsPaths: string[];
   cache: PipelineCache;
+  /** issue #3850 — PostCSS message 의 deps/dirDeps 보존. afterBundle skipPostcssRun
+   *  path 가 watch trigger 정합 위해 사용 (tailwind `@source` 같은 dir-dep). */
+  postcssDeps?: Set<string>;
+  postcssDirDeps?: Set<string>;
 }
 
 function normalizeBase(base: string | undefined): string {
@@ -386,8 +390,13 @@ export async function prepareAppCssPipelineRoot(
     !isIncremental ||
     (dirtyPaths !== null &&
       dirtyPaths.some((p) => isCssFile(p) || isCssPreprocessorFile(p) || isPostcssConfigFile(p)));
+  // issue #3850 — runPostcssIfConfigured 의 deps/dirDeps 결과 보존. afterBundle
+  // 의 skipPostcssRun path 가 tailwind @source 같은 dir-dep watch trigger 정합
+  // 위해 사용. postcssRelevant 가 false 면 빈 set (이전 prep 결과 재사용 가정).
+  let postcssDeps = new Set<string>();
+  let postcssDirDeps = new Set<string>();
   if (postcssRelevant) {
-    await runPostcssIfConfigured(
+    const postcssResult = await runPostcssIfConfigured(
       tempRoot,
       tempRoot,
       null,
@@ -396,6 +405,8 @@ export async function prepareAppCssPipelineRoot(
       fallbackRequire,
       postcssOverride,
     );
+    postcssDeps = postcssResult.deps;
+    postcssDirDeps = postcssResult.dirDeps;
   }
   // `*.module.scss` 는 위 sass 단계에서 `*.module.css` 가 새로 만들어지므로, 사전 walk
   // 가 본 모듈 리스트엔 빠져 있다. preprocessor 출력 경로를 재계산해 보강.
@@ -425,6 +436,8 @@ export async function prepareAppCssPipelineRoot(
     tempRoot,
     generatedCssAbsPaths,
     cache: { stylePipelineFiles, styleSourceFiles },
+    postcssDeps,
+    postcssDirDeps,
   };
 }
 
@@ -485,6 +498,10 @@ export function createAppDevController(
   // true. afterBundle 가 그 flag 보고 runPostcssForAppDev 의 redundant PostCSS
   // pass 차단 (zero-config double-pass 해소). prepare 의 pipeline 결과로 결정.
   let preparePostcssApplied = false;
+  // issue #3850 — prepare 의 postcssDeps/postcssDirDeps 보존. afterBundle 가
+  // skipPostcssRun path 에서 머지 (tailwind @source 같은 dir-dep watch trigger).
+  let preparePostcssDeps = new Set<string>();
+  let preparePostcssDirDeps = new Set<string>();
   // #71: sass @import reverse-dep 맵(tempRoot 기준 path). prepare(full pipeline) 와 fast-path
   // (rebuildScssIncremental) 가 갱신하고, isSassOnlyChange 가 조회해 dep 있는 파일은 fast-path
   // 박탈 → full pipeline 의 transitive 재컴파일로 dependents 까지 갱신. 세션 내내 누적.
@@ -556,6 +573,10 @@ export function createAppDevController(
       // runPostcssIfConfigured 호출됨 (override 또는 자동발견 어느 path 든 PostCSS
       // 처리 가능). afterBundle 가 redundant pass 차단할 수 있도록 flag set.
       preparePostcssApplied = !!pipeline;
+      // issue #3850 — prepare result 의 postcssDeps/postcssDirDeps 보존.
+      // afterBundle skipPostcssRun path 가 watch trigger 정합 위해 사용.
+      preparePostcssDeps = pipeline?.postcssDeps ?? new Set();
+      preparePostcssDirDeps = pipeline?.postcssDirDeps ?? new Set();
       const prepareRoot = pipelineRoot ?? root;
       const envDir = opts.envDir ? resolve(opts.envDir) : prepareRoot;
       const prepared = prepareAppDevSync({
@@ -620,8 +641,16 @@ export function createAppDevController(
       });
       cssDeps = result.deps;
       cssDirDeps = result.dirDeps;
+      // issue #3850 — skipPostcssRun path 의 result.dirDeps 가 빈 set 라
+      // tailwind @source 같은 dir-dep watch trigger 누락. prepare 의 결과를
+      // 머지 (preparePostcssDeps/Dirs) — controller 의 cssDeps/cssDirDeps 가
+      // 양쪽 source 의 union 으로 watch 정합.
+      if (preparePostcssApplied) {
+        for (const d of preparePostcssDeps) cssDeps.add(d);
+        for (const d of preparePostcssDirDeps) cssDirDeps.add(d);
+      }
       primaryHref = result.primaryHref;
-      return result;
+      return { ...result, deps: cssDeps, dirDeps: cssDirDeps };
     },
     injectBundleCssLinks(bundleResult: BundleResult) {
       // pipeline 이 SCSS / CSS Modules generated CSS 를 inject 한 상태면 bundler 의
