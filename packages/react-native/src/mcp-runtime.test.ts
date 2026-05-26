@@ -250,6 +250,20 @@ describe('mcp-runtime.cjs (PR-E2) — dispatch', () => {
     expect(lastWs!.sent.length).toBe(0);
   });
 
+  test('handlers.ping override — user implementation 이 default 보다 우선 (F4 retroactive)', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // user 가 default 후 override
+    rt.handlers.ping = () => ({ custom: true, src: 'user' });
+
+    lastWs!.triggerOpen();
+    lastWs!.triggerMessage('{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}');
+    const resp = JSON.parse(lastWs!.sent[0]);
+    expect(resp.result).toEqual({ custom: true, src: 'user' });
+    // default 의 pong/ts 가 안 나와야 함
+    expect(resp.result.pong).toBeUndefined();
+  });
+
   test('default `ping` handler — `ping_app` MCP tool 의 양방향 sanity check', () => {
     loadRuntime(g);
     const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
