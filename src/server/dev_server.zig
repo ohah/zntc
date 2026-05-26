@@ -21,6 +21,7 @@ const EventRing = server_events.EventRing;
 const writeJsonEscaped = server_events.writeJsonEscaped;
 const buildErrorJsonFromDiagnostics = server_events.buildErrorJsonFromDiagnostics;
 const writeJsonValue = server_events.writeJsonValue;
+const mcp_app_channel_mod = @import("mcp_app_channel.zig");
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -39,7 +40,7 @@ pub const DevServer = struct {
     ws_clients: WsClients = .{},
     /// MCP app channel — `/__mcp-app` WS 연결로 RN 앱과 양방향 통신.
     /// 후속 PR 가 request/response Map 을 여기에 추가.
-    app_channel: @import("mcp_app_channel.zig").AppChannel = .{},
+    app_channel: mcp_app_channel_mod.AppChannel = .{},
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -557,12 +558,13 @@ pub const DevServer = struct {
     fn handleMcpAppWebSocket(self: *DevServer, ws: *http.Server.WebSocket) void {
         const accepted = self.app_channel.connect();
         if (!accepted) {
-            // 이미 다른 앱이 연결돼 있음 — first-wins 정책. 핸드셰이크 close.
+            // 이미 다른 앱이 연결돼 있음 — first-wins 정책. error JSON 송신 후 명시적
+            // close frame 으로 정상 종료 (1006 abnormal closure 대신 1000 + text 보장).
             getLog().print("  [mcp-app] 이미 연결된 앱 있음, 새 연결 거절\n", .{}) catch {};
-            ws.writeMessage(
-                "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"another app already connected\"}}",
-                .text,
-            ) catch {};
+            ws.writeMessage(mcp_app_channel_mod.REJECT_MESSAGE, .text) catch {};
+            // RFC 6455 §5.5.1 close frame — payload 비워도 valid. 클라이언트가 이전
+            // text frame 까지 받은 후 graceful close 보장.
+            ws.writeMessage("", .connection_close) catch {};
             return;
         }
         defer self.app_channel.disconnect();
@@ -570,10 +572,7 @@ pub const DevServer = struct {
         getLog().print("  [mcp-app] 앱 연결 (count={})\n", .{self.app_channel.stats().connect_count}) catch {};
 
         // 핸드셰이크 hello — 클라이언트가 connect 완료 확인용.
-        ws.writeMessage(
-            "{\"jsonrpc\":\"2.0\",\"method\":\"connected\",\"params\":{\"protocol\":\"mcp-app-1\"}}",
-            .text,
-        ) catch {
+        ws.writeMessage(mcp_app_channel_mod.HELLO_MESSAGE, .text) catch {
             getLog().print("  [mcp-app] hello send 실패\n", .{}) catch {};
             return;
         };
