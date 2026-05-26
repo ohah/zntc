@@ -776,10 +776,35 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
   const web = await loadWebModule();
   const root = resolve(opts.appRoot ?? '.');
   opts.outdir = opts.outdir || join(root, '.zntc-dev');
-  const appDev = web.createAppDevController(opts, root, configEnv, {
-    fallbackRequire: requireFromCli,
-    cliNodeModules,
-  });
+  // RFC #3833 v3 D1a'' Phase 2: dev path 도 build path (runAppBuild) 와 동일하게
+  // 사용자 explicit `plugins: [css({postcss:{...}})]` 를 caller-side pre-warm 으로
+  // controller 에 전달. dev/build divergence 해소.
+  const devUserPlugins = [];
+  if (config && Array.isArray(config.plugins)) devUserPlugins.push(...config.plugins);
+  for (const pluginPath of opts.pluginPaths) {
+    const absPath = resolve(pluginPath);
+    const cfg = await importAndResolveDefault(absPath);
+    if (Array.isArray(cfg.plugins)) devUserPlugins.push(...cfg.plugins);
+    else if (typeof cfg.setup === 'function') devUserPlugins.push(cfg);
+  }
+  const devCssPlugin = devUserPlugins.findLast(
+    (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
+  );
+  let devPostcssOverride = null;
+  if (devCssPlugin?.__cssOptions) {
+    const o = devCssPlugin.__cssOptions;
+    if (o.disabled === true) {
+      devPostcssOverride = { plugins: [], options: undefined };
+    } else if (o.postcss) {
+      devPostcssOverride = { plugins: o.postcss.plugins ?? [], options: o.postcss.options };
+    }
+  }
+  const appDev = web.createAppDevController(
+    { ...opts, postcssOverride: devPostcssOverride },
+    root,
+    configEnv,
+    { fallbackRequire: requireFromCli, cliNodeModules },
+  );
   const prepared = await appDev.prepare();
 
   opts.entryPoints = [prepared.entryPath];
