@@ -480,7 +480,17 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       'runtime/mcp-runtime.cjs',
       projectRoot,
     );
-    if (mcpRuntime) runBeforeMain.push(mcpRuntime);
+    if (mcpRuntime) {
+      runBeforeMain.push(mcpRuntime);
+    } else if (extra?.mcp === true) {
+      // 사용자가 명시적으로 mcp=true 로 활성화했는데 path 못 찾으면 silent 가
+      // 디버깅 어렵다 — explicit on 일 때만 warn. default (extra.mcp 미지정) 는
+      // 기존 `resolveRnPolyfills` 의 silent 정책 유지 (`@zntc/react-native`
+      // 미설치 환경 friendly).
+      console.warn(
+        "[zntc:rn] mcp preamble 활성화됐으나 '@zntc/react-native/runtime/mcp-runtime.cjs' 를 찾지 못함. @zntc/react-native 설치 여부 확인.",
+      );
+    }
   }
   if (extra?.prelude && extra.prelude.length > 0) {
     // 사용자 추가 prelude — InitializeCore + MCP runtime 이후에 실행. 절대/상대 모두
