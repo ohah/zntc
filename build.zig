@@ -282,6 +282,14 @@ pub fn build(b: *std.Build) void {
         //  import library가 필요해서 아래에서 별도 처리한다.)
         napi_lib.linker_allow_shlib_undefined = true;
 
+        // BoringSSL static link — `src/root.zig` 가 `server/mod.zig` 를 export 하고
+        // 그 안에서 `boringssl`/`tls` 를 re-export 하므로 napi target 도 BoringSSL
+        // symbol 을 reference 한다. attach 안 하면 `linker_allow_shlib_undefined=true`
+        // 가 link 단계는 통과시키지만 dlopen 시 `SSL_CTX_free` 등 undefined symbol 로
+        // require('./zig-out/lib/zntc.node') 가 fail (regression: server/boringssl.zig
+        // 추가 후 napi target attach 누락).
+        boringssl_build.attach(napi_lib, boringssl_lib, b);
+
         // ─── Windows: NAPI import library 생성 ───
         // Windows 링커(lld-link)는 undefined 심볼을 허용하지 않으므로,
         // node-api-headers가 제공하는 .def 파일로부터 `zig dlltool`을 이용해
