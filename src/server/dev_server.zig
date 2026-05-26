@@ -652,6 +652,16 @@ pub const DevServer = struct {
             // issue #3858 — root_dir 의 dir entry 변화 시 rescan. collectCssFiles
             // 재호출 + 신규 .css 발견 시 watcher.addPath + synthetic event.
             // 삭제된 path 는 removePath + synthetic event (caller 가 정리).
+            //
+            // /code-review max #1 (HIGH UAF) fix: 삭제 path 를 free 하기 전에
+            // changed_paths 에 dupe 추가. broadcast 루프 종료 후 iteration 끝의
+            // defer 가 dupe 메모리 일괄 free.
+            var deletion_dupes: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (deletion_dupes.items) |d| self.allocator.free(d);
+                deletion_dupes.deinit(self.allocator);
+            }
+
             if (needs_rescan and root_real != null) {
                 const root = root_real.?;
                 var new_css_paths: std.ArrayList([]const u8) = .empty;
@@ -692,9 +702,16 @@ pub const DevServer = struct {
                 }
                 for (to_remove.items) |p| {
                     watcher.removePath(p);
-                    // synthetic event — caller 가 .css deletion 처리
-                    if (changed_set.getOrPut(p) catch null) |gop| {
-                        if (!gop.found_existing) changed_paths.append(self.allocator, p) catch {};
+                    // /code-review max #1 fix: p 의 dupe 를 deletion_dupes 에 보관,
+                    // changed_paths 에 dupe append. css_paths 의 원본 free 후에도
+                    // broadcast 루프 (line 714+) 가 dupe 를 안전하게 read.
+                    const path_dupe = self.allocator.dupe(u8, p) catch continue;
+                    deletion_dupes.append(self.allocator, path_dupe) catch {
+                        self.allocator.free(path_dupe);
+                        continue;
+                    };
+                    if (changed_set.getOrPut(path_dupe) catch null) |gop| {
+                        if (!gop.found_existing) changed_paths.append(self.allocator, path_dupe) catch {};
                     }
                     _ = css_path_set.remove(p);
                     // css_paths 에서도 제거 (owner 라 free) — swap-remove 효율
@@ -705,7 +722,7 @@ pub const DevServer = struct {
                             break;
                         }
                     }
-                    getLog().print("  [watch] file removed: {s}\n", .{std.fs.path.basename(p)}) catch {};
+                    getLog().print("  [watch] file removed: {s}\n", .{std.fs.path.basename(path_dupe)}) catch {};
                 }
             }
 
