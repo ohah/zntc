@@ -323,10 +323,31 @@ const InotifyBackend = struct {
         if (self.watched_files.fetchRemove(path)) |kv| {
             allocator.free(kv.key);
         }
-        // issue #3858 — dir-watch entry 도 remove. 단 inotify_rm_watch 는 caller 가
-        // 다른 file 도 같은 dir 안 watch 할 수 있어 보수적으로 dir_wds 는 유지.
+        // issue #3858 — dir-watch entry remove. /code-review max #3 follow-up:
+        // 같은 dir 에 watched_files 가 없을 때만 inotify_rm_watch 호출하여 wd
+        // 누수 차단. 다른 file 이 같은 dir 안 watch 중이면 wd 유지 (file event
+        // 가 dispatch 되어야 함).
         if (self.watched_dirs.fetchRemove(path)) |kv| {
             allocator.free(kv.key);
+
+            // path 가 dir_wds key 와 같은 entry — 같은 dir 의 file watch 없으면 wd cleanup
+            var has_file_in_dir = false;
+            var fit = self.watched_files.keyIterator();
+            while (fit.next()) |fk| {
+                if (std.fs.path.dirname(fk.*)) |fd| {
+                    if (std.mem.eql(u8, fd, path)) {
+                        has_file_in_dir = true;
+                        break;
+                    }
+                }
+            }
+            if (!has_file_in_dir) {
+                if (self.dir_wds.fetchRemove(path)) |dw| {
+                    _ = std.os.linux.inotify_rm_watch(self.inotify_fd, dw.value);
+                    _ = self.wd_dirs.remove(dw.value);
+                    allocator.free(dw.key);
+                }
+            }
         }
     }
 
