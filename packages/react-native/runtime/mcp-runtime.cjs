@@ -63,6 +63,194 @@ function startMcpRuntime(g) {
       echo: params || null,
     };
   };
+
+  // ─── Fiber tree 순회 + ref 시스템 (PR-F1 baseline) ───
+  //
+  // React DevTools 의 global hook 통해 fiber root 접근 → DFS 순회로 component 검색.
+  // 각 매칭 element 에 opaque ref (`e1`, `e2`, ...) 부여 + Map 으로 reverse-lookup.
+  // 후속 tool (inspect_state, eval_code 등) 이 ref 로 instance 호출.
+  //
+  // 메모리 가이드: 매 find 호출마다 새 ref 부여 — 기존 ref invalidate 안 함. caller
+  // 가 stale ref 받아도 inspect_state 가 null 응답. RN fast-refresh 시 tree 재구성
+  // 되어도 동작.
+  //
+  // refMap 의 unbounded growth 방지 — REF_MAP_MAX (256) 도달 시 가장 오래된 entry
+  // 를 FIFO 로 evict. Map 의 insertion-order 보장 사용 (ES2015+). fiber 는 strong
+  // reference 라 evict 안 하면 unmount 된 subtree 까지 GC 못 함 — 디버그 세션에서
+  // find_element 를 hot loop 로 호출하면 누적. 256 은 동시 inspect 대상 가정 평균
+  // (Playwright MCP 도 비슷한 ref 회전 사용).
+  var REF_MAP_MAX = 256;
+  var refMap = new Map(); // ref string → fiber pointer (insertion-ordered)
+  var refIdCounter = 1;
+
+  function nextRefId() {
+    var id = refIdCounter;
+    refIdCounter += 1;
+    return 'e' + id;
+  }
+
+  function rememberRef(ref, fiber) {
+    if (refMap.size >= REF_MAP_MAX) {
+      // 가장 오래된 entry (Map iteration order = insertion order) drop.
+      var oldest = refMap.keys().next().value;
+      if (oldest != null) refMap.delete(oldest);
+    }
+    refMap.set(ref, fiber);
+  }
+
+  function getFiberRoots() {
+    var hook = g.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    if (!hook || typeof hook.getFiberRoots !== 'function') return [];
+    // RN 은 보통 renderer 1개 (RCTHostView), 그러나 multi-renderer 가능성 위해
+    // hook.renderers (Map<rendererID, RendererInterface>) 전체를 iterate.
+    var roots = [];
+    try {
+      var renderers = hook.renderers;
+      if (renderers && typeof renderers.forEach === 'function') {
+        renderers.forEach(function (_, rendererID) {
+          var rootsSet = hook.getFiberRoots(rendererID);
+          if (rootsSet && typeof rootsSet.forEach === 'function') {
+            rootsSet.forEach(function (root) {
+              roots.push(root);
+            });
+          }
+        });
+      }
+    } catch (err) {
+      // DevTools hook 이 unexpected state — silent ignore 면 디버그 어려움.
+      // RN console 가 있으면 warn (loop 가능성 낮음, getFiberRoots 는 매 find 마다 한번).
+      if (g.console && typeof g.console.warn === 'function') {
+        try {
+          g.console.warn('[zntc:mcp:runtime] getFiberRoots failed:', err && err.message);
+        } catch (_) {
+          /* console 자체 throw — 더 할 수 있는 게 없음 */
+        }
+      }
+    }
+    return roots;
+  }
+
+  function getComponentName(fiber) {
+    if (!fiber || !fiber.type) return null;
+    var t = fiber.type;
+    if (typeof t === 'string') return t; // host component (View, Text, etc)
+    return t.displayName || t.name || null;
+  }
+
+  function getTextContent(fiber) {
+    // RN host text fiber 는 두 패턴:
+    //   1. `<Text>Hello</Text>` → memoizedProps.children === 'Hello'
+    //   2. host text node (RN 의 RCTText 내부) → memoizedProps === 'Hello' (string 자체)
+    // children 가 array (e.g. `<Text>Hi {name}</Text>`) 인 경우는 미지원 — 후속 PR.
+    if (!fiber) return null;
+    if (typeof fiber.memoizedProps === 'string') return fiber.memoizedProps;
+    if (fiber.memoizedProps && typeof fiber.memoizedProps.children === 'string') {
+      return fiber.memoizedProps.children;
+    }
+    return null;
+  }
+
+  // DFS — fiber.child 따라 내려가고 fiber.sibling 따라 옆으로. parent chain 은
+  // fiber.return.
+  function walkFiber(root, visitor) {
+    var current = root.current; // FiberRoot 의 current = root fiber
+    if (!current) return;
+    var stack = [current];
+    while (stack.length > 0) {
+      var fiber = stack.pop();
+      if (!fiber) continue;
+      if (visitor(fiber) === false) return; // early stop
+      if (fiber.sibling) stack.push(fiber.sibling);
+      if (fiber.child) stack.push(fiber.child);
+    }
+  }
+
+  function matchByText(fiber, value) {
+    var text = getTextContent(fiber);
+    return typeof text === 'string' && text.indexOf(value) !== -1;
+  }
+
+  function matchByComponent(fiber, value) {
+    return getComponentName(fiber) === value;
+  }
+
+  function matchByRole(fiber, value) {
+    var props = fiber.memoizedProps;
+    if (!props || typeof props !== 'object') return false;
+    return props.accessibilityRole === value || props.role === value;
+  }
+
+  function serializeFiber(fiber, ref) {
+    var name = getComponentName(fiber) || '(unknown)';
+    var text = getTextContent(fiber);
+    var props = fiber.memoizedProps || {};
+    var summary = {
+      ref: ref,
+      component: name,
+    };
+    if (text != null) summary.text = text;
+    var role = (props && (props.accessibilityRole || props.role)) || null;
+    if (role) summary.role = role;
+    var label = (props && (props.accessibilityLabel || props['aria-label'])) || null;
+    if (label) summary.label = label;
+    if (props && typeof props.testID === 'string') summary.testID = props.testID;
+    // source — React 의 _debugSource 가 fileName + lineNumber 보유 (dev only).
+    var src = fiber._debugSource;
+    if (src && typeof src.fileName === 'string') {
+      summary.source =
+        src.fileName + (typeof src.lineNumber === 'number' ? ':' + src.lineNumber : '');
+    }
+    return summary;
+  }
+
+  // find_element({ by, value }) — by: 'text' / 'role' / 'component'. value: string.
+  // 첫 매칭 element 반환. 매칭 없으면 `{ found: false }`.
+  //
+  // 잘못된 input (params 누락, unknown `by`, fiber root 없음) 는 **throw** 한다 —
+  // dispatcher (onmessage) 가 catch 해서 JSON-RPC `-32603 Internal error` 로 wrap →
+  // MCP client 가 표준 error 채널로 받음. `{error:...}` 객체 반환은 result content
+  // 안에 묻혀 silent fail 처럼 보이는 anti-pattern (PR-F1 review F4).
+  handlers.find_element = function (params) {
+    if (!params || typeof params.by !== 'string' || typeof params.value !== 'string') {
+      throw new Error(
+        'find_element: params requires `by` (text/role/component) and `value` (string)',
+      );
+    }
+    var matcher;
+    if (params.by === 'text') matcher = matchByText;
+    else if (params.by === 'role') matcher = matchByRole;
+    else if (params.by === 'component') matcher = matchByComponent;
+    else {
+      throw new Error('find_element: unknown `by` -- only text/role/component supported');
+    }
+
+    var roots = getFiberRoots();
+    if (roots.length === 0) {
+      throw new Error(
+        'find_element: no React fiber root found (DevTools hook not installed or React not mounted yet)',
+      );
+    }
+
+    var found = null;
+    for (var i = 0; i < roots.length && !found; i++) {
+      walkFiber(roots[i], function (fiber) {
+        if (matcher(fiber, params.value)) {
+          var ref = nextRefId();
+          rememberRef(ref, fiber);
+          found = serializeFiber(fiber, ref);
+          return false; // early stop
+        }
+        return true;
+      });
+    }
+    return found || { found: false };
+  };
+
+  // (internal) refMap 노출 — 후속 tool (inspect_state) 이 ref → fiber 조회. test 도 사용.
+  handlers.__getFiberByRef = function (params) {
+    if (!params || typeof params.ref !== 'string') return { fiber: null };
+    return { has: refMap.has(params.ref) };
+  };
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.
@@ -153,7 +341,10 @@ function startMcpRuntime(g) {
       if (g.console && typeof g.console.warn === 'function') {
         var idHint = obj && obj.id != null ? ' id=' + String(obj.id) : '';
         g.console.warn(
-          '[zntc:mcp:runtime] send drop — WS 닫힘 (state=' + state.connectionState + ')' + idHint,
+          '[zntc:mcp:runtime] send dropped — WS closed (state=' +
+            state.connectionState +
+            ')' +
+            idHint,
         );
       }
       return false;

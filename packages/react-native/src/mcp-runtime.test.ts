@@ -379,3 +379,264 @@ describe('mcp-runtime.cjs (PR-E2) — reconnect', () => {
     expect(scheduled.length).toBe(0);
   });
 });
+
+// PR-F1 — find_element. fiber tree 순회 + opaque ref. 실 React 없이 minimal mock
+// fiber 로 검증 — Playwright MCP 의 ref(e1, e2) 패턴 동치 동작 확인.
+interface FakeFiber {
+  type?: unknown;
+  memoizedProps?: unknown;
+  child?: FakeFiber | null;
+  sibling?: FakeFiber | null;
+  stateNode?: unknown;
+  _debugSource?: { fileName?: string; lineNumber?: number };
+}
+
+interface FakeFiberRoot {
+  current: FakeFiber;
+}
+
+function makeFiberHook(g: FakeGlobal, roots: FakeFiberRoot[]): void {
+  (g as unknown as Record<string, unknown>).__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    renderers: new Map([[1, {}]]),
+    getFiberRoots: (_rendererID: number) => new Set(roots),
+  };
+}
+
+describe('mcp-runtime.cjs (PR-F1) — find_element', () => {
+  // PR-F1 review F4: 잘못된 input 은 `{error}` return 대신 throw — dispatcher (onmessage) 가
+  // catch 해서 JSON-RPC `-32603 Internal error` 로 wrap.
+  test('params 누락 → throw: requires `by` and `value`', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.find_element({})).toThrow(/requires `by`/);
+    expect(() => rt.handlers.find_element({ by: 'text' })).toThrow(/requires `by`/);
+  });
+
+  test('unknown `by` → throw: only text/role/component supported', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.find_element({ by: 'xpath', value: '//div' })).toThrow(/unknown `by`/);
+  });
+
+  test('DevTools hook 없음 → throw: no React fiber root found', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.find_element({ by: 'text', value: 'Hello' })).toThrow(
+      /no React fiber root/,
+    );
+  });
+
+  test('by=text — fiber.memoizedProps.children 매칭 + opaque ref 부여', () => {
+    // App > View > Text("Hello world")
+    const textFiber: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'Hello world' },
+    };
+    const viewFiber: FakeFiber = {
+      type: 'View',
+      memoizedProps: { accessibilityRole: 'group' },
+      child: textFiber,
+    };
+    const appFiber: FakeFiber = {
+      type: { displayName: 'App' },
+      memoizedProps: {},
+      child: viewFiber,
+    };
+    makeFiberHook(g, [{ current: appFiber }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.find_element({ by: 'text', value: 'Hello' }) as {
+      ref?: string;
+      component?: string;
+      text?: string;
+    };
+    expect(r.ref).toMatch(/^e\d+$/);
+    expect(r.component).toBe('Text');
+    expect(r.text).toBe('Hello world');
+
+    // 같은 인스턴스 두 번 find → 새 ref 부여 (캐시 안 함 — 매번 fresh)
+    const r2 = rt.handlers.find_element({ by: 'text', value: 'Hello' }) as { ref?: string };
+    expect(r2.ref).not.toBe(r.ref);
+  });
+
+  test('by=role — props.accessibilityRole 또는 props.role 매칭', () => {
+    const btnFiber: FakeFiber = {
+      type: 'View',
+      memoizedProps: { accessibilityRole: 'button', accessibilityLabel: 'Submit' },
+    };
+    const linkFiber: FakeFiber = {
+      type: 'View',
+      memoizedProps: { role: 'link' },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btnFiber,
+    };
+    btnFiber.sibling = linkFiber;
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r1 = rt.handlers.find_element({ by: 'role', value: 'button' }) as {
+      ref?: string;
+      role?: string;
+      label?: string;
+    };
+    expect(r1.ref).toBeDefined();
+    expect(r1.role).toBe('button');
+    expect(r1.label).toBe('Submit');
+
+    const r2 = rt.handlers.find_element({ by: 'role', value: 'link' }) as { role?: string };
+    expect(r2.role).toBe('link');
+  });
+
+  test('by=component — getComponentName 매칭 (host string + displayName/name)', () => {
+    const myButton: FakeFiber = {
+      type: { displayName: 'MyButton' },
+      memoizedProps: {},
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: myButton,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.find_element({ by: 'component', value: 'MyButton' }) as {
+      component?: string;
+    };
+    expect(r.component).toBe('MyButton');
+  });
+
+  test('DFS first-match 순서 — child 가 sibling 보다 먼저 visited (review F4 회귀 잠금)', () => {
+    // root
+    //   ├ child  (Component A — accessibilityRole=button)
+    //   └ sibling (Component B — accessibilityRole=button)
+    // DFS stack push 순서: sibling → child → child pop 먼저 → A 매칭.
+    // walkFiber 의 push order (sibling first, child last) 가 child-first 보장.
+    const fiberA: FakeFiber = {
+      type: { displayName: 'A' },
+      memoizedProps: { accessibilityRole: 'button' },
+    };
+    const fiberB: FakeFiber = {
+      type: { displayName: 'B' },
+      memoizedProps: { accessibilityRole: 'button' },
+    };
+    fiberA.sibling = fiberB;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiberA,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.find_element({ by: 'role', value: 'button' }) as { component?: string };
+    expect(r.component).toBe('A');
+  });
+
+  test('refMap LRU cap — 256 entry 후 oldest evicted (review F3 회귀 잠금)', () => {
+    // 매우 큰 트리는 비현실 — root child chain 으로 LRU 검증.
+    // 257번째 find 시 e1 이 evicted, e2~e257 + e258 살아있음.
+    // walkFiber 가 stack 기반 DFS — child 만 따라가는 chain 만들기.
+    function makeChain(n: number): FakeFiber {
+      let last: FakeFiber = {
+        type: 'Text',
+        memoizedProps: { children: 'leaf' },
+      };
+      for (let i = 0; i < n; i++) {
+        last = {
+          type: { displayName: 'C' + i },
+          memoizedProps: {},
+          child: last,
+        };
+      }
+      return last;
+    }
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: makeChain(1),
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // 260번 find — 같은 'leaf' 매칭. 매 호출마다 새 ref. e1~e260.
+    const refs: string[] = [];
+    for (let i = 0; i < 260; i++) {
+      const r = rt.handlers.find_element({ by: 'text', value: 'leaf' }) as { ref: string };
+      refs.push(r.ref);
+    }
+    expect(refs.length).toBe(260);
+    // 256 cap — e1~e4 evicted, e5~e260 살아있음.
+    const has = (ref: string) =>
+      (rt.handlers.__getFiberByRef({ ref }) as { has?: boolean }).has === true;
+    expect(has('e1')).toBe(false);
+    expect(has('e4')).toBe(false);
+    expect(has('e5')).toBe(true);
+    expect(has('e260')).toBe(true);
+  });
+
+  test('__getFiberByRef — 등록된 ref 는 has:true, 없는 ref 는 has:false', () => {
+    const fiber: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'X' },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.find_element({ by: 'text', value: 'X' }) as { ref: string };
+    expect((rt.handlers.__getFiberByRef({ ref: r.ref }) as { has?: boolean }).has).toBe(true);
+    expect((rt.handlers.__getFiberByRef({ ref: 'e9999' }) as { has?: boolean }).has).toBe(false);
+  });
+
+  test('매칭 없음 → { found: false }', () => {
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.find_element({ by: 'text', value: 'NotPresent' }) as {
+      found?: boolean;
+    };
+    expect(r.found).toBe(false);
+  });
+
+  test('serializeFiber — testID + source(_debugSource) 포함', () => {
+    const fiber: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'Tagged', testID: 'btn-1' },
+      _debugSource: { fileName: '/abs/path/App.tsx', lineNumber: 42 },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.find_element({ by: 'text', value: 'Tagged' }) as {
+      testID?: string;
+      source?: string;
+    };
+    expect(r.testID).toBe('btn-1');
+    expect(r.source).toBe('/abs/path/App.tsx:42');
+  });
+});
