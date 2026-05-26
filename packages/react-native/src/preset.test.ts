@@ -397,6 +397,42 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     ]);
   });
 
+  test('runBeforeMain — extra.mcp=true 명시 (default 와 동등하게 dev 시 inject)', () => {
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true, extra: { mcp: true } }));
+    expect(opts.runBeforeMain).toEqual([
+      join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'),
+      join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'),
+    ]);
+  });
+
+  test('runBeforeMain — extra 자체 undefined 일 때 dev 시 default 로 inject (회귀 방지)', () => {
+    mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');
+    writeFileSync(join(dir, 'node_modules/react-native/Libraries/Core/InitializeCore.js'), '');
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'), '');
+
+    // extra 미전달 — `?? undefined` 분기로 default 동작 검증.
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    expect(opts.runBeforeMain).toContain(
+      join(dir, 'node_modules/@zntc/react-native/runtime/mcp-runtime.cjs'),
+    );
+  });
+
   test('runBeforeMain — @zntc/react-native 미설치 시 silent fallback (inject 안 함, throw 없음)', () => {
     mkdirSync(join(dir, 'node_modules/react-native/Libraries/Core'), { recursive: true });
     writeFileSync(join(dir, 'node_modules/react-native/package.json'), '{"name":"react-native"}');

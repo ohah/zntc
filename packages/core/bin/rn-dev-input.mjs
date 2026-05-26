@@ -99,6 +99,10 @@ export function buildRnBundleExtra(config, opts = {}) {
     sourceRoot: cfg.sourcemapSourcesRoot ?? undefined,
     silentConsoleErrorPatterns: server.silentConsoleErrorPatterns ?? undefined,
     forwardClientLogs: server.forwardClientLogs !== false,
+    // PR-C — `extra.mcp` opt-out. zntc.config / metro.config 의 최상위 `mcp` 또는
+    // `server.mcp` 필드로 noise-sensitive 빌드 (CI bundle 분석 등) 가 MCP runtime
+    // preamble 을 끌 수 있게 forward. undefined 면 default (dev 시 자동 inject).
+    mcp: cfg.mcp ?? server.mcp ?? undefined,
   };
 }
 
