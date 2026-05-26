@@ -432,7 +432,17 @@ pub const DevServer = struct {
         defer connection.stream.close();
 
         var send_buf: [8192]u8 = undefined;
-        var recv_buf: [8192]u8 = undefined;
+        // recv_buf: 256KB heap alloc — large WebSocket frame (JSON-RPC payload, MCP
+        // app channel 의 take_snapshot 같은 대형 응답) 지원. std.http.Server.WebSocket
+        // 의 readSmallMessage 는 single-frame (fin=true) 만 받고 `payload > buffer.len`
+        // 시 MessageTooBig. typical MCP request/response (KB~수십 KB) 는 충분히 fit.
+        // PNG 등 binary payload 가 base64 로 MB 단위가 될 경우는 PR-E3+ 의 streaming
+        // 또는 자체 readMessage 구현으로 별도 처리.
+        const recv_buf = self.allocator.alloc(u8, 256 * 1024) catch |err| {
+            getLog().print("zntc: failed to alloc connection recv buffer: {}\n", .{err}) catch {};
+            return;
+        };
+        defer self.allocator.free(recv_buf);
 
         if (self.tls_ctx) |*ctx| {
             // HTTPS path — SSL_accept handshake 후 TlsReader/TlsWriter 어댑터로 http.Server.
@@ -442,13 +452,13 @@ pub const DevServer = struct {
             };
             defer tls_conn.deinit();
 
-            var tls_reader = tls_conn.reader(&recv_buf);
+            var tls_reader = tls_conn.reader(recv_buf);
             var tls_writer = tls_conn.writer(&send_buf);
             var server: http.Server = .init(&tls_reader.interface, &tls_writer.interface);
             self.serveOnConnection(&server, &tls_writer.interface);
         } else {
             // plain HTTP path.
-            var conn_reader = connection.stream.reader(&recv_buf);
+            var conn_reader = connection.stream.reader(recv_buf);
             var conn_writer = connection.stream.writer(&send_buf);
             var server: http.Server = .init(conn_reader.interface(), &conn_writer.interface);
             self.serveOnConnection(&server, &conn_writer.interface);
