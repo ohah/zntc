@@ -2106,11 +2106,24 @@ async function runServe(opts, config, { appDev = null } = {}) {
           // dirty=cssChanges 받아 tempRoot 에 새 .css cpSync + PostCSS process.
           // graphChanged 면 아래 runBundle 분기가 처리 — 중복 회피.
           if (event && event.success && Array.isArray(event.changed) && !event.graphChanged) {
-            const cssChanges = event.changed.filter(
-              (p) =>
-                typeof p === 'string' &&
-                (p.endsWith('.css') || p.endsWith('.scss') || p.endsWith('.sass')),
-            );
+            // #3861 — outdir 안 path 는 cssChanges 에서 제외. reconcileOutdir 의
+            // unlink 가 kqueue NOTE.DELETE 발생 → outdir path 가 changed_files
+            // 에 들어가 다음 cycle 의 prepare/afterBundle 가 mirror 다시 → unlink
+            // 효과 무효화 → 무한 loop. outdir 의 fs event 는 dev 결과 (mirror /
+            // bundler emit) 이므로 source-of-truth 가 아니라 처음부터 무시.
+            // /code-review max #1: path boundary — outdir='/a/dist' 가 sibling
+            // '/a/dist-vendor/foo.css' false-positive 매치 방지. line 2467 의
+            // drain filter (`${outdirAbs}${sep}`) 와 동형 (exact + sep prefix).
+            const resolvedOutdir = opts.outdir ? resolve(opts.outdir) : null;
+            const resolvedOutdirPrefix = resolvedOutdir ? `${resolvedOutdir}${sep}` : null;
+            const cssChanges = event.changed.filter((p) => {
+              if (typeof p !== 'string') return false;
+              if (!(p.endsWith('.css') || p.endsWith('.scss') || p.endsWith('.sass'))) return false;
+              if (resolvedOutdir && (p === resolvedOutdir || p.startsWith(resolvedOutdirPrefix))) {
+                return false;
+              }
+              return true;
+            });
             if (cssChanges.length > 0) {
               try {
                 await appDev.prepare(cssChanges);
@@ -2322,7 +2335,25 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // fsWatch + drain (CSS / sass / postcss / restart) 만 — JS 변경은 native watch 가 단독 처리.
 
     async function rebuildAppDevCss(changedPath) {
-      await appDev.afterBundle({ changedPath });
+      // issue #3861 — prepare 도 호출. drain 이 prepare skip 시 tempRoot 가
+      // raw root 의 변경 (특히 delete) 와 동기 안 되어 afterBundle 의 mirror 가
+      // stale .css 를 outdir 에 다시 write → reconcileOutdirCss 의 unlink 무효화
+      // (drain 과 native onRebuild 의 dual watch race). prepare 가 raw root 의
+      // 현재 상태로 tempRoot sync — delete 시 tempRoot 에서도 unlink → mirror
+      // 도 안 함.
+      // /code-review max #2: prepare 의 throw 도 hmr error broadcast — onRebuild
+      // 의 catch 패턴 (line 2125 `[serve] css prepare+afterBundle failed`) 과
+      // symmetry. drain outer catch 만 의존하면 hmr.reportThrownError skip 됨.
+      try {
+        await appDev.prepare([changedPath]);
+        await appDev.afterBundle({ changedPath });
+      } catch (cssErr) {
+        hmr?.reportThrownError(cssErr);
+        if (opts.logLevel !== 'silent') {
+          console.error('[serve] css prepare+afterBundle failed:', cssErr);
+        }
+        throw cssErr; // drain outer try 가 재처리 — rebuilding=false 보장.
+      }
       hmr?.clearError();
       hmr?.broadcast({
         type: HMR_MSG.CssUpdate,
