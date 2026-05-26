@@ -712,6 +712,10 @@ function extractCssPostcssOverride(plugins) {
       root: opts.root,
     };
   }
+  // review #2 — `css({root})` 단독 명시 (postcss override 없이) 시 root 가
+  // auto-discover path 에서 silent ignore. fix 가 design 변경 (prepare 가 새
+  // cssAutoDiscoverRoot 옵션 받아 findPostcssConfig 의 search base swap) 필요 —
+  // monorepo edge case, 본 PR scope 외 별도 issue (TODO).
   return null;
 }
 
