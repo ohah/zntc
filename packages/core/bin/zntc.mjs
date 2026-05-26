@@ -701,7 +701,16 @@ function extractCssPostcssOverride(plugins) {
   const opts = cssPlugin.__cssOptions;
   if (opts.disabled === true) return { plugins: [], options: undefined };
   if (opts.postcss) {
-    return { plugins: opts.postcss.plugins ?? [], options: opts.postcss.options };
+    return {
+      plugins: opts.postcss.plugins ?? [],
+      options: opts.postcss.options,
+      // issue #3851 — css({root}) 의 root 가 caller-pre-warm path 에서 silent
+      // ignore 였던 회귀 fix. override path 의 postcss require base 로 routing.
+      // mode 는 override.plugins 명시 시 loadPostcssConfig 미호출이라 무의미 —
+      // routing 안 함 (사용자가 root 와 mode 둘 다 명시한 경우 mode 는 onLoad
+      // 의 dispatcher path 에서만 의미 있었음, caller-pre-warm 에선 dead).
+      root: opts.root,
+    };
   }
   return null;
 }
