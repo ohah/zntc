@@ -451,6 +451,9 @@ pub const Resolver = struct {
             if (std.mem.eql(u8, specifier, entry.from)) {
                 return try allocator.dupe(u8, entry.to);
             }
+            // `exact = true` 인 entry 는 prefix 매칭 skip — `to` 가 단일 파일이면 subpath
+            // import 가 깨지므로 명시적 opt-in 한 경우에만 prefix 도 허용.
+            if (entry.exact) continue;
             // 접두사 매칭: specifier가 "from/" 로 시작
             if (specifier.len > entry.from.len and
                 std.mem.startsWith(u8, specifier, entry.from) and

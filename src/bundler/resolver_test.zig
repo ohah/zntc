@@ -757,6 +757,33 @@ test "resolve.alias — no match partial name" {
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }
 
+test "resolve.alias — exact=true 는 prefix match 를 건너뛴다 (wrapper 단일 파일 alias 보호)" {
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react-native-webview", .to = "/abs/wrapper.cjs", .exact = true },
+    };
+    // exact 매칭은 작동
+    const exact = try Resolver.applyAlias(std.testing.allocator, aliases, "react-native-webview");
+    defer std.testing.allocator.free(exact.?);
+    try std.testing.expectEqualStrings("/abs/wrapper.cjs", exact.?);
+    // prefix 매칭은 비활성 — subpath 가 원본 패키지로 resolve 되도록 alias 가 안 적용되어야 함
+    const prefix = try Resolver.applyAlias(std.testing.allocator, aliases, "react-native-webview/lib/X");
+    try std.testing.expectEqual(@as(?[]const u8, null), prefix);
+}
+
+test "resolve.alias — exact=false (default) 는 기존대로 prefix match 동작" {
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = "preact/compat" }, // exact 미명시 → false
+    };
+    // exact 도 작동
+    const exact = try Resolver.applyAlias(std.testing.allocator, aliases, "react");
+    defer std.testing.allocator.free(exact.?);
+    try std.testing.expectEqualStrings("preact/compat", exact.?);
+    // prefix 도 작동 (회귀 검증)
+    const prefix = try Resolver.applyAlias(std.testing.allocator, aliases, "react/hooks");
+    defer std.testing.allocator.free(prefix.?);
+    try std.testing.expectEqualStrings("preact/compat/hooks", prefix.?);
+}
+
 test "resolve.alias — multiple entries first match wins" {
     const aliases: []const AliasEntry = &.{
         .{ .from = "react", .to = "preact/compat" },

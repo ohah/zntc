@@ -848,6 +848,18 @@ interface BuildOptionsCommon {
    * `fallback` instead (applied only on failure). The array form is also
    * supported in buildSync(), which uses only sync hooks. */
   alias?: Record<string, string> | Array<{ find: string | RegExp; replacement: string }>;
+  /** alias 의 prefix matching 을 끄는 from 목록 — exact 매칭만 허용.
+   *
+   * `alias` object form 의 기본 동작은 esbuild 처럼 정확/접두사 둘 다 매칭이라
+   * `react: "preact/compat"` 가 `react/hooks → preact/compat/hooks` 로도 동작한다.
+   * 그러나 alias 값이 **단일 파일** (예: `react-native-webview` → `./wrapper.cjs`)
+   * 인 경우 prefix 매칭이 `react-native-webview/lib/X → ./wrapper.cjs/lib/X` 로
+   * 깨진다. 이 list 에 from 을 적으면 그 entry 는 exact 매칭만 적용 — subpath
+   * import 는 alias 미적용되어 원본 패키지로 resolve.
+   *
+   * 일반적인 package-to-package alias (`react → preact/compat`) 는 list 에 안 넣음.
+   * 주로 wrapper / shim 파일 alias 에서 사용. */
+  aliasExact?: string[];
   /** Fallback resolution — applied **only when** normal resolution fails
    * (webpack `resolve.fallback` / Metro `resolver.extraNodeModules`-compatible).
    * If the value is a string, re-resolve to that specifier; if `false`,

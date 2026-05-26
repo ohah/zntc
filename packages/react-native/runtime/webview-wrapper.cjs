@@ -44,7 +44,19 @@ function mergeRefs(...refs) {
   };
 }
 
-const OriginalWebView = Original && Original.WebView ? Original.WebView : Original.default;
+// CJS / ESM interop: 원본 패키지가 named `WebView`, default, 또는 `module.exports = WebView`
+// 셋 중 어느 형태든 받음. 셋 다 falsy 면 명시적 throw (silent 깨짐 대신 fail-loud).
+const OriginalWebView =
+  (Original && Original.WebView) ||
+  (Original && Original.default) ||
+  (typeof Original === 'function' ? Original : null);
+if (!OriginalWebView) {
+  throw new Error(
+    '[zntc:mcp:webview-wrapper] react-native-webview 모듈 의 WebView export 를 찾지 못했습니다. ' +
+      '지원 형태: named `WebView`, `default`, 또는 `module.exports = WebView` (legacy CJS). ' +
+      'react-native-webview 버전 호환성 확인 필요.',
+  );
+}
 
 const ZntcWebView = React.forwardRef(function ZntcWebView(props, userRef) {
   const innerRef = React.useRef(null);
@@ -70,7 +82,13 @@ ZntcWebView.displayName = 'ZntcWebView';
 // 원본 모듈의 named/default exports 모두 보존 — WebView 만 wrap 으로 덮어쓴다.
 // caller 가 `import { WebViewMessageEvent } from 'react-native-webview'` 처럼 가져가는
 // 부수 export 가 깨지지 않게 spread.
-module.exports = Object.assign({}, Original, {
+const wrapperExports = Object.assign({}, Original, {
   WebView: ZntcWebView,
   default: ZntcWebView,
 });
+// `__esModule: true` 명시 — pure CJS 원본 패키지 (marker 부재) 에서도 zntc/Metro 의
+// CJS→ESM interop 이 default import 를 `module.default` 로 unwrap 하도록 보장.
+// 미 명시 시 `import WebView from 'react-native-webview'` 가 wrapper module 객체
+// 전체를 받아 JSX `<WebView />` 가 invariant violation 으로 깨진다.
+Object.defineProperty(wrapperExports, '__esModule', { value: true });
+module.exports = wrapperExports;

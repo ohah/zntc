@@ -40,6 +40,7 @@ const pure_zig_only_fields = [_][]const u8{
 const bundler_only_fields = [_][]const u8{
     "external",
     "alias",
+    "aliasExact",
     "loader",
     "conditions",
     "resolveExtensions",
