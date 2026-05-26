@@ -251,6 +251,189 @@ function startMcpRuntime(g) {
     if (!params || typeof params.ref !== 'string') return { fiber: null };
     return { has: refMap.has(params.ref) };
   };
+
+  // ─── inspect_state (PR-F2) ───
+  //
+  // safeSerialize — JSON.stringify 의 cycle / non-serializable 값 핸들링.
+  // - function/symbol/undefined → marker string ('[Function]' 등)
+  // - Map/Set/Date/Promise/Error/TypedArray → 명시적 marker
+  // - cycle → '[Circular]'
+  // - max depth → '[MaxDepth]' (RN 의 큰 fiber tree 가 nested props 갖기도)
+  // - throwing getter/Proxy → '[Throws ...]' (해당 key 만 marker, 전체 inspect 실패 방지)
+  // - 긴 array → 앞 N 개만 + '[...M more]'
+  // 결과는 plain object/array/primitive 만 — JSON.stringify 안전.
+  var SERIALIZE_MAX_DEPTH = 8;
+  var SERIALIZE_MAX_ARRAY = 256;
+  function safeSerialize(value, seen, depth) {
+    if (depth > SERIALIZE_MAX_DEPTH) return '[MaxDepth]';
+    if (value === null) return null;
+    var t = typeof value;
+    if (t === 'string' || t === 'boolean') return value;
+    if (t === 'number') {
+      // NaN / Infinity 는 JSON 표현 불가 → marker.
+      if (value !== value) return '[NaN]';
+      if (value === Infinity) return '[+Infinity]';
+      if (value === -Infinity) return '[-Infinity]';
+      return value;
+    }
+    if (t === 'undefined') return '[Undefined]';
+    if (t === 'function') {
+      return '[Function' + (value.name ? ' ' + value.name : '') + ']';
+    }
+    if (t === 'symbol') return '[Symbol]';
+    if (t === 'bigint') return '[BigInt ' + value.toString() + ']';
+    if (t !== 'object') return '[' + t + ']';
+
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+
+    try {
+      if (Array.isArray(value)) {
+        var arr = [];
+        var cap = Math.min(value.length, SERIALIZE_MAX_ARRAY);
+        for (var i = 0; i < cap; i++) {
+          arr.push(safeSerialize(value[i], seen, depth + 1));
+        }
+        if (value.length > SERIALIZE_MAX_ARRAY) {
+          arr.push('[...' + (value.length - SERIALIZE_MAX_ARRAY) + ' more]');
+        }
+        return arr;
+      }
+      // 잘 알려진 instance 들 — 빈 object 로 직렬화되지 않게 marker.
+      if (value instanceof Date) return '[Date ' + value.toISOString() + ']';
+      if (typeof Map !== 'undefined' && value instanceof Map)
+        return '[Map size=' + value.size + ']';
+      if (typeof Set !== 'undefined' && value instanceof Set)
+        return '[Set size=' + value.size + ']';
+      if (typeof Error !== 'undefined' && value instanceof Error) {
+        return '[Error ' + (value.message || value.name || '?') + ']';
+      }
+      if (typeof Promise !== 'undefined' && value instanceof Promise) return '[Promise]';
+      // TypedArray (Uint8Array/Int32Array/...) — large image/audio buffer 가 props 에
+      // 들어오면 전체 byte 직렬화로 폭주. ArrayBuffer.isView 가 모든 typed array + DataView
+      // 커버. byteLength 만 marker 에 포함.
+      if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
+        var ctor = (value.constructor && value.constructor.name) || 'TypedArray';
+        var len = typeof value.byteLength === 'number' ? value.byteLength : value.length || 0;
+        return '[' + ctor + ' byteLength=' + len + ']';
+      }
+      if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+        return '[ArrayBuffer byteLength=' + value.byteLength + ']';
+      }
+      // React element ($$typeof Symbol) — 거대한 children 트리 직렬화 방지. Proxy 가
+      // 임의 get trap 으로 throw 할 수 있어 try/catch.
+      try {
+        if (value.$$typeof) return '[ReactElement]';
+      } catch (e) {
+        return '[Throws ' + ((e && e.message) || '?') + ']';
+      }
+
+      var out = {};
+      // Own enumerable keys 만 — prototype chain (e.g. component instance methods) 제외.
+      // F3: 사용자 정의 getter / Proxy get trap 이 throw 하면 한 key 만 marker — 전체
+      // inspect_state 실패 방지.
+      for (var key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          try {
+            out[key] = safeSerialize(value[key], seen, depth + 1);
+          } catch (e2) {
+            out[key] = '[Throws ' + ((e2 && e2.message) || '?') + ']';
+          }
+        }
+      }
+      return out;
+    } finally {
+      seen.delete(value);
+    }
+  }
+
+  // React 18 fiber 의 memoizedState 가 function component 면 Hook linked list:
+  //   { memoizedState, baseState, queue, next } chain.
+  // _debugHookTypes (dev only) 가 hook 이름 array — index 로 매칭.
+  function serializeHooks(fiber) {
+    var hook = fiber.memoizedState;
+    if (!hook || typeof hook !== 'object') return null;
+    // class component 의 state 객체 인지 hook chain 인지 판별 — hook 은 `next` field 와
+    // `memoizedState` field 동시 보유 (React 가 internal contract). 그 외는 class state.
+    if (!('next' in hook) || !('memoizedState' in hook)) return null;
+
+    var types = Array.isArray(fiber._debugHookTypes) ? fiber._debugHookTypes : [];
+    var hooks = [];
+    var cur = hook;
+    var idx = 0;
+    var MAX_HOOKS = 64; // 안전 한도 — 정상 component 는 수개~수십개.
+    var seen = new Set();
+    while (cur && hooks.length < MAX_HOOKS) {
+      if (seen.has(cur)) break; // cycle guard (이론상 없지만 방어)
+      seen.add(cur);
+      // useEffect 등의 Effect 객체는 fiber-wide Effect linked list 의 next 를 갖고 있어서
+      // memoizedState 그대로 직렬화하면 동일 chain 이 hook 마다 중복 트리화. tag/create/
+      // destroy/deps 시그너처로 Effect 감지 → marker.
+      var hookValue = cur.memoizedState;
+      var isEffectLike =
+        hookValue != null &&
+        typeof hookValue === 'object' &&
+        typeof hookValue.tag === 'number' &&
+        'create' in hookValue &&
+        'deps' in hookValue;
+      hooks.push({
+        type: types[idx] || null,
+        value: isEffectLike
+          ? '[Effect tag=' + hookValue.tag + ']'
+          : safeSerialize(hookValue, new Set(), 0),
+      });
+      cur = cur.next;
+      idx += 1;
+    }
+    // 64 hook 초과 시 silent truncate 면 reader 가 완전한 list 로 오인. marker 명시.
+    if (cur && hooks.length >= MAX_HOOKS) {
+      hooks.push({ type: '[...truncated]', value: null });
+    }
+    return hooks;
+  }
+
+  // inspect_state({ ref }) — find_element 가 부여한 ref 로 fiber lookup, props/state/hooks
+  // 직렬화. ref 가 없거나 fiber 가 unmount 됐으면 throw → -32603.
+  handlers.inspect_state = function (params) {
+    if (!params || typeof params.ref !== 'string') {
+      throw new Error('inspect_state: params requires `ref` (string from find_element)');
+    }
+    var fiber = refMap.get(params.ref);
+    if (!fiber) {
+      throw new Error('inspect_state: ref `' + params.ref + '` not found (expired or unknown)');
+    }
+
+    var name = getComponentName(fiber) || '(unknown)';
+    // fiber kind 판별:
+    //   - host: `fiber.type` 이 string (View, Text 등 RN 내장 / DOM 의 div). stateNode
+    //     는 NativeViewInstance 라 React Component 아님.
+    //   - class: stateNode 가 React.Component 인스턴스 — Component.prototype 에
+    //     `isReactComponent = {}` (빈 객체) 가 박혀 있어 truthy check (F1 fix:
+    //     `=== true` 는 잘못된 contract, 실제 React 는 `{}`).
+    //   - function: 그 외 (hook 기반 컴포넌트). memoizedState 가 Hook linked list.
+    var isHost = typeof fiber.type === 'string';
+    var isClass =
+      !isHost &&
+      fiber.stateNode != null &&
+      typeof fiber.stateNode === 'object' &&
+      !!fiber.stateNode.isReactComponent;
+    var kind = isHost ? 'host' : isClass ? 'class' : 'function';
+
+    var snapshot = {
+      ref: params.ref,
+      component: name,
+      kind: kind,
+      props: safeSerialize(fiber.memoizedProps, new Set(), 0),
+    };
+
+    if (isClass) {
+      snapshot.state = safeSerialize(fiber.memoizedState, new Set(), 0);
+    } else if (!isHost) {
+      var hooks = serializeHooks(fiber);
+      if (hooks != null) snapshot.hooks = hooks;
+    }
+    return snapshot;
+  };
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.

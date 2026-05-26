@@ -28,6 +28,7 @@ const mcp_app_channel_mod = @import("mcp_app_channel.zig");
 // 여유. tool 별로 더 길어야 하면 별도 const 추가 (예: take_snapshot 큰 트리 직렬화).
 const PING_TIMEOUT_MS: u64 = 5000;
 const FIND_ELEMENT_TIMEOUT_MS: u64 = 5000;
+const INSPECT_STATE_TIMEOUT_MS: u64 = 5000;
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -1276,7 +1277,8 @@ pub const DevServer = struct {
                 \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}},
                 \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}},
                 \\{"name":"ping_app","description":"Ping the connected RN app's MCP runtime over the /__mcp-app WebSocket. Returns the app's pong response (verifies bi-directional channel).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-                \\{"name":"find_element","description":"Find the first matching React component in the connected RN app's fiber tree. Returns an opaque ref (e1/e2/...) for subsequent tool calls (inspect_state, eval_code, etc).","inputSchema":{"type":"object","properties":{"by":{"type":"string","enum":["text","role","component"],"description":"Match strategy: 'text' (substring of Text node), 'role' (accessibilityRole), 'component' (displayName)"},"value":{"type":"string","description":"Value to match"}},"required":["by","value"],"additionalProperties":false}}
+                \\{"name":"find_element","description":"Find the first matching React component in the connected RN app's fiber tree. Returns an opaque ref (e1/e2/...) for subsequent tool calls (inspect_state, eval_code, etc).","inputSchema":{"type":"object","properties":{"by":{"type":"string","enum":["text","role","component"],"description":"Match strategy: 'text' (substring of Text node), 'role' (accessibilityRole), 'component' (displayName)"},"value":{"type":"string","description":"Value to match"}},"required":["by","value"],"additionalProperties":false}},
+                \\{"name":"inspect_state","description":"Inspect the React state of an element previously returned by find_element. Pass the opaque ref (e.g. 'e1') and receive a JSON snapshot. Result kind: 'class' (memoizedState as state object), 'function' (hooks array from memoizedState linked list + _debugHookTypes), 'host' (RN native component — only props returned).","inputSchema":{"type":"object","properties":{"ref":{"type":"string","description":"Opaque ref returned by find_element (e1, e2, ...)"}},"required":["ref"],"additionalProperties":false}}
                 \\]}
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
@@ -1316,6 +1318,13 @@ pub const DevServer = struct {
         if (std.mem.eql(u8, tool_name, "find_element")) {
             // RN app 의 fiber tree 순회 — `by` / `value` args 그대로 forward.
             try self.forwardAppTool(w, "find_element", args, FIND_ELEMENT_TIMEOUT_MS);
+            return;
+        }
+
+        if (std.mem.eql(u8, tool_name, "inspect_state")) {
+            // refMap lookup + memoizedProps/memoizedState/hooks 직렬화. sync 작업이라
+            // 동일 5초 timeout. ref invalid 시 app handler 가 throw → -32603 forward.
+            try self.forwardAppTool(w, "inspect_state", args, INSPECT_STATE_TIMEOUT_MS);
             return;
         }
 

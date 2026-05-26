@@ -364,6 +364,68 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
     expect(result.error.message).toContain('app not connected');
   });
 
+  test('tools/list — inspect_state 노출', async () => {
+    const server = await setupServer();
+    const result = await mcpCall(server.port, { jsonrpc: '2.0', id: 14, method: 'tools/list' });
+    const names = result.result.tools.map((t: any) => t.name);
+    expect(names).toContain('inspect_state');
+  });
+
+  test('inspect_state — ref forward + round-trip', async () => {
+    const server = await setupServer();
+    let receivedParams: any = null;
+    mockApp = connectMockApp(server.port, {
+      inspect_state: (params) => {
+        receivedParams = params;
+        return {
+          ref: 'e1',
+          component: 'Counter',
+          kind: 'function',
+          props: { step: 1 },
+          hooks: [{ type: 'useState', value: 3 }],
+        };
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: { name: 'inspect_state', arguments: { ref: 'e1' } },
+    });
+
+    expect(receivedParams).toEqual({ ref: 'e1' });
+    expect(result.error).toBeUndefined();
+    const inner = JSON.parse(result.result.content[0].text);
+    expect(inner.component).toBe('Counter');
+    expect(inner.kind).toBe('function');
+    expect(inner.hooks[0]).toEqual({ type: 'useState', value: 3 });
+  });
+
+  test('inspect_state — unknown ref → app throw → -32603 + 원본 메시지 forward', async () => {
+    const server = await setupServer();
+    mockApp = connectMockApp(server.port, {
+      inspect_state: (params: any) => {
+        throw new Error('inspect_state: ref `' + params.ref + '` not found');
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 16,
+      method: 'tools/call',
+      params: { name: 'inspect_state', arguments: { ref: 'e9999' } },
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain('not found');
+  });
+
   test('app 두 번째 연결 — first-wins 거절', async () => {
     const server = await setupServer();
     mockApp = connectMockApp(server.port, {});
