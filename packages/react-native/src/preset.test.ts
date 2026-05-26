@@ -445,6 +445,78 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     ]);
   });
 
+  test('alias — dev 시 react-native-webview → wrapper.cjs + __zntc_webview_original__ → 원본 (PR-D)', () => {
+    mkdirSync(join(dir, 'node_modules/react-native-webview'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/react-native-webview/package.json'),
+      '{"name":"react-native-webview"}',
+    );
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    expect(opts.alias?.['react-native-webview']).toBe(
+      join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'),
+    );
+    expect(opts.alias?.['__zntc_webview_original__']).toBe(
+      join(dir, 'node_modules/react-native-webview'),
+    );
+  });
+
+  test('alias — prod 빌드는 react-native-webview wrapper alias 미등록', () => {
+    mkdirSync(join(dir, 'node_modules/react-native-webview'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/react-native-webview/package.json'),
+      '{"name":"react-native-webview"}',
+    );
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: false }));
+    expect(opts.alias?.['react-native-webview']).toBeUndefined();
+    expect(opts.alias?.['__zntc_webview_original__']).toBeUndefined();
+  });
+
+  test('alias — extra.mcp=false 면 wrapper alias 미등록 (dev 라도 opt-out)', () => {
+    mkdirSync(join(dir, 'node_modules/react-native-webview'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/react-native-webview/package.json'),
+      '{"name":"react-native-webview"}',
+    );
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'), '');
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true, extra: { mcp: false } }));
+    expect(opts.alias?.['react-native-webview']).toBeUndefined();
+    expect(opts.alias?.['__zntc_webview_original__']).toBeUndefined();
+  });
+
+  test('alias — react-native-webview 미설치 시 silent fallback (alias 자체가 안 등록)', () => {
+    mkdirSync(join(dir, 'node_modules/@zntc/react-native/runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'node_modules/@zntc/react-native/package.json'),
+      '{"name":"@zntc/react-native"}',
+    );
+    writeFileSync(join(dir, 'node_modules/@zntc/react-native/runtime/webview-wrapper.cjs'), '');
+    // react-native-webview 패키지 부재
+
+    const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    expect(opts.alias?.['react-native-webview']).toBeUndefined();
+    expect(opts.alias?.['__zntc_webview_original__']).toBeUndefined();
+  });
+
   test('extra.prelude — 사용자 prelude 가 projectRoot 기준 절대화 + runBeforeMain 에 append', () => {
     const opts = buildRnBundleOptions(
       baseInput({ extra: { prelude: ['./shims/extra-prelude.js'] } }),
