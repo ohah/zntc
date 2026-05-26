@@ -720,9 +720,7 @@ function extractCssPostcssOverride(plugins) {
  * @returns {Array<unknown>} caller-pre-warm 활성 css plugin 제거된 새 array
  */
 function dropCallerPreWarmedCssPlugin(plugins) {
-  return plugins.filter(
-    (p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined),
-  );
+  return plugins.filter((p) => !(p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined));
 }
 
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
@@ -749,9 +747,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   const postcssOverride = extractCssPostcssOverride(appPlugins);
   // dropCallerPreWarmedCssPlugin: caller-pre-warm 활성화 시 그 css plugin 을
   // dispatcher 에서 제거. buildBundleOptions 와 동일 logic 공유 (drift 방지).
-  const dispatchPlugins = postcssOverride
-    ? dropCallerPreWarmedCssPlugin(appPlugins)
-    : appPlugins;
+  const dispatchPlugins = postcssOverride ? dropCallerPreWarmedCssPlugin(appPlugins) : appPlugins;
   let pipelineRoot = null;
   try {
     const pipeline = await web.prepareAppCssPipelineRoot(
