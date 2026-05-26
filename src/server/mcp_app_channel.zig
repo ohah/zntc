@@ -37,13 +37,20 @@ pub const RequestError = error{
     WriteFailed,
 };
 
+/// 슬롯의 종결 상태 — `failed` 가 단일 boolean 이었던 이전 design 은 disconnect 와
+/// OOM 을 구분 못 해 caller 가 wrong error 받았다 (F3). 명시 enum 으로 분리.
+const SlotState = enum {
+    pending,
+    success, // response 있음
+    disconnected, // disconnect 으로 fail
+    oom, // resolveResponse 의 dupe OOM
+};
+
 /// `request` 가 wait 하는 동안 reader thread 가 채우는 슬롯. caller 가 lifetime 관리.
 const PendingSlot = struct {
     /// 응답 JSON 본문 — caller allocator 로 alloc/free.
     response: ?[]const u8 = null,
-    /// `true` 면 disconnect 등으로 fail. response 는 null.
-    failed: bool = false,
-    completed: bool = false,
+    state: SlotState = .pending,
 };
 
 /// 앱 ↔ MCP server 간 WebSocket 채널의 단일 연결 상태 + pending request map.
@@ -51,6 +58,9 @@ const PendingSlot = struct {
 pub const AppChannel = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
+    /// 별도 mutex — write_mutex 가 WS frame 송신 직렬화 보호. mutex (pending Map) 와
+    /// 분리해 reader 의 resolveResponse 가 write 동안 blocking 안 됨 (F2).
+    write_mutex: std.Thread.Mutex = .{},
     cond: std.Thread.Condition = .{},
     connected: bool = false,
     /// 핸드셰이크 누적 성공 횟수.
@@ -103,8 +113,9 @@ pub const AppChannel = struct {
         // 모든 pending slot fail 처리 + cond broadcast 로 waiter 깨움.
         var it = self.pending.valueIterator();
         while (it.next()) |slot_ptr| {
-            slot_ptr.*.failed = true;
-            slot_ptr.*.completed = true;
+            // pending → disconnected. 이미 success/oom 상태면 그대로 보존
+            // (race: response 가 거의 동시에 도착했으면 caller 에게 그 결과 우선).
+            if (slot_ptr.*.state == .pending) slot_ptr.*.state = .disconnected;
         }
         self.cond.broadcast();
         self.mutex.unlock();
@@ -122,15 +133,16 @@ pub const AppChannel = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         const slot_ptr = self.pending.get(id) orelse return; // orphan response — drop
+        // 이미 종결됐으면 (caller 가 timeout/disconnect 으로 떠남) 새 response 무시.
+        // caller stack 변수 ref 라 race window 닫음 (F1).
+        if (slot_ptr.state != .pending) return;
         const copy = self.allocator.dupe(u8, response_json) catch {
-            // OOM — slot 이 fail 처리 (response null)
-            slot_ptr.failed = true;
-            slot_ptr.completed = true;
+            slot_ptr.state = .oom;
             self.cond.broadcast();
             return;
         };
         slot_ptr.response = copy;
-        slot_ptr.completed = true;
+        slot_ptr.state = .success;
         self.cond.broadcast();
     }
 
@@ -169,8 +181,8 @@ pub const AppChannel = struct {
         }
         self.mutex.unlock();
 
-        // WS frame build + 송신 (mutex 밖에서) — writer 가 caller thread 의 buffer 와
-        // WebSocket output stream 사용. caller serialize 보장 (stdio 단일 thread).
+        // WS frame build — main mutex 밖. write 자체는 write_mutex 로 직렬화 (F2):
+        // 여러 caller 가 동시 request 호출 시 frame interleave 회피.
         var frame: std.ArrayList(u8) = .empty;
         defer frame.deinit(self.allocator);
         const w = frame.writer(self.allocator);
@@ -181,7 +193,10 @@ pub const AppChannel = struct {
         w.writeAll(params_json) catch return RequestError.OutOfMemory;
         w.writeAll("}") catch return RequestError.OutOfMemory;
 
-        writer.write(frame.items) catch return RequestError.WriteFailed;
+        self.write_mutex.lock();
+        const write_result = writer.write(frame.items);
+        self.write_mutex.unlock();
+        write_result catch return RequestError.WriteFailed;
 
         // 응답 wait — deadline 까지 timedWait. monotonic 안 쓰는 이유: timedWait 가 relative
         // delta 받아 처리. nanoTimestamp 는 wall-clock 이라 NTP jump 시 spurious wake 가능
@@ -193,20 +208,23 @@ pub const AppChannel = struct {
         const deadline_ns = start_ns +| total_ns; // saturating add
         self.mutex.lock();
         defer self.mutex.unlock();
-        while (!slot.completed) {
+        while (slot.state == .pending) {
             const now_i128 = std.time.nanoTimestamp();
             const now_ns: u64 = if (now_i128 > 0) @intCast(now_i128) else 0;
-            if (now_ns >= deadline_ns) {
-                return RequestError.Timeout;
-            }
+            if (now_ns >= deadline_ns) break; // deadline 도달 — 아래 final check
             const remaining = deadline_ns - now_ns;
             self.cond.timedWait(&self.mutex, remaining) catch {
-                // timeout — slot 도 completed 안 됨. 응답 안 옴.
-                return RequestError.Timeout;
+                break; // timeout — 아래 final check
             };
         }
-        if (slot.failed) return RequestError.AppDisconnected;
-        return slot.response orelse return RequestError.AppDisconnected;
+        // Final state 매핑 — mutex 잡은 상태에서 state 재확인. timeout race window
+        // (response 가 timeout 직후 도착) 도 여기서 success 분기로 흡수해 leak/UAF 방지 (F1).
+        switch (slot.state) {
+            .success => return slot.response orelse RequestError.AppDisconnected,
+            .disconnected => return RequestError.AppDisconnected,
+            .oom => return RequestError.OutOfMemory,
+            .pending => return RequestError.Timeout,
+        }
     }
 
     pub fn stats(self: *AppChannel) struct {
@@ -410,6 +428,73 @@ test "AppChannel.request: disconnect 중 pending → AppDisconnected" {
     ch.disconnect();
     thr.join();
     try std.testing.expectEqual(@as(?RequestError, RequestError.AppDisconnected), ctx.err);
+}
+
+test "AppChannel.resolveResponse: timeout 직후 도착한 응답 — slot.state 가 이미 종결이라 무시 (F1 race)" {
+    var ch = AppChannel.init(std.testing.allocator);
+    defer ch.deinit();
+    _ = ch.connect();
+
+    var written: std.ArrayList(u8) = .empty;
+    defer written.deinit(std.testing.allocator);
+    const writer = BufWriter{ .out = &written, .alloc = std.testing.allocator };
+    // 짧은 timeout — 즉시 종결.
+    try std.testing.expectError(RequestError.Timeout, ch.request("late", "{}", 10, writer));
+    // 정상 동작이면 pending 0 (defer 가 remove). resolveResponse 후속 호출은 orphan.
+    try std.testing.expectEqual(@as(usize, 0), ch.stats().pending_count);
+    ch.resolveResponse(1, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"late\":true}}");
+    // leak 또는 throw 없음 (testing.allocator 가 leak 검증).
+}
+
+test "AppChannel.resolveResponse: 두 동시 request — id 별 매칭, out-of-order 응답" {
+    var ch = AppChannel.init(std.testing.allocator);
+    defer ch.deinit();
+    _ = ch.connect();
+
+    var written: std.ArrayList(u8) = .empty;
+    defer written.deinit(std.testing.allocator);
+
+    const RunCtx = struct {
+        ch: *AppChannel,
+        writer: BufWriter,
+        method: []const u8,
+        result: ?[]const u8 = null,
+        err: ?RequestError = null,
+
+        fn run(self: *@This()) void {
+            const r = self.ch.request(self.method, "{}", 2000, self.writer) catch |e| {
+                self.err = e;
+                return;
+            };
+            self.result = r;
+        }
+    };
+    var ctx_a = RunCtx{
+        .ch = &ch,
+        .writer = BufWriter{ .out = &written, .alloc = std.testing.allocator },
+        .method = "alpha",
+    };
+    var ctx_b = RunCtx{
+        .ch = &ch,
+        .writer = BufWriter{ .out = &written, .alloc = std.testing.allocator },
+        .method = "beta",
+    };
+    const t_a = try std.Thread.spawn(.{}, RunCtx.run, .{&ctx_a});
+    const t_b = try std.Thread.spawn(.{}, RunCtx.run, .{&ctx_b});
+    std.Thread.sleep(30 * std.time.ns_per_ms);
+
+    // out-of-order: id 2 (beta) 먼저, id 1 (alpha) 나중.
+    ch.resolveResponse(2, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"who\":\"beta\"}}");
+    ch.resolveResponse(1, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"who\":\"alpha\"}}");
+
+    t_a.join();
+    t_b.join();
+    try std.testing.expect(ctx_a.result != null);
+    try std.testing.expect(ctx_b.result != null);
+    defer std.testing.allocator.free(ctx_a.result.?);
+    defer std.testing.allocator.free(ctx_b.result.?);
+    try std.testing.expect(std.mem.indexOf(u8, ctx_a.result.?, "\"alpha\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ctx_b.result.?, "\"beta\"") != null);
 }
 
 test "AppChannel.resolveResponse: orphan id (unknown) → silent drop, throw 없음" {
