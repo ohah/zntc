@@ -93,6 +93,11 @@ export type HmrMessage =
 export const APP_DEV_HMR_CLIENT_PATH = '/__zntc_app_dev_hmr__';
 export const APP_DEV_HMR_WS_PATH = '/__hmr';
 
+// MCP (Model Context Protocol) app channel WS path — RN 앱 안 mcp-runtime.cjs 가
+// 이 path 로 dev_server 에 connect. Zig 측 `src/server/dev_server.zig:mcp_app_path`
+// 와 정확히 일치해야 함 (protocol.test.ts 의 짝 검증으로 drift 차단).
+export const APP_DEV_MCP_APP_WS_PATH = '/__mcp-app';
+
 // RFC 6455 §1.3 — handshake 에 쓰이는 fixed GUID. 변경 불가.
 export const HMR_WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
