@@ -18,8 +18,7 @@ import {
 // 실 css() factory 의 file URL — fixture 가 monorepo 안 packages/web/dist 의
 // 빌드된 css/index.js 를 file:// URL 로 import. node_modules walk 회피.
 // build:dts 가 dist/css/index.js 생성 보장 (pretest hook).
-const CSS_FACTORY_URL = pathToFileURL(join(PROJECT_ROOT, 'packages/web/dist/css/index.js'))
-  .href;
+const CSS_FACTORY_URL = pathToFileURL(join(PROJECT_ROOT, 'packages/web/dist/css/index.js')).href;
 
 describe('CLI: Vite-style app builder > styles > PostCSS', () => {
   test('JS-imported CSS is linked from HTML and processed by PostCSS', () => {
