@@ -2114,12 +2114,26 @@ async function runServe(opts, config, { appDev = null } = {}) {
             // /code-review max #1: path boundary — outdir='/a/dist' 가 sibling
             // '/a/dist-vendor/foo.css' false-positive 매치 방지. line 2467 의
             // drain filter (`${outdirAbs}${sep}`) 와 동형 (exact + sep prefix).
+            // /code-review max #2: outdir 가 source root 와 동일/상위면 filter
+            // skip — outdir == watchRoot (e.g. `--outdir .`) 시 raw root 의
+            // .css 전부 false-positive 제외되어 dev HMR 차단. opts._appWatchRoot
+            // 를 보호 — outdir 가 watchRoot 와 무관 (외부 dir) 일 때만 filter.
             const resolvedOutdir = opts.outdir ? resolve(opts.outdir) : null;
-            const resolvedOutdirPrefix = resolvedOutdir ? `${resolvedOutdir}${sep}` : null;
+            const resolvedWatchRoot = opts._appWatchRoot ? resolve(opts._appWatchRoot) : null;
+            const outdirEqualsOrContainsWatchRoot =
+              resolvedOutdir &&
+              resolvedWatchRoot &&
+              (resolvedOutdir === resolvedWatchRoot ||
+                resolvedWatchRoot.startsWith(`${resolvedOutdir}${sep}`));
+            const resolvedOutdirPrefix =
+              resolvedOutdir && !outdirEqualsOrContainsWatchRoot ? `${resolvedOutdir}${sep}` : null;
             const cssChanges = event.changed.filter((p) => {
               if (typeof p !== 'string') return false;
               if (!(p.endsWith('.css') || p.endsWith('.scss') || p.endsWith('.sass'))) return false;
-              if (resolvedOutdir && (p === resolvedOutdir || p.startsWith(resolvedOutdirPrefix))) {
+              if (
+                resolvedOutdirPrefix &&
+                (p === resolvedOutdir || p.startsWith(resolvedOutdirPrefix))
+              ) {
                 return false;
               }
               return true;
@@ -2341,18 +2355,19 @@ async function runServe(opts, config, { appDev = null } = {}) {
       // (drain 과 native onRebuild 의 dual watch race). prepare 가 raw root 의
       // 현재 상태로 tempRoot sync — delete 시 tempRoot 에서도 unlink → mirror
       // 도 안 함.
-      // /code-review max #2: prepare 의 throw 도 hmr error broadcast — onRebuild
-      // 의 catch 패턴 (line 2125 `[serve] css prepare+afterBundle failed`) 과
-      // symmetry. drain outer catch 만 의존하면 hmr.reportThrownError skip 됨.
+      // prepare/afterBundle 의 throw — drain outer catch (line 2460) 가
+      // hmr.reportThrownError + console.error('[serve] rebuild error') 처리.
+      // 내부 catch 에서 reportThrownError 중복 호출은 동일 err 가 2 번 broadcast
+      // 됨 (review max #1). css-specific 진단 메시지만 추가 + throw (드레인 finally
+      // 가 rebuilding=false 보장).
       try {
         await appDev.prepare([changedPath]);
         await appDev.afterBundle({ changedPath });
       } catch (cssErr) {
-        hmr?.reportThrownError(cssErr);
         if (opts.logLevel !== 'silent') {
           console.error('[serve] css prepare+afterBundle failed:', cssErr);
         }
-        throw cssErr; // drain outer try 가 재처리 — rebuilding=false 보장.
+        throw cssErr;
       }
       hmr?.clearError();
       hmr?.broadcast({
