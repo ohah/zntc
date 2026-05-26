@@ -592,6 +592,129 @@ fn addWatchRootFiles(
     ) catch {};
 }
 
+/// issue #3858 — root + 모든 sub-dir 을 recursive 로 dir-watch 등록. kqueue/inotify
+/// 의 dir-watch 가 single-level (sub-dir 안 변화 안 감지) 이라 sub-dir 도 각각
+/// 등록 필요. count 는 tracked 의 watch_count 증가분.
+fn addWatchRootDirs(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    tracked: *zntc_lib.server.TrackedFileSet,
+    count: *usize,
+) void {
+    // root 자체
+    if (tracked.addDirPath(root)) count.* += 1;
+
+    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(allocator) catch return;
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        // node_modules, .git, .zntc-* 등 skip (watch_scan 의 hasSkippedSegment 와 일관)
+        if (std.mem.indexOf(u8, entry.path, "node_modules") != null) continue;
+        if (std.mem.indexOf(u8, entry.path, ".git") != null) continue;
+        if (std.mem.indexOf(u8, entry.path, ".zntc-") != null) continue;
+        const full_path = std.fs.path.join(allocator, &.{ root, entry.path }) catch continue;
+        defer allocator.free(full_path);
+        if (tracked.addDirPath(full_path)) count.* += 1;
+    }
+}
+
+/// issue #3858 — dir event 수신 후 root rescan. tracked 의 file 중 root 안 path 와
+/// 새 scan 결과 비교 → 신규 file 은 addPath + touched 에 추가 (markIfChanged 가
+/// 첫 hash 등록 → changed_files 진입), 삭제된 file 은 removePath + deleted 에 추가
+/// (markIfChanged 가 hash 실패로 false → changed_files 우회를 위해 caller 가 직접
+/// changed_files 에 push 해야 함). touched/deleted 의 key 는 allocator 가 owner.
+fn rescanWatchRootDirty(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    include: []const []const u8,
+    exclude: []const []const u8,
+    tracked: *zntc_lib.server.TrackedFileSet,
+    touched: *std.StringHashMap(void),
+    deleted: *std.StringHashMap(void),
+) void {
+    // (a) 새 scan 결과 set
+    var new_paths = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = new_paths.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        new_paths.deinit();
+    }
+    const Ctx = struct {
+        new_paths: *std.StringHashMap(void),
+        allocator: std.mem.Allocator,
+    };
+    const visit = struct {
+        fn f(ctx: Ctx, full_path: []const u8) bool {
+            const dupe = ctx.allocator.dupe(u8, full_path) catch return true;
+            const gop = ctx.new_paths.getOrPut(dupe) catch {
+                ctx.allocator.free(dupe);
+                return true;
+            };
+            if (gop.found_existing) ctx.allocator.free(dupe);
+            return true; // dupe 했으니 walker 가 원본 free
+        }
+    }.f;
+    zntc_lib.server.watch_scan.scanRoot(
+        allocator,
+        root,
+        .{ .include = include, .exclude = exclude },
+        Ctx{ .new_paths = &new_paths, .allocator = allocator },
+        visit,
+    ) catch return;
+
+    // (b) 신규 file detect — new_paths 에 있고 tracked 에 없음.
+    // addWatcherOnly 사용 (hashes 등록 skip) — 다음 markIfChanged 의 첫 호출이
+    // hash 등록 + true 반환 → changed_files 에 들어가 첫 emit 보장.
+    var nit = new_paths.keyIterator();
+    while (nit.next()) |np| {
+        if (tracked.contains(np.*)) continue;
+        if (!tracked.addWatcherOnly(np.*)) continue;
+        const td = allocator.dupe(u8, np.*) catch continue;
+        const gop = touched.getOrPut(td) catch {
+            allocator.free(td);
+            continue;
+        };
+        if (gop.found_existing) {
+            allocator.free(td);
+        } else {
+            gop.key_ptr.* = td;
+        }
+    }
+
+    // (c) 삭제 detect — tracked 의 root 안 file 중 new_paths 에 없음
+    var to_remove: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (to_remove.items) |rp| allocator.free(rp);
+        to_remove.deinit(allocator);
+    }
+    var tit = tracked.keyIterator();
+    while (tit.next()) |tp| {
+        if (tracked.isDirPath(tp.*)) continue;
+        if (!std.mem.startsWith(u8, tp.*, root)) continue;
+        if (new_paths.contains(tp.*)) continue;
+        const dupe = allocator.dupe(u8, tp.*) catch continue;
+        to_remove.append(allocator, dupe) catch {
+            allocator.free(dupe);
+        };
+    }
+    for (to_remove.items) |rp| {
+        // deleted set 에 추가 (touched 아님 — markIfChanged 우회 위해)
+        const td = allocator.dupe(u8, rp) catch continue;
+        const gop = deleted.getOrPut(td) catch {
+            allocator.free(td);
+            continue;
+        };
+        if (gop.found_existing) {
+            allocator.free(td);
+        } else {
+            gop.key_ptr.* = td;
+        }
+        tracked.removePath(rp); // rp 를 read 후 remove (tracked key 와 다른 dupe)
+    }
+}
+
 /// 단일 파일 빌드 산출물의 `.map` 을 디스크에 기록. lazy 경로 (`sourcemap_json == null`)
 /// 이거나 `enabled == false` 이면 no-op. 실패는 silently ignore — dev server 경로에서
 /// disk I/O 장애가 빌드 흐름을 막으면 안 됨.
@@ -817,6 +940,11 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             &tracked,
             &initial_watch_count,
         );
+        // issue #3858 — dev mode 중 신규 file (graph 미진입 .css 등) 의 add/delete
+        // 감지를 위해 root_dir + 모든 sub-dir 도 dir-watch. kqueue/inotify 의
+        // dir-watch 가 single-level (sub-dir 안 변화 안 감지) 이라 recursive 등록.
+        // main loop 가 dir event 시 rescan + 신규 path 의 addPath + touched 갱신.
+        addWatchRootDirs(allocator, root, &tracked, &initial_watch_count);
     }
 
     // 초기 빌드 결과를 파일에 쓰기 (onReady 전에 완료해야 서버가 읽을 수 있음).
@@ -926,7 +1054,49 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
         if (async_data.stop_flag.load(.acquire)) break;
 
-        // content hash 필터링.
+        // issue #3858 — dir event 분리 후 rescan + 신규/삭제 file detect.
+        // touched 에 남은 dir path 는 markIfChanged 가 hash 실패로 false 라 사실상
+        // noise — remove 후 dir 자체의 rescan trigger 로 활용.
+        // 삭제된 file 은 별도 deleted set 으로 받아 markIfChanged 우회 → 아래
+        // changed_files 에 직접 push (deleted 의 hashFileStreaming 가 null 이라
+        // markIfChanged 가 false 반환, 그대로 두면 changed_files 누락).
+        var deleted: std.StringHashMap(void) = .init(allocator);
+        defer {
+            var dkit = deleted.keyIterator();
+            while (dkit.next()) |k| allocator.free(k.*);
+            deleted.deinit();
+        }
+        var dir_paths_in_touched: std.ArrayList([]const u8) = .empty;
+        defer dir_paths_in_touched.deinit(allocator);
+        var ttit = touched.keyIterator();
+        while (ttit.next()) |k| {
+            if (tracked.isDirPath(k.*)) dir_paths_in_touched.append(allocator, k.*) catch {};
+        }
+        if (dir_paths_in_touched.items.len > 0) {
+            // dir path 제거 + 각 watch_root 마다 rescan
+            for (dir_paths_in_touched.items) |dp| {
+                if (touched.fetchRemove(dp)) |kv| allocator.free(kv.key);
+            }
+            for (async_data.watch_roots) |root| {
+                // 신규 sub-dir 도 dynamic dir-watch — addWatchRootDirs 가 tracked.contains
+                // (addDirPath 안에서 dir_paths.contains) 로 중복 skip.
+                var dummy_count: usize = 0;
+                addWatchRootDirs(allocator, root, &tracked, &dummy_count);
+                rescanWatchRootDirty(
+                    allocator,
+                    root,
+                    async_data.watch_include,
+                    async_data.watch_exclude,
+                    &tracked,
+                    &touched,
+                    &deleted,
+                );
+            }
+        }
+        if (touched.count() == 0 and deleted.count() == 0) continue;
+
+        // content hash 필터링. 신규 file 은 markIfChanged 가 첫 hash 등록이라
+        // 항상 true 반환 → changed_files 통과.
         var changed_files: std.ArrayList([]const u8) = .empty;
         defer changed_files.deinit(allocator);
         var tkit = touched.keyIterator();
@@ -934,6 +1104,12 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             if (tracked.markIfChanged(pkey.*)) {
                 changed_files.append(allocator, pkey.*) catch {};
             }
+        }
+        // issue #3858 — deleted file 은 hash 우회로 changed_files 에 직접 push.
+        // caller (zntc.mjs onRebuild) 가 existsSync 로 add/delete 구분.
+        var dkit2 = deleted.keyIterator();
+        while (dkit2.next()) |pkey| {
+            changed_files.append(allocator, pkey.*) catch {};
         }
         const detect_ns: u64 = if (detect_timer) |*t| t.read() else 0;
 

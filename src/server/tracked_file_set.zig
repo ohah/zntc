@@ -23,6 +23,9 @@ pub const TrackedFileSet = struct {
     allocator: std.mem.Allocator,
     watcher: FileWatcher,
     hashes: std.StringHashMap(u64),
+    /// issue #3858 — dir 자체를 watch 대상으로 등록한 path 들. addDirPath 가 set.
+    /// caller (watchWorkerThread) 가 isDirPath 로 event dispatch 분기.
+    dir_paths: std.StringHashMap(void),
     max_bytes: usize,
 
     const Self = @This();
@@ -32,6 +35,7 @@ pub const TrackedFileSet = struct {
             .allocator = allocator,
             .watcher = try FileWatcher.init(allocator),
             .hashes = std.StringHashMap(u64).init(allocator),
+            .dir_paths = std.StringHashMap(void).init(allocator),
             .max_bytes = max_bytes,
         };
     }
@@ -41,6 +45,9 @@ pub const TrackedFileSet = struct {
         var it = self.hashes.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
         self.hashes.deinit();
+        var dit = self.dir_paths.keyIterator();
+        while (dit.next()) |k| self.allocator.free(k.*);
+        self.dir_paths.deinit();
     }
 
     /// 감시 대상 등록 + 해시 캐시 갱신.
@@ -62,10 +69,54 @@ pub const TrackedFileSet = struct {
         return true;
     }
 
+    /// issue #3858 — dir 자체를 감시 대상으로 등록. file 과 다른 점:
+    /// (a) hash 비교 우회 (dir 의 content hash 의미 없음, markIfChanged 시 dir_paths 면 항상 true)
+    /// (b) waitForChanges 가 dir entry 변화 시 dir path 의 ChangeEvent emit (PR-1 의 dir-watch)
+    /// caller (watchWorkerThread) 가 dir event 시 rescan + 신규 file 의 addPath 수행.
+    /// 반환값: watcher 등록 성공 여부.
+    pub fn addDirPath(self: *Self, path: []const u8) bool {
+        self.watcher.addPath(path) catch return false;
+        if (self.dir_paths.contains(path)) return true;
+        const key = self.allocator.dupe(u8, path) catch return true;
+        self.dir_paths.put(key, {}) catch {
+            self.allocator.free(key);
+            return true;
+        };
+        return true;
+    }
+
+    /// issue #3858 — path 가 dir-path 로 등록됐는지. caller 가 event 의 path
+    /// 가 dir 인지 file 인지 dispatch 분기에 사용.
+    pub fn isDirPath(self: *const Self, path: []const u8) bool {
+        return self.dir_paths.contains(path);
+    }
+
+    /// issue #3858 — rescan 후 발견된 신규 file 등록. watcher.addPath + hashes
+    /// 에 dummy hash(0) 등록 (key 는 dupe). 이렇게 하면:
+    /// (a) markIfChanged 의 첫 호출이 실 hash 와 0 비교 → 다르면 true → changed_files
+    ///     에 들어가 첫 emit 정상 작동
+    /// (b) keyIterator 가 path 를 iterate — 이후 delete detect 시 to_remove 에
+    ///     정상 추가됨 (이전엔 hashes 미등록이라 iterate 안 되어 누락)
+    /// 반환값: watcher 등록 성공 여부.
+    pub fn addWatcherOnly(self: *Self, path: []const u8) bool {
+        self.watcher.addPath(path) catch return false;
+        const gop = self.hashes.getOrPut(path) catch return true;
+        if (!gop.found_existing) {
+            const key = self.allocator.dupe(u8, path) catch {
+                _ = self.hashes.remove(path);
+                return true;
+            };
+            gop.key_ptr.* = key;
+            gop.value_ptr.* = 0; // dummy — markIfChanged 의 첫 호출이 실 hash 로 갱신 + true 반환
+        }
+        return true;
+    }
+
     /// 워처 + 해시 캐시 양쪽에서 제거.
     pub fn removePath(self: *Self, path: []const u8) void {
         self.watcher.removePath(path);
         if (self.hashes.fetchRemove(path)) |kv| self.allocator.free(kv.key);
+        if (self.dir_paths.fetchRemove(path)) |kv| self.allocator.free(kv.key);
     }
 
     pub fn contains(self: *const Self, path: []const u8) bool {
