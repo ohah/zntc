@@ -160,9 +160,40 @@ describe('mcp-runtime.cjs (PR-E2) — dispatch', () => {
       '{"jsonrpc":"2.0","method":"connected","params":{"protocol":"mcp-app-99"}}',
     );
     expect(lastWs!.closed).toBe(true);
-    // closedExplicitly 라 reconnect schedule 안 됨 — 0-delay 외 추가 setTimeout 없음
+    // protocolMismatch sentinel 로 reconnect schedule 안 됨 — 0-delay 외 추가 setTimeout 없음.
+    // close() API 의 closedExplicitly 와 별도 sentinel — 두 case 구분.
     const reconnectScheduled = g.setTimeout_calls!.some((c) => c.ms > 0);
     expect(reconnectScheduled).toBe(false);
+  });
+
+  test('일반 RPC 의 nested params 에 "method":"connected" 가 있어도 hello 로 오인 안 함 (F1 회귀 잠금)', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    let dispatched: unknown = null;
+    rt.handlers['app/dispatch'] = (params) => {
+      dispatched = params;
+      return { ok: true };
+    };
+    lastWs!.triggerOpen();
+    // nested action 안에 `"method":"connected"` 문자열이 들어있는 정상 RPC.
+    lastWs!.triggerMessage(
+      '{"jsonrpc":"2.0","id":99,"method":"app/dispatch","params":{"action":{"method":"connected","payload":{}}}}',
+    );
+    // close 되면 안 됨 (이전 substring 기반 코드는 여기서 protocol mismatch 분기로 close 했었음).
+    expect(lastWs!.closed).toBe(false);
+    expect(dispatched).toEqual({ action: { method: 'connected', payload: {} } });
+    expect(lastWs!.sent.length).toBe(1);
+    const resp = JSON.parse(lastWs!.sent[0]);
+    expect(resp.id).toBe(99);
+    expect(resp.result).toEqual({ ok: true });
+  });
+
+  test('hello 의 protocol 키 부재 (server bug) — mismatch 로 처리, close', () => {
+    loadRuntime(g);
+    lastWs!.triggerOpen();
+    // `connected` method 인데 params.protocol 누락.
+    lastWs!.triggerMessage('{"jsonrpc":"2.0","method":"connected","params":{}}');
+    expect(lastWs!.closed).toBe(true);
   });
 
   test('request 메시지 (id + method) — handler 호출 → response send', () => {
