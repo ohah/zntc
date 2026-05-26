@@ -7,7 +7,17 @@
  * Watch/Serve는 JS 레이어에서 구현.
  */
 
-import { mkdirSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { resolve, dirname, basename, extname, join, sep } from 'node:path';
 import { createServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
@@ -852,6 +862,10 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
 
   opts.entryPoints = [prepared.entryPath];
   opts.serveDir = opts.outdir;
+  // issue #3858 — runServe 의 watchFolders 자동 set 위해 app root 를 stash.
+  // opts.serveDir 은 outdir(`.zntc-dev`) 이라 사용자 source code root 가 아님 —
+  // 별도 channel 필요.
+  opts._appWatchRoot = root;
   // issue #3852 — runAppDev 가 collect 한 plugin 을 stash → runServe 의
   // buildBundleOptions 가 재import 안 함. ESM cache hit 라 시맨틱 회귀는 0 였지만
   // perf + cache invalidate edge 안전.
@@ -1816,6 +1830,58 @@ async function emitRestartAfter(opts, reason, beforeSpawn) {
 
 // ─── Serve 모드 ───
 
+/**
+ * #3858 — raw root 와 outdir 의 `.css` set diff → outdir 에만 있는 .css unlink.
+ * dev mode 에서 사용자가 raw root 의 .css 를 삭제했을 때 outdir 의 mirror file
+ * 도 stale 잔존 회피. native event 의 race / circular event 와 무관하게 fs
+ * truth 로 reconcile. cost: O(n) walk, typical CSS count 작아 무시할 수준.
+ */
+function reconcileOutdirCss(rawRoot, outdir) {
+  const rawCssSet = new Set();
+  function walkRaw(dir, relBase) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      // node_modules / .git / outdir 의 sub-tree skip — outdir 가 rawRoot 안에 있을 수 있음.
+      if (e.name === 'node_modules' || e.name === '.git') continue;
+      if (e.name.startsWith('.zntc-')) continue;
+      const full = join(dir, e.name);
+      const rel = relBase ? `${relBase}/${e.name}` : e.name;
+      if (e.isDirectory()) walkRaw(full, rel);
+      else if (e.isFile() && e.name.endsWith('.css')) rawCssSet.add(rel);
+    }
+  }
+  walkRaw(rawRoot, '');
+
+  function walkOutdir(dir, relBase) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      const rel = relBase ? `${relBase}/${e.name}` : e.name;
+      if (e.isDirectory()) walkOutdir(full, rel);
+      else if (e.isFile() && e.name.endsWith('.css')) {
+        if (!rawCssSet.has(rel)) {
+          try {
+            unlinkSync(full);
+          } catch {
+            // best-effort
+          }
+        }
+      }
+    }
+  }
+  walkOutdir(outdir, '');
+}
+
 async function runServe(opts, config, { appDev = null } = {}) {
   const isBun = typeof globalThis.Bun !== 'undefined';
   // appDev 모드에서만 web 모듈 (HMR_MSG / APP_DEV_HMR_*_PATH / createHmrChannel /
@@ -1945,6 +2011,20 @@ async function runServe(opts, config, { appDev = null } = {}) {
       filterCallerPreWarmCss: true,
     });
     watchBuildOpts.devMode = true;
+    // issue #3858 — appDev path 에서 watchFolders 자동 = app root. 사용자가 직접
+    // .css 파일을 import 없이 만들었을 때 (graph 외) 신규 file 의 add 감지를
+    // native watcher (TrackedFileSet 의 dir-watch) 가 처리하도록 root_dir 등록.
+    // opts._appWatchRoot 는 runAppDev 가 stash 한 사용자 source code root (outdir
+    // 아닌 진짜 src/ 컨테이너). 사용자 명시 watchFolders 가 있으면 union — 우선순위 유지.
+    if (opts._appWatchRoot) {
+      const autoWatchRoot = resolve(opts._appWatchRoot);
+      const existing = Array.isArray(watchBuildOpts.watchFolders)
+        ? watchBuildOpts.watchFolders
+        : [];
+      if (!existing.includes(autoWatchRoot)) {
+        watchBuildOpts.watchFolders = [...existing, autoWatchRoot];
+      }
+    }
     watchBuildOpts.onReady = async (event) => {
       try {
         // #3799 root-cause — initial build 의 diagnostics 의 error 도 reportError.
@@ -1973,6 +2053,37 @@ async function runServe(opts, config, { appDev = null } = {}) {
       // 시점 — cold-start 는 watch 1회만).
       void (async () => {
         try {
+          // issue #3858 — changed 에 .css 가 포함되어 있고 graphChanged 아니면
+          // prepare + afterBundle 호출. graph 외 신규 .css 는 prepare 의 tempRoot
+          // sync 가 필요 (afterBundle 의 mirror 가 tempRoot 만 scan). prepare 가
+          // dirty=cssChanges 받아 tempRoot 에 새 .css cpSync + PostCSS process.
+          // graphChanged 면 아래 runBundle 분기가 처리 — 중복 회피.
+          // issue #3858 — changed 에 .css 가 포함되어 있고 graphChanged 아니면
+          // prepare + afterBundle 호출. graph 외 신규 .css 는 prepare 의 tempRoot
+          // sync 가 필요 (afterBundle 의 mirror 가 tempRoot 만 scan). prepare 가
+          // dirty=cssChanges 받아 tempRoot 에 새 .css cpSync + PostCSS process.
+          // graphChanged 면 아래 runBundle 분기가 처리 — 중복 회피.
+          if (event && event.success && Array.isArray(event.changed) && !event.graphChanged) {
+            const cssChanges = event.changed.filter(
+              (p) =>
+                typeof p === 'string' &&
+                (p.endsWith('.css') || p.endsWith('.scss') || p.endsWith('.sass')),
+            );
+            if (cssChanges.length > 0) {
+              try {
+                await appDev.prepare(cssChanges);
+                await appDev.afterBundle({ changedPath: cssChanges[0] });
+              } catch (cssErr) {
+                console.error('[serve] css prepare+afterBundle failed:', cssErr);
+              }
+            }
+          }
+          // issue #3858 — 매 rebuild 마다 outdir reconcile (raw root .css 와 diff
+          // 후 outdir stale unlink). native delete event 의 race / circular event
+          // 회피. cost: O(.css count) walk per rebuild — 일반적 small.
+          if (event && event.success && opts._appWatchRoot && opts.outdir) {
+            reconcileOutdirCss(opts._appWatchRoot, opts.outdir);
+          }
           if (event && event.success && event.graphChanged) {
             try {
               const r = await runBundle(opts, config);
