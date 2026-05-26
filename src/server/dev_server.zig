@@ -201,8 +201,10 @@ pub const DevServer = struct {
     }
 
     pub fn deinit(self: *DevServer) void {
-        // shutdown_requested set + tcp_server close — 새 connection 안 받음.
-        self.shutdown_requested.store(true, .release);
+        // shutdown() 호출 — shutdown_requested set + self-connect trigger 로 blocking
+        // accept() 를 깨움 (macOS/Linux 에서 listen socket close 만으론 accept 안 깨움).
+        // 그 뒤 listen socket 정리.
+        self.shutdown();
         if (self.tcp_server) |*s| s.deinit();
         // 살아있는 connection (handleConnection thread) 가 종료할 때까지 wait —
         // reader thread 가 app_channel mutex/pending Map 사용 중인데 deinit 가
@@ -212,12 +214,16 @@ pub const DevServer = struct {
         const DEINIT_TIMEOUT_MS: u64 = 2000;
         const start_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
         const deadline_ns: u128 = start_ns + DEINIT_TIMEOUT_MS * std.time.ns_per_ms;
-        while (self.active_connections.load(.acquire) > 0) {
+        while (true) {
+            const count = self.active_connections.load(.acquire);
+            if (count == 0) break;
             const now_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
             if (now_ns >= deadline_ns) {
+                // 같은 load 결과 (count) 를 log — re-load 시 사이에 0 으로 떨어졌으면
+                // "0 개 아직 살아있음 (UAF 위험)" 같은 모순적 메시지 (F4 retro).
                 getLog().print(
                     "  [deinit] connection thread {d} 개 아직 살아있음 — 2초 timeout, deinit 진행 (UAF 위험)\n",
-                    .{self.active_connections.load(.acquire)},
+                    .{count},
                 ) catch {};
                 break;
             }
@@ -439,7 +445,13 @@ pub const DevServer = struct {
                 getLog().print("zntc: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
+            // active_connections 를 spawn 전에 증가 — handleConnection 의 fetchAdd 가
+            // OS scheduler 지연으로 늦게 실행되면 deinit 의 wait loop 가 counter=0 으로
+            // 보고 일찍 통과 → UAF race window. 여기서 카운트 ownership 잡고 spawn
+            // 실패 시만 즉시 감소. 성공 시 handleConnection 의 defer fetchSub 가 처리.
+            _ = self.active_connections.fetchAdd(1, .acq_rel);
             const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, handleConnection, .{ self, connection }) catch {
+                _ = self.active_connections.fetchSub(1, .acq_rel);
                 connection.stream.close();
                 continue;
             };
@@ -461,9 +473,8 @@ pub const DevServer = struct {
     }
 
     fn handleConnection(self: *DevServer, connection: std.net.Server.Connection) void {
-        // DevServer.deinit 가 reader thread (이 connection) 가 종료할 때까지 wait —
-        // app_channel 의 mutex/pending Map 사용 중인 thread 와 race 회피.
-        _ = self.active_connections.fetchAdd(1, .acq_rel);
+        // active_connections 의 fetchAdd 는 acceptLoop 가 이미 수행 (spawn 전 race
+        // window 회피). 여기선 defer 로 fetchSub 만 — handleConnection 종료 시 한 번.
         defer _ = self.active_connections.fetchSub(1, .acq_rel);
         defer connection.stream.close();
 
