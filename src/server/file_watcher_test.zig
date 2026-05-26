@@ -247,3 +247,65 @@ test "FileWatcher: add nonexistent path does not crash" {
     // mtime backend: stat 실패해도 등록하므로 count=1 가능
     // 어느 쪽이든 crash하면 안 됨
 }
+
+// issue #3858 — C2 epic PR-1 TDD failing test
+// 디렉토리를 watch 하고 그 안에 새 file 이 생성되면 event 가 발생해야 한다.
+// graph 외 .css 파일이 dev mode 중 생성될 때 native watcher 가 감지하는 인프라.
+test "FileWatcher: watch directory — 새 파일 생성 시 event 발생 (#3858)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    // 디렉토리 자체를 watch
+    try watcher.addPath(dir_path);
+    try std.testing.expectEqual(@as(usize, 1), watcher.watchCount());
+
+    // 별도 thread 가 50ms 후 디렉토리 안에 새 file 생성
+    const create_thread = try std.Thread.spawn(.{}, struct {
+        fn run(dir: std.fs.Dir) void {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            dir.writeFile(.{ .sub_path = "new.css", .data = ".x{}" }) catch {};
+        }
+    }.run, .{tmp.dir});
+
+    const changes = try watcher.waitForChanges(3000);
+    create_thread.join();
+
+    // 새 file 생성이 dir entry 변화 → 어떤 event 든 발생해야 함.
+    // path 는 dir_path 자체 (kqueue) 또는 new.css 의 absolute path (inotify) 가능.
+    try std.testing.expect(changes.len > 0);
+}
+
+// 같은 디렉토리에서 file 삭제 시도 event 발생.
+test "FileWatcher: watch directory — file 삭제 시 event 발생 (#3858)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // 디렉토리 watch 전에 file 미리 존재
+    try tmp.dir.writeFile(.{ .sub_path = "victim.css", .data = ".v{}" });
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    try watcher.addPath(dir_path);
+
+    const del_thread = try std.Thread.spawn(.{}, struct {
+        fn run(dir: std.fs.Dir) void {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            dir.deleteFile("victim.css") catch {};
+        }
+    }.run, .{tmp.dir});
+
+    const changes = try watcher.waitForChanges(3000);
+    del_thread.join();
+
+    try std.testing.expect(changes.len > 0);
+}
