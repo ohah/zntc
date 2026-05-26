@@ -392,9 +392,12 @@ export async function prepareAppCssPipelineRoot(
       dirtyPaths.some((p) => isCssFile(p) || isCssPreprocessorFile(p) || isPostcssConfigFile(p)));
   // issue #3850 — runPostcssIfConfigured 의 deps/dirDeps 결과 보존. afterBundle
   // 의 skipPostcssRun path 가 tailwind @source 같은 dir-dep watch trigger 정합
-  // 위해 사용. postcssRelevant 가 false 면 빈 set (이전 prep 결과 재사용 가정).
-  let postcssDeps = new Set<string>();
-  let postcssDirDeps = new Set<string>();
+  // 위해 사용. **postcssRelevant=false (incremental dirty=non-CSS)** 면 PostCSS
+  // 호출 skip 후 undefined 반환 — controller 가 이전 prep 의 deps/dirDeps 를
+  // carry-over (회귀 가드: /code-review max #1). prep 마다 빈 set 으로 reset
+  // 하면 .ts 파일 1개 edit 만 해도 tailwind @source dir-dep 손실.
+  let postcssDeps: Set<string> | undefined;
+  let postcssDirDeps: Set<string> | undefined;
   if (postcssRelevant) {
     const postcssResult = await runPostcssIfConfigured(
       tempRoot,
@@ -575,8 +578,15 @@ export function createAppDevController(
       preparePostcssApplied = !!pipeline;
       // issue #3850 — prepare result 의 postcssDeps/postcssDirDeps 보존.
       // afterBundle skipPostcssRun path 가 watch trigger 정합 위해 사용.
-      preparePostcssDeps = pipeline?.postcssDeps ?? new Set();
-      preparePostcssDirDeps = pipeline?.postcssDirDeps ?? new Set();
+      // **carry-over (review #1)**: pipeline.postcssDeps 가 undefined 면
+      // PostCSS 호출 skip (incremental + non-CSS dirty) — 이전 prep 의 dirDeps
+      // 보존. defined 면 새 값으로 overwrite.
+      if (pipeline?.postcssDeps !== undefined) {
+        preparePostcssDeps = pipeline.postcssDeps;
+      }
+      if (pipeline?.postcssDirDeps !== undefined) {
+        preparePostcssDirDeps = pipeline.postcssDirDeps;
+      }
       const prepareRoot = pipelineRoot ?? root;
       const envDir = opts.envDir ? resolve(opts.envDir) : prepareRoot;
       const prepared = prepareAppDevSync({
