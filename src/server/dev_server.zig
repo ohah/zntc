@@ -987,7 +987,9 @@ pub const DevServer = struct {
             }) catch {},
             .notification => request.respond("", .{
                 .status = .no_content,
-                .extra_headers = &json_headers,
+                // RFC 9110 §8.3: 본문 없는 응답에 Content-Type SHOULD NOT 보내야 함.
+                // cors_headers 만 사용 (json_headers 의 Content-Type 제외).
+                .extra_headers = &cors_headers,
             }) catch {},
         }
     }
@@ -1085,9 +1087,11 @@ pub const DevServer = struct {
             else => .null,
         };
 
-        // JSON-RPC 2.0: notification 은 응답 금지. method namespace `notifications/`
-        // 로 식별 (MCP spec 의 모든 notification 이 이 prefix 사용).
-        if (std.mem.startsWith(u8, method, "notifications/")) {
+        // JSON-RPC 2.0 §4.1: "A Notification is a Request object without an id member."
+        // method namespace `notifications/` (MCP convention) + `id` 필드 부재 두 조건을
+        // 모두 충족할 때만 notification 으로 처리. strict 한 spec 준수 + 잘못 작성된
+        // client (id 동반 notifications/* 송신) 가 응답을 영원히 기다리는 misuse 방어.
+        if (std.mem.startsWith(u8, method, "notifications/") and id_val == .null) {
             return .notification;
         }
 
@@ -2042,6 +2046,30 @@ test "dispatchMcpRequest: notifications/initialized → .notification + 응답 0
     // JSON-RPC 2.0: notification 은 응답 금지. writer 변경 0, kind 가 .notification.
     try std.testing.expectEqual(DevServer.DispatchResult.notification, kind);
     try std.testing.expectEqual(@as(usize, 0), resp.items.len);
+}
+
+test "dispatchMcpRequest: id 동반 notifications/* → .response (JSON-RPC §4.1 strict: id 부재 + prefix)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    // id 가 있는 notifications/* — spec 위반 client 의 misuse. notification 으로 처리되지 않고
+    // 일반 method 분기에서 -32601 Method not found 응답이 가야 client 가 hang 안 함.
+    const kind = try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":11,"method":"notifications/initialized"}
+    , w);
+
+    try std.testing.expectEqual(DevServer.DispatchResult.response, kind);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":11") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32601") != null);
 }
 
 test "dispatchMcpRequest: 임의 notifications/* prefix → .notification + 응답 0 byte" {
