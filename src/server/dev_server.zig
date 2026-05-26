@@ -925,8 +925,8 @@ pub const DevServer = struct {
         }
     }
 
-    /// MCP (Model Context Protocol) JSON-RPC 2.0 엔드포인트.
-    /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events).
+    /// MCP (Model Context Protocol) JSON-RPC 2.0 HTTP 엔드포인트.
+    /// body 읽기 + 크기 검증 후 transport-agnostic `dispatchMcpRequest` 위임.
     fn handleMcp(self: *DevServer, request: *http.Server.Request) !void {
         if (request.head.method != .POST) {
             request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Use POST\"},\"id\":null}", .{
@@ -974,12 +974,30 @@ pub const DevServer = struct {
         }
         const body = body_buf[0..body_len];
 
+        var resp: std.ArrayList(u8) = .empty;
+        defer resp.deinit(self.allocator);
+        const w = resp.writer(self.allocator);
+
+        self.dispatchMcpRequest(body, w) catch |err| {
+            getLog().print("  [mcp] dispatch error: {}\n", .{err}) catch {};
+            return;
+        };
+
+        request.respond(resp.items, .{
+            .status = .ok,
+            .extra_headers = &json_headers,
+        }) catch {};
+    }
+
+    /// Transport-agnostic JSON-RPC 2.0 dispatcher.
+    /// HTTP 와 (예정된) stdio 양쪽이 공유. body 한 통을 받아 응답 한 통을 `writer` 에 쓴다.
+    /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events, verify_in_chrome),
+    /// notifications/initialized. 그 외 → -32601 Method not found.
+    /// JSON parse 실패 → -32700 Parse error (응답을 writer 에 쓰고 정상 종료).
+    fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !void {
         // JSON 파싱
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
-            request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}", .{
-                .status = .ok,
-                .extra_headers = &json_headers,
-            }) catch {};
+            try writer.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}");
             return;
         };
         defer parsed.deinit();
@@ -997,20 +1015,16 @@ pub const DevServer = struct {
             else => .null,
         };
 
-        var resp: std.ArrayList(u8) = .empty;
-        defer resp.deinit(self.allocator);
-        const w = resp.writer(self.allocator);
-
-        try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try writeJsonValue(w, id_val);
-        try w.writeAll(",");
+        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+        try writeJsonValue(writer, id_val);
+        try writer.writeAll(",");
 
         if (std.mem.eql(u8, method, "initialize")) {
-            try w.writeAll(
+            try writer.writeAll(
                 \\"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"zntc-dev-server","version":"0.1.0"}}
             );
         } else if (std.mem.eql(u8, method, "tools/list")) {
-            try w.writeAll(
+            try writer.writeAll(
                 \\"result":{"tools":[
                 \\{"name":"reset_cache","description":"Clear the build cache. Next build will be a full rebuild.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
                 \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}},
@@ -1018,19 +1032,14 @@ pub const DevServer = struct {
                 \\]}
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
-            try self.handleToolsCall(w, root);
+            try self.handleToolsCall(writer, root);
         } else if (std.mem.eql(u8, method, "notifications/initialized")) {
             // MCP 클라이언트 initialized 통지는 응답 없음 (notification)
-            try w.writeAll("\"result\":{}");
+            try writer.writeAll("\"result\":{}");
         } else {
-            try w.writeAll("\"error\":{\"code\":-32601,\"message\":\"Method not found\"}");
+            try writer.writeAll("\"error\":{\"code\":-32601,\"message\":\"Method not found\"}");
         }
-        try w.writeAll("}");
-
-        request.respond(resp.items, .{
-            .status = .ok,
-            .extra_headers = &json_headers,
-        }) catch {};
+        try writer.writeAll("}");
     }
 
     fn handleToolsCall(self: *DevServer, w: anytype, root: std.json.Value) !void {
@@ -1884,4 +1893,171 @@ test "DevServer.init: cert/key 둘 다 null → plain HTTP (tls_ctx null)" {
     });
     defer dev_server.deinit();
     try std.testing.expect(dev_server.tls_ctx == null);
+}
+
+// ─── dispatchMcpRequest: transport-agnostic JSON-RPC 2.0 dispatcher ───
+// HTTP / stdio 가 공유하는 dispatcher. body 한 통 → writer 응답 한 통.
+
+test "dispatchMcpRequest: initialize → protocolVersion + serverInfo + id 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":42,"method":"initialize"}
+    , w);
+
+    // 응답 형식: {"jsonrpc":"2.0","id":42,"result":{"protocolVersion":"2024-11-05",...}}
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"jsonrpc\":\"2.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"protocolVersion\":\"2024-11-05\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"serverInfo\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"zntc-dev-server\"") != null);
+    // error 필드는 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
+}
+
+test "dispatchMcpRequest: tools/list → 3개 tool 명세 포함" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
+    , w);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"reset_cache\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"get_build_events\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"verify_in_chrome\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
+}
+
+test "dispatchMcpRequest: notifications/initialized → result:{} 응답" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","method":"notifications/initialized"}
+    , w);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"result\":{}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
+}
+
+test "dispatchMcpRequest: unknown method → -32601 Method not found" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":7,"method":"completely/unknown"}
+    , w);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32601") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"Method not found\"") != null);
+}
+
+test "dispatchMcpRequest: invalid JSON body → -32700 Parse error + id null" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest("not-a-json{", w);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32700") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"Parse error\"") != null);
+    // id 는 알 수 없으므로 null 응답
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":null") != null);
+}
+
+test "dispatchMcpRequest: tools/call reset_cache → cache_reset_requested 플래그 set" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    // 초기값 확인
+    try std.testing.expectEqual(false, dev_server.cache_reset_requested.load(.acquire));
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reset_cache","arguments":{}}}
+    , w);
+
+    // dispatcher 호출 후 플래그 set 됨
+    try std.testing.expectEqual(true, dev_server.cache_reset_requested.load(.acquire));
+    // 응답 형식 검증
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "Cache reset requested") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
+}
+
+test "dispatchMcpRequest: tools/call unknown tool → -32602" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
+    defer dev_server.deinit();
+
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(std.testing.allocator);
+    const w = resp.writer(std.testing.allocator);
+
+    try dev_server.dispatchMcpRequest(
+        \\{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"nope","arguments":{}}}
+    , w);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32602") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp.items, "Unknown tool") != null);
 }
