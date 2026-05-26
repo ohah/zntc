@@ -839,6 +839,10 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
 
   opts.entryPoints = [prepared.entryPath];
   opts.serveDir = opts.outdir;
+  // issue #3852 — runAppDev 가 collect 한 plugin 을 stash → runServe 의
+  // buildBundleOptions 가 재import 안 함. ESM cache hit 라 시맨틱 회귀는 0 였지만
+  // perf + cache invalidate edge 안전.
+  opts._resolvedPlugins = devUserPlugins;
 
   return runServe(opts, config, { appDev });
 }
@@ -1417,19 +1421,27 @@ function mergeCliRuntimeTargets(runtimePolyfills, runtimeTargetQueries) {
  * runBundle (single-shot) 와 watch (incremental HMR, #3779) 의 옵션 drift 차단.
  */
 async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false } = {}) {
-  const plugins = [];
-  if (config && Array.isArray(config.plugins)) {
-    plugins.push(...config.plugins);
-  }
-  for (const pluginPath of opts.pluginPaths) {
-    const absPath = resolve(pluginPath);
-    // importAndResolveDefault 는 pathToFileURL 으로 Windows 경로를 안전하게 처리하고
-    // ENOENT/객체 검증을 통일한다 (config-loader 와 공유).
-    const cfg = await importAndResolveDefault(absPath);
-    if (Array.isArray(cfg.plugins)) {
-      plugins.push(...cfg.plugins);
-    } else if (typeof cfg.setup === 'function') {
-      plugins.push(cfg);
+  // issue #3852 — caller (runAppDev) 가 이미 plugin walk 했으면 `_resolvedPlugins`
+  // 로 stash → 재import skip. ESM cache hit 이라 시맨틱 회귀 없지만 perf +
+  // cache invalidate edge 안전.
+  let plugins;
+  if (Array.isArray(opts._resolvedPlugins)) {
+    plugins = [...opts._resolvedPlugins];
+  } else {
+    plugins = [];
+    if (config && Array.isArray(config.plugins)) {
+      plugins.push(...config.plugins);
+    }
+    for (const pluginPath of opts.pluginPaths) {
+      const absPath = resolve(pluginPath);
+      // importAndResolveDefault 는 pathToFileURL 으로 Windows 경로를 안전하게 처리하고
+      // ENOENT/객체 검증을 통일한다 (config-loader 와 공유).
+      const cfg = await importAndResolveDefault(absPath);
+      if (Array.isArray(cfg.plugins)) {
+        plugins.push(...cfg.plugins);
+      } else if (typeof cfg.setup === 'function') {
+        plugins.push(cfg);
+      }
     }
   }
   // RFC #3833 v3 D1a'' caller-side pre-warm — dropCallerPreWarmedCssPlugin helper

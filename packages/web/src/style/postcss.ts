@@ -248,6 +248,15 @@ export async function runPostcssForAppDev(
     skipPostcssRun = false,
     sourceRoot,
   } = options;
+  // issue #3853 — skipPostcssRun=true 시 sourceRoot 명시 의무화. fallback (raw
+  // root) 으로 silent 떨어지면 PostCSS 미적용 .css 가 outdir 로 copy → dev server
+  // 응답 stale. early throw 로 미래 caller 의 silent regression 차단.
+  if (skipPostcssRun && sourceRoot === undefined) {
+    throw new Error(
+      'runPostcssForAppDev: skipPostcssRun=true 시 sourceRoot 명시 필수 (issue #3853). ' +
+        'prepare 의 tempRoot path 전달하지 않으면 raw root 의 PostCSS 미적용 .css 가 mirror 됨.',
+    );
+  }
   const mirrorRoot = sourceRoot ?? root;
   const deps = new Set<string>();
   const dirDeps = new Set<string>();
