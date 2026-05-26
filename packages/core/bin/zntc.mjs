@@ -698,15 +698,23 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   const cssPlugin = appPlugins.findLast(
     (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
   );
-  // **presence check**: `postcss !== undefined` — 사용자가 의도적으로 `plugins:[]`
-  // 명시한 경우 (postcss 명시 disable) 도 override path 진입. plugins.length 로
-  // 분기하면 빈 배열이 silently auto-discover 로 fallback 되어 Vite 비호환.
-  const postcssOverride = cssPlugin?.__cssOptions?.postcss
-    ? {
-        plugins: cssPlugin.__cssOptions.postcss.plugins ?? [],
-        options: cssPlugin.__cssOptions.postcss.options,
-      }
-    : null;
+  // postcssOverride 분기 (Vite parity 추정 — file config 자동발견 vs inline 명시 우선):
+  //   1. disabled:true  → explicit PostCSS 끄기. override={plugins:[]} 로 auto-discover skip
+  //   2. postcss 명시   → presence check, plugins ?? [] 로 정규화. options-only 도 explicit
+  //                       no-op 으로 (Vite 의 inline override = file config skip)
+  //   3. 둘 다 없으면   → override=null → auto-discover path
+  let postcssOverride = null;
+  if (cssPlugin?.__cssOptions) {
+    const opts = cssPlugin.__cssOptions;
+    if (opts.disabled === true) {
+      postcssOverride = { plugins: [], options: undefined };
+    } else if (opts.postcss) {
+      postcssOverride = {
+        plugins: opts.postcss.plugins ?? [],
+        options: opts.postcss.options,
+      };
+    }
+  }
   let pipelineRoot = null;
   try {
     const pipeline = await web.prepareAppCssPipelineRoot(
