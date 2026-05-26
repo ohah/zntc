@@ -343,8 +343,28 @@ export async function runPostcssForAppDev(
   // 있으면 그것 사용 (monorepo edge).
   const configPath = postcssOverride ? null : findPostcssConfig(cssAutoDiscoverRoot ?? root);
   if (!configPath && !postcssOverride) {
-    const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
-    if (first) primaryHref = joinUrl(base, relative(root, first));
+    // #3858/#3861 — PostCSS config 없을 때도 mirror sourceRoot (또는 root) 의
+    // .css 를 outdir 으로 copy. drain 의 rebuildAppDevCss 가 changedPath 명시 +
+    // PostCSS no-op 시 outdir 갱신 보장 — 신규 raw .css 가 outdir 에 도달.
+    const mirrorBase = sourceRoot ?? root;
+    const allCssFiles = collectAppFiles(mirrorBase, { skipDir: outdir, predicate: isCssFile });
+    const targets =
+      changedPath && changedPath.endsWith('.css')
+        ? allCssFiles.filter(
+            (p) => p === changedPath || relative(root, p) === relative(root, changedPath),
+          )
+        : allCssFiles;
+    mkdirSync(outdir, { recursive: true });
+    for (const file of targets) {
+      const outputRel = relative(mirrorBase, file);
+      const outputPath = join(outdir, outputRel);
+      mkdirSync(dirname(outputPath), { recursive: true });
+      writeFileSync(outputPath, readFileSync(file, 'utf8'));
+    }
+    // cssDeps: raw root 의 .css path — watch trigger 정합 (사용자 file edit 감지).
+    const watchCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
+    for (const f of watchCssFiles) deps.add(resolve(f));
+    if (watchCssFiles[0]) primaryHref = joinUrl(base, relative(root, watchCssFiles[0]));
     return { deps, dirDeps, primaryHref, processed: 0 };
   }
 
@@ -386,7 +406,32 @@ export async function runPostcssForAppDev(
     // issue #3857 — auto-discover path 의 search base. require base 는 app root.
     loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire, root);
   }
-  if (!loaded) return { deps, dirDeps, primaryHref, processed: 0 };
+  if (!loaded) {
+    // #3858/#3861 — postcss config 발견됐어도 plugins=[] / no-op 인 경우.
+    // mirror sourceRoot 의 changedPath (또는 전체) 를 outdir 으로 copy —
+    // drain 의 신규 .css 가 outdir 도달 보장. 위 `!configPath && !postcssOverride`
+    // 분기 의 mirror logic 과 동형.
+    const mirrorBase = sourceRoot ?? root;
+    const allCssFiles = collectAppFiles(mirrorBase, { skipDir: outdir, predicate: isCssFile });
+    // changedPath 는 raw root path, p 는 mirrorBase (tempRoot or root) path.
+    // 같은 rel path 비교 — mirrorBase 기준 p 의 rel == root 기준 changedPath 의 rel.
+    const changedRel =
+      changedPath && changedPath.endsWith('.css') ? relative(root, changedPath) : null;
+    const targets = changedRel
+      ? allCssFiles.filter((p) => relative(mirrorBase, p) === changedRel)
+      : allCssFiles;
+    mkdirSync(outdir, { recursive: true });
+    for (const file of targets) {
+      const outputRel = relative(mirrorBase, file);
+      const outputPath = join(outdir, outputRel);
+      mkdirSync(dirname(outputPath), { recursive: true });
+      writeFileSync(outputPath, readFileSync(file, 'utf8'));
+    }
+    const watchCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
+    for (const f of watchCssFiles) deps.add(resolve(f));
+    if (watchCssFiles[0]) primaryHref = joinUrl(base, relative(root, watchCssFiles[0]));
+    return { deps, dirDeps, primaryHref, processed: 0 };
+  }
   if (loaded.configFile) deps.add(resolve(loaded.configFile));
   else if (configPath) deps.add(resolve(configPath));
 
