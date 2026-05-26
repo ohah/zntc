@@ -692,7 +692,11 @@ fn rescanWatchRootDirty(
     var tit = tracked.keyIterator();
     while (tit.next()) |tp| {
         if (tracked.isDirPath(tp.*)) continue;
+        // /code-review max #1 — startsWith path boundary. root='/foo' 가
+        // '/foobar/x.css' 를 false-positive 매치하지 않도록 separator 또는
+        // 정확 일치 강제. multi-watchFolders 시 다른 root 의 file 영향 차단.
         if (!std.mem.startsWith(u8, tp.*, root)) continue;
+        if (tp.*.len > root.len and tp.*[root.len] != '/' and tp.*[root.len] != '\\') continue;
         if (new_paths.contains(tp.*)) continue;
         const dupe = allocator.dupe(u8, tp.*) catch continue;
         to_remove.append(allocator, dupe) catch {

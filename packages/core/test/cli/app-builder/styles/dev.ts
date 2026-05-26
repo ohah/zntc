@@ -257,9 +257,11 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
     }
   });
 
-  // #3858 의 ADD case 는 PASS. DELETE case (reconcile + native event race) 는
-  // test 환경의 macOS /var/folders symlink + APFS dirent cache 와의 상호작용으로
-  // unstable — 별도 follow-up issue 로 분리. `.todo` 표기.
+  // #3858 의 DELETE case 는 design 적용됨 (reconcileOutdirCss diff-based factory).
+  // 실 환경 (`/private/tmp/...` manual test) 에선 작동 (unlink 후 fetch 404). 단
+  // test 환경 (`/var/folders/...` macOS tmpdir) 에선 unlink 후에도 readdirSync/
+  // dev server fetch 가 stale dirent 봐 200 반환 — APFS dirent cache 또는 spawn
+  // child 와 test process 의 fs visibility 차이. 별도 follow-up issue #3861.
   test.todo('dev: 신규 .css add+delete cycle (#3858 follow-up)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-cssdel-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
@@ -273,19 +275,28 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
 
     const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    const stderrChunks: string[] = [];
+    proc.stderr?.on('data', (chunk) => stderrChunks.push(chunk.toString()));
     await waitForServer(port);
     try {
       // (1) 신규 .css 추가 + 200 검증
       writeFileSync(join(dir, 'src', 'tmp.css'), '.tmp{color:blue}');
-      await new Promise((r) => setTimeout(r, 2500));
+      await new Promise((r) => setTimeout(r, 3000));
       const r1 = await fetch(`http://localhost:${port}/src/tmp.css`);
       expect(r1.status).toBe(200);
 
-      // (2) 삭제 → fetch 404 (mirror 정리 검증)
+      // (2) 삭제 → poll fetch 까지 404 (reconcile + fs cache race window 회피).
+      // reconcileOutdirCss 의 prev/current diff 로 사라진 path unlink 후 APFS
+      // dirent cache 가 갱신되기까지 추가 cycle 가능 — 최대 8초 poll.
       rmSync(join(dir, 'src', 'tmp.css'));
-      await new Promise((r) => setTimeout(r, 2500));
-      const r2 = await fetch(`http://localhost:${port}/src/tmp.css`);
-      expect(r2.status).toBe(404);
+      let last = 200;
+      for (let i = 0; i < 16; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const r2 = await fetch(`http://localhost:${port}/src/tmp.css`);
+        last = r2.status;
+        if (last === 404) break;
+      }
+      expect(last).toBe(404);
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
