@@ -1439,9 +1439,7 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
   // app 모드만 caller-pre-warm 로 prepare 가 처리하므로 dispatcher dispatch 차단
   // 필요, bundle 모드는 native async dispatcher 가 onLoad 호출 (단 caller-pre-warm
   // 없어 PostCSS 적용 안 되지만 사용자 의도 그대로 dispatcher 에 전달).
-  const dispatchPlugins = filterCallerPreWarmCss
-    ? dropCallerPreWarmedCssPlugin(plugins)
-    : plugins;
+  const dispatchPlugins = filterCallerPreWarmCss ? dropCallerPreWarmedCssPlugin(plugins) : plugins;
 
   applySingleFileDynamicImportDefault(opts);
 
