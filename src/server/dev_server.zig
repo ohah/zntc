@@ -29,6 +29,10 @@ const mcp_app_channel_mod = @import("mcp_app_channel.zig");
 const PING_TIMEOUT_MS: u64 = 5000;
 const FIND_ELEMENT_TIMEOUT_MS: u64 = 5000;
 const INSPECT_STATE_TIMEOUT_MS: u64 = 5000;
+// eval_code 는 user expression 실행이라 longer ceiling. sync JS 면 timeout 으로
+// cancel 불가 (RN main JS thread block) — 한도는 "응답 안 올 때 다음 request 까지
+// 차단 막는 안전망" 역할.
+const EVAL_CODE_TIMEOUT_MS: u64 = 10000;
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -1278,7 +1282,8 @@ pub const DevServer = struct {
                 \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}},
                 \\{"name":"ping_app","description":"Ping the connected RN app's MCP runtime over the /__mcp-app WebSocket. Returns the app's pong response (verifies bi-directional channel).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
                 \\{"name":"find_element","description":"Find the first matching React component in the connected RN app's fiber tree. Returns an opaque ref (e1/e2/...) for subsequent tool calls (inspect_state, eval_code, etc).","inputSchema":{"type":"object","properties":{"by":{"type":"string","enum":["text","role","component"],"description":"Match strategy: 'text' (substring of Text node), 'role' (accessibilityRole), 'component' (displayName)"},"value":{"type":"string","description":"Value to match"}},"required":["by","value"],"additionalProperties":false}},
-                \\{"name":"inspect_state","description":"Inspect the React state of an element previously returned by find_element. Pass the opaque ref (e.g. 'e1') and receive a JSON snapshot. Result kind: 'class' (memoizedState as state object), 'function' (hooks array from memoizedState linked list + _debugHookTypes), 'host' (RN native component — only props returned).","inputSchema":{"type":"object","properties":{"ref":{"type":"string","description":"Opaque ref returned by find_element (e1, e2, ...)"}},"required":["ref"],"additionalProperties":false}}
+                \\{"name":"inspect_state","description":"Inspect the React state of an element previously returned by find_element. Pass the opaque ref (e.g. 'e1') and receive a JSON snapshot. Result kind: 'class' (memoizedState as state object), 'function' (hooks array from memoizedState linked list + _debugHookTypes), 'host' (RN native component — only props returned).","inputSchema":{"type":"object","properties":{"ref":{"type":"string","description":"Opaque ref returned by find_element (e1, e2, ...)"}},"required":["ref"],"additionalProperties":false}},
+                \\{"name":"eval_code","description":"Evaluate a synchronous JavaScript expression in the connected RN app's JS thread. With optional ref (from find_element), the element's stateNode (class instance / NativeView) is bound to both `this` and `$ctx`. Returns {ok:true, value, type} on success, {ok:false, error, kind, stack?} on failure (kind: 'syntax' | 'runtime' | 'unsupported'). Side-effects ALLOWED — this.setState() and global mutations execute against the running app (think debugger console, not pure observer). No await/yield/async (sync expressions only — Promise return serializes as marker). Hermes builds with enableEval=false return kind:'unsupported' (fall back to inspect_state for read-only). Dev-only.","inputSchema":{"type":"object","properties":{"expression":{"type":"string","description":"JavaScript expression (NOT statement). Examples: '1+1', 'this.props.title', 'Object.keys($ctx)'"},"ref":{"type":"string","description":"Optional opaque ref from find_element (e1, e2, ...). When given, the element's stateNode is bound to `this` and `$ctx`."}},"required":["expression"],"additionalProperties":false}}
                 \\]}
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
@@ -1325,6 +1330,15 @@ pub const DevServer = struct {
             // refMap lookup + memoizedProps/memoizedState/hooks 직렬화. sync 작업이라
             // 동일 5초 timeout. ref invalid 시 app handler 가 throw → -32603 forward.
             try self.forwardAppTool(w, "inspect_state", args, INSPECT_STATE_TIMEOUT_MS);
+            return;
+        }
+
+        if (std.mem.eql(u8, tool_name, "eval_code")) {
+            // user expression 평가 — sync JS 라 RN main thread block 가능. 10초 ceiling
+            // 은 응답 못 받을 때 다음 request 차단 막는 안전망 (실제 cancel 은 못 함).
+            // params 누락 / unknown ref 는 throw → -32603, runtime/syntax error 는
+            // {ok:false, error} 로 result 안에 — user input 의 결과는 결과 채널이 자연.
+            try self.forwardAppTool(w, "eval_code", args, EVAL_CODE_TIMEOUT_MS);
             return;
         }
 
