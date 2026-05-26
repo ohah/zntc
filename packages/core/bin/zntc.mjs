@@ -693,7 +693,9 @@ function getAutoConfigSearchDir(opts) {
  */
 function extractCssPostcssOverride(plugins) {
   const cssPlugin = plugins.findLast(
-    (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
+    // 두 항 모두 optional chain — predicate 순서 변경 시 null/undefined deref 회귀
+    // 차단 (/code-review max #1 latent finding).
+    (p) => p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined,
   );
   if (!cssPlugin?.__cssOptions) return null;
   const opts = cssPlugin.__cssOptions;
