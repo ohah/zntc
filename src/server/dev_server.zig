@@ -1011,8 +1011,22 @@ pub const DevServer = struct {
         // stdio transport 는 newline-delimited 라 framing 이 깨지므로 여기서 통일.
         // JSON spec 상 raw `\n`/`\r` 는 string literal 안에 못 들어가고 (`\\n` escape 만 허용)
         // structural whitespace 라서 제거해도 의미 손실 없음 (HTTP transport 도 동일하게 안전).
-        for (resp.items) |b| {
-            if (b != '\n' and b != '\r') try writer.writeByte(b);
+        //
+        // Fast path: 대부분의 응답엔 newline 없음 → 한 번에 writeAll (unbuffered stdout
+        // 의 per-byte syscall 폭증 회피, tools/list 만 chunk loop).
+        if (std.mem.indexOfAny(u8, resp.items, "\n\r")) |_| {
+            var i: usize = 0;
+            while (i < resp.items.len) {
+                // 다음 newline 까지의 chunk 1개를 한 번에 write.
+                var j = i;
+                while (j < resp.items.len and resp.items[j] != '\n' and resp.items[j] != '\r') : (j += 1) {}
+                if (j > i) try writer.writeAll(resp.items[i..j]);
+                // 연속된 newline/cr skip.
+                while (j < resp.items.len and (resp.items[j] == '\n' or resp.items[j] == '\r')) : (j += 1) {}
+                i = j;
+            }
+        } else {
+            try writer.writeAll(resp.items);
         }
     }
 
