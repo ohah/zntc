@@ -67,26 +67,32 @@ const ZntcWebView = React.forwardRef(function ZntcWebView(props, userRef) {
   // 시점에 registry update. RN strict mode 의 double-mount 도 정확히 등록/해제.
   // 사용자 ref (function 또는 object) 와 동시 forwarding.
   const idRef = React.useRef(null);
+  // userRef 를 ref box 에 저장 — `useCallback` dep 에서 빼서 onRef 정체성 안정화.
+  // 이렇게 안 하면 parent 가 inline function ref (`<WebView ref={(r)=>...} />`) 줄 때
+  // 매 render 마다 userRef 가 new function → useCallback 이 new onRef → React 가
+  // callback-ref 프로토콜 따라 prev(null) → next(instance) 재호출. 결과: 매 render
+  // 마다 registry 의 ID 가 churn 되어 in-flight PR-E3 의 webview_evaluate_script 가
+  // stale ID 로 hit 할 수 있다.
+  const userRefBox = React.useRef(userRef);
+  userRefBox.current = userRef;
 
-  const onRef = React.useCallback(
-    (instance) => {
-      // 이전 instance 의 registry entry 정리 (StrictMode 의 unmount → remount 안전)
-      if (idRef.current) {
-        _registry.delete(idRef.current);
-        idRef.current = null;
-      }
-      // 새 instance 등록 (null 이면 detach 의미 — register 안 함)
-      if (instance) {
-        const id = _nextWvId();
-        idRef.current = id;
-        _registry.set(id, instance);
-      }
-      // 사용자 ref 도 같이 forward — forwardRef 의 contract 보존.
-      if (typeof userRef === 'function') userRef(instance);
-      else if (userRef != null) userRef.current = instance;
-    },
-    [userRef],
-  );
+  const onRef = React.useCallback((instance) => {
+    // 이전 instance 의 registry entry 정리 (StrictMode 의 unmount → remount 안전)
+    if (idRef.current) {
+      _registry.delete(idRef.current);
+      idRef.current = null;
+    }
+    // 새 instance 등록 (null 이면 detach 의미 — register 안 함)
+    if (instance) {
+      const id = _nextWvId();
+      idRef.current = id;
+      _registry.set(id, instance);
+    }
+    // 사용자 ref 도 같이 forward — forwardRef 의 contract 보존.
+    const u = userRefBox.current;
+    if (typeof u === 'function') u(instance);
+    else if (u != null) u.current = instance;
+  }, []);
 
   return React.createElement(OriginalWebView, {
     ...props,

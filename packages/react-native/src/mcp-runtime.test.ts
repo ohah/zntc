@@ -297,31 +297,46 @@ describe('mcp-runtime.cjs (PR-E2) — reconnect', () => {
     expect(reconnects[reconnects.length - 1].ms).toBe(1000);
   });
 
-  test('send drop warn — WS 닫힘 후 응답 send 시 console.warn (F7 deferred)', () => {
-    const warnings: unknown[] = [];
+  test('send drop warn — connecting 상태 (handler 가 open 전 message 받음) 의 documented race path', () => {
+    // 진짜 race: handler 가 message 받았는데 state.connectionState === 'connecting' 인
+    // 짧은 윈도우. 이전 test 는 close 후 onmessage 강제호출 (state.ws === null 분기) 라
+    // 사실상 trivial branch 만 검증. 이번엔 'connecting' state 에서 send drop path 진입.
+    const warnings: string[] = [];
     g.console = {
-      warn: (...args: unknown[]) => warnings.push(args),
+      warn: (msg: string) => warnings.push(msg),
       log: () => {},
       error: () => {},
     } as unknown as Console;
     loadRuntime(g);
-    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
-    // handler 가 동기 응답을 send 시도 — 그 사이 WS 가 닫혀 있다면?
+    const rt = g.__ZNTC_MCP_RUNTIME__ as {
+      handlers: Record<string, (p: unknown) => unknown>;
+      connectionState: string;
+    };
     rt.handlers.echo = () => ({ ok: true });
 
-    lastWs!.triggerOpen();
-    // close 먼저 발생 후 dispatcher 가 try send.
-    lastWs!.triggerClose();
-    // close 후 message 받으면 — runtime 의 dispatch 가 호출되어 handler → send 시도.
-    // 단 onmessage 가 close 후엔 호출 안 됨 (mockWs 의 spec). 직접 send 호출 시뮬레이션:
-    // runtime 의 내부 send 는 직접 access 불가 — handler 호출 시뮬레이션 어려움.
-    // 대신 onmessage 가 closed 상태에서 호출됐을 때 send 가 warn 하는지 검증:
-    lastWs!.onmessage?.({ data: '{"jsonrpc":"2.0","id":1,"method":"echo"}' });
-    // send 호출 시 state.connectionState !== 'open' 라 warn + return false
-    const warnedCount = warnings.filter(
-      (w) => Array.isArray(w) && typeof w[0] === 'string' && w[0].includes('send drop'),
-    ).length;
-    expect(warnedCount).toBeGreaterThanOrEqual(1);
+    // onopen 미발화 — state.connectionState === 'connecting'
+    expect(rt.connectionState).toBe('connecting');
+    lastWs!.triggerMessage('{"jsonrpc":"2.0","id":42,"method":"echo"}');
+
+    // send drop warn 발생 + id + state 표시
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('send drop');
+    expect(warnings[0]).toContain('id=42');
+    expect(warnings[0]).toContain('state=connecting');
+    // 응답 byte 안 보냄 (drop)
+    expect(lastWs!.sent.length).toBe(0);
+  });
+
+  test('send drop warn — g.console === null 환경에서도 throw 안 함 (F4 retroactive)', () => {
+    // RN sandbox 가 `globalThis.console = null` 설정 시 `typeof === "object"` 통과해
+    // 그 다음 `.warn` 접근에서 null deref. 가드가 truthy check 로 강화되어야 OK.
+    g.console = null as unknown as Console;
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    rt.handlers.echo = () => ({ ok: true });
+    expect(() => {
+      lastWs!.triggerMessage('{"jsonrpc":"2.0","id":1,"method":"echo"}');
+    }).not.toThrow();
   });
 
   test('close() 호출 — reconnect 안 함', () => {

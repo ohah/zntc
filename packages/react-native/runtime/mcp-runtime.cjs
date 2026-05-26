@@ -138,7 +138,8 @@ function startMcpRuntime(g) {
       // handler 실행 중 / 직후에 onclose 발화 race — pending response 손실.
       // dev console.warn 으로 디버깅 hint (서버는 timeout 까지 hang). 후속 PR 에서
       // pending response queue 또는 retry 로 강화 가능.
-      if (typeof g.console !== 'undefined' && typeof g.console.warn === 'function') {
+      // `g.console === null` 도 `typeof === 'object'` 이라 truthy check 필수 (F4).
+      if (g.console && typeof g.console.warn === 'function') {
         var idHint = obj && obj.id != null ? ' id=' + String(obj.id) : '';
         g.console.warn(
           '[zntc:mcp:runtime] send drop — WS 닫힘 (state=' + state.connectionState + ')' + idHint,
@@ -252,7 +253,10 @@ function __zntcIsReactNative(g) {
 }
 
 function __zntcShouldAutoStart(g) {
-  if (!g || g.__ZNTC_DISABLE_MCP_RUNTIME__ === true) return false;
+  // opt-out 은 truthy 값 모두 허용 — jest 의 흔한 패턴 (`'1'` / `'true'` / boolean) 다 통과.
+  // 명시적 `=== true` 만 받으면 `globalThis.__ZNTC_DISABLE_MCP_RUNTIME__ = '1'` 로 끄려는
+  // 사용자가 silent fail 한다 (F5).
+  if (!g || g.__ZNTC_DISABLE_MCP_RUNTIME__) return false;
   return __zntcIsReactNative(g);
 }
 
