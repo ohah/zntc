@@ -692,13 +692,18 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   // RFC #3833 v3 D1a'' (caller-side pre-warm): 사용자 explicit `plugins: [css({...})]`
   // 의 옵션을 prepare 에 전달. buildAppSync 의 sync dispatcher × async onLoad 충돌
   // 우회 — `css()` factory 가 `__cssOptions` sentinel 로 노출 (web/css/index.ts).
-  // name 매치 + sentinel 존재 둘 다 검사 (third-party 가장 plugin 방어).
-  const cssPlugin = appPlugins.find(
+  // **findLast**: 미래 default `css()` prepend (PR-3b 후속) 와 user override `css()` 가
+  // 같이 있을 때 user 가 winner (Vite 의 plugins 순서 의미와 일관). sentinel 은
+  // unique property 가 아닌 단순 string field — 의도 위장 방어보다 의도 매치용.
+  const cssPlugin = appPlugins.findLast(
     (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
   );
-  const postcssOverride = cssPlugin?.__cssOptions?.postcss?.plugins?.length
+  // **presence check**: `postcss !== undefined` — 사용자가 의도적으로 `plugins:[]`
+  // 명시한 경우 (postcss 명시 disable) 도 override path 진입. plugins.length 로
+  // 분기하면 빈 배열이 silently auto-discover 로 fallback 되어 Vite 비호환.
+  const postcssOverride = cssPlugin?.__cssOptions?.postcss
     ? {
-        plugins: cssPlugin.__cssOptions.postcss.plugins,
+        plugins: cssPlugin.__cssOptions.postcss.plugins ?? [],
         options: cssPlugin.__cssOptions.postcss.options,
       }
     : null;

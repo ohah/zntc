@@ -138,10 +138,12 @@ export async function loadPostcssConfig(
  * `cssDir` 의 모든 CSS 파일 (skipDir 제외) 에 postcss 실행 → in-place 덮어쓰기.
  * postcss config 가 없으면 no-op. `runPostcssForAppDev` 와 달리 outdir 분리 안 함.
  *
- * `override` 가 truthy + `plugins.length > 0` 면 자동 발견 skip 후 직접 사용 —
- * 사용자 explicit `plugins: [css({ postcss: {...override} })]` 의 caller-side
- * pre-warm path (RFC #3833 v3 D1a''). `postcss` 자체는 동일 fallback chain 으로
- * require. 미설치 시 silent skip (overide path 도 동일).
+ * `override` 가 truthy 면 자동 발견 skip — 사용자 explicit `plugins: [css({
+ * postcss: {...override} })]` 의 caller-side pre-warm path (RFC #3833 v3 D1a'').
+ * Vite parity: `override.plugins` 가 빈 배열이어도 explicit no-op 으로 처리
+ * (auto-discover 로 fallback 안 함). `postcss` 자체는 동일 fallback chain 으로
+ * require — 미설치 시 logLevel != silent 면 warn 출력 후 skip (override path
+ * 가 silently no-op 안 되도록 가시성 확보).
  */
 export async function runPostcssIfConfigured(
   root: string,
@@ -153,14 +155,21 @@ export async function runPostcssIfConfigured(
   override?: { plugins: unknown[]; options?: Record<string, unknown> } | null,
 ): Promise<void> {
   let loaded: LoadedPostcss | null;
-  if (override && override.plugins.length > 0) {
-    // caller 가 explicit override 전달 — postcss-load-config 자동 발견 skip.
+  if (override) {
+    // explicit override path. plugins 가 빈 배열이면 PostCSS process 자체 skip
+    // (Vite 식 'explicit no-op' — auto-discover 로 fallback 안 함).
+    if (override.plugins.length === 0) return;
     // postcss 자체만 require (app-first / fallback-second).
     let postcssModule: { default?: LoadedPostcss['postcss'] } & LoadedPostcss['postcss'];
     try {
       postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as typeof postcssModule;
     } catch {
-      return; // postcss 미설치 시 silent pass-through (자동 발견 path 와 동일)
+      // postcss 미설치. 자동 발견 path 는 silent skip 인데 override path 는
+      // 사용자 explicit intent 라 silent 가 silent-bug 가능 — warn 후 skip.
+      if (logLevel !== 'silent') {
+        console.error('[postcss] override path: postcss require 실패 — skip');
+      }
+      return;
     }
     const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
     loaded = {
