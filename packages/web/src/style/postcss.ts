@@ -137,6 +137,11 @@ export async function loadPostcssConfig(
 /**
  * `cssDir` 의 모든 CSS 파일 (skipDir 제외) 에 postcss 실행 → in-place 덮어쓰기.
  * postcss config 가 없으면 no-op. `runPostcssForAppDev` 와 달리 outdir 분리 안 함.
+ *
+ * `override` 가 truthy + `plugins.length > 0` 면 자동 발견 skip 후 직접 사용 —
+ * 사용자 explicit `plugins: [css({ postcss: {...override} })]` 의 caller-side
+ * pre-warm path (RFC #3833 v3 D1a''). `postcss` 자체는 동일 fallback chain 으로
+ * require. 미설치 시 silent skip (overide path 도 동일).
  */
 export async function runPostcssIfConfigured(
   root: string,
@@ -145,8 +150,28 @@ export async function runPostcssIfConfigured(
   configEnv: ConfigEnv,
   logLevel: string | undefined,
   fallbackRequire: NodeRequire,
+  override?: { plugins: unknown[]; options?: Record<string, unknown> } | null,
 ): Promise<void> {
-  const loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
+  let loaded: LoadedPostcss | null;
+  if (override && override.plugins.length > 0) {
+    // caller 가 explicit override 전달 — postcss-load-config 자동 발견 skip.
+    // postcss 자체만 require (app-first / fallback-second).
+    let postcssModule: { default?: LoadedPostcss['postcss'] } & LoadedPostcss['postcss'];
+    try {
+      postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as typeof postcssModule;
+    } catch {
+      return; // postcss 미설치 시 silent pass-through (자동 발견 path 와 동일)
+    }
+    const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
+    loaded = {
+      postcss,
+      plugins: override.plugins,
+      options: override.options ?? {},
+      configFile: null,
+    };
+  } else {
+    loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
+  }
   if (!loaded) return;
   const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
   await Promise.all(
