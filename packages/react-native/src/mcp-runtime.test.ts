@@ -250,6 +250,23 @@ describe('mcp-runtime.cjs (PR-E2) — dispatch', () => {
     expect(lastWs!.sent.length).toBe(0);
   });
 
+  test('default `ping` handler — `ping_app` MCP tool 의 양방향 sanity check', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // ping 이 기본 등록되어 있어야 함 (별도 user handler 추가 없음)
+    expect(typeof rt.handlers.ping).toBe('function');
+
+    lastWs!.triggerOpen();
+    lastWs!.triggerMessage('{"jsonrpc":"2.0","id":7,"method":"ping","params":{"src":"test"}}');
+
+    expect(lastWs!.sent.length).toBe(1);
+    const resp = JSON.parse(lastWs!.sent[0]);
+    expect(resp.id).toBe(7);
+    expect(resp.result.pong).toBe(true);
+    expect(typeof resp.result.ts).toBe('number');
+    expect(resp.result.echo).toEqual({ src: 'test' });
+  });
+
   test('invalid JSON → 무시 (응답 안 보냄, throw 안 함)', () => {
     loadRuntime(g);
     lastWs!.triggerOpen();

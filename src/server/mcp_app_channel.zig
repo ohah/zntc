@@ -58,9 +58,15 @@ const PendingSlot = struct {
 pub const AppChannel = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
-    /// 별도 mutex — write_mutex 가 WS frame 송신 직렬화 보호. mutex (pending Map) 와
-    /// 분리해 reader 의 resolveResponse 가 write 동안 blocking 안 됨 (F2).
+    /// 별도 mutex — write_mutex 가 WS frame 송신 직렬화 + current_ws ptr lifetime 보호.
+    /// reader thread 의 setCurrentWs/clearCurrentWs 가 write_mutex 잡고, inflight
+    /// write 끝날 때까지 wait — `current_ws` 가 invalid 한 상태로 dispatcher 가 사용
+    /// 안 됨을 보장.
     write_mutex: std.Thread.Mutex = .{},
+    /// handleMcpAppWebSocket 의 stack 변수 `ws` 를 보관 — dispatcher 가 별도 인자 없이
+    /// `requestStored` 호출 가능. setCurrentWs/clearCurrentWs 만 통해 변경, 모든 변경/
+    /// 읽기는 write_mutex 안에서.
+    current_ws: ?*http.Server.WebSocket = null,
     cond: std.Thread.Condition = .{},
     connected: bool = false,
     /// 핸드셰이크 누적 성공 횟수.
@@ -125,6 +131,43 @@ pub const AppChannel = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.connected;
+    }
+
+    /// handleMcpAppWebSocket 가 핸드셰이크 직후 호출 — dispatcher 가 ws 통해 request
+    /// 가능하게 한다. clearCurrentWs 와 짝.
+    pub fn setCurrentWs(self: *AppChannel, ws: *http.Server.WebSocket) void {
+        self.write_mutex.lock();
+        defer self.write_mutex.unlock();
+        self.current_ws = ws;
+    }
+
+    /// handleMcpAppWebSocket 종료 직전 (read loop 후, 함수 return 전) 호출 — ws ptr
+    /// invalidation 알림. inflight write 가 있다면 write_mutex lock 으로 기다린다.
+    pub fn clearCurrentWs(self: *AppChannel) void {
+        self.write_mutex.lock();
+        defer self.write_mutex.unlock();
+        self.current_ws = null;
+    }
+
+    /// stored `current_ws` 를 사용해 request 송신. dispatcher 의 production path.
+    /// `request` 가 이미 `write_mutex` 안에서 writer.write 호출 — WsWriter 는 lock 잡지
+    /// 않고 ws 만 호출 (nested lock 회피).
+    pub fn requestStored(
+        self: *AppChannel,
+        method: []const u8,
+        params_json: []const u8,
+        timeout_ms: u64,
+    ) RequestError![]const u8 {
+        const WsWriter = struct {
+            channel: *AppChannel,
+            pub fn write(self_w: @This(), frame: []const u8) !void {
+                // write_mutex 는 request 가 잡고 있음 — 여기선 ws ptr 만 read.
+                // current_ws null 이면 setCurrentWs 안 됐거나 이미 clearCurrentWs 됨.
+                const ws = self_w.channel.current_ws orelse return error.NotConnected;
+                try ws.writeMessage(frame, .text);
+            }
+        };
+        return self.request(method, params_json, timeout_ms, WsWriter{ .channel = self });
     }
 
     /// WS reader 가 response 메시지 (id + result/error) 받으면 호출. response_json 은
