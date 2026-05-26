@@ -9,6 +9,7 @@ pub const events = @import("events.zig");
 pub const boringssl = @import("boringssl.zig");
 pub const tls = @import("tls.zig");
 pub const mcp_stdio = @import("mcp_stdio.zig");
+pub const mcp_app_channel = @import("mcp_app_channel.zig");
 
 test {
     _ = @import("dev_server.zig");
@@ -20,6 +21,7 @@ test {
     _ = @import("boringssl.zig");
     _ = @import("tls.zig");
     _ = @import("mcp_stdio.zig");
+    _ = @import("mcp_app_channel.zig");
 
     // test files
     _ = @import("dev_server_test.zig");
