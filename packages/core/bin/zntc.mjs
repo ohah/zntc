@@ -669,6 +669,41 @@ function getAutoConfigSearchDir(opts) {
   return process.cwd();
 }
 
+/**
+ * RFC #3833 v3 D1a'' (caller-side pre-warm) helper — runAppBuild/runAppDev 가
+ * 공유. 사용자 explicit `plugins: [css({postcss:{...}})]` 의 옵션을 추출해
+ * prepare 단계의 `postcssOverride` 로 전달. buildAppSync 의 sync dispatcher ×
+ * async cssOnLoad 충돌 회피 — Vite/esbuild 의 main thread pre-process → sync
+ * bundle 패턴.
+ *
+ * 분기:
+ *   1. disabled:true     → explicit PostCSS 끄기 (override={plugins:[]} 로
+ *                          auto-discover 도 차단, prepare 가 length 0 skip)
+ *   2. postcss 명시       → presence check, plugins ?? [] 정규화. options-only
+ *                          override 도 explicit no-op (Vite inline override
+ *                          시맨틱)
+ *   3. 둘 다 없으면       → override=null → prepare 가 auto-discover path
+ *
+ * **findLast**: 미래 default `css()` prepend 와 user override 가 동시 존재 시
+ * 마지막 등록이 winner (Vite plugins 순서 의미). sentinel `__cssOptions` 는
+ * runtime 위장 방어 0 — 의도 매치용.
+ *
+ * @param {Array<{name?:string,__cssOptions?:object}>} plugins
+ * @returns {{plugins: unknown[], options: Record<string,unknown> | undefined} | null}
+ */
+function extractCssPostcssOverride(plugins) {
+  const cssPlugin = plugins.findLast(
+    (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
+  );
+  if (!cssPlugin?.__cssOptions) return null;
+  const opts = cssPlugin.__cssOptions;
+  if (opts.disabled === true) return { plugins: [], options: undefined };
+  if (opts.postcss) {
+    return { plugins: opts.postcss.plugins ?? [], options: opts.postcss.options };
+  }
+  return null;
+}
+
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   // JS plugin 로드 — bundle pipeline 의 buildBundleOptions 와 동일 패턴. app
   // pipeline 도 plugin dispatcher 통과 (#2538 4-4 PR-1).
@@ -689,32 +724,8 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   const root = resolve(opts.appRoot ?? '.');
   const outdir = resolve(opts.outdir ?? join(root, 'dist'));
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
-  // RFC #3833 v3 D1a'' (caller-side pre-warm): 사용자 explicit `plugins: [css({...})]`
-  // 의 옵션을 prepare 에 전달. buildAppSync 의 sync dispatcher × async onLoad 충돌
-  // 우회 — `css()` factory 가 `__cssOptions` sentinel 로 노출 (web/css/index.ts).
-  // **findLast**: 미래 default `css()` prepend (PR-3b 후속) 와 user override `css()` 가
-  // 같이 있을 때 user 가 winner (Vite 의 plugins 순서 의미와 일관). sentinel 은
-  // unique property 가 아닌 단순 string field — 의도 위장 방어보다 의도 매치용.
-  const cssPlugin = appPlugins.findLast(
-    (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
-  );
-  // postcssOverride 분기 (Vite parity 추정 — file config 자동발견 vs inline 명시 우선):
-  //   1. disabled:true  → explicit PostCSS 끄기. override={plugins:[]} 로 auto-discover skip
-  //   2. postcss 명시   → presence check, plugins ?? [] 로 정규화. options-only 도 explicit
-  //                       no-op 으로 (Vite 의 inline override = file config skip)
-  //   3. 둘 다 없으면   → override=null → auto-discover path
-  let postcssOverride = null;
-  if (cssPlugin?.__cssOptions) {
-    const opts = cssPlugin.__cssOptions;
-    if (opts.disabled === true) {
-      postcssOverride = { plugins: [], options: undefined };
-    } else if (opts.postcss) {
-      postcssOverride = {
-        plugins: opts.postcss.plugins ?? [],
-        options: opts.postcss.options,
-      };
-    }
-  }
+  // RFC #3833 v3 D1a'' caller-side pre-warm — extractCssPostcssOverride helper 참조.
+  const postcssOverride = extractCssPostcssOverride(appPlugins);
   let pipelineRoot = null;
   try {
     const pipeline = await web.prepareAppCssPipelineRoot(
@@ -776,9 +787,7 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
   const web = await loadWebModule();
   const root = resolve(opts.appRoot ?? '.');
   opts.outdir = opts.outdir || join(root, '.zntc-dev');
-  // RFC #3833 v3 D1a'' Phase 2: dev path 도 build path (runAppBuild) 와 동일하게
-  // 사용자 explicit `plugins: [css({postcss:{...}})]` 를 caller-side pre-warm 으로
-  // controller 에 전달. dev/build divergence 해소.
+  // RFC #3833 v3 D1a'' Phase 2: build path 와 동일 plugin walk + helper 추출.
   const devUserPlugins = [];
   if (config && Array.isArray(config.plugins)) devUserPlugins.push(...config.plugins);
   for (const pluginPath of opts.pluginPaths) {
@@ -787,20 +796,8 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
     if (Array.isArray(cfg.plugins)) devUserPlugins.push(...cfg.plugins);
     else if (typeof cfg.setup === 'function') devUserPlugins.push(cfg);
   }
-  const devCssPlugin = devUserPlugins.findLast(
-    (p) => p?.name === '@zntc/web/css' && p.__cssOptions !== undefined,
-  );
-  let devPostcssOverride = null;
-  if (devCssPlugin?.__cssOptions) {
-    const o = devCssPlugin.__cssOptions;
-    if (o.disabled === true) {
-      devPostcssOverride = { plugins: [], options: undefined };
-    } else if (o.postcss) {
-      devPostcssOverride = { plugins: o.postcss.plugins ?? [], options: o.postcss.options };
-    }
-  }
   const appDev = web.createAppDevController(
-    { ...opts, postcssOverride: devPostcssOverride },
+    { ...opts, postcssOverride: extractCssPostcssOverride(devUserPlugins) },
     root,
     configEnv,
     { fallbackRequire: requireFromCli, cliNodeModules },
