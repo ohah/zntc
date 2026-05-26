@@ -640,3 +640,361 @@ describe('mcp-runtime.cjs (PR-F1) — find_element', () => {
     expect(r.source).toBe('/abs/path/App.tsx:42');
   });
 });
+
+// PR-F2 — inspect_state. find_element 가 부여한 ref 로 fiber 의 props/state/hooks 직렬화.
+describe('mcp-runtime.cjs (PR-F2) — inspect_state', () => {
+  function findThenInspect(
+    rt: { handlers: Record<string, (p: unknown) => unknown> },
+    by: 'text' | 'role' | 'component',
+    value: string,
+  ): { ref: string; result: any } {
+    const f = rt.handlers.find_element({ by, value }) as { ref: string };
+    return { ref: f.ref, result: rt.handlers.inspect_state({ ref: f.ref }) };
+  }
+
+  test('params 누락 → throw: requires `ref`', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.inspect_state({})).toThrow(/requires `ref`/);
+    expect(() => rt.handlers.inspect_state({ ref: 123 })).toThrow(/requires `ref`/);
+  });
+
+  test('unknown ref → throw: not found (expired or unknown)', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.inspect_state({ ref: 'e9999' })).toThrow(/not found/);
+  });
+
+  test('function component — props + hooks 직렬화 (_debugHookTypes 활용)', () => {
+    // function component (memoizedState 가 Hook linked list)
+    // hook0: useState(count=3), hook1: useState(name='hi')
+    const hook1: any = { memoizedState: 'hi', next: null };
+    const hook0: any = { memoizedState: 3, next: hook1 };
+    const fnFiber: FakeFiber = {
+      type: { displayName: 'Counter' },
+      memoizedProps: { label: 'click', step: 1 },
+      stateNode: null,
+      _debugHookTypes: ['useState', 'useState'],
+    } as any;
+    (fnFiber as any).memoizedState = hook0;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fnFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Counter');
+    expect(result.component).toBe('Counter');
+    expect(result.kind).toBe('function');
+    expect(result.props).toEqual({ label: 'click', step: 1 });
+    expect(result.hooks).toEqual([
+      { type: 'useState', value: 3 },
+      { type: 'useState', value: 'hi' },
+    ]);
+    expect(result.state).toBeUndefined();
+  });
+
+  test('class component — memoizedState 직렬화, hooks 없음 (F1: isReactComponent 는 빈 객체 {})', () => {
+    // PR-F2 review F1: 실제 React 는 Component.prototype.isReactComponent = {} (빈 객체).
+    // 이전 stub 가 `true` 였어 production class 컴포넌트가 'function' 으로 오분류 됐던
+    // bug 를 mask 했었음. 이제 React 와 동일한 contract 로 검증.
+    const classFiber: FakeFiber = {
+      type: { displayName: 'Modal' },
+      memoizedProps: { visible: true },
+      stateNode: { isReactComponent: {} } as any,
+    } as any;
+    (classFiber as any).memoizedState = { open: true, count: 7 };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: classFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Modal');
+    expect(result.kind).toBe('class');
+    expect(result.props).toEqual({ visible: true });
+    expect(result.state).toEqual({ open: true, count: 7 });
+    expect(result.hooks).toBeUndefined();
+  });
+
+  test('safeSerialize — function/cycle/undefined/Date/Map 등 non-JSON 값 marker 로 대체', () => {
+    const cycle: any = { name: 'self' };
+    cycle.me = cycle; // cycle
+    const fiber: FakeFiber = {
+      type: { displayName: 'Mix' },
+      memoizedProps: {
+        cb: function namedFn() {},
+        n: undefined,
+        when: new Date('2026-01-01T00:00:00.000Z'),
+        map: new Map([['k', 'v']]),
+        set: new Set([1, 2]),
+        nan: NaN,
+        inf: Infinity,
+        cycle: cycle,
+      },
+      stateNode: null,
+    } as any;
+    (fiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Mix');
+    const p = result.props;
+    expect(p.cb).toBe('[Function namedFn]');
+    expect(p.n).toBe('[Undefined]');
+    expect(p.when).toBe('[Date 2026-01-01T00:00:00.000Z]');
+    expect(p.map).toBe('[Map size=1]');
+    expect(p.set).toBe('[Set size=2]');
+    expect(p.nan).toBe('[NaN]');
+    expect(p.inf).toBe('[+Infinity]');
+    expect(p.cycle).toEqual({ name: 'self', me: '[Circular]' });
+  });
+
+  test('React element ($$typeof) → [ReactElement] marker (children 트리 폭주 방지)', () => {
+    var element = { $$typeof: Symbol.for('react.element'), type: 'div', props: {} };
+    const fiber: FakeFiber = {
+      type: { displayName: 'Wrap' },
+      memoizedProps: { children: element },
+      stateNode: null,
+    } as any;
+    (fiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Wrap');
+    expect(result.props.children).toBe('[ReactElement]');
+  });
+
+  test('max depth — 깊이 8 초과 시 [MaxDepth]', () => {
+    // 9 레벨 nested object
+    let deep: any = 'leaf';
+    for (let i = 0; i < 9; i++) deep = { v: deep };
+    const fiber: FakeFiber = {
+      type: { displayName: 'Deep' },
+      memoizedProps: { tree: deep },
+      stateNode: null,
+    } as any;
+    (fiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Deep');
+    // depth 8 에서 truncate — root props (depth 0) → .tree (1) → .v×N. depth 9 호출에서
+    // marker 반환되므로 depth 8 위치 obj 의 `.v` 가 '[MaxDepth]'.
+    let cur = result.props.tree;
+    for (let i = 0; i < 7; i++) cur = cur.v; // depth 8 까지 내려감 (8 - 1 = 7번)
+    expect(cur.v).toBe('[MaxDepth]');
+  });
+
+  test('hook cycle guard — next pointer 가 자기 자신이면 안전 종료', () => {
+    const hook: any = { memoizedState: 'a' };
+    hook.next = hook; // 비정상 cycle
+    const fnFiber: FakeFiber = {
+      type: { displayName: 'Cyc' },
+      memoizedProps: {},
+      stateNode: null,
+      _debugHookTypes: ['useState'],
+    } as any;
+    (fnFiber as any).memoizedState = hook;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fnFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Cyc');
+    expect(Array.isArray(result.hooks)).toBe(true);
+    expect(result.hooks.length).toBe(1); // 첫 hook 만 직렬화 후 cycle 감지로 stop
+  });
+
+  test('host fiber (RN View / Text) → kind:"host", hooks/state 없음 (review F1)', () => {
+    // host fiber 의 type 은 string. stateNode 는 NativeViewInstance (React.Component
+    // 아님). 이전 코드는 `kind: 'function'` 으로 잘못 분류했음 + serializeHooks 가
+    // class state 인 척 wrong 결과 가능성.
+    const hostFiber: FakeFiber = {
+      type: 'View',
+      memoizedProps: { style: { padding: 8 }, accessible: true },
+      stateNode: { _nativeTag: 42 } as any,
+    } as any;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: hostFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'View' }) as { ref: string };
+    const r = rt.handlers.inspect_state({ ref: f.ref }) as {
+      kind?: string;
+      props?: any;
+      hooks?: unknown;
+      state?: unknown;
+    };
+    expect(r.kind).toBe('host');
+    expect(r.props.accessible).toBe(true);
+    expect(r.hooks).toBeUndefined();
+    expect(r.state).toBeUndefined();
+  });
+
+  test('safeSerialize — TypedArray / ArrayBuffer / Promise 는 marker (size/buffer 폭주 방지)', () => {
+    const fiber: FakeFiber = {
+      type: { displayName: 'Buf' },
+      memoizedProps: {
+        u8: new Uint8Array(1024),
+        i32: new Int32Array([1, 2, 3]),
+        ab: new ArrayBuffer(64),
+        pr: Promise.resolve(1),
+      },
+      stateNode: null,
+    } as any;
+    (fiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Buf');
+    expect(result.props.u8).toBe('[Uint8Array byteLength=1024]');
+    expect(result.props.i32).toBe('[Int32Array byteLength=12]');
+    expect(result.props.ab).toBe('[ArrayBuffer byteLength=64]');
+    expect(result.props.pr).toBe('[Promise]');
+  });
+
+  test('safeSerialize — throwing getter → "[Throws ...]" marker, 다른 key 는 정상 직렬화', () => {
+    const props: any = { ok: 1 };
+    Object.defineProperty(props, 'boom', {
+      enumerable: true,
+      get() {
+        throw new Error('getter exploded');
+      },
+    });
+    const fiber: FakeFiber = {
+      type: { displayName: 'Boom' },
+      memoizedProps: props,
+      stateNode: null,
+    } as any;
+    (fiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Boom');
+    expect(result.props.ok).toBe(1);
+    expect(result.props.boom).toContain('[Throws');
+    expect(result.props.boom).toContain('getter exploded');
+  });
+
+  test('safeSerialize — 긴 array (length > 256) 는 앞 256개 + "...more" marker', () => {
+    const big = Array.from({ length: 300 }, (_, i) => i);
+    const fiber: FakeFiber = {
+      type: { displayName: 'Big' },
+      memoizedProps: { list: big },
+      stateNode: null,
+    } as any;
+    (fiber as any).memoizedState = null;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Big');
+    expect(result.props.list.length).toBe(257); // 256 + 1 marker
+    expect(result.props.list[256]).toBe('[...44 more]');
+  });
+
+  test('hook truncation — 65 hook 일 때 64 + truncated marker', () => {
+    // 65개 hook chain
+    let tail: any = null;
+    const types: string[] = [];
+    for (let i = 64; i >= 0; i--) {
+      tail = { memoizedState: i, next: tail };
+      types.unshift('useState');
+    }
+    const fnFiber: FakeFiber = {
+      type: { displayName: 'Many' },
+      memoizedProps: {},
+      stateNode: null,
+      _debugHookTypes: types,
+    } as any;
+    (fnFiber as any).memoizedState = tail;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fnFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'Many');
+    expect(result.hooks.length).toBe(65); // 64 hook + 1 truncated marker
+    expect(result.hooks[64].type).toBe('[...truncated]');
+  });
+
+  test('useEffect-like hook (tag + create + deps) → "[Effect tag=N]" marker (chain 폭주 방지)', () => {
+    const effect2: any = { tag: 5, create: () => {}, deps: [], destroy: undefined };
+    const effect1: any = { tag: 5, create: () => {}, deps: [], destroy: undefined, next: effect2 };
+    effect2.next = effect1; // 동일 fiber Effect chain
+    const hook1: any = { memoizedState: effect1, next: null };
+    const fnFiber: FakeFiber = {
+      type: { displayName: 'WithEffect' },
+      memoizedProps: {},
+      stateNode: null,
+      _debugHookTypes: ['useEffect'],
+    } as any;
+    (fnFiber as any).memoizedState = hook1;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fnFiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const { result } = findThenInspect(rt, 'component', 'WithEffect');
+    expect(result.hooks[0]).toEqual({ type: 'useEffect', value: '[Effect tag=5]' });
+  });
+});
