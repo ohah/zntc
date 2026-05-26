@@ -145,6 +145,16 @@ export async function loadPostcssConfig(
  * require — 미설치 시 logLevel != silent 면 warn 출력 후 skip (override path
  * 가 silently no-op 안 되도록 가시성 확보).
  */
+export interface RunPostcssIfConfiguredResult {
+  /** issue #3850 — PostCSS message 의 dep tracking. tailwind @source 등의
+   *  file dependency. caller (prepareAppCssPipelineRoot) 가 보존 후 dev path
+   *  의 skipPostcssRun 가 watch trigger 정합 위해 사용. */
+  deps: Set<string>;
+  /** issue #3850 — PostCSS message 의 dir-dep tracking. tailwind v4 의
+   *  @source "../html" 같은 directory watch. */
+  dirDeps: Set<string>;
+}
+
 export async function runPostcssIfConfigured(
   root: string,
   cssDir: string,
@@ -159,12 +169,14 @@ export async function runPostcssIfConfigured(
      *  base. 미지정 시 root 인자 사용. */
     root?: string;
   } | null,
-): Promise<void> {
+): Promise<RunPostcssIfConfiguredResult> {
+  const deps = new Set<string>();
+  const dirDeps = new Set<string>();
   let loaded: LoadedPostcss | null;
   if (override) {
     // explicit override path. plugins 가 빈 배열이면 PostCSS process 자체 skip
     // (Vite 식 'explicit no-op' — auto-discover 로 fallback 안 함).
-    if (override.plugins.length === 0) return;
+    if (override.plugins.length === 0) return { deps, dirDeps };
     // postcss 자체만 require (app-first / fallback-second).
     // issue #3851 — override.root 가 있으면 그것 use, 아니면 root.
     const requireBase = override.root ?? root;
@@ -181,7 +193,7 @@ export async function runPostcssIfConfigured(
       if (logLevel !== 'silent') {
         console.error('[postcss] override path: postcss require 실패 — skip');
       }
-      return;
+      return { deps, dirDeps };
     }
     const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
     loaded = {
@@ -193,7 +205,7 @@ export async function runPostcssIfConfigured(
   } else {
     loaded = await loadPostcssConfig(root, configEnv, fallbackRequire);
   }
-  if (!loaded) return;
+  if (!loaded) return { deps, dirDeps };
   const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
   await Promise.all(
     cssFiles.map(async (file) => {
@@ -205,9 +217,13 @@ export async function runPostcssIfConfigured(
       });
       writeFileSync(file, result.css);
       if (result.map) writeFileSync(`${file}.map`, result.map.toString());
+      // issue #3850 — PostCSS message 의 deps/dirDeps 수집. tailwind @source
+      // 등 dir-dep watch trigger 정합.
+      collectPostcssMessages(result.messages, deps, dirDeps);
     }),
   );
   logPostcssProcessed(logLevel, cssFiles.length, loaded.configFile);
+  return { deps, dirDeps };
 }
 
 export interface AppDevPostcssOptions {
