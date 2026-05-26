@@ -281,12 +281,87 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
       params: { name: 'ping_app', arguments: {} },
     });
 
-    // dispatcher 가 app 의 error response 를 받음 → `result` 가 없어서 -32603 응답
-    // (dispatcher 의 "app response missing 'result'" 분기). assertion 강화 — 정확한
-    // 분기 메시지 검증 (F3: spec drift 가드).
+    // dispatcher 가 app 의 error response 를 받음 → result 없음 → app 의 error.message
+    // 를 추출해 -32603 으로 forward (PR-F1 review F4). throw message ("mock app handler
+    // boom") 가 그대로 client 에 도달해야 진단 가능.
     expect(result.error).toBeDefined();
     expect(result.error.code).toBe(-32603);
-    expect(result.error.message).toContain("missing 'result'");
+    expect(result.error.message).toContain('mock app handler boom');
+  });
+
+  test('tools/list — find_element 노출', async () => {
+    const server = await setupServer();
+    const result = await mcpCall(server.port, { jsonrpc: '2.0', id: 10, method: 'tools/list' });
+    const names = result.result.tools.map((t: any) => t.name);
+    expect(names).toContain('find_element');
+  });
+
+  test('find_element — mock app 의 fiber search 결과 round-trip', async () => {
+    const server = await setupServer();
+    let receivedParams: any = null;
+    mockApp = connectMockApp(server.port, {
+      find_element: (params) => {
+        receivedParams = params;
+        // mock app 이 fiber tree 순회 흉내 — 매칭 element 반환.
+        return { ref: 'e1', component: 'Text', text: 'Hello world' };
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 11,
+      method: 'tools/call',
+      params: { name: 'find_element', arguments: { by: 'text', value: 'Hello' } },
+    });
+
+    // dispatcher 가 args 를 그대로 app params 로 forward 했는지 확인.
+    expect(receivedParams).toEqual({ by: 'text', value: 'Hello' });
+    expect(result.id).toBe(11);
+    expect(result.error).toBeUndefined();
+    expect(result.result.content[0].type).toBe('text');
+    const innerJson = JSON.parse(result.result.content[0].text);
+    expect(innerJson.ref).toBe('e1');
+    expect(innerJson.component).toBe('Text');
+    expect(innerJson.text).toBe('Hello world');
+  });
+
+  test('find_element — mock app handler throw → -32603 + 원본 message forward', async () => {
+    const server = await setupServer();
+    mockApp = connectMockApp(server.port, {
+      find_element: () => {
+        throw new Error('fiber root missing');
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 13,
+      method: 'tools/call',
+      params: { name: 'find_element', arguments: { by: 'text', value: 'x' } },
+    });
+
+    // F4: app 의 error.message ("fiber root missing") 가 그대로 client 에 forward.
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain('fiber root missing');
+  });
+
+  test('find_element — mock app 미연결 → -32603 + "app not connected"', async () => {
+    const server = await setupServer();
+    // mock app connect 안 함.
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 12,
+      method: 'tools/call',
+      params: { name: 'find_element', arguments: { by: 'text', value: 'x' } },
+    });
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain('app not connected');
   });
 
   test('app 두 번째 연결 — first-wins 거절', async () => {

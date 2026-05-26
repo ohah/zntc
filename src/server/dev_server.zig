@@ -23,6 +23,12 @@ const buildErrorJsonFromDiagnostics = server_events.buildErrorJsonFromDiagnostic
 const writeJsonValue = server_events.writeJsonValue;
 const mcp_app_channel_mod = @import("mcp_app_channel.zig");
 
+// MCP `tools/call` 의 RN-app forward 도구별 timeout. RN handler 는 보통 ms 단위 응답
+// 인데 cold start / 첫 fiber walk 가 모바일 디바이스에서 수백 ms 까지 갈 수 있어 5초
+// 여유. tool 별로 더 길어야 하면 별도 const 추가 (예: take_snapshot 큰 트리 직렬화).
+const PING_TIMEOUT_MS: u64 = 5000;
+const FIND_ELEMENT_TIMEOUT_MS: u64 = 5000;
+
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
 }
@@ -1269,7 +1275,8 @@ pub const DevServer = struct {
                 \\{"name":"reset_cache","description":"Clear the build cache. Next build will be a full rebuild.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
                 \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}},
                 \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}},
-                \\{"name":"ping_app","description":"Ping the connected RN app's MCP runtime over the /__mcp-app WebSocket. Returns the app's pong response (verifies bi-directional channel).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}
+                \\{"name":"ping_app","description":"Ping the connected RN app's MCP runtime over the /__mcp-app WebSocket. Returns the app's pong response (verifies bi-directional channel).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+                \\{"name":"find_element","description":"Find the first matching React component in the connected RN app's fiber tree. Returns an opaque ref (e1/e2/...) for subsequent tool calls (inspect_state, eval_code, etc).","inputSchema":{"type":"object","properties":{"by":{"type":"string","enum":["text","role","component"],"description":"Match strategy: 'text' (substring of Text node), 'role' (accessibilityRole), 'component' (displayName)"},"value":{"type":"string","description":"Value to match"}},"required":["by","value"],"additionalProperties":false}}
                 \\]}
             );
         } else if (std.mem.eql(u8, method, "tools/call")) {
@@ -1306,54 +1313,17 @@ pub const DevServer = struct {
             return;
         }
 
+        if (std.mem.eql(u8, tool_name, "find_element")) {
+            // RN app 의 fiber tree 순회 — `by` / `value` args 그대로 forward.
+            try self.forwardAppTool(w, "find_element", args, FIND_ELEMENT_TIMEOUT_MS);
+            return;
+        }
+
         if (std.mem.eql(u8, tool_name, "ping_app")) {
-            // 앱 MCP runtime 의 `handlers.ping` 호출. typical RN handler 는 ms 단위
-            // 응답이라 PING_TIMEOUT_MS (5초) 면 cold start 까지도 여유. 후속 본격 tool
-            // (take_snapshot 등) 은 자체 default 또는 args.timeout 별도 처리.
-            const PING_TIMEOUT_MS: u64 = 5000;
-            const resp_json = self.app_channel.requestStored("ping", "{}", PING_TIMEOUT_MS) catch |err| {
-                const msg = switch (err) {
-                    mcp_app_channel_mod.RequestError.NotConnected => "app not connected on /__mcp-app",
-                    mcp_app_channel_mod.RequestError.Timeout => "app response timeout (5s)",
-                    mcp_app_channel_mod.RequestError.AppDisconnected => "app disconnected mid-request",
-                    mcp_app_channel_mod.RequestError.WriteFailed => "ws write failed",
-                    mcp_app_channel_mod.RequestError.OutOfMemory => "out of memory",
-                };
-                try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"");
-                try writeJsonEscaped(w, msg);
-                try w.writeAll("\"}");
-                return;
-            };
-            defer self.allocator.free(resp_json);
-
-            // 앱 response 는 JSON-RPC envelope `{jsonrpc, id, result/error}`. result 만
-            // 추출해 MCP client 에 forward (content text 로 raw JSON 직렬화).
-            var resp_parsed = std.json.parseFromSlice(std.json.Value, self.allocator, resp_json, .{}) catch {
-                try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response was not valid JSON\"}");
-                return;
-            };
-            defer resp_parsed.deinit();
-            const result_val = switch (resp_parsed.value) {
-                .object => |o| o.get("result"),
-                else => null,
-            };
-            if (result_val == null) {
-                try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response missing 'result'\"}");
-                return;
-            }
-            // MCP 2024-11-05 의 `content[]` 는 `{type:"text", text:<string>}` 만 지원
-            // (`{type:"json", ...}` 추가는 후속 spec). 앱의 raw result JSON 을 string
-            // 안에 임베드하려면 두 단계 encode 필요:
-            //   1. valueAlloc — result_val (Value) 를 JSON 문자열로 직렬화
-            //   2. writeJsonEscaped — 그 문자열을 또 JSON 문자열 리터럴로 escape (`"` → `\"`)
-            // client 는 결과로 받은 text 를 다시 JSON.parse 해야 함. 향후 MCP spec 이
-            // `{type:"json", value:...}` 지원하면 single-encode 로 단순화 가능.
-            const result_str = try std.json.Stringify.valueAlloc(self.allocator, result_val.?, .{});
-            defer self.allocator.free(result_str);
-
-            try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
-            try writeJsonEscaped(w, result_str);
-            try w.writeAll("\"}]}");
+            // 앱 MCP runtime 의 `handlers.ping` 호출. ping 은 params 없음 — empty
+            // object forward. forwardAppTool 가 args (json Value) 받아 직렬화 하지만
+            // here args 가 .null/.object 모두 valid.
+            try self.forwardAppTool(w, "ping", args, PING_TIMEOUT_MS);
             return;
         }
 
@@ -1431,6 +1401,97 @@ pub const DevServer = struct {
         }
 
         try w.writeAll("\"error\":{\"code\":-32602,\"message\":\"Unknown tool\"}");
+    }
+
+    /// AppChannel 너머 RN 앱의 MCP runtime 으로 단일 method 를 forward 하는 helper.
+    /// `args` (JSON Value) 를 그대로 직렬화해 `method:<name> params:<args>` request 송신
+    /// 후 timeout_ms 안에 응답 받기. 결과는 MCP 2024-11-05 `content[]` 의 text 로 wrap
+    /// (raw JSON 을 string 안에 double-encode).
+    ///
+    /// 에러는 모두 영어 메시지 — MCP client 가 표시할 수 있도록.
+    fn forwardAppTool(
+        self: *DevServer,
+        w: anytype,
+        method: []const u8,
+        args: std.json.Value,
+        timeout_ms: u64,
+    ) !void {
+        // args 직렬화 — params 없이 `{}` 로도 충분하지만 일반화 위해 그대로 dump.
+        // args 가 `.null` 이면 "null" 이 되는데, 앱 handler 는 `params ?? {}` 로 처리.
+        // OOM 도 unified `-32603` MCP error path 로 통일 — propagate 하면 HTTP 500.
+        const args_json = std.json.Stringify.valueAlloc(self.allocator, args, .{}) catch {
+            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"args serialization failed\"}");
+            return;
+        };
+        defer self.allocator.free(args_json);
+
+        const resp_json = self.app_channel.requestStored(method, args_json, timeout_ms) catch |err| {
+            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"");
+            switch (err) {
+                mcp_app_channel_mod.RequestError.NotConnected => try writeJsonEscaped(w, "app not connected on /__mcp-app"),
+                mcp_app_channel_mod.RequestError.Timeout => {
+                    // ms 포함 — 도구별 timeout 이 달라질 수 있어 self-describing.
+                    var buf: [64]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "app response timeout ({d}ms)", .{timeout_ms}) catch "app response timeout";
+                    try writeJsonEscaped(w, s);
+                },
+                mcp_app_channel_mod.RequestError.AppDisconnected => try writeJsonEscaped(w, "app disconnected mid-request"),
+                mcp_app_channel_mod.RequestError.WriteFailed => try writeJsonEscaped(w, "ws write failed"),
+                mcp_app_channel_mod.RequestError.OutOfMemory => try writeJsonEscaped(w, "out of memory"),
+            }
+            try w.writeAll("\"}");
+            return;
+        };
+        defer self.allocator.free(resp_json);
+
+        // 앱 response 는 JSON-RPC envelope `{jsonrpc, id, result/error}`. result 가
+        // 있으면 그걸 MCP content text 로 wrap, error 만 있으면 그대로 client 에 forward
+        // (PR-F1 review F4 — app handler throw 시 의미 있는 메시지가 묻히지 않도록).
+        var resp_parsed = std.json.parseFromSlice(std.json.Value, self.allocator, resp_json, .{}) catch {
+            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response was not valid JSON\"}");
+            return;
+        };
+        defer resp_parsed.deinit();
+        const result_val = switch (resp_parsed.value) {
+            .object => |o| o.get("result"),
+            else => null,
+        };
+        if (result_val == null) {
+            // app 이 result 대신 error 를 보냈으면 그걸 forward. else missing 'result'.
+            const err_val: ?std.json.Value = switch (resp_parsed.value) {
+                .object => |o| o.get("error"),
+                else => null,
+            };
+            const err_msg: []const u8 = blk: {
+                if (err_val) |ev| switch (ev) {
+                    .object => |eo| switch (eo.get("message") orelse .null) {
+                        .string => |s| break :blk s,
+                        else => {},
+                    },
+                    else => {},
+                };
+                break :blk "app response missing 'result'";
+            };
+            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"");
+            try writeJsonEscaped(w, err_msg);
+            try w.writeAll("\"}");
+            return;
+        }
+        // MCP 2024-11-05 의 `content[]` 는 `{type:"text", text:<string>}` 만 지원. 앱의
+        // raw result JSON 을 string 안에 임베드 — 두 단계 encode:
+        //   1. valueAlloc — Value → JSON string
+        //   2. writeJsonEscaped — 그 string 을 또 JSON string literal 로 escape
+        // client 는 받은 text 를 다시 JSON.parse 해야 함. 향후 `{type:"json", ...}` 지원
+        // 시 single-encode 로 단순화 가능.
+        const result_str = std.json.Stringify.valueAlloc(self.allocator, result_val.?, .{}) catch {
+            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"result serialization failed\"}");
+            return;
+        };
+        defer self.allocator.free(result_str);
+
+        try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+        try writeJsonEscaped(w, result_str);
+        try w.writeAll("\"}]}");
     }
 
     /// `verify_in_chrome` MCP 도구. Node CLI (`zntc verify --verify-json ...`) 를
