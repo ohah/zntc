@@ -17,6 +17,7 @@ export {
   join,
   CLI,
   RUNTIME,
+  PROJECT_ROOT,
   waitForServer,
   waitForText,
   findFreePort,
