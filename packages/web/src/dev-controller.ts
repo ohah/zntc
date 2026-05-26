@@ -481,6 +481,10 @@ export function createAppDevController(
   const base = normalizeBase(opts.base ?? opts.publicPath ?? '/');
   let cssDeps = new Set<string>();
   let cssDirDeps = new Set<string>();
+  // issue #3847 — prepare 가 PostCSS 처리 (auto-discover 또는 override) 한 경우
+  // true. afterBundle 가 그 flag 보고 runPostcssForAppDev 의 redundant PostCSS
+  // pass 차단 (zero-config double-pass 해소). prepare 의 pipeline 결과로 결정.
+  let preparePostcssApplied = false;
   // #71: sass @import reverse-dep 맵(tempRoot 기준 path). prepare(full pipeline) 와 fast-path
   // (rebuildScssIncremental) 가 갱신하고, isSassOnlyChange 가 조회해 dep 있는 파일은 fast-path
   // 박탈 → full pipeline 의 transitive 재컴파일로 dependents 까지 갱신. 세션 내내 누적.
@@ -548,6 +552,10 @@ export function createAppDevController(
       pipelineRoot = pipeline?.tempRoot ?? null;
       pipelineCache = pipeline?.cache ?? null;
       hasPipelineCss = (pipeline?.generatedCssAbsPaths.length ?? 0) > 0;
+      // issue #3847 — pipeline truthy = prepareAppCssPipelineRoot 진입 →
+      // runPostcssIfConfigured 호출됨 (override 또는 자동발견 어느 path 든 PostCSS
+      // 처리 가능). afterBundle 가 redundant pass 차단할 수 있도록 flag set.
+      preparePostcssApplied = !!pipeline;
       const prepareRoot = pipelineRoot ?? root;
       const envDir = opts.envDir ? resolve(opts.envDir) : prepareRoot;
       const prepared = prepareAppDevSync({
@@ -595,7 +603,8 @@ export function createAppDevController(
     },
     async afterBundle({ changedPath = null } = {}) {
       // RFC #3833 v3 D1a'' Phase 2: prepare 와 동일 override 를 afterBundle 에도
-      // 전달 — 일관된 PostCSS plugin set (build path 와 시맨틱 일치).
+      // 전달. issue #3847: prepare 가 PostCSS 처리한 경우 skipPostcssRun=true 로
+      // redundant pass 차단 (zero-config double-pass + caller-pre-warm 모두).
       const result = await runPostcssForAppDev({
         root,
         outdir,
@@ -605,6 +614,9 @@ export function createAppDevController(
         changedPath,
         fallbackRequire,
         postcssOverride: opts.postcssOverride ?? null,
+        skipPostcssRun: preparePostcssApplied,
+        // issue #3847 — mirror 의 source 가 prepare 의 tempRoot (PostCSS 처리됨)
+        sourceRoot: pipelineRoot ?? root,
       });
       cssDeps = result.deps;
       cssDirDeps = result.dirDeps;

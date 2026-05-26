@@ -210,6 +210,15 @@ export interface AppDevPostcssOptions {
    *  Phase 2). build path 의 `runPostcssIfConfigured` 와 동일 시맨틱 — truthy
    *  면 자동발견 skip, plugins.length === 0 면 explicit no-op. */
   postcssOverride?: { plugins: unknown[]; options?: Record<string, unknown> } | null;
+  /** dev path zero-config double-pass 회피 (issue #3847). controller 의
+   *  prepare 가 PostCSS 처리 (auto-discover 또는 override) 했음을 caller 가
+   *  알린 경우 true — runPostcssForAppDev 가 PostCSS 호출 skip + sourceRoot
+   *  의 .css 를 outdir 로 mirror (PostCSS 미적용, 이미 처리된 결과 그대로).
+   *  cssDeps 는 raw root path 로 유지 (watch trigger 정합). */
+  skipPostcssRun?: boolean;
+  /** skipPostcssRun=true 시 mirror 의 source root (prepare 의 tempRoot 또는
+   *  raw root). 미지정 시 root 사용. controller 가 pipelineRoot 전달. */
+  sourceRoot?: string;
 }
 
 export interface AppDevPostcssResult {
@@ -236,10 +245,36 @@ export async function runPostcssForAppDev(
     changedPath = null,
     fallbackRequire,
     postcssOverride = null,
+    skipPostcssRun = false,
+    sourceRoot,
   } = options;
+  const mirrorRoot = sourceRoot ?? root;
   const deps = new Set<string>();
   const dirDeps = new Set<string>();
   let primaryHref: string | null = null;
+  // issue #3847 — controller 의 prepare 가 이미 PostCSS 처리 (auto-discover
+  // 또는 override) 했음을 caller 가 알린 경우 redundant PostCSS pass 차단.
+  // 단 file mirror 는 유지 — 기존 runPostcssForAppDev 가 outdir 에 emit 하는
+  // 역할 (dev server 가 outdir 에서 서빙). PostCSS 미적용 file copy 만.
+  if (skipPostcssRun) {
+    // mirror: mirrorRoot (= prepare 의 tempRoot) 의 .css → outdir. PostCSS
+    // 미적용 (이미 prepare 가 처리한 결과). raw root 와 path 다른 경우 (caller
+    // 가 pipelineRoot 명시) tempRoot 의 처리된 결과를 outdir 로 copy.
+    const mirrorCssFiles = collectAppFiles(mirrorRoot, { skipDir: outdir, predicate: isCssFile });
+    mkdirSync(outdir, { recursive: true });
+    for (const f of mirrorCssFiles) {
+      const outputRel = relative(mirrorRoot, f);
+      const outputPath = join(outdir, outputRel);
+      mkdirSync(dirname(outputPath), { recursive: true });
+      const input = readFileSync(f, 'utf8');
+      writeFileSync(outputPath, input);
+    }
+    // cssDeps: raw root 의 .css path — watch trigger 정합 (사용자 file edit 감지).
+    const watchCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
+    for (const f of watchCssFiles) deps.add(resolve(f));
+    if (watchCssFiles[0]) primaryHref = joinUrl(base, relative(root, watchCssFiles[0]));
+    return { deps, dirDeps, primaryHref, processed: 0 };
+  }
   // override 가 있으면 자동발견 skip. plugins.length === 0 면 explicit no-op
   // (build path 의 runPostcssIfConfigured 와 동일 시맨틱).
   const configPath = postcssOverride ? null : findPostcssConfig(root);
