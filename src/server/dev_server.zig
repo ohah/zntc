@@ -55,9 +55,11 @@ pub const DevServer = struct {
     /// shutdown() 호출 시 set; acceptLoop가 다음 iteration에서 종료.
     shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// 현재 살아있는 connection (handleConnection thread) 수. deinit 가 0 까지 wait —
-    /// reader thread 가 AppChannel.resolveResponse 호출 중인데 main thread 가
-    /// app_channel.deinit() 호출하면 mutex/pending Map UAF. counter 로 graceful
-    /// 종료 보장.
+    /// 직접 보호 대상은 `app_channel` (reader thread 가 mutex/pending Map 사용) 이지만
+    /// counter 는 **모든** handleConnection thread (plain HTTP / SSE / HMR WS / MCP app)
+    /// 를 카운팅 — handleConnection 의 fetchAdd/Sub 가 path 분기 전이라 통일. 99% 의
+    /// connection 이 app_channel 안 만지지만, counter 가 over-conservative 하게 모두
+    /// wait 한다 (정확성 무해, deinit timeout 까지 살짝 늘 가능성).
     active_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
@@ -1305,9 +1307,11 @@ pub const DevServer = struct {
         }
 
         if (std.mem.eql(u8, tool_name, "ping_app")) {
-            // 앱 MCP runtime 의 `handlers.ping` 호출. 5초 timeout — typical RN handler
-            // 는 ms 단위 응답이라 충분.
-            const resp_json = self.app_channel.requestStored("ping", "{}", 5000) catch |err| {
+            // 앱 MCP runtime 의 `handlers.ping` 호출. typical RN handler 는 ms 단위
+            // 응답이라 PING_TIMEOUT_MS (5초) 면 cold start 까지도 여유. 후속 본격 tool
+            // (take_snapshot 등) 은 자체 default 또는 args.timeout 별도 처리.
+            const PING_TIMEOUT_MS: u64 = 5000;
+            const resp_json = self.app_channel.requestStored("ping", "{}", PING_TIMEOUT_MS) catch |err| {
                 const msg = switch (err) {
                     mcp_app_channel_mod.RequestError.NotConnected => "app not connected on /__mcp-app",
                     mcp_app_channel_mod.RequestError.Timeout => "app response timeout (5s)",
@@ -1337,7 +1341,13 @@ pub const DevServer = struct {
                 try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response missing 'result'\"}");
                 return;
             }
-            // result 를 다시 JSON 직렬화 (text content 의 raw text)
+            // MCP 2024-11-05 의 `content[]` 는 `{type:"text", text:<string>}` 만 지원
+            // (`{type:"json", ...}` 추가는 후속 spec). 앱의 raw result JSON 을 string
+            // 안에 임베드하려면 두 단계 encode 필요:
+            //   1. valueAlloc — result_val (Value) 를 JSON 문자열로 직렬화
+            //   2. writeJsonEscaped — 그 문자열을 또 JSON 문자열 리터럴로 escape (`"` → `\"`)
+            // client 는 결과로 받은 text 를 다시 JSON.parse 해야 함. 향후 MCP spec 이
+            // `{type:"json", value:...}` 지원하면 single-encode 로 단순화 가능.
             const result_str = try std.json.Stringify.valueAlloc(self.allocator, result_val.?, .{});
             defer self.allocator.free(result_str);
 
