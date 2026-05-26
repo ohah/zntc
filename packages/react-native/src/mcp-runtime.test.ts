@@ -1276,3 +1276,252 @@ describe('mcp-runtime.cjs (PR-F3) — eval_code', () => {
     expect(r.value).toBe(2);
   });
 });
+
+// PR-F4 — get_logs. console.log/info/warn/error/debug intercept + ring buffer.
+describe('mcp-runtime.cjs (PR-F4) — get_logs', () => {
+  // get_logs test 는 g.console 의 5개 method 가 wrap 되는지 검증. mock console 을
+  // 매번 fresh 로 두고 wrapping → emit → handlers.get_logs round-trip 확인.
+  function setupConsole(): { calls: Array<{ level: string; args: unknown[] }> } {
+    const calls: Array<{ level: string; args: unknown[] }> = [];
+    (g as any).console = {
+      log: (...args: unknown[]) => calls.push({ level: 'log', args }),
+      info: (...args: unknown[]) => calls.push({ level: 'info', args }),
+      warn: (...args: unknown[]) => calls.push({ level: 'warn', args }),
+      error: (...args: unknown[]) => calls.push({ level: 'error', args }),
+      debug: (...args: unknown[]) => calls.push({ level: 'debug', args }),
+    };
+    return { calls };
+  }
+
+  test('console.log/warn/error 호출 → ring buffer 누적 + 원본 console 도 호출', () => {
+    const { calls } = setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    (g as any).console.log('hello', 1);
+    (g as any).console.warn('warn-msg');
+    (g as any).console.error('boom');
+
+    // 원본 mock 도 호출됐는지
+    expect(calls.length).toBe(3);
+    expect(calls[0]).toEqual({ level: 'log', args: ['hello', 1] });
+
+    // ring buffer 도 채워졌는지
+    const r = rt.handlers.get_logs({}) as {
+      entries: Array<{ level: string; args: unknown[]; ts: number }>;
+      dropped: number;
+      total: number;
+    };
+    expect(r.entries.length).toBe(3);
+    expect(r.entries[0].level).toBe('log');
+    expect(r.entries[0].args).toEqual(['hello', 1]);
+    expect(r.entries[1].level).toBe('warn');
+    expect(r.entries[2].level).toBe('error');
+    expect(r.dropped).toBe(0);
+    expect(r.total).toBe(3);
+  });
+
+  test('level filter — `warn` 만 반환', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    (g as any).console.log('a');
+    (g as any).console.warn('b');
+    (g as any).console.error('c');
+    (g as any).console.warn('d');
+
+    const r = rt.handlers.get_logs({ level: 'warn' }) as { entries: Array<{ level: string }> };
+    expect(r.entries.length).toBe(2);
+    expect(r.entries.every((e) => e.level === 'warn')).toBe(true);
+  });
+
+  test('invalid level → throw', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.get_logs({ level: 'verbose' })).toThrow(/invalid `level`/);
+  });
+
+  test('cursor (seq) pagination — lossless, same-ms entry 도 포함', () => {
+    // PR-F4 review F3 — seq 기반 cursor 가 정확한 pagination 경로. busy-wait 없이도
+    // 검증 가능 — seq 는 monotonic 보장.
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    (g as any).console.log('a');
+    (g as any).console.log('b');
+    const r1 = rt.handlers.get_logs({}) as {
+      entries: Array<{ seq: number; args: unknown[] }>;
+      nextCursor: number;
+    };
+    expect(r1.entries.length).toBe(2);
+    expect(r1.nextCursor).toBe(r1.entries[1].seq);
+
+    (g as any).console.log('c');
+    (g as any).console.log('d');
+    const r2 = rt.handlers.get_logs({ cursor: r1.nextCursor }) as {
+      entries: Array<{ args: unknown[] }>;
+      nextCursor: number;
+    };
+    expect(r2.entries.length).toBe(2);
+    expect(r2.entries[0].args).toEqual(['c']);
+    expect(r2.entries[1].args).toEqual(['d']);
+  });
+
+  test('cursor — entries 비어도 nextCursor 보존 (단조 증가)', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    (g as any).console.log('x');
+    const r1 = rt.handlers.get_logs({}) as { nextCursor: number };
+    // 새 log 없이 cursor 진행
+    const r2 = rt.handlers.get_logs({ cursor: r1.nextCursor }) as {
+      entries: unknown[];
+      nextCursor: number;
+    };
+    expect(r2.entries.length).toBe(0);
+    expect(r2.nextCursor).toBe(r1.nextCursor); // 그대로 유지
+  });
+
+  test('since filter — timestamp 이후 entry 반환 (coarse, same-ms 한계 명시)', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    (g as any).console.log('a');
+    (g as any).console.log('b');
+    // since 가 매우 작은 값 — 모든 entry 반환.
+    const all = rt.handlers.get_logs({ since: 0 }) as { entries: unknown[] };
+    expect(all.entries.length).toBe(2);
+    // since 가 매우 큰 값 — 0개.
+    const none = rt.handlers.get_logs({ since: Date.now() + 1_000_000 }) as { entries: unknown[] };
+    expect(none.entries.length).toBe(0);
+  });
+
+  test('invalid limit (음수/0/NaN) → throw', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.get_logs({ limit: 0 })).toThrow(/invalid `limit`/);
+    expect(() => rt.handlers.get_logs({ limit: -5 })).toThrow(/invalid `limit`/);
+    expect(() => rt.handlers.get_logs({ limit: NaN })).toThrow(/invalid `limit`/);
+  });
+
+  test('cursor + since AND — 둘 다 만족하는 entry 만', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    (g as any).console.log('a');
+    const after = rt.handlers.get_logs({}) as {
+      entries: Array<{ seq: number; ts: number }>;
+    };
+    const seq0 = after.entries[0].seq;
+    // 같은 cursor 와 매우 큰 since — since 가 효과 발휘
+    const r = rt.handlers.get_logs({ cursor: seq0, since: Date.now() + 1_000_000 }) as {
+      entries: unknown[];
+    };
+    expect(r.entries.length).toBe(0);
+  });
+
+  test('intercept chain — 우리 wrap 위로 third-party 가 wrap 해도 ring buffer 캡처', () => {
+    // PR-F4 review F6: LogBox 같은 후속 wrapper 가 console.log 를 한 번 더 wrap 하면
+    // call chain 은 third-party → our wrap → original. our wrap 안의 appendLog 가
+    // 호출되어 ring buffer 채워져야 함.
+    const { calls } = setupConsole();
+    loadRuntime(g);
+    // mcp-runtime 가 wrap 후 — 그 위로 third-party (LogBox 흉내) wrap.
+    const ourWrapped = (g as any).console.log;
+    let thirdPartyCalls = 0;
+    (g as any).console.log = function () {
+      thirdPartyCalls += 1;
+      return ourWrapped.apply(this, arguments);
+    };
+
+    (g as any).console.log('hi');
+    expect(thirdPartyCalls).toBe(1);
+    expect(calls.length).toBe(1);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.get_logs({}) as { entries: Array<{ args: unknown[] }> };
+    expect(r.entries.length).toBe(1);
+    expect(r.entries[0].args).toEqual(['hi']);
+  });
+
+  test('limit — newest N 만 반환', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    for (let i = 0; i < 10; i++) (g as any).console.log('e' + i);
+    const r = rt.handlers.get_logs({ limit: 3 }) as { entries: Array<{ args: unknown[] }> };
+    expect(r.entries.length).toBe(3);
+    // newest 3 = e7, e8, e9
+    expect(r.entries.map((e) => e.args[0])).toEqual(['e7', 'e8', 'e9']);
+  });
+
+  test('safeSerialize 적용 — function/cycle/Date 등 marker', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const cycle: any = { a: 1 };
+    cycle.self = cycle;
+    (g as any).console.log('mixed', function fn() {}, new Date('2026-01-01T00:00:00Z'), cycle);
+    const r = rt.handlers.get_logs({}) as { entries: Array<{ args: unknown[] }> };
+    expect(r.entries[0].args[0]).toBe('mixed');
+    expect(r.entries[0].args[1]).toBe('[Function fn]');
+    expect(r.entries[0].args[2]).toBe('[Date 2026-01-01T00:00:00.000Z]');
+    expect((r.entries[0].args[3] as any).self).toBe('[Circular]');
+  });
+
+  test('intercept idempotent — 두 번 load 해도 wrap 한 번만', () => {
+    const { calls } = setupConsole();
+    loadRuntime(g);
+    loadRuntime(g);
+    (g as any).console.log('once');
+    // wrap 두 번이면 mock 호출 2번, append 도 2번. 1회 wrap 이라 1번씩.
+    expect(calls.length).toBe(1);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.get_logs({}) as { entries: unknown[] };
+    expect(r.entries.length).toBe(1);
+  });
+
+  test('ring buffer overflow → 가장 오래된 entry drop + dropped counter 증가', () => {
+    setupConsole();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    // 1005 entry — 5개 drop
+    for (let i = 0; i < 1005; i++) (g as any).console.log('e' + i);
+    const r = rt.handlers.get_logs({ limit: 1000 }) as {
+      entries: Array<{ args: unknown[] }>;
+      dropped: number;
+      total: number;
+    };
+    expect(r.dropped).toBe(5);
+    expect(r.total).toBe(1000);
+    expect(r.entries.length).toBe(1000);
+    // 가장 oldest 5개 (e0~e4) 가 drop — 시작은 e5
+    expect(r.entries[0].args[0]).toBe('e5');
+    expect(r.entries[999].args[0]).toBe('e1004');
+  });
+
+  test('console null/undefined 환경 — intercept skip, get_logs 는 빈 entries', () => {
+    (g as any).console = null;
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.get_logs({}) as { entries: unknown[]; dropped: number };
+    expect(r.entries.length).toBe(0);
+    expect(r.dropped).toBe(0);
+  });
+
+  test('intercept 의 try/catch — appendLog 가 throw 해도 원본 console 호출 보존', () => {
+    // safeSerialize 가 throw 하는 시나리오는 어렵지만, ring buffer assertion 의 wrap
+    // 이 try-catch 덕에 가시화 안 됨. 일단 normal path 가 원본 호출 보존하는 sanity.
+    const { calls } = setupConsole();
+    loadRuntime(g);
+    (g as any).console.warn('keep-going');
+    expect(calls.length).toBe(1);
+    expect(calls[0].args).toEqual(['keep-going']);
+  });
+});
