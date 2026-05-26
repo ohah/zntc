@@ -978,10 +978,7 @@ pub const DevServer = struct {
         defer resp.deinit(self.allocator);
         const w = resp.writer(self.allocator);
 
-        self.dispatchMcpRequest(body, w) catch |err| {
-            getLog().print("  [mcp] dispatch error: {}\n", .{err}) catch {};
-            return;
-        };
+        try self.dispatchMcpRequest(body, w);
 
         request.respond(resp.items, .{
             .status = .ok,
@@ -991,10 +988,33 @@ pub const DevServer = struct {
 
     /// Transport-agnostic JSON-RPC 2.0 dispatcher.
     /// HTTP 와 (예정된) stdio 양쪽이 공유. body 한 통을 받아 응답 한 통을 `writer` 에 쓴다.
-    /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events, verify_in_chrome),
-    /// notifications/initialized. 그 외 → -32601 Method not found.
-    /// JSON parse 실패 → -32700 Parse error (응답을 writer 에 쓰고 정상 종료).
+    ///
+    /// 응답을 내부 임시 buffer 에 먼저 build 한 뒤 한 번에 `writer` 로 flush.
+    /// build 도중 error 발생 시 buffer 를 폐기하고 `-32603 Internal error` fallback 을
+    /// 새로 build 해서 보낸다 → transport wrapper 의 outer catch 없이도 항상 완결된
+    /// 응답 1통이 writer 에 쓰이는 것을 보장 (stdio 의 frame 깨짐 방지).
     fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !void {
+        var resp: std.ArrayList(u8) = .empty;
+        defer resp.deinit(self.allocator);
+        const inner = resp.writer(self.allocator);
+
+        self.buildMcpResponse(body, inner) catch |err| {
+            getLog().print("  [mcp] dispatch error: {}, sending -32603 fallback\n", .{err}) catch {};
+            // partial 응답 폐기 후 -32603 fallback 새로 build.
+            // 이 단계도 OOM 으로 fail 하면 caller 가 처리 (마지막 안전망 — transport wrapper).
+            resp.clearRetainingCapacity();
+            try inner.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}");
+        };
+
+        try writer.writeAll(resp.items);
+    }
+
+    /// dispatcher 본문 — JSON parse + method dispatch + response build.
+    /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events,
+    /// verify_in_chrome), notifications/initialized. 그 외 → -32601 Method not found.
+    /// JSON parse 실패 → -32700 Parse error (응답을 writer 에 쓰고 정상 종료).
+    /// 그 외 error 는 propagate — caller (`dispatchMcpRequest`) 가 -32603 fallback 처리.
+    fn buildMcpResponse(self: *DevServer, body: []const u8, writer: anytype) !void {
         // JSON 파싱
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
             try writer.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}");
