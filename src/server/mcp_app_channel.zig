@@ -239,7 +239,12 @@ pub const AppChannel = struct {
         self.write_mutex.lock();
         const write_result = writer.write(frame.items);
         self.write_mutex.unlock();
-        write_result catch return RequestError.WriteFailed;
+        write_result catch |err| {
+            // WsWriter 의 `error.NotConnected` (current_ws null) 는 별도 의미. caller 가
+            // "write failed" 대신 정확한 진단 받도록 분리 (F6).
+            if (err == error.NotConnected) return RequestError.NotConnected;
+            return RequestError.WriteFailed;
+        };
 
         // 응답 wait — deadline 까지 timedWait. monotonic 안 쓰는 이유: timedWait 가 relative
         // delta 받아 처리. nanoTimestamp 는 wall-clock 이라 NTP jump 시 spurious wake 가능
