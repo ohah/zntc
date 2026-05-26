@@ -185,6 +185,7 @@ function usageLines(command) {
     '       zntc dev [root]',
     '       zntc build [root]',
     '       zntc preview [outdir]',
+    '       zntc mcp                          MCP stdio transport (Cursor/Claude Code)',
     '',
     'Options:',
     '  --bundle                   Bundle dependencies',
@@ -233,7 +234,7 @@ function printUsage(command, stream = console.log) {
 
 function parseArgs(argv) {
   const args = argv.slice(2);
-  const appCommands = new Set(['dev', 'build', 'preview', 'verify']);
+  const appCommands = new Set(['dev', 'build', 'preview', 'verify', 'mcp']);
   const appCommand = appCommands.has(args[0]) ? args.shift() : undefined;
   const opts = {
     appCommand,
@@ -2712,6 +2713,20 @@ async function main() {
       const { runVerify } = await import('./verify.mjs');
       const r = await runVerify(opts);
       process.exit(r.exitCode);
+    } catch (err) {
+      console.error(`error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  // mcp — stdio transport. NAPI mcpStdioServe 가 stdin EOF 까지 blocking. Cursor /
+  // Claude Code / Claude Desktop 등 stdio MCP 클라이언트가 `npx zntc mcp` 형태로
+  // spawn. config / build pipeline 우회 — DevServer in-memory state (cache_reset 등)
+  // 만 띄움 (HTTP listener 없음).
+  if (opts.appCommand === 'mcp') {
+    try {
+      coreModule.mcpStdioServe({ rootDir: resolve('.') });
+      process.exit(0);
     } catch (err) {
       console.error(`error: ${err.message}`);
       process.exit(1);

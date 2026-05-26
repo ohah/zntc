@@ -993,7 +993,7 @@ pub const DevServer = struct {
     /// build 도중 error 발생 시 buffer 를 폐기하고 `-32603 Internal error` fallback 을
     /// 새로 build 해서 보낸다 → transport wrapper 의 outer catch 없이도 항상 완결된
     /// 응답 1통이 writer 에 쓰이는 것을 보장 (stdio 의 frame 깨짐 방지).
-    fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !void {
+    pub fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !void {
         var resp: std.ArrayList(u8) = .empty;
         defer resp.deinit(self.allocator);
         const inner = resp.writer(self.allocator);
@@ -1006,7 +1006,14 @@ pub const DevServer = struct {
             try inner.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}");
         };
 
-        try writer.writeAll(resp.items);
+        // 응답을 single-line 으로 정규화 — `tools/list` 등이 가독성 위해 multi-line raw
+        // string 으로 작성됐기 때문에 응답 buffer 에 raw `\n` 이 섞일 수 있다.
+        // stdio transport 는 newline-delimited 라 framing 이 깨지므로 여기서 통일.
+        // JSON spec 상 raw `\n`/`\r` 는 string literal 안에 못 들어가고 (`\\n` escape 만 허용)
+        // structural whitespace 라서 제거해도 의미 손실 없음 (HTTP transport 도 동일하게 안전).
+        for (resp.items) |b| {
+            if (b != '\n' and b != '\r') try writer.writeByte(b);
+        }
     }
 
     /// dispatcher 본문 — JSON parse + method dispatch + response build.
