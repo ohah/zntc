@@ -39,6 +39,32 @@ describe('css() plugin factory', () => {
     expect(typeof plugin.setup).toBe('function');
   });
 
+  // RFC #3833 v3 D1a'' (caller-side pre-warm): css() 반환 객체에 `__cssOptions`
+  // sentinel — runAppBuild/runAppDev 의 extractCssPostcssOverride helper 가
+  // 이걸로 explicit override 추출. dispatcher 는 name/setup 만 사용, sentinel 무영향.
+  test('__cssOptions sentinel — caller-side pre-warm 용 (D1a)', () => {
+    // 기본 옵션 — empty 객체로 sentinel 부착
+    const plugin1 = css() as { __cssOptions: unknown };
+    expect(plugin1.__cssOptions).toEqual({});
+
+    // postcss override 명시
+    const plugin2 = css({ postcss: { plugins: [{ postcssPlugin: 'x', Once() {} }] } }) as {
+      __cssOptions: { postcss?: { plugins?: unknown[] } };
+    };
+    expect(plugin2.__cssOptions.postcss?.plugins).toHaveLength(1);
+
+    // disabled flag
+    const plugin3 = css({ disabled: true }) as { __cssOptions: { disabled?: boolean } };
+    expect(plugin3.__cssOptions.disabled).toBe(true);
+
+    // root / mode 옵션 sentinel 보존
+    const plugin4 = css({ root: '/abs', mode: 'production' }) as {
+      __cssOptions: { root?: string; mode?: string };
+    };
+    expect(plugin4.__cssOptions.root).toBe('/abs');
+    expect(plugin4.__cssOptions.mode).toBe('production');
+  });
+
   test('zero-config 호출 — onLoad hook 1개 등록 (.css filter)', () => {
     const plugin = css();
     const { build, tracked } = makeMockBuild();
