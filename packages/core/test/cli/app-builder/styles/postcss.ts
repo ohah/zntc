@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'node:url';
+
 import {
   describe,
   test,
@@ -9,8 +11,15 @@ import {
   mkdirSync,
   tmpdir,
   join,
+  PROJECT_ROOT,
   runCli,
 } from '../helpers';
+
+// 실 css() factory 의 file URL — fixture 가 monorepo 안 packages/web/dist 의
+// 빌드된 css/index.js 를 file:// URL 로 import. node_modules walk 회피.
+// build:dts 가 dist/css/index.js 생성 보장 (pretest hook).
+const CSS_FACTORY_URL = pathToFileURL(join(PROJECT_ROOT, 'packages/web/dist/css/index.js'))
+  .href;
 
 describe('CLI: Vite-style app builder > styles > PostCSS', () => {
   test('JS-imported CSS is linked from HTML and processed by PostCSS', () => {
@@ -63,24 +72,22 @@ describe('CLI: Vite-style app builder > styles > PostCSS', () => {
     writeFileSync(join(dir, 'src', 'main.ts'), 'import "./style.css";');
     writeFileSync(join(dir, 'src', 'style.css'), '.card { color: red; }\n');
     // postcss.config 부재 — 자동 발견 path 가 null 이어야 override path 가 활성화됨.
-    // fixture 가 @zntc/web 미설치 → css() 반환과 동등 plain object 직접 정의.
-    // caller (runAppBuild) 가 name + __cssOptions sentinel 만 검사 (D1a'' design).
+    // 실 css() factory import — fixture 가 monorepo 의 packages/web/dist/css/index.js
+    // 를 file:// URL 로 import (#5 fix). caller (runAppBuild) 가 실 css() 반환 객체의
+    // __cssOptions sentinel 을 추출 — plain object 와 동등성 + 실 factory path 검증.
     writeFileSync(
       join(dir, 'zntc.config.mjs'),
       [
+        `import { css } from ${JSON.stringify(CSS_FACTORY_URL)};`,
         'export default {',
         '  plugins: [',
-        '    {',
-        "      name: '@zntc/web/css',",
-        '      __cssOptions: {',
-        '        postcss: {',
-        '          plugins: [',
-        "            { postcssPlugin: 'override-marker', Once(root) { root.append({ selector: '.override-applied', nodes: [] }); } },",
-        '          ],',
-        '        },',
+        '    css({',
+        '      postcss: {',
+        '        plugins: [',
+        "          { postcssPlugin: 'override-marker', Once(root) { root.append({ selector: '.override-applied', nodes: [] }); } },",
+        '        ],',
         '      },',
-        '      setup() {},',
-        '    },',
+        '    }),',
         '  ],',
         '};',
       ].join('\n'),
