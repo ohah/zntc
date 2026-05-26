@@ -259,6 +259,19 @@ describe('mcp-runtime.cjs (PR-E2) — dispatch', () => {
 });
 
 describe('mcp-runtime.cjs (PR-E2) — reconnect', () => {
+  test('WebSocket constructor throw — scheduleReconnect 호출 (F6 deferred 회귀 잠금)', () => {
+    // 일부 RN 버전 / 이상한 URL / 네트워크 정책 issue 로 `new WebSocket(...)` 가 즉시
+    // throw 가능. catch 후 reconnect schedule 되어야 함.
+    g.WebSocket = function ThrowingWebSocket() {
+      throw new Error('socket creation failed');
+    } as unknown as FakeGlobal['WebSocket'];
+    loadRuntime(g);
+    // 첫 setTimeout(connect, 0) 실행 → connect 안 throw → catch → scheduleReconnect (1000ms)
+    const scheduled = g.setTimeout_calls!.filter((c) => c.ms > 0);
+    expect(scheduled.length).toBeGreaterThanOrEqual(1);
+    expect(scheduled[0].ms).toBe(1000);
+  });
+
   test('connection close 후 reconnect schedule (지수 backoff)', () => {
     loadRuntime(g);
     lastWs!.triggerOpen();
