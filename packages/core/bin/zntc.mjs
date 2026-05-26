@@ -700,14 +700,22 @@ function getAutoConfigSearchDir(opts) {
  * @param {Array<{name?:string,__cssOptions?:object}>} plugins
  * @returns {{plugins: unknown[], options: Record<string,unknown> | undefined} | null}
  */
-function extractCssPostcssOverride(plugins) {
+/**
+ * sentinel `__cssOptions` 보유 css plugin 의 raw options 추출. 매치 안 되면 null.
+ * extractCssPostcssOverride / extractCssAutoDiscoverRoot 의 공통 helper.
+ */
+function extractCssOptions(plugins) {
   const cssPlugin = plugins.findLast(
     // 두 항 모두 optional chain — predicate 순서 변경 시 null/undefined deref 회귀
     // 차단 (/code-review max #1 latent finding).
     (p) => p?.name === '@zntc/web/css' && p?.__cssOptions !== undefined,
   );
-  if (!cssPlugin?.__cssOptions) return null;
-  const opts = cssPlugin.__cssOptions;
+  return cssPlugin?.__cssOptions ?? null;
+}
+
+function extractCssPostcssOverride(plugins) {
+  const opts = extractCssOptions(plugins);
+  if (!opts) return null;
   if (opts.disabled === true) return { plugins: [], options: undefined };
   if (opts.postcss) {
     return {
@@ -721,11 +729,24 @@ function extractCssPostcssOverride(plugins) {
       root: opts.root,
     };
   }
-  // review #2 — `css({root})` 단독 명시 (postcss override 없이) 시 root 가
-  // auto-discover path 에서 silent ignore. fix 가 design 변경 (prepare 가 새
-  // cssAutoDiscoverRoot 옵션 받아 findPostcssConfig 의 search base swap) 필요 —
-  // monorepo edge case, 본 PR scope 외 별도 issue (TODO).
   return null;
+}
+
+/**
+ * issue #3857 — `css({root})` 단독 명시 (postcss override 없이) 시 root 가
+ * auto-discover path 의 findPostcssConfig 시작 base 로 사용되게 caller 가 전달.
+ * monorepo edge: postcss.config 가 monorepo root 에 있고 app 이 sub-package
+ * 인 경우 사용자가 root='/monorepo-root' 명시.
+ *
+ * - opts.disabled 면 null (자동발견 차단은 disabled true 의 책임)
+ * - opts.postcss truthy 면 null (override path 가 root 직접 routing)
+ * - opts.root 만 있으면 그것 반환
+ */
+function extractCssAutoDiscoverRoot(plugins) {
+  const opts = extractCssOptions(plugins);
+  if (!opts || opts.disabled === true) return null;
+  if (opts.postcss) return null;
+  return opts.root ?? null;
 }
 
 /**
@@ -775,6 +796,9 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
   // RFC #3833 v3 D1a'' caller-side pre-warm — extractCssPostcssOverride helper 참조.
   const postcssOverride = extractCssPostcssOverride(appPlugins);
+  // issue #3857 — css({root}) 단독 명시 시 findPostcssConfig search base
+  // (monorepo edge: app 이 sub-package, postcss.config 가 monorepo root).
+  const cssAutoDiscoverRoot = extractCssAutoDiscoverRoot(appPlugins);
   // dropCallerPreWarmedCssPlugin: sentinel 가진 css plugin 을 항상 dispatcher 에서
   // 제거 (buildBundleOptions 와 동일 무조건 적용). /code-review max #5: 조건부
   // (postcssOverride truthy 시만) 분기는 비대칭 — 사용자가 sentinel 만 가진
@@ -790,7 +814,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       opts.logLevel,
       'build',
       { fallbackRequire: requireFromCli, cliNodeModules },
-      { postcssOverride },
+      { postcssOverride, cssAutoDiscoverRoot },
     );
     pipelineRoot = pipeline?.tempRoot ?? null;
     const result = buildAppSync({
@@ -852,7 +876,14 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
     else if (typeof cfg.setup === 'function') devUserPlugins.push(cfg);
   }
   const appDev = web.createAppDevController(
-    { ...opts, postcssOverride: extractCssPostcssOverride(devUserPlugins) },
+    {
+      ...opts,
+      postcssOverride: extractCssPostcssOverride(devUserPlugins),
+      // issue #3857 — css({root}) 단독 명시 (postcss override 없이) 시 root 를
+      // findPostcssConfig 의 search base 로 전달. monorepo 의 sub-package app
+      // 이 monorepo root 의 postcss.config 참조하는 시나리오.
+      cssAutoDiscoverRoot: extractCssAutoDiscoverRoot(devUserPlugins),
+    },
     root,
     configEnv,
     { fallbackRequire: requireFromCli, cliNodeModules },
