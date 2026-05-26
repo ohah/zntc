@@ -589,10 +589,21 @@ pub const DevServer = struct {
         defer if (root_real) |r| self.allocator.free(r);
         if (root_real) |root| {
             collectCssFiles(self.allocator, self.root_dir, root, &css_paths);
+            // issue #3858 — dev mode 중 신규 .css 추가/삭제 감지를 위해 root_dir
+            // 자체도 watch. FileWatcher 의 dir-watch (PR-1) 가 dir entry 변화 시
+            // ChangeEvent{path=root} emit → watchLoop 가 rescan + 신규 path
+            // addPath + synthetic event 트리거.
+            watcher.addPath(root) catch {};
         }
         for (css_paths.items) |p| {
             watcher.addPath(p) catch {};
         }
+
+        // issue #3858 — rescan 시 빠른 중복 체크용 set. css_paths 의 path 와 동일
+        // 인스턴스 참조 (소유 X — css_paths 가 owner).
+        var css_path_set = std.StringHashMap(void).init(self.allocator);
+        defer css_path_set.deinit();
+        for (css_paths.items) |p| css_path_set.put(p, {}) catch {};
 
         getLog().print("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()}) catch {};
 
@@ -610,8 +621,22 @@ pub const DevServer = struct {
 
             var changed_paths: std.ArrayList([]const u8) = .empty;
             defer changed_paths.deinit(self.allocator);
+            // issue #3858 — event 의 path 가 dir-watch (root_dir) 매치 시 rescan 트리거.
+            // PR-1 의 inotify dir-watch 가 file event 와 dir entry event 양쪽 emit 할
+            // 수 있어 dedup 가드 (StringHashMap 기반 set).
+            var changed_set = std.StringHashMap(void).init(self.allocator);
+            defer changed_set.deinit();
+            var needs_rescan = false;
             for (events) |ev| {
                 getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)}) catch {};
+                if (root_real) |root| {
+                    if (std.mem.eql(u8, ev.path, root)) {
+                        needs_rescan = true;
+                        continue; // dir entry event 는 changed_paths 에 넣지 않음 (caller 가 file path 만 처리).
+                    }
+                }
+                const gop = changed_set.getOrPut(ev.path) catch continue;
+                if (gop.found_existing) continue; // dedup
                 changed_paths.append(self.allocator, ev.path) catch {};
 
                 // SSE: watch_change 이벤트
@@ -622,6 +647,66 @@ pub const DevServer = struct {
                 writeJsonEscaped(w, ev.path) catch continue;
                 w.writeAll("\"}") catch continue;
                 self.publishEvent(EventType.watch_change, fbs.getWritten());
+            }
+
+            // issue #3858 — root_dir 의 dir entry 변화 시 rescan. collectCssFiles
+            // 재호출 + 신규 .css 발견 시 watcher.addPath + synthetic event.
+            // 삭제된 path 는 removePath + synthetic event (caller 가 정리).
+            if (needs_rescan and root_real != null) {
+                const root = root_real.?;
+                var new_css_paths: std.ArrayList([]const u8) = .empty;
+                defer {
+                    for (new_css_paths.items) |p| self.allocator.free(p);
+                    new_css_paths.deinit(self.allocator);
+                }
+                collectCssFiles(self.allocator, self.root_dir, root, &new_css_paths);
+
+                // new_css_paths set 으로 빠른 lookup
+                var new_set = std.StringHashMap(void).init(self.allocator);
+                defer new_set.deinit();
+                for (new_css_paths.items) |p| new_set.put(p, {}) catch {};
+
+                // (a) 신규 path detect — new_set 에 있으나 css_path_set 에 없음
+                for (new_css_paths.items) |p| {
+                    if (css_path_set.contains(p)) continue;
+                    const path_owned = self.allocator.dupe(u8, p) catch continue;
+                    css_paths.append(self.allocator, path_owned) catch {
+                        self.allocator.free(path_owned);
+                        continue;
+                    };
+                    css_path_set.put(path_owned, {}) catch {};
+                    watcher.addPath(path_owned) catch {};
+                    // synthetic event — caller 가 css-update broadcast 트리거하도록
+                    if (changed_set.getOrPut(path_owned) catch null) |gop| {
+                        if (!gop.found_existing) changed_paths.append(self.allocator, path_owned) catch {};
+                    }
+                    getLog().print("  [watch] new file added: {s}\n", .{std.fs.path.basename(path_owned)}) catch {};
+                }
+
+                // (b) 삭제 path detect — css_path_set 에 있으나 new_set 에 없음
+                var to_remove: std.ArrayList([]const u8) = .empty;
+                defer to_remove.deinit(self.allocator);
+                var it = css_path_set.keyIterator();
+                while (it.next()) |k| {
+                    if (!new_set.contains(k.*)) to_remove.append(self.allocator, k.*) catch {};
+                }
+                for (to_remove.items) |p| {
+                    watcher.removePath(p);
+                    // synthetic event — caller 가 .css deletion 처리
+                    if (changed_set.getOrPut(p) catch null) |gop| {
+                        if (!gop.found_existing) changed_paths.append(self.allocator, p) catch {};
+                    }
+                    _ = css_path_set.remove(p);
+                    // css_paths 에서도 제거 (owner 라 free) — swap-remove 효율
+                    for (css_paths.items, 0..) |cp, i| {
+                        if (std.mem.eql(u8, cp, p)) {
+                            _ = css_paths.swapRemove(i);
+                            self.allocator.free(cp);
+                            break;
+                        }
+                    }
+                    getLog().print("  [watch] file removed: {s}\n", .{std.fs.path.basename(p)}) catch {};
+                }
             }
 
             // CSS 변경 → 번들 재빌드 없이 css-update 전송
