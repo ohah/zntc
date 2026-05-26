@@ -197,6 +197,8 @@ interface NativeModule {
       }
     >;
   };
+  /** MCP (Model Context Protocol) stdio transport — blocking, returns on stdin EOF. */
+  mcpStdioServe(options: { rootDir: string }): void;
 }
 
 let native: NativeModule | null = null;
@@ -508,6 +510,27 @@ export function configureProfile(
 
 export function profileReport(format: 'table' | 'tree' | 'json' | 'csv' = 'table'): string {
   return ensureNative().profileReport(format);
+}
+
+// ─── MCP (Model Context Protocol) stdio transport ───
+
+export interface McpStdioOptions {
+  /** DevServer in-memory state 보유 root (cache_reset_requested, event_ring 등). */
+  rootDir: string;
+}
+
+/**
+ * MCP JSON-RPC 2.0 stdio transport 를 실행. stdin EOF 까지 blocking.
+ *
+ * stdin 의 newline-delimited JSON request 를 한 줄씩 읽어 dispatcher 에 forward,
+ * 응답을 stdout 에 한 줄씩 쓴다. Cursor / Claude Code / Claude Desktop 등 stdio
+ * 기반 MCP 클라이언트가 이 진입점을 child process 로 spawn.
+ *
+ * 호출은 blocking — Node 이벤트 루프가 stdio loop 안에서 멈춘다. CLI `zntc mcp`
+ * subcommand 처럼 main thread 가 거기 잡혀도 되는 상황에서만 사용.
+ */
+export function mcpStdioServe(options: McpStdioOptions): void {
+  ensureNative().mcpStdioServe(options);
 }
 
 // ─── Build API ───
