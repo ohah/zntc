@@ -746,7 +746,11 @@ function extractCssAutoDiscoverRoot(plugins) {
   const opts = extractCssOptions(plugins);
   if (!opts || opts.disabled === true) return null;
   if (opts.postcss) return null;
-  return opts.root ?? null;
+  // /code-review max #3/#4: type/empty guard — non-string 또는 빈 string 거부.
+  // findPostcssConfig(non-string) → TypeError, findPostcssConfig('') → cwd 기준
+  // wrong-base search. 사용자 invalid 입력은 silent null (auto-discover skip).
+  if (typeof opts.root !== 'string' || opts.root.length === 0) return null;
+  return opts.root;
 }
 
 /**
