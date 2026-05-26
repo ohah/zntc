@@ -324,6 +324,14 @@ export async function prepareAppCssPipelineRoot(
   // issue #3857 — cssAutoDiscoverRoot 가 있으면 그것을 findPostcssConfig 시작 base
   // 로 사용 (monorepo edge: app 이 sub-package, postcss.config 가 monorepo root).
   const configPath = postcssOverride ? null : findPostcssConfig(cssAutoDiscoverRoot ?? root);
+  // /code-review max #2 — 사용자가 cssAutoDiscoverRoot 명시했는데 그 path 에서
+  // postcss.config 발견 못 했을 때 silent skip 회피. issue #3857 의 silent ignore
+  // 패턴 재발 차단 — typo (`css({root:'/wrong/path'})`) 진단 가시화.
+  if (cssAutoDiscoverRoot && !configPath && !postcssOverride && logLevel !== 'silent') {
+    console.error(
+      `[postcss] css({root}) 명시 — ${cssAutoDiscoverRoot} 에서 postcss.config.* 발견 못함 — auto-discover skip`,
+    );
+  }
   // F1 cache: 이전 prep 의 stylePipelineFiles 를 재사용. 호출자가 구조 변화 (.scss/.module.css
   // 추가/삭제) 시 cache=null 로 무효화한다. 재사용이면 full tree walk 를 통째 회피.
   const stylePipelineFiles =

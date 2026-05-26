@@ -110,12 +110,18 @@ export async function loadPostcssConfig(
   root: string,
   configEnv: ConfigEnv,
   fallbackRequire: NodeRequire,
+  /** issue #3857 /code-review max #1 — postcss / postcss-load-config 의
+   *  require base. config search 가 monorepo root 인 경우에도 module require
+   *  는 app root 가 정상 (pnpm strict / nohoist 환경에서 monorepo root 에
+   *  postcss 미설치 가능). 미지정 시 root 인자 사용 — 기존 동작 유지. */
+  requireBase?: string,
 ): Promise<LoadedPostcss | null> {
-  const postcssrc = requireFromAppRoot(root, fallbackRequire, 'postcss-load-config') as (
+  const reqBase = requireBase ?? root;
+  const postcssrc = requireFromAppRoot(reqBase, fallbackRequire, 'postcss-load-config') as (
     env: { cwd: string; env: string },
     root: string,
   ) => Promise<PostcssrcConfig>;
-  const postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as {
+  const postcssModule = requireFromAppRoot(reqBase, fallbackRequire, 'postcss') as {
     default?: LoadedPostcss['postcss'];
   } & LoadedPostcss['postcss'];
   const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
@@ -210,7 +216,9 @@ export async function runPostcssIfConfigured(
   } else {
     // issue #3857 — auto-discover path 의 search base. cssAutoDiscoverRoot
     // (monorepo root 등) 가 있으면 그것 사용, 없으면 root 인자 (tempRoot).
-    loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire);
+    // /code-review max #1: require base 는 app root 유지 (pnpm strict 환경에서
+    // monorepo root 에 postcss 미설치 가능 — module resolve 는 app root 기준).
+    loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire, root);
   }
   if (!loaded) return { deps, dirDeps };
   const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
@@ -375,8 +383,8 @@ export async function runPostcssForAppDev(
       configFile: null,
     };
   } else {
-    // issue #3857 — auto-discover path 의 search base.
-    loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire);
+    // issue #3857 — auto-discover path 의 search base. require base 는 app root.
+    loaded = await loadPostcssConfig(cssAutoDiscoverRoot ?? root, configEnv, fallbackRequire, root);
   }
   if (!loaded) return { deps, dirDeps, primaryHref, processed: 0 };
   if (loaded.configFile) deps.add(resolve(loaded.configFile));
