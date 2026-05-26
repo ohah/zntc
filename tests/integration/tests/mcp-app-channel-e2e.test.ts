@@ -31,10 +31,13 @@ async function findFreePort(): Promise<number> {
 
 async function startServer(args: string[]): Promise<Server> {
   const port = await findFreePort();
+  // F1: stdout/stderr pipe 를 drain 안 하면 OS pipe buffer (~16-64KB) 가득 차서
+  // server write block → response 멎음. dev_server 가 verbose log 송신 (`[mcp-app]`,
+  // `[bundle.js]` 등) 라 6 test 동안 누적 → flaky. `ignore` 로 drain 우회.
   const proc = Bun.spawn({
     cmd: [ZNTC_BIN, ...args, '--port', String(port)],
-    stdout: 'pipe',
-    stderr: 'pipe',
+    stdout: 'ignore',
+    stderr: 'ignore',
   });
 
   await waitForServer(port, {
@@ -81,7 +84,19 @@ function connectMockApp(
 ): MockApp {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/__mcp-app`);
   let helloResolve!: () => void;
-  const helloReceived = new Promise<void>((r) => (helloResolve = r));
+  let helloReject!: (e: Error) => void;
+  const helloReceived = new Promise<void>((res, rej) => {
+    helloResolve = res;
+    helloReject = rej;
+  });
+  // F2: hello 가 도착하기 전 close/error 시 helloReceived 가 영원히 pending → test
+  // 가 bun default timeout 까지 hang. close 시 reject 로 명확 fail.
+  ws.addEventListener('close', () => helloReject(new Error('ws closed before hello')), {
+    once: true,
+  });
+  ws.addEventListener('error', () => helloReject(new Error('ws error before hello')), {
+    once: true,
+  });
 
   ws.addEventListener('message', (ev) => {
     if (typeof ev.data !== 'string') return;
@@ -267,9 +282,11 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
     });
 
     // dispatcher 가 app 의 error response 를 받음 → `result` 가 없어서 -32603 응답
-    // (dispatcher 의 "app response missing 'result'" 분기).
+    // (dispatcher 의 "app response missing 'result'" 분기). assertion 강화 — 정확한
+    // 분기 메시지 검증 (F3: spec drift 가드).
     expect(result.error).toBeDefined();
     expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain("missing 'result'");
   });
 
   test('app 두 번째 연결 — first-wins 거절', async () => {
