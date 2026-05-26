@@ -252,9 +252,13 @@ export async function runPostcssForAppDev(
   let loaded: LoadedPostcss | null;
   if (postcssOverride) {
     if (postcssOverride.plugins.length === 0) {
-      // explicit no-op — primaryHref 만 첫 CSS 로 채워 link 유지.
-      const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
-      if (first) primaryHref = joinUrl(base, relative(root, first));
+      // explicit no-op — primaryHref 만 첫 CSS 로 채워 link 유지. 단 watch deps
+      // 는 모든 .css 파일 추가 — controller 의 isCssOnlyChange / cssDeps 가 변경
+      // 감지에 사용. 빈 deps 반환 시 watch 가 reload trigger 누락 가능 (/code-review
+      // max #3).
+      const allCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
+      for (const f of allCssFiles) deps.add(resolve(f));
+      if (allCssFiles[0]) primaryHref = joinUrl(base, relative(root, allCssFiles[0]));
       return { deps, dirDeps, primaryHref, processed: 0 };
     }
     let postcssModule: { default?: LoadedPostcss['postcss'] } & LoadedPostcss['postcss'];
