@@ -16,6 +16,17 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    // `-Dkeep-debug=true` 로 ReleaseFast/Safe/Small 빌드에서도 debug info 유지.
+    // samply / Instruments / dtrace 같은 sampling profiler 가 함수명을 해석하려면
+    // DWARF 가 필요하다. 기본은 false (Zig optimize mode 기본값 = Release* 면 strip).
+    // docs/PERF_PROFILING.md 참고.
+    const keep_debug = b.option(
+        bool,
+        "keep-debug",
+        "Keep debug info in Release* builds (for samply/Instruments profiling). Default: false",
+    ) orelse false;
+    const strip_setting: ?bool = if (keep_debug) false else null;
+
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Every executable or library we compile will be based on one or more modules.
@@ -27,6 +38,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip_setting,
     });
 
     // We will also create a module for our other entry point, 'main.zig'.
@@ -38,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip_setting,
     });
 
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
