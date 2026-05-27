@@ -126,7 +126,13 @@ function connectMockApp(
       }
       try {
         const result = fn(msg.params ?? {});
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: result ?? {} }));
+        // raw escape hatch — `{__raw:true, body:{...}}` 반환 시 wrap 우회.
+        // result/error 둘 다 없는 응답 같은 spec-violating case 직접 송신용.
+        if (result && (result as any).__raw === true) {
+          ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, ...(result as any).body }));
+        } else {
+          ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: result ?? {} }));
+        }
       } catch (err: any) {
         ws.send(
           JSON.stringify({
@@ -619,6 +625,30 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
     expect(result.error).toBeDefined();
     expect(result.error.code).toBe(-32603);
     expect(result.error.message).toContain('not found');
+  });
+
+  test('forwardAppTool fallback — app response 가 result/error 둘 다 없으면 "missing \'result\'" (#50)', async () => {
+    // PR-F1 review F4 fallback path. 정상 mock 은 항상 result 또는 error 를 보내지만,
+    // spec-violating app (또는 race condition 으로 partial response) 가 둘 다 없는
+    // envelope 송신 시 dispatcher 가 silent fail 안 하고 명시 진단. raw escape hatch
+    // 로 직접 mock.
+    const server = await setupServer();
+    mockApp = connectMockApp(server.port, {
+      ping: () => ({ __raw: true, body: {} }), // {jsonrpc, id} 만, result/error 없음
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 50,
+      method: 'tools/call',
+      params: { name: 'ping_app', arguments: {} },
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain("missing 'result'");
   });
 
   test('app 두 번째 연결 — first-wins 거절', async () => {

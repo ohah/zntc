@@ -155,13 +155,19 @@ function startMcpRuntime(g) {
 
   // DFS — fiber.child 따라 내려가고 fiber.sibling 따라 옆으로. parent chain 은
   // fiber.return.
+  //
+  // **Cycle guard**: corrupted fiber (partial render / 외부 mutation 결과로 child
+  // 또는 sibling 이 자기 자신 또는 조상을 가리키는 상황) 에서 무한 loop 막기 위해
+  // WeakSet 으로 visited 추적. WeakSet 은 fiber 객체 reference 만 잡고 GC 영향 X.
   function walkFiber(root, visitor) {
     var current = root.current; // FiberRoot 의 current = root fiber
     if (!current) return;
+    var visited = new WeakSet();
     var stack = [current];
     while (stack.length > 0) {
       var fiber = stack.pop();
-      if (!fiber) continue;
+      if (!fiber || visited.has(fiber)) continue;
+      visited.add(fiber);
       if (visitor(fiber) === false) return; // early stop
       if (fiber.sibling) stack.push(fiber.sibling);
       if (fiber.child) stack.push(fiber.child);
@@ -704,6 +710,18 @@ function startMcpRuntime(g) {
       state.truncated = true;
       return null;
     }
+    // Cycle guard — fiber.child / fiber.sibling 이 조상 또는 자기 자신을 가리키면
+    // recursion stack overflow 발생. state.visited (WeakSet) 으로 차단.
+    //
+    // `__cycle` marker 는 의도적으로 ref 없음 (`__depth_truncated` 와 비대칭):
+    //   - depth-truncated 는 미방문 subtree — caller 가 ref 로 expand 가능.
+    //   - cycle 은 이미 다른 자리에 동일 fiber 가 직렬화됨 — expand 불필요.
+    //   - state.nodes 증가 안 함 (이미 첫 방문 시 카운트).
+    if (state.visited.has(fiber)) {
+      state.truncated = true;
+      return { __cycle: true };
+    }
+    state.visited.add(fiber);
     if (depth > maxDepth) {
       // depth-truncated node — fresh ref 부여해 caller 가 후속 take_snapshot({ref})
       // 로 그 subtree 를 expand 할 수 있게 (review F4). state.nodes 도 카운트 —
@@ -749,7 +767,13 @@ function startMcpRuntime(g) {
         ? Math.min(Math.floor(p.max_nodes), SNAPSHOT_MAX_NODES_CAP)
         : SNAPSHOT_DEFAULT_NODES;
 
-    var state = { nodes: 0, maxNodes: maxNodes, truncated: false };
+    var state = {
+      nodes: 0,
+      maxNodes: maxNodes,
+      truncated: false,
+      // visited fiber set — cycle 시 무한 recursion 방지. WeakSet 이라 fiber GC 영향 X.
+      visited: new WeakSet(),
+    };
 
     // ref 있으면 그 subtree 만, 없으면 모든 fiber root.
     if (typeof p.ref === 'string') {

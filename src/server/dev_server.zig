@@ -687,12 +687,16 @@ pub const DevServer = struct {
                         .object => |o| o.get("id") orelse .null,
                         else => .null,
                     };
-                    const has_result_or_error = switch (root) {
-                        .object => |o| o.get("result") != null or o.get("error") != null,
+                    const has_method = switch (root) {
+                        .object => |o| o.get("method") != null,
                         else => false,
                     };
-                    if (has_result_or_error) {
-                        // response — id 를 u64 로 추출 후 pending 매칭.
+                    // response 분류: id 있고 method 없으면 response (spec 상 result 또는
+                    // error 가 있어야 하지만 둘 다 없는 spec-violating envelope 도 forward
+                    // — forwardAppTool 의 "missing 'result'" fallback 이 진단 메시지 제공
+                    // (#50 deferred fix). 이전엔 silent drop 으로 5초 timeout 만 발생.
+                    const id_present = id_val != .null;
+                    if (id_present and !has_method) {
                         const id_u64: ?u64 = switch (id_val) {
                             .integer => |n| if (n >= 0) @intCast(n) else null,
                             else => null,
@@ -702,9 +706,11 @@ pub const DevServer = struct {
                         } else {
                             getLog().print("  [mcp-app] response 의 id 가 invalid (non-integer)\n", .{}) catch {};
                         }
-                    } else {
-                        // method 있고 result 없음 — app 측 request. 후속 PR 에서 dispatch.
+                    } else if (has_method) {
+                        // app→server request 또는 notification — 후속 PR 에서 dispatch.
                         getLog().print("  [mcp-app] app→server request (not yet handled): {s}\n", .{msg.data}) catch {};
+                    } else {
+                        getLog().print("  [mcp-app] unknown frame (no id, no method): {s}\n", .{msg.data}) catch {};
                     }
                 },
                 .connection_close => break,
