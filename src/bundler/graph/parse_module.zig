@@ -194,6 +194,10 @@ pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
                 .unresolved_references = analyzer.unresolved_references,
                 .references = analyzer.references.items,
                 .numeric_const_texts = analyzer.numeric_const_texts,
+                // R1-a PR-3-a: analyzer.free_vars (PR-2-b 에서 env-gated build) 의
+                // borrow pointer. analyzer 와 함께 parse_arena 가 lifecycle 관리.
+                // env unset 시 analyzer.free_vars=null → here 도 null = inert.
+                .free_vars = if (analyzer.free_vars) |*fv| fv else null,
             };
             // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
             module.uses_top_level_await = analyzer.has_top_level_await;
