@@ -49,6 +49,22 @@ fn getLog() std.fs.File.DeprecatedWriter {
 }
 
 pub const DevServer = struct {
+    /// Routine log helper — `quiet=true` 면 silent. instance method 안에서 사용.
+    /// CLI 환경 (default quiet=false) 은 그대로 출력, NAPI embed 는 silent.
+    ///
+    /// **scope (quiet 가드 됨)**: routine progress 만 — request access (200/500),
+    /// HMR / WS / watcher / mcp-app / sse / bundle progress / cache reset etc.
+    ///
+    /// **scope 외 (quiet 와 무관 항상 stderr)**: critical 진단 — init failure (cert
+    /// 로드/디렉토리/overlay sentinel), start fatal (host parse / listen fail / watch
+    /// thread spawn), deinit UAF 경고. caller 가 직접 `getLog().print(...)` 호출. 사용자가
+    /// quiet=true 줘도 진단 못 보면 NAPI throwError 의 generic 메시지로는 root cause
+    /// 추적 불가.
+    fn routineLog(self: *const DevServer, comptime fmt: []const u8, args: anytype) void {
+        if (self.quiet) return;
+        getLog().print(fmt, args) catch {};
+    }
+
     allocator: std.mem.Allocator,
     root_dir: std.fs.Dir,
     root_path: []const u8,
@@ -141,9 +157,11 @@ pub const DevServer = struct {
         /// 둘 다 null 이면 plain HTTP. 한쪽만 set 하면 init error (`error.TlsKeyMissing`).
         cert_path: ?[]const u8 = null,
         key_path: ?[]const u8 = null,
-        /// stderr 의 banner ("zntc dev server / Local: ...") 와 routine progress 출력
-        /// 억제. CLI 는 사용자에게 보여줘야 하므로 기본 false, NAPI embed (Vite plugin
-        /// 등) 는 자체 logger 사용해서 true 권장.
+        /// banner + routine log (request access, HMR / WS / watcher / mcp-app /
+        /// sse / bundle progress) 모두 stderr silence. **critical** 진단 (init
+        /// failure, host/listen fatal, deinit UAF 경고) 은 quiet 와 무관하게 항상
+        /// 출력 — 사용자가 진단 못 보면 NAPI throwError generic 메시지로 root cause
+        /// 추적 불가. CLI 기본 false, NAPI embed default true.
         quiet: bool = false,
     };
 
@@ -169,6 +187,10 @@ pub const DevServer = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
+        // init 의 진단 로그 — `quiet` 와 **무관** 하게 항상 stderr 출력. 사용자가
+        // init failure 를 못 보면 NAPI throwError 의 generic 메시지만 받고 어느
+        // 경로/cert/key 가 문제인지 진단 못 함. dev-time critical path 라 quiet 영향
+        // 외 (start fatal / deinit UAF 경고도 같은 contract).
         const root_dir = std.fs.cwd().openDir(options.root_dir, .{ .iterate = true }) catch |err| {
             getLog().print("zntc: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
@@ -257,6 +279,9 @@ pub const DevServer = struct {
             if (now_ns >= deadline_ns) {
                 // 같은 load 결과 (count) 를 log — re-load 시 사이에 0 으로 떨어졌으면
                 // "0 개 아직 살아있음 (UAF 위험)" 같은 모순적 메시지 (F4 retro).
+                //
+                // **critical**: UAF 가능성 경고 — quiet 와 무관하게 항상 stderr. 사용자가
+                // 다음 단계 crash 진단 시 단서 필요 (PR-G4 review F3).
                 getLog().print(
                     "  [deinit] connection thread {d} 개 아직 살아있음 — 2초 timeout, deinit 진행 (UAF 위험)\n",
                     .{count},
@@ -307,6 +332,8 @@ pub const DevServer = struct {
             // 빌드/init 시점에 즉시 잡히면 디버깅이 명확.
             if (count == 0) {
                 allocator.free(next);
+                // substituteOverlayPlaceholders 는 init 보조 함수 — self 없음. 사용자
+                // 환경 dev-side debug 라 항상 stderr (init failure).
                 getLog().print(
                     "zntc: dev overlay client sentinel '{s}' 가 정본에 없음 — subs 표와 src/server/dev_overlay_client.js 동기 확인 필요\n",
                     .{s.token},
@@ -322,6 +349,9 @@ pub const DevServer = struct {
     pub fn start(self: *DevServer) !void {
         // host 바인딩: "localhost" → 127.0.0.1, "0.0.0.0" → 모든 인터페이스
         const bind_ip = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
+        // **critical**: host parse / listen fail 은 dev server 가 출발 자체 못 함 —
+        // quiet 와 무관하게 항상 stderr. NAPI 가 host=어디 port=얼마로 실패했는지
+        // 진단 못 보면 caller 가 환경 문제 (port 사용 중 등) 추적 불가.
         const address = std.net.Address.parseIp4(bind_ip, self.port) catch {
             getLog().print("zntc: invalid host address: {s}\n", .{self.host}) catch {};
             return error.InvalidAddress;
@@ -329,9 +359,7 @@ pub const DevServer = struct {
         self.tcp_server = address.listen(.{
             .reuse_address = true,
         }) catch |err| {
-            if (!self.quiet) {
-                getLog().print("zntc: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
-            }
+            getLog().print("zntc: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
             return err;
         };
 
@@ -376,6 +404,8 @@ pub const DevServer = struct {
         // entry가 있으면 watch 스레드 시작
         if (self.abs_entry != null) {
             const watch_thread = std.Thread.spawn(.{}, watchLoop, .{self}) catch |err| {
+                // **critical**: watch thread spawn fail — HMR / file watch 자체 안 됨.
+                // 사용자가 진단 봐야 함. quiet 와 무관 stderr.
                 getLog().print("zntc: failed to start watch thread: {}\n", .{err}) catch {};
                 return err;
             };
@@ -492,7 +522,7 @@ pub const DevServer = struct {
             if (self.shutdown_requested.load(.acquire)) return;
             const connection = self.tcp_server.?.accept() catch |err| {
                 if (self.shutdown_requested.load(.acquire)) return;
-                getLog().print("zntc: accept failed: {}\n", .{err}) catch {};
+                self.routineLog("zntc: accept failed: {}\n", .{err});
                 continue;
             };
             // active_connections 를 spawn 전에 증가 — handleConnection 의 fetchAdd 가
@@ -543,7 +573,7 @@ pub const DevServer = struct {
         if (self.tls_ctx) |*ctx| {
             // HTTPS path — SSL_accept handshake 후 TlsReader/TlsWriter 어댑터로 http.Server.
             var tls_conn = tls.TlsConnection.init(ctx, connection.stream.handle) catch |err| {
-                getLog().print("zntc: TLS handshake failed: {}\n", .{err}) catch {};
+                self.routineLog("zntc: TLS handshake failed: {}\n", .{err});
                 return;
             };
             defer tls_conn.deinit();
@@ -568,7 +598,7 @@ pub const DevServer = struct {
             var request = server.receiveHead() catch |err| switch (err) {
                 error.HttpConnectionClosing => return,
                 else => {
-                    getLog().print("zntc: receiveHead failed: {}\n", .{err}) catch {};
+                    self.routineLog("zntc: receiveHead failed: {}\n", .{err});
                     return;
                 },
             };
@@ -576,7 +606,7 @@ pub const DevServer = struct {
             switch (request.upgradeRequested()) {
                 .websocket => |opt_key| {
                     const key = opt_key orelse {
-                        getLog().print("zntc: WebSocket upgrade missing key\n", .{}) catch {};
+                        self.routineLog("zntc: WebSocket upgrade missing key\n", .{});
                         return;
                     };
 
@@ -595,7 +625,7 @@ pub const DevServer = struct {
                     }
 
                     var ws = request.respondWebSocket(.{ .key = key }) catch {
-                        getLog().print("zntc: WebSocket handshake failed\n", .{}) catch {};
+                        self.routineLog("zntc: WebSocket handshake failed\n", .{});
                         return;
                     };
                     if (is_mcp_app) {
@@ -616,21 +646,21 @@ pub const DevServer = struct {
             }
 
             self.handleRequest(&request) catch |err| {
-                getLog().print("zntc: request '{s}' failed: {}\n", .{ request.head.target, err }) catch {};
+                self.routineLog("zntc: request '{s}' failed: {}\n", .{ request.head.target, err });
                 return;
             };
         }
     }
 
     fn handleWebSocket(self: *DevServer, ws: *http.Server.WebSocket, writer: *std.Io.Writer) void {
-        getLog().print("  [ws] client connected\n", .{}) catch {};
+        self.routineLog("  [ws] client connected\n", .{});
 
         // broadcast 리스트에 등록
         self.ws_clients.add(writer);
         defer self.ws_clients.remove(writer);
 
         ws.writeMessage("{\"type\":\"connected\"}", .text) catch {
-            getLog().print("  [ws] failed to send connected message\n", .{}) catch {};
+            self.routineLog("  [ws] failed to send connected message\n", .{});
             return;
         };
         self.error_state.sendIfPresent(writer);
@@ -640,21 +670,21 @@ pub const DevServer = struct {
             const msg = ws.readSmallMessage() catch |err| {
                 switch (err) {
                     error.ConnectionClose => {},
-                    else => getLog().print("  [ws] read error: {}\n", .{err}) catch {},
+                    else => self.routineLog("  [ws] read error: {}\n", .{err}),
                 }
                 break;
             };
 
             switch (msg.opcode) {
                 .text => {
-                    getLog().print("  [ws] recv: {s}\n", .{msg.data}) catch {};
+                    self.routineLog("  [ws] recv: {s}\n", .{msg.data});
                 },
                 .connection_close => break,
                 else => {},
             }
         }
 
-        getLog().print("  [ws] client disconnected\n", .{}) catch {};
+        self.routineLog("  [ws] client disconnected\n", .{});
     }
 
     /// MCP app channel WebSocket handler — RN 앱 안 mcp-runtime.cjs 가 핸드셰이크
@@ -666,7 +696,7 @@ pub const DevServer = struct {
         if (!accepted) {
             // 이미 다른 앱이 연결돼 있음 — first-wins 정책. error JSON 송신 후 명시적
             // close frame 으로 정상 종료 (1006 abnormal closure 대신 1000 + text 보장).
-            getLog().print("  [mcp-app] 이미 연결된 앱 있음, 새 연결 거절\n", .{}) catch {};
+            self.routineLog("  [mcp-app] 이미 연결된 앱 있음, 새 연결 거절\n", .{});
             ws.writeMessage(mcp_app_channel_mod.REJECT_MESSAGE, .text) catch {};
             // RFC 6455 §5.5.1 close frame — payload 비워도 valid. 클라이언트가 이전
             // text frame 까지 받은 후 graceful close 보장.
@@ -680,13 +710,13 @@ pub const DevServer = struct {
         defer self.app_channel.clearCurrentWs();
         defer self.app_channel.disconnect();
 
-        getLog().print("  [mcp-app] 앱 연결 (count={})\n", .{self.app_channel.stats().connect_count}) catch {};
+        self.routineLog("  [mcp-app] 앱 연결 (count={})\n", .{self.app_channel.stats().connect_count});
 
         // 핸드셰이크 hello — setCurrentWs 전에 송신해야 한다 (F1). setCurrentWs 후에 보내면
         // 그 사이 다른 thread 가 dispatcher 통해 write 호출 → hello frame 과 byte-level
         // interleave 가능 (writeMessageVecUnflushed 의 header/payload/flush 가 atomic 아님).
         ws.writeMessage(mcp_app_channel_mod.HELLO_MESSAGE, .text) catch {
-            getLog().print("  [mcp-app] hello send 실패\n", .{}) catch {};
+            self.routineLog("  [mcp-app] hello send 실패\n", .{});
             return;
         };
         // hello 송신 완료 — 이제 ws 를 channel 에 노출 (dispatcher 가 사용 가능).
@@ -699,7 +729,7 @@ pub const DevServer = struct {
             const msg = ws.readSmallMessage() catch |err| {
                 switch (err) {
                     error.ConnectionClose => {},
-                    else => getLog().print("  [mcp-app] read 에러: {}\n", .{err}) catch {},
+                    else => self.routineLog("  [mcp-app] read 에러: {}\n", .{err}),
                 }
                 break;
             };
@@ -710,7 +740,7 @@ pub const DevServer = struct {
                     // AppChannel.resolveResponse 호출. method 가 있으면 app → server
                     // request — 후속 PR 에서 server-side handler dispatch.
                     var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, msg.data, .{}) catch {
-                        getLog().print("  [mcp-app] invalid JSON: {s}\n", .{msg.data}) catch {};
+                        self.routineLog("  [mcp-app] invalid JSON: {s}\n", .{msg.data});
                         continue;
                     };
                     defer parsed.deinit();
@@ -736,13 +766,13 @@ pub const DevServer = struct {
                         if (id_u64) |id| {
                             self.app_channel.resolveResponse(id, msg.data);
                         } else {
-                            getLog().print("  [mcp-app] response 의 id 가 invalid (non-integer)\n", .{}) catch {};
+                            self.routineLog("  [mcp-app] response 의 id 가 invalid (non-integer)\n", .{});
                         }
                     } else if (has_method) {
                         // app→server request 또는 notification — 후속 PR 에서 dispatch.
-                        getLog().print("  [mcp-app] app→server request (not yet handled): {s}\n", .{msg.data}) catch {};
+                        self.routineLog("  [mcp-app] app→server request (not yet handled): {s}\n", .{msg.data});
                     } else {
-                        getLog().print("  [mcp-app] unknown frame (no id, no method): {s}\n", .{msg.data}) catch {};
+                        self.routineLog("  [mcp-app] unknown frame (no id, no method): {s}\n", .{msg.data});
                     }
                 },
                 .connection_close => break,
@@ -750,7 +780,7 @@ pub const DevServer = struct {
             }
         }
 
-        getLog().print("  [mcp-app] 앱 연결 종료\n", .{}) catch {};
+        self.routineLog("  [mcp-app] 앱 연결 종료\n", .{});
     }
 
     fn watchLoop(self: *DevServer) void {
@@ -819,7 +849,7 @@ pub const DevServer = struct {
         defer css_path_set.deinit();
         for (css_paths.items) |p| css_path_set.put(p, {}) catch {};
 
-        getLog().print("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()}) catch {};
+        self.routineLog("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()});
 
         while (true) {
             const events = watcher.waitForChanges(watch_interval_ms) catch continue;
@@ -828,7 +858,7 @@ pub const DevServer = struct {
             if (self.cache_reset_requested.swap(false, .acquire)) {
                 inc_bundler.reset();
                 self.publishEvent(EventType.cache_reset, "{\"type\":\"cache_reset\"}");
-                getLog().print("  [ctrl] cache reset via /reset-cache\n", .{}) catch {};
+                self.routineLog("  [ctrl] cache reset via /reset-cache\n", .{});
             }
 
             if (events.len == 0) continue;
@@ -842,7 +872,7 @@ pub const DevServer = struct {
             defer changed_set.deinit();
             var needs_rescan = false;
             for (events) |ev| {
-                getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)}) catch {};
+                self.routineLog("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)});
                 if (root_real) |root| {
                     if (std.mem.eql(u8, ev.path, root)) {
                         needs_rescan = true;
@@ -904,7 +934,7 @@ pub const DevServer = struct {
                     if (changed_set.getOrPut(path_owned) catch null) |gop| {
                         if (!gop.found_existing) changed_paths.append(self.allocator, path_owned) catch {};
                     }
-                    getLog().print("  [watch] new file added: {s}\n", .{std.fs.path.basename(path_owned)}) catch {};
+                    self.routineLog("  [watch] new file added: {s}\n", .{std.fs.path.basename(path_owned)});
                 }
 
                 // (b) 삭제 path detect — css_path_set 에 있으나 new_set 에 없음
@@ -936,7 +966,7 @@ pub const DevServer = struct {
                             break;
                         }
                     }
-                    getLog().print("  [watch] file removed: {s}\n", .{std.fs.path.basename(path_dupe)}) catch {};
+                    self.routineLog("  [watch] file removed: {s}\n", .{std.fs.path.basename(path_dupe)});
                 }
             }
 
@@ -957,7 +987,7 @@ pub const DevServer = struct {
                     var msg_buf: [512]u8 = undefined;
                     const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
                     self.ws_clients.broadcast(css_msg);
-                    getLog().print("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)}) catch {};
+                    self.routineLog("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)});
                 }
             }
 
@@ -997,7 +1027,7 @@ pub const DevServer = struct {
                     if (result.graph_changed) {
                         // 그래프 구조 변경 → full-reload (새 import 추가 등)
                         self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
-                        getLog().print("  [hmr] graph changed, full-reload\n", .{}) catch {};
+                        self.routineLog("  [hmr] graph changed, full-reload\n", .{});
                     } else if (result.changed_modules.len > 0) {
                         // 변경 모듈만 HMR update
                         self.ws_clients.broadcast("{\"type\":\"update-start\"}");
@@ -1008,14 +1038,14 @@ pub const DevServer = struct {
                         if (hmr_msg) |msg| {
                             defer self.allocator.free(msg);
                             self.ws_clients.broadcast(msg);
-                            getLog().print("  [hmr] incremental update ({d} modules)\n", .{result.changed_modules.len}) catch {};
+                            self.routineLog("  [hmr] incremental update ({d} modules)\n", .{result.changed_modules.len});
                         } else {
                             self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
                         }
                         self.ws_clients.broadcast("{\"type\":\"update-done\"}");
                     } else {
                         // 코드 diff 없음 (타입만 변경 등) → Vite와 동일하게 무시
-                        getLog().print("  [hmr] no code change, skipping\n", .{}) catch {};
+                        self.routineLog("  [hmr] no code change, skipping\n", .{});
                     }
 
                     // free changed_modules (id/code/map 각각 dupe 소유권 이전됨 — freeAll 필수).
@@ -1034,13 +1064,13 @@ pub const DevServer = struct {
                     for (css_paths.items) |p| {
                         watcher.addPath(p) catch {};
                     }
-                    getLog().print("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()}) catch {};
+                    self.routineLog("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()});
                 },
                 .build_error => |err_msg| {
                     defer self.allocator.free(err_msg);
                     self.error_state.setCopy(self.allocator, err_msg) catch {};
                     self.ws_clients.broadcast(err_msg);
-                    getLog().print("  [watch] build error, overlay sent\n", .{}) catch {};
+                    self.routineLog("  [watch] build error, overlay sent\n", .{});
 
                     // bundle_build_failed 이벤트 (err_msg는 이미 JSON)
                     var fail_buf: [256]u8 = undefined;
@@ -1162,7 +1192,7 @@ pub const DevServer = struct {
             }
         }
         const reader = request.readerExpectContinue(&.{}) catch |err| {
-            getLog().print("  [mcp] body reader error: {}\n", .{err}) catch {};
+            self.routineLog("  [mcp] body reader error: {}\n", .{err});
             return;
         };
         var body_buf: [max_body + 1]u8 = undefined;
@@ -1175,7 +1205,7 @@ pub const DevServer = struct {
                 }) catch {};
                 return;
             }
-            getLog().print("  [mcp] body read error: {}\n", .{err}) catch {};
+            self.routineLog("  [mcp] body read error: {}\n", .{err});
             return;
         };
         const body_len = body_writer.end;
@@ -1237,7 +1267,7 @@ pub const DevServer = struct {
         const inner = resp.writer(self.allocator);
 
         const kind = self.buildMcpResponse(body, inner) catch |err| blk: {
-            getLog().print("  [mcp] dispatch error: {}, sending -32603 fallback\n", .{err}) catch {};
+            self.routineLog("  [mcp] dispatch error: {}, sending -32603 fallback\n", .{err});
             // partial 응답 폐기 후 -32603 fallback 새로 build.
             // 이 단계도 OOM 으로 fail 하면 caller 가 처리 (마지막 안전망 — transport wrapper).
             resp.clearRetainingCapacity();
@@ -1774,7 +1804,7 @@ pub const DevServer = struct {
             // MCP JSON-RPC 서버 — POST /mcp
             if (std.mem.eql(u8, raw_path_early, "/mcp")) {
                 self.handleMcp(request) catch |err| {
-                    getLog().print("zntc: /mcp handler error: {}\n", .{err}) catch {};
+                    self.routineLog("zntc: /mcp handler error: {}\n", .{err});
                     request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}", .{
                         .status = .ok,
                         .extra_headers = &json_headers,
@@ -1825,7 +1855,7 @@ pub const DevServer = struct {
 
             if (std.mem.eql(u8, raw_path, bundle_path)) {
                 self.serveBundle(request) catch |err| {
-                    getLog().print("zntc: bundle failed: {}\n", .{err}) catch {};
+                    self.routineLog("zntc: bundle failed: {}\n", .{err});
                     request.respond("500 Bundle Error", .{
                         .status = .internal_server_error,
                         .extra_headers = &cors_headers,
@@ -1911,7 +1941,7 @@ pub const DevServer = struct {
                 .extra_headers = &js_headers,
             });
 
-            getLog().print("  500 {s} (bundle errors)\n", .{abs_entry}) catch {};
+            self.routineLog("  500 {s} (bundle errors)\n", .{abs_entry});
             return;
         }
         self.error_state.clear(self.allocator);
@@ -1930,7 +1960,7 @@ pub const DevServer = struct {
             .extra_headers = &js_headers,
         });
 
-        getLog().print("  200 {s} (bundled)\n", .{bundle_path}) catch {};
+        self.routineLog("  200 {s} (bundled)\n", .{bundle_path});
     }
 
     const sourcemap_headers = cors_headers ++ [_]http.Header{
@@ -1945,7 +1975,7 @@ pub const DevServer = struct {
             try request.respond(sm, .{
                 .extra_headers = &sourcemap_headers,
             });
-            getLog().print("  200 /bundle.js.map\n", .{}) catch {};
+            self.routineLog("  200 /bundle.js.map\n", .{});
         } else {
             try request.respond("", .{
                 .status = .not_found,
@@ -1958,7 +1988,7 @@ pub const DevServer = struct {
         try request.respond(self.overlay_client, .{
             .extra_headers = &js_headers,
         });
-        getLog().print("  200 {s}\n", .{app_dev_client_path}) catch {};
+        self.routineLog("  200 {s}\n", .{app_dev_client_path});
     }
 
     /// /@react-refresh — react-refresh/runtime 가상 모듈 서빙.
@@ -1978,7 +2008,7 @@ pub const DevServer = struct {
                     \\window.__REACT_REFRESH_RUNTIME__ = undefined;
                 ;
                 try request.respond(noop, .{ .extra_headers = &js_headers });
-                getLog().print("  200 /@react-refresh (noop — not installed)\n", .{}) catch {};
+                self.routineLog("  200 /@react-refresh (noop — not installed)\n", .{});
                 return;
             },
             else => return err,
@@ -2007,10 +2037,10 @@ pub const DevServer = struct {
         try output.appendSlice(self.allocator, epilogue);
 
         try request.respond(output.items, .{ .extra_headers = &js_headers });
-        getLog().print("  200 /@react-refresh\n", .{}) catch {};
+        self.routineLog("  200 /@react-refresh\n", .{});
     }
 
-    fn serveAutoHtml(_: *DevServer, request: *http.Server.Request) !void {
+    fn serveAutoHtml(self: *DevServer, request: *http.Server.Request) !void {
         const html =
             \\<!DOCTYPE html>
             \\<html>
@@ -2028,7 +2058,7 @@ pub const DevServer = struct {
             .extra_headers = &html_headers,
         });
 
-        getLog().print("  200 / (auto html)\n", .{}) catch {};
+        self.routineLog("  200 / (auto html)\n", .{});
     }
 
     fn serveStaticFile(self: *DevServer, request: *http.Server.Request, rel_path: []const u8) !void {
@@ -2058,7 +2088,7 @@ pub const DevServer = struct {
             try request.respond(injected, .{
                 .extra_headers = &headers,
             });
-            getLog().print("  200 {s}\n", .{rel_path}) catch {};
+            self.routineLog("  200 {s}\n", .{rel_path});
             return;
         }
 
@@ -2066,7 +2096,7 @@ pub const DevServer = struct {
             .extra_headers = &headers,
         });
 
-        getLog().print("  200 {s}\n", .{rel_path}) catch {};
+        self.routineLog("  200 {s}\n", .{rel_path});
     }
 
     fn injectAppDevClient(self: *DevServer, html: []const u8) ![]const u8 {
