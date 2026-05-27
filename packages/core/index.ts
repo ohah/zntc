@@ -580,9 +580,10 @@ export interface StartDevServerOptions {
   /** HTTPS key (PEM). certPath 와 함께 줘야. */
   keyPath?: string;
   /**
-   * stderr 의 banner + 모든 routine log (request access 200/500, HMR / WS /
-   * watcher / sse / bundle progress / cache reset) silence. NAPI embed
-   * default true (자체 logger 가정). false 로 명시하면 stderr 출력.
+   * stderr 의 banner + 모든 routine log silence. NAPI embed default true
+   * (자체 logger 가정). false 로 명시하면 stderr 출력. quiet 가드되는 카테고리
+   * 전체 리스트는 `src/server/dev_server.zig` 의 `DevServer.routineLog` doc
+   * (CANONICAL SCOPE LIST) 참조 — 단일 진실 소스.
    *
    * **critical 진단은 quiet 와 무관 항상 stderr** — init failure (cert 로드 /
    * 디렉토리 못 찾음 / overlay sentinel), start fatal (host parse / listen 실패
