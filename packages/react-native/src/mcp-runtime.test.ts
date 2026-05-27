@@ -1707,3 +1707,80 @@ describe('mcp-runtime.cjs (PR-F5) — take_snapshot', () => {
     expect(r.nodes).toBe(6);
   });
 });
+
+// Fiber cycle guard (post-F5 deferred) — corrupted fiber 의 자기 참조 child/sibling
+// 이 walkFiber 무한 loop / snapshotFiber stack overflow 일으키지 않도록 WeakSet
+// visited 보호.
+describe('mcp-runtime.cjs — fiber cycle guard (post-F5 deferred)', () => {
+  test('walkFiber — child self-cycle + 매치 없는 search → 무한 loop 없이 found:false', () => {
+    // PR review F3: 매치 있는 값을 찾으면 first-match 에서 early stop 라 cycle guard
+    // 작동 검증이 안 됨. 매치 없는 값으로 walk 가 끝까지 가게 해야 cycle 진짜 hit.
+    const fiber: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'cycle' },
+    };
+    fiber.child = fiber; // self cycle
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: fiber,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // 매치 없는 검색 — visited set 으로 cycle 차단 안 되면 무한 loop.
+    const r = rt.handlers.find_element({ by: 'text', value: 'nope' }) as { found?: boolean };
+    expect(r.found).toBe(false);
+  });
+
+  test('walkFiber — sibling chain cycle + 매치 없는 search → 무한 loop 없이 found:false', () => {
+    const a: FakeFiber = { type: { displayName: 'A' }, memoizedProps: {} };
+    const b: FakeFiber = { type: { displayName: 'B' }, memoizedProps: {} };
+    a.sibling = b;
+    b.sibling = a; // cycle
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: a,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // 매치 없는 search — visited set 없으면 sibling chain 무한 loop.
+    const r = rt.handlers.find_element({ by: 'component', value: 'Missing' }) as {
+      found?: boolean;
+    };
+    expect(r.found).toBe(false);
+  });
+
+  test('snapshotFiber — child 자기 참조 → __cycle marker + truncated:true', () => {
+    const cyc: FakeFiber = {
+      type: { displayName: 'Cyc' },
+      memoizedProps: {},
+    };
+    cyc.child = cyc;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: cyc,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.take_snapshot({}) as {
+      roots: Array<any>;
+      nodes: number;
+      truncated: boolean;
+    };
+    // Root → Cyc (1번 직렬화) → child=Cyc 의 두 번째 진입은 __cycle marker.
+    expect(r.truncated).toBe(true);
+    const rootNode = r.roots[0];
+    const cycNode = rootNode.children[0];
+    expect(cycNode.component).toBe('Cyc');
+    // cycNode.children[0] 는 self 의 두 번째 진입 → __cycle marker
+    expect(cycNode.children[0].__cycle).toBe(true);
+  });
+});
