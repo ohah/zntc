@@ -237,6 +237,38 @@ describe('mcp-runtime.cjs (PR-E2) — dispatch', () => {
     expect(resp.error.message).toContain('test failure');
   });
 
+  test('async handler — Promise return → resolve 후 result send (post-F3 deferred)', async () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    rt.handlers.delayed = () =>
+      new Promise((resolve) => {
+        // 0-delay microtask 후 resolve. dispatcher 는 then chain.
+        Promise.resolve().then(() => resolve({ async: true, n: 7 }));
+      });
+    lastWs!.triggerOpen();
+    lastWs!.triggerMessage('{"jsonrpc":"2.0","id":5,"method":"delayed"}');
+    // resolve 후 send 까지 microtask 1회.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lastWs!.sent.length).toBe(1);
+    const resp = JSON.parse(lastWs!.sent[0]);
+    expect(resp.id).toBe(5);
+    expect(resp.result).toEqual({ async: true, n: 7 });
+  });
+
+  test('async handler — Promise reject → -32603 error send', async () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    rt.handlers.fails = () => Promise.reject(new Error('async boom'));
+    lastWs!.triggerOpen();
+    lastWs!.triggerMessage('{"jsonrpc":"2.0","id":6,"method":"fails"}');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lastWs!.sent.length).toBe(1);
+    const resp = JSON.parse(lastWs!.sent[0]);
+    expect(resp.id).toBe(6);
+    expect(resp.error.code).toBe(-32603);
+    expect(resp.error.message).toContain('async boom');
+  });
+
   test('notification (id 없음) — 핸들러 호출 후 응답 안 보냄', () => {
     loadRuntime(g);
     const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
@@ -1223,19 +1255,67 @@ describe('mcp-runtime.cjs (PR-F3) — eval_code', () => {
     expect(r.value).toBe('FORWARD');
   });
 
-  test('F4 — await / yield 는 syntax error (sync 전용 — contract lock)', () => {
+  test('async — `await` expression 은 AsyncFunction fallback 으로 Promise 결과 반환 (post-F3 deferred)', async () => {
+    // PR-F3 의 sync-only contract 는 본 deferred 로 완화. `await Promise.resolve(...)`
+    // 가 ok:true + value 로 resolve. handler 가 Promise 반환 — dispatcher 가 await.
     loadRuntime(g);
     const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
-    const r1 = rt.handlers.eval_code({
-      expression: 'await Promise.resolve(1)',
-    }) as { ok: boolean; kind?: string };
-    expect(r1.ok).toBe(false);
-    expect(r1.kind).toBe('syntax');
-    const r2 = rt.handlers.eval_code({
+    const r = rt.handlers.eval_code({
+      expression: 'await Promise.resolve(42)',
+    });
+    // AsyncFunction 사용 시 handler 자체가 Promise 반환.
+    expect(typeof (r as any).then).toBe('function');
+    const awaited = (await r) as { ok: boolean; value: number };
+    expect(awaited.ok).toBe(true);
+    expect(awaited.value).toBe(42);
+  });
+
+  test('yield (generator expression) 는 여전히 syntax error — AsyncFunction 도 거부', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
       expression: 'yield 1',
     }) as { ok: boolean; kind?: string };
-    expect(r2.ok).toBe(false);
-    expect(r2.kind).toBe('syntax');
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('syntax');
+  });
+
+  test('async — await 한 Promise 가 reject → runtime error (Promise.then 의 reject branch)', async () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
+      expression: 'await Promise.reject(new Error("nope"))',
+    });
+    const awaited = (await r) as { ok: boolean; kind?: string; error?: string };
+    expect(awaited.ok).toBe(false);
+    expect(awaited.kind).toBe('runtime');
+    expect(awaited.error).toContain('nope');
+  });
+
+  test('async — await 한 cyclic graph 도 safeSerialize 가 bound (F7)', async () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
+      expression: 'await Promise.resolve(globalThis)',
+    });
+    const awaited = (await r) as { ok: boolean; value: unknown };
+    expect(awaited.ok).toBe(true);
+    expect(typeof JSON.stringify(awaited.value)).toBe('string'); // throw 없음
+  });
+
+  test('sync path 의 Promise.resolve(x) — handler return 도 dispatcher 가 await (F4)', () => {
+    // expression 자체에 await 없지만 결과가 Promise 면 sync path 가 새 Function 만들고
+    // 그 결과가 Promise. eval_code handler 는 sync return 으로 그 Promise 그대로 반환,
+    // dispatcher 가 .then 으로 await.
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.eval_code({
+      expression: 'Promise.resolve(99)',
+    }) as { ok: boolean; value: unknown; type: string };
+    // sync path 사용 — handler 의 value 가 Promise. safeSerialize 의 [Promise] marker.
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe('[Promise]');
+    expect(r.type).toBe('object');
   });
 
   test('F6 — globalThis 같은 큰 cyclic graph 반환도 safeSerialize 가 bound', () => {

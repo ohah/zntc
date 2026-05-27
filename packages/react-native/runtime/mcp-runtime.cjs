@@ -451,13 +451,19 @@ function startMcpRuntime(g) {
   // state snapshot) 를 `this` + `$ctx` 양쪽에 바인딩.
   //
   // **중요한 contract**:
-  //   - 동기 expression 전용 — `await` / `yield` 는 SyntaxError. `new Function` 이라
-  //     async function 안 됨. Promise 반환 가능 (resolve 안 기다림, marker 직렬화).
+  //   - sync expression 우선 시도 (`new Function`) → SyntaxError 면 `new AsyncFunction`
+  //     으로 retry. `await` expression 지원. `yield` 는 generator 라 별도, 여전히
+  //     SyntaxError.
+  //   - 결과가 Promise 면 dispatcher 가 then/catch 로 await 후 result/error 송신.
+  //     sync path 의 expression 이 `Promise.resolve(x)` 같은 Promise 반환해도 동일
+  //     하게 await 됨 — 즉 thenable return 은 모두 dispatcher 가 처리.
   //   - 평가는 RN main JS thread 에서 발생 — **side-effect 가능**. `this.setState(...)`
   //     로 컴포넌트 mutate, `globalThis.foo = ...` 로 global 변경. dev 디버거 console
   //     처럼 동작 (pure observer 아님).
   //   - 'use strict' — sloppy mode 의 묵시적 global 변수 생성 차단. props 가 frozen
   //     이면 `this.props = {}` 가 TypeError 로 표면화.
+  //   - JS-side cancel 없음 — 10s timeout 은 Zig dispatcher 가 enforce. 늦게 도착한
+  //     resolve 는 orphan 으로 drop (mcp_app_channel.zig 의 pending 매칭 실패).
   //
   // 보안: arbitrary code 평가 — dev 빌드에만 inject 되므로 production 우려 없음.
   //
@@ -483,6 +489,26 @@ function startMcpRuntime(g) {
       return true;
     } catch (_) {
       return false;
+    }
+  })();
+
+  // AsyncFunction 생성자 — globalThis 에 직접 노출 안 됨. async function 의 constructor
+  // 로 획득. Hermes 일부 빌드 미지원 가능 → probe 결과 null 이면 await/yield expression
+  // 은 sync path 의 SyntaxError 그대로 반환.
+  //
+  // **F2**: `async function(){}` 리터럴 직접 작성하면 async-syntax 미지원 엔진에서
+  // parse-time SyntaxError → 전체 mcp-runtime.cjs 로드 실패 (모든 MCP tool down).
+  // `new Function('return ...')` 로 wrap 해서 runtime SyntaxError 로 격리 — try/catch
+  // 가 잡아 null fallback.
+  var AsyncFunctionCtor = (function () {
+    if (!EVAL_SUPPORTED) return null;
+    try {
+      var Ctor = new Function('return (async function(){}).constructor')();
+      // sanity probe — Ctor 가 호출 가능 + new Function 처럼 throw 안 함.
+      new Ctor('return 0;');
+      return Ctor;
+    } catch (_) {
+      return null;
     }
   })();
 
@@ -528,28 +554,41 @@ function startMcpRuntime(g) {
       }
     }
 
-    var fn;
+    // `new Function` body — expression 을 괄호로 감싸 statement 와 구분.
+    // `$ctx` 는 명시 파라미터, `this` 는 .call 의 first arg 로 동시 바인딩.
+    // sync 시도 → SyntaxError (await/yield 등) 면 AsyncFunction 으로 재시도.
+    var fn = null;
+    var isAsync = false;
+    var firstSynErr = null;
+    var asyncErr = null;
     try {
-      // `new Function` body — expression 을 괄호로 감싸 statement 와 구분.
-      // `$ctx` 는 명시 파라미터, `this` 는 .call 의 first arg 로 동시 바인딩.
       fn = new Function('$ctx', '"use strict"; return (' + expr + ');');
     } catch (synErr) {
-      return {
-        ok: false,
-        error: (synErr && synErr.message) || String(synErr),
-        kind: 'syntax',
-      };
+      firstSynErr = synErr;
+    }
+    if (fn == null && AsyncFunctionCtor != null) {
+      try {
+        fn = new AsyncFunctionCtor('$ctx', '"use strict"; return (' + expr + ');');
+        isAsync = true;
+      } catch (e) {
+        // AsyncFunction 도 syntax error → 진짜 syntax 문제 (await 외).
+        asyncErr = e;
+      }
+    }
+    if (fn == null) {
+      // **F3**: 사용자가 `await` 쓴 의도라면 sync-engine 의 "await is only valid"
+      // 보다 async-engine 의 실제 syntax error 가 더 유용. async 시도 결과 있으면
+      // 그걸 우선.
+      var reportErr = asyncErr || firstSynErr;
+      var errMsg = (reportErr && reportErr.message) || String(reportErr);
+      if (AsyncFunctionCtor == null && firstSynErr != null) {
+        errMsg += ' (AsyncFunction unavailable on this JS engine)';
+      }
+      return { ok: false, error: errMsg, kind: 'syntax' };
     }
 
-    try {
-      var result = fn.call(ctx, ctx);
-      return {
-        ok: true,
-        value: safeSerialize(result, new Set(), 0),
-        type: typeof result,
-      };
-    } catch (runErr) {
-      // stack 은 길어질 수 있어 cap (2KB) — fiber tree 같은 거대 객체 사용 안 했지만 안전.
+    function makeRuntimeError(runErr) {
+      // stack 은 길어질 수 있어 cap (2KB) — 거대 객체 사용 안 했지만 안전.
       var stack = runErr && runErr.stack ? String(runErr.stack) : null;
       if (stack && stack.length > 2000) stack = stack.slice(0, 2000) + '...';
       return {
@@ -558,6 +597,27 @@ function startMcpRuntime(g) {
         kind: 'runtime',
         stack: stack,
       };
+    }
+
+    function makeOk(value) {
+      return {
+        ok: true,
+        value: safeSerialize(value, new Set(), 0),
+        type: typeof value,
+      };
+    }
+
+    try {
+      var result = fn.call(ctx, ctx);
+      // AsyncFunction → Promise. dispatcher 가 then/catch 처리하므로 그대로 return.
+      // 모든 expression 결과가 동기적으로 Promise 일 수도 (사용자 expression 이
+      // `Promise.resolve(x)` 같은 sync-return Promise) — `async: true` flag 로 구분.
+      if (isAsync && result && typeof result.then === 'function') {
+        return result.then(makeOk, makeRuntimeError);
+      }
+      return makeOk(result);
+    } catch (runErr) {
+      return makeRuntimeError(runErr);
     }
   };
 
@@ -871,8 +931,34 @@ function startMcpRuntime(g) {
       }
       try {
         var result = fn(msg.params || {});
-        // sync 결과만 우선 — async (Promise) 처리는 후속 PR
-        send({ jsonrpc: '2.0', id: msg.id, result: result == null ? {} : result });
+        // Promise return — async handler (eval_code 의 await expression 등). then/catch
+        // 으로 resolve 대기 후 송신. handler 자체가 throw 면 catch 분기.
+        //
+        // **F1**: dispatch 시점의 ws 를 snapshot. resolve 시점에 ws 가 reconnect 되어
+        // 새 connection 이면 stale response 가 새 socket 으로 흐를 위험. 같은 ws 일 때만
+        // send — 다르면 silent drop (server 가 timeout 으로 이미 응답 처리).
+        var dispatchWs = state.ws;
+        if (result && typeof result.then === 'function') {
+          result.then(
+            function (value) {
+              if (state.ws !== dispatchWs) return; // reconnect 후 stale 응답 drop
+              send({ jsonrpc: '2.0', id: msg.id, result: value == null ? {} : value });
+            },
+            function (rejErr) {
+              if (state.ws !== dispatchWs) return;
+              send({
+                jsonrpc: '2.0',
+                id: msg.id,
+                error: {
+                  code: -32603,
+                  message: String((rejErr && rejErr.message) || rejErr),
+                },
+              });
+            },
+          );
+        } else {
+          send({ jsonrpc: '2.0', id: msg.id, result: result == null ? {} : result });
+        }
       } catch (err) {
         send({
           jsonrpc: '2.0',
@@ -888,7 +974,15 @@ function startMcpRuntime(g) {
       var nfn = handlers[msg.method];
       if (typeof nfn === 'function') {
         try {
-          nfn(msg.params || {});
+          var nres = nfn(msg.params || {});
+          // F8: handler 가 Promise 반환하고 reject 되면 unhandled rejection → RN
+          // yellow box. 응답 안 보내지만 silent absorb.
+          if (nres && typeof nres.then === 'function') {
+            nres.then(
+              function () {},
+              function () {},
+            );
+          }
         } catch (_) {}
       }
       return;
