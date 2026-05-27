@@ -527,9 +527,22 @@ test "AppChannel.resolveResponse: 두 동시 request — id 별 매칭, out-of-o
         .writer = BufWriter{ .out = &written, .alloc = std.testing.allocator },
         .method = "beta",
     };
+    // thread setup 을 직렬화 — 단순 sleep 만 쓰면 OS scheduler 에 따라 alpha 가 id 2,
+    // beta 가 id 1 을 받아 검증 단계에서 ctx_a 가 beta 응답을 받게 됨 (race). 본 테스트의
+    // 본질 (out-of-order 응답이 id 로 정확히 매칭) 은 pending 등록 후 응답 순서만
+    // 뒤집어도 검증 가능 — id 할당 순서까지 굳혀 결정성 확보.
     const t_a = try std.Thread.spawn(.{}, RunCtx.run, .{&ctx_a});
+    var spin: usize = 0;
+    while (spin < 400 and ch.stats().pending_count < 1) : (spin += 1) {
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(@as(usize, 1), ch.stats().pending_count);
     const t_b = try std.Thread.spawn(.{}, RunCtx.run, .{&ctx_b});
-    std.Thread.sleep(30 * std.time.ns_per_ms);
+    spin = 0;
+    while (spin < 400 and ch.stats().pending_count < 2) : (spin += 1) {
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(@as(usize, 2), ch.stats().pending_count);
 
     // out-of-order: id 2 (beta) 먼저, id 1 (alpha) 나중.
     ch.resolveResponse(2, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"who\":\"beta\"}}");
