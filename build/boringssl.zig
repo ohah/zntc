@@ -31,6 +31,13 @@ pub fn build(
         .root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
+            // **`pic = true`** — NAPI binary (`zig-out/lib/zntc.node`) 는 shared library
+            // 라 link 되는 모든 코드가 PIC 여야 한다. non-PIC archive 를 dynamic library
+            // 에 link 하면 `R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol
+            // 'malloc'; recompile with -fPIC` (ARM64) / `R_X86_64_PC32 ... (X86_64)`
+            // relocation 에러 발생. exe binary 도 PIC 코드 OK (현대 Linux 의 PIE default
+            // 와 일치) — overhead 무시 수준.
+            .pic = true,
         }),
     });
     lib.linkLibC();
