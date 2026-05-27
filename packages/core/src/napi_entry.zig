@@ -121,5 +121,9 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     _ = c.napi_create_function(env, "stopDevServer", "stopDevServer".len, serve_entry.napiStopDevServer, null, &stop_dev_server_fn);
     _ = c.napi_set_named_property(env, exports, "stopDevServer", stop_dev_server_fn);
 
+    var get_dev_server_port_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "getDevServerPort", "getDevServerPort".len, serve_entry.napiGetDevServerPort, null, &get_dev_server_port_fn);
+    _ = c.napi_set_named_property(env, exports, "getDevServerPort", get_dev_server_port_fn);
+
     return exports;
 }

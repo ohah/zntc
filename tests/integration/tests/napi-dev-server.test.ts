@@ -134,8 +134,7 @@ describe('NAPI startDevServer / stopDevServer', () => {
     expect(() => (native.stopDevServer as any)(null)).toThrow(/handle/);
   });
 
-  test('port 범위 검증 (0 / 65536+ → throw)', () => {
-    expect(() => native.startDevServer({ rootDir: tmpRoot, port: 0 })).toThrow(/port/);
+  test('port 65536+ → throw (PR-G3: 0 은 OS-assigned 으로 허용)', () => {
     expect(() => native.startDevServer({ rootDir: tmpRoot, port: 70000 })).toThrow(/port/);
   });
 
@@ -164,6 +163,47 @@ describe('NAPI startDevServer / stopDevServer', () => {
     } finally {
       native.stopDevServer(handleB);
     }
+  });
+
+  test('port 0 (OS-assigned ephemeral) + getDevServerPort — 실 bound port 조회 (PR-G3)', async () => {
+    const handle = native.startDevServer({ rootDir: tmpRoot, port: 0, host: '127.0.0.1' });
+    try {
+      const port = native.getDevServerPort(handle);
+      expect(typeof port).toBe('number');
+      // F1 fix detector: race (stale read) 시 0 반환되면 즉시 fail.
+      expect(port).not.toBe(0);
+      expect(port).toBeGreaterThan(1024);
+      expect(port).toBeLessThan(65536);
+      await waitUntilReady(`http://127.0.0.1:${port}/index.html`);
+      const res = await fetch(`http://127.0.0.1:${port}/index.html`);
+      expect(res.status).toBe(200);
+    } finally {
+      native.stopDevServer(handle);
+    }
+  });
+
+  test('getDevServerPort 가 stopped handle 에 throw', () => {
+    const port = reservePort();
+    const handle = native.startDevServer({ rootDir: tmpRoot, port, host: '127.0.0.1' });
+    native.stopDevServer(handle);
+    expect(() => native.getDevServerPort(handle)).toThrow(/stopped/);
+  });
+
+  test('getDevServerPort 가 non-handle 에 throw', () => {
+    expect(() => (native.getDevServerPort as any)({})).toThrow(/handle/);
+    expect(() => (native.getDevServerPort as any)(null)).toThrow(/handle/);
+  });
+
+  test('quiet:false → banner stderr 출력 (PR-G3 quiet 기능 — 명시 false)', () => {
+    // 본 test 는 stderr capture 가 어려우니 동작 자체만 검증 (throw 없음).
+    const port = reservePort();
+    const handle = native.startDevServer({
+      rootDir: tmpRoot,
+      port,
+      host: '127.0.0.1',
+      quiet: false,
+    });
+    native.stopDevServer(handle);
   });
 
   // GC-only cleanup (no explicit stopDevServer) — finalize callback 가 자동 정리한다는
