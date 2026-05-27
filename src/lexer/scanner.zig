@@ -559,7 +559,10 @@ pub const Scanner = struct {
                 },
 
                 else => blk: {
-                    // ASCII 식별자 시작
+                    // hot path: ASCII identifier start. cold path (\u escape /
+                    // non-ASCII / syntax_error) 는 scanColdIdentOrError() 로 분리
+                    // 해 hot loop 의 instruction-cache footprint 를 줄였다. cold
+                    // 분기는 ASCII-only JS/TS corpus 에서는 거의 호출되지 않음.
                     if (isAsciiIdentStart(c)) {
                         self.scanIdentifierTail();
                         const text = self.tokenText();
@@ -569,9 +572,6 @@ pub const Scanner = struct {
                             const decoded = self.decodeIdentifierEscapes(text);
                             if (decoded) |name| {
                                 if (token.keywords.get(name)) |kw| {
-                                    // reserved keyword/literal → escaped_keyword (항상 식별자 사용 불가)
-                                    // strict mode reserved (let, yield, implements 등) → escaped_strict_reserved
-                                    // contextual keyword (async, from 등) → identifier
                                     break :blk if (kw.isReservedKeyword() or kw.isLiteralKeyword())
                                         .escaped_keyword
                                     else if (kw.isStrictModeReserved() or kw == .kw_let or kw == .kw_yield)
@@ -583,69 +583,11 @@ pub const Scanner = struct {
                             break :blk .identifier;
                         }
                         break :blk token.keywords.get(text) orelse .identifier;
+                    } else {
+                        // 함수 본문 첫 문장의 @branchHint(.cold) 가 outline 을
+                        // 유도하므로 call-site 의 추가 hint 는 중복 — 생략.
+                        break :blk self.scanColdIdentOrError(c);
                     }
-                    // \u 유니코드 이스케이프로 시작하는 식별자
-                    if (c == '\\') {
-                        self.token.has_escape = true;
-                        // advance()에서 이미 \ 를 소비했으므로 current-1 부터
-                        self.current -= 1; // put back '\'
-                        const esc_start = self.current;
-                        if (self.scanIdentifierEscape()) {
-                            // 식별자 시작: 디코딩된 코드포인트가 ID_Start인지 검증
-                            const esc_text = self.source[esc_start..self.current];
-                            const start_cp = self.decodeEscapeCodepoint(esc_text);
-                            if (start_cp) |cp| {
-                                if (cp < 0x80) {
-                                    if (!isAsciiIdentStart(@intCast(cp))) {
-                                        self.current = esc_start + 1;
-                                        break :blk .syntax_error;
-                                    }
-                                } else if (cp <= 0x10FFFF) {
-                                    if (!unicode.isIdentifierStart(@intCast(cp))) {
-                                        self.current = esc_start + 1;
-                                        break :blk .syntax_error;
-                                    }
-                                }
-                            } else {
-                                // 디코딩 실패 (예: \u{00_76}) → 유효하지 않은 이스케이프
-                                self.current = esc_start + 1;
-                                break :blk .syntax_error;
-                            }
-                            self.scanIdentifierTail();
-                            // 이스케이프를 디코딩하여 키워드인지 판별.
-                            // 키워드면 escaped_keyword (식별자로 사용 불가),
-                            // 아니면 일반 identifier.
-                            const raw = self.tokenText();
-                            const decoded = self.decodeIdentifierEscapes(raw);
-                            if (decoded) |name| {
-                                if (token.keywords.get(name)) |kw| {
-                                    break :blk if (kw.isReservedKeyword() or kw.isLiteralKeyword())
-                                        .escaped_keyword
-                                    else if (kw.isStrictModeReserved() or kw == .kw_let or kw == .kw_yield)
-                                        .escaped_strict_reserved
-                                    else
-                                        .identifier;
-                                }
-                            }
-                            break :blk .identifier;
-                        }
-                        self.current += 1; // re-consume '\'
-                        break :blk .syntax_error;
-                    }
-                    // Non-ASCII 유니코드 식별자
-                    if (c >= 0x80) {
-                        // advance()에서 1바이트 소비했으므로 나머지 UTF-8 바이트 소비
-                        const start_pos = self.current - 1;
-                        const remaining = self.source[start_pos..];
-                        const decoded = unicode.decodeUtf8(remaining);
-                        if (unicode.isIdentifierStart(decoded.codepoint)) {
-                            self.current = @intCast(start_pos + decoded.len);
-                            self.scanIdentifierTail();
-                            const text = self.tokenText();
-                            break :blk token.keywords.get(text) orelse .identifier;
-                        }
-                    }
-                    break :blk .syntax_error;
                 },
             };
 
@@ -2159,6 +2101,77 @@ pub const Scanner = struct {
     // ====================================================================
     // 문자 분류
     // ====================================================================
+
+    /// cold path: `\u` escape identifier / non-ASCII identifier / syntax_error.
+    /// `Scanner.next` 의 `else` 분기 hot path 가 `isAsciiIdentStart(c)` 일 때
+    /// 직접 처리하고, 그 외 모든 cold case 를 본 함수로 분리한다 — hot loop 의
+    /// instruction-cache footprint 를 줄여 일반 identifier scan 의 throughput
+    /// 을 보호한다. 함수 본문 첫 문장의 `@branchHint(.cold)` 가 LLVM 에 outline
+    /// 을 hint 한다 (Zig 에 `@cold` 키워드는 없고 이 hint 가 cold-function
+    /// effect 의 표준 패턴).
+    fn scanColdIdentOrError(self: *Scanner, c: u8) Kind {
+        @branchHint(.cold);
+        // \u 유니코드 이스케이프로 시작하는 식별자
+        if (c == '\\') {
+            self.token.has_escape = true;
+            // advance()에서 이미 \ 를 소비했으므로 current-1 부터
+            self.current -= 1; // put back '\'
+            const esc_start = self.current;
+            if (self.scanIdentifierEscape()) {
+                // 식별자 시작: 디코딩된 코드포인트가 ID_Start인지 검증
+                const esc_text = self.source[esc_start..self.current];
+                const start_cp = self.decodeEscapeCodepoint(esc_text);
+                if (start_cp) |cp| {
+                    if (cp < 0x80) {
+                        if (!isAsciiIdentStart(@intCast(cp))) {
+                            self.current = esc_start + 1;
+                            return .syntax_error;
+                        }
+                    } else if (cp <= 0x10FFFF) {
+                        if (!unicode.isIdentifierStart(@intCast(cp))) {
+                            self.current = esc_start + 1;
+                            return .syntax_error;
+                        }
+                    }
+                } else {
+                    // 디코딩 실패 (예: \u{00_76}) → 유효하지 않은 이스케이프
+                    self.current = esc_start + 1;
+                    return .syntax_error;
+                }
+                self.scanIdentifierTail();
+                // 이스케이프를 디코딩하여 키워드인지 판별.
+                const raw = self.tokenText();
+                const decoded = self.decodeIdentifierEscapes(raw);
+                if (decoded) |name| {
+                    if (token.keywords.get(name)) |kw| {
+                        return if (kw.isReservedKeyword() or kw.isLiteralKeyword())
+                            .escaped_keyword
+                        else if (kw.isStrictModeReserved() or kw == .kw_let or kw == .kw_yield)
+                            .escaped_strict_reserved
+                        else
+                            .identifier;
+                    }
+                }
+                return .identifier;
+            }
+            self.current += 1; // re-consume '\'
+            return .syntax_error;
+        }
+        // Non-ASCII 유니코드 식별자
+        if (c >= 0x80) {
+            // advance()에서 1바이트 소비했으므로 나머지 UTF-8 바이트 소비
+            const start_pos = self.current - 1;
+            const remaining = self.source[start_pos..];
+            const decoded = unicode.decodeUtf8(remaining);
+            if (unicode.isIdentifierStart(decoded.codepoint)) {
+                self.current = @intCast(start_pos + decoded.len);
+                self.scanIdentifierTail();
+                const text = self.tokenText();
+                return token.keywords.get(text) orelse .identifier;
+            }
+        }
+        return .syntax_error;
+    }
 
     /// ASCII 식별자 시작 문자인지.
     fn isAsciiIdentStart(c: u8) bool {
