@@ -17,7 +17,6 @@ const ErrorState = server_events.ErrorState;
 pub const SseSink = server_events.SseSink;
 const SseClients = server_events.SseClients;
 pub const EventType = server_events.EventType;
-const EventRing = server_events.EventRing;
 const writeJsonEscaped = server_events.writeJsonEscaped;
 const buildErrorJsonFromDiagnostics = server_events.buildErrorJsonFromDiagnostics;
 
@@ -65,8 +64,6 @@ pub const DevServer = struct {
     error_state: ErrorState = .{},
     /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    /// SSE 구독자 join 시 catch-up 용 이벤트 히스토리 (최근 N개).
-    event_ring: EventRing,
     /// shutdown() 호출 시 set; acceptLoop가 다음 iteration에서 종료.
     shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// listen 완료 + self.port 갱신 완료 신호 (release / acquire 로 cross-thread
@@ -93,7 +90,7 @@ pub const DevServer = struct {
     /// sentinel 을 protocol 상수로 치환한 결과. init 에서 1회 생성, deinit 에서 free.
     /// JS 측 packages/web/runtime/dev-overlay-client.mjs 와 같은 source/치환표 사용 (#2538 4-3).
     /// default 미제공 — partial-init 인스턴스가 serveAppDevClient 로 빈 body 응답하는
-    /// silent regression 차단 (event_ring 과 같은 invariant).
+    /// silent regression 차단.
     overlay_client: []u8,
     /// TLS context — `--certfile`/`--keyfile` 양쪽 다 설정된 경우만. null 이면 plain
     /// HTTP. dev server scope 라 1개 cert 만 — SNI multi-cert 는 별도 epic (#2538 4-2).
@@ -221,7 +218,6 @@ pub const DevServer = struct {
             .jsx_import_source = options.jsx_import_source,
             .jsx_factory = options.jsx_factory,
             .jsx_fragment = options.jsx_fragment,
-            .event_ring = EventRing.init(allocator),
             .overlay_client = overlay_client,
             .tls_ctx = tls_ctx,
         };
@@ -263,7 +259,6 @@ pub const DevServer = struct {
         self.allocator.free(self.overlay_client);
         if (self.tls_ctx) |*c| c.deinit();
         self.root_dir.close();
-        self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
     }
 
@@ -1026,7 +1021,6 @@ pub const DevServer = struct {
         }
     }
 
-
     /// 이벤트를 SSE 구독자 전원에 브로드캐스트.
     /// event_seq 는 u64 라 32-bit 네이티브 타깃에서는 lock-free atomic 이 불가능하다
     /// ("expected 32-bit integer type or smaller"). 64-bit & 멀티스레드일 때만 atomic 을
@@ -1055,8 +1049,7 @@ pub const DevServer = struct {
 
     /// `data_json`은 유효한 JSON 오브젝트 문자열이어야 한다 (이스케이프 호출부 책임).
     pub fn publishEvent(self: *DevServer, event_type: []const u8, data_json: []const u8) void {
-        const seq = self.nextSeq();
-        self.event_ring.push(seq, event_type, data_json);
+        _ = self.nextSeq();
         self.sse_clients.broadcast(event_type, data_json);
     }
 
@@ -1103,7 +1096,6 @@ pub const DevServer = struct {
                 }) catch {};
                 return;
             }
-
         }
 
         if (request.head.method != .GET and request.head.method != .HEAD) {

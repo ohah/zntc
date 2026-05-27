@@ -169,7 +169,7 @@ export default defineConfig({
           label: '레시피',
           translations: { en: 'Recipes' },
           items: [
-            { label: 'Dev Server (SSE/MCP)', slug: 'guides/dev-server' },
+            { label: 'Dev Server (SSE)', slug: 'guides/dev-server' },
             {
               label: 'Module Federation 예제',
               slug: 'guides/module-federation-recipe',

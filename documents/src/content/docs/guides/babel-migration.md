@@ -145,7 +145,7 @@ bun add -D @babel/core
 ```ts
 import { defineConfig } from "@zntc/core";
 import * as babel from "@babel/core";
-import mcpPreset from "@ohah/react-native-mcp-server/babel-preset";
+import customPreset from "your-babel-preset";
 
 export default defineConfig({
   platform: "react-native",
@@ -157,7 +157,7 @@ export default defineConfig({
         handler(code, id) {
           const out = babel.transformSync(code, {
             filename: id,
-            presets: [[mcpPreset, { renderHighlight: true }]],
+            presets: [[customPreset, { /* preset options */ }]],
             plugins: [
               // 여기에 그 외 커스텀 Babel 플러그인
             ],
