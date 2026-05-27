@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   APP_DEV_HMR_CLIENT_PATH,
   APP_DEV_HMR_WS_PATH,
-  APP_DEV_MCP_APP_WS_PATH,
   HMR_MSG,
   HMR_RN_MSG,
   HMR_WS_GUID,
@@ -32,8 +31,6 @@ describe('protocol 상수', () => {
   test('client/ws path 가 정의된 namespace', () => {
     expect(APP_DEV_HMR_CLIENT_PATH).toBe('/__zntc_app_dev_hmr__');
     expect(APP_DEV_HMR_WS_PATH).toBe('/__hmr');
-    // Zig 측 src/server/dev_server.zig:mcp_app_path 와 정확히 일치 — drift 차단.
-    expect(APP_DEV_MCP_APP_WS_PATH).toBe('/__mcp-app');
   });
 
   test('RFC 6455 GUID 는 spec 고정값', () => {

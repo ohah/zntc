@@ -287,7 +287,6 @@ Options:
 
 - `/sse/events` — SSE 빌드 이벤트 (`server_ready`, `watch_change`, `bundle_build_*`, `cache_reset`)
 - `/reset-cache` — Control API, 외부에서 캐시 무효화 트리거
-- `/mcp` — Model Context Protocol (JSON-RPC 2.0). Claude Code 등 LLM 에이전트가 `.mcp.json`으로 직접 연결. 11개 tool (build domain 3 + sanity 1 + RN debugging 7) — 상세는 [docs/MCP.md](./MCP.md). stdio transport 도 `zntc mcp` 서브명령으로 제공.
 
 상세: [docs/HMR.md](./HMR.md)
 

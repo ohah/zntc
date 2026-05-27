@@ -185,8 +185,6 @@ function usageLines(command) {
     '       zntc dev [root]',
     '       zntc build [root]',
     '       zntc preview [outdir]',
-    '       zntc mcp [root]                   MCP stdio transport (Cursor/Claude Code)',
-    '                                         root: positional > ZNTC_ROOT env > cwd',
     '',
     'Options:',
     '  --bundle                   Bundle dependencies',
@@ -235,7 +233,7 @@ function printUsage(command, stream = console.log) {
 
 function parseArgs(argv) {
   const args = argv.slice(2);
-  const appCommands = new Set(['dev', 'build', 'preview', 'verify', 'mcp']);
+  const appCommands = new Set(['dev', 'build', 'preview', 'verify']);
   const appCommand = appCommands.has(args[0]) ? args.shift() : undefined;
   const opts = {
     appCommand,
@@ -428,7 +426,7 @@ function parseArgs(argv) {
 
     // positional (파일 경로)
     if (!arg.startsWith('-')) {
-      if (opts.appCommand === 'dev' || opts.appCommand === 'build' || opts.appCommand === 'mcp') {
+      if (opts.appCommand === 'dev' || opts.appCommand === 'build') {
         opts.appRoot = opts.appRoot ?? arg;
       } else if (opts.appCommand === 'preview') {
         opts.previewDir = opts.previewDir ?? arg;
@@ -2714,29 +2712,6 @@ async function main() {
       const { runVerify } = await import('./verify.mjs');
       const r = await runVerify(opts);
       process.exit(r.exitCode);
-    } catch (err) {
-      console.error(`error: ${err.message}`);
-      process.exit(1);
-    }
-  }
-
-  // mcp — stdio transport. NAPI mcpStdioServe 가 stdin EOF 까지 blocking. Cursor /
-  // Claude Code / Claude Desktop 등 stdio MCP 클라이언트가 `npx zntc mcp` 형태로
-  // spawn. config / build pipeline 우회 — DevServer in-memory state (cache_reset 등)
-  // 만 띄움 (HTTP listener 없음).
-  //
-  // root 결정 우선순위 (Cursor/Claude Desktop spawn cwd 불확실 회피):
-  //   1) positional arg (`zntc mcp /path/to/project`)
-  //   2) ZNTC_ROOT 환경변수
-  //   3) process.cwd()  (default)
-  if (opts.appCommand === 'mcp') {
-    try {
-      // `||` 사용 — `ZNTC_ROOT=""` (빈 값) 처럼 truthy 가 아닌 입력은 cwd 로 fallback.
-      // `??` 는 `''` 도 채택해 `resolve('')` (cwd) 로 떨어지긴 하나, 의도가 cwd 면
-      // 명시적 fallback 이 더 안전.
-      const rootDir = resolve(opts.appRoot || process.env.ZNTC_ROOT || '.');
-      coreModule.mcpStdioServe({ rootDir });
-      process.exit(0);
     } catch (err) {
       console.error(`error: ${err.message}`);
       process.exit(1);

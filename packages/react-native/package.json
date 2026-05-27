@@ -37,9 +37,7 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./runtime/zntc-hmr-client.cjs": "./runtime/zntc-hmr-client.cjs",
-    "./runtime/mcp-runtime.cjs": "./runtime/mcp-runtime.cjs",
-    "./runtime/webview-wrapper.cjs": "./runtime/webview-wrapper.cjs"
+    "./runtime/zntc-hmr-client.cjs": "./runtime/zntc-hmr-client.cjs"
   },
   "scripts": {
     "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core --external @babel/core --external @react-native/babel-plugin-codegen --external @react-native/babel-preset --external metro-resolver --external react-native --external @react-native/js-polyfills",
