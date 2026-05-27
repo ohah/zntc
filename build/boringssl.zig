@@ -58,25 +58,40 @@ pub fn build(
     // 우연히 통과되지만 x86 만 fail → Zig issue 로 추적 가능한 known 버그.
     //
     // 우회: windows-msvc 에서는 `linkLibCpp` 를 호출하지 않아 Zig 가 자체 libc++
-    // 소스를 끌어들이지 않게 하고, clang frontend 가 MSVC kit 의 시스템 STL 헤더
-    // (`<vector>`/`<string>` 등) 를 자동 탐지 (windows-msvc 타깃의 INCLUDE 환경
-    // detection) 하도록 둔다. C++ runtime 심볼 (operator new/delete, 정적 초기화
-    // helper) 은 MSVC 의 `msvcprt` (DLL link C++ runtime, msvcp140.dll 의 import
-    // lib) 로 link. **static `libcpmt` 를 안 쓰는 이유**: Zig 의 default linkLibC
-    // on windows-msvc 는 dynamic UCRT (`ucrt.lib` → `ucrtbase.dll`) 를 link
-    // 하므로, static C++ runtime 과 혼용 시 LNK4098 류 CRT 충돌. `msvcp140.dll`
-    // 의존은 Node.js 자체가 이미 가진 의존이라 사용자 부담 없음.
+    // 소스를 끌어들이지 않게 하고, MSVC kit 의 시스템 STL 헤더 (`<vector>` 등)
+    // 와 C++ runtime 을 직접 사용한다. C++ runtime 심볼 (operator new/delete,
+    // 정적 초기화 helper) 은 MSVC 의 `msvcprt` (DLL link C++ runtime,
+    // msvcp140.dll 의 import lib) 로 link. **static `libcpmt` 를 안 쓰는 이유**:
+    // Zig 의 default linkLibC on windows-msvc 는 dynamic UCRT (`ucrt.lib` →
+    // `ucrtbase.dll`) 를 link 하므로, static C++ runtime 과 혼용 시 LNK4098 류
+    // CRT 충돌. `msvcp140.dll` 의존은 Node.js 자체가 이미 가진 의존이라 사용자
+    // 부담 없음.
+    //
+    // **헤더 탐지 보강 (가설 1 robust 화)**: clang 의 windows-msvc 자동 detection
+    // 외에 환경 변수 `INCLUDE` 의 path 들도 명시적으로 `addSystemIncludePath`.
+    // GHA windows-latest 는 cl.exe 가 PATH 에 있고 vcvarsall env 가 부분 활성화
+    // 상태라 INCLUDE 에 MSVC STL 경로 (`VC\Tools\MSVC\14.x\include`,
+    // `Windows Kits\10\Include\10.x\ucrt` 등) 가 들어있다. Zig 자동 detection 이
+    // 작동하면 중복이지만 헤더 search path 중복은 무해 (clang 이 첫 hit 사용).
+    // detection 이 어떤 이유로 실패해도 명시 경로가 fallback 으로 동작.
     //
     // BoringSSL 의 cxxflags 가 `-fno-exceptions -fno-rtti -D_HAS_EXCEPTIONS=0`
     // 이라 의존 심볼이 operator new/delete + 정적 초기화 helper 정도로 매우
     // 좁아 `msvcprt` 만으로 충족.
-    //
-    // **측정 PR**: 이 분기가 CI windows-msvc 3종 (ia32 / x64 / arm64) 에서 정상
-    // 동작하는지 확인하기 위한 시도. ia32 빌드 통과 + x64/arm64 회귀 없으면 채택,
-    // 어느 쪽이든 fail 시 옵션 A (x86-windows-gnu 전환) 로 fallback.
     const is_windows_msvc = target.result.os.tag == .windows and target.result.abi == .msvc;
     if (is_windows_msvc) {
         lib.linkSystemLibrary("msvcprt");
+
+        // INCLUDE env 의 경로를 모두 system include path 로 명시 추가.
+        // Windows 의 INCLUDE 는 세미콜론 구분.
+        if (b.graph.env_map.get("INCLUDE")) |include_paths| {
+            var iter = std.mem.splitScalar(u8, include_paths, ';');
+            while (iter.next()) |path| {
+                const trimmed = std.mem.trim(u8, path, " \t\r\n");
+                if (trimmed.len == 0) continue;
+                lib.addSystemIncludePath(.{ .cwd_relative = b.dupe(trimmed) });
+            }
+        }
     } else {
         lib.linkLibCpp();
     }
