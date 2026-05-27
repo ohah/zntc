@@ -245,4 +245,54 @@ v2-B 의 의도 vs 실제 main 상태:
 
 - v2-B sub-PR (D2b 절대경로 / cssPlugin 재설계 / #3835 hard-bind) 재타진 시 본 §7 + `project_2538_4_4_in_progress` 메모리로 즉시 종결
 - 새 CSS pipeline finding 발견 시 먼저 `transformCssModules` 직접 호출 unit-test 재현 → main 에서 안 재현되면 A-1 시점 회귀였는지 확인
-- axis 3 reframing 은 D1a'' 머지 후 dev-controller 코드 audit 후 별도 RFC 로
+- axis 3 reframing 은 §10 도장 참조 (v2-B 와 같은 stale 패턴)
+
+## 10. 2026-05-27 axis 3 stale 도장 (옵션 A/B/C 폐기, dev-controller 의도 설계 확정)
+
+audit 결과 RFC §3 axis 3 옵션 A (dev-controller `prepare()` slim down + cssPlugin 부활) 가 **main 의 자연 수렴 방향과 정반대**임을 코드로 확정. 옵션 A/B/C 모두 폐기, dev-controller 의 현재 형태를 의도된 설계로 도장.
+
+### 10.1 자연 수렴 결과 정량 (audit)
+
+| 항목 | RFC §3 axis 3 옵션 A 의도 | 실제 main 자연 수렴 |
+|---|---|---|
+| `prepareAppCssPipelineRoot` (`dev-controller.ts:305-480`) | sass-only 슬림화 | **sass + PostCSS + css-modules 세 단계 모두 담당 (175 LOC)** |
+| `@zntc/web/css` cssPlugin (`packages/web/src/css/index.ts:70-142`) | PostCSS/css-modules 단독 처리 | **dead code** (`dropCallerPreWarmedCssPlugin` 가 dispatcher 에서 항상 제거, onLoad 미도달) |
+| `runPostcssForAppDev` (`packages/web/src/style/postcss.ts:288-466`) | cssPlugin onLoad async 호출 | dev-controller 의 `afterBundle` 에서 직접 호출 (`changedPath` 기반 incremental) |
+| sass→postcss→css-modules invariant | cssPlugin 안에서 보장 | dev-controller `prepareAppCssPipelineRoot` §RFC §2 가드 (L405-410) 로 보장 |
+
+자연 수렴 방향 = **dev-controller 책임 통합 + cssPlugin dead**. RFC §3 axis 3 옵션 A 의 정반대.
+
+### 10.2 옵션 A 가 불가능한 이유
+
+- **cssPlugin onLoad 는 async** — `prepareAppCssPipelineRoot` 가 호출되는 dev/build path 는 sync dispatcher (`buildAppSync`) → cssPlugin onLoad 진입 시 `syncPluginPromiseFailure` 변환 → `BundleFailed` (§1.6 의 v2-A 회귀 와 같은 root cause)
+- **D1a'' caller-pre-warm 이 그 충돌을 회피** — caller (`runAppBuild`/`runAppDev`) 가 `extractCssPostcssOverride` 로 옵션 추출 후 prepare 의 PostCSS 단계로 forward. cssPlugin 자체는 sentinel-holder 만
+- axis 3 옵션 A 가 의도한 "cssPlugin 활성화 + dev-controller slim" 은 sync dispatcher × async onLoad 충돌 → **선행 조건 미충족**
+
+### 10.3 axis 3 옵션 A/B/C 폐기 + dev-controller 현재 형태 의도 설계 도장
+
+| 옵션 | 폐기 사유 |
+|---|---|
+| **A (dev-controller slim + cssPlugin 부활)** | §10.2 cssPlugin onLoad async × sync dispatcher 충돌 (D1a'' 머지로 영구 해소된 영역의 역방향) |
+| **B (dev-controller 가 cssPlugin onLoad 직접 호출)** | RFC §3 명시 "plugin 추상화 위반 / 결합도 폭증". 게다가 §10.2 의 async/sync 충돌은 동일 |
+| **C (2-pass + marker dedup)** | RFC §3 명시 "PR-3b 의 dev path 가 사실상 dead". A-1 attempt 의 a1-#1/a1-#3 finding (RFC §7.1 자연 해소) 으로 무의미 |
+
+→ **dev-controller 의 현재 형태 (sass + PostCSS + css-modules 통합 + cssPlugin sentinel-holder) 가 의도된 설계**. axis 3 옵션 A 가 RFC #3833 v3 §3 에 "axis 1=D1a + axis 2=D2b 채택 시 옵션 A 가 자연스러움" 으로 적힌 것은 axis 2 가 stale (RFC §7.3 자연 해소) 이전의 가정 — axis 2 stale 후 옵션 A 도 함께 stale.
+
+### 10.4 잔여 정리 영역 (선택적, ROI 작음)
+
+audit 정량 결과 ~100 LOC 의 cosmetic refactoring 가능성만 잔존:
+
+| 영역 | LOC | 효과 |
+|---|---|---|
+| F1 `runPostcssForAppDev` → dev-controller inline | ~20 | 코드 응집성 향상 (refactor, 동작 무변경) |
+| F2 dev-controller.ts 파이프라인 주석 강화 | ~30 | RFC §2 가드 의도 명시 (docs) |
+| F3 cssPlugin `onLoad` dead code 정식 제거 또는 sentinel-only 명시 | ~50 | future "async pre-warm path" 예비용 명시 또는 정리 |
+
+위 F1/F2/F3 는 **axis 3 reframing 의 의무사항 아님**. 옵션이지 필수 아닌 정리. 별도 small refactor PR 또는 영구 보류.
+
+### 10.5 운영 규칙
+
+- axis 3 reframing 재질문 시 본 §10 + `project_2538_4_4_in_progress` 메모리로 즉시 종결
+- "dev-controller slim down" / "cssPlugin 부활" / "sync dispatcher 에 async hook" 류 가설 재시도 절대 금지
+- F1/F2/F3 cosmetic refactor 는 사용자 명시 요청 시만 진행 — 자동 분류 없음
+- dev-controller 의 sass + PostCSS + css-modules 통합은 D1a'' caller-pre-warm 아키텍처의 자연 도달점이며 의도된 설계
