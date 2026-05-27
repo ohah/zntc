@@ -38,6 +38,13 @@ pub fn build(
             // relocation 에러 발생. exe binary 도 PIC 코드 OK (현대 Linux 의 PIE default
             // 와 일치) — overhead 무시 수준.
             .pic = true,
+            // **`sanitize_c = .off`** — Zig 의 default sanitize_c (Debug 빌드 시 on)
+            // 는 `__ubsan_handle_*` symbol 들을 호출하는 코드를 emit. 그런데 Linux 의
+            // libubsan 은 Zig 가 자동 link 안 해서 NAPI binary dlopen 시
+            // `undefined symbol: __ubsan_handle_type_mismatch_v1` 발생 (관찰 환경:
+            // CI ubuntu-latest, packages/core 의 build:js:cjs step 에서 require).
+            // vendored BoringSSL 은 외부 코드라 자체 sanitize 무의미 — off 가 정합.
+            .sanitize_c = .off,
         }),
     });
     lib.linkLibC();
