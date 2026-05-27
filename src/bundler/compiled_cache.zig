@@ -90,7 +90,18 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
+///
+/// **`intentionally_unhashed`**: 의도적으로 hash 에서 제외하는 필드 화이트리스트.
+/// 새 필드 추가 시 (a) hashEmitOptions 에 등록 또는 (b) 본 화이트리스트에 추가 — 둘
+/// 중 하나 필수. 새 필드를 "안 적어도 통과" 처리 금지 (silent stale cache 회귀).
+///
+/// 현 화이트리스트:
+/// - `skip_bundle_output`: emit_concat (full bundle) + emit_sourcemap_finalize 만 skip.
+///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
+///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
+///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
 const expected_emit_options_field_count: usize = 56;
+const intentionally_unhashed_fields = [_][]const u8{"skip_bundle_output"};
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -123,9 +134,12 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.worklet_transform);
     h.addOptStr(options.worklet_plugin_version);
     h.addBool(options.collect_module_codes);
-    // skip_bundle_output 은 emit 결과의 풀 bundle 부분만 영향 — per-module dev_codes 는
-    // 동일 — 즉 module-level cache key 와 무관하지만, 일관성을 위해 hash 에 포함.
-    h.addBool(options.skip_bundle_output);
+    // skip_bundle_output 은 emit_concat (full bundle) + emit_sourcemap_finalize 만 skip —
+    // emit_module_pass 가 만드는 per-module 결과 (dev_codes / compiled_cache entry) 는
+    // 동일하다. 따라서 hash 에서 *제외*. incremental rebuild 가 dev_mode 패키지로
+    // skip_bundle_output=true 를 set 해도 first build 의 compiled_cache entry 와 동일한
+    // input_hash → cache hit. (이전엔 "일관성" 명목으로 hash 에 포함했으나 실측 결과
+    // dev_server 의 first/rebuild 옵션 불일치 → 전체 cache miss 발생, root cause 였음.)
 
     h.addU64(options.define.len);
     for (options.define) |d| {

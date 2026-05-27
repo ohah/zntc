@@ -875,9 +875,12 @@ pub const DevServer = struct {
                 } else |_| {}
             }
 
-            // 증분 재번들: 변경된 모듈만 diff하여 전송
+            // 증분 재번들: watcher 가 감지한 변경 path set 을 그대로 전달 →
+            // IncrementalBundler 가 graph_discover 의 stat skip + dev_mode 패키지
+            // (skip_bundle_output, sourcemap.lazy) 자동 적용. NAPI watch (watch.zig:1135-1142)
+            // 와 동일 패턴. emit_concat (~38ms) + emit_sourcemap_finalize (~19ms) 절감.
             const build_start_ns = std.time.nanoTimestamp();
-            const rebuild_result = inc_bundler.rebuild() catch continue;
+            const rebuild_result = inc_bundler.rebuildWithChanges(&changed_set) catch continue;
             const build_duration_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - build_start_ns)) / std.time.ns_per_ms;
             switch (rebuild_result) {
                 .success => |result| {

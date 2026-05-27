@@ -147,16 +147,30 @@ pub const IncrementalBundler = struct {
         self.last_paths = null;
     }
 
-    /// 증분 번들. changed_paths가 주어지면 해당 모듈만 재빌드 시도.
+    /// 증분 번들. caller 가 변경 path 를 모를 때 (initial build 등).
     /// 그래프 변경(새 import 추가 등)이 감지되면 자동으로 전체 재빌드 폴백.
     pub fn rebuild(self: *IncrementalBundler) !RebuildResult {
-        if (self.needs_full_rebuild) {
-            return self.doBuild(true);
-        }
-        return self.doBuild(false);
+        return self.rebuildWithChanges(null);
     }
 
-    fn doBuild(self: *IncrementalBundler, is_first: bool) !RebuildResult {
+    /// `rebuild` 의 watcher-driven 변형. caller (dev_server / NAPI) 가 알아챈
+    /// 변경 path set 을 그대로 graph 에 전달. NAPI watch (packages/core/src/napi/watch.zig:1135)
+    /// 와 동일 패턴. 큰 graph 에서 graph_discover 의 stat syscall 누적을 우회.
+    pub fn rebuildWithChanges(
+        self: *IncrementalBundler,
+        changed_files: ?*const std.StringHashMap(void),
+    ) !RebuildResult {
+        if (self.needs_full_rebuild) {
+            return self.doBuild(true, changed_files);
+        }
+        return self.doBuild(false, changed_files);
+    }
+
+    fn doBuild(
+        self: *IncrementalBundler,
+        is_first: bool,
+        changed_files: ?*const std.StringHashMap(void),
+    ) !RebuildResult {
         // (#3751) N rebuild 마다 resolve_cache reset — arena monotonic growth 차단.
         // 빌드 *사이* 에서만 실행 (in-flight CachedResolvedDep 가 모두 store 로 owned-clone
         // 된 상태).
@@ -184,8 +198,27 @@ pub const IncrementalBundler = struct {
         // compiled_cache 는 매 빌드 주입 — miss 는 안전하게 폴백 (emit 경로가 cache 없을 때와 동일).
         var opts = self.options;
         opts.compiled_cache = &self.compiled_cache;
+
+        // NAPI watch.zig:823-1142 의 dev_mode 최적화 패키지 양도. 같은 invariant
+        // (HMR client 는 module_dev_codes 만 소비) 가 web dev_server 에도 성립.
+        // - initial: lazy sourcemap finalize (initial output 은 필요하므로 skip_bundle_output 미적용)
+        // - incremental: skip_bundle_output 으로 emit_concat (~38ms) + emit_sourcemap_finalize
+        //   (~19ms) 절감. dev_codes 만 broadcast 하는 dev_server.buildHmrUpdateFromModules
+        //   와 호환.
+        //
+        // dev_mode 자체가 *개발용 빠른 빌드* 의지 → caller 가 dev_mode=true 면 자동 최적화
+        // 적용. caller 가 eager sourcemap / full bundle output 원하면 dev_mode=false 사용.
+        //
+        // **dev_server 사용자 주의 (latent)**: sourcemap.lazy 는 result.sourcemap (eager JSON)
+        // 대신 result.sourcemap_builder 만 채움. dev_server 가 sourcemap_builder 를 소비하지
+        // 않으면 (`/bundle.js.map` 라우트) sourcemap.enable 켜는 순간 404. 현재 dev_server.zig
+        // 가 sourcemap.enable=false default 라 dormant — sourcemap 활성화 시 sourcemap_builder
+        // wire-up 또는 lazy 비활성화 follow-up 필수.
+        if (opts.dev_mode and opts.sourcemap.enable) opts.sourcemap.lazy = true;
         if (!is_first) {
             opts.module_store = &self.persistent_store;
+            opts.changed_files = changed_files;
+            if (opts.dev_mode and opts.collect_module_codes) opts.skip_bundle_output = true;
         }
 
         var bundler = Bundler.initWithResolveCache(self.allocator, opts, &self.resolve_cache.?);
