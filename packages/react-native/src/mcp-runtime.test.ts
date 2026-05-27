@@ -1864,3 +1864,351 @@ describe('mcp-runtime.cjs — fiber cycle guard (post-F5 deferred)', () => {
     expect(cycNode.children[0].__cycle).toBe(true);
   });
 });
+
+// PR-F6 — tap_element. ref 의 onPress 또는 ancestor onPress 호출.
+describe('mcp-runtime.cjs (PR-F6) — tap_element', () => {
+  test('params 누락 → throw: requires `ref`', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.tap_element({})).toThrow(/requires `ref`/);
+    expect(() => rt.handlers.tap_element({ ref: 42 })).toThrow(/requires `ref`/);
+  });
+
+  test('unknown ref → throw: not found', () => {
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.tap_element({ ref: 'e9999' })).toThrow(/not found/);
+  });
+
+  test('onPress 직접 prop — 호출 + ok:true', () => {
+    let called = false;
+    const btn: FakeFiber = {
+      type: { displayName: 'Button' },
+      memoizedProps: {
+        accessibilityRole: 'button',
+        onPress: () => {
+          called = true;
+        },
+      },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btn,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'button' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean };
+    expect(called).toBe(true);
+    expect(r.ok).toBe(true);
+  });
+
+  test('ancestor chain (Touchable wrap) — parent 의 onPress 호출', () => {
+    let parentCalled = false;
+    const child: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'Press me' },
+    };
+    const touchable: FakeFiber = {
+      type: { displayName: 'TouchableOpacity' },
+      memoizedProps: {
+        onPress: () => {
+          parentCalled = true;
+        },
+      },
+      child: child,
+    };
+    (child as any).return = touchable;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: touchable,
+    };
+    (touchable as any).return = root;
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    // child (Text) ref 로 tap — ancestor 의 TouchableOpacity onPress 호출돼야.
+    const f = rt.handlers.find_element({ by: 'text', value: 'Press' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean };
+    expect(parentCalled).toBe(true);
+    expect(r.ok).toBe(true);
+  });
+
+  test('5 ancestor 내 onPress 없음 → {ok:false, kind:"no_handler"}', () => {
+    const target: FakeFiber = {
+      type: 'View',
+      memoizedProps: { accessibilityRole: 'group' },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: target,
+    };
+    (target as any).return = root;
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'group' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean; kind?: string };
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('no_handler');
+  });
+
+  test('handler throw → {ok:false, kind:"runtime", error, stack}', () => {
+    const btn: FakeFiber = {
+      type: { displayName: 'Btn' },
+      memoizedProps: {
+        accessibilityRole: 'button',
+        onPress: () => {
+          throw new Error('press boom');
+        },
+      },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btn,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'button' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as {
+      ok: boolean;
+      kind?: string;
+      error?: string;
+      stack?: string;
+    };
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('runtime');
+    expect(r.error).toContain('press boom');
+    expect(typeof r.stack).toBe('string');
+  });
+
+  test('async handler (Promise) — dispatcher 가 await → resolve 후 ok:true', async () => {
+    const btn: FakeFiber = {
+      type: { displayName: 'AsyncBtn' },
+      memoizedProps: {
+        accessibilityRole: 'button',
+        onPress: async () => {
+          await new Promise((r) => setTimeout(r, 0));
+        },
+      },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btn,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'button' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref });
+    expect(typeof (r as any).then).toBe('function');
+    const awaited = (await r) as { ok: boolean };
+    expect(awaited.ok).toBe(true);
+  });
+
+  test('async handler reject → {ok:false, kind:"runtime"}', async () => {
+    const btn: FakeFiber = {
+      type: { displayName: 'AsyncFail' },
+      memoizedProps: {
+        accessibilityRole: 'button',
+        onPress: () => Promise.reject(new Error('async tap boom')),
+      },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btn,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'button' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref });
+    const awaited = (await r) as { ok: boolean; kind?: string; error?: string };
+    expect(awaited.ok).toBe(false);
+    expect(awaited.kind).toBe('runtime');
+    expect(awaited.error).toContain('async tap boom');
+  });
+
+  test('F3 — disabled prop → {ok:false, kind:"disabled"} (native touch 시맨틱 일치)', () => {
+    let called = false;
+    const btn: FakeFiber = {
+      type: { displayName: 'DisabledBtn' },
+      memoizedProps: {
+        accessibilityRole: 'button',
+        disabled: true,
+        onPress: () => {
+          called = true;
+        },
+      },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btn,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'button' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean; kind?: string };
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('disabled');
+    expect(called).toBe(false);
+  });
+
+  test('F3 — accessibilityState.disabled → {ok:false, kind:"disabled"}', () => {
+    const btn: FakeFiber = {
+      type: { displayName: 'A11yDisabled' },
+      memoizedProps: {
+        accessibilityRole: 'button',
+        accessibilityState: { disabled: true },
+        onPress: () => {},
+      },
+    };
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: btn,
+    };
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'role', value: 'button' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean; kind?: string };
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('disabled');
+  });
+
+  test('F4 — mock event target=startFiber.stateNode, currentTarget=handlerFiber.stateNode', () => {
+    // ancestor chain: Text(child) → TouchableOpacity(handler). target 은 Text 의
+    // stateNode (사용자가 ref 로 가리킨 곳), currentTarget 은 Touchable 의 stateNode
+    // (handler 부착 위치).
+    var receivedEvent: any = null;
+    const textStateNode = { _nativeTag: 99 } as any;
+    const touchStateNode = { _nativeTag: 100 } as any;
+    const text: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'Tap' },
+      stateNode: textStateNode,
+    } as any;
+    const touchable: FakeFiber = {
+      type: { displayName: 'TouchableOpacity' },
+      memoizedProps: {
+        onPress: (ev: any) => {
+          receivedEvent = ev;
+        },
+      },
+      child: text,
+      stateNode: touchStateNode,
+    } as any;
+    (text as any).return = touchable;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: touchable,
+    };
+    (touchable as any).return = root;
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'text', value: 'Tap' }) as { ref: string };
+    rt.handlers.tap_element({ ref: f.ref });
+    expect(receivedEvent).toBeDefined();
+    expect(receivedEvent.target).toBe(textStateNode);
+    expect(receivedEvent.currentTarget).toBe(touchStateNode);
+    expect(typeof receivedEvent.preventDefault).toBe('function');
+    expect(typeof receivedEvent.persist).toBe('function');
+    expect(typeof receivedEvent.nativeEvent.timestamp).toBe('number');
+  });
+
+  test('F1 — fiber.return self-cycle 시 budget 안 소모하고 종료', () => {
+    // 직전 fiber.return === self 면 ancestor walk 이 같은 노드 6번 방문해서 진짜
+    // 5-step 위 onPress 를 놓치는 위험. visited set 이 cycle 차단해야.
+    const grandparent: FakeFiber = {
+      type: { displayName: 'Wrapper' },
+      memoizedProps: { onPress: () => {} },
+    };
+    const cyc: FakeFiber = {
+      type: { displayName: 'Cyclic' },
+      memoizedProps: {},
+    };
+    (cyc as any).return = cyc; // self cycle — visited set 안 그러면 무한히 같은 노드
+    // 하지만 본 test 의 의도: 자기 cycle 라 grandparent 도달 못 함, 그래도 budget
+    // 안 소모하고 no_handler 깔끔 반환.
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: grandparent,
+    };
+    (grandparent as any).return = root;
+    grandparent.child = cyc;
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'component', value: 'Cyclic' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean; kind?: string };
+    // cyc 의 return 이 self 라 ancestor walk 가 cycle break — Wrapper 의 onPress 못 봄.
+    // 핵심은 무한 loop 안 도는 것 + 명시 no_handler.
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('no_handler');
+  });
+
+  test('F7 — 정확히 5 ancestor (TAP_ANCESTOR_LOOKUP_MAX) 위의 onPress 도달', () => {
+    let called = false;
+    // start → a → b → c → d → wrapper(onPress). startFiber 자체 검사 + 5 step 위.
+    const wrapper: FakeFiber = {
+      type: { displayName: 'Wrap' },
+      memoizedProps: { onPress: () => (called = true) },
+    };
+    const d: FakeFiber = { type: 'View', memoizedProps: {} };
+    const c: FakeFiber = { type: 'View', memoizedProps: {} };
+    const b: FakeFiber = { type: 'View', memoizedProps: {} };
+    const a: FakeFiber = { type: 'View', memoizedProps: {} };
+    const start: FakeFiber = {
+      type: 'Text',
+      memoizedProps: { children: 'deep' },
+    };
+    (start as any).return = a;
+    (a as any).return = b;
+    (b as any).return = c;
+    (c as any).return = d;
+    (d as any).return = wrapper;
+    const root: FakeFiber = {
+      type: { name: 'Root' },
+      memoizedProps: {},
+      child: wrapper,
+    };
+    (wrapper as any).return = root;
+    wrapper.child = d;
+    d.child = c;
+    c.child = b;
+    b.child = a;
+    a.child = start;
+    makeFiberHook(g, [{ current: root }]);
+
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const f = rt.handlers.find_element({ by: 'text', value: 'deep' }) as { ref: string };
+    const r = rt.handlers.tap_element({ ref: f.ref }) as { ok: boolean };
+    expect(called).toBe(true);
+    expect(r.ok).toBe(true);
+  });
+});
