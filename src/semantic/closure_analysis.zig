@@ -32,6 +32,16 @@ pub const FreeVarMap = std.AutoHashMap(u32, std.DynamicBitSet);
 /// 별도 flag `ZNTC_R1A_PRECISE_REUSE` 로 게이트 — 두 단계 독립 측정.
 pub const FREEVAR_INFRA_ENV = "ZNTC_R1A_FREEVAR_INFRA";
 
+/// R1-a PR-3 mangler reuse 활성화 env flag. set 되면:
+///  - linker 가 `m.semantic.free_vars` 를 mangler input 의 `free_vars_per_scope` 에 연결
+///  - linker 가 1글자 reserved 등록을 free-var 에 *참조된 1글자만* 으로 축소 (PR-3-b)
+///  - mangler `markScopeSubtree(0)` 보수 대신 free-var 기반 정밀 마킹 (PR-3-b)
+///
+/// PRECISE_REUSE 가 set 됐는데 FREEVAR_INFRA 가 off 면 `isInfraEnabled` 가 자동 true
+/// 반환 — analyzer 가 free-var build 안 하면 PR-3 의 정밀 reuse 불가능하므로 implicit
+/// promotion.
+pub const PRECISE_REUSE_ENV = "ZNTC_R1A_PRECISE_REUSE";
+
 /// `descendant` 가 `maybe_ancestor` 의 *strict descendant* (= maybe_ancestor 자체 아님,
 /// parent 체인 따라 도달 가능) 인지. 같은 scope 는 false (outer-ref 아님 — 자기 scope
 /// 내 ref 는 closure capture 아님). mangler.markScopeSubtree 의 보수 대체로 PR-3 에서
@@ -52,14 +62,24 @@ pub fn isStrictDescendant(scopes: []const Scope, maybe_ancestor: ScopeId, descen
     return false;
 }
 
-/// 현재 환경에서 R1-a free-var infra 가 활성화됐는지. env `ZNTC_R1A_FREEVAR_INFRA`
-/// 설정값 무관 *존재* 만 검사 (`=0`/`=false` 도 활성). 단순 toggle 의도.
-/// allocator 가 필요한 이유: zig `std.process.getEnvVarOwned` 는 owned slice 반환.
-/// 호출 빈도 = analyze() 호출당 1회 (= 파일당 1회 빌드) → 매번 호출도 overhead 무시 가능.
-pub fn isInfraEnabled(allocator: std.mem.Allocator) bool {
-    const v = std.process.getEnvVarOwned(allocator, FREEVAR_INFRA_ENV) catch return false;
+/// env 변수가 *존재* 하면 true (값 무관, `=0`/`=false` 도 활성). zig
+/// `getEnvVarOwned` 는 owned slice 반환 — caller 가 free. analyzer/linker 호출당
+/// 1회 빈도라 overhead 무시 가능.
+fn envIsSet(allocator: std.mem.Allocator, key: []const u8) bool {
+    const v = std.process.getEnvVarOwned(allocator, key) catch return false;
     defer allocator.free(v);
     return v.len > 0;
+}
+
+/// 현재 환경에서 R1-a free-var infra 가 활성화됐는지. PRECISE_REUSE 가 set 됐으면
+/// FREEVAR_INFRA 도 implicit ON (PR-3 의 mangler reuse 는 analyzer build 가 선행 조건).
+pub fn isInfraEnabled(allocator: std.mem.Allocator) bool {
+    return envIsSet(allocator, FREEVAR_INFRA_ENV) or envIsSet(allocator, PRECISE_REUSE_ENV);
+}
+
+/// 현재 환경에서 R1-a mangler precise reuse (PR-3) 가 활성화됐는지.
+pub fn isPreciseReuseEnabled(allocator: std.mem.Allocator) bool {
+    return envIsSet(allocator, PRECISE_REUSE_ENV);
 }
 
 /// nested scope 별 outer-ref symbol bitset 을 build. references 1회 순회로

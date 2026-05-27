@@ -105,6 +105,12 @@ pub const ModuleSemanticData = struct {
     unresolved_references: std.StringHashMap(void),
     /// per-reference 배열. 현재 consumer: mangler liveness.
     references: []const Reference = &.{},
+    /// R1-a (`RFC_MANGLER_SAFE_C2.md`) PR-3 free-var (closure capture) map.
+    /// analyzer 가 `ZNTC_R1A_FREEVAR_INFRA` / `ZNTC_R1A_PRECISE_REUSE` 환경변수
+    /// set 됐을 때만 build (PR-2-b). linker 가 `ZNTC_R1A_PRECISE_REUSE` 시만 mangler
+    /// input 의 `free_vars_per_scope` 에 연결 (PR-3-a). mangler 가 그 후 사용 (PR-3-b).
+    /// borrowed — parse_arena 가 backing 메모리 lifecycle 관리.
+    free_vars: ?*const @import("../semantic/closure_analysis.zig").FreeVarMap = null,
     /// `Symbol.const_kind == .number` 인 심볼의 원본 numeric_literal 텍스트 사이드테이블 (#2505).
     /// Symbol 에 16B slice 를 박지 않으려고 분리 — 보통 numeric const 는 전체 심볼의 극소수.
     /// parse_arena 가 backing — value slice 는 source 또는 string_table 참조.
