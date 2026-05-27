@@ -52,9 +52,13 @@ pub const DevServer = struct {
     allocator: std.mem.Allocator,
     root_dir: std.fs.Dir,
     root_path: []const u8,
+    /// 실제 listen 중인 port. listen 전엔 init 시점 옵션값, listen 후엔 OS-assigned
+    /// port (옵션이 0 이었던 경우) 포함 실제 값. NAPI `getDevServerPort` 가 이 필드 노출.
     port: u16,
     host: []const u8,
     open: bool,
+    /// stderr 출력 silence. NAPI embed 등 외부 logger 가 있을 때 true.
+    quiet: bool,
     tcp_server: ?std.net.Server,
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
@@ -75,6 +79,10 @@ pub const DevServer = struct {
     event_ring: EventRing,
     /// shutdown() 호출 시 set; acceptLoop가 다음 iteration에서 종료.
     shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// listen 완료 + self.port 갱신 완료 신호 (release / acquire 로 cross-thread
+    /// publish). `getDevServerPort` 가 acquire 로 읽기 — port 0 (OS-assigned) 의 실
+    /// 값을 다른 thread 에서 안전 조회.
+    listen_ready: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// 현재 살아있는 connection (handleConnection thread) 수. deinit 가 0 까지 wait —
     /// 직접 보호 대상은 `app_channel` (reader thread 가 mutex/pending Map 사용) 이지만
     /// counter 는 **모든** handleConnection thread (plain HTTP / SSE / HMR WS / MCP app)
@@ -133,6 +141,10 @@ pub const DevServer = struct {
         /// 둘 다 null 이면 plain HTTP. 한쪽만 set 하면 init error (`error.TlsKeyMissing`).
         cert_path: ?[]const u8 = null,
         key_path: ?[]const u8 = null,
+        /// stderr 의 banner ("zntc dev server / Local: ...") 와 routine progress 출력
+        /// 억제. CLI 는 사용자에게 보여줘야 하므로 기본 false, NAPI embed (Vite plugin
+        /// 등) 는 자체 logger 사용해서 true 권장.
+        quiet: bool = false,
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
@@ -205,6 +217,7 @@ pub const DevServer = struct {
             .port = options.port,
             .host = options.host,
             .open = options.open,
+            .quiet = options.quiet,
             .tcp_server = null,
             .entry_point = options.entry_point,
             .abs_entry = abs_entry,
@@ -316,22 +329,36 @@ pub const DevServer = struct {
         self.tcp_server = address.listen(.{
             .reuse_address = true,
         }) catch |err| {
-            getLog().print("zntc: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
+            if (!self.quiet) {
+                getLog().print("zntc: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
+            }
             return err;
         };
 
-        const w = getLog();
-        const scheme: []const u8 = if (self.tls_ctx != null) "https" else "http";
-        w.print("\n  zntc dev server\n\n", .{}) catch {};
-        w.print("  Local: {s}://{s}:{d}/\n", .{ scheme, self.host, self.port }) catch {};
-        if (std.mem.eql(u8, self.host, "0.0.0.0")) {
-            w.print("  Network: {s}://0.0.0.0:{d}/\n", .{ scheme, self.port }) catch {};
+        // port 0 (OS-assigned ephemeral) 였으면 실제 bound port 로 self.port 갱신
+        // — caller (NAPI getDevServerPort 등) 가 실 값 조회 가능.
+        if (self.tcp_server) |s| {
+            self.port = s.listen_address.getPort();
         }
-        w.print("  Root:  {s}\n", .{self.root_path}) catch {};
-        if (self.entry_point) |ep| {
-            w.print("  Entry: {s}\n", .{ep}) catch {};
+        // F1: atomic release — self.port 쓰기가 reader 의 acquire load 와 happens-
+        // before relation 형성. ARM64 (Apple Silicon) 같은 weakly-ordered 환경에서
+        // self.port 값이 reorder 되어 옵션 default (0) 로 읽히는 문제 차단.
+        self.listen_ready.store(true, .release);
+
+        if (!self.quiet) {
+            const w = getLog();
+            const scheme: []const u8 = if (self.tls_ctx != null) "https" else "http";
+            w.print("\n  zntc dev server\n\n", .{}) catch {};
+            w.print("  Local: {s}://{s}:{d}/\n", .{ scheme, self.host, self.port }) catch {};
+            if (std.mem.eql(u8, self.host, "0.0.0.0")) {
+                w.print("  Network: {s}://0.0.0.0:{d}/\n", .{ scheme, self.port }) catch {};
+            }
+            w.print("  Root:  {s}\n", .{self.root_path}) catch {};
+            if (self.entry_point) |ep| {
+                w.print("  Entry: {s}\n", .{ep}) catch {};
+            }
+            w.print("\n", .{}) catch {};
         }
-        w.print("\n", .{}) catch {};
 
         // --open: 브라우저 자동 열기
         if (self.open) {

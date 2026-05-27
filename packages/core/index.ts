@@ -219,9 +219,16 @@ interface NativeModule {
     open?: boolean;
     certPath?: string;
     keyPath?: string;
+    quiet?: boolean;
   }): unknown;
   /** startDevServer 가 반환한 handle 로 graceful shutdown. idempotent. */
   stopDevServer(handle: unknown): void;
+  /**
+   * startDevServer 반환 handle 의 실제 listen port. port=0 (OS-assigned) 으로 시작
+   * 했을 때 유용 — 실제 bound port 반환. handle 이 이미 stop 됐으면 throw.
+   * 호출은 server.listen() 완료까지 blocking (최대 1s polling).
+   */
+  getDevServerPort(handle: unknown): number;
 }
 
 let native: NativeModule | null = null;
@@ -580,7 +587,10 @@ export function tlsSelfCheck(options: TlsSelfCheckOptions): void {
 /** @see {@link NativeModule.startDevServer} */
 export interface StartDevServerOptions {
   rootDir: string;
-  /** TCP port (1-65535). Default 12300. */
+  /**
+   * TCP port (0-65535). Default 12300. 0 은 OS-assigned ephemeral port —
+   * `getDevServerPort(handle)` 로 실제 값 조회.
+   */
   port?: number;
   /** Bind host. "localhost"/"127.0.0.1" (default) 또는 "0.0.0.0". */
   host?: string;
@@ -592,6 +602,15 @@ export interface StartDevServerOptions {
   certPath?: string;
   /** HTTPS key (PEM). certPath 와 함께 줘야. */
   keyPath?: string;
+  /**
+   * stderr 의 banner ("zntc dev server / Local: ...") 와 listen-fail log 출력 silence.
+   * NAPI embed 의 기본값은 true (자체 logger 가정). false 로 명시하면 stderr 출력.
+   *
+   * **scope 명시**: 본 옵션은 banner 와 listen 에러 한정. HMR / WS / watcher /
+   * bundle / request 등 routine log 는 별도 — 현재 모두 stderr 직접 출력. 완전
+   * silent 가 필요하면 후속 PR 에서 verbose log 도 quiet 범위에 포함 예정.
+   */
+  quiet?: boolean;
 }
 
 /** Opaque handle from {@link startDevServer}. */
@@ -621,6 +640,21 @@ export function startDevServer(options: StartDevServerOptions): DevServerHandle 
 /** Graceful shutdown — idempotent. */
 export function stopDevServer(handle: DevServerHandle): void {
   ensureNative().stopDevServer(handle);
+}
+
+/**
+ * startDevServer handle 의 실제 listen port.
+ *
+ * port=0 (OS-assigned ephemeral) 로 시작했을 때 실 bound port 조회. 일반적인
+ * test fixture / dynamic 환경에서 free port 자동 할당받고 그 값을 즉시 사용.
+ *
+ * @example
+ * const handle = startDevServer({ rootDir: './public', port: 0 });
+ * const port = getDevServerPort(handle);
+ * const res = await fetch(`http://127.0.0.1:${port}/`);
+ */
+export function getDevServerPort(handle: DevServerHandle): number {
+  return ensureNative().getDevServerPort(handle);
 }
 
 // ─── Build API ───

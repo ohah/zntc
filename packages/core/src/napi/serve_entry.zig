@@ -145,7 +145,9 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
         };
     }
 
-    // port — required type number, default 12300.
+    // port — required type number, default 12300. **0 은 OS-assigned ephemeral**:
+    // start() 가 listen 후 실제 port 로 self.port 갱신 → `getDevServerPort(handle)`
+    // 로 조회 가능. 일반 테스트 fixture 가 free port 자동 할당받을 때 유용.
     var port: u16 = 12300;
     if (getNamedProperty(env, argv[0], "port")) |port_val| {
         var port_type: c.napi_valuetype = undefined;
@@ -156,9 +158,9 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
                 cleanupStrings(root_dir, host, entry, cert_path, key_path);
                 return throwError(env, "startDevServer: failed to read 'port' number");
             }
-            if (port_u32 == 0 or port_u32 > 65535) {
+            if (port_u32 > 65535) {
                 cleanupStrings(root_dir, host, entry, cert_path, key_path);
-                return throwError(env, "startDevServer: 'port' must be 1..65535");
+                return throwError(env, "startDevServer: 'port' must be 0..65535 (0 = OS-assigned)");
             }
             port = @intCast(port_u32);
         } else if (port_type != c.napi_undefined and port_type != c.napi_null) {
@@ -168,6 +170,9 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
     }
 
     const open = getObjectBool(env, argv[0], "open", false);
+    // NAPI embed 는 자체 logger 가 있는 경우가 많아 default quiet=true. 사용자가
+    // 명시 false 면 stderr 에 banner + listen log 출력.
+    const quiet = getObjectBool(env, argv[0], "quiet", true);
 
     // cert 와 key 둘 다 있거나 둘 다 없거나.
     if ((cert_path == null) != (key_path == null)) {
@@ -189,6 +194,7 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
         .entry_point = entry,
         .cert_path = cert_path,
         .key_path = key_path,
+        .quiet = quiet,
     }) catch |err| {
         native_alloc.destroy(server);
         cleanupStrings(root_dir, host, entry, cert_path, key_path);
@@ -233,6 +239,51 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
         return throwError(env, "startDevServer: napi_create_external failed");
     }
     return external_value;
+}
+
+pub fn napiGetDevServerPort(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 1;
+    var argv: [1]c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
+        return throwError(env, "getDevServerPort: failed to get arguments");
+    }
+    if (argc < 1) return throwError(env, "getDevServerPort requires a handle argument");
+
+    var arg_type: c.napi_valuetype = undefined;
+    if (c.napi_typeof(env, argv[0], &arg_type) != c.napi_ok or arg_type != c.napi_external) {
+        return throwError(env, "getDevServerPort: argument must be a handle from startDevServer");
+    }
+
+    var data: ?*anyopaque = null;
+    if (c.napi_get_value_external(env, argv[0], &data) != c.napi_ok or data == null) {
+        return throwError(env, "getDevServerPort: failed to unwrap handle");
+    }
+    const handle: *DevServerHandle = @ptrCast(@alignCast(data.?));
+    if (handle.stopped.load(.acquire)) {
+        return throwError(env, "getDevServerPort: handle has been stopped");
+    }
+
+    // listen_ready atomic flag 가 release-store 됐을 때 acquire-load 로 self.port 값이
+    // 다른 thread (worker thread 의 start()) 의 write 와 happens-before relation 형성.
+    // ARM64 같은 weakly-ordered 환경에서 silent stale-read (옵션 값 0) 방지 (F1 fix).
+    const POLL_INTERVAL_NS = 10 * std.time.ns_per_ms;
+    const POLL_MAX_ATTEMPTS: u32 = 100; // 10ms × 100 = 1s 한도
+    var attempts: u32 = 0;
+    while (!handle.server.listen_ready.load(.acquire) and attempts < POLL_MAX_ATTEMPTS) : (attempts += 1) {
+        std.Thread.sleep(POLL_INTERVAL_NS);
+        if (handle.stopped.load(.acquire)) {
+            return throwError(env, "getDevServerPort: handle stopped before listen completed");
+        }
+    }
+    if (!handle.server.listen_ready.load(.acquire)) {
+        return throwError(env, "getDevServerPort: server listen did not complete within 1s");
+    }
+
+    var port_val: c.napi_value = undefined;
+    if (c.napi_create_uint32(env, @intCast(handle.server.port), &port_val) != c.napi_ok) {
+        return throwError(env, "getDevServerPort: failed to create return value");
+    }
+    return port_val;
 }
 
 pub fn napiStopDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
