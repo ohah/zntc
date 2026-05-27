@@ -15,6 +15,7 @@ const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const module_store = @import("module_store.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
+const ModuleGraph = @import("graph.zig").ModuleGraph;
 
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다 (RFC 8259 준수).
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
@@ -85,6 +86,16 @@ pub const IncrementalBundler = struct {
     /// reset 주기. test 가 override 가능. 0 = reset 비활성.
     rebuild_reset_interval: usize = 100,
 
+    /// RFC #3933 Sub-PR-B.2 — opt-in persistent ModuleGraph.
+    /// true 면 첫 빌드 시 graph 를 init + 이후 rebuild 가 같은 graph 재사용 (Bundler.initWithGraph).
+    /// graph 의 reset/invalidate 호출자 wire-up 까진 Sub-PR-B.3 — 본 PR 에서는 default false
+    /// 라 영향 0 (기존 path, 매 빌드 graph init/deinit). `ZNTC_INCREMENTAL_PERSIST=1` env
+    /// 또는 dev_server 가 명시 set 으로 opt-in. 환경별 통합은 후속 PR.
+    enable_persistence: bool = false,
+    /// `enable_persistence=true` 일 때 첫 빌드부터 init + 이후 빌드 간 보존되는 ModuleGraph.
+    /// `deinit` 가 일괄 해제. caller 는 직접 접근 금지 — `doBuild` 만이 lifetime 관리.
+    persistent_graph: ?ModuleGraph = null,
+
     /// 모듈 단위 dev/HMR 캐시 엔트리.
     /// `code` = `__zntc_register` wrapper (HMR 경로).
     /// `compiled` / `input_hash` = compiled output cache 재사용용 (populate 는 별도 PR).
@@ -111,6 +122,7 @@ pub const IncrementalBundler = struct {
         self.persistent_store.deinit();
         self.compiled_cache.deinit();
         if (self.resolve_cache) |*rc| rc.deinit();
+        if (self.persistent_graph) |*g| g.deinit();
     }
 
     /// 외부에서 캐시 전체 무효화 (Control API `/reset-cache` 등).
@@ -221,7 +233,17 @@ pub const IncrementalBundler = struct {
             if (opts.dev_mode and opts.collect_module_codes) opts.skip_bundle_output = true;
         }
 
-        var bundler = Bundler.initWithResolveCache(self.allocator, opts, &self.resolve_cache.?);
+        // RFC #3933 Sub-PR-B.2 — enable_persistence opt-in path. Bundler.initWithGraph wire-up.
+        //
+        // **정확성 가드 (본 PR scope 제한)**: graph state 의 selective invalidate 는 Sub-PR-B.3
+        // 영역. 본 PR 은 매 빌드 graph 를 *fresh init* (이전 graph 는 deinit) — 즉 실측 효과 0,
+        // API path 만 작동. persistent_graph 의 *진짜 reuse + replay short-circuit* 은 B.3 에서.
+        var bundler = blk: {
+            if (!self.enable_persistence) break :blk Bundler.initWithResolveCache(self.allocator, opts, &self.resolve_cache.?);
+            if (self.persistent_graph) |*pg| pg.deinit();
+            self.persistent_graph = ModuleGraph.init(self.allocator, &self.resolve_cache.?);
+            break :blk Bundler.initWithGraph(self.allocator, opts, &self.resolve_cache.?, &self.persistent_graph.?);
+        };
         defer bundler.deinit(); // resolve_cache_external=true이므로 resolve_cache는 해제 안 됨
 
         var result = bundler.bundle() catch return .fatal;

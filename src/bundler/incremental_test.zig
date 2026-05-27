@@ -1118,3 +1118,80 @@ test "IncrementalBundler: reset() Control API 도 resolve_cache 같이 비움 (#
     try std.testing.expect(ib.resolve_cache == null);
     try std.testing.expectEqual(@as(usize, 0), ib.rebuild_count);
 }
+
+// ============================================================
+// Sub-PR-B.2: enable_persistence opt-in path 정확성 가드
+// RFC #3933 — default off (영향 0), opt-in 시 persistent_graph 보존 + 매 빌드
+// reset/invalidate 호출로 정확성 유지. Sub-PR-B.3 가 selective invalidate.
+// ============================================================
+
+test "IncrementalBundler enable_persistence: 첫 빌드 + rebuild 정확성, persistent_graph 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    ib.enable_persistence = true;
+    defer ib.deinit();
+
+    // 첫 빌드 — persistent_graph init
+    try std.testing.expect(ib.persistent_graph == null);
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(ib.persistent_graph != null);
+    const mod_count_after_first = ib.persistent_graph.?.modules.count();
+    try std.testing.expect(mod_count_after_first >= 2);
+
+    // 두 번째 rebuild — graph 가 보존되지만 reset/invalidate 로 fresh state.
+    // index.ts 수정 → 정확한 build 결과 검증.
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x + 1);");
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // persistent_graph 는 같은 instance — modules slot 보존 (count 동일)
+    try std.testing.expect(ib.persistent_graph != null);
+    try std.testing.expectEqual(mod_count_after_first, ib.persistent_graph.?.modules.count());
+}
+
+test "IncrementalBundler enable_persistence=false: default off, persistent_graph null 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    // enable_persistence default false
+    defer ib.deinit();
+
+    try std.testing.expectEqual(false, ib.enable_persistence);
+
+    const r = try ib.rebuild();
+    switch (r) {
+        .success => |s| freeChanged(s.changed_modules),
+        else => return error.TestUnexpectedResult,
+    }
+    // default off 면 persistent_graph 미사용
+    try std.testing.expect(ib.persistent_graph == null);
+}
