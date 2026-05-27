@@ -1079,8 +1079,16 @@ pub const Ast = struct {
     const StringInternMap = std.HashMapUnmanaged(Span, void, SpanCtx, std.hash_map.default_max_load_percentage);
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Ast {
+        var nodes: std.ArrayList(Node) = .empty;
+        // typescript.js 9MB 측정에서 노드 1 개당 약 8 source 바이트의 밀도. 한 번에
+        // capacity 를 잡아 lazy realloc 의 2x peak (이전 buffer + 새 buffer 공존)를
+        // 회피한다. 87MB synthetic 입력 실측: pre-warm RSS 2.32 GB vs lazy 2.99 GB
+        // (-22%). 큰 입력 폭주 가설은 측정으로 반증돼 별도 cap 은 두지 않는다.
+        // 시그니처가 error union 이 아니므로 OOM 은 `catch {}` 후 기존 lazy grow
+        // 경로로 fallback.
+        nodes.ensureTotalCapacity(allocator, source.len / 8) catch {};
         return .{
-            .nodes = .empty,
+            .nodes = nodes,
             .extra_data = .empty,
             .string_table = .empty,
             .string_interns = .empty,
