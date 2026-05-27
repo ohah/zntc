@@ -1080,16 +1080,23 @@ pub const Ast = struct {
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Ast {
         var nodes: std.ArrayList(Node) = .empty;
-        // typescript.js 9MB 측정에서 노드 1 개당 약 8 source 바이트의 밀도. 한 번에
-        // capacity 를 잡아 lazy realloc 의 2x peak (이전 buffer + 새 buffer 공존)를
-        // 회피한다. 87MB synthetic 입력 실측: pre-warm RSS 2.32 GB vs lazy 2.99 GB
-        // (-22%). 큰 입력 폭주 가설은 측정으로 반증돼 별도 cap 은 두지 않는다.
-        // 시그니처가 error union 이 아니므로 OOM 은 `catch {}` 후 기존 lazy grow
-        // 경로로 fallback.
+        var extra_data: std.ArrayList(u32) = .empty;
+        // 핫 ArrayList 두 곳을 source 길이 기반 평균 밀도로 한 번에 capacity 를 잡아
+        // lazy realloc 의 2x peak (이전 buffer + 새 buffer 공존) 를 회피한다. 87MB
+        // synthetic 입력 실측: nodes 만 적용 시 RSS 2.99 GB → 2.32 GB (-22%, PR
+        // #3926), extra_data 까지 적용 시 RSS 2.32 → 2.23 GB (-98 MB / -4.2% 추가).
+        // 측정 fixture = typescript.js / _tsc.js / mobx / date-fns/cdn / vue / svelte.
+        //   nodes:      source.len / 8  (range 3.60–9.76 byte/node, mean 7.44)
+        //   extra_data: source.len / 6  (range 3.19–8.07 byte/entry, mean 6.43)
+        // svelte 처럼 밀도 높은 corpus 는 평균 ratio 로 ~50% cover 돼 1 라운드 lazy
+        // grow 가 남지만, 평균 corpus 의 RSS 절감을 우선 (cap 가설은 87MB 측정으로
+        // 반증 — pre-warm 이 lazy 보다 항상 RSS 작거나 같음). 시그니처가 error union
+        // 이 아니므로 OOM 은 `catch {}` 후 기존 lazy grow 경로로 fallback.
         nodes.ensureTotalCapacity(allocator, source.len / 8) catch {};
+        extra_data.ensureTotalCapacity(allocator, source.len / 6) catch {};
         return .{
             .nodes = nodes,
-            .extra_data = .empty,
+            .extra_data = extra_data,
             .string_table = .empty,
             .string_interns = .empty,
             .allocator = allocator,
