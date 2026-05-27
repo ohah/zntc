@@ -876,6 +876,134 @@ function startMcpRuntime(g) {
     };
   };
 
+  // ─── tap_element (PR-F6) ───
+  //
+  // ref 의 fiber 또는 ancestor chain (TouchableOpacity / TouchableHighlight /
+  // Pressable / Button 등의 wrapper) 에서 `onPress` prop 검색 후 호출. RN 의 native
+  // touch event 시뮬레이션은 native bridge 없으면 불가 — handler 직접 호출이 최대한
+  // 의 사용성. 사용자 입장에서 "버튼 누르기" 와 동등.
+  //
+  // **Side-effect**: handler 가 setState / dispatch / navigation / fetch 등 임의 실행.
+  // eval_code 와 같은 debugger console 시맨틱.
+  //
+  // **Async**: handler 가 Promise 반환하면 그대로 return — dispatcher 가 await.
+  //
+  // 에러:
+  //   - params 누락 / unknown ref → throw → -32603
+  //   - 5 ancestor 내 onPress 없음 → {ok:false, kind:'no_handler'}
+  //   - handler 가 throw → {ok:false, kind:'runtime', error, stack}
+  var TAP_ANCESTOR_LOOKUP_MAX = 5;
+
+  handlers.tap_element = function (params) {
+    if (!params || typeof params.ref !== 'string') {
+      throw new Error('tap_element: params requires `ref` (string)');
+    }
+    var startFiber = refMap.get(params.ref);
+    if (!startFiber) {
+      throw new Error('tap_element: ref `' + params.ref + '` not found (expired or unknown)');
+    }
+
+    // **F3**: disabled prop 처리 — 실제 native touch 는 `<Button disabled>` /
+    // `<Pressable disabled>` / `accessibilityState.disabled` 시 handler 호출 안 함.
+    // tap_element 도 같은 contract 로 short-circuit.
+    var startProps = startFiber.memoizedProps;
+    if (startProps && typeof startProps === 'object') {
+      if (startProps.disabled === true) {
+        return {
+          ok: false,
+          kind: 'disabled',
+          error: 'tap_element: element is disabled (props.disabled === true)',
+        };
+      }
+      var a11yState = startProps.accessibilityState;
+      if (a11yState && a11yState.disabled === true) {
+        return {
+          ok: false,
+          kind: 'disabled',
+          error: 'tap_element: element is disabled (accessibilityState.disabled === true)',
+        };
+      }
+    }
+
+    // onPress 검색 — 자기 자신부터 parent chain (fiber.return) 따라 5 step 까지.
+    // **F1 fix**: WeakSet visited 로 cycle 차단 (cycle 시 budget 소모 안 함).
+    var current = startFiber;
+    var handler = null;
+    var handlerFiber = null;
+    var ancestorVisited = new WeakSet();
+    for (var i = 0; i <= TAP_ANCESTOR_LOOKUP_MAX && current; i++) {
+      if (ancestorVisited.has(current)) break;
+      ancestorVisited.add(current);
+      var props = current.memoizedProps;
+      if (props && typeof props.onPress === 'function') {
+        handler = props.onPress;
+        handlerFiber = current;
+        break;
+      }
+      current = current.return;
+    }
+    if (handler == null) {
+      return {
+        ok: false,
+        kind: 'no_handler',
+        error:
+          'tap_element: no onPress handler found on element or up to ' +
+          TAP_ANCESTOR_LOOKUP_MAX +
+          ' ancestors',
+      };
+    }
+
+    // **F4**: target 은 사용자가 가리킨 원래 fiber 의 host stateNode (실제 tap 된 view).
+    // currentTarget 은 handler 가 부착된 fiber (React 의 SyntheticEvent 규약). composite
+    // fiber 의 stateNode 는 React 인스턴스 (또는 null) 이라 event.target.measure() 같은
+    // 호출이 실패하던 문제 회피. host fiber 직접 ref 면 동일, ancestor 면 의미 분리.
+    function findHostStateNode(fiber) {
+      // descendant 탐색은 fiber.child / sibling 이 cycle 가능. ancestor 의 stateNode 가
+      // host 아니어도 startFiber 자체의 stateNode 우선 사용.
+      if (fiber && fiber.stateNode) return fiber.stateNode;
+      return null;
+    }
+    var targetNode = findHostStateNode(startFiber);
+    var currentTargetNode = findHostStateNode(handlerFiber);
+
+    // Mock event — RN 의 SyntheticEvent 와 동일 shape. 대부분 handler 는 event 안 보지만
+    // nativeEvent.timestamp / preventDefault / stopPropagation / target / currentTarget
+    // 정도는 기본 제공.
+    var mockEvent = {
+      nativeEvent: { timestamp: Date.now() },
+      target: targetNode,
+      currentTarget: currentTargetNode,
+      preventDefault: function () {},
+      stopPropagation: function () {},
+      persist: function () {},
+    };
+
+    function makeRuntimeError(runErr) {
+      var stack = runErr && runErr.stack ? String(runErr.stack) : null;
+      if (stack && stack.length > 2000) stack = stack.slice(0, 2000) + '...';
+      return {
+        ok: false,
+        kind: 'runtime',
+        error: (runErr && runErr.message) || String(runErr),
+        stack: stack,
+      };
+    }
+
+    try {
+      var result = handler.call(null, mockEvent);
+      // async handler → Promise → dispatcher 가 await. ok:true 결과만 반환 (handler
+      // 의 return value 자체는 노출 안 함 — onPress 의 return 은 UI contract 무관).
+      if (result && typeof result.then === 'function') {
+        return result.then(function () {
+          return { ok: true };
+        }, makeRuntimeError);
+      }
+      return { ok: true };
+    } catch (err) {
+      return makeRuntimeError(err);
+    }
+  };
+
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.

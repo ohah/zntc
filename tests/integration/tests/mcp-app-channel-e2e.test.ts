@@ -627,6 +627,60 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
     expect(result.error.message).toContain('not found');
   });
 
+  test('tools/list — tap_element 노출', async () => {
+    const server = await setupServer();
+    const result = await mcpCall(server.port, { jsonrpc: '2.0', id: 60, method: 'tools/list' });
+    const names = result.result.tools.map((t: any) => t.name);
+    expect(names).toContain('tap_element');
+  });
+
+  test('tap_element — ref forward + 결과 round-trip', async () => {
+    const server = await setupServer();
+    let receivedParams: any = null;
+    mockApp = connectMockApp(server.port, {
+      tap_element: (params) => {
+        receivedParams = params;
+        return { ok: true };
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 61,
+      method: 'tools/call',
+      params: { name: 'tap_element', arguments: { ref: 'e1' } },
+    });
+
+    expect(receivedParams).toEqual({ ref: 'e1' });
+    expect(result.error).toBeUndefined();
+    const inner = JSON.parse(result.result.content[0].text);
+    expect(inner.ok).toBe(true);
+  });
+
+  test('tap_element — unknown ref → app throw → -32603 forward', async () => {
+    const server = await setupServer();
+    mockApp = connectMockApp(server.port, {
+      tap_element: (params: any) => {
+        throw new Error('tap_element: ref `' + params.ref + '` not found');
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 62,
+      method: 'tools/call',
+      params: { name: 'tap_element', arguments: { ref: 'e9999' } },
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain('not found');
+  });
+
   test('forwardAppTool fallback — app response 가 result/error 둘 다 없으면 "missing \'result\'" (#50)', async () => {
     // PR-F1 review F4 fallback path. 정상 mock 은 항상 result 또는 error 를 보내지만,
     // spec-violating app (또는 race condition 으로 partial response) 가 둘 다 없는
