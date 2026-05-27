@@ -19,8 +19,10 @@ pub const analyzer = @import("analyzer.zig");
 pub const checker = @import("checker.zig");
 pub const scope = @import("scope.zig");
 pub const symbol = @import("symbol.zig");
+pub const closure_analysis = @import("closure_analysis.zig");
 
 pub const SemanticAnalyzer = analyzer.SemanticAnalyzer;
+pub const FreeVarMap = closure_analysis.FreeVarMap;
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 pub const Scope = scope.Scope;
 pub const ScopeId = scope.ScopeId;
@@ -37,6 +39,7 @@ test {
     _ = checker;
     _ = scope;
     _ = symbol;
+    _ = closure_analysis;
 
     // test files
     _ = @import("analyzer_test.zig");

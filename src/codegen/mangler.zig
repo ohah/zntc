@@ -91,6 +91,11 @@ pub const MangleInput = struct {
     /// `external_reserved` 가 *per-module* (예: Phase A 의 이 모듈 mangled 이름)
     /// 라면 본 필드는 *전 모듈 공통* (예: runtime helper 이름) 으로 분리된다.
     external_reserved_global: ?*const std.StringHashMap(void) = null,
+    /// R1-a (`RFC_MANGLER_SAFE_C2.md`) PR-2 inert infra — nested scope 의 free-var
+    /// (outer scope 의 사용 symbol set). default null 이면 mangler 가 보수 fallback
+    /// (`markAncestorPath` 전체 마킹) 그대로. PR-3 의 `ZNTC_R1A_PRECISE_REUSE` flag
+    /// ON 시만 reuse. borrowed — caller 소유 유지.
+    free_vars_per_scope: ?*const @import("../semantic/closure_analysis.zig").FreeVarMap = null,
 };
 
 /// Liveness 기반 mangling.
