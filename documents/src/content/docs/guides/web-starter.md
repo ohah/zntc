@@ -101,6 +101,6 @@ bun run preview      # dist/ 미리보기
 
 ## 관련 문서
 
-- [Dev Server](/zntc/guides/dev-server/) — `zntc dev` 의 SSE / MCP / Live Reload 동작.
+- [Dev Server](/zntc/guides/dev-server/) — `zntc dev` 의 SSE / Live Reload 동작.
 - [Config File](/zntc/guides/config-file/) — `zntc.config.ts` 의 전체 옵션과 함수형 config.
 - [Plugin Recipes](/zntc/guides/plugin-recipes/) — CSS / PostCSS / Tailwind / SVG 같은 자주 쓰는 plugin 패턴.

@@ -955,10 +955,9 @@ interface BuildOptionsCommon {
    *
    * `alias` object form 의 기본 동작은 esbuild 처럼 정확/접두사 둘 다 매칭이라
    * `react: "preact/compat"` 가 `react/hooks → preact/compat/hooks` 로도 동작한다.
-   * 그러나 alias 값이 **단일 파일** (예: `react-native-webview` → `./wrapper.cjs`)
-   * 인 경우 prefix 매칭이 `react-native-webview/lib/X → ./wrapper.cjs/lib/X` 로
-   * 깨진다. 이 list 에 from 을 적으면 그 entry 는 exact 매칭만 적용 — subpath
-   * import 는 alias 미적용되어 원본 패키지로 resolve.
+   * 그러나 alias 값이 **단일 파일** 인 경우 prefix 매칭이 `from/subpath → file.js/subpath`
+   * (파일을 디렉토리 취급) 로 깨진다. 이 list 에 from 을 적으면 그 entry 는 exact
+   * 매칭만 적용 — subpath import 는 alias 미적용되어 원본 패키지로 resolve.
    *
    * 일반적인 package-to-package alias (`react → preact/compat`) 는 list 에 안 넣음.
    * 주로 wrapper / shim 파일 alias 에서 사용. */

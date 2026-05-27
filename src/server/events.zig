@@ -160,84 +160,6 @@ pub const EventType = struct {
     pub const cache_reset = "cache_reset";
 };
 
-/// 최근 이벤트 순환 버퍼 — SSE 구독자 late-join 시 catch-up 용 history.
-/// 고정 용량; 오래된 엔트리는 덮어쓰임. `seq`로 이벤트 순서 추적.
-pub const EventRing = struct {
-    mutex: std.Thread.Mutex = .{},
-    allocator: std.mem.Allocator,
-    items: [capacity]Record = undefined,
-    /// 다음 쓰기 위치 (`items[head % capacity]`).
-    head: u64 = 0,
-
-    pub const capacity: usize = 256;
-
-    pub const Record = struct {
-        seq: u64,
-        event_type: []const u8, // owned
-        data_json: []const u8, // owned
-    };
-
-    pub fn init(allocator: std.mem.Allocator) EventRing {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn deinit(self: *EventRing) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const count: usize = @intCast(@min(self.head, capacity));
-        for (self.items[0..count]) |*r| {
-            self.allocator.free(r.event_type);
-            self.allocator.free(r.data_json);
-        }
-    }
-
-    pub fn push(self: *EventRing, seq: u64, event_type: []const u8, data_json: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        // head 는 u64 라 32-bit 타깃에서 배열 인덱스(usize)로 직접 못 쓴다.
-        // `% capacity`(256) 결과는 항상 usize 범위 → @intCast 안전.
-        const idx: usize = @intCast(self.head % capacity);
-        if (self.head >= capacity) {
-            self.allocator.free(self.items[idx].event_type);
-            self.allocator.free(self.items[idx].data_json);
-        }
-        const t_dup = self.allocator.dupe(u8, event_type) catch return;
-        const d_dup = self.allocator.dupe(u8, data_json) catch {
-            self.allocator.free(t_dup);
-            return;
-        };
-        self.items[idx] = .{ .seq = seq, .event_type = t_dup, .data_json = d_dup };
-        self.head += 1;
-    }
-
-    /// `since_seq` 이후 이벤트들을 복사해 반환. caller가 free.
-    pub fn snapshotSince(self: *EventRing, alloc: std.mem.Allocator, since_seq: u64) ![]Record {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const total = self.head;
-        const start = if (total > capacity) total - capacity else 0;
-        var out: std.ArrayList(Record) = .empty;
-        errdefer {
-            for (out.items) |r| {
-                alloc.free(r.event_type);
-                alloc.free(r.data_json);
-            }
-            out.deinit(alloc);
-        }
-        var i: u64 = start;
-        while (i < total) : (i += 1) {
-            const src = self.items[@as(usize, @intCast(i % capacity))];
-            if (src.seq <= since_seq) continue;
-            try out.append(alloc, .{
-                .seq = src.seq,
-                .event_type = try alloc.dupe(u8, src.event_type),
-                .data_json = try alloc.dupe(u8, src.data_json),
-            });
-        }
-        return try out.toOwnedSlice(alloc);
-    }
-};
-
 /// WebSocket text frame을 직접 인코딩하여 writer에 쓴다.
 /// std.http.Server.WebSocket.writeMessage와 동일한 형식이지만,
 /// WebSocket 구조체 없이 raw writer로 전송할 수 있다.
@@ -291,7 +213,7 @@ pub fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytyp
 }
 
 // ============================================================
-// SSE / EventRing / JSON 헬퍼 테스트
+// SSE / JSON 헬퍼 테스트
 // ============================================================
 
 test "SseSink.writeFrame: 표준 SSE 형식 (event: + data: + 빈 줄)" {
@@ -308,66 +230,6 @@ test "writeJsonEscaped: 특수 문자 이스케이프" {
     var w = std.Io.Writer.fixed(&buf);
     try writeJsonEscaped(&w, "a\"b\\c\nd\rt\te");
     try std.testing.expectEqualStrings("a\\\"b\\\\c\\nd\\rt\\te", buf[0..w.end]);
-}
-
-test "EventRing: push/snapshotSince — since 이후만 반환" {
-    const alloc = std.testing.allocator;
-    var ring = EventRing.init(alloc);
-    defer ring.deinit();
-
-    ring.push(1, "a", "{\"v\":1}");
-    ring.push(2, "b", "{\"v\":2}");
-    ring.push(3, "c", "{\"v\":3}");
-
-    const snap = try ring.snapshotSince(alloc, 1);
-    defer {
-        for (snap) |r| {
-            alloc.free(r.event_type);
-            alloc.free(r.data_json);
-        }
-        alloc.free(snap);
-    }
-    try std.testing.expectEqual(@as(usize, 2), snap.len);
-    try std.testing.expectEqual(@as(u64, 2), snap[0].seq);
-    try std.testing.expectEqualStrings("b", snap[0].event_type);
-    try std.testing.expectEqual(@as(u64, 3), snap[1].seq);
-}
-
-test "EventRing: capacity 초과 시 오래된 항목 덮어쓰기" {
-    const alloc = std.testing.allocator;
-    var ring = EventRing.init(alloc);
-    defer ring.deinit();
-
-    var i: u64 = 0;
-    while (i < EventRing.capacity + 50) : (i += 1) {
-        ring.push(i + 1, "e", "{}");
-    }
-
-    // 가장 최근 capacity개만 보존되어야 함
-    const snap = try ring.snapshotSince(alloc, 0);
-    defer {
-        for (snap) |r| {
-            alloc.free(r.event_type);
-            alloc.free(r.data_json);
-        }
-        alloc.free(snap);
-    }
-    try std.testing.expectEqual(@as(usize, EventRing.capacity), snap.len);
-    // 첫 항목은 잘려나간 만큼 뒤로 밀린 seq
-    try std.testing.expectEqual(@as(u64, 51), snap[0].seq);
-}
-
-test "EventRing: snapshotSince 빈 결과 (since == head)" {
-    const alloc = std.testing.allocator;
-    var ring = EventRing.init(alloc);
-    defer ring.deinit();
-
-    ring.push(1, "a", "{}");
-    ring.push(2, "b", "{}");
-
-    const snap = try ring.snapshotSince(alloc, 2);
-    defer alloc.free(snap);
-    try std.testing.expectEqual(@as(usize, 0), snap.len);
 }
 
 test "SseClients: broadcast — 다수 클라이언트에 SSE 형식으로 전송" {

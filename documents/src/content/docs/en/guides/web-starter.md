@@ -101,6 +101,6 @@ bun run preview      # preview dist/
 
 ## See also
 
-- [Dev Server](/zntc/en/guides/dev-server/) — `zntc dev` SSE / MCP / Live Reload behavior.
+- [Dev Server](/zntc/en/guides/dev-server/) — `zntc dev` SSE / Live Reload behavior.
 - [Config File](/zntc/en/guides/config-file/) — full `zntc.config.ts` options and functional config.
 - [Plugin Recipes](/zntc/en/guides/plugin-recipes/) — CSS / PostCSS / Tailwind / SVG plugin patterns.

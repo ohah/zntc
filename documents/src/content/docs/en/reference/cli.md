@@ -295,7 +295,7 @@ use preact by adding just `/** @jsxImportSource preact */` — that file alone u
 | `--open`                        | Auto-open browser                                                                                       |
 | `--proxy /api=http://host:port` | API proxy                                                                                               |
 
-**Dev server external interfaces:** `/sse/events` (SSE build events), `/reset-cache` (Control API), `/mcp` (Model Context Protocol — for LLM agents like Claude Code).
+**Dev server external interfaces:** `/sse/events` (SSE build events), `/reset-cache` (Control API).
 
 ## Plugins / Execution
 

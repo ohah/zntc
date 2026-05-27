@@ -13,7 +13,7 @@ ZNTC stands for **Zig Native Transpiler & Compiler**. It is a native-speed trans
 - **Bundling** — Tree-shaking, code splitting, preserve-modules. [Bundling overview](/zntc/en/guides/bundling/) · [Tree-shaking](/zntc/en/guides/tree-shaking/) · [manualChunks](/zntc/en/guides/manual-chunks/)
 - **React Native** — Metro-compatible bundling, Flow stripping, Hermes bytecode compatibility. [React Native guide](/zntc/en/guides/react-native/) · [Expo](/zntc/en/guides/react-native-expo/)
 - **Plugins** — Rollup/Vite-compatible plugin system (C NAPI, in-process). [Plugins guide](/zntc/en/guides/plugins/) · [Vite adapter](/zntc/en/guides/vite/)
-- **Dev Server** — HMR, proxy, static file serving, SSE/MCP. [Dev Server guide](/zntc/en/guides/dev-server/)
+- **Dev Server** — HMR, proxy, static file serving, SSE. [Dev Server guide](/zntc/en/guides/dev-server/)
 - **WASM** — Transpile and bundle directly in the browser / Edge / WASI. [Installation guide — WASM](/zntc/en/guides/installation/)
 
 ## 1st-party transforms, no Babel

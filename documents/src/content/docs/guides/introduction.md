@@ -13,7 +13,7 @@ ZNTC는 **Zig Native Transpiler & Compiler**의 약자로, JavaScript/TypeScript
 - **번들링** — Tree-shaking, 코드 스플리팅, preserve-modules. [번들링 개요](/zntc/guides/bundling/) · [트리쉐이킹](/zntc/guides/tree-shaking/) · [manualChunks](/zntc/guides/manual-chunks/)
 - **React Native** — Metro 호환 번들링, Flow 스트리핑, Hermes 바이트코드 호환. [React Native 가이드](/zntc/guides/react-native/) · [Expo](/zntc/guides/react-native-expo/)
 - **플러그인** — Rollup/Vite 호환 플러그인 시스템 (C NAPI, in-process). [플러그인 가이드](/zntc/guides/plugins/) · [Vite 어댑터](/zntc/guides/vite/)
-- **Dev Server** — HMR, 프록시, 정적 파일 서빙, SSE/MCP. [Dev Server 가이드](/zntc/guides/dev-server/)
+- **Dev Server** — HMR, 프록시, 정적 파일 서빙, SSE. [Dev Server 가이드](/zntc/guides/dev-server/)
 - **WASM** — 브라우저 / Edge / WASI 에서 직접 트랜스파일 + 번들. [설치 가이드의 WASM 섹션](/zntc/guides/installation/)
 
 ## Babel 없이 1st-party 지원
