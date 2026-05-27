@@ -199,6 +199,12 @@ interface NativeModule {
   };
   /** MCP (Model Context Protocol) stdio transport — blocking, returns on stdin EOF. */
   mcpStdioServe(options: { rootDir: string }): void;
+  /**
+   * TLS sanity check — BoringSSL static link 의 runtime 동작 검증.
+   * cert/key 한 번 로드 후 즉시 해제. 성공 → undefined, 실패 → throw.
+   * 후속 HTTPS dev server NAPI entry 의 토대 + 사용자 cert/key 유효성 빠른 확인.
+   */
+  tlsSelfCheck(options: { certPath: string; keyPath: string }): void;
 }
 
 let native: NativeModule | null = null;
@@ -531,6 +537,27 @@ export interface McpStdioOptions {
  */
 export function mcpStdioServe(options: McpStdioOptions): void {
   ensureNative().mcpStdioServe(options);
+}
+
+/** @see {@link NativeModule.tlsSelfCheck} */
+export interface TlsSelfCheckOptions {
+  certPath: string;
+  keyPath: string;
+}
+
+/**
+ * TLS context init/deinit 만 호출하는 BoringSSL sanity 진입점.
+ *
+ * cert/key 파일을 한 번 로드해 BoringSSL 의 SSL_CTX 가 정상 생성되는지 검증.
+ * Throw 시 message 에 Zig error name 이 포함되어 caller 가 분류 가능
+ * (CertLoadFailed / KeyLoadFailed / KeyMismatch 등).
+ *
+ * NAPI binary 에 BoringSSL 이 static link 되어 있는지 + dlopen 후 symbol resolve
+ * 가 동작하는지 빠르게 확인하는 용도. 향후 본격 HTTPS dev server NAPI entry 가
+ * 추가되면 그 entry 가 같은 path 사용.
+ */
+export function tlsSelfCheck(options: TlsSelfCheckOptions): void {
+  ensureNative().tlsSelfCheck(options);
 }
 
 // ─── Build API ───
