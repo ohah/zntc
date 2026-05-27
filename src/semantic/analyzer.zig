@@ -155,12 +155,6 @@ pub const SemanticAnalyzer = struct {
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
 
-    /// R1-a (`RFC_MANGLER_SAFE_C2.md`) PR-2-b — nested scope 의 free-var (outer-ref
-    /// symbol set). analyze() 끝에 env `ZNTC_R1A_FREEVAR_INFRA` 가 set 됐을 때만 build,
-    /// 그 외엔 null 유지. mangler 가 PR-3 의 `ZNTC_R1A_PRECISE_REUSE` flag ON 시만
-    /// 사용 (PR-2-b 자체는 input field 미연결 = byte-identical 보장).
-    free_vars: ?@import("closure_analysis.zig").FreeVarMap = null,
-
     /// Annex B: if/else/labeled body에서 function declaration을 만나면
     /// var hoisting conflict check를 건너뛴다.
     /// sloppy mode에서 `if (true) function f() {}` 같은 구문이 let/const와 충돌하지 않도록 한다.
@@ -272,10 +266,6 @@ pub const SemanticAnalyzer = struct {
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
         self.class_private_refs.deinit(self.allocator);
-        if (self.free_vars) |*fv| {
-            @import("closure_analysis.zig").freeFreeVarMap(fv);
-            self.free_vars = null;
-        }
     }
 
     // ================================================================
@@ -301,18 +291,6 @@ pub const SemanticAnalyzer = struct {
         const root_idx: NodeIndex = self.ast.transformed_root orelse
             @as(NodeIndex, @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1))));
         try self.visitNode(root_idx);
-
-        // R1-a PR-2-b: env `ZNTC_R1A_FREEVAR_INFRA` 가 set 됐을 때만 free-var map build.
-        // 미설정 시 wall-time/메모리 영향 0. PR-3 의 mangler reuse 와 별개 flag.
-        const closure = @import("closure_analysis.zig");
-        if (closure.isInfraEnabled(self.allocator)) {
-            self.free_vars = try closure.buildFreeVarMap(
-                self.allocator,
-                self.scopes.items,
-                self.symbols.items,
-                self.references.items,
-            );
-        }
     }
 
     // ================================================================

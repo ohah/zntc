@@ -832,12 +832,6 @@ pub const Linker = struct {
         const modules = try self.allocator.alloc(um.ModuleMangleInput, mod_count);
         errdefer self.allocator.free(modules);
 
-        // R1-a PR-3-a: `ZNTC_R1A_PRECISE_REUSE` env set 시 mangler 가 free-var map
-        // 사용 (mangler `markScopeSubtree(0)` 보수 마킹을 PR-3-b 에서 정밀화). 함수
-        // 진입점에서 한 번 검사 — module 별 매번 env get 회피.
-        const precise_reuse = @import("../semantic/closure_analysis.zig")
-            .isPreciseReuseEnabled(self.allocator);
-
         const bitsets = try self.allocator.alloc(std.DynamicBitSet, mod_count);
         var created: usize = 0;
         errdefer {
@@ -1143,11 +1137,6 @@ pub const Linker = struct {
                     .module_scope_symbols = bitsets[mi],
                     .cross_module_imports = ir_owned,
                     .wrapper_isolated = m.wrap_kind.isWrapped(),
-                    // R1-a PR-3-a: precise_reuse 시만 analyzer 의 free-var map 연결.
-                    // PR-3-b 의 mangler 가 이걸 사용해 `markScopeSubtree(0)` 의 보수
-                    // 마킹을 정밀화. env unset 또는 sem.free_vars=null → null = mangler
-                    // 가 기존 동작 (byte-identical 자동 보장).
-                    .free_vars_per_scope = if (precise_reuse) sem.free_vars else null,
                 };
             } else {
                 modules[mi] = emptyInput(m.source, bitsets[mi]);

@@ -57,11 +57,6 @@ pub const ModuleMangleInput = struct {
     /// pool 후보). false (bare scope-hoist) 는 top-level 이 한 scope 라 globally
     /// unique 필수. J-step3a (RFC #3288) 측정용.
     wrapper_isolated: bool = false,
-    /// R1-a (`RFC_MANGLER_SAFE_C2.md`) PR-2 inert infra — nested scope 의 free-var
-    /// (outer scope 의 사용 symbol set). default null 이면 mangler 가 보수 fallback
-    /// (`markAncestorPath` 전체 마킹) 그대로. PR-3 의 `ZNTC_R1A_PRECISE_REUSE` flag
-    /// ON 시만 reuse. borrowed — caller (linker/collectUnifiedInput) 소유 유지.
-    free_vars_per_scope: ?*const @import("../semantic/closure_analysis.zig").FreeVarMap = null,
 };
 
 /// Phase A 의 mangling 후보. 호출부가 빈도/필터링을 수행해 넘긴다
