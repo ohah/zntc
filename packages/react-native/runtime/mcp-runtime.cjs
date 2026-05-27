@@ -1004,6 +1004,181 @@ function startMcpRuntime(g) {
     }
   };
 
+  // ─── get_network (PR-F7) ───
+  //
+  // XMLHttpRequest intercept — RN 의 모든 network request 캡처. RN 의 fetch() 도
+  // 내부적으로 XHR 사용 (whatwg-fetch polyfill) 이라 XHR 만 wrap 해도 fetch 포함.
+  //
+  // 각 entry: {seq, tsStart, method, url, status?, durationMs?, error?}. body 는
+  // privacy / size 이유로 미캡처 — eval_code 로 직접 inspect 가능. ring buffer 200
+  // entries, FIFO. dropped 누적 counter.
+  //
+  // intercept idempotent — `XHR.prototype.__zntcMcpWrapped` marker.
+  //
+  // **wrap chain order**: get_logs 의 console wrap 과 동일 — third-party (LogBox /
+  // Flipper / RN DevTools 의 XHRInterceptor) 가 우리 위에서 wrap 만 하고 forward 하면
+  // chain 유지. **replace** (덮어쓰기) 하면 intercept 끊김.
+  //
+  // **ring size 200** vs LOG_RING_MAX 1000 — network entry 는 args array 가 없어
+  // ~6 작은 field. RN 앱은 보통 화면당 10-100 req 발생 (log 보다 적음).
+  var NET_RING_MAX = 200;
+  var NET_DEFAULT_LIMIT = 50;
+  var netRing = [];
+  var netSeq = 0;
+  var netDropped = 0;
+
+  function appendNetwork(entry) {
+    if (netRing.length >= NET_RING_MAX) {
+      netRing.shift();
+      netDropped += 1;
+    }
+    netRing.push(entry);
+  }
+
+  function nextNetSeq() {
+    netSeq += 1;
+    return netSeq;
+  }
+
+  if (g.XMLHttpRequest && typeof g.XMLHttpRequest === 'function') {
+    var XHRCtor = g.XMLHttpRequest;
+    var proto = XHRCtor.prototype;
+    if (proto && !proto.__zntcMcpWrapped) {
+      var origOpen = proto.open;
+      var origSend = proto.send;
+      if (typeof origOpen === 'function' && typeof origSend === 'function') {
+        proto.open = function (method, url) {
+          // entry pre-create — send 시점에 ring buffer push.
+          this.__zntcMcpEntry = {
+            seq: nextNetSeq(),
+            tsStart: Date.now(),
+            method: typeof method === 'string' ? method : String(method),
+            url: typeof url === 'string' ? url : String(url),
+            status: null,
+            durationMs: null,
+            error: null,
+          };
+          return origOpen.apply(this, arguments);
+        };
+        proto.send = function () {
+          var entry = this.__zntcMcpEntry;
+          // **F3-4**: double-send guard — `xhr.send()` 가 두 번 호출되면 (W3C 는 throw
+          // 하지만 polyfill 따라 다름) 동일 entry 가 ring buffer 에 두 번 push 되고
+          // listener 도 두 번 attach 되어 entry mutation race. 이미 한번 push 했으면
+          // skip 후 origSend 만 forward (origSend 가 throw 하면 자연 surface).
+          if (entry && !this.__zntcMcpSent) {
+            this.__zntcMcpSent = true;
+            // open() → send() 시점에 push — 응답 늦어도 pending 으로 노출.
+            appendNetwork(entry);
+            var xhr = this;
+            var finalized = false;
+            function finalize() {
+              if (finalized) return;
+              finalized = true;
+              entry.durationMs = Date.now() - entry.tsStart;
+              try {
+                entry.status = xhr.status;
+              } catch (_) {
+                /* xhr.status 가 throw 가능 (readyState < HEADERS_RECEIVED) — defensive */
+              }
+            }
+            try {
+              xhr.addEventListener('load', finalize);
+              xhr.addEventListener('error', function () {
+                finalize();
+                entry.error = 'network error';
+              });
+              xhr.addEventListener('abort', function () {
+                finalize();
+                entry.error = 'aborted';
+              });
+              xhr.addEventListener('timeout', function () {
+                finalize();
+                entry.error = 'timeout';
+              });
+            } catch (_) {
+              /* addEventListener 가 어떤 환경에서 throw 면 entry 는 pending 유지 */
+            }
+          }
+          return origSend.apply(this, arguments);
+        };
+        proto.__zntcMcpWrapped = true;
+      }
+    }
+  }
+
+  handlers.get_network = function (params) {
+    var p = params || {};
+    var cursorSeq = typeof p.cursor === 'number' ? p.cursor : -Infinity;
+
+    var methodFilter = null;
+    if (p.method != null) {
+      if (typeof p.method !== 'string') {
+        throw new Error('get_network: invalid `method` -- must be a string');
+      }
+      methodFilter = p.method.toUpperCase();
+    }
+
+    var statusExact = null;
+    var statusMin = -Infinity;
+    var statusMax = Infinity;
+    if (p.status != null) {
+      if (typeof p.status !== 'number' || !isFinite(p.status)) {
+        throw new Error('get_network: invalid `status` -- must be a number');
+      }
+      statusExact = p.status;
+    }
+    if (p.status_min != null) {
+      if (typeof p.status_min !== 'number') {
+        throw new Error('get_network: invalid `status_min`');
+      }
+      statusMin = p.status_min;
+    }
+    if (p.status_max != null) {
+      if (typeof p.status_max !== 'number') {
+        throw new Error('get_network: invalid `status_max`');
+      }
+      statusMax = p.status_max;
+    }
+
+    var urlSub = null;
+    if (p.url_substring != null) {
+      if (typeof p.url_substring !== 'string') {
+        throw new Error('get_network: invalid `url_substring` -- must be a string');
+      }
+      urlSub = p.url_substring.toLowerCase();
+    }
+
+    if (p.limit != null) {
+      if (typeof p.limit !== 'number' || !isFinite(p.limit) || p.limit < 1) {
+        throw new Error('get_network: invalid `limit` -- must be a positive number');
+      }
+    }
+    var limit = typeof p.limit === 'number' ? Math.floor(p.limit) : NET_DEFAULT_LIMIT;
+    if (limit > NET_RING_MAX) limit = NET_RING_MAX;
+
+    var filtered = [];
+    for (var i = 0; i < netRing.length; i++) {
+      var e = netRing[i];
+      if (e.seq <= cursorSeq) continue;
+      if (methodFilter != null && (e.method || '').toUpperCase() !== methodFilter) continue;
+      if (statusExact != null && e.status !== statusExact) continue;
+      if (e.status != null && (e.status < statusMin || e.status > statusMax)) continue;
+      // status null (pending) 일 때 statusMin/Max filter 가 set 됐으면 제외 — status
+      // 모르니 매칭 못 함.
+      if (e.status == null && (statusMin > -Infinity || statusMax < Infinity)) continue;
+      if (urlSub != null && (e.url || '').toLowerCase().indexOf(urlSub) === -1) continue;
+      filtered.push(e);
+    }
+    var sliced = filtered.length > limit ? filtered.slice(filtered.length - limit) : filtered;
+    return {
+      entries: sliced,
+      nextCursor: sliced.length > 0 ? sliced[sliced.length - 1].seq : cursorSeq,
+      dropped: netDropped,
+      total: netRing.length,
+    };
+  };
+
   // closedExplicitly: 사용자 `runtime.close()` 호출 (사용자 의도, reconnect 금지)
   // protocolMismatch: server 가 광고한 protocol version 이 client EXPECTED 와 불일치
   // — reconnect 무의미 (RN reload 필요). 별도 sentinel 로 두 가지 케이스 구분.

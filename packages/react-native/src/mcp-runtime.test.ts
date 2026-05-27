@@ -2212,3 +2212,310 @@ describe('mcp-runtime.cjs (PR-F6) — tap_element', () => {
     expect(r.ok).toBe(true);
   });
 });
+
+// PR-F7 — get_network. XMLHttpRequest intercept + ring buffer + filter.
+describe('mcp-runtime.cjs (PR-F7) — get_network', () => {
+  interface MockXHRInstance {
+    method?: string;
+    url?: string;
+    status: number;
+    listeners: Record<string, Array<() => void>>;
+    open(method: string, url: string): void;
+    send(body?: unknown): void;
+    addEventListener(name: string, cb: () => void): void;
+    _fire(name: string, status?: number): void;
+  }
+
+  function makeMockXHRCtor() {
+    function XHR(this: any) {
+      this.status = 0;
+      this.listeners = {};
+    }
+    XHR.prototype.open = function (this: any, method: string, url: string) {
+      this.method = method;
+      this.url = url;
+    };
+    XHR.prototype.send = function (this: any) {
+      /* listeners 가 test _fire 로 trigger */
+    };
+    XHR.prototype.addEventListener = function (this: any, name: string, cb: () => void) {
+      (this.listeners[name] || (this.listeners[name] = [])).push(cb);
+    };
+    XHR.prototype._fire = function (this: any, name: string, status?: number) {
+      if (status != null) this.status = status;
+      var arr = this.listeners[name] || [];
+      for (var i = 0; i < arr.length; i++) arr[i]();
+    };
+    return XHR as unknown as { new (): MockXHRInstance };
+  }
+
+  function setupXHR(): { Ctor: { new (): MockXHRInstance } } {
+    const Ctor = makeMockXHRCtor();
+    (g as any).XMLHttpRequest = Ctor;
+    return { Ctor };
+  }
+
+  test('params 누락 OK — 전체 entries 반환 (빈 상태)', () => {
+    setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.get_network({}) as { entries: unknown[]; total: number };
+    expect(Array.isArray(r.entries)).toBe(true);
+    expect(r.entries.length).toBe(0);
+    expect(r.total).toBe(0);
+  });
+
+  test('XHR intercept — open/send → ring buffer push, load → status/durationMs 채움', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    const xhr = new Ctor();
+    xhr.open('GET', 'https://api.example.com/users');
+    xhr.send();
+    xhr._fire('load', 200);
+
+    const r = rt.handlers.get_network({}) as {
+      entries: Array<{
+        method: string;
+        url: string;
+        status: number | null;
+        durationMs: number | null;
+      }>;
+    };
+    expect(r.entries.length).toBe(1);
+    expect(r.entries[0].method).toBe('GET');
+    expect(r.entries[0].url).toBe('https://api.example.com/users');
+    expect(r.entries[0].status).toBe(200);
+    expect(typeof r.entries[0].durationMs).toBe('number');
+  });
+
+  test('pending (load 전) → status:null, durationMs:null', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    const xhr = new Ctor();
+    xhr.open('POST', 'https://api.example.com/login');
+    xhr.send();
+    // load 미발화
+    const r = rt.handlers.get_network({}) as {
+      entries: Array<{ status: number | null; durationMs: number | null }>;
+    };
+    expect(r.entries.length).toBe(1);
+    expect(r.entries[0].status).toBeNull();
+    expect(r.entries[0].durationMs).toBeNull();
+  });
+
+  test('error event → entry.error 채움', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    const xhr = new Ctor();
+    xhr.open('GET', 'https://broken.example/x');
+    xhr.send();
+    xhr._fire('error');
+    const r = rt.handlers.get_network({}) as { entries: Array<{ error: string | null }> };
+    expect(r.entries[0].error).toBe('network error');
+  });
+
+  test('method filter (case-insensitive)', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    for (const m of ['GET', 'POST', 'GET', 'DELETE']) {
+      const x = new Ctor();
+      x.open(m, 'https://example/' + m);
+      x.send();
+      x._fire('load', 200);
+    }
+    const r = rt.handlers.get_network({ method: 'get' }) as {
+      entries: Array<{ method: string }>;
+    };
+    expect(r.entries.length).toBe(2);
+    expect(r.entries.every((e) => e.method === 'GET')).toBe(true);
+  });
+
+  test('status 정확 매칭 + status_min/max 범위', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    for (const code of [200, 404, 500, 201]) {
+      const x = new Ctor();
+      x.open('GET', 'https://example/' + code);
+      x.send();
+      x._fire('load', code);
+    }
+    const exact = rt.handlers.get_network({ status: 404 }) as {
+      entries: Array<{ status: number }>;
+    };
+    expect(exact.entries.length).toBe(1);
+    expect(exact.entries[0].status).toBe(404);
+
+    const errors = rt.handlers.get_network({ status_min: 400, status_max: 599 }) as {
+      entries: Array<{ status: number }>;
+    };
+    expect(errors.entries.length).toBe(2);
+    expect(errors.entries.every((e) => e.status >= 400)).toBe(true);
+  });
+
+  test('url_substring filter (case-insensitive)', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    for (const u of ['/users', '/posts', '/USERS/42', '/admin']) {
+      const x = new Ctor();
+      x.open('GET', 'https://api' + u);
+      x.send();
+      x._fire('load', 200);
+    }
+    const r = rt.handlers.get_network({ url_substring: 'users' }) as { entries: unknown[] };
+    expect(r.entries.length).toBe(2);
+  });
+
+  test('invalid limit (0/음수/NaN) → throw', () => {
+    setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    expect(() => rt.handlers.get_network({ limit: 0 })).toThrow(/invalid `limit`/);
+    expect(() => rt.handlers.get_network({ limit: -1 })).toThrow(/invalid `limit`/);
+    expect(() => rt.handlers.get_network({ limit: NaN })).toThrow(/invalid `limit`/);
+  });
+
+  test('cursor pagination — nextCursor 로 lossless 이어보기', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    for (let i = 0; i < 3; i++) {
+      const x = new Ctor();
+      x.open('GET', 'https://example/' + i);
+      x.send();
+      x._fire('load', 200);
+    }
+    const r1 = rt.handlers.get_network({ limit: 2 }) as {
+      entries: Array<{ seq: number }>;
+      nextCursor: number;
+    };
+    expect(r1.entries.length).toBe(2);
+    expect(r1.nextCursor).toBe(r1.entries[1].seq);
+
+    const x = new Ctor();
+    x.open('GET', 'https://example/4');
+    x.send();
+    x._fire('load', 200);
+
+    const r2 = rt.handlers.get_network({ cursor: r1.nextCursor }) as {
+      entries: Array<{ seq: number }>;
+    };
+    expect(r2.entries.length).toBe(1);
+    expect(r2.entries[0].seq).toBeGreaterThan(r1.nextCursor);
+  });
+
+  test('ring buffer overflow → 가장 오래된 entry drop + dropped counter', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    for (let i = 0; i < 205; i++) {
+      const x = new Ctor();
+      x.open('GET', 'https://example/' + i);
+      x.send();
+      x._fire('load', 200);
+    }
+    const r = rt.handlers.get_network({ limit: 200 }) as {
+      entries: unknown[];
+      dropped: number;
+      total: number;
+    };
+    expect(r.dropped).toBe(5);
+    expect(r.total).toBe(200);
+    expect(r.entries.length).toBe(200);
+  });
+
+  test('intercept idempotent — prototype marker 직접 검증 (F3-2)', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    // wrap 됐는지 marker 직접 확인.
+    expect((Ctor.prototype as any).__zntcMcpWrapped).toBe(true);
+    const wrappedOpen = (Ctor.prototype as any).open;
+
+    // 같은 g 의 새로운 runtime 호출 — early-return path 우회 위해 loaded flag 클리어.
+    (g as any).__ZNTC_MCP_RUNTIME__ = undefined;
+    loadRuntime(g);
+    // 같은 prototype 가 다시 wrap 안 됐는지 — open reference 동일.
+    expect((Ctor.prototype as any).open).toBe(wrappedOpen);
+  });
+
+  test('double-send guard — 같은 xhr.send() 두 번 호출해도 ring buffer 에 한 번만 push (F3-4)', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    const xhr = new Ctor() as MockXHRInstance;
+    xhr.open('GET', 'https://example/dup');
+    xhr.send();
+    xhr.send(); // 두 번째 send — guard 가 push skip
+    xhr._fire('load', 200);
+
+    const r = rt.handlers.get_network({}) as { entries: unknown[] };
+    expect(r.entries.length).toBe(1);
+  });
+
+  test('abort 후 load late fire — finalized guard 가 first event 만 유지 (F3-3)', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    const xhr = new Ctor() as MockXHRInstance;
+    xhr.open('GET', 'https://example/race');
+    xhr.send();
+    xhr._fire('abort'); // 먼저 abort
+    xhr._fire('load', 200); // 그 다음 load (race) — finalized 가드로 무시
+
+    const r = rt.handlers.get_network({}) as {
+      entries: Array<{ error: string | null; status: number | null }>;
+    };
+    expect(r.entries.length).toBe(1);
+    expect(r.entries[0].error).toBe('aborted');
+    // status 는 finalize 시점에 한번만 — abort 시점에 0
+  });
+
+  test('concurrent — 두 in-flight xhr 의 entry isolation', () => {
+    const { Ctor } = setupXHR();
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+
+    const xhr1 = new Ctor() as MockXHRInstance;
+    const xhr2 = new Ctor() as MockXHRInstance;
+    xhr1.open('GET', 'https://example/a');
+    xhr2.open('POST', 'https://example/b');
+    xhr1.send();
+    xhr2.send();
+    // 응답 out-of-order
+    xhr2._fire('load', 201);
+    xhr1._fire('load', 200);
+
+    const r = rt.handlers.get_network({}) as {
+      entries: Array<{ method: string; url: string; status: number }>;
+    };
+    expect(r.entries.length).toBe(2);
+    // ring buffer 는 send() 호출 순 (a, b)
+    expect(r.entries[0].url).toBe('https://example/a');
+    expect(r.entries[0].status).toBe(200);
+    expect(r.entries[1].url).toBe('https://example/b');
+    expect(r.entries[1].status).toBe(201);
+  });
+
+  test('XMLHttpRequest 미지원 환경 — intercept skip, 빈 entries', () => {
+    (g as any).XMLHttpRequest = undefined;
+    loadRuntime(g);
+    const rt = g.__ZNTC_MCP_RUNTIME__ as { handlers: Record<string, (p: unknown) => unknown> };
+    const r = rt.handlers.get_network({}) as { entries: unknown[] };
+    expect(r.entries.length).toBe(0);
+  });
+});

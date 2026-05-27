@@ -681,6 +681,80 @@ describe('MCP App Channel E2E (/__mcp-app + /mcp ping_app)', () => {
     expect(result.error.message).toContain('not found');
   });
 
+  test('tools/list — get_network 노출', async () => {
+    const server = await setupServer();
+    const result = await mcpCall(server.port, { jsonrpc: '2.0', id: 70, method: 'tools/list' });
+    const names = result.result.tools.map((t: any) => t.name);
+    expect(names).toContain('get_network');
+  });
+
+  test('get_network — filter forward + 결과 round-trip', async () => {
+    const server = await setupServer();
+    let receivedParams: any = null;
+    mockApp = connectMockApp(server.port, {
+      get_network: (params) => {
+        receivedParams = params;
+        return {
+          entries: [
+            {
+              seq: 1,
+              tsStart: 1000,
+              method: 'GET',
+              url: '/users',
+              status: 200,
+              durationMs: 50,
+              error: null,
+            },
+          ],
+          dropped: 0,
+          total: 1,
+          nextCursor: 1,
+        };
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 71,
+      method: 'tools/call',
+      params: {
+        name: 'get_network',
+        arguments: { method: 'GET', status_min: 200, status_max: 299 },
+      },
+    });
+
+    expect(receivedParams).toEqual({ method: 'GET', status_min: 200, status_max: 299 });
+    expect(result.error).toBeUndefined();
+    const inner = JSON.parse(result.result.content[0].text);
+    expect(inner.entries.length).toBe(1);
+    expect(inner.entries[0].method).toBe('GET');
+    expect(inner.entries[0].status).toBe(200);
+  });
+
+  test('get_network — invalid limit → app throw → -32603', async () => {
+    const server = await setupServer();
+    mockApp = connectMockApp(server.port, {
+      get_network: () => {
+        throw new Error('get_network: invalid `limit` -- must be a positive number');
+      },
+    });
+    await waitForWsOpen(mockApp.ws);
+    await mockApp.helloReceived;
+
+    const result = await mcpCall(server.port, {
+      jsonrpc: '2.0',
+      id: 72,
+      method: 'tools/call',
+      params: { name: 'get_network', arguments: { limit: -1 } },
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toContain('invalid `limit`');
+  });
+
   test('forwardAppTool fallback — app response 가 result/error 둘 다 없으면 "missing \'result\'" (#50)', async () => {
     // PR-F1 review F4 fallback path. 정상 mock 은 항상 result 또는 error 를 보내지만,
     // spec-violating app (또는 race condition 으로 partial response) 가 둘 다 없는
