@@ -251,6 +251,12 @@ pub const ModuleGraph = struct {
     const graph_lifecycle = @import("graph/lifecycle.zig");
     pub const init = graph_lifecycle.init;
     pub const deinit = graph_lifecycle.deinit;
+    /// RFC_GRAPH_PERSISTENCE Sub-PR-B.1 — graph-global state reset (modules 보존).
+    /// 호출자 없음 (Sub-PR-B.3 에서 wire-up).
+    pub const reset = graph_lifecycle.reset;
+    /// RFC_GRAPH_PERSISTENCE Sub-PR-B.1 — 단일 모듈 invalidate (path 보존).
+    /// 호출자 없음 (Sub-PR-B.3 에서 wire-up).
+    pub const invalidateModule = graph_lifecycle.invalidateModule;
 
     const ensureBuiltinPlugins = graph_plugins.ensureBuiltinPlugins;
     pub const pluginRunnerWithBuiltins = graph_plugins.pluginRunnerWithBuiltins;
