@@ -1176,8 +1176,18 @@ pub const Ast = struct {
         };
         // 세 appendSlice 중 하나라도 실패하면 이미 할당된 ArrayList 버퍼를 정리해야 한다.
         errdefer cloned.deinit();
-        try cloned.nodes.appendSlice(allocator, source_ast.nodes.items);
-        try cloned.extra_data.appendSlice(allocator, source_ast.extra_data.items);
+        // transformer 가 추가하는 노드 / extra_data 의 양을 8 corpus 직접 계측
+        // (typescript.js / _tsc.js / svelte / mobx / vue / date-fns / pako /
+        // 87MB synthetic): nodes 는 max 1.495x, extra_data 는 max 1.956x. 그래서
+        //   nodes:      2x   (1.495 + 33% headroom)
+        //   extra_data: 2.1x (1.956 + 5% noise 마진)
+        // 8 corpus 모두에서 cloned.{nodes,extra_data} 의 prewarm 직후 capacity 와
+        // transform 끝의 capacity 가 동일 — 한 round 도 lazy grow 발생 안 함을
+        // instrumented 측정으로 확인.
+        try cloned.nodes.ensureTotalCapacity(allocator, source_ast.nodes.items.len * 2);
+        cloned.nodes.appendSliceAssumeCapacity(source_ast.nodes.items);
+        try cloned.extra_data.ensureTotalCapacity(allocator, source_ast.extra_data.items.len * 21 / 10);
+        cloned.extra_data.appendSliceAssumeCapacity(source_ast.extra_data.items);
         try cloned.string_table.appendSlice(allocator, source_ast.string_table.items);
         // intern map 은 stored Span 만 복사 (owned key dupe 불필요). 새 ctx 는 cloned 의
         // string_table 을 가리키므로, 같은 offset 에서 같은 byte content 디코드 → hash 동일.
