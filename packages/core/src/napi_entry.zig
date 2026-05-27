@@ -33,6 +33,7 @@ const napiWatch = watch_mod.napiWatch;
 
 const mcp_stdio_entry = @import("napi/mcp_stdio_entry.zig");
 const tls_smoke = @import("napi/tls_smoke.zig");
+const serve_entry = @import("napi/serve_entry.zig");
 
 // ─── 모듈 등록 ───
 
@@ -111,6 +112,14 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     var tls_self_check_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "tlsSelfCheck", "tlsSelfCheck".len, tls_smoke.napiTlsSelfCheck, null, &tls_self_check_fn);
     _ = c.napi_set_named_property(env, exports, "tlsSelfCheck", tls_self_check_fn);
+
+    var start_dev_server_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "startDevServer", "startDevServer".len, serve_entry.napiStartDevServer, null, &start_dev_server_fn);
+    _ = c.napi_set_named_property(env, exports, "startDevServer", start_dev_server_fn);
+
+    var stop_dev_server_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "stopDevServer", "stopDevServer".len, serve_entry.napiStopDevServer, null, &stop_dev_server_fn);
+    _ = c.napi_set_named_property(env, exports, "stopDevServer", stop_dev_server_fn);
 
     return exports;
 }

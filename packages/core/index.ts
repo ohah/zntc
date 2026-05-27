@@ -205,6 +205,23 @@ interface NativeModule {
    * 후속 HTTPS dev server NAPI entry 의 토대 + 사용자 cert/key 유효성 빠른 확인.
    */
   tlsSelfCheck(options: { certPath: string; keyPath: string }): void;
+  /**
+   * In-process dev server (HTTP 또는 HTTPS) 를 native thread 에서 시작.
+   * `certPath` + `keyPath` 양쪽 주면 HTTPS, 둘 다 없으면 HTTP. 한쪽만 주면 throw.
+   * 반환값은 opaque handle — `stopDevServer(handle)` 으로 graceful shutdown 가능.
+   * JS GC 가 handle 수거 시 자동 cleanup (safety net) 이지만 명시 stop 이 정석.
+   */
+  startDevServer(options: {
+    rootDir: string;
+    port?: number;
+    host?: string;
+    entry?: string;
+    open?: boolean;
+    certPath?: string;
+    keyPath?: string;
+  }): unknown;
+  /** startDevServer 가 반환한 handle 로 graceful shutdown. idempotent. */
+  stopDevServer(handle: unknown): void;
 }
 
 let native: NativeModule | null = null;
@@ -558,6 +575,52 @@ export interface TlsSelfCheckOptions {
  */
 export function tlsSelfCheck(options: TlsSelfCheckOptions): void {
   ensureNative().tlsSelfCheck(options);
+}
+
+/** @see {@link NativeModule.startDevServer} */
+export interface StartDevServerOptions {
+  rootDir: string;
+  /** TCP port (1-65535). Default 12300. */
+  port?: number;
+  /** Bind host. "localhost"/"127.0.0.1" (default) 또는 "0.0.0.0". */
+  host?: string;
+  /** `--bundle` entry. 지정 시 dev server 가 bundle 결과 서빙. */
+  entry?: string;
+  /** Open default browser at server URL. Default false. */
+  open?: boolean;
+  /** HTTPS cert (PEM). keyPath 와 함께 줘야. */
+  certPath?: string;
+  /** HTTPS key (PEM). certPath 와 함께 줘야. */
+  keyPath?: string;
+}
+
+/** Opaque handle from {@link startDevServer}. */
+export type DevServerHandle = object;
+
+/**
+ * In-process dev server (HTTP / HTTPS) 를 native thread 에서 시작.
+ *
+ * 일반 `zntc --serve` 와 동일한 listener / routing / HMR / SSE 동작. NAPI 임베드라
+ * Node event loop 는 자유 (별도 thread 에서 listen).
+ *
+ * 반환된 handle 은 opaque. `stopDevServer(handle)` 로 graceful shutdown. JS GC
+ * 가 handle 수거 시 finalizer 가 자동 stop (safety net) — 명시 stop 권장.
+ *
+ * @example
+ * const handle = startDevServer({ rootDir: './public', port: 5173 });
+ * try {
+ *   await new Promise(r => setTimeout(r, 60_000));
+ * } finally {
+ *   stopDevServer(handle);
+ * }
+ */
+export function startDevServer(options: StartDevServerOptions): DevServerHandle {
+  return ensureNative().startDevServer(options) as DevServerHandle;
+}
+
+/** Graceful shutdown — idempotent. */
+export function stopDevServer(handle: DevServerHandle): void {
+  ensureNative().stopDevServer(handle);
 }
 
 // ─── Build API ───
