@@ -194,7 +194,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.3.11"
 
       # registry-url 을 지정하면 setup-node 가 NPM_CONFIG_USERCONFIG 를 $RUNNER_TEMP/.npmrc
       # 로 설정해, 아래 Publish step 이 $HOME/.npmrc 에 쓴 토큰을 npm 이 무시한다.
