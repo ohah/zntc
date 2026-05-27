@@ -171,8 +171,9 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
 
     const open = getObjectBool(env, argv[0], "open", false);
     // NAPI embed 는 자체 logger 가 있는 경우가 많아 default quiet=true. 사용자가
-    // 명시 false 면 stderr 에 banner + 모든 routine log (request access / HMR /
-    // WS / watcher / sse / bundle progress / cache reset) 출력.
+    // 명시 false 면 stderr 에 banner + 모든 routine log 출력. 카테고리 전체
+    // 리스트는 src/server/dev_server.zig 의 `DevServer.routineLog` doc 의
+    // CANONICAL SCOPE LIST 참조 (단일 진실 소스).
     // **critical 진단 (init failure / start fatal / deinit UAF) 은 quiet 와 무관
     // 하게 항상 stderr** — 사용자가 throw 메시지 너머 진단 못 보면 NAPI throwError
     // generic 메시지로 root cause 추적 불가.

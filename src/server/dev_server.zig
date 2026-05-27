@@ -28,8 +28,21 @@ pub const DevServer = struct {
     /// Routine log helper — `quiet=true` 면 silent. instance method 안에서 사용.
     /// CLI 환경 (default quiet=false) 은 그대로 출력, NAPI embed 는 silent.
     ///
-    /// **scope (quiet 가드 됨)**: routine progress 만 — request access (200/500),
-    /// HMR / WS / watcher / sse / bundle progress / cache reset etc.
+    /// ── CANONICAL SCOPE LIST ─────────────────────────────────────────────────
+    /// quiet 가드되는 routine progress 카테고리 (단일 진실 소스):
+    ///   1. request access (200/500)
+    ///   2. HMR
+    ///   3. WS
+    ///   4. watcher
+    ///   5. sse
+    ///   6. bundle progress
+    ///   7. cache reset
+    ///
+    /// 카테고리 추가/제거 시 본 리스트를 갱신 + 다음 사이트도 sync 필수:
+    ///   - dev_server.zig `Options.quiet` field doc (직접 enumerate)
+    ///   - packages/core/src/napi/serve_entry.zig napiStartDevServer 주석
+    ///   - packages/core/index.ts `StartDevServerOptions.quiet` TSDoc
+    /// 세 사이트는 본 canonical 리스트를 가리키는 "see" 참조만 유지.
     ///
     /// **scope 외 (quiet 와 무관 항상 stderr)**: critical 진단 — init failure (cert
     /// 로드/디렉토리/overlay sentinel), start fatal (host parse / listen fail / watch
@@ -125,11 +138,12 @@ pub const DevServer = struct {
         /// 둘 다 null 이면 plain HTTP. 한쪽만 set 하면 init error (`error.TlsKeyMissing`).
         cert_path: ?[]const u8 = null,
         key_path: ?[]const u8 = null,
-        /// banner + routine log (request access, HMR / WS / watcher /
-        /// sse / bundle progress) 모두 stderr silence. **critical** 진단 (init
-        /// failure, host/listen fatal, deinit UAF 경고) 은 quiet 와 무관하게 항상
-        /// 출력 — 사용자가 진단 못 보면 NAPI throwError generic 메시지로 root cause
-        /// 추적 불가. CLI 기본 false, NAPI embed default true.
+        /// banner + routine log silence. **critical** 진단 (init failure,
+        /// host/listen fatal, deinit UAF 경고) 은 quiet 와 무관하게 항상 출력.
+        /// CLI 기본 false, NAPI embed default true.
+        ///
+        /// quiet 가드되는 카테고리 전체 리스트는 `DevServer.routineLog` doc 의
+        /// CANONICAL SCOPE LIST 참조 (단일 진실 소스).
         quiet: bool = false,
     };
 
