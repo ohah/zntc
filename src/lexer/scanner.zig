@@ -127,6 +127,15 @@ pub const Scanner = struct {
         std.debug.assert(source.len <= std.math.maxInt(u32));
 
         var line_offsets: std.ArrayList(u32) = .empty;
+        // 8 corpus 직접 계측 (typescript.js / _tsc.js / svelte / mobx / vue /
+        // date-fns / pako / 87MB synthetic): bytes/line 범위 29.65 (vue, dense) ~
+        // 46.43 (_tsc, sparse). svelte 는 minified single-line outlier.
+        // source.len/20 으로 prewarm 하면 모든 corpus 에서 final lines < prewarm
+        // requested (vue 47% 마진, typescript.js 9MB 56% 마진) — 한 round 도 lazy
+        // grow 발생 안 함. typescript.js 9MB: 200K lines 가 1→212K capacity 까지
+        // 22 round grow 했던 부분을 단일 alloc 으로 흡수. ratio 20 은 vue 의
+        // 29.65 보다 33% 더 dense 한 hypothetical bundle 까지 cover.
+        try line_offsets.ensureTotalCapacity(allocator, source.len / 20);
         // 첫 번째 줄의 시작 offset은 항상 0. 이 append가 실패하면 getLineColumn()이 동작 불가.
         try line_offsets.append(allocator, 0);
 
