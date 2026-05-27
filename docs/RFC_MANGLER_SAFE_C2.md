@@ -1,7 +1,9 @@
 # RFC: Mangler R1-a — precise free-var 분석으로 c2 안전화
 
-상태: **DRAFT · 박제 충돌 영역 의도적 재시도** · 분류: R&D spike
-관련: `RFC_MANGLER_SIZE_GAP_CLOSED.md` (§3 c2/M2 NO-GO) · `project_minify_gap_S_series` · `project_nested_scope_renamer_epic` · `project_object_key_unquote_win`
+상태: **CLOSED · NO-GO 영구 박제** (2026-05-27) · 분류: R&D spike (종결)
+관련: `RFC_MANGLER_SIZE_GAP_CLOSED.md` (§3 c2/M2 NO-GO + §3 R1-a NO-GO 추가) · `project_minify_gap_S_series` · `project_nested_scope_renamer_epic` · `project_object_key_unquote_win`
+
+⚠️ **본 RFC 의 PoC spike (PR-3-b) 는 lifetime/AutoHashMap copy semantic 영역의 deep R&D 함정으로 측정 게이트 통과 불가 확정**. §8 NO-GO 격하 결과 참조. 본 RFC §3 ~ §7 의 가설은 archived. 향후 같은 R1-a 또는 변형 재시도 절대 금지.
 
 ## 0. 박제 충돌 명시 (RFC 머지 전 합의)
 
@@ -202,3 +204,70 @@ PR-3 게이트 미달 시 본 RFC 자체가 영구 종결:
 - `references/esbuild/internal/renamer/renamer.go` (MinifyRenamer/AssignNestedScopeSlots)
 - ZNTC `src/codegen/unified_mangler.zig` (Phase A) / `src/codegen/mangler.zig` (Phase B) / `src/codegen/linker.zig:799-816` (1글자 reserved)
 - ZNTC `src/codegen/mangler.zig` `precise_liveness` (#3335 inert infra, R1-a PR-3 재사용 후보)
+
+---
+
+## 9. 2026-05-27 NO-GO 격하 도장 (영구 종결)
+
+R1-a 의 PoC spike (`feat/r1a-mangler-pr3b-precise-marking` 로컬 branch — push 미수행, 폐기됨) 가 §5 측정 게이트의 한 항목도 통과 못 함. 본 RFC NO-GO 박제 격하 + 영구 종결.
+
+### 9.1 spike 진행 + instrument 결과
+
+PoC sub-PR 3 개 (PR-2-a #3919 / PR-2-b #3920 / PR-3-a #3921) inert infra 머지 후 PR-3-b 의 `markScopeSubtree(0)` 정밀 분기 코드 작성. 측정 게이트 결과:
+
+| 측정 | 결과 | 게이트 |
+|---|---|---|
+| zod size | **63,826 B (변화 0)** | -2,300B 이상 ❌ |
+| effect size | **116,357 B (변화 0)** | 회귀 0 ✅ (아무 변화 없음 = 0) |
+| rxjs size | **149,638 B (변화 0)** | 회귀 0 ✅ |
+| runtime MATCH | 11/11 (smoke 일부) | 144/144 ✅ |
+| **R1-a 코드 path 발동** | **0회 (fv_map count=0 모든 module)** | precise reuse 작동 필수 ❌ |
+
+핵심 — env `ZNTC_R1A_PRECISE_REUSE=1` set 상태에서도 mangler 의 `if (input.free_vars_per_scope) |fv_map|` 분기 안의 `fv_map.count() == 0` 모든 module. 즉 정밀 마킹 알고리즘이 한 번도 실제 entry 처리 안 함 — **size 변화 0 의 직접 원인**.
+
+### 9.2 진짜 root cause — lifetime/AutoHashMap copy semantic 깊은 R&D
+
+`SemanticAnalyzer.buildFreeVarMap` 가 `entries=2` 인 모듈 (refs=10, scopes=3, symbols=5) 에서 정상 build 됨을 분석기 단계 instrument 로 확인. 하지만:
+
+1. `analyzer` 는 `parse_module.zig:178` 의 **stack-local** 변수
+2. 첫 시도 (`&analyzer.free_vars.?` borrow pointer) → analyzer stack 종료 시 dangling pointer → mangler 에서 `fv_map count=39532836` (uninitialized memory)
+3. 두 번째 시도 (`ModuleSemanticData.free_vars: ?FreeVarMap` value copy) → AutoHashMap struct metadata 만 copy, backing buckets 은 arena 공유 — 이론상 OK
+4. 그러나 실측: copy 후 `fv_map count=0` 모든 module. analyzer 의 build 결과가 ModuleSemanticData 에 전파 안 됨
+
+원인 가능성 (deep R&D):
+- AutoHashMap value copy 가 zig 0.15 의 idiomatic 패턴 아님 (`clone` 필요?)
+- `analyzer.free_vars` 가 some 인데 unwrap 후 copy 가 빈 map 으로 됨
+- analyzer 의 arena vs module 의 arena lifecycle 불일치 (parse_module 의 arena_alloc 가 다른 모듈에 의해 reset 가능성)
+
+확인 시 1~수 세션 추가 소요. 사용자 명령 "임시방편 금지 + 루트커즈 수정" 에 비춰 **lifetime/AutoHashMap idiom 영역의 deep R&D 는 mangler size 격차 회수 목표 대비 ROI 음성**.
+
+### 9.3 영구 종결 결정 (RFC §7 NO-GO 격하 발동)
+
+| RFC §7 절차 | 적용 |
+|---|---|
+| PR-3-b 즉시 close (머지 금지) | ✅ 머지 미수행, 로컬 branch 폐기 |
+| PR-2-a/PR-2-b/PR-3-a inert infra revert | ⏳ 별도 cleanup PR 트랙 (#3919/#3920/#3921 머지된 상태 → dead code 정리) |
+| 본 RFC 상태 → `CLOSED · NO-GO` | ✅ §0 갱신 + §9 추가 (본 단락) |
+| `RFC_MANGLER_SIZE_GAP_CLOSED.md §3` 표 갱신 — R1-a 행 추가 | ⏳ 같은 PR 에서 |
+| `project_minify_gap_S_series` 메모리 — "R1-a NO-GO 박제 완료" 도장 | ⏳ 같은 PR 에서 |
+
+### 9.4 R1-a NO-GO 격하 = mangler 회수 영역 8 NO-GO 경로 확정
+
+`RFC_MANGLER_SIZE_GAP_CLOSED.md §3` 의 7 NO-GO 경로 + R1-a = **8 NO-GO 경로**:
+
+1. esbuild renamer 1:1 이식 (+174B)
+2. 사전계산 통합 빈도풀 (wash)
+3. chunk-reparse emit overhaul (zod 2% 회수)
+4. combined scope-tree (zod +0.1%/effect +0.2%)
+5. RFC #3288 c2 — top-level→per-module Phase B (zod +3.2KB/effect +61KB)
+6. RFC #3288 M2 — frequency-보존 c2 변형 (동일 회귀)
+7. 앞단 단일모델 통일 XXL — corpus 최대 -1.7% 낙관 (도달 불가)
+8. **R1-a — precise free-var 분석으로 c2 안전화** (2026-05-27, fv_map count=0 측정 게이트 미달, lifetime/AutoHashMap idiom 함정)
+
+**mangler 코어 알고리즘 회수 영역 영구 종결 확정**. 동일 영역 (free-var 정밀화 변형 / scope info 다른 형태 전달 / hybrid 모델 등) 재시도 절대 금지.
+
+### 9.5 운영 규칙 (재시도 차단)
+
+- mangler size 격차 회수 가설 재질문 시 본 §9 + `RFC_MANGLER_SIZE_GAP_CLOSED.md §3` 8 경로 표 + `project_minify_gap_S_series` 박제로 즉답 종결
+- 새 codegen size root cause 발견 시 mangler 가 아닌 별개 codegen 영역 (`project_object_key_unquote_win` §머지 후 재분석 참조)
+- 사용자 명령 "임시방편 금지 + 루트커즈 수정" — 8 NO-GO 영역 재시도 자체가 임시방편
