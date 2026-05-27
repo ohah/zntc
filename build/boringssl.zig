@@ -48,7 +48,38 @@ pub fn build(
         }),
     });
     lib.linkLibC();
-    lib.linkLibCpp();
+
+    // **windows-msvc 만 분기**: Zig 0.15.2 의 `linkLibCpp()` 는 자체 번들된
+    // libcxx/libcxxabi 소스를 그 자리에서 컴파일하는데, 이 libcxxabi 는 Itanium
+    // C++ ABI 전제로 작성돼 있다. MSVC 의 vcruntime 헤더 (특히 32-bit) 는
+    // class member 함수가 `__thiscall` 호출 규약을 사용해 `type_info::~type_info` /
+    // `bad_alloc::what` 등 가상 함수 override 의 calling convention 충돌 (관찰
+    // 환경: CI win32-ia32-msvc, `napi` 빌드 step). x86_64 는 호출 규약이 단일이라
+    // 우연히 통과되지만 x86 만 fail → Zig issue 로 추적 가능한 known 버그.
+    //
+    // 우회: windows-msvc 에서는 `linkLibCpp` 를 호출하지 않아 Zig 가 자체 libc++
+    // 소스를 끌어들이지 않게 하고, clang frontend 가 MSVC kit 의 시스템 STL 헤더
+    // (`<vector>`/`<string>` 등) 를 자동 탐지 (windows-msvc 타깃의 INCLUDE 환경
+    // detection) 하도록 둔다. C++ runtime 심볼 (operator new/delete, 정적 초기화
+    // helper) 은 MSVC 의 `msvcprt` (DLL link C++ runtime, msvcp140.dll 의 import
+    // lib) 로 link. **static `libcpmt` 를 안 쓰는 이유**: Zig 의 default linkLibC
+    // on windows-msvc 는 dynamic UCRT (`ucrt.lib` → `ucrtbase.dll`) 를 link
+    // 하므로, static C++ runtime 과 혼용 시 LNK4098 류 CRT 충돌. `msvcp140.dll`
+    // 의존은 Node.js 자체가 이미 가진 의존이라 사용자 부담 없음.
+    //
+    // BoringSSL 의 cxxflags 가 `-fno-exceptions -fno-rtti -D_HAS_EXCEPTIONS=0`
+    // 이라 의존 심볼이 operator new/delete + 정적 초기화 helper 정도로 매우
+    // 좁아 `msvcprt` 만으로 충족.
+    //
+    // **측정 PR**: 이 분기가 CI windows-msvc 3종 (ia32 / x64 / arm64) 에서 정상
+    // 동작하는지 확인하기 위한 시도. ia32 빌드 통과 + x64/arm64 회귀 없으면 채택,
+    // 어느 쪽이든 fail 시 옵션 A (x86-windows-gnu 전환) 로 fallback.
+    const is_windows_msvc = target.result.os.tag == .windows and target.result.abi == .msvc;
+    if (is_windows_msvc) {
+        lib.linkSystemLibrary("msvcprt");
+    } else {
+        lib.linkLibCpp();
+    }
 
     const sources_text = @embedFile("../vendor/boringssl/gen/sources.json");
     // Leaky variant — b.allocator 가 build graph lifetime arena 라 별도 ArenaAllocator
@@ -130,9 +161,10 @@ pub fn build(
 /// `build()` 가 만든 lib 을 caller (exe / test step) 에 부착. linkLibrary +
 /// BoringSSL header 의 include path. include path 는 pure-Zig caller (extern fn
 /// declaration 만) 에는 dead 지만, 추후 caller 가 `addCSourceFile` 로 inline C
-/// bridge 를 추가하거나 `@cImport` 를 쓰면 필요해진다. 또 lib 의 linkLibCpp 가
-/// transitive 로 caller 의 is_linking_libcpp 를 true 로 만든다 (Zig 0.15.2
-/// std.Build.Step.Compile L1147-1152).
+/// bridge 를 추가하거나 `@cImport` 를 쓰면 필요해진다. lib 의 `linkLibCpp` (또는
+/// windows-msvc 의 `linkSystemLibrary("msvcprt")`) 가 transitive 로 caller 의
+/// 최종 link line 에 C++ runtime 을 자동 추가한다 (Zig 0.15.2 std.Build.Step.
+/// Compile L1147-1152 의 `is_linking_libcpp` 전파 + L1183 의 system_lib 전파).
 pub fn attach(
     target_step: *std.Build.Step.Compile,
     lib: *std.Build.Step.Compile,
