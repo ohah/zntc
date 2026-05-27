@@ -1470,3 +1470,102 @@ test "F4 follow-up: buildIncremental 는 user-set project_root 를 보존" {
     // RN/Metro asset httpServerLocation 어긋남.
     try std.testing.expectEqualStrings(user_project_root, graph.project_root);
 }
+
+// ============================================================
+// Sub-PR-B.1: ModuleGraph.reset / invalidateModule API tests
+// RFC_GRAPH_PERSISTENCE — 호출자 없음 (Sub-PR-B.3 에서 wire-up). 본 단위 테스트는
+// API 의 부분 정확성만 — graph-global state clear + module-local state reset.
+// ============================================================
+
+test "graph.reset: modules + path_to_module 보존, diagnostics/worker_entries clear" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';");
+    try writeFile(tmp.dir, "b.ts", "export const x = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    const mod_count_before = graph.moduleCount();
+    const path_count_before = graph.path_to_module.count();
+    try std.testing.expect(mod_count_before >= 2);
+
+    // 인위적으로 graph-global state 채우기 — diagnostics + worker_entries
+    const Span = @import("../lexer/token.zig").Span;
+    try graph.diagnostics.append(graph.allocator, .{
+        .code = .parse_error,
+        .severity = .warning,
+        .message = "synthetic diag",
+        .file_path = "synthetic.ts",
+        .span = Span.EMPTY,
+        .step = .parse,
+    });
+    const synthetic_path = try graph.allocator.dupe(u8, "/tmp/worker.ts");
+    try graph.worker_entries.append(graph.allocator, .{
+        .resolved_path = synthetic_path,
+        .source_module = ModuleIndex.fromUsize(0),
+        .record_index = 0,
+    });
+    graph.exec_counter = 42;
+    graph.cycle_counter = 7;
+
+    // reset 호출
+    graph.reset();
+
+    // modules 보존
+    try std.testing.expectEqual(mod_count_before, graph.moduleCount());
+    try std.testing.expectEqual(path_count_before, graph.path_to_module.count());
+    // graph-global state cleared
+    try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+    try std.testing.expectEqual(@as(usize, 0), graph.worker_entries.items.len);
+    try std.testing.expectEqual(@as(u32, 0), graph.exec_counter);
+    try std.testing.expectEqual(@as(u32, 0), graph.cycle_counter);
+}
+
+test "graph.invalidateModule: path 보존, ast/semantic/resolved_deps clear" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';");
+    try writeFile(tmp.dir, "b.ts", "export const x = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    const target_idx = ModuleIndex.fromUsize(0);
+    const path_before = graph.getModule(target_idx).?.path;
+    const path_dupe = try std.testing.allocator.dupe(u8, path_before);
+    defer std.testing.allocator.free(path_dupe);
+
+    // build 후엔 ast / semantic 채워져 있음
+    try std.testing.expect(graph.getModule(target_idx).?.state == .ready);
+
+    graph.invalidateModule(target_idx);
+
+    // path 보존 (path_arena 가 소유)
+    try std.testing.expectEqualStrings(path_dupe, graph.getModule(target_idx).?.path);
+    // module state 가 reserved (build 시작 상태) 로 reset
+    try std.testing.expectEqual(Module.State.reserved, graph.getModule(target_idx).?.state);
+    // ast / semantic null
+    try std.testing.expect(graph.getModule(target_idx).?.ast == null);
+    try std.testing.expect(graph.getModule(target_idx).?.semantic == null);
+    // resolved_deps clear
+    try std.testing.expectEqual(@as(usize, 0), graph.getModule(target_idx).?.resolved_deps.items.len);
+}
