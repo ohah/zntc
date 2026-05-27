@@ -188,3 +188,61 @@ PR-3b verify 의 finding (#1 / #3 / #4) 와 A-1 attempt 의 finding (a1-#1 ~ a1-
 - esbuild plugin namespace (`onResolve({ filter, namespace })`) — ZTS 미지원
 - ZNTC dev-controller `prepareAppCssPipelineRoot` 351-357 (sass→postcss→css-modules invariant)
 - ZNTC plugin types: `packages/core/index.ts` onResolve/onLoad = `{filter: RegExp}` only (namespace 부재)
+
+---
+
+## 7. 2026-05-27 v2-B 재검증 — stale 도장 (재시도 차단)
+
+본 RFC 의 v2-B (cssPlugin D2b 절대경로 재설계 + #3835 caller root/mode hard-bind) 가 D1a'' Phase 1+2 + revert + follow-up 머지 누적으로 **통째로 해소됐음을 코드·런타임 재현으로 확정**. v2-B 가 의도한 모든 finding 이 main HEAD `51eee6e2` 에서 더 이상 재현되지 않는다. 재타진 차단.
+
+### 7.1 axis 2 (D2b) — a1-#1 / a1-#3 main 자연 해소 (unit-test 재현 검증)
+
+`packages/web/src/style/css-modules.ts` 의 `transformCssModules` 를 직접 호출해 다른 dir / 같은 basename 시나리오 재현:
+
+```
+root/
+├── a/btn.module.css   { .root { color: red; }, .label }
+└── b/btn.module.css   { .root { color: blue; }, .danger }
+```
+
+main HEAD 결과:
+
+| 검증 항목 | 결과 |
+|---|---|
+| fs collision (다른 dir 같은 basename) | ✅ 없음 — `/<root>/a/btn.module.zntc.css` vs `/<root>/b/btn.module.zntc.css` **별개 절대경로 위치 emit** |
+| scoped class hash 동일성 | ✅ 다름 — `a/btn .root → btn_root__DzQ0UI7Q` vs `b/btn .root → btn_root__ZzcMXT8A` (`rel`+local 기반 sha) |
+| proxy cssImport `./basename` resolve | ✅ 각 proxy 가 자기 dir 의 `.module.zntc.css` 정확히 가리킴 (relative resolve 자연 동작) |
+| **a1-#1 proxy namespace mismatch** | **재현 안 됨** |
+| **a1-#3 basename collision** | **재현 안 됨** |
+
+a1-#1/a1-#3 는 A-1 attempt (이미 closed) 시점 회귀였고, A-1 폐기 + PR-3a revert (#3838) + D1a'' (#3844/#3845/#3849/#3856/#3859) 머지 후 main 에는 **자연스러운 fs constraint** (`writeFileSync` 가 source-tree 절대경로, proxy 가 같은 dir relative import) 로 자동 해소.
+
+### 7.2 #3835 — caller root/mode divergence: CLOSE as not-planned
+
+D1a'' Phase 1/2 머지 후 `@zntc/web/css` 의 `css()` factory 의 `onLoad` 가 **사실상 dead code**. caller-pre-warm path 가 항상 `postcssOverride` 를 `prepareAppCssPipelineRoot` 에 전달 → `process.env.NODE_ENV` / `process.cwd()` 분기 미실행. CLI / vitePlugin / NAPI 사용자 모두 caller-pre-warm path 거침 → 영향 0. 사용자가 issue #3835 를 **CLOSE as not-planned** 로 종결.
+
+`packages/web/src/css/index.ts:89-95` 의 fallback 코드 (`options.root ?? process.cwd()`, `options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development')`) 는 잔존하지만 도달 불가 path. 미래 onLoad path 재활성화 (예: D1a 재시도 or 직접 NAPI 호출 사용자) 시 별도 issue 트랙.
+
+### 7.3 v2-B 자체 stale — 전면 NO-GO
+
+v2-B 의 의도 vs 실제 main 상태:
+
+| v2-B 의도 | 실제 main | 결정 |
+|---|---|---|
+| D2b 절대경로 emit (a1-#1/a1-#3 해결) | §7.1 unit-test 재현 자연 해소 | **NO-GO** (이미 해결) |
+| PostCSS async 호출 (sync × async 회피) | D1a'' caller-pre-warm 으로 해소 (#3844/#3845) | **NO-GO** (이미 해결) |
+| caller root/mode hard-bind (#3835) | issue CLOSE as not-planned (onLoad dead) | **NO-GO** (이미 해결) |
+
+→ **v2-B 전체가 D1a''+revert+follow-up 머지 누적으로 통째로 해소됨**. RFC §4 의 v2-B sub-PR 분해는 **착수 불필요** = 빈 작업. 본 RFC §1 ~ §6 의 v2-B 언급은 역사적 기록으로 유지하되 §7 도장이 운영 규칙.
+
+### 7.4 잔존 (v2-B 와 무관, 별도 트랙)
+
+- **a1-#2 (prototype shadowing)** — `css-modules.ts:236-241` 의 `Object.create(null)` 가드 이미 적용 (#3840 머지). RFC §6.5 와 별개로 처리 완료.
+- **axis 3 (dev-controller slim down)** — axis 2 가 stale 라 reframing 필요. D1a'' 머지 이후 dev-controller `prepare()` 의 책임이 사실상 axis 3 옵션 A 와 거의 같은 형태로 수렴. 별도 RFC 또는 RFC follow-up 으로 진행.
+- **axis 4 (#3836 dedup)** — `dropCallerPreWarmedCssPlugin` helper (#3849) 로 흡수.
+
+### 7.5 운영 규칙
+
+- v2-B sub-PR (D2b 절대경로 / cssPlugin 재설계 / #3835 hard-bind) 재타진 시 본 §7 + `project_2538_4_4_in_progress` 메모리로 즉시 종결
+- 새 CSS pipeline finding 발견 시 먼저 `transformCssModules` 직접 호출 unit-test 재현 → main 에서 안 재현되면 A-1 시점 회귀였는지 확인
+- axis 3 reframing 은 D1a'' 머지 후 dev-controller 코드 audit 후 별도 RFC 로
