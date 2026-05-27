@@ -156,15 +156,6 @@ export interface RnBundleInput {
      * dev server 터미널로 forwarding. 기본 true.
      */
     forwardClientLogs?: boolean;
-    /**
-     * MCP (Model Context Protocol) runtime preamble 활성화. 기본 true — dev 빌드일
-     * 때 `@zntc/react-native/runtime/mcp-runtime.cjs` 가 `runBeforeMain` 에 추가되어
-     * 앱 시작 시 global registry (`__ZNTC_MCP_RUNTIME__`) 를 등록한다.
-     * `false` 로 명시 시 inject 우회 — CI bundle 분석 같은 noise 회피, 또는
-     * `@zntc/react-native` 미설치 환경에서 silent fallback 외 명시적 opt-out.
-     * production 빌드 (`dev: false`) 는 옵션과 무관하게 inject 안 됨.
-     */
-    mcp?: boolean;
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -274,64 +265,6 @@ function buildRnSingletonAliases(projectRoot: string): Record<string, string> {
     if (packageRoot) aliases[packageName] = packageRoot;
   }
   return aliases;
-}
-
-/**
- * MCP WebView wrapper alias 등록. `react-native-webview` import 를 zntc 의 forwardRef
- * wrapper 로 redirect — JSX 안 건드리고 mount 시 instance 를 `__ZNTC_WEBVIEW_REGISTRY__`
- * 에 자동 등록 (후속 `webview_evaluate_script` MCP tool 이 imperative method 호출 가능).
- * wrapper 가 원본 패키지를 require 할 때는 escape specifier `__zntc_webview_original__`
- * 로만 접근 (alias self-loop 회피).
- *
- * 등록 조건 (모두 충족 시):
- *   1. `dev === true` — production 빌드 영향 0
- *   2. `extra.mcp !== false` — MCP 비활성 시 wrapper 도 우회
- *   3. `react-native-webview` 가 projectRoot 에 설치됨
- *   4. `@zntc/react-native` 의 wrapper.cjs 가 발견됨
- */
-function buildMcpWebViewAliases(
-  projectRoot: string,
-  dev: boolean,
-  mcpEnabled: boolean,
-  explicitOn = false,
-): Record<string, string> {
-  if (!dev || !mcpEnabled) return {};
-  const webviewRoot = tryResolvePackageRoot('react-native-webview', projectRoot);
-  if (!webviewRoot) {
-    if (explicitOn) {
-      // mcp=true 명시했는데 react-native-webview 가 없으면 디버깅 hint — wrapper alias
-      // 가 어떤 디버깅 시도 없이 silent skip 되는 걸 막는다.
-      console.warn(
-        "[zntc:rn] mcp WebView wrapper 비활성 — 'react-native-webview' 가 projectRoot 에서 resolve 안 됨.",
-      );
-    }
-    return {};
-  }
-  const zntcRnRoot = tryResolvePackageRoot('@zntc/react-native', projectRoot);
-  if (!zntcRnRoot) return {};
-  const wrapperPath = resolve(zntcRnRoot, 'runtime/webview-wrapper.cjs');
-  if (!existsSync(wrapperPath)) return {};
-  return {
-    'react-native-webview': wrapperPath,
-    // wrapper 가 원본 모듈에 접근하는 전용 specifier — alias 두 번 적용되어
-    // 자기 자신으로 돌아오는 무한 루프 회피.
-    __zntc_webview_original__: webviewRoot,
-  };
-}
-
-/**
- * `buildMcpWebViewAliases` 가 등록한 alias 중 prefix matching 을 꺼야 하는 from list.
- * `react-native-webview` 는 단일 파일 wrapper 라 subpath import 가 깨지므로 exact only.
- * `__zntc_webview_original__` 은 escape specifier 라 wrapper 외 사용처 없음, 그래도
- * 안전상 exact only.
- */
-function buildMcpWebViewAliasExactList(
-  projectRoot: string,
-  dev: boolean,
-  mcpEnabled: boolean,
-): string[] {
-  const aliases = buildMcpWebViewAliases(projectRoot, dev, mcpEnabled);
-  return Object.keys(aliases);
 }
 
 /**
@@ -527,32 +460,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     projectRoot,
   );
   if (initCore) runBeforeMain.push(initCore);
-  // MCP runtime preamble — dev 빌드 한정. `@zntc/react-native/runtime/mcp-runtime.cjs`
-  // 가 InitializeCore 직후 실행되어 global registry (`__ZNTC_MCP_RUNTIME__`) 등록.
-  // 후속 PR-E 가 같은 slot 에 실제 WS connect / Fiber 직렬화 / network 캡처 등
-  // 본격 runtime 채움. production 빌드에는 inject 안 됨.
-  // `extra?.mcp === false` 로 명시적 opt-out 가능 (CI bundle 분석 등 noise 회피).
-  if (dev && extra?.mcp !== false) {
-    const mcpRuntime = tryResolvePackageFile(
-      '@zntc/react-native',
-      'runtime/mcp-runtime.cjs',
-      projectRoot,
-    );
-    if (mcpRuntime) {
-      runBeforeMain.push(mcpRuntime);
-    } else if (extra?.mcp === true) {
-      // 사용자가 명시적으로 mcp=true 로 활성화했는데 path 못 찾으면 silent 가
-      // 디버깅 어렵다 — explicit on 일 때만 warn. default (extra.mcp 미지정) 는
-      // 기존 `resolveRnPolyfills` 의 silent 정책 유지 (`@zntc/react-native`
-      // 미설치 환경 friendly).
-      console.warn(
-        "[zntc:rn] mcp preamble 활성화됐으나 '@zntc/react-native/runtime/mcp-runtime.cjs' 를 찾지 못함. @zntc/react-native 설치 여부 확인.",
-      );
-    }
-  }
   if (extra?.prelude && extra.prelude.length > 0) {
-    // 사용자 추가 prelude — InitializeCore + MCP runtime 이후에 실행. 절대/상대 모두
-    // projectRoot 기준으로 정규화.
+    // 사용자 추가 prelude — InitializeCore 이후에 실행. 절대/상대 모두 projectRoot
+    // 기준으로 정규화.
     for (const p of extra.prelude) runBeforeMain.push(resolve(projectRoot, p));
   }
 
@@ -596,15 +506,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     // RN core package 는 singleton 이어야 한다. pnpm peer folder 에서
     // react-native/react 가 별도 module 로 들어오면 InitializeCore/DevTools 가
     // 다시 실행되어 Fabric 이 깨질 수 있다.
-    alias: {
-      ...buildRnSingletonAliases(projectRoot),
-      ...buildMcpWebViewAliases(projectRoot, dev, extra?.mcp !== false, extra?.mcp === true),
-    },
-    // MCP WebView wrapper alias 는 단일 .cjs 파일이라 prefix matching 으로 subpath
-    // import (`react-native-webview/lib/X`) 가 깨진다. exact 매칭만 적용해 subpath
-    // 는 원본 패키지로 resolve. wrapper 가 미등록된 경우 (prod / opt-out / 미설치)
-    // 에는 list 가 비어 무영향.
-    aliasExact: buildMcpWebViewAliasExactList(projectRoot, dev, extra?.mcp !== false),
+    alias: buildRnSingletonAliases(projectRoot),
     // Metro 설정과 맞춰 pnpm symlink 를 처리한다. resolver 는 표준 pnpm package
     // symlink 의 module identity 를 실제 .pnpm package path 로 정규화하되, workspace
     // symlink 는 logical path 를 유지한다.

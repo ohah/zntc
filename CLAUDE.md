@@ -16,7 +16,6 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 - [docs/RELEASE_STRATEGY.md](./docs/RELEASE_STRATEGY.md) — lockstep version / semver 의미 / 0.x 정책 / cadence / 채널 / 머지 정책
 - [docs/PUBLISH.md](./docs/PUBLISH.md) — release 실행 절차 (pre-release-check, release.ts, changesets)
 - [docs/BUNDLER.md](./docs/BUNDLER.md), [docs/PLUGINS.md](./docs/PLUGINS.md), [docs/HMR.md](./docs/HMR.md), [docs/DECISIONS.md](./docs/DECISIONS.md), [docs/FLOW.md](./docs/FLOW.md), [docs/DEBUG.md](./docs/DEBUG.md), [docs/INVARIANTS.md](./docs/INVARIANTS.md)
-- [docs/MCP.md](./docs/MCP.md) — Model Context Protocol 11 tool reference (build/sanity/RN debug) + ref chaining + eval_code 로 scroll_to/key_press/screenshot 대체 매핑
 - [docs/BACKLOG.md](./docs/BACKLOG.md), [docs/AST_PLUGINS.md](./docs/AST_PLUGINS.md) (미해결 버그는 GitHub Issues)
 - CLI 옵션 전체: `zntc --help` / JS API 구현: `packages/core/index.ts`
 

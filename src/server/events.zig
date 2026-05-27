@@ -160,7 +160,7 @@ pub const EventType = struct {
     pub const cache_reset = "cache_reset";
 };
 
-/// 최근 이벤트 순환 버퍼 — MCP `get_build_events`에서 특정 시점 이후 이벤트 조회에 사용.
+/// 최근 이벤트 순환 버퍼 — SSE 구독자 late-join 시 catch-up 용 history.
 /// 고정 용량; 오래된 엔트리는 덮어쓰임. `seq`로 이벤트 순서 추적.
 pub const EventRing = struct {
     mutex: std.Thread.Mutex = .{},
@@ -290,24 +290,8 @@ pub fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytyp
     return try msg.toOwnedSlice(allocator);
 }
 
-/// 임의의 std.json.Value를 JSON으로 직렬화 (MCP `id` 필드용 — string/integer/null만).
-pub fn writeJsonValue(w: anytype, v: std.json.Value) !void {
-    switch (v) {
-        .null => try w.writeAll("null"),
-        .bool => |b| try w.writeAll(if (b) "true" else "false"),
-        .integer => |n| try w.print("{d}", .{n}),
-        .float => |f| try w.print("{d}", .{f}),
-        .string => |s| {
-            try w.writeByte('"');
-            try writeJsonEscaped(w, s);
-            try w.writeByte('"');
-        },
-        else => try w.writeAll("null"),
-    }
-}
-
 // ============================================================
-// SSE / EventRing / MCP 헬퍼 테스트
+// SSE / EventRing / JSON 헬퍼 테스트
 // ============================================================
 
 test "SseSink.writeFrame: 표준 SSE 형식 (event: + data: + 빈 줄)" {
@@ -324,22 +308,6 @@ test "writeJsonEscaped: 특수 문자 이스케이프" {
     var w = std.Io.Writer.fixed(&buf);
     try writeJsonEscaped(&w, "a\"b\\c\nd\rt\te");
     try std.testing.expectEqualStrings("a\\\"b\\\\c\\nd\\rt\\te", buf[0..w.end]);
-}
-
-test "writeJsonValue: id 필드 (string/integer/null)" {
-    var buf: [256]u8 = undefined;
-
-    var w1 = std.Io.Writer.fixed(&buf);
-    try writeJsonValue(&w1, .{ .integer = 42 });
-    try std.testing.expectEqualStrings("42", buf[0..w1.end]);
-
-    var w2 = std.Io.Writer.fixed(&buf);
-    try writeJsonValue(&w2, .{ .string = "abc" });
-    try std.testing.expectEqualStrings("\"abc\"", buf[0..w2.end]);
-
-    var w3 = std.Io.Writer.fixed(&buf);
-    try writeJsonValue(&w3, .null);
-    try std.testing.expectEqualStrings("null", buf[0..w3.end]);
 }
 
 test "EventRing: push/snapshotSince — since 이후만 반환" {

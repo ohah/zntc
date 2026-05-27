@@ -31,7 +31,6 @@ const build_async_entry = @import("napi/build_async_entry.zig");
 const watch_mod = @import("napi/watch.zig");
 const napiWatch = watch_mod.napiWatch;
 
-const mcp_stdio_entry = @import("napi/mcp_stdio_entry.zig");
 const tls_smoke = @import("napi/tls_smoke.zig");
 const serve_entry = @import("napi/serve_entry.zig");
 
@@ -104,10 +103,6 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     var bench_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "benchmark", "benchmark".len, benchmark_mod.napiBenchmark, null, &bench_fn);
     _ = c.napi_set_named_property(env, exports, "benchmark", bench_fn);
-
-    var mcp_stdio_fn: c.napi_value = undefined;
-    _ = c.napi_create_function(env, "mcpStdioServe", "mcpStdioServe".len, mcp_stdio_entry.napiMcpStdioServe, null, &mcp_stdio_fn);
-    _ = c.napi_set_named_property(env, exports, "mcpStdioServe", mcp_stdio_fn);
 
     var tls_self_check_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "tlsSelfCheck", "tlsSelfCheck".len, tls_smoke.napiTlsSelfCheck, null, &tls_self_check_fn);

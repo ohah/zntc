@@ -119,9 +119,8 @@ pub const ModuleIndex = enum(u32) {
 /// 접두사 매칭: "react/hooks" → "preact/compat/hooks"
 ///
 /// `exact = true` 인 entry 는 prefix 매칭을 건너뛴다 — `from` 과 specifier 가 완전
-/// 일치할 때만 적용. `to` 가 디렉토리가 아닌 단일 파일 (예: `runtime/webview-wrapper.cjs`)
-/// 인 경우 prefix 매칭이 `from/subpath` → `wrapper.cjs/subpath` (디렉토리 취급) 으로
-/// 깨지므로 명시적 opt-in.
+/// 일치할 때만 적용. `to` 가 디렉토리가 아닌 단일 파일인 경우 prefix 매칭이
+/// `from/subpath` → `file.js/subpath` (디렉토리 취급) 으로 깨지므로 명시적 opt-in.
 pub const AliasEntry = struct {
     from: []const u8,
     to: []const u8,

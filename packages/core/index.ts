@@ -197,8 +197,6 @@ interface NativeModule {
       }
     >;
   };
-  /** MCP (Model Context Protocol) stdio transport — blocking, returns on stdin EOF. */
-  mcpStdioServe(options: { rootDir: string }): void;
   /**
    * TLS sanity check — BoringSSL static link 의 runtime 동작 검증.
    * cert/key 한 번 로드 후 즉시 해제. 성공 → undefined, 실패 → throw.
@@ -542,27 +540,6 @@ export function profileReport(format: 'table' | 'tree' | 'json' | 'csv' = 'table
   return ensureNative().profileReport(format);
 }
 
-// ─── MCP (Model Context Protocol) stdio transport ───
-
-export interface McpStdioOptions {
-  /** DevServer in-memory state 보유 root (cache_reset_requested, event_ring 등). */
-  rootDir: string;
-}
-
-/**
- * MCP JSON-RPC 2.0 stdio transport 를 실행. stdin EOF 까지 blocking.
- *
- * stdin 의 newline-delimited JSON request 를 한 줄씩 읽어 dispatcher 에 forward,
- * 응답을 stdout 에 한 줄씩 쓴다. Cursor / Claude Code / Claude Desktop 등 stdio
- * 기반 MCP 클라이언트가 이 진입점을 child process 로 spawn.
- *
- * 호출은 blocking — Node 이벤트 루프가 stdio loop 안에서 멈춘다. CLI `zntc mcp`
- * subcommand 처럼 main thread 가 거기 잡혀도 되는 상황에서만 사용.
- */
-export function mcpStdioServe(options: McpStdioOptions): void {
-  ensureNative().mcpStdioServe(options);
-}
-
 /** @see {@link NativeModule.tlsSelfCheck} */
 export interface TlsSelfCheckOptions {
   certPath: string;
@@ -604,7 +581,7 @@ export interface StartDevServerOptions {
   keyPath?: string;
   /**
    * stderr 의 banner + 모든 routine log (request access 200/500, HMR / WS /
-   * watcher / mcp-app / sse / bundle progress / cache reset) silence. NAPI embed
+   * watcher / sse / bundle progress / cache reset) silence. NAPI embed
    * default true (자체 logger 가정). false 로 명시하면 stderr 출력.
    *
    * **critical 진단은 quiet 와 무관 항상 stderr** — init failure (cert 로드 /

@@ -189,7 +189,7 @@ src/
       virtual_ns_treeshake.zig # virtual namespace tree-shake
   server/                   # Phase 6b: 개발 서버 + HMR ✅
     mod.zig                 #   서버 엔트리 + re-export
-    dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh, SSE, MCP, Control API)
+    dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh, SSE, Control API)
     file_watcher.zig        #   파일 변경 감지 (watch/serve, watchFolders 지원)
     watch_scan.zig          #   공통 디렉토리 walker (TOCTOU-free, glob filter)
     tracked_file_set.zig    #   감시 대상 파일 추적 (StableSegmentedList 기반)

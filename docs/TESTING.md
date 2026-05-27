@@ -95,7 +95,7 @@ cd tests/e2e && bun test                 # Playwright E2E (dev server, 브라우
 - `stage3-decorator{,-smoke}.test.ts`
 
 **dev 서버 / HMR / watch**
-- `devserver.test.ts` / `devserver-sse-mcp.test.ts` / `hmr.test.ts`
+- `devserver.test.ts` / `hmr.test.ts`
 - `watch-json.test.ts` / `watch-stress.test.ts`
 
 **Resolve / 외부 호환**

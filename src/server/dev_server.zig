@@ -20,29 +20,6 @@ pub const EventType = server_events.EventType;
 const EventRing = server_events.EventRing;
 const writeJsonEscaped = server_events.writeJsonEscaped;
 const buildErrorJsonFromDiagnostics = server_events.buildErrorJsonFromDiagnostics;
-const writeJsonValue = server_events.writeJsonValue;
-const mcp_app_channel_mod = @import("mcp_app_channel.zig");
-
-// MCP `tools/call` 의 RN-app forward 도구별 timeout. RN handler 는 보통 ms 단위 응답
-// 인데 cold start / 첫 fiber walk 가 모바일 디바이스에서 수백 ms 까지 갈 수 있어 5초
-// 여유. tool 별로 더 길어야 하면 별도 const 추가 (예: take_snapshot 큰 트리 직렬화).
-const PING_TIMEOUT_MS: u64 = 5000;
-const FIND_ELEMENT_TIMEOUT_MS: u64 = 5000;
-const INSPECT_STATE_TIMEOUT_MS: u64 = 5000;
-// eval_code 는 user expression 실행이라 longer ceiling. sync JS 면 timeout 으로
-// cancel 불가 (RN main JS thread block) — 한도는 "응답 안 올 때 다음 request 까지
-// 차단 막는 안전망" 역할.
-const EVAL_CODE_TIMEOUT_MS: u64 = 10000;
-// get_logs 는 in-memory ring buffer 읽기라 빠름 — 동일 5초.
-const GET_LOGS_TIMEOUT_MS: u64 = 5000;
-// take_snapshot 은 fiber tree 전체 순회 — 통상 ms 단위지만 RN 디바이스 cold start
-// + 대형 트리 (수천 노드) 가능성 감안 10초.
-const TAKE_SNAPSHOT_TIMEOUT_MS: u64 = 10000;
-// tap_element 은 onPress handler 직접 호출 — 사용자 코드가 setState / async fetch
-// / navigation 등 무엇이든 실행. eval_code 와 동일 10초 ceiling.
-const TAP_ELEMENT_TIMEOUT_MS: u64 = 10000;
-// get_network 는 in-memory ring buffer read — get_logs 와 동일 5초.
-const GET_NETWORK_TIMEOUT_MS: u64 = 5000;
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -53,7 +30,7 @@ pub const DevServer = struct {
     /// CLI 환경 (default quiet=false) 은 그대로 출력, NAPI embed 는 silent.
     ///
     /// **scope (quiet 가드 됨)**: routine progress 만 — request access (200/500),
-    /// HMR / WS / watcher / mcp-app / sse / bundle progress / cache reset etc.
+    /// HMR / WS / watcher / sse / bundle progress / cache reset etc.
     ///
     /// **scope 외 (quiet 와 무관 항상 stderr)**: critical 진단 — init failure (cert
     /// 로드/디렉토리/overlay sentinel), start fatal (host parse / listen fail / watch
@@ -79,9 +56,6 @@ pub const DevServer = struct {
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
-    /// MCP app channel — `/__mcp-app` WS 연결로 RN 앱과 양방향 통신.
-    /// init/deinit 필수 (pending request Map 보유).
-    app_channel: mcp_app_channel_mod.AppChannel,
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -91,7 +65,7 @@ pub const DevServer = struct {
     error_state: ErrorState = .{},
     /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    /// MCP `get_build_events` 도구용 이벤트 히스토리 (최근 N개).
+    /// SSE 구독자 join 시 catch-up 용 이벤트 히스토리 (최근 N개).
     event_ring: EventRing,
     /// shutdown() 호출 시 set; acceptLoop가 다음 iteration에서 종료.
     shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -100,11 +74,8 @@ pub const DevServer = struct {
     /// 값을 다른 thread 에서 안전 조회.
     listen_ready: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// 현재 살아있는 connection (handleConnection thread) 수. deinit 가 0 까지 wait —
-    /// 직접 보호 대상은 `app_channel` (reader thread 가 mutex/pending Map 사용) 이지만
-    /// counter 는 **모든** handleConnection thread (plain HTTP / SSE / HMR WS / MCP app)
-    /// 를 카운팅 — handleConnection 의 fetchAdd/Sub 가 path 분기 전이라 통일. 99% 의
-    /// connection 이 app_channel 안 만지지만, counter 가 over-conservative 하게 모두
-    /// wait 한다 (정확성 무해, deinit timeout 까지 살짝 늘 가능성).
+    /// handleConnection 의 fetchAdd/Sub 가 path 분기 전이라 모든 connection (plain
+    /// HTTP / SSE / HMR WS) 통일 카운팅.
     active_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
@@ -157,7 +128,7 @@ pub const DevServer = struct {
         /// 둘 다 null 이면 plain HTTP. 한쪽만 set 하면 init error (`error.TlsKeyMissing`).
         cert_path: ?[]const u8 = null,
         key_path: ?[]const u8 = null,
-        /// banner + routine log (request access, HMR / WS / watcher / mcp-app /
+        /// banner + routine log (request access, HMR / WS / watcher /
         /// sse / bundle progress) 모두 stderr silence. **critical** 진단 (init
         /// failure, host/listen fatal, deinit UAF 경고) 은 quiet 와 무관하게 항상
         /// 출력 — 사용자가 진단 못 보면 NAPI throwError generic 메시지로 root cause
@@ -168,7 +139,6 @@ pub const DevServer = struct {
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
     const hmr_path = "/__hmr";
-    const mcp_app_path = "/__mcp-app";
     const app_dev_client_path = "/__zntc_app_dev_client__";
     const watch_interval_ms = 500;
     /// dev overlay client 의 raw template — `__ZNTC_HMR_*__` sentinel 들이 박힌 상태.
@@ -254,7 +224,6 @@ pub const DevServer = struct {
             .event_ring = EventRing.init(allocator),
             .overlay_client = overlay_client,
             .tls_ctx = tls_ctx,
-            .app_channel = mcp_app_channel_mod.AppChannel.init(allocator),
         };
     }
 
@@ -264,11 +233,9 @@ pub const DevServer = struct {
         // 그 뒤 listen socket 정리.
         self.shutdown();
         if (self.tcp_server) |*s| s.deinit();
-        // 살아있는 connection (handleConnection thread) 가 종료할 때까지 wait —
-        // reader thread 가 app_channel mutex/pending Map 사용 중인데 deinit 가
-        // 그것 free 하면 UAF. 최대 2초 wait (best-effort) — production 은 process
-        // exit 직전 deinit 라 그 시점엔 thread 종료된 상태가 일반적. 2초 넘어가면
-        // log + 그대로 진행 (RN app 의 keep-alive WS 가 idle 상태인 경우 등).
+        // 살아있는 connection (handleConnection thread) 가 종료할 때까지 wait. 최대
+        // 2초 (best-effort) — production 은 process exit 직전 deinit 라 그 시점엔
+        // thread 종료된 상태가 일반적. 2초 넘어가면 log + 그대로 진행.
         const DEINIT_TIMEOUT_MS: u64 = 2000;
         const start_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
         const deadline_ns: u128 = start_ns + DEINIT_TIMEOUT_MS * std.time.ns_per_ms;
@@ -298,10 +265,6 @@ pub const DevServer = struct {
         self.root_dir.close();
         self.event_ring.deinit();
         self.error_state.deinit(self.allocator);
-        // pending requests 모두 fail (caller waiter 깨움) + pending map storage 해제.
-        // 위 active_connections wait 이 reader thread 종료 보장 — race 0.
-        self.app_channel.disconnect();
-        self.app_channel.deinit();
     }
 
     /// dev overlay client raw template 의 `__ZNTC_HMR_*__` sentinel 들을
@@ -559,15 +522,11 @@ pub const DevServer = struct {
         defer connection.stream.close();
 
         var send_buf: [8192]u8 = undefined;
-        // recv_buf: 32KB stack alloc — typical HTTP request header + body / MCP app
-        // channel 의 JSON-RPC payload (KB~수십 KB) 다 fit. 이전 256KB heap 은 SSE/HMR
-        // WS 같은 long-lived connection 의 entire lifetime 점유 → 100 tab × 2 connection
-        // × 256KB = 25MB unused 메모리 burden. 32KB stack alloc 으로 memory 8× 절감
-        // (32KB × 100 = 3.2MB) + heap alloc OOM 위험 제거.
-        //
-        // 32KB 초과 single-frame 은 readSmallMessage 가 MessageTooBig. PR-E3 의
-        // take_snapshot 같은 대형 binary payload 는 streaming / 자체 readMessage 구현
-        // 별도 PR 로 처리 — 256KB 가 그 시나리오에도 충분치 않음 (PNG base64 가 MB 단위).
+        // recv_buf: 32KB stack alloc — typical HTTP request header + body 가 다 fit.
+        // 이전 256KB heap 은 SSE/HMR WS 같은 long-lived connection 의 entire lifetime
+        // 점유 → 100 tab × 2 connection × 256KB = 25MB unused 메모리 burden. 32KB
+        // stack alloc 으로 memory 8× 절감 (32KB × 100 = 3.2MB) + heap alloc OOM 위험
+        // 제거. 32KB 초과 single-frame 은 readSmallMessage 가 MessageTooBig.
         var recv_buf: [32 * 1024]u8 = undefined;
 
         if (self.tls_ctx) |*ctx| {
@@ -610,13 +569,11 @@ pub const DevServer = struct {
                         return;
                     };
 
-                    // 허용 path: /__hmr (HMR broadcast) 또는 /__mcp-app (MCP app channel)
+                    // 허용 path: /__hmr (HMR broadcast)
                     const target = request.head.target;
                     const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
                     const ws_path = target[0..path_end];
-                    const is_hmr = std.mem.eql(u8, ws_path, hmr_path);
-                    const is_mcp_app = std.mem.eql(u8, ws_path, mcp_app_path);
-                    if (!is_hmr and !is_mcp_app) {
+                    if (!std.mem.eql(u8, ws_path, hmr_path)) {
                         request.respond("400 Bad Request", .{
                             .status = .bad_request,
                             .extra_headers = &cors_headers,
@@ -628,11 +585,7 @@ pub const DevServer = struct {
                         self.routineLog("zntc: WebSocket handshake failed\n", .{});
                         return;
                     };
-                    if (is_mcp_app) {
-                        self.handleMcpAppWebSocket(&ws);
-                    } else {
-                        self.handleWebSocket(&ws, writer);
-                    }
+                    self.handleWebSocket(&ws, writer);
                     return;
                 },
                 .other => {
@@ -685,102 +638,6 @@ pub const DevServer = struct {
         }
 
         self.routineLog("  [ws] client disconnected\n", .{});
-    }
-
-    /// MCP app channel WebSocket handler — RN 앱 안 mcp-runtime.cjs 가 핸드셰이크
-    /// 후 메시지 loop 에 들어온다. 본 PR-E1 은 핸드셰이크 + 단순 echo log 까지만.
-    /// 후속 PR 이 request/response 매칭 (`AppChannel.request(method, params)`) + tool
-    /// dispatch forwarding 을 추가.
-    fn handleMcpAppWebSocket(self: *DevServer, ws: *http.Server.WebSocket) void {
-        const accepted = self.app_channel.connect();
-        if (!accepted) {
-            // 이미 다른 앱이 연결돼 있음 — first-wins 정책. error JSON 송신 후 명시적
-            // close frame 으로 정상 종료 (1006 abnormal closure 대신 1000 + text 보장).
-            self.routineLog("  [mcp-app] 이미 연결된 앱 있음, 새 연결 거절\n", .{});
-            ws.writeMessage(mcp_app_channel_mod.REJECT_MESSAGE, .text) catch {};
-            // RFC 6455 §5.5.1 close frame — payload 비워도 valid. 클라이언트가 이전
-            // text frame 까지 받은 후 graceful close 보장.
-            ws.writeMessage("", .connection_close) catch {};
-            return;
-        }
-        // defer 순서 (LIFO): clearCurrentWs → disconnect. disconnect 가 pending 을 fail
-        // 시키며 waiter 를 깨우는데, current_ws 가 먼저 null 이 되면 그 사이 새 dispatcher
-        // 의 write 가 NotConnected 받아 WriteFailed 로 misclassified (F2/F6).
-        // → disconnect 가 먼저 실행되도록 defer 순서 뒤집음.
-        defer self.app_channel.clearCurrentWs();
-        defer self.app_channel.disconnect();
-
-        self.routineLog("  [mcp-app] 앱 연결 (count={})\n", .{self.app_channel.stats().connect_count});
-
-        // 핸드셰이크 hello — setCurrentWs 전에 송신해야 한다 (F1). setCurrentWs 후에 보내면
-        // 그 사이 다른 thread 가 dispatcher 통해 write 호출 → hello frame 과 byte-level
-        // interleave 가능 (writeMessageVecUnflushed 의 header/payload/flush 가 atomic 아님).
-        ws.writeMessage(mcp_app_channel_mod.HELLO_MESSAGE, .text) catch {
-            self.routineLog("  [mcp-app] hello send 실패\n", .{});
-            return;
-        };
-        // hello 송신 완료 — 이제 ws 를 channel 에 노출 (dispatcher 가 사용 가능).
-        // clearCurrentWs 는 read loop 종료 직전 실행 (inflight write 가 write_mutex 잡고
-        // 있다면 끝날 때까지 wait → ws ptr 가 dangling 안 됨).
-        self.app_channel.setCurrentWs(ws);
-
-        // 메시지 loop — 본 PR 은 단순 echo log. 후속 PR 가 JSON-RPC dispatch.
-        while (true) {
-            const msg = ws.readSmallMessage() catch |err| {
-                switch (err) {
-                    error.ConnectionClose => {},
-                    else => self.routineLog("  [mcp-app] read 에러: {}\n", .{err}),
-                }
-                break;
-            };
-
-            switch (msg.opcode) {
-                .text => {
-                    // JSON parse 후 response (`id` + `result`/`error`) 면 pending 매칭 →
-                    // AppChannel.resolveResponse 호출. method 가 있으면 app → server
-                    // request — 후속 PR 에서 server-side handler dispatch.
-                    var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, msg.data, .{}) catch {
-                        self.routineLog("  [mcp-app] invalid JSON: {s}\n", .{msg.data});
-                        continue;
-                    };
-                    defer parsed.deinit();
-                    const root = parsed.value;
-                    const id_val = switch (root) {
-                        .object => |o| o.get("id") orelse .null,
-                        else => .null,
-                    };
-                    const has_method = switch (root) {
-                        .object => |o| o.get("method") != null,
-                        else => false,
-                    };
-                    // response 분류: id 있고 method 없으면 response (spec 상 result 또는
-                    // error 가 있어야 하지만 둘 다 없는 spec-violating envelope 도 forward
-                    // — forwardAppTool 의 "missing 'result'" fallback 이 진단 메시지 제공
-                    // (#50 deferred fix). 이전엔 silent drop 으로 5초 timeout 만 발생.
-                    const id_present = id_val != .null;
-                    if (id_present and !has_method) {
-                        const id_u64: ?u64 = switch (id_val) {
-                            .integer => |n| if (n >= 0) @intCast(n) else null,
-                            else => null,
-                        };
-                        if (id_u64) |id| {
-                            self.app_channel.resolveResponse(id, msg.data);
-                        } else {
-                            self.routineLog("  [mcp-app] response 의 id 가 invalid (non-integer)\n", .{});
-                        }
-                    } else if (has_method) {
-                        // app→server request 또는 notification — 후속 PR 에서 dispatch.
-                        self.routineLog("  [mcp-app] app→server request (not yet handled): {s}\n", .{msg.data});
-                    } else {
-                        self.routineLog("  [mcp-app] unknown frame (no id, no method): {s}\n", .{msg.data});
-                    }
-                },
-                .connection_close => break,
-                else => {},
-            }
-        }
-
-        self.routineLog("  [mcp-app] 앱 연결 종료\n", .{});
     }
 
     fn watchLoop(self: *DevServer) void {
@@ -1169,560 +1026,6 @@ pub const DevServer = struct {
         }
     }
 
-    /// MCP (Model Context Protocol) JSON-RPC 2.0 HTTP 엔드포인트.
-    /// body 읽기 + 크기 검증 후 transport-agnostic `dispatchMcpRequest` 위임.
-    fn handleMcp(self: *DevServer, request: *http.Server.Request) !void {
-        if (request.head.method != .POST) {
-            request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Use POST\"},\"id\":null}", .{
-                .status = .method_not_allowed,
-                .extra_headers = &json_headers,
-            }) catch {};
-            return;
-        }
-
-        // 요청 body 읽기 — Content-Length를 먼저 보고 64KB 초과 시 즉시 413.
-        const max_body = 64 * 1024;
-        if (request.head.content_length) |cl| {
-            if (cl > max_body) {
-                request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Request body too large (max 64KB)\"},\"id\":null}", .{
-                    .status = .payload_too_large,
-                    .extra_headers = &json_headers,
-                }) catch {};
-                return;
-            }
-        }
-        const reader = request.readerExpectContinue(&.{}) catch |err| {
-            self.routineLog("  [mcp] body reader error: {}\n", .{err});
-            return;
-        };
-        var body_buf: [max_body + 1]u8 = undefined;
-        var body_writer = std.Io.Writer.fixed(&body_buf);
-        _ = reader.streamRemaining(&body_writer) catch |err| {
-            if (body_writer.end > max_body) {
-                request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Request body too large (max 64KB)\"},\"id\":null}", .{
-                    .status = .payload_too_large,
-                    .extra_headers = &json_headers,
-                }) catch {};
-                return;
-            }
-            self.routineLog("  [mcp] body read error: {}\n", .{err});
-            return;
-        };
-        const body_len = body_writer.end;
-        if (body_len > max_body) {
-            request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Request body too large (max 64KB)\"},\"id\":null}", .{
-                .status = .payload_too_large,
-                .extra_headers = &json_headers,
-            }) catch {};
-            return;
-        }
-        const body = body_buf[0..body_len];
-
-        var resp: std.ArrayList(u8) = .empty;
-        defer resp.deinit(self.allocator);
-        const w = resp.writer(self.allocator);
-
-        const kind = try self.dispatchMcpRequest(body, w);
-
-        switch (kind) {
-            .response => request.respond(resp.items, .{
-                .status = .ok,
-                .extra_headers = &json_headers,
-            }) catch {},
-            .notification => request.respond("", .{
-                .status = .no_content,
-                // RFC 9110 §8.3: 본문 없는 응답에 Content-Type SHOULD NOT 보내야 함.
-                // cors_headers 만 사용 (json_headers 의 Content-Type 제외).
-                .extra_headers = &cors_headers,
-            }) catch {},
-        }
-    }
-
-    /// Transport-agnostic JSON-RPC 2.0 dispatcher.
-    /// HTTP 와 (예정된) stdio 양쪽이 공유. body 한 통을 받아 응답 한 통을 `writer` 에 쓴다.
-    ///
-    /// JSON-RPC 2.0 spec: notification (method 가 `notifications/*` 인 경우) 에는 응답을
-    /// 보내지 않는다 ("The Server MUST NOT reply to a Notification"). dispatcher 의 결과를
-    /// caller (HTTP / stdio transport) 가 분기해 처리할 수 있도록 enum 반환.
-    pub const DispatchResult = enum {
-        /// 응답 1통이 writer 에 쓰임. caller 는 transport 별 framing (HTTP 200 body /
-        /// stdio newline) 으로 client 에 forward.
-        response,
-        /// notification — writer 에 아무것도 쓰이지 않음. caller 는 응답/framing 안 보냄
-        /// (HTTP: 204 No Content, stdio: newline 안 추가).
-        notification,
-    };
-
-    /// 응답을 내부 임시 buffer 에 먼저 build 한 뒤 한 번에 `writer` 로 flush.
-    /// build 도중 error 발생 시 buffer 를 폐기하고 `-32603 Internal error` fallback 을
-    /// 새로 build 해서 보낸다 → transport wrapper 의 outer catch 없이도 항상 완결된
-    /// 응답 1통이 writer 에 쓰이는 것을 보장 (stdio 의 frame 깨짐 방지).
-    ///
-    /// 반환:
-    /// - `.response` — writer 에 응답 1통 쓰임
-    /// - `.notification` — writer 변경 없음 (JSON-RPC notification, 응답 금지)
-    pub fn dispatchMcpRequest(self: *DevServer, body: []const u8, writer: anytype) !DispatchResult {
-        var resp: std.ArrayList(u8) = .empty;
-        defer resp.deinit(self.allocator);
-        const inner = resp.writer(self.allocator);
-
-        const kind = self.buildMcpResponse(body, inner) catch |err| blk: {
-            self.routineLog("  [mcp] dispatch error: {}, sending -32603 fallback\n", .{err});
-            // partial 응답 폐기 후 -32603 fallback 새로 build.
-            // 이 단계도 OOM 으로 fail 하면 caller 가 처리 (마지막 안전망 — transport wrapper).
-            resp.clearRetainingCapacity();
-            try inner.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}");
-            break :blk DispatchResult.response;
-        };
-
-        // notification 이면 응답 byte 가 0 — writer 에 아무것도 안 쓰고 즉시 반환.
-        if (kind == .notification) return .notification;
-
-        // 응답을 single-line 으로 정규화 — `tools/list` 등이 가독성 위해 multi-line raw
-        // string 으로 작성됐기 때문에 응답 buffer 에 raw `\n` 이 섞일 수 있다.
-        // stdio transport 는 newline-delimited 라 framing 이 깨지므로 여기서 통일.
-        // JSON spec 상 raw `\n`/`\r` 는 string literal 안에 못 들어가고 (`\\n` escape 만 허용)
-        // structural whitespace 라서 제거해도 의미 손실 없음 (HTTP transport 도 동일하게 안전).
-        //
-        // Fast path: 대부분의 응답엔 newline 없음 → 한 번에 writeAll (unbuffered stdout
-        // 의 per-byte syscall 폭증 회피, tools/list 만 chunk loop).
-        if (std.mem.indexOfAny(u8, resp.items, "\n\r")) |_| {
-            var i: usize = 0;
-            while (i < resp.items.len) {
-                // 다음 newline 까지의 chunk 1개를 한 번에 write.
-                var j = i;
-                while (j < resp.items.len and resp.items[j] != '\n' and resp.items[j] != '\r') : (j += 1) {}
-                if (j > i) try writer.writeAll(resp.items[i..j]);
-                // 연속된 newline/cr skip.
-                while (j < resp.items.len and (resp.items[j] == '\n' or resp.items[j] == '\r')) : (j += 1) {}
-                i = j;
-            }
-        } else {
-            try writer.writeAll(resp.items);
-        }
-        return .response;
-    }
-
-    /// dispatcher 본문 — JSON parse + method dispatch + response build.
-    /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events,
-    /// verify_in_chrome). 그 외 → -32601 Method not found.
-    /// `notifications/*` (예: `notifications/initialized`, `notifications/cancelled`) →
-    /// JSON-RPC 2.0 spec 상 응답 없음. writer 변경 없이 `.notification` 반환.
-    /// JSON parse 실패 → -32700 Parse error (응답을 writer 에 쓰고 `.response` 반환).
-    /// 그 외 error 는 propagate — caller (`dispatchMcpRequest`) 가 -32603 fallback 처리.
-    fn buildMcpResponse(self: *DevServer, body: []const u8, writer: anytype) !DispatchResult {
-        // JSON 파싱
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
-            try writer.writeAll("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}");
-            return .response;
-        };
-        defer parsed.deinit();
-        const root = parsed.value;
-
-        const method = switch (root) {
-            .object => |o| switch (o.get("method") orelse .null) {
-                .string => |s| s,
-                else => "",
-            },
-            else => "",
-        };
-        const id_val: std.json.Value = switch (root) {
-            .object => |o| o.get("id") orelse .null,
-            else => .null,
-        };
-
-        // JSON-RPC 2.0 §4.1: "A Notification is a Request object without an id member."
-        // method namespace `notifications/` (MCP convention) + `id` 필드 부재 두 조건을
-        // 모두 충족할 때만 notification 으로 처리. strict 한 spec 준수 + 잘못 작성된
-        // client (id 동반 notifications/* 송신) 가 응답을 영원히 기다리는 misuse 방어.
-        if (std.mem.startsWith(u8, method, "notifications/") and id_val == .null) {
-            return .notification;
-        }
-
-        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try writeJsonValue(writer, id_val);
-        try writer.writeAll(",");
-
-        if (std.mem.eql(u8, method, "initialize")) {
-            try writer.writeAll(
-                \\"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"zntc-dev-server","version":"0.1.0"}}
-            );
-        } else if (std.mem.eql(u8, method, "tools/list")) {
-            try writer.writeAll(
-                \\"result":{"tools":[
-                \\{"name":"reset_cache","description":"Clear the build cache. Next build will be a full rebuild.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-                \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}},
-                \\{"name":"verify_in_chrome","description":"Run `zntc verify` (headless Chromium) against the dev server (or a custom target) and return the JSON report. Requires Playwright in the Node CLI environment; set ZNTC_CLI env to the path of bin/zntc.mjs (npm-install environments find `zntc` on PATH automatically).","inputSchema":{"type":"object","properties":{"target":{"type":"string","description":"Path or URL to verify. Defaults to the dev server root URL."},"timeout":{"type":"number","minimum":1000,"maximum":60000,"description":"Page load timeout in ms (default: 10000)"},"ignore":{"type":"array","items":{"type":"string"},"description":"Regex patterns; matching console/url events are skipped."},"allowConsoleError":{"type":"boolean","description":"If true, console.error events do not affect exit code."}},"additionalProperties":false}},
-                \\{"name":"ping_app","description":"Ping the connected RN app's MCP runtime over the /__mcp-app WebSocket. Returns the app's pong response (verifies bi-directional channel).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-                \\{"name":"find_element","description":"Find the first matching React component in the connected RN app's fiber tree. Returns an opaque ref (e1/e2/...) for subsequent tool calls (inspect_state, eval_code, etc).","inputSchema":{"type":"object","properties":{"by":{"type":"string","enum":["text","role","component"],"description":"Match strategy: 'text' (substring of Text node), 'role' (accessibilityRole), 'component' (displayName)"},"value":{"type":"string","description":"Value to match"}},"required":["by","value"],"additionalProperties":false}},
-                \\{"name":"inspect_state","description":"Inspect the React state of an element previously returned by find_element. Pass the opaque ref (e.g. 'e1') and receive a JSON snapshot. Result kind: 'class' (memoizedState as state object), 'function' (hooks array from memoizedState linked list + _debugHookTypes), 'host' (RN native component — only props returned).","inputSchema":{"type":"object","properties":{"ref":{"type":"string","description":"Opaque ref returned by find_element (e1, e2, ...)"}},"required":["ref"],"additionalProperties":false}},
-                \\{"name":"eval_code","description":"Evaluate a JavaScript expression in the connected RN app's JS thread. With optional ref (from find_element), the element's stateNode (class instance / NativeView) is bound to both `this` and `$ctx`. Returns {ok:true, value, type} on success, {ok:false, error, kind, stack?} on failure (kind: 'syntax' | 'runtime' | 'unsupported'). Side-effects ALLOWED — this.setState() and global mutations execute against the running app (think debugger console, not pure observer). Supports `await` for async expressions — `new Function` is tried first; on SyntaxError (await/yield) `new AsyncFunction` retries and the dispatcher waits for the Promise to resolve. Async result is awaited within the tool's timeout (10s). Hermes builds with enableEval=false return kind:'unsupported' (fall back to inspect_state for read-only). Dev-only.","inputSchema":{"type":"object","properties":{"expression":{"type":"string","description":"JavaScript expression (NOT statement). Examples: '1+1', 'this.props.title', 'await fetch(...).then(r=>r.json())'"},"ref":{"type":"string","description":"Optional opaque ref from find_element (e1, e2, ...). When given, the element's stateNode is bound to `this` and `$ctx`."}},"required":["expression"],"additionalProperties":false}},
-                \\{"name":"get_logs","description":"Read recent console.log/info/warn/error/debug entries captured from the RN app since the runtime was installed. Returns {entries, nextCursor, dropped, total}. Each entry: {seq, ts, level, args}. Args are safeSerialize'd at call time (cycles/depth/typed-arrays handled; Promise serializes as [Promise] marker — does not await). The ring buffer keeps the last 1000 entries; older entries are dropped and `dropped` is a CUMULATIVE counter since runtime install (subtract previous response's value for delta). For lossless pagination pass `cursor: nextCursor` of the previous response — `since` (ts) is a coarse filter and loses same-ms entries.","inputSchema":{"type":"object","properties":{"cursor":{"type":"number","description":"Optional monotonic seq cursor from previous response's nextCursor. Returns entries with seq > cursor (lossless pagination)."},"since":{"type":"number","description":"Optional Unix ms timestamp — return entries with ts > since. Same-ms entries are excluded; prefer `cursor` for lossless pagination."},"level":{"type":"string","enum":["log","info","warn","error","debug"],"description":"Optional filter — only return entries of this level."},"limit":{"type":"number","minimum":1,"maximum":1000,"description":"Optional max entries to return (default 100; enforced by app). Newest entries returned when truncating."}},"additionalProperties":false}},
-                \\{"name":"take_snapshot","description":"Walk the connected RN app's React fiber tree and return a nested summary. Without `ref`, returns the full tree from each root. With `ref` (from find_element / a previous take_snapshot), returns only that subtree. Each node: {ref, component, text?, role?, label?, testID?, source?, children?}. Each node (including depth-truncated markers) is auto-assigned a fresh ref so subsequent inspect_state/eval_code/take_snapshot calls can target it; depth-truncated nodes carry `__depth_truncated:true` and a `ref` only (use the ref to re-snapshot with higher max_depth). Refs are stored in a 1024-entry FIFO map shared with find_element — for very large trees, prefer ref-scoped subtree snapshots to avoid eviction of older refs.","inputSchema":{"type":"object","properties":{"ref":{"type":"string","description":"Optional opaque ref to limit the snapshot to that subtree."},"max_depth":{"type":"number","minimum":1,"maximum":32,"description":"Optional traversal depth cap (default 12). Deeper nodes returned as __depth_truncated markers with a ref for follow-up expansion."},"max_nodes":{"type":"number","minimum":1,"maximum":1024,"description":"Optional total node cap (default 256, hard cap 1024 = refMap size). When exceeded the snapshot is partial with truncated:true. Includes depth-truncated markers in the count."}},"additionalProperties":false}},
-                \\{"name":"tap_element","description":"Invoke the onPress handler of an element identified by ref. Walks up to 5 ancestor fibers (via fiber.return, cycle-guarded) to find an onPress prop (handles TouchableOpacity/TouchableHighlight/Pressable/Button wrappers). Only `onPress` is invoked — `onLongPress`/`onPressIn`/`onPressOut`/`onClick` are not (use eval_code for those). Skipped when `props.disabled === true` or `accessibilityState.disabled === true` (matches native touch semantics). Returns {ok:true} on success, {ok:false, error, kind} on failure (kind: 'no_handler' | 'disabled' | 'runtime'). Side-effects ALLOWED — handler may call setState, dispatch actions, navigate, fetch. If the handler returns a Promise it is awaited within the 10s timeout. Refs are stored in the shared 1024-FIFO map — re-resolve via find_element if you get 'not found' after many intervening tool calls. Dev-only.","inputSchema":{"type":"object","properties":{"ref":{"type":"string","description":"Opaque ref from find_element / take_snapshot."}},"required":["ref"],"additionalProperties":false}},
-                \\{"name":"get_network","description":"Read recent HTTP requests captured by intercepting XMLHttpRequest (RN's fetch() routes through XHR — both captured). Returns {entries, nextCursor, dropped, total}. Each entry: {seq, tsStart, method, url, status?, durationMs?, error?}. Request/response bodies are NOT captured — use eval_code to inspect xhr.response when targeting a specific URL. Ring buffer keeps the last 200 entries; `dropped` is CUMULATIVE since runtime install. For lossless pagination pass `cursor: nextCursor`. Optional filters: method (case-insensitive), status (exact) or status_min/status_max range, url_substring (case-insensitive). Pending entries (status=null) are EXCLUDED whenever any status/status_min/status_max filter is set (we cannot match an unknown status). Fetches that fail BEFORE XHR open (e.g. AbortController pre-abort, native security/policy rejection) are not captured.","inputSchema":{"type":"object","properties":{"cursor":{"type":"number","description":"Optional monotonic seq cursor from previous response's nextCursor."},"method":{"type":"string","description":"Optional exact method filter (case-insensitive)."},"status":{"type":"number","description":"Optional exact status filter (e.g. 404). Excludes pending."},"status_min":{"type":"number","description":"Optional inclusive lower bound for status filter (e.g. 400). Excludes pending."},"status_max":{"type":"number","description":"Optional inclusive upper bound for status filter. Excludes pending."},"url_substring":{"type":"string","description":"Optional case-insensitive substring filter on URL."},"limit":{"type":"number","minimum":1,"maximum":200,"description":"Optional max entries to return (default 50). Newest entries returned when truncating."}},"additionalProperties":false}}
-                \\]}
-            );
-        } else if (std.mem.eql(u8, method, "tools/call")) {
-            try self.handleToolsCall(writer, root);
-        } else {
-            try writer.writeAll("\"error\":{\"code\":-32601,\"message\":\"Method not found\"}");
-        }
-        try writer.writeAll("}");
-        return .response;
-    }
-
-    fn handleToolsCall(self: *DevServer, w: anytype, root: std.json.Value) !void {
-        const params: std.json.Value = switch (root) {
-            .object => |o| o.get("params") orelse .null,
-            else => .null,
-        };
-        const tool_name: []const u8 = switch (params) {
-            .object => |o| switch (o.get("name") orelse .null) {
-                .string => |s| s,
-                else => "",
-            },
-            else => "",
-        };
-        const args: std.json.Value = switch (params) {
-            .object => |o| o.get("arguments") orelse .null,
-            else => .null,
-        };
-
-        if (std.mem.eql(u8, tool_name, "reset_cache")) {
-            self.cache_reset_requested.store(true, .release);
-            try w.writeAll(
-                \\"result":{"content":[{"type":"text","text":"Cache reset requested; next build will be a full rebuild."}]}
-            );
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "find_element")) {
-            // RN app 의 fiber tree 순회 — `by` / `value` args 그대로 forward.
-            try self.forwardAppTool(w, "find_element", args, FIND_ELEMENT_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "inspect_state")) {
-            // refMap lookup + memoizedProps/memoizedState/hooks 직렬화. sync 작업이라
-            // 동일 5초 timeout. ref invalid 시 app handler 가 throw → -32603 forward.
-            try self.forwardAppTool(w, "inspect_state", args, INSPECT_STATE_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "eval_code")) {
-            // user expression 평가 — sync JS 라 RN main thread block 가능. 10초 ceiling
-            // 은 응답 못 받을 때 다음 request 차단 막는 안전망 (실제 cancel 은 못 함).
-            // params 누락 / unknown ref 는 throw → -32603, runtime/syntax error 는
-            // {ok:false, error} 로 result 안에 — user input 의 결과는 결과 채널이 자연.
-            try self.forwardAppTool(w, "eval_code", args, EVAL_CODE_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "get_logs")) {
-            // RN console ring buffer 의 entries snapshot. since/level/limit 은 app 에서
-            // filter. invalid level 같은 user error 는 app handler 가 throw → -32603.
-            try self.forwardAppTool(w, "get_logs", args, GET_LOGS_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "take_snapshot")) {
-            // fiber tree 전체 (또는 ref subtree) nested summary. cap (max_depth /
-            // max_nodes) 는 app handler 가 enforce. unknown ref → throw → -32603.
-            try self.forwardAppTool(w, "take_snapshot", args, TAKE_SNAPSHOT_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "tap_element")) {
-            // onPress handler invoke — async handler 면 dispatcher 가 Promise await.
-            // unknown ref / params 누락 → throw → -32603.
-            try self.forwardAppTool(w, "tap_element", args, TAP_ELEMENT_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "get_network")) {
-            // XMLHttpRequest intercept ring buffer read. invalid filter (e.g.
-            // 음수 limit) → app handler 가 throw → -32603.
-            try self.forwardAppTool(w, "get_network", args, GET_NETWORK_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "ping_app")) {
-            // 앱 MCP runtime 의 `handlers.ping` 호출. ping 은 params 없음 — empty
-            // object forward. forwardAppTool 가 args (json Value) 받아 직렬화 하지만
-            // here args 가 .null/.object 모두 valid.
-            try self.forwardAppTool(w, "ping", args, PING_TIMEOUT_MS);
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "get_build_events")) {
-            var duration_ms: u64 = 10_000;
-            switch (args) {
-                .object => |o| switch (o.get("duration") orelse .null) {
-                    .integer => |n| duration_ms = @intCast(@max(1000, @min(60000, n))),
-                    .float => |f| duration_ms = @intFromFloat(@max(1000.0, @min(60000.0, f))),
-                    else => {},
-                },
-                else => {},
-            }
-            const start_seq = self.loadSeq();
-            // 새 event 도착 즉시 반환 (HOL blocking 완화) — 매 100ms 마다 seq 증가
-            // 확인. duration 까지 새 event 없으면 그때 빈 배열 반환. 이전엔 무조건
-            // duration 동안 sleep 해서 stdio loop 의 다음 request 도 차단됐다.
-            //
-            // Monotonic 시간 (`std.time.Instant`) 사용 — NTP/DST/수동 시간 조정 등
-            // wall-clock 점프에 영향 받지 않도록. `std.time.nanoTimestamp()` 는
-            // wall-clock 이라 시계가 거꾸로 가면 polling 이 stuck 가능.
-            const chunk_ns: u64 = 100 * std.time.ns_per_ms;
-            const total_ns: u64 = duration_ms * std.time.ns_per_ms;
-            if (std.time.Instant.now()) |start_time| {
-                while (true) {
-                    if (self.loadSeq() > start_seq) break;
-                    const now = std.time.Instant.now() catch break;
-                    const elapsed = now.since(start_time);
-                    if (elapsed >= total_ns) break;
-                    const remaining = total_ns - elapsed;
-                    std.Thread.sleep(@min(chunk_ns, remaining));
-                }
-            } else |_| {
-                // monotonic clock 미지원 환경 → 단일 sleep (기존 동작, 시계 점프 영향
-                // 1-shot 으로 제한). 정상 OS 에서는 도달 안 함.
-                std.Thread.sleep(total_ns);
-            }
-            const records = self.event_ring.snapshotSince(self.allocator, start_seq) catch {
-                try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[]\"}]}");
-                return;
-            };
-            defer {
-                for (records) |r| {
-                    self.allocator.free(r.event_type);
-                    self.allocator.free(r.data_json);
-                }
-                self.allocator.free(records);
-            }
-
-            // 이벤트 JSON 배열을 별도 버퍼에 구축 (이중 이스케이프 회피)
-            var inner: std.ArrayList(u8) = .empty;
-            defer inner.deinit(self.allocator);
-            const iw = inner.writer(self.allocator);
-            try iw.writeAll("[");
-            for (records, 0..) |r, i| {
-                if (i > 0) try iw.writeAll(",");
-                try std.fmt.format(iw, "{{\"seq\":{d},\"type\":\"", .{r.seq});
-                try writeJsonEscaped(iw, r.event_type);
-                try iw.writeAll("\",\"data\":");
-                // data_json은 이미 JSON → 그대로 삽입
-                try iw.writeAll(r.data_json);
-                try iw.writeAll("}");
-            }
-            try iw.writeAll("]");
-
-            try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
-            try writeJsonEscaped(w, inner.items);
-            try w.writeAll("\"}]}");
-            return;
-        }
-
-        if (std.mem.eql(u8, tool_name, "verify_in_chrome")) {
-            try self.handleVerifyInChrome(w, args);
-            return;
-        }
-
-        try w.writeAll("\"error\":{\"code\":-32602,\"message\":\"Unknown tool\"}");
-    }
-
-    /// AppChannel 너머 RN 앱의 MCP runtime 으로 단일 method 를 forward 하는 helper.
-    /// `args` (JSON Value) 를 그대로 직렬화해 `method:<name> params:<args>` request 송신
-    /// 후 timeout_ms 안에 응답 받기. 결과는 MCP 2024-11-05 `content[]` 의 text 로 wrap
-    /// (raw JSON 을 string 안에 double-encode).
-    ///
-    /// 에러는 모두 영어 메시지 — MCP client 가 표시할 수 있도록.
-    fn forwardAppTool(
-        self: *DevServer,
-        w: anytype,
-        method: []const u8,
-        args: std.json.Value,
-        timeout_ms: u64,
-    ) !void {
-        // args 직렬화 — params 없이 `{}` 로도 충분하지만 일반화 위해 그대로 dump.
-        // args 가 `.null` 이면 "null" 이 되는데, 앱 handler 는 `params ?? {}` 로 처리.
-        // OOM 도 unified `-32603` MCP error path 로 통일 — propagate 하면 HTTP 500.
-        const args_json = std.json.Stringify.valueAlloc(self.allocator, args, .{}) catch {
-            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"args serialization failed\"}");
-            return;
-        };
-        defer self.allocator.free(args_json);
-
-        const resp_json = self.app_channel.requestStored(method, args_json, timeout_ms) catch |err| {
-            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"");
-            switch (err) {
-                mcp_app_channel_mod.RequestError.NotConnected => try writeJsonEscaped(w, "app not connected on /__mcp-app"),
-                mcp_app_channel_mod.RequestError.Timeout => {
-                    // ms 포함 — 도구별 timeout 이 달라질 수 있어 self-describing.
-                    var buf: [64]u8 = undefined;
-                    const s = std.fmt.bufPrint(&buf, "app response timeout ({d}ms)", .{timeout_ms}) catch "app response timeout";
-                    try writeJsonEscaped(w, s);
-                },
-                mcp_app_channel_mod.RequestError.AppDisconnected => try writeJsonEscaped(w, "app disconnected mid-request"),
-                mcp_app_channel_mod.RequestError.WriteFailed => try writeJsonEscaped(w, "ws write failed"),
-                mcp_app_channel_mod.RequestError.OutOfMemory => try writeJsonEscaped(w, "out of memory"),
-            }
-            try w.writeAll("\"}");
-            return;
-        };
-        defer self.allocator.free(resp_json);
-
-        // 앱 response 는 JSON-RPC envelope `{jsonrpc, id, result/error}`. result 가
-        // 있으면 그걸 MCP content text 로 wrap, error 만 있으면 그대로 client 에 forward
-        // (PR-F1 review F4 — app handler throw 시 의미 있는 메시지가 묻히지 않도록).
-        var resp_parsed = std.json.parseFromSlice(std.json.Value, self.allocator, resp_json, .{}) catch {
-            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"app response was not valid JSON\"}");
-            return;
-        };
-        defer resp_parsed.deinit();
-        const result_val = switch (resp_parsed.value) {
-            .object => |o| o.get("result"),
-            else => null,
-        };
-        if (result_val == null) {
-            // app 이 result 대신 error 를 보냈으면 그걸 forward. else missing 'result'.
-            const err_val: ?std.json.Value = switch (resp_parsed.value) {
-                .object => |o| o.get("error"),
-                else => null,
-            };
-            const err_msg: []const u8 = blk: {
-                if (err_val) |ev| switch (ev) {
-                    .object => |eo| switch (eo.get("message") orelse .null) {
-                        .string => |s| break :blk s,
-                        else => {},
-                    },
-                    else => {},
-                };
-                break :blk "app response missing 'result'";
-            };
-            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"");
-            try writeJsonEscaped(w, err_msg);
-            try w.writeAll("\"}");
-            return;
-        }
-        // MCP 2024-11-05 의 `content[]` 는 `{type:"text", text:<string>}` 만 지원. 앱의
-        // raw result JSON 을 string 안에 임베드 — 두 단계 encode:
-        //   1. valueAlloc — Value → JSON string
-        //   2. writeJsonEscaped — 그 string 을 또 JSON string literal 로 escape
-        // client 는 받은 text 를 다시 JSON.parse 해야 함. 향후 `{type:"json", ...}` 지원
-        // 시 single-encode 로 단순화 가능.
-        const result_str = std.json.Stringify.valueAlloc(self.allocator, result_val.?, .{}) catch {
-            try w.writeAll("\"error\":{\"code\":-32603,\"message\":\"result serialization failed\"}");
-            return;
-        };
-        defer self.allocator.free(result_str);
-
-        try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
-        try writeJsonEscaped(w, result_str);
-        try w.writeAll("\"}]}");
-    }
-
-    /// `verify_in_chrome` MCP 도구. Node CLI (`zntc verify --verify-json ...`) 를
-    /// 자식 프로세스로 spawn 해 JSON 리포트를 받아온다. CLI 경로는 `ZNTC_CLI` env →
-    /// PATH 의 `zntc` 순. Playwright optionalDependency 가 Node 측 책임.
-    fn handleVerifyInChrome(self: *DevServer, w: anytype, args: std.json.Value) !void {
-        const allocator = self.allocator;
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const arena_alloc = arena.allocator();
-
-        // 1. target — 기본값 = 서버 root URL.
-        var target: []const u8 = "";
-        var timeout_ms: ?i64 = null;
-        var allow_console_error = false;
-        var ignore_patterns: []const std.json.Value = &.{};
-        switch (args) {
-            .object => |o| {
-                switch (o.get("target") orelse .null) {
-                    .string => |s| target = s,
-                    else => {},
-                }
-                switch (o.get("timeout") orelse .null) {
-                    .integer => |n| timeout_ms = n,
-                    .float => |f| timeout_ms = @intFromFloat(f),
-                    else => {},
-                }
-                switch (o.get("allowConsoleError") orelse .null) {
-                    .bool => |b| allow_console_error = b,
-                    else => {},
-                }
-                switch (o.get("ignore") orelse .null) {
-                    .array => |arr| ignore_patterns = arr.items,
-                    else => {},
-                }
-            },
-            else => {},
-        }
-        if (target.len == 0) {
-            target = try std.fmt.allocPrint(arena_alloc, "http://{s}:{d}/", .{ self.host, self.port });
-        }
-
-        // 2. CLI 경로 — ZNTC_CLI 우선 (모노레포 dev / 비표준 install 환경), 없으면 PATH 의 `zntc`.
-        const cli_path = std.process.getEnvVarOwned(arena_alloc, "ZNTC_CLI") catch
-            try arena_alloc.dupe(u8, "zntc");
-
-        // 3. argv 구성 — ZNTC_CLI 가 `.mjs/.js` 면 직접 exec 불가 (Node 는 스크립트
-        // 파일을 ELF/Mach-O 처럼 실행 못함, `node script.mjs` 형태 필요).
-        const needs_node = std.mem.endsWith(u8, cli_path, ".mjs") or
-            std.mem.endsWith(u8, cli_path, ".js");
-        var argv: std.ArrayList([]const u8) = .empty;
-        if (needs_node) try argv.append(arena_alloc, "node");
-        try argv.append(arena_alloc, cli_path);
-        try argv.append(arena_alloc, "verify");
-        try argv.append(arena_alloc, target);
-        try argv.append(arena_alloc, "--verify-json");
-        if (timeout_ms) |t| {
-            try argv.append(arena_alloc, "--verify-timeout");
-            try argv.append(arena_alloc, try std.fmt.allocPrint(arena_alloc, "{d}", .{t}));
-        }
-        if (allow_console_error) {
-            try argv.append(arena_alloc, "--verify-allow-console-error");
-        }
-        for (ignore_patterns) |p| switch (p) {
-            .string => |s| {
-                try argv.append(arena_alloc, "--verify-ignore");
-                try argv.append(arena_alloc, s);
-            },
-            else => {},
-        };
-
-        // 4. spawn (1MB stdout / stderr 상한 — verify 리포트는 보통 1-10KB).
-        const result = std.process.Child.run(.{
-            .allocator = arena_alloc,
-            .argv = argv.items,
-            .max_output_bytes = 1024 * 1024,
-        }) catch |err| {
-            try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
-            const msg = try std.fmt.allocPrint(
-                arena_alloc,
-                "zntc verify spawn 실패: {}. ZNTC_CLI env (또는 PATH 의 `zntc` Node CLI) 가 설치/실행 가능한지 확인.",
-                .{err},
-            );
-            try writeJsonEscaped(w, msg);
-            try w.writeAll("\"}],\"isError\":true}");
-            return;
-        };
-
-        // 5. 응답 구성 — stdout (JSON 1줄) 이 verify 리포트. 비어있으면 stderr 노출.
-        const is_error = switch (result.term) {
-            .Exited => |code| code != 0,
-            else => true,
-        };
-        const stdout_trim = std.mem.trim(u8, result.stdout, " \t\r\n");
-        const stderr_trim = std.mem.trim(u8, result.stderr, " \t\r\n");
-        const payload = if (stdout_trim.len > 0) stdout_trim else stderr_trim;
-
-        try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
-        try writeJsonEscaped(w, payload);
-        try w.writeAll("\"}]");
-        if (is_error) try w.writeAll(",\"isError\":true");
-        try w.writeAll("}");
-    }
 
     /// 이벤트를 SSE 구독자 전원에 브로드캐스트.
     /// event_seq 는 u64 라 32-bit 네이티브 타깃에서는 lock-free atomic 이 불가능하다
@@ -1801,17 +1104,6 @@ pub const DevServer = struct {
                 return;
             }
 
-            // MCP JSON-RPC 서버 — POST /mcp
-            if (std.mem.eql(u8, raw_path_early, "/mcp")) {
-                self.handleMcp(request) catch |err| {
-                    self.routineLog("zntc: /mcp handler error: {}\n", .{err});
-                    request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}", .{
-                        .status = .ok,
-                        .extra_headers = &json_headers,
-                    }) catch {};
-                };
-                return;
-            }
         }
 
         if (request.head.method != .GET and request.head.method != .HEAD) {
@@ -2394,316 +1686,4 @@ test "DevServer.init: cert/key 둘 다 null → plain HTTP (tls_ctx null)" {
     });
     defer dev_server.deinit();
     try std.testing.expect(dev_server.tls_ctx == null);
-}
-
-// ─── dispatchMcpRequest: transport-agnostic JSON-RPC 2.0 dispatcher ───
-// HTTP / stdio 가 공유하는 dispatcher. body 한 통 → writer 응답 한 통.
-
-test "dispatchMcpRequest: initialize → protocolVersion + serverInfo + id 보존" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":42,"method":"initialize"}
-    , w);
-
-    // 응답 형식: {"jsonrpc":"2.0","id":42,"result":{"protocolVersion":"2024-11-05",...}}
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"jsonrpc\":\"2.0\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":42") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"protocolVersion\":\"2024-11-05\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"serverInfo\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"zntc-dev-server\"") != null);
-    // error 필드는 없어야 함
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
-}
-
-test "dispatchMcpRequest: tools/list → 모든 tool 명세 포함" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
-    , w);
-
-    // 각 tool name 이 JSON 의 `"name":"…"` 패턴으로 정확히 등장하는지 확인 —
-    // description 안에 우연히 같은 단어 (e.g. "error" 단어) 가 있어도 false-positive
-    // 안 나도록 substring 을 narrow 하게.
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"reset_cache\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"get_build_events\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"verify_in_chrome\"") != null);
-    // PR-E3b: ping_app — RN app 의 mcp-runtime handler 와 양방향 sanity check tool.
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"ping_app\"") != null);
-    // PR-F1/F2/F3/F4: RN debugging tool 4종. tool drop 회귀 감지.
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"find_element\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"inspect_state\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"eval_code\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"get_logs\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"take_snapshot\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"tap_element\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"name\":\"get_network\"") != null);
-    // JSON-RPC error envelope `"error":{` 가 응답에 들어있지 않은지 — tool description
-    // 안의 free-text "error" 단어와 구분.
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\":{") == null);
-}
-
-test "dispatchMcpRequest: tools/call ping_app → app 미연결 시 -32603 + 진단 메시지" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    // AppChannel.connect 한 적 없음 → requestStored 의 mutex 안 connected=false →
-    // RequestError.NotConnected → dispatcher 가 -32603 + "app not connected" 메시지.
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ping_app","arguments":{}}}
-    , w);
-
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32603") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "app not connected") != null);
-}
-
-test "dispatchMcpRequest: notifications/initialized → .notification + 응답 0 byte (JSON-RPC spec)" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    const kind = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","method":"notifications/initialized"}
-    , w);
-
-    // JSON-RPC 2.0: notification 은 응답 금지. writer 변경 0, kind 가 .notification.
-    try std.testing.expectEqual(DevServer.DispatchResult.notification, kind);
-    try std.testing.expectEqual(@as(usize, 0), resp.items.len);
-}
-
-test "dispatchMcpRequest: id 동반 notifications/* → .response (JSON-RPC §4.1 strict: id 부재 + prefix)" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    // id 가 있는 notifications/* — spec 위반 client 의 misuse. notification 으로 처리되지 않고
-    // 일반 method 분기에서 -32601 Method not found 응답이 가야 client 가 hang 안 함.
-    const kind = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":11,"method":"notifications/initialized"}
-    , w);
-
-    try std.testing.expectEqual(DevServer.DispatchResult.response, kind);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":11") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32601") != null);
-}
-
-test "dispatchMcpRequest: 임의 notifications/* prefix → .notification + 응답 0 byte" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    // initialized 외 다른 notification (cancelled, progress 등) 도 동일하게 응답 0 byte.
-    const kind = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}
-    , w);
-
-    try std.testing.expectEqual(DevServer.DispatchResult.notification, kind);
-    try std.testing.expectEqual(@as(usize, 0), resp.items.len);
-}
-
-test "dispatchMcpRequest: regular method → .response 반환" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    const kind = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":1,"method":"initialize"}
-    , w);
-
-    try std.testing.expectEqual(DevServer.DispatchResult.response, kind);
-    try std.testing.expect(resp.items.len > 0);
-}
-
-test "dispatchMcpRequest: unknown method → -32601 Method not found" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":7,"method":"completely/unknown"}
-    , w);
-
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":7") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32601") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"Method not found\"") != null);
-}
-
-test "dispatchMcpRequest: invalid JSON body → -32700 Parse error + id null" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    _ = try dev_server.dispatchMcpRequest("not-a-json{", w);
-
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32700") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"Parse error\"") != null);
-    // id 는 알 수 없으므로 null 응답
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":null") != null);
-}
-
-test "dispatchMcpRequest: tools/call reset_cache → cache_reset_requested 플래그 set" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    // 초기값 확인
-    try std.testing.expectEqual(false, dev_server.cache_reset_requested.load(.acquire));
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reset_cache","arguments":{}}}
-    , w);
-
-    // dispatcher 호출 후 플래그 set 됨
-    try std.testing.expectEqual(true, dev_server.cache_reset_requested.load(.acquire));
-    // 응답 형식 검증
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"id\":3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "Cache reset requested") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\"error\"") == null);
-}
-
-test "dispatchMcpRequest: get_build_events 가 새 event 도착 시 일찍 반환 (HOL blocking 완화)" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    // Background thread — dispatcher 호출 ~100ms 후 event 한 통 publish.
-    // 이전 코드는 duration 전체 (1초) sleep 후에야 응답 → ~1000ms 소요.
-    // 새 코드는 polling chunk 끝에서 즉시 break → ~100-200ms 안에 응답.
-    const Ctx = struct {
-        server: *DevServer,
-        fn run(ctx: @This()) void {
-            std.Thread.sleep(100 * std.time.ns_per_ms);
-            ctx.server.publishEvent(EventType.cache_reset, "{\"type\":\"test\"}");
-        }
-    };
-    var thread = try std.Thread.spawn(.{}, Ctx.run, .{Ctx{ .server = &dev_server }});
-    defer thread.join();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    const t0 = std.time.milliTimestamp();
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_build_events","arguments":{"duration":1000}}}
-    , w);
-    const elapsed_ms = std.time.milliTimestamp() - t0;
-
-    // duration=1000ms 인데 100ms 후 event 도착 → ~200ms 안에 응답 와야 함 (chunk_ns=100ms 라 최대 200ms).
-    // 700ms 까지 통과 허용 (CI noise) — 이전 코드는 1000ms 풀로 sleep 함.
-    try std.testing.expect(elapsed_ms < 700);
-    // event 한 통 (seq, type, data) 포함 검증
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "\\\"seq\\\":") != null);
-}
-
-test "dispatchMcpRequest: tools/call unknown tool → -32602" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    var dev_server = try DevServer.init(std.testing.allocator, .{ .root_dir = dir_path });
-    defer dev_server.deinit();
-
-    var resp: std.ArrayList(u8) = .empty;
-    defer resp.deinit(std.testing.allocator);
-    const w = resp.writer(std.testing.allocator);
-
-    _ = try dev_server.dispatchMcpRequest(
-        \\{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"nope","arguments":{}}}
-    , w);
-
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "-32602") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp.items, "Unknown tool") != null);
 }
