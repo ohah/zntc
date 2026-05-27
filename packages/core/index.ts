@@ -603,12 +603,14 @@ export interface StartDevServerOptions {
   /** HTTPS key (PEM). certPath 와 함께 줘야. */
   keyPath?: string;
   /**
-   * stderr 의 banner ("zntc dev server / Local: ...") 와 listen-fail log 출력 silence.
-   * NAPI embed 의 기본값은 true (자체 logger 가정). false 로 명시하면 stderr 출력.
+   * stderr 의 banner + 모든 routine log (request access 200/500, HMR / WS /
+   * watcher / mcp-app / sse / bundle progress / cache reset) silence. NAPI embed
+   * default true (자체 logger 가정). false 로 명시하면 stderr 출력.
    *
-   * **scope 명시**: 본 옵션은 banner 와 listen 에러 한정. HMR / WS / watcher /
-   * bundle / request 등 routine log 는 별도 — 현재 모두 stderr 직접 출력. 완전
-   * silent 가 필요하면 후속 PR 에서 verbose log 도 quiet 범위에 포함 예정.
+   * **critical 진단은 quiet 와 무관 항상 stderr** — init failure (cert 로드 /
+   * 디렉토리 못 찾음 / overlay sentinel), start fatal (host parse / listen 실패
+   * / watch thread spawn), deinit UAF 경고. 사용자가 throw 메시지 너머의 root
+   * cause 를 추적할 수 있도록 보장.
    */
   quiet?: boolean;
 }
