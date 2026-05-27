@@ -644,6 +644,11 @@ pub const Bundler = struct {
     resolve_cache: ResolveCache,
     /// 외부 소유 ResolveCache 포인터. non-null이면 이것을 사용하고 resolve_cache 필드는 무시.
     resolve_cache_ref: ?*ResolveCache = null,
+    /// 외부 소유 ModuleGraph 포인터 (RFC #3933 Sub-PR-B.2). non-null이면 bundle() 가
+    /// graph instance 를 init/deinit 하지 않고 그대로 재사용. caller (IncrementalBundler)
+    /// 가 빌드 사이 graph 보존 → cache hit 모듈의 replay 단계 short-circuit 가능.
+    /// 호출자 wire-up 은 Sub-PR-B.3 에서 — 현재는 API skeleton 만.
+    external_graph: ?*ModuleGraph = null,
     /// #3318 ④: MF seam(shared/remote external + 글로벌)을 옵션 레이어가
     /// 아닌 번들러 단일 지점(bundle() 초입)에서 `opts.mf` 로부터 유도한
     /// combined 버퍼. self.allocator 소유 → **deinit 가 유일 free 지점**
@@ -707,6 +712,21 @@ pub const Bundler = struct {
             .resolve_cache = rc.*, // resolve_cache_ref가 우선이므로 이 값은 사용 안 됨
             .resolve_cache_ref = rc,
         };
+    }
+
+    /// RFC #3933 Sub-PR-B.2 — 외부 owned ModuleGraph + ResolveCache 를 받는 생성자.
+    /// bundle() 가 graph 를 init/deinit 하지 않고 그대로 재사용. caller (IncrementalBundler)
+    /// 가 빌드 사이 graph 보존하면 cache hit 모듈의 replay 단계 short-circuit 가능 (Sub-PR-B.3).
+    /// 사용 전제: caller 가 graph 의 옵션 mirror (dev_mode, defines 등) 가 빌드 사이 일관 유지.
+    pub fn initWithGraph(
+        allocator: std.mem.Allocator,
+        options: BundleOptions,
+        rc: *ResolveCache,
+        graph: *ModuleGraph,
+    ) Bundler {
+        var b = initWithResolveCache(allocator, options, rc);
+        b.external_graph = graph;
+        return b;
     }
 
     /// 실제 사용할 ResolveCache 포인터를 반환.
@@ -1070,7 +1090,14 @@ pub const Bundler = struct {
 
         // 1. 모듈 그래프 구축
         var graph_scope = profile.begin(.graph);
-        var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
+        // RFC #3933 Sub-PR-B.2: external_graph 가 있으면 init/deinit skip — caller 보존.
+        // 옵션 mirror 는 매 빌드 갱신 (caller 가 빌드 사이 옵션 변경 가능 — idempotent).
+        var owned_graph_storage: ModuleGraph = undefined;
+        const has_external_graph = self.external_graph != null;
+        if (!has_external_graph) {
+            owned_graph_storage = ModuleGraph.init(self.allocator, self.getResolveCache());
+        }
+        const graph: *ModuleGraph = if (self.external_graph) |g| g else &owned_graph_storage;
         // this.emitFile (PR5): plugin 이 emit 한 asset 수집소. graph build 가 plugin hook 을
         // 호출하기 *전* 에 연결해야 한다. emit 된 asset 은 아래에서 OutputFile(kind=.asset)로
         // 복사되어 final_asset_outputs 에 합쳐지고, store 는 scratch 라 bundle() 종료 시 해제.
@@ -1128,7 +1155,8 @@ pub const Bundler = struct {
         graph.preserve_modules = self.options.preserve_modules;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();
-        defer graph.deinit();
+        // RFC #3933 Sub-PR-B.2: external_graph 면 deinit skip (caller 보존).
+        defer if (!has_external_graph) graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출.
         // reparsed_count: 증분 경로(=store 전달)일 때만 set — null은 전체 파싱을 의미.
@@ -1179,7 +1207,7 @@ pub const Bundler = struct {
         if (self.options.mf) |*mf| {
             const fed = @import("federation.zig");
             try fed.markBoundary(
-                &graph,
+                graph,
                 mf,
                 self.allocator,
                 self.options.entry_points,
@@ -1188,7 +1216,7 @@ pub const Bundler = struct {
             // P3-4 (#3439): 소유권 경계 린트 — 경계 모듈이 host-owned
             // store/Provider 자체 생성 시 비-차단 경고. markBoundary 직후
             // (경계 플래그 완료, 동일 graph 순회). 빌드 영향 0(경고만).
-            fed.lintOwnershipBoundary(&graph);
+            fed.lintOwnershipBoundary(graph);
         }
 
         if (graph.runtime_polyfill_roots.items.len > 0) {
@@ -1256,7 +1284,7 @@ pub const Bundler = struct {
         graph_scope.end();
 
         // ZNTC_DEBUG=module_stats → 모듈 분류 히스토그램 (docs/DEBUG.md §1).
-        if (@import("../debug_log.zig").enabled(.module_stats)) dumpModuleStats(&graph);
+        if (@import("../debug_log.zig").enabled(.module_stats)) dumpModuleStats(graph);
 
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
@@ -1267,7 +1295,7 @@ pub const Bundler = struct {
         const will_tree_shake = !self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking;
         var link_scope = profile.begin(.link);
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
-            var l = Linker.initWithGlobalIdentifiers(self.allocator, &graph, self.options.format, self.options.global_identifiers);
+            var l = Linker.initWithGlobalIdentifiers(self.allocator, graph, self.options.format, self.options.global_identifiers);
             // Metro+Babel은 named import를 CommonJS property access로 낮추므로, export가
             // 실제로 없어도 런타임 값은 ReferenceError가 아니라 undefined가 된다.
             l.shim_missing_exports = self.options.shim_missing_exports or self.options.platform == .react_native;
@@ -1315,7 +1343,7 @@ pub const Bundler = struct {
             var s = blk_init: {
                 var init_scope = profile.begin(.shake_init);
                 defer init_scope.end();
-                break :blk_init try TreeShaker.init(self.allocator, &graph, &(linker.?));
+                break :blk_init try TreeShaker.init(self.allocator, graph, &(linker.?));
             };
             {
                 var analyze_scope = profile.begin(.shake_analyze);
@@ -1561,7 +1589,7 @@ pub const Bundler = struct {
 
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
-                &graph,
+                graph,
                 &dev_emit_opts,
                 if (linker) |*l| l else null,
                 null, // dev mode: tree-shaking 비활성
@@ -1575,12 +1603,12 @@ pub const Bundler = struct {
             var chunk_graph = if (self.options.preserve_modules)
                 try chunk_mod.generatePreserveModulesChunks(
                     self.allocator,
-                    &graph,
+                    graph,
                     self.options.entry_points,
                     if (shaker) |*s| s else null,
                 )
             else
-                try chunk_mod.generateChunks(self.allocator, &graph, self.options.entry_points, .{
+                try chunk_mod.generateChunks(self.allocator, graph, self.options.entry_points, .{
                     .shaker = if (shaker) |*s| s else null,
                     .manual_chunks = self.options.manual_chunks,
                     .manual_resolver = self.options.manual_chunks_resolver,
@@ -1592,10 +1620,10 @@ pub const Bundler = struct {
             // 작은 common 청크 병합 (Rollup experimentalMinChunkSize 류).
             // computeCrossChunkLinks *전* — cross-chunk import 가 병합 후 기준 재계산.
             if (!self.options.preserve_modules and self.options.min_chunk_size > 0) {
-                chunk_mod.mergeSmallChunks(&chunk_graph, &graph, self.options.min_chunk_size);
+                chunk_mod.mergeSmallChunks(&chunk_graph, graph, self.options.min_chunk_size);
             }
 
-            try chunk_mod.computeCrossChunkLinks(&chunk_graph, &graph, self.allocator, if (linker) |*l| l else null);
+            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph, self.allocator, if (linker) |*l| l else null);
 
             var emit_opts = self.makeEmitOptions();
             emit_opts.preserve_modules = self.options.preserve_modules;
@@ -1618,7 +1646,7 @@ pub const Bundler = struct {
             var css_hrefs: ?[]?[]const u8 = null;
             errdefer if (css_hrefs) |h| self.allocator.free(h);
             if (!self.options.preserve_modules) {
-                css_plan = css_emit.planCssChunks(self.allocator, &graph, &chunk_graph, self.options.css_names) catch null;
+                css_plan = css_emit.planCssChunks(self.allocator, graph, &chunk_graph, self.options.css_names) catch null;
                 if (css_plan) |p| {
                     css_hrefs = css_emit.planChunkHrefs(self.allocator, p, chunk_graph.chunkCount()) catch null;
                     emit_opts.chunk_css_hrefs = css_hrefs;
@@ -1627,7 +1655,7 @@ pub const Bundler = struct {
 
             outputs = try emitter.emitChunks(
                 self.allocator,
-                &graph,
+                graph,
                 &chunk_graph,
                 &emit_opts,
                 if (linker) |*l| l else null,
@@ -1646,7 +1674,7 @@ pub const Bundler = struct {
             if (self.options.mf) |*mf|
                 // #3468: chunk_graph + css_hrefs(planChunkHrefs, 위에서
                 // 계산) 전달 → expose CSS 산출을 manifest assets.css 게시.
-                mf_manifest = try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, &graph, &chunk_graph, css_hrefs, self.options.public_path);
+                mf_manifest = try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, graph, &chunk_graph, css_hrefs, self.options.public_path);
 
             // emitChunks 가 href 를 청크 내용으로 복사 완료 → 이제 plan 의
             // path/contents 소유권을 OutputFile 로 이전(plan 컨테이너만 해제).
@@ -1702,7 +1730,7 @@ pub const Bundler = struct {
                 if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
                 const emit_result = try emitter.emitWithTreeShaking(
                     self.allocator,
-                    &graph,
+                    graph,
                     &emit_opts,
                     if (linker) |*l| l else null,
                     if (shaker) |*s| s else null,
@@ -1733,7 +1761,7 @@ pub const Bundler = struct {
             if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
-                &graph,
+                graph,
                 &emit_opts,
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
@@ -1833,7 +1861,7 @@ pub const Bundler = struct {
         const metafile_json: ?[]const u8 = if (self.options.metafile or self.options.analyze)
             try generateMetafileJson(
                 self.allocator,
-                &graph,
+                graph,
                 output,
                 outputs,
                 if (self.options.mf) |*mf| mf else null,
@@ -1899,7 +1927,7 @@ pub const Bundler = struct {
                 // 비-splitting / preserve-modules: entry 당 단일 CSS (기존 동작).
                 for (self.options.entry_points) |ep| {
                     const resolved = graph.path_to_module.get(ep) orelse continue;
-                    if (css_emit.emitCssBundle(self.allocator, &graph, resolved, self.options.css_names)) |css_out| {
+                    if (css_emit.emitCssBundle(self.allocator, graph, resolved, self.options.css_names)) |css_out| {
                         css_output_files.append(self.allocator, css_out) catch {};
                     }
                 }
