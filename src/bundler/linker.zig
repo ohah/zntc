@@ -2089,7 +2089,7 @@ pub const Linker = struct {
         if (target.wrap_kind != .cjs) return null;
         if (std.mem.eql(u8, ref.export_name, "default")) return null;
 
-        const req_var = try target.allocRequireName(self.allocator);
+        const req_var = try target.allocRequireName(self.allocator, &self.rename_table);
         defer self.allocator.free(req_var);
         return try std.fmt.allocPrint(self.allocator, "{s}().{s}", .{ req_var, ref.export_name });
     }
@@ -2432,7 +2432,7 @@ pub fn getOrCreateRequireVar(
 ) ![]const u8 {
     if (cache.get(mod_idx)) |cached| return cached;
     const target_mod = self.getModule(mod_idx).?;
-    const name = try target_mod.allocRequireName(self.allocator);
+    const name = try target_mod.allocRequireName(self.allocator, &self.rename_table);
     try cache.put(mod_idx, name);
     return name;
 }

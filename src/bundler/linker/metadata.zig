@@ -1131,7 +1131,7 @@ pub fn buildMetadataForAst(
                         try preamble.write(target_mod.dev_id);
                         try preamble.write("\"].fn()");
                     } else {
-                        const init_name = try target_mod.allocInitName(self.allocator);
+                        const init_name = try target_mod.allocInitName(self.allocator, &self.rename_table);
                         defer self.allocator.free(init_name);
                         try preamble.write(init_name);
                         try preamble.write("()");
@@ -1257,7 +1257,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 if (require_rewrites.get(rec.specifier)) |old| {
                     self.allocator.free(old);
                 }
-                const exports_name = try m.allocExportsName(self.allocator);
+                const exports_name = try m.allocExportsName(self.allocator, &self.rename_table);
                 defer self.allocator.free(exports_name);
                 // #1621: minify 시 __toCommonJS → $tC 축약.
                 const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
@@ -1281,7 +1281,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             const req_ref = if (self.dev_mode)
                 try types.fmtDevRequireCallExpr(self.allocator, target_mod.dev_id)
             else
-                try target_mod.allocRequireName(self.allocator);
+                try target_mod.allocRequireName(self.allocator, &self.rename_table);
             try require_rewrites.put(self.allocator, rec.specifier, req_ref);
         } else if (target_mod.wrap_kind == .esm) {
             // ESM 타겟: require("spec") → (init_xxx(), __toCommonJS(exports_xxx))
@@ -1292,9 +1292,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 const call_expr = try types.fmtDevRequireExpr(self.allocator, target_mod.dev_id);
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else {
-                const init_name = try target_mod.allocInitName(self.allocator);
+                const init_name = try target_mod.allocInitName(self.allocator, &self.rename_table);
                 defer self.allocator.free(init_name);
-                const exports_name = try target_mod.allocExportsName(self.allocator);
+                const exports_name = try target_mod.allocExportsName(self.allocator, &self.rename_table);
                 defer self.allocator.free(exports_name);
                 // #1621: minify 시 __toCommonJS → $tC 축약.
                 const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";

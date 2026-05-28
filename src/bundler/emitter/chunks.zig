@@ -22,6 +22,7 @@ const Codegen = @import("../../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
 const Linker = @import("../linker.zig").Linker;
+const RenameTable = @import("../symbol.zig").RenameTable;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
 const tree_shaker_mod = @import("../tree_shaker.zig");
 const TreeShaker = tree_shaker_mod.TreeShaker;
@@ -366,6 +367,7 @@ pub fn emitChunks(
                 chunk_graph,
                 chunk,
                 options.run_before_main,
+                if (linker) |l| &l.rename_table else null,
             );
             try emitRunBeforeMainCrossImports(
                 &chunk_output,
@@ -650,7 +652,7 @@ pub fn emitChunks(
 
             if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(sorted_pos, rbm_insert_after_pos)) {
                 const before_len = chunk_output.items.len;
-                try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
+                try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
                 if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
                 rbm_calls_emitted = true;
             }
@@ -696,7 +698,7 @@ pub fn emitChunks(
         }
         if (emit_top_level_rbm and !rbm_calls_emitted) {
             const before_len = chunk_output.items.len;
-            try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
+            try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
             if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
             rbm_calls_emitted = true;
         }
@@ -717,6 +719,7 @@ pub fn emitChunks(
                 chunk_graph,
                 chunk,
                 options.run_before_main,
+                if (linker) |l| &l.rename_table else null,
             );
         }
 
@@ -1085,12 +1088,13 @@ fn collectRunBeforeMainCrossImports(
     chunk_graph: *const ChunkGraph,
     current_chunk: *const Chunk,
     run_before_main: []const []const u8,
+    rename_tbl: ?*const RenameTable,
 ) !void {
     for (run_before_main) |rbm_path| {
         const rbm = graph.findModuleByPath(rbm_path) orelse continue;
         const source_chunk = chunk_graph.getModuleChunk(rbm.index);
         if (source_chunk == .none or source_chunk == current_chunk.index) continue;
-        const name = try runBeforeMainCallName(allocator, rbm) orelse continue;
+        const name = try runBeforeMainCallName(allocator, rbm, rename_tbl) orelse continue;
 
         var duplicate = false;
         for (out.items) |existing| {
@@ -1170,12 +1174,13 @@ fn collectRunBeforeMainExportNames(
     chunk_graph: *const ChunkGraph,
     current_chunk: *const Chunk,
     run_before_main: []const []const u8,
+    rename_tbl: ?*const RenameTable,
 ) !void {
     for (run_before_main) |rbm_path| {
         const rbm = graph.findModuleByPath(rbm_path) orelse continue;
         const source_chunk = chunk_graph.getModuleChunk(rbm.index);
         if (source_chunk == .none or source_chunk != current_chunk.index) continue;
-        const name = try runBeforeMainCallName(allocator, rbm) orelse continue;
+        const name = try runBeforeMainCallName(allocator, rbm, rename_tbl) orelse continue;
         errdefer allocator.free(name);
         if (containsName(out.items, name)) {
             allocator.free(name);
@@ -1185,12 +1190,12 @@ fn collectRunBeforeMainExportNames(
     }
 }
 
-fn runBeforeMainCallName(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {
+fn runBeforeMainCallName(allocator: std.mem.Allocator, module: *const Module, rename_tbl: ?*const RenameTable) !?[]const u8 {
     if (!module.wrap_kind.isWrapped()) return null;
     return if (module.wrap_kind == .cjs)
-        try module.allocRequireName(allocator)
+        try module.allocRequireName(allocator, rename_tbl)
     else
-        try module.allocInitName(allocator);
+        try module.allocInitName(allocator, rename_tbl);
 }
 
 fn appendUniqueName(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, name: []const u8) !void {
@@ -1443,14 +1448,14 @@ fn rewriteDynamicImports(
             const tmi: u32 = rec.resolved.toU32();
             const replacement_expr = switch (target_mod.wrap_kind) {
                 .esm => blk: {
-                    const init_name = try target_mod.allocInitName(allocator);
+                    const init_name = try target_mod.allocInitName(allocator, if (linker) |l| &l.rename_table else null);
                     defer allocator.free(init_name);
-                    const exports_name = try target_mod.allocExportsName(allocator);
+                    const exports_name = try target_mod.allocExportsName(allocator, if (linker) |l| &l.rename_table else null);
                     defer allocator.free(exports_name);
                     break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
                 },
                 .cjs => blk: {
-                    const require_name = try target_mod.allocRequireName(allocator);
+                    const require_name = try target_mod.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
                     defer allocator.free(require_name);
                     break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
                 },
@@ -1622,14 +1627,15 @@ pub fn rewriteDynamicImportsSingleFile(
         const target_mod = graph.getModule(rec.resolved) orelse continue;
         const replacement_expr = switch (target_mod.wrap_kind) {
             .esm => blk: {
-                const init_name = try target_mod.allocInitName(allocator);
+                // single-file 경로 (linker 파라미터 없음) → rt null, canonical field (parity 로 동치).
+                const init_name = try target_mod.allocInitName(allocator, null);
                 defer allocator.free(init_name);
-                const exports_name = try target_mod.allocExportsName(allocator);
+                const exports_name = try target_mod.allocExportsName(allocator, null);
                 defer allocator.free(exports_name);
                 break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
             },
             .cjs => blk: {
-                const require_name = try target_mod.allocRequireName(allocator);
+                const require_name = try target_mod.allocRequireName(allocator, null);
                 defer allocator.free(require_name);
                 break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
             },

@@ -59,6 +59,7 @@ const tla_warning_comment = "/* [" ++ error_codes.Code.tla_requires_esm_format.f
 const linker_mod = @import("linker.zig");
 const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
+const RenameTable = @import("symbol.zig").RenameTable;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const statement_shaker = @import("statement_shaker.zig");
 const stmt_info_mod = @import("stmt_info.zig");
@@ -764,7 +765,7 @@ pub fn emitWithTreeShaking(
         // 동시에 user entry body 는 setup 이후 실행된다.
         if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(i, rbm_insert_after_pos)) {
             const before_len = module_output.items.len;
-            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
+            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
             rbm_calls_emitted = true;
         }
@@ -917,7 +918,7 @@ pub fn emitWithTreeShaking(
     }
     if (emit_top_level_rbm and !rbm_calls_emitted) {
         const before_len = module_output.items.len;
-        try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
+        try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
         module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
         rbm_calls_emitted = true;
     }
@@ -982,7 +983,7 @@ pub fn emitWithTreeShaking(
                         try output.appendSlice(allocator, chain);
                     }
                 }
-                try appendGuardedModuleCall(&output, allocator, em, options);
+                try appendGuardedModuleCall(&output, allocator, em, options, if (linker) |l| &l.rename_table else null);
                 break;
             }
         }
@@ -1233,12 +1234,12 @@ pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator,
 
 /// 모듈의 wrap_kind에 따라 require_xxx() 또는 init_xxx() 호출 코드를 생성한다.
 /// run-before-main, 엔트리 자동 호출, star export init 등에서 공용.
-pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype) !void {
+pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype, rename_tbl: ?*const RenameTable) !void {
     if (!mod.wrap_kind.isWrapped()) return;
     const call_name = if (mod.wrap_kind == .cjs)
-        try mod.allocRequireName(allocator)
+        try mod.allocRequireName(allocator, rename_tbl)
     else
-        try mod.allocInitName(allocator);
+        try mod.allocInitName(allocator, rename_tbl);
     defer allocator.free(call_name);
     if (mod.wrap_kind != .cjs and mod.uses_top_level_await) {
         try output.appendSlice(allocator, "await ");
@@ -1256,15 +1257,16 @@ pub fn appendGuardedModuleCall(
     allocator: std.mem.Allocator,
     mod: anytype,
     options: *const EmitOptions,
+    rename_tbl: ?*const RenameTable,
 ) !void {
     if (!mod.shouldGuard(options.entry_error_guard)) {
-        try appendModuleCall(output, allocator, mod);
+        try appendModuleCall(output, allocator, mod, rename_tbl);
         return;
     }
     const call_name = if (mod.wrap_kind == .cjs)
-        try mod.allocRequireName(allocator)
+        try mod.allocRequireName(allocator, rename_tbl)
     else
-        try mod.allocInitName(allocator);
+        try mod.allocInitName(allocator, rename_tbl);
     defer allocator.free(call_name);
     // guard helper 에 함수 식별자만 전달. helper 가 fn() 호출.
     try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_FN_NAME_MIN else rt.GUARD_FN_NAME);
@@ -1277,10 +1279,10 @@ pub fn appendGuardedModuleCall(
 /// `entry_error_guard` 활성 시 각 rbm 호출도 `__zntc_guarded(...)` 로 wrap —
 /// Metro `getAppendScripts` 가 `runBeforeMainModule` 의 각 path 마다 별도
 /// `__r(N);` (= guardedLoadModule outer 호출) 을 emit 하는 것과 동등.
-pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, options: *const EmitOptions) !void {
+pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, options: *const EmitOptions, rename_tbl: ?*const RenameTable) !void {
     for (run_before_main) |rbm_path| {
         const rbm = graph.findModuleByPath(rbm_path) orelse continue;
-        try appendGuardedModuleCall(output, allocator, rbm, options);
+        try appendGuardedModuleCall(output, allocator, rbm, options, rename_tbl);
     }
 }
 
@@ -1932,7 +1934,7 @@ pub fn emitModule(
     if (module.wrap_kind == .cjs) {
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
-        const var_name = try module.allocRequireName(allocator);
+        const var_name = try module.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
         defer allocator.free(var_name);
 
         var wrapped: std.ArrayList(u8) = .empty;

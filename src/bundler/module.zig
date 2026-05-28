@@ -26,6 +26,8 @@ pub const ExportBinding = binding_scanner.ExportBinding;
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
+const RenameTable = symbol_mod.RenameTable;
+const SymbolID = symbol_mod.SymbolID;
 const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 
 pub const DISABLED_MODULE_PREFIX = "(disabled):";
@@ -460,19 +462,27 @@ pub const Module = struct {
     /// 주입한 경우 릴리즈/압축 출력에서는 그 이름을 우선 사용한다.
     /// 미등록이면 null.
     /// 반환 slice는 parse_arena가 소유 — 모듈 수명 내 유효.
-    fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId) ?[]const u8 {
+    /// RFC #3940 L.4c-2: rename 출처를 build-scope `rename_table` 로 전환 (Module 은 graph-scope
+    /// 라 Linker 직접 참조 불가 → caller 가 `rt` 전달). `rt` 가 null 이면 기존 `canonical_name`
+    /// field 경로 (parity 로 동일 값 — L.3 sink + L.4a sync). i 단계: non-esm_wrap caller 는 실제
+    /// rt, esm_wrap/finalize/cjs_wrap 은 null. L.5 에서 field 경로 제거 + rt 필수화.
+    fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId, rt: ?*const RenameTable) ?[]const u8 {
         const id = maybe_id orelse return null;
         const sem = self.semantic orelse return null;
         const idx: u32 = @intFromEnum(id);
         if (idx >= sem.symbols.items.len) return null;
-        const sym = sem.symbols.items[idx];
-        if (sym.canonical_name.len > 0) return sym.canonical_name;
-        const name = sym.synthetic_name;
+        if (rt) |t| {
+            if (t.get(SymbolID.make(self.index, idx))) |n| if (n.len > 0) return n;
+        } else {
+            const canon = sem.symbols.items[idx].canonical_name;
+            if (canon.len > 0) return canon;
+        }
+        const name = sem.symbols.items[idx].synthetic_name;
         return if (name.len > 0) name else null;
     }
 
-    pub fn getInitName(self: *const Module) ?[]const u8 {
-        return self.syntheticName(self.init_symbol);
+    pub fn getInitName(self: *const Module, rt: ?*const RenameTable) ?[]const u8 {
+        return self.syntheticName(self.init_symbol, rt);
     }
 
     /// 이 모듈이 ESM 순환 그룹의 일원인지. 0 = 순환 없음 (D065).
@@ -511,28 +521,28 @@ pub const Module = struct {
         return true;
     }
 
-    pub fn getExportsName(self: *const Module) ?[]const u8 {
-        return self.syntheticName(self.exports_symbol);
+    pub fn getExportsName(self: *const Module, rt: ?*const RenameTable) ?[]const u8 {
+        return self.syntheticName(self.exports_symbol, rt);
     }
 
-    pub fn getRequireName(self: *const Module) ?[]const u8 {
-        return self.syntheticName(self.require_symbol);
+    pub fn getRequireName(self: *const Module, rt: ?*const RenameTable) ?[]const u8 {
+        return self.syntheticName(self.require_symbol, rt);
     }
 
     /// `getInitName()`의 할당 버전 — 등록된 경우 dupe, 아니면 fresh 생성.
     /// 기존 `types.makeInitVarName(alloc, path)` 호출지의 drop-in 대체.
-    pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
-        if (self.getInitName()) |n| return allocator.dupe(u8, n);
+    pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
+        if (self.getInitName(rt)) |n| return allocator.dupe(u8, n);
         return types.makeInitVarName(allocator, self.path);
     }
 
-    pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
-        if (self.getExportsName()) |n| return allocator.dupe(u8, n);
+    pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
+        if (self.getExportsName(rt)) |n| return allocator.dupe(u8, n);
         return types.makeExportsVarName(allocator, self.path);
     }
 
-    pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
-        if (self.getRequireName()) |n| return allocator.dupe(u8, n);
+    pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
+        if (self.getRequireName(rt)) |n| return allocator.dupe(u8, n);
         return types.makeRequireVarName(allocator, self.path);
     }
 

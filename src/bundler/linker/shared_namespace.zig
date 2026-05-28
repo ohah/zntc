@@ -887,7 +887,7 @@ pub fn writeEsmInitExprBody(
         try writer.write(target_mod.dev_id);
         try writer.write("\"].fn()");
     } else {
-        const init_name = try target_mod.allocInitName(self.allocator);
+        const init_name = try target_mod.allocInitName(self.allocator, &self.rename_table);
         defer self.allocator.free(init_name);
         try writer.write(init_name);
         try writer.write("()");

@@ -171,9 +171,9 @@ pub fn emitEsmWrappedModule(
 ) !EsmEmitResult {
     const basename = module.wrapperId();
 
-    const init_name = try module.allocInitName(allocator);
+    const init_name = try module.allocInitName(allocator, null);
     defer allocator.free(init_name);
-    const exports_name = try module.allocExportsName(allocator);
+    const exports_name = try module.allocExportsName(allocator, null);
     defer allocator.free(exports_name);
 
     // AST top-level 문장을 분류
@@ -532,7 +532,7 @@ pub fn emitEsmWrappedModule(
                     const getter_val = switch (src_mod.wrap_kind) {
                         .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options),
                         .cjs => blk: {
-                            const rv = try src_mod.allocRequireName(allocator);
+                            const rv = try src_mod.allocRequireName(allocator, null);
                             defer allocator.free(rv);
                             break :blk try std.fmt.allocPrint(allocator, "{s}()", .{rv});
                         },
@@ -813,9 +813,9 @@ pub fn emitEsmWrappedModule(
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
-                            const iv = try source_mod.allocInitName(allocator);
+                            const iv = try source_mod.allocInitName(allocator, null);
                             defer allocator.free(iv);
-                            const ev = try source_mod.allocExportsName(allocator);
+                            const ev = try source_mod.allocExportsName(allocator, null);
                             defer allocator.free(ev);
                             // #1621: minify 시 __toCommonJS → $tC 축약.
                             const to_cjs_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
@@ -841,7 +841,7 @@ pub fn emitEsmWrappedModule(
                         if (found_preamble_var) |pv| {
                             try reexport_buf.appendSlice(allocator, pv);
                         } else {
-                            const rv = try source_mod.allocRequireName(allocator);
+                            const rv = try source_mod.allocRequireName(allocator, null);
                             defer allocator.free(rv);
                             const interop_mode = cjsInteropMode(options, module);
                             // #1621: minify 시 __toESM → $tE 축약.
@@ -1171,7 +1171,7 @@ fn appendWrappedInitCall(
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
             } else {
-                const iv = try src_mod.allocInitName(allocator);
+                const iv = try src_mod.allocInitName(allocator, null);
                 defer allocator.free(iv);
                 try buf.appendSlice(allocator, iv);
                 try buf.appendSlice(allocator, "()");
@@ -1179,7 +1179,7 @@ fn appendWrappedInitCall(
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .cjs => {
-            const rv = try src_mod.allocRequireName(allocator);
+            const rv = try src_mod.allocRequireName(allocator, null);
             defer allocator.free(rv);
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             try buf.appendSlice(allocator, rv);
@@ -1273,7 +1273,7 @@ fn makeLazyEsmGetterValue(
     const init_call = if (options.dev_mode) blk: {
         break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
     } else blk: {
-        const iv = try src_mod.allocInitName(allocator);
+        const iv = try src_mod.allocInitName(allocator, null);
         defer allocator.free(iv);
         break :blk try std.fmt.allocPrint(allocator, "{s}()", .{iv});
     };
@@ -1294,7 +1294,7 @@ fn makeEsmExportGetterValue(
     name: []const u8,
     options: *const EmitOptions,
 ) ![]const u8 {
-    const ev = try src_mod.allocExportsName(allocator);
+    const ev = try src_mod.allocExportsName(allocator, null);
     defer allocator.free(ev);
     const target = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
     defer allocator.free(target);
@@ -1306,7 +1306,7 @@ fn makeNamespaceGetterValue(
     src_mod: *const Module,
     options: *const EmitOptions,
 ) ![]const u8 {
-    const ev = try src_mod.allocExportsName(allocator);
+    const ev = try src_mod.allocExportsName(allocator, null);
     defer allocator.free(ev);
     return makeLazyEsmGetterValue(allocator, src_mod, ev, options);
 }
@@ -1345,12 +1345,12 @@ fn makeStarGetterValue(
                 if (l.tree_shaker_active and !canonical_mod.is_included) return null;
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
-                    const ev = try canonical_mod.allocExportsName(allocator);
+                    const ev = try canonical_mod.allocExportsName(allocator, null);
                     defer allocator.free(ev);
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, resolved.export_name });
                 }
                 if (canonical_mod.wrap_kind == .cjs) {
-                    const rv = try canonical_mod.allocRequireName(allocator);
+                    const rv = try canonical_mod.allocRequireName(allocator, null);
                     defer allocator.free(rv);
                     return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, resolved.export_name });
                 }
@@ -1369,7 +1369,7 @@ fn makeStarGetterValue(
             return try makeEsmExportGetterValue(allocator, src_mod, name, options);
         },
         .cjs => {
-            const rv = try src_mod.allocRequireName(allocator);
+            const rv = try src_mod.allocRequireName(allocator, null);
             defer allocator.free(rv);
             return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
         },
