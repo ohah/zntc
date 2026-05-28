@@ -341,7 +341,9 @@ fn getOrCreateSharedNamespaceVar(
         return raced.var_name;
     }
 
-    const fresh = try makeUniqueSharedNsVarNameLocked(mutable_self, base_name, seen_exports);
+    try ensureNsBaseRank(mutable_self);
+    const rank = mutable_self.ns_base_rank.get(target_mod_idx) orelse 0;
+    const fresh = try makeUniqueSharedNsVarNameLocked(mutable_self, base_name, rank, seen_exports);
     errdefer self.allocator.free(fresh);
     try mutable_self.ns_shared_inline_order.append(self.allocator, target_mod_idx);
     errdefer _ = mutable_self.ns_shared_inline_order.pop();
@@ -644,15 +646,56 @@ fn makeSharedNamespaceBaseName(self: *const Linker, target_mod_idx: u32) std.mem
     return buf.toOwnedSlice(self.allocator);
 }
 
+/// (#3966) sanitized base 가 같은 모듈들의 결정적 rank 를 1회 계산해 캐싱.
+/// renumber(#3564) 후 module_index 는 path-sorted 라 0..moduleCount 순회가
+/// 결정적. rank>0 (충돌) 인 모듈만 map 에 저장 — 부재 시 rank 0.
+/// 호출처(getOrCreateSharedNamespaceVar)가 `ns_cache_mutex` 를 보유한 상태에서
+/// 부르므로 별도 락 불필요.
+fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
+    if (self.ns_base_rank_built) return;
+    self.ns_base_rank_built = true;
+
+    var counts = std.StringHashMap(u32).init(self.allocator);
+    defer {
+        var it = counts.keyIterator();
+        while (it.next()) |k| self.allocator.free(k.*);
+        counts.deinit();
+    }
+
+    const n: u32 = @intCast(self.graph.moduleCount());
+    var idx: u32 = 0;
+    while (idx < n) : (idx += 1) {
+        const base = try makeSharedNamespaceBaseName(self, idx);
+        defer self.allocator.free(base);
+        const gop = try counts.getOrPut(base);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, base);
+            gop.value_ptr.* = 0;
+        }
+        const rank = gop.value_ptr.*;
+        gop.value_ptr.* = rank + 1;
+        if (rank > 0) {
+            try self.ns_base_rank.put(self.allocator, idx, rank);
+        }
+    }
+}
+
+/// rank 0 → `{base}_ns`, rank N>0 → `{base}_ns_{N+1}` (예: `core_ns`, `core_ns_2`).
+/// rank 가 target 의 module_index 로 결정되므로 병렬 materialize 순서와 무관 (#3966).
+/// 잔여 충돌(target 자체 export 와 동명 등 희소 케이스)은 결정적으로 증가.
 fn makeUniqueSharedNsVarNameLocked(
     self: *Linker,
     base: []const u8,
+    rank: u32,
     seen_exports: *std.StringHashMap(void),
 ) std.mem.Allocator.Error![]const u8 {
-    var candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns", .{base});
+    var candidate = if (rank == 0)
+        try std.fmt.allocPrint(self.allocator, "{s}_ns", .{base})
+    else
+        try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ base, rank + 1 });
     if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
 
-    var i: usize = 2;
+    var i: usize = if (rank == 0) 2 else rank + 2;
     while (true) : (i += 1) {
         self.allocator.free(candidate);
         candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ base, i });
@@ -971,4 +1014,65 @@ test "G1-step2: 복잡 VAL (call/string/depth) depth-track 보존" {
             "f:()=>t,g:()=>u,h:()=>v,\"q-x\":()=>w}",
         got,
     );
+}
+
+// ================================================================
+// #3966: shared namespace var 이름의 rank 기반 결정성 회귀 가드.
+// rank 는 target 의 module_index(path-sorted) 로 결정되므로 병렬 emit
+// materialize 순서와 무관하게 같은 base 의 충돌이 항상 같은 suffix 로 풀린다.
+// ================================================================
+
+fn testEmptyLinker(a: std.mem.Allocator, cache: *@import("../resolve_cache.zig").ResolveCache, graph: *@import("../graph.zig").ModuleGraph) Linker {
+    cache.* = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    graph.* = @import("../graph.zig").ModuleGraph.init(a, cache);
+    return Linker.init(a, graph, .esm);
+}
+
+test "#3966: rank → 결정적 ns var 이름 (rank 0 base_ns, rank N base_ns_{N+1})" {
+    const a = std.testing.allocator;
+    var cache: @import("../resolve_cache.zig").ResolveCache = undefined;
+    var graph: @import("../graph.zig").ModuleGraph = undefined;
+    var linker = testEmptyLinker(a, &cache, &graph);
+    defer linker.deinit();
+    defer graph.deinit();
+    defer cache.deinit();
+
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+
+    // 같은 base("core") 의 rank 0/1/2 → core_ns / core_ns_2 / core_ns_3.
+    // 발급 순서를 일부러 rank 역순(2→0→1)으로 호출해도 rank 만으로 이름이
+    // 결정됨을 검증 (materialize 순서 무관성 = #3966 핵심).
+    const n2 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 2, &seen);
+    defer a.free(n2);
+    try std.testing.expectEqualStrings("core_ns_3", n2);
+    try linker.ns_shared_var_names.put(a, n2, {});
+
+    const n0 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 0, &seen);
+    defer a.free(n0);
+    try std.testing.expectEqualStrings("core_ns", n0);
+    try linker.ns_shared_var_names.put(a, n0, {});
+
+    const n1 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 1, &seen);
+    defer a.free(n1);
+    try std.testing.expectEqualStrings("core_ns_2", n1);
+}
+
+test "#3966: target 자체 export 와 동명 충돌 시 결정적 증가" {
+    const a = std.testing.allocator;
+    var cache: @import("../resolve_cache.zig").ResolveCache = undefined;
+    var graph: @import("../graph.zig").ModuleGraph = undefined;
+    var linker = testEmptyLinker(a, &cache, &graph);
+    defer linker.deinit();
+    defer graph.deinit();
+    defer cache.deinit();
+
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+    // 모듈이 `x_ns` 라는 이름을 직접 export → rank 0 후보(x_ns) 충돌 → x_ns_2 로 증가.
+    try seen.put("x_ns", {});
+
+    const got = try makeUniqueSharedNsVarNameLocked(&linker, "x", 0, &seen);
+    defer a.free(got);
+    try std.testing.expectEqualStrings("x_ns_2", got);
 }

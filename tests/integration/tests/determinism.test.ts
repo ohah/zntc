@@ -95,4 +95,12 @@ describe('build determinism (#3564)', () => {
   test('code-splitting — manualChunks + dynamic', async () => {
     await expectDeterministic('code-splitting', 'index.js', ['--splitting'], 'outdir');
   });
+
+  // #3966: 서로 다른 디렉터리의 동일 basename(core/patch) 모듈을 namespace 로
+  // import + 값 사용 → shared-ns 객체 변수(core_ns/core_ns_2/...) 발급. 병렬
+  // emit 에서 이 이름의 base/suffix 배정이 first-come 비결정이었음. rank(=path-
+  // sorted module_index) 기반 배정으로 결정화.
+  test('ns-base-collision — 동일 basename namespace 값 사용 (#3966)', async () => {
+    await expectDeterministic('ns-base-collision', 'index.js');
+  });
 });
