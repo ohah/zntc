@@ -103,7 +103,7 @@ pub const UnifiedMangleResult = struct {
     }
 };
 
-/// 단일 호출 mangler. Phase A (빈도순 base54) + Phase B (per-module liveness)
+/// 단일 호출 mangler. Phase A (빈도순 base54) + Phase B (per-module scope-nesting)
 /// 를 counter/reserved 공유 상태로 순차 실행.
 pub fn mangleAll(
     allocator: std.mem.Allocator,
@@ -252,7 +252,7 @@ pub fn mangleAll(
     };
 
     // ================================================================
-    // Phase B — per-module scope liveness
+    // Phase B — per-module scope-nesting slot 할당
     // ================================================================
     const phase_b_stats = try allocator.alloc(mangler.ManglerStats, input.modules.len);
     errdefer allocator.free(phase_b_stats);

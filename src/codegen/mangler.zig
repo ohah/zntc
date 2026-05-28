@@ -52,13 +52,13 @@ pub const ManglerResult = struct {
 /// Mangler 호출 1회의 측정값. Unified mangler 로 마이그레이션 전/후의
 /// property 검증 (번들 크기 ± 1%, 이름 길이 총합 등) 에 사용.
 pub const ManglerStats = struct {
-    /// Phase 3 에서 생성된 고유 slot 수 (= 고유 base54 이름 수).
+    /// slot 할당(Phase 2+3)에서 생성된 고유 slot 수 (= 고유 base54 이름 수).
     slot_count: usize = 0,
     /// Phase 4 에서 할당된 slot 이름 길이의 합.
     slot_name_length_sum: usize = 0,
     /// Phase 4 종료 시점의 base54 name_counter 값 (예약어 스킵 포함 소비).
     name_counter_final: u32 = 0,
-    /// Phase 3 종료 시점의 reserved_names set 크기.
+    /// slot 할당 종료 시점의 reserved_names set 크기.
     reserved_size: usize = 0,
     /// Phase 5 후 renames 에 기록된 심볼 수 (원본과 동일하면 skip 되므로 slot_count 와 다를 수 있음).
     renamed_symbol_count: usize = 0,
@@ -73,8 +73,9 @@ pub const MangleInput = struct {
     scopes: []const Scope,
     symbols: []const Symbol,
     scope_maps: []const std.StringHashMap(usize),
-    /// Mangler 는 (symbol_id, scope_id) 만 소비. node_index/kind 필드는
-    /// dead store / property mangle 등 다른 consumer 용.
+    /// **scope-nesting 전환 후 mangle() 미사용** (과거 liveness graph-coloring 의 per-symbol
+    /// liveness 계산 입력이었음). slot 할당은 scope_maps + scope tree 만으로 결정. 호출처 호환
+    /// 및 다른 consumer(dead store / property mangle) 용으로 필드는 유지.
     references: []const Reference,
     source: []const u8,
     /// 번들 모드에서 mangling 제외할 symbol indices (null이면 없음)
@@ -246,12 +247,12 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
 }
 
 // ============================================================
-// Slot 할당 (Phase 2+3) — 공유 binding 수집 + 두 알고리즘
+// Slot 할당 (Phase 2+3) — binding 수집 + scope-nesting
 // ============================================================
 
 /// 한 scope 의 binding 을 수집해 `binding_buf` 에 채운다(sym_idx 오름차순 정렬).
 /// shouldSkip/blocksMangling/skip_symbols 로 mangle 제외 심볼은 제외하고, 출력에 남는
-/// 원본 이름은 `reserved_names` 에 등록. 신/구 slot 알고리즘이 공유 (동일 분류 보장).
+/// 원본 이름은 `reserved_names` 에 등록.
 fn collectScopeBindings(
     scope_idx: u32,
     scope_maps: []const std.StringHashMap(usize),
@@ -346,6 +347,10 @@ fn assignSlotsScopeNesting(
             const slot_id = local_slot;
             local_slot += 1;
             symbol_to_slot[sym_idx] = slot_id;
+            // slot_id 는 항상 0..N 연속 (start_slot ≤ slot_refs.len 상속 + 1 씩 증가) → 아래
+            // while 은 0/1 개만 append. gap 이 생기면 phantom slot 이 base54 이름을 낭비하므로
+            // 불변식을 assert 로 명문화 (start_slot 상속 로직 변경 시 회귀 가드).
+            std.debug.assert(slot_id <= slot_refs.items.len);
             while (slot_refs.items.len <= slot_id) try slot_refs.append(allocator, 0);
             slot_refs.items[slot_id] += symbols[sym_idx].reference_count;
         }
@@ -721,4 +726,64 @@ test "mangle: scope-nesting 자식 binding 은 부모 slot 을 안 받음 (shado
     const o = result.renames.get(0) orelse return error.NoRenameOuter;
     const i = result.renames.get(1) orelse return error.NoRenameInner;
     try std.testing.expect(!std.mem.eql(u8, o, i));
+}
+
+test "mangle: scope-nesting 깊이 3 — grandchild ≠ grandparent, cousin 은 재사용" {
+    const allocator = std.testing.allocator;
+
+    // scope tree: 0(root) → 1(func) → {2(block), 3(block)} ; 2 → 4(block).
+    //   gp@1, alpha@2, beta@3(=alpha 의 cousin), deepv@4(=gp 의 grandchild).
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(2), .kind = .block, .is_strict = false, .symbol_count = 1 },
+    };
+    const names = [_][]const u8{ "gpvar", "alpha", "beta", "deepv" };
+    const decl_scopes = [_]u32{ 1, 2, 3, 4 };
+    var symbols: [4]Symbol = undefined;
+    for (&symbols, 0..) |*s, idx| {
+        s.* = .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(decl_scopes[idx]),
+            .origin_scope = @enumFromInt(decl_scopes[idx]),
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = Span{ .start = 0, .end = 0 },
+            .reference_count = 1,
+            .synthetic_name = names[idx],
+        };
+    }
+
+    var maps: [5]std.StringHashMap(usize) = undefined;
+    for (&maps) |*m| m.* = std.StringHashMap(usize).init(allocator);
+    defer for (&maps) |*m| m.deinit();
+    try maps[1].put("gpvar", 0);
+    try maps[2].put("alpha", 1);
+    try maps[3].put("beta", 2);
+    try maps[4].put("deepv", 3);
+
+    var result = try mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &maps,
+        .references = &.{},
+        .source = "",
+    });
+    defer result.deinit();
+
+    const gp = result.renames.get(0) orelse return error.NoGp;
+    const alpha = result.renames.get(1) orelse return error.NoAlpha;
+    const beta = result.renames.get(2) orelse return error.NoBeta;
+    const deepv = result.renames.get(3) orelse return error.NoDeep;
+
+    // cousin (alpha@2, beta@3): 같은 부모 slot 카운트 상속 → 같은 slot/이름.
+    try std.testing.expectEqualStrings(alpha, beta);
+    // grandchild(deepv@4) ≠ grandparent(gp@1): 부모 slot 이후 상속 → 다른 이름.
+    try std.testing.expect(!std.mem.eql(u8, deepv, gp));
+    // grandchild ≠ 자기 부모(alpha@2): deepv 는 alpha slot 이후.
+    try std.testing.expect(!std.mem.eql(u8, deepv, alpha));
+    // 부모(gp) ≠ 자식(alpha).
+    try std.testing.expect(!std.mem.eql(u8, gp, alpha));
 }
