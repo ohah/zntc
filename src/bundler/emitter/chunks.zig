@@ -1591,6 +1591,7 @@ pub fn rewriteDynamicImportsSingleFile(
     module: *const Module,
     graph: *const ModuleGraph,
     lower_unresolved_dynamic_imports: bool,
+    rename_tbl: ?*const RenameTable,
 ) ![]const u8 {
     if (module.import_records.len == 0) return try allocator.dupe(u8, code);
     if (!graph.inline_dynamic_imports) return try allocator.dupe(u8, code);
@@ -1627,15 +1628,15 @@ pub fn rewriteDynamicImportsSingleFile(
         const target_mod = graph.getModule(rec.resolved) orelse continue;
         const replacement_expr = switch (target_mod.wrap_kind) {
             .esm => blk: {
-                // single-file 경로 (linker 파라미터 없음) → rt null, canonical field (parity 로 동치).
-                const init_name = try target_mod.allocInitName(allocator, null);
+                // RFC #3940 L.5b: caller(emitWithTreeShaking)가 linker 보유 → rt 전달.
+                const init_name = try target_mod.allocInitName(allocator, rename_tbl);
                 defer allocator.free(init_name);
-                const exports_name = try target_mod.allocExportsName(allocator, null);
+                const exports_name = try target_mod.allocExportsName(allocator, rename_tbl);
                 defer allocator.free(exports_name);
                 break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
             },
             .cjs => blk: {
-                const require_name = try target_mod.allocRequireName(allocator, null);
+                const require_name = try target_mod.allocRequireName(allocator, rename_tbl);
                 defer allocator.free(require_name);
                 break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
             },
