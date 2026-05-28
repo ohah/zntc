@@ -630,6 +630,89 @@ test "IncrementalBundler: build error returns error message" {
     }
 }
 
+test "IncrementalBundler: cache-hit 충돌 모듈의 rename 이 fresh 빌드와 byte-identical (RFC #3940 L.5c)" {
+    // RFC #3940 L.5c 로 Symbol.canonical_name field 가 제거되어 rename 은 build-scope
+    // Linker.rename_table 에만 산다. 삭제된 canonical_name UAF 테스트의 대체 — 충돌 rename 된
+    // 모듈이 다음 build 에서 cache-hit(semantic 재사용) 될 때, 새 build 의 rename_table 이
+    // 정확히 재계산돼 from-scratch 빌드와 동일한 번들을 stale/garbage 없이 내는지 검증한다.
+    // (구 버그: 이전 build 의 freed canonical_strings 포인터가 store 모듈에 dangling →
+    // cache-hit 시 garbage emit.)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 같은 이름 'count' 가 두 모듈에서 export → 충돌 → 한쪽이 count$1 로 rename.
+    try writeFile(tmp.dir, "a.ts", "export const count = 1;");
+    try writeFile(tmp.dir, "b.ts", "export const count = 2;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { count as A } from './a';
+        \\import { count as B } from './b';
+        \\console.log(A, B);
+        \\
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    // store 를 mtime 까지 워밍 (B3: 첫 build 부터 cache put).
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer ib.deinit();
+    for (0..2) |_| {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    // index.ts 만 수정 → 충돌 모듈 a.ts/b.ts 는 cache-hit. (mtime 변별 위해 sleep.)
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "index.ts",
+        \\import { count as A } from './a';
+        \\import { count as B } from './b';
+        \\console.log(A, B, 1);
+        \\
+    );
+
+    // (1) store 공유 빌드: index.ts reparse, a.ts/b.ts cache-hit.
+    var cached = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .module_store = &ib.persistent_store,
+    });
+    defer cached.deinit();
+    var cached_result = try cached.bundle();
+    defer cached_result.deinit(std.testing.allocator);
+
+    // cache-hit 확인: index.ts 만 reparse, 충돌 모듈 a.ts/b.ts 는 미-reparse.
+    try std.testing.expect(cached_result.reparsed_paths != null);
+    var saw_index = false;
+    for (cached_result.reparsed_paths.?) |p| {
+        if (std.mem.endsWith(u8, p, "a.ts")) return error.ConflictModuleReparsed;
+        if (std.mem.endsWith(u8, p, "b.ts")) return error.ConflictModuleReparsed;
+        if (std.mem.endsWith(u8, p, "index.ts")) saw_index = true;
+    }
+    try std.testing.expect(saw_index);
+
+    // (2) from-scratch 빌드 (store 없음, 수정된 index.ts 읽음).
+    var fresh = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer fresh.deinit();
+    var fresh_result = try fresh.bundle();
+    defer fresh_result.deinit(std.testing.allocator);
+
+    // 충돌 rename 이 실제로 발생(non-vacuous) + 출력이 valid UTF-8 (stale/garbage 0).
+    try std.testing.expect(std.mem.indexOf(u8, fresh_result.output, "count$1") != null);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cached_result.output));
+
+    // 핵심: cache-hit 출력이 from-scratch 출력과 byte-identical — cache-hit 충돌 모듈의
+    // rename 이 새 build 의 rename_table 로 정확히 재계산됨(stale pointer 없음).
+    try std.testing.expectEqualStrings(fresh_result.output, cached_result.output);
+}
+
 // ============================================================
 // RFC #1672 Phase B3 — first-build cache reuse
 // ============================================================
