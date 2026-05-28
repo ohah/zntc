@@ -283,7 +283,7 @@ semantic 을 "다음 레버" 로 단정하지 말고 *후보* 로만 본다. 실
 - **parse (parser.ast)**: nodes / extra_data / string_table.
 
 둘 다 본 RFC 범위 밖 — `RFC_LIFECYCLE_SCOPE_REDESIGN` (cross-build memory ownership)
-또는 별도 analyzer/parser 메모리 RFC 후보.
+또는 별도 analyzer/parser 메모리 RFC 후보. 추적: **#3957** (다음 메모리 레버 epic).
 
 ### 11.3 측정 인프라 한계 (중요)
 
@@ -303,7 +303,8 @@ semantic 을 "다음 레버" 로 단정하지 말고 *후보* 로만 본다. 실
 
 clone 회피 (PR-1 API + PR-2 적용) 로 transformer 영역의 RSS 기여 (~80 MB) 소진.
 잔여는 parse/semantic 으로 본 RFC 범위 밖. **추가 정밀화는 별도 epic** (analyzer/parser
-메모리 또는 lifecycle redesign) 으로 분리. 본 RFC 의 transformer-ownership 레버는 종결.
+메모리 또는 lifecycle redesign) 으로 분리 — **추적 이슈 #3957**. 본 RFC 의
+transformer-ownership 레버는 종결.
 
 ## 8. 박제 (재시도 금지)
 
