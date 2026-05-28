@@ -255,6 +255,34 @@ test "graph: unresolved import — error diagnostic" {
     try std.testing.expect(has_unresolved);
 }
 
+test "graph: unresolved import — 진단 1회만 (중복 방지 회귀)" {
+    // #3966 후속: hard-error 로 실패한 record 는 resolve_failed 로 마킹되어
+    // applyScanResult 의 직접 호출 + 후속 resolveModuleImports 양쪽에서 재처리되지
+    // 않는다. value usage 가 있어 hard-error 경로(soft-fail 아님)를 타게 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import x from './nonexistent';\nconsole.log(x);");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    // 같은 unresolved import 에 대한 error 진단은 정확히 1개여야 한다 (중복 출력 버그 가드).
+    var unresolved_errors: usize = 0;
+    for (graph.diagnostics.items) |d| {
+        if (d.code == .unresolved_import and d.severity == .@"error") unresolved_errors += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), unresolved_errors);
+}
+
 test "graph: unresolved type-only import — soft fail with warning (#2466)" {
     // react-native-screens/types 패턴: subpath 가 .d.ts 만 export 하므로 resolve 실패하지만
     // X 가 type position 에서만 쓰이면 babel typescript preset 처럼 statement 통째 elide
