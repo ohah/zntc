@@ -168,6 +168,12 @@ pub fn build(b: *std.Build) void {
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
+    // lib/exe 테스트 바이너리를 직렬 실행. 둘을 병렬로 돌리면 CI runner 자원 경합 +
+    // `.zig-cache/tmp` 임시파일 race 로 무관 테스트가 seed-랜덤하게 spurious fail 한다
+    // (예: profile.snapshotToJson, parser.ast_walk_test). exe 가 lib 완료 후 돌게 해
+    // 한 번에 한 테스트 프로세스만 실행되도록 강제한다.
+    run_exe_unit_tests.step.dependOn(&run_lib_unit_tests.step);
+
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
