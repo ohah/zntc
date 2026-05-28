@@ -281,6 +281,13 @@ pub const Linker = struct {
     ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .{},
     ns_shared_inline_order: std.ArrayListUnmanaged(u32) = .empty,
     ns_shared_var_names: std.StringHashMapUnmanaged(void) = .{},
+    /// (#3966) shared namespace var 이름의 결정적 충돌 해소. 같은 sanitized
+    /// base (예: 서로 다른 디렉터리의 `core.js`) 를 갖는 모듈들 중 module_index
+    /// (renumber 후 path-sorted, 결정적) 순서의 rank. rank>0 인 모듈만 저장
+    /// (충돌 희소) — 부재 시 rank 0. 병렬 emit 의 first-come-first-served
+    /// 이름 claim 이 `core_ns`/`core_ns_2` 를 run 마다 뒤바꾸던 비결정 제거.
+    ns_base_rank: std.AutoHashMapUnmanaged(u32, u32) = .{},
+    ns_base_rank_built: bool = false,
     /// computeCrossChunkLinks(메타데이터 前 실행, chunk graph 보유)가 채우는
     /// "정의자 청크가 다른" namespace re-export target 집합. registerNamespace
     /// Rewrites 는 metadata 시점에 chunk 정보가 없으므로 이 집합으로 shared
@@ -425,6 +432,7 @@ pub const Linker = struct {
         self.ns_shared_inline_cache.deinit(self.allocator);
         self.ns_shared_inline_order.deinit(self.allocator);
         self.ns_shared_var_names.deinit(self.allocator);
+        self.ns_base_rank.deinit(self.allocator);
         self.ns_cross_chunk_targets.deinit(self.allocator);
         // #1791 fatal diag message 해제 (allocPrint owned)
         for (self.fatal_diagnostics.items) |d| self.allocator.free(d.message);
