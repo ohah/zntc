@@ -288,6 +288,7 @@ pub const Module = struct {
     /// new idx 로 채우고, bundler 의 post-shake finalize 가 `applyPendingRenames` 로 mutable
     /// `rename_table` 에 반영 후 비운다. value 는 `Linker.canonical_strings` borrow (같은 build
     /// finalize 내 소비). build-scope 라 store round-trip 전 반드시 clear (cross-build dangling 방지).
+    /// 맵 backing 은 `parse_arena` 소유 — 개별 `deinit` 금지 (`arena.deinit` 가 일괄 해제, #1287).
     pending_renames: RenameTable = .{},
 
     /// 내가 import하는 모듈들 (순방향)
