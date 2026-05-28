@@ -88,6 +88,8 @@ pub const incremental = @import("incremental.zig");
 pub const IncrementalBundler = incremental.IncrementalBundler;
 pub const compiled_cache = @import("compiled_cache.zig");
 pub const CompiledOutputCache = compiled_cache.CompiledOutputCache;
+pub const chunk_emit_cache = @import("chunk_emit_cache.zig");
+pub const ChunkEmitCache = chunk_emit_cache.ChunkEmitCache;
 
 test {
     _ = types;
@@ -111,6 +113,7 @@ test {
     _ = plugin;
     _ = module_store;
     _ = symbol;
+    _ = chunk_emit_cache; // RFC_EMIT_INCREMENTAL Sub-PR-C.1 — 인라인 test 발견
 
     // emitter/ 하위 파일 (dev.zig 등) 의 인라인 test 블록을 test 빌드가
     // 발견하도록 명시적으로 reference. emitter.zig 는 dev 를 사용하지만
