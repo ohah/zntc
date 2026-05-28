@@ -23,6 +23,7 @@ const ModuleGraph = @import("graph.zig").ModuleGraph;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const Linker = @import("linker.zig").Linker;
+const bundler_symbol = @import("symbol.zig");
 const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
@@ -235,7 +236,12 @@ pub const TreeShaker = struct {
         // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
         // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
         std.debug.assert(m.parse_arena != null);
-        self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator(), &self.linker.rename_table) catch {
+        // L.5a: carry-over capture 는 apply (bundler post-shake, !code_splitting) 와 발화 조건을 맞춘다.
+        // code_splitting 은 per-chunk computeRenamesForModules 가 rename 을 재계산하므로 carry-over 가
+        // 무의미 + apply 미실행 → capture 한 pending 이 clear 안 돼 store dangling. code_splitting 이면
+        // rename_table=null 로 capture skip (apply 와 대칭).
+        const rt: ?*const bundler_symbol.RenameTable = if (self.graph.code_splitting) null else &self.linker.rename_table;
+        self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator(), rt) catch {
             m.prebuilt_stmt_info = null;
         };
         self.ast_mutated_after_link = true;
