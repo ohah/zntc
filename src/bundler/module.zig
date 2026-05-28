@@ -469,10 +469,10 @@ pub const Module = struct {
     /// 주입한 경우 릴리즈/압축 출력에서는 그 이름을 우선 사용한다.
     /// 미등록이면 null.
     /// 반환 slice는 parse_arena가 소유 — 모듈 수명 내 유효.
-    /// RFC #3940 L.4c-2: rename 출처를 build-scope `rename_table` 로 전환 (Module 은 graph-scope
-    /// 라 Linker 직접 참조 불가 → caller 가 `rt` 전달). `rt` 가 null 이면 기존 `canonical_name`
-    /// field 경로 (parity 로 동일 값 — L.3 sink + L.4a sync). i 단계: non-esm_wrap caller 는 실제
-    /// rt, esm_wrap/finalize/cjs_wrap 은 null. L.5 에서 field 경로 제거 + rt 필수화.
+    /// RFC #3940 L.5b: rename 출처는 build-scope `rename_table` (Module 은 graph-scope 라 Linker
+    /// 직접 참조 불가 → caller 가 `rt` 전달). `rt == null` 은 rename 이 아직/원래 없는 컨텍스트
+    /// (finalize: mangle 전 / cjs_wrap: semantic 없음) — synthetic_name fallback. (L.4c-2 의
+    /// `canonical_name` field 이중 경로는 L.5b 에서 제거 — rename_table 단일 출처.)
     fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId, rt: ?*const RenameTable) ?[]const u8 {
         const id = maybe_id orelse return null;
         const sem = self.semantic orelse return null;
@@ -480,9 +480,6 @@ pub const Module = struct {
         if (idx >= sem.symbols.items.len) return null;
         if (rt) |t| {
             if (t.get(SymbolID.make(self.index, idx))) |n| if (n.len > 0) return n;
-        } else {
-            const canon = sem.symbols.items[idx].canonical_name;
-            if (canon.len > 0) return canon;
         }
         const name = sem.symbols.items[idx].synthetic_name;
         return if (name.len > 0) name else null;
