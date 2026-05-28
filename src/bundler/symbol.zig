@@ -139,6 +139,57 @@ pub const SymbolID = packed struct {
     }
 };
 
+/// Build-scope per-build rename table — `SymbolID → 최종 이름` (RFC #3940 Sub-PR-L.3).
+///
+/// esbuild 패턴: symbol identity (integer `SymbolID`) 와 rename 결과 (string) 를 분리한다.
+/// 목표는 `Symbol.canonical_name` (build-scope `Linker` 가 alloc → graph-scope `Symbol` 에
+/// 저장 = cross-build dangling, RFC #3933 segfault root) 을 제거하고 rename 을 build-scope
+/// 로 외부화하는 것.
+///
+/// **L.3 = 병행 작성 단계**: `Linker.assignSymbolCanonical` (신규 canonical write 의 단일
+/// sink) 가 `Symbol.canonical_name` 과 RenameTable 에 *동시* 기록한다. 두 결과의 parity 를
+/// 검증한 뒤 (Sub-PR-L.4) emitter 가 RenameTable lookup 으로 전환하고, (Sub-PR-L.5)
+/// `canonical_name` field 를 제거한다.
+///
+/// **예외 (L.4 처리 필요)**: `graph/transform_prepass.zig` 의 carry-over
+/// (`preserveCanonicalNamesAfterSemanticResync`) 와 `graph/build_flow.zig` 의 cache-hit
+/// reset (`canonical_name = ""`) 은 *Linker 가 없는 graph 단계* 라 이 sink 를 우회한다.
+/// fresh build 에선 이후 link 가 rename 을 재계산해 sink 를 통과하므로 parity 가 성립하지만,
+/// AST mutation 후 semantic resync 의 preserved name 은 rename_table 에 미동기다. emitter 가
+/// rename_table 로 전환(L.4)하기 전에 이 carry-over 경로의 동기화를 반드시 해결해야 한다.
+///
+/// **값 string 은 borrow**: 병행 단계에선 `Linker.canonical_strings` 가 value 를 소유하고
+/// RenameTable 은 같은 slice 를 가리키기만 한다 (free 안 함). field 제거(L.5) 후 owning 으로
+/// 승격될 수 있다.
+///
+/// **build-scope**: `Linker` lifetime. `clearCanonicalNames` (per-chunk/per-build reset) 시
+/// 함께 clear.
+pub const RenameTable = struct {
+    map: std.AutoHashMapUnmanaged(SymbolID, []const u8) = .empty,
+
+    pub fn deinit(self: *RenameTable, allocator: std.mem.Allocator) void {
+        self.map.deinit(allocator);
+    }
+
+    /// `SymbolID → name` 등록 (덮어쓰기). `name` 은 borrow (caller/canonical_strings 소유).
+    pub fn put(self: *RenameTable, allocator: std.mem.Allocator, id: SymbolID, name: []const u8) !void {
+        try self.map.put(allocator, id, name);
+    }
+
+    pub fn get(self: *const RenameTable, id: SymbolID) ?[]const u8 {
+        return self.map.get(id);
+    }
+
+    pub fn count(self: *const RenameTable) u32 {
+        return self.map.count();
+    }
+
+    /// 모든 entry 제거 (capacity 유지). per-chunk / per-build reset.
+    pub fn clear(self: *RenameTable) void {
+        self.map.clearRetainingCapacity();
+    }
+};
+
 /// Re-export alias 레코드.
 /// `name`은 exported_name(barrel 기준). `canonical_name`은 체인 resolve 후
 /// linker가 주입한 최종 참조 이름. `ref_count`는 symbol-level tree-shaking 용.
@@ -299,4 +350,31 @@ test "SymbolID: AutoHashMap 키로 사용 (RenameTable 기반)" {
     try std.testing.expectEqual(@as(u32, 3), map.count());
     // 동일 키 재조회 (eql 동작)
     try std.testing.expectEqualStrings("a$1", map.get(SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 10)).?);
+}
+
+test "RenameTable: put/get/count/clear + 덮어쓰기" {
+    var rt: RenameTable = .{};
+    defer rt.deinit(std.testing.allocator);
+
+    const a = SymbolID.make(@as(ModuleIndex, @enumFromInt(0)), 1);
+    const b = SymbolID.make(@as(ModuleIndex, @enumFromInt(0)), 2);
+
+    try std.testing.expectEqual(@as(?[]const u8, null), rt.get(a));
+    try rt.put(std.testing.allocator, a, "a$1");
+    try rt.put(std.testing.allocator, b, "b$1");
+    try std.testing.expectEqual(@as(u32, 2), rt.count());
+    try std.testing.expectEqualStrings("a$1", rt.get(a).?);
+    try std.testing.expectEqualStrings("b$1", rt.get(b).?);
+
+    // 같은 SymbolID 재할당 → 덮어쓰기 (assignSymbolCanonical 의 had_prior 경로 모사)
+    try rt.put(std.testing.allocator, a, "a$2");
+    try std.testing.expectEqual(@as(u32, 2), rt.count());
+    try std.testing.expectEqualStrings("a$2", rt.get(a).?);
+
+    rt.clear();
+    try std.testing.expectEqual(@as(u32, 0), rt.count());
+    try std.testing.expectEqual(@as(?[]const u8, null), rt.get(a));
+    // clear 후 재사용 가능 (capacity 유지)
+    try rt.put(std.testing.allocator, b, "b$2");
+    try std.testing.expectEqualStrings("b$2", rt.get(b).?);
 }

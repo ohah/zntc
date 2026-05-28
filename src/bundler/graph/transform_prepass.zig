@@ -217,6 +217,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 /// 이 중앙 resync 경로를 우회해서 record/binding 만 수동 보정하면 linker, tree-shaker,
 /// chunking 이 서로 다른 AST/semantic 상태를 보게 되므로 여기서만 metadata 재구축
 /// 정책을 확장해야 한다 (#1913).
+/// **RFC #3940 L.4 blocker**: 이 carry-over 는 `Linker.assignSymbolCanonical` (신규 canonical
+/// write 의 단일 sink) 를 우회해 `canonical_name` 을 graph 단계 (Linker 없음) 에서 직접 복사한다.
+/// 따라서 여기서 preserve 된 name 은 `Linker.rename_table` 에 동기화되지 않는다 (Sub-PR-L.3).
+/// fresh build 에선 이후 link 가 rename 을 재계산해 sink 를 통과하므로 무해하지만, emitter 가
+/// rename_table lookup 으로 전환(L.4)하면 이 preserved name 이 누락된다. L.4 진행 시 이 경로를
+/// rename_table 동기화(또는 carry-over 자체를 SymbolID 기반으로 재설계)해야 한다.
 fn preserveCanonicalNamesAfterSemanticResync(
     source: []const u8,
     old_sem: ModuleSemanticData,
