@@ -8,7 +8,21 @@ const es_helpers = @import("es_helpers.zig");
 /// - `.owned_from_caller`: `initFromOwnedAst` (호출자가 ast 인스턴스의 lifetime 보유,
 ///    transformer 는 *직접 mutate* 하나 deinit/destroy 는 호출자 책임). transpile path
 ///    에서 cloneForTransformer 회피용 — RFC_TRANSFORMER_OWN_AST 참조.
-pub const AstOwnership = enum { owned, borrowed, owned_from_caller };
+pub const AstOwnership = enum {
+    owned,
+    borrowed,
+    owned_from_caller,
+
+    /// transformer 의 deinit 이 ast.deinit() + allocator.destroy(ast) 를 수행해야 하는지.
+    /// `.owned` 만 true — 그 외엔 외부 owner (borrowed) 또는 caller (owned_from_caller) 책임.
+    /// exhaustive switch 로 미래 variant 추가 시 컴파일 에러로 누락 방지.
+    pub fn transformerFreesAst(self: AstOwnership) bool {
+        return switch (self) {
+            .owned => true,
+            .borrowed, .owned_from_caller => false,
+        };
+    }
+};
 
 pub const BlockRenameEntry = struct {
     old_name: []const u8,

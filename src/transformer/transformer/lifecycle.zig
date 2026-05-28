@@ -10,9 +10,17 @@ const TransformOptions = transformer_mod.TransformOptions;
 const Error = Transformer.Error;
 const AstOwnership = state_mod.AstOwnership;
 
-pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Error!Transformer {
+/// 3-constructor 공통: experimental_decorators 가 true 면 use_define_for_class_fields 가 false 여야 한다.
+/// stage2 decorator 가 instance field 의 initializer 를 가로채야 하는데, useDefineForClassFields
+/// true 는 ECMA-스펙 `[[Define]]` semantics 라 가로챌 곳이 없음. 둘 다 enable 은 모순이라 강제 정정.
+fn normalizeOptions(options: TransformOptions) TransformOptions {
     var opts = options;
     if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
+    return opts;
+}
+
+pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Error!Transformer {
+    const opts = normalizeOptions(options);
 
     const ast_ptr = try allocator.create(Ast);
     errdefer allocator.destroy(ast_ptr);
@@ -31,9 +39,7 @@ pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: Trans
 /// `*const Ast` 받음 — transform() cache hit 분기는 ast mutation 없음. 단, ast 필드는
 /// `*Ast` 라 내부적으로 `@constCast` (caller 가 mut 의도면 별도 borrow 함수 미래에).
 pub fn initBorrow(allocator: std.mem.Allocator, ast: *const Ast, options: TransformOptions) Error!Transformer {
-    var opts = options;
-    if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
-    return finishInit(allocator, @constCast(ast), opts, .borrowed);
+    return finishInit(allocator, @constCast(ast), normalizeOptions(options), .borrowed);
 }
 
 /// Transformer 가 `source_ast` 의 *mutation 권한* 만 양도받아 직접 transform 한다.
@@ -45,15 +51,27 @@ pub fn initBorrow(allocator: std.mem.Allocator, ast: *const Ast, options: Transf
 ///
 /// `transpile path` 전용. bundler 의 graph cache / HMR re-process 는 원본 보존 의무 →
 /// 기존 `init` (clone) 사용 유지.
+///
+/// **사전조건**: caller 의 `source_ast` 는 *pristine parser 결과* 여야 한다.
+/// - `transformed_root == null` — 이미 transform 된 ast 면 driver.zig 의 cache-hit 분기가
+///   stale root 를 반환하고 transformer 내부 state (symbol_ids/runtime_helpers/refresh registrations)
+///   는 비어 emit 시 helper import 가 누락 (silent miscompile).
+/// - `transform_boundary == null` — parser 가 아직 boundary 를 세운 적 없어야 한다. 이미
+///   세워진 boundary 를 silent overwrite 하면 D1 invariant (boundary 위는 transformer append)
+///   가 깨져 resync analyzer 가 transformer 노드를 parser 노드로 오분류한다.
+/// debug 빌드에서 assert 로 강제. release 빌드는 doc-contract 만.
 pub fn initFromOwnedAst(
     allocator: std.mem.Allocator,
     source_ast: *Ast,
     options: TransformOptions,
 ) Error!Transformer {
-    var opts = options;
-    if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
+    std.debug.assert(source_ast.transformed_root == null);
+    std.debug.assert(source_ast.transform_boundary == null);
+
+    const opts = normalizeOptions(options);
     // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
     // `init` 의 clone 직후와 동일 시점 = 호출 시점의 nodes.items.len.
+    // assert 통과 후이므로 caller-visible 부작용은 contract 의 일부.
     source_ast.transform_boundary = @intCast(source_ast.nodes.items.len);
     return finishInit(allocator, source_ast, opts, .owned_from_caller);
 }
@@ -88,7 +106,8 @@ pub fn deinit(self: *Transformer) void {
     // `.borrowed` 는 외부 owner (보통 module.parse_arena) 가 ast 를 free.
     // `.owned_from_caller` 는 호출자가 ast 인스턴스의 lifetime 보유 (transpile path
     // 에서 `parser.ast.deinit()` 으로 free). transformer 는 ast 를 건드리지 않는다.
-    if (self.ast_ownership == .owned) {
+    // method 호출 = exhaustive switch → 미래 variant 추가 시 컴파일 에러로 누락 방지.
+    if (self.ast_ownership.transformerFreesAst()) {
         self.ast.deinit();
         self.allocator.destroy(self.ast);
     }
