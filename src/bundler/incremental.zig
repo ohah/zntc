@@ -246,7 +246,16 @@ pub const IncrementalBundler = struct {
         };
         defer bundler.deinit(); // resolve_cache_external=true이므로 resolve_cache는 해제 안 됨
 
+        // RFC #3940 Sub-PR-L.0b — bundle 직후 profile snapshot 캡처 (ZNTC_PROFILE 활성 시).
+        // caller (dev_server) 가 SSE event payload 또는 NAPI watch callback 에 포함.
+        // counter reset 은 다음 build 측정 위해 즉시. snapshot 은 cheap (atomic load N회).
+        const _profile = @import("../profile.zig");
         var result = bundler.bundle() catch return .fatal;
+        const profile_snapshot: ?_profile.ProfileSnapshot = if (_profile.anyEnabled())
+            _profile.takeSnapshot()
+        else
+            null;
+        if (profile_snapshot != null) _profile.resetCounters();
 
         if (result.hasErrors()) {
             const err_json = buildErrorJson(self.allocator, &result) orelse {
@@ -319,6 +328,7 @@ pub const IncrementalBundler = struct {
                 .paths = self.last_paths orelse &.{},
                 .changed_modules = try actually_changed.toOwnedSlice(self.allocator),
                 .graph_changed = graph_changed,
+                .profile_snapshot = profile_snapshot,
             },
         };
     }
@@ -380,6 +390,11 @@ pub const IncrementalBundler = struct {
         /// 로 정리해야 한다. 단순히 slice 만 free 하면 leak.
         changed_modules: []const BundleResult.ModuleDevCode,
         graph_changed: bool,
+        /// RFC #3940 Sub-PR-L.0b — bundle 직후 profile snapshot. `ZNTC_PROFILE` 활성 시
+        /// 만 채워짐 (`anyEnabled()` true 일 때). caller (dev_server) 가 SSE event 의
+        /// `profile` 필드 또는 NAPI watch callback payload 에 포함. null 이면 미측정.
+        /// 측정 효율: snapshot 자체는 cheap (atomic load × num_categories).
+        profile_snapshot: ?@import("../profile.zig").ProfileSnapshot = null,
     };
 
     pub const RebuildResult = union(enum) {
