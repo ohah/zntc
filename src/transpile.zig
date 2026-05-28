@@ -1144,20 +1144,15 @@ fn transpileWithCallbackInternal(
     // `.d.ts` declaration 파일: 전체 type-only → 빈 출력 (D12.5).
     if (isDeclarationFile(file_path)) return .{ .code = try allocator.dupe(u8, "") };
 
-    // arena 분리 (Step 1 — RFC 메모리 절약 part 1, 동작 무변경):
-    // - parser_arena: scanner + parser-time 데이터 (parser.ast / scratch / bracket_stack).
-    //   현재는 transpile 끝 defer 로 deinit → 단일 arena 와 RSS 동일. Step 2 (다음 PR)
-    //   에서 transformer.transform 전 이른 deinit 으로 RSS 회수 예정.
-    // - transformer_arena: analyzer / transformer / codegen / 결과 dupe 모두.
-    var parser_arena = std.heap.ArenaAllocator.init(allocator);
-    defer parser_arena.deinit();
-    const parser_alloc = parser_arena.allocator();
-    var transformer_arena = std.heap.ArenaAllocator.init(allocator);
-    defer transformer_arena.deinit();
-    const arena_alloc = transformer_arena.allocator();
+    // 단일 arena (RFC_TRANSFORMER_OWN_AST PR-2 후): clone 회피로 parser.ast 가 transformer.ast
+    // 와 동일 instance — 이른 deinit 으로 회수할 영역 자체가 없어 PR #3941 의 parser_arena/
+    // transformer_arena 2-arena 구조는 의미 없음. 단일 arena 로 환원.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    // 1. 파싱 (parser_arena)
-    var scanner = Scanner.init(parser_alloc, source) catch return error.OutOfMemory;
+    // 1. 파싱
+    var scanner = Scanner.init(arena_alloc, source) catch return error.OutOfMemory;
 
     // --stop-after=scan: 파서 호출 없이 토큰 drain 만 수행 (profile/debug 용).
     // Scanner 가 lazy 이므로 next() 로 EOF 까지 소비해야 실제 tokenization 비용이 발생.
@@ -1169,7 +1164,7 @@ fn transpileWithCallbackInternal(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
-    var parser = Parser.init(parser_alloc, &scanner);
+    var parser = Parser.init(arena_alloc, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
     parser.configureAmbientFromPath(file_path);
 
@@ -1292,9 +1287,11 @@ fn transpileWithCallbackInternal(
     if (effective_opts.jsxClassicPragmaIgnoredUnderAutomatic(&parser.ast)) {
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.jsx_pragma_ignored_msg });
     }
-    var transformer = try Transformer.init(arena_alloc, &parser.ast, effective_opts);
-    // transformer.ast 도 arena owned (cloneForTransformer 결과). parser.ast 와 동일 이유.
-    defer transformer.ast.dumpStringInternStatsIfEnabled();
+    // RFC_TRANSFORMER_OWN_AST PR-2: clone 회피 — transformer 가 parser.ast 의 ownership 을
+    // 양도받아 *동일 instance* 를 직접 mutate. cloneForTransformer (87MB synthetic 기준 -581 MB)
+    // 회피. transpile path 전용 (bundler 의 graph cache / HMR re-process 는 init 유지).
+    // line 1195 의 defer 가 stats 를 dump 하므로 여기서 별도 defer 불필요 — 같은 instance.
+    var transformer = try Transformer.initFromOwnedAst(arena_alloc, &parser.ast, effective_opts);
     if (analyzer_storage) |*analyzer| {
         transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
         transformer.symbols = analyzer.symbols.items;
