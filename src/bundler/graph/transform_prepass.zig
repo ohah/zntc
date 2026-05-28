@@ -220,15 +220,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 /// **RFC #3940 L.5a — carry-over 를 build-scope `rename_table` 기반으로 재설계**.
 /// post-link tree-shake (const-materialize 등) 의 semantic resync 가 symbols 배열을 재생성하면
 /// old idx 기준 rename 정보가 stale 해진다. resync **전** old_sem 각 symbol 의 rename 을
-/// `rename_table.get(SymbolID(module.index, old_idx))` 로 읽어 (canonical_name field 대신 —
-/// parity 로 동일 값), resync **후** new_sem 에서 name-based 로 new_idx 를 찾아
-/// `module.pending_renames` 에 `SymbolID(module.index, new_idx) → name` 으로 stash 한다.
+/// `rename_table.get(SymbolID(module.index, old_idx))` 로 읽어, resync **후** new_sem 에서
+/// name-based 로 new_idx 를 찾아 `module.pending_renames` 에
+/// `SymbolID(module.index, new_idx) → name` 으로 stash 한다.
 /// bundler 의 post-shake finalize 가 `Linker.applyPendingRenames` 로 mutable `rename_table` 에
 /// 반영한다 (tree_shaker.linker 는 *const 라 put 불가 — capture=read, apply=write 분리).
 /// `rename_table == null` (graph pre-pass, link 전) 이면 rename 미설정이라 no-op.
 ///
-/// SymbolID 정합: renumber 가 inner idx 불변 + 기존 sync 가 `si==idx` 로 동일 매핑 →
-/// "기존 canonical+sync(idx)" 와 동일 `(module.index, idx)→name` → byte-identical.
+/// SymbolID 정합: renumber 가 inner idx 불변 → resync 전후 `(module.index, idx)→name` 동일.
 fn captureRenamesToPending(
     module: *Module,
     rename_table: *const bundler_symbol.RenameTable,

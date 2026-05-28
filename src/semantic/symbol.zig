@@ -289,11 +289,6 @@ pub const Symbol = struct {
     /// incremental rebuild 시 arena 불일치 방지.
     synthetic_name: []const u8 = "",
 
-    /// 번들러 linker/mangler가 주입한 canonical (rename된) 이름. 빈 문자열 =
-    /// 미지정 (원본 이름 유지). 소유권은 linker (`canonical_strings` ArrayList)
-    /// — Symbol은 non-owning slice만 보유. linker가 살아있는 동안만 유효.
-    canonical_name: []const u8 = "",
-
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
         if (self.synthetic_name.len > 0) return self.synthetic_name;
@@ -308,11 +303,6 @@ pub const Symbol = struct {
     /// 보존 판정, minify 의 dead-store 제외, mangler 의 이름 보존 등에서 동일하게 묶인다.
     pub fn isExported(self: *const Symbol) bool {
         return self.decl_flags.is_exported or self.decl_flags.is_default_export;
-    }
-
-    /// Linker가 canonical_name을 주입했는지 여부. 빈 문자열 = 미지정.
-    pub fn hasCanonicalName(self: *const Symbol) bool {
-        return self.canonical_name.len > 0;
     }
 };
 
