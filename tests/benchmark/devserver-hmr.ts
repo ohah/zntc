@@ -162,16 +162,21 @@ class SseProfileTap {
   durations: number[] = [];
   private aborted = false;
   private ac = new AbortController();
+  // /code-review max followup #6: stop() 후 _loop 가 즉시 종료되도록 promise 저장 +
+  // reader.releaseLock 호출. floating promise 가 마지막 SSE event tap 을 놓치는 race
+  // 를 줄인다.
+  private loopPromise: Promise<void> | null = null;
 
   start(sseUrl: string): void {
-    void this._loop(sseUrl);
+    this.loopPromise = this._loop(sseUrl);
   }
 
   private async _loop(sseUrl: string) {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       const res = await fetch(sseUrl, { signal: this.ac.signal });
       if (!res.body) return;
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
       while (!this.aborted) {
@@ -193,14 +198,28 @@ class SseProfileTap {
           } catch {}
         }
       }
-    } catch {}
+    } catch {
+      // abort 또는 read error — 정상 종료
+    } finally {
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch {}
+      }
+    }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.aborted = true;
     try {
       this.ac.abort();
     } catch {}
+    if (this.loopPromise) {
+      try {
+        await this.loopPromise;
+      } catch {}
+      this.loopPromise = null;
+    }
   }
 }
 
@@ -226,23 +245,43 @@ async function measure(tool: Tool, fx: Fixture) {
     const iters: number[] = [];
     for (let i = 0; i < ITERATIONS; i++) {
       let t0 = 0;
+      // /code-review max followup #3 + #7: onMsg 가 *어떤* WS 메시지든 받자마자 resolve
+      // 하면 dev_server 가 success 분기 *최초* 로 broadcast 하는 `{"type":"clear-error"}`
+      // 가 캡처되어 user-visible HMR latency 보다 빠르게 측정됨. update-start /
+      // update-done / full-reload (= 실제 patch 또는 reload 신호) 만 캐치. 또 setTimeout 은
+      // clearTimeout 으로 해제하여 success 후 10 개 pending timer 가 Node event loop 를 잡아두지 않도록.
+      // update-done 도 accept — incremental bundler 가 코드 diff 없는 빈 rebuild 를
+      // emit 하는 edge case 에서 update-start 가 안 올 가능성 대비 fallback.
       const p = new Promise<void>((res, rej) => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
         const onMsg = (ev: MessageEvent) => {
-          // any update-related message counts
+          // followup #2: t0 가 아직 설정 안 됐다면 (i 이전 iteration 의 stale fire) ignore.
+          if (t0 === 0) return;
+          let msgType: string | null = null;
+          try {
+            const parsed = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data));
+            msgType = parsed?.type ?? null;
+          } catch {}
+          if (msgType !== 'update-start' && msgType !== 'update-done' && msgType !== 'full-reload')
+            return;
           const dt = performance.now() - t0;
           ws.removeEventListener('message', onMsg);
+          if (timer) clearTimeout(timer);
           iters.push(dt);
           res();
         };
         ws.addEventListener('message', onMsg);
-        setTimeout(() => rej(new Error(`hmr ${i} timeout`)), REBUILD_TIMEOUT_MS);
+        timer = setTimeout(() => {
+          ws.removeEventListener('message', onMsg);
+          rej(new Error(`hmr ${i} timeout`));
+        }, REBUILD_TIMEOUT_MS);
       });
       t0 = performance.now();
       appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
       try {
         await p;
       } catch (e) {
-        sseTap?.stop();
+        await sseTap?.stop();
         return { error: String(e), stderr: stderrChunks.join('').slice(0, 300) };
       }
       await sleep(SETTLE_MS);
@@ -250,7 +289,7 @@ async function measure(tool: Tool, fx: Fixture) {
     try {
       ws.close();
     } catch {}
-    sseTap?.stop();
+    await sseTap?.stop();
     return { initialMs, iters, profiles: sseTap?.bundleDoneProfiles ?? [] };
   } finally {
     child.kill('SIGTERM');
@@ -262,8 +301,19 @@ async function measure(tool: Tool, fx: Fixture) {
 
 /** 여러 iteration 의 profile 들에서 phase 별 median 추출. */
 function aggregatePhases(profiles: Array<Record<string, number>>): Array<[string, number]> {
-  // initial build 제외 (워밍업) — 가장 큰 첫 entry skip
-  const samples = profiles.length > 2 ? profiles.slice(1) : profiles;
+  // /code-review max followup #4: initial build (cold) 는 항상 skip — 이전 코드는
+  // `length > 2 ? slice(1) : profiles` 라 length 가 1~2 일 때 initial 이 median 에
+  // 섞여 발표 데이터 신뢰성 ↓ 였음. ITERATIONS=10 정상 path 에선 같은 동작이고,
+  // 비정상 path (early timeout) 에선 빈 결과 + 경고 — initial 만 들고 가는 위험 제거.
+  if (profiles.length < 2) {
+    if (profiles.length === 1) {
+      console.warn(
+        `  [warn] aggregatePhases: only 1 profile sample (initial build); skipping (cold-build noise)`,
+      );
+    }
+    return [];
+  }
+  const samples = profiles.slice(1);
   const byPhase: Record<string, number[]> = {};
   for (const p of samples) {
     for (const [k, v] of Object.entries(p)) {
