@@ -222,6 +222,89 @@ n=30 페어드 교대 실행, ReleaseFast, macOS, `scripts/measure-rss.ts`:
 debug assert (transformed_root/transform_boundary == null) 가 깨진다. PR-3 의 추가 정밀화는
 이 -84 MB 가 ROI 하한임을 전제로 판단.
 
+## 11. PR-3 측정 + 정밀화 (phase 별 분포)
+
+`ZNTC_MEM_PROFILE=1` 계측 (`transpile.zig` 의 `MemProfile`, phase 경계마다
+`arena.queryCapacity()` 스냅샷) 으로 87MB synthetic 의 phase 별 arena 누적 분포 측정
+(instrumented ReleaseFast build, single run):
+
+| phase | arena 누적 cap | Δ (증분) |
+| --- | ---: | ---: |
+| start | 0 MB | — |
+| parse | 2049 MB | +2049 MB |
+| semantic | 4303 MB | +2254 MB |
+| transform | 4303 MB | +0 MB |
+| generate | 4303 MB | +0 MB |
+| emit | 4303 MB | +0 MB |
+
+### 11.1 clone 의 peak RSS 기여 ≈ 80 MB (직접 증거는 RSS, capacity 아님)
+
+`initFromOwnedAst` (own) 와 `init` (clone) 을 동일 fixture 로 비교 (둘 다 instrumented,
+single run):
+
+| 버전 | arena 누적 cap | peak RSS |
+| --- | ---: | ---: |
+| init (clone) | 4303 MB | ~3415 MB |
+| initFromOwnedAst (own) | 4303 MB | ~3337 MB |
+| **Δ** | **0 MB** | **~-78 MB** |
+
+**arena capacity 동일 (4303 MB) 은 clone 비용을 증명하지 못한다 — measurement 한계의
+귀결일 뿐이다.** `arena.queryCapacity()` 는 모든 BufNode backing 의 *합* 이고, arena alloc
+은 가장 최근 BufNode 의 tail 만 사용한다 (이전 node 의 tail 은 backfill 안 함). semantic
+단계가 마지막에 큰 BufNode (+2254 MB) 를 만들면서 그 node 에 큰 미사용 tail 이 남고 →
+이후 transform 의 clone / generate output / emit 가 모두 그 tail 에 fit → 새 BufNode 가
+안 생겨 capacity 의 합이 불변. 즉 **capacity 가 clone/own 동일한 것은 clone 이 싸든 비싸든
+*예상되는* 결과** 이며 (§11.3 의 과소측정 한계), clone 비용에 대해 아무 정보도 주지 않는다.
+
+clone 의 실제 비용을 측정하는 유일한 직접 지표는 **peak RSS 차이 (~-78 MB)** 다. clone 이
+tail 페이지를 touch 하는 만큼만 RSS 가 늘기 때문. §1.1 의 "transformer.ast cloned 581 MB"
+는 *논리적 복제 크기* 일 뿐, arena+mimalloc 환경에서 *touch 되어 RSS 에 기여하는 부분은
+~80 MB*. 따라서 §5.5 의 -300 MB 게이트는 clone 의 실제 RSS 비용 자체가 ~80 MB 라
+**도달 불가** 였다.
+
+### 11.1.1 §10 (prewarm) 과 §11 은 같은 root cause
+
+§10 의 "clone 배열 prewarm (#3928, -553 MB 선반영)" 과 §11 의 "clone 이 arena tail/page
+reuse 에 흡수" 는 *독립 확증이 아니라 동일 현상의 두 각도* 다. clone 의 marginal RSS 비용이
+~80 MB 로 작은 근본 이유는 prewarm 이 clone 대상 배열의 capacity 를 미리 키워 둔 것 +
+arena/mimalloc 의 page reuse — 둘은 같은 메커니즘을 allocator 층위와 array 층위에서 본 것.
+"두 개의 독립 증거" 로 읽으면 안 된다.
+
+### 11.2 잔여 dominant 영역 (이 fixture 기준, 일반화 주의)
+
+clone 영역 소진 후 **이 87MB synthetic 에서** arena 의 capacity high-water 는 거의 전부
+parse (2049 MB) + semantic (2254 MB). 단 이 fixture 는 244K decl 의 **TS-type-heavy**
+synthetic 이라 semantic (scope/symbol/reference) 비중이 과대 — §1.1 의 이전 baseline 은
+analyzer 13% / codegen 6% 였다. **일반 JS corpus 는 분포가 크게 다를 수 있으므로**, parse/
+semantic 을 "다음 레버" 로 단정하지 말고 *후보* 로만 본다. 실제 착수 전 대표 corpus 로 재측정
+필수. 후보 영역:
+
+- **semantic (analyzer)**: scopes / symbols / references 배열.
+- **parse (parser.ast)**: nodes / extra_data / string_table.
+
+둘 다 본 RFC 범위 밖 — `RFC_LIFECYCLE_SCOPE_REDESIGN` (cross-build memory ownership)
+또는 별도 analyzer/parser 메모리 RFC 후보.
+
+### 11.3 측정 인프라 한계 (중요)
+
+- `arena.queryCapacity()` 는 모든 BufNode backing 의 합 = *reserved high-water mark*
+  이지 *used* 가 아니다. arena 는 최근 BufNode tail 만 쓰므로, 그 tail 에 fit 하는 alloc
+  (clone / generate output / emit) 은 새 node 를 안 만들어 **증분 0 으로 과소측정**.
+  위 phase 표의 transform/generate/emit +0 은 "메모리를 안 썼다" 가 아니라 "queryCapacity
+  가 못 본다" 는 뜻. 실제 phase 비용은 peak RSS 로만 봐야 한다 (§11.1).
+- §11 의 절대 peak RSS (own 3337 / clone 3415 MB) 는 §10 의 n=30 측정 (3182 / 3266 MB)
+  보다 ~150 MB 높다 — instrumented build (계측 + single run) 의 오버헤드. Δ 도 §11
+  은 single-run -78 MB, §10 은 n=30 median -84 MB 로 *측정 방법이 다르다*. 둘 다 "~80 MB
+  영역" 으로 정합하나 ±수 MB 정밀 일치를 주장하지 않는다 (single-run 은 분산 큼).
+- `ZNTC_MEM_PROFILE` 계측 자체는 enabled=false 시 즉시 return + `env_flag.Once` (std.once
+  프로세스 1회 캐시) — production hot path 영향 0.
+
+### 11.4 RFC 종결
+
+clone 회피 (PR-1 API + PR-2 적용) 로 transformer 영역의 RSS 기여 (~80 MB) 소진.
+잔여는 parse/semantic 으로 본 RFC 범위 밖. **추가 정밀화는 별도 epic** (analyzer/parser
+메모리 또는 lifecycle redesign) 으로 분리. 본 RFC 의 transformer-ownership 레버는 종결.
+
 ## 8. 박제 (재시도 금지)
 
 - **PR #3941 의 arena 분리만으로는 RSS 절약 0** — clone 회피 필수
