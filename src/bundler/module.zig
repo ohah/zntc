@@ -469,10 +469,10 @@ pub const Module = struct {
     /// 주입한 경우 릴리즈/압축 출력에서는 그 이름을 우선 사용한다.
     /// 미등록이면 null.
     /// 반환 slice는 parse_arena가 소유 — 모듈 수명 내 유효.
-    /// RFC #3940 L.5b: rename 출처는 build-scope `rename_table` (Module 은 graph-scope 라 Linker
+    /// RFC #3940: rename 출처는 build-scope `rename_table` (Module 은 graph-scope 라 Linker
     /// 직접 참조 불가 → caller 가 `rt` 전달). `rt == null` 은 rename 이 아직/원래 없는 컨텍스트
-    /// (finalize: mangle 전 / cjs_wrap: semantic 없음) — synthetic_name fallback. (L.4c-2 의
-    /// `canonical_name` field 이중 경로는 L.5b 에서 제거 — rename_table 단일 출처.)
+    /// (finalize: mangle 전 / cjs_wrap: semantic 없음) — synthetic_name fallback. rename_table 이
+    /// 단일 출처 (구 `Symbol.canonical_name` field 는 L.5c 에서 제거).
     fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId, rt: ?*const RenameTable) ?[]const u8 {
         const id = maybe_id orelse return null;
         const sem = self.semantic orelse return null;

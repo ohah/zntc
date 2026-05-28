@@ -84,10 +84,10 @@ pub const SymbolRef = union(enum) {
 
 /// Build-scope 심볼 식별자 — esbuild SymbolID 패턴 (RFC #3940 Sub-PR-L.2).
 ///
-/// `(module, inner)` integer pair 로 semantic 선언/합성 심볼을 식별한다. 향후
-/// per-build `RenameTable: SymbolID → name` (Sub-PR-L.3) 의 키. `Symbol.canonical_name`
-/// (build-scope Linker 가 alloc → graph-scope Symbol 에 저장 = cross-build dangling) 을
-/// 제거하고 rename 을 build-scope 로 외부화하기 위한 정수 식별자.
+/// `(module, inner)` integer pair 로 semantic 선언/합성 심볼을 식별한다. per-build
+/// `RenameTable: SymbolID → name` 의 키. 과거 `Symbol.canonical_name` (build-scope Linker 가
+/// alloc → graph-scope Symbol 에 저장 = cross-build dangling) 을 대체해 rename 을 build-scope
+/// 로 외부화한 정수 식별자 (RFC #3940 L.5c 에서 field 제거 완료).
 ///
 /// **build-local 식별자 주의**: `module` 은 `ModuleIndex` 라 *단일 build 내에서만* 안정하다
 /// (`graph/renumber.zig` 가 모듈 추가/삭제 시 BFS 로 index 재배정). RenameTable 은 build-scope
@@ -139,28 +139,20 @@ pub const SymbolID = packed struct {
     }
 };
 
-/// Build-scope per-build rename table — `SymbolID → 최종 이름` (RFC #3940 Sub-PR-L.3).
+/// Build-scope per-build rename table — `SymbolID → 최종 이름` (RFC #3940).
 ///
 /// esbuild 패턴: symbol identity (integer `SymbolID`) 와 rename 결과 (string) 를 분리한다.
-/// 목표는 `Symbol.canonical_name` (build-scope `Linker` 가 alloc → graph-scope `Symbol` 에
-/// 저장 = cross-build dangling, RFC #3933 segfault root) 을 제거하고 rename 을 build-scope
-/// 로 외부화하는 것.
+/// 과거 `Symbol.canonical_name` (build-scope `Linker` 가 alloc → graph-scope `Symbol` 에
+/// 저장 = cross-build dangling, RFC #3933 segfault root) 을 대체한 build-scope rename store.
+/// `Linker.assignSymbolCanonical` (canonical write 단일 sink) 가 여기에 기록하고, emit/facade/
+/// dedup read 가 이 테이블을 조회한다. L.5c 에서 `Symbol.canonical_name` field 제거 완료 →
+/// 유일 출처.
 ///
-/// **L.3 = 병행 작성 단계**: `Linker.assignSymbolCanonical` (신규 canonical write 의 단일
-/// sink) 가 `Symbol.canonical_name` 과 RenameTable 에 *동시* 기록한다. 두 결과의 parity 를
-/// 검증한 뒤 (Sub-PR-L.4) emitter 가 RenameTable lookup 으로 전환하고, (Sub-PR-L.5)
-/// `canonical_name` field 를 제거한다.
+/// **carry-over**: AST mutation 후 semantic resync (`graph/transform_prepass.zig`) 가 symbol idx
+/// 를 재배정하면 `module.pending_renames` 에 모았다가 `Linker.applyPendingRenames` 가 반영한다.
 ///
-/// **예외 (L.4 처리 필요)**: `graph/transform_prepass.zig` 의 carry-over
-/// (`preserveCanonicalNamesAfterSemanticResync`) 와 `graph/build_flow.zig` 의 cache-hit
-/// reset (`canonical_name = ""`) 은 *Linker 가 없는 graph 단계* 라 이 sink 를 우회한다.
-/// fresh build 에선 이후 link 가 rename 을 재계산해 sink 를 통과하므로 parity 가 성립하지만,
-/// AST mutation 후 semantic resync 의 preserved name 은 rename_table 에 미동기다. emitter 가
-/// rename_table 로 전환(L.4)하기 전에 이 carry-over 경로의 동기화를 반드시 해결해야 한다.
-///
-/// **값 string 은 borrow**: 병행 단계에선 `Linker.canonical_strings` 가 value 를 소유하고
-/// RenameTable 은 같은 slice 를 가리키기만 한다 (free 안 함). field 제거(L.5) 후 owning 으로
-/// 승격될 수 있다.
+/// **값 string 은 borrow**: `Linker.canonical_strings` 가 value 를 소유하고 RenameTable 은 같은
+/// slice 를 가리키기만 한다 (free 안 함).
 ///
 /// **build-scope**: `Linker` lifetime. `clearCanonicalNames` (per-chunk/per-build reset) 시
 /// 함께 clear.

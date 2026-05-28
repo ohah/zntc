@@ -160,20 +160,17 @@ pub const Linker = struct {
     /// 를 linker 의 `fatal_diagnostics` 버퍼로 flush. 병렬 append 보호.
     diagnostics_mutex: std.Thread.Mutex = .{},
 
-    /// semantic.Symbol.canonical_name 슬라이스의 backing 저장소. linker가 소유 —
+    /// rename_table value (최종 이름 string) 의 backing 저장소. linker가 소유 —
     /// deinit에서 일괄 해제. AliasTable.canonical_name은 caller-owned (별도 모델).
     canonical_strings: std.ArrayList([]const u8) = .empty,
-    /// canonical_strings에 등록되며 canonical_name이 채워진 Symbol 포인터.
-    /// clearCanonicalNames가 O(touched)로 reset하기 위한 dirty list.
-    canonical_symbols: std.ArrayList(*semantic_symbol.Symbol) = .empty,
     /// 충돌 검사용 set. 리네임 후보가 기존 canonical로 사용 중인지 O(1) 확인.
     /// 키는 canonical_strings가 소유 — 이 맵은 borrowed.
     canonical_names_used: std.StringHashMap(void),
 
-    /// RFC #3940 Sub-PR-L.3 — `SymbolID → 최종 이름` 병행 테이블. canonical write 단일
-    /// sink (`assignSymbolCanonical`) 가 `Symbol.canonical_name` 과 *동시* 작성한다. 값
-    /// string 은 borrow (canonical_strings 소유, 같은 slice). `clearCanonicalNames` 시 함께
-    /// clear, `deinit` 에서 map 해제. L.4 에서 emitter 가 이 테이블 lookup 으로 전환 예정.
+    /// RFC #3940 — build-scope `SymbolID → 최종 이름` 테이블. canonical write 단일 sink
+    /// (`assignSymbolCanonical`) 가 기록한다. 값 string 은 borrow (canonical_strings 소유, 같은
+    /// slice). `clearCanonicalNames` 시 함께 clear, `deinit` 에서 map 해제. emit/facade/dedup
+    /// read 의 단일 출처 (L.5c 에서 `Symbol.canonical_name` field 제거 후 유일 rename store).
     rename_table: bundler_symbol.RenameTable = .{},
 
     /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
@@ -400,7 +397,6 @@ pub const Linker = struct {
         self.resolved_bindings.deinit();
         for (self.canonical_strings.items) |s| self.allocator.free(s);
         self.canonical_strings.deinit(self.allocator);
-        self.canonical_symbols.deinit(self.allocator);
         self.canonical_names_used.deinit();
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit();
@@ -952,8 +948,7 @@ pub const Linker = struct {
                                 .cjs_exports, .cjs_require, .esm_init => {},
                                 else => continue,
                             }
-                            // RFC #3940 L.4c: dedup key 도 build-scope rename_table 경유.
-                            // parity (L.3 sink + L.4a carry-over sync) 로 canonical_name 과 동치.
+                            // RFC #3940 L.4c: dedup key 도 build-scope rename_table 경유. miss → synthetic_name.
                             const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                             if (key.len <= 1) continue;
                             if (exported.contains(key)) continue;
@@ -1176,7 +1171,7 @@ pub const Linker = struct {
     /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
     ///
     /// #1760: unified `mangleAll()` 한 번의 호출로 top-level + nested 모두 결정.
-    /// Phase A 결과는 `Symbol.canonical_name` 에 주입 (emit 호환), Phase B 결과는
+    /// Phase A 결과는 `rename_table` 에 주입, Phase B 결과는
     /// linker 필드에 보관되어 `metadata.buildMetadataForAst` 가 조회 (Step 3c).
     pub fn computeMangling(self: *Linker) !void {
         var scope = profile.begin(.link_compute_mangling);
@@ -1204,7 +1199,7 @@ pub const Linker = struct {
         // result 소유권을 linker 로 이관 (deinit 은 linker.deinit 이 담당).
         errdefer result.deinit();
 
-        // Phase A 결과 (top-level 심볼) 를 `Symbol.canonical_name` 에 주입.
+        // Phase A 결과 (top-level 심볼) 를 rename_table 에 주입.
         // dup 는 canonical_strings 가 소유. result.renames 안의 원본 문자열은
         // linker.deinit 이 해제 — Phase A 값은 이중 보관이지만 단순성 우선.
         for (collected.top_level_candidates) |cand| {
@@ -1213,10 +1208,9 @@ pub const Linker = struct {
             const cand_mod = self.getModule(cand.module_index) orelse continue;
             const sem = cand_mod.semantic orelse continue;
             if (cand.symbol_id >= sem.symbols.items.len) continue;
-            const sym = &sem.symbols.items[cand.symbol_id];
             const dup = try self.allocator.dupe(u8, mangled);
             const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(cand.module_index)), cand.symbol_id);
-            try self.assignSymbolCanonical(id, sym, dup);
+            try self.assignSymbolCanonical(id, dup);
         }
 
         if (self.mangle_report) |r| {
@@ -1259,52 +1253,46 @@ pub const Linker = struct {
         return self.canonical_names_used.contains(name);
     }
 
-    /// scope_maps[0] → synthetic_name fallback 으로 찾은 mutable Symbol + 그 module-local index.
-    /// `findSymbolMutable` 의 반환 묶음 — SymbolID 구성 (RFC #3940 L.3) 에 idx 필요.
-    const FoundSymbol = struct { sym: *semantic_symbol.Symbol, idx: u32 };
-
-    /// (module_index, local_name)의 canonical_name을 설정. value 소유권은
+    /// (module_index, local_name)의 최종 이름(`rename_table`)을 설정. value 소유권은
     /// canonical_strings로 이전 (caller가 미리 dupe해서 넘김). Symbol을 못 찾으면
     /// value를 free하고 silently noop.
     fn putCanonicalName(self: *Linker, module_index: u32, name: []const u8, value: []const u8) !void {
-        const found = self.findSymbolMutable(module_index, name) orelse {
+        const idx = self.findSymbolIdx(module_index, name) orelse {
             self.allocator.free(value);
             return;
         };
-        const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), found.idx);
-        try self.assignSymbolCanonical(id, found.sym, value);
+        const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), idx);
+        try self.assignSymbolCanonical(id, value);
     }
 
-    /// Symbol에 직접 canonical_name을 할당. value 소유권을 canonical_strings로 이전.
-    /// 이전 canonical_name이 있으면 used set에서만 제거 (string은 deinit까지 보관).
+    /// SymbolID 에 최종 이름(canonical)을 할당하는 단일 write sink. value 소유권을
+    /// canonical_strings로 이전 (deinit까지 보관). 같은 id 에 이전 이름이 있으면
+    /// used set에서만 제거 후 `rename_table` 에 재기록한다.
     ///
-    /// RFC #3940 Sub-PR-L.3 — canonical write 단일 sink. `id` 가 유효하면 `rename_table` 에도
-    /// 동일 `value` 를 병행 기록 (`Symbol.canonical_name` 과 같은 borrow slice).
-    fn assignSymbolCanonical(self: *Linker, id: bundler_symbol.SymbolID, sym: *semantic_symbol.Symbol, value: []const u8) !void {
-        const had_prior = sym.canonical_name.len > 0;
-        if (had_prior) _ = self.canonical_names_used.fetchRemove(sym.canonical_name);
+    /// RFC #3940 Sub-PR-L.5c — `Symbol.canonical_name` field 제거 후 rename_table 이 유일 store.
+    /// 호출처(`putCanonicalName`/`computeMangling`)는 모두 valid id(`SymbolID.make(real,real)`).
+    fn assignSymbolCanonical(self: *Linker, id: bundler_symbol.SymbolID, value: []const u8) !void {
+        if (id.isValid()) {
+            if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
+        }
         try self.canonical_strings.append(self.allocator, value);
         try self.canonical_names_used.put(value, {});
-        if (!had_prior) try self.canonical_symbols.append(self.allocator, sym);
-        sym.canonical_name = value;
         if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
     }
 
-    /// scope_maps[0] → synthetic_name fallback으로 mutable Symbol 찾기.
-    /// `lookupSymbolCanonical`도 이 logic 위에서 동작.
-    fn findSymbolMutable(self: *const Linker, module_index: u32, name: []const u8) ?FoundSymbol {
+    /// scope_maps[0] → synthetic_name fallback으로 symbol 의 module-local index 찾기.
+    /// `putCanonicalName`/`lookupSymbolCanonical` 이 SymbolID 구성에 idx 만 사용한다.
+    fn findSymbolIdx(self: *const Linker, module_index: u32, name: []const u8) ?u32 {
         const m = self.getModule(module_index) orelse return null;
         const sem = m.semantic orelse return null;
         if (sem.scope_maps.len > 0) {
             if (sem.scope_maps[0].get(name)) |sym_idx| {
-                if (sym_idx < sem.symbols.items.len) {
-                    return .{ .sym = &sem.symbols.items[sym_idx], .idx = @intCast(sym_idx) };
-                }
+                if (sym_idx < sem.symbols.items.len) return @intCast(sym_idx);
             }
         }
         for (sem.symbols.items, 0..) |*sym, i| {
             if (sym.synthetic_kind != null and std.mem.eql(u8, sym.synthetic_name, name)) {
-                return .{ .sym = sym, .idx = @intCast(i) };
+                return @intCast(i);
             }
         }
         return null;
@@ -1397,12 +1385,10 @@ pub const Linker = struct {
     }
 
     fn lookupSymbolCanonical(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
-        const found = self.findSymbolMutable(module_index, name) orelse return null;
-        // RFC #3940 Sub-PR-L.4b — emit 경로가 `Symbol.canonical_name` field 대신 build-scope
-        // `rename_table` 을 읽는다. parity (L.3 병행작성 + L.4a carry-over sync) 로 결과 동일:
-        // canonical write 단일 sink 가 둘에 같은 slice 를 기록하므로 byte-identical. miss → null
-        // (기존 `!hasCanonicalName()` 분기와 동치).
-        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), found.idx));
+        const idx = self.findSymbolIdx(module_index, name) orelse return null;
+        // emit 경로는 build-scope `rename_table` 을 읽는다 — `Symbol.canonical_name` field 는
+        // RFC #3940 Sub-PR-L.5c 에서 제거됨. miss → null (원본 이름 유지).
+        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), idx));
     }
 
     /// ExportBinding의 canonical local name을 kind별 safe한 방법으로 조회.
@@ -1420,9 +1406,9 @@ pub const Linker = struct {
     }
 
     /// SymbolRef 기반 canonical name 조회 facade. #1328 Phase 4c-3.
-    /// - alias: AliasTable이 canonical_name 소유 → 직접 반환 (L.5 분리 대상).
-    /// - semantic: build-scope `rename_table` 조회 (RFC #3940 L.4b — `Symbol.canonical_name`
-    ///   field 대신). parity 로 결과 동일. bounds 밖이면 null.
+    /// - alias: AliasTable이 canonical_name 소유 → 직접 반환 (별도 모델).
+    /// - semantic: build-scope `rename_table` 조회 (RFC #3940 — `Symbol.canonical_name` field 는
+    ///   L.5c 에서 제거됨). bounds 밖이면 null.
     /// 리네임 안 됐으면 null — caller가 원본 이름으로 fallback.
     pub fn getCanonicalByRef(self: *const Linker, ref: bundler_symbol.SymbolRef) ?[]const u8 {
         if (!ref.isValid()) return null;
@@ -2246,43 +2232,14 @@ pub const Linker = struct {
         }) catch {};
     }
 
-    /// canonical_names를 초기화한다. 키와 값의 메모리를 해제하고 맵을 비운다.
+    /// rename 결과를 초기화한다. canonical_strings 값을 해제하고 used set / rename_table 을 비운다.
     /// per-chunk rename에서 이전 청크의 결과를 제거할 때 사용.
     pub fn clearCanonicalNames(self: *Linker) void {
         for (self.canonical_strings.items) |s| self.allocator.free(s);
         self.canonical_strings.clearRetainingCapacity();
         self.canonical_names_used.clearRetainingCapacity();
-        // O(touched): putCanonicalName이 기록한 dirty 심볼만 reset.
-        for (self.canonical_symbols.items) |sym| sym.canonical_name = "";
-        self.canonical_symbols.clearRetainingCapacity();
-        // RFC #3940 Sub-PR-L.3 — rename_table 도 canonical_strings 와 동기 reset.
-        // 값이 방금 free 된 stale slice 를 가리키지 않도록 함께 clear.
+        // 값이 방금 free 된 stale slice 를 가리키지 않도록 rename_table 도 함께 clear.
         self.rename_table.clear();
-    }
-
-    /// RFC #3940 Sub-PR-L.3 — 병행 작성 parity 검증 (debug/test 용).
-    /// 신규 canonical write 의 단일 sink (`assignSymbolCanonical`) 를 통과한 모든 rename 이
-    /// `Symbol.canonical_name` 과 `rename_table` 양쪽에 동일하게 기록됐는지 확인한다.
-    /// `canonical_name` 이 비어있지 않은 모든 심볼에 대해 `(module, idx)` SymbolID 로
-    /// rename_table 을 조회해 string 일치를 검사 — L.4 (emitter→RenameTable 전환) 의 안전망.
-    /// 불일치/누락이 하나라도 있으면 false.
-    ///
-    /// **fresh build 기준**: `graph/transform_prepass.zig` 의 carry-over 가 link 단계 *밖*
-    /// 에서 `canonical_name` 을 복사하는 incremental/AST-mutation 경로는 이 sink 를 우회하므로
-    /// rename_table 미동기 → false 가 될 수 있다. 그 경로 동기화는 L.4 blocker (RenameTable
-    /// docstring 참고). 단방향 검증 (canonical_name → rename_table).
-    pub fn renameTableParityHolds(self: *const Linker) bool {
-        for (0..self.graph.moduleCount()) |mi| {
-            const m = self.getModule(@intCast(mi)) orelse continue;
-            const sem = m.semantic orelse continue;
-            for (sem.symbols.items, 0..) |*sym, si| {
-                if (sym.canonical_name.len == 0) continue;
-                const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si);
-                const rt_name = self.rename_table.get(id) orelse return false;
-                if (!std.mem.eql(u8, rt_name, sym.canonical_name)) return false;
-            }
-        }
-        return true;
     }
 
     /// RFC #3940 Sub-PR-L.5a — graph carry-over 가 `module.pending_renames` 에 stash 한 rename

@@ -767,13 +767,9 @@ pub fn buildIncremental(
                 // PR #3738: namespace_access_index 도 동일 — parse_arena 안 HashMap backing 이라
                 // arena 양도 시 graph 쪽이 (arena, index) 짝 소유. store 쪽 dangling 방지.
                 cached.module.namespace_access_index = null;
-                // canonical_name 은 이전 Build 의 Linker 가 소유한 문자열을
-                // 가리키는데, 그 Linker.deinit 이후 이미 freed 상태다.
-                // 다음 Linker 가 conflict 마다 새로 assign 하므로 stale 한
-                // 포인터를 비워 emit 이 freed memory 를 읽지 못하도록 한다.
-                if (mod.semantic) |*sem| {
-                    for (sem.symbols.items) |*sym| sym.canonical_name = "";
-                }
+                // RFC #3940 Sub-PR-L.5c — rename 은 build-scope `Linker.rename_table` 에만 살고
+                // graph-scope Symbol 은 더 이상 rename 포인터를 보유하지 않는다. cross-build
+                // stale 가 구조적으로 불가능해 별도 reset 이 필요 없다.
                 mod.state = .ready;
             } else {
                 var s_mp = profile.begin(.graph_discover_incr_miss_parse);

@@ -227,8 +227,6 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 const name = entry.key_ptr.*;
 
                 // skip 판정 — 아래 세 경로는 원본 이름이 출력에 살아남으므로 reserved.
-                // #1757: 원본 이름과 `canonical_name` (top-level mangler rename 결과)
-                // 둘 다 등록해 nested mangler 독립 base54 counter 가 같은 이름 배정 방지.
                 if (shouldSkip(sym, name)) {
                     // shouldSkip 의 5 case 분류:
                     //   1. is_exported            → renames 로 ref, 원본 안 emit → reserve 불필요
@@ -244,11 +242,12 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                     }
                     continue;
                 }
-                // direct eval / with 스코프의 바인딩은 mangling 차단 (#1258)
+                // direct eval / with 스코프의 바인딩은 mangling 차단 (#1258) — 원본 이름이
+                // 동적 lookup 대상으로 출력에 그대로 남으므로 reserve.
                 if (!sym.scope_id.isNone()) {
                     const s_idx = sym.scope_id.toIndex();
                     if (s_idx < scopes.len and scopes[s_idx].blocksMangling()) {
-                        try reserveNameFor(&reserved_names, sym, name);
+                        try reserved_names.put(name, {});
                         continue;
                     }
                 }
@@ -582,18 +581,6 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
     if (std.mem.eql(u8, name, "arguments")) return true;
     if (name.len <= 1) return true;
     return false;
-}
-
-/// Phase 3 의 세 skip 경로 공용: 원본 이름 + `canonical_name` (top-level mangler
-/// rename 결과) 둘 다 reserved 로 등록. `StringHashMap.put` 은 idempotent.
-///
-/// #1760 Step 3c 실측: Phase B 의 `external_reserved` 로 Phase A 의 모든 이름을
-/// 전달하는 전역 공유 방식은 nested 이름을 과도하게 밀어내 번들 크기 +5~10%
-/// 회귀를 유발. canonical 을 scope-local reserved 로 보존하는 이 방어막이
-/// 실질적 이점 — 전역 pool 공유보다 over-reserving 이 적음.
-fn reserveNameFor(reserved: *std.StringHashMap(void), sym: Symbol, name: []const u8) !void {
-    try reserved.put(name, {});
-    if (sym.hasCanonicalName()) try reserved.put(sym.canonical_name, {});
 }
 
 // ============================================================

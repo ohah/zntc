@@ -2,8 +2,8 @@
 //!
 //! `mangleAll()` 한 번의 호출로 cross-module top-level + per-module nested
 //! mangling 을 순차 수행한다. 두 phase 가 같은 base54 counter + reserved set
-//! 을 공유해 shadow 를 원천 차단하고, `Symbol.canonical_name` 을 경유하지
-//! 않는다 (결과는 `(module_index, symbol_id)` 키 HashMap).
+//! 을 공유해 shadow 를 원천 차단한다 (결과는 `(module_index, symbol_id)` 키 HashMap,
+//! linker 가 build-scope `rename_table` 로 옮긴다).
 //!
 //! Phase 1 범위:
 //!   - 타입 정의 + 동작하는 스켈레톤
@@ -13,7 +13,6 @@
 //! 후속 단계 (#1760 마이그레이션 전략):
 //!   2. 신/구 결과 property 비교 (번들 크기/이름 길이 총합/reserved/shadow)
 //!   3. Bundler 의 호출 지점 교체
-//!   4. 구 API / Symbol.canonical_name 제거
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -140,9 +139,9 @@ pub fn mangleAll(
     // 의 `cross_module_imports` 에 해당하는 source 의 mangled name 만 per-mod reserved 에
     // 추가 (전역 broadcast 가 아니라 실제 import 한 source 만 — size 회귀 회피).
     //
-    // 보강 메커니즘 (`mangler.reserveNameFor` 가 import binding 의 `canonical_name` 으로
-    // 자동 reserve) 는 `Symbol.canonical_name` 이 `mangleAll` 반환 *후* 에 linker 가
-    // set 하므로 Phase B 진입 시점에는 빈 상태 — 여기서 명시적 selective broadcast 가 필요.
+    // cross-module import 의 shadow 방지는 *오직* 이 명시적 selective broadcast 가 담당한다.
+    // (Phase B `mangler.mangle` 은 `mangleAll` 내부에서 호출되어 rename_table 이 아직 비어있어
+    // mangler 단독으로는 source 이름을 알 수 없다.)
     //
     // (`renames` 만으로 derive 못 함 — Phase A 의 no-op rename, 즉 원본 이름과 mangled 이름이
     // 같은 경우도 reserved 에 등록해야 하지만 `renames` 에는 안 들어가기 때문.)
@@ -261,7 +260,7 @@ pub fn mangleAll(
     // Phase B 는 *이 모듈* 의 Phase A mangled name 만 reserved 로 받는다 (per_mod_reserved).
     // 다른 모듈의 Phase A 이름은 wrapper IIFE 격리로 nested 에서 직접 보이지 않으므로
     // ban 하지 않아도 안전. cross-module reference 는 모두 import binding (module-scope,
-    // mangler 내부 reserveNameFor 가 자동 reserve) 또는 wrapper symbol 호출로만 접근.
+    // 위 selective broadcast 가 per_mod_reserved 에 추가) 또는 wrapper symbol 호출로만 접근.
     for (input.modules, 0..) |m, i| {
         var nested = try mangler.mangle(allocator, .{
             .scopes = m.scopes,
