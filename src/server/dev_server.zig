@@ -890,18 +890,26 @@ pub const DevServer = struct {
                     // bundle_build_done 이벤트. RFC #3940 Sub-PR-L.0c — ZNTC_PROFILE
                     // 활성 시 profile snapshot 을 별도 JSON 으로 dump. profile 비활성 (default)
                     // 이면 result.profile_snapshot 가 null → 기존 짧은 JSON 그대로.
-                    if (result.profile_snapshot) |snap| {
+                    //
+                    // /code-review max followup #1 (CRITICAL) fix: profile JSON 작성 실패 시
+                    // unlabeled `break` 가 가장 가까운 loop (`while (true)` watchLoop) 로
+                    // 빠져나가 watch thread 가 silent 종료되는 버그. labeled block + bool 반환
+                    // 으로 emit 실패 시 short JSON fallback 사용, loop 는 그대로 유지.
+                    const emit_ok: bool = if (result.profile_snapshot) |snap| blk: {
                         // profile 활성 path — 큰 JSON 가능. ArrayList 동적 할당.
                         var profile_buf: std.ArrayList(u8) = .empty;
                         defer profile_buf.deinit(self.allocator);
                         const w = profile_buf.writer(self.allocator);
-                        w.print("{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2},\"profile\":", .{ build_id, result.paths.len, build_duration_ms }) catch break;
+                        w.print("{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2},\"profile\":", .{ build_id, result.paths.len, build_duration_ms }) catch break :blk false;
                         const _profile = @import("../profile.zig");
-                        _profile.snapshotToJson(snap, w, 0.1) catch break; // 0.1ms threshold — sub-100us noise skip
-                        w.writeByte('}') catch break;
+                        _profile.snapshotToJson(snap, w, 0.1) catch break :blk false; // 0.1ms threshold — sub-100us noise skip
+                        w.writeByte('}') catch break :blk false;
                         self.publishEvent(EventType.bundle_build_done, profile_buf.items);
-                    } else {
-                        // profile 비활성 default — 기존 짧은 JSON path
+                        break :blk true;
+                    } else false;
+
+                    if (!emit_ok) {
+                        // profile 비활성 default 또는 profile JSON emit 실패 → 기존 짧은 JSON path
                         var done_buf: [256]u8 = undefined;
                         if (std.fmt.bufPrint(&done_buf, "{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2}}}", .{ build_id, result.paths.len, build_duration_ms })) |json| {
                             self.publishEvent(EventType.bundle_build_done, json);
