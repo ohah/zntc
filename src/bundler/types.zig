@@ -678,6 +678,11 @@ pub const ImportRecord = struct {
     is_lazy_resolved: bool = false,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
+    /// resolve 가 hard-error 로 확정 실패한 record. 성공(resolved 설정)·external·
+    /// lazy 와 마찬가지로 "재resolve 불필요" 상태 마커. 이게 없으면
+    /// shouldResolveRecordForModule / resolveModuleImports 가 resolved==.none 만 보고
+    /// 이미 실패 처리된 record 를 미처리로 오판해 재resolve → 진단 중복 출력 (#3966 후속).
+    resolve_failed: bool = false,
     /// try-block 안의 `require("xxx")` 또는 동적 `import("xxx")` —
     /// resolve 실패 시 hard error 가 아니라 warning 으로 격하하고 stub 으로 대체.
     /// follow-redirects/debug.js 같은 Metro 식 optional dep 패턴 지원

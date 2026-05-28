@@ -282,6 +282,10 @@ pub fn applyResolveResult(
         }
         const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
         self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve module", record.specifier);
+        // 실패 확정 마킹 — 성공(recordResolvedDep 가 resolved 설정)·external 과 동일하게
+        // "재resolve 불필요" 상태로 둬야 shouldResolveRecordForModule/resolveModuleImports
+        // 가 이 record 를 다시 resolve(+ 중복 진단)하지 않는다.
+        self.modules.at(mod_idx).import_records[rec_i].resolve_failed = true;
         return;
     }
 
@@ -448,7 +452,7 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
                 continue;
             }
         }
-        if (record.resolved != .none or record.is_external) continue;
+        if (record.resolved != .none or record.is_external or record.resolve_failed) continue;
         const should_link = graph_requested_exports.shouldLinkResolvedRecordForModule(self, mod_idx, rec_i, record);
 
         // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌

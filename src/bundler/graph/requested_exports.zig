@@ -166,7 +166,7 @@ pub fn shouldLinkResolvedRecordForModule(self: anytype, mod_idx: usize, rec_i: u
 }
 
 pub fn shouldResolveRecordForModule(self: anytype, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
-    if (record.resolved != .none or record.is_external) return false;
+    if (record.resolved != .none or record.is_external or record.resolve_failed) return false;
     return shouldLinkResolvedRecordForModule(self, mod_idx, rec_i, record);
 }
 
