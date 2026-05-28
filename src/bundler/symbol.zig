@@ -82,6 +82,63 @@ pub const SymbolRef = union(enum) {
     }
 };
 
+/// Build-scope 심볼 식별자 — esbuild SymbolID 패턴 (RFC #3940 Sub-PR-L.2).
+///
+/// `(module, inner)` integer pair 로 semantic 선언/합성 심볼을 식별한다. 향후
+/// per-build `RenameTable: SymbolID → name` (Sub-PR-L.3) 의 키. `Symbol.canonical_name`
+/// (build-scope Linker 가 alloc → graph-scope Symbol 에 저장 = cross-build dangling) 을
+/// 제거하고 rename 을 build-scope 로 외부화하기 위한 정수 식별자.
+///
+/// **build-local 식별자 주의**: `module` 은 `ModuleIndex` 라 *단일 build 내에서만* 안정하다
+/// (`graph/renumber.zig` 가 모듈 추가/삭제 시 BFS 로 index 재배정). RenameTable 은 build-scope
+/// 라 build-local 키로 충분하다. cross-build 로 살아남는 graph identity (Sub-PR-L.6 graph
+/// persistence) 가 필요하면 `module_id.zig` 의 path-stable id 와 조합해야 한다 (audit §5.2).
+///
+/// alias (`SymbolRef.alias`) 는 semantic 과 별도 공간이라 SymbolID 가 표현하지 않는다
+/// (esbuild parity). alias rename 의 build-scope 외부화는 Sub-PR-L.5 에서 별도 처리.
+///
+/// packed struct (64 bits, 두 enum(u32)) — `std.AutoHashMap(SymbolID, …)` 키로 직접 사용 가능.
+pub const SymbolID = packed struct {
+    module: ModuleIndex,
+    inner: SemanticSymbolId,
+
+    /// invalid sentinel — module/inner 둘 다 none.
+    pub const invalid: SymbolID = .{ .module = .none, .inner = .none };
+
+    /// `(module, sym_idx)` 로 생성. `sym_idx` 는 usize/u32 모두 허용 (intCast).
+    pub fn make(module: ModuleIndex, sym_idx: anytype) SymbolID {
+        return .{
+            .module = module,
+            .inner = @enumFromInt(@as(u32, @intCast(sym_idx))),
+        };
+    }
+
+    /// `SymbolRef` 에서 변환. `.semantic` variant 만 SymbolID 로 매핑되고,
+    /// `.alias` / invalid 는 null (alias 는 SymbolID 공간 밖).
+    pub fn fromRef(ref: SymbolRef) ?SymbolID {
+        return switch (ref) {
+            .semantic => |s| if (s.module.isNone() or s.symbol.isNone())
+                null
+            else
+                .{ .module = s.module, .inner = s.symbol },
+            .alias => null,
+        };
+    }
+
+    /// `SymbolRef.semantic` 으로 환원.
+    pub fn toRef(self: SymbolID) SymbolRef {
+        return .{ .semantic = .{ .module = self.module, .symbol = self.inner } };
+    }
+
+    pub fn isValid(self: SymbolID) bool {
+        return !self.module.isNone() and !self.inner.isNone();
+    }
+
+    pub fn eql(a: SymbolID, b: SymbolID) bool {
+        return a.module == b.module and a.inner == b.inner;
+    }
+};
+
 /// Re-export alias 레코드.
 /// `name`은 exported_name(barrel 기준). `canonical_name`은 체인 resolve 후
 /// linker가 주입한 최종 참조 이름. `ref_count`는 symbol-level tree-shaking 용.
@@ -189,4 +246,57 @@ test "SymbolRef: semantic vs alias 공간 구분" {
     try std.testing.expect(!sem.eql(bnd));
     try std.testing.expect(sem.eql(sem));
     try std.testing.expect(!SymbolRef.invalid.isValid());
+}
+
+test "SymbolID: make + toRef roundtrip" {
+    const id = SymbolID.make(@as(ModuleIndex, @enumFromInt(3)), 7);
+    try std.testing.expectEqual(@as(ModuleIndex, @enumFromInt(3)), id.module);
+    try std.testing.expectEqual(@as(SemanticSymbolId, @enumFromInt(7)), id.inner);
+    try std.testing.expect(id.isValid());
+
+    const ref = id.toRef();
+    const back = SymbolID.fromRef(ref).?;
+    try std.testing.expect(id.eql(back));
+}
+
+test "SymbolID: fromRef — semantic 만 매핑, alias/invalid 는 null" {
+    const sem: SymbolRef = .{ .semantic = .{ .module = @enumFromInt(1), .symbol = @enumFromInt(2) } };
+    const got = SymbolID.fromRef(sem).?;
+    try std.testing.expectEqual(@as(ModuleIndex, @enumFromInt(1)), got.module);
+    try std.testing.expectEqual(@as(SemanticSymbolId, @enumFromInt(2)), got.inner);
+
+    const alias: SymbolRef = .{ .alias = .{ .module = @enumFromInt(1), .symbol = @enumFromInt(2) } };
+    try std.testing.expectEqual(@as(?SymbolID, null), SymbolID.fromRef(alias));
+
+    // semantic 이지만 none sentinel → invalid → null
+    const none_mod: SymbolRef = .{ .semantic = .{ .module = .none, .symbol = @enumFromInt(2) } };
+    try std.testing.expectEqual(@as(?SymbolID, null), SymbolID.fromRef(none_mod));
+    const none_sym: SymbolRef = .{ .semantic = .{ .module = @enumFromInt(1), .symbol = .none } };
+    try std.testing.expectEqual(@as(?SymbolID, null), SymbolID.fromRef(none_sym));
+}
+
+test "SymbolID: isValid + invalid sentinel" {
+    try std.testing.expect(!SymbolID.invalid.isValid());
+    try std.testing.expect(SymbolID.make(@as(ModuleIndex, @enumFromInt(0)), 0).isValid());
+}
+
+test "SymbolID: AutoHashMap 키로 사용 (RenameTable 기반)" {
+    var map = std.AutoHashMap(SymbolID, []const u8).init(std.testing.allocator);
+    defer map.deinit();
+
+    const a = SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 10);
+    const b = SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 11);
+    const c = SymbolID.make(@as(ModuleIndex, @enumFromInt(2)), 10);
+
+    try map.put(a, "a$1");
+    try map.put(b, "b$2");
+    try map.put(c, "c$3");
+
+    try std.testing.expectEqualStrings("a$1", map.get(a).?);
+    try std.testing.expectEqualStrings("b$2", map.get(b).?);
+    try std.testing.expectEqualStrings("c$3", map.get(c).?);
+    // 같은 module 다른 inner, 다른 module 같은 inner 모두 구분
+    try std.testing.expectEqual(@as(u32, 3), map.count());
+    // 동일 키 재조회 (eql 동작)
+    try std.testing.expectEqualStrings("a$1", map.get(SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 10)).?);
 }
