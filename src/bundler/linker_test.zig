@@ -1527,6 +1527,34 @@ test "RenameTable 병행: clearCanonicalNames 가 rename_table 도 비움 (RFC #
     try std.testing.expect(r.linker.renameTableParityHolds()); // canonical_name 도 "" → 자명하게 true
 }
 
+test "syncRenameTableFromCanonical: carry-over 우회분을 canonical_name 으로부터 복구 (RFC #3940 L.4a)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export { x as a } from './m1'; export { x as b } from './m2';");
+    try writeFile(tmp.dir, "m1.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "m2.ts", "export const x = 2;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    try r.linker.computeRenames();
+    const before = r.linker.rename_table.count();
+    try std.testing.expect(before >= 1);
+    try std.testing.expect(r.linker.renameTableParityHolds());
+
+    // carry-over (transform_prepass) 가 assignSymbolCanonical sink 를 우회해 canonical_name 만
+    // 갱신하고 rename_table 은 stale 인 상태를 모사: rename_table 만 비운다 (canonical_name 유지).
+    r.linker.rename_table.clear();
+    try std.testing.expect(!r.linker.renameTableParityHolds()); // 이제 깨짐 (blocker 재현)
+
+    // sync 가 canonical_name (ground truth) 으로부터 rename_table 을 재구성 → parity 회복.
+    try r.linker.syncRenameTableFromCanonical();
+    try std.testing.expectEqual(before, r.linker.rename_table.count());
+    try std.testing.expect(r.linker.renameTableParityHolds());
+}
+
 // Regression: HMR rebuild 에서 소스가 재파싱된 모듈의 `alias_table` 이 줄어들
 // 수 있어 (e.g. re_export 엔트리가 없어진 경우), 캐시된 import_binding 의
 // `.symbol.alias` 가 old-build AliasId 를 stale 로 들고 있으면
