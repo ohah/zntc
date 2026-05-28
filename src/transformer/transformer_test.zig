@@ -3069,3 +3069,130 @@ test "experimentalDecorators + private: @dec field 가 private 동반에도 emit
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "__decorateClass") != null);
 }
+
+// ============================================================
+// RFC_TRANSFORMER_OWN_AST PR-1: Transformer.initFromOwnedAst
+// cloneForTransformer 회피 — caller 가 ast 인스턴스의 lifetime 보유, transformer 가
+// *동일 instance* 를 직접 mutate. transpile path 전용 (bundler 는 원본 보존 의무라 init 유지).
+// ============================================================
+
+test "initFromOwnedAst: transformer.ast 가 source_ast 와 동일 instance" {
+    // clone 하지 않으므로 transformer.ast 의 포인터가 호출자가 넘긴 ast 와 같아야 한다.
+    var src_ast = Ast.init(std.testing.allocator, "");
+    defer src_ast.deinit();
+
+    const empty_list = try src_ast.addNodeList(&.{});
+    _ = try src_ast.addNode(.{
+        .tag = .program,
+        .span = .{ .start = 0, .end = 0 },
+        .data = .{ .list = empty_list },
+    });
+
+    var t = try Transformer.initFromOwnedAst(std.testing.allocator, &src_ast, .{});
+    defer t.deinit();
+
+    // 핵심 invariant: clone 안 함 → 동일 인스턴스.
+    try std.testing.expectEqual(@as(*Ast, &src_ast), t.ast);
+    // boundary 가 호출 시점 nodes.items.len 으로 스냅샷 (init 의 clone-after 와 동일 의미).
+    try std.testing.expectEqual(
+        @as(u32, @intCast(src_ast.nodes.items.len)),
+        src_ast.transform_boundary.?,
+    );
+}
+
+test "initFromOwnedAst: empty program → init 과 동일한 결과" {
+    // init (clone path) 와 initFromOwnedAst (own path) 가 동일 입력에 동일 transform 결과를 내야 한다.
+
+    // init (clone) 경로
+    var ast_a = Ast.init(std.testing.allocator, "");
+    defer ast_a.deinit();
+    const list_a = try ast_a.addNodeList(&.{});
+    _ = try ast_a.addNode(.{
+        .tag = .program,
+        .span = .{ .start = 0, .end = 0 },
+        .data = .{ .list = list_a },
+    });
+    var t_a = try Transformer.init(std.testing.allocator, &ast_a, .{});
+    defer t_a.deinit();
+    const root_a = try t_a.transform();
+    const res_a = t_a.ast.getNode(root_a);
+
+    // initFromOwnedAst (own) 경로
+    var ast_b = Ast.init(std.testing.allocator, "");
+    defer ast_b.deinit();
+    const list_b = try ast_b.addNodeList(&.{});
+    _ = try ast_b.addNode(.{
+        .tag = .program,
+        .span = .{ .start = 0, .end = 0 },
+        .data = .{ .list = list_b },
+    });
+    var t_b = try Transformer.initFromOwnedAst(std.testing.allocator, &ast_b, .{});
+    defer t_b.deinit();
+    const root_b = try t_b.transform();
+    const res_b = t_b.ast.getNode(root_b);
+
+    try std.testing.expectEqual(res_a.tag, res_b.tag);
+    try std.testing.expectEqual(res_a.data.list.len, res_b.data.list.len);
+}
+
+test "initFromOwnedAst: type_alias_declaration strip → init 과 동일" {
+    // strip 동작이 own path 에서도 정확히 작동하는지 검증.
+
+    // init (clone) 경로
+    var ast_a = Ast.init(std.testing.allocator, "type Foo = string;");
+    defer ast_a.deinit();
+    const ta_a = try ast_a.addEmptyExtraNode(.ts_type_alias_declaration, .{ .start = 0, .end = 18 });
+    const list_a = try ast_a.addNodeList(&.{ta_a});
+    _ = try ast_a.addNode(.{
+        .tag = .program,
+        .span = .{ .start = 0, .end = 18 },
+        .data = .{ .list = list_a },
+    });
+    var t_a = try Transformer.init(std.testing.allocator, &ast_a, .{});
+    defer t_a.deinit();
+    const root_a = try t_a.transform();
+    const res_a = t_a.ast.getNode(root_a);
+
+    // initFromOwnedAst (own) 경로
+    var ast_b = Ast.init(std.testing.allocator, "type Foo = string;");
+    defer ast_b.deinit();
+    const ta_b = try ast_b.addEmptyExtraNode(.ts_type_alias_declaration, .{ .start = 0, .end = 18 });
+    const list_b = try ast_b.addNodeList(&.{ta_b});
+    _ = try ast_b.addNode(.{
+        .tag = .program,
+        .span = .{ .start = 0, .end = 18 },
+        .data = .{ .list = list_b },
+    });
+    var t_b = try Transformer.initFromOwnedAst(std.testing.allocator, &ast_b, .{});
+    defer t_b.deinit();
+    const root_b = try t_b.transform();
+    const res_b = t_b.ast.getNode(root_b);
+
+    // 둘 다 program 이고 list 가 비어야 (type alias 제거).
+    try std.testing.expectEqual(Tag.program, res_a.tag);
+    try std.testing.expectEqual(Tag.program, res_b.tag);
+    try std.testing.expectEqual(@as(u32, 0), res_a.data.list.len);
+    try std.testing.expectEqual(@as(u32, 0), res_b.data.list.len);
+}
+
+test "initFromOwnedAst: deinit 후에도 caller 의 ast.deinit() 정상 동작" {
+    // ownership 이 호출자에 있으므로 transformer.deinit 은 ast 를 건드리지 않아야 한다.
+    // defer LIFO 순서: t.deinit() → src_ast.deinit().
+    var src_ast = Ast.init(std.testing.allocator, "");
+    defer src_ast.deinit();
+
+    const empty_list = try src_ast.addNodeList(&.{});
+    _ = try src_ast.addNode(.{
+        .tag = .program,
+        .span = .{ .start = 0, .end = 0 },
+        .data = .{ .list = empty_list },
+    });
+
+    {
+        var t = try Transformer.initFromOwnedAst(std.testing.allocator, &src_ast, .{});
+        _ = try t.transform();
+        t.deinit();
+        // t.deinit 후 src_ast 가 살아있어야 — node 접근으로 use-after-free 검출.
+        try std.testing.expect(src_ast.nodes.items.len > 0);
+    }
+}

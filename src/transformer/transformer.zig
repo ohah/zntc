@@ -308,6 +308,7 @@ pub const Transformer = struct {
     const lifecycle_mod = @import("transformer/lifecycle.zig");
     pub const init = lifecycle_mod.init;
     pub const initBorrow = lifecycle_mod.initBorrow;
+    pub const initFromOwnedAst = lifecycle_mod.initFromOwnedAst;
     pub const deinit = lifecycle_mod.deinit;
     pub const deinitExceptAst = lifecycle_mod.deinitExceptAst;
     pub const initSymbolIds = lifecycle_mod.initSymbolIds;

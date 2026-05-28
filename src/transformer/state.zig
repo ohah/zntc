@@ -2,7 +2,13 @@ const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const es_helpers = @import("es_helpers.zig");
 
-pub const AstOwnership = enum { owned, borrowed };
+/// transformer 가 보유한 AST 의 소유 관계.
+/// - `.owned`: `init` (clone 후 transformer 가 deinit + destroy)
+/// - `.borrowed`: `initBorrow` (외부 owner 가 ast 를 mutate-free, transformer 는 cache hit 분기만)
+/// - `.owned_from_caller`: `initFromOwnedAst` (호출자가 ast 인스턴스의 lifetime 보유,
+///    transformer 는 *직접 mutate* 하나 deinit/destroy 는 호출자 책임). transpile path
+///    에서 cloneForTransformer 회피용 — RFC_TRANSFORMER_OWN_AST 참조.
+pub const AstOwnership = enum { owned, borrowed, owned_from_caller };
 
 pub const BlockRenameEntry = struct {
     old_name: []const u8,
