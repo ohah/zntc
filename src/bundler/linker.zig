@@ -952,7 +952,9 @@ pub const Linker = struct {
                                 .cjs_exports, .cjs_require, .esm_init => {},
                                 else => continue,
                             }
-                            const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
+                            // RFC #3940 L.4c: dedup key 도 build-scope rename_table 경유.
+                            // parity (L.3 sink + L.4a carry-over sync) 로 canonical_name 과 동치.
+                            const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                             if (key.len <= 1) continue;
                             if (exported.contains(key)) continue;
                             try candidates.append(self.allocator, .{
@@ -1007,7 +1009,8 @@ pub const Linker = struct {
                         // getter dead-export skip 과 같은 진실의 원천.
                         if (self.tree_shaker_active and !m.isStatementAliveBySym(sym_idx_usize)) continue;
 
-                        const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
+                        // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
+                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), sym_idx)) orelse sym_name;
                         if (key.len <= 1) {
                             // canonical_name 이 sym_name 과 다른 1-char 케이스도 reserve
                             // (위 sym_name 분기와 대칭 — #2965).
@@ -1036,7 +1039,8 @@ pub const Linker = struct {
                         // ref=0 이면 어디서도 import 하지 않아 codegen 이 binding 을 emit
                         // 하지 않는다. 그런 candidate 는 mangle 풀에서 제외.
                         if (sk == .default_export and sym.reference_count == 0) continue;
-                        const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
+                        // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
+                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                         if (key.len <= 1) continue;
                         if (exported.contains(key)) continue;
 
