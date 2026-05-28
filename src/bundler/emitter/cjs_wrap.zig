@@ -13,7 +13,8 @@ const EmitOptions = @import("../emitter.zig").EmitOptions;
 /// Disabled 모듈: platform=browser에서 Node 빌트인 모듈을 빈 __commonJS wrapper로 출력.
 /// wrapper key는 dev/HMR registry 조회와 일치해야 하므로 module.wrapperId()를 쓴다.
 pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool) !?[]const u8 {
-    const var_name = try module.allocRequireName(allocator);
+    // RFC #3940 L.4c-2a-i: free fn (linker 없음) → rt null, canonical field 경로 (parity 로 동치).
+    const var_name = try module.allocRequireName(allocator, null);
     defer allocator.free(var_name);
     const wrapper_id = module.wrapperId();
 
@@ -105,7 +106,8 @@ pub fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, opti
 /// `var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });`
 /// 형태의 __commonJS wrapper를 생성.
 pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, source: []const u8, minify: bool) !?[]const u8 {
-    const var_name = try module.allocRequireName(allocator);
+    // RFC #3940 L.4c-2a-i: free fn (linker 없음) → rt null, canonical field 경로 (parity 로 동치).
+    const var_name = try module.allocRequireName(allocator, null);
     defer allocator.free(var_name);
 
     var buf: std.ArrayList(u8) = .empty;

@@ -187,9 +187,10 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     var seed_it = self.modules.iterator(0);
     while (seed_it.next()) |m| {
         if (m.wrap_kind == .none) continue;
-        if (m.getInitName()) |n| _ = used_names.put(n, 1) catch {};
-        if (m.getExportsName()) |n| _ = used_names.put(n, 1) catch {};
-        if (m.getRequireName()) |n| _ = used_names.put(n, 1) catch {};
+        // RFC #3940 L.4c-2a-i: mangle 전 단계 (canonical 미설정) → rt null, synthetic_name 조회.
+        if (m.getInitName(null)) |n| _ = used_names.put(n, 1) catch {};
+        if (m.getExportsName(null)) |n| _ = used_names.put(n, 1) catch {};
+        if (m.getRequireName(null)) |n| _ = used_names.put(n, 1) catch {};
     }
 
     var it = self.modules.iterator(0);
