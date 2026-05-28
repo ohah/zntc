@@ -1,8 +1,47 @@
 # RFC: Graph Persistence — Incremental Build 의 ModuleGraph Instance 재사용
 
-상태: **DRAFT · 측정 기반 epic** · 분류: dev UX / core 재설계
+상태: **CLOSED · NO-GO (정확성 회귀, 재시도 금지)** · 분류: 결정 문서
 부모 RFC: [RFC_EMIT_INCREMENTAL_DEV_SERVER.md](./RFC_EMIT_INCREMENTAL_DEV_SERVER.md) PR-B 영역
 관련: `src/bundler/bundler.zig:1073`, `src/bundler/incremental.zig`, `src/bundler/graph.zig`, `src/bundler/graph/build_flow.zig`, `src/bundler/graph/resolve_imports.zig`
+
+## 0. 종결 (Sub-PR-B.3 PoC 결과)
+
+본 RFC 의 Sub-PR-B.3 PoC 가 **정확성 회귀로 NO-GO 확정** (2026-05-28).
+
+**측정 데이터:**
+- Sub-PR-B.3 의 selective invalidate path 적용 + ZNTC_INCREMENTAL_PERSIST=1
+- lodash dev_server 의 첫 incremental rebuild → **segfault**
+- 위치: `Linker.assignSymbolCanonical` → `HashMap StringContext.hash` → string pointer access
+- 진짜 root: 이전 빌드 `Linker` 가 alloc 한 `canonical_name` 메모리 가 `Linker.deinit` 후 freed. 다음 빌드의 `Linker` 가 graph 의 stale slice 접근 → segfault
+
+**RFC §6 의 NO-GO 기준 정확히 부합:** "정확성 회귀 → RFC_GRAPH_PERSISTENCE_CLOSED.md 종결".
+
+**진짜 fix 는 stale pointer 추적이 아님:**
+- canonical_name 만이 아니라 *전체 cross-build memory* (parse_arena ownership, alias_table, export_index_by_name, namespace_access_index, requested_exports 내부 strings 등) 모두
+- 그때그때 정리는 *implicit invariant* — 새 PR 마다 회귀 risk 영구 증가, 유지보수 폭탄
+
+**진짜 graph persistence 의 architecture 영역 = `RFC_LIFECYCLE_SCOPE_REDESIGN`** (별도 epic 후보):
+- build-scope (매 빌드 free) vs graph-scope (persistent) 메모리 영역 명확 분리
+- canonical_name 등 cross-build 데이터는 graph allocator 가 own
+- esbuild SymbolID 패턴 양도 (path/ID-based references)
+- ZNTC 의 1-2 quarter 작업, mid-term roadmap 영역
+
+**Sub-PR-B.3 변경 revert.** Sub-PR-B.1 (#3934 reset/invalidateModule API) + Sub-PR-B.2 (#3936 initWithGraph + enable_persistence opt-in flag) 는 main 에 머지된 상태로 보존 — 호출자 없어 영향 0, 향후 lifecycle redesign 시 활용 가능.
+
+**재시도 금지 영역:**
+- selective invalidate + persistent_graph 만으로 graph reuse
+- stale pointer 그때그때 정리 (보안성 없음)
+- 본 RFC §3 의 Sub-PR-B.3 ~ B.5 영역
+
+**대안 진행 영역:**
+- emit_module_pass incremental (별개 RFC, graph 안 건드림) — RFC_EMIT_INCREMENTAL
+- requested_exports 자료구조 부분 fix (HashSet 등, graph state 변경 없이 가능) — 후속 fix
+- RFC_LIFECYCLE_SCOPE_REDESIGN 큰 epic — mid-term
+
+---
+
+(이하 원래 RFC 본문 — 측정 데이터 + design 영역. 종결됐으나 history 보존을 위해 유지.)
+
 
 ## 1. 배경
 
