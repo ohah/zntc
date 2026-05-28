@@ -1,9 +1,67 @@
 # RFC: Emit Incremental — emit_module_pass Chunk-Level Dirty Marking
 
-상태: **DRAFT · 측정 기반 epic** · 분류: dev UX / emit 모델 재설계
+상태: **CLOSED · NO-GO (모든 작은 fix 가 noise / 회귀, 재시도 금지)** · 분류: 결정 문서
 부모 RFC: [RFC_EMIT_INCREMENTAL_DEV_SERVER.md](./RFC_EMIT_INCREMENTAL_DEV_SERVER.md) PR-C 영역
 관련: `src/bundler/emitter.zig:563` (emit_module_pass), `:670` (skip_bundle_concat), `src/bundler/compiled_cache.zig`
-선행: [RFC_GRAPH_PERSISTENCE](./RFC_GRAPH_PERSISTENCE.md) NO-GO (graph 영역 종결, emit 영역 별개)
+선행: [RFC_GRAPH_PERSISTENCE](./RFC_GRAPH_PERSISTENCE.md) NO-GO
+
+## 0. 종결 (Sub-PR-C 시도 결과)
+
+본 RFC 의 모든 sub-PR 영역이 **measurement-first NO-GO**.
+
+### PoC 측정 결과 (2026-05-28, lodash 641 modules, ZNTC dev_server WS HMR)
+
+| Sub-PR | 영역 | 측정 | 결과 |
+|---|---|---|---|
+| C.1 (#3938) | ChunkEmitCache API skeleton | 호출자 없음, 영향 0 | ✅ 자산 보존 |
+| **C.2 — Phase 1.5 parallel** | tryHit + hit.dupe per module 을 thread pool 화 | 307→323ms (-16ms 회귀) | ❌ thread pool overhead > cache lookup 비용 |
+| **C.2 — CSS short-circuit** | graph 의 css 모듈 없으면 emitCssBundle DFS skip | 307→307ms (noise) | ❌ Debug 24ms 가 Release 에선 noise 안에 묻힘 |
+| **C.2 — dev_codes module cache** | compiled_cache.Entry 에 hmr_code 추가, emit_concat 의 concat skip | 307→304ms (noise) | ❌ Release 에서 noise |
+
+**RFC §6 의 NO-GO 기준 정확히 부합**: "절약 <30ms 또는 정확성 회귀 → RFC_EMIT_INCREMENTAL_CLOSED.md 종결".
+
+### emit sub-phase 의 진짜 분포 (Debug profile, lodash 641 modules incremental rebuild)
+
+```
+emit total       151.35ms
+├─ emit.concat   95.53ms  (25.9%) ← Debug 측정 최대, 그러나 Release 에선 noise
+├─ emit.css      24.54ms  (CSS 없는데도 24ms — DFS traverse, fix 시도 noise)
+├─ emit.output   12.51ms (self)
+├─ emit.module.pass  16.08ms  (Phase 1.5 lookup, parallel 시도 회귀)
+└─ emit.prelude   0.32ms
+```
+
+Debug build 측정 vs Release wall 측정 의 *큰 괴리* — Debug 의 ms 단위 sub-phase 가 Release 에선 노이즈 floor 아래.
+
+### 진짜 fix 영역
+
+dev_server HMR 의 진짜 architectural 개선은 **`RFC_LIFECYCLE_SCOPE_REDESIGN`** (별도 mid-term epic):
+- build-scope vs graph-scope 메모리 영역 분리
+- canonical_name / hmr_code / compiled_cache entry 의 ownership 일관성
+- esbuild SymbolID 패턴 (path/ID-based references)
+- 1-2 quarter 작업
+
+본 RFC 의 *작은 fix* 들은 모두 *Release noise 안* — 의미 있는 단기 win 없음.
+
+**재시도 금지 영역:**
+- Phase 1.5 parallel 화 (16ms 회귀, RFC 영역 NO-GO 확정)
+- CSS emitCssBundle short-circuit (Release noise, ROI 측정 불가)
+- dev_codes module cache (Release noise, ROI 측정 불가)
+- chunk-level dirty marking 단순 wire-up (정확한 ChunkEmitCache hit 시나리오 부재)
+
+**자산 보존 (호출자 없음, 영향 0):**
+- `src/bundler/chunk_emit_cache.zig` (Sub-PR-C.1, #3938) — 향후 lifecycle redesign 시 활용 가능
+- 단위 테스트 9건
+
+**대안 영역:**
+- **PR-A 머지 (#3932) 의 -23% 가 dev_server HMR 의 최대 단기 win** — 추가 작은 fix 없음
+- **`RFC_LIFECYCLE_SCOPE_REDESIGN` mid-term epic** — 진짜 esbuild parity
+- 측정 노이즈 분리 위한 *RFC_RELEASE_PROFILING_HARNESS* (별개 작은 epic) — Debug/Release 측정 통합 도구
+
+---
+
+(이하 원래 RFC 본문 — Sub-PR-C 의 *원안 design*. 종결됐으나 history 보존.)
+
 
 ## 1. 배경
 
