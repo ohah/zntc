@@ -19,6 +19,7 @@ const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
 const Linker = @import("../linker.zig").Linker;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
+const RenameTable = @import("../symbol.zig").RenameTable;
 const tree_shaker_mod = @import("../tree_shaker.zig");
 const TreeShaker = tree_shaker_mod.TreeShaker;
 const statement_shaker = @import("../statement_shaker.zig");
@@ -170,10 +171,12 @@ pub fn emitEsmWrappedModule(
     options: anytype,
 ) !EsmEmitResult {
     const basename = module.wrapperId();
+    // RFC #3940 L.4c-2a-ii: wrapper-name 을 build-scope rename_table 경유로. parity 로 byte-identical.
+    const rename_tbl: ?*const RenameTable = if (linker) |l| &l.rename_table else null;
 
-    const init_name = try module.allocInitName(allocator, null);
+    const init_name = try module.allocInitName(allocator, rename_tbl);
     defer allocator.free(init_name);
-    const exports_name = try module.allocExportsName(allocator, null);
+    const exports_name = try module.allocExportsName(allocator, rename_tbl);
     defer allocator.free(exports_name);
 
     // AST top-level 문장을 분류
@@ -530,9 +533,9 @@ pub fn emitEsmWrappedModule(
                     // export * as ns from './dep' → namespace re-export
                     // getter는 소스 모듈의 exports 객체 자체를 참조
                     const getter_val = switch (src_mod.wrap_kind) {
-                        .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options),
+                        .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options, rename_tbl),
                         .cjs => blk: {
-                            const rv = try src_mod.allocRequireName(allocator, null);
+                            const rv = try src_mod.allocRequireName(allocator, rename_tbl);
                             defer allocator.free(rv);
                             break :blk try std.fmt.allocPrint(allocator, "{s}()", .{rv});
                         },
@@ -813,9 +816,9 @@ pub fn emitEsmWrappedModule(
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
-                            const iv = try source_mod.allocInitName(allocator, null);
+                            const iv = try source_mod.allocInitName(allocator, rename_tbl);
                             defer allocator.free(iv);
-                            const ev = try source_mod.allocExportsName(allocator, null);
+                            const ev = try source_mod.allocExportsName(allocator, rename_tbl);
                             defer allocator.free(ev);
                             // #1621: minify 시 __toCommonJS → $tC 축약.
                             const to_cjs_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
@@ -841,7 +844,7 @@ pub fn emitEsmWrappedModule(
                         if (found_preamble_var) |pv| {
                             try reexport_buf.appendSlice(allocator, pv);
                         } else {
-                            const rv = try source_mod.allocRequireName(allocator, null);
+                            const rv = try source_mod.allocRequireName(allocator, rename_tbl);
                             defer allocator.free(rv);
                             const interop_mode = cjsInteropMode(options, module);
                             // #1621: minify 시 __toESM → $tE 축약.
@@ -890,7 +893,7 @@ pub fn emitEsmWrappedModule(
             re_export_inited.put(src_i, {}) catch {};
             if (shouldLazyReExportInit(options, src_mod_ptr)) continue;
 
-            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options, rename_tbl);
         }
 
         // Side-effect-only import (`import './x';`) → target이 ESM 래핑일 때만
@@ -908,7 +911,7 @@ pub fn emitEsmWrappedModule(
             if (src_mod.wrap_kind != .esm) continue;
             re_export_inited.put(src_i, {}) catch {};
 
-            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, options);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, options, rename_tbl);
         }
     }
 
@@ -1159,6 +1162,7 @@ fn appendWrappedInitCall(
     allocator: std.mem.Allocator,
     src_mod: *const Module,
     options: *const EmitOptions,
+    rename_tbl: ?*const RenameTable,
 ) !void {
     const is_tla = src_mod.wrap_kind == .esm and src_mod.uses_top_level_await;
     const guard = src_mod.shouldGuard(options.entry_error_guard);
@@ -1171,7 +1175,7 @@ fn appendWrappedInitCall(
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
             } else {
-                const iv = try src_mod.allocInitName(allocator, null);
+                const iv = try src_mod.allocInitName(allocator, rename_tbl);
                 defer allocator.free(iv);
                 try buf.appendSlice(allocator, iv);
                 try buf.appendSlice(allocator, "()");
@@ -1179,7 +1183,7 @@ fn appendWrappedInitCall(
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .cjs => {
-            const rv = try src_mod.allocRequireName(allocator, null);
+            const rv = try src_mod.allocRequireName(allocator, rename_tbl);
             defer allocator.free(rv);
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             try buf.appendSlice(allocator, rv);
@@ -1265,6 +1269,7 @@ fn makeLazyEsmGetterValue(
     src_mod: *const Module,
     target: []const u8,
     options: *const EmitOptions,
+    rename_tbl: ?*const RenameTable,
 ) ![]const u8 {
     if (!shouldLazyReExportInit(options, src_mod) or src_mod.wrap_kind != .esm) {
         return try allocator.dupe(u8, target);
@@ -1273,7 +1278,7 @@ fn makeLazyEsmGetterValue(
     const init_call = if (options.dev_mode) blk: {
         break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
     } else blk: {
-        const iv = try src_mod.allocInitName(allocator, null);
+        const iv = try src_mod.allocInitName(allocator, rename_tbl);
         defer allocator.free(iv);
         break :blk try std.fmt.allocPrint(allocator, "{s}()", .{iv});
     };
@@ -1293,22 +1298,24 @@ fn makeEsmExportGetterValue(
     src_mod: *const Module,
     name: []const u8,
     options: *const EmitOptions,
+    rename_tbl: ?*const RenameTable,
 ) ![]const u8 {
-    const ev = try src_mod.allocExportsName(allocator, null);
+    const ev = try src_mod.allocExportsName(allocator, rename_tbl);
     defer allocator.free(ev);
     const target = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
     defer allocator.free(target);
-    return makeLazyEsmGetterValue(allocator, src_mod, target, options);
+    return makeLazyEsmGetterValue(allocator, src_mod, target, options, rename_tbl);
 }
 
 fn makeNamespaceGetterValue(
     allocator: std.mem.Allocator,
     src_mod: *const Module,
     options: *const EmitOptions,
+    rename_tbl: ?*const RenameTable,
 ) ![]const u8 {
-    const ev = try src_mod.allocExportsName(allocator, null);
+    const ev = try src_mod.allocExportsName(allocator, rename_tbl);
     defer allocator.free(ev);
-    return makeLazyEsmGetterValue(allocator, src_mod, ev, options);
+    return makeLazyEsmGetterValue(allocator, src_mod, ev, options, rename_tbl);
 }
 
 /// star re-export의 getter 값을 소스 모듈 wrap_kind에 따라 생성한다.
@@ -1324,6 +1331,8 @@ fn makeStarGetterValue(
     options: *const EmitOptions,
 ) !?[]const u8 {
     if (l.tree_shaker_active and !src_mod.is_included) return null;
+    // RFC #3940 L.4c-2a-ii: wrapper-name 을 build-scope rename_table 경유 (parity 로 byte-identical).
+    const rename_tbl: ?*const RenameTable = &l.rename_table;
 
     switch (src_mod.wrap_kind) {
         .none => {
@@ -1345,12 +1354,12 @@ fn makeStarGetterValue(
                 if (l.tree_shaker_active and !canonical_mod.is_included) return null;
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
-                    const ev = try canonical_mod.allocExportsName(allocator, null);
+                    const ev = try canonical_mod.allocExportsName(allocator, rename_tbl);
                     defer allocator.free(ev);
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, resolved.export_name });
                 }
                 if (canonical_mod.wrap_kind == .cjs) {
-                    const rv = try canonical_mod.allocRequireName(allocator, null);
+                    const rv = try canonical_mod.allocRequireName(allocator, rename_tbl);
                     defer allocator.free(rv);
                     return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, resolved.export_name });
                 }
@@ -1366,10 +1375,10 @@ fn makeStarGetterValue(
             return null;
         },
         .esm => {
-            return try makeEsmExportGetterValue(allocator, src_mod, name, options);
+            return try makeEsmExportGetterValue(allocator, src_mod, name, options, rename_tbl);
         },
         .cjs => {
-            const rv = try src_mod.allocRequireName(allocator, null);
+            const rv = try src_mod.allocRequireName(allocator, rename_tbl);
             defer allocator.free(rv);
             return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
         },
