@@ -1394,8 +1394,11 @@ pub const Linker = struct {
 
     fn lookupSymbolCanonical(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
         const found = self.findSymbolMutable(module_index, name) orelse return null;
-        if (!found.sym.hasCanonicalName()) return null;
-        return found.sym.canonical_name;
+        // RFC #3940 Sub-PR-L.4b — emit 경로가 `Symbol.canonical_name` field 대신 build-scope
+        // `rename_table` 을 읽는다. parity (L.3 병행작성 + L.4a carry-over sync) 로 결과 동일:
+        // canonical write 단일 sink 가 둘에 같은 slice 를 기록하므로 byte-identical. miss → null
+        // (기존 `!hasCanonicalName()` 분기와 동치).
+        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), found.idx));
     }
 
     /// ExportBinding의 canonical local name을 kind별 safe한 방법으로 조회.
@@ -1413,9 +1416,9 @@ pub const Linker = struct {
     }
 
     /// SymbolRef 기반 canonical name 조회 facade. #1328 Phase 4c-3.
-    /// - alias: AliasTable이 canonical_name 소유 → 직접 반환.
-    /// - semantic: Symbol.canonical_name 직접 조회. 미설정 시 string map fallback
-    ///   (synthetic 심볼 등 mirror 안 된 케이스).
+    /// - alias: AliasTable이 canonical_name 소유 → 직접 반환 (L.5 분리 대상).
+    /// - semantic: build-scope `rename_table` 조회 (RFC #3940 L.4b — `Symbol.canonical_name`
+    ///   field 대신). parity 로 결과 동일. bounds 밖이면 null.
     /// 리네임 안 됐으면 null — caller가 원본 이름으로 fallback.
     pub fn getCanonicalByRef(self: *const Linker, ref: bundler_symbol.SymbolRef) ?[]const u8 {
         if (!ref.isValid()) return null;
@@ -1429,9 +1432,7 @@ pub const Linker = struct {
                 const sem = m.semantic orelse break :blk null;
                 const idx: u32 = @intFromEnum(s.symbol);
                 if (idx >= sem.symbols.items.len) break :blk null;
-                const sym = &sem.symbols.items[idx];
-                if (sym.hasCanonicalName()) break :blk sym.canonical_name;
-                break :blk null;
+                break :blk self.rename_table.get(bundler_symbol.SymbolID.make(s.module, idx));
             },
         };
     }
