@@ -715,6 +715,25 @@ test "Scanner: string with unicode escape \\u{}" {
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
+test "Scanner: string \\u{10FFFF} (유효 max codepoint) → string_literal (#3980)" {
+    const source = "'\\u{10FFFF}'";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: string \\u{110000} (범위초과) → syntax_error (#3980)" {
+    // 0x110000 > 0x10FFFF. 이전엔 has_hex 만 검사해 silent 통과 → invalid JS emit.
+    const source = "'\\u{110000}'";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
+}
+
 test "Scanner: string with escaped quote" {
     const source = "'it\\'s'";
     var scanner = try Scanner.init(std.testing.allocator, source);

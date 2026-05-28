@@ -1680,19 +1680,30 @@ pub const Scanner = struct {
                     'u' => {
                         self.current += 1;
                         if (self.peek() == '{') {
-                            // \u{H...H} — 가변 길이, 각 문자가 hex digit이어야 함
+                            // \u{H...H} — 가변 길이, 각 문자가 hex digit이어야 하고 값 ≤ 0x10FFFF.
+                            // (#3980) 범위초과 검사가 빠져 "\u{110000}" 같은 invalid escape 가
+                            // 통과하던 버그 수정 — template 경로(scanTemplateContent)와 동일 검증.
                             self.current += 1;
                             var has_hex = false;
+                            var code_point: u32 = 0;
+                            var overflow = false;
                             while (!self.isAtEnd() and self.peek() != '}') {
                                 const hc = self.peek();
-                                if ((hc >= '0' and hc <= '9') or (hc >= 'a' and hc <= 'f') or (hc >= 'A' and hc <= 'F')) {
-                                    has_hex = true;
-                                    self.current += 1;
-                                } else {
+                                const digit: u32 = if (hc >= '0' and hc <= '9')
+                                    hc - '0'
+                                else if (hc >= 'a' and hc <= 'f')
+                                    hc - 'a' + 10
+                                else if (hc >= 'A' and hc <= 'F')
+                                    hc - 'A' + 10
+                                else
                                     return .syntax_error; // non-hex (예: '_' numeric separator)
-                                }
+                                has_hex = true;
+                                if (code_point > 0x10FFFF) overflow = true;
+                                code_point = (code_point << 4) | digit;
+                                self.current += 1;
                             }
                             if (!has_hex) return .syntax_error;
+                            if (overflow or code_point > 0x10FFFF) return .syntax_error; // 범위초과 (#3980)
                             if (!self.isAtEnd()) self.current += 1; // consume '}'
                         } else {
                             // \uHHHH — 고정 4자리
