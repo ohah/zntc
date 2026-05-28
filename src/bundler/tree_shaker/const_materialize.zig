@@ -262,7 +262,7 @@ pub fn shouldRunNumericPostPass(self: *const TreeShaker) bool {
 /// import/export statement indexing and materialize scratch remain valid.
 fn markConstMaterializedAndResync(self: *TreeShaker, m: *Module) void {
     std.debug.assert(m.parse_arena != null);
-    self.graph.resyncModuleMetadataAfterConstMaterialization(m, m.parse_arena.?.allocator()) catch {
+    self.graph.resyncModuleMetadataAfterConstMaterialization(m, m.parse_arena.?.allocator(), &self.linker.rename_table) catch {
         m.prebuilt_stmt_info = null;
     };
     // PR #3738: AST mutation 후 cached namespace_access_index 는 stale (node_idx 매핑 + text key

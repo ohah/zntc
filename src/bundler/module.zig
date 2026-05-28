@@ -283,6 +283,13 @@ pub const Module = struct {
     /// wrap_kind == .cjs 모듈의 `require_<path>` 함수 심볼 id.
     require_symbol: ?SemanticSymbolId = null,
 
+    /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
+    /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해
+    /// new idx 로 채우고, bundler 의 post-shake finalize 가 `applyPendingRenames` 로 mutable
+    /// `rename_table` 에 반영 후 비운다. value 는 `Linker.canonical_strings` borrow (같은 build
+    /// finalize 내 소비). build-scope 라 store round-trip 전 반드시 clear (cross-build dangling 방지).
+    pending_renames: RenameTable = .{},
+
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
     /// 나를 import하는 모듈들 (역방향, D078 HMR용)
