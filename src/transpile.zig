@@ -1144,12 +1144,20 @@ fn transpileWithCallbackInternal(
     // `.d.ts` declaration 파일: 전체 type-only → 빈 출력 (D12.5).
     if (isDeclarationFile(file_path)) return .{ .code = try allocator.dupe(u8, "") };
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_alloc = arena.allocator();
+    // arena 분리 (Step 1 — RFC 메모리 절약 part 1, 동작 무변경):
+    // - parser_arena: scanner + parser-time 데이터 (parser.ast / scratch / bracket_stack).
+    //   현재는 transpile 끝 defer 로 deinit → 단일 arena 와 RSS 동일. Step 2 (다음 PR)
+    //   에서 transformer.transform 전 이른 deinit 으로 RSS 회수 예정.
+    // - transformer_arena: analyzer / transformer / codegen / 결과 dupe 모두.
+    var parser_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parser_arena.deinit();
+    const parser_alloc = parser_arena.allocator();
+    var transformer_arena = std.heap.ArenaAllocator.init(allocator);
+    defer transformer_arena.deinit();
+    const arena_alloc = transformer_arena.allocator();
 
-    // 1. 파싱
-    var scanner = Scanner.init(arena_alloc, source) catch return error.OutOfMemory;
+    // 1. 파싱 (parser_arena)
+    var scanner = Scanner.init(parser_alloc, source) catch return error.OutOfMemory;
 
     // --stop-after=scan: 파서 호출 없이 토큰 drain 만 수행 (profile/debug 용).
     // Scanner 가 lazy 이므로 next() 로 EOF 까지 소비해야 실제 tokenization 비용이 발생.
@@ -1161,7 +1169,7 @@ fn transpileWithCallbackInternal(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
-    var parser = Parser.init(arena_alloc, &scanner);
+    var parser = Parser.init(parser_alloc, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
     parser.configureAmbientFromPath(file_path);
 
