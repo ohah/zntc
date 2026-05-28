@@ -1288,9 +1288,12 @@ fn transpileWithCallbackInternal(
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.jsx_pragma_ignored_msg });
     }
     // RFC_TRANSFORMER_OWN_AST PR-2: clone 회피 — transformer 가 parser.ast 의 ownership 을
-    // 양도받아 *동일 instance* 를 직접 mutate. cloneForTransformer (87MB synthetic 기준 -581 MB)
-    // 회피. transpile path 전용 (bundler 의 graph cache / HMR re-process 는 init 유지).
-    // line 1195 의 defer 가 stats 를 dump 하므로 여기서 별도 defer 불필요 — 같은 instance.
+    // 양도받아 *동일 instance* 를 직접 mutate. cloneForTransformer 의 deep copy 회피로
+    // 87MB synthetic 기준 peak RSS -84 MB (-2.6%, n=30 p<0.0001) 절감 (clone 배열이
+    // 이미 pre-warm 된 상태라 RFC 초기 추정 -580 MB 보다 작음). transpile path 전용 —
+    // bundler 의 graph cache / HMR re-process 는 원본 보존 의무라 init 유지.
+    // 위 `defer parser.ast.dumpStringInternStatsIfEnabled()` 가 stats 를 dump 하므로
+    // 여기서 별도 defer 불필요 — parser.ast 와 transformer.ast 가 같은 instance.
     var transformer = try Transformer.initFromOwnedAst(arena_alloc, &parser.ast, effective_opts);
     if (analyzer_storage) |*analyzer| {
         transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;

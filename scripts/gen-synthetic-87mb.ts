@@ -9,7 +9,8 @@
  * 사용:
  *   bun scripts/gen-synthetic-87mb.ts <output_path> [target_mb=87]
  *
- * fixture 는 gitignore — 빌드 머신에서 1 회 생성 후 측정용으로 사용.
+ * 생성된 fixture (수십 MB) 는 commit 하지 말 것 — /tmp 등 repo 밖에 출력하거나
+ * .gitignore 에 추가. 빌드 머신에서 1 회 생성 후 측정용으로 사용.
  */
 
 const path = require("node:path");
@@ -24,7 +25,9 @@ if (!out) {
 
 const targetBytes = targetMb * 1024 * 1024;
 
-// 결정성: 동일 generator 가 동일 결과 — 측정 재현성 확보.
+// 결정성: 동일 JS 엔진 내에서 동일 generator 가 동일 결과 — 측정 재현성 확보.
+// (float64 LCG: seed*1103515245 가 2^53 를 넘어 하위 비트가 반올림되므로 glibc LCG 와
+//  비트 동일하진 않으나, 한 머신에서 fixture 1 회 생성용이라 충분. 분포 uniform 검증됨.)
 let seed = 0x1234abcd;
 function rand(): number {
   seed = (seed * 1103515245 + 12345) & 0x7fffffff;

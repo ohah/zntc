@@ -186,10 +186,41 @@ PR-2 머지 후 samply 재측정:
 
 ## 7. 다음 세션 시작점
 
-1. PR-1: `Transformer.initFromOwnedAst` API 추가 (작은 PR, infra)
-2. PR-2: transpile.zig 가 새 API 사용 + arena 분리 원복 + 측정
+1. PR-1: `Transformer.initFromOwnedAst` API 추가 (작은 PR, infra) — **완료**
+2. PR-2: transpile.zig 가 새 API 사용 + arena 분리 원복 + 측정 — **완료**
 
-PR-1 머지 후 PR-2 의 측정 결과 따라 GO/NO-GO 결정.
+PR-1 머지 후 PR-2 의 측정 결과 따라 GO/NO-GO 결정. → §10 참조.
+
+## 10. PR-2 측정 결과 + GO 판단 (실측)
+
+87MB synthetic (`scripts/gen-synthetic-87mb.ts`, seed 0x1234abcd, 244K decls),
+n=30 페어드 교대 실행, ReleaseFast, macOS, `scripts/measure-rss.ts`:
+
+| | median peak RSS |
+| --- | ---: |
+| main (clone) | ~3266 MB |
+| PR-2 (initFromOwnedAst) | ~3182 MB |
+| **Δ** | **~-84 MB (-2.6%)** |
+
+- sign-test: 30/30 b<a, two-sided p < 0.0001 — 통계적으로 명백히 유의
+- correctness: main vs PR-2 output **byte-identical** (37.5 MB), bundle-smoke 151/0, bench 16/0
+
+**RFC §5.5 게이트 (-300 MB) 미충족, §5.6 NO-GO 임계 (-100 MB) 도 미달.**
+그러나:
+- 추정 -580 MB 와 실측 -84 MB 의 격차 원인 = **clone 되는 `nodes`/`extra_data` 배열이
+  이미 pre-warm 됨** (`project_arraylist_prewarm_session_2026_05_28.md` / #3928 에서
+  -553 MB 선반영). 즉 §1.1 의 581 MB 분포는 prewarm 이전 stale 수치.
+- mimalloc 의 page reuse 가 clone buffer 를 즉시 재사용 → peak 영향 제한적 (RFC §5.6
+  에서 예견한 시나리오).
+
+**GO 판단 (사용자 결정)**: 작은 절감이나 (1) 통계적으로 명백 (p<0.0001), (2) correctness
+회귀 0 (byte-identical), (3) clone 제거로 코드도 단순화 (단일 arena) — 머지 진행.
+대신 §5.5 의 -300 MB 게이트는 prewarm 선반영으로 *애초에 도달 불가* 였음을 기록.
+
+**박제**: transpile path 의 *immutable parser.ast 안전성* 을 in-place mutation 과
+맞바꾼 대가가 -2.6% 라는 점 — 이후 transpile path 에 parser.ast 재사용 코드를 추가하면
+debug assert (transformed_root/transform_boundary == null) 가 깨진다. PR-3 의 추가 정밀화는
+이 -84 MB 가 ROI 하한임을 전제로 판단.
 
 ## 8. 박제 (재시도 금지)
 
@@ -200,7 +231,8 @@ PR-1 머지 후 PR-2 의 측정 결과 따라 GO/NO-GO 결정.
 ## 9. References
 
 - `src/parser/ast.zig:1147` cloneForTransformer
-- `src/transformer/transformer/lifecycle.zig:13-37` Transformer.init / initBorrow
-- `src/transpile.zig:1295` transpile path 의 Transformer.init 호출
+- `src/transformer/transformer/lifecycle.zig` Transformer.init / initBorrow / initFromOwnedAst
+- `src/transpile.zig` transpile path 의 `initFromOwnedAst` 호출 (PR-2)
 - `src/bundler/emitter.zig:1431-1432` bundler path (clone 유지)
+- `scripts/gen-synthetic-87mb.ts` / `scripts/measure-rss.ts` — 측정 재현 도구 (PR-3 재사용)
 - 메모리 박제: `project_arraylist_prewarm_session_2026_05_28.md` 의 Step 2 NO-GO 분석
