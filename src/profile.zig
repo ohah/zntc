@@ -685,6 +685,83 @@ pub fn count(cat: Category) u32 {
 }
 
 // ============================================================================
+// Sub-PR-L.0a — ProfileSnapshot API (RFC_RELEASE_PROFILING_HARNESS)
+// ============================================================================
+
+/// Profile 측정값의 시점 snapshot. 각 category 의 total_ns / self_ns / count 보존.
+/// dev_server / NAPI watch 가 build 직후 캡처해서 SSE event / callback payload 에 포함.
+///
+/// build mode 무관 작동 — Release build 에서도 ZNTC_PROFILE=all 활성 시 정확한
+/// per-category ns 측정. RFC #3939 의 측정 괴리 (Debug ms vs Release wall noise) fix
+/// 의 prerequisite.
+///
+/// 호출자 없음 (L.0b 에서 incremental.zig wire-up).
+pub const ProfileSnapshot = struct {
+    totals_ns: [num_categories]u64,
+    self_totals_ns: [num_categories]u64,
+    counts: [num_categories]u32,
+
+    /// 특정 category 의 total_ns.
+    pub fn total(snap: *const ProfileSnapshot, cat: Category) u64 {
+        return snap.totals_ns[@intFromEnum(cat)];
+    }
+
+    /// 특정 category 의 self_ns (child 시간 제외).
+    pub fn selfTime(snap: *const ProfileSnapshot, cat: Category) u64 {
+        return snap.self_totals_ns[@intFromEnum(cat)];
+    }
+
+    /// 특정 category 의 호출 횟수.
+    pub fn callCount(snap: *const ProfileSnapshot, cat: Category) u32 {
+        return snap.counts[@intFromEnum(cat)];
+    }
+};
+
+/// 현재 시점의 profile 상태를 snapshot 으로 캡처. **counter 는 reset 하지 않음** —
+/// caller 가 별도로 `resetCounters` 호출 필요 (다음 build 측정 위해).
+/// thread-safe (atomic read).
+pub fn takeSnapshot() ProfileSnapshot {
+    var snap: ProfileSnapshot = .{
+        .totals_ns = undefined,
+        .self_totals_ns = undefined,
+        .counts = undefined,
+    };
+    for (0..num_categories) |i| {
+        snap.totals_ns[i] = atomicGet(u64, &totals_ns[i]);
+        snap.self_totals_ns[i] = atomicGet(u64, &self_totals_ns[i]);
+        snap.counts[i] = atomicGet(u32, &counts[i]);
+    }
+    return snap;
+}
+
+/// Snapshot 을 JSON object 로 직렬화. `{"<category>_ms": <ms>, ...}` 형식.
+/// SSE event 의 `profile` 필드에 직접 포함 가능. total_ns 만 출력 (self_ns / count 는
+/// 별도 detail level 에서 추가 가능, 본 PR scope 외).
+///
+/// `min_ms_threshold` 미만의 category 는 skip — JSON 크기 줄이고 중요 phase 만.
+/// 0 이면 모든 active category 출력.
+pub fn snapshotToJson(snap: ProfileSnapshot, writer: anytype, min_ms_threshold: f64) !void {
+    @setEvalBranchQuota(20000);
+    try writer.writeByte('{');
+    var first = true;
+    inline for (@typeInfo(Category).@"enum".fields) |field| {
+        const cat_idx = field.value;
+        const ns = snap.totals_ns[cat_idx];
+        const ms = @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
+        // 0ns category 는 skip — JSON 크기 줄이고 의미 있는 데이터만.
+        if (ns > 0 and ms >= min_ms_threshold) {
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try writer.writeByte('"');
+            try writer.writeAll(field.name);
+            try writer.writeAll("_ms\":");
+            try std.fmt.format(writer, "{d:.2}", .{ms});
+        }
+    }
+    try writer.writeByte('}');
+}
+
+// ============================================================================
 // Reporting
 // ============================================================================
 
@@ -1262,4 +1339,104 @@ test "addFromCsv all enables categories beyond u128 mask boundary" {
     addFromCsv("all");
     try testing.expect(enabled(.shake_fixpoint_re_exports_module));
     try testing.expect(enabled(.cache));
+}
+
+// ============================================================================
+// Sub-PR-L.0a tests (RFC_RELEASE_PROFILING_HARNESS)
+// ============================================================================
+
+test "takeSnapshot: 활성 category 의 timing 보존" {
+    resetForTest();
+    defer resetForTest();
+    addFromCsv("parse,emit");
+
+    var s1 = begin(.parse);
+    std.Thread.sleep(100_000);
+    s1.end();
+    var s2 = begin(.emit);
+    std.Thread.sleep(50_000);
+    s2.end();
+
+    const snap = takeSnapshot();
+    try testing.expect(snap.total(.parse) >= 100_000);
+    try testing.expect(snap.total(.emit) >= 50_000);
+    try testing.expectEqual(@as(u32, 1), snap.callCount(.parse));
+    try testing.expectEqual(@as(u32, 1), snap.callCount(.emit));
+}
+
+test "takeSnapshot: 비활성 category 는 0" {
+    resetForTest();
+    defer resetForTest();
+    addFromCsv("parse");
+
+    var s = begin(.emit); // 비활성
+    s.end();
+
+    const snap = takeSnapshot();
+    try testing.expectEqual(@as(u64, 0), snap.total(.emit));
+    try testing.expectEqual(@as(u32, 0), snap.callCount(.emit));
+}
+
+test "takeSnapshot: counter reset 하지 않음 (caller 책임)" {
+    resetForTest();
+    defer resetForTest();
+    addFromCsv("parse");
+
+    var s = begin(.parse);
+    std.Thread.sleep(100_000);
+    s.end();
+
+    const snap1 = takeSnapshot();
+    const snap2 = takeSnapshot();
+    try testing.expectEqual(snap1.total(.parse), snap2.total(.parse));
+    try testing.expectEqual(snap1.callCount(.parse), snap2.callCount(.parse));
+}
+
+test "snapshotToJson: 활성 phase 만 JSON 출력" {
+    resetForTest();
+    defer resetForTest();
+    addFromCsv("parse,emit");
+
+    var s1 = begin(.parse);
+    std.Thread.sleep(2_000_000); // 2ms
+    s1.end();
+    var s2 = begin(.emit);
+    std.Thread.sleep(1_000_000); // 1ms
+    s2.end();
+
+    const snap = takeSnapshot();
+    var buf: [512]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try snapshotToJson(snap, fbs.writer(), 0);
+    const json = fbs.getWritten();
+
+    // parse + emit 둘 다 포함
+    try testing.expect(std.mem.indexOf(u8, json, "\"parse_ms\":") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"emit_ms\":") != null);
+    // JSON 형식 valid
+    try testing.expectEqual(@as(u8, '{'), json[0]);
+    try testing.expectEqual(@as(u8, '}'), json[json.len - 1]);
+}
+
+test "snapshotToJson: min_ms_threshold 이상만 포함" {
+    resetForTest();
+    defer resetForTest();
+    addFromCsv("parse,emit");
+
+    var s1 = begin(.parse);
+    std.Thread.sleep(5_000_000); // 5ms
+    s1.end();
+    var s2 = begin(.emit);
+    std.Thread.sleep(100_000); // 0.1ms
+    s2.end();
+
+    const snap = takeSnapshot();
+    var buf: [512]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try snapshotToJson(snap, fbs.writer(), 1.0); // 1ms threshold
+    const json = fbs.getWritten();
+
+    // parse 만 포함 (>= 1ms), emit 은 skip
+    try testing.expect(std.mem.indexOf(u8, json, "\"parse_ms\":") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"emit_ms\":") == null);
 }
