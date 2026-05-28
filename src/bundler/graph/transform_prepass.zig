@@ -227,7 +227,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 /// 반영한다 (tree_shaker.linker 는 *const 라 put 불가 — capture=read, apply=write 분리).
 /// `rename_table == null` (graph pre-pass, link 전) 이면 rename 미설정이라 no-op.
 ///
-/// SymbolID 정합: renumber 가 inner idx 불변 → resync 전후 `(module.index, idx)→name` 동일.
+/// **Multi-pass 정합 (RFC #3940 L.5c review fix)**: 같은 모듈이 한 build 에서 2회 이상 resync
+/// 되면 (pre-shake `applyNodeBufferCapabilityFacts` markAst + numeric post-pass markConst 등)
+/// `rename_table` (link 시점 = pass0 idx) 만으로는 2차 capture 의 old_idx (= 1차 resync 후 idx)
+/// 와 어긋나 stale lookup 이 된다. 그러나 **직전 resync 가 이미 old_sem(=현재) idx 기준으로
+/// `pending_renames` 에 stash** 했으므로, rename source 를 `pending_renames` (직전 결과) 우선 +
+/// `rename_table` (link 시점) 폴백으로 잡으면 idx-shift 와 무관하게 정합한다. 또 매 resync 마다
+/// old_sem 기준으로 **새 맵을 rebuild(교체)** 해 이전 idx 의 stale entry 를 제거 — 다른 심볼이
+/// 잘못된 rename 으로 오염되는 것을 막는다. 단일 resync (대부분) 는 pending 이 비어 폴백만 타므로
+/// 기존과 byte-identical.
 fn captureRenamesToPending(
     module: *Module,
     rename_table: *const bundler_symbol.RenameTable,
@@ -237,16 +245,26 @@ fn captureRenamesToPending(
     arena: std.mem.Allocator,
 ) !void {
     const module_scope: ?*const std.StringHashMap(usize) = if (new_sem.scope_maps.len > 0) &new_sem.scope_maps[0] else null;
+    // old_sem 기준 새 맵을 만들어 교체 — 이전 idx 의 stale entry 누적/오염 방지 (multi-pass).
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    // `rename_table` (link 시점 = pass0 idx) 폴백은 **첫 capture (pending 비어있음)** 에서만
+    // 허용한다. 2차+ resync 는 old_sem idx 가 pass1+ 라, pass0 키 폴백 시 그 슬롯의 *다른* 심볼
+    // rename 을 오인해 잘못 적용할 수 있다 (idx-space mismatch). 직전 resync 가 old_sem idx 로
+    // stash 한 `pending_renames` 가 2차+ 의 유일한 정합 source 다. apply 가 build 끝에 pending 을
+    // clear 하므로 다음 build 의 첫 capture 는 다시 count==0 — cross-build 안전.
+    const allow_table_fallback = module.pending_renames.count() == 0;
     for (old_sem.symbols.items, 0..) |old_sym, old_idx| {
         const old_id = bundler_symbol.SymbolID.make(module.index, old_idx);
-        const rename = rename_table.get(old_id) orelse continue;
+        // 직전 resync 결과(pending) 우선; 첫 capture 만 link 시점 rename_table 폴백.
+        const rename = module.pending_renames.get(old_id) orelse
+            (if (allow_table_fallback) rename_table.get(old_id) else null) orelse continue;
 
         if (old_sym.synthetic_kind == null) {
             const name = old_sym.nameText(source);
             const new_idx = if (module_scope) |scope| scope.get(name) else null;
             if (new_idx) |idx| {
                 if (idx < new_sem.symbols.items.len and new_sem.symbols.items[idx].synthetic_kind == null) {
-                    try module.pending_renames.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
+                    try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
                 }
             }
             continue;
@@ -255,10 +273,11 @@ fn captureRenamesToPending(
         for (new_sem.symbols.items, 0..) |new_sym, new_idx| {
             if (new_sym.synthetic_kind != old_sym.synthetic_kind) continue;
             if (!std.mem.eql(u8, new_sym.synthetic_name, old_sym.synthetic_name)) continue;
-            try module.pending_renames.put(arena, bundler_symbol.SymbolID.make(module.index, new_idx), rename);
+            try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, new_idx), rename);
             break;
         }
     }
+    module.pending_renames = rebuilt;
 }
 
 fn refreshSemanticAndStmtInfoAfterAstMutation(
