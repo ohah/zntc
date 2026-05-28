@@ -1133,6 +1133,42 @@ fn isDeclarationFile(file_path: []const u8) bool {
         std.mem.endsWith(u8, file_path, ".d.cts");
 }
 
+/// `ZNTC_MEM_PROFILE` 존재 여부 — 프로세스 1회 캐시 (std.once, WASI/Windows 포터블).
+/// 직접 std.posix.getenv 는 WASI 에서 @compileError 라 env_flag.Once 사용.
+const mem_profile_env = @import("env_flag.zig").Once("ZNTC_MEM_PROFILE");
+
+/// transpile phase 별 arena 누적 capacity 스냅샷 (RFC_TRANSFORMER_OWN_AST PR-3 측정).
+/// `ZNTC_MEM_PROFILE=1` 일 때만 stderr 로 phase 경계 증분 출력 — 단일 arena 라 phase 별
+/// alloc 의 직접 분리는 불가하나, queryCapacity 증분이 각 phase 가 추가한 메모리의 proxy.
+/// 평소엔 enabled=false 라 snap() 이 즉시 return (hot path 영향 0).
+/// ⚠️ queryCapacity 는 reserved high-water mark — 마지막 arena BufNode 의 미사용 tail 에
+/// fit 하는 alloc (clone, codegen output) 은 증분 0 으로 *과소측정*. 실제 phase 비용은
+/// peak RSS 로 봐야 한다 (RFC §11.3 참조).
+const MemProfile = struct {
+    enabled: bool,
+    prev: usize = 0,
+
+    fn init() MemProfile {
+        return .{ .enabled = mem_profile_env.enabled() };
+    }
+
+    fn snap(self: *MemProfile, arena: *std.heap.ArenaAllocator, label: []const u8) void {
+        if (!self.enabled) return;
+        const cap = arena.queryCapacity();
+        const delta = cap -| self.prev;
+        const to_mb = struct {
+            fn f(b: usize) f64 {
+                return @as(f64, @floatFromInt(b)) / (1024.0 * 1024.0);
+            }
+        }.f;
+        std.debug.print(
+            "[mem] {s:<10} arena={d:>11} B ({d:>8.1} MB)  Δ +{d:>8.1} MB\n",
+            .{ label, cap, to_mb(cap), to_mb(delta) },
+        );
+        self.prev = cap;
+    }
+};
+
 fn transpileWithCallbackInternal(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -1150,6 +1186,9 @@ fn transpileWithCallbackInternal(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
+
+    var mem_profile = MemProfile.init();
+    mem_profile.snap(&arena, "start");
 
     // 1. 파싱
     var scanner = Scanner.init(arena_alloc, source) catch return error.OutOfMemory;
@@ -1185,6 +1224,7 @@ fn transpileWithCallbackInternal(
         parser.is_jsx = true;
     }
     _ = parser.parse() catch return error.ParseError;
+    mem_profile.snap(&arena, "parse");
     // Ast 가 arena 안에 살아 Ast.deinit() 가 호출되지 않으므로, intern stats dump 를
     // arena 해제 직전(LIFO) 에 명시 호출. ZNTC_STRING_INTERN_STATS=1 일 때만 출력.
     defer parser.ast.dumpStringInternStatsIfEnabled();
@@ -1238,6 +1278,7 @@ fn transpileWithCallbackInternal(
     } else if (transform_plan.semantic == .bindings) {
         binding_lite_storage = try collectBindingLite(arena_alloc, &parser.ast);
     }
+    mem_profile.snap(&arena, "semantic");
 
     if (options.stop_after == .semantic) {
         return .{ .code = try allocator.dupe(u8, "") };
@@ -1304,6 +1345,7 @@ fn transpileWithCallbackInternal(
     }
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
+    mem_profile.snap(&arena, "transform");
 
     if (options.stop_after == .transform) {
         return .{ .code = try allocator.dupe(u8, "") };
@@ -1371,6 +1413,7 @@ fn transpileWithCallbackInternal(
         cg.line_offsets = scanner.line_offsets.items;
     }
     const raw_output = cg.generate(root) catch return error.CodegenError;
+    mem_profile.snap(&arena, "generate");
 
     // 6.5. JSX import prepend (transformer가 JSX lowering 수행한 경우).
     // transformer.options 는 per-file pragma (#D026) 가 적용된 effective 설정 — 원본
@@ -1448,6 +1491,8 @@ fn transpileWithCallbackInternal(
         }
         break :blk buf.items;
     } else output;
+    // emit = generate 이후 jsx/css/runtime-helper prepend + sourcemap footer 까지 포함.
+    mem_profile.snap(&arena, "emit");
 
     // Arena 밖으로 복제 (arena는 함수 종료 시 defer로 해제 — line 167).
     // mangle_metadata.skip_nodes는 arena-owned이므로 별도 deinit 불필요.
