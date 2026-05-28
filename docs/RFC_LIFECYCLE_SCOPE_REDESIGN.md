@@ -41,6 +41,14 @@ emit 영역 작은 fix (Phase 1.5 parallel / CSS short-circuit / dev_codes modul
 
 핵심 문제: **`Linker` 가 build-scope (매 빌드 init/deinit) 인데 graph 의 cross-build state (`Module.semantic.symbols[].canonical_name`) 에 alloc 한 메모리를 write**. graph 가 persistent 면 다음 빌드의 새 Linker 가 stale slice 접근.
 
+> **Audit 보정 (Sub-PR-L.1 완료, [RFC_LIFECYCLE_SCOPE_AUDIT](./RFC_LIFECYCLE_SCOPE_AUDIT.md)):**
+> 위 표는 dangling 후보를 `canonical_name` 1개 + `alias_table`/`export_index_by_name`/
+> `namespace_access_index` 로 추정했으나, audit 결과 **실제 cross-build dangling 은 4종**으로 확정:
+> (1) `Symbol.canonical_name`, (2) `Alias.canonical_name` (`bundler/symbol.zig:90`, 은닉 vector),
+> (3) `Module.reachable_stmts` + (4) `Module.symbol_to_stmt` (`module.zig:365-368`, TreeShaker
+> borrowed mirror — **신규 발견, cache-hit reset 누락**). `export_index_by_name`/`namespace_access_index`
+> 는 `parse_arena`/`graph.allocator` 소유라 **안전**(dangling 아님)으로 정정. 상세는 audit §4.
+
 ### 1.4 ZNTC vs esbuild 의 ownership 차이
 
 | 차원 | ZNTC | esbuild |
@@ -97,6 +105,14 @@ pub const RenameTable = struct {
 
 핵심: `Symbol` struct 에서 `canonical_name: []const u8` field **제거**. `SymbolID → name` 매핑을 *build-scope 의 RenameTable* 로 이관. graph 의 Symbol 은 *immutable identity* 만.
 
+> **Audit 보정 (Sub-PR-L.1):** 위 `SymbolID.source_index: u32` 는 `ModuleIndex` 직접 사용을
+> 암시하나, audit 결과 **`ModuleIndex` 는 build-local (cross-build 불안정)** — `renumber.zig:90`
+> 의 BFS 재배정으로 모듈 추가/삭제 시 동일 모듈이 다른 index 를 받는다. 따라서 L.2 에서 SymbolID 를
+> 정의할 때 **"build-local RenameTable 키 (build 내 안정한 ModuleIndex 사용 가능)"** 와
+> **"cross-build path-stable id (`Module.path` 기반, graph persistence 용)"** 를 구분해야 한다.
+> 한편 `SymbolRef.semantic = {module, symbol}` (`bundler/symbol.zig:32`) 이 이미 integer pair 라
+> raw material 은 존재한다. 상세는 audit §5.
+
 ## 3. 측정 목표
 
 dev_server lodash HMR latency:
@@ -121,10 +137,12 @@ phase 분포 변화 추정 (Debug profile 기준):
 - emit 영역 작은 fix 의 ROI 정확 측정 가능
 - 본 RFC 의 prerequisite — 측정 noise floor 분리
 
-**Sub-PR-L.1**: cross-build memory ownership 정밀 audit
+**Sub-PR-L.1**: cross-build memory ownership 정밀 audit ✅ **완료** → [RFC_LIFECYCLE_SCOPE_AUDIT](./RFC_LIFECYCLE_SCOPE_AUDIT.md)
 - `src/bundler/{linker,emitter,graph,semantic}.zig` 전체 walk
 - 각 alloc 사이트의 scope (build/graph/cache) 표시
 - audit 문서로 follow-up PR 들의 scope 결정
+- **결과**: dangling 후보 4종 확정 (RFC 추정 1종 → 정정), emitter RenameTable 인프라 95% 기존재
+  (`metadata.renames`), cache-scope 청정 확인, ModuleIndex 불안정성 → SymbolID 설계 보정
 
 ### Phase 2 — SymbolID 패턴 도입 (3-4주)
 
