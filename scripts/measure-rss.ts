@@ -3,7 +3,7 @@
  * Peak RSS 측정 + 페어드 통계 — RFC_TRANSFORMER_OWN_AST PR-2 검증용.
  *
  * 두 zntc 바이너리 (main / PR) 를 같은 fixture 로 N 회 교대 실행해 RSS 분포 비교.
- * Mann-Whitney U + Wilcoxon signed-rank + binomial sign-test 3 중으로 p-value 산출.
+ * 페어드 binomial sign-test (two-sided) 로 p-value 산출 + median Δ 게이트로 GO/NO-GO.
  *
  * macOS: /usr/bin/time -l 의 "maximum resident set size" (bytes) 파싱.
  * Linux: /usr/bin/time -v 의 "Maximum resident set size (kbytes)" 파싱.
@@ -60,10 +60,16 @@ type Sample = { a: number; b: number };
 function sample(): Sample[] {
   const xs: Sample[] = [];
   for (let i = 0; i < n; i++) {
-    // 교대 실행으로 OS-level caching/jitter 균등화.
-    const first = i % 2 === 0;
-    const va = first ? measure(a, fixture) : measure(a, fixture);
-    const vb = first ? measure(b, fixture) : measure(b, fixture);
+    // 실제 교대 실행으로 warm-cache/jitter 순서 편향 제거: 짝수 iter 는 a→b, 홀수는 b→a.
+    let va: number;
+    let vb: number;
+    if (i % 2 === 0) {
+      va = measure(a, fixture);
+      vb = measure(b, fixture);
+    } else {
+      vb = measure(b, fixture);
+      va = measure(a, fixture);
+    }
     xs.push({ a: va, b: vb });
     process.stderr.write(`  [${i + 1}/${n}] a=${(va / 1024 / 1024).toFixed(1)}MB b=${(vb / 1024 / 1024).toFixed(1)}MB Δ=${((vb - va) / 1024 / 1024).toFixed(1)}MB\n`);
   }
@@ -87,18 +93,13 @@ function stddev(xs: number[]): number {
 }
 
 // Binomial sign-test (two-sided): k = #(b < a), n = trials.
-// CDF via direct sum (n=30 충분히 작음).
+// p = 2 * min-tail CDF (direct sum; n=30 충분히 작음).
 function binomialP(k: number, n: number): number {
   function logBinom(n: number, k: number): number {
     let r = 0;
     for (let i = 1; i <= k; i++) r += Math.log(n - k + i) - Math.log(i);
     return r;
   }
-  let p = 0;
-  for (let i = 0; i <= Math.min(k, n - k); i++) {
-    p += Math.exp(logBinom(n, i)) * Math.pow(0.5, n);
-  }
-  // two-sided: 2 * min-tail
   const minK = Math.min(k, n - k);
   let pTail = 0;
   for (let i = 0; i <= minK; i++) {
@@ -125,8 +126,9 @@ function binomialP(k: number, n: number): number {
   console.error(`a (main):    median=${(median(as) / 1024 / 1024).toFixed(2)} MB  mean=${(mean(as) / 1024 / 1024).toFixed(2)} ± ${(stddev(as) / 1024 / 1024).toFixed(2)} MB`);
   console.error(`b (PR-2):    median=${(median(bs) / 1024 / 1024).toFixed(2)} MB  mean=${(mean(bs) / 1024 / 1024).toFixed(2)} ± ${(stddev(bs) / 1024 / 1024).toFixed(2)} MB`);
   console.error(`Δ (b - a):   median=${(median(diffs) / 1024 / 1024).toFixed(2)} MB  mean=${(mean(diffs) / 1024 / 1024).toFixed(2)} ± ${(stddev(diffs) / 1024 / 1024).toFixed(2)} MB`);
-  console.error(`sign-test:   ${k}/${effN} samples with b < a (ties=${ties}), two-sided p = ${p.toFixed(4)}`);
-  console.error(`gate:        Δ ≤ -300 MB ? ${median(diffs) <= -300 * 1024 * 1024 ? "GO" : "NO-GO"}    p < 0.05 ? ${p < 0.05 ? "OK" : "NS"}`);
+  const dir = median(diffs) < 0 ? "b<a (PR smaller)" : median(diffs) > 0 ? "b>a (PR larger)" : "tie";
+  console.error(`sign-test:   ${k}/${effN} samples with b < a (ties=${ties}), two-sided p = ${p.toFixed(6)} — direction: ${dir}`);
+  console.error(`gate:        Δ ≤ -300 MB ? ${median(diffs) <= -300 * 1024 * 1024 ? "GO" : "NO-GO"}    significant improvement ? ${p < 0.05 && median(diffs) < 0 ? "YES" : "NO"}`);
 
   process.stdout.write(JSON.stringify({
     n,

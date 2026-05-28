@@ -105,7 +105,8 @@ fn finishInit(
 pub fn deinit(self: *Transformer) void {
     // `.borrowed` 는 외부 owner (보통 module.parse_arena) 가 ast 를 free.
     // `.owned_from_caller` 는 호출자가 ast 인스턴스의 lifetime 보유 (transpile path
-    // 에서 `parser.ast.deinit()` 으로 free). transformer 는 ast 를 건드리지 않는다.
+    // 에서는 ast 가 arena 안에 있어 arena.deinit() 으로 일괄 회수). transformer 는
+    // ast 를 건드리지 않는다.
     // method 호출 = exhaustive switch → 미래 variant 추가 시 컴파일 에러로 누락 방지.
     if (self.ast_ownership.transformerFreesAst()) {
         self.ast.deinit();

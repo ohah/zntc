@@ -3,14 +3,17 @@
 //! 단일 AST를 append-only로 변환한다.
 //!
 //! 작동 원리:
-//!   1. 파서 AST를 cloneForTransformer()로 복제
+//!   1. 파서 AST 를 확보 — 두 경로:
+//!      - `init`: cloneForTransformer() 로 복제 (bundler/HMR — 원본 보존 의무).
+//!      - `initFromOwnedAst`: 복제 없이 parser.ast 의 ownership 양도받아 in-place mutate
+//!        (transpile path — RFC_TRANSFORMER_OWN_AST, clone deep copy 회피).
 //!   2. 파서 노드(0..parser_node_count-1)를 읽기 전용으로 탐색
 //!   3. 변환된 노드를 같은 AST 끝에 append
 //!   4. string_table이 하나이므로 파서에서 만든 합성 이름도 codegen에서 읽을 수 있음
 //!
 //! 메모리:
-//!   - ast는 트랜스포머 allocator로 복제됨 (원본 module.ast 보존)
-//!   - 변환 완료 후 원본 AST는 해제 가능
+//!   - `init`: ast 는 트랜스포머 allocator 로 복제됨 (원본 module.ast 보존).
+//!   - `initFromOwnedAst`: ast 는 caller (parser.ast) 와 동일 instance — 복제 없음.
 //!   - source는 원본과 같은 슬라이스를 참조 (zero-copy)
 
 const std = @import("std");
