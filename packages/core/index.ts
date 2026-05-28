@@ -1420,6 +1420,24 @@ export interface WatchRebuildEvent {
     emitConcat: number;
     /** Source map V3 JSON generation (VLQ encode + sources content + debugId). */
     emitSourcemapFinalize: number;
+
+    // Link sub-phase (RFC #3940 Sub-PR-L.0e — Lifecycle redesign 의 link 영역 측정).
+
+    /** Link: per-module export map build. */
+    linkBuildExportMap: number;
+    /** Link: import resolution (binding cross-reference). */
+    linkResolveImports: number;
+    /**
+     * Link: canonical_name 계산. lodash 측정에서 ~50ms — RFC #3940 의 RenameTable
+     * 도입 (Phase 2) 후 baseline 으로 활용.
+     */
+    linkComputeRenames: number;
+    /** Link: re-export alias 채우기 (cross-module export name 매핑). */
+    linkPopulateReExportAliases: number;
+    /** Link: import symbol 채우기. */
+    linkPopulateImportSymbols: number;
+    /** Link: namespace access 채우기 (namespace import 사용처). */
+    linkPopulateNamespaceAccesses: number;
   };
   /** Number of modules reparsed in the incremental graph. Counts cache-missed
    * modules only. Not exposed for full builds. */
