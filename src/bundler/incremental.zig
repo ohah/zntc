@@ -249,13 +249,21 @@ pub const IncrementalBundler = struct {
         // RFC #3940 Sub-PR-L.0b — bundle 직후 profile snapshot 캡처 (ZNTC_PROFILE 활성 시).
         // caller (dev_server) 가 SSE event payload 또는 NAPI watch callback 에 포함.
         // counter reset 은 다음 build 측정 위해 즉시. snapshot 은 cheap (atomic load N회).
+        //
+        // /code-review max followup #2 fix: bundle() catch return .fatal 이 reset 을 skip
+        // 하면 다음 성공 build snapshot 이 실패 build 의 partial 누적값과 섞여 측정 오염.
+        // anyEnabled() 를 한 번 캐싱 후 fatal/success 모든 경로에서 reset 보장.
         const _profile = @import("../profile.zig");
-        var result = bundler.bundle() catch return .fatal;
-        const profile_snapshot: ?_profile.ProfileSnapshot = if (_profile.anyEnabled())
+        const profile_was_enabled = _profile.anyEnabled();
+        var result = bundler.bundle() catch {
+            if (profile_was_enabled) _profile.resetCounters();
+            return .fatal;
+        };
+        const profile_snapshot: ?_profile.ProfileSnapshot = if (profile_was_enabled)
             _profile.takeSnapshot()
         else
             null;
-        if (profile_snapshot != null) _profile.resetCounters();
+        if (profile_was_enabled) _profile.resetCounters();
 
         if (result.hasErrors()) {
             const err_json = buildErrorJson(self.allocator, &result) orelse {
