@@ -38,6 +38,16 @@ fn formatLazyMarker(
     );
 }
 
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |pos| {
+        count += 1;
+        search_from = pos + needle.len;
+    }
+    return count;
+}
+
 // ============================================================
 // Batch D: metafile, analyze, legal-comments, inject, keepNames
 // ============================================================
@@ -1436,15 +1446,34 @@ test "JSX automatic: ESM-wrapped module with CJS jsx-runtime — synthetic bindi
 }
 
 test "JSX automatic-dev: #1209 — _jsxDEV must be assigned per module (HMR safety)" {
-    // #3062 이후 synthetic JSX 우회 제거 + transformer 가 정식 import 노드 추가. 새
-    // 방식에선 `_jsxDEV` 식별자가 source 의 canonical 로 rename 되어 substring
-    // assertion 부적용. brittle substring 보다 더 robust 한 e2e DOM 검증으로 대체:
-    //   - tests/e2e/tests/lib-scenario-e2e.test.ts 의 H1/H4/H5/H6 시나리오가
-    //     preact JSX automatic 의 빌드 → 브라우저 실행 → DOM 검증까지 다룸.
-    //     H4: 사용자 `_jsx` 식별자 충돌 (#3068 helper scope 격리)
-    //     H5: 멀티 모듈 jsx-runtime 공유
-    //     H6: barrel re-export JSX
-    return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\export function App() { return <div>Hello</div>; }
+        \\export function Other() { return <span>Other</span>; }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\const app = require('./app.tsx');
+        \\console.log(app.App(), app.Other());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    const out = result.output;
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, out, "__esm(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsxDEV") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "var _jsxDEV = ") == null);
 }
 
 test "JSX automatic-dev: #1209 — browser platform also affected" {
@@ -1480,10 +1509,37 @@ test "JSX automatic-dev: #1209 — browser platform also affected" {
 }
 
 test "JSX automatic: multiple modules sharing same jsx-runtime" {
-    // #3062 이후 substring assertion 부적용. e2e 대체:
-    //   tests/e2e/tests/lib-scenario-e2e.test.ts 의 H5_preact_jsx_multi_module
-    //   (CompA / CompB / entry 가 동시에 JSX 사용 + 브라우저 DOM 검증).
-    return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.tsx",
+        \\export function A() { return <span>A</span>; }
+    );
+    try writeFile(tmp.dir, "b.tsx",
+        \\export function B() { return <span>B</span>; }
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { A } from './a.tsx';
+        \\import { B } from './b.tsx';
+        \\export function App() { return <><A /><B /></>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    const out = result.output;
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsx") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsxs") != null);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(out, "from \"react/jsx-runtime\""));
 }
 
 test "JSX automatic: fragment syntax uses _Fragment" {
@@ -1571,18 +1627,68 @@ test "JSX automatic: mixed JSX and non-JSX modules" {
 }
 
 test "JSX automatic: re-export of JSX component" {
-    // #3062 이후 substring assertion 부적용. e2e 대체:
-    //   tests/e2e/tests/lib-scenario-e2e.test.ts 의 H6_preact_jsx_re_export
-    //   (barrel 파일 통과 후 Button 컴포넌트 → 브라우저 DOM 검증).
-    return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "button.tsx",
+        \\export function Button() { return <button>OK</button>; }
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { Button } from './button.tsx';
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { Button } from './barrel.ts';
+        \\export const node = <Button />;
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    const out = result.output;
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, out, "function Button") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsx") != null);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(out, "from \"react/jsx-runtime\""));
 }
 
 test "JSX automatic: ESM-wrapped hoisted function can access _jsxDEV (scope test)" {
-    // #3062 이후 substring assertion 부적용. e2e 대체:
-    //   tests/e2e/tests/lib-scenario-e2e.test.ts 의 H1/H4/H5/H6 가 preact JSX
-    //   automatic 의 빌드/렌더 정상성을 브라우저 동작까지 검증. 별도 ESM-wrapped
-    //   require 소비 fixture 가 필요하면 후속 시나리오로 추가 가능.
-    return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "comp.tsx",
+        \\export function App() { return <div>hi</div>; }
+        \\export const make = () => <App />;
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\const c = require('./comp.tsx');
+        \\console.log(c.App(), c.make());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    const out = result.output;
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, out, "__esm(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "function App") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsxDEV") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "var _jsxDEV = ") == null);
 }
 
 test "JSX automatic: ESM-wrapped with multiple JSX functions (_jsx, _jsxs, _Fragment)" {

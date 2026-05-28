@@ -1397,14 +1397,13 @@ test "snapshotToJson: 활성 phase 만 JSON 출력" {
     defer resetForTest();
     addFromCsv("parse,emit");
 
-    var s1 = begin(.parse);
-    std.Thread.sleep(2_000_000); // 2ms
-    s1.end();
-    var s2 = begin(.emit);
-    std.Thread.sleep(1_000_000); // 1ms
-    s2.end();
-
-    const snap = takeSnapshot();
+    var snap: ProfileSnapshot = .{
+        .totals_ns = [_]u64{0} ** num_categories,
+        .self_totals_ns = [_]u64{0} ** num_categories,
+        .counts = [_]u32{0} ** num_categories,
+    };
+    snap.totals_ns[@intFromEnum(Category.parse)] = 2 * std.time.ns_per_ms;
+    snap.totals_ns[@intFromEnum(Category.emit)] = 1 * std.time.ns_per_ms;
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     try snapshotToJson(snap, fbs.writer(), 0);
@@ -1423,14 +1422,13 @@ test "snapshotToJson: min_ms_threshold 이상만 포함" {
     defer resetForTest();
     addFromCsv("parse,emit");
 
-    var s1 = begin(.parse);
-    std.Thread.sleep(5_000_000); // 5ms
-    s1.end();
-    var s2 = begin(.emit);
-    std.Thread.sleep(100_000); // 0.1ms
-    s2.end();
-
-    const snap = takeSnapshot();
+    var snap: ProfileSnapshot = .{
+        .totals_ns = [_]u64{0} ** num_categories,
+        .self_totals_ns = [_]u64{0} ** num_categories,
+        .counts = [_]u32{0} ** num_categories,
+    };
+    snap.totals_ns[@intFromEnum(Category.parse)] = 5 * std.time.ns_per_ms;
+    snap.totals_ns[@intFromEnum(Category.emit)] = std.time.ns_per_ms / 10;
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     try snapshotToJson(snap, fbs.writer(), 1.0); // 1ms threshold

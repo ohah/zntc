@@ -6,7 +6,7 @@
 //! case B: changed_files = {entry.ts}      — watcher 가 1 file 변경 보고 (single-file edit)
 //! case C: changed_files = null            — watcher 미통합 (=v3 baseline)
 //!
-//! lodash-es 641 module fixture 로 측정.
+//! CI dependency install 여부와 무관하도록 테스트 안에서 synthetic lodash-es fixture 를 만든다.
 
 const std = @import("std");
 const Bundler = @import("../bundler.zig").Bundler;
@@ -29,6 +29,61 @@ const LODASH_ENTRY =
     \\console.log([uniq, chunk, compact].map(f => typeof f).join(','));
     \\
 ;
+
+const LODASH_NAMES = [_][]const u8{
+    "uniq",
+    "chunk",
+    "compact",
+    "drop",
+    "dropRight",
+    "fill",
+    "findIndex",
+    "flatten",
+    "flattenDeep",
+    "head",
+    "indexOf",
+    "initial",
+    "intersection",
+    "last",
+    "nth",
+    "pull",
+    "pullAll",
+    "remove",
+    "slice",
+    "sortedIndex",
+    "take",
+    "takeRight",
+    "union",
+    "uniqBy",
+    "without",
+    "xor",
+    "zip",
+    "zipObject",
+    "countBy",
+    "every",
+    "filter",
+    "find",
+    "forEach",
+    "groupBy",
+    "includes",
+    "keyBy",
+    "map",
+    "orderBy",
+    "partition",
+    "reduce",
+    "reject",
+    "sample",
+    "shuffle",
+    "size",
+    "some",
+    "sortBy",
+    "debounce",
+    "throttle",
+    "memoize",
+    "once",
+    "defer",
+    "delay",
+};
 
 const Case = enum { empty, single_entry, null_changed };
 
@@ -242,6 +297,37 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
     });
 }
 
+fn writeSyntheticLodashFixture(
+    allocator: std.mem.Allocator,
+    dir: std.fs.Dir,
+) !void {
+    try writeFile(dir, "node_modules/lodash-es/package.json",
+        \\{"type":"module","module":"index.js","main":"index.js"}
+    );
+
+    var index: std.ArrayList(u8) = .empty;
+    defer index.deinit(allocator);
+    const w = index.writer(allocator);
+    for (LODASH_NAMES) |name| {
+        const module_path = try std.fmt.allocPrint(
+            allocator,
+            "node_modules/lodash-es/{s}.js",
+            .{name},
+        );
+        defer allocator.free(module_path);
+        const module_source = try std.fmt.allocPrint(
+            allocator,
+            "export function {s}(value) {{ return value; }}\n",
+            .{name},
+        );
+        defer allocator.free(module_source);
+
+        try writeFile(dir, module_path, module_source);
+        try w.print("export {{ {s} }} from './{s}.js';\n", .{ name, name });
+    }
+    try writeFile(dir, "node_modules/lodash-es/index.js", index.items);
+}
+
 test "incremental bench v4: changed_files null/empty/single comparison" {
     profile.resetForTest();
     profile.setLevel(.summary);
@@ -285,24 +371,10 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
     defer tmp.cleanup();
 
     try writeFile(tmp.dir, "entry.ts", LODASH_ENTRY);
-
-    // node_modules symlink — lodash-es resolve 가능하게.
-    // cwd 가 repo root (zig build 의 실행 위치) → 그 안의 node_modules 를 symlink target.
-    const real_nm = std.fs.cwd().realpathAlloc(allocator, "node_modules") catch |err| {
-        std.debug.print("[bench v4] cwd node_modules absent ({}), skip\n", .{err});
-        return error.SkipZigTest;
-    };
-    defer allocator.free(real_nm);
+    try writeSyntheticLodashFixture(allocator, tmp.dir);
 
     const tmp_real = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_real);
-    const tmp_nm = try std.fs.path.join(allocator, &.{ tmp_real, "node_modules" });
-    defer allocator.free(tmp_nm);
-    std.posix.symlink(real_nm, tmp_nm) catch |err| {
-        std.debug.print("[bench v4] symlink skip: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-
     const entry = try std.fs.path.join(allocator, &.{ tmp_real, "entry.ts" });
     defer allocator.free(entry);
 
@@ -317,10 +389,7 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
             .module_store = &store,
         });
         defer b.deinit();
-        const r = b.bundle() catch |err| {
-            std.debug.print("[bench v4] cold bundle fail: {}\n", .{err});
-            return error.SkipZigTest;
-        };
+        const r = try b.bundle();
         defer r.deinit(allocator);
         cold_module_count = if (r.module_paths) |paths| paths.len else 0;
     }
@@ -340,7 +409,7 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
         \\
         \\[incremental-bench v4] lodash-es {d} module, 3 case warm:
         \\  cold        : parse={d}us semantic={d}us discover={d}us total={d}us
-        \\  warm null   : parse={d}us semantic={d}us discover={d}us total={d}us  (v3 baseline, 641 stat)
+        \\  warm null   : parse={d}us semantic={d}us discover={d}us total={d}us  (v3 baseline, full stat)
         \\  warm empty  : parse={d}us semantic={d}us discover={d}us total={d}us  (no-change watcher)
         \\  warm single : parse={d}us semantic={d}us discover={d}us total={d}us  (1-file watcher)
         \\
