@@ -355,7 +355,7 @@ pub const Category = enum {
     pub fn displayName(cat: Category) []const u8 {
         return switch (cat) {
             inline else => |c| comptime blk: {
-                @setEvalBranchQuota(20000);
+                @setEvalBranchQuota(num_categories * 200);
                 const name = @tagName(c);
                 var buf: [name.len]u8 = undefined;
                 for (name, 0..) |ch, i| {
@@ -741,7 +741,7 @@ pub fn takeSnapshot() ProfileSnapshot {
 /// `min_ms_threshold` 미만의 category 는 skip — JSON 크기 줄이고 중요 phase 만.
 /// 0 이면 모든 active category 출력.
 pub fn snapshotToJson(snap: ProfileSnapshot, writer: anytype, min_ms_threshold: f64) !void {
-    @setEvalBranchQuota(20000);
+    @setEvalBranchQuota(num_categories * 200);
     try writer.writeByte('{');
     var first = true;
     inline for (@typeInfo(Category).@"enum".fields) |field| {
@@ -767,7 +767,7 @@ pub fn snapshotToJson(snap: ProfileSnapshot, writer: anytype, min_ms_threshold: 
 
 /// 지정한 format 으로 리포트 출력.
 pub fn report(writer: anytype, format: Format) !void {
-    @setEvalBranchQuota(20000);
+    @setEvalBranchQuota(num_categories * 200);
     switch (format) {
         .table => try reportTable(writer),
         .tree => try reportTree(writer),
