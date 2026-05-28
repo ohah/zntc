@@ -1378,12 +1378,11 @@ pub const Bundler = struct {
                     const l = &(linker.?);
                     l.populateReExportAliases();
                     l.populateImportSymbols();
-                    // RFC #3940 Sub-PR-L.4a — 이 분기는 canonical 을 재계산하지 않고 graph
-                    // carry-over (preserveCanonicalNamesAfterSemanticResync) 가 보존한
-                    // canonical_name 을 그대로 쓴다. carry-over 는 assignSymbolCanonical 단일
-                    // sink 를 우회하므로 rename_table 이 stale → canonical_name 으로부터 재동기화해
-                    // emit (L.4b 의 rename_table lookup) 이 정확하도록 보장.
-                    try l.syncRenameTableFromCanonical();
+                    // RFC #3940 Sub-PR-L.5a — 이 분기는 rename 을 재계산하지 않고 graph carry-over
+                    // (captureRenamesToPending) 가 module.pending_renames 에 stash 한 rename 을
+                    // rename_table 에 반영한다. tree_shaker 의 *const linker 는 put 불가라 capture(read)는
+                    // tree_shaker, apply(write)는 여기 mutable linker 로 분리.
+                    try l.applyPendingRenames();
                 }
             }
             break :blk s;

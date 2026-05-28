@@ -188,6 +188,19 @@ pub const RenameTable = struct {
     pub fn clear(self: *RenameTable) void {
         self.map.clearRetainingCapacity();
     }
+
+    /// 특정 module 의 모든 entry 제거 (RFC #3940 L.5a — carry-over apply 시 mutated module 의
+    /// resync-전 stale idx entry 를 비워 pending 으로 완전 재선언. iterator invalidation 회피 위해
+    /// key 수집 후 제거). `scratch` 는 build-scope 임시 allocator.
+    pub fn removeModule(self: *RenameTable, scratch: std.mem.Allocator, module: ModuleIndex) !void {
+        var keys: std.ArrayListUnmanaged(SymbolID) = .empty;
+        defer keys.deinit(scratch);
+        var it = self.map.iterator();
+        while (it.next()) |e| {
+            if (e.key_ptr.module == module) try keys.append(scratch, e.key_ptr.*);
+        }
+        for (keys.items) |k| _ = self.map.remove(k);
+    }
 };
 
 /// Re-export alias 레코드.

@@ -186,7 +186,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     _ = parser_node_count;
 
-    resyncAfterAstMutation(self, module, arena_alloc) catch {
+    resyncAfterAstMutation(self, module, arena_alloc, null) catch {
         self.addDiag(
             .parse_error,
             .@"error",
@@ -217,39 +217,46 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 /// 이 중앙 resync 경로를 우회해서 record/binding 만 수동 보정하면 linker, tree-shaker,
 /// chunking 이 서로 다른 AST/semantic 상태를 보게 되므로 여기서만 metadata 재구축
 /// 정책을 확장해야 한다 (#1913).
-/// **RFC #3940 L.4 blocker**: 이 carry-over 는 `Linker.assignSymbolCanonical` (신규 canonical
-/// write 의 단일 sink) 를 우회해 `canonical_name` 을 graph 단계 (Linker 없음) 에서 직접 복사한다.
-/// 따라서 여기서 preserve 된 name 은 `Linker.rename_table` 에 동기화되지 않는다 (Sub-PR-L.3).
-/// fresh build 에선 이후 link 가 rename 을 재계산해 sink 를 통과하므로 무해하지만, emitter 가
-/// rename_table lookup 으로 전환(L.4)하면 이 preserved name 이 누락된다. L.4 진행 시 이 경로를
-/// rename_table 동기화(또는 carry-over 자체를 SymbolID 기반으로 재설계)해야 한다.
-fn preserveCanonicalNamesAfterSemanticResync(
-    source: []const u8,
+/// **RFC #3940 L.5a — carry-over 를 build-scope `rename_table` 기반으로 재설계**.
+/// post-link tree-shake (const-materialize 등) 의 semantic resync 가 symbols 배열을 재생성하면
+/// old idx 기준 rename 정보가 stale 해진다. resync **전** old_sem 각 symbol 의 rename 을
+/// `rename_table.get(SymbolID(module.index, old_idx))` 로 읽어 (canonical_name field 대신 —
+/// parity 로 동일 값), resync **후** new_sem 에서 name-based 로 new_idx 를 찾아
+/// `module.pending_renames` 에 `SymbolID(module.index, new_idx) → name` 으로 stash 한다.
+/// bundler 의 post-shake finalize 가 `Linker.applyPendingRenames` 로 mutable `rename_table` 에
+/// 반영한다 (tree_shaker.linker 는 *const 라 put 불가 — capture=read, apply=write 분리).
+/// `rename_table == null` (graph pre-pass, link 전) 이면 rename 미설정이라 no-op.
+///
+/// SymbolID 정합: renumber 가 inner idx 불변 + 기존 sync 가 `si==idx` 로 동일 매핑 →
+/// "기존 canonical+sync(idx)" 와 동일 `(module.index, idx)→name` → byte-identical.
+fn captureRenamesToPending(
+    module: *Module,
+    rename_table: *const bundler_symbol.RenameTable,
     old_sem: ModuleSemanticData,
-    new_sem: *ModuleSemanticData,
-) void {
+    new_sem: *const ModuleSemanticData,
+    source: []const u8,
+    arena: std.mem.Allocator,
+) !void {
     const module_scope: ?*const std.StringHashMap(usize) = if (new_sem.scope_maps.len > 0) &new_sem.scope_maps[0] else null;
-    for (old_sem.symbols.items) |old_sym| {
-        if (old_sym.canonical_name.len == 0) continue;
+    for (old_sem.symbols.items, 0..) |old_sym, old_idx| {
+        const old_id = bundler_symbol.SymbolID.make(module.index, old_idx);
+        const rename = rename_table.get(old_id) orelse continue;
 
         if (old_sym.synthetic_kind == null) {
             const name = old_sym.nameText(source);
             const new_idx = if (module_scope) |scope| scope.get(name) else null;
             if (new_idx) |idx| {
-                if (idx < new_sem.symbols.items.len) {
-                    const new_sym = &new_sem.symbols.items[idx];
-                    if (new_sym.synthetic_kind == null) {
-                        new_sym.canonical_name = old_sym.canonical_name;
-                    }
+                if (idx < new_sem.symbols.items.len and new_sem.symbols.items[idx].synthetic_kind == null) {
+                    try module.pending_renames.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
                 }
             }
             continue;
         }
 
-        for (new_sem.symbols.items) |*new_sym| {
+        for (new_sem.symbols.items, 0..) |new_sym, new_idx| {
             if (new_sym.synthetic_kind != old_sym.synthetic_kind) continue;
             if (!std.mem.eql(u8, new_sym.synthetic_name, old_sym.synthetic_name)) continue;
-            new_sym.canonical_name = old_sym.canonical_name;
+            try module.pending_renames.put(arena, bundler_symbol.SymbolID.make(module.index, new_idx), rename);
             break;
         }
     }
@@ -259,6 +266,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
+    rename_table: ?*const bundler_symbol.RenameTable,
 ) !void {
     const ast = &(module.ast orelse return);
     const previous_semantic = module.semantic;
@@ -293,8 +301,10 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .helper_scope_map = analyzer.helper_scope_map,
         };
         if (!self.minify_identifiers) {
-            if (previous_semantic) |old_sem| {
-                preserveCanonicalNamesAfterSemanticResync(module.source, old_sem, &module.semantic.?);
+            if (rename_table) |rt| {
+                if (previous_semantic) |old_sem| {
+                    try captureRenamesToPending(module, rt, old_sem, &module.semantic.?, module.source, arena_alloc);
+                }
             }
         }
         suppressRuntimeHelperInternalUnresolved(module);
@@ -381,6 +391,7 @@ pub fn resyncAfterConstMaterialization(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
+    rename_table: ?*const bundler_symbol.RenameTable,
 ) !void {
     var resync_scope = profile.begin(.graph_resync);
     defer resync_scope.end();
@@ -388,7 +399,7 @@ pub fn resyncAfterConstMaterialization(
     defer const_scope.end();
 
     _ = &(module.ast orelse return);
-    try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
+    try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc, rename_table);
     try refreshStableBindingRefsAfterSemanticResync(self, module, arena_alloc, .graph_resync_binding_refs);
 }
 
@@ -396,6 +407,7 @@ pub fn resyncAfterAstMutation(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
+    rename_table: ?*const bundler_symbol.RenameTable,
 ) !void {
     var resync_scope = profile.begin(.graph_resync);
     defer resync_scope.end();
@@ -403,7 +415,7 @@ pub fn resyncAfterAstMutation(
     const ast = &(module.ast orelse return);
     const previous_import_records = module.import_records;
 
-    try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
+    try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc, rename_table);
 
     var scan_result: import_scanner.ScanResult = undefined;
     {

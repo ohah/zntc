@@ -2285,27 +2285,25 @@ pub const Linker = struct {
         return true;
     }
 
-    /// RFC #3940 Sub-PR-L.4a — `rename_table` 을 현재 `Symbol.canonical_name` 으로부터 전체 재구성.
+    /// RFC #3940 Sub-PR-L.5a — graph carry-over 가 `module.pending_renames` 에 stash 한 rename
+    /// (SymbolID→name) 을 build-scope `rename_table` 에 반영한다.
     ///
-    /// graph carry-over (`transform_prepass.preserveCanonicalNamesAfterSemanticResync`) 가
     /// tree-shake 단계 (link 후, `minify_identifiers=false` + const-materialization AST mutation)
-    /// 에서 `assignSymbolCanonical` 단일 sink 를 우회해 `canonical_name` 을 직접 복사하면
-    /// rename_table 이 stale/누락된다. 이 분기는 canonical 을 재계산하지 않으므로, emit 전에
-    /// canonical_name (이 단계의 ground truth) 으로부터 rename_table 을 재구성해 동기화한다.
-    /// `clear` 후 전 모듈 순회 — semantic resync 로 바뀐 symbol idx 의 stale entry 도 제거된다.
-    ///
-    /// (graph 단계 carry-over 는 link 전이라 canonical_name 이 비어 preserve 가 no-op → 무관.
-    /// L.5 에서 canonical_name field 제거 시엔 carry-over 를 SymbolID 기반으로 재설계 — 이 메서드 폐기.)
-    pub fn syncRenameTableFromCanonical(self: *Linker) !void {
-        self.rename_table.clear();
-        for (0..self.graph.moduleCount()) |mi| {
-            const m = self.getModule(@intCast(mi)) orelse continue;
-            const sem = m.semantic orelse continue;
-            for (sem.symbols.items, 0..) |*sym, si| {
-                if (sym.canonical_name.len == 0) continue;
-                const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si);
-                try self.rename_table.put(self.allocator, id, sym.canonical_name);
+    /// 의 semantic resync 가 symbol idx 를 재배정하면, `transform_prepass.captureRenamesToPending`
+    /// 가 (tree_shaker 의 *const linker.rename_table 에서 읽어) new idx 로 module.pending_renames 에
+    /// 모았다. 여기서 mutable linker 가 적용 — mutated module 의 resync-전 stale entry 를 prune 후
+    /// pending 으로 완전 재선언 (구 `syncRenameTableFromCanonical` 의 clear-rebuild 시맨틱 보존).
+    /// 소비 후 pending 을 비운다 (value 는 canonical_strings borrow — build-scope, store round-trip 전 clear).
+    pub fn applyPendingRenames(self: *Linker) !void {
+        var mit = self.graph.modules.iterator(0);
+        while (mit.next()) |m| {
+            if (m.pending_renames.count() == 0) continue;
+            try self.rename_table.removeModule(self.allocator, m.index);
+            var it = m.pending_renames.map.iterator();
+            while (it.next()) |e| {
+                try self.rename_table.put(self.allocator, e.key_ptr.*, e.value_ptr.*);
             }
+            m.pending_renames.clear();
         }
     }
 
