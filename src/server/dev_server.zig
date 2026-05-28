@@ -887,11 +887,26 @@ pub const DevServer = struct {
                     self.error_state.clear(self.allocator);
                     self.ws_clients.broadcast("{\"type\":\"clear-error\"}");
 
-                    // bundle_build_done 이벤트
-                    var done_buf: [256]u8 = undefined;
-                    if (std.fmt.bufPrint(&done_buf, "{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2}}}", .{ build_id, result.paths.len, build_duration_ms })) |json| {
-                        self.publishEvent(EventType.bundle_build_done, json);
-                    } else |_| {}
+                    // bundle_build_done 이벤트. RFC #3940 Sub-PR-L.0c — ZNTC_PROFILE
+                    // 활성 시 profile snapshot 을 별도 JSON 으로 dump. profile 비활성 (default)
+                    // 이면 result.profile_snapshot 가 null → 기존 짧은 JSON 그대로.
+                    if (result.profile_snapshot) |snap| {
+                        // profile 활성 path — 큰 JSON 가능. ArrayList 동적 할당.
+                        var profile_buf: std.ArrayList(u8) = .empty;
+                        defer profile_buf.deinit(self.allocator);
+                        const w = profile_buf.writer(self.allocator);
+                        w.print("{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2},\"profile\":", .{ build_id, result.paths.len, build_duration_ms }) catch break;
+                        const _profile = @import("../profile.zig");
+                        _profile.snapshotToJson(snap, w, 0.1) catch break; // 0.1ms threshold — sub-100us noise skip
+                        w.writeByte('}') catch break;
+                        self.publishEvent(EventType.bundle_build_done, profile_buf.items);
+                    } else {
+                        // profile 비활성 default — 기존 짧은 JSON path
+                        var done_buf: [256]u8 = undefined;
+                        if (std.fmt.bufPrint(&done_buf, "{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2}}}", .{ build_id, result.paths.len, build_duration_ms })) |json| {
+                            self.publishEvent(EventType.bundle_build_done, json);
+                        } else |_| {}
+                    }
 
                     if (result.graph_changed) {
                         // 그래프 구조 변경 → full-reload (새 import 추가 등)
