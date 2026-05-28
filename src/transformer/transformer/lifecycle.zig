@@ -36,6 +36,28 @@ pub fn initBorrow(allocator: std.mem.Allocator, ast: *const Ast, options: Transf
     return finishInit(allocator, @constCast(ast), opts, .borrowed);
 }
 
+/// Transformer 가 `source_ast` 의 *mutation 권한* 만 양도받아 직접 transform 한다.
+/// `cloneForTransformer` 의 deep copy 를 회피해 peak RSS 절감 — RFC_TRANSFORMER_OWN_AST.
+///
+/// 호출 후 `source_ast` 는 *transformer.ast 와 동일 instance* (dangling 아님).
+/// `Transformer.deinit` 은 ast 를 건드리지 않는다 — 호출자가 `source_ast.deinit()` 책임.
+/// `init` (clone 후 owned) 과 달리, `source_ast` 의 후속 사용도 동일 instance 라 안전.
+///
+/// `transpile path` 전용. bundler 의 graph cache / HMR re-process 는 원본 보존 의무 →
+/// 기존 `init` (clone) 사용 유지.
+pub fn initFromOwnedAst(
+    allocator: std.mem.Allocator,
+    source_ast: *Ast,
+    options: TransformOptions,
+) Error!Transformer {
+    var opts = options;
+    if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
+    // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
+    // `init` 의 clone 직후와 동일 시점 = 호출 시점의 nodes.items.len.
+    source_ast.transform_boundary = @intCast(source_ast.nodes.items.len);
+    return finishInit(allocator, source_ast, opts, .owned_from_caller);
+}
+
 fn finishInit(
     allocator: std.mem.Allocator,
     ast_ptr: *Ast,
@@ -43,7 +65,9 @@ fn finishInit(
     ownership: AstOwnership,
 ) Error!Transformer {
     const parser_count: u32 = switch (ownership) {
-        .owned => @intCast(ast_ptr.nodes.items.len),
+        // `.owned` 는 clone 직후 → nodes.items.len 이 parser 영역 끝.
+        // `.owned_from_caller` 는 source_ast 자체가 parser 결과 → 동일.
+        .owned, .owned_from_caller => @intCast(ast_ptr.nodes.items.len),
         .borrowed => ast_ptr.transform_boundary orelse @intCast(ast_ptr.nodes.items.len),
     };
     var self: Transformer = .{
@@ -61,7 +85,9 @@ fn finishInit(
 }
 
 pub fn deinit(self: *Transformer) void {
-    // borrow 모드는 외부 owner (보통 module.parse_arena) 가 ast 를 free.
+    // `.borrowed` 는 외부 owner (보통 module.parse_arena) 가 ast 를 free.
+    // `.owned_from_caller` 는 호출자가 ast 인스턴스의 lifetime 보유 (transpile path
+    // 에서 `parser.ast.deinit()` 으로 free). transformer 는 ast 를 건드리지 않는다.
     if (self.ast_ownership == .owned) {
         self.ast.deinit();
         self.allocator.destroy(self.ast);
