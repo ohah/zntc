@@ -180,3 +180,84 @@ test "ambiguous export*: namespace 멤버는 undefined — 객체서 제외 + vo
     // materialize 된 ns 객체에 ambiguous `shared` getter 가 없어야 한다(undefined).
     try testing.expect(std.mem.indexOf(u8, code, "get shared") == null);
 }
+
+test "ambiguous export*: namespace 멤버 rewrite 경로(minify, 비-dev)는 void 0 으로 치환 (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const a = 1;\nexport const shared = 'from-a';");
+    try writeFile(tmp.dir, "b.js", "export const b = 2;\nexport const shared = 'from-b';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './barrel.js';
+        \\globalThis.z = ns.shared;
+    );
+
+    // minify_identifiers + 비-dev → nsMemberRewriteSafe → 객체 materialize 대신
+    // emitStaticMember 가 멤버를 직접 재작성하는 경로(registerNamespaceRewrites).
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.js", .{ .minify_identifiers = true });
+    defer r.deinit();
+    const code = r.code();
+    try testing.expect(!r.result.hasErrors());
+    // ambiguous `ns.shared` 는 `void 0` 로 재작성되어야 한다.
+    try testing.expect(std.mem.indexOf(u8, code, "void 0") != null);
+}
+
+test "ambiguous export*: 3개 distinct 소스도 named import build error (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const shared = 'a';");
+    try writeFile(tmp.dir, "b.js", "export const shared = 'b';");
+    try writeFile(tmp.dir, "c.js", "export const shared = 'c';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';\nexport * from './c.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { shared } from './barrel.js';
+        \\globalThis.z = shared;
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    try testing.expect(r.result.hasErrors());
+    try testing.expect(hasAmbiguousDiag(&r));
+}
+
+test "ambiguous export*: 한 import 문에 ambiguous+정상 혼재 — ambiguous 만 진단 (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const only_a = 1;\nexport const shared = 'from-a';");
+    try writeFile(tmp.dir, "b.js", "export const only_b = 2;\nexport const shared = 'from-b';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { only_a, shared, only_b } from './barrel.js';
+        \\globalThis.z = [only_a, shared, only_b];
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    // shared 만 ambiguous → 진단 1건. only_a/only_b 는 단일 소스라 정상 해석.
+    try testing.expect(hasAmbiguousDiag(&r));
+    var ambiguous_count: usize = 0;
+    if (r.result.diagnostics) |diags| {
+        for (diags) |d| {
+            if (d.code == .ambiguous_export) ambiguous_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), ambiguous_count);
+}
+
+test "ambiguous export*: default 는 export * 비전파라 ambiguous 아님 (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // a/b 둘 다 default 가 있지만, ESM 에서 export * 는 default 를 재전파하지 않는다.
+    try writeFile(tmp.dir, "a.js", "export default 'da';\nexport const a = 1;");
+    try writeFile(tmp.dir, "b.js", "export default 'db';\nexport const b = 2;");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './barrel.js';
+        \\globalThis.z = [ns.a, ns.b, ns.default];
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    // default 충돌은 ambiguous 진단을 내지 않는다(애초에 namespace 에 포함 안 됨).
+    try testing.expect(!hasAmbiguousDiag(&r));
+}
