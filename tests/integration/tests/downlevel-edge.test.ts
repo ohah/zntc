@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bundleAndRun, createFixture, runZntc, transpileAndRun } from './helpers';
+import { bundleAndRun, createFixture, runNode, runZntc, transpileAndRun } from './helpers';
 
 describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -161,6 +161,41 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(conditionalGuard).toBeGreaterThanOrEqual(0);
       expect(thenBranch).toBeGreaterThan(conditionalGuard);
       expect(elseBranch).toBeGreaterThan(thenBranch);
+    });
+
+    test('default 있는 중첩 destructuring 은 verbatim 잔존 없이 valid ES5 lowering (#3979)', async () => {
+      // 이전: declarator 의 assignment_pattern 분기가 left 가 중첩 패턴인지 검사 안 해
+      // `var { c:c=2 } = ...` / `[c=2]` 리터럴 destructuring 이 ES5 출력에 잔존(invalid).
+      const fixture = await createFixture({
+        'index.ts': `
+          const o = { b: { c: 5 }, d: [7] };
+          const { b: { c = 2 } = {} } = o;       // object-in-object + default
+          const { d: [e = 9] = [] } = o;          // array-in-object + default
+          const [ { a = 1 } = {} ] = [{ a: 8 }];  // object-in-array + default
+          console.log(c, e, a);
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const outFile = join(fixture.dir, 'out.js');
+      const transpile = await runZntc([
+        join(fixture.dir, 'index.ts'),
+        '-o',
+        outFile,
+        '--target=es5',
+      ]);
+      expect(transpile.exitCode).toBe(0);
+
+      const output = readFileSync(outFile, 'utf8');
+      // ES5 에 없는 destructuring binding 패턴이 남으면 안 된다. 소스 객체 리터럴
+      // (`var o = { b: { c: 5 } }`) 은 binding 이름이 `var` 와 `{` 사이에 있어 매칭 안 됨.
+      // 잘못된 잔존(`var { c:c=2 } = ...`, `[c=2]`)은 `var`/`,` 직후 `{`/`[` 형태.
+      expect(/(?:var|,)\s*\{[^=]*=/.test(output)).toBe(false); // var { x = ... }
+      expect(/(?:var|,)\s*\[[^\]]*=/.test(output)).toBe(false); // var [ x = ... ]
+
+      // 런타임 값 정확성 (es5 출력을 node 로 실행)
+      const { stdout } = await runNode(outFile);
+      expect(stdout).toBe('5 7 8');
     });
 
     test('logical nullish assignment reads member value only once', async () => {
