@@ -370,49 +370,53 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
     self.member_assign_target = false;
 
     if (self.options.linking_metadata) |meta| {
-        if (flags & MemberFlags.optional_chain == 0) {
-            const obj_node_i = @intFromEnum(object);
-            if (obj_node_i < meta.symbol_ids.len) {
-                if (meta.symbol_ids[obj_node_i]) |obj_sym_id| {
-                    if (meta.ns_member_rewrites.get(obj_sym_id)) |inner_map| {
-                        const prop_node = self.ast.getNode(property);
-                        const prop_text = self.ast.getText(prop_node.data.string_ref);
-                        if (inner_map.get(prop_text)) |canonical_name| {
-                            if (canonical_name.len > 0 and canonical_name[0] == '{') {
-                                try self.writeByte('(');
-                                try self.write(canonical_name);
-                                try self.writeByte(')');
-                            } else {
-                                try self.write(canonical_name);
-                            }
-                            return;
+        // optional chain(`ns?.prop`)도 포함한다. module namespace 객체는 절대 nullish 가
+        // 아니므로 ns 위치의 선행 `?.` 는 단락(short-circuit)되지 않는 no-op — 치환 시
+        // `?.` 를 안전히 제거할 수 있다(`ns?.x` ≡ `ns.x`). 체인 뒤쪽(`ns?.a?.b`)의 `?.`
+        // 는 각자의 base 기준이라 영향 없음. (이 블록이 fire 하지 않으면 아래 일반 emit 이
+        // `?.` 를 그대로 보존한다.)
+        const obj_node_i = @intFromEnum(object);
+        if (obj_node_i < meta.symbol_ids.len) {
+            if (meta.symbol_ids[obj_node_i]) |obj_sym_id| {
+                if (meta.ns_member_rewrites.get(obj_sym_id)) |inner_map| {
+                    const prop_node = self.ast.getNode(property);
+                    const prop_text = self.ast.getText(prop_node.data.string_ref);
+                    if (inner_map.get(prop_text)) |canonical_name| {
+                        if (canonical_name.len > 0 and canonical_name[0] == '{') {
+                            try self.writeByte('(');
+                            try self.write(canonical_name);
+                            try self.writeByte(')');
+                        } else {
+                            try self.write(canonical_name);
                         }
-                        // 멤버가 rewrite map 에 없음 = 그 export 가 존재하지 않음(static ESM).
-                        // ns 객체가 member-rewrite 로 materialize 되지 않았다면(ns_inline_objects
-                        // 미등록) `ns.prop` 은 선언된 적 없는 ns 식별자를 참조해 ReferenceError 가
-                        // 된다 — ESM 은 미존재 멤버를 undefined 로 평가하므로 `void 0` 으로 재작성한다
-                        // (#3982 ambiguous 멤버와 동형, esbuild parity). materialize 된 경우(값 사용/
-                        // shadow)는 ns 가 renamed 변수로 선언돼 있어 fall-through(`var.prop`→undefined)
-                        // 가 안전하고, CJS namespace 는 copyProps+rename 경로라 inner_map 자체가 없어
-                        // 이 분기에 도달하지 않는다(동적 멤버를 void 0 으로 잘못 가리지 않음).
-                        //
-                        // 두 가드:
-                        //  - lvalue 타겟(`ns.x = 1`/`ns.x++`)이면 `(void 0)=1` 은 SyntaxError →
-                        //    재작성 skip, 기존 fall-through 유지(런타임 throw, namespace 멤버
-                        //    대입은 어차피 ESM 에러).
-                        //  - dev 번들은 모듈이 항상 wrapper 로 선언돼 `ns` 가 존재하므로 dangling
-                        //    이 발생하지 않는다. 재작성 불필요 + CJS 동적 멤버 오인 방지 위해 skip.
-                        if (!is_assign_target and
-                            self.options.dev_module_id == null and
-                            meta.ns_inline_objects.get(obj_sym_id) == null)
-                        {
-                            // `(void 0)` — paren 필수. 이 멤버 식은 call/member 의 피연산자가
-                            // 될 수 있어(`ns.x()`, `ns.x.y`) bare `void 0` 은 `void 0()`(=
-                            // `void(0())`) / `void 0.y`(SyntaxError) 로 잘못 파싱된다. paren 으로
-                            // 감싸면 모든 컨텍스트에서 undefined 의미가 보존된다.
-                            try self.write("(void 0)");
-                            return;
-                        }
+                        return;
+                    }
+                    // 멤버가 rewrite map 에 없음 = 그 export 가 존재하지 않음(static ESM).
+                    // ns 객체가 member-rewrite 로 materialize 되지 않았다면(ns_inline_objects
+                    // 미등록) `ns.prop` 은 선언된 적 없는 ns 식별자를 참조해 ReferenceError 가
+                    // 된다 — ESM 은 미존재 멤버를 undefined 로 평가하므로 `void 0` 으로 재작성한다
+                    // (#3982 ambiguous 멤버와 동형, esbuild parity). materialize 된 경우(값 사용/
+                    // shadow)는 ns 가 renamed 변수로 선언돼 있어 fall-through(`var.prop`→undefined)
+                    // 가 안전하고, CJS namespace 는 copyProps+rename 경로라 inner_map 자체가 없어
+                    // 이 분기에 도달하지 않는다(동적 멤버를 void 0 으로 잘못 가리지 않음).
+                    //
+                    // 두 가드:
+                    //  - lvalue 타겟(`ns.x = 1`/`ns.x++`)이면 `(void 0)=1` 은 SyntaxError →
+                    //    재작성 skip, 기존 fall-through 유지(런타임 throw, namespace 멤버
+                    //    대입은 어차피 ESM 에러). optional chain(`ns?.x`)은 LHS 가 될 수 없어
+                    //    이 가드와 무관.
+                    //  - dev 번들은 모듈이 항상 wrapper 로 선언돼 `ns` 가 존재하므로 dangling
+                    //    이 발생하지 않는다. 재작성 불필요 + CJS 동적 멤버 오인 방지 위해 skip.
+                    if (!is_assign_target and
+                        self.options.dev_module_id == null and
+                        meta.ns_inline_objects.get(obj_sym_id) == null)
+                    {
+                        // `(void 0)` — paren 필수. 이 멤버 식은 call/member 의 피연산자가
+                        // 될 수 있어(`ns.x()`, `ns.x.y`) bare `void 0` 은 `void 0()`(=
+                        // `void(0())`) / `void 0.y`(SyntaxError) 로 잘못 파싱된다. paren 으로
+                        // 감싸면 모든 컨텍스트에서 undefined 의미가 보존된다.
+                        try self.write("(void 0)");
+                        return;
                     }
                 }
             }
