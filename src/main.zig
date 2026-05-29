@@ -924,7 +924,7 @@ pub fn main(init: std.process.Init) !void {
 
             // 엔트리 파일도 감시 대상에 추가
             const entry_dupe = try allocator.dupe(u8, abs_entry);
-            const entry_mtime = watch_cli.getFileMtime(abs_entry) catch 0;
+            const entry_mtime = watch_cli.getFileMtime(io, abs_entry) catch 0;
             try mtime_map.put(entry_dupe, entry_mtime);
 
             if (result.module_paths) |paths| {
