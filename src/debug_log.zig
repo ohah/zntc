@@ -24,6 +24,7 @@
 //! `ZNTC_DEBUG=compiled_cache,hmr` — 쉼표 구분. 공백/대소문자 무시.
 
 const std = @import("std");
+const env_flag = @import("env_flag.zig");
 
 /// 로그 카테고리. 추가 시 이 enum 에만 이름 넣으면 됨.
 pub const Category = enum {
@@ -119,10 +120,19 @@ pub fn addCategories(names: []const []const u8) void {
 
 /// 프로세스 시작 시 1회 호출. `ZNTC_DEBUG` env 를 읽어 mask 초기화.
 /// CLI main / NAPI entry 양쪽에서 호출 — 중복 호출 해도 idempotent.
-pub fn initFromEnv(allocator: std.mem.Allocator) void {
-    const value = std.process.getEnvVarOwned(allocator, "ZNTC_DEBUG") catch return;
-    defer allocator.free(value);
-    addFromCsv(value);
+/// Zig 0.16: monotonic clock 측정이 io 를 요구한다. debug_log 는 instrumentation
+/// 전역 모듈이라 audit hot path 마다 io 를 파라미터로 끌어들이지 않고
+/// `initFromEnv(io)` 에서 1회 저장한 모듈-전역 io 를 쓴다.
+var dlog_io: ?std.Io = null;
+
+/// monotonic 경과 측정용 clock (구 std.time.Timer 대체).
+const monotonic_clock: std.Io.Clock = .awake;
+
+pub fn initFromEnv(io: std.Io) void {
+    dlog_io = io;
+    // Zig 0.16: std.process.getEnvVarOwned 제거 → libc getenv 기반 env_flag.get
+    // (borrowed slice, allocator 불필요).
+    if (env_flag.get("ZNTC_DEBUG")) |v| addFromCsv(v);
 }
 
 /// 테스트/재설정용. 전체 비활성.
@@ -143,10 +153,13 @@ pub fn print(comptime cat: Category, comptime fmt: []const u8, args: anytype) vo
 /// hot path 의 disabled-path 비용을 최소화한다. enabled 시에만 `Timer.start` 호출.
 pub const AuditScope = struct {
     on: bool,
-    timer: ?std.time.Timer,
+    start_ts: ?std.Io.Timestamp,
 
     pub inline fn elapsedNs(self: *AuditScope) u64 {
-        if (self.timer) |*t| return t.read();
+        if (self.start_ts) |start| {
+            const io = dlog_io orelse return 0;
+            return @intCast(@max(0, start.untilNow(io, monotonic_clock).toNanoseconds()));
+        }
         return 0;
     }
 };
@@ -155,7 +168,7 @@ pub inline fn auditScope(comptime cat: Category) AuditScope {
     const on = enabled(cat);
     return .{
         .on = on,
-        .timer = if (on) std.time.Timer.start() catch null else null,
+        .start_ts = if (on) (if (dlog_io) |io| std.Io.Timestamp.now(io, monotonic_clock) else null) else null,
     };
 }
 

@@ -30,6 +30,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const env_flag = @import("env_flag.zig");
 
 /// counters(`totals_ns` 등)를 atomic 으로 갱신할지 여부 (comptime).
 ///
@@ -49,14 +50,28 @@ inline fn useAtomicCounter(comptime T: type) bool {
         @bitSizeOf(T) <= @bitSizeOf(usize);
 }
 
-var counter_mutex: std.Thread.Mutex = .{};
+// Zig 0.16: std.Thread.Mutex 제거 + std.Io.Mutex.lock 은 io 인자 요구. counter
+// fallback (non-atomic T = 32-bit 의 u64 등, wasm32-threads) 은 hot path 라 io 를
+// 끌어들이지 않으려고 io-free atomic 스핀락으로 교체한다 (critical section 이
+// slot += delta 한 줄이라 spin 비용 무시 수준).
+var counter_lock: u32 = 0;
+
+inline fn lockCounters() void {
+    while (@cmpxchgWeak(u32, &counter_lock, 0, 1, .acquire, .monotonic) != null) {
+        std.atomic.spinLoopHint();
+    }
+}
+
+inline fn unlockCounters() void {
+    @atomicStore(u32, &counter_lock, 0, .release);
+}
 
 inline fn atomicAdd(comptime T: type, slot: *T, delta: T) void {
     if (useAtomicCounter(T)) {
         _ = @atomicRmw(T, slot, .Add, delta, .monotonic);
     } else if (!builtin.single_threaded) {
-        counter_mutex.lock();
-        defer counter_mutex.unlock();
+        lockCounters();
+        defer unlockCounters();
         slot.* += delta;
     } else {
         slot.* += delta;
@@ -66,8 +81,8 @@ inline fn atomicAdd(comptime T: type, slot: *T, delta: T) void {
 inline fn atomicGet(comptime T: type, slot: *const T) T {
     if (useAtomicCounter(T)) return @atomicLoad(T, slot, .monotonic);
     if (!builtin.single_threaded) {
-        counter_mutex.lock();
-        defer counter_mutex.unlock();
+        lockCounters();
+        defer unlockCounters();
         return slot.*;
     }
     return slot.*;
@@ -464,7 +479,16 @@ threadlocal var active_scope_len: u8 = 0;
 /// Σself(모든 스레드 누적)은 병렬 구간 때문에 wall 보다 클 수 있어 비교 기준이 필요하다.
 /// 활성화(`addFromCsv`/`addCategories`)는 worker thread 가 생기기 전 startup 에서 1회뿐이라
 /// hot path(`begin`) 에 검사를 둘 필요 없이 여기서 한 번 찍는다.
-var wall_start: ?std.time.Instant = null;
+var wall_start: ?std.Io.Timestamp = null;
+
+/// Zig 0.16: monotonic clock 측정이 io 를 요구한다. profile 은 instrumentation
+/// 전역 모듈이라 hot path (`begin`/`end`) 마다 io 를 파라미터로 끌어들이지 않고
+/// `initFromEnv(allocator, io)` 에서 1회 저장한 모듈-전역 io 를 쓴다. 미설정(null)
+/// 이면 타이밍은 no-op (profile 비활성 또는 init 전).
+var prof_io: ?std.Io = null;
+
+/// monotonic 경과 측정용 clock (구 std.time.Timer/Instant 대체).
+const monotonic_clock: std.Io.Clock = .awake;
 
 // ============================================================================
 // Activation API (CLI / NAPI / env 공용)
@@ -493,7 +517,9 @@ pub fn setLevel(lv: Level) void {
 
 /// 활성화된 직후 호출 — wall-clock 기준점을 1회 찍는다 (이미 찍혔으면 no-op).
 fn markActivated() void {
-    if (wall_start == null and anyEnabled()) wall_start = std.time.Instant.now() catch null;
+    if (wall_start == null and anyEnabled()) {
+        if (prof_io) |io| wall_start = std.Io.Timestamp.now(io, monotonic_clock);
+    }
 }
 
 /// 쉼표 구분 카테고리 목록을 mask 에 합집합으로 추가. `all` / `none` 키워드 지원.
@@ -539,16 +565,14 @@ pub fn addCategories(names: []const []const u8) void {
 
 /// `ZNTC_PROFILE` / `ZNTC_PROFILE_LEVEL` env 를 읽어 활성화. 미설정 시 no-op.
 /// CLI main / NAPI entry 양쪽에서 호출 — 중복 호출 해도 idempotent.
-pub fn initFromEnv(allocator: std.mem.Allocator) void {
-    if (std.process.getEnvVarOwned(allocator, "ZNTC_PROFILE")) |v| {
-        defer allocator.free(v);
-        addFromCsv(v);
-    } else |_| {}
-
-    if (std.process.getEnvVarOwned(allocator, "ZNTC_PROFILE_LEVEL")) |v| {
-        defer allocator.free(v);
+pub fn initFromEnv(io: std.Io) void {
+    prof_io = io;
+    // Zig 0.16: std.process.getEnvVarOwned 제거 → libc getenv 기반 env_flag.get
+    // (borrowed slice, allocator 불필요).
+    if (env_flag.get("ZNTC_PROFILE")) |v| addFromCsv(v);
+    if (env_flag.get("ZNTC_PROFILE_LEVEL")) |v| {
         if (Level.fromString(v)) |lv| setLevel(lv);
-    } else |_| {}
+    }
 }
 
 /// totals_ns / counts 를 0 으로 초기화.
@@ -604,14 +628,19 @@ fn enableCategoryAndChildren(parent: Category) void {
 ///
 /// 비활성 category 면 `timer == null` — `end()` 도 no-op (분기 한 번).
 pub const Scope = struct {
-    timer: ?std.time.Timer = null,
+    start_ts: ?std.Io.Timestamp = null,
     category: Category = .scan, // 비활성 시 사용 안 됨
     stack_index: u8 = 0,
     stack_active: bool = false,
 
     pub fn end(self: *Scope) void {
-        if (self.timer) |*t| {
-            const elapsed_ns = t.read();
+        if (self.start_ts) |start| {
+            // io 가 비면(이론상 begin 후 사라질 일 없음) 측정 포기.
+            const io = prof_io orelse {
+                self.start_ts = null;
+                return;
+            };
+            const elapsed_ns: u64 = @intCast(@max(0, start.untilNow(io, monotonic_clock).toNanoseconds()));
             var child_ns: u64 = 0;
             if (self.stack_active) {
                 if (active_scope_len == self.stack_index + 1) {
@@ -629,7 +658,7 @@ pub const Scope = struct {
             }
             const self_ns = elapsed_ns -| child_ns;
             recordTiming(self.category, elapsed_ns, self_ns);
-            self.timer = null;
+            self.start_ts = null;
         }
     }
 };
@@ -638,10 +667,11 @@ pub const Scope = struct {
 /// 활성 category 면 Timer 시작 + category 기록.
 pub inline fn begin(cat: Category) Scope {
     if (!enabled(cat)) return .{};
-    const timer = std.time.Timer.start() catch return .{};
+    const io = prof_io orelse return .{};
+    const start = std.Io.Timestamp.now(io, monotonic_clock);
     if (active_scope_len >= max_scope_depth) {
         return .{
-            .timer = timer,
+            .start_ts = start,
             .category = cat,
         };
     }
@@ -649,7 +679,7 @@ pub inline fn begin(cat: Category) Scope {
     active_scopes[stack_index] = .{};
     active_scope_len += 1;
     return .{
-        .timer = timer,
+        .start_ts = start,
         .category = cat,
         .stack_index = stack_index,
         .stack_active = true,
@@ -755,7 +785,7 @@ pub fn snapshotToJson(snap: ProfileSnapshot, writer: anytype, min_ms_threshold: 
             try writer.writeByte('"');
             try writer.writeAll(field.name);
             try writer.writeAll("_ms\":");
-            try std.fmt.format(writer, "{d:.2}", .{ms});
+            try writer.print("{d:.2}", .{ms});
         }
     }
     try writer.writeByte('}');
@@ -786,8 +816,8 @@ fn totalAllNs() u64 {
 /// 병렬 phase 때문에 Σself 가 wall 을 초과하는 게 정상이므로 비교 기준으로 함께 보여준다.
 fn wallNs() u64 {
     const start = wall_start orelse return 0;
-    const now = std.time.Instant.now() catch return 0;
-    return now.since(start);
+    const io = prof_io orelse return 0;
+    return @intCast(@max(0, start.untilNow(io, monotonic_clock).toNanoseconds()));
 }
 
 fn nsToMs(ns: u64) f64 {
