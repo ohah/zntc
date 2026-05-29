@@ -44,8 +44,10 @@ pub fn parseCommandName(name: []const u8) ?Command {
     return null;
 }
 
-pub fn parseArgs(allocator: std.mem.Allocator, command: Command, args: []const []const u8) !Options {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn parseArgs(allocator: std.mem.Allocator, io: std.Io, command: Command, args: []const []const u8) !Options {
+    // 0.16: deprecatedWriter 제거. length-0 buffer = unbuffered (exit 전 flush 불필요).
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
     var opts = Options{ .command = command };
     errdefer opts.deinit(allocator);
 
@@ -162,8 +164,9 @@ fn parseProxy(opts: *Options, allocator: std.mem.Allocator, value: []const u8, s
     });
 }
 
-pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn run(allocator: std.mem.Allocator, io: std.Io, opts: Options) !void {
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
     const app_build = lib.app.build;
     const app_env = lib.app.env;
     const mode = opts.mode orelse if (opts.command == .build) "production" else "development";
@@ -177,7 +180,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
     var tsconfig = if (opts.command == .preview)
         lib.config.TsConfig{}
     else
-        (lib.config.TsConfig.load(allocator, root) catch lib.config.TsConfig{});
+        (lib.config.TsConfig.load(allocator, io, root) catch lib.config.TsConfig{});
     defer tsconfig.deinit();
     const jsx_merged = lib.tsconfig_merge.merge(&tsconfig, .{
         .jsx_runtime = opts.jsx_runtime,
@@ -195,8 +198,8 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
     switch (opts.command) {
         .build => {
             const outdir = opts.outdir orelse "dist";
-            if (opts.clean) try deleteOutput(allocator, root, outdir);
-            const written = app_build.buildApp(allocator, .{
+            if (opts.clean) try deleteOutput(allocator, io, root, outdir);
+            const written = app_build.buildApp(allocator, io, .{
                 .root = root,
                 .outdir = outdir,
                 .entry_html = opts.entry_html,
@@ -217,8 +220,8 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
         },
         .dev => {
             const dev_outdir = opts.outdir orelse ".zntc-dev";
-            if (opts.clean) try deleteOutput(allocator, root, dev_outdir);
-            var prepared = app_build.prepareDev(allocator, .{
+            if (opts.clean) try deleteOutput(allocator, io, root, dev_outdir);
+            var prepared = app_build.prepareDev(allocator, io, .{
                 .root = root,
                 .outdir = dev_outdir,
                 .entry_html = opts.entry_html,
@@ -237,7 +240,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
             defer allocator.free(root_abs);
             const dev_outdir_abs = try std.fs.path.resolve(allocator, &.{ root_abs, dev_outdir });
             defer allocator.free(dev_outdir_abs);
-            var env_map = try app_env.loadEnv(allocator, .{
+            var env_map = try app_env.loadEnv(allocator, io, .{
                 .mode = mode,
                 .env_dir = opts.env_dir orelse root_abs,
                 .prefixes = env_prefixes,
@@ -248,7 +251,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
             const server_defines = try copyDefinesForBundler(allocator, app_defines);
             defer allocator.free(server_defines);
 
-            var dev_server = lib.server.DevServer.init(allocator, .{
+            var dev_server = lib.server.DevServer.init(allocator, io, .{
                 .root_dir = dev_outdir_abs,
                 .port = opts.port,
                 .host = opts.host,
@@ -266,7 +269,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
                 std.process.exit(1);
             };
             defer dev_server.deinit();
-            dev_server.start() catch |err| {
+            dev_server.start(io) catch |err| {
                 try stderr.print("zntc dev: server failed: {}\n", .{err});
                 std.process.exit(1);
             };
@@ -275,7 +278,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
             const preview_dir = opts.root_or_outdir orelse opts.outdir orelse "dist";
             const preview_abs = try std.fs.path.resolve(allocator, &.{preview_dir});
             defer allocator.free(preview_abs);
-            var server = lib.server.DevServer.init(allocator, .{
+            var server = lib.server.DevServer.init(allocator, io, .{
                 .root_dir = preview_abs,
                 .port = opts.port,
                 .host = opts.host,
@@ -288,7 +291,7 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !void {
                 std.process.exit(1);
             };
             defer server.deinit();
-            server.start() catch |err| {
+            server.start(io) catch |err| {
                 try stderr.print("zntc preview: server failed: {}\n", .{err});
                 std.process.exit(1);
             };
@@ -307,11 +310,11 @@ fn normalizeBase(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
     return try out.toOwnedSlice(allocator);
 }
 
-fn deleteOutput(allocator: std.mem.Allocator, root: []const u8, outdir: []const u8) !void {
+fn deleteOutput(allocator: std.mem.Allocator, io: std.Io, root: []const u8, outdir: []const u8) !void {
     const path = try std.fs.path.resolve(allocator, &.{ root, outdir });
     defer allocator.free(path);
-    std.fs.cwd().access(path, .{}) catch return;
-    try std.fs.cwd().deleteTree(path);
+    std.Io.Dir.cwd().access(io, path, .{}) catch return;
+    try std.Io.Dir.cwd().deleteTree(io, path);
 }
 
 fn copyDefinesForBundler(allocator: std.mem.Allocator, app_defines: []const lib.app.env.DefineEntry) ![]lib.transformer.DefineEntry {
