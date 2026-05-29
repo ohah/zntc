@@ -261,11 +261,12 @@ pub const RealReadFileCache = struct {
     /// 임계구역(HashMap get/put)이 io-free 라 스핀락으로 충분. fd 중복 open race 는
     /// "먼저 put 한 쪽 채택, 내 fd close" 로 처리.
     fn getOrOpenDir(self: *RealReadFileCache, io: std.Io, allocator: std.mem.Allocator, dir_path: []const u8) !std.Io.Dir {
-        // deinit 에서 fd 정리에 쓸 io 저장 (dir 삽입 전에 항상 set).
-        self.io = io;
         {
             self.mutex.lock();
             defer self.mutex.unlock();
+            // deinit 에서 fd 정리에 쓸 io 저장 (dir 삽입 전에 항상 set). 공유 캐시를 여러
+            // 워커가 동시 호출하므로 락 안에서 set 해 data race(같은 값이라 양성이지만 UB) 제거.
+            self.io = io;
             if (self.dirs.get(dir_path)) |dir| return dir;
         }
         // openDir 은 락 밖 (blocking syscall — 락 안에서 하면 contention).

@@ -626,7 +626,10 @@ pub const ResolveCache = struct {
                         };
                         defer self.allocator.free(spec_buf);
                         if (thread_safe) cache_shard.mutex.unlock();
-                        const maybe_replaced = self.resolver.resolve(io, pkg_root, spec_buf);
+                        // 0.16: resolve() 진입부가 self.io 를 쓰므로, 공유 self.resolver 대신
+                        // worker-local 사본(resolve_ptr)을 써 동시쓰기 data race 제거(+ dir/
+                        // realpath/pkg_json 캐시가 wired 된 사본이라 비캐시 fallback 도 제거).
+                        const maybe_replaced = resolve_ptr.resolve(io, pkg_root, spec_buf);
                         if (thread_safe) cache_shard.mutex.lock();
                         if (maybe_replaced) |replaced| {
                             // 원본 result free — replaced 가 새 owner.
