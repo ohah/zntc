@@ -264,6 +264,29 @@ test "resolveExports: subpath map" {
     try std.testing.expect(missing == null);
 }
 
+test "resolveExports: 와일드카드는 longest-prefix 선택 — 키 순서 무관 (#3976)" {
+    const a = std.testing.allocator;
+    // `./*` 와 `./internal/*` 둘 다 `./internal/util` 에 매칭. Node/esbuild 는
+    // 더 구체적인(prefix 긴) `./internal/*` 를 선택해야 하며 키 삽입순서와 무관.
+    const variants = [_][]const u8{
+        \\{"exports":{"./*":"./dist/esm/*.js","./internal/*":"./dist/cjs/internal-*.js"}}
+        ,
+        \\{"exports":{"./internal/*":"./dist/cjs/internal-*.js","./*":"./dist/esm/*.js"}}
+        ,
+    };
+    for (variants) |source| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, source, .{});
+        defer parsed.deinit();
+        const exports = parsed.value.object.get("exports").?;
+
+        const r = resolveExports(a, exports, "./internal/util", &.{"import"});
+        try std.testing.expect(r != null);
+        defer if (r.?.allocated) a.free(r.?.path);
+        // longest-prefix `./internal/*` → ./dist/cjs/internal-util.js (덜 구체적 ./* 아님)
+        try std.testing.expectEqualStrings("./dist/cjs/internal-util.js", r.?.path);
+    }
+}
+
 test "resolveExports: nested conditions in subpath" {
     const source =
         \\{"exports":{".":{"import":"./esm.js","require":"./cjs.js"}}}
