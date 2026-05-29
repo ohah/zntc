@@ -229,7 +229,7 @@ pub fn emitAssetRegistryCall(
             const d = std.fs.path.dirname(input.url) orelse ".";
             break :blk try metadata_alloc.dupe(u8, d);
         }
-        const rel = std.fs.path.relative(source_alloc, input.project_root, input.abs_path) catch {
+        const rel = std.fs.path.relative(source_alloc, "", null, input.project_root, input.abs_path) catch {
             break :blk try metadata_alloc.dupe(u8, ".");
         };
         const rel_dir = std.fs.path.dirname(rel) orelse ".";

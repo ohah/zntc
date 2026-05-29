@@ -550,7 +550,7 @@ fn isExternalUrl(value: []const u8) bool {
 /// root 안의 파일은 root-기준 relative path 를 그대로 보존하여 동일 basename 충돌을 차단한다.
 /// root 밖(예: 외부 디렉토리에서 symlink)은 fallback 으로 basename 을 사용.
 fn stylesheetRelFromRoot(allocator: std.mem.Allocator, root: []const u8, style_path: []const u8) ![]const u8 {
-    const rel = std.fs.path.relative(allocator, root, style_path) catch
+    const rel = std.fs.path.relative(allocator, "", null, root, style_path) catch
         return allocator.dupe(u8, std.fs.path.basename(style_path));
     if (rel.len == 0 or std.mem.startsWith(u8, rel, "..")) {
         allocator.free(rel);

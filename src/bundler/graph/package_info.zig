@@ -1,5 +1,7 @@
 //! Package metadata cache helpers for ModuleGraph.
 
+const std = @import("std");
+
 const Module = @import("../module.zig").Module;
 const pkg_json = @import("../package_json.zig");
 const resolve_cache_mod = @import("../resolve_cache.zig");
