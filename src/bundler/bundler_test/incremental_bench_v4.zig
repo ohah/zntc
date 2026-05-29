@@ -307,7 +307,6 @@ fn writeSyntheticLodashFixture(
 
     var index: std.ArrayList(u8) = .empty;
     defer index.deinit(allocator);
-    const w = index.writer(allocator);
     for (LODASH_NAMES) |name| {
         const module_path = try std.fmt.allocPrint(
             allocator,
@@ -323,7 +322,7 @@ fn writeSyntheticLodashFixture(
         defer allocator.free(module_source);
 
         try writeFile(dir, module_path, module_source);
-        try w.print("export {{ {s} }} from './{s}.js';\n", .{ name, name });
+        try index.print(allocator, "export {{ {s} }} from './{s}.js';\n", .{ name, name });
     }
     try writeFile(dir, "node_modules/lodash-es/index.js", index.items);
 }

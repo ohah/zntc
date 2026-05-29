@@ -26,7 +26,7 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     const graph = try allocator.create(ModuleGraph);
     graph.* = ModuleGraph.init(allocator, &cache);
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var linker = Linker.init(allocator, graph, .esm);
     try linker.link();
@@ -182,7 +182,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
@@ -228,7 +228,7 @@ test "linker: external import not resolved (no binding)" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
@@ -552,7 +552,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
@@ -591,7 +591,7 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
