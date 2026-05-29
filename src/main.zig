@@ -334,22 +334,23 @@ pub fn main(init: std.process.Init) !void {
 
     // Subcommand dispatch — `zntc bench ...` 는 별도 경로.
     if (args.len >= 2 and std.mem.eql(u8, args[1], "bench")) {
-        return bench_command.run(allocator, args[2..]);
+        return bench_command.run(allocator, io, args[2..]);
     }
     if (args.len >= 2) {
         if (app_command.parseCommandName(args[1])) |command| {
-            var app_opts = app_command.parseArgs(allocator, command, args[2..]) catch |err| switch (err) {
+            var app_opts = app_command.parseArgs(allocator, io, command, args[2..]) catch |err| switch (err) {
                 error.HelpRequested => {
                     try usage_cli.printUsage(stdout);
                     return;
                 },
                 else => {
                     try stderr.print("zntc {s}: argument error: {}\n", .{ @tagName(command), err });
+                    stderr.flush() catch {};
                     std.process.exit(1);
                 },
             };
             defer app_opts.deinit(allocator);
-            return app_command.run(allocator, app_opts);
+            return app_command.run(allocator, io, app_opts);
         }
     }
 
@@ -363,6 +364,7 @@ pub fn main(init: std.process.Init) !void {
             lib.profile.setLevel(parsed);
         } else {
             try stderr.print("zntc: invalid --profile-level='{s}' (expected summary|detailed|per-module|per-pass)\n", .{lvl});
+            stderr.flush() catch {};
             std.process.exit(1);
         }
     }
@@ -371,6 +373,7 @@ pub fn main(init: std.process.Init) !void {
             break :blk parsed;
         }
         try stderr.print("zntc: invalid --profile-format='{s}' (expected table|tree|json|csv)\n", .{fmt});
+        stderr.flush() catch {};
         std.process.exit(1);
     } else null;
 
@@ -378,8 +381,7 @@ pub fn main(init: std.process.Init) !void {
     defer {
         if (opts.profile_csv != null or profile_report_format != null) {
             const fmt = profile_report_format orelse .table;
-            const stderr_file = std.fs.File.stderr();
-            lib.profile.report(stderr_file.deprecatedWriter(), fmt) catch {};
+            lib.profile.report(stderr, fmt) catch {};
         }
     }
 
@@ -392,17 +394,17 @@ pub fn main(init: std.process.Init) !void {
 
     // --test262
     if (opts.is_test262) {
-        return standalone_modes.runTest262(allocator, opts.test262_dir);
+        return standalone_modes.runTest262(allocator, io, opts.test262_dir);
     }
 
     // --tokenize
     if (opts.is_tokenize) {
-        return standalone_modes.runTokenize(allocator, opts.input_file);
+        return standalone_modes.runTokenize(allocator, io, opts.input_file);
     }
 
     // --serve (정적 서버 또는 --bundle과 조합하여 번들 서빙)
     if (opts.is_serve) {
-        return standalone_modes.runServe(allocator, .{
+        return standalone_modes.runServe(allocator, io, .{
             .is_bundle = opts.is_bundle,
             .input_file = opts.input_file,
             .port = opts.serve_port,
@@ -428,18 +430,19 @@ pub fn main(init: std.process.Init) !void {
     const tsconfig_dir_for_paths: ?[]const u8 = blk: {
         if (opts.tsconfig_raw != null) break :blk null;
         if (opts.project_path) |pp| break :blk pp;
-        autodiscovered_dir = TsConfig.autodiscoverFromEntry(allocator, entry_dir_start);
+        autodiscovered_dir = TsConfig.autodiscoverFromEntry(allocator, io, entry_dir_start);
         break :blk autodiscovered_dir;
     };
     var tsconfig: TsConfig = blk: {
         if (opts.tsconfig_raw) |raw| {
             break :blk TsConfig.parseFromString(allocator, raw) catch {
                 try stderr.print("zntc: failed to parse --tsconfig-raw\n", .{});
+                stderr.flush() catch {};
                 std.process.exit(1);
             };
         }
         if (tsconfig_dir_for_paths) |p| {
-            break :blk TsConfig.loadFromPath(allocator, p) catch TsConfig{};
+            break :blk TsConfig.loadFromPath(allocator, io, p) catch TsConfig{};
         }
         break :blk TsConfig{};
     };
@@ -513,7 +516,7 @@ pub fn main(init: std.process.Init) !void {
             try stderr.print("zntc: --bundle requires an entry file path\n", .{});
             std.process.exit(1);
         };
-        const abs_entry = std.fs.cwd().realpathAlloc(allocator, entry_file) catch {
+        const abs_entry = std.Io.Dir.cwd().realpathAlloc(io, allocator,entry_file) catch {
             try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{entry_file});
             std.process.exit(1);
         };
@@ -535,7 +538,7 @@ pub fn main(init: std.process.Init) !void {
         var resolved_pm_root: ?[]const u8 = null;
         defer if (resolved_pm_root) |r| allocator.free(r);
         if (opts.preserve_modules_root) |pmr| {
-            resolved_pm_root = std.fs.cwd().realpathAlloc(allocator, pmr) catch {
+            resolved_pm_root = std.Io.Dir.cwd().realpathAlloc(io, allocator,pmr) catch {
                 try stderr.print("zntc: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
                 std.process.exit(1);
             };
@@ -646,7 +649,7 @@ pub fn main(init: std.process.Init) !void {
             entries_extras.deinit(allocator);
         }
         for (opts.extra_inputs.items) |extra| {
-            const abs = std.fs.cwd().realpathAlloc(allocator, extra) catch {
+            const abs = std.Io.Dir.cwd().realpathAlloc(io, allocator,extra) catch {
                 try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{extra});
                 std.process.exit(1);
             };
@@ -749,7 +752,7 @@ pub fn main(init: std.process.Init) !void {
             .min_chunk_size = opts.min_chunk_size,
             .dev_mode = opts.dev,
             .react_refresh = opts.dev,
-            .root_dir = if (opts.dev or opts.sourcemap) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
+            .root_dir = if (opts.dev or opts.sourcemap) (std.Io.Dir.cwd().realpathAlloc(io, allocator,".") catch null) else null,
         };
         defer if (bundle_opts.root_dir) |rd| allocator.free(rd);
 
@@ -809,7 +812,7 @@ pub fn main(init: std.process.Init) !void {
         if (result.outputs) |outputs| {
             // Code splitting: 다중 파일 출력 → --outdir 필수
             const out_dir = opts.output_dir orelse ".";
-            std.fs.cwd().makePath(out_dir) catch {};
+            std.Io.Dir.cwd().createDirPath(io,out_dir) catch {};
             for (outputs) |o| {
                 initial_bytes += o.contents.len;
                 const full_path = try std.fs.path.join(allocator, &.{ out_dir, o.path });
@@ -817,11 +820,11 @@ pub fn main(init: std.process.Init) !void {
                 // naming 패턴에 디렉토리가 포함된 경우 (예: chunks/[name]-[hash])
                 // 하위 디렉토리를 생성해야 함
                 if (std.fs.path.dirname(full_path)) |dir| {
-                    std.fs.cwd().makePath(dir) catch {};
+                    std.Io.Dir.cwd().createDirPath(io,dir) catch {};
                 }
-                const file = try std.fs.cwd().createFile(full_path, .{});
-                defer file.close();
-                try file.writeAll(o.contents);
+                const file = try std.Io.Dir.cwd().createFile(io,full_path, .{});
+                defer file.close(io);
+                try file.writeStreamingAll(io,o.contents);
                 if (!opts.watch_json) {
                     try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
                 }
@@ -829,26 +832,26 @@ pub fn main(init: std.process.Init) !void {
             if (!opts.watch_json) {
                 try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
             }
-            try writeAssetOutputs(allocator, result.asset_outputs, out_dir);
+            try writeAssetOutputs(allocator, io, result.asset_outputs, out_dir);
         } else if (opts.output_file) |out_path| {
             // 단일 파일 출력
             if (std.fs.path.dirname(out_path)) |dir| {
-                std.fs.cwd().makePath(dir) catch {};
+                std.Io.Dir.cwd().createDirPath(io,dir) catch {};
             }
-            const file = try std.fs.cwd().createFile(out_path, .{});
-            defer file.close();
-            try file.writeAll(result.output);
+            const file = try std.Io.Dir.cwd().createFile(io,out_path, .{});
+            defer file.close(io);
+            try file.writeStreamingAll(io,result.output);
             initial_bytes = result.output.len;
             if (!opts.watch_json) {
                 try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
             }
-            try writeAssetOutputs(allocator, result.asset_outputs, std.fs.path.dirname(out_path) orelse ".");
+            try writeAssetOutputs(allocator, io, result.asset_outputs, std.fs.path.dirname(out_path) orelse ".");
 
             // 소스맵 파일 출력
             if (result.sourcemap) |sm_json| {
                 const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
                 defer allocator.free(map_path);
-                std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
+                std.Io.Dir.cwd().writeFile(io, .{ .sub_path = map_path, .data = sm_json }) catch |err| {
                     try stderr.print("zntc: cannot write '{s}': {}\n", .{ map_path, err });
                 };
             }
@@ -863,9 +866,9 @@ pub fn main(init: std.process.Init) !void {
         // metafile 출력
         if (opts.metafile_path) |mf_path| {
             if (result.metafile_json) |mf| {
-                const file = try std.fs.cwd().createFile(mf_path, .{});
-                defer file.close();
-                try file.writeAll(mf);
+                const file = try std.Io.Dir.cwd().createFile(io,mf_path, .{});
+                defer file.close(io);
+                try file.writeStreamingAll(io,mf);
             }
         }
 
@@ -999,25 +1002,25 @@ pub fn main(init: std.process.Init) !void {
                         output_bytes += o.contents.len;
                         const full_path = std.fs.path.join(allocator, &.{ out_dir, o.path }) catch continue;
                         defer allocator.free(full_path);
-                        if (std.fs.path.dirname(full_path)) |dir| std.fs.cwd().makePath(dir) catch {};
-                        const file = std.fs.cwd().createFile(full_path, .{}) catch continue;
-                        defer file.close();
-                        file.writeAll(o.contents) catch continue;
+                        if (std.fs.path.dirname(full_path)) |dir| std.Io.Dir.cwd().createDirPath(io,dir) catch {};
+                        const file = std.Io.Dir.cwd().createFile(io,full_path, .{}) catch continue;
+                        defer file.close(io);
+                        file.writeStreamingAll(io,o.contents) catch continue;
                     }
                     if (!opts.watch_json) {
                         try stderr.print("[watch] Rebuilt → {d} chunks\n", .{outputs.len});
                     }
                 } else if (opts.output_file) |out_path| {
                     output_bytes = rebuild_result.output.len;
-                    if (std.fs.path.dirname(out_path)) |dir| std.fs.cwd().makePath(dir) catch {};
-                    const file = std.fs.cwd().createFile(out_path, .{}) catch continue;
-                    defer file.close();
-                    file.writeAll(rebuild_result.output) catch continue;
+                    if (std.fs.path.dirname(out_path)) |dir| std.Io.Dir.cwd().createDirPath(io,dir) catch {};
+                    const file = std.Io.Dir.cwd().createFile(io,out_path, .{}) catch continue;
+                    defer file.close(io);
+                    file.writeStreamingAll(io,rebuild_result.output) catch continue;
                     // rebuild 시에도 소스맵 갱신
                     if (rebuild_result.sourcemap) |sm_json| {
                         const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
                         defer allocator.free(map_path);
-                        std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
+                        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = map_path, .data = sm_json }) catch |err| {
                             try stderr.print("zntc: cannot write '{s}': {}\n", .{ map_path, err });
                         };
                     }
@@ -1187,23 +1190,25 @@ pub fn main(init: std.process.Init) !void {
 
     if (!is_stdin) {
         // statFile로 디렉토리 여부 판별
-        const stat = std.fs.cwd().statFile(input_path_str) catch |err| {
+        const stat = std.Io.Dir.cwd().statFile(io, input_path_str) catch |err| {
             // statFile이 실패하면 openDir을 시도하여 디렉토리인지 확인
             // (일부 시스템에서 디렉토리에 statFile이 실패할 수 있음)
-            var dir = std.fs.cwd().openDir(input_path_str, .{}) catch {
+            var dir = std.Io.Dir.cwd().openDir(io, input_path_str, .{}) catch {
                 // 파일도 디렉토리도 아닌 경우
                 try stderr.print("zntc: cannot access '{s}': {}\n", .{ input_path_str, err });
+                stderr.flush() catch {};
                 std.process.exit(1);
             };
-            dir.close();
+            dir.close(io);
             // 디렉토리 확인됨 — 아래 디렉토리 처리로 이동
             const out_dir = opts.output_dir orelse {
                 try stderr.print("zntc: --outdir is required when input is a directory\n", .{});
+                stderr.flush() catch {};
                 std.process.exit(1);
             };
-            walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
+            walkAndTranspile(allocator, io, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
-                try watch_cli.watchDirectory(transpileFile, allocator, input_path_str, out_dir, options, stderr);
+                try watch_cli.watchDirectory(transpileFile, allocator, io, input_path_str, out_dir, options, stderr);
             }
             return;
         };
@@ -1211,11 +1216,12 @@ pub fn main(init: std.process.Init) !void {
         if (stat.kind == .directory) {
             const out_dir = opts.output_dir orelse {
                 try stderr.print("zntc: --outdir is required when input is a directory\n", .{});
+                stderr.flush() catch {};
                 std.process.exit(1);
             };
-            walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
+            walkAndTranspile(allocator, io, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
-                try watch_cli.watchDirectory(transpileFile, allocator, input_path_str, out_dir, options, stderr);
+                try watch_cli.watchDirectory(transpileFile, allocator, io, input_path_str, out_dir, options, stderr);
             }
             return;
         }
@@ -1225,16 +1231,21 @@ pub fn main(init: std.process.Init) !void {
     const file_path = if (is_stdin) "<stdin>" else input_path_str;
 
     if (is_stdin) {
-        const source = std.fs.File.stdin().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
+        // 0.16: File.readToEndAlloc 제거 → readerStreaming(stdin 은 non-seekable) +
+        // Reader.allocRemaining.
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buf);
+        const source = stdin_reader.interface.allocRemaining(allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
             try stderr.print("zntc: cannot read stdin: {}\n", .{err});
+            stderr.flush() catch {};
             std.process.exit(1);
         };
         defer allocator.free(source);
-        transpileFile(allocator, file_path, source, opts.output_file, options) catch std.process.exit(1);
+        transpileFile(allocator, io, file_path, source, opts.output_file, options) catch std.process.exit(1);
     } else {
-        transpileFile(allocator, file_path, null, opts.output_file, options) catch std.process.exit(1);
+        transpileFile(allocator, io, file_path, null, opts.output_file, options) catch std.process.exit(1);
         if (opts.watch) {
-            watch_cli.watchFile(transpileFile, allocator, file_path, opts.output_file, options, stderr) catch std.process.exit(1);
+            watch_cli.watchFile(transpileFile, allocator, io, file_path, opts.output_file, options, stderr) catch std.process.exit(1);
         }
     }
 }
