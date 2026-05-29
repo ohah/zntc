@@ -65,8 +65,11 @@ pub fn matchesRemoteSpec(spec: []const u8, key: []const u8) bool {
 /// fallback 으로 충분). 비-WASI 동작 불변.
 pub fn cwdRealpath(io: std.Io, allocator: std.mem.Allocator) ?[]const u8 {
     if (comptime builtin.os.tag == .wasi) return null;
-    // 0.16: cwd().realpathAlloc 제거 → realPathFileAlloc.
-    return std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch null;
+    // 0.16: realPathFileAlloc 는 [:0]u8 (N 바이트). []const u8 로 coerce 후 free 하면
+    // N-1 만 해제돼 size-mismatch → sentinel-aware free 후 정확 길이 dupe.
+    const z = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch return null;
+    defer allocator.free(z);
+    return allocator.dupe(u8, z) catch null;
 }
 
 /// 패키지명 → container 소유 글로벌 식별자(`__mf_shared_<sanitized>`).
@@ -361,8 +364,11 @@ pub fn resolveAbs(io: std.Io, allocator: std.mem.Allocator, cwd: ?[]const u8, va
     defer allocator.free(joined);
     // WASI 는 realpath @compileError → comptime 분기(비-WASI 동작 불변).
     if (comptime builtin.os.tag == .wasi) return allocator.dupe(u8, joined);
-    // 0.16: cwd().realpathAlloc 제거 → realPathFileAlloc.
-    return std.Io.Dir.cwd().realPathFileAlloc(io, joined, allocator) catch allocator.dupe(u8, joined);
+    // 0.16: realPathFileAlloc 는 [:0]u8 → sentinel-aware free 후 정확 길이 dupe
+    // (caller 가 []const u8 로 해제 시 size-mismatch 방지).
+    const z = std.Io.Dir.cwd().realPathFileAlloc(io, joined, allocator) catch return allocator.dupe(u8, joined);
+    defer allocator.free(z);
+    return allocator.dupe(u8, z);
 }
 
 /// path 의 최내곽 node_modules 패키지명(`@scope/pkg` 포함). scoped 분기·
