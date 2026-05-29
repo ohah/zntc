@@ -78,6 +78,12 @@ pub const Codegen = struct {
     /// 모든 call expression 에 대해 호출되므로, 해당 종류의 record 가 없으면 O(1) 로 빠짐.
     has_glob_records: bool = false,
     has_require_context_records: bool = false,
+    /// 다음에 emit 할 member expression 이 assignment/update 의 *타겟*(lvalue)인지.
+    /// emitAssignment/emitUpdate 가 operand emit 직전 set, emitStaticMember 가 진입
+    /// 즉시 읽고 리셋(중첩 object 위치는 rvalue 라 영향 X). 미존재 namespace 멤버를
+    /// `(void 0)` 으로 재작성할 때, lvalue 위치(`ns.x = 1` → `(void 0)=1`)면 SyntaxError
+    /// 가 되므로 그 경우엔 재작성을 건너뛴다.
+    member_assign_target: bool = false,
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }
