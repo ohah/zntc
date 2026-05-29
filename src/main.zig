@@ -535,10 +535,14 @@ pub fn main(init: std.process.Init) !void {
         var resolved_pm_root: ?[]const u8 = null;
         defer if (resolved_pm_root) |r| allocator.free(r);
         if (opts.preserve_modules_root) |pmr| {
-            resolved_pm_root = std.Io.Dir.cwd().realPathFileAlloc(io, pmr, allocator) catch {
+            // 0.16: realPathFileAlloc 는 [:0]u8. ?[]const u8 로 free 하면 sentinel 누락
+            // size-mismatch → 정확 길이 dupe 후 원본 free (fs.realpath 패턴).
+            const pmr_z = std.Io.Dir.cwd().realPathFileAlloc(io, pmr, allocator) catch {
                 try stderr.print("zntc: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
                 std.process.exit(1);
             };
+            defer allocator.free(pmr_z);
+            resolved_pm_root = try allocator.dupe(u8, pmr_z);
             opts.preserve_modules_root = resolved_pm_root;
         }
 
@@ -646,11 +650,13 @@ pub fn main(init: std.process.Init) !void {
             entries_extras.deinit(allocator);
         }
         for (opts.extra_inputs.items) |extra| {
-            const abs = std.Io.Dir.cwd().realPathFileAlloc(io, extra, allocator) catch {
+            // 0.16: realPathFileAlloc [:0]u8 → []const u8 리스트 free size-mismatch 방지 dupe.
+            const abs_z = std.Io.Dir.cwd().realPathFileAlloc(io, extra, allocator) catch {
                 try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{extra});
                 std.process.exit(1);
             };
-            try entries_extras.append(allocator, abs);
+            defer allocator.free(abs_z);
+            try entries_extras.append(allocator, try allocator.dupe(u8, abs_z));
         }
         var entries_list: std.ArrayList([]const u8) = .empty;
         defer entries_list.deinit(allocator);
@@ -749,7 +755,13 @@ pub fn main(init: std.process.Init) !void {
             .min_chunk_size = opts.min_chunk_size,
             .dev_mode = opts.dev,
             .react_refresh = opts.dev,
-            .root_dir = if (opts.dev or opts.sourcemap) (std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch null) else null,
+            // 0.16: realPathFileAlloc [:0]u8 → ?[]const u8 필드 free size-mismatch 방지:
+            // 정확 길이 dupe 후 원본 free (block 으로 인라인 처리).
+            .root_dir = if (opts.dev or opts.sourcemap) blk: {
+                const z = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch break :blk null;
+                defer allocator.free(z);
+                break :blk allocator.dupe(u8, z) catch null;
+            } else null,
         };
         defer if (bundle_opts.root_dir) |rd| allocator.free(rd);
 
