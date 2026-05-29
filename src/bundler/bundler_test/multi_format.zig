@@ -24,7 +24,7 @@ test "multi-format: esm + cjs single path produces both outputs" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.outputs_by_format != null);
@@ -55,7 +55,7 @@ test "multi-format: single esm equals multi[esm,cjs].esm (byte-identical)" {
         .format = .esm,
     });
     defer b_single.deinit();
-    const r_single = try b_single.bundle();
+    const r_single = try b_single.bundle(std.testing.io);
     defer r_single.deinit(std.testing.allocator);
 
     var tmp_multi = std.testing.tmpDir(.{});
@@ -72,7 +72,7 @@ test "multi-format: single esm equals multi[esm,cjs].esm (byte-identical)" {
         },
     });
     defer b_multi.deinit();
-    const r_multi = try b_multi.bundle();
+    const r_multi = try b_multi.bundle(std.testing.io);
     defer r_multi.deinit(std.testing.allocator);
 
     // single 의 output == multi 의 ESM (첫 entry, result.output 으로 move 된 상태).
@@ -95,7 +95,7 @@ test "multi-format: order invariant — [esm,cjs] vs [cjs,esm] produces same per
         .output = &.{ .{ .format = .esm }, .{ .format = .cjs } },
     });
     defer b_ab.deinit();
-    const r_ab = try b_ab.bundle();
+    const r_ab = try b_ab.bundle(std.testing.io);
     defer r_ab.deinit(std.testing.allocator);
 
     var tmp_ba = std.testing.tmpDir(.{});
@@ -109,7 +109,7 @@ test "multi-format: order invariant — [esm,cjs] vs [cjs,esm] produces same per
         .output = &.{ .{ .format = .cjs }, .{ .format = .esm } },
     });
     defer b_ba.deinit();
-    const r_ba = try b_ba.bundle();
+    const r_ba = try b_ba.bundle(std.testing.io);
     defer r_ba.deinit(std.testing.allocator);
 
     // [esm,cjs] 의 esm (= r_ab.output, 첫 entry) == [cjs,esm] 의 esm (= r_ba.outputs_by_format[1].output, 두 번째 entry)
@@ -134,7 +134,7 @@ test "multi-format: memory safety — repeated multi-emit no leak" {
             .output = &.{ .{ .format = .esm }, .{ .format = .cjs } },
         });
         defer b.deinit();
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(result.outputs_by_format != null);
     }
@@ -158,7 +158,7 @@ test "multi-format: Module Federation rejected" {
     });
     defer b.deinit();
 
-    const result = b.bundle();
+    const result = b.bundle(std.testing.io);
     try std.testing.expectError(error.MultiFormatNotSupportedWithModuleFederation, result);
 }
 
@@ -180,7 +180,7 @@ test "multi-format: dev_mode rejected" {
     });
     defer b.deinit();
 
-    const result = b.bundle();
+    const result = b.bundle(std.testing.io);
     try std.testing.expectError(error.MultiFormatRequiresSinglePath, result);
 }
 
@@ -204,7 +204,7 @@ test "multi-format: CSS import yields shared CSS output across formats" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.outputs_by_format != null);

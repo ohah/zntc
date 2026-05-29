@@ -53,7 +53,7 @@ test "incremental bench: react-style 10 components, cache hit on no-change" {
             .module_store = &store,
         });
         defer b.deinit();
-        const r = try b.bundle();
+        const r = try b.bundle(std.testing.io);
         defer r.deinit(std.testing.allocator);
         try std.testing.expect(r.output.len > 0);
     }
@@ -71,7 +71,7 @@ test "incremental bench: react-style 10 components, cache hit on no-change" {
             .module_store = &store,
         });
         defer b.deinit();
-        const r = try b.bundle();
+        const r = try b.bundle(std.testing.io);
         defer r.deinit(std.testing.allocator);
         try std.testing.expect(r.output.len > 0);
     }

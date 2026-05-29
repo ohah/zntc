@@ -1,7 +1,7 @@
 //! 플러그인 시스템 테스트
 //!
 //! - 단위 테스트: PluginRunner의 각 훅 실행 로직 검증
-//! - 통합 테스트: Bundler.bundle()을 통한 end-to-end 검증
+//! - 통합 테스트: Bundler.bundle(std.testing.io)을 통한 end-to-end 검증
 
 const std = @import("std");
 const Bundler = @import("bundler.zig").Bundler;
@@ -168,7 +168,7 @@ test "PluginRunner: generateBundle all executed" {
 }
 
 // ============================================================
-// 통합 테스트: Bundler.bundle()을 통한 플러그인 훅 실행 검증
+// 통합 테스트: Bundler.bundle(std.testing.io)을 통한 플러그인 훅 실행 검증
 // ============================================================
 
 // --- transform 훅 통합 테스트 ---
@@ -196,7 +196,7 @@ test "Plugin integration: transform hook modifies output" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // transform 훅이 삽입한 변수 선언이 출력에 포함되어야 함
@@ -228,7 +228,7 @@ test "Plugin integration: transform-added imports are scanned from final source 
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -272,7 +272,7 @@ test "Plugin integration: transform-added package import feeds tree-shaking (#20
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -316,7 +316,7 @@ test "Plugin integration: transform output invalidates compiled cache (#2038)" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -333,7 +333,7 @@ test "Plugin integration: transform output invalidates compiled cache (#2038)" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -350,7 +350,7 @@ test "Plugin integration: transform output invalidates compiled cache (#2038)" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
         const stats = cache.takeStats();
 
@@ -396,7 +396,7 @@ test "Plugin integration: load output invalidates compiled cache (#2038)" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -413,7 +413,7 @@ test "Plugin integration: load output invalidates compiled cache (#2038)" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -453,7 +453,7 @@ test "Plugin integration: generateBundle hook is called" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(integration_generate_called);
@@ -475,7 +475,7 @@ test "Plugin integration: no plugins preserves existing behavior" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42;") != null);
@@ -511,7 +511,7 @@ test "Plugin integration: multiple plugins chain transforms" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 두 플러그인 모두 적용되어야 함
@@ -545,7 +545,7 @@ test "Plugin integration: resolveId null falls through to default resolver" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 기본 resolver가 dep.ts를 찾아서 번들해야 함
@@ -577,7 +577,7 @@ test "Plugin integration: load null falls through to filesystem" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const z = 77") != null);
@@ -618,7 +618,7 @@ test "Plugin integration: transform hook is called for user source files (#964)"
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -830,7 +830,7 @@ test "Plugin integration: lifecycle hook 호출 순서 + 정상 build → buildE
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_start_count);
@@ -865,7 +865,7 @@ test "Plugin integration: buildStart 실패 시 build 실패 + errdefer 경로�
     });
     defer b.deinit();
 
-    try std.testing.expectError(error.PluginFailed, b.bundle());
+    try std.testing.expectError(error.PluginFailed, b.bundle(std.testing.io));
     try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_start_count);
     try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_end_count);
     try std.testing.expectEqual(@as(u32, 1), LifecycleLog.close_bundle_count);

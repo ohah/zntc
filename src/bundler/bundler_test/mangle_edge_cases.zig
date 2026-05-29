@@ -43,7 +43,7 @@ test "Mangle: entry 의 export const 이름은 minify 후에도 보존된다" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -77,7 +77,7 @@ test "Mangle: non-entry 모듈 top-level const/function 은 짧은 이름으로 
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -125,7 +125,7 @@ test "Mangle: nested 1-char 변수를 top-level mangled 이름이 shadow 하지 
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -180,7 +180,7 @@ test "Mangle: 두 모듈이 같은 top-level 이름을 갖고 cross-import 시 d
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -233,7 +233,7 @@ test "Mangle: 1-char top-level binding `z` 가 entry import alias 와 충돌 회
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -270,7 +270,7 @@ test "Mangle: external import binding 은 mangle 되지 않는다" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -315,7 +315,7 @@ test "Mangle: 모듈이 참조하는 unresolved global(Promise/Set)을 top-level
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -369,7 +369,7 @@ test "Mangle: 런타임 helper(`__`-prefix) 식별자는 추가 rename 되지 �
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -432,7 +432,7 @@ test "Mangle: dead 모듈 binding 은 included 모듈의 짧은 이름 풀을 �
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -467,7 +467,7 @@ test "Mangle: minify off 시 비-entry 모듈 top-level 이름이 보존된다 (
         // minify 옵션 모두 off.
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -501,7 +501,7 @@ test "Mangle: minify_whitespace=true 단독으로는 식별자 mangle 이 일어
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -531,7 +531,7 @@ test "Mangle: minify_whitespace + minify_identifiers 함께면 비-entry top-lev
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

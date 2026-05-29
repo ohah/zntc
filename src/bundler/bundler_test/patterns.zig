@@ -26,7 +26,7 @@ test "Resolution: parent directory traversal (../../)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -49,7 +49,7 @@ test "Resolution: .tsx extension for React components" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -72,7 +72,7 @@ test "Resolution: mixed .ts and .tsx imports" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -117,7 +117,7 @@ test "Real-world: layered architecture (controller → service → repository)" 
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -163,7 +163,7 @@ test "Real-world: plugin system pattern" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -205,7 +205,7 @@ test "Real-world: state management pattern (Redux-like)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -239,7 +239,7 @@ test "Real-world: middleware chain pattern" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -266,7 +266,7 @@ test "Error: multiple unresolved imports" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -295,7 +295,7 @@ test "Error: unresolved in dependency (not entry)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // dep.ts 내부의 미해석 import도 에러로 보고
@@ -326,7 +326,7 @@ test "Format: all three formats produce valid output for same input" {
         .format = .esm,
     });
     defer b1.deinit();
-    const r1 = try b1.bundle();
+    const r1 = try b1.bundle(std.testing.io);
     defer r1.deinit(std.testing.allocator);
     try std.testing.expect(!r1.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, r1.output, "n * n") != null);
@@ -337,7 +337,7 @@ test "Format: all three formats produce valid output for same input" {
         .format = .cjs,
     });
     defer b2.deinit();
-    const r2 = try b2.bundle();
+    const r2 = try b2.bundle(std.testing.io);
     defer r2.deinit(std.testing.allocator);
     try std.testing.expect(!r2.hasErrors());
     try std.testing.expect(std.mem.startsWith(u8, r2.output, "\"use strict\";\n"));
@@ -349,7 +349,7 @@ test "Format: all three formats produce valid output for same input" {
         .format = .iife,
     });
     defer b3.deinit();
-    const r3 = try b3.bundle();
+    const r3 = try b3.bundle(std.testing.io);
     defer r3.deinit(std.testing.allocator);
     try std.testing.expect(!r3.hasErrors());
     try std.testing.expect(std.mem.startsWith(u8, r3.output, "(() => {\n"));
@@ -371,7 +371,7 @@ test "Format: minify removes module boundary comments" {
         .minify_whitespace = false,
     });
     defer b1.deinit();
-    const r1 = try b1.bundle();
+    const r1 = try b1.bundle(std.testing.io);
     defer r1.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, r1.output, "//#region ") != null);
     try std.testing.expect(std.mem.indexOf(u8, r1.output, "//#endregion") != null);
@@ -384,7 +384,7 @@ test "Format: minify removes module boundary comments" {
         .minify_syntax = true,
     });
     defer b2.deinit();
-    const r2 = try b2.bundle();
+    const r2 = try b2.bundle(std.testing.io);
     defer r2.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "//#region") == null);
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "//#endregion") == null);
@@ -409,7 +409,7 @@ test "minifyIdentifiers: for-in LHS identifier should be renamed" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const r = try b.bundle();
+    const r = try b.bundle(std.testing.io);
     defer r.deinit(std.testing.allocator);
 
     // "myKey" should NOT appear in the output (it should be renamed)
@@ -440,7 +440,7 @@ test "minifyIdentifiers: var hoisting inside function body (#1041)" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const r = try b.bundle();
+    const r = try b.bundle(std.testing.io);
     defer r.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "hoistedVar") == null);
@@ -466,7 +466,7 @@ test "minifyIdentifiers: function declaration hoisting inside function body (#10
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const r = try b.bundle();
+    const r = try b.bundle(std.testing.io);
     defer r.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "helperFn") == null);
@@ -494,7 +494,7 @@ test "minifyIdentifiers: nested block var hoisting (#1041)" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const r = try b.bundle();
+    const r = try b.bundle(std.testing.io);
     defer r.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "deepVar") == null);
@@ -516,7 +516,7 @@ test "Format: scope_hoist false with all three formats" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -551,7 +551,7 @@ test "Mixed: import default + named from same module, re-exported" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -579,7 +579,7 @@ test "Mixed: export * and named export same module" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -615,7 +615,7 @@ test "Mixed: deeply nested barrel with re-exports and defaults" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -642,7 +642,7 @@ test "Mixed: template literals and tagged templates across modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -668,7 +668,7 @@ test "Mixed: spread operator and rest params across modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -694,7 +694,7 @@ test "Mixed: destructuring in import and export" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -723,7 +723,7 @@ test "Mixed: array destructuring export emits each bound name" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -750,7 +750,7 @@ test "Mixed: generator function across modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -777,7 +777,7 @@ test "Mixed: computed property names across modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -810,7 +810,7 @@ test "Stress: 20 modules in diamond lattice" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -852,7 +852,7 @@ test "Export: named as default" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -877,7 +877,7 @@ test "Export: empty export clause" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -905,7 +905,7 @@ test "Export: multiple imports from same module (dedup bindings)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -940,7 +940,7 @@ test "Export: export let with later mutation" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -970,7 +970,7 @@ test "Hoisting: var declarations across modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -996,7 +996,7 @@ test "Hoisting: function declarations hoisted above usage" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1025,7 +1025,7 @@ test "TypeScript: declare module stripped" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1058,7 +1058,7 @@ test "TypeScript: readonly and access modifiers stripped" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1088,7 +1088,7 @@ test "TypeScript: intersection and union types stripped" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1116,7 +1116,7 @@ test "TypeScript: as const and satisfies stripped" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1143,7 +1143,7 @@ test "TypeScript: parameter property transform in bundle" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1171,7 +1171,7 @@ test "Scope hoisting: imported value used as object key" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1193,7 +1193,7 @@ test "Scope hoisting: imported value in template literal" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1216,7 +1216,7 @@ test "Scope hoisting: imported value in array destructuring" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1238,7 +1238,7 @@ test "Scope hoisting: imported value in ternary" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

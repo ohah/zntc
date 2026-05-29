@@ -143,7 +143,7 @@ fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entr
         .changed_files = changed_ptr,
     });
     defer b.deinit();
-    const r = try b.bundle();
+    const r = try b.bundle(std.testing.io);
     defer r.deinit(allocator);
 
     const parse_ns = profile.totalNs(.parse);
@@ -299,7 +299,7 @@ fn printSubPhase(label: []const u8, r: WarmResult) void {
 
 fn writeSyntheticLodashFixture(
     allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
 ) !void {
     try writeFile(dir, "node_modules/lodash-es/package.json",
         \\{"type":"module","module":"index.js","main":"index.js"}
@@ -389,7 +389,7 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
             .module_store = &store,
         });
         defer b.deinit();
-        const r = try b.bundle();
+        const r = try b.bundle(std.testing.io);
         defer r.deinit(allocator);
         cold_module_count = if (r.module_paths) |paths| paths.len else 0;
     }

@@ -42,7 +42,7 @@ test "Runtime helper shadow: user `var __extends` 가 helper call binding 을 �
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -130,7 +130,7 @@ test "Runtime helper shadow: minify 모드에서도 user shadow 가 격리됨" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -172,7 +172,7 @@ test "Runtime helper shadow: helper 호출이 user binding 의 rename 결과를 
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -219,7 +219,7 @@ test "Runtime helper shadow: private field set helper avoids UMD global helper o
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

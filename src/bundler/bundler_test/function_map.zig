@@ -21,7 +21,7 @@ test "bundler function_map: single-file — x_facebook_sources in sourcemap" {
         .sourcemap = .{ .enable = true, .function_map = true },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -51,7 +51,7 @@ test "bundler function_map: multi-file — per-source entries" {
         .sourcemap = .{ .enable = true, .function_map = true },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -77,7 +77,7 @@ test "bundler function_map: disabled — no x_facebook_sources" {
         // function_map 기본값 = false
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -100,7 +100,7 @@ test "bundler function_map: class methods — ClassName#method format" {
         .sourcemap = .{ .enable = true, .function_map = true },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -134,7 +134,7 @@ test "bundler sourcemap: hoisted function bodies in __esm factory have mappings 
         .sourcemap = .{ .enable = true },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 

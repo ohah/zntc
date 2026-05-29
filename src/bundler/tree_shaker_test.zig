@@ -46,7 +46,7 @@ fn buildAndShakeWithOpts(
     entry_name: []const u8,
     no_side_effects: []const []const u8,
 ) !TestResult {
-    const dp = try tmp.dir.realpathAlloc(allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);

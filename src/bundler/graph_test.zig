@@ -1136,7 +1136,7 @@ test "pkg_info_cache: missing package.json → unknown + is_module=false" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    const info = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(false, info.is_module);
     try std.testing.expect(info.side_effects == .unknown);
     try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
@@ -1152,7 +1152,7 @@ test "pkg_info_cache: type=module → is_module=true, side_effects=unknown" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    const info = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(true, info.is_module);
     try std.testing.expect(info.side_effects == .unknown);
 }
@@ -1167,7 +1167,7 @@ test "pkg_info_cache: sideEffects=false → .all(false)" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    const info = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(false, info.is_module);
     try std.testing.expect(info.side_effects == .all);
     try std.testing.expectEqual(false, info.side_effects.all);
@@ -1183,7 +1183,7 @@ test "pkg_info_cache: sideEffects=[*.css] → .patterns, patterns 소유권 유�
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    const info = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expect(info.side_effects == .patterns);
     try std.testing.expectEqual(@as(usize, 2), info.side_effects.patterns.len);
     try std.testing.expectEqualStrings("*.css", info.side_effects.patterns[0]);
@@ -1201,7 +1201,7 @@ test "pkg_info_cache: type=module + sideEffects=false 조합" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    const info = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(true, info.is_module);
     try std.testing.expect(info.side_effects == .all);
     try std.testing.expectEqual(false, info.side_effects.all);
@@ -1217,8 +1217,8 @@ test "pkg_info_cache: 같은 경로 두 번 → cache size 1, 동일 결과" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const first = gc.graph.lookupPkgInfo(pkg_abs);
-    const second = gc.graph.lookupPkgInfo(pkg_abs);
+    const first = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
+    const second = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(first.is_module, second.is_module);
     try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
 }
@@ -1235,9 +1235,9 @@ test "pkg_info_cache: 같은 pkg 다른 파일 경로 → cache entry 1개" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    _ = gc.graph.lookupPkgInfo(pkg_abs);
-    _ = gc.graph.lookupPkgInfo(pkg_abs);
-    _ = gc.graph.lookupPkgInfo(pkg_abs);
+    _ = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
+    _ = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
+    _ = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
 }
 
@@ -1251,7 +1251,7 @@ test "pkg_info_cache: invalid JSON → is_module=false, side_effects=unknown" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    const info = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expectEqual(false, info.is_module);
     try std.testing.expect(info.side_effects == .unknown);
 }
@@ -1269,8 +1269,8 @@ test "pkg_info_cache: 다른 패키지는 별도 entry" {
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const a = gc.graph.lookupPkgInfo(pkg_a);
-    const b = gc.graph.lookupPkgInfo(pkg_b);
+    const a = gc.graph.lookupPkgInfo(std.testing.io, pkg_a);
+    const b = gc.graph.lookupPkgInfo(std.testing.io, pkg_b);
     try std.testing.expectEqual(true, a.is_module);
     try std.testing.expectEqual(false, b.is_module);
     try std.testing.expect(a.side_effects == .unknown);
@@ -1292,7 +1292,7 @@ fn parallelWorker(ctx: ParallelCtx) void {
     while (!ctx.start_flag.load(.acquire)) {
         std.Thread.yield() catch {};
     }
-    ctx.results[ctx.idx] = ctx.graph.lookupPkgInfo(ctx.pkg_path);
+    ctx.results[ctx.idx] = ctx.graph.lookupPkgInfo(std.testing.io, ctx.pkg_path);
 }
 
 test "pkg_info_cache: patterns 슬라이스가 다회 cache hit 후에도 동일 포인터 + 내용 유지" {
@@ -1307,9 +1307,9 @@ test "pkg_info_cache: patterns 슬라이스가 다회 cache hit 후에도 동일
     var gc = makeGraph();
     defer freeGraph(&gc.graph, gc.cache);
 
-    const a = gc.graph.lookupPkgInfo(pkg_abs);
-    const b = gc.graph.lookupPkgInfo(pkg_abs);
-    const c = gc.graph.lookupPkgInfo(pkg_abs);
+    const a = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
+    const b = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
+    const c = gc.graph.lookupPkgInfo(std.testing.io, pkg_abs);
     try std.testing.expect(a.side_effects == .patterns);
     try std.testing.expect(c.side_effects == .patterns);
     // 같은 slice 포인터 — 복사 없이 cache 의 소유권 공유.

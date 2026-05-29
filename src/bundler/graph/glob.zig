@@ -86,7 +86,7 @@ test "expandGlob: 파일명 prefix와 suffix를 적용하고 결과를 정렬한
     const source_dir = try absPath(&tmp, "src");
     defer std.testing.allocator.free(source_dir);
 
-    const matches = try expandGlob(std.testing.allocator, source_dir, "./pages/Page*.tsx");
+    const matches = try expandGlob(std.testing.allocator, std.testing.io, source_dir, "./pages/Page*.tsx");
     defer freeGlobMatches(std.testing.allocator, matches);
 
     try std.testing.expectEqual(@as(usize, 2), matches.len);
@@ -108,7 +108,7 @@ test "expandGlobRecords: glob 레코드에만 매칭 결과를 채운다" {
         .{ .specifier = "./side-effect", .kind = .side_effect, .span = Span.EMPTY },
     };
 
-    expandGlobRecords(std.testing.allocator, &records, source_dir);
+    expandGlobRecords(std.testing.allocator, std.testing.io, &records, source_dir);
     defer if (records[0].glob_matches) |matches| freeGlobMatches(std.testing.allocator, matches);
 
     try std.testing.expect(records[0].glob_matches != null);

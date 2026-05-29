@@ -10,11 +10,11 @@ const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
 fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
-    return try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
-    const dp = try tmp.dir.realpathAlloc(allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
@@ -173,7 +173,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.js", "module.exports = { x: 42 };");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
@@ -219,7 +219,7 @@ test "linker: external import not resolved (no binding)" {
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import { x } from 'react';");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
@@ -543,7 +543,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     try writeFile(tmp.dir, "b.ts", "const x = 'b';");
     try writeFile(tmp.dir, "c.ts", "const x = 'c';");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
@@ -582,7 +582,7 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     try writeFile(tmp.dir, "a.ts", "import './b';\nconst x = 1;");
     try writeFile(tmp.dir, "b.ts", "const x = 2;");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
