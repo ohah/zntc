@@ -314,10 +314,10 @@ fn parseGlobalsArg(opts: *CliOptions, allocator: std.mem.Allocator, val: []const
 ///    manualChunks (record form)
 ///
 /// function-form `manualChunks` 는 JS-only 라 JSON 에서는 record form 만 받는다.
-fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
-    const f = try std.fs.cwd().openFile("zntc.config.json", .{});
-    defer f.close();
-    const content = try f.readToEndAlloc(allocator, 1 * 1024 * 1024);
+fn applyZntcConfigJson(opts: *CliOptions, io: std.Io, allocator: std.mem.Allocator) !void {
+    // 0.16: File.readToEndAlloc 제거 → Dir.readFileAlloc 로 open+read 일괄
+    // (없으면 FileNotFound — caller 가 처리).
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, "zntc.config.json", allocator, std.Io.Limit.limited(1 * 1024 * 1024));
     defer allocator.free(content);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -436,9 +436,12 @@ fn applyZntcConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
 /// --help 출력이나 파싱 에러로 프로그램을 종료해야 하면 null을 반환한다.
-pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?CliOptions {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !?CliOptions {
+    // 0.16: deprecatedWriter 제거. length-0 buffer = unbuffered (exit 전 flush 불필요).
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_state.interface;
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
 
     if (args.len < 2) {
         try usage_cli.printUsage(stdout);
@@ -448,7 +451,7 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
     var opts = CliOptions{};
     // zntc.config.json이 있으면 defaults를 그쪽으로 초기화. CLI 인자는 뒤에서
     // 파싱되며 이 값을 덮어쓴다 ("CLI > config" 우선순위).
-    applyZntcConfigJson(&opts, allocator) catch |err| switch (err) {
+    applyZntcConfigJson(&opts, io, allocator) catch |err| switch (err) {
         error.FileNotFound => {},
         else => {
             try stderr.print("[zntc] zntc.config.json load failed: {}\n", .{err});
@@ -920,7 +923,7 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             };
         } else if (std.mem.startsWith(u8, arg, "--watch-folder=")) {
             const raw = arg["--watch-folder=".len..];
-            const abs = std.fs.cwd().realpathAlloc(allocator, raw) catch {
+            const abs = std.Io.Dir.cwd().realPathFileAlloc(io, raw, allocator) catch {
                 try stderr.print("zntc: cannot resolve --watch-folder path: {s}\n", .{raw});
                 std.process.exit(1);
             };
@@ -945,7 +948,7 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator)
             const sep_pos = std.mem.indexOfScalar(u8, arg, ':') orelse std.mem.indexOfScalar(u8, arg, '=').?;
             const option_name = arg[0 .. sep_pos + 1];
             const raw_path = arg[sep_pos + 1 ..];
-            const abs = std.fs.cwd().realpathAlloc(allocator, raw_path) catch {
+            const abs = std.Io.Dir.cwd().realPathFileAlloc(io, raw_path, allocator) catch {
                 try stderr.print("zntc: cannot resolve {s} path: {s}\n", .{ option_name, raw_path });
                 std.process.exit(1);
             };

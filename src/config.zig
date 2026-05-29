@@ -112,34 +112,34 @@ pub const TsConfig = struct {
     ///
     /// tsconfig.json이 없으면 기본값 TsConfig를 반환한다 (에러 아님).
     /// 파일 내용이 유효하지 않은 JSON이면 에러를 반환한다.
-    pub fn load(allocator: std.mem.Allocator, dir_path: []const u8) !TsConfig {
-        return loadFile(allocator, dir_path, "tsconfig.json", 0);
+    pub fn load(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) !TsConfig {
+        return loadFile(allocator, io, dir_path, "tsconfig.json", 0);
     }
 
     /// 파일 경로 또는 디렉토리 경로에서 tsconfig를 로드한다.
     /// 경로 끝이 `.json`이면 파일로 취급, 아니면 디렉토리로 취급해 그 안의 `tsconfig.json`을 읽는다.
     /// NAPI/빌드 API 에서 사용자가 "./tsconfig.json" 또는 "./project-dir" 어느 쪽을 줘도 동작.
-    pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !TsConfig {
+    pub fn loadFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !TsConfig {
         if (std.mem.endsWith(u8, path, ".json")) {
             const dir = std.fs.path.dirname(path) orelse ".";
             const file = std.fs.path.basename(path);
-            return loadFile(allocator, dir, file, 0);
+            return loadFile(allocator, io, dir, file, 0);
         }
-        return loadFile(allocator, path, "tsconfig.json", 0);
+        return loadFile(allocator, io, path, "tsconfig.json", 0);
     }
 
     /// `start_dir` 에서 시작해 상위 디렉토리로 올라가며 첫 `tsconfig.json` 을 찾는다.
     /// 찾으면 해당 디렉토리를 `allocator.dupe` 로 반환 (caller 가 free). 없으면 null.
     /// esbuild/vite 등 zero-config 번들러의 기본 탐색 동작. fs 루트(`/`) 까지 올라가고 종료.
-    pub fn findTsconfigUpward(allocator: std.mem.Allocator, start_dir: []const u8) !?[]const u8 {
-        const cwd = std.fs.cwd();
+    pub fn findTsconfigUpward(allocator: std.mem.Allocator, io: std.Io, start_dir: []const u8) !?[]const u8 {
+        const cwd = std.Io.Dir.cwd();
         var current = try std.fs.path.resolve(allocator, &.{start_dir});
         defer allocator.free(current);
 
         while (true) {
             const candidate = try std.fs.path.join(allocator, &.{ current, "tsconfig.json" });
             defer allocator.free(candidate);
-            if (cwd.access(candidate, .{})) |_| {
+            if (cwd.access(io, candidate, .{})) |_| {
                 return try allocator.dupe(u8, current);
             } else |_| {}
 
@@ -155,15 +155,16 @@ pub const TsConfig = struct {
     /// `findTsconfigUpward` 의 entry-path 친화 wrapper — `dirname(entry_path) orelse "."`
     /// 정규화 + 실패 시 silent null. 디렉토리 부분이 없는 bare filename 이면 cwd 부터 탐색.
     /// 결과는 directory string (caller 가 `allocator.free`). NAPI / transpile 진입점 공유.
-    pub fn autodiscoverFromEntry(allocator: std.mem.Allocator, entry_path: []const u8) ?[]const u8 {
+    pub fn autodiscoverFromEntry(allocator: std.mem.Allocator, io: std.Io, entry_path: []const u8) ?[]const u8 {
         const dir = std.fs.path.dirname(entry_path) orelse ".";
-        return findTsconfigUpward(allocator, dir) catch null;
+        return findTsconfigUpward(allocator, io, dir) catch null;
     }
 
     /// 특정 파일명으로 tsconfig를 로드한다 (extends 체인에서 사용).
     /// depth: extends 재귀 깊이 (무한 루프 방지, 최대 10단계)
     fn loadFile(
         allocator: std.mem.Allocator,
+        io: std.Io,
         dir_path: []const u8,
         file_name: []const u8,
         depth: u32,
@@ -178,7 +179,7 @@ pub const TsConfig = struct {
         defer allocator.free(file_path);
 
         // 파일 읽기 (없으면 기본값 반환)
-        const raw_source = std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024) catch |err| {
+        const raw_source = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 return TsConfig{};
             }
@@ -232,7 +233,7 @@ pub const TsConfig = struct {
                 const base_dir = std.fs.path.dirname(resolved) orelse dir_path;
                 const base_file = std.fs.path.basename(resolved);
 
-                var base_config = try loadFile(allocator, base_dir, base_file, depth + 1);
+                var base_config = try loadFile(allocator, io, base_dir, base_file, depth + 1);
                 defer base_config.deinit();
 
                 // base의 값을 config에 복사 (현재 config는 아직 기본값)
@@ -392,9 +393,9 @@ pub const TSCONFIG_FILE_EXT = ".json";
 /// stderr 에 경고를 직접 출력한다. `std.log.warn` 은 NAPI 라이브러리 컨텍스트에서 drop 되는
 /// 경우가 있어 (호스트가 log 콜백을 제공 안 하면 silent) 확실하게 도달하려면 fd 2 에 직접 쓴다.
 fn warnToStderr(comptime fmt: []const u8, args: anytype) void {
-    // Zig 0.15: std.fs.File.writer() 는 buffer 가 필요하므로 deprecatedWriter() 사용 —
-    // stderr 는 buffering 불필요하고 main.zig 도 동일 패턴.
-    std.fs.File.stderr().deprecatedWriter().print(fmt, args) catch {};
+    // Zig 0.16: threaded io 없이 도달 보장이 필요한 stderr 경고. std.debug.print 가
+    // debug_io 기반으로 fd 2 에 직접 쓴다 (NAPI 컨텍스트에서도 std.log 와 달리 drop 안 됨).
+    std.debug.print(fmt, args);
 }
 
 /// Resolver 에 주입할 수 있도록 target prefix 를 절대 경로로 만든 형태.

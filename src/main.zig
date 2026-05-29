@@ -69,11 +69,11 @@ fn checkAllowOverwrite(
 ) !void {
     if (allow_overwrite) return;
 
-    const in_abs_owned = std.Io.Dir.cwd().realpathAlloc(io, allocator, entry_path) catch null;
+    const in_abs_owned = std.Io.Dir.cwd().realPathFileAlloc(io, entry_path, allocator) catch null;
     defer if (in_abs_owned) |p| allocator.free(p);
     const in_abs = in_abs_owned orelse entry_path;
 
-    const out_abs_owned = std.Io.Dir.cwd().realpathAlloc(io, allocator, out_path) catch null;
+    const out_abs_owned = std.Io.Dir.cwd().realPathFileAlloc(io, out_path, allocator) catch null;
     defer if (out_abs_owned) |p| allocator.free(p);
     const out_abs = out_abs_owned orelse out_path;
 
@@ -351,7 +351,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var opts = try cli_options.parseCliArguments(args, allocator) orelse return;
+    var opts = try cli_options.parseCliArguments(args, allocator, io) orelse return;
     defer opts.deinit(allocator);
 
     // --profile / --profile-level / --profile-format 반영 (env 와 합집합).
@@ -513,7 +513,7 @@ pub fn main(init: std.process.Init) !void {
             try stderr.print("zntc: --bundle requires an entry file path\n", .{});
             std.process.exit(1);
         };
-        const abs_entry = std.Io.Dir.cwd().realpathAlloc(io, allocator,entry_file) catch {
+        const abs_entry = std.Io.Dir.cwd().realPathFileAlloc(io, entry_file, allocator) catch {
             try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{entry_file});
             std.process.exit(1);
         };
@@ -535,7 +535,7 @@ pub fn main(init: std.process.Init) !void {
         var resolved_pm_root: ?[]const u8 = null;
         defer if (resolved_pm_root) |r| allocator.free(r);
         if (opts.preserve_modules_root) |pmr| {
-            resolved_pm_root = std.Io.Dir.cwd().realpathAlloc(io, allocator,pmr) catch {
+            resolved_pm_root = std.Io.Dir.cwd().realPathFileAlloc(io, pmr, allocator) catch {
                 try stderr.print("zntc: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
                 std.process.exit(1);
             };
@@ -646,7 +646,7 @@ pub fn main(init: std.process.Init) !void {
             entries_extras.deinit(allocator);
         }
         for (opts.extra_inputs.items) |extra| {
-            const abs = std.Io.Dir.cwd().realpathAlloc(io, allocator,extra) catch {
+            const abs = std.Io.Dir.cwd().realPathFileAlloc(io, extra, allocator) catch {
                 try stderr.print("zntc: cannot resolve entry file '{s}'\n", .{extra});
                 std.process.exit(1);
             };
@@ -749,7 +749,7 @@ pub fn main(init: std.process.Init) !void {
             .min_chunk_size = opts.min_chunk_size,
             .dev_mode = opts.dev,
             .react_refresh = opts.dev,
-            .root_dir = if (opts.dev or opts.sourcemap) (std.Io.Dir.cwd().realpathAlloc(io, allocator,".") catch null) else null,
+            .root_dir = if (opts.dev or opts.sourcemap) (std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch null) else null,
         };
         defer if (bundle_opts.root_dir) |rd| allocator.free(rd);
 
