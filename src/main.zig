@@ -16,7 +16,7 @@ const standalone_modes = @import("cli/standalone.zig");
 const usage_cli = @import("cli/usage.zig");
 const cli_options = @import("cli/options.zig");
 const watch_cli = @import("cli/watch.zig");
-const env_flag = @import("env_flag.zig");
+const env_flag = lib.env_flag;
 /// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
 /// root 선언이라야 컴파일러가 safety panic을 여기로 보낸다.
 pub const panic = lib.crash_handler.panic;
@@ -31,9 +31,16 @@ const TranspileOptions = struct {
 
 /// transpile.zig 에러 콜백: 파서/시맨틱 에러 발생 시 코드 프레임 출력
 fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const lib.diagnostic.Diagnostic) void {
-    const stderr_file = std.fs.File.stderr();
-    const stderr = stderr_file.deprecatedWriter();
-    const use_color = lib.ansi_mod.isTty(stderr_file);
+    // 고정 시그니처 콜백이라 threaded io 를 받을 수 없다. 0.16 의 debug lockStderr
+    // (debug_io 기반) 로 stderr writer 를 얻고, 색상은 terminal_mode 로 판정한다.
+    var buf: [4096]u8 = undefined;
+    const locked = std.debug.lockStderr(&buf);
+    defer std.debug.unlockStderr();
+    const stderr = &locked.file_writer.interface;
+    const use_color = switch (locked.terminal_mode) {
+        .no_color => false,
+        else => true,
+    };
     const source_info = lib.rich_diagnostic.SourceInfo{
         .source = source,
         .line_offsets = scanner.line_offsets.items,
@@ -46,6 +53,7 @@ fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanne
         const rich = rich_diag_mod.fromDiagnostic(diag, file_path);
         renderer.render(stderr, rich, source_info, opts) catch {};
     }
+    stderr.flush() catch {};
 }
 
 /// realpath 결과는 owned. 실패 (보통 출력 파일은 미존재) 시 caller-owned 인 raw
@@ -53,6 +61,7 @@ fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanne
 /// 도 같은 전략.
 fn checkAllowOverwrite(
     allocator: std.mem.Allocator,
+    io: std.Io,
     stderr: anytype,
     allow_overwrite: bool,
     entry_path: []const u8,
@@ -60,11 +69,11 @@ fn checkAllowOverwrite(
 ) !void {
     if (allow_overwrite) return;
 
-    const in_abs_owned = std.fs.cwd().realpathAlloc(allocator, entry_path) catch null;
+    const in_abs_owned = std.Io.Dir.cwd().realpathAlloc(io, allocator, entry_path) catch null;
     defer if (in_abs_owned) |p| allocator.free(p);
     const in_abs = in_abs_owned orelse entry_path;
 
-    const out_abs_owned = std.fs.cwd().realpathAlloc(allocator, out_path) catch null;
+    const out_abs_owned = std.Io.Dir.cwd().realpathAlloc(io, allocator, out_path) catch null;
     defer if (out_abs_owned) |p| allocator.free(p);
     const out_abs = out_abs_owned orelse out_path;
 
@@ -92,14 +101,21 @@ fn checkAllowOverwrite(
 ///   파일 쓰기/stdout 출력 후에야 arena.deinit()이 실행되어야 한다.
 fn transpileFile(
     allocator: std.mem.Allocator,
+    io: std.Io,
     file_path: []const u8,
     source_override: ?[]const u8,
     output_path: ?[]const u8,
     options: TranspileOptions,
 ) !void {
     const transpile_mod = lib.transpile;
-    const stderr = std.fs.File.stderr().deprecatedWriter();
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stderr_buf: [2048]u8 = undefined;
+    var stderr_state = std.Io.File.stderr().writer(io, &stderr_buf);
+    const stderr = &stderr_state.interface;
+    defer stderr.flush() catch {};
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_state = std.Io.File.stdout().writer(io, &stdout_buf);
+    const stdout = &stdout_state.interface;
+    defer stdout.flush() catch {};
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -107,7 +123,7 @@ fn transpileFile(
 
     // 소스 읽기
     const source = source_override orelse blk: {
-        break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
+        break :blk std.Io.Dir.cwd().readFileAlloc(io, file_path, arena_alloc, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
             try stderr.print("zntc: cannot read '{s}': {}\n", .{ file_path, err });
             return error.TranspileFailed;
         };
@@ -137,24 +153,24 @@ fn transpileFile(
     defer result.deinit(allocator);
 
     if (output_path) |out_path| {
-        try checkAllowOverwrite(arena_alloc, stderr, options.allow_overwrite, file_path, out_path);
+        try checkAllowOverwrite(arena_alloc, io, stderr, options.allow_overwrite, file_path, out_path);
     }
 
     // 출력
     if (output_path) |out_path| {
         if (std.fs.path.dirname(out_path)) |dir| {
-            std.fs.cwd().makePath(dir) catch |err| {
+            std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
                 try stderr.print("zntc: cannot create directory '{s}': {}\n", .{ dir, err });
                 return error.TranspileFailed;
             };
         }
-        std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = result.code }) catch |err| {
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = result.code }) catch |err| {
             try stderr.print("zntc: cannot write '{s}': {}\n", .{ out_path, err });
             return error.TranspileFailed;
         };
         if (result.sourcemap) |sm_json| {
             const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{out_path});
-            std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = map_path, .data = sm_json }) catch |err| {
                 try stderr.print("zntc: cannot write '{s}': {}\n", .{ map_path, err });
             };
         }
@@ -168,17 +184,17 @@ fn transpileFile(
 
 /// 디렉토리를 재귀 순회하며 .ts/.tsx 파일을 찾아 트랜스파일한다.
 /// Asset 파일(file/copy 로더)을 출력 디렉토리에 쓴다.
-fn writeAssetOutputs(allocator: std.mem.Allocator, asset_outputs: ?[]const emitter.OutputFile, base_dir: []const u8) !void {
+fn writeAssetOutputs(allocator: std.mem.Allocator, io: std.Io, asset_outputs: ?[]const emitter.OutputFile, base_dir: []const u8) !void {
     const assets = asset_outputs orelse return;
     for (assets) |a| {
         const asset_path = try std.fs.path.join(allocator, &.{ base_dir, a.path });
         defer allocator.free(asset_path);
         if (std.fs.path.dirname(asset_path)) |dir| {
-            std.fs.cwd().makePath(dir) catch {};
+            std.Io.Dir.cwd().createDirPath(io, dir) catch {};
         }
-        const af = try std.fs.cwd().createFile(asset_path, .{});
-        defer af.close();
-        try af.writeAll(a.contents);
+        const af = try std.Io.Dir.cwd().createFile(io, asset_path, .{});
+        defer af.close(io);
+        try af.writeStreamingAll(io, a.contents);
     }
 }
 
@@ -186,19 +202,26 @@ fn writeAssetOutputs(allocator: std.mem.Allocator, asset_outputs: ?[]const emitt
 /// .d.ts 파일과 node_modules 디렉토리는 건너뛴다.
 fn walkAndTranspile(
     allocator: std.mem.Allocator,
+    io: std.Io,
     input_dir: []const u8,
     output_dir: []const u8,
     options: TranspileOptions,
 ) !void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stderr_buf: [2048]u8 = undefined;
+    var stderr_state = std.Io.File.stderr().writer(io, &stderr_buf);
+    const stderr = &stderr_state.interface;
+    defer stderr.flush() catch {};
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_state = std.Io.File.stdout().writer(io, &stdout_buf);
+    const stdout = &stdout_state.interface;
+    defer stdout.flush() catch {};
 
     // 입력 디렉토리 열기
-    var dir = std.fs.cwd().openDir(input_dir, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, input_dir, .{ .iterate = true }) catch |err| {
         try stderr.print("zntc: cannot open directory '{s}': {}\n", .{ input_dir, err });
         return error.WalkFailed;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     // 재귀적으로 파일 순회
     var walker = dir.walk(allocator) catch |err| {
@@ -250,7 +273,7 @@ fn walkAndTranspile(
         try stdout.print("{s} → {s}\n", .{ input_path, output_path });
 
         // 트랜스파일 실행
-        transpileFile(allocator, input_path, null, output_path, options) catch {
+        transpileFile(allocator, io, input_path, null, output_path, options) catch {
             had_errors = true;
             continue;
         };
@@ -279,7 +302,7 @@ pub fn main(init: std.process.Init) !void {
     // Debug: GPA 사용 (leak detection, double-free 감지).
     // init.gpa 는 무시하고 기존 allocator 전략 유지 (release 의 mimalloc 성능 특성 보존).
     const is_debug = @import("builtin").mode == .Debug;
-    var gpa: if (is_debug) std.heap.GeneralPurposeAllocator(.{}) else void =
+    var gpa: if (is_debug) std.heap.DebugAllocator(.{}) else void =
         if (is_debug) .{} else {};
     defer if (is_debug) {
         _ = gpa.deinit();
