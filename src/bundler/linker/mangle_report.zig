@@ -1,4 +1,5 @@
 const std = @import("std");
+const spin = @import("../../util/spin_lock.zig");
 
 const ManglerStats = @import("../../codegen/mangler.zig").ManglerStats;
 
@@ -11,7 +12,7 @@ const ManglerStats = @import("../../codegen/mangler.zig").ManglerStats;
 /// `buildMetadataForAst` 는 emitter 가 병렬 호출하므로 `recordNested` 는 mutex 보호.
 pub const MangleReportCollector = struct {
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex = .{},
+    mutex: spin.SpinLock = .{},
 
     top_level: ManglerStats = .{},
     /// top-level 충돌 방지 pool 크기 (scope_maps 이름 + canonical_strings 합집합).

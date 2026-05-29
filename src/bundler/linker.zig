@@ -12,6 +12,7 @@
 //!   - references/esbuild/internal/linker/linker.go
 
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
@@ -158,7 +159,7 @@ pub const Linker = struct {
     fatal_diagnostics: std.ArrayList(BundlerDiagnostic) = .empty,
     /// #1791 emitter 가 `emitModuleThread` 로 병렬 emit 중 `LinkingMetadata.pending_diagnostics`
     /// 를 linker 의 `fatal_diagnostics` 버퍼로 flush. 병렬 append 보호.
-    diagnostics_mutex: std.Thread.Mutex = .{},
+    diagnostics_mutex: spin.SpinLock = .{},
 
     /// rename_table value (최종 이름 string) 의 backing 저장소. linker가 소유 —
     /// deinit에서 일괄 해제. AliasTable.canonical_name은 caller-owned (별도 모델).
@@ -306,7 +307,7 @@ pub const Linker = struct {
     /// emitter 가 `emitModuleThread` 로 buildMetadataForAst 를 병렬 호출하므로 필수.
     /// Fast path (get) → unlock → compute → lock → double-check → put 패턴으로
     /// DFS 자체는 lock 밖에서 수행해 경합 최소화.
-    ns_cache_mutex: std.Thread.Mutex = .{},
+    ns_cache_mutex: spin.SpinLock = .{},
 
     const ChainCacheEntry = struct {
         result: ?SymbolRef,

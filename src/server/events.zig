@@ -1,9 +1,10 @@
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const http = std.http;
 
 /// WS 클라이언트 목록 — 여러 스레드에서 접근하므로 mutex로 보호
 pub const WsClients = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: spin.SpinLock = .{},
     /// WebSocket output writer 포인터 목록. handleWebSocket 스택에서 소유.
     items: [max_clients]*std.Io.Writer = undefined,
     len: usize = 0,
@@ -48,7 +49,7 @@ pub const WsClients = struct {
 };
 
 pub const ErrorState = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: spin.SpinLock = .{},
     json: ?[]const u8 = null,
 
     pub fn deinit(self: *ErrorState, allocator: std.mem.Allocator) void {
@@ -106,7 +107,7 @@ pub const SseSink = struct {
 /// SSE 클라이언트 목록 — `/sse/events`로 연결된 long-lived HTTP 응답 sink들.
 /// WS와 병렬 운영; 빌드 이벤트는 SSE로 전송 (HMR은 WS 유지).
 pub const SseClients = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: spin.SpinLock = .{},
     items: [max_clients]*SseSink = undefined,
     len: usize = 0,
 

@@ -18,6 +18,7 @@
 //!   - references/bun/src/resolver/resolver.zig
 
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const types = @import("types.zig");
 const ModuleType = types.ModuleType;
 const pkg_json = @import("package_json.zig");
@@ -100,7 +101,7 @@ fn matchTsPathEntry(entry: @import("../config.zig").TsConfig.PathEntry, specifie
 pub const DirEntryCache = struct {
     /// 디렉토리 절대 경로 → 엔트리 집합. null이면 디렉토리가 존재하지 않음 (negative 캐시).
     cache: std.StringHashMap(?*EntrySet),
-    rwlock: std.Thread.RwLock = .{},
+    rwlock: spin.SpinRwLock = .{},
     allocator: std.mem.Allocator,
 
     const EntrySet = struct {
@@ -255,7 +256,7 @@ pub const RealpathCache = struct {
 
     const Shard = struct {
         cache: std.StringHashMap([]const u8),
-        mutex: std.Thread.Mutex = .{},
+        mutex: spin.SpinLock = .{},
     };
 
     pub fn init(allocator: std.mem.Allocator) RealpathCache {
