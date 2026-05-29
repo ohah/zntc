@@ -1735,13 +1735,15 @@ test "ref: export * name collision — both sources have same export" {
     var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
     defer r.deinit();
 
-    // x가 사용됨 — 어느 소스에서 왔든 하나는 마킹
-    // (충돌 해결은 linker의 역할, tree-shaker는 사용 여부만 추적)
+    // (#3982) x 는 src1/src2 양쪽에서 export * 로 도달 → ESM spec 상 ambiguous →
+    // resolveExportChain 이 어느 canonical 로도 해석하지 않는다(named import 는 linker
+    // 가 build error 로 surface). 따라서 tree-shaker 도 x 를 어느 소스에서도 used 로
+    // 마킹하지 않는다(이전엔 first-wins 로 한쪽을 마킹하던 lenient 동작 — 폐기).
     const src1 = r.findModule("src1.ts");
     const src2 = r.findModule("src2.ts");
     const x_used_in_src1 = if (src1) |i| r.shaker.isExportUsed(i, "x") else false;
     const x_used_in_src2 = if (src2) |i| r.shaker.isExportUsed(i, "x") else false;
-    try std.testing.expect(x_used_in_src1 or x_used_in_src2);
+    try std.testing.expect(!x_used_in_src1 and !x_used_in_src2);
     // only1, only2는 사용되지 않음
     if (src1) |i| try std.testing.expect(!r.shaker.isExportUsed(i, "only1"));
     if (src2) |i| try std.testing.expect(!r.shaker.isExportUsed(i, "only2"));

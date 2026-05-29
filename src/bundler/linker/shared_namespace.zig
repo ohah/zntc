@@ -182,6 +182,9 @@ pub fn registerNamespaceRewrites(
         }
     }
 
+    // (#3982) 2+ `export *` 소스가 있는 barrel 만 ambiguity 검사(흔한 0~1 star 는 비용 0).
+    const ambiguity_possible = self.starReExportCount(@enumFromInt(target_mod_idx)) >= 2;
+
     for (cached_exports) |exp| {
         const is_shadow = blk: {
             if (ns_rewrite) break :blk false;
@@ -190,6 +193,13 @@ pub fn registerNamespaceRewrites(
         };
         if (is_shadow) {
             has_shadow = true;
+            continue;
+        }
+        // (#3982) 같은 이름이 2+ distinct star 소스에서 도달하면 ESM spec 상 ambiguous —
+        // namespace 멤버는 undefined. `void 0` 으로 매핑하면 emitStaticMember 가 access
+        // 를 `void 0` 으로 재작성(materialize 안 된 inline ns 의 dangling 참조 방지).
+        if (ambiguity_possible and self.isAmbiguousStarExport(@enumFromInt(target_mod_idx), exp.exported)) {
+            try inner_map.put(exp.exported, "void 0");
             continue;
         }
         if (exp.ns_target_mod) |target| {
@@ -788,9 +798,14 @@ fn buildInlineObjectStr(
     const colon_sep: []const u8 = if (min_ws) ":" else ": ";
     const get_open: []const u8 = if (min_ws) "(){return " else "() { return ";
     const get_close: []const u8 = if (min_ws) "}" else "; }";
+    // (#3982) 2+ `export *` 소스 barrel 만 ambiguity 검사.
+    const ambiguity_possible = self.starReExportCount(@enumFromInt(target_mod_idx)) >= 2;
     try buf.appendSlice(self.allocator, "{");
     var first = true;
     for (exports.items) |exp| {
+        // (#3982) 같은 이름이 2+ distinct star 소스에서 도달하면 ESM spec 상 ambiguous —
+        // namespace 객체에서 제외 → `ns.x`===undefined, `"x" in ns`===false (Node 동형).
+        if (ambiguity_possible and self.isAmbiguousStarExport(@enumFromInt(target_mod_idx), exp.exported)) continue;
         // declaration 이 tree-shaken 되어 emit 안 되면 namespace getter 도 skip —
         // dangling reference 방지. declaration 모듈은 init_mod (lazy init) 있으면
         // 그쪽, 없으면 target (정적 export).
