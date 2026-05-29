@@ -92,10 +92,10 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         // 결정(async_limit=0 이면 io.async 가 inline 실행 = 순차). work-stealing
         // (recv 후 신규 모듈 즉시 dispatch) 패턴은 그대로. group.async 는 실패하지 않으므로
         // pool_ok fallback 불필요.
-        // ⚠️ 현재 --jobs(self.max_threads)는 async_limit 로 연결돼 있지 않다 — io 는 진입점
-        // (CLI=init.io / NAPI=common.io())의 기본값(cpu-1)을 쓴다. 출력은 renumber/path-sort
-        // (#3564)로 worker 수와 무관하게 byte-identical → determinism 영향 0. --jobs→async_limit
-        // 연결(특히 --jobs=1 순차 디버깅)은 per-build io 구성이 필요한 별도 작업(#1514 follow-up).
+        // --jobs(self.max_threads)는 진입점(CLI main / NAPI common.setJobs)에서 io 의
+        // async_limit 으로 반영된다(#4004, bundler.asyncLimitForJobs). --jobs=1 → .nothing
+        // 이면 아래 group.async 가 inline 실행 = 순차(디버깅/재현). 출력은 renumber/path-sort
+        // (#3564)로 worker 수와 무관하게 byte-identical → async_limit 변화에도 determinism 불변.
         var channel = MpscChannel(graph_discovery_scan.ScanResult).init(self.allocator);
         defer channel.deinit();
 

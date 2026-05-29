@@ -304,7 +304,22 @@ pub fn main(init: std.process.Init) !void {
     // Zig 0.16: juicy main — io / args / environ 을 Init 에서 받는다 (libc-free,
     // Zig start 가 채움). args 는 argsAlloc 제거로 Init.minimal.args 이터레이터
     // 수집, env 는 std.process.getEnvVarOwned 제거로 environ Map 스냅샷 캡처로 대체.
-    const io = init.io;
+    //
+    // #4004: --jobs(max_threads)로 io 의 async_limit(Io.Group 병렬도)을 제어하려면
+    // io 를 *소유* 해야 한다 — init.io 는 std 가 소유해 setAsyncLimit 불가. init.gpa
+    // (threadsafe 명시)로 Threaded 를 직접 만들어 쓰고, opts 파싱 후 setAsyncLimit 으로
+    // --jobs 를 반영한다(아래). 기본 async_limit(cpu-1)은 init.io 와 동일.
+    //
+    // ⚠️ environ/argv0 을 init.minimal 에서 그대로 전달해야 한다 — std start 는 init.io
+    // 의 Threaded 에 process environ 을 넣지만(start.zig), `.{}` 로 만들면 environ 이
+    // .empty 가 돼 std.process.spawn(io, ...) 의 자식이 빈 환경을 받는다(예: --serve
+    // --open 의 xdg-open 이 PATH/DISPLAY 없이 실행돼 브라우저가 안 열림).
+    var threaded = std.Io.Threaded.init(init.gpa, .{
+        .argv0 = .init(init.minimal.args),
+        .environ = init.minimal.environ,
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
     // env 스냅샷을 가장 먼저 등록 — env_flag.Once 가 첫 조회 결과를 캐시하므로
     // 어떤 env 조회보다 앞서야 한다.
     env_flag.captureEnviron(init.environ_map);
@@ -364,6 +379,10 @@ pub fn main(init: std.process.Init) !void {
 
     var opts = try cli_options.parseCliArguments(args, allocator, io) orelse return;
     defer opts.deinit(allocator);
+
+    // #4004: --jobs → io async_limit. 여기부터의 bundle/transpile(graph discover·emit
+    // 의 Io.Group)이 반영받는다. --jobs=1 → .nothing(inline 순차, 디버깅/재현).
+    if (lib.bundler.asyncLimitForJobs(opts.max_threads)) |lim| threaded.setAsyncLimit(lim);
 
     // --profile / --profile-level / --profile-format 반영 (env 와 합집합).
     if (opts.profile_csv) |csv| lib.profile.addFromCsv(csv);
