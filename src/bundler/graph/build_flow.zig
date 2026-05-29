@@ -490,7 +490,7 @@ fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index:
             const m_ptr = self.modules.at(i);
             if (m_ptr.is_disabled or m_ptr.is_external) continue;
             try graph_resolve_imports.resolveModuleImports(self, io, @enumFromInt(@as(u32, @intCast(i))));
-            try graph_resolve_imports.applyContextDepResults(self, i);
+            try graph_resolve_imports.applyContextDepResults(self, io, i);
         }
         parse_start = parse_end;
     }
