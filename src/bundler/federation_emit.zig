@@ -515,6 +515,7 @@ pub const ExposeInfo = struct {
 /// #3468: chunk_graph.getModuleChunk(expose 모듈)→css_hrefs[chunk] 로
 /// expose 가 소유한 CSS 산출을 연결(없으면 null → assets.css 빈 [] 유지).
 fn collectExposes(
+    io: std.Io,
     allocator: std.mem.Allocator,
     outputs: []const emitter.OutputFile,
     mf: *const types.MfBundleConfig,
@@ -526,7 +527,7 @@ fn collectExposes(
     var list: std.ArrayListUnmanaged(ExposeInfo) = .empty;
     errdefer list.deinit(allocator);
     for (mf.exposes) |kv| {
-        const abs = federation.resolveAbs(allocator, cwd, kv.value) catch continue;
+        const abs = federation.resolveAbs(io, allocator, cwd, kv.value) catch continue;
         defer allocator.free(abs);
         const match = exposeMatch(graph, abs) orelse {
             std.log.warn("[mf] expose '{s}' has no federation_id (P1-1 미표시) — container.get 누락", .{kv.key});
@@ -561,6 +562,7 @@ fn collectExposes(
 /// 로 편입·해제). host(exposes 없음)면 null. 게이트는 호출부
 /// (`if (options.mf) |mf|`, bundler.zig — markBoundary 와 동일 관례).
 pub fn wrapContainer(
+    io: std.Io,
     allocator: std.mem.Allocator,
     outputs: []emitter.OutputFile,
     mf: *const types.MfBundleConfig,
@@ -576,10 +578,10 @@ pub fn wrapContainer(
     if (mf.exposes.len == 0) return null; // host(shared/remotes-only) = container 아님
     const name = mf.name orelse return null; // remote 는 P1-0 검증이 name 강제
 
-    const cwd = federation.cwdRealpath(allocator); // WASI-safe(comptime 분기)
+    const cwd = federation.cwdRealpath(io, allocator); // WASI-safe(comptime 분기)
     defer if (cwd) |c| allocator.free(c);
 
-    const exposes = try collectExposes(allocator, outputs, mf, graph, chunk_graph, css_hrefs, cwd);
+    const exposes = try collectExposes(io, allocator, outputs, mf, graph, chunk_graph, css_hrefs, cwd);
     defer allocator.free(exposes);
 
     // ── container 객체 문자열 빌드(min-무관 compact, 유효 JS) ──

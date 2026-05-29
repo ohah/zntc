@@ -223,7 +223,6 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     // verbose 모드: 양성 테스트가 에러로 실패한 경우 첫 에러 출력 + 에러 위치의 토큰
     if (verbose and result == .fail and !meta.is_negative_parse and parser.errors.items.len > 0) {
         const err = parser.errors.items[0];
-        const stderr = std.fs.File.stderr().deprecatedWriter();
         // 에러 위치 앞 20자 + 뒤 30자
         const before_start = if (err.span.start > 20) err.span.start - 20 else 0;
         const ctx_end = @min(err.span.start + 30, @as(u32, @intCast(source.len)));
@@ -231,7 +230,8 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
         // 개행 전까지만 (에러 위치부터)
         var line_end: usize = err.span.start - before_start;
         while (line_end < snippet.len and snippet[line_end] != '\n') : (line_end += 1) {}
-        stderr.print("    error@{d}: {s} | ...{s}\n", .{ err.span.start, err.message, snippet[0..line_end] }) catch {}; // stderr 출력 실패 무시
+        // 0.16: deprecatedWriter 제거 → io 없이 stderr 로깅 가능한 std.debug.print 사용.
+        std.debug.print("    error@{d}: {s} | ...{s}\n", .{ err.span.start, err.message, snippet[0..line_end] });
     }
 
     return result;
@@ -245,7 +245,7 @@ pub const CategorySummary = struct {
 
 /// 디렉토리 내 모든 .js 파일을 재귀적으로 찾아 테스트를 실행한다.
 /// show_failures가 true이면 실패한 파일 목록을 stderr에 출력한다.
-pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failures: bool) !TestSummary {
+pub fn runDirectory(allocator: mem.Allocator, io: std.Io, dir_path: []const u8, show_failures: bool) !TestSummary {
     var summary = TestSummary{};
     var failed_list: std.ArrayList([]const u8) = .empty;
     defer {
@@ -253,13 +253,13 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
         failed_list.deinit(allocator);
     }
 
-    var dir = try fs.openDirAbsolute(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
 
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!mem.endsWith(u8, entry.basename, ".js")) continue;
 
@@ -267,9 +267,7 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
         if (mem.indexOf(u8, entry.path, "_FIXTURE") != null) continue;
 
         // 파일 읽기
-        const file = dir.openFile(entry.path, .{}) catch continue;
-        defer file.close();
-        const source = file.readToEndAlloc(allocator, 1024 * 1024) catch continue;
+        const source = dir.readFileAlloc(io, entry.path, allocator, std.Io.Limit.limited(1024 * 1024)) catch continue;
         defer allocator.free(source);
 
         // 메타데이터 파싱 & 테스트 실행
@@ -291,10 +289,9 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
 
     // 실패 목록 출력
     if (show_failures and failed_list.items.len > 0) {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
-        try stderr.print("\n--- Failed Tests ({d}) ---\n", .{failed_list.items.len});
+        std.debug.print("\n--- Failed Tests ({d}) ---\n", .{failed_list.items.len});
         for (failed_list.items) |path| {
-            try stderr.print("  FAIL: {s}\n", .{path});
+            std.debug.print("  FAIL: {s}\n", .{path});
         }
     }
 
@@ -302,20 +299,20 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
 }
 
 /// 여러 카테고리(서브디렉토리)를 순회하며 각각의 통과율을 계산한다.
-pub fn runCategories(allocator: mem.Allocator, base_dir_path: []const u8) ![]CategorySummary {
+pub fn runCategories(allocator: mem.Allocator, io: std.Io, base_dir_path: []const u8) ![]CategorySummary {
     var categories: std.ArrayList(CategorySummary) = .empty;
 
-    var dir = try fs.openDirAbsolute(base_dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(io, base_dir_path, .{ .iterate = true });
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         // 절대 경로 조합
         const sub_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_dir_path, entry.name });
         defer allocator.free(sub_path);
 
-        const summary = runDirectory(allocator, sub_path, false) catch continue;
+        const summary = runDirectory(allocator, io, sub_path, false) catch continue;
         if (summary.total == 0) continue;
 
         try categories.append(allocator, .{
