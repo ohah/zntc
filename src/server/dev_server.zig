@@ -303,7 +303,7 @@ pub const DevServer = struct {
         self.allocator.free(self.overlay_client);
         if (self.tls_ctx) |*c| c.deinit();
         self.root_dir.close(self.io);
-        self.error_state.deinit(self.allocator);
+        self.error_state.deinit(self.io, self.allocator);
     }
 
     /// dev overlay client raw template 의 `__ZNTC_HMR_*__` sentinel 들을
@@ -659,14 +659,14 @@ pub const DevServer = struct {
         self.routineLog("  [ws] client connected\n", .{});
 
         // broadcast 리스트에 등록
-        self.ws_clients.add(writer);
-        defer self.ws_clients.remove(writer);
+        self.ws_clients.add(self.io, writer);
+        defer self.ws_clients.remove(self.io, writer);
 
         ws.writeMessage("{\"type\":\"connected\"}", .text) catch {
             self.routineLog("  [ws] failed to send connected message\n", .{});
             return;
         };
-        self.error_state.sendIfPresent(writer);
+        self.error_state.sendIfPresent(self.io, writer);
 
         // 클라이언트 메시지 수신 루프 (ping/pong은 std.http가 자동 처리)
         while (true) {
@@ -715,7 +715,7 @@ pub const DevServer = struct {
         const initial_paths: []const []const u8 = switch (initial) {
             .success => |r| r.paths,
             .build_error => |err_msg| blk: {
-                self.error_state.setOwned(self.allocator, err_msg);
+                self.error_state.setOwned(self.io, self.allocator, err_msg);
                 break :blk fallback_paths[0..];
             },
             .fatal => return,
@@ -893,7 +893,7 @@ pub const DevServer = struct {
 
                     var msg_buf: [512]u8 = undefined;
                     const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
-                    self.ws_clients.broadcast(css_msg);
+                    self.ws_clients.broadcast(self.io, css_msg);
                     self.routineLog("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)});
                 }
             }
@@ -926,8 +926,8 @@ pub const DevServer = struct {
             const build_duration_ms = @as(f64, @floatFromInt(std.Io.Timestamp.now(self.io, .awake).toNanoseconds() - build_start_ns)) / std.time.ns_per_ms;
             switch (rebuild_result) {
                 .success => |result| {
-                    self.error_state.clear(self.allocator);
-                    self.ws_clients.broadcast("{\"type\":\"clear-error\"}");
+                    self.error_state.clear(self.io, self.allocator);
+                    self.ws_clients.broadcast(self.io, "{\"type\":\"clear-error\"}");
 
                     // bundle_build_done 이벤트. RFC #3940 Sub-PR-L.0c — ZNTC_PROFILE
                     // 활성 시 profile snapshot 을 별도 JSON 으로 dump. profile 비활성 (default)
@@ -961,23 +961,23 @@ pub const DevServer = struct {
 
                     if (result.graph_changed) {
                         // 그래프 구조 변경 → full-reload (새 import 추가 등)
-                        self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                        self.ws_clients.broadcast(self.io, "{\"type\":\"full-reload\"}");
                         self.routineLog("  [hmr] graph changed, full-reload\n", .{});
                     } else if (result.changed_modules.len > 0) {
                         // 변경 모듈만 HMR update
-                        self.ws_clients.broadcast("{\"type\":\"update-start\"}");
+                        self.ws_clients.broadcast(self.io, "{\"type\":\"update-start\"}");
                         const hmr_msg = buildHmrUpdateFromModules(
                             self.allocator,
                             result.changed_modules,
                         );
                         if (hmr_msg) |msg| {
                             defer self.allocator.free(msg);
-                            self.ws_clients.broadcast(msg);
+                            self.ws_clients.broadcast(self.io, msg);
                             self.routineLog("  [hmr] incremental update ({d} modules)\n", .{result.changed_modules.len});
                         } else {
-                            self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                            self.ws_clients.broadcast(self.io, "{\"type\":\"full-reload\"}");
                         }
-                        self.ws_clients.broadcast("{\"type\":\"update-done\"}");
+                        self.ws_clients.broadcast(self.io, "{\"type\":\"update-done\"}");
                     } else {
                         // 코드 diff 없음 (타입만 변경 등) → Vite와 동일하게 무시
                         self.routineLog("  [hmr] no code change, skipping\n", .{});
@@ -1003,8 +1003,8 @@ pub const DevServer = struct {
                 },
                 .build_error => |err_msg| {
                     defer self.allocator.free(err_msg);
-                    self.error_state.setCopy(self.allocator, err_msg) catch {};
-                    self.ws_clients.broadcast(err_msg);
+                    self.error_state.setCopy(self.io, self.allocator, err_msg) catch {};
+                    self.ws_clients.broadcast(self.io, err_msg);
                     self.routineLog("  [watch] build error, overlay sent\n", .{});
 
                     // bundle_build_failed 이벤트 (err_msg는 이미 JSON)
@@ -1088,21 +1088,21 @@ pub const DevServer = struct {
         response.flush() catch return;
 
         var sink: SseSink = .{ .writer = &response.writer, .body_writer = &response };
-        self.sse_clients.add(&sink);
-        defer self.sse_clients.remove(&sink);
+        self.sse_clients.add(self.io, &sink);
+        defer self.sse_clients.remove(self.io, &sink);
 
         // keep-alive: 30초마다 주석 전송. broadcast와 race 방지를 위해 sink mutex 사용.
         while (true) {
             // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
             self.io.sleep(std.Io.Duration.fromSeconds(30), .awake) catch {};
-            self.sse_clients.mutex.lock();
+            self.sse_clients.mutex.lockUncancelable(self.io);
             const ok = blk: {
                 response.writer.writeAll(": keep-alive\n\n") catch break :blk false;
                 response.writer.flush() catch break :blk false;
                 response.flush() catch break :blk false;
                 break :blk true;
             };
-            self.sse_clients.mutex.unlock();
+            self.sse_clients.mutex.unlock(self.io);
             if (!ok) break;
         }
     }
@@ -1136,7 +1136,7 @@ pub const DevServer = struct {
     /// `data_json`은 유효한 JSON 오브젝트 문자열이어야 한다 (이스케이프 호출부 책임).
     pub fn publishEvent(self: *DevServer, event_type: []const u8, data_json: []const u8) void {
         _ = self.nextSeq();
-        self.sse_clients.broadcast(event_type, data_json);
+        self.sse_clients.broadcast(self.io, event_type, data_json);
     }
 
     fn handleRequest(self: *DevServer, request: *http.Server.Request) !void {
@@ -1289,8 +1289,8 @@ pub const DevServer = struct {
             const diags = result.getDiagnostics();
             if (buildErrorJsonFromDiagnostics(self.allocator, diags)) |err_json| {
                 defer self.allocator.free(err_json);
-                self.error_state.setCopy(self.allocator, err_json) catch {};
-                self.ws_clients.broadcast(err_json);
+                self.error_state.setCopy(self.io, self.allocator, err_json) catch {};
+                self.ws_clients.broadcast(self.io, err_json);
             } else |_| {}
 
             var msg: std.ArrayList(u8) = .empty;
@@ -1314,8 +1314,8 @@ pub const DevServer = struct {
             self.routineLog("  500 {s} (bundle errors)\n", .{abs_entry});
             return;
         }
-        self.error_state.clear(self.allocator);
-        self.ws_clients.broadcast("{\"type\":\"clear-error\"}");
+        self.error_state.clear(self.io, self.allocator);
+        self.ws_clients.broadcast(self.io, "{\"type\":\"clear-error\"}");
 
         // 소스맵 캐시 업데이트 (소유권 이전 — dupe 불필요)
         if (result.sourcemap) |sm| {

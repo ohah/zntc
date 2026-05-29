@@ -1,28 +1,31 @@
 const std = @import("std");
-const spin = @import("../util/spin_lock.zig");
 const http = std.http;
 
 /// WS 클라이언트 목록 — 여러 스레드에서 접근하므로 mutex로 보호
 pub const WsClients = struct {
-    mutex: spin.SpinLock = .{},
+    // 0.16: 임계구역 안에서 blocking 소켓 flush(writeWsFrame)를 수행하므로 io-free
+    // SpinLock(busy-spin) 이 아니라 std.Io.Mutex(경합 시 futex sleep)를 써야 한다 —
+    // 느린 client 의 flush 가 lock 을 잡고 있을 때 다른 스레드가 코어를 busy-burn 하지
+    // 않도록(spin_lock.zig docstring 규칙: blocking I/O 보유 락엔 Io.Mutex).
+    mutex: std.Io.Mutex = .init,
     /// WebSocket output writer 포인터 목록. handleWebSocket 스택에서 소유.
     items: [max_clients]*std.Io.Writer = undefined,
     len: usize = 0,
 
     const max_clients = 64;
 
-    pub fn add(self: *WsClients, writer: *std.Io.Writer) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn add(self: *WsClients, io: std.Io, writer: *std.Io.Writer) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         if (self.len < max_clients) {
             self.items[self.len] = writer;
             self.len += 1;
         }
     }
 
-    pub fn remove(self: *WsClients, writer: *std.Io.Writer) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn remove(self: *WsClients, io: std.Io, writer: *std.Io.Writer) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         for (self.items[0..self.len], 0..) |item, i| {
             if (item == writer) {
                 self.len -= 1;
@@ -32,9 +35,9 @@ pub const WsClients = struct {
         }
     }
 
-    pub fn broadcast(self: *WsClients, data: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn broadcast(self: *WsClients, io: std.Io, data: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         var i: usize = 0;
         while (i < self.len) {
             writeWsFrame(self.items[i], data) catch {
@@ -49,35 +52,37 @@ pub const WsClients = struct {
 };
 
 pub const ErrorState = struct {
-    mutex: spin.SpinLock = .{},
+    // 0.16: sendIfPresent 가 락 안에서 blocking 소켓 write 를 하므로 Io.Mutex 사용
+    // (WsClients 와 동일 이유).
+    mutex: std.Io.Mutex = .init,
     json: ?[]const u8 = null,
 
-    pub fn deinit(self: *ErrorState, allocator: std.mem.Allocator) void {
-        self.clear(allocator);
+    pub fn deinit(self: *ErrorState, io: std.Io, allocator: std.mem.Allocator) void {
+        self.clear(io, allocator);
     }
 
-    pub fn setOwned(self: *ErrorState, allocator: std.mem.Allocator, json: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn setOwned(self: *ErrorState, io: std.Io, allocator: std.mem.Allocator, json: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         if (self.json) |old| allocator.free(old);
         self.json = json;
     }
 
-    pub fn setCopy(self: *ErrorState, allocator: std.mem.Allocator, json: []const u8) !void {
+    pub fn setCopy(self: *ErrorState, io: std.Io, allocator: std.mem.Allocator, json: []const u8) !void {
         const copy = try allocator.dupe(u8, json);
-        self.setOwned(allocator, copy);
+        self.setOwned(io, allocator, copy);
     }
 
-    pub fn clear(self: *ErrorState, allocator: std.mem.Allocator) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn clear(self: *ErrorState, io: std.Io, allocator: std.mem.Allocator) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         if (self.json) |json| allocator.free(json);
         self.json = null;
     }
 
-    pub fn sendIfPresent(self: *ErrorState, writer: *std.Io.Writer) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn sendIfPresent(self: *ErrorState, io: std.Io, writer: *std.Io.Writer) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         if (self.json) |json| writeWsFrame(writer, json) catch {};
     }
 };
@@ -107,24 +112,25 @@ pub const SseSink = struct {
 /// SSE 클라이언트 목록 — `/sse/events`로 연결된 long-lived HTTP 응답 sink들.
 /// WS와 병렬 운영; 빌드 이벤트는 SSE로 전송 (HMR은 WS 유지).
 pub const SseClients = struct {
-    mutex: spin.SpinLock = .{},
+    // 0.16: broadcast/keep-alive 가 락 안에서 blocking chunked flush 를 하므로 Io.Mutex.
+    mutex: std.Io.Mutex = .init,
     items: [max_clients]*SseSink = undefined,
     len: usize = 0,
 
     const max_clients = 64;
 
-    pub fn add(self: *SseClients, sink: *SseSink) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn add(self: *SseClients, io: std.Io, sink: *SseSink) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         if (self.len < max_clients) {
             self.items[self.len] = sink;
             self.len += 1;
         }
     }
 
-    pub fn remove(self: *SseClients, sink: *SseSink) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn remove(self: *SseClients, io: std.Io, sink: *SseSink) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         for (self.items[0..self.len], 0..) |item, i| {
             if (item == sink) {
                 self.len -= 1;
@@ -136,9 +142,9 @@ pub const SseClients = struct {
 
     /// `event: <type>\ndata: <json>\n\n` 형식으로 모든 구독자에 브로드캐스트.
     /// keep-alive 핸들러와 broadcast가 같은 sink를 동시 write하지 않도록 mutex로 직렬화.
-    pub fn broadcast(self: *SseClients, event_type: []const u8, data_json: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn broadcast(self: *SseClients, io: std.Io, event_type: []const u8, data_json: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         var i: usize = 0;
         while (i < self.len) {
             self.items[i].writeFrame(event_type, data_json) catch {
@@ -245,11 +251,11 @@ test "SseClients: broadcast — 다수 클라이언트에 SSE 형식으로 전�
     var w2 = std.Io.Writer.fixed(&buf2);
     var sink2: SseSink = .{ .writer = &w2 };
 
-    sse.add(&sink1);
-    sse.add(&sink2);
+    sse.add(std.testing.io, &sink1);
+    sse.add(std.testing.io, &sink2);
     try std.testing.expectEqual(@as(usize, 2), sse.len);
 
-    sse.broadcast("ping", "{}");
+    sse.broadcast(std.testing.io, "ping", "{}");
     try std.testing.expectEqualStrings("event: ping\ndata: {}\n\n", buf1[0..w1.end]);
     try std.testing.expectEqualStrings("event: ping\ndata: {}\n\n", buf2[0..w2.end]);
 }
@@ -267,10 +273,10 @@ test "SseClients: remove — swap-remove로 제거" {
     var w3 = std.Io.Writer.fixed(&buf3);
     var sink3: SseSink = .{ .writer = &w3 };
 
-    sse.add(&sink1);
-    sse.add(&sink2);
-    sse.add(&sink3);
-    sse.remove(&sink2);
+    sse.add(std.testing.io, &sink1);
+    sse.add(std.testing.io, &sink2);
+    sse.add(std.testing.io, &sink3);
+    sse.remove(std.testing.io, &sink2);
 
     try std.testing.expectEqual(@as(usize, 2), sse.len);
     try std.testing.expect(sse.items[0] == &sink1);
@@ -287,9 +293,9 @@ test "SseClients: broadcast 시 dead client 자동 제거" {
     var w_full = std.Io.Writer.fixed(&buf_full);
     var sink_full: SseSink = .{ .writer = &w_full };
 
-    sse.add(&sink_full);
-    sse.add(&sink_ok);
-    sse.broadcast("evt", "{}");
+    sse.add(std.testing.io, &sink_full);
+    sse.add(std.testing.io, &sink_ok);
+    sse.broadcast(std.testing.io, "evt", "{}");
 
     try std.testing.expectEqual(@as(usize, 1), sse.len);
     try std.testing.expect(sse.items[0] == &sink_ok);
