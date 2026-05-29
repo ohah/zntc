@@ -161,8 +161,8 @@ pub const IncrementalBundler = struct {
 
     /// 증분 번들. caller 가 변경 path 를 모를 때 (initial build 등).
     /// 그래프 변경(새 import 추가 등)이 감지되면 자동으로 전체 재빌드 폴백.
-    pub fn rebuild(self: *IncrementalBundler) !RebuildResult {
-        return self.rebuildWithChanges(null);
+    pub fn rebuild(self: *IncrementalBundler, io: std.Io) !RebuildResult {
+        return self.rebuildWithChanges(io, null);
     }
 
     /// `rebuild` 의 watcher-driven 변형. caller (dev_server / NAPI) 가 알아챈
@@ -170,16 +170,18 @@ pub const IncrementalBundler = struct {
     /// 와 동일 패턴. 큰 graph 에서 graph_discover 의 stat syscall 누적을 우회.
     pub fn rebuildWithChanges(
         self: *IncrementalBundler,
+        io: std.Io,
         changed_files: ?*const std.StringHashMap(void),
     ) !RebuildResult {
         if (self.needs_full_rebuild) {
-            return self.doBuild(true, changed_files);
+            return self.doBuild(io, true, changed_files);
         }
-        return self.doBuild(false, changed_files);
+        return self.doBuild(io, false, changed_files);
     }
 
     fn doBuild(
         self: *IncrementalBundler,
+        io: std.Io,
         is_first: bool,
         changed_files: ?*const std.StringHashMap(void),
     ) !RebuildResult {
@@ -255,7 +257,7 @@ pub const IncrementalBundler = struct {
         // anyEnabled() 를 한 번 캐싱 후 fatal/success 모든 경로에서 reset 보장.
         const _profile = @import("../profile.zig");
         const profile_was_enabled = _profile.anyEnabled();
-        var result = bundler.bundle() catch {
+        var result = bundler.bundle(io) catch {
             if (profile_was_enabled) _profile.resetCounters();
             return .fatal;
         };

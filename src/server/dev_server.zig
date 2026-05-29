@@ -701,7 +701,7 @@ pub const DevServer = struct {
         defer inc_bundler.deinit();
 
         // 초기 번들
-        const initial = inc_bundler.rebuild() catch return;
+        const initial = inc_bundler.rebuild(self.io) catch return;
         var fallback_paths = [_][]const u8{abs_entry};
         const initial_paths: []const []const u8 = switch (initial) {
             .success => |r| r.paths,
@@ -913,7 +913,7 @@ pub const DevServer = struct {
             // 와 동일 패턴. emit_concat (~38ms) + emit_sourcemap_finalize (~19ms) 절감.
             // 0.16: std.time.nanoTimestamp 제거 → Io.Timestamp(awake 단조시계).
             const build_start_ns = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
-            const rebuild_result = inc_bundler.rebuildWithChanges(&changed_set) catch continue;
+            const rebuild_result = inc_bundler.rebuildWithChanges(self.io, &changed_set) catch continue;
             const build_duration_ms = @as(f64, @floatFromInt(std.Io.Timestamp.now(self.io, .awake).toNanoseconds() - build_start_ns)) / std.time.ns_per_ms;
             switch (rebuild_result) {
                 .success => |result| {
@@ -1270,7 +1270,7 @@ pub const DevServer = struct {
         });
         defer bundler.deinit();
 
-        var result = try bundler.bundle();
+        var result = try bundler.bundle(self.io);
         defer result.deinit(self.allocator);
 
         if (result.hasErrors()) {
