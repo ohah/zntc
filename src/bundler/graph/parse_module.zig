@@ -19,7 +19,7 @@ const graph_parse_helpers = @import("parse_helpers.zig");
 const suppressRuntimeHelperInternalUnresolved = graph_parse_helpers.suppressRuntimeHelperInternalUnresolved;
 const getMtime = ModuleGraph.getMtime;
 
-pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
+pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     const mod_idx = @intFromEnum(idx);
     if (mod_idx >= self.modules.count()) return;
 
@@ -98,7 +98,7 @@ pub fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
         var read_scope = profile.begin(.graph_discover_pm_setup_read);
         defer read_scope.end();
         if (module.source.len == 0) {
-            module.source = self.readModuleSourceWithMtime(module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
+            module.source = self.readModuleSourceWithMtime(io, module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
         }
     }
 
