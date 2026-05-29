@@ -128,10 +128,15 @@ pub const RealReadFileCache = struct {
     // 임계구역이 HashMap get/put 뿐이 됐다 → io-free 스핀락 (다른 캐시와 일관). std.Thread.
     // Mutex 제거 + std.Io.Mutex.lock 의 io 요구 회피.
     mutex: spin.SpinLock = .{},
+    /// 0.16: dir.close(io) 가 io 를 요구하나 ModuleGraph.deinit 은 io 를 받지
+    /// 않는다(다수 caller). Resolver/DirEntryCache 선례대로 per-instance io 필드를
+    /// getOrOpenDir 진입 시 저장 → deinit 이 self.io 로 fd 정리. dirs 가 비면
+    /// 루프가 돌지 않아 undefined io 접근 없음.
+    io: std.Io = undefined,
 
-    pub fn deinit(self: *RealReadFileCache, io: std.Io, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *RealReadFileCache, allocator: std.mem.Allocator) void {
         var value_it = self.dirs.valueIterator();
-        while (value_it.next()) |dir| dir.close(io);
+        while (value_it.next()) |dir| dir.close(self.io);
         var key_it = self.dirs.keyIterator();
         while (key_it.next()) |key| allocator.free(key.*);
         self.dirs.deinit(allocator);
@@ -256,6 +261,8 @@ pub const RealReadFileCache = struct {
     /// 임계구역(HashMap get/put)이 io-free 라 스핀락으로 충분. fd 중복 open race 는
     /// "먼저 put 한 쪽 채택, 내 fd close" 로 처리.
     fn getOrOpenDir(self: *RealReadFileCache, io: std.Io, allocator: std.mem.Allocator, dir_path: []const u8) !std.Io.Dir {
+        // deinit 에서 fd 정리에 쓸 io 저장 (dir 삽입 전에 항상 set).
+        self.io = io;
         {
             self.mutex.lock();
             defer self.mutex.unlock();
@@ -282,7 +289,7 @@ pub const RealReadFileCache = struct {
 pub const VirtualReadFileCache = struct {
     // RealReadFileCache 와 comptime 시그니처 일치 (ReadFileCache dispatch). io 는
     // host callback 위임이라 미사용이지만 시그니처 통일을 위해 받는다.
-    pub fn deinit(_: *VirtualReadFileCache, _: std.Io, _: std.mem.Allocator) void {}
+    pub fn deinit(_: *VirtualReadFileCache, _: std.mem.Allocator) void {}
 
     pub fn readFile(
         _: *VirtualReadFileCache,

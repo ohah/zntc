@@ -233,7 +233,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
             } else {
                 // 상대/bare specifier (B-ii): source_dir(project_root) 기준 resolve (RFC §4.2).
                 // plugin 이 this.resolve 를 선호출하지 않아도 된다(Rollup 동형).
-                const resolved = self.resolve_cache.resolveThreadSafe(source_dir, chk.id, .static_import) catch |err| switch (err) {
+                const resolved = self.resolve_cache.resolveThreadSafe(io, source_dir, chk.id, .static_import) catch |err| switch (err) {
                     error.ModuleNotFound => {
                         self.addDiag(
                             .plugin_error,
