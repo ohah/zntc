@@ -227,6 +227,24 @@ pub fn applyResolveResult(
     is_error: bool,
 ) !void {
     const mod_index = ModuleIndex.fromUsize(mod_idx);
+    // (#3984) 비-literal dynamic import(`import(x)`)는 parser 가 dynamic_invalid_reason
+    // 을 설정해 둔 *의도된 비해석* 레코드다. worker scan 은 빈 specifier("") 로
+    // resolve 를 시도하는데, 그 결과가 (a) native resolve 실패 → is_error, (b)
+    // `--packages=external`/`--external` 에서 isExternal("")=true → is_error=false 인데
+    // phantom external 로 link, (c) resolveId plugin 이 ""를 resolve → 잘못된 모듈 link
+    // 로 갈라진다. 어느 경우든 generic "Cannot resolve module" 나 잘못된 link 대신 그
+    // reason 을 warning 으로 emit + passthrough 해야 한다. 따라서 is_error 분기 *이전*
+    // 에 일괄 처리한다(altitude: 세 경로를 한 곳으로 수렴). resolved 를 채우지 않고
+    // return → codegen 이 원본 import() 를 native passthrough. resolve_failed 마킹으로
+    // resolveModuleImports 의 동형 분기가 중복 emit 하지 않게 한다(단일 경고).
+    if (record.dynamic_invalid_reason) |reason| {
+        const rec_ptr = &self.modules.at(mod_idx).import_records[rec_i];
+        if (!rec_ptr.resolve_failed) {
+            self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, reason, null);
+            rec_ptr.resolve_failed = true;
+        }
+        return;
+    }
     if (is_error) {
         // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음)
         if (record.kind == .worker) {
@@ -448,7 +466,15 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
             if (record.dynamic_invalid_reason) |reason| {
                 // 비-literal dynamic import: warning 후 resolved=.none 유지 →
                 // chunk/codegen 무시(원본 import() 네이티브 passthrough).
-                self.addDiag(.unresolved_import, .warning, module_path, record.span, .resolve, reason, null);
+                // (#3984) worker-scan 경로(applyResolveResult)가 이미 진단했으면
+                // resolve_failed 가 set 되어 있다 → 중복 emit 방지. worker scan 을
+                // 거치지 않고 직접 도달한 fallback 경로만 여기서 emit 하되, 여기서도
+                // resolve_failed 를 set 해 (applyResolveResult 와 대칭) resolveModuleImports
+                // 재진입(lazy re-export barrel 타깃이 ready 후 재방문)에서 중복 emit 을 막는다.
+                if (!record.resolve_failed) {
+                    self.addDiag(.unresolved_import, .warning, module_path, record.span, .resolve, reason, null);
+                    mod_ptr.import_records[rec_i].resolve_failed = true;
+                }
                 continue;
             }
         }
