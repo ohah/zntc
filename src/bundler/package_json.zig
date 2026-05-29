@@ -24,6 +24,7 @@
 //!   - references/rolldown/crates/rolldown_resolver/src/resolver_config.rs
 
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const fs = @import("fs.zig");
 
 /// package.json 필드명 / exports conditions 문자열 상수.
@@ -118,7 +119,7 @@ pub const PkgJsonCacheError = error{ FileNotFound, IoError, JsonParseError, OutO
 
 pub const PackageJsonCache = struct {
     cache: std.StringHashMap(Entry),
-    rwlock: std.Thread.RwLock = .{},
+    rwlock: spin.SpinRwLock = .{},
     allocator: std.mem.Allocator,
 
     const Entry = union(enum) {

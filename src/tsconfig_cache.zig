@@ -15,6 +15,7 @@
 //! 은 arena 소유 — clear() 시 arena reset 으로 일괄 해제.
 
 const std = @import("std");
+const spin = @import("util/spin_lock.zig");
 const TsConfig = @import("config.zig").TsConfig;
 
 pub const TsconfigCache = struct {
@@ -25,7 +26,7 @@ pub const TsconfigCache = struct {
     /// entry_dir (arena-owned) → tsconfig_path (arena-owned) 또는 null (no tsconfig found).
     /// "찾았다" 와 "없음 확정" 을 구분하기 위해 optional.
     by_entry_dir: std.StringHashMapUnmanaged(?[]const u8) = .empty,
-    mutex: std.Thread.Mutex = .{},
+    mutex: spin.SpinLock = .{},
 
     pub fn init(parent_alloc: std.mem.Allocator) !*TsconfigCache {
         const self = try parent_alloc.create(TsconfigCache);

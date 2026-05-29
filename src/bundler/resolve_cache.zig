@@ -12,6 +12,7 @@
 //!   - references/esbuild/pkg/api/api.go (External []string)
 
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const resolver_mod = @import("resolver.zig");
 const Resolver = resolver_mod.Resolver;
 const ResolveResult = resolver_mod.ResolveResult;
@@ -85,7 +86,7 @@ pub const PathInternPool = struct {
         arena: std.heap.ArenaAllocator,
         /// interned bytes set. key = slice into `arena`. value = void.
         set: std.StringHashMapUnmanaged(void) = .empty,
-        mutex: std.Thread.Mutex = .{},
+        mutex: spin.SpinLock = .{},
     };
 
     pub fn init(parent_allocator: std.mem.Allocator) PathInternPool {
@@ -168,7 +169,7 @@ pub const ResolveCache = struct {
     /// 잠금 시 *반드시 위 순서* — 역순/중첩 잠금 금지 (deadlock). 현재 코드는 각 mutex
     /// 가 짧은 critical section 안에서만 잠겨 상호배제 영향 없지만 future 추가 시 enforce.
     dataurl_arena: std.heap.ArenaAllocator,
-    dataurl_arena_mutex: std.Thread.Mutex = .{},
+    dataurl_arena_mutex: spin.SpinLock = .{},
     external_patterns: []const []const u8,
     platform: Platform,
     packages_external: bool = false,
@@ -185,14 +186,14 @@ pub const ResolveCache = struct {
     /// `browser_overrides_cache` 접근 보호 — `getBareModuleOverride` 는 어떤 락도 안 쥐고
     /// 호출되므로(`resolveInner` 의 pre-resolve 분기) 두 worker 가 같은 패키지를 처음
     /// 만나면 `.put` 이 동시에 일어나 HashMap 이 깨질 수 있다.
-    browser_cache_mutex: std.Thread.Mutex = .{},
+    browser_cache_mutex: spin.SpinLock = .{},
     /// 커스텀 조건이 병합된 조건 배열 (import용, require용).
     conditions_import: []const []const u8 = &.{},
     conditions_require: []const []const u8 = &.{},
     conditions_allocated: bool = false,
 
     const CacheShard = struct {
-        mutex: std.Thread.Mutex = .{},
+        mutex: spin.SpinLock = .{},
         map: std.StringHashMap(CachedResult),
     };
 

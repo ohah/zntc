@@ -17,6 +17,7 @@
 //!   - references/bun/src/bundler/LinkerContext.zig
 
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
@@ -84,7 +85,7 @@ pub const ModuleGraph = struct {
     modules: ModuleList = .{},
     path_to_module: std.StringHashMap(ModuleIndex),
     requested_exports: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty,
-    requested_exports_mutex: std.Thread.Mutex = .{},
+    requested_exports_mutex: spin.SpinLock = .{},
     diagnostics: std.ArrayList(BundlerDiagnostic),
     owned_diagnostic_strings: std.ArrayList([]const u8) = .empty,
     resolve_cache: *ResolveCache,
@@ -94,7 +95,7 @@ pub const ModuleGraph = struct {
     emit_store: ?*anyopaque = null,
     source_read_cache: fs.ReadFileCache = .{},
     /// 병렬 워커에서 diagnostics 접근 보호용 mutex
-    diag_mutex: std.Thread.Mutex = .{},
+    diag_mutex: spin.SpinLock = .{},
 
     /// 패키지 단위 package.json 정보 캐시. pkg_dir_path → (is_module, side_effects).
     /// `type: "module"` 과 `sideEffects` 를 **한 번의 pkg.json parse** 로 추출 (#1744).
@@ -102,7 +103,7 @@ pub const ModuleGraph = struct {
     /// scanWorker 병렬 호출 대응으로 Mutex 보호 + double-check pattern.
     pkg_info_cache: std.StringHashMapUnmanaged(PkgInfo) = .empty,
     /// pkg_info_cache 병렬 접근 보호.
-    pkg_info_cache_mutex: std.Thread.Mutex = .{},
+    pkg_info_cache_mutex: spin.SpinLock = .{},
 
     // DFS 상태
     exec_counter: u32 = 0,
@@ -170,7 +171,7 @@ pub const ModuleGraph = struct {
     /// strings 는 graph.allocator 소유 (loader arena 가 free 되어도 안전하도록 dupe).
     rn_asset_metadata: std.ArrayListUnmanaged(@import("graph/assets.zig").RnAssetMetadata) = .empty,
     /// rn_asset_metadata 병렬 append 보호 (scanWorker 호출 대응).
-    rn_asset_metadata_mutex: std.Thread.Mutex = .{},
+    rn_asset_metadata_mutex: spin.SpinLock = .{},
 
     /// `worklet "directive"` plugin 활성 여부 — bundler 가 BundleOptions.worklet_transform 으로 set.
     /// graph 가 직접 사용 (parseModule 의 worklet exclude 휴리스틱).

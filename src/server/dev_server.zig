@@ -1,4 +1,5 @@
 const std = @import("std");
+const spin = @import("../util/spin_lock.zig");
 const builtin = @import("builtin");
 const http = std.http;
 const mime = @import("mime.zig");
@@ -73,7 +74,7 @@ pub const DevServer = struct {
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     /// event_seq fallback 보호용 — 32-bit 타깃은 64-bit atomic 미지원이라
     /// `loadSeq`/`nextSeq`가 atomic 대신 이 mutex로 직렬화한다 (아래 헬퍼 참조).
-    seq_mutex: std.Thread.Mutex = .{},
+    seq_mutex: spin.SpinLock = .{},
     error_state: ErrorState = .{},
     /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -96,7 +97,7 @@ pub const DevServer = struct {
     jsx_factory: []const u8 = "React.createElement",
     jsx_fragment: []const u8 = "React.Fragment",
     sourcemap_cache: struct {
-        mutex: std.Thread.Mutex = .{},
+        mutex: spin.SpinLock = .{},
         data: ?[]const u8 = null,
     } = .{},
     /// dev overlay client — raw template (overlay_client_template) 의 `__ZNTC_HMR_*__`
