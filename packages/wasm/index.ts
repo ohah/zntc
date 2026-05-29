@@ -68,6 +68,11 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       fd_fdstat_get: ok,
       fd_fdstat_set_flags: ok,
       fd_filestat_get: ok,
+      // Zig 0.16 std.Io.File 가 새로 dispatch 하는 wasi fn 들 (set 계열은 결과 무시,
+      // fd_readdir 는 실제 dir 순회를 zntc_fs 가 담당하므로 EBADF 로 fallback 안전).
+      fd_filestat_set_times: ok,
+      fd_filestat_set_size: ok,
+      fd_readdir: () => 8,
       // EBADF (8) 반환 — wasi-musl libc 가 "valid fd 없음" 으로 처리 후 fallback. 0 반환
       // 시 musl 이 gibberish 메모리 read 시도 → panic. EBADF 가 안전.
       fd_prestat_get: () => 8,
@@ -131,6 +136,7 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       path_link: ok,
       path_symlink: ok,
       path_readlink: () => 8,
+      path_filestat_set_times: ok,
     },
     // wasi-libc 의 pthread_create 가 dispatch — single-thread 환경 (Node/Bun) 에선
     // -1 (ENOSYS) 반환 → bundler 의 std.Thread.spawn 이 single-thread fallback.
@@ -348,9 +354,8 @@ let bundlerMemory: WebAssembly.Memory | null = null;
 let bundlerVfs: VirtualFileSystem | null = null;
 
 function readBundlerString(ptr: number, len: number): string {
-  // bundlerMemory 는 SharedArrayBuffer (threads features 로 shared:true). 해당 view 를
-  // 그대로 TextDecoder.decode 에 전달하면 브라우저가 거부 ("must not be shared") —
-  // .slice() 로 새 ArrayBuffer 복사 후 decode.
+  // 0.16: single-threaded wasm 이라 bundlerMemory 는 일반 ArrayBuffer. .slice() 는
+  // shared/non-shared 무관하게 안전(복사본 decode) — 기존 동작 유지.
   const view = new Uint8Array(bundlerMemory!.buffer, ptr, len);
   return decoder.decode(view.slice());
 }
@@ -429,13 +434,14 @@ export async function initBundler(
   if (bundler) return;
   const source = await resolveWasmSource(input, 'zntc-bundler.wasm');
 
-  // wasm32-wasi + threads features → shared_memory 강제 → env.memory import 필요.
+  // Zig 0.16: wasm-bundler 가 single-threaded(wasm32-wasi, no threads/shared)로 전환됨
+  // (0.16 std 가 멀티스레드 wasm allocator/io 미지원). 모듈이 env.memory 를 NON-shared
+  // 로 import 하므로 여기 memory 도 shared:false 여야 한다(shared 불일치 시 LinkError).
   // wasi-musl libc 가 stack/heap 위해 ~257 page 요구 — 1024 (64 MiB) initial 로 여유.
   // 65536 page = 4 GiB max (build.zig:max_memory 와 일치).
   const memory = new WebAssembly.Memory({
     initial: 1024,
     maximum: 65536,
-    shared: true,
   });
 
   const bundlerImports = createBundlerImports(() => memory);
