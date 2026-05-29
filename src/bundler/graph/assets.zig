@@ -344,6 +344,7 @@ fn scaleVariantBaseName(alloc: std.mem.Allocator, logical_name: []const u8, scal
 /// Metro 호환: base(1x)가 없어도 scale variant 만 있으면 해당 scale 로 등록한다.
 pub fn collectScaleVariants(
     alloc: std.mem.Allocator,
+    io: std.Io,
     abs_path: []const u8,
     name_without_ext: []const u8,
     ext: []const u8,
@@ -370,7 +371,7 @@ pub fn collectScaleVariants(
         const variant_path = try std.fs.path.join(alloc, &.{ fs_dir, variant_name });
         defer alloc.free(variant_path);
 
-        fs.access(variant_path) catch continue;
+        fs.access(io, variant_path) catch continue;
         try scale_list.append(alloc, scale);
 
         if (scale == primary_scale and std.mem.eql(u8, variant_path, abs_path)) {

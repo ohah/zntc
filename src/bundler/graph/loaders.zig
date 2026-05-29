@@ -137,7 +137,7 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
             // RN scale variants (@2x, @3x): asset_registry 활성화 시에만 스캔.
             // 기본 URL 출력 모드에서는 variant가 의미 없음 (런타임이 해석 안 함).
             const scales_result = if (self.asset_registry != null)
-                collectScaleVariants(arena_alloc, module.path, logical_name_without_ext, ext, self.asset_names, dir, primary_scale) catch ScaleCollection{ .scales = &.{1}, .variants = &.{} }
+                collectScaleVariants(arena_alloc, io, module.path, logical_name_without_ext, ext, self.asset_names, dir, primary_scale) catch ScaleCollection{ .scales = &.{1}, .variants = &.{} }
             else
                 ScaleCollection{ .scales = &.{1}, .variants = &.{} };
 

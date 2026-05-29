@@ -159,21 +159,22 @@ pub fn mergeMetaJson(arena: std.mem.Allocator, base: ?[]const u8, add: []const u
     const add_v = std.json.parseFromSliceLeaky(std.json.Value, arena, add, .{}) catch
         return arena.dupe(u8, base_json);
     if (base_v != .object or add_v != .object) return arena.dupe(u8, add);
-    try deepMergeMetaValue(&base_v, add_v);
+    try deepMergeMetaValue(arena, &base_v, add_v);
     return std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(base_v, .{})});
 }
 
-fn deepMergeMetaValue(base: *std.json.Value, add: std.json.Value) std.mem.Allocator.Error!void {
+// 0.16: std.json.ObjectMap(StringArrayHashMap) 가 unmanaged 라 put 에 allocator 필요.
+fn deepMergeMetaValue(arena: std.mem.Allocator, base: *std.json.Value, add: std.json.Value) std.mem.Allocator.Error!void {
     var it = add.object.iterator();
     while (it.next()) |e| {
         if (base.object.getPtr(e.key_ptr.*)) |existing| {
             if (existing.* == .object and e.value_ptr.* == .object) {
-                try deepMergeMetaValue(existing, e.value_ptr.*);
+                try deepMergeMetaValue(arena, existing, e.value_ptr.*);
                 continue;
             }
         }
         // 신규 키, 또는 둘 중 하나가 비-object → add(나중) 값으로 덮어쓴다.
-        try base.object.put(e.key_ptr.*, e.value_ptr.*);
+        try base.object.put(arena, e.key_ptr.*, e.value_ptr.*);
     }
 }
 
