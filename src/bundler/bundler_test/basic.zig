@@ -1241,7 +1241,7 @@ fn rcRecursiveScan(
     defer list.deinit(allocator);
     var walker = d.walk(allocator) catch return try allocator.alloc([]const u8, 0);
     defer walker.deinit();
-    while (walker.next() catch null) |entry| {
+    while (walker.next(std.testing.io) catch null) |entry| {
         if (entry.kind != .file) continue;
         const rel = std.fmt.allocPrint(allocator, "./{s}", .{entry.path}) catch continue;
         list.append(allocator, rel) catch continue;

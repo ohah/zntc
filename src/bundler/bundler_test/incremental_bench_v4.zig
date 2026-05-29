@@ -372,7 +372,7 @@ test "incremental bench v4: changed_files null/empty/single comparison" {
     try writeFile(tmp.dir, "entry.ts", LODASH_ENTRY);
     try writeSyntheticLodashFixture(allocator, tmp.dir);
 
-    const tmp_real = try tmp.dir.realpathAlloc(allocator, ".");
+    const tmp_real = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_real);
     const entry = try std.fs.path.join(allocator, &.{ tmp_real, "entry.ts" });
     defer allocator.free(entry);
