@@ -72,11 +72,15 @@ var g_env_map: ?std.process.Environ.Map = null;
 /// register 에서 1회 호출 — libc environ 을 env_flag 로 등록.
 pub fn captureEnvironFromLibc() void {
     if (g_env_map != null) return;
-    const c_environ = std.c.environ;
-    var env_count: usize = 0;
-    while (c_environ[env_count] != null) : (env_count += 1) {}
-    const slice: [:null]const ?[*:0]const u8 = @ptrCast(c_environ[0..env_count :null]);
-    const block: std.process.Environ.Block = .{ .slice = slice };
+    // Block 은 OS 별 comptime 타입: Windows=GlobalBlock(use_global→PEB), POSIX=PosixBlock(slice).
+    const block: std.process.Environ.Block = if (builtin.os.tag == .windows)
+        .{ .use_global = true }
+    else blk: {
+        const c_environ = std.c.environ;
+        var env_count: usize = 0;
+        while (c_environ[env_count] != null) : (env_count += 1) {}
+        break :blk .{ .slice = @ptrCast(c_environ[0..env_count :null]) };
+    };
     g_env_map = std.process.Environ.createMap(.{ .block = block }, nativeAlloc()) catch return;
     @import("zntc_lib").env_flag.captureEnviron(&g_env_map.?);
 }
