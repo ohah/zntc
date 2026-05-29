@@ -24,7 +24,7 @@ pub const TsconfigCache = struct {
     arena: std.heap.ArenaAllocator,
     /// entry_dir (arena-owned) → tsconfig_path (arena-owned) 또는 null (no tsconfig found).
     /// "찾았다" 와 "없음 확정" 을 구분하기 위해 optional.
-    by_entry_dir: std.StringHashMapUnmanaged(?[]const u8) = .{},
+    by_entry_dir: std.StringHashMapUnmanaged(?[]const u8) = .empty,
     mutex: std.Thread.Mutex = .{},
 
     pub fn init(parent_alloc: std.mem.Allocator) !*TsconfigCache {

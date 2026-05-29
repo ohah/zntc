@@ -413,7 +413,7 @@ pub fn buildMetadataForAst(
     var owned_nested_renames: std.ArrayListUnmanaged([]const u8) = .empty;
 
     // __esm live binding: __export getter에서 사용할 이름 override
-    var export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .{};
+    var export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .empty;
     errdefer {
         export_getter_overrides.deinit(self.allocator);
         for (owned_nested_renames.items) |v| self.allocator.free(v);
@@ -1327,7 +1327,7 @@ pub fn buildMetadataForAst(
 /// CJS 래핑 모듈과 scope hoisted ESM+CJS 혼합 모듈 모두에서 사용.
 /// `format` 은 per-emit 인자 — 같은 Linker 가 다른 format 으로 호출될 수 있음.
 pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types.Format) !std.StringHashMapUnmanaged([]const u8) {
-    var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
+    var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .empty;
     const self_idx = m.index.toU32();
     var audit = debug_log.auditScope(.metadata_audit);
     defer if (audit.on) debug_log.print(.metadata_audit, "rr wrap={s} imports={d} result={d} ns={d}\n", .{ @tagName(m.wrap_kind), m.import_records.len, require_rewrites.count(), audit.elapsedNs() });
@@ -1502,7 +1502,7 @@ pub fn buildCrossModuleConstValuesProfiled(
     _: @import("../module.zig").ModuleSemanticData,
     profile_cats: ConstValuesProfile,
 ) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
-    var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .{};
+    var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .empty;
     if (m.import_bindings.len == 0) return const_values;
     for (m.import_bindings) |ib| {
         if (ib.kind == .namespace) continue;

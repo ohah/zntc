@@ -52,7 +52,7 @@ pub const NamespaceAccess = struct {
     kind: Kind,
     /// property → 해당 `ns.prop` 접근이 발생한 top-level stmt 인덱스 목록.
     /// stmt_spans가 전달된 경우에만 채워지며, 없으면 빈 리스트.
-    members: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .{},
+    members: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
 
     pub const Kind = enum { member_only, @"opaque" };
 
@@ -67,7 +67,7 @@ pub const NamespaceAccess = struct {
 /// 같은 AST 를 여러 namespace import 로 분석할 때 공유해 AST 전체 순회를 줄인다 (#1735).
 pub const NamespaceAccessIndex = struct {
     /// obj_node_idx → prop_node_idx 매핑 (static/private member expression).
-    prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .{},
+    prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// import declaration span 범위 — 이 안의 identifier_reference 는 선언이므로 skip.
     decl_ranges: std.ArrayListUnmanaged(DeclRange) = .empty,
     /// text-fallback 색인 (#3680 옵션 A): obj 가 identifier_reference 인 member access 를
@@ -76,15 +76,15 @@ pub const NamespaceAccessIndex = struct {
     ///
     /// 키 lifetime: `ast.getText` 결과 (source buffer 또는 string_table 슬라이스). ast 수명 동안만 유효.
     /// 즉 build → analyze 동안 ast 가 mutate (transformer 의 addString 등) 되면 invalidate. 단일 단계 사용 강제.
-    accesses_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentAccess)) = .{},
+    accesses_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentAccess)) = .empty,
 
     /// escape 색인 (F1 fix): 모든 identifier_reference 의 `text → [(node_idx, span_start)...]`.
     /// text fallback 진입 시 `idents_by_text[local_name]` 의 각 node_idx 가 `prop_by_obj` 에
     /// 있으면 member-obj, 없으면 escape (value position) — opaque return 으로 over-prune 회피.
-    idents_by_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentRef)) = .{},
+    idents_by_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentRef)) = .empty,
     /// computed_member_expression 의 obj 가 identifier_reference 인 경우 `text → [...]`.
     /// `M[dyn]` 같은 dynamic access — text-only mode 의 escape 감지에 사용 (binding_scanner 동치).
-    computed_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ComputedObj)) = .{},
+    computed_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ComputedObj)) = .empty,
 
     pub const DeclRange = struct { start: u32, end: u32 };
 

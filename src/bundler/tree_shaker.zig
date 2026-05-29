@@ -1204,7 +1204,7 @@ pub const TreeShaker = struct {
         }
         if (mod_idx >= self.re_export_namespace_sources.len) return null;
         if (self.re_export_namespace_sources[mod_idx] == null) {
-            var map: std.StringHashMapUnmanaged(u32) = .{};
+            var map: std.StringHashMapUnmanaged(u32) = .empty;
             errdefer map.deinit(self.allocator);
             const target_module = self.getModule(mod_idx) orelse {
                 self.re_export_namespace_sources[mod_idx] = map;
@@ -1587,7 +1587,7 @@ pub const TreeShaker = struct {
         const m = self.getModule(mod_idx) orelse return false;
         const ast = &(m.ast orelse return false);
 
-        var buffer_names: std.StringHashMapUnmanaged(void) = .{};
+        var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
         defer buffer_names.deinit(self.allocator);
         cjs_patterns.collectNodeBufferModuleObjectNames(self.allocator, ast, &buffer_names) catch return false;
         if (buffer_names.count() == 0) return false;
@@ -2004,7 +2004,7 @@ pub const TreeShaker = struct {
     }
 
     fn collectDirectUsedExportNames(self: *TreeShaker, module_index: u32) !std.ArrayListUnmanaged([]const u8) {
-        var names: std.ArrayListUnmanaged([]const u8) = .{};
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer names.deinit(self.allocator);
 
         // used_exports 키 형식 (types.makeModuleKey, types.zig:716): [u32 module_idx][0x00][name]

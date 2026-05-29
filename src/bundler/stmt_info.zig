@@ -663,7 +663,7 @@ fn collectCjsExportObjectNames(
     ast: *const Ast,
     stmt_raw_indices: []const u32,
 ) !std.StringHashMapUnmanaged(void) {
-    var names: std.StringHashMapUnmanaged(void) = .{};
+    var names: std.StringHashMapUnmanaged(void) = .empty;
     errdefer names.deinit(allocator);
 
     for (stmt_raw_indices) |raw_idx| {
@@ -727,7 +727,7 @@ fn collectCjsExportHelperCandidates(
         for (out.items) |c| allocator.free(c.export_name);
         out.deinit(allocator);
     };
-    var seen: std.StringHashMapUnmanaged(void) = .{};
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
     defer seen.deinit(allocator);
 
     for (indices) |raw_prop| {
@@ -909,7 +909,7 @@ fn collectCjsObjectExportCandidates(
     };
     // `seen` 키는 `out.items[*].export_name` 을 빌려쓴다. 에러 경로에서
     // `out` 의 name 들이 해제되기 전에 `seen` 이 먼저 비워지도록 LIFO 순서를 맞춘다.
-    var seen: std.StringHashMapUnmanaged(void) = .{};
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
     defer seen.deinit(allocator);
 
     for (indices) |raw_prop| {

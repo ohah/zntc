@@ -26,7 +26,7 @@ pub fn emitEnumIIFE(self: anytype, node: Node) !void {
     const member_indices = self.ast.extra_data.items[members_start .. members_start + members_len];
 
     // 멤버 이름→값 매핑 (enum 자기 참조 인라이닝용)
-    var member_values: std.StringHashMapUnmanaged(EnumMemberValue) = .{};
+    var member_values: std.StringHashMapUnmanaged(EnumMemberValue) = .empty;
     defer member_values.deinit(self.allocator);
 
     // 1차 패스에서 needs_rename도 같이 판별 (별도 순회 불필요)
@@ -394,7 +394,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     self.declared_names.put(self.allocator, name_text, {}) catch {};
 
     // 1단계: export된 이름 수집 (IIFE 열기 전에 — 파라미터 충돌 감지용)
-    var ns_export_map: std.StringHashMapUnmanaged(void) = .{};
+    var ns_export_map: std.StringHashMapUnmanaged(void) = .empty;
     defer ns_export_map.deinit(self.allocator);
     if (body_node.tag == .block_statement) {
         const list = body_node.data.list;

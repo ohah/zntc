@@ -91,7 +91,7 @@ fn parseKeysFromExpr(
     alloc: std.mem.Allocator,
     body: []const u8,
 ) !std.StringArrayHashMapUnmanaged(void) {
-    var keys: std.StringArrayHashMapUnmanaged(void) = .{};
+    var keys: std.StringArrayHashMapUnmanaged(void) = .empty;
     errdefer keys.deinit(alloc);
     const trimmed = std.mem.trim(u8, body, " \t\n\r");
     if (trimmed.len < 2) return keys;

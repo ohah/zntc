@@ -515,7 +515,7 @@ test "PR #3737: interest gating — set 안 local 만 색인" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var interest: std.StringHashMapUnmanaged(void) = .{};
+    var interest: std.StringHashMapUnmanaged(void) = .empty;
     defer interest.deinit(allocator);
     try interest.put(allocator, "M", {});
 
@@ -555,7 +555,7 @@ test "PR #3737: interest gating — set 밖 local 분석 시 0 결과 (caller �
     defer parser.deinit();
     _ = try parser.parse();
 
-    var empty_interest: std.StringHashMapUnmanaged(void) = .{};
+    var empty_interest: std.StringHashMapUnmanaged(void) = .empty;
     defer empty_interest.deinit(allocator);
     var idx = try namespace_access_mod.NamespaceAccessIndex.buildOpt(allocator, &parser.ast, true, &empty_interest);
     defer idx.deinit(allocator);

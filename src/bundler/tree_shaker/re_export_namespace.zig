@@ -4,11 +4,11 @@ const std = @import("std");
 
 pub const ConsumerUsage = struct {
     opaque_all: bool = false,
-    entries: std.StringHashMapUnmanaged(Entry) = .{},
+    entries: std.StringHashMapUnmanaged(Entry) = .empty,
 
     pub const Entry = struct {
         is_opaque: bool = false,
-        props: std.StringHashMapUnmanaged(void) = .{},
+        props: std.StringHashMapUnmanaged(void) = .empty,
     };
 
     pub fn deinit(self: *ConsumerUsage, allocator: std.mem.Allocator) void {

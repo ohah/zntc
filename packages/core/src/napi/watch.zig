@@ -141,7 +141,7 @@ const LazySourceMapCache = struct {
     bundle: ?*SourceMap.SourceMapBuilder = null,
     /// 최신 rebuild 의 모듈 id → per-module sourcemap builder. key/value 모두 caller 가
     /// 전달한 allocator 소유 — `deinit` / `clear` 가 정리한다.
-    modules: std.StringHashMapUnmanaged(*SourceMap.SourceMapBuilder) = .{},
+    modules: std.StringHashMapUnmanaged(*SourceMap.SourceMapBuilder) = .empty,
     /// swap / getter 호출을 직렬화.
     mutex: std.Thread.Mutex = .{},
 

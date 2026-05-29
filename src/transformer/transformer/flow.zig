@@ -97,11 +97,11 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span:
         try mkTypeofObject(self, subject, span),
         .amp2,
     );
-    var binds: std.ArrayListUnmanaged(NodeIndex) = .{};
+    var binds: std.ArrayListUnmanaged(NodeIndex) = .empty;
     var guard_acc: NodeIndex = .none;
 
     // rest binding 을 위해 명시 키 노드 수집.
-    var key_lits: std.ArrayListUnmanaged(NodeIndex) = .{};
+    var key_lits: std.ArrayListUnmanaged(NodeIndex) = .empty;
 
     var i: u32 = 0;
     while (i < lst.len) : (i += 1) {
@@ -164,7 +164,7 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
     const len_test = try mkBin(self, span, len_member, try mkNum(self, elem_count), len_cmp_kind);
     var test_acc = try mkBin(self, span, is_arr, len_test, .amp2);
 
-    var binds: std.ArrayListUnmanaged(NodeIndex) = .{};
+    var binds: std.ArrayListUnmanaged(NodeIndex) = .empty;
     var guard_acc: NodeIndex = .none;
     var idx: usize = 0;
     i = 0;
@@ -316,7 +316,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
         // body 가 block `{ s1; s2; }` 이면 statement 들을 펼치고 `return;` 으로
         // 함수 탈출 (값 없는 statement-arm). expression 이면 `return <expr>;`.
         // `return <block>` 으로 wrap 하면 codegen 이 object literal 로 출력해 깨짐.
-        var body_stmts: std.ArrayListUnmanaged(NodeIndex) = .{};
+        var body_stmts: std.ArrayListUnmanaged(NodeIndex) = .empty;
         if (body_node.tag == .block_statement) {
             const blist = body_node.data.list;
             var bi: u32 = 0;
@@ -340,7 +340,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
         const lp = try lowerMatchPattern(self, pattern, subject, span);
 
         // then-block: bindings... + (guard ? if (guard) { body } : body)
-        var then_list: std.ArrayListUnmanaged(NodeIndex) = .{};
+        var then_list: std.ArrayListUnmanaged(NodeIndex) = .empty;
         for (lp.bindings) |b| try then_list.append(self.allocator, b);
         if (lp.guard.isNone()) {
             for (body_stmts.items) |s| try then_list.append(self.allocator, s);
