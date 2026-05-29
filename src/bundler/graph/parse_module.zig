@@ -113,7 +113,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     // Scanner + Parser (arena 할당)
     var scanner: Scanner = undefined;
     var parser: Parser = undefined;
-    if (!self.initParserForModule(module, arena_alloc, &scanner, &parser)) return;
+    if (!self.initParserForModule(io, module, arena_alloc, &scanner, &parser)) return;
 
     setup_scope.end();
     {

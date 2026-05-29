@@ -14,6 +14,7 @@ const ModuleGraph = graph_mod.ModuleGraph;
 
 pub fn init(
     self: *ModuleGraph,
+    io: std.Io,
     module: *Module,
     arena_alloc: std.mem.Allocator,
     scanner: *Scanner,
@@ -60,7 +61,7 @@ pub fn init(
         .cjs
     else if (std.mem.eql(u8, ext, ".cts"))
         .cts
-    else if (module.is_module_field or graph_package_info.isPackageTypeModule(self, module.path))
+    else if (module.is_module_field or graph_package_info.isPackageTypeModule(self, io, module.path))
         .esm_package_json
     else
         .unknown;
