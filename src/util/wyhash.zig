@@ -76,33 +76,33 @@ test "hashFileStreaming matches hashU64" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const contents = "hello world, wyhash streaming";
-    try tmp.dir.writeFile(.{ .sub_path = "t.txt", .data = contents });
-    const real = try tmp.dir.realpathAlloc(std.testing.allocator, "t.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "t.txt", .data = contents });
+    const real = try tmp.dir.realPathFileAlloc(std.testing.io, "t.txt", std.testing.allocator);
     defer std.testing.allocator.free(real);
-    const got = hashFileStreaming(real, 1024 * 1024) orelse return error.HashFailed;
+    const got = hashFileStreaming(std.testing.io, real, 1024 * 1024) orelse return error.HashFailed;
     try std.testing.expectEqual(hashU64(contents), got);
 }
 
 test "hashFileStreaming over-limit falls back to size+mtime pseudo-hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "big.txt", .data = "0123456789" });
-    const real = try tmp.dir.realpathAlloc(std.testing.allocator, "big.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big.txt", .data = "0123456789" });
+    const real = try tmp.dir.realPathFileAlloc(std.testing.io, "big.txt", std.testing.allocator);
     defer std.testing.allocator.free(real);
     // 한도 초과 — null 대신 pseudo-hash 반환 (size+mtime).
-    const fallback = hashFileStreaming(real, 5) orelse return error.HashFailed;
-    const full = hashFileStreaming(real, 100) orelse return error.HashFailed;
+    const fallback = hashFileStreaming(std.testing.io, real, 5) orelse return error.HashFailed;
+    const full = hashFileStreaming(std.testing.io, real, 100) orelse return error.HashFailed;
     // 둘은 다른 알고리즘이므로 서로 달라야 함 (확률적 — 충돌 매우 희박).
     try std.testing.expect(fallback != full);
 }
 
 test "hashFileStreaming missing file returns null" {
-    try std.testing.expect(hashFileStreaming("/nonexistent/zntc_wyhash_test.txt", 1024) == null);
+    try std.testing.expect(hashFileStreaming(std.testing.io, "/nonexistent/zntc_wyhash_test.txt", 1024) == null);
 }
 
 test "hashFileStreaming NUL byte path returns null (no panic)" {
     // ZNTC virtual module id (`\x00zntc:runtime/...`) 가 file watch 등록 시 hash 시도됐을 때
     // Zig std `toPosixPath` 의 NUL byte assertion panic 회귀 방지.
-    try std.testing.expect(hashFileStreaming("\x00zntc:runtime/extends", 1024) == null);
-    try std.testing.expect(hashFileStreaming("foo\x00bar", 1024) == null);
+    try std.testing.expect(hashFileStreaming(std.testing.io, "\x00zntc:runtime/extends", 1024) == null);
+    try std.testing.expect(hashFileStreaming(std.testing.io, "foo\x00bar", 1024) == null);
 }

@@ -1814,12 +1814,12 @@ test "TransformPlan: ambiguous or overflowing named import shadows keep full sem
     try function_expression_overflow_source.appendSlice(std.testing.allocator, "import { Foo");
     var j: usize = 0;
     while (j < 64) : (j += 1) {
-        try function_expression_overflow_source.writer(std.testing.allocator).print(", I{d}", .{j});
+        try function_expression_overflow_source.print(std.testing.allocator, ", I{d}", .{j});
     }
     try function_expression_overflow_source.appendSlice(std.testing.allocator, " } from './x';\nconst fn = function Foo(");
     j = 0;
     while (j < 64) : (j += 1) {
-        try function_expression_overflow_source.writer(std.testing.allocator).print("I{d},", .{j});
+        try function_expression_overflow_source.print(std.testing.allocator, "I{d},", .{j});
     }
     try function_expression_overflow_source.appendSlice(std.testing.allocator, ") { return Foo; };\n");
     const function_expression_overflow_plan = try testTransformPlan(function_expression_overflow_source.items, "input.ts", .{});
@@ -1831,12 +1831,12 @@ test "TransformPlan: ambiguous or overflowing named import shadows keep full sem
     try overflow_source.appendSlice(std.testing.allocator, "import {");
     var i: usize = 0;
     while (i < 65) : (i += 1) {
-        try overflow_source.writer(std.testing.allocator).print(" I{d},", .{i});
+        try overflow_source.print(std.testing.allocator, " I{d},", .{i});
     }
     try overflow_source.appendSlice(std.testing.allocator, " } from './x';\nfunction f(");
     i = 0;
     while (i < 65) : (i += 1) {
-        try overflow_source.writer(std.testing.allocator).print("I{d},", .{i});
+        try overflow_source.print(std.testing.allocator, "I{d},", .{i});
     }
     try overflow_source.appendSlice(std.testing.allocator, ") {}\n");
     const overflow_plan = try testTransformPlan(overflow_source.items, "input.ts", .{});

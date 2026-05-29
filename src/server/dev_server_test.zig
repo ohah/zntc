@@ -39,10 +39,10 @@ test "DevServer.shutdown: 플래그 설정 + acceptLoop 종료 신호" {
     const testing = std.testing;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    var server = try dev_server.DevServer.init(testing.allocator, .{
+    var server = try dev_server.DevServer.init(testing.allocator, testing.io, .{
         .root_dir = tmp_path,
         .port = 0,
         .host = "127.0.0.1",

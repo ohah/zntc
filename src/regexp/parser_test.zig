@@ -877,8 +877,8 @@ fn buildNamedGroups(alloc: std.mem.Allocator, count: u32, with_last_backref: boo
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     var i: u32 = 0;
-    while (i < count) : (i += 1) try buf.writer(alloc).print("(?<n{d}>a)", .{i});
-    if (with_last_backref) try buf.writer(alloc).print("\\k<n{d}>", .{count - 1});
+    while (i < count) : (i += 1) try buf.print(alloc, "(?<n{d}>a)", .{i});
+    if (with_last_backref) try buf.print(alloc, "\\k<n{d}>", .{count - 1});
     return buf.toOwnedSlice(alloc);
 }
 
@@ -914,7 +914,7 @@ test "#3501 correctness: duplicate name past inline cap still errors" {
     var i: u32 = 0;
     while (i < 20) : (i += 1) {
         const nm: u32 = if (i == 19) 3 else i; // 마지막을 n3 으로 → n3 중복
-        try buf.writer(a).print("(?<n{d}>a)", .{nm});
+        try buf.print(a, "(?<n{d}>a)", .{nm});
     }
     const P = PatternParser(false);
     var p = P.init(buf.items, .{});
@@ -927,7 +927,7 @@ test "#3501 validate: 40 named backrefs accepted (>[32] cap)" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(a);
     var i: u32 = 0;
-    while (i < 40) : (i += 1) try buf.writer(a).print("(?<n{d}>a)\\k<n{d}>", .{ i, i });
+    while (i < 40) : (i += 1) try buf.print(a, "(?<n{d}>a)\\k<n{d}>", .{ i, i });
     const P = PatternParser(false);
     var p = P.init(buf.items, .{});
     p.ext_alloc = a;

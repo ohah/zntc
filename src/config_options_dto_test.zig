@@ -118,7 +118,7 @@ test "schema diff: Zig DTO fields are covered by TS TranspileOptions" {
     const allocator = std.testing.allocator;
 
     // 저장소 루트에서 테스트 실행 가정 (zig build test 기본).
-    const ts_source = std.fs.cwd().readFileAlloc(allocator, "packages/shared/index.ts", 1 * 1024 * 1024) catch |err| {
+    const ts_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/shared/index.ts", allocator, std.Io.Limit.limited(1 * 1024 * 1024)) catch |err| {
         // CI 외 환경에서 경로가 다를 수 있음 → skip 처리
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
@@ -279,7 +279,7 @@ test "schema diff: bundler_only_fields are all in TS BuildOptionsCommon" {
     @setEvalBranchQuota(8000);
     const allocator = std.testing.allocator;
 
-    const ts_source = std.fs.cwd().readFileAlloc(allocator, "packages/core/index.ts", 4 * 1024 * 1024) catch |err| {
+    const ts_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/core/index.ts", allocator, std.Io.Limit.limited(4 * 1024 * 1024)) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
     };
@@ -303,7 +303,7 @@ test "schema diff: bundler_only_fields are all in TS BuildOptionsCommon" {
 
     // 2. BuildOptionsCommon 의 키는 (a) bundler_only_fields 또는 (b) TranspileOptions 또는
     //    (c) ts_buildoptions_only_allowlist 중 하나에 있어야 함.
-    const transpile_source = std.fs.cwd().readFileAlloc(allocator, "packages/shared/index.ts", 1 * 1024 * 1024) catch |err| {
+    const transpile_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/shared/index.ts", allocator, std.Io.Limit.limited(1 * 1024 * 1024)) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
     };

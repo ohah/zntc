@@ -2972,7 +2972,7 @@ test "#2470 regression: 50 TS parameter properties — all this.aN assignments e
     var i: u32 = 0;
     while (i < 50) : (i += 1) {
         if (i > 0) try src.appendSlice(allocator, ", ");
-        try src.writer(allocator).print("public a{d}", .{i});
+        try src.print(allocator, "public a{d}", .{i});
     }
     try src.appendSlice(allocator, ") {} }");
 
@@ -2999,7 +2999,7 @@ test "#2471 regression: 100-key object destructuring + rest — all keys exclude
     var i: u32 = 0;
     while (i < 100) : (i += 1) {
         if (i > 0) try src.appendSlice(allocator, ", ");
-        try src.writer(allocator).print("k{d}", .{i});
+        try src.print(allocator, "k{d}", .{i});
     }
     try src.appendSlice(allocator, ", ...rest } = obj;");
 

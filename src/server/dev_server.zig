@@ -1539,9 +1539,9 @@ test "collectCssFiles: .css만 수집하고 .js는 제외" {
     defer tmp.cleanup();
 
     // .css 파일 2개 + .js 파일 1개 생성
-    tmp.dir.writeFile(.{ .sub_path = "a.css", .data = "" }) catch return error.TestUnexpectedResult;
-    tmp.dir.writeFile(.{ .sub_path = "b.css", .data = "" }) catch return error.TestUnexpectedResult;
-    tmp.dir.writeFile(.{ .sub_path = "c.js", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = "c.js", .data = "" }) catch return error.TestUnexpectedResult;
 
     var out: std.ArrayList([]const u8) = .empty;
     defer {
@@ -1549,7 +1549,7 @@ test "collectCssFiles: .css만 수집하고 .js는 제외" {
         out.deinit(allocator);
     }
 
-    DevServer.collectCssFiles(allocator, tmp.dir, "/root", &out);
+    DevServer.collectCssFiles(allocator, std.testing.io, tmp.dir, "/root", &out);
 
     // .css 2개만 수집되어야 한다
     try testing.expectEqual(@as(usize, 2), out.items.len);
@@ -1568,11 +1568,11 @@ test "collectCssFiles: node_modules 내 .css 제외" {
     defer tmp.cleanup();
 
     // 일반 .css
-    tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = "style.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     // node_modules/ 하위 .css — 제외되어야 함
-    tmp.dir.makePath("node_modules/pkg") catch return error.TestUnexpectedResult;
-    tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/lib.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.createDirPath(std.testing.io, "node_modules/pkg") catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/pkg/lib.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     var out: std.ArrayList([]const u8) = .empty;
     defer {
@@ -1580,7 +1580,7 @@ test "collectCssFiles: node_modules 내 .css 제외" {
         out.deinit(allocator);
     }
 
-    DevServer.collectCssFiles(allocator, tmp.dir, "/root", &out);
+    DevServer.collectCssFiles(allocator, std.testing.io, tmp.dir, "/root", &out);
 
     // node_modules 내 .css는 제외 → 1개만
     try testing.expectEqual(@as(usize, 1), out.items.len);
@@ -1594,11 +1594,11 @@ test "collectCssFiles: 숨김 폴더(.git) 내 .css 제외" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    tmp.dir.writeFile(.{ .sub_path = "main.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = "main.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     // .git/ 하위 .css — 숨김 폴더이므로 제외되어야 함
-    tmp.dir.makePath(".git/hooks") catch return error.TestUnexpectedResult;
-    tmp.dir.writeFile(.{ .sub_path = ".git/hooks/style.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.createDirPath(std.testing.io, ".git/hooks") catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".git/hooks/style.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     var out: std.ArrayList([]const u8) = .empty;
     defer {
@@ -1606,7 +1606,7 @@ test "collectCssFiles: 숨김 폴더(.git) 내 .css 제외" {
         out.deinit(allocator);
     }
 
-    DevServer.collectCssFiles(allocator, tmp.dir, "/root", &out);
+    DevServer.collectCssFiles(allocator, std.testing.io, tmp.dir, "/root", &out);
 
     // .git 내 .css는 제외 → 1개만
     try testing.expectEqual(@as(usize, 1), out.items.len);
@@ -1705,10 +1705,10 @@ test "substituteOverlayPlaceholders: raw sentinel 들이 protocol 값으로 치�
 test "DevServer.init: cert 만 set + key 없음 → error.TlsKeyMissing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    const result = DevServer.init(std.testing.allocator, .{
+    const result = DevServer.init(std.testing.allocator, std.testing.io, .{
         .root_dir = dir_path,
         .cert_path = "/some/cert.pem",
         // key_path = null
@@ -1719,10 +1719,10 @@ test "DevServer.init: cert 만 set + key 없음 → error.TlsKeyMissing" {
 test "DevServer.init: key 만 set + cert 없음 → error.TlsKeyMissing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    const result = DevServer.init(std.testing.allocator, .{
+    const result = DevServer.init(std.testing.allocator, std.testing.io, .{
         .root_dir = dir_path,
         .key_path = "/some/key.pem",
         // cert_path = null
@@ -1733,10 +1733,10 @@ test "DevServer.init: key 만 set + cert 없음 → error.TlsKeyMissing" {
 test "DevServer.init: 둘 다 set + 존재하지 않는 파일 → CertLoadFailed (TlsContext init fail propagate)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    const result = DevServer.init(std.testing.allocator, .{
+    const result = DevServer.init(std.testing.allocator, std.testing.io, .{
         .root_dir = dir_path,
         .cert_path = "/nonexistent/cert.pem",
         .key_path = "/nonexistent/key.pem",
@@ -1748,10 +1748,10 @@ test "DevServer.init: 둘 다 set + 존재하지 않는 파일 → CertLoadFaile
 test "DevServer.init: cert/key 둘 다 null → plain HTTP (tls_ctx null)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var dev_server = try DevServer.init(std.testing.allocator, .{
+    var dev_server = try DevServer.init(std.testing.allocator, std.testing.io, .{
         .root_dir = dir_path,
     });
     defer dev_server.deinit();

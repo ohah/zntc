@@ -28,7 +28,7 @@ test "JSX: component composition" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -40,7 +40,7 @@ test "JSX: component composition" {
 test "JSX: RN dev default component import from directory index keeps target module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("Widget");
+    try tmp.dir.createDirPath(std.testing.io, "Widget");
     try writeFile(tmp.dir, "app.tsx",
         \\import Widget from './Widget';
         \\export function App() { return <Widget label="ok" />; }
@@ -68,7 +68,7 @@ test "JSX: RN dev default component import from directory index keeps target mod
         .strict_execution_order = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -84,7 +84,7 @@ test "JSX: RN dev default component import from directory index keeps target mod
 test "JSX: RN dev TSX generic component import keeps target module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("BannerCarousel");
+    try tmp.dir.createDirPath(std.testing.io, "BannerCarousel");
     try writeFile(tmp.dir, "app.tsx",
         \\import BannerCarousel from './BannerCarousel';
         \\const data = [{ id: '1' }];
@@ -116,7 +116,7 @@ test "JSX: RN dev TSX generic component import keeps target module" {
         .strict_execution_order = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     if (result.hasErrors() or
@@ -148,7 +148,7 @@ test "JSX: component with props" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -169,7 +169,7 @@ test "JSX: fragment syntax" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -194,7 +194,7 @@ test "JSX: three self-closing siblings" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -215,7 +215,7 @@ test "JSX: nested self-closing inside open/close element" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -234,7 +234,7 @@ test "JSX: mixed self-closing and open/close siblings" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -262,7 +262,7 @@ test "JSX: expression container between self-closing siblings" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -281,7 +281,7 @@ test "JSX: deeply nested components" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -300,7 +300,7 @@ test "JSX: self-closing with attributes between siblings" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -321,7 +321,7 @@ test "JSX: component with children + self-closing sibling" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -341,7 +341,7 @@ test "JSX: fragment with mixed children types" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -366,7 +366,7 @@ test "JSX: nested components with props and children" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -387,7 +387,7 @@ test "JSX: five siblings stress test" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -408,7 +408,7 @@ test "JSX: conditional expression inside element" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -428,7 +428,7 @@ test "JSX: spread attributes" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -447,7 +447,7 @@ test "JSX: self-closing after text content" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -476,7 +476,7 @@ test "TypeScript: type guard function" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -503,7 +503,7 @@ test "TypeScript: overloaded function stripped" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -531,7 +531,7 @@ test "Deconflict: imported name shadowed in nested scope" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -559,7 +559,7 @@ test "Deconflict: seven modules same name" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -591,7 +591,7 @@ test "Re-export: rename chain (A→B→C→D)" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -616,7 +616,7 @@ test "Re-export: overlapping export * names" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // (#3982) x 는 a/b 양쪽에서 export * 로 도달 → ESM spec 상 ambiguous → named
@@ -661,7 +661,7 @@ test "Real-world: CLI tool pattern" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -691,7 +691,7 @@ test "Real-world: validation library" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -717,7 +717,7 @@ test "Edge: void operator across modules" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -737,7 +737,7 @@ test "Edge: typeof imported value" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -758,7 +758,7 @@ test "Edge: instanceof with imported class" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -787,7 +787,7 @@ test "Edge: labeled statement across modules" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -807,7 +807,7 @@ test "Edge: comma operator in export" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -849,7 +849,7 @@ test "Stress: MVC 7-module framework" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -872,7 +872,7 @@ test "JSX: @jsx pragma + automatic runtime → warning diagnostic (D026)" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .automatic });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // (react/jsx-runtime 미설치라 resolve error 도 같이 나지만) jsx_pragma_ignored warning 은 와야 함.

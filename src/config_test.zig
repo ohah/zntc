@@ -75,7 +75,7 @@ test "stripJsonComments - trailing comma" {
 test "TsConfig.load - missing file returns defaults" {
     const allocator = std.testing.allocator;
     // 존재하지 않는 디렉토리를 지정하면 기본값이 반환된다
-    var config = try TsConfig.load(allocator, "/tmp/zntc_test_nonexistent_dir_12345");
+    var config = try TsConfig.load(allocator, std.testing.io, "/tmp/zntc_test_nonexistent_dir_12345");
     defer config.deinit();
 
     try std.testing.expect(config.target == null);
@@ -98,8 +98,8 @@ test "TsConfig.load - parse compilerOptions" {
 
     // 임시 디렉토리에 테스트용 tsconfig.json 생성
     const tmp_dir = "/tmp/zntc_test_config_parse";
-    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
+    std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir) catch {}; // cleanup 실패 무시
 
     const tsconfig_content =
         \\{
@@ -123,9 +123,9 @@ test "TsConfig.load - parse compilerOptions" {
 
     const tsconfig_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tsconfig.json" });
     defer allocator.free(tsconfig_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = tsconfig_path, .data = tsconfig_content });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = tsconfig_path, .data = tsconfig_content });
 
-    var config = try TsConfig.load(allocator, tmp_dir);
+    var config = try TsConfig.load(allocator, std.testing.io, tmp_dir);
     defer config.deinit();
 
     try std.testing.expectEqualStrings("es2020", config.target.?);
@@ -147,8 +147,8 @@ test "TsConfig.load - JSONC with comments" {
     const allocator = std.testing.allocator;
 
     const tmp_dir = "/tmp/zntc_test_config_jsonc";
-    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
+    std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir) catch {}; // cleanup 실패 무시
 
     const tsconfig_content =
         \\{
@@ -164,9 +164,9 @@ test "TsConfig.load - JSONC with comments" {
 
     const tsconfig_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tsconfig.json" });
     defer allocator.free(tsconfig_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = tsconfig_path, .data = tsconfig_content });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = tsconfig_path, .data = tsconfig_content });
 
-    var config = try TsConfig.load(allocator, tmp_dir);
+    var config = try TsConfig.load(allocator, std.testing.io, tmp_dir);
     defer config.deinit();
 
     try std.testing.expectEqualStrings("es2021", config.target.?);
@@ -178,8 +178,8 @@ test "TsConfig.load - extends inheritance" {
     const allocator = std.testing.allocator;
 
     const tmp_dir = "/tmp/zntc_test_config_extends";
-    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
+    std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir) catch {}; // cleanup 실패 무시
 
     // base.json: 기본 설정
     const base_content =
@@ -194,7 +194,7 @@ test "TsConfig.load - extends inheritance" {
     ;
     const base_path = try std.fs.path.join(allocator, &.{ tmp_dir, "base.json" });
     defer allocator.free(base_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = base_path, .data = base_content });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = base_path, .data = base_content });
 
     // tsconfig.json: base를 확장하고 일부 오버라이드
     const tsconfig_content =
@@ -208,9 +208,9 @@ test "TsConfig.load - extends inheritance" {
     ;
     const tsconfig_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tsconfig.json" });
     defer allocator.free(tsconfig_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = tsconfig_path, .data = tsconfig_content });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = tsconfig_path, .data = tsconfig_content });
 
-    var config = try TsConfig.load(allocator, tmp_dir);
+    var config = try TsConfig.load(allocator, std.testing.io, tmp_dir);
     defer config.deinit();
 
     // target은 자식이 오버라이드 → "es2022"
@@ -228,8 +228,8 @@ test "TsConfig.load - partial compilerOptions" {
     const allocator = std.testing.allocator;
 
     const tmp_dir = "/tmp/zntc_test_config_partial";
-    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
+    std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir) catch {}; // cleanup 실패 무시
 
     // 일부 옵션만 있는 tsconfig
     const tsconfig_content =
@@ -241,9 +241,9 @@ test "TsConfig.load - partial compilerOptions" {
     ;
     const tsconfig_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tsconfig.json" });
     defer allocator.free(tsconfig_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = tsconfig_path, .data = tsconfig_content });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = tsconfig_path, .data = tsconfig_content });
 
-    var config = try TsConfig.load(allocator, tmp_dir);
+    var config = try TsConfig.load(allocator, std.testing.io, tmp_dir);
     defer config.deinit();
 
     try std.testing.expectEqualStrings("esnext", config.target.?);

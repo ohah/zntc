@@ -6,15 +6,15 @@ const env = @import("env.zig");
 test "app env loader honors Vite file priority and prefixes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir);
 
-    try tmp.dir.writeFile(.{ .sub_path = ".env", .data = "VITE_KEY=base\nSECRET=hidden\n" });
-    try tmp.dir.writeFile(.{ .sub_path = ".env.local", .data = "VITE_KEY=local\n" });
-    try tmp.dir.writeFile(.{ .sub_path = ".env.production", .data = "VITE_KEY=prod\nZNTC_FLAG=yes\n" });
-    try tmp.dir.writeFile(.{ .sub_path = ".env.production.local", .data = "VITE_KEY=prod-local\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".env", .data = "VITE_KEY=base\nSECRET=hidden\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".env.local", .data = "VITE_KEY=local\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".env.production", .data = "VITE_KEY=prod\nZNTC_FLAG=yes\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".env.production.local", .data = "VITE_KEY=prod-local\n" });
 
-    var env_map = try env.loadEnv(std.testing.allocator, .{ .mode = "production", .env_dir = dir });
+    var env_map = try env.loadEnv(std.testing.allocator, std.testing.io, .{ .mode = "production", .env_dir = dir });
     defer env.deinitMap(&env_map, std.testing.allocator);
     try std.testing.expectEqualStrings("prod-local", env_map.get("VITE_KEY").?);
     try std.testing.expectEqualStrings("yes", env_map.get("ZNTC_FLAG").?);

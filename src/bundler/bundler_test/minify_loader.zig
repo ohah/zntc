@@ -81,7 +81,7 @@ test "Scope hoisting: arrow param shadow should not be renamed when namespace im
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // checks$1.map 또는 checks$2.map가 있으면 안 됨 — parameter shadow가 rename되지 않아야
@@ -117,7 +117,7 @@ test "Bundler: sideEffects glob pattern — matched file kept, unmatched tree-sh
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // polyfill.js는 sideEffects 패턴 매칭 → side_effects=true → 번들에 포함
@@ -156,7 +156,7 @@ test "Scope hoisting: forward reference in same module — const before use" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 번들 실행 시 "from_a from_b"가 출력되어야 한다.
@@ -196,7 +196,7 @@ test "scope hoisting: canonical name collision prevention (vue computed pattern)
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -218,7 +218,7 @@ test "namespace object: bare default keyword prevention (eventemitter3 pattern)"
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -242,7 +242,7 @@ test "namespace barrel re-export: import * as X; export { X } (fp-ts pattern)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -267,7 +267,7 @@ test "export *: excludes default (ESM spec 15.2.3.5)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -288,7 +288,7 @@ test "export * + explicit default re-export coexistence" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -310,7 +310,7 @@ test "Interop: .mjs importer uses Node mode, .ts uses Babel mode" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -340,7 +340,7 @@ test "TreeShaking: export-level DCE — tslib pattern (export default object)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -371,7 +371,7 @@ test "TreeShaking: export-level DCE — var with ternary init removed" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -402,7 +402,7 @@ test "TreeShaking: class extends identifier — unused child removed (three.js p
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -434,7 +434,7 @@ test "TreeShaking: class extends call expr — kept as side-effect" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -467,7 +467,7 @@ test "TreeShaking: re-export chain — only used export included (three.module.j
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -496,7 +496,7 @@ test "TreeShaking: class with static block preserved — side-effect in body" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -522,7 +522,7 @@ test "TreeShaking: class with impure static field preserved" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -548,7 +548,7 @@ test "TreeShaking: class with pure static field removed" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -578,7 +578,7 @@ test "TreeShaking: export default identifier — import preserved (yargs y18n pa
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -611,7 +611,7 @@ test "TreeShaking: ESM→CJS re-export default — eventemitter3 pattern" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -643,7 +643,7 @@ test "TreeShaking: namespace barrel re-export — import * as z; export { z }" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -678,7 +678,7 @@ test "Codegen: else if (false) chain — no syntax error" {
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -708,7 +708,7 @@ test "Codegen: unary ! boolean eval — correct negation" {
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -739,7 +739,7 @@ test "Minify: production env derived DEV flag folds through string methods" {
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -779,7 +779,7 @@ test "Minify: cross-module default DEV flag removes dead import fanout" {
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -820,7 +820,7 @@ test "Minify: cross-module derived default DEV flag removes long diagnostic bran
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -860,7 +860,7 @@ test "Minify: cross-module true DEV flag keeps live import fanout" {
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -899,7 +899,7 @@ test "Minify: re-exported default DEV flag removes dead import fanout" {
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -929,7 +929,7 @@ test "Minify: constant fact materialization preserves object shorthand keys" {
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -979,7 +979,7 @@ test "Minify: refreshed semantic recomputes mangling after constant fact DCE" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1009,7 +1009,7 @@ test "TreeShaking: seedAllStmts propagates export * chain — cheerio pattern" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1047,7 +1047,7 @@ test "TreeShaking: sideEffects:false + namespace import — symbol-based BFS see
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1088,7 +1088,7 @@ test "TreeShaking: sideEffects:false deep re-export chain — symbol reachabilit
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1119,7 +1119,7 @@ test "TreeShaking: sideEffects:false + side-effect statement preserved when modu
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1150,7 +1150,7 @@ test "Minify: CJS import binding preamble uses mangled name" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1178,7 +1178,7 @@ test "Minify: ESM import binding resolves correctly after mangling (#1581)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1206,7 +1206,7 @@ test "Minify: for-loop body var declaration has semicolon" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1232,7 +1232,7 @@ test "Minify: template literal expression identifiers renamed (#493)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1268,7 +1268,7 @@ test "Minify: nested scope variable not shadowed by mangled name (#494)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1298,7 +1298,7 @@ test "Minify: TS type params do not collide with runtime vars (#1259)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1333,7 +1333,7 @@ test "Minify: type alias / interface do not consume mangler slots (#1259)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1365,7 +1365,7 @@ test "Minify: generic class type params do not leak into runtime (#1259)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1393,7 +1393,7 @@ test "Minify: enum member access preserved after mangling (#1259)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1425,7 +1425,7 @@ test "Minify: direct eval preserves visible local bindings (#1258)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1458,7 +1458,7 @@ test "Minify: direct eval preserves outer scope bindings too (#1258)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1491,7 +1491,7 @@ test "Minify: with statement preserves bindings in enclosing scope (#1258)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1529,7 +1529,7 @@ test "Minify: non-entry export name is mangled (#1581)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1559,7 +1559,7 @@ test "Minify: entry export name preserved (#1581)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1589,7 +1589,7 @@ test "Minify: external import local binding preserved (#1581)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1620,7 +1620,7 @@ test "Minify: non-entry default export synthetic `_default` is mangled (#1585)" 
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1657,7 +1657,7 @@ test "Minify: multiple default exports collide — each `_default$N` is mangled 
         .minify_syntax = true,
     });
     defer bun.deinit();
-    const result = try bun.bundle();
+    const result = try bun.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1689,7 +1689,7 @@ test "Minify: entry `export default` preserves external `default` keyword (#1585
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1727,7 +1727,7 @@ test "Minify: new (ClassExpression)() drops redundant parens (#1586)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1754,7 +1754,7 @@ test "Minify: new (Identifier)() drops redundant parens (#1586)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1779,7 +1779,7 @@ test "Minify: new (MemberExpression)() drops redundant parens (#1586)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1809,7 +1809,7 @@ test "Minify: new (CallExpression)() keeps parens — safety (#1586)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1835,7 +1835,7 @@ test "Minify: redundant parens removal preserved without minify_syntax (#1586)" 
         .minify_syntax = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1866,7 +1866,7 @@ test "Minify: default export has no synthetic variable — no regression (#1585)
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1902,7 +1902,7 @@ test "Minify: unreferenced class expression name is anonymized (#1587)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1932,7 +1932,7 @@ test "Minify: class expression with self-reference keeps its name (#1587)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1959,7 +1959,7 @@ test "Minify: class declaration name never anonymized (#1587)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1988,7 +1988,7 @@ test "Minify: anonymization disabled without minify_syntax (#1587)" {
         .minify_syntax = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2015,7 +2015,7 @@ test "Minify: keep_names disables anonymization (#1587)" {
         .keep_names = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2052,7 +2052,7 @@ test "Minify non-fast-path: anonymize unreferenced class expression (#1596)" {
         .use_define_for_class_fields = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2080,7 +2080,7 @@ test "Minify non-fast-path: self-reference keeps name (#1596)" {
         .use_define_for_class_fields = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2108,7 +2108,7 @@ test "Minify non-fast-path: static field blocks anonymization (#1596)" {
         .use_define_for_class_fields = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2138,7 +2138,7 @@ test "Minify non-fast-path: experimental decorator blocks anonymization (#1596)"
         .experimental_decorators = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2167,7 +2167,7 @@ test "Minify non-fast-path: instance field allows anonymization (#1596)" {
         .use_define_for_class_fields = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2194,7 +2194,7 @@ test "Asset loader: text — string export" {
         .loader_overrides = &.{.{ .ext = ".txt", .loader = .text }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2220,7 +2220,7 @@ test "Asset loader: text — escapes special characters" {
         .loader_overrides = &.{.{ .ext = ".txt", .loader = .text }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2233,7 +2233,7 @@ test "Asset loader: dataurl — base64 data URL" {
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import url from './icon.png';\nconsole.log(url);");
     // 간단한 바이너리 데이터 (실제 PNG가 아니어도 테스트 목적으로 충분)
-    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2244,7 +2244,7 @@ test "Asset loader: dataurl — base64 data URL" {
         .loader_overrides = &.{.{ .ext = ".png", .loader = .dataurl }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2257,7 +2257,7 @@ test "Asset loader: base64 — pure base64 string (no data URL prefix)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import s from './data.bin';\nconsole.log(s);");
-    try tmp.dir.writeFile(.{ .sub_path = "data.bin", .data = &.{ 0x48, 0x69 } }); // "Hi"
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "data.bin", .data = &.{ 0x48, 0x69 } }); // "Hi"
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2268,7 +2268,7 @@ test "Asset loader: base64 — pure base64 string (no data URL prefix)" {
         .loader_overrides = &.{.{ .ext = ".bin", .loader = .base64 }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2282,7 +2282,7 @@ test "Asset loader: copy — raw passthrough to asset output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import url from './doc.pdf';\nconsole.log(url);");
-    try tmp.dir.writeFile(.{ .sub_path = "doc.pdf", .data = "PDF-RAW-CONTENTS" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "doc.pdf", .data = "PDF-RAW-CONTENTS" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2293,7 +2293,7 @@ test "Asset loader: copy — raw passthrough to asset output" {
         .loader_overrides = &.{.{ .ext = ".pdf", .loader = .copy }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2309,7 +2309,7 @@ test "Asset loader: file — hash filename + asset output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import url from './logo.png';\nconsole.log(url);");
-    try tmp.dir.writeFile(.{ .sub_path = "logo.png", .data = "fake-png-data" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = "fake-png-data" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2320,7 +2320,7 @@ test "Asset loader: file — hash filename + asset output" {
         .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2337,7 +2337,7 @@ test "Asset loader: file — public-path prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import url from './img.png';\nconsole.log(url);");
-    try tmp.dir.writeFile(.{ .sub_path = "img.png", .data = "data" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "img.png", .data = "data" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2349,7 +2349,7 @@ test "Asset loader: file — public-path prefix" {
         .public_path = "https://cdn.example.com/",
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2360,7 +2360,7 @@ test "Asset loader: file — content hash determinism" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import url from './a.bin';\nconsole.log(url);");
-    try tmp.dir.writeFile(.{ .sub_path = "a.bin", .data = "deterministic-content" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.bin", .data = "deterministic-content" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2372,7 +2372,7 @@ test "Asset loader: file — content hash determinism" {
         .loader_overrides = &.{.{ .ext = ".bin", .loader = .file }},
     });
     defer b1.deinit();
-    const r1 = try b1.bundle();
+    const r1 = try b1.bundle(std.testing.io);
     defer r1.deinit(std.testing.allocator);
 
     // 두 번째 번들 (같은 내용)
@@ -2382,7 +2382,7 @@ test "Asset loader: file — content hash determinism" {
         .loader_overrides = &.{.{ .ext = ".bin", .loader = .file }},
     });
     defer b2.deinit();
-    const r2 = try b2.bundle();
+    const r2 = try b2.bundle(std.testing.io);
     defer r2.deinit(std.testing.allocator);
 
     // 같은 내용 → 같은 해시 → 같은 출력
@@ -2393,7 +2393,7 @@ test "Asset loader: binary — __toBinary runtime helper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import data from './raw.bin';\nconsole.log(data);");
-    try tmp.dir.writeFile(.{ .sub_path = "raw.bin", .data = &.{ 0xDE, 0xAD, 0xBE, 0xEF } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "raw.bin", .data = &.{ 0xDE, 0xAD, 0xBE, 0xEF } });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2404,7 +2404,7 @@ test "Asset loader: binary — __toBinary runtime helper" {
         .loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2429,7 +2429,7 @@ test "Asset loader: empty — undefined export" {
         .loader_overrides = &.{.{ .ext = ".css", .loader = .empty }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2452,7 +2452,7 @@ test "Asset loader: --loader override takes precedence" {
         .loader_overrides = &.{.{ .ext = ".txt", .loader = .file }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2466,7 +2466,7 @@ test "Asset loader: asset-names pattern" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import url from './font.woff';\nconsole.log(url);");
-    try tmp.dir.writeFile(.{ .sub_path = "font.woff", .data = "woff-data" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "font.woff", .data = "woff-data" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2478,7 +2478,7 @@ test "Asset loader: asset-names pattern" {
         .asset_names = "assets/[name]-[hash]",
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2504,7 +2504,7 @@ test "Asset loader: CJS format" {
         .loader_overrides = &.{.{ .ext = ".txt", .loader = .text }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2517,8 +2517,8 @@ test "Asset loader: [dir] pattern preserves directory structure" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // 서브디렉토리에 asset 배치
-    tmp.dir.makePath("images/icons") catch {};
-    try tmp.dir.writeFile(.{ .sub_path = "images/icons/logo.png", .data = "png-data" });
+    tmp.dir.createDirPath(std.testing.io, "images/icons") catch {};
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "images/icons/logo.png", .data = "png-data" });
     try writeFile(tmp.dir, "entry.ts", "import url from './images/icons/logo.png';\nconsole.log(url);");
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -2531,7 +2531,7 @@ test "Asset loader: [dir] pattern preserves directory structure" {
         .asset_names = "[dir]/[name]-[hash]",
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2545,7 +2545,7 @@ test "Asset loader: [dir] pattern preserves directory structure" {
 test "Asset loader: [ext] pattern" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "font.woff2", .data = "woff2-data" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "font.woff2", .data = "woff2-data" });
     try writeFile(tmp.dir, "entry.ts", "import url from './font.woff2';\nconsole.log(url);");
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -2558,7 +2558,7 @@ test "Asset loader: [ext] pattern" {
         .asset_names = "static/[ext]/[name]-[hash]",
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2570,7 +2570,7 @@ test "No loader: .png without --loader errors" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const icon = require('./icon.png');\nconsole.log(icon);");
-    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2580,7 +2580,7 @@ test "No loader: .png without --loader errors" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // loader 미설정 → 빌드 에러 발생
@@ -2595,7 +2595,7 @@ test "No loader: .png with --loader:.png=file succeeds" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const icon = require('./icon.png');\nconsole.log(icon);");
-    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2606,7 +2606,7 @@ test "No loader: .png with --loader:.png=file succeeds" {
         .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // loader 지정 → 성공
@@ -2618,7 +2618,7 @@ test "No loader: ESM import of .png without --loader errors" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
-    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2628,7 +2628,7 @@ test "No loader: ESM import of .png without --loader errors" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -2642,7 +2642,7 @@ test "No loader: .mp3 without --loader errors" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const audio = require('./sound.mp3');\nconsole.log(audio);");
-    try tmp.dir.writeFile(.{ .sub_path = "sound.mp3", .data = "fake-mp3" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sound.mp3", .data = "fake-mp3" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2652,7 +2652,7 @@ test "No loader: .mp3 without --loader errors" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -2662,7 +2662,7 @@ test "Plugin load hook overrides asset loader" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
-    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2674,7 +2674,7 @@ test "Plugin load hook overrides asset loader" {
         .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2689,7 +2689,7 @@ test "Plugin load hook overrides asset loader" {
 // ============================================================
 
 // Helper: CJS wrap이 발생하도록 require를 호출하는 fixture.
-fn writeCjsWrapFixture(tmp_dir: std.fs.Dir) !void {
+fn writeCjsWrapFixture(tmp_dir: std.Io.Dir) !void {
     try writeFile(tmp_dir, "lib.cjs", "module.exports = { greet: () => \"hi\" };");
     try writeFile(tmp_dir, "entry.ts",
         \\const lib = require('./lib.cjs');
@@ -2713,7 +2713,7 @@ test "#1618 minify: __commonJS → $cj short name" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2741,7 +2741,7 @@ test "#1618 non-minify: __commonJS name preserved" {
         // minify_whitespace=false → 기본(디버그 친화) 이름 유지
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2776,7 +2776,7 @@ test "#1618 minify: user-defined `$c` local const doesn't collide with runtime h
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2810,7 +2810,7 @@ test "#1618 minify: non-CJS bundle doesn't emit runtime helper" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2825,7 +2825,7 @@ test "#1618 minify: non-CJS bundle doesn't emit runtime helper" {
 
 // Helper: ESM 모듈이 require() 로 소비되면 __esm 래핑 + __export + __toCommonJS 가
 // 모두 활성화됨 (references/esbuild: CJS-ESM interop 경로).
-fn writeEsmWrappedFixture(tmp_dir: std.fs.Dir) !void {
+fn writeEsmWrappedFixture(tmp_dir: std.Io.Dir) !void {
     try writeFile(tmp_dir, "mod.js",
         \\export function greet() { return 'hello'; }
         \\export const name = 'world';
@@ -2852,7 +2852,7 @@ test "#1621 minify: __esm/__export/__toCommonJS → $e/$x/$tC short names" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2884,7 +2884,7 @@ test "#1621 non-minify: __esm/__export/__toCommonJS long names preserved" {
         // non-minify: 긴 이름 유지.
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2898,7 +2898,7 @@ test "#1621 non-minify: __esm/__export/__toCommonJS long names preserved" {
 }
 
 // Helper: CJS 모듈을 default import 하면 preamble 에서 __toESM 래핑이 활성화됨.
-fn writeToEsmFixture(tmp_dir: std.fs.Dir) !void {
+fn writeToEsmFixture(tmp_dir: std.Io.Dir) !void {
     try writeFile(tmp_dir, "lib.cjs",
         \\Object.defineProperty(exports, "__esModule", { value: true });
         \\exports.default = { v: 42 };
@@ -2925,7 +2925,7 @@ test "#1621 minify: __toESM → $tE short name" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2954,7 +2954,7 @@ test "#1621 minify: Object.* alias shortened ($dp/$cr/$gP/$gN/$gD/$hO/$cp)" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2992,7 +2992,7 @@ test "#1621 minify: __toESM compact __copyProps shape" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3034,7 +3034,7 @@ test "#1621 minify+react-native: configurable __toESM stays ES5 and compact" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3070,7 +3070,7 @@ test "#1621 minify: __commonJS body 는 anonymous arrow (named function 제거)"
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3109,7 +3109,7 @@ test "#1621 minify+es5: class → $eX/$cC/$cS 축약" {
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3146,7 +3146,7 @@ test "#1621 non-minify+es5: class helper 원본 이름 유지" {
         // minify 비활성 — 원본 이름 기대
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3176,7 +3176,7 @@ test "#1621 minify+es5: async → $aS/$gn 축약" {
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3209,7 +3209,7 @@ test "#1621 minify+es5: spread/rest → $tA/$aL/$rs 축약" {
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3242,7 +3242,7 @@ test "#1621 minify+es5: tagged template → $tt 축약" {
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3274,7 +3274,7 @@ test "#1621 minify+es5: private method/field → $pI/$pG/$pF 축약" {
         .unsupported = compat_mod.fromESTarget(.es2021),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3305,7 +3305,7 @@ test "#1621 minify+keep-names: __name → $nm 축약" {
         .keep_names = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3339,7 +3339,7 @@ test "#1621 minify + decorator: __decorateClass/__decorateParam → $dC/$dK" {
         .experimental_decorators = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3384,7 +3384,7 @@ test "#1621 runtime correctness: es5 minified bundle 실행 결과 일치" {
         .unsupported = compat_mod.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

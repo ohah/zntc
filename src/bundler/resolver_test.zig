@@ -21,12 +21,12 @@ test "isRelativeOrAbsolute" {
 }
 
 /// 테스트용 헬퍼: tmpDir에 파일 생성 (부모 디렉토리 자동 생성)
-fn createFile(dir: std.fs.Dir, path: []const u8) !void {
+fn createFile(dir: std.Io.Dir, path: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
+        dir.createDirPath(std.testing.io, parent) catch {};
     }
-    const file = try dir.createFile(path, .{});
-    file.close();
+    const file = try dir.createFile(std.testing.io, path, .{});
+    file.close(std.testing.io);
 }
 
 /// 테스트용 헬퍼: 경로 끝 부분 비교 (구분자 독립 — Windows `\` + Unix `/` 모두 처리).
@@ -48,11 +48,11 @@ test "resolve: exact file" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "foo.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./foo.ts");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./foo.ts");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "foo.ts"));
@@ -64,11 +64,11 @@ test "resolve: extension search (.ts)" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "bar.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./bar");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./bar");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "bar.ts"));
@@ -79,11 +79,11 @@ test "resolve: simple nested dot-relative path" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "nested/util.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./nested/util");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./nested/util");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "nested/util.ts"));
@@ -95,11 +95,11 @@ test "resolve: normalized dot-relative path still supports parent segment" {
     try createFile(tmp.dir, "bar.ts");
     try createFile(tmp.dir, "nested/entry.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./nested/../bar");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./nested/../bar");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "bar.ts"));
@@ -111,11 +111,11 @@ test "resolve: extension search (.tsx before .js)" {
     try createFile(tmp.dir, "comp.tsx");
     try createFile(tmp.dir, "comp.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./comp");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./comp");
     defer std.testing.allocator.free(result.path);
 
     // .ts → .tsx → .js 순서이므로 .tsx가 먼저
@@ -128,11 +128,11 @@ test "resolve: TS extension mapping (.js → .ts)" {
     try createFile(tmp.dir, "util.ts");
     // util.js는 없음. import './util.js' → ./util.ts로 해석
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./util.js");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./util.js");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "util.ts"));
@@ -143,11 +143,11 @@ test "resolve: TS extension mapping (.jsx → .tsx)" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "App.tsx");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./App.jsx");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./App.jsx");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "App.tsx"));
@@ -158,11 +158,11 @@ test "resolve: directory index (./dir → ./dir/index.ts)" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "components/index.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./components");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./components");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "components/index.ts"));
@@ -174,11 +174,11 @@ test "resolve: current directory dot specifier resolves index" {
     try createFile(tmp.dir, "feature/index.js");
     try createFile(tmp.dir, "feature/component.js");
 
-    const feature_path = try tmp.dir.realpathAlloc(std.testing.allocator, "feature");
+    const feature_path = try tmp.dir.realPathFileAlloc(std.testing.io, "feature", std.testing.allocator);
     defer std.testing.allocator.free(feature_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(feature_path, ".");
+    const result = try resolver.resolve(std.testing.io, feature_path, ".");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "feature/index.js"));
@@ -189,11 +189,11 @@ test "resolve: directory index (.tsx)" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "pages/index.tsx");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./pages");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./pages");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "pages/index.tsx"));
@@ -205,11 +205,11 @@ test "resolve: parent directory (../)" {
     try createFile(tmp.dir, "shared.ts");
     try createFile(tmp.dir, "sub/entry.ts");
 
-    const sub_path = try tmp.dir.realpathAlloc(std.testing.allocator, "sub");
+    const sub_path = try tmp.dir.realPathFileAlloc(std.testing.io, "sub", std.testing.allocator);
     defer std.testing.allocator.free(sub_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(sub_path, "../shared");
+    const result = try resolver.resolve(std.testing.io, sub_path, "../shared");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "shared.ts"));
@@ -219,11 +219,11 @@ test "resolve: module not found" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = resolver.resolve(dir_path, "./nonexistent");
+    const result = resolver.resolve(std.testing.io, dir_path, "./nonexistent");
     try std.testing.expectError(error.ModuleNotFound, result);
 }
 
@@ -233,11 +233,11 @@ test "resolve: bare specifier with main field" {
     try writeFile(tmp.dir, "node_modules/my-lib/package.json", "{\"main\":\"./lib/index.js\"}");
     try createFile(tmp.dir, "node_modules/my-lib/lib/index.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "my-lib");
+    const result = try resolver.resolve(std.testing.io, dir_path, "my-lib");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "my-lib/lib/index.js"));
@@ -250,11 +250,11 @@ test "resolve: bare specifier with module field" {
     try createFile(tmp.dir, "node_modules/esm-pkg/esm/index.js");
     try createFile(tmp.dir, "node_modules/esm-pkg/cjs/index.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "esm-pkg");
+    const result = try resolver.resolve(std.testing.io, dir_path, "esm-pkg");
     defer std.testing.allocator.free(result.path);
 
     // module 필드가 main보다 우선
@@ -268,11 +268,11 @@ test "resolve: bare specifier with exports field" {
     try createFile(tmp.dir, "node_modules/exp-pkg/esm.js");
     try createFile(tmp.dir, "node_modules/exp-pkg/cjs.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "exp-pkg");
+    const result = try resolver.resolve(std.testing.io, dir_path, "exp-pkg");
     defer std.testing.allocator.free(result.path);
 
     // 기본 conditions에 "import"가 포함되어 esm.js 선택
@@ -285,11 +285,11 @@ test "resolve: bare specifier with index fallback" {
     try writeFile(tmp.dir, "node_modules/simple/package.json", "{\"name\":\"simple\"}");
     try createFile(tmp.dir, "node_modules/simple/index.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "simple");
+    const result = try resolver.resolve(std.testing.io, dir_path, "simple");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "simple/index.js"));
@@ -301,11 +301,11 @@ test "resolve: trailing slash bare specifier uses package root" {
     try writeFile(tmp.dir, "node_modules/buffer/package.json", "{\"main\":\"index.js\"}");
     try createFile(tmp.dir, "node_modules/buffer/index.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "buffer/");
+    const result = try resolver.resolve(std.testing.io, dir_path, "buffer/");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "buffer/index.js"));
@@ -319,11 +319,11 @@ test "resolve: trailing slash bare specifier walks up to workspace root node_mod
     try createFile(tmp.dir, "node_modules/buffer/index.js");
     try createFile(tmp.dir, "packages/app/src/entry.ts");
 
-    const source_path = try tmp.dir.realpathAlloc(std.testing.allocator, "packages/app/src");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "packages/app/src", std.testing.allocator);
     defer std.testing.allocator.free(source_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(source_path, "buffer/");
+    const result = try resolver.resolve(std.testing.io, source_path, "buffer/");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "buffer/index.js"));
@@ -334,7 +334,7 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("node_modules");
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
     try writeFile(tmp.dir, "node_modules/react/package.json", "{\"main\":\"index.js\"}");
     try createFile(tmp.dir, "node_modules/react/index.js");
 
@@ -345,28 +345,28 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
     try writeFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/code-push/package.json", "{\"main\":\"script/acquisition-sdk.js\"}");
     try createFile(tmp.dir, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js");
 
-    tmp.dir.symLink("../.pnpm/ui@1_react@18/node_modules/ui", "node_modules/ui", .{ .is_directory = true }) catch |err| switch (err) {
+    tmp.dir.symLink(std.testing.io, "../.pnpm/ui@1_react@18/node_modules/ui", "node_modules/ui", .{ .is_directory = true }) catch |err| switch (err) {
         error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var realpath_resolver = Resolver.init(std.testing.allocator);
-    const real_ui = try realpath_resolver.resolve(root, "ui");
+    const real_ui = try realpath_resolver.resolve(std.testing.io, root, "ui");
     defer std.testing.allocator.free(real_ui.path);
     try std.testing.expect(std.mem.indexOf(u8, real_ui.path, ".pnpm") != null);
 
     const real_ui_dir = std.fs.path.dirname(real_ui.path).?;
-    const peer_react = try realpath_resolver.resolve(real_ui_dir, "react");
+    const peer_react = try realpath_resolver.resolve(std.testing.io, real_ui_dir, "react");
     defer std.testing.allocator.free(peer_react.path);
     try std.testing.expect(std.mem.indexOf(u8, peer_react.path, ".pnpm/ui@1_react@18/node_modules/react") != null);
 
     var logical_resolver = Resolver.init(std.testing.allocator);
     logical_resolver.preserve_symlinks = true;
     logical_resolver.resolve_symlink_siblings = true;
-    const logical_ui = try logical_resolver.resolve(root, "ui");
+    const logical_ui = try logical_resolver.resolve(std.testing.io, root, "ui");
     defer std.testing.allocator.free(logical_ui.path);
     defer if (logical_ui.resolve_dir) |dir| std.testing.allocator.free(dir);
     // preserve_symlinks=true → identity 는 link path. `.pnpm` 미포함, `node_modules/ui` 로 끝남.
@@ -376,19 +376,19 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — pnpm 에서 link
 
     const logical_ui_dir = std.fs.path.dirname(logical_ui.path).?;
     // peer dependency dedupe: lookup root 는 link path → walk up 으로 root node_modules/react 도달.
-    const root_react = try logical_resolver.resolve(logical_ui_dir, "react");
+    const root_react = try logical_resolver.resolve(std.testing.io, logical_ui_dir, "react");
     defer std.testing.allocator.free(root_react.path);
     try std.testing.expect(pathEndsWith(root_react.path, "node_modules/react/index.js"));
     try std.testing.expect(std.mem.indexOf(u8, root_react.path, ".pnpm/ui@1_react@18/node_modules/react") == null);
 
     // package-private dependency: logical 경로엔 없고 realpath sibling 에만 존재 →
     // resolve_symlink_siblings fallback 으로 `.pnpm/.../node_modules/code-push` 발견.
-    const package_owned_dep = try logical_resolver.resolve(logical_ui_dir, "code-push");
+    const package_owned_dep = try logical_resolver.resolve(std.testing.io, logical_ui_dir, "code-push");
     defer std.testing.allocator.free(package_owned_dep.path);
     defer if (package_owned_dep.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_dep.path, ".pnpm/ui@1_react@18/node_modules/code-push") != null);
 
-    const package_owned_subpath = try logical_resolver.resolve(logical_ui_dir, "code-push/script/acquisition-sdk");
+    const package_owned_subpath = try logical_resolver.resolve(std.testing.io, logical_ui_dir, "code-push/script/acquisition-sdk");
     defer std.testing.allocator.free(package_owned_subpath.path);
     defer if (package_owned_subpath.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, package_owned_subpath.path, ".pnpm/ui@1_react@18/node_modules/code-push/script/acquisition-sdk.js") != null);
@@ -398,12 +398,13 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — 표준 pnpm pack
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/node_modules");
-    try tmp.dir.makePath("node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/src");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/src");
     try writeFile(tmp.dir, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/package.json", "{\"main\":\"index.js\"}");
     try createFile(tmp.dir, "node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts");
 
     tmp.dir.symLink(
+        std.testing.io,
         "../../../node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview",
         "apps/app/node_modules/react-native-webview",
         .{ .is_directory = true },
@@ -413,6 +414,7 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — 표준 pnpm pack
     };
 
     tmp.dir.symLink(
+        std.testing.io,
         "../../react-native-webview@13/node_modules/react-native-webview",
         "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/react-native-webview",
         .{ .is_directory = true },
@@ -421,19 +423,19 @@ test "resolve: preserve_symlinks + resolve_symlink_siblings — 표준 pnpm pack
         else => return err,
     };
 
-    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "apps/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "apps/app", std.testing.allocator);
     defer std.testing.allocator.free(app_root);
-    const bridge_src = try tmp.dir.realpathAlloc(std.testing.allocator, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/src");
+    const bridge_src = try tmp.dir.realPathFileAlloc(std.testing.io, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/src", std.testing.allocator);
     defer std.testing.allocator.free(bridge_src);
 
     var resolver = Resolver.init(std.testing.allocator);
     resolver.preserve_symlinks = true;
     resolver.resolve_symlink_siblings = true;
 
-    const from_app = try resolver.resolve(app_root, "react-native-webview/src/RNCWebViewNativeComponent");
+    const from_app = try resolver.resolve(std.testing.io, app_root, "react-native-webview/src/RNCWebViewNativeComponent");
     defer std.testing.allocator.free(from_app.path);
     defer if (from_app.resolve_dir) |dir| std.testing.allocator.free(dir);
-    const from_bridge = try resolver.resolve(bridge_src, "react-native-webview/src/RNCWebViewNativeComponent");
+    const from_bridge = try resolver.resolve(std.testing.io, bridge_src, "react-native-webview/src/RNCWebViewNativeComponent");
     defer std.testing.allocator.free(from_bridge.path);
     defer if (from_bridge.resolve_dir) |dir| std.testing.allocator.free(dir);
 
@@ -447,7 +449,7 @@ test "resolve: preserve_symlinks sibling fallback beats global node_paths versio
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/node_modules/@scope");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules/@scope");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/package.json", "{\"main\":\"dist/index.js\"}");
     try createFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/dist/index.js");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
@@ -456,6 +458,7 @@ test "resolve: preserve_symlinks sibling fallback beats global node_paths versio
     try createFile(tmp.dir, "node_modules/.pnpm/node_modules/dep/index.js");
 
     tmp.dir.symLink(
+        std.testing.io,
         "../../../../node_modules/.pnpm/pkg@1/node_modules/@scope/pkg",
         "apps/app/node_modules/@scope/pkg",
         .{ .is_directory = true },
@@ -464,9 +467,9 @@ test "resolve: preserve_symlinks sibling fallback beats global node_paths versio
         else => return err,
     };
 
-    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "apps/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "apps/app", std.testing.allocator);
     defer std.testing.allocator.free(app_root);
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const pnpm_global = try std.fs.path.resolve(std.testing.allocator, &.{ root, "node_modules/.pnpm/node_modules" });
     defer std.testing.allocator.free(pnpm_global);
@@ -477,14 +480,14 @@ test "resolve: preserve_symlinks sibling fallback beats global node_paths versio
     resolver.resolve_symlink_siblings = true;
     resolver.node_paths = &node_paths;
 
-    const pkg = try resolver.resolve(app_root, "@scope/pkg");
+    const pkg = try resolver.resolve(std.testing.io, app_root, "@scope/pkg");
     defer std.testing.allocator.free(pkg.path);
     defer if (pkg.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, pkg.path, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/dist/index.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, pkg.path, "apps/app/node_modules/@scope/pkg/dist/index.js") == null);
 
     const pkg_dir = std.fs.path.dirname(pkg.path).?;
-    const dep = try resolver.resolve(pkg_dir, "dep");
+    const dep = try resolver.resolve(std.testing.io, pkg_dir, "dep");
     defer std.testing.allocator.free(dep.path);
     defer if (dep.resolve_dir) |dir| std.testing.allocator.free(dir);
     try std.testing.expect(std.mem.indexOf(u8, dep.path, ".pnpm/pkg@1/node_modules/dep/index.js") != null);
@@ -495,8 +498,8 @@ test "resolve: global node_paths symlink records real resolve_dir before hoisted
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app");
-    try tmp.dir.makePath("node_modules/.pnpm/node_modules");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/.pnpm/node_modules");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/pkg/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/pkg/index.js", "exports.value = require('dep').value;");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
@@ -505,6 +508,7 @@ test "resolve: global node_paths symlink records real resolve_dir before hoisted
     try writeFile(tmp.dir, "node_modules/.pnpm/node_modules/dep/index.js", "exports.value = 'global';");
 
     tmp.dir.symLink(
+        std.testing.io,
         "../pkg@1/node_modules/pkg",
         "node_modules/.pnpm/node_modules/pkg",
         .{ .is_directory = true },
@@ -513,9 +517,9 @@ test "resolve: global node_paths symlink records real resolve_dir before hoisted
         else => return err,
     };
 
-    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "apps/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "apps/app", std.testing.allocator);
     defer std.testing.allocator.free(app_root);
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const pnpm_global = try std.fs.path.resolve(std.testing.allocator, &.{ root, "node_modules/.pnpm/node_modules" });
     defer std.testing.allocator.free(pnpm_global);
@@ -526,7 +530,7 @@ test "resolve: global node_paths symlink records real resolve_dir before hoisted
     resolver.resolve_symlink_siblings = true;
     resolver.node_paths = &node_paths;
 
-    const pkg = try resolver.resolve(app_root, "pkg");
+    const pkg = try resolver.resolve(std.testing.io, app_root, "pkg");
     defer std.testing.allocator.free(pkg.path);
     defer if (pkg.resolve_dir) |dir| std.testing.allocator.free(dir);
 
@@ -535,7 +539,7 @@ test "resolve: global node_paths symlink records real resolve_dir before hoisted
     try std.testing.expect(pkg.resolve_dir == null);
 
     const dep_source_dir = pkg.resolve_dir orelse std.fs.path.dirname(pkg.path).?;
-    const dep = try resolver.resolve(dep_source_dir, "dep");
+    const dep = try resolver.resolve(std.testing.io, dep_source_dir, "dep");
     defer std.testing.allocator.free(dep.path);
     defer if (dep.resolve_dir) |dir| std.testing.allocator.free(dir);
 
@@ -551,11 +555,11 @@ test "resolve: bare specifier walk up directories" {
     try createFile(tmp.dir, "node_modules/top-pkg/index.js");
     try createFile(tmp.dir, "src/deep/entry.ts");
 
-    const deep_path = try tmp.dir.realpathAlloc(std.testing.allocator, "src/deep");
+    const deep_path = try tmp.dir.realPathFileAlloc(std.testing.io, "src/deep", std.testing.allocator);
     defer std.testing.allocator.free(deep_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(deep_path, "top-pkg");
+    const result = try resolver.resolve(std.testing.io, deep_path, "top-pkg");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "top-pkg/index.js"));
@@ -565,11 +569,11 @@ test "resolve: bare specifier not found" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = resolver.resolve(dir_path, "nonexistent-pkg");
+    const result = resolver.resolve(std.testing.io, dir_path, "nonexistent-pkg");
     try std.testing.expectError(error.ModuleNotFound, result);
 }
 
@@ -604,11 +608,11 @@ test "resolve: json module type" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "data.json");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./data.json");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./data.json");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expectEqual(ModuleType.json, result.module_type);
@@ -619,11 +623,11 @@ test "resolve: css module type" {
     defer tmp.cleanup();
     try createFile(tmp.dir, "style.css");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./style.css");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./style.css");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expectEqual(ModuleType.css, result.module_type);
@@ -636,11 +640,11 @@ test "resolve: extension search priority (.ts > .tsx > .js)" {
     try createFile(tmp.dir, "mod.tsx");
     try createFile(tmp.dir, "mod.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./mod");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./mod");
     defer std.testing.allocator.free(result.path);
 
     // .ts가 가장 먼저
@@ -653,11 +657,11 @@ test "resolve: exact .js file exists (no TS mapping)" {
     try createFile(tmp.dir, "lib.js");
     try createFile(tmp.dir, "lib.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "./lib.js");
+    const result = try resolver.resolve(std.testing.io, dir_path, "./lib.js");
     defer std.testing.allocator.free(result.path);
 
     // 정확한 .js가 있으면 TS 매핑하지 않음
@@ -672,11 +676,11 @@ test "resolve: subpath imports (#specifier)" {
     );
     try createFile(tmp.dir, "src/utils.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = try resolver.resolve(dir_path, "#utils");
+    const result = try resolver.resolve(std.testing.io, dir_path, "#utils");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "src/utils.js"));
@@ -691,13 +695,13 @@ test "resolve: subpath imports with conditions" {
     try createFile(tmp.dir, "src/node.js");
     try createFile(tmp.dir, "src/browser.js");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     // 기본 conditions에 "browser"가 있으므로 browser.js 우선 (import > module > browser)
     var resolver = Resolver.init(std.testing.allocator);
     resolver.conditions = &.{ "node", "import", "default" };
-    const result = try resolver.resolve(dir_path, "#dep");
+    const result = try resolver.resolve(std.testing.io, dir_path, "#dep");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "src/node.js"));
@@ -710,11 +714,11 @@ test "resolve: subpath imports not found" {
         \\{"name":"my-app","imports":{"#foo":"./foo.js"}}
     );
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var resolver = Resolver.init(std.testing.allocator);
-    const result = resolver.resolve(dir_path, "#bar");
+    const result = resolver.resolve(std.testing.io, dir_path, "#bar");
     try std.testing.expectError(error.ModuleNotFound, result);
 }
 
@@ -798,11 +802,12 @@ test "resolve.alias — symlink package root resolves package entry" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/src");
-    try tmp.dir.makePath("apps/app/node_modules");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/src");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules");
     try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/index.js", "exports.version = 'test';\n");
     tmp.dir.symLink(
+        std.testing.io,
         "../../../node_modules/.pnpm/react@1/node_modules/react",
         "apps/app/node_modules/react",
         .{ .is_directory = true },
@@ -811,7 +816,7 @@ test "resolve.alias — symlink package root resolves package entry" {
         else => return err,
     };
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const source_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "apps/app/src" });
     defer std.testing.allocator.free(source_dir);
@@ -829,7 +834,7 @@ test "resolve.alias — symlink package root resolves package entry" {
     resolver.preserve_symlinks = true;
     resolver.alias = aliases;
 
-    const result = try resolver.resolve(source_dir, "react");
+    const result = try resolver.resolve(std.testing.io, source_dir, "react");
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "apps/app/node_modules/react/index.js"));
@@ -846,7 +851,7 @@ test "DirEntryCache: hasFile / hasDir / negative 캐시" {
     try createFile(tmp.dir, "a.ts");
     try createFile(tmp.dir, "sub/b.ts");
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
     const sub_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "sub" });
     defer std.testing.allocator.free(sub_path);
@@ -876,9 +881,9 @@ test "DirEntryCache: 동시 조회 — 같은 디렉토리에 여러 스레드" 
     defer tmp.cleanup();
     inline for (.{ "f0.ts", "f1.ts", "f2.ts", "f3.ts" }) |name| try createFile(tmp.dir, name);
     // 디렉토리도 여러 개 — cache 가 readdir 미스를 lock 밖에서 처리하는 경로를 동시에 친다.
-    inline for (.{ "d0", "d1", "d2", "d3" }) |name| try tmp.dir.makePath(name);
+    inline for (.{ "d0", "d1", "d2", "d3" }) |name| try tmp.dir.createDirPath(std.testing.io, name);
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     var cache = DirEntryCache.init(std.testing.allocator);

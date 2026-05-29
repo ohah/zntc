@@ -2,7 +2,7 @@ const std = @import("std");
 const FileWatcher = @import("file_watcher.zig").FileWatcher;
 
 test "FileWatcher: init and deinit" {
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
     try std.testing.expectEqual(@as(usize, 0), watcher.watchCount());
 }
@@ -12,11 +12,11 @@ test "FileWatcher: add and count" {
     defer tmp.cleanup();
 
     // 임시 파일 생성
-    try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "hello" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "test.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "test.txt", .data = "hello" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "test.txt", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
@@ -31,11 +31,11 @@ test "FileWatcher: remove path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "a" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "a.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.txt", .data = "a" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "a.txt", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
@@ -49,16 +49,16 @@ test "FileWatcher: owns added path memory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "owned.txt", .data = "owned" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "owned.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "owned.txt", .data = "owned" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "owned.txt", std.testing.allocator);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
     std.testing.allocator.free(path);
 
-    const same_path = try tmp.dir.realpathAlloc(std.testing.allocator, "owned.txt");
+    const same_path = try tmp.dir.realPathFileAlloc(std.testing.io, "owned.txt", std.testing.allocator);
     defer std.testing.allocator.free(same_path);
 
     watcher.removePath(same_path);
@@ -69,14 +69,14 @@ test "FileWatcher: clear paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "x.txt", .data = "x" });
-    try tmp.dir.writeFile(.{ .sub_path = "y.txt", .data = "y" });
-    const px = try tmp.dir.realpathAlloc(std.testing.allocator, "x.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "x.txt", .data = "x" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "y.txt", .data = "y" });
+    const px = try tmp.dir.realPathFileAlloc(std.testing.io, "x.txt", std.testing.allocator);
     defer std.testing.allocator.free(px);
-    const py = try tmp.dir.realpathAlloc(std.testing.allocator, "y.txt");
+    const py = try tmp.dir.realPathFileAlloc(std.testing.io, "y.txt", std.testing.allocator);
     defer std.testing.allocator.free(py);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(px);
@@ -91,11 +91,11 @@ test "FileWatcher: timeout returns empty when no changes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "stable.txt", .data = "no change" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "stable.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "stable.txt", .data = "no change" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "stable.txt", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
@@ -109,23 +109,23 @@ test "FileWatcher: detects file modification" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "mod.txt", .data = "original" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "mod.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "mod.txt", .data = "original" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "mod.txt", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
 
     // 약간 대기 후 파일 수정 (다른 스레드에서)
     const write_thread = try std.Thread.spawn(.{}, struct {
-        fn run(dir: std.fs.Dir) void {
+        fn run(io: std.Io, dir: std.Io.Dir) void {
             // 50ms 대기 후 파일 수정
-            std.Thread.sleep(50 * std.time.ns_per_ms);
-            dir.writeFile(.{ .sub_path = "mod.txt", .data = "modified content" }) catch {};
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = "mod.txt", .data = "modified content" }) catch {};
         }
-    }.run, .{tmp.dir});
+    }.run, .{ std.testing.io, tmp.dir });
 
     const changes = try watcher.waitForChanges(3000);
     write_thread.join();
@@ -139,14 +139,14 @@ test "FileWatcher: detects multiple file modifications" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "aaa" });
-    try tmp.dir.writeFile(.{ .sub_path = "b.txt", .data = "bbb" });
-    const path_a = try tmp.dir.realpathAlloc(std.testing.allocator, "a.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.txt", .data = "aaa" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b.txt", .data = "bbb" });
+    const path_a = try tmp.dir.realPathFileAlloc(std.testing.io, "a.txt", std.testing.allocator);
     defer std.testing.allocator.free(path_a);
-    const path_b = try tmp.dir.realpathAlloc(std.testing.allocator, "b.txt");
+    const path_b = try tmp.dir.realPathFileAlloc(std.testing.io, "b.txt", std.testing.allocator);
     defer std.testing.allocator.free(path_b);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path_a);
@@ -154,12 +154,12 @@ test "FileWatcher: detects multiple file modifications" {
 
     // 별도 스레드에서 두 파일 동시 수정
     const write_thread = try std.Thread.spawn(.{}, struct {
-        fn run(dir: std.fs.Dir) void {
-            std.Thread.sleep(50 * std.time.ns_per_ms);
-            dir.writeFile(.{ .sub_path = "a.txt", .data = "aaa modified" }) catch {};
-            dir.writeFile(.{ .sub_path = "b.txt", .data = "bbb modified" }) catch {};
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = "a.txt", .data = "aaa modified" }) catch {};
+            dir.writeFile(io, .{ .sub_path = "b.txt", .data = "bbb modified" }) catch {};
         }
-    }.run, .{tmp.dir});
+    }.run, .{ std.testing.io, tmp.dir });
 
     // 첫 번째 waitForChanges로 최소 1개 이벤트 수집
     var total_changes: usize = 0;
@@ -188,21 +188,21 @@ test "FileWatcher: detects file deletion" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "del.txt", .data = "to be deleted" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "del.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "del.txt", .data = "to be deleted" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "del.txt", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
 
     const del_thread = try std.Thread.spawn(.{}, struct {
-        fn run(dir: std.fs.Dir) void {
-            std.Thread.sleep(50 * std.time.ns_per_ms);
-            dir.deleteFile("del.txt") catch {};
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.deleteFile(io, "del.txt") catch {};
         }
-    }.run, .{tmp.dir});
+    }.run, .{ std.testing.io, tmp.dir });
 
     const changes = try watcher.waitForChanges(3000);
     del_thread.join();
@@ -215,11 +215,11 @@ test "FileWatcher: removePath stops watching" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "ignore.txt", .data = "watch me" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "ignore.txt");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ignore.txt", .data = "watch me" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "ignore.txt", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(path);
@@ -230,7 +230,7 @@ test "FileWatcher: removePath stops watching" {
     try std.testing.expectEqual(@as(usize, 0), watcher.watchCount());
 
     // 감시 해제 후 파일 수정
-    try tmp.dir.writeFile(.{ .sub_path = "ignore.txt", .data = "modified after remove" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ignore.txt", .data = "modified after remove" });
 
     // 짧은 timeout → 감시 해제했으므로 이벤트 없어야 함
     const changes = try watcher.waitForChanges(200);
@@ -238,7 +238,7 @@ test "FileWatcher: removePath stops watching" {
 }
 
 test "FileWatcher: add nonexistent path does not crash" {
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     // 존재하지 않는 파일 → addPath는 에러 없이 skip
@@ -255,10 +255,10 @@ test "FileWatcher: watch directory — 새 파일 생성 시 event 발생 (#3858
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     // 디렉토리 자체를 watch
@@ -267,11 +267,11 @@ test "FileWatcher: watch directory — 새 파일 생성 시 event 발생 (#3858
 
     // 별도 thread 가 50ms 후 디렉토리 안에 새 file 생성
     const create_thread = try std.Thread.spawn(.{}, struct {
-        fn run(dir: std.fs.Dir) void {
-            std.Thread.sleep(50 * std.time.ns_per_ms);
-            dir.writeFile(.{ .sub_path = "new.css", .data = ".x{}" }) catch {};
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = "new.css", .data = ".x{}" }) catch {};
         }
-    }.run, .{tmp.dir});
+    }.run, .{ std.testing.io, tmp.dir });
 
     const changes = try watcher.waitForChanges(3000);
     create_thread.join();
@@ -287,22 +287,22 @@ test "FileWatcher: watch directory — file 삭제 시 event 발생 (#3858)" {
     defer tmp.cleanup();
 
     // 디렉토리 watch 전에 file 미리 존재
-    try tmp.dir.writeFile(.{ .sub_path = "victim.css", .data = ".v{}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "victim.css", .data = ".v{}" });
 
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var watcher = try FileWatcher.init(std.testing.allocator);
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
     defer watcher.deinit();
 
     try watcher.addPath(dir_path);
 
     const del_thread = try std.Thread.spawn(.{}, struct {
-        fn run(dir: std.fs.Dir) void {
-            std.Thread.sleep(50 * std.time.ns_per_ms);
-            dir.deleteFile("victim.css") catch {};
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.deleteFile(io, "victim.css") catch {};
         }
-    }.run, .{tmp.dir});
+    }.run, .{ std.testing.io, tmp.dir });
 
     const changes = try watcher.waitForChanges(3000);
     del_thread.join();

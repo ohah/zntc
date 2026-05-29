@@ -27,7 +27,7 @@ test "CodeSplitting: code_splitting=false unchanged — 기존 동작 보존" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 단일 파일 모드: output에 결과, outputs는 null
@@ -52,7 +52,7 @@ test "CodeSplitting: single entry no split — 동적 import 없으면 청크 1�
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -83,7 +83,7 @@ test "CodeSplitting: dynamic import produces two output files" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -121,7 +121,7 @@ test "CodeSplitting: shared module produces common chunk" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -159,7 +159,7 @@ test "CodeSplitting: cross-chunk import statement" {
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -212,7 +212,7 @@ test "CodeSplitting: multiple common chunks have unique filenames" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -245,7 +245,7 @@ test "CodeSplitting: CJS format succeeds — cross-chunk require + 동적 requir
     defer bnd.deinit();
     // P3-B: CJS + code_splitting 은 더 이상 에러 아님 — 네이티브 require 가
     // 청크 경계 해석(RFC §4.3). 옛 동작("returns error") 무효화.
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
@@ -281,7 +281,7 @@ test "CodeSplitting: IIFE format succeeds — 레지스트리 + self-register fa
     defer bnd.deinit();
     // PR3: iife + code_splitting 은 더 이상 에러 아님 — 런타임 레지스트리
     // (`__zntc_*`) + self-register factory + `<script>` 로더(RFC §4.1/§4.3).
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
@@ -325,7 +325,7 @@ test "CodeSplitting: UMD/AMD format succeeds — 보편 wrapper + 레지스트�
         // PR4: umd/amd + splitting 은 더 이상 에러 아님 — PR3 레지스트리
         // 기계 + entry 만 보편 wrapper(format_wrapper) + `return
         // __zntc_require(id)`. 옛 동작("returns error") 무효화.
-        const result = try bnd.bundle();
+        const result = try bnd.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
         const outs = result.outputs orelse return error.TestUnexpectedResult;
@@ -364,7 +364,7 @@ test "PreserveModules: CJS format succeeds with require()/exports (P3-A #3321)" 
         .format = .cjs,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
@@ -400,7 +400,7 @@ test "PreserveModules: IIFE format returns PreserveModulesRequiresESM (intention
         .format = .iife,
     });
     defer bnd.deinit();
-    const result = bnd.bundle();
+    const result = bnd.bundle(std.testing.io);
     try std.testing.expect(result == error.PreserveModulesRequiresESM);
 }
 
@@ -428,7 +428,7 @@ test "CodeSplitting: cross-chunk named import — 심볼 수준 import 문 생�
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -479,7 +479,7 @@ test "CodeSplitting: multiple named imports from common chunk" {
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -519,7 +519,7 @@ test "CodeSplitting: no cross-chunk symbols when all in same chunk" {
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -556,7 +556,7 @@ test "CodeSplitting: re-export chain across chunks" {
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -609,7 +609,7 @@ test "CodeSplitting: per-chunk rename — 다른 청크의 같은 이름은 충�
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -663,7 +663,7 @@ test "CodeSplitting: same-chunk collision still renamed" {
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -703,7 +703,7 @@ test "CodeSplitting: cross-chunk export alias with renamed symbol" {
     });
     defer bundler.deinit();
 
-    const result = try bundler.bundle();
+    const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -750,7 +750,7 @@ test "CodeSplitting: cross-chunk import binding does not collide with local name
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -796,7 +796,7 @@ test "CodeSplitting: cross-chunk import reference uses correct binding name" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -838,7 +838,7 @@ test "CodeSplitting: CRITICAL — same name in shared chunk and entry chunk" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -883,7 +883,7 @@ test "CodeSplitting: CRITICAL — rename collision between import binding and lo
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -946,7 +946,7 @@ test "CodeSplitting: CRITICAL — two modules in same chunk with same name as cr
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1000,7 +1000,7 @@ test "CodeSplitting: three entries sharing module — all import same name" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1032,7 +1032,7 @@ test "CodeSplitting: default export cross-chunk" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1068,7 +1068,7 @@ test "CodeSplitting: deep chain across chunks" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1103,7 +1103,7 @@ test "CodeSplitting: minified output with chunks" {
         .minify_syntax = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1137,7 +1137,7 @@ test "CodeSplitting: CJS module in shared chunk" {
         .code_splitting = true,
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1176,7 +1176,7 @@ test "CodeSplitting: content hash naming — entry-names and chunk-names" {
         .chunk_names = "chunks/[name]-[hash]",
     });
     defer bnd.deinit();
-    const result = try bnd.bundle();
+    const result = try bnd.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1225,7 +1225,7 @@ test "CodeSplitting: content hash deterministic — same code same hash" {
         .chunk_names = "[name]-[hash]",
     });
     defer bnd1.deinit();
-    const result1 = try bnd1.bundle();
+    const result1 = try bnd1.bundle(std.testing.io);
     defer result1.deinit(std.testing.allocator);
 
     // 2차 빌드
@@ -1235,7 +1235,7 @@ test "CodeSplitting: content hash deterministic — same code same hash" {
         .chunk_names = "[name]-[hash]",
     });
     defer bnd2.deinit();
-    const result2 = try bnd2.bundle();
+    const result2 = try bnd2.bundle(std.testing.io);
     defer result2.deinit(std.testing.allocator);
 
     const outs1 = result1.outputs orelse return error.TestUnexpectedResult;
@@ -1282,7 +1282,7 @@ test "Bundler: dev mode includes polyfills and banner" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1320,7 +1320,7 @@ test "Bundler: minify_whitespace 가 polyfill content 도 minify (#3649 polyfill
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1353,7 +1353,7 @@ test "Bundler: polyfill transpile 의 semantic 진단 owned 필드 누수 없음
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 핵심 가드: 테스트 종료 시 누수 없음(testing.allocator 가 자동 검출).
@@ -1376,7 +1376,7 @@ test "Bundler: dev mode single file" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1405,7 +1405,7 @@ test "Bundler: dev mode two files with import" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1434,7 +1434,7 @@ test "Bundler: dev mode default import" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1460,7 +1460,7 @@ test "Bundler: dev mode module_dev_codes" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1490,7 +1490,7 @@ test "Bundler: dev mode per-module sourcemap (Issue #1248)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1528,7 +1528,7 @@ test "Bundler: dev mode per-module sourcemap — sources_content=false (Issue #1
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1556,7 +1556,7 @@ test "Bundler: dev mode sourcemap" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1587,7 +1587,7 @@ test "Bundler: dev mode sourcemap — multi-module sources" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1614,7 +1614,7 @@ test "Bundler: dev mode sourcemap — mappings point to correct bundle lines" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1657,7 +1657,7 @@ test "Bundler: dev mode react fast refresh" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1695,7 +1695,7 @@ test "Bundler: dev mode refresh registration" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1719,7 +1719,7 @@ test "Bundler: refresh — node_modules entry skipped by Vite-compatible path fi
     // 주입하지 않는다 (Vite @vitejs/plugin-react 의 default exclude).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("node_modules/lib");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/lib");
     try writeFile(tmp.dir, "node_modules/lib/index.tsx",
         \\export default function LibComp() { return 1; }
     );
@@ -1734,7 +1734,7 @@ test "Bundler: refresh — node_modules entry skipped by Vite-compatible path fi
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -1762,7 +1762,7 @@ test "Bundler: refresh — user-land .tsx still registers (positive control)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -1790,7 +1790,7 @@ test "Bundler: refresh — ES5 lexical lowering preserves arrow component regist
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -1834,7 +1834,7 @@ test "Bundler: refresh — registration follows linker rename through barrel exp
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -1859,7 +1859,7 @@ test "Bundler: dev mode ES5 runtime helpers injected globally" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1894,7 +1894,7 @@ test "Bundler: dev mode collect_module_codes" {
             .dev_mode = true,
         });
         defer b.deinit();
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
         try std.testing.expect(result.module_dev_codes == null);
@@ -1908,7 +1908,7 @@ test "Bundler: dev mode collect_module_codes" {
             .collect_module_codes = true,
         });
         defer b.deinit();
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
         const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
@@ -1942,7 +1942,7 @@ test "Bundler: dev mode named imports from multiple modules are not mixed" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1981,7 +1981,7 @@ test "Bundler: dev mode ESM→CJS named import uses HMR-safe property access" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2023,7 +2023,7 @@ test "Bundler: dev mode HMR module code rewrites CJS require to registry lookup"
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2065,7 +2065,7 @@ test "Bundler: dev mode HMR registry uses stable ids for disabled CJS shims" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2124,7 +2124,7 @@ test "Bundler: dev mode CJS named import does not allocate colliding hoisted bin
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2163,7 +2163,7 @@ test "Bundler: dev mode alias named import does not emit raw require" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2239,7 +2239,7 @@ test "Bundler: dev mode HMR mixed alias imports do not emit raw require" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2308,7 +2308,7 @@ test "Bundler: dev mode ts paths re-exported CJS named import does not emit raw 
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2354,7 +2354,7 @@ test "Bundler: dev mode new expression wraps renamed CJS member callee" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2389,7 +2389,7 @@ test "Bundler: dev mode new expression wraps renamed CJS deep member callee" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2423,7 +2423,7 @@ test "Bundler: dev mode new expression wraps renamed CJS computed member callee"
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2457,7 +2457,7 @@ test "Bundler: dev mode new expression keeps plain ESM import callee unwrapped" 
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2492,7 +2492,7 @@ test "Bundler: dev mode new expression keeps parens after minify syntax strips o
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2534,34 +2534,42 @@ test "Profile: pipeline stage timing (dev only, not for CI)" {
         var xform_ns: i128 = 0;
         var cg_ns: i128 = 0;
 
+        // 0.16: std.time.nanoTimestamp 제거 → Io.Timestamp(.awake monotonic) 의
+        // nanoseconds 값으로 경과 ns 측정.
+        const nowNs = struct {
+            fn f() i128 {
+                return std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds;
+            }
+        }.f;
+
         for (0..RUNS) |_| {
             var arena = std.heap.ArenaAllocator.init(alloc);
             defer arena.deinit();
             const a = arena.allocator();
 
-            var t0 = std.time.nanoTimestamp();
+            var t0 = nowNs();
             var scanner = try Scanner.init(a, source);
-            scan_ns += std.time.nanoTimestamp() - t0;
+            scan_ns += nowNs() - t0;
 
-            t0 = std.time.nanoTimestamp();
+            t0 = nowNs();
             var parser = Parser.init(a, &scanner);
             _ = try parser.parse();
-            parse_ns += std.time.nanoTimestamp() - t0;
+            parse_ns += nowNs() - t0;
 
-            t0 = std.time.nanoTimestamp();
+            t0 = nowNs();
             var analyzer = SemanticAnalyzer.init(a, &parser.ast);
             _ = analyzer.analyze() catch {};
-            sem_ns += std.time.nanoTimestamp() - t0;
+            sem_ns += nowNs() - t0;
 
-            t0 = std.time.nanoTimestamp();
+            t0 = nowNs();
             var transformer = try Transformer.init(a, &parser.ast, .{});
             const root = try transformer.transform();
-            xform_ns += std.time.nanoTimestamp() - t0;
+            xform_ns += nowNs() - t0;
 
-            t0 = std.time.nanoTimestamp();
+            t0 = nowNs();
             var cg = Codegen.init(a, transformer.ast);
             _ = try cg.generate(root);
-            cg_ns += std.time.nanoTimestamp() - t0;
+            cg_ns += nowNs() - t0;
         }
 
         const us: i128 = 1000;

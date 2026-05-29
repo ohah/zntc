@@ -14,16 +14,16 @@ const Plugin = plugin_mod.Plugin;
 const pkg_json = @import("package_json.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
-fn createFile(dir: std.fs.Dir, path: []const u8) !void {
+fn createFile(dir: std.Io.Dir, path: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
+        dir.createDirPath(std.testing.io, parent) catch {};
     }
-    const file = try dir.createFile(path, .{});
-    file.close();
+    const file = try dir.createFile(std.testing.io, path, .{});
+    file.close(std.testing.io);
 }
 
 fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
-    return try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 test "graph: single module, no imports" {
@@ -41,7 +41,7 @@ test "graph: single module, no imports" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
     try std.testing.expectEqual(@as(u32, 0), graph.getModule(ModuleIndex.fromUsize(0)).?.exec_index);
@@ -64,7 +64,7 @@ test "graph: A imports B — correct exec order" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
 
@@ -91,7 +91,7 @@ test "graph: chain A → B → C — correct exec order" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     try std.testing.expectEqual(@as(usize, 3), graph.moduleCount());
 
@@ -121,7 +121,7 @@ test "graph: diamond A→B,C; B→D; C→D — no duplicate" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // D가 중복 없이 4개 모듈
     try std.testing.expectEqual(@as(usize, 4), graph.moduleCount());
@@ -155,7 +155,7 @@ test "graph: circular dependency — warning emitted" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // 2개 모듈, 순환 경고 존재
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
@@ -182,7 +182,7 @@ test "graph: external module — phantom 으로 graph 에 등록 (Rollup parity)
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // a.ts + phantom react = 2 modules. react phantom 의 is_external = true.
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
@@ -220,7 +220,7 @@ test "graph: 같은 external 을 여러 모듈이 import → phantom 1개 공유
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // entry + a + b + 1 phantom shared-ext = 4
     try std.testing.expectEqual(@as(usize, 4), graph.moduleCount());
@@ -245,7 +245,7 @@ test "graph: unresolved import — error diagnostic" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // 에러 diagnostic 있어야 함
     var has_unresolved = false;
@@ -273,7 +273,7 @@ test "graph: unresolved import — 진단 1회만 (중복 방지 회귀)" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // 같은 unresolved import 에 대한 error 진단은 정확히 1개여야 한다 (중복 출력 버그 가드).
     var unresolved_errors: usize = 0;
@@ -303,7 +303,7 @@ test "graph: non-literal dynamic import — string-literal reason warning 1회 (
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var reason_warnings: usize = 0;
     var generic_cannot_resolve: usize = 0;
@@ -338,7 +338,7 @@ test "graph: unresolved type-only import — soft fail with warning (#2466)" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // error 가 아니라 warning 이어야 함.
     var error_count: usize = 0;
@@ -374,7 +374,7 @@ test "graph: unresolved import with value usage — hard error (regression guard
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var has_error = false;
     for (graph.diagnostics.items) |d| {
@@ -407,7 +407,7 @@ test "graph: unresolved type-only import — many bindings (no hard cap)" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var error_count: usize = 0;
     for (graph.diagnostics.items) |d| {
@@ -433,7 +433,7 @@ test "graph: bidirectional edges (D078)" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // A.dependencies에 B
     try std.testing.expectEqual(@as(usize, 1), graph.getModule(ModuleIndex.fromUsize(0)).?.dependencies.items.len);
@@ -457,7 +457,7 @@ test "graph: re-export adds dependency" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     try std.testing.expectEqual(@as(usize, 1), graph.getModule(ModuleIndex.fromUsize(0)).?.dependencies.items.len);
@@ -481,7 +481,7 @@ test "graph: multiple entry points" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{ e1, e2 });
+    try graph.build(std.testing.io, &.{ e1, e2 });
 
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     // 둘 다 exec_index가 할당됨 (maxInt 아님)
@@ -505,7 +505,7 @@ test "graph: dynamic import stored in dynamic_imports" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     // 동적 import는 dynamic_imports에, dependencies에는 없음
@@ -529,7 +529,7 @@ test "graph: JSON module — no AST, in graph" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     // JSON 모듈은 ESM AST로 변환됨 (export default <json>)
@@ -554,7 +554,7 @@ test "graph: semantic data preserved after build" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     const m = graph.getModule(ModuleIndex.fromUsize(0)).?;
     // semantic 데이터가 보존되어야 함
@@ -585,7 +585,7 @@ test "graph: semantic data null for non-JS modules" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // a.ts는 semantic 있음
     try std.testing.expect(graph.getModule(ModuleIndex.fromUsize(0)).?.semantic != null);
@@ -608,7 +608,7 @@ test "graph: semantic exported_names tracks default export" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     const sem = graph.getModule(ModuleIndex.fromUsize(0)).?.semantic.?;
     try std.testing.expect(sem.exported_names.get("default") != null);
@@ -630,7 +630,7 @@ test "graph: import/export bindings preserved after build" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // a.ts: import_bindings에 x가 있어야 함
     const a = graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -785,7 +785,7 @@ test "graph: RN keeps abort-controller style Object.defineProperty exports as CJ
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     for (0..graph.moduleCount()) |i| {
@@ -879,7 +879,7 @@ fn populateStoreForChangedFilesTest(
 ) !void {
     var graph = ModuleGraph.init(std.testing.allocator, cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
     for (0..graph.moduleCount()) |i| {
         const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.parse_arena == null) continue;
@@ -906,7 +906,7 @@ test "buildIncremental: changed_files=empty → stat skip → cache hit even aft
 
     // mtime resolution(ns) 차이 보장. macOS APFS 는 ns 까지 추적하지만 같은 syscall window
     // 안에서 두 번 쓰면 동일 mtime 이 될 수 있어 명시적 sleep.
-    std.Thread.sleep(20 * std.time.ns_per_ms);
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
     try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
 
     var empty: std.StringHashMap(void) = .init(std.testing.allocator);
@@ -914,7 +914,7 @@ test "buildIncremental: changed_files=empty → stat skip → cache hit even aft
 
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph2.deinit();
-    const r = try graph2.buildIncremental(&.{entry}, &store, &empty);
+    const r = try graph2.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     // changed_files 가 비어 있어 entry.ts 의 stat 을 skip → 디스크가 바뀌었어도 cache hit.
@@ -938,7 +938,7 @@ test "buildIncremental: changed_files contains entry → stat → cache miss aft
 
     try populateStoreForChangedFilesTest(&cache, &store, entry);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
     try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
 
     var changed: std.StringHashMap(void) = .init(std.testing.allocator);
@@ -947,7 +947,7 @@ test "buildIncremental: changed_files contains entry → stat → cache miss aft
 
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph2.deinit();
-    const r = try graph2.buildIncremental(&.{entry}, &store, &changed);
+    const r = try graph2.buildIncremental(std.testing.io, &.{entry}, &store, &changed);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     // entry 가 changed set 에 있으므로 stat 정상 수행 → 새 mtime 으로 cache miss → reparse 1건.
@@ -1003,7 +1003,7 @@ test "buildIncremental: cache-hit modules replay resolved deps without resolver"
         var graph = ModuleGraph.init(std.testing.allocator, &cache);
         graph.plugins = &plugins;
         defer graph.deinit();
-        try graph.build(&.{entry});
+        try graph.build(std.testing.io, &.{entry});
         try std.testing.expect(counter.count > 0);
 
         for (0..graph.moduleCount()) |i| {
@@ -1020,7 +1020,7 @@ test "buildIncremental: cache-hit modules replay resolved deps without resolver"
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     graph2.plugins = &plugins;
     defer graph2.deinit();
-    const r = try graph2.buildIncremental(&.{entry}, &store, &empty);
+    const r = try graph2.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     try std.testing.expectEqual(@as(usize, 0), r.reparsed_indices.len);
@@ -1051,12 +1051,12 @@ test "buildIncremental: changed_files=null → 기존 동작 (전체 stat) — �
 
     try populateStoreForChangedFilesTest(&cache, &store, entry);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
     try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
 
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph2.deinit();
-    const r = try graph2.buildIncremental(&.{entry}, &store, null);
+    const r = try graph2.buildIncremental(std.testing.io, &.{entry}, &store, null);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     // null fallback — 모든 모듈 stat. 디스크 변경된 entry 는 mtime mismatch → cache miss.
@@ -1084,7 +1084,7 @@ test "buildIncremental: changed_files=empty + cache miss (new module) → 강제
 
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    const r = try graph.buildIncremental(&.{entry}, &store, &empty);
+    const r = try graph.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     // changed_files 에 없지만 store 에도 없으므로 skip 조건 불성립 → stat → 신규 파싱.
@@ -1112,7 +1112,7 @@ fn freeGraph(g: *ModuleGraph, cache: *resolve_cache_mod.ResolveCache) void {
 }
 
 /// 임시 tmp 디렉토리 안에 node_modules/<pkg>/package.json 생성.
-fn writePkgJson(tmp_dir: std.fs.Dir, pkg_name: []const u8, contents: []const u8) !void {
+fn writePkgJson(tmp_dir: std.Io.Dir, pkg_name: []const u8, contents: []const u8) !void {
     var buf: [256]u8 = undefined;
     const rel = try std.fmt.bufPrint(&buf, "node_modules/{s}/package.json", .{pkg_name});
     try writeFile(tmp_dir, rel, contents);
@@ -1120,7 +1120,7 @@ fn writePkgJson(tmp_dir: std.fs.Dir, pkg_name: []const u8, contents: []const u8)
 
 /// 패키지 디렉토리 절대 경로 = tmp_root/node_modules/<pkg>. findPackageDirPath 검증용.
 fn pkgDirAbs(tmp: *std.testing.TmpDir, pkg_name: []const u8) ![]u8 {
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const rel = try std.fmt.allocPrint(std.testing.allocator, "node_modules/{s}", .{pkg_name});
     defer std.testing.allocator.free(rel);
@@ -1488,7 +1488,7 @@ test "F4 (#65): buildIncremental 가 stale entry_dir 를 강제 재계산" {
     var empty: std.StringHashMap(void) = .init(std.testing.allocator);
     defer empty.deinit();
 
-    const r = try graph.buildIncremental(&.{entry}, &store, &empty);
+    const r = try graph.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     // entry_dir 가 entry path 의 dirname 으로 갱신됐어야.
@@ -1525,7 +1525,7 @@ test "F4 follow-up: buildIncremental 는 user-set project_root 를 보존" {
     var empty: std.StringHashMap(void) = .init(std.testing.allocator);
     defer empty.deinit();
 
-    const r = try graph.buildIncremental(&.{entry}, &store, &empty);
+    const r = try graph.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);
 
     // user-set project_root 보존 — buildIncremental 이 강제 invalidate 하면
@@ -1555,7 +1555,7 @@ test "graph.reset: modules + path_to_module 보존, diagnostics/worker_entries c
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     const mod_count_before = graph.moduleCount();
     const path_count_before = graph.path_to_module.count();
@@ -1609,7 +1609,7 @@ test "graph.invalidateModule: path 보존, ast/semantic/resolved_deps clear" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     const target_idx = ModuleIndex.fromUsize(0);
     const path_before = graph.getModule(target_idx).?.path;

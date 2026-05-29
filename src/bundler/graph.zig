@@ -509,10 +509,10 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
 // 폴백하도록 만든 가드. plugin 합성 virtual path / AssetRegistry / 빈 경로
 // 등이 실제로 putModule loop 을 타고 들어와 서버가 통째로 죽던 사례 (#1682).
 test "getMtime: reject null-byte / empty / overlong path" {
-    try std.testing.expectError(error.InvalidPath, ModuleGraph.getMtime(""));
-    try std.testing.expectError(error.InvalidPath, ModuleGraph.getMtime("/tmp/foo\x00bar"));
+    try std.testing.expectError(error.InvalidPath, ModuleGraph.getMtime(std.testing.io, ""));
+    try std.testing.expectError(error.InvalidPath, ModuleGraph.getMtime(std.testing.io, "/tmp/foo\x00bar"));
 
     var long_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     @memset(&long_buf, 'a');
-    try std.testing.expectError(error.NameTooLong, ModuleGraph.getMtime(&long_buf));
+    try std.testing.expectError(error.NameTooLong, ModuleGraph.getMtime(std.testing.io, &long_buf));
 }

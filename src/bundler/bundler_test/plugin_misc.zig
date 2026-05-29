@@ -67,7 +67,7 @@ test "Batch D: metafile — JSON with inputs and outputs" {
         .metafile = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -108,7 +108,7 @@ test "Batch D: metafile — virtual specifier (NUL byte) JSON-escape" {
         .metafile = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -131,7 +131,7 @@ test "Batch D: metafile — disabled when not requested" {
         .entry_points = &.{entry},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // metafile 미요청 시 null
@@ -152,7 +152,7 @@ test "Batch D: analyze — forces metafile generation" {
         .analyze = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // analyze=true → metafile 자동 활성화
@@ -177,7 +177,7 @@ test "Batch D: legal-comments=eof — collect at end of output" {
         .legal_comments = .eof,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -207,7 +207,7 @@ test "Batch D: legal-comments=none — strip all" {
         .legal_comments = .none,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -239,7 +239,7 @@ test "Batch D: legal-comments=eof — deduplication" {
         .legal_comments = .eof,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -270,7 +270,7 @@ test "Batch D: inject — prepends injected file before entry" {
         .inject = &.{inject},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -301,7 +301,7 @@ test "Batch D: inject — multiple inject files" {
         .inject = &.{ inject1, inject2 },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -331,7 +331,7 @@ test "Batch D: keepNames — __name call for renamed functions" {
         .keep_names = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -357,7 +357,7 @@ test "Batch D: keepNames — no __name when names unchanged" {
         .keep_names = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -385,7 +385,7 @@ test "Batch D: keepNames — class declaration" {
         .keep_names = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -416,7 +416,7 @@ test "Batch D: keepNames + code splitting — __name helper in chunk" {
         .keep_names = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -452,7 +452,7 @@ test "Batch D: legal-comments=eof + minify — comments after minified code" {
         .legal_comments = .eof,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -478,7 +478,7 @@ test "Batch D: metafile — code splitting produces per-chunk outputs" {
         .metafile = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -507,7 +507,7 @@ test "Batch D: inject — inject file included in metafile inputs" {
         .metafile = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -540,7 +540,7 @@ test "Worker: new Worker(new URL) produces separate IIFE bundle" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -582,7 +582,7 @@ test "Worker: no Worker pattern means no extra assets" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -609,7 +609,7 @@ test "Worker: multiple workers produce separate bundles" {
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -652,7 +652,7 @@ test "Worker: duplicate references to same worker build only once" {
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -687,7 +687,7 @@ test "Worker: SharedWorker is also detected" {
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -719,7 +719,7 @@ test "Worker: platform node cjs emits cjs worker and file URL" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -744,8 +744,8 @@ test "Worker: same specifier in different modules resolves to distinct workers" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("a");
-    try tmp.dir.makeDir("b");
+    try tmp.dir.createDir(std.testing.io, "a", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "b", .default_dir);
     try writeFile(tmp.dir, "entry.ts",
         \\import { run as runA } from "./a/index.ts";
         \\import { run as runB } from "./b/index.ts";
@@ -770,7 +770,7 @@ test "Worker: same specifier in different modules resolves to distinct workers" 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -810,7 +810,7 @@ test "Worker: non-worker new URL is preserved verbatim" {
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -840,7 +840,7 @@ test "Worker: minified bundle preserves worker URL replacement" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -871,7 +871,7 @@ test "Worker: platform browser cjs uses empty-string url polyfill" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -916,7 +916,7 @@ test "Bundle: Flow file with parse errors does not crash" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // Should not crash — either succeeds or reports errors gracefully
@@ -954,7 +954,7 @@ test "Bundle: Flow export type alias + module.exports → CJS wrapping (#713)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -986,7 +986,7 @@ test "Bundle: TS export type alias + module.exports → CJS wrapping (#713)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1018,7 +1018,7 @@ test "Bundle: Flow export opaque type + module.exports → CJS wrapping (#713)" 
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1051,7 +1051,7 @@ test "Bundle: module with syntax errors does not crash transformer" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // Should not crash — broken module is skipped, bundle still produced
@@ -1084,7 +1084,7 @@ test "ESM live binding: function hoisted outside __esm references canonical var"
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1126,7 +1126,7 @@ test "ESM live binding: init only contains dependency init calls" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1163,7 +1163,7 @@ test "ESM live binding: namespace import uses exports_xxx (not live binding)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1192,7 +1192,7 @@ test "ESM live binding: re-export from __esm uses source canonical name" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1222,7 +1222,7 @@ test "ESM live binding: class stays inside __esm init (block-scoped)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1253,7 +1253,7 @@ test "ESM live binding: RN platform forces __esm wrapping with live binding" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1293,7 +1293,7 @@ test "JSX automatic: jsx-runtime import injected in bundle mode" {
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1321,7 +1321,7 @@ test "JSX automatic-dev: jsx-dev-runtime import injected in bundle mode" {
         .external = &.{"react/jsx-dev-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1346,7 +1346,7 @@ test "JSX automatic: no injection when no JSX in module" {
         .jsx_runtime = .automatic,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1372,7 +1372,7 @@ test "JSX automatic: classic mode does not inject jsx-runtime" {
         .external = &.{"react"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1399,7 +1399,7 @@ test "JSX automatic: custom import source" {
         .external = &.{"preact/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1434,7 +1434,7 @@ test "JSX automatic: ESM-wrapped module with CJS jsx-runtime — synthetic bindi
         .external = &.{"react/jsx-dev-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1466,7 +1466,7 @@ test "JSX automatic-dev: #1209 — _jsxDEV must be assigned per module (HMR safe
         .external = &.{"react/jsx-dev-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     const out = result.output;
@@ -1498,7 +1498,7 @@ test "JSX automatic-dev: #1209 — browser platform also affected" {
         .external = &.{"react/jsx-dev-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     const out = result.output;
@@ -1532,7 +1532,7 @@ test "JSX automatic: multiple modules sharing same jsx-runtime" {
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     const out = result.output;
@@ -1559,7 +1559,7 @@ test "JSX automatic: fragment syntax uses _Fragment" {
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1586,7 +1586,7 @@ test "JSX automatic-dev: source location info included" {
         .external = &.{"react/jsx-dev-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1616,7 +1616,7 @@ test "JSX automatic: mixed JSX and non-JSX modules" {
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1649,7 +1649,7 @@ test "JSX automatic: re-export of JSX component" {
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     const out = result.output;
@@ -1680,7 +1680,7 @@ test "JSX automatic: ESM-wrapped hoisted function can access _jsxDEV (scope test
         .external = &.{"react/jsx-dev-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     const out = result.output;
@@ -1714,7 +1714,7 @@ test "JSX automatic: ESM-wrapped with multiple JSX functions (_jsx, _jsxs, _Frag
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1743,7 +1743,7 @@ test "JSX automatic: non-ESM-wrapped module emits ESM external import" {
         .external = &.{"react/jsx-runtime"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1775,7 +1775,7 @@ test "runtime helper: __copyProps uses getOwnPropertyNames, not Object.keys" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1810,7 +1810,7 @@ test "runtime helper: __toCommonJS has module.exports direct return path" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1845,7 +1845,7 @@ test "RN platform: entry module is __esm wrapped (not scope-hoisted)" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1881,7 +1881,7 @@ test "RN platform: entry __esm contains import bindings inside init body" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1916,7 +1916,7 @@ test "non-RN platform: entry is NOT __esm wrapped (scope-hoisted)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1946,7 +1946,7 @@ test "namespace inline object uses getter for live binding" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1972,7 +1972,7 @@ test "namespace inline object: default export quoted in getter" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2012,7 +2012,7 @@ test "Self-require: RN 플랫폼 파일 패턴 (조건부 self-require)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2025,17 +2025,17 @@ test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve fr
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/node_modules/@scope");
-    try tmp.dir.makePath("apps/app/node_modules/react-native");
-    try tmp.dir.makePath("node_modules/react-native");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules/@scope");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules/react-native");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/react-native");
     try writeFile(tmp.dir, "apps/app/node_modules/react-native/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "apps/app/node_modules/react-native/index.js", "exports.NativeModules = { CodePush: {} };");
     try writeFile(tmp.dir, "node_modules/react-native/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "node_modules/react-native/index.js", "exports.NativeModules = { CodePush: {} };");
 
-    try tmp.dir.makePath("node_modules/.pnpm/pkg@1/node_modules/@scope/pkg");
-    try tmp.dir.makePath("node_modules/.pnpm/pkg@1/node_modules/code-push/script");
-    try tmp.dir.makePath("node_modules/.pnpm/pkg@1/node_modules/hoist-non-react-statics");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/.pnpm/pkg@1/node_modules/code-push/script");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/.pnpm/pkg@1/node_modules/hoist-non-react-statics");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/package.json", "{\"main\":\"CodePush.js\"}");
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/@scope/pkg/CodePush.js",
         \\import { AcquisitionManager as Sdk } from "code-push/script/acquisition-sdk";
@@ -2049,6 +2049,7 @@ test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve fr
     try writeFile(tmp.dir, "node_modules/.pnpm/pkg@1/node_modules/hoist-non-react-statics/index.js", "module.exports = function hoist() {};");
 
     tmp.dir.symLink(
+        std.testing.io,
         "../../../../node_modules/.pnpm/pkg@1/node_modules/@scope/pkg",
         "apps/app/node_modules/@scope/pkg",
         .{ .is_directory = true },
@@ -2075,7 +2076,7 @@ test "react_native preserve_symlinks: CJS-wrapped package ESM imports resolve fr
         .resolve_symlink_siblings = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2090,9 +2091,9 @@ test "react_native preserve_symlinks: workspace symlink package resolves app log
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/node_modules/@scope");
-    try tmp.dir.makePath("apps/app/node_modules/react-native-tcp-socket");
-    try tmp.dir.makePath("packages/pkg/dist");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules/@scope");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules/react-native-tcp-socket");
+    try tmp.dir.createDirPath(std.testing.io, "packages/pkg/dist");
     try writeFile(tmp.dir, "apps/app/node_modules/react-native-tcp-socket/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "apps/app/node_modules/react-native-tcp-socket/index.js", "module.exports = { createConnection() {} };");
     try writeFile(tmp.dir, "packages/pkg/package.json", "{\"main\":\"dist/index.js\"}");
@@ -2102,6 +2103,7 @@ test "react_native preserve_symlinks: workspace symlink package resolves app log
     );
 
     tmp.dir.symLink(
+        std.testing.io,
         "../../../../packages/pkg",
         "apps/app/node_modules/@scope/pkg",
         .{ .is_directory = true },
@@ -2125,7 +2127,7 @@ test "react_native preserve_symlinks: workspace symlink package resolves app log
         .resolve_symlink_siblings = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2136,8 +2138,8 @@ test "react_native preserve_symlinks: standard pnpm package symlink is bundled o
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/node_modules/@webview-bridge");
-    try tmp.dir.makePath("node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules/@webview-bridge");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native");
     try writeFile(tmp.dir, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native/index.js",
         \\const WebView = require("react-native-webview");
@@ -2149,6 +2151,7 @@ test "react_native preserve_symlinks: standard pnpm package symlink is bundled o
     );
 
     tmp.dir.symLink(
+        std.testing.io,
         "../../../node_modules/.pnpm/react-native-webview@13/node_modules/react-native-webview",
         "apps/app/node_modules/react-native-webview",
         .{ .is_directory = true },
@@ -2157,6 +2160,7 @@ test "react_native preserve_symlinks: standard pnpm package symlink is bundled o
         else => return err,
     };
     tmp.dir.symLink(
+        std.testing.io,
         "../../../../node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/@webview-bridge/react-native",
         "apps/app/node_modules/@webview-bridge/react-native",
         .{ .is_directory = true },
@@ -2165,6 +2169,7 @@ test "react_native preserve_symlinks: standard pnpm package symlink is bundled o
         else => return err,
     };
     tmp.dir.symLink(
+        std.testing.io,
         "../../react-native-webview@13/node_modules/react-native-webview",
         "node_modules/.pnpm/@webview-bridge+react-native@1/node_modules/react-native-webview",
         .{ .is_directory = true },
@@ -2192,7 +2197,7 @@ test "react_native preserve_symlinks: standard pnpm package symlink is bundled o
         .resolve_symlink_siblings = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2213,10 +2218,11 @@ test "preserve_symlinks: alias to pnpm symlink package root bundles package entr
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("apps/app/node_modules");
+    try tmp.dir.createDirPath(std.testing.io, "apps/app/node_modules");
     try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/package.json", "{\"main\":\"index.js\"}");
     try writeFile(tmp.dir, "node_modules/.pnpm/react@1/node_modules/react/index.js", "exports.version = 'test';\n");
     tmp.dir.symLink(
+        std.testing.io,
         "../../../node_modules/.pnpm/react@1/node_modules/react",
         "apps/app/node_modules/react",
         .{ .is_directory = true },
@@ -2230,7 +2236,7 @@ test "preserve_symlinks: alias to pnpm symlink package root bundles package entr
         \\console.log(React.version);
     );
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const entry = try absPath(&tmp, "apps/app/index.js");
     defer std.testing.allocator.free(entry);
@@ -2247,7 +2253,7 @@ test "preserve_symlinks: alias to pnpm symlink package root bundles package entr
         .alias = &.{.{ .from = "react", .to = react_root }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2275,7 +2281,7 @@ test "shimMissingExports: missing export에 shim 변수 생성" {
         .shim_missing_exports = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2304,7 +2310,7 @@ test "shimMissingExports: 플래그 꺼져있으면 shim 미생성" {
         .shim_missing_exports = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // shim 없으면 void 0 선언이 없어야 함
@@ -2329,7 +2335,7 @@ test "missing export: 값으로 쓰는 실제 누락 export 는 missing_export �
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -2362,7 +2368,7 @@ test "missing export: type-only import 는 stripped 이므로 진단을 내지 �
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 타입은 strip 되어 런타임 값 참조가 아니므로 missing_export 진단을 내지 않는다
@@ -2394,7 +2400,7 @@ test "missing export: CJS 모듈 import 는 동적 exports 라 진단 보수적�
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // CJS exports 는 정적으로 열거 불가 → 거짓 양성을 피하려 missing_export 를 surface 하지 않는다
@@ -2497,7 +2503,7 @@ test "missing export 게이트: export*/named-reexport/unused/default 차원별 
 
         var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
         defer b.deinit();
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         var found = false;
@@ -2536,7 +2542,7 @@ test "Self-re-export: default re-export가 자기 자신을 가리킬 때 skip" 
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 자기참조 re-export는 에러가 아닌 경고 → 번들 생성 성공
@@ -2608,7 +2614,7 @@ test "RN preset: class → function IIFE 강제 다운레벨 (Hermes class expre
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2636,7 +2642,7 @@ test "RN preset: 사용자 unsupported.class=false여도 RN에서 자동 true �
         .unsupported = .{ .class = false },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2660,7 +2666,7 @@ test "RN preset: browser 플랫폼에서는 class 그대로 보존" {
         .platform = .browser,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2693,7 +2699,7 @@ test "RN preset: arrow worklet params → __closure에서 제외 (#1283 Reanimat
         .worklet_transform = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2724,7 +2730,7 @@ test "RN preset: #1302 for-of destructuring + const→var는 void 0 init 추가 
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2763,7 +2769,7 @@ test "RN preset: for-of loop closure preserves method this" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2793,7 +2799,7 @@ test "RN preset: #1299 let/const → var 다운레벨 (Hermes block scoping)" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2825,7 +2831,7 @@ test "RN preset: #1299 arrow → function 다운레벨 (Hermes object literal ar
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2850,7 +2856,7 @@ test "RN preset: async/await도 ES5 매트릭스로 다운레벨 (보수적 정�
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2881,7 +2887,7 @@ test "JSX automatic: _createElement import injected when key-after-spread used" 
         .external = &.{ "react/jsx-dev-runtime", "react" },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2918,7 +2924,7 @@ test "JSX automatic: _createElement injected for .js source (expo-router useScre
         .external = &.{ "react/jsx-dev-runtime", "react" },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2983,7 +2989,7 @@ test "entry_error_guard #1: 옵션 활성 시 prologue 에 Metro guard helper em
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3009,7 +3015,7 @@ test "entry_error_guard #2: 옵션 비활성 시 helper / wrap 모두 없음 (�
         .entry_error_guard = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3034,7 +3040,7 @@ test "entry_error_guard #3: helper 정의 1번만 emit (중복 방지)" {
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3052,7 +3058,7 @@ test "entry_error_guard #4: 단순 entry — chain unroll 없이 entry trigger �
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3080,7 +3086,7 @@ test "entry_error_guard #5: 다중 chain entry — import init 은 entry guard �
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3122,7 +3128,7 @@ test "entry_error_guard #5b: runBeforeMain 을 entry 앞에 분리하고 entry i
         .run_before_main = &.{setup},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3170,7 +3176,7 @@ test "entry_error_guard #5c: runBeforeMain 은 dependency closure 정의 뒤 ent
         .run_before_main = &.{setup},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3185,11 +3191,11 @@ test "react_native dev auto InitializeCore: preserve_symlinks logical runBeforeM
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("app/node_modules");
+    try tmp.dir.createDirPath(std.testing.io, "app/node_modules");
     try writeFile(tmp.dir, ".pnpm/react-native@1/node_modules/react-native/Libraries/Core/InitializeCore.js",
         \\globalThis.initCoreCount = (globalThis.initCoreCount || 0) + 1;
     );
-    tmp.dir.symLink("../../.pnpm/react-native@1/node_modules/react-native", "app/node_modules/react-native", .{ .is_directory = true }) catch |err| switch (err) {
+    tmp.dir.symLink(std.testing.io, "../../.pnpm/react-native@1/node_modules/react-native", "app/node_modules/react-native", .{ .is_directory = true }) catch |err| switch (err) {
         error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
@@ -3210,7 +3216,7 @@ test "react_native dev auto InitializeCore: preserve_symlinks logical runBeforeM
         .run_before_main = &.{init_core},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3250,7 +3256,7 @@ test "entry_error_guard #5d: scope-hoisted named import from ESM wrap keeps live
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3274,7 +3280,7 @@ test "entry_error_guard #6: side-effect import — wrap 적용 + 평가 시점 �
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3299,7 +3305,7 @@ test "entry_error_guard #7: re-export entry — chain unroll 안 깨짐" {
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3318,7 +3324,7 @@ test "entry_error_guard #8: CJS entry — require_X() wrap" {
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3340,7 +3346,7 @@ test "entry_error_guard #9: mixed CJS + ESM dependencies — 모두 wrap" {
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3359,7 +3365,7 @@ test "entry_error_guard #10: Metro inGuard + ErrorUtils fallback rethrow semanti
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3385,7 +3391,7 @@ test "entry_error_guard #11: entry 안의 var/function 정의 + chain 혼재" {
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3413,7 +3419,7 @@ test "entry_error_guard #12: TLA entry — wrap 안 함 (await 보존)" {
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3436,7 +3442,7 @@ test "entry_error_guard #13: minify_whitespace — minified helper 형태 정상
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3467,7 +3473,7 @@ test "entry_error_guard #14: 비-entry 모듈의 chain 도 wrap (preamble + side
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3492,7 +3498,7 @@ test "entry_error_guard #15: entry import chain 은 entry init body 안에 남�
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3519,7 +3525,7 @@ test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metada
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3548,7 +3554,7 @@ test "entry_error_guard #17: silent_console_error_patterns 주입 시 setter int
     const patterns = [_][]const u8{expo_polyfill_pattern};
     var b = try buildRnGuardedWithSilentPatterns(std.testing.allocator, entry, &patterns);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3574,7 +3580,7 @@ test "entry_error_guard #17b: silent_console_error_patterns 비어있으면 sett
 
     var b = try buildRnGuarded(std.testing.allocator, entry); // patterns 비어있음
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3596,7 +3602,7 @@ test "entry_error_guard #18: silent swallow/debug toggle 제거 — Metro ErrorU
 
     var b = try buildRnGuarded(std.testing.allocator, entry);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3628,7 +3634,7 @@ test "entry_error_guard #19: dev_mode + entry import chain — __zntc_modules[\"
         .dev_mode = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3655,7 +3661,7 @@ test "entry_error_guard #20: silent_console_error_patterns 정확도 — 실제 
     const patterns = [_][]const u8{expo_polyfill_pattern};
     var b = try buildRnGuardedWithSilentPatterns(std.testing.allocator, entry, &patterns);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3692,7 +3698,7 @@ test "entry_error_guard #21: silent_console_error_patterns 다중 패턴 — 모
     };
     var b = try buildRnGuardedWithSilentPatterns(std.testing.allocator, entry, &patterns);
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3740,7 +3746,7 @@ test "react_native re-export getters defer ESM source initialization" {
         .tree_shaking = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3826,7 +3832,7 @@ test "react_native inlineRequires: defer function-only ESM imports across select
         .tree_shaking = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3843,7 +3849,7 @@ test "react_native inlineRequires: defer function-only ESM imports across select
         .entry_error_guard = true,
     });
     defer dev_b.deinit();
-    const dev_result = try dev_b.bundle();
+    const dev_result = try dev_b.bundle(std.testing.io);
     defer dev_result.deinit(std.testing.allocator);
 
     try std.testing.expect(!dev_result.hasErrors());
@@ -3901,7 +3907,7 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -3969,7 +3975,7 @@ test "react_native inlineRequires: package sideEffects pattern keeps static ESM 
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4024,7 +4030,7 @@ test "react_native inlineRequires: strict order still defers named CJS imports" 
         .strict_execution_order = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4057,7 +4063,7 @@ test "react_native inlineRequires: named re-export initializes canonical source 
         \\import { createStackNavigator } from './stack';
         \\globalThis.__zntcStackNavigator = createStackNavigator().ready;
     );
-    try tmp.dir.makePath("stack");
+    try tmp.dir.createDirPath(std.testing.io, "stack");
     try writeFile(tmp.dir, "stack/index.js",
         \\export { default as createStackNavigator } from './createStackNavigator';
     );
@@ -4083,7 +4089,7 @@ test "react_native inlineRequires: named re-export initializes canonical source 
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4104,7 +4110,7 @@ test "react_native inlineRequires: named re-export preserves package entry side 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("perf");
+    try tmp.dir.createDirPath(std.testing.io, "perf");
     try writeFile(tmp.dir, "entry.js",
         \\import { getPerformance } from './perf';
         \\globalThis.__zntcPerfResult = getPerformance().dataCollectionEnabled;
@@ -4151,7 +4157,7 @@ test "react_native inlineRequires: named re-export preserves package entry side 
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4172,7 +4178,7 @@ test "react_native inlineRequires: export-star source side effects stay eager" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("analytics");
+    try tmp.dir.createDirPath(std.testing.io, "analytics");
     try writeFile(tmp.dir, "entry.js",
         \\import { getAnalytics } from './analytics';
         \\globalThis.__zntcAnalyticsResult = getAnalytics().dataCollectionEnabled;
@@ -4218,7 +4224,7 @@ test "react_native inlineRequires: export-star source side effects stay eager" {
         .strict_execution_order = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4239,7 +4245,7 @@ test "react_native inlineRequires: namespace member rewrite initializes source m
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("sentry");
+    try tmp.dir.createDirPath(std.testing.io, "sentry");
     try writeFile(tmp.dir, "entry.js",
         \\import * as Sentry from './sentry';
         \\import * as selectors from './selectors';
@@ -4277,7 +4283,7 @@ test "react_native inlineRequires: namespace member rewrite initializes source m
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4307,7 +4313,7 @@ test "react_native release: namespace member rewrite initializes export-star sou
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("selectors");
+    try tmp.dir.createDirPath(std.testing.io, "selectors");
     try writeFile(tmp.dir, "entry.js",
         \\import * as selectors from './selectors';
         \\globalThis.__zntcSelectorResult = selectors.getVisible({ modal: { visible: true } });
@@ -4331,7 +4337,7 @@ test "react_native release: namespace member rewrite initializes export-star sou
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4348,7 +4354,7 @@ test "react_native inlineRequires: namespace import from export-star barrel init
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("definitions");
+    try tmp.dir.createDirPath(std.testing.io, "definitions");
     try writeFile(tmp.dir, "entry.js",
         \\import * as ANIMATION_DEFINITIONS from './definitions';
         \\globalThis.__zntcAnimations = Object.keys(ANIMATION_DEFINITIONS)
@@ -4380,7 +4386,7 @@ test "react_native inlineRequires: namespace import from export-star barrel init
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4433,7 +4439,7 @@ test "react_native inlineRequires: named import of namespace re-export stays eag
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4512,7 +4518,7 @@ test "react_native inlineRequires: keeps default ESM imports eager for provider 
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4567,7 +4573,7 @@ test "react_native inlineRequires: object parameter default visits ESM value imp
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4609,7 +4615,7 @@ test "react_native inlineRequires: simple parameter default visits ESM value imp
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4654,7 +4660,7 @@ test "react_native inlineRequires: minified bare parameter default visits ESM va
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4692,7 +4698,7 @@ test "react_native inlineRequires: array pattern default visits ESM value import
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4736,7 +4742,7 @@ test "react_native inlineRequires: nested destructuring default visits ESM value
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4782,7 +4788,7 @@ test "react_native inlineRequires: TS parameter property default visits ESM valu
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -4838,7 +4844,7 @@ test "react_native inlineRequires: for-of binding default visits ESM value impor
         .entry_error_guard = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

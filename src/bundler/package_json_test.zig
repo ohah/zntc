@@ -10,16 +10,19 @@ const isSubpathMap = pkg_json.isSubpathMap;
 // ============================================================
 
 // path-based parsePackageJson 호출용 helper — tmp dir 의 절대경로 반환.
-// caller 는 buf 를 자체 stack 에 보유.
+// caller 는 buf 를 자체 stack 에 보유. 0.16: realPathFileAlloc 결과를 buf 로 복사.
 fn tmpDirPath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
-    return try tmp.dir.realpath(".", buf);
+    const owned = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(owned);
+    @memcpy(buf[0..owned.len], owned);
+    return buf[0..owned.len];
 }
 
 test "parsePackageJson: basic fields" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"test-pkg","main":"./lib/index.js","module":"./esm/index.js","type":"module"}
@@ -28,7 +31,7 @@ test "parsePackageJson: basic fields" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &buf);
-    var result = try parsePackageJson(std.testing.allocator, dir_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, dir_path);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test-pkg", result.pkg.name.?);
@@ -41,7 +44,7 @@ test "parsePackageJson: sideEffects false" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"pure-pkg","sideEffects":false}
@@ -50,7 +53,7 @@ test "parsePackageJson: sideEffects false" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &buf);
-    var result = try parsePackageJson(std.testing.allocator, dir_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, dir_path);
     defer result.deinit();
 
     switch (result.pkg.side_effects) {
@@ -63,7 +66,7 @@ test "parsePackageJson: sideEffects array" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"css-pkg","sideEffects":["*.css","./src/polyfill.js"]}
@@ -72,7 +75,7 @@ test "parsePackageJson: sideEffects array" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &buf);
-    var result = try parsePackageJson(std.testing.allocator, dir_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, dir_path);
     defer result.deinit();
 
     switch (result.pkg.side_effects) {
@@ -89,7 +92,7 @@ test "parsePackageJson: sideEffects empty array" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"empty-pkg","sideEffects":[]}
@@ -98,7 +101,7 @@ test "parsePackageJson: sideEffects empty array" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &buf);
-    var result = try parsePackageJson(std.testing.allocator, dir_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, dir_path);
     defer result.deinit();
 
     // 빈 배열은 sideEffects: false와 동일
@@ -114,7 +117,7 @@ test "parsePackageJson: missing file" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &buf);
-    const result = parsePackageJson(std.testing.allocator, dir_path);
+    const result = parsePackageJson(std.testing.allocator, std.testing.io, dir_path);
     try std.testing.expectError(error.FileNotFound, result);
 }
 
@@ -125,10 +128,10 @@ test "parsePackageJson: symlink-to-directory 안의 package.json (bun/.bun 패�
     defer tmp.cleanup();
 
     // 실제 패키지 디렉토리
-    try tmp.dir.makeDir("real_pkg");
-    var real_dir = try tmp.dir.openDir("real_pkg", .{});
-    defer real_dir.close();
-    try real_dir.writeFile(.{
+    try tmp.dir.createDir(std.testing.io, "real_pkg", .default_dir);
+    var real_dir = try tmp.dir.openDir(std.testing.io, "real_pkg", .{});
+    defer real_dir.close(std.testing.io);
+    try real_dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"linked-pkg","main":"./index.js"}
@@ -136,21 +139,21 @@ test "parsePackageJson: symlink-to-directory 안의 package.json (bun/.bun 패�
     });
 
     // bun/.bun 같은 symlink-to-directory
-    tmp.dir.symLink("real_pkg", "linked_pkg", .{ .is_directory = true }) catch |err| switch (err) {
+    tmp.dir.symLink(std.testing.io, "real_pkg", "linked_pkg", .{ .is_directory = true }) catch |err| switch (err) {
         // Windows / 권한 부족 환경 skip
         error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &buf);
+    const tmp_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path);
 
     // symlink 경로로 parsePackageJson 호출 — std.fs.path.join 후 readFile 가
     // symlink 를 따라가 target 의 package.json 읽음
     var join_buf: [std.fs.max_path_bytes]u8 = undefined;
     const linked_path = try std.fmt.bufPrint(&join_buf, "{s}/linked_pkg", .{tmp_path});
 
-    var result = try parsePackageJson(std.testing.allocator, linked_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, linked_path);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("linked-pkg", result.pkg.name.?);
@@ -161,10 +164,10 @@ test "parsePackageJson: pnpm/bun farm symlink — node_modules/foo → .pnpm/foo
     defer tmp.cleanup();
 
     // pnpm/bun 의 farm 구조 모방 — content-addressable store + flat symlink farm
-    try tmp.dir.makePath(".pnpm/foo@1.0.0/node_modules/foo");
-    var farm_dir = try tmp.dir.openDir(".pnpm/foo@1.0.0/node_modules/foo", .{});
-    defer farm_dir.close();
-    try farm_dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, ".pnpm/foo@1.0.0/node_modules/foo");
+    var farm_dir = try tmp.dir.openDir(std.testing.io, ".pnpm/foo@1.0.0/node_modules/foo", .{});
+    defer farm_dir.close(std.testing.io);
+    try farm_dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"foo","version":"1.0.0","main":"./index.js","module":"./esm/index.js"}
@@ -172,20 +175,20 @@ test "parsePackageJson: pnpm/bun farm symlink — node_modules/foo → .pnpm/foo
     });
 
     // node_modules/foo 가 farm 으로 symlink — bun install 과 pnpm install 양쪽 동일 패턴
-    try tmp.dir.makeDir("node_modules");
-    tmp.dir.symLink("../.pnpm/foo@1.0.0/node_modules/foo", "node_modules/foo", .{ .is_directory = true }) catch |err| switch (err) {
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    tmp.dir.symLink(std.testing.io, "../.pnpm/foo@1.0.0/node_modules/foo", "node_modules/foo", .{ .is_directory = true }) catch |err| switch (err) {
         error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &buf);
+    const tmp_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path);
 
     var join_buf: [std.fs.max_path_bytes]u8 = undefined;
     const farm_path = try std.fmt.bufPrint(&join_buf, "{s}/node_modules/foo", .{tmp_path});
 
     // path-based 호출이 farm symlink 를 따라가 farm 의 package.json 읽음
-    var result = try parsePackageJson(std.testing.allocator, farm_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, farm_path);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("foo", result.pkg.name.?);
@@ -197,7 +200,7 @@ test "parsePackageJson: OutOfMemory 는 별도로 throw (silent swallow 방지)"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"oom-test"}
@@ -209,7 +212,7 @@ test "parsePackageJson: OutOfMemory 는 별도로 throw (silent swallow 방지)"
 
     // failingAllocator 0 byte 허용 — std.fs.path.join 의 첫 alloc 부터 실패
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    const result = parsePackageJson(failing.allocator(), dir_path);
+    const result = parsePackageJson(failing.allocator(), std.testing.io, dir_path);
     try std.testing.expectError(error.OutOfMemory, result);
 }
 
@@ -428,7 +431,7 @@ test "parsePackageJson: imports field" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "package.json",
         .data =
         \\{"name":"chalk","imports":{"#ansi-styles":"./source/vendor/ansi-styles/index.js"}}
@@ -437,7 +440,7 @@ test "parsePackageJson: imports field" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &buf);
-    var result = try parsePackageJson(std.testing.allocator, dir_path);
+    var result = try parsePackageJson(std.testing.allocator, std.testing.io, dir_path);
     defer result.deinit();
 
     try std.testing.expect(result.pkg.imports != null);
