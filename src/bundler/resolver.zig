@@ -103,6 +103,8 @@ pub const DirEntryCache = struct {
     cache: std.StringHashMap(?*EntrySet),
     rwlock: spin.SpinRwLock = .{},
     allocator: std.mem.Allocator,
+    /// 0.16: listDir 가 io 를 요구. Resolver.resolve 진입 시 주입 (per-instance).
+    io: std.Io = undefined,
 
     const EntrySet = struct {
         files: std.StringHashMap(void),
@@ -189,7 +191,7 @@ pub const DirEntryCache = struct {
     /// readdir() 후 heap 에 `EntrySet` 을 만들어 반환. 디렉토리가 없거나 OOM 이면 null
     /// (호출자는 negative 로 캐시) — 기존 동작과 동일.
     fn buildEntrySet(self: *DirEntryCache, dir_path: []const u8) ?*EntrySet {
-        const entries = fs.listDir(self.allocator, dir_path) catch return null;
+        const entries = fs.listDir(self.io, self.allocator, dir_path) catch return null;
         // entries 의 name 은 hashmap 으로 소유권 이전되거나 free 됨 — slice 자체만 free.
         defer self.allocator.free(entries);
 
@@ -253,6 +255,8 @@ pub const RealpathCache = struct {
 
     shards: [num_shards]Shard,
     allocator: std.mem.Allocator,
+    /// 0.16: realpath 가 io 를 요구. Resolver.resolve 진입 시 주입 (per-instance).
+    io: std.Io = undefined,
 
     const Shard = struct {
         cache: std.StringHashMap([]const u8),
@@ -303,7 +307,7 @@ pub const RealpathCache = struct {
         shard.mutex.unlock();
 
         const resolved_dir = cached_dir orelse blk: {
-            const new_dir = fs.realpath(self.allocator, dir) catch
+            const new_dir = fs.realpath(self.io, self.allocator, dir) catch
                 self.allocator.dupe(u8, dir) catch return error.OutOfMemory;
 
             shard.mutex.lock();
@@ -437,6 +441,12 @@ pub const Resolver = struct {
     /// React Native asset resolver 호환: `name.ext` base 파일이 없어도
     /// `name@2x.ext` / `name@3x.ext` 같은 scale variant가 있으면 그 파일로 해석한다.
     react_native_asset_scale_fallback: bool = false,
+    /// 0.16: fs 연산이 io 를 요구한다. Resolver 는 fs 프로빙이 25+ 메서드에 깊게
+    /// 퍼진 stateful 서브시스템이라, public 진입점 `resolve()` 에서 1회 저장한
+    /// per-instance io 를 내부 메서드가 self.io 로 읽는다 (전역 아님 — resolve_cache
+    /// 의 thread-safe 경로는 resolver 를 복사하므로 io 는 스레드-로컬). std.http.Client
+    /// 가 io 를 필드로 갖는 것과 동형.
+    io: std.Io = undefined,
 
     pub fn init(allocator: std.mem.Allocator) Resolver {
         return .{ .allocator = allocator };
@@ -599,7 +609,11 @@ pub const Resolver = struct {
         return null;
     }
 
-    pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+    pub fn resolve(self: *Resolver, io: std.Io, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        self.io = io;
+        // 하위 캐시에도 io 전파 (per-instance; resolve_cache thread-safe 경로는 복사본).
+        if (self.dir_cache) |dc| dc.io = io;
+        if (self.realpath_cache) |rc| rc.io = io;
         const result = try self.resolveInner(source_dir, specifier);
         if (self.block_list.len > 0 and !result.disabled) {
             const bl = @import("block_list.zig");
@@ -766,7 +780,7 @@ pub const Resolver = struct {
             owned_out.* = null;
             return cache.getOrParse(dir_path);
         }
-        owned_out.* = pkg_json.parsePackageJson(self.allocator, dir_path) catch |err| switch (err) {
+        owned_out.* = pkg_json.parsePackageJson(self.allocator, self.io, dir_path) catch |err| switch (err) {
             error.FileNotFound => return error.FileNotFound,
             error.IoError => return error.IoError,
             error.JsonParseError => return error.JsonParseError,
@@ -863,16 +877,11 @@ pub const Resolver = struct {
             resolved_path = ext_result.path;
         }
 
-        // file size 검사 — shim 은 작음. 큰 cjs main (graphql 등 full bundle) 즉시 reject.
-        const file = std.fs.openFileAbsolute(resolved_path, .{}) catch return null;
-        defer file.close();
-        const stat = file.stat() catch return null;
-        if (stat.size > CJS_SHIM_MAX_SIZE) return null;
-
-        // 작은 cjs main read + substring scan. AST parse 대신 비용 최소화.
-        var buf: [CJS_SHIM_MAX_SIZE]u8 = undefined;
-        const read_n = file.readAll(&buf) catch return null;
-        const content = buf[0..read_n];
+        // file size 검사 + read 를 한 번에 — shim 은 작음. 0.16 의 readFileAlloc 는 Limit
+        // 초과(큰 cjs main, graphql 등) 시 StreamTooLong → null 로 즉시 reject (구 stat-size
+        // 검사 대체). 작은 파일은 그대로 읽어 substring scan.
+        const content = std.Io.Dir.cwd().readFileAlloc(self.io, resolved_path, self.allocator, std.Io.Limit.limited(CJS_SHIM_MAX_SIZE)) catch return null;
+        defer self.allocator.free(content);
 
         // production conditional require shim 패턴: `process.env.NODE_ENV` + `require(` 둘 다 등장.
         const has_node_env = std.mem.indexOf(u8, content, "process.env.NODE_ENV") != null;
@@ -946,7 +955,7 @@ pub const Resolver = struct {
         const real_source_dir = blk: {
             var realpath_scope = profile.begin(.resolve_realpath);
             defer realpath_scope.end();
-            break :blk fs.realpath(self.allocator, source_dir) catch
+            break :blk fs.realpath(self.io, self.allocator, source_dir) catch
                 self.allocator.dupe(u8, source_dir) catch return error.OutOfMemory;
         };
         defer self.allocator.free(real_source_dir);
@@ -1030,7 +1039,7 @@ pub const Resolver = struct {
     fn resolveSubpathImports(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         var current_dir = source_dir;
         while (true) {
-            if (pkg_json.parsePackageJson(self.allocator, current_dir)) |*parsed_result| {
+            if (pkg_json.parsePackageJson(self.allocator, self.io, current_dir)) |*parsed_result| {
                 var parsed = parsed_result.*;
                 defer parsed.deinit();
 
@@ -1083,7 +1092,7 @@ pub const Resolver = struct {
                     const real_path = if (self.realpath_cache) |cache|
                         cache.resolve(path) catch return error.OutOfMemory
                     else
-                        fs.realpath(self.allocator, path) catch
+                        fs.realpath(self.io, self.allocator, path) catch
                             self.allocator.dupe(u8, path) catch return error.OutOfMemory;
 
                     if (shouldCanonicalizePnpmPackageSymlink(path, real_path)) {
@@ -1097,7 +1106,7 @@ pub const Resolver = struct {
                 break :blk cache.resolve(path) catch
                     self.allocator.dupe(u8, path) catch return error.OutOfMemory;
             }
-            break :blk fs.realpath(self.allocator, path) catch
+            break :blk fs.realpath(self.io, self.allocator, path) catch
                 self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         };
         errdefer self.allocator.free(resolved);
@@ -1128,7 +1137,7 @@ pub const Resolver = struct {
             if (self.realpath_cache) |cache| {
                 break :blk cache.resolve(path) catch return error.OutOfMemory;
             }
-            break :blk fs.realpath(self.allocator, path) catch
+            break :blk fs.realpath(self.io, self.allocator, path) catch
                 self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         };
         defer self.allocator.free(real_path);
