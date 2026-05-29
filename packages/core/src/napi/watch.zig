@@ -694,6 +694,7 @@ fn rescanWatchRootDirty(
     }.f;
     zntc_lib.server.watch_scan.scanRoot(
         allocator,
+        common.io(),
         root,
         .{ .include = include, .exclude = exclude },
         Ctx{ .new_paths = &new_paths, .allocator = allocator },
