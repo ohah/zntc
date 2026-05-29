@@ -150,6 +150,34 @@ fn nsForceInline(
         self.isNamespaceExportConsumed(module_index, local_name);
 }
 
+/// (#3975) namespace import target 이 *순수* CJS star re-export — ESM 모듈이 단일
+/// `export * from <CJS>` 만 가지고 자체 named/default export·다른 star 가 없는 경우 —
+/// 면 underlying CJS 모듈 인덱스를 반환한다. 이 경우 `import * as ns from mid` 는
+/// `import * as ns from cjs`(직접) 와 의미가 동일하므로, namespace 를 정적 ns-object
+/// (shared-ns preamble, CJS wrapper 정의 *전* emit → ReferenceError) 대신 직접 CJS
+/// interop preamble(`var ns = __toESM(require())`, per-module = CJS region 후) 로
+/// 처리하도록 canonical 을 redirect 한다(#3975 emit-ordering 근본 수정).
+fn pureCjsStarTarget(self: *const Linker, mod_idx: u32) ?u32 {
+    const m = self.getModule(mod_idx) orelse return null;
+    if (m.wrap_kind == .cjs) return null; // 이미 CJS — redirect 불필요
+    var cjs_src: ?u32 = null;
+    for (m.export_bindings) |eb| {
+        if (eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*")) {
+            const rec_idx = eb.import_record_index orelse return null;
+            if (rec_idx >= m.import_records.len) return null;
+            const src = m.import_records[rec_idx].resolved;
+            if (src.isNone()) return null;
+            const sm = self.graph.getModule(src) orelse return null;
+            if (sm.wrap_kind != .cjs) return null; // ESM star 는 정적 ns-object 로 처리 가능
+            if (cjs_src != null) return null; // 다중 star → 순수 단일 아님
+            cjs_src = @intFromEnum(src);
+        } else {
+            return null; // 자체 named/default export 또는 `export * as ns` 존재 → 순수 아님
+        }
+    }
+    return cjs_src;
+}
+
 fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_mod: *const Module, target_name: []const u8) ![]const u8 {
     const sep = if (self.minify_whitespace) "," else ", ";
     const import_init = try allocEsmInitExpr(self, import_mod);
@@ -646,7 +674,16 @@ pub fn buildMetadataForAst(
                 continue;
             }
 
-            const canonical_mod = @intFromEnum(rec.resolved);
+            var canonical_mod = @intFromEnum(rec.resolved);
+
+            // (#3975) namespace import 가 pure-CJS-star ESM(단일 `export * from <CJS>`,
+            // 자체 export 없음)을 가리키면 underlying CJS 로 redirect → 아래 CJS-interop
+            // preamble 경로(`var ns = __toESM(require())`, per-module = CJS region 후, 올바른
+            // ordering)로 처리. 정적 ns-object 경로는 shared-ns preamble 이 CJS wrapper 정의
+            // *전* emit 돼 `require_x is not a function` 이 됐다(직접 import * as ns from cjs 와 동형화).
+            if (ib.kind == .namespace) {
+                if (pureCjsStarTarget(self, canonical_mod)) |cjs_idx| canonical_mod = cjs_idx;
+            }
 
             // __esm 모듈에서 CJS 타겟 또는 self-import: body의 require_rewrites가
             // 할당문 + init 호출을 처리하므로 preamble 생성 skip.

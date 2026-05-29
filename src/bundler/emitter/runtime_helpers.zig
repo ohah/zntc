@@ -83,6 +83,30 @@ pub fn emitBundleRuntimeHelpers(
 /// linker 가 있으면 `getResolvedBinding` 의 chain 끝까지 따라가 ESM re-export
 /// (`export { default } from "./cjs"`) 와 다단계 re-export 도 캐치. linker 가 없으면
 /// (linker_test 단독 등) importer 의 직접 target 만 검사하는 보수적 fallback.
+/// (#3975) 모듈이 *순수* CJS star re-export(ESM 이 단일 `export * from <CJS>` 만,
+/// 자체 named/default export·다른 star 없음)인지. metadata.zig 의 pureCjsStarTarget
+/// 와 동일 조건 — namespace import 가 이 모듈을 가리키면 underlying CJS 로 redirect 되어
+/// `__toESM(require())` 가 emit 되므로 헬퍼 필요 판정에 쓴다.
+fn isPureCjsStarReExport(target: *const Module, graph: *const ModuleGraph) bool {
+    if (target.wrap_kind == .cjs) return false;
+    var found_cjs_star = false;
+    for (target.export_bindings) |eb| {
+        if (eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*")) {
+            const ri = eb.import_record_index orelse return false;
+            if (ri >= target.import_records.len) return false;
+            const src = target.import_records[ri].resolved;
+            if (src.isNone()) return false;
+            const sm = graph.getModule(src) orelse return false;
+            if (sm.wrap_kind != .cjs) return false;
+            if (found_cjs_star) return false; // 다중 star → 순수 아님
+            found_cjs_star = true;
+        } else {
+            return false; // 자체 export 또는 export * as ns
+        }
+    }
+    return found_cjs_star;
+}
+
 fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, linker: ?*const Linker) bool {
     for (module.import_bindings) |ib| {
         if (ib.import_record_index >= module.import_records.len) continue;
@@ -94,6 +118,11 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
             if (record.resolved.isNone()) continue;
             const target = graph.getModule(record.resolved) orelse continue;
             if (target.wrap_kind == .cjs) return true;
+            // (#3975) target 이 ESM 이라도 *pure* CJS-star re-export(단일 `export * from
+            // <CJS>`, 자체 export 없음)면 metadata 가 underlying CJS 로 redirect 해 per-module
+            // preamble 이 `var ns = __toESM(require())` 를 emit → __toESM 헬퍼 필요. redirect
+            // 조건(metadata.zig pureCjsStarTarget)과 동일하게 감지한다.
+            if (isPureCjsStarReExport(target, graph)) return true;
             continue;
         }
 
