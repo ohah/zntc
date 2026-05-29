@@ -952,7 +952,8 @@ pub fn main(init: std.process.Init) !void {
             }
 
             while (true) {
-                std.Thread.sleep(500 * std.time.ns_per_ms);
+                // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
+                io.sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
 
                 // mtime 변경 확인 + 변경 파일 수집
                 var changed = false;
