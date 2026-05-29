@@ -249,6 +249,8 @@ const KqueueBackend = struct {
 // ============================================================
 
 const InotifyBackend = struct {
+    /// 0.16: statFile/close 에 io 필요 (Linux 백엔드). init 에서 보관.
+    io: std.Io,
     inotify_fd: i32,
     /// 감시 대상 파일 경로 (allocator 소유)
     watched_files: std.StringHashMap(void),
