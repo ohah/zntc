@@ -33,7 +33,7 @@ test "Integration: barrel file tree-shaking with sideEffects=false" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -70,7 +70,7 @@ test "Integration: barrel file without sideEffects keeps all" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -97,7 +97,7 @@ test "Integration: diamond re-export resolves to same symbol" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -131,7 +131,7 @@ test "Integration: class extends across module boundary" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -163,7 +163,7 @@ test "Integration: default and named re-export combined" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -197,7 +197,7 @@ test "Integration: side-effect order with export star" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -224,7 +224,7 @@ test "Integration: deeply nested barrel re-exports" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -249,7 +249,7 @@ test "Integration: mixed default/named import from same module" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

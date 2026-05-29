@@ -37,7 +37,7 @@ test "TreeShaking: post-declaration assignment to top-level var is preserved" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -74,7 +74,7 @@ test "TreeShaking: function-body writer of mutable let does not pull function in
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -107,7 +107,7 @@ test "TreeShaking: top-level writer kept, function-body writer dropped on shared
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -153,7 +153,7 @@ test "TreeShaking: dead function-body writer does not cascade through transitive
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -185,7 +185,7 @@ test "TreeShaking: compound/update writers inside function body are not writer-e
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -231,7 +231,7 @@ test "TreeShaking: unused worklet metadata assignments do not keep pure modules 
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -298,7 +298,7 @@ test "TreeShaking: unused worklet metadata assignments are dropped when sibling 
         .define = &.{.{ .key = "__DEV__", .value = "false" }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -359,7 +359,7 @@ test "TreeShaking: native worklet transform does not leave metadata for dead dev
         .define = &.{.{ .key = "__DEV__", .value = "false" }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

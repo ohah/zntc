@@ -40,7 +40,7 @@ test "TreeShaking: unused side_effects=false module excluded from bundle" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -64,7 +64,7 @@ test "TreeShaking: tree_shaking=false preserves all modules" {
         .tree_shaking = false,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -81,7 +81,7 @@ test "TreeShaking: entry point exports preserved in bundle" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -101,7 +101,7 @@ test "TreeShaking: only used exports from dependency" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -123,7 +123,7 @@ test "TreeShaking: re-export chain dependency included" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -141,7 +141,7 @@ test "TreeShaking: side-effect-only import preserved" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -160,7 +160,7 @@ test "TreeShaking: side-effect-only CJS import emits require call" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -185,7 +185,7 @@ test "TreeShaking: runBeforeMain import-only root preserves side-effect dependen
         .run_before_main = &.{prelude},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -214,7 +214,7 @@ test "TreeShaking: class extends call expression preserved (#1261 edge)" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -249,7 +249,7 @@ test "#1291 실제 증상: \"use strict\" + non-simple params 있는 모듈이 g
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib = __commonJS") != null);
@@ -289,7 +289,7 @@ test "TreeShaking: export * chain through TS-stripped empty source still resolve
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -328,7 +328,7 @@ test "TreeShaking: namespace import preamble dropped when target excluded from b
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -361,7 +361,7 @@ test "TreeShaking: CJS default import member access seeds only used export" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -391,7 +391,7 @@ test "TreeShaking: CJS default import value escape keeps all exports" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -427,7 +427,7 @@ test "TreeShaking: CJS default member access follows module.exports require prox
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

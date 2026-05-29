@@ -27,7 +27,7 @@ test "incremental bench: cold vs warm rebuild parse savings" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const r1 = try b.bundle();
+    const r1 = try b.bundle(std.testing.io);
     defer r1.deinit(std.testing.allocator);
 
     const cold_parse = profile.totalNs(.parse);

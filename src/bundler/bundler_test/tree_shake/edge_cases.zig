@@ -33,7 +33,7 @@ test "TreeShaking: dynamic import target module is preserved (#1260)" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -65,7 +65,7 @@ test "TreeShaking: class with impure static field via getter access preserved (#
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -97,7 +97,7 @@ test "TreeShaking: pure static field in unused class is removed (#1261 companion
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -129,7 +129,7 @@ test "TreeShaking: dynamic import transitive dependency preserved (#1260 edge)" 
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -167,7 +167,7 @@ test "TreeShaking: dynamic import deep chain (3 levels) preserved (#1260 edge)" 
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -201,7 +201,7 @@ test "TreeShaking: dynamic + static import of same module coexist (#1260 edge)" 
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -239,7 +239,7 @@ test "TreeShaking: dynamic import with non-static specifier does not protect (#1
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -271,7 +271,7 @@ test "TreeShaking: class static block side-effect preserved (#1261 edge)" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -309,7 +309,7 @@ test "TreeShaking: size regression — 1-of-N named imports (#1262)" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -355,7 +355,7 @@ test "TreeShaking: size regression — deep re-export chain only used exports (#
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

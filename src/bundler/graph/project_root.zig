@@ -38,7 +38,7 @@ test "findProjectRoot: 일반 npm — src/index.ts → root는 package.json 위�
     const expected = try absPath(&tmp, ".");
     defer std.testing.allocator.free(expected);
 
-    const root = try findProjectRoot(std.testing.allocator, start);
+    const root = try findProjectRoot(std.testing.allocator, std.testing.io, start);
     try std.testing.expectEqualStrings(expected, root);
 }
 
@@ -52,7 +52,7 @@ test "findProjectRoot: npm workspace — packages/app/index.ts → app의 packag
     const start = try absPath(&tmp, "packages/app");
     defer std.testing.allocator.free(start);
 
-    const root = try findProjectRoot(std.testing.allocator, start);
+    const root = try findProjectRoot(std.testing.allocator, std.testing.io, start);
     try std.testing.expectEqualStrings(start, root);
 }
 
@@ -69,7 +69,7 @@ test "findProjectRoot: pnpm workspace — packages/app/src/index.ts → app의 p
     const expected = try absPath(&tmp, "packages/app");
     defer std.testing.allocator.free(expected);
 
-    const root = try findProjectRoot(std.testing.allocator, start);
+    const root = try findProjectRoot(std.testing.allocator, std.testing.io, start);
     try std.testing.expectEqualStrings(expected, root);
 }
 
@@ -86,7 +86,7 @@ test "findProjectRoot: bun workspace — packages/app/src/index.ts → app의 pa
     const expected = try absPath(&tmp, "packages/app");
     defer std.testing.allocator.free(expected);
 
-    const root = try findProjectRoot(std.testing.allocator, start);
+    const root = try findProjectRoot(std.testing.allocator, std.testing.io, start);
     try std.testing.expectEqualStrings(expected, root);
 }
 
@@ -103,6 +103,6 @@ test "findProjectRoot: yarn pnp — .pnp.cjs + package.json 단일 패키지" {
     const expected = try absPath(&tmp, ".");
     defer std.testing.allocator.free(expected);
 
-    const root = try findProjectRoot(std.testing.allocator, start);
+    const root = try findProjectRoot(std.testing.allocator, std.testing.io, start);
     try std.testing.expectEqualStrings(expected, root);
 }

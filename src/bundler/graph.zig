@@ -456,7 +456,7 @@ fn expectAllBuiltModulesSkipPrePass(file_count: usize) !void {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
     try std.testing.expectEqual(file_count, graph.moduleCount());
     var it = graph.modulesIterator();
     while (it.next()) |module| {

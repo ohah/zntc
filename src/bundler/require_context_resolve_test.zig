@@ -259,7 +259,7 @@ test "BundlerDiagnostic.ErrorCode: require_context_no_handler exists" {
 // ============================================================
 
 fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
-    return try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 test "graph: require.context invalid_reason → require_context_invalid diagnostic" {

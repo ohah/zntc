@@ -18,7 +18,7 @@ test "@__PURE__: annotation preserved in call expression output" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -35,7 +35,7 @@ test "@__PURE__: annotation preserved with #__PURE__ syntax" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -52,7 +52,7 @@ test "@__PURE__: annotation on new expression" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -69,7 +69,7 @@ test "@__PURE__: no annotation when not present" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -86,7 +86,7 @@ test "@__PURE__: annotation not emitted in minify mode" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -104,7 +104,7 @@ test "@__PURE__: applies to first call only in chain" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -129,7 +129,7 @@ test "@__PURE__: preserved across modules in bundle" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -156,7 +156,7 @@ test "@__NO_SIDE_EFFECTS__: function flag preserved in bundle output" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -179,7 +179,7 @@ test "@__NO_SIDE_EFFECTS__: call to annotated function auto-pure in single file"
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -201,7 +201,7 @@ test "@__NO_SIDE_EFFECTS__: function expression variant" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -227,7 +227,7 @@ test "@__NO_SIDE_EFFECTS__: cross-module re-export chain" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -254,7 +254,7 @@ test "@__NO_SIDE_EFFECTS__: cross-module multiple imports" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -281,7 +281,7 @@ test "@__NO_SIDE_EFFECTS__: cross-module default export" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -304,7 +304,7 @@ test "@__NO_SIDE_EFFECTS__: no false positive on normal import" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -328,7 +328,7 @@ test "@__NO_SIDE_EFFECTS__: export default async function" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -351,7 +351,7 @@ test "@__NO_SIDE_EFFECTS__: export async function (named)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -373,7 +373,7 @@ test "@__NO_SIDE_EFFECTS__: single-file async function" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

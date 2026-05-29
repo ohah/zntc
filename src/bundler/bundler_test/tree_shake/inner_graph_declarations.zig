@@ -22,7 +22,7 @@ test "TreeShaking: innerGraph prunes pure write-only assignment" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -49,7 +49,7 @@ test "TreeShaking: innerGraph prunes overwritten pure assignment before read" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -75,7 +75,7 @@ test "TreeShaking: innerGraph prunes overwritten pure declaration initializer" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -102,7 +102,7 @@ test "TreeShaking: innerGraph preserves declaration initializer read before over
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -132,7 +132,7 @@ test "TreeShaking: innerGraph preserves side-effect declaration initializer" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -158,7 +158,7 @@ test "TreeShaking: innerGraph preserves exported declaration initializer" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

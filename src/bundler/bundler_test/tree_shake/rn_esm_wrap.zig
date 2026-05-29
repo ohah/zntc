@@ -38,7 +38,7 @@ test "TreeShaking #2398: RN .esm wrap + sideEffects:false barrel drops unused re
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -73,7 +73,7 @@ test "TreeShaking: RN .esm wrap named barrel use skips unused default re-export 
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -110,7 +110,7 @@ test "TreeShaking #2398: RN .esm wrap + sideEffects 미명시는 conservative �
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -159,7 +159,7 @@ test "TreeShaking #2398: RN .esm wrap + sideEffects:false barrel 50개 re-export
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -200,7 +200,7 @@ test "TreeShaking #2398: RN .esm wrap + side-effect import 는 본문 보존" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -236,7 +236,7 @@ test "TreeShaking #2398: RN require() 가 .esm wrap target namespace 전체 보�
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -274,7 +274,7 @@ test "TreeShaking #2398: RN namespace import (`import * as ns`) 가 .esm wrap pu
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -327,7 +327,7 @@ test "TreeShaking: RN .esm wrap unused namespace re-export drops orphan import i
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -372,7 +372,7 @@ test "TreeShaking: RN .esm wrap used namespace re-export includes namespace targ
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -414,7 +414,7 @@ test "TreeShaking: RN .esm wrap export-star drops getter for pruned source" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

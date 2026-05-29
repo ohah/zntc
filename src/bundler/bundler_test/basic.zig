@@ -25,7 +25,7 @@ test "Bundler: single file bundle" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42;") != null);
@@ -46,7 +46,7 @@ test "Bundler: two files bundled in order" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // b.ts가 a.ts보다 먼저 (exec_index 순서)
@@ -69,7 +69,7 @@ test "Bundler: external module excluded" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // react는 external → 에러 없이 번들 생성
@@ -93,7 +93,7 @@ test "Bundler: minified output" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // minify_syntax 에서 top-level const → var 다운그레이드 (#1630)
@@ -125,7 +125,7 @@ test "Bundler: unresolved globals reserve minified top-level names" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -158,7 +158,7 @@ test "Bundler: minify가 래퍼 합성 심볼을 짧은 이름으로 바꿈" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -196,7 +196,7 @@ test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -229,7 +229,7 @@ test "Bundler: RN minified require(JSON) rewrites CJS module param" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -269,7 +269,7 @@ test "Bundler: RN minified CJS wrapper keeps Node parameter names" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -323,7 +323,7 @@ test "Bundler: RN minified keeps computed global assignment side effect" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -362,7 +362,7 @@ test "Bundler: define으로 죽은 require 분기는 그래프에 포함하지 �
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -394,7 +394,7 @@ test "Bundler: try-block 안의 unresolved require 는 warning 만 + stub 으로
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // build hard-fail 안 함 — error 없이 통과해야 함.
@@ -439,7 +439,7 @@ test "Bundler: try-block 안의 unresolved require 는 실행 시 MODULE_NOT_FOU
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -464,7 +464,7 @@ test "Bundler: try-block 바깥의 unresolved require 는 여전히 hard error (
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -508,7 +508,7 @@ test "Bundler: ESM external default import 가 모듈마다 mangled local 일 �
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -536,7 +536,7 @@ test "Bundler: unresolved import produces error diagnostic" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -567,7 +567,7 @@ test "Bundler: webpack runtime helper calls are not resolved as imports" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -587,7 +587,7 @@ test "Bundler: circular dependency produces warning" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 순환은 경고 (에러 아님) → 번들 생성은 성공
@@ -613,7 +613,7 @@ test "Bundler: IIFE format" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
@@ -634,7 +634,7 @@ test "Bundler: CJS format" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.startsWith(u8, result.output, "\"use strict\";\n"));
@@ -656,7 +656,7 @@ test "Bundler: multiple entry points" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -682,7 +682,7 @@ test "Linker integration: import statement removed from bundle" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // import 문이 제거되어야 함
@@ -707,7 +707,7 @@ test "Linker integration: export keyword stripped (non-entry)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // b.ts의 "export const" → "const" (export 키워드 제거)
@@ -728,7 +728,7 @@ test "Linker integration: name conflict renamed" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 두 모듈의 count가 충돌 → 하나는 count$1로 리네임
@@ -754,7 +754,7 @@ test "Linker integration: scope_hoist=false preserves import/export" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // scope_hoist=false → import/export 그대로 유지
@@ -778,7 +778,7 @@ test "Re-export: named re-export" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -798,7 +798,7 @@ test "Re-export: export all (export * from)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -820,7 +820,7 @@ test "Re-export: chained re-export (A→B→C)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -840,7 +840,7 @@ test "Re-export: barrel file (index re-exporting multiple modules)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -859,7 +859,7 @@ test "Re-export: default export and import" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -877,7 +877,7 @@ test "Re-export: export default expression" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -900,7 +900,7 @@ test "Scope hoisting: three modules same variable name" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -934,7 +934,7 @@ test "Scope hoisting: export default identifier가 mangling 시 할당문 생성
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -957,7 +957,7 @@ test "Scope hoisting: multiple named imports from one module" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -981,7 +981,7 @@ test "Scope hoisting: import used in expression" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1000,7 +1000,7 @@ test "Scope hoisting: export function declaration" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1019,7 +1019,7 @@ test "Scope hoisting: let and var declarations across modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1046,7 +1046,7 @@ test "Circular: three module cycle (A→B→C→A)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 순환은 경고지만 번들은 생성됨
@@ -1073,7 +1073,7 @@ test "Circular: two module cycle with exports" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1094,7 +1094,7 @@ test "Circular: diamond with shared leaf" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1121,7 +1121,7 @@ test "Bundler: import.meta.glob eager option" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("mods");
+    try tmp.dir.createDir(std.testing.io, "mods", .default_dir);
     try writeFile(tmp.dir, "mods/a.ts", "export const x = 1;");
     try writeFile(tmp.dir, "mods/b.ts", "export const y = 2;");
     try writeFile(tmp.dir, "entry.ts", "const m = import.meta.glob('./mods/*.ts', { eager: true });\nconsole.log(m);");
@@ -1132,7 +1132,7 @@ test "Bundler: import.meta.glob eager option" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1148,7 +1148,7 @@ test "Bundler: import.meta.glob import option" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("mods");
+    try tmp.dir.createDir(std.testing.io, "mods", .default_dir);
     try writeFile(tmp.dir, "mods/a.ts", "export const setup = () => 1;");
     try writeFile(tmp.dir, "entry.ts", "const m = import.meta.glob('./mods/*.ts', { import: 'setup' });\nconsole.log(m);");
 
@@ -1158,7 +1158,7 @@ test "Bundler: import.meta.glob import option" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1303,7 +1303,7 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // matches 가 graph dep 으로 등록되니 실제 파일 필요.
-    try tmp.dir.makeDir("pages");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
     try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
     try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
     try writeFile(tmp.dir, "entry.ts",
@@ -1318,7 +1318,7 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1358,7 +1358,7 @@ test "Bundler: require.context emits empty map when no matches" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1387,7 +1387,7 @@ test "Bundler: require.context escapes match path special chars" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
 
     // 원본 `"` 는 `\"` 로, `\` 는 `\\` 로 escape 되어야 JS 문자열 리터럴이 유효.
@@ -1405,8 +1405,8 @@ test "Bundler: require.context normalizes trailing slash and missing ./" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // graph dep 등록을 위해 실제 파일 생성.
-    try tmp.dir.makeDir("pages");
-    try tmp.dir.makeDir("pages/nested");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "pages/nested", .default_dir);
     try writeFile(tmp.dir, "pages/nested/a.tsx", "export const a = 1;");
     // dir 에 trailing `/` → 매치 경로 join 시 중복 `//` 안 생김.
     try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./pages/');\nconsole.log(ctx);");
@@ -1418,7 +1418,7 @@ test "Bundler: require.context normalizes trailing slash and missing ./" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1464,8 +1464,8 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // 각 dir 에 매치할 파일이 실제 존재해야 graph dep 등록 성공.
-    try tmp.dir.makeDir("pages");
-    try tmp.dir.makeDir("other");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "other", .default_dir);
     try writeFile(tmp.dir, "pages/first.tsx", "export const x = 1;");
     try writeFile(tmp.dir, "other/second.tsx", "export const y = 2;");
     try writeFile(tmp.dir, "entry.ts",
@@ -1481,7 +1481,7 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1503,8 +1503,8 @@ test "Bundler: require.context coexists with import.meta.glob" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("mods");
-    try tmp.dir.makeDir("pages");
+    try tmp.dir.createDir(std.testing.io, "mods", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
     try writeFile(tmp.dir, "mods/a.ts", "export const x = 1;");
     // require.context 매치 파일도 graph dep 등록용으로 필요.
     try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
@@ -1522,7 +1522,7 @@ test "Bundler: require.context coexists with import.meta.glob" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1546,7 +1546,7 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("pages");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
     try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
     try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
     try writeFile(tmp.dir, "entry.ts",
@@ -1565,7 +1565,7 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1589,7 +1589,7 @@ test "Bundler: require.context — matches 파일들이 번들에 포함됨" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("pages");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
     try writeFile(tmp.dir, "pages/a.tsx", "export const PAGE_A = 'page-a-content';");
     try writeFile(tmp.dir, "pages/b.tsx", "export const PAGE_B = 'page-b-content';");
     try writeFile(tmp.dir, "entry.ts",
@@ -1604,7 +1604,7 @@ test "Bundler: require.context — matches 파일들이 번들에 포함됨" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1625,8 +1625,8 @@ test "Bundler: require.context — nested match 파일도 번들에 포함" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("pages");
-    try tmp.dir.makeDir("pages/nested");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "pages/nested", .default_dir);
     try writeFile(tmp.dir, "pages/nested/deep.tsx", "export const DEEP = 'deep-content';");
     try writeFile(tmp.dir, "entry.ts",
         \\const ctx = require.context('./pages', true, /\.tsx$/);
@@ -1640,7 +1640,7 @@ test "Bundler: require.context — nested match 파일도 번들에 포함" {
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1666,7 +1666,7 @@ test "Bundler: require.context — empty matches → 파일 없어도 hasErrors 
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={}") != null);
@@ -1684,7 +1684,7 @@ test "Bundler: no require.context in source → no webpackContext template emitt
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -1703,7 +1703,7 @@ test "Bundler: require.context IIFE has no raw require call (RN runtime invarian
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("pages");
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
     try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
     try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
     try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./pages');\nconsole.log(ctx.keys());");
@@ -1715,7 +1715,7 @@ test "Bundler: require.context IIFE has no raw require call (RN runtime invarian
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
@@ -1767,7 +1767,7 @@ test "Bundler: IIFE + --globals maps external to factory arg (#1824)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
@@ -1800,7 +1800,7 @@ test "Bundler: IIFE without --globals on external → error (#1824 regression)" 
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     // globals 매핑이 없으므로 unresolved import 에러.
     try std.testing.expect(result.hasErrors());
@@ -1823,7 +1823,7 @@ test "Bundler: UMD external dependencies in wrapper" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
@@ -1858,7 +1858,7 @@ test "Async helper: single __async emit when target downlevels async" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1880,7 +1880,7 @@ test "Async helper: no emit when target supports async natively" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1903,7 +1903,7 @@ test "Async helper: no emit when code has no async/await (edge)" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1937,7 +1937,7 @@ test "Async helper: __generator(this, ...) signature in multi-module bundle (#19
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1973,7 +1973,7 @@ test "yield* helper: __values single emit across multi-module bundle (#1910)" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b_inst.deinit();
-    const result = try b_inst.bundle();
+    const result = try b_inst.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2009,7 +2009,7 @@ test "Runtime helpers: __values + __generator + __async coexist in single bundle
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2035,7 +2035,7 @@ test "Async helper: __generator(this) preserves outer this through bundler emit"
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2060,7 +2060,7 @@ test "Async generator: __asyncGenerator + __await runtime emit (#1911)" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2091,7 +2091,7 @@ test "Runtime helper virtual module skip preserves helper-internal names" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2123,7 +2123,7 @@ test "Async helper: multi-module with async in one — single emit (edge)" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2147,7 +2147,7 @@ test "Async helper: top-level await triggers emit (edge)" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // top-level await는 현재 경고만 emit 가능 — 에러 없으면 OK.
@@ -2172,7 +2172,7 @@ test "Async helper: async arrow function (edge)" {
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2203,7 +2203,7 @@ test "Arrow param shadows hoisted top-level rename (effect TDZ repro)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -2242,7 +2242,7 @@ test "Re-export resolves to canonical local (not global-identifier reserved, #13
         .global_identifiers = &globals,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -2278,7 +2278,7 @@ test "Synthetic span: barrel re-export of async function — no SIGBUS at es5 (#
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__asyncValues") != null);
@@ -2299,7 +2299,7 @@ test "Synthetic span: object method shorthand + computed key — no SIGBUS at es
         .unsupported = compat.fromESTarget(.es5),
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 }
@@ -2320,7 +2320,7 @@ test "Bundler: AMD external dependencies in wrapper" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
@@ -2365,7 +2365,7 @@ test "Bundler: #1751 Flow component with ref + minify regression" {
         .flow = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2404,7 +2404,7 @@ test "Bundler: #1751 ESM wrap function decl assignment has trailing semicolon" {
         .minify_whitespace = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2438,7 +2438,7 @@ test "Bundler: #1756 generator downlevel + minify genFn rename" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2478,7 +2478,7 @@ test "Bundler: #1757 mangler outer fn / inner var shadowing" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

@@ -55,7 +55,7 @@ test "LazyBarrel: sideEffects false named re-export scans only requested source"
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -90,7 +90,7 @@ test "LazyBarrel: import then export default with explicit extension scans reque
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -124,7 +124,7 @@ test "LazyBarrel: default-as-named re-export scans requested source" {
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -158,7 +158,7 @@ test "LazyBarrel: missing sideEffects field keeps conservative graph scan" {
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -198,7 +198,7 @@ test "LazyBarrel: sideEffects true and glob matched true keep conservative graph
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -231,7 +231,7 @@ test "LazyBarrel: unused unresolved re-export still reports resolve error" {
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -281,7 +281,7 @@ test "LazyBarrel: export star fallback scans only when direct binding is absent"
         .max_threads = 1,
     });
     defer direct_bundler.deinit();
-    const direct_result = try direct_bundler.bundle();
+    const direct_result = try direct_bundler.bundle(std.testing.io);
     defer direct_result.deinit(std.testing.allocator);
 
     try std.testing.expect(!direct_result.hasErrors());
@@ -295,7 +295,7 @@ test "LazyBarrel: export star fallback scans only when direct binding is absent"
         .max_threads = 1,
     });
     defer star_bundler.deinit();
-    const star_result = try star_bundler.bundle();
+    const star_result = try star_bundler.bundle(std.testing.io);
     defer star_result.deinit(std.testing.allocator);
 
     try std.testing.expect(!star_result.hasErrors());
@@ -329,7 +329,7 @@ test "LazyBarrel: skipped resolved re-export is not reported unresolved in IIFE"
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -376,7 +376,7 @@ test "LazyBarrel: namespace dynamic side-effect and require consumers scan all s
             .max_threads = 1,
         });
         defer b.deinit();
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -408,7 +408,7 @@ test "LazyBarrel: requested local export conservatively scans all records" {
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -451,7 +451,7 @@ test "LazyBarrel: stress 320 sideEffects false re-exports scan three requested s
         .max_threads = 1,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

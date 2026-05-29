@@ -1577,7 +1577,7 @@ fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void 
         \\}
     );
 
-    const result = std.process.Child.run(std.testing.allocator, std.testing.io, .{
+    const result = std.process.run(std.testing.allocator, std.testing.io, .{
         .argv = &.{ "node", "-e", script.items },
         .stdout_limit = std.Io.Limit.limited(16 * 1024),
         .stderr_limit = std.Io.Limit.limited(16 * 1024),

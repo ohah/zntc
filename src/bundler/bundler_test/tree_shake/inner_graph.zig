@@ -35,7 +35,7 @@ test "TreeShaking: innerGraph prunes unused pure entry locals" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -67,7 +67,7 @@ test "TreeShaking: --pure callee hints prune unused exact and wildcard calls" {
         .pure = &.{ "makeUnused", "React.createElement", "PropTypes.*" },
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -99,7 +99,7 @@ test "TreeShaking: innerGraph preserves entry side-effect initializer" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -125,7 +125,7 @@ test "TreeShaking: innerGraph preserves entry exports" {
         .tree_shaking = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

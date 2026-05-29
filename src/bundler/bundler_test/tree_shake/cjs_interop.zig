@@ -25,21 +25,21 @@ test "TreeShaking CJS: default member access prunes, namespace and export star k
 
     var b_default = Bundler.init(std.testing.allocator, .{ .entry_points = &.{default_entry} });
     defer b_default.deinit();
-    const default_result = try b_default.bundle();
+    const default_result = try b_default.bundle(std.testing.io);
     defer default_result.deinit(std.testing.allocator);
     try std.testing.expect(!default_result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, default_result.output, "CJS_UNUSED_MUST_STAY") == null);
 
     var b_namespace = Bundler.init(std.testing.allocator, .{ .entry_points = &.{namespace_entry} });
     defer b_namespace.deinit();
-    const namespace_result = try b_namespace.bundle();
+    const namespace_result = try b_namespace.bundle(std.testing.io);
     defer namespace_result.deinit(std.testing.allocator);
     try std.testing.expect(!namespace_result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, namespace_result.output, "CJS_UNUSED_MUST_STAY") != null);
 
     var b_star = Bundler.init(std.testing.allocator, .{ .entry_points = &.{star_entry} });
     defer b_star.deinit();
-    const star_result = try b_star.bundle();
+    const star_result = try b_star.bundle(std.testing.io);
     defer star_result.deinit(std.testing.allocator);
     try std.testing.expect(!star_result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, star_result.output, "CJS_UNUSED_MUST_STAY") != null);
@@ -64,7 +64,7 @@ test "TreeShaking CJS: dynamic export patterns and effectful RHS are preserved" 
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -96,7 +96,7 @@ test "TreeShaking CJS: live export keeps CJS require target evaluation" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

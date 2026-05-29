@@ -279,7 +279,7 @@ test "CJS: RN strict order defers named CJS import with inlineRequires" {
 
     try std.testing.expect(!result.hasErrors());
 
-    const node_result = std.process.Child.run(std.testing.allocator, std.testing.io, .{
+    const node_result = std.process.run(std.testing.allocator, std.testing.io, .{
         .argv = &.{ "node", "-e", result.output },
         .stdout_limit = std.Io.Limit.limited(16 * 1024),
         .stderr_limit = std.Io.Limit.limited(16 * 1024),

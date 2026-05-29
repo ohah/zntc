@@ -25,7 +25,7 @@ test "PackageJson: exports string shorthand" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -46,7 +46,7 @@ test "PackageJson: exports condition import" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -66,7 +66,7 @@ test "PackageJson: subpath exports" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -86,7 +86,7 @@ test "PackageJson: wildcard exports" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -111,7 +111,7 @@ test "PackageJson: module field preferred over main" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -131,7 +131,7 @@ test "PackageJson: main field fallback" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -163,7 +163,7 @@ test "PackageJson: react-native platform follows Metro main field order" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -212,7 +212,7 @@ test "PackageJson: react-native package exports without RN condition matches imp
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -251,7 +251,7 @@ test "PackageJson: react-native package exports with RN condition wins over impo
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -275,7 +275,7 @@ test "Resolver: disableHierarchicalLookup=false (default) finds parent node_modu
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -300,7 +300,7 @@ test "Resolver: disableHierarchicalLookup=true blocks parent node_modules walk-u
         .disable_hierarchical_lookup = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // walk-up 차단으로 resolve 실패해야 한다 — root node_modules 에 있어도 못 찾음.
@@ -325,7 +325,7 @@ test "Resolver: disableHierarchicalLookup=true still resolves co-located node_mo
         .disable_hierarchical_lookup = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -342,7 +342,7 @@ test "PackageJson: no package.json index.js fallback" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -363,7 +363,7 @@ test "Extension: import .mts file" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -380,7 +380,7 @@ test "Extension: import .cts file via .cjs" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -397,7 +397,7 @@ test "Extension: direct .mts import without .mjs" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -421,7 +421,7 @@ test "DynamicImport: static path in import()" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 단일 번들 모드에서 lazy 모듈 코드가 포함되어야 함
@@ -444,7 +444,7 @@ test "DynamicImport: external dynamic import preserved" {
         .external = &.{"external-pkg"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -465,7 +465,7 @@ test "DynamicImport: combined with static import" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -494,7 +494,7 @@ test "Format: CJS scope_hoist entry exports" {
         .scope_hoist = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -519,7 +519,7 @@ test "Format: IIFE scope_hoist entry exports" {
         .scope_hoist = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -546,7 +546,7 @@ test "Default: anonymous string default export imported" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -573,7 +573,7 @@ test "Default: export named as default then import" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -600,7 +600,7 @@ test "Namespace: import * as ns usage" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -625,7 +625,7 @@ test "Namespace: import * combined with named import" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -649,7 +649,7 @@ test "Resolution: scoped package @scope/pkg" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -672,7 +672,7 @@ test "Resolution: JSON file import" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // JSON import는 에러 없이 번들 생성 (내용 포함 여부는 구현에 따라)
@@ -696,7 +696,7 @@ test "JSON import: ESM format uses scope-hoisted var (linker integration)" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -720,7 +720,7 @@ test "JSON import: named exports from top-level object keys" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -747,7 +747,7 @@ test "JSON import: named exports + default export coexist" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -774,7 +774,7 @@ test "JSON require: CJS consumer emits default object without duplicate named ex
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -798,7 +798,7 @@ test "JSON import: non-object JSON has no named exports" {
         .format = .esm,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -818,7 +818,7 @@ test "IIFE globalName: export → return 변환 (linker integration)" {
         .global_name = "MyLib",
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -857,7 +857,7 @@ test "Deconflict: rename avoids nested scope variable" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -888,7 +888,7 @@ test "Re-export: 10-level chain" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -924,7 +924,7 @@ test "MultiEntry: scope hoist with shared dep name conflict" {
         .scope_hoist = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -956,7 +956,7 @@ test "Export: empty export {} stripped in scope hoist" {
         .scope_hoist = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -990,7 +990,7 @@ test "TypeScript: import type fully stripped in bundle" {
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1023,7 +1023,7 @@ test "TypeScript: external + type-only usage → preamble require skip" {
         .external = &.{"external-types"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1051,7 +1051,7 @@ test "TypeScript: verbatimModuleSyntax=true preserves external type-only preambl
         .verbatim_module_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1078,7 +1078,7 @@ test "TypeScript: external + export re-export → preamble require 유지 (#1793
         .external = &.{"external-pkg"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1104,7 +1104,7 @@ test "TypeScript: external + namespace member access → preamble 유지 (namesp
         .external = &.{"react"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1130,7 +1130,7 @@ test "TypeScript: external + default import → Phase D 는 default 를 elide �
         .external = &.{"external-mod"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1156,7 +1156,7 @@ test "TypeScript: external + named mixed → type-only 만 elide, value-used 유
         .external = &.{"external-kit"},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

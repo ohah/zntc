@@ -43,7 +43,7 @@ test "Polyfill: transpile 실패 시 raw fallback — 크래시 없이 번들 �
     defer b.deinit();
 
     // transpile 실패는 경고만 — 번들 자체는 성공.
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -76,7 +76,7 @@ test "Polyfill: raw fallback + trailing newline 없음 — })() 가 content 마�
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -109,7 +109,7 @@ test "Polyfill: console.js 비-minify — raw 보존(주석/들여쓰기 남음)
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -139,7 +139,7 @@ test "Polyfill: console.js minify — transpile 되어 주석/들여쓰기 제�
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -169,7 +169,7 @@ test "Polyfill: flow pragma polyfill — flow=true 빌드에서 Flow 타입 stri
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -200,7 +200,7 @@ test "Polyfill: flow pragma polyfill + minify — Flow strip + 주석/들여쓰�
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -236,7 +236,7 @@ test "Polyfill: 정상 JS polyfill — minify on/off 대조" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -265,7 +265,7 @@ test "Polyfill: 정상 JS polyfill — minify on/off 대조" {
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         try std.testing.expect(!result.hasErrors());
@@ -297,7 +297,7 @@ test "Polyfill: 빈 polyfill 파일(0-byte) — 크래시 없이 번들 생성" 
         });
         defer b.deinit();
 
-        const result = try b.bundle();
+        const result = try b.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
 
         // 빈 polyfill 이어도 번들은 정상 생성, entry 코드 포함.

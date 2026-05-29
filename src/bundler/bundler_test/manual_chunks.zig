@@ -41,7 +41,7 @@ test "manualChunks: empty list → 기존 code splitting 동작" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -77,7 +77,7 @@ test "manualChunks: substring match → 지정 청크에 모듈 할당" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -116,7 +116,7 @@ test "manualChunks: multi-pattern → 여러 모듈을 한 청크로" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -154,7 +154,7 @@ test "manualChunks: multiple groups → 서로 다른 청크로 분리" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -200,7 +200,7 @@ test "manualChunks: transitive dependency follows matched module (rolldown inclu
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -238,7 +238,7 @@ test "manualChunks: dynamic import target 은 manual 에서 제외 — async chu
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -280,7 +280,7 @@ test "manualChunks: dynamic entry 의 static dep 은 manual 로 들어감" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
@@ -322,7 +322,7 @@ test "manualChunks resolver: dynamic entry 반환 이름 무시" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
@@ -382,7 +382,7 @@ test "manualChunks resolver: returns chunk name → 해당 청크로 할당" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -411,7 +411,7 @@ test "manualChunks resolver: returning null → 기존 자동 분배" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -441,7 +441,7 @@ test "manualChunks resolver: multiple names → 각자 다른 청크로 동적 �
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -478,7 +478,7 @@ test "manualChunks resolver: ctx 로 호출 카운터 전달" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -513,7 +513,7 @@ test "manualChunks resolver + record 공존: resolver 우선" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -546,7 +546,7 @@ test "manualChunks: no match → 엔트리 청크에 머묾 (기존 동작)" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -622,7 +622,7 @@ test "manualChunks meta.getModuleInfo: isEntry / importers / imported_ids 수집
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -684,7 +684,7 @@ test "getModuleInfo / getModulePathByIndex: graph valid 상태에서 missing / O
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(checks.missing_id_null);
@@ -720,7 +720,7 @@ test "manualChunks meta.getModuleInfo: 다중 엔트리 + shared 모듈 토폴�
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
@@ -804,7 +804,7 @@ test "manualChunks meta.getModuleInfo: dynamic import 는 static importers/impor
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 

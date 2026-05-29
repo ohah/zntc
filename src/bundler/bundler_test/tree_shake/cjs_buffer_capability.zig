@@ -42,7 +42,7 @@ test "TreeShaking CJS: node Buffer capability branch prunes safe-buffer fallback
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -79,7 +79,7 @@ test "TreeShaking CJS: unknown Buffer-like capability branch preserves fallback 
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -114,7 +114,7 @@ test "TreeShaking CJS: node:buffer capability branch is treated like buffer" {
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -148,7 +148,7 @@ test "TreeShaking CJS: incomplete Buffer capability check does not prune fallbac
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -180,7 +180,7 @@ test "TreeShaking CJS: browser platform does not apply Node Buffer capability fa
         .platform = .browser,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -207,7 +207,7 @@ test "TreeShaking CJS: named Buffer import seeds module.exports buffer assignmen
         .platform = .node,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
