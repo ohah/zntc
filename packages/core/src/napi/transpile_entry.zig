@@ -64,7 +64,7 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     const has_raw = std.mem.indexOf(u8, opts_json, "\"tsconfigRaw\"") != null;
     if (argc > 3 and options.tsconfig_path == null and !has_raw) {
         if (tsconfig_cache_mod.unwrapTsconfigCache(env, argv[3])) |cache| {
-            if (cache.findTsconfigPath(filename)) |path| {
+            if (cache.findTsconfigPath(common.io(), filename)) |path| {
                 options.tsconfig_path = path;
             }
         }
@@ -112,12 +112,14 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
             .source = source,
             .line_offsets = result.line_offsets,
         };
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(native_alloc);
-        diagnostic_renderer.renderAll(buf.writer(native_alloc), result.diagnostics, source_info, filename, napi_render_opts) catch {};
-        if (buf.items.len > 0) {
+        // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating (renderAll 이 *Io.Writer 받음).
+        var aw: std.Io.Writer.Allocating = .init(native_alloc);
+        defer aw.deinit();
+        diagnostic_renderer.renderAll(&aw.writer, result.diagnostics, source_info, filename, napi_render_opts) catch {};
+        const buf_items = aw.writer.buffered();
+        if (buf_items.len > 0) {
             var js_errors: c.napi_value = undefined;
-            if (c.napi_create_string_utf8(env, buf.items.ptr, buf.items.len, &js_errors) == c.napi_ok) {
+            if (c.napi_create_string_utf8(env, buf_items.ptr, buf_items.len, &js_errors) == c.napi_ok) {
                 _ = c.napi_set_named_property(env, js_result, "errors", js_errors);
             }
         }
