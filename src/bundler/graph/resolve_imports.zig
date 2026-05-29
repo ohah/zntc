@@ -45,7 +45,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
                 if (dep.is_context_dep) {
                     self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
                 }
-                try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
+                try replayLinkResolvedDep(self, io, mod_index, mod_idx, dep, dep_idx);
             },
             .disabled => {
                 // _other 는 leaf bucket — request_exports/record_dep 와 중첩 측정 금지
@@ -54,13 +54,13 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
                 var s_o = profile.begin(.graph_discover_incr_replay_other);
                 const dep_idx = try self.addDisabledModule(dep.path.bytes());
                 s_o.end();
-                try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
+                try replayLinkResolvedDep(self, io, mod_index, mod_idx, dep, dep_idx);
             },
             .optional_missing => {
                 var s_o = profile.begin(.graph_discover_incr_replay_other);
                 const dep_idx = try self.addOptionalMissingModule(dep.path.bytes());
                 s_o.end();
-                try replayLinkResolvedDep(self, mod_index, mod_idx, dep, dep_idx);
+                try replayLinkResolvedDep(self, io, mod_index, mod_idx, dep, dep_idx);
             },
             .external => {
                 // external 은 replayLinkResolvedDep 를 거치지 않고 inline 하므로
@@ -104,6 +104,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
 /// 케이스가 공통으로 사용. external 은 `is_external` flag 기록 후 무조건 link 라 별도.
 fn replayLinkResolvedDep(
     self: *ModuleGraph,
+    io: std.Io,
     mod_index: ModuleIndex,
     mod_idx: usize,
     dep: CachedResolvedDep,
@@ -118,7 +119,7 @@ fn replayLinkResolvedDep(
         var s_rd = profile.begin(.graph_discover_incr_replay_record_dep);
         try recordResolvedDep(self, mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
         s_rd.end();
-        if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
+        if (request_changed) try resolveDeferredRequestedImportsIfReady(self, io, dep_idx);
         return;
     }
     var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
@@ -347,7 +348,7 @@ pub fn applyResolveResult(
                     .target_is_module_field = f.is_module_field,
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
-                if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
+                if (request_changed) try resolveDeferredRequestedImportsIfReady(self, io, dep_idx);
             },
             .disabled => |d| {
                 // PR resolve interning: d.path 는 path_pool 소유 (borrow only).
@@ -377,7 +378,7 @@ pub fn applyResolveResult(
                     .path = .{ .interned = v.path },
                 });
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
-                if (request_changed) try resolveDeferredRequestedImportsIfReady(self, dep_idx);
+                if (request_changed) try resolveDeferredRequestedImportsIfReady(self, io, dep_idx);
             },
             // (deferred 6) `.external` 은 phantom external 경로 (line 354 의 else 분기) 가
             // 별도로 처리하지만, plugin 이 resolveId 에서 직접 `.external` 반환하는 경로는
