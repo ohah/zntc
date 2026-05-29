@@ -962,7 +962,7 @@ pub fn main(init: std.process.Init) !void {
 
                 var mit = mtime_map.iterator();
                 while (mit.next()) |entry| {
-                    const current_mtime = watch_cli.getFileMtime(entry.key_ptr.*) catch continue;
+                    const current_mtime = watch_cli.getFileMtime(io, entry.key_ptr.*) catch continue;
                     if (current_mtime != entry.value_ptr.*) {
                         if (!opts.watch_json) {
                             try stderr.print("[watch] Changed: {s}\n", .{entry.key_ptr.*});
