@@ -283,6 +283,40 @@ test "graph: unresolved import — 진단 1회만 (중복 방지 회귀)" {
     try std.testing.expectEqual(@as(usize, 1), unresolved_errors);
 }
 
+test "graph: non-literal dynamic import — string-literal reason warning 1회 (#3984)" {
+    // 비-literal `import(name)` 은 generic "Cannot resolve module" 가 아니라
+    // dynamic_invalid_reason("...string literal specifier...") warning 을 정확히
+    // 1회 emit 해야 한다. (#3973 의 resolve_failed 마킹이 worker-scan 경로에서
+    // 올바른 메시지를 죽이던 회귀 가드.)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "const name = './mod';\nexport const p = import(name);\nconsole.log('entry');");
+    try writeFile(tmp.dir, "mod.ts", "export default 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    var reason_warnings: usize = 0;
+    var generic_cannot_resolve: usize = 0;
+    for (graph.diagnostics.items) |d| {
+        if (d.code != .unresolved_import) continue;
+        if (std.mem.indexOf(u8, d.message, "string literal") != null) reason_warnings += 1;
+        if (std.mem.eql(u8, d.message, "Cannot resolve module")) generic_cannot_resolve += 1;
+    }
+    // 정확히 1회의 reason warning, generic 메시지는 0회.
+    try std.testing.expectEqual(@as(usize, 1), reason_warnings);
+    try std.testing.expectEqual(@as(usize, 0), generic_cannot_resolve);
+}
+
 test "graph: unresolved type-only import — soft fail with warning (#2466)" {
     // react-native-screens/types 패턴: subpath 가 .d.ts 만 export 하므로 resolve 실패하지만
     // X 가 type position 에서만 쓰이면 babel typescript preset 처럼 statement 통째 elide
