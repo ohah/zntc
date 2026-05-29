@@ -548,7 +548,12 @@ pub const DevServer = struct {
     /// shutdown_requested 플래그를 보고 종료. 실제 socket close는 deinit에서.
     pub fn shutdown(self: *DevServer) void {
         self.shutdown_requested.store(true, .release);
-        if (self.tcp_server != null) {
+        // listen_ready 를 acquire-load 해 start() 워커스레드의 tcp_server/port 쓰기와
+        // happens-before 형성 (0.16 은 Server.listen_address 제거로 self.port 를 self-connect
+        // 에 쓰는데, 미동기화 시 weakly-ordered 에서 port 가 stale(0) 로 읽혀 엉뚱한 포트로
+        // connect → blocking accept 미해제 위험). publish 전이면 self-connect 스킵(아직 listen
+        // 안 했으니 깨울 accept 도 없음).
+        if (self.tcp_server != null and self.listen_ready.load(.acquire)) {
             // 0.16: Server.listen_address 제거 → self.host/self.port 로 self-connect
             // 재구성해 blocking accept() 를 깨운다 (close 만으론 accept 안 깨움).
             const bind_ip = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;

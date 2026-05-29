@@ -626,11 +626,12 @@ pub fn emitWithTreeShaking(
         @constCast(l).use_shared_ns_preamble = true;
     }
 
-    // 0.16: std.Thread.Pool/WaitGroup 제거 → std.Io.Group. 동시성은 io 의
-    // async_limit 가 결정(--jobs 반영, async_limit=0 이면 inline = 결정적 단일스레드).
-    // results[i] 가 인덱스별 독립 슬롯이라 worker 순서 무관(determinism 불변).
-    // pool.init 실패 분기는 불필요 — Io.Group.async 는 실패하지 않으며 자원 부족
-    // 시 inline 으로 fallback.
+    // 0.16: std.Thread.Pool/WaitGroup 제거 → std.Io.Group. 동시성은 io 의 async_limit 가
+    // 결정(async_limit=0 이면 inline = 단일스레드). results[i] 가 인덱스별 독립 슬롯이라
+    // worker 순서 무관(determinism 불변). pool.init 실패 분기 불필요 — group.async 는
+    // 실패하지 않고 자원 부족 시 inline fallback.
+    // 참고: emit 은 0.15 의 Thread.Pool 도 --jobs 미반영(항상 병렬, #3966)이었고, 0.16
+    // 도 io 기본 async_limit(cpu-1)을 쓴다 — --jobs 연결은 build_flow 주석의 follow-up 참조.
     const use_pool = sorted.items.len >= 2;
     if (use_pool) {
         var group: std.Io.Group = .init;
@@ -1069,8 +1070,11 @@ pub fn emitWithTreeShaking(
     // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;
     const debug_id: ?[]const u8 = if (options.sourcemap.debug_ids) blk: {
-        // 결정론적 debugId — output 파일명 해시 기반 (reproducible build, io 불필요).
-        SourceMap.generateUuidV4(&debug_id_buf, options.output_filename);
+        // 결정론적 debugId — **번들 내용**(output.items, sourceMappingURL/debugId 주석
+        // 부착 직전) 해시 기반. 파일명 시드는 내용이 바뀌어도 같은 debugId 가 나와
+        // Sentry 가 stale source map 으로 stack frame 을 잘못 매칭한다 → 내용으로 시드해야
+        // reproducible(동일 입력→동일 id) + per-content uniqueness 둘 다 보장. io 불필요.
+        SourceMap.generateUuidV4(&debug_id_buf, output.items);
         break :blk &debug_id_buf;
     } else null;
 
