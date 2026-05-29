@@ -68,12 +68,13 @@ fn bufferDiagnostics(
 ) void {
     if (diagnostics.len == 0) return;
     const source_info: rich_diagnostic.SourceInfo = .{ .source = source, .line_offsets = line_offsets };
-    var buf: std.ArrayList(u8) = .empty;
-    const writer = buf.writer(wasm_alloc);
-    diagnostic_renderer.renderAll(writer, diagnostics, source_info, file_path, wasm_render_opts) catch {};
-    if (buf.items.len > 0) {
+    // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating (renderAll 이 *Io.Writer 받음).
+    var aw: std.Io.Writer.Allocating = .init(wasm_alloc);
+    defer aw.deinit();
+    diagnostic_renderer.renderAll(&aw.writer, diagnostics, source_info, file_path, wasm_render_opts) catch {};
+    if (aw.writer.buffered().len > 0) {
         if (last_error_buf) |old| wasm_alloc.free(old);
-        last_error_buf = buf.toOwnedSlice(wasm_alloc) catch null;
+        last_error_buf = aw.toOwnedSlice() catch null;
     }
 }
 
