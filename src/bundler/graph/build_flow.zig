@@ -23,7 +23,7 @@ const graph_finalize = @import("finalize.zig");
 /// 진입점들로부터 모듈 그래프를 구축한다.
 /// Phase 1: 모든 모듈 등록 + 파싱 + import resolve (BFS)
 /// Phase 2: DFS로 exec_index + 순환 감지
-pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
+pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !void {
     // #1961: ZNTC builtin runtime helper plugin 을 plugin slice 앞에 prepend.
     // 워커 스레드에서 호출하기 전 단일 thread 진입점에서 1회만.
     graph_plugins.ensureBuiltinPlugins(self);
@@ -69,69 +69,60 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
 
     var spawned_up_to: usize = 0;
     if (self.max_threads == 0 and self.modules.count() == 1) {
-        // Tiny graphs spend more time opening the pool/channel than scanning the first batch.
-        // Keep the initial bounded batch on the main thread, then fall back to the pool if it
+        // Tiny graphs spend more time opening the channel than scanning the first batch.
+        // Keep the initial bounded batch on the main thread, then fall back to async if it
         // discovers more work.
-        spawned_up_to = try graph_discovery_scan.scanModuleRangeSequential(self, 0, 1);
+        spawned_up_to = try graph_discovery_scan.scanModuleRangeSequential(self, io, 0, 1);
         const pending_after_entry = self.modules.count() - spawned_up_to;
         if (pending_after_entry > 0 and pending_after_entry <= 16) {
-            spawned_up_to = try graph_discovery_scan.scanModuleRangeSequential(self, spawned_up_to, self.modules.count());
+            spawned_up_to = try graph_discovery_scan.scanModuleRangeSequential(self, io, spawned_up_to, self.modules.count());
         }
     }
 
     if (spawned_up_to < self.modules.count()) {
-        var pool: std.Thread.Pool = undefined;
-        const pool_opts: std.Thread.Pool.Options = if (self.max_threads > 0)
-            .{ .allocator = self.allocator, .n_jobs = self.max_threads }
-        else
-            .{ .allocator = self.allocator };
-        const pool_ok = if (pool.init(pool_opts)) |_| true else |_| false;
-        defer if (pool_ok) pool.deinit();
+        // 0.16: std.Thread.Pool 제거 → std.Io.Group. 동시성은 io 의 async_limit 가
+        // 결정(--jobs→async_limit; single 이면 io.async 가 inline 실행 = 순차). work-stealing
+        // (recv 후 신규 모듈 즉시 dispatch) 패턴은 그대로. group.async 는 실패하지 않으므로
+        // pool_ok fallback 불필요.
+        var channel = MpscChannel(graph_discovery_scan.ScanResult).init(self.allocator);
+        defer channel.deinit();
 
-        if (!pool_ok) {
-            try discoverPendingModulesSequential(self, spawned_up_to);
-        } else {
-            var channel = MpscChannel(graph_discovery_scan.ScanResult).init(self.allocator);
-            defer channel.deinit();
+        var group: std.Io.Group = .init;
+        var inflight: usize = 0;
 
-            var inflight: usize = 0;
+        // Spawn the initial modules: entries, inject files, and run-before-main files.
+        while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
+            const m = self.modules.at(spawned_up_to);
+            if (m.state == .ready) continue; // Skip disabled modules.
+            const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
+            group.async(io, graph_discovery_scan.scanWorker, .{ self, io, idx, &channel });
+            inflight += 1;
+        }
 
-            // Spawn the initial modules: entries, inject files, and run-before-main files.
+        // Apply each worker result, then immediately dispatch newly discovered modules.
+        while (inflight > 0) {
+            const result = channel.recv(io);
+            inflight -= 1;
+            try graph_discovery_scan.applyScanResult(self, result);
+
+            // Dispatch newly discovered modules without waiting for a batch boundary.
             while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
                 const m = self.modules.at(spawned_up_to);
-                if (m.state == .ready) continue; // Skip disabled modules.
+                if (m.state == .ready) continue;
                 const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
-                pool.spawn(graph_discovery_scan.scanWorker, .{ self, idx, &channel }) catch {
-                    // Fall back to the main thread if the pool cannot spawn this job.
-                    graph_discovery_scan.scanWorker(self, idx, &channel);
-                };
+                group.async(io, graph_discovery_scan.scanWorker, .{ self, io, idx, &channel });
                 inflight += 1;
             }
-
-            // Apply each worker result, then immediately dispatch newly discovered modules.
-            while (inflight > 0) {
-                const result = channel.recv();
-                inflight -= 1;
-                try graph_discovery_scan.applyScanResult(self, result);
-
-                // Dispatch newly discovered modules without waiting for a batch boundary.
-                while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
-                    const m = self.modules.at(spawned_up_to);
-                    if (m.state == .ready) continue;
-                    const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
-                    pool.spawn(graph_discovery_scan.scanWorker, .{ self, idx, &channel }) catch {
-                        graph_discovery_scan.scanWorker(self, idx, &channel);
-                    };
-                    inflight += 1;
-                }
-            }
         }
+
+        // 모든 결과 수신 완료 — worker 함수가 완전히 반환하고 group 리소스 해제될 때까지 대기.
+        group.await(io) catch {};
     }
 
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer runtime_indices.deinit(self.allocator);
-    try applyRuntimePolyfills(self, &runtime_indices);
-    try injectEmittedChunks(self);
+    try applyRuntimePolyfills(self, io, &runtime_indices);
+    try injectEmittedChunks(self, io);
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
     discover_scope.end();
 
@@ -149,7 +140,7 @@ pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
 /// finalizeGraph 가 DFS 루트로, chunk.zig 가 dynamic entry 로 분리, tree_shaker 가 entry_set 으로
 /// 생존시킨다. 플래그는 renumber 가 Module 을 옮겨도 따라가므로(shallow copy) 이후 단계가 renumber
 /// 후 안전하게 읽는다(index 배열 전달 불필요).
-fn injectEmittedChunks(self: *ModuleGraph) !void {
+fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
     const store_ptr = self.emit_store orelse return; // chunk 미사용 빌드: hot path 0
     const store: *@import("../emit_store.zig").EmitStore = @ptrCast(@alignCast(store_ptr));
     if (store.chunks.items.len == 0) return;
@@ -327,7 +318,7 @@ fn injectEmittedChunks(self: *ModuleGraph) !void {
         // 새로 추가된 emit chunk 모듈을 parse/resolve. discovery 중 transform 이 또 emit chunk
         // 하면 store.chunks 가 늘어 while 이 재진입(fixpoint).
         if (self.modules.count() > before_count) {
-            try discoverPendingModulesSequential(self, before_count);
+            try discoverPendingModulesSequential(self, io, before_count);
             // discovery 가 신규 모듈을 external/disabled 로 판정했거나 read 실패(source 비어)면
             // chunk 대상이 아니다 — 플래그를 clear 해 phantom 모듈이 entry/chunk 로 새는 것을
             // 막는다. B-i 는 set 전에 가드하지만 B-ii 는 discovery 전에 set 하므로 사후 재검증
@@ -408,7 +399,7 @@ fn resolveExistingModuleIndex(self: *ModuleGraph, source_dir: []const u8, id: []
     }
 }
 
-fn applyRuntimePolyfills(self: *ModuleGraph, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
+fn applyRuntimePolyfills(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
     const plan = self.runtime_polyfills orelse return;
 
     var scope = profile.begin(.graph_runtime_polyfills);
@@ -477,17 +468,17 @@ fn applyRuntimePolyfills(self: *ModuleGraph, runtime_indices: *std.ArrayList(Mod
         try self.runtime_polyfill_roots.append(self.allocator, module.path);
         graph_runtime_polyfills.logPrelude(plan, module);
     }
-    try discoverPendingModulesSequential(self, discover_start);
+    try discoverPendingModulesSequential(self, io, discover_start);
 }
 
-fn discoverPendingModulesSequential(self: *ModuleGraph, start_index: usize) !void {
+fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index: usize) !void {
     var parse_start = start_index;
     while (parse_start < self.modules.count()) {
         const parse_end = self.modules.count();
         for (parse_start..parse_end) |j| {
             const m = self.modules.at(j);
             if (m.state == .ready) continue;
-            self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
+            self.parseModule(io, @enumFromInt(@as(u32, @intCast(j))));
         }
         for (parse_start..parse_end) |i| {
             const m_ptr = self.modules.at(i);
@@ -630,6 +621,7 @@ pub const IncrementalBuildResult = struct {
 /// build()와 동일한 Phase 2~4를 실행하여 exec_index, ExportsKind, TLA를 보장.
 pub fn buildIncremental(
     self: *ModuleGraph,
+    io: std.Io,
     entry_points: []const []const u8,
     store: *module_store.PersistentModuleStore,
     /// Watcher 가 이번 rebuild 동안 변경됐다고 보고한 절대경로 set.
@@ -706,7 +698,7 @@ pub fn buildIncremental(
                         }
                     }
                 }
-                break :blk getMtime(mod_path) catch 0;
+                break :blk getMtime(io, mod_path) catch 0;
             };
 
             // 캐시 조회. `defer` 가 아닌 명시 `end()` — getIfFresh 호출 자체만 측정해야
@@ -775,7 +767,7 @@ pub fn buildIncremental(
                 var s_mp = profile.begin(.graph_discover_incr_miss_parse);
                 defer s_mp.end();
                 // 캐시 미스: 정상 파싱
-                self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
+                self.parseModule(io, @enumFromInt(@as(u32, @intCast(i))));
                 const m_ptr = self.modules.at(i);
                 self.applySideEffectsFromPackageJson(m_ptr);
                 m_ptr.mtime = mtime;
@@ -808,7 +800,7 @@ pub fn buildIncremental(
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer runtime_indices.deinit(self.allocator);
     const before_runtime_count = self.modules.count();
-    try applyRuntimePolyfills(self, &runtime_indices);
+    try applyRuntimePolyfills(self, io, &runtime_indices);
     if (self.modules.count() > before_runtime_count) graph_changed = true;
     // watch/incremental 에서도 emit chunk 플래그를 이번 emit_store.chunks 기준으로 set
     // (cache-hit restore 에서 stale 은 이미 reset). build() 와 동일 처리 (#1880 PR7-2b-i).
@@ -816,7 +808,7 @@ pub fn buildIncremental(
     // 되므로 reparsed 에 누락된다 → 그 모듈 경로를 모아 renumber 후 reparsed 에 등록한다(아래).
     // 누락 시 HMR diff 가 그 모듈 코드를 "no change" 로 drop → client 에 안 실려 stale (#3664).
     const before_emit_count = self.modules.count();
-    try injectEmittedChunks(self);
+    try injectEmittedChunks(self, io);
     var emit_new_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer emit_new_paths.deinit(self.allocator);
     if (self.modules.count() > before_emit_count) {
@@ -863,11 +855,11 @@ pub fn buildIncremental(
 /// `assert(indexOfScalar == null)` 로 panic (reached unreachable code) 한다.
 /// plugin 이 합성한 virtual path, AssetRegistry 등 에서 실제로 이런 path 가 들어와
 /// HMR rebuild 중 번들러가 통째로 죽던 버그를 막는다.
-pub fn getMtime(path: []const u8) !i128 {
+pub fn getMtime(io: std.Io, path: []const u8) !i128 {
     if (path.len == 0) return error.InvalidPath;
     if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
     if (path.len >= std.fs.max_path_bytes) return error.NameTooLong;
-    const stat = try fs.statFile(path);
+    const stat = try fs.statFile(io, path);
     return stat.mtime;
 }
 
@@ -887,7 +879,7 @@ pub fn transferModulesToStore(self: *ModuleGraph, store: *module_store.Persisten
         // 여기서 재-stat 하면 watcher-driven mtime cache 효과가 half-revert
         // 됨 (Issue #1727 §3). 0 이면 초기 경로에서 실패했던 모듈 —
         // fallback 으로 한 번 더 stat.
-        const mtime = if (m.mtime != 0) m.mtime else (getMtime(m.path) catch 0);
+        const mtime = if (m.mtime != 0) m.mtime else (getMtime(io, m.path) catch 0);
         store.putModule(m.path, m, mtime);
     }
 }
