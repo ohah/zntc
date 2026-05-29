@@ -25,29 +25,33 @@ pub fn build(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) !*std.Build.Step.Compile {
+    // Zig 0.16: link_libc / addCSourceFile / addIncludePath / linkSystemLibrary 등이
+    // Step.Compile 에서 제거되고 *Module 메서드/필드로 이관됐다. 모듈을 변수로 잡아
+    // 사용한다.
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        // **`pic = true`** — NAPI binary (`zig-out/lib/zntc.node`) 는 shared library
+        // 라 link 되는 모든 코드가 PIC 여야 한다. non-PIC archive 를 dynamic library
+        // 에 link 하면 `R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol
+        // 'malloc'; recompile with -fPIC` (ARM64) / `R_X86_64_PC32 ... (X86_64)`
+        // relocation 에러 발생. exe binary 도 PIC 코드 OK (현대 Linux 의 PIE default
+        // 와 일치) — overhead 무시 수준.
+        .pic = true,
+        // **`sanitize_c = .off`** — Zig 의 default sanitize_c (Debug 빌드 시 on)
+        // 는 `__ubsan_handle_*` symbol 들을 호출하는 코드를 emit. 그런데 Linux 의
+        // libubsan 은 Zig 가 자동 link 안 해서 NAPI binary dlopen 시
+        // `undefined symbol: __ubsan_handle_type_mismatch_v1` 발생 (관찰 환경:
+        // CI ubuntu-latest, packages/core 의 build:js:cjs step 에서 require).
+        // vendored BoringSSL 은 외부 코드라 자체 sanitize 무의미 — off 가 정합.
+        .sanitize_c = .off,
+        .link_libc = true,
+    });
     const lib = b.addLibrary(.{
         .name = "boringssl",
         .linkage = .static,
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            // **`pic = true`** — NAPI binary (`zig-out/lib/zntc.node`) 는 shared library
-            // 라 link 되는 모든 코드가 PIC 여야 한다. non-PIC archive 를 dynamic library
-            // 에 link 하면 `R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol
-            // 'malloc'; recompile with -fPIC` (ARM64) / `R_X86_64_PC32 ... (X86_64)`
-            // relocation 에러 발생. exe binary 도 PIC 코드 OK (현대 Linux 의 PIE default
-            // 와 일치) — overhead 무시 수준.
-            .pic = true,
-            // **`sanitize_c = .off`** — Zig 의 default sanitize_c (Debug 빌드 시 on)
-            // 는 `__ubsan_handle_*` symbol 들을 호출하는 코드를 emit. 그런데 Linux 의
-            // libubsan 은 Zig 가 자동 link 안 해서 NAPI binary dlopen 시
-            // `undefined symbol: __ubsan_handle_type_mismatch_v1` 발생 (관찰 환경:
-            // CI ubuntu-latest, packages/core 의 build:js:cjs step 에서 require).
-            // vendored BoringSSL 은 외부 코드라 자체 sanitize 무의미 — off 가 정합.
-            .sanitize_c = .off,
-        }),
+        .root_module = mod,
     });
-    lib.linkLibC();
 
     // **windows-msvc 만 분기**: Zig 0.15.2 의 `linkLibCpp()` 는 자체 번들된
     // libcxx/libcxxabi 소스를 그 자리에서 컴파일하는데, 이 libcxxabi 는 Itanium
@@ -72,9 +76,9 @@ pub fn build(
     // 좁아 `msvcprt` 만으로 충족.
     const is_windows_msvc = target.result.os.tag == .windows and target.result.abi == .msvc;
     if (is_windows_msvc) {
-        lib.linkSystemLibrary("msvcprt");
+        mod.linkSystemLibrary("msvcprt", .{});
     } else {
-        lib.linkLibCpp();
+        mod.link_libcpp = true;
     }
 
     const sources_text = @embedFile("../vendor/boringssl/gen/sources.json");
@@ -134,7 +138,7 @@ pub fn build(
         for (srcs) |rel| {
             const full = try std.fs.path.join(b.allocator, &.{ "vendor/boringssl", rel });
             const is_cpp = std.mem.endsWith(u8, rel, ".cc") or std.mem.endsWith(u8, rel, ".cpp");
-            lib.addCSourceFile(.{
+            mod.addCSourceFile(.{
                 .file = b.path(full),
                 .flags = if (is_cpp) cxx_full else c_full,
             });
@@ -142,13 +146,13 @@ pub fn build(
     }
 
     // angle-bracket `<openssl/...>` 가 BoringSSL 의 public header 를 resolve.
-    lib.addIncludePath(b.path("vendor/boringssl/include"));
+    mod.addIncludePath(b.path("vendor/boringssl/include"));
 
     // Windows target — crypto/bio/socket.cc / connect.cc 가 `<winsock2.h>` 무조건
     // include 하고 Win32 socket API (socket/recv/WSAGetLastError) 호출. 시스템
     // ws2_32 link 가 없으면 cross-Windows build 가 undefined symbol.
     if (target.result.os.tag == .windows) {
-        lib.linkSystemLibrary("ws2_32");
+        mod.linkSystemLibrary("ws2_32", .{});
     }
 
     return lib;
@@ -166,6 +170,6 @@ pub fn attach(
     lib: *std.Build.Step.Compile,
     b: *std.Build,
 ) void {
-    target_step.linkLibrary(lib);
-    target_step.addIncludePath(b.path("vendor/boringssl/include"));
+    target_step.root_module.linkLibrary(lib);
+    target_step.root_module.addIncludePath(b.path("vendor/boringssl/include"));
 }
