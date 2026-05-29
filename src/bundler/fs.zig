@@ -391,7 +391,12 @@ pub const RealFS = struct {
     /// symlink 정규화. resolver 의 preserve_symlinks=false 경로에 사용 (bun/.bun, pnpm/.pnpm).
     /// caller 가 반환 slice 의 메모리 소유.
     pub fn realpath(_: RealFS, io: std.Io, allocator: std.mem.Allocator, path: []const u8) FsError![]const u8 {
-        return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| return mapFsError(err);
+        // 0.16: realPathFileAlloc 는 [:0]u8 (sentinel 포함 N 바이트) 반환. []const u8
+        // 로 coerce 후 free 하면 N-1 만 해제돼 DebugAllocator size-mismatch. sentinel-
+        // aware free 후 정확한 길이로 dupe 해 caller 가 []const u8 로 안전 해제하게 한다.
+        const z = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| return mapFsError(err);
+        defer allocator.free(z);
+        return allocator.dupe(u8, z) catch return FsError.OutOfMemory;
     }
 
     /// 디렉토리 항목을 ArrayList 에 모아 반환. caller 가 메모리 소유.
