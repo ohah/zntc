@@ -27,6 +27,18 @@ pub const panic = @import("zntc_lib").crash_handler.panic;
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
 const wasm_alloc = std.heap.wasm_allocator;
 
+/// 0.16: optionsFromJson 등 일부 lib API 가 io 를 요구한다. WASM 은 juicy main 이
+/// 없으므로 전역 단일스레드 Threaded io(async_limit=0, inline)를 lazy 생성한다.
+/// transpile-only 경로(entry_path=null)는 tsconfig autodiscover 가 게이트 off 라
+/// io 가 실제 fs 에 닿지 않지만, 시그니처 충족 + 향후 안전을 위해 실 io 를 둔다.
+var wasm_threaded: ?std.Io.Threaded = null;
+fn wasmIo() std.Io {
+    if (wasm_threaded == null) {
+        wasm_threaded = std.Io.Threaded.init(wasm_alloc, .{ .async_limit = .nothing });
+    }
+    return wasm_threaded.?.io();
+}
+
 // WASM transpile-only 진입점. 번들러/HMR 경로가 없어 debug_log 초기화 생략.
 // 향후 WASM 에서 bundler 기능을 export 하게 되면 `debug_log.initFromEnv` 추가 필요.
 // (docs/DEBUG.md 참조)
@@ -128,7 +140,7 @@ export fn transpile(
     else
         "{}";
 
-    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json, null) catch {
+    const options = transpile_mod.optionsFromJson(opts_alloc, wasmIo(), opts_json, null) catch {
         setError("invalid options JSON");
         return 0;
     };

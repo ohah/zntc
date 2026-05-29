@@ -111,22 +111,29 @@ fn writeStructSchema(writer: anytype, comptime T: type) !void {
     try writer.writeAll("}, \"additionalProperties\": false}");
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    // 0.16: juicy main — io / args 를 Init 에서. GPA→DebugAllocator, argsAlloc 제거.
+    const io = init.io;
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, alloc);
+    defer arg_it.deinit();
+    var args_buf: std.ArrayList([]const u8) = .empty;
+    defer args_buf.deinit(alloc);
+    while (arg_it.next()) |a| try args_buf.append(alloc, a);
+    const args = args_buf.items;
     if (args.len < 2) {
         std.debug.print("usage: emit_schema <output-path>\n", .{});
         std.process.exit(1);
     }
     const out_path = args[1];
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    const writer = buf.writer(alloc);
+    // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating (writeProperties 가 *Io.Writer 받음).
+    var aw: std.Io.Writer.Allocating = .init(alloc);
+    defer aw.deinit();
+    const writer = &aw.writer;
 
     try writer.writeAll(
         \\{
@@ -141,10 +148,12 @@ pub fn main() !void {
     try writeProperties(writer);
     try writer.writeAll("\n  }\n}\n");
 
+    const schema_bytes = aw.writer.buffered();
     // 출력 경로의 부모 디렉토리 생성 (schemas/가 아직 없을 수 있음).
+    // 0.16: std.fs.cwd 제거 → Io.Dir.cwd + io; makePath→createDirPath.
     if (std.fs.path.dirname(out_path)) |dir| {
-        std.fs.cwd().makePath(dir) catch {};
+        std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     }
-    try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
-    std.debug.print("wrote {s} ({d} bytes)\n", .{ out_path, buf.items.len });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = schema_bytes });
+    std.debug.print("wrote {s} ({d} bytes)\n", .{ out_path, schema_bytes.len });
 }
