@@ -150,7 +150,8 @@ pub fn writeJsonString(writer: anytype, s: []const u8) !void {
 /// 파일의 mtime(수정 시각)을 i128 나노초 단위로 반환한다.
 pub fn getFileMtime(io: std.Io, path: []const u8) !i128 {
     const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
-    return stat.mtime;
+    // 0.16: stat.mtime 은 Io.Timestamp → ns(i128) 로 변환.
+    return stat.mtime.toNanoseconds();
 }
 
 /// path → mtime upsert. 키 충돌 시 std.HashMap.put 이 기존 키 유지 +
