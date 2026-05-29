@@ -529,7 +529,7 @@ pub const ResolveCache = struct {
                 while (remap_depth < MAX_REMAP_DEPTH) : (remap_depth += 1) {
                     // 동일 specifier 로 self-remap 이면 즉시 종료 (recursive-module fixture).
                     if (remap_depth > 0 and std.mem.eql(u8, effective_spec, remap_buf[remap_depth - 1])) break;
-                    switch (self.getBareModuleOverride(source_dir, effective_spec)) {
+                    switch (self.getBareModuleOverride(io, source_dir, effective_spec)) {
                         .disabled => {
                             const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
                             // interning: pool 에 store + 원본 free. cache + caller 둘 다 interned.
@@ -602,7 +602,7 @@ pub const ResolveCache = struct {
         if (self.platform.isBrowserLike()) {
             var browser_scope = profile.begin(.resolve_browser_override);
             defer browser_scope.end();
-            const override = self.getBrowserOverride(result.path);
+            const override = self.getBrowserOverride(io, result.path);
             switch (override) {
                 .disabled => {
                     const disabled = try self.internDisabled(result.path, result.module_type, .owned);
@@ -716,7 +716,7 @@ pub const ResolveCache = struct {
     /// 해석된 절대 경로가 package.json "browser" 필드에서 override (disabled / remap) 되었는지 판별.
     /// node_modules 내 파일만 대상. 결과는 패키지 디렉토리별로 캐싱 (반복 파싱 방지).
     /// remap 의 value 는 BrowserOverrides 가 소유 — caller 는 외부 저장 금지.
-    fn getBrowserOverride(self: *ResolveCache, resolved_path: []const u8) OverrideKind {
+    fn getBrowserOverride(self: *ResolveCache, io: std.Io, resolved_path: []const u8) OverrideKind {
         // node_modules 내 파일만 대상
         const nm = "node_modules" ++ std.fs.path.sep_str;
         const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return .none;
@@ -742,7 +742,7 @@ pub const ResolveCache = struct {
 
         const pkg_dir_path = resolved_path[0 .. nm_pos + nm.len + pkg_end];
 
-        const overrides = self.getOrBuildBrowserOverrides(pkg_dir_path) orelse return .none;
+        const overrides = self.getOrBuildBrowserOverrides(io, pkg_dir_path) orelse return .none;
 
         // resolved_path 에서 패키지 루트 이후의 상대 경로 추출
         const relative_in_pkg = resolved_path[nm_pos + nm.len + pkg_end ..];
@@ -767,11 +767,11 @@ pub const ResolveCache = struct {
     /// source_dir 의 패키지 browser 필드에서 specifier (bare module name) 매칭 조회.
     /// `import "fs"` / `import "module-a"` 형태를 resolve 전에 intercept 하기 위한 진입점 (#1530).
     /// browser 필드 remap value 는 BrowserOverrides 소유 — caller 외부 저장 금지.
-    fn getBareModuleOverride(self: *ResolveCache, source_dir: []const u8, specifier: []const u8) OverrideKind {
+    fn getBareModuleOverride(self: *ResolveCache, io: std.Io, source_dir: []const u8, specifier: []const u8) OverrideKind {
         // source_dir 이 node_modules/<pkg> 내부이면 해당 pkg 의 browser 필드 조회.
         const pkg_dir_path = findPackageDirPath(source_dir) orelse return .none;
 
-        const overrides = self.getOrBuildBrowserOverrides(pkg_dir_path) orelse return .none;
+        const overrides = self.getOrBuildBrowserOverrides(io, pkg_dir_path) orelse return .none;
 
         if (overrides.module_disabled.contains(specifier)) return .disabled;
         if (overrides.module_remap.get(specifier)) |rep| return .{ .remap = rep };
@@ -783,14 +783,14 @@ pub const ResolveCache = struct {
     /// 스레드가 먼저 넣었으면 내가 만든 건 폐기 (DirEntryCache 와 동일 패턴).
     /// 반환값은 캐시 map 과 무관한 by-value 복사라 락 밖에서 읽어도 안전 (BrowserOverrides 의
     /// 내부 map 들은 빌드 후 불변, 그 버킷은 deinit 전까지 안 풀린다).
-    fn getOrBuildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
+    fn getOrBuildBrowserOverrides(self: *ResolveCache, io: std.Io, pkg_dir_path: []const u8) ?BrowserOverrides {
         {
             self.browser_cache_mutex.lock();
             defer self.browser_cache_mutex.unlock();
             if (self.browser_overrides_cache.get(pkg_dir_path)) |cached| return cached;
         }
 
-        var built = self.buildBrowserOverrides(pkg_dir_path);
+        var built = self.buildBrowserOverrides(io, pkg_dir_path);
 
         self.browser_cache_mutex.lock();
         defer self.browser_cache_mutex.unlock();
@@ -812,9 +812,9 @@ pub const ResolveCache = struct {
 
     /// package.json 의 browser 필드를 4 축 (path/module × disabled/remap) 으로 수집.
     /// 키 prefix 로 분류: "./foo" → path-key, 나머지는 bare module key (#1530).
-    fn buildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
+    fn buildBrowserOverrides(self: *ResolveCache, io: std.Io, pkg_dir_path: []const u8) ?BrowserOverrides {
         // pkg_json_cache 가 소유 — 여기서 deinit 하지 않는다 (디렉토리당 1회 parse 재사용).
-        const parsed = self.pkg_json_cache.getOrParse(pkg_dir_path) catch return null;
+        const parsed = self.pkg_json_cache.getOrParse(io, pkg_dir_path) catch return null;
         const browser_map = parsed.pkg.browser_map orelse return null;
         const browser_obj = browser_map.object;
 
