@@ -66,11 +66,11 @@ pub fn markRecordLazyResolved(self: *ModuleGraph, mod_idx: usize, rec_i: usize) 
 
 /// 모듈을 그래프에 추가하고 파싱한다.
 /// 이미 존재하면 기존 인덱스를 반환.
-pub fn addModule(self: *ModuleGraph, abs_path: []const u8) !ModuleIndex {
-    return self.addModuleWithResolveDir(abs_path, null);
+pub fn addModule(self: *ModuleGraph, io: std.Io, abs_path: []const u8) !ModuleIndex {
+    return self.addModuleWithResolveDir(io, abs_path, null);
 }
 
-pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve_dir: ?[]const u8) !ModuleIndex {
+pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const u8, resolve_dir: ?[]const u8) !ModuleIndex {
     // 중복 체크
     var s_dedup = profile.begin(.graph_discover_incr_add_module_dedup);
     const existing_opt = self.path_to_module.get(abs_path);
@@ -122,7 +122,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, abs_path: []const u8, resolve
     var s_pre = profile.begin(.graph_discover_incr_add_module_preopen);
     defer s_pre.end();
     if (std.fs.path.dirname(abs_path)) |dir_path| {
-        self.source_read_cache.preopenDir(self.allocator, dir_path);
+        self.source_read_cache.preopenDir(io, self.allocator, dir_path);
     }
 
     // 파싱은 build()의 배치 루프에서 수행

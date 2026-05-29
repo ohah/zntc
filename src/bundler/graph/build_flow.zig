@@ -42,7 +42,7 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     var inject_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer inject_indices.deinit(self.allocator);
     for (self.inject_files) |inject_path| {
-        const idx = try self.addModule(inject_path);
+        const idx = try self.addModule(io, inject_path);
         _ = try graph_requested_exports.requestAll(self, idx);
         try inject_indices.append(self.allocator, idx);
     }
@@ -52,7 +52,7 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     var run_before_main_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer run_before_main_indices.deinit(self.allocator);
     for (self.run_before_main_files) |rbm_path| {
-        const idx = try self.addModule(rbm_path);
+        const idx = try self.addModule(io, rbm_path);
         _ = try graph_requested_exports.requestAll(self, idx);
         try run_before_main_indices.append(self.allocator, idx);
     }
@@ -63,7 +63,7 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     // 배치 경계 없이 모듈 발견 즉시 파싱 시작 → CPU 유휴 시간 최소화.
     var discover_scope = profile.begin(.graph_discover);
     for (entry_points) |entry_path| {
-        const idx = try self.addModule(entry_path);
+        const idx = try self.addModule(io, entry_path);
         _ = try graph_requested_exports.requestAll(self, idx);
     }
 
@@ -215,7 +215,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
                 // 절대경로면 resolve 불필요 — 그대로 등록한다. 플랫폼 무관(Windows `C:\` 포함)이며
                 // resolver 가 abs 를 bare specifier 로 오인하는 경로를 피한다. 존재/disabled/read
                 // 실패는 discovery 후 phantom 재스캔이 정리(B-ii 머지본 동작 유지).
-                const new_idx = self.addModule(chk.id) catch {
+                const new_idx = self.addModule(io, chk.id) catch {
                     self.addDiag(
                         .plugin_error,
                         .@"error",
@@ -264,7 +264,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
                 switch (m_union) {
                     .file => |f| {
                         // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only).
-                        const new_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
+                        const new_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
                         const nei = @intFromEnum(new_idx);
                         if (nei >= self.modules.count()) continue;
                         const nm = self.modules.at(nei);
@@ -459,7 +459,7 @@ fn applyRuntimePolyfills(self: *ModuleGraph, io: std.Io, runtime_indices: *std.A
     defer inject_scope.end();
     const discover_start = self.modules.count();
     for (selected.items) |module| {
-        const idx = try self.addModule(module.path);
+        const idx = try self.addModule(io, module.path);
         _ = try graph_requested_exports.requestAll(self, idx);
         if (self.moduleAtMut(idx)) |m| {
             m.is_context_dep = true;
@@ -649,7 +649,7 @@ pub fn buildIncremental(
     var inject_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer inject_indices.deinit(self.allocator);
     for (self.inject_files) |inject_path| {
-        const idx = try self.addModule(inject_path);
+        const idx = try self.addModule(io, inject_path);
         _ = try graph_requested_exports.requestAll(self, idx);
         try inject_indices.append(self.allocator, idx);
     }
@@ -657,13 +657,13 @@ pub fn buildIncremental(
     var run_before_main_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer run_before_main_indices.deinit(self.allocator);
     for (self.run_before_main_files) |rbm_path| {
-        const idx = try self.addModule(rbm_path);
+        const idx = try self.addModule(io, rbm_path);
         _ = try graph_requested_exports.requestAll(self, idx);
         try run_before_main_indices.append(self.allocator, idx);
     }
 
     for (entry_points) |entry_path| {
-        const idx = try self.addModule(entry_path);
+        const idx = try self.addModule(io, entry_path);
         _ = try graph_requested_exports.requestAll(self, idx);
     }
 
