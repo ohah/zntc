@@ -78,7 +78,9 @@ pub fn build(b: *std.Build) void {
         .name = "zntc",
         .root_module = exe_mod,
     });
-    exe.linkLibC();
+    // Zig 0.16: linkLibC()/addCSourceFile()/addIncludePath() 등이 Step.Compile 에서
+    // 제거되고 *Module 로 이관됐다. exe 의 root module(exe_mod) 에 직접 설정한다.
+    exe_mod.link_libc = true;
 
     // mimalloc: 고성능 메모리 할당자 (vendor/mimalloc, static.c 단일 컴파일).
     // CI #3795 — MSVC ARM64 target 에서 mimalloc atomic.h 가 C 로 컴파일되면 `__ldar64` /
@@ -86,7 +88,7 @@ pub fn build(b: *std.Build) void {
     // mimalloc 권장대로 (`atomic.h:161`) MSVC target 은 C++ 컴파일 — `__cplusplus` 분기가
     // std::atomic 사용해 intrinsic 회피. shim 파일이 `extern "C" { #include static.c }` 로
     // mimalloc unity build 를 C++ 컴파일러로 처리.
-    exe.addCSourceFile(.{
+    exe_mod.addCSourceFile(.{
         .file = b.path("vendor/mimalloc-shim.cpp"),
         .flags = &.{
             "-DMI_SKIP_COLLECT_ON_EXIT=1",
@@ -95,16 +97,16 @@ pub fn build(b: *std.Build) void {
             "-Wno-date-time", // __DATE__/__TIME__ 경고 억제
         },
     });
-    exe.addIncludePath(b.path("vendor/mimalloc/include"));
-    exe.addIncludePath(b.path("vendor")); // shim 의 "mimalloc/src/static.c" include path
+    exe_mod.addIncludePath(b.path("vendor/mimalloc/include"));
+    exe_mod.addIncludePath(b.path("vendor")); // shim 의 "mimalloc/src/static.c" include path
 
     // macOS 를 -Dtarget 으로 cross 빌드하면 zig 가 SDK 의 usr/include 를 자동 포함하지
     // 않아 mimalloc(prim.c)의 <CommonCrypto/CommonCryptoError.h> 를 못 찾는다.
     // SDKROOT(CI: xcrun --show-sdk-path) 의 usr/include 를 보강. native 빌드(SDKROOT 미설정)
     // 는 zig 가 SDK 를 자동 탐지하므로 이 분기를 타지 않는다.
     if (target.result.os.tag == .macos) {
-        if (b.graph.env_map.get("SDKROOT")) |sdk| {
-            exe.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{sdk}) });
+        if (b.graph.environ_map.get("SDKROOT")) |sdk| {
+            exe_mod.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{sdk}) });
         }
     }
 
@@ -253,7 +255,7 @@ pub fn build(b: *std.Build) void {
         // wasi-libc — Zig 0.15 wasm_allocator 가 multi-threaded 미지원이라
         // c_allocator (musl thread-safe malloc) 필요. JS 측은 wasi_snapshot_preview1
         // 의 모든 fn 을 stub 으로 제공 (createWasiImports 확장).
-        wasm_bundler_exe.linkLibC();
+        wasm_bundler_mod.link_libc = true;
         wasm_bundler_exe.import_memory = true;
         wasm_bundler_exe.shared_memory = true;
         wasm_bundler_exe.max_memory = 4 * 1024 * 1024 * 1024; // 4 GiB
@@ -295,7 +297,7 @@ pub fn build(b: *std.Build) void {
             .name = "zntc-napi",
             .root_module = napi_mod,
         });
-        napi_lib.linkLibC();
+        napi_mod.link_libc = true;
         // Node.js NAPI 심볼은 런타임에 제공되므로 undefined 허용
         // (ELF/Mach-O는 이것만으로 충분하지만, Windows PE/COFF는 빌드 타임에
         //  import library가 필요해서 아래에서 별도 처리한다.)
@@ -329,7 +331,7 @@ pub fn build(b: *std.Build) void {
                 const dlltool = b.addSystemCommand(&.{ "zig", "dlltool", "-m", machine, "-d" });
                 dlltool.addFileArg(b.path(def_path));
                 dlltool.addArg("-l");
-                napi_lib.addObjectFile(dlltool.addOutputFileArg(lib_name));
+                napi_mod.addObjectFile(dlltool.addOutputFileArg(lib_name));
             }
         }
 
@@ -360,7 +362,7 @@ pub fn build(b: *std.Build) void {
             .name = "bench-callback",
             .root_module = bench_mod_napi,
         });
-        bench_lib.linkLibC();
+        bench_mod_napi.link_libc = true;
         bench_lib.linker_allow_shlib_undefined = true;
 
         const bench_install = b.addInstallArtifact(bench_lib, .{

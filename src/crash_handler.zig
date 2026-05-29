@@ -47,10 +47,15 @@ fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
     @branchHint(.cold);
 
     // stderr에 배너를 먼저 찍는다. 실패해도 무시 — 어쨌든 defaultPanic으로 넘어간다.
-    // deprecatedWriter는 `anytype` writer를 반환하므로 std.Io.Writer 전환 이슈가 없다.
-    const stderr_file = std.fs.File.stderr();
-    const w = stderr_file.deprecatedWriter();
+    // Zig 0.16: panic 경로는 스레드된 io 가 없을 수 있어 std.debug 의 debug_io 기반
+    // lockStderr 를 쓴다 (panic-safe, syscall-level). file_writer.interface 가
+    // std.Io.Writer 라 printBanner 의 anytype writer 와 호환.
+    var buf: [256]u8 = undefined;
+    const locked = std.debug.lockStderr(&buf);
+    const w = &locked.file_writer.interface;
     printBanner(w, msg) catch {};
+    w.flush() catch {};
+    std.debug.unlockStderr();
 
     // 기본 panic 경로 (스택 트레이스 + abort)로 위임.
     // defaultPanic은 내부에서 심볼 해석/스택 덤프 + posix.abort()를 수행.
