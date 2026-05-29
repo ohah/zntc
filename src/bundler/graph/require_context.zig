@@ -18,7 +18,7 @@ const ModuleGraph = graph_mod.ModuleGraph;
 /// `self`: ModuleGraph (addDiag, plugins 접근용)
 /// `module_path`: 현재 모듈 경로 (importer)
 /// `records`: 모듈의 import_records (in-place 수정)
-pub fn expandRecords(self: *ModuleGraph, mod_idx: usize) void {
+pub fn expandRecords(self: *ModuleGraph, io: std.Io, mod_idx: usize) void {
     const module = self.modules.at(mod_idx);
 
     // scanWorker + resolveModuleImports 양쪽에서 호출됨. 이미 expand 됐으면 즉시 리턴
@@ -84,7 +84,7 @@ pub fn expandRecords(self: *ModuleGraph, mod_idx: usize) void {
                     if (resolved_paths_opt) |paths| {
                         // default null — file variant 만 dupe 성공 시 덮어씀.
                         paths[i] = null;
-                        if (self.resolve_cache.resolveThreadSafe(source_dir, joined, .require) catch null) |res| switch (res) {
+                        if (self.resolve_cache.resolveThreadSafe(io, source_dir, joined, .require) catch null) |res| switch (res) {
                             // PR resolve interning: f.path 는 path_pool 소유 (borrow only). arena 로만 dupe.
                             .file => |f| {
                                 paths[i] = arena_alloc.dupe(u8, f.path) catch null;

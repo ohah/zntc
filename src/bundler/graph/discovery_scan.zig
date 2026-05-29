@@ -104,10 +104,10 @@ pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
     const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
     // import.meta.glob: 워커에서 glob 확장 수행
-    expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
+    expandGlobRecords(self.allocator, io, mod_ptr.import_records, source_dir);
     // require.context: plugin 으로 matches 주입 + context_expansion_deps 로 수집 (#1579 Phase 4).
     // import_records 는 건드리지 않으므로 len 변화 없음.
-    expandRequireContextRecords(self, mod_idx);
+    expandRequireContextRecords(self, io, mod_idx);
 
     const records = mod_ptr.import_records;
     var results = self.allocator.alloc(ResolveOutput, records.len) catch {
