@@ -101,6 +101,15 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         defer channel.deinit();
 
         var group: std.Io.Group = .init;
+        // #4009: discovery 가 어떤 경로로 빠져나가도(정상 / recv 의 error.SendFailed /
+        // applyScanResult error) 워커를 먼저 reap 한 뒤 channel.deinit(아래 defer, LIFO 로
+        // 이 await 뒤에 실행)되도록 defer await. recv 가 OOM 시 error 를 던질 때 워커가 떠도는
+        // 채 채널이 teardown 되는 UAF + 기존 `try applyScanResult` 에러 경로의 await 누락을 함께
+        // 막는다(정상 경로의 명시 await 를 이 defer 로 대체).
+        // (알려진 한계: 에러-abort 시 워커가 await 직전 send 한 미소비 ScanResult 의
+        // resolve_outputs 는 channel.deinit 가 item-단위로 못 풀어 해제 안 됨 — 이미 OOM 으로
+        // 빌드를 접는 rare 경로라 수용. leak-clean 종료가 필요하면 별도 drain follow-up.)
+        defer group.await(io) catch {};
         var inflight: usize = 0;
 
         // #4007: 모듈당 group.async 는 0.16 std.Io.Group 의 per-task dispatch 비용(태스크당
@@ -115,14 +124,14 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
 
         // Apply each worker result, then dispatch newly discovered modules (chunked).
         while (inflight > 0) {
-            const result = channel.recv(io);
+            // #4009: 워커 send 가 OOM 으로 결과를 drop 하면 error.SendFailed — 무한 대기 대신
+            // 빌드를 실패시킨다(상단 defer group.await 가 워커 reap 보장).
+            const result = try channel.recv(io);
             inflight -= 1;
             try graph_discovery_scan.applyScanResult(self, io, result);
             dispatchPendingChunked(self, io, &group, &channel, &spawned_up_to, &inflight, parallelism);
         }
-
-        // 모든 결과 수신 완료 — worker 함수가 완전히 반환하고 group 리소스 해제될 때까지 대기.
-        group.await(io) catch {};
+        // (정상 종료 시 group reap 은 상단 `defer group.await` 가 처리)
     }
 
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;

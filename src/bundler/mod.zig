@@ -99,6 +99,7 @@ test {
     _ = package_json;
     _ = resolve_cache;
     _ = module;
+    _ = mpsc_channel; // #4009 send OOM → recv error.SendFailed 회귀 가드
     _ = graph;
     _ = emitter;
     _ = binding_scanner;
