@@ -2077,7 +2077,7 @@ pub const Bundler = struct {
         // putModule이 parse_arena 소유권을 store로 가져가므로
         // graph.deinit()에서 이중 해제가 발생하지 않는다.
         if (self.options.module_store) |store| {
-            graph.transferModulesToStore(store);
+            graph.transferModulesToStore(io, store);
         }
 
         var first_err: ?*const types.BundlerDiagnostic = null;
