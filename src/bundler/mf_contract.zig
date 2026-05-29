@@ -143,13 +143,14 @@ pub fn resolveManifestPath(
 /// resolveManifestPath → 파일 읽기 → parseContract 의 편의 결합.
 /// local/file only. manifest 최대 4MiB(표준 manifest 는 수 KB).
 pub fn loadContract(
+    io: std.Io,
     gpa: std.mem.Allocator,
     cwd: ?[]const u8,
     entry: []const u8,
 ) !RemoteContract {
     const path = try resolveManifestPath(gpa, cwd, entry);
     defer gpa.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(gpa, path, 4 * 1024 * 1024) catch |e| switch (e) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, std.Io.Limit.limited(4 * 1024 * 1024)) catch |e| switch (e) {
         error.FileNotFound => return error.MfContractManifestNotFound, // 부재 ≠ 결함
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.MfContractMalformed, // 읽기 실패(권한·IO 등)
@@ -188,10 +189,10 @@ fn sidecarFileSri(gpa: std.mem.Allocator, sidecar_bytes: []const u8, name: []con
 /// — KB·소수 remote, P3-1/2 per-import 비용 모델 답습; 응집 위해
 /// mf_contract 단일 위치). 네트워크 entry → resolveManifestPath 가
 /// `MfContractNetworkUnsupported`(호출측 skip).
-pub fn verifyIntegrity(gpa: std.mem.Allocator, cwd: ?[]const u8, entry: []const u8) !void {
+pub fn verifyIntegrity(io: std.Io, gpa: std.mem.Allocator, cwd: ?[]const u8, entry: []const u8) !void {
     const path = try resolveManifestPath(gpa, cwd, entry);
     defer gpa.free(path);
-    const manifest = std.fs.cwd().readFileAlloc(gpa, path, 4 * 1024 * 1024) catch |e| switch (e) {
+    const manifest = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, std.Io.Limit.limited(4 * 1024 * 1024)) catch |e| switch (e) {
         error.FileNotFound => return error.MfContractManifestNotFound,
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.MfContractMalformed,
@@ -200,7 +201,7 @@ pub fn verifyIntegrity(gpa: std.mem.Allocator, cwd: ?[]const u8, entry: []const 
 
     const sc_path = try std.fmt.allocPrint(gpa, "{s}.integrity.json", .{path});
     defer gpa.free(sc_path);
-    const sidecar = std.fs.cwd().readFileAlloc(gpa, sc_path, 4 * 1024 * 1024) catch |e| switch (e) {
+    const sidecar = std.Io.Dir.cwd().readFileAlloc(io, sc_path, gpa, std.Io.Limit.limited(4 * 1024 * 1024)) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return, // sidecar 부재/읽기불가 = 검증 불가 ≠ 위반 → skip
     };
@@ -216,7 +217,7 @@ pub fn verifyIntegrity(gpa: std.mem.Allocator, cwd: ?[]const u8, entry: []const 
     // Ed25519: `.sig`(opt-in) 있으면 sidecar 서명 검증.
     const sig_path = try std.fmt.allocPrint(gpa, "{s}.sig", .{sc_path});
     defer gpa.free(sig_path);
-    const sig = std.fs.cwd().readFileAlloc(gpa, sig_path, 64 * 1024) catch |e| switch (e) {
+    const sig = std.Io.Dir.cwd().readFileAlloc(io, sig_path, gpa, std.Io.Limit.limited(64 * 1024)) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return, // 미서명(P2-3 opt-in) = 검증 불가 ≠ 위반 → skip
     };
