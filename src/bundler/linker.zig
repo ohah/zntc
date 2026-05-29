@@ -1497,7 +1497,7 @@ pub const Linker = struct {
                     ib.imported_name,
                     0,
                 ) orelse {
-                    // export를 찾을 수 없음
+                    // export를 찾을 수 없음 — 내부 진단(self.diagnostics, 테스트/디버그용) 유지.
                     self.addDiag(
                         .missing_export,
                         .@"error",
@@ -1507,6 +1507,50 @@ pub const Linker = struct {
                         "Imported name not found in module",
                         ib.imported_name,
                     );
+                    // (#3978) 사용자 노출(BundleResult)은 *진짜 누락*만. resolveExportChain
+                    // null 은 CJS 동적 exports / TS namespace·interface·const-enum / default-fn /
+                    // handled-elsewhere 등 false-null 이 대부분(계측: unit 137 중 ~133 false).
+                    // semantic.exported_names(analyzer 가 type-space 포함 *모든* export 이름 기록)를
+                    // chain-aware 로 조회해 진짜 누락만 가려낸다. CJS/helper/type-only/shim 은 제외.
+                    // esbuild/rolldown parity. (export_bindings 는 TS 구문 미기록이라 사용 불가.)
+                    const tgt_cjs = if (self.graph.getModule(source_record.resolved)) |t| t.wrap_kind == .cjs else true;
+                    var type_only = false;
+                    // value_used: importer 의 로컬 바인딩이 *값* 위치에서 참조되는가. 미해결
+                    // import 는 local_symbol 이 invalid 라 isImportBindingTypeOnly 가 판정 못 하므로
+                    // module scope(scope_maps[0])에서 local_name → symbol 을 찾아 references 의
+                    // value-use 를 직접 확인한다. type-only(타입 위치만 사용, strip)·미사용 import 는
+                    // false → 진단 surface 안 함(런타임에 식별자가 emit 되지 않아 ReferenceError 없음).
+                    var value_used = false;
+                    if (m.semantic) |*sem| {
+                        type_only = metadata_mod.isImportBindingTypeOnly(sem, ib);
+                        if (sem.scope_maps.len > 0) {
+                            if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
+                                for (sem.references) |r| {
+                                    if (@intFromEnum(r.symbol_id) == sym_idx and r.isValueUse()) {
+                                        value_used = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    const genuine = value_used and !ib.is_helper and !tgt_cjs and !type_only and
+                        !self.shim_missing_exports and
+                        !self.moduleHasExportName(source_record.resolved, ib.imported_name, 0);
+                    if (genuine) {
+                        const msg = std.fmt.allocPrint(self.allocator, "No matching export \"{s}\" in module", .{ib.imported_name}) catch {
+                            continue;
+                        };
+                        self.fatal_diagnostics.append(self.allocator, .{
+                            .code = .missing_export,
+                            .severity = .@"error",
+                            .message = msg,
+                            .file_path = m.path,
+                            .span = ib.local_span,
+                            .step = .link,
+                            .suggestion = ib.imported_name,
+                        }) catch self.allocator.free(msg);
+                    }
                     continue;
                 };
 
@@ -1539,6 +1583,47 @@ pub const Linker = struct {
             }
         }
         return null;
+    }
+
+    /// (#3978) scanner-level export 존재 여부(chain-aware). resolveExportChain 은
+    /// 해석(rename/symbol) 까지 모델하느라 CJS 동적 exports·TS namespace/interface/
+    /// const-enum·default-function 등을 false-null 로 떨군다. 이 함수는 semantic
+    /// analyzer 가 기록한 *완전한* export-name 집합(exported_names — type-space 포함)을
+    /// 조회해 "export 가 선언돼 있는가" 만 본다. missing_export 진단을 진짜 누락에만
+    /// surface 하기 위한 보수적 게이트 — 불확실(모듈/semantic 부재·깊이초과·CJS)하면
+    /// "있음"(true)으로 처리해 false-positive 진단을 피한다.
+    pub fn moduleHasExportName(self: *const Linker, module_idx: ModuleIndex, name: []const u8, depth: u32) bool {
+        if (depth > max_chain_depth) return true; // 불확실 → 보수적
+        const m = self.graph.getModule(module_idx) orelse return true;
+        if (m.wrap_kind == .cjs) return true; // CJS: 동적 exports, 정적 확인 불가 → 있다고 가정
+        const sem = if (m.semantic) |*s| s else return true; // semantic 부재 → 보수적
+        // exported_names: analyzer 가 기록한 named/default/re-export 이름 집합.
+        if (sem.exported_names.contains(name)) return true;
+        // namespace / const-enum 등 exported_names 에 안 잡히는 export 는 module-scope
+        // 심볼의 is_exported 플래그로 추가 확인.
+        if (sem.scope_maps.len > 0) {
+            if (sem.scope_maps[0].get(name)) |sym_idx| {
+                if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].decl_flags.is_exported) return true;
+            }
+        }
+        // export * from <src>: 구체 이름은 exported_names 에 없으므로 소스로 재귀
+        // (ESM spec: export * 는 default 제외).
+        if (!std.mem.eql(u8, name, "default")) {
+            for (m.export_bindings) |eb| {
+                if (eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*")) {
+                    const rec_idx = eb.import_record_index orelse continue;
+                    if (rec_idx >= m.import_records.len) continue;
+                    const src = m.import_records[rec_idx].resolved;
+                    if (!src.isNone() and self.moduleHasExportName(src, name, depth + 1)) return true;
+                }
+            }
+        }
+        // 여기 도달 = 이름 미발견. exported_names 가 *비어있으면* 이 모듈의 export 가
+        // semantic 에 캡처되지 않은 형태(TS namespace/const-enum, ESM-wrap/scope-hoist 등)
+        // → 모델 불완전이므로 보수적으로 "있음"(true) 처리해 false-positive 진단을 피한다.
+        // 비어있지 않으면(실제 export 가 캡처됨) 진짜 미발견 → false(genuine missing).
+        if (sem.exported_names.count() == 0) return true;
+        return false;
     }
 
     pub fn resolveExportChain(
