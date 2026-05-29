@@ -56,7 +56,11 @@ pub fn emitUpdate(self: anytype, node: Node) !void {
     const is_postfix = (flags & ast_mod.UnaryFlags.postfix) != 0;
     const op: Kind = @enumFromInt(@as(u8, @truncate(flags)));
     if (!is_postfix) try self.write(op.symbol());
+    // operand 는 update 의 lvalue 타겟 — 미존재 ns 멤버를 `(void 0)` 으로 바꾸면
+    // `(void 0)++` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
+    self.member_assign_target = true;
     try self.emitNode(operand);
+    self.member_assign_target = false;
     if (is_postfix) try self.write(op.symbol());
 }
 
@@ -155,7 +159,12 @@ fn rhsLeadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
 
 pub fn emitAssignment(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
+    // left 는 assignment 의 lvalue 타겟 — 미존재 ns 멤버를 `(void 0)` 으로 바꾸면
+    // `(void 0) = x` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
+    // emitStaticMember 가 진입 즉시 리셋하므로 중첩 object 위치(rvalue)는 영향 없음.
+    self.member_assign_target = true;
     try self.emitNode(node.data.binary.left);
+    self.member_assign_target = false;
     try self.writeSpace();
     if (node.data.binary.flags != 0) {
         const op: Kind = @enumFromInt(node.data.binary.flags);
@@ -355,6 +364,11 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
     const flags = self.ast.readExtra(e, 2);
     const MemberFlags = ast_mod.MemberFlags;
 
+    // 이 member 가 assignment/update 의 lvalue 타겟인지. 진입 즉시 읽고 리셋해
+    // object(중첩 member) 재귀 emit 은 rvalue 로 처리되게 한다.
+    const is_assign_target = self.member_assign_target;
+    self.member_assign_target = false;
+
     if (self.options.linking_metadata) |meta| {
         if (flags & MemberFlags.optional_chain == 0) {
             const obj_node_i = @intFromEnum(object);
@@ -371,6 +385,32 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
                             } else {
                                 try self.write(canonical_name);
                             }
+                            return;
+                        }
+                        // 멤버가 rewrite map 에 없음 = 그 export 가 존재하지 않음(static ESM).
+                        // ns 객체가 member-rewrite 로 materialize 되지 않았다면(ns_inline_objects
+                        // 미등록) `ns.prop` 은 선언된 적 없는 ns 식별자를 참조해 ReferenceError 가
+                        // 된다 — ESM 은 미존재 멤버를 undefined 로 평가하므로 `void 0` 으로 재작성한다
+                        // (#3982 ambiguous 멤버와 동형, esbuild parity). materialize 된 경우(값 사용/
+                        // shadow)는 ns 가 renamed 변수로 선언돼 있어 fall-through(`var.prop`→undefined)
+                        // 가 안전하고, CJS namespace 는 copyProps+rename 경로라 inner_map 자체가 없어
+                        // 이 분기에 도달하지 않는다(동적 멤버를 void 0 으로 잘못 가리지 않음).
+                        //
+                        // 두 가드:
+                        //  - lvalue 타겟(`ns.x = 1`/`ns.x++`)이면 `(void 0)=1` 은 SyntaxError →
+                        //    재작성 skip, 기존 fall-through 유지(런타임 throw, namespace 멤버
+                        //    대입은 어차피 ESM 에러).
+                        //  - dev 번들은 모듈이 항상 wrapper 로 선언돼 `ns` 가 존재하므로 dangling
+                        //    이 발생하지 않는다. 재작성 불필요 + CJS 동적 멤버 오인 방지 위해 skip.
+                        if (!is_assign_target and
+                            self.options.dev_module_id == null and
+                            meta.ns_inline_objects.get(obj_sym_id) == null)
+                        {
+                            // `(void 0)` — paren 필수. 이 멤버 식은 call/member 의 피연산자가
+                            // 될 수 있어(`ns.x()`, `ns.x.y`) bare `void 0` 은 `void 0()`(=
+                            // `void(0())`) / `void 0.y`(SyntaxError) 로 잘못 파싱된다. paren 으로
+                            // 감싸면 모든 컨텍스트에서 undefined 의미가 보존된다.
+                            try self.write("(void 0)");
                             return;
                         }
                     }
