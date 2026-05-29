@@ -483,6 +483,8 @@ const InotifyBackend = struct {
 // ============================================================
 
 const MtimeBackend = struct {
+    /// 0.16: statFile 에 io 필요 (Windows/기타 폴백). init 에서 보관.
+    io: std.Io,
     paths: std.StringHashMap(i128), // path → mtime
     result_buf: std.ArrayList(ChangeEvent),
 
@@ -510,7 +512,7 @@ const MtimeBackend = struct {
             try self.paths.put(path_owned, 0);
             return;
         };
-        try self.paths.put(path_owned, stat.mtime);
+        try self.paths.put(path_owned, stat.mtime.toNanoseconds());
     }
 
     fn removePath(self: *MtimeBackend, allocator: std.mem.Allocator, path: []const u8) void {
@@ -535,7 +537,8 @@ const MtimeBackend = struct {
         var elapsed: u32 = 0;
 
         while (elapsed < timeout_ms) {
-            std.Thread.sleep(@as(u64, interval) * std.time.ns_per_ms);
+            // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
+            self.io.sleep(std.Io.Duration.fromMilliseconds(@intCast(interval)), .awake) catch {};
             elapsed += interval;
 
             var it = self.paths.iterator();
@@ -544,8 +547,8 @@ const MtimeBackend = struct {
                     try self.result_buf.append(allocator, .{ .path = entry.key_ptr.*, .kind = .deleted });
                     continue;
                 };
-                if (stat.mtime != entry.value_ptr.*) {
-                    entry.value_ptr.* = stat.mtime;
+                if (stat.mtime.toNanoseconds() != entry.value_ptr.*) {
+                    entry.value_ptr.* = stat.mtime.toNanoseconds();
                     try self.result_buf.append(allocator, .{ .path = entry.key_ptr.*, .kind = .modified });
                 }
             }
