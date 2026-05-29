@@ -684,6 +684,32 @@ pub fn emitEsmWrappedModule(
 
             try wrapped.appendSlice(allocator, "});\n");
         }
+
+        // (#3975) `export * from <CJS>`: CJS 는 정적 export_bindings 가 없어 위 getter
+        // 열거로 안 잡힌다. wrapped 모듈의 exports 객체에 CJS 동적 멤버를 런타임 복사
+        // (`__copyProps(exports_x, require_cjs())`) → `import * as ns`(__toESM(exports))·
+        // named re-import 모두 CJS 멤버를 본다. esbuild __reExport 대응. plain CJS 는
+        // default 키가 없어 default 누출 없음(`export *` 는 default 비전파, spec 일치).
+        if (linker) |l| {
+            for (module.export_bindings) |eb| {
+                if (!(eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*"))) continue;
+                const rec_idx = eb.import_record_index orelse continue;
+                if (rec_idx >= module.import_records.len) continue;
+                const src_idx = module.import_records[rec_idx].resolved;
+                if (src_idx.isNone()) continue;
+                const src_mod = l.graph.getModule(src_idx) orelse continue;
+                if (src_mod.wrap_kind != .cjs) continue;
+                const rv = try src_mod.allocRequireName(allocator, rename_tbl);
+                defer allocator.free(rv);
+                const copy_props: []const u8 = if (options.minify_whitespace) rt.NAMES.COPY_PROPS_MIN else "__copyProps";
+                try wrapped.appendSlice(allocator, copy_props);
+                try wrapped.appendSlice(allocator, "(");
+                try wrapped.appendSlice(allocator, exports_name);
+                try wrapped.appendSlice(allocator, ", ");
+                try wrapped.appendSlice(allocator, rv);
+                try wrapped.appendSlice(allocator, "());\n");
+            }
+        }
     }
 
     // 5. body codegen (variable_declaration/class → 할당문만)

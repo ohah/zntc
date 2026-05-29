@@ -203,6 +203,24 @@ pub fn registerNamespaceRewrites(
             continue;
         }
         if (exp.ns_target_mod) |target| {
+            // (#3975) target 이 CJS 면 정적 ns-object(buildInlineObjectStr=빈 {})로는
+            // 동적 멤버를 못 담는다. 멤버를 `__toESM(require_cjs())` 표현식으로 재작성 →
+            // `ns.inner` → `__toESM(require_cjs())`, 접근 시점 평가(CJS wrapper 정의 후)라
+            // ordering 안전(var cjs_ns={} 빈객체 + shared-preamble ordering 버그 회피).
+            // require_cjs 는 dev/production 양쪽에서 정의됨. production 의 inner 는
+            // metadata.zig namespaceHasCjsStar 분기가 먼저 처리하므로 이 경로는 주로 dev.
+            if (self.getModule(target)) |tm| {
+                if (tm.wrap_kind == .cjs) {
+                    const req = try tm.allocRequireName(self.allocator, &self.rename_table);
+                    defer self.allocator.free(req);
+                    const toesm: []const u8 = if (self.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
+                    const expr = try std.fmt.allocPrint(self.allocator, "{s}({s}())", .{ toesm, req });
+                    errdefer self.allocator.free(expr);
+                    try owned_rewrite_values.append(self.allocator, expr);
+                    try inner_map.put(exp.exported, expr);
+                    continue;
+                }
+            }
             const ns_var = if (ns_target_to_var.get(target)) |cached|
                 cached
             else blk: {
