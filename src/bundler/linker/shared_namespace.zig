@@ -736,7 +736,7 @@ fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const st
 /// 모듈의 모든 export를 인라인 객체 문자열로 생성 (재귀적).
 /// `export * as ns` export는 소스 모듈의 인라인 객체로 중첩.
 /// 결과는 `self.ns_inline_cache` 에 target_mod_idx 별로 캐싱 — linker 전역 공유.
-fn buildInlineObjectStr(
+pub fn buildInlineObjectStr(
     self: *const Linker,
     target_mod_idx: u32,
     depth: u32,
@@ -826,6 +826,22 @@ fn buildInlineObjectStr(
                 try buf.appendSlice(self.allocator, exp.exported);
             }
             try buf.appendSlice(self.allocator, colon_sep);
+            // (#3975) `export * as inner from <CJS>`: CJS 멤버는 정적 열거 불가 →
+            // 빈 `{}` 대신 `__toESM(require())` 로 런타임 namespace 를 만든다. 이 literal 은
+            // namespaceHasCjsStar 경로(per-module preamble, CJS region 후)에서만 emit 되므로
+            // require_x ordering 안전.
+            if (self.getModule(src_mod)) |src_m| {
+                if (src_m.wrap_kind == .cjs) {
+                    const req = try src_m.allocRequireName(self.allocator, &self.rename_table);
+                    defer self.allocator.free(req);
+                    const toesm: []const u8 = if (self.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
+                    try buf.appendSlice(self.allocator, toesm);
+                    try buf.appendSlice(self.allocator, "(");
+                    try buf.appendSlice(self.allocator, req);
+                    try buf.appendSlice(self.allocator, "())");
+                    continue;
+                }
+            }
             const nested = try buildInlineObjectStr(self, src_mod, depth + 1);
             defer self.allocator.free(nested);
             try buf.appendSlice(self.allocator, nested);

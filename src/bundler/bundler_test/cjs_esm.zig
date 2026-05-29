@@ -126,6 +126,79 @@ test "CJS: import * as ns of ESM-that-export*-from-CJS → __toESM(require()) af
     try std.testing.expect(wrapper_pos < use_pos);
 }
 
+test "CJS: namespace of mixed barrel (local export + export*-from-CJS) (#3975)" {
+    // mid 가 자체 ESM export + `export * from <CJS>` 혼합. ns 는 per-module preamble 에서
+    // `var ns = {get local...}; __copyProps(ns, require_lib());` 로 런타임 구성돼야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "exports.alpha = 1;");
+    try writeFile(tmp.dir, "mid.ts", "export const local = 42;\nexport * from './lib.cjs';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './mid.ts';\nglobalThis.z = [ns.local, ns.alpha];");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CJS 멤버는 __copyProps(ns, require_lib()) 로 런타임 복사 (헬퍼 정의가 아닌 호출부).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__copyProps(ns, require_lib())") != null);
+    // require wrapper 정의가 __copyProps(ns, require_lib()) 호출보다 먼저 와야 함(ordering).
+    const wrapper_pos = std.mem.indexOf(u8, result.output, "require_lib = __commonJS").?;
+    const use_pos = std.mem.indexOf(u8, result.output, "__copyProps(ns, require_lib())").?;
+    try std.testing.expect(wrapper_pos < use_pos);
+    // ESM-local 멤버는 getter 로 유지.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get local()") != null);
+}
+
+test "CJS: namespace of multiple export*-from-CJS barrels (#3975)" {
+    // 2개의 `export * from <CJS>` → 각 CJS 마다 __copyProps. 다중 CJS star 가
+    // resolveStarExport 를 거짓-ambiguous 로 만들어 tree-shake 되던 회귀 가드.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "c1.cjs", "exports.alpha = 1;");
+    try writeFile(tmp.dir, "c2.cjs", "exports.beta = 2;");
+    try writeFile(tmp.dir, "mid.ts", "export * from './c1.cjs';\nexport * from './c2.cjs';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './mid.ts';\nglobalThis.z = [ns.alpha, ns.beta];");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 CJS 소스가 모두 번들에 남아 namespace 로 복사돼야 한다(tree-shake 거짓제거 방지).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_c1 = __commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_c2 = __commonJS") != null);
+}
+
+test "CJS: namespace with export*-as-inner from CJS (#3975)" {
+    // `export * as inner from <CJS>` → ns.inner 는 빈 {} 가 아니라 __toESM(require()) 여야.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "exports.alpha = 1;");
+    try writeFile(tmp.dir, "mid.ts", "export * as inner from './lib.cjs';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './mid.ts';\nglobalThis.z = ns.inner.alpha;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // inner 멤버가 __toESM(require_lib()) 로 materialize 돼야 한다(빈 {} 아님).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+}
+
 test "CJS: RN strict order defers named CJS import with inlineRequires" {
     // RN inlineRequires 에서는 named CJS import 도 Metro 처럼 값 사용 지점에서 평가된다.
     // side-effect import 순서는 유지하지만, named binding 의 require 는 본문 실행 전

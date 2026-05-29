@@ -178,6 +178,28 @@ fn pureCjsStarTarget(self: *const Linker, mod_idx: u32) ?u32 {
     return cjs_src;
 }
 
+/// (#3975) namespace target(ESM)이 CJS 모듈을 `export *` 또는 `export * as ns` 로
+/// 재노출하는지. pureCjsStarTarget 의 일반화 — 혼합(local export + CJS star)·다중 CJS
+/// star·inner(`export * as`)를 모두 포함한다. true 면 정적 ns-object 가 CJS 동적 멤버를
+/// 못 담으므로 per-module preamble 에서 `var ns={...}; __copyProps(ns, require())` 로
+/// 런타임 구성한다. (pure-single 케이스는 pureCjsStarTarget redirect 가 먼저 처리.)
+fn namespaceHasCjsStar(self: *const Linker, mod_idx: u32) bool {
+    const m = self.getModule(mod_idx) orelse return false;
+    if (m.wrap_kind == .cjs) return false; // 직접 CJS namespace 는 별도 경로
+    for (m.export_bindings) |eb| {
+        const is_star = eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*");
+        const is_star_as = eb.kind == .re_export_namespace;
+        if (!is_star and !is_star_as) continue;
+        const rec_idx = eb.import_record_index orelse continue;
+        if (rec_idx >= m.import_records.len) continue;
+        const src = m.import_records[rec_idx].resolved;
+        if (src.isNone()) continue;
+        const sm = self.graph.getModule(src) orelse continue;
+        if (sm.wrap_kind == .cjs) return true;
+    }
+    return false;
+}
+
 fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_mod: *const Module, target_name: []const u8) ![]const u8 {
     const sep = if (self.minify_whitespace) "," else ", ";
     const import_init = try allocEsmInitExpr(self, import_mod);
@@ -848,6 +870,45 @@ pub fn buildMetadataForAst(
             if (ib.kind == .namespace) {
                 const ns_sym_id = ib.local_symbol.semanticIndex() orelse continue;
                 const local_name = m.importBindingLocalName(ib);
+
+                // (#3975) target 이 CJS 를 export*/export*-as 로 재노출하면(혼합·다중·inner),
+                // 정적 ns-object 가 CJS 동적 멤버를 못 담는다. per-module preamble(CJS region
+                // 후, 올바른 ordering)에 `var ns = <ESM-local getters>;` + 각 CJS star 마다
+                // `__copyProps(ns, require_cjs())` 를 emit 해 런타임 구성한다. pure-single 케이스는
+                // 위 pureCjsStarTarget redirect 가 이미 처리하므로 여기 도달하지 않는다.
+                // dev_mode 는 별도 dev-metadata 경로(buildDevMetadata)가 namespace 를
+                // 처리하므로 여기서 중복 emit 하지 않는다 — 그쪽에 CJS-star copyProps 추가.
+                const cjs_star_target = self.getModule(canonical_mod);
+                const target_included = if (cjs_star_target) |cm| cm.is_included else true;
+                if (!self.dev_mode and namespaceHasCjsStar(self, canonical_mod) and
+                    !(self.tree_shaker_active and !target_included))
+                {
+                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse local_name;
+                    // ESM-local getter 객체 (CJS plain-star 멤버는 부재, inner-CJS 는 __toESM).
+                    const obj = try self.buildNamespaceInlineObject(@intCast(canonical_mod), 0);
+                    defer self.allocator.free(obj);
+                    try preamble.writeNamespaceObject(preamble_name, obj);
+                    // 각 `export * from <CJS>` 의 동적 멤버를 런타임 복사.
+                    const cm = cjs_star_target.?;
+                    for (cm.export_bindings) |eb| {
+                        if (!(eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*"))) continue;
+                        const rec_idx = eb.import_record_index orelse continue;
+                        if (rec_idx >= cm.import_records.len) continue;
+                        const src = cm.import_records[rec_idx].resolved;
+                        if (src.isNone()) continue;
+                        const sm = self.graph.getModule(src) orelse continue;
+                        if (sm.wrap_kind != .cjs) continue;
+                        if (self.tree_shaker_active and !sm.is_included) continue;
+                        const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, src.toU32());
+                        try preamble.writeNamespaceCopyProps(preamble_name, req_var);
+                    }
+                    const hoisted = try self.allocator.dupe(u8, preamble_name);
+                    errdefer self.allocator.free(hoisted);
+                    try ns_var_list.append(self.allocator, hoisted);
+                    try putOwnedRename(self, &renames, &owned_nested_renames, ns_sym_id, preamble_name);
+                    continue;
+                }
+
                 const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
                 // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.

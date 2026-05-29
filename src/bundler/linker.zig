@@ -1852,6 +1852,7 @@ pub const Linker = struct {
     fn resolveStarExport(self: *const Linker, module_idx: ModuleIndex, name: []const u8, depth: u32) StarResolve {
         const m = self.graph.getModule(module_idx) orelse return .none;
         var found: ?SymbolRef = null;
+        var found_is_cjs = false;
         for (m.export_bindings) |eb| {
             if (!eb.kind.isReExportAll()) continue;
             const rec_idx = eb.import_record_index orelse continue;
@@ -1861,10 +1862,22 @@ pub const Linker = struct {
             // CJS fallback은 실제 `module.exports`/`exports.*` 소스에만 유효. synthetic 은
             // star 전파 금지(allow_synthetic=false) — Rollup 동일.
             const result = self.resolveOrCjsFallback(source_mod, name, depth + 1, false) orelse continue;
+            // resolveOrCjsFallback 은 CJS 소스에 대해 *임의의* 이름을 매칭(동적 exports)으로
+            // 반환한다. 따라서 CJS 결과는 그 이름을 정적으로 *정의한다고 증명할 수 없으므로*
+            // ambiguity 판정에서 제외한다 — 2+ CJS star 가 모든 이름을 거짓-ambiguous 로
+            // 만드는 것을 방지(#3975 다중 CJS star). 런타임에 __copyProps first-wins 로 병합.
+            // ESM 정적 export 끼리의 충돌만 진짜 ambiguous(#3982).
+            const result_is_cjs = if (self.graph.getModule(result.module_index)) |rm| rm.wrap_kind == .cjs else false;
             if (found) |f| {
-                if (!sameCanonical(f, result)) return .ambiguous;
+                if (!result_is_cjs and !found_is_cjs and !sameCanonical(f, result)) return .ambiguous;
+                // 정적(ESM) 결과를 CJS 동적 결과보다 우선.
+                if (found_is_cjs and !result_is_cjs) {
+                    found = result;
+                    found_is_cjs = false;
+                }
             } else {
                 found = result;
+                found_is_cjs = result_is_cjs;
             }
         }
         return if (found) |f| .{ .resolved = f } else .none;
@@ -2210,6 +2223,9 @@ pub const Linker = struct {
 
     pub const registerNamespaceRewrites = shared_namespace.registerNamespaceRewrites;
     pub const ensureSharedNsVar = shared_namespace.ensureSharedNsVar;
+    /// (#3975) namespace 객체의 ESM-local getter literal 생성 (CJS star/inner 혼합 케이스의
+    /// per-module 런타임 구성에서 사용). buildInlineObjectStr 노출.
+    pub const buildNamespaceInlineObject = shared_namespace.buildInlineObjectStr;
 
     /// computeCrossChunkLinks 가 cross-chunk namespace re-export target 마킹
     /// (#3367). metadata 시점엔 chunk 정보 부재 — registerNamespaceRewrites 가

@@ -107,6 +107,27 @@ fn isPureCjsStarReExport(target: *const Module, graph: *const ModuleGraph) bool 
     return found_cjs_star;
 }
 
+/// (#3975) namespace target(ESM)이 CJS 를 `export *`/`export * as` 로 재노출하는지
+/// (혼합·다중·inner 포함, pure-single 상위집합). metadata.zig 의 namespaceHasCjsStar 와
+/// 동일 조건 — 이 경로는 per-module preamble 이 `__copyProps(ns, require())`/`__toESM`
+/// 을 emit 하므로 두 헬퍼가 필요하다. 두 함수는 lockstep 유지 (어긋나면 헬퍼 미정의 →
+/// ReferenceError).
+fn namespaceTargetHasCjsStar(target: *const Module, graph: *const ModuleGraph) bool {
+    if (target.wrap_kind == .cjs) return false;
+    for (target.export_bindings) |eb| {
+        const is_star = eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*");
+        const is_star_as = eb.kind == .re_export_namespace;
+        if (!is_star and !is_star_as) continue;
+        const ri = eb.import_record_index orelse continue;
+        if (ri >= target.import_records.len) continue;
+        const src = target.import_records[ri].resolved;
+        if (src.isNone()) continue;
+        const sm = graph.getModule(src) orelse continue;
+        if (sm.wrap_kind == .cjs) return true;
+    }
+    return false;
+}
+
 fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, linker: ?*const Linker) bool {
     for (module.import_bindings) |ib| {
         if (ib.import_record_index >= module.import_records.len) continue;
@@ -123,6 +144,9 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
             // preamble 이 `var ns = __toESM(require())` 를 emit → __toESM 헬퍼 필요. redirect
             // 조건(metadata.zig pureCjsStarTarget)과 동일하게 감지한다.
             if (isPureCjsStarReExport(target, graph)) return true;
+            // (#3975) 혼합/다중/inner: per-module preamble 이 `__copyProps(ns, require())`
+            // (+ inner 는 __toESM) 를 emit → 헬퍼 필요.
+            if (namespaceTargetHasCjsStar(target, graph)) return true;
             continue;
         }
 
