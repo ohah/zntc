@@ -214,9 +214,14 @@ jobs:
           - platform: win32-x64-msvc
             os: windows-latest
             zig_target: native
-          - platform: win32-arm64-msvc
-            os: windows-11-arm
-            zig_target: native
+          # win32-arm64-msvc 는 의도적으로 smoke 매트릭스에서 제외. Zig 0.16.0 의
+          # arm64-windows 컴파일러 바이너리가 windows-11-arm 네이티브 러너에서 segfault
+          # 하며(upstream — 0.15.2 정상), 네이티브 .node 로드 검증엔 arm64 하드웨어가
+          # 필요하다. arm64-windows .node 의 빌드는 release.yml(build-napi/build-cli)이
+          # 매 PR x64 호스트에서 -Dtarget=aarch64-windows-msvc cross-build 로 검증한다
+          # (Zig 표준 — cross 산출물은 byte-identical). install/resolve 흐름은 platform
+          # 무관이라 다른 8개 플랫폼이 커버. arm64 런타임 보증이 필요하면 릴리스 시점/
+          # 실하드웨어에서 별도 검증(매 PR 에뮬레이션 러너는 유지보수·안정성 비용 과다).
           # win32-ia32-msvc: Node.js v24 가 win-x86 빌드를 폐지했으므로 v22 LTS
           # (마지막 win-x86 공식 빌드 유지) 로 native require 검증. host dogfood
           # 도 32-bit Node 가 dlopen 해야 하므로 host_zig_target 으로 32-bit
