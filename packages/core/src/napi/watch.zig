@@ -846,7 +846,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     var bundler = Bundler.init(allocator, initial_opts);
     defer bundler.deinit();
-    var result = bundler.bundle() catch |err| {
+    var result = bundler.bundle(common.io()) catch |err| {
         // 초기 빌드 실패 — rebuild 이벤트로 에러 전달
         const event = allocator.create(WatchRebuildEvent) catch {
             // OOM — TSFN 해제 + 정리 후 종료
@@ -1169,7 +1169,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
         defer rebundler.deinit();
 
-        var rebuild_result = rebundler.bundle() catch |err| {
+        var rebuild_result = rebundler.bundle(common.io()) catch |err| {
             // 재빌드 실패
             const event = allocator.create(WatchRebuildEvent) catch continue;
             const err_name: [:0]const u8 = @errorName(err);

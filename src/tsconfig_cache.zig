@@ -46,7 +46,7 @@ pub const TsconfigCache = struct {
     /// entry_path 의 dirname 으로 cache lookup. miss 시 `autodiscoverFromEntry` 호출 후 결과
     /// 저장. 반환 string 은 cache (arena) 소유 — caller 가 free 하면 안 됨.
     /// 반환 null 은 "위로 올라가도 tsconfig 없음" 을 의미.
-    pub fn findTsconfigPath(self: *TsconfigCache, entry_path: []const u8) ?[]const u8 {
+    pub fn findTsconfigPath(self: *TsconfigCache, io: std.Io, entry_path: []const u8) ?[]const u8 {
         const dir = std.fs.path.dirname(entry_path) orelse ".";
 
         self.mutex.lock();
@@ -61,7 +61,7 @@ pub const TsconfigCache = struct {
         // walk 임시 alloc — 결과 path 만 arena 로 dupe 후 임시 해제.
         var tmp_arena = std.heap.ArenaAllocator.init(self.parent_alloc);
         defer tmp_arena.deinit();
-        const found = TsConfig.autodiscoverFromEntry(tmp_arena.allocator(), entry_path);
+        const found = TsConfig.autodiscoverFromEntry(tmp_arena.allocator(), io, entry_path);
 
         const arena_alloc = self.arena.allocator();
         const dir_owned = arena_alloc.dupe(u8, dir) catch return null;
