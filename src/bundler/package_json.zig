@@ -325,31 +325,51 @@ fn resolveSubpathMap(
         }
     }
 
-    // 2. 와일드카드 매칭 (./* 패턴)
+    // 2. 와일드카드 매칭 (./* 패턴).
+    // (#3976) 매칭되는 패턴이 여러 개면 Node PACKAGE_*_RESOLVE / esbuild
+    // PATTERN_KEY_COMPARE 처럼 *가장 구체적인* 패턴을 선택해야 한다 — prefix(`*` 앞)
+    // 가 가장 긴 것, 동률이면 key 가 긴 것. 이전엔 obj.iterator() 첫 매칭을 즉시
+    // 반환해 package.json 키 삽입순서에 의존했다(예: `./*` 와 `./internal/*` 가 둘 다
+    // 매칭 시 잘못된 덜-구체적 파일로 해석). resolveConditions=null 후보는 기존대로
+    // 건너뛴다 (matched-but-null blocking 은 별도 — #3981).
+    var best_resolved: ?[]const u8 = null;
+    var best_matched: []const u8 = "";
+    var best_prefix_len: usize = 0;
+    var best_key_len: usize = 0;
+    var have_best = false;
     var it = obj.iterator();
     while (it.next()) |entry| {
         const pattern = entry.key_ptr.*;
-        if (std.mem.indexOf(u8, pattern, "*")) |star_pos| {
-            const prefix = pattern[0..star_pos];
-            const suffix = pattern[star_pos + 1 ..];
+        const star_pos = std.mem.indexOf(u8, pattern, "*") orelse continue;
+        const prefix = pattern[0..star_pos];
+        const suffix = pattern[star_pos + 1 ..];
 
-            if (subpath.len >= prefix.len + suffix.len and
-                std.mem.startsWith(u8, subpath, prefix) and
-                std.mem.endsWith(u8, subpath, suffix))
-            {
-                const matched = subpath[prefix.len .. subpath.len - suffix.len];
-                const resolved = resolveConditions(entry.value_ptr.*, conditions) orelse continue;
-
-                // 결과에서 * 를 매칭된 부분으로 치환
-                if (std.mem.indexOf(u8, resolved, "*")) |res_star| {
-                    const before = resolved[0..res_star];
-                    const after = resolved[res_star + 1 ..];
-                    const substituted = std.mem.concat(allocator, u8, &.{ before, matched, after }) catch return null;
-                    return .{ .path = substituted, .allocated = true };
-                }
-                return .{ .path = resolved, .allocated = false };
-            }
+        if (subpath.len >= prefix.len + suffix.len and
+            std.mem.startsWith(u8, subpath, prefix) and
+            std.mem.endsWith(u8, subpath, suffix))
+        {
+            // 현재 best 보다 더 구체적인 후보만 평가 (longest prefix, 동률 시 longest key).
+            const more_specific = !have_best or prefix.len > best_prefix_len or
+                (prefix.len == best_prefix_len and pattern.len > best_key_len);
+            if (!more_specific) continue;
+            const resolved = resolveConditions(entry.value_ptr.*, conditions) orelse continue;
+            best_resolved = resolved;
+            best_matched = subpath[prefix.len .. subpath.len - suffix.len];
+            best_prefix_len = prefix.len;
+            best_key_len = pattern.len;
+            have_best = true;
         }
+    }
+
+    if (best_resolved) |resolved| {
+        // 결과에서 * 를 매칭된 부분으로 치환
+        if (std.mem.indexOf(u8, resolved, "*")) |res_star| {
+            const before = resolved[0..res_star];
+            const after = resolved[res_star + 1 ..];
+            const substituted = std.mem.concat(allocator, u8, &.{ before, best_matched, after }) catch return null;
+            return .{ .path = substituted, .allocated = true };
+        }
+        return .{ .path = resolved, .allocated = false };
     }
 
     return null;
