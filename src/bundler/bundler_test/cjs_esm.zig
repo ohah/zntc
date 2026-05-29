@@ -97,6 +97,35 @@ test "CJS: ESM imports named from CJS" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".value") != null);
 }
 
+test "CJS: import * as ns of ESM-that-export*-from-CJS → __toESM(require()) after wrapper (#3975)" {
+    // mid 가 `export * from <CJS>` 인 pure-CJS-star 인 경우, `import * as ns from mid`
+    // 의 namespace 는 정적 열거 불가(CJS 동적 exports)라 직접 `import * as ns from cjs`
+    // 와 동형으로 per-module preamble 의 `var ns = __toESM(require_lib())` 로 처리돼야 한다.
+    // 이전엔 정적 ns-object 가 shared-ns preamble(CJS wrapper 정의 전)에 emit 돼
+    // ReferenceError(또는 빈 ns) 였다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "exports.alpha = 1;\nexports.beta = 2;");
+    try writeFile(tmp.dir, "mid.ts", "export * from './lib.cjs';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './mid.ts';\nconsole.log(ns.alpha, ns.beta);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __toESM(require_lib()) 형태로 ns 가 materialize 돼야 함.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+    // require_lib wrapper 정의가 __toESM(require_lib()) 사용보다 *먼저* 와야 함(ordering).
+    const wrapper_pos = std.mem.indexOf(u8, result.output, "require_lib = __commonJS").?;
+    const use_pos = std.mem.indexOf(u8, result.output, "__toESM(require_lib())").?;
+    try std.testing.expect(wrapper_pos < use_pos);
+}
+
 test "CJS: RN strict order defers named CJS import with inlineRequires" {
     // RN inlineRequires 에서는 named CJS import 도 Metro 처럼 값 사용 지점에서 평가된다.
     // side-effect import 순서는 유지하지만, named binding 의 require 는 본문 실행 전
