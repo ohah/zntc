@@ -16,14 +16,14 @@ const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
 /// Fast path (lock→get→unlock) → Slow path (lock 밖 parse) →
 /// double-check put (race 시 내 값 폐기). patterns 메모리 소유권은
 /// 캐시가 보유하며 Linker deinit 에서 일괄 해제.
-pub fn lookupPkgInfo(self: *ModuleGraph, pkg_dir_path: []const u8) PkgInfo {
+pub fn lookupPkgInfo(self: *ModuleGraph, io: std.Io, pkg_dir_path: []const u8) PkgInfo {
     self.pkg_info_cache_mutex.lock();
     const cached = self.pkg_info_cache.get(pkg_dir_path);
     self.pkg_info_cache_mutex.unlock();
     if (cached) |c| return c;
 
     var info: PkgInfo = .{ .is_module = false, .side_effects = .unknown };
-    if (pkg_json.parsePackageJson(self.allocator, pkg_dir_path)) |parsed_val| {
+    if (pkg_json.parsePackageJson(self.allocator, io, pkg_dir_path)) |parsed_val| {
         var parsed = parsed_val;
         info.is_module = parsed.pkg.isModule();
         info.side_effects = parsed.pkg.side_effects;
@@ -48,18 +48,18 @@ pub fn lookupPkgInfo(self: *ModuleGraph, pkg_dir_path: []const u8) PkgInfo {
 }
 
 /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
-pub fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {
+pub fn applySideEffectsFromPackageJson(self: *ModuleGraph, io: std.Io, module: *Module) void {
     if (self.ignore_annotations) return;
     const pkg_dir_path = findPackageDirPath(module.path) orelse return;
-    const info = self.lookupPkgInfo(pkg_dir_path);
+    const info = self.lookupPkgInfo(io, pkg_dir_path);
     graph_package_side_effects.applyCached(module, pkg_dir_path, info.side_effects);
 }
 
 /// 모듈 경로에서 가장 가까운 package.json의 "type" 필드가 "module"인지 확인.
 /// `lookupPkgInfo` 로 캐시 경유 — 같은 pkg 의 side_effects 조회와 pkg.json parse 공유.
-pub fn isPackageTypeModule(self: *ModuleGraph, module_path: []const u8) bool {
+pub fn isPackageTypeModule(self: *ModuleGraph, io: std.Io, module_path: []const u8) bool {
     var scope = profile.begin(.graph_discover_pm_is_pkg_type);
     defer scope.end();
     const pkg_dir_path = findPackageDirPath(module_path) orelse return false;
-    return self.lookupPkgInfo(pkg_dir_path).is_module;
+    return self.lookupPkgInfo(io, pkg_dir_path).is_module;
 }

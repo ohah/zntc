@@ -483,7 +483,7 @@ fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index:
         for (parse_start..parse_end) |i| {
             const m_ptr = self.modules.at(i);
             if (m_ptr.state == .ready) continue;
-            self.applySideEffectsFromPackageJson(m_ptr);
+            self.applySideEffectsFromPackageJson(io, m_ptr);
             m_ptr.state = .ready;
         }
         for (parse_start..parse_end) |i| {
@@ -769,7 +769,7 @@ pub fn buildIncremental(
                 // 캐시 미스: 정상 파싱
                 self.parseModule(io, @enumFromInt(@as(u32, @intCast(i))));
                 const m_ptr = self.modules.at(i);
-                self.applySideEffectsFromPackageJson(m_ptr);
+                self.applySideEffectsFromPackageJson(io, m_ptr);
                 m_ptr.mtime = mtime;
                 m_ptr.state = .ready;
                 try reparsed.append(self.allocator, @enumFromInt(@as(u32, @intCast(i))));

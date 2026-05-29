@@ -378,7 +378,7 @@ pub fn collectScaleVariants(
             continue;
         }
 
-        const loaded = fs.readFile(alloc, variant_path, 100 * 1024 * 1024) catch continue;
+        const loaded = fs.readFile(io, alloc, variant_path, 100 * 1024 * 1024) catch continue;
         const hash = contentHash(loaded.contents);
         const output_name = try applyAssetNamingPattern(alloc, asset_names, variant_basename, &hash, ext, dir_pattern);
 

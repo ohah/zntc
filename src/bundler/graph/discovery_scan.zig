@@ -51,7 +51,7 @@ pub fn applyScanResult(self: *ModuleGraph, io: std.Io, result: ScanResult) !void
 
     const mod_idx = @intFromEnum(result.module_idx);
     const mod_ptr = self.modules.at(mod_idx);
-    self.applySideEffectsFromPackageJson(mod_ptr);
+    self.applySideEffectsFromPackageJson(io, mod_ptr);
     mod_ptr.state = .ready;
 
     const records = mod_ptr.import_records;
@@ -93,7 +93,7 @@ pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
     }
 
     const mod_ptr = self.modules.at(mod_idx);
-    self.applySideEffectsFromPackageJson(mod_ptr);
+    self.applySideEffectsFromPackageJson(io, mod_ptr);
     if (mod_ptr.import_records.len == 0) {
         return .{ .module_idx = idx, .resolve_outputs = &.{} };
     }
