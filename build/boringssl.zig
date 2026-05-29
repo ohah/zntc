@@ -153,6 +153,10 @@ pub fn build(
     // ws2_32 link 가 없으면 cross-Windows build 가 undefined symbol.
     if (target.result.os.tag == .windows) {
         mod.linkSystemLibrary("ws2_32", .{});
+        // 0.16: Zig std (std.process.spawn / Threaded 등)가 Windows 에서 토큰/권한
+        // API(OpenProcessToken/LookupPrivilegeValue/AdjustTokenPrivileges, advapi32)를
+        // 참조. mingw(gnu)는 자동 제공하지만 msvc(lld-link)는 명시 link 필요.
+        mod.linkSystemLibrary("advapi32", .{});
     }
 
     return lib;
