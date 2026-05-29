@@ -24,7 +24,7 @@ pub fn parse(self: *ModuleGraph, module: *Module) void {
         return;
     };
     const arena_alloc = module.parse_arena.?.allocator();
-    module.source = graph_loaders.readModuleSourceWithMtime(self, module, arena_alloc, 10 * 1024 * 1024, .parse) orelse return;
+    module.source = graph_loaders.readModuleSourceWithMtime(self, io, module, arena_alloc, 10 * 1024 * 1024, .parse) orelse return;
 
     module.ast = json_to_esm.convert(arena_alloc, module.source) catch {
         self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Invalid JSON", null);

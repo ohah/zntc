@@ -24,7 +24,7 @@ const ModuleGraph = graph_mod.ModuleGraph;
 /// CSS 모듈을 파싱한다.
 /// 파일을 읽어서 @import 규칙을 추출하고, import_records에 등록한다.
 /// CSS 소스는 module.source에 보존하여 css_emitter에서 사용한다.
-pub fn parseCssModule(self: *ModuleGraph, module: *Module) void {
+pub fn parseCssModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
     if (std.mem.endsWith(u8, std.fs.path.basename(module.path), ".module.css")) {
         self.addDiag(.no_loader, .@"error", module.path, Span.EMPTY, .parse, "CSS Modules (.module.css) are not supported by the native CSS pipeline yet", "Use plain CSS, or transform CSS Modules through a plugin before ZNTC bundles the app");
         module.state = .ready;
@@ -39,7 +39,7 @@ pub fn parseCssModule(self: *ModuleGraph, module: *Module) void {
 
     // 파일 읽기
     if (module.source.len == 0) {
-        module.source = readModuleSourceWithMtime(self, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+        module.source = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
     }
 
     // @import 규칙 + @charset / @layer prefix 선언 추출 (arena 에 할당, #3747)
@@ -95,7 +95,7 @@ pub fn parseCssModule(self: *ModuleGraph, module: *Module) void {
 ///
 /// asset_registry 모드의 .file/.copy는 loader를 .javascript로 바꿔 fall-through
 /// 신호를 보내고, 호출자가 일반 JS 파이프라인을 이어 실행한다.
-pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
+pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
     module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
         module.state = .ready;
         return;
@@ -106,7 +106,7 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
         .text, .dataurl, .base64, .binary => {
             // text/dataurl/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
             // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
-            const raw = readModuleSourceWithMtime(self, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+            const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
             module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.path, self.transform_options_base.minify_whitespace) orelse {
                 module.state = .ready;
                 return;
@@ -114,7 +114,7 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
         },
         .file, .copy => {
             // 파일 읽기 → content hash → 출력 경로 생성 → URL 문자열
-            const raw = readModuleSourceWithMtime(self, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+            const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
             const hash = contentHash(raw);
             const ext = std.fs.path.extension(module.path);
             const basename = std.fs.path.basename(module.path);
@@ -220,6 +220,7 @@ pub fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
 /// 사용 — 모듈당 fstat 1 syscall 절감.
 fn readModuleSource(
     self: *ModuleGraph,
+    io: std.Io,
     module: *Module,
     alloc: std.mem.Allocator,
     max_bytes: usize,
@@ -228,7 +229,7 @@ fn readModuleSource(
     const loaded = blk: {
         var scope = profile.begin(.graph_discover_pm_setup_read_file);
         defer scope.end();
-        break :blk self.source_read_cache.readFile(self.allocator, alloc, module.path, max_bytes) catch {
+        break :blk self.source_read_cache.readFile(io, self.allocator, alloc, module.path, max_bytes) catch {
             self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
             module.state = .ready;
             return null;
@@ -239,22 +240,23 @@ fn readModuleSource(
 
 pub fn readModuleSourceWithMtime(
     self: *ModuleGraph,
+    io: std.Io,
     module: *Module,
     alloc: std.mem.Allocator,
     max_bytes: usize,
     step: BundlerDiagnostic.Step,
 ) ?[]const u8 {
-    if (module.mtime != 0) return readModuleSource(self, module, alloc, max_bytes, step);
+    if (module.mtime != 0) return readModuleSource(self, io, module, alloc, max_bytes, step);
 
     // Fresh build (CLI / 첫 빌드): module_store / compiled_cache / changed_files 모두
     // null 이므로 mtime 을 read 하는 caller 가 없다 — fstat 호출을 생략해 모듈당
     // 1 syscall 절감. incremental rebuild 에서는 cache invalidation 이 mtime 에
     // 의존하므로 stat 유지.
     if (!self.incremental_mode) {
-        return readModuleSource(self, module, alloc, max_bytes, step);
+        return readModuleSource(self, io, module, alloc, max_bytes, step);
     }
 
-    const loaded = self.source_read_cache.readFileWithStat(self.allocator, alloc, module.path, max_bytes) catch {
+    const loaded = self.source_read_cache.readFileWithStat(io, self.allocator, alloc, module.path, max_bytes) catch {
         self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
         module.state = .ready;
         return null;
