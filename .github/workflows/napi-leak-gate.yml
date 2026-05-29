@@ -5,11 +5,11 @@ name: NAPI Leak Gate (disabled until Zig 0.16)
 # 1분 dev probe 후 process 종료 시 stack trace 포함 leak 리포트 dump. 회귀
 # 발생 시 leak entries > 0 또는 panic 으로 즉시 차단.
 #
-# **현재 비활성화** — Zig 0.15.2 + Linux x86_64 + libc shared library 의
+# **현재 비활성화** — 과거 Zig 0.15.2 + Linux x86_64 + libc shared library 의
 # DebugAllocator `captureStackTrace` 가 frame pointer chain unwinding 시 SEGV
-# (Zig issue #25025). 0.16.0 milestone 에서 fix 됐으나 ZTS 는 0.15.2 사용.
-# Zig 0.16 업그레이드 epic (issue #1514) 머지 후 다시 활성화 — 그 때 아래
-# `on:` 트리거 (`push.branches`, `schedule.cron`) 의 주석을 제거.
+# (Zig issue #25025) 때문에 보류했다. ZTS 는 #1514 로 0.16.0 으로 올라가
+# (issue #25025 는 0.16 milestone 에서 fix) 재활성화 가능 — 별도 PR 에서 아래
+# `on:` 트리거 (`push.branches`, `schedule.cron`) 의 주석을 제거하고 검증.
 #
 # **macOS local 측정은 정상 동작** — `docs/DEBUG.md` / Starlight guide 의
 # 1분 dev probe 스크립트로 직접 사용 가능. 회귀 의심 시 macOS 에서 수동 측정.
@@ -57,7 +57,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           cache-key: napi
 
       - name: Setup Bun
