@@ -42,18 +42,19 @@ pub fn passesFilter(rel: []const u8, filter: Filter) bool {
 /// `false` 반환 시 walker가 즉시 free — transient view로만 사용할 때 유용.
 pub fn scanRoot(
     allocator: std.mem.Allocator,
+    io: std.Io,
     root: []const u8,
     filter: Filter,
     context: anytype,
     comptime visit: fn (ctx: @TypeOf(context), full_path: []const u8) bool,
 ) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
 
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (hasSkippedSegment(entry.path)) continue;
         if (!passesFilter(entry.path, filter)) continue;

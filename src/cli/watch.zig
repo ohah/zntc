@@ -185,7 +185,7 @@ pub fn collectMtimes(
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
 
         const path = entry.path;
