@@ -46,6 +46,41 @@ pub fn nativeAlloc() std.mem.Allocator {
     return std.heap.c_allocator;
 }
 
+// ── NAPI 전역 io (0.16) ───────────────────────────────────────────────────
+// NAPI 는 juicy main(std.process.Init) 이 없어 io 를 받을 수 없다. 모듈 로드
+// 시 1회 std.Io.Threaded 인스턴스를 만들고 io() 로 공유한다 (프로세스 1개
+// 이벤트 루프 모델). bundler 내부 병렬(Io.Group)은 이 풀의 async_limit 사용.
+// register(메인 스레드, 다른 호출 전) 에서 init → race-free.
+var g_threaded: ?std.Io.Threaded = null;
+
+/// register 에서 1회 호출. 이미 init 됐으면 무시(idempotent).
+pub fn initIo() void {
+    if (g_threaded != null) return;
+    g_threaded = std.Io.Threaded.init(nativeAlloc(), .{});
+}
+
+/// 모든 NAPI 진입점이 bundler/fs 작업에 쓸 공유 io. initIo 선행 필수.
+pub fn io() std.Io {
+    return g_threaded.?.io();
+}
+
+// ── NAPI 환경변수 스냅샷 (0.16) ───────────────────────────────────────────
+// std.process.getEnvVarOwned 제거 → libc environ(std.c.environ) 으로 Map 을
+// 만들어 env_flag 에 등록. Map 은 프로세스 수명 동안 유지(deinit 안 함).
+var g_env_map: ?std.process.Environ.Map = null;
+
+/// register 에서 1회 호출 — libc environ 을 env_flag 로 등록.
+pub fn captureEnvironFromLibc() void {
+    if (g_env_map != null) return;
+    const c_environ = std.c.environ;
+    var env_count: usize = 0;
+    while (c_environ[env_count] != null) : (env_count += 1) {}
+    const slice: [:null]const ?[*:0]const u8 = @ptrCast(c_environ[0..env_count :null]);
+    const block: std.process.Environ.Block = .{ .slice = slice };
+    g_env_map = std.process.Environ.createMap(.{ .block = block }, nativeAlloc()) catch return;
+    @import("zntc_lib").env_flag.captureEnviron(&g_env_map.?);
+}
+
 /// NAPI env cleanup hook (signature: `fn (?*anyopaque) callconv(.c) void`).
 ///
 /// **Linux 호환성 fix (이전 `extern fn atexit` 에서 전환)**: Linux dynamic

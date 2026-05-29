@@ -89,9 +89,10 @@ pub const NapiPlugin = struct {
         /// 6번째 인자로 전달. callJsCallback 은 메인 스레드 직렬이라 store write 동기화 불필요.
         emit_store: ?*anyopaque = null,
         response: ?PluginResponse = null,
-        response_ready: bool = false,
-        mutex: std.Thread.Mutex = .{},
-        cond: std.Thread.Condition = .{},
+        /// 0.16: std.Thread.Mutex/Condition 제거 → one-shot 핸드오프는 std.Io.Event.
+        /// set(release)/wait(acquire) 가 response write 의 happens-before 를 보장하므로
+        /// 별도 mutex 불필요. 워커가 set 이전엔 response 를 읽지 않는다.
+        done: std.Io.Event = .unset,
     };
 
     /// JS 결과 객체에서 PluginResponse 필드를 추출한다.
@@ -231,11 +232,8 @@ pub const NapiPlugin = struct {
 
     /// CallContext에 응답을 기록하고 워커 스레드에 시그널을 보낸다.
     fn signalResponse(ctx: *CallContext, resp: PluginResponse) void {
-        ctx.mutex.lock();
         ctx.response = resp;
-        ctx.response_ready = true;
-        ctx.cond.signal();
-        ctx.mutex.unlock();
+        ctx.done.set(common.io());
     }
 
     /// Promise의 .then() 콜백 — resolve 시 결과를 파싱하여 워커 스레드에 전달
@@ -584,12 +582,20 @@ pub const NapiPlugin = struct {
             return null;
         }
 
-        // 30초 타임아웃: Promise가 resolve/reject되지 않는 경우 hang 방지
-        ctx.mutex.lock();
-        defer ctx.mutex.unlock();
-        const timeout_ns: u64 = 30 * std.time.ns_per_s;
-        while (!ctx.response_ready) {
-            ctx.cond.timedWait(&ctx.mutex, timeout_ns) catch return null;
+        // 30초 타임아웃: Promise가 resolve/reject되지 않는 경우 hang 방지.
+        // 0.16: Io.Condition 에 timedWait 가 없으므로 Io.Event.waitTimeout + 절대
+        // deadline. waitTimeout 은 spurious wakeup 도 error.Timeout 으로 반환하므로,
+        // deadline 이 아직 미래면 재대기(실제 timeout 만 null 반환).
+        const io = common.io();
+        const deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = std.Io.Duration.fromSeconds(30) }).toDeadline(io);
+        while (true) {
+            ctx.done.waitTimeout(io, deadline) catch {
+                if (deadline.toDurationFromNow(io)) |d| {
+                    if (d.toNanoseconds() > 0) continue; // 아직 시간 남음 → spurious, 재대기
+                }
+                return null; // deadline 경과 → 실제 timeout
+            };
+            break; // is_set
         }
 
         return ctx.response;
@@ -1082,9 +1088,8 @@ pub const NapiManualChunksResolver = struct {
         id: []const u8,
         graph: ?*const anyopaque,
         result: ?[]const u8 = null,
-        ready: bool = false,
-        mutex: std.Thread.Mutex = .{},
-        cond: std.Thread.Condition = .{},
+        /// 0.16: std.Thread.Mutex/Condition 제거 → one-shot 핸드오프는 std.Io.Event.
+        done: std.Io.Event = .unset,
     };
 
     /// ModuleIndex 배열 → JS string[]. invalid index 는 skip 해서 compact 한 배열 반환.
@@ -1306,11 +1311,8 @@ pub const NapiManualChunksResolver = struct {
     }
 
     fn signalResult(ctx: *CallContext, result: ?[]const u8) void {
-        ctx.mutex.lock();
         ctx.result = result;
-        ctx.ready = true;
-        ctx.cond.signal();
-        ctx.mutex.unlock();
+        ctx.done.set(common.io());
     }
 
     /// Zig resolver 인터페이스 — `ManualChunksResolveFn` 과 동일 시그니처.
@@ -1323,9 +1325,8 @@ pub const NapiManualChunksResolver = struct {
             return null;
         }
 
-        call_ctx.mutex.lock();
-        while (!call_ctx.ready) call_ctx.cond.wait(&call_ctx.mutex);
-        call_ctx.mutex.unlock();
+        // 0.16: Io.Event 로 one-shot 대기 (signalResult 가 set).
+        call_ctx.done.waitUncancelable(common.io());
 
         return call_ctx.result;
     }

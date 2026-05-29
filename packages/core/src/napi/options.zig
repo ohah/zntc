@@ -106,7 +106,7 @@ fn parseOutputExports(env: c.napi_env, obj: c.napi_value) bundler_mod.OutputExpo
 }
 
 fn resolveEntryPoint(alloc: std.mem.Allocator, path: []const u8) ?[]const u8 {
-    const resolved = std.fs.cwd().realpathAlloc(alloc, path) catch return alloc.dupe(u8, path) catch null;
+    const resolved = std.Io.Dir.cwd().realPathFileAlloc(common.io(), path, alloc) catch return alloc.dupe(u8, path) catch null;
     return resolved;
 }
 
@@ -585,7 +585,7 @@ pub fn parseBuildOptions(
     const tsconfig_path_opt: ?[]const u8 = if (tsconfig_raw != null) null else tsconfig_path_js orelse blk: {
         // entry 가 하나라도 있으면 그 dirname 기준, 없으면 cwd ("." → dirname → ".") 부터 탐색.
         const start_path: []const u8 = if (entries.len > 0) entries[0] else ".";
-        autodiscovered_dir = TsConfig.autodiscoverFromEntry(native_alloc, start_path);
+        autodiscovered_dir = TsConfig.autodiscoverFromEntry(native_alloc, common.io(), start_path);
         break :blk autodiscovered_dir;
     };
     if (tsconfig_raw) |raw| {

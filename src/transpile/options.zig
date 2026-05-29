@@ -424,6 +424,7 @@ pub fn applyTranspileSharedFields(
 /// 오류: JSON 파싱 실패 / 알 수 없는 enum 문자열 → error 반환.
 pub fn optionsFromJson(
     allocator: std.mem.Allocator,
+    io: std.Io,
     json: []const u8,
     entry_path: ?[]const u8,
 ) !TranspileOptions {
@@ -450,7 +451,7 @@ pub fn optionsFromJson(
             // 명시 path > entry 디렉토리에서 위로 자동 탐색 (esbuild/vite 식 zero-config).
             const resolved_path: ?[]const u8 = opts.tsconfig_path orelse find: {
                 const path = entry_path orelse break :find null;
-                break :find TsConfig.autodiscoverFromEntry(allocator, path);
+                break :find TsConfig.autodiscoverFromEntry(allocator, io, path);
             };
             if (resolved_path) |p| {
                 break :blk TsConfig.loadFromPath(allocator, p) catch TsConfig{};
