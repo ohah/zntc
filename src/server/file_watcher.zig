@@ -273,8 +273,26 @@ const InotifyBackend = struct {
         std.os.linux.IN.MOVED_FROM |
         std.os.linux.IN.MOVED_TO;
 
+    /// 0.16: posix.close 제거 → fd 를 Io.File 로 감싸 close(io).
+    fn closeFd(self: *const InotifyBackend, fd: i32) void {
+        const f: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+        f.close(self.io);
+    }
+
+    /// 0.16: posix.inotify_add_watch 제거 → libc inotify_add_watch(sentinel path).
+    /// 실패(-1) 시 null (caller 의 `orelse return` 으로 기존 `catch return` 보존).
+    fn addWatch(self: *InotifyBackend, allocator: std.mem.Allocator, p: []const u8) ?i32 {
+        const path_z = allocator.dupeZ(u8, p) catch return null;
+        defer allocator.free(path_z);
+        const wd = std.c.inotify_add_watch(self.inotify_fd, path_z, dir_mask);
+        if (wd < 0) return null;
+        return wd;
+    }
+
     fn init(allocator: std.mem.Allocator, io: std.Io) !InotifyBackend {
-        const fd = try posix.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
+        // 0.16: posix.inotify_init1 제거 → libc inotify_init1.
+        const fd = std.c.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
+        if (fd < 0) return error.InotifyInitFailed;
         return .{
             .io = io,
             .inotify_fd = fd,
@@ -304,7 +322,7 @@ const InotifyBackend = struct {
         self.wd_dirs.deinit();
 
         self.result_buf.deinit(allocator);
-        posix.close(self.inotify_fd);
+        self.closeFd(self.inotify_fd);
     }
 
     fn addPath(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) !void {
@@ -316,7 +334,7 @@ const InotifyBackend = struct {
         if (stat.kind == .directory) {
             // dir 자체를 inotify_add_watch — IN.CREATE/IN.DELETE/IN.MOVED_* event 받음.
             if (!self.dir_wds.contains(path)) {
-                const wd = posix.inotify_add_watch(self.inotify_fd, path, dir_mask) catch return;
+                const wd = self.addWatch(allocator, path) orelse return;
                 const dir_owned = try allocator.dupe(u8, path);
                 try self.dir_wds.put(dir_owned, wd);
                 try self.wd_dirs.put(wd, dir_owned);
@@ -331,7 +349,7 @@ const InotifyBackend = struct {
 
         // 디렉토리를 아직 감시하지 않으면 등록
         if (!self.dir_wds.contains(dir_path)) {
-            const wd = posix.inotify_add_watch(self.inotify_fd, dir_path, dir_mask) catch return;
+            const wd = self.addWatch(allocator, dir_path) orelse return;
             const dir_owned = try allocator.dupe(u8, dir_path);
             try self.dir_wds.put(dir_owned, wd);
             try self.wd_dirs.put(wd, dir_owned);
