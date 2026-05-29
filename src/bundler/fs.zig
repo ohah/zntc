@@ -367,7 +367,7 @@ pub const RealFS = struct {
     }
 
     pub fn statFile(_: RealFS, io: std.Io, path: []const u8) FsError!FileStat {
-        const stat = std.Io.Dir.cwd().statFile(io, path) catch |err| return mapFsError(err);
+        const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| return mapFsError(err);
         const kind = mapEntryKind(stat.kind);
         return .{
             .size = stat.size,
