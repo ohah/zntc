@@ -28,7 +28,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           cache-key: debug
 
       - name: Build (Debug)
@@ -58,7 +58,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           cache-key: release-${{ matrix.optimize }}
 
       # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
@@ -78,7 +78,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           # zig fmt --check 만 실행 — 빌드 캐시 미생성. 캐싱은 순수 오버헤드이고,
           # 키 미지정 시 전역 기본 키를 build job 들과 공유해 thrash 유발하므로 off.
           use-cache: false
@@ -121,7 +121,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           cache-key: napi
 
       - name: Setup Bun
@@ -237,7 +237,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           cache-key: napi-smoke-${{ matrix.platform }}
 
       - name: Setup Bun
@@ -394,7 +394,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           cache-key: wasm
 
       - name: Setup Bun

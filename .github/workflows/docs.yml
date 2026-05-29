@@ -33,7 +33,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           # ci.yml 의 wasm job 과 동일 빌드 프로파일 — 키 공유로 cross-workflow 재사용.
           cache-key: wasm
 
