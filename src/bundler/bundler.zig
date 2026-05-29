@@ -994,30 +994,30 @@ pub const Bundler = struct {
                 // 써야 한다. 여기서 realpath 로 주입하면 entry/import 경로의 logical
                 // react-native 와 별도 module id 가 되어 InitializeCore 가 중복 실행된다.
                 if (self.options.preserve_symlinks) {
-                    if (fs.statFile(full)) |stat| {
+                    if (fs.statFile(io, full)) |stat| {
                         if (stat.kind == .file) break :blk full;
                     } else |_| {}
                 }
                 // 기본 경로는 fs.realpath 통과 (#1885: VirtualFS 호환).
-                if (fs.realpath(self.allocator, full)) |real| {
+                if (fs.realpath(io, self.allocator, full)) |real| {
                     self.allocator.free(full);
                     break :blk real;
                 } else |_| {}
                 self.allocator.free(full);
                 // CWD 기준 탐색
                 if (self.options.preserve_symlinks) {
-                    if (fs.statFile(init_core_rel)) |stat| {
+                    if (fs.statFile(io, init_core_rel)) |stat| {
                         if (stat.kind == .file) {
                             break :blk self.allocator.dupe(u8, init_core_rel) catch break :blk null;
                         }
                     } else |_| {}
                 }
-                break :blk fs.realpath(self.allocator, init_core_rel) catch null;
+                break :blk fs.realpath(io, self.allocator, init_core_rel) catch null;
             };
 
             if (auto_init_core_path) |init_path| {
                 var already_present = false;
-                const init_path_real = fs.realpath(self.allocator, init_path) catch null;
+                const init_path_real = fs.realpath(io, self.allocator, init_path) catch null;
                 defer if (init_path_real) |p| self.allocator.free(p);
                 for (self.options.run_before_main) |rbm| {
                     if (std.mem.eql(u8, rbm, init_path)) {
@@ -1025,7 +1025,7 @@ pub const Bundler = struct {
                         break;
                     }
                     if (init_path_real) |real| {
-                        const rbm_real = fs.realpath(self.allocator, rbm) catch null;
+                        const rbm_real = fs.realpath(io, self.allocator, rbm) catch null;
                         defer if (rbm_real) |p| self.allocator.free(p);
                         if (rbm_real) |p| {
                             if (std.mem.eql(u8, p, real)) {
@@ -1494,13 +1494,13 @@ pub const Bundler = struct {
                 const full_path = std.fs.path.join(self.allocator, &.{ entry_dir, dev_path }) catch break :blk;
                 defer self.allocator.free(full_path);
                 // fs.realpath / fs.readFile 통과 → wasm VirtualFS 호환 (#1885 Phase 2).
-                if (fs.realpath(self.allocator, full_path)) |real| {
+                if (fs.realpath(io, self.allocator, full_path)) |real| {
                     defer self.allocator.free(real);
-                    if (fs.readFile(self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
+                    if (fs.readFile(io, self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
                 } else |_| {}
-                if (fs.realpath(self.allocator, dev_path)) |real| {
+                if (fs.realpath(io, self.allocator, dev_path)) |real| {
                     defer self.allocator.free(real);
-                    if (fs.readFile(self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
+                    if (fs.readFile(io, self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
                 } else |_| {}
                 std.log.warn("zntc: react-refresh not found — install react-refresh for HMR", .{});
                 break :blk;
