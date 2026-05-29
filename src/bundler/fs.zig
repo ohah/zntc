@@ -542,7 +542,7 @@ fn mapFsError(err: anyerror) FsError {
     };
 }
 
-fn mapEntryKind(kind: std.Io.Dir.Entry.Kind) EntryKind {
+fn mapEntryKind(kind: std.Io.File.Kind) EntryKind {
     return switch (kind) {
         .file => .file,
         .directory => .directory,
