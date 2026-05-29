@@ -454,7 +454,7 @@ pub fn optionsFromJson(
                 break :find TsConfig.autodiscoverFromEntry(allocator, io, path);
             };
             if (resolved_path) |p| {
-                break :blk TsConfig.loadFromPath(allocator, p) catch TsConfig{};
+                break :blk TsConfig.loadFromPath(allocator, io, p) catch TsConfig{};
             }
         }
         break :blk TsConfig{};

@@ -72,11 +72,9 @@ const DevServerHandle = struct {
 /// thread entry — server.start() 호출. start() 가 정상 종료 (shutdown_requested)
 /// 되면 thread 도 종료. fail 시 stderr log 만.
 fn serveThreadEntry(server: *DevServer) void {
-    server.start() catch |err| {
-        std.fs.File.stderr().deprecatedWriter().print(
-            "zntc: dev server thread error: {}\n",
-            .{err},
-        ) catch {};
+    // 0.16: start(io) + deprecatedWriter 제거 → std.debug.print(io 불필요 stderr).
+    server.start(common.io()) catch |err| {
+        std.debug.print("zntc: dev server thread error: {}\n", .{err});
     };
 }
 

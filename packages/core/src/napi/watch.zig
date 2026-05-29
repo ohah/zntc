@@ -144,7 +144,7 @@ const LazySourceMapCache = struct {
     /// 전달한 allocator 소유 — `deinit` / `clear` 가 정리한다.
     modules: std.StringHashMapUnmanaged(*SourceMap.SourceMapBuilder) = .empty,
     /// swap / getter 호출을 직렬화.
-    mutex: std.Thread.Mutex = .{},
+    mutex: zntc_lib.util.SpinLock = .{},
 
     /// 현재 캐시된 bundle + module builder 들을 모두 free + 맵 clear. 내부에서 lock
     /// 하지 않으므로 caller 가 `mutex` 를 이미 잡았거나 (stop 경로처럼) 동시 접근이
@@ -1543,11 +1543,11 @@ fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         // 0.16: ResetEvent.timedWait 제거 → Io.Event.waitTimeout + 절대 deadline
         // (spurious wakeup 은 error.Timeout 이므로 deadline 미래면 재대기). best-effort.
         const stop_io = common.io();
-        const stop_deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = std.Io.Duration.fromSeconds(5) }).toDeadline(stop_io);
+        const stop_deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = .{ .raw = std.Io.Duration.fromSeconds(5), .clock = .awake } }).toDeadline(stop_io);
         while (true) {
             async_data.stop_complete.waitTimeout(stop_io, stop_deadline) catch {
                 if (stop_deadline.toDurationFromNow(stop_io)) |d| {
-                    if (d.toNanoseconds() > 0) continue;
+                    if (d.raw.toNanoseconds() > 0) continue;
                 }
                 break;
             };
