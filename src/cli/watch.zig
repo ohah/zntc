@@ -8,15 +8,17 @@ const std = @import("std");
 pub fn watchFile(
     comptime transpileFn: anytype,
     allocator: std.mem.Allocator,
+    io: std.Io,
     file_path: []const u8,
     output_path: ?[]const u8,
     options: anytype,
     stderr: anytype,
 ) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_state.interface;
 
     // 초기 mtime 저장
-    var last_mtime = getFileMtime(file_path) catch |err| {
+    var last_mtime = getFileMtime(io, file_path) catch |err| {
         try stderr.print("zntc: cannot stat '{s}': {}\n", .{ file_path, err });
         return error.WatchFailed;
     };
@@ -24,14 +26,14 @@ pub fn watchFile(
     try stdout.print("[watch] Watching for file changes...\n", .{});
 
     while (true) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        io.sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
 
-        const current_mtime = getFileMtime(file_path) catch continue;
+        const current_mtime = getFileMtime(io, file_path) catch continue;
 
         if (current_mtime != last_mtime) {
             last_mtime = current_mtime;
             try stdout.print("[watch] File changed: {s}\n", .{file_path});
-            transpileFn(allocator, file_path, null, output_path, options) catch |err| {
+            transpileFn(allocator, io,file_path, null, output_path, options) catch |err| {
                 try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
             };
         }
@@ -44,12 +46,14 @@ pub fn watchFile(
 pub fn watchDirectory(
     comptime transpileFn: anytype,
     allocator: std.mem.Allocator,
+    io: std.Io,
     input_dir: []const u8,
     output_dir: []const u8,
     options: anytype,
     stderr: anytype,
 ) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_state.interface;
 
     // mtime 맵: 파일 경로(소유) -> mtime
     var mtime_map = std.StringHashMap(i128).init(allocator);
@@ -62,12 +66,12 @@ pub fn watchDirectory(
     }
 
     // 초기 mtime 수집
-    try collectMtimes(allocator, input_dir, &mtime_map);
+    try collectMtimes(allocator, io, input_dir, &mtime_map);
 
     try stdout.print("[watch] Watching for file changes...\n", .{});
 
     while (true) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        io.sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
 
         // 현재 파일 상태 수집
         var current_mtimes = std.StringHashMap(i128).init(allocator);
@@ -79,7 +83,7 @@ pub fn watchDirectory(
             current_mtimes.deinit();
         }
 
-        collectMtimes(allocator, input_dir, &current_mtimes) catch continue;
+        collectMtimes(allocator, io, input_dir, &current_mtimes) catch continue;
 
         // 변경된 파일 찾기
         var it = current_mtimes.iterator();
@@ -108,7 +112,7 @@ pub fn watchDirectory(
                 const out_path = try std.fs.path.join(allocator, &.{ output_dir, output_rel });
                 defer allocator.free(out_path);
 
-                transpileFn(allocator, path, null, out_path, options) catch |err| {
+                transpileFn(allocator, io,path, null, out_path, options) catch |err| {
                     try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
                 };
 
@@ -144,8 +148,8 @@ pub fn writeJsonString(writer: anytype, s: []const u8) !void {
 }
 
 /// 파일의 mtime(수정 시각)을 i128 나노초 단위로 반환한다.
-pub fn getFileMtime(path: []const u8) !i128 {
-    const stat = try std.fs.cwd().statFile(path);
+pub fn getFileMtime(io: std.Io, path: []const u8) !i128 {
+    const stat = try std.Io.Dir.cwd().statFile(io, path);
     return stat.mtime;
 }
 
@@ -154,10 +158,11 @@ pub fn getFileMtime(path: []const u8) !i128 {
 /// getPtr 로 존재 확인 후 새 entry 일 때만 dupe.
 pub fn upsertMtimePath(
     allocator: std.mem.Allocator,
+    io: std.Io,
     map: *std.StringHashMap(i128),
     path: []const u8,
 ) void {
-    const mt = getFileMtime(path) catch return;
+    const mt = getFileMtime(io, path) catch return;
     if (map.getPtr(path)) |existing| {
         existing.* = mt;
         return;
@@ -170,11 +175,12 @@ pub fn upsertMtimePath(
 /// mtime_map에 파일 전체 경로(소유) -> mtime을 저장한다.
 pub fn collectMtimes(
     allocator: std.mem.Allocator,
+    io: std.Io,
     input_dir: []const u8,
     mtime_map: *std.StringHashMap(i128),
 ) !void {
-    var dir = try std.fs.cwd().openDir(input_dir, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(io, input_dir, .{ .iterate = true });
+    defer dir.close(io);
 
     var walker = try dir.walk(allocator);
     defer walker.deinit();
@@ -193,7 +199,7 @@ pub fn collectMtimes(
         // 전체 경로 구성
         const full_path = try std.fs.path.join(allocator, &.{ input_dir, path });
 
-        const mtime = getFileMtime(full_path) catch {
+        const mtime = getFileMtime(io, full_path) catch {
             allocator.free(full_path);
             continue;
         };
@@ -210,17 +216,19 @@ pub fn collectMtimes(
 /// visitor는 true 반환으로 full_path 소유권을 map 키로 이전한다.
 pub fn collectWatchRootMtimes(
     allocator: std.mem.Allocator,
+    io: std.Io,
     root: []const u8,
     include: []const []const u8,
     exclude: []const []const u8,
     mtime_map: *std.StringHashMap(i128),
 ) !void {
-    const Ctx = struct { map: *std.StringHashMap(i128) };
+    // 0.16: statFile 가 io 를 요구하므로 visitor closure 가 ctx 로 io 를 받는다.
+    const Ctx = struct { map: *std.StringHashMap(i128), io: std.Io };
     const visit = struct {
         fn f(ctx: Ctx, full_path: []const u8) bool {
             const gop = ctx.map.getOrPut(full_path) catch return false;
             if (gop.found_existing) return false;
-            gop.value_ptr.* = getFileMtime(full_path) catch {
+            gop.value_ptr.* = getFileMtime(ctx.io, full_path) catch {
                 _ = ctx.map.remove(full_path);
                 return false;
             };
@@ -229,9 +237,10 @@ pub fn collectWatchRootMtimes(
     }.f;
     try @import("zntc_lib").server.watch_scan.scanRoot(
         allocator,
+        io,
         root,
         .{ .include = include, .exclude = exclude },
-        Ctx{ .map = mtime_map },
+        Ctx{ .map = mtime_map, .io = io },
         visit,
     );
 }

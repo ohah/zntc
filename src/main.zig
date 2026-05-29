@@ -928,13 +928,14 @@ pub fn main(init: std.process.Init) !void {
             try mtime_map.put(entry_dupe, entry_mtime);
 
             if (result.module_paths) |paths| {
-                for (paths) |p| watch_cli.upsertMtimePath(allocator, &mtime_map, p);
+                for (paths) |p| watch_cli.upsertMtimePath(allocator, io, &mtime_map, p);
             }
 
             // --watch-folder: 번들 그래프 밖 루트를 재귀 스캔해 감시 대상에 추가
             for (opts.watch_roots_list.items) |root| {
                 watch_cli.collectWatchRootMtimes(
                     allocator,
+                    io,
                     root,
                     opts.watch_include_list.items,
                     opts.watch_exclude_list.items,
@@ -1125,9 +1126,9 @@ pub fn main(init: std.process.Init) !void {
                     while (kit.next()) |k| allocator.free(k.*);
                     mtime_map.clearRetainingCapacity();
 
-                    watch_cli.upsertMtimePath(allocator, &mtime_map, abs_entry);
+                    watch_cli.upsertMtimePath(allocator, io, &mtime_map, abs_entry);
                     if (rebuild_result.module_paths) |paths| {
-                        for (paths) |p| watch_cli.upsertMtimePath(allocator, &mtime_map, p);
+                        for (paths) |p| watch_cli.upsertMtimePath(allocator, io, &mtime_map, p);
                     }
                 }
             }

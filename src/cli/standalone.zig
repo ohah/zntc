@@ -6,14 +6,17 @@ const lib = @import("zntc_lib");
 const Scanner = lib.lexer.Scanner;
 const runner = lib.test262.runner;
 
-pub fn runTest262(allocator: std.mem.Allocator, dir_path: ?[]const u8) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn runTest262(allocator: std.mem.Allocator, io: std.Io, dir_path: ?[]const u8) !void {
+    // 0.16: deprecatedWriter 제거. length-0 buffer = unbuffered (exit 전 flush 불필요).
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_state.interface;
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
     const raw_dir = dir_path orelse {
         try stderr.print("zntc: --test262 requires a directory path\n", .{});
         std.process.exit(1);
     };
-    const abs_path = try std.fs.cwd().realpathAlloc(allocator, raw_dir);
+    const abs_path = try std.Io.Dir.cwd().realPathFileAlloc(io, raw_dir, allocator);
     defer allocator.free(abs_path);
 
     // test262 repo root 자동 감지: `test/` 와 `tools/` 가 둘 다 있으면 conformance `test/` 만 측정.
@@ -24,8 +27,9 @@ pub fn runTest262(allocator: std.mem.Allocator, dir_path: ?[]const u8) !void {
     const tools_sub = try std.fs.path.join(allocator, &.{ abs_path, "tools" });
     defer allocator.free(tools_sub);
     const is_repo_root = blk: {
-        std.fs.accessAbsolute(test_sub, .{}) catch break :blk false;
-        std.fs.accessAbsolute(tools_sub, .{}) catch break :blk false;
+        // 0.16: std.fs.accessAbsolute 제거 → Dir.access (절대경로 sub_path 허용).
+        std.Io.Dir.cwd().access(io, test_sub, .{}) catch break :blk false;
+        std.Io.Dir.cwd().access(io, tools_sub, .{}) catch break :blk false;
         break :blk true;
     };
 
@@ -34,19 +38,21 @@ pub fn runTest262(allocator: std.mem.Allocator, dir_path: ?[]const u8) !void {
         try stdout.print("Detected test262 repo root — restricting walk to '{s}'\n", .{walk_path});
     }
     try stdout.print("Running Test262: {s}\n", .{walk_path});
-    const summary = try runner.runDirectory(allocator, walk_path, false);
+    const summary = try runner.runDirectory(allocator, io, walk_path, false);
     try summary.print(stdout);
     if (summary.failed > 0) std.process.exit(1);
 }
 
-pub fn runTokenize(allocator: std.mem.Allocator, input_file: ?[]const u8) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn runTokenize(allocator: std.mem.Allocator, io: std.Io, input_file: ?[]const u8) !void {
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_state.interface;
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
     const file_path = input_file orelse {
         try stderr.print("zntc: --tokenize requires a file path\n", .{});
         std.process.exit(1);
     };
-    const source = try std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024);
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
     defer allocator.free(source);
 
     var scanner = try Scanner.init(allocator, source);
@@ -78,8 +84,9 @@ pub const ServeOptions = struct {
     key_path: ?[]const u8 = null,
 };
 
-pub fn runServe(allocator: std.mem.Allocator, opts: ServeOptions) !void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn runServe(allocator: std.mem.Allocator, io: std.Io, opts: ServeOptions) !void {
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
 
     // --serve --bundle entry.ts → entry의 디렉토리를 root로 사용
     const serve_dir: []const u8 = if (opts.is_bundle and opts.input_file != null) blk: {
@@ -93,7 +100,7 @@ pub fn runServe(allocator: std.mem.Allocator, opts: ServeOptions) !void {
         };
     } else null;
 
-    var dev_server = lib.server.DevServer.init(allocator, .{
+    var dev_server = lib.server.DevServer.init(allocator, io, .{
         .root_dir = serve_dir,
         .port = opts.port,
         .host = opts.host,
@@ -107,7 +114,7 @@ pub fn runServe(allocator: std.mem.Allocator, opts: ServeOptions) !void {
         std.process.exit(1);
     };
     defer dev_server.deinit();
-    dev_server.start() catch |err| {
+    dev_server.start(io) catch |err| {
         try stderr.print("zntc: dev server failed: {}\n", .{err});
         std.process.exit(1);
     };
