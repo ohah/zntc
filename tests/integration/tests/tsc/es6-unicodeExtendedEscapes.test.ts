@@ -249,7 +249,8 @@ var x = "\\u{10FFFF}";
     );
   });
   test('unicodeExtendedEscapesInStrings07', async () => {
-    await expectPass(
+    // 0x110000 > 0x10FFFF → 범위 초과. ES/TSC(TS1198) 처럼 에러로 거부 (#3980).
+    await expectError(
       `// @target: es5,es6
 
 // ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
@@ -310,7 +311,8 @@ var x = "\\u{DC00}";
     );
   });
   test('unicodeExtendedEscapesInStrings12', async () => {
-    await expectPass(
+    // 0xFFFFFFFF > 0x10FFFF → 범위 초과. ES/TSC(TS1198) 처럼 에러로 거부 (#3980).
+    await expectError(
       `// @target: es5,es6
 
 var x = "\\u{FFFFFFFF}";
