@@ -292,6 +292,7 @@ fn sharedVerdict(host: types.MfBundleConfig.SharedEntry, remote: mf_contract.Sha
 /// (`__mfGuardedLoad`)/표준 `errorLoadRemote` 가 담당(빌드 핀+런타임
 /// 가드 분담, §9). 정적/명시 config=빌드 핀, 런타임 동적=가드.
 pub fn verifyHostContract(
+    io: std.Io,
     allocator: std.mem.Allocator,
     src: []const u8,
     mf: *const types.MfBundleConfig,
@@ -315,9 +316,9 @@ pub fn verifyHostContract(
     defer seen_remotes.deinit();
     var i: usize = 0;
     while (nextRemoteImport(src, mf, &i)) |h|
-        try verifyOneRemoteSpec(allocator, h.spec, mf, cwd, &seen_specs, &seen_remotes);
+        try verifyOneRemoteSpec(io, allocator, h.spec, mf, cwd, &seen_specs, &seen_remotes);
     for (static_specs) |spec|
-        try verifyOneRemoteSpec(allocator, spec, mf, cwd, &seen_specs, &seen_remotes);
+        try verifyOneRemoteSpec(io, allocator, spec, mf, cwd, &seen_specs, &seen_remotes);
 }
 
 /// host import spec 1개의 P3-1(expose)·P3-2(shared)·P3-3(무결성) 검증.
@@ -328,6 +329,7 @@ pub fn verifyHostContract(
 /// remote-level(무결성·shared)은 seen_remotes 로 remote 당 1회 —
 /// expose(P3-1)만 per-spec(서브경로별 존재 확인).
 fn verifyOneRemoteSpec(
+    io: std.Io,
     allocator: std.mem.Allocator,
     spec: []const u8,
     mf: *const types.MfBundleConfig,
@@ -343,7 +345,7 @@ fn verifyOneRemoteSpec(
     const r = parseRemote(kv);
     // 검증 불가(http=P4 / 부재 / 파싱불가) = 위반 아님 → 통과(정밀
     // fail-fast). 단 OOM 은 빌드 자원 문제 → silent skip 금지, 전파.
-    var rc = mf_contract.loadContract(allocator, cwd, r.entry) catch |e| switch (e) {
+    var rc = mf_contract.loadContract(io, allocator, cwd, r.entry) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return,
     };
@@ -360,7 +362,7 @@ fn verifyOneRemoteSpec(
         // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임
         // 절반). sidecar/sig 부재·malformed = 검증 불가 ≠ 위반 → expose/
         // shared 로 진행. 정밀 fail-fast: 확정 변조만 차단.
-        mf_contract.verifyIntegrity(allocator, cwd, r.entry) catch |e| switch (e) {
+        mf_contract.verifyIntegrity(io, allocator, cwd, r.entry) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.MfIntegrityMismatch => {
                 std.log.err(

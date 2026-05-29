@@ -2115,7 +2115,7 @@ pub const Bundler = struct {
                 // resolve 불가 remote 는 skip(정밀 fail-fast).
                 const fe = @import("federation_emit.zig");
                 const cwd: ?[]const u8 = if (self.options.project_root.len > 0) self.options.project_root else null;
-                try fe.verifyHostContract(self.allocator, output, mf, cwd, mf_static_remotes.keys());
+                try fe.verifyHostContract(io, self.allocator, output, mf, cwd, mf_static_remotes.keys());
                 const host_out = try fe.emitHostInit(self.allocator, output, mf, mf_static_remotes.keys());
                 self.allocator.free(output);
                 output = host_out;
