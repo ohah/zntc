@@ -208,11 +208,11 @@ pub const PackageJsonCache = struct {
 
 /// `pkg_dir_path` 디렉토리의 package.json 을 읽고 파싱한다. path 기반 시그니처로
 /// fs.zig 추상화 통과 — std.fs.Dir 핸들 의존 제거 (#1921, #1885 Phase 1 완성).
-pub fn parsePackageJson(allocator: std.mem.Allocator, pkg_dir_path: []const u8) !ParsedPackageJson {
+pub fn parsePackageJson(allocator: std.mem.Allocator, io: std.Io, pkg_dir_path: []const u8) !ParsedPackageJson {
     const json_path = try std.fs.path.join(allocator, &.{ pkg_dir_path, "package.json" });
     defer allocator.free(json_path);
 
-    const loaded = fs.readFile(allocator, json_path, 1024 * 1024) catch |err| switch (err) {
+    const loaded = fs.readFile(io, allocator, json_path, 1024 * 1024) catch |err| switch (err) {
         fs.FsError.NotFound => return error.FileNotFound,
         fs.FsError.OutOfMemory => return error.OutOfMemory,
         // PermissionDenied / IoError / NotDirectory / IsDirectory 모두 IoError 로 통합 —

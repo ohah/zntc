@@ -781,8 +781,8 @@ pub fn buildIncremental(
             if (cache_hit_modules.contains(@intCast(i))) {
                 var s_rp = profile.begin(.graph_discover_incr_replay);
                 defer s_rp.end();
-                try graph_resolve_imports.replayCachedResolvedDeps(self, i);
-                try graph_resolve_imports.resolveDeferredRequestedImportsIfReady(self, ModuleIndex.fromUsize(i));
+                try graph_resolve_imports.replayCachedResolvedDeps(self, io, i);
+                try graph_resolve_imports.resolveDeferredRequestedImportsIfReady(self, io, ModuleIndex.fromUsize(i));
             } else {
                 var s_mr = profile.begin(.graph_discover_incr_miss_resolve);
                 defer s_mr.end();
