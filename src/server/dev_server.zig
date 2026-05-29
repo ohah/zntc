@@ -34,14 +34,31 @@ fn getLog() DebugLog {
     return .{};
 }
 
+// Windows 의 getsockname 은 libc 가 아니라 ws2_32 가 stdcall 규약으로 export 한다.
+// `std.c.getsockname` 은 `extern "c"`(cdecl) 라 x86-windows-msvc(32-bit) 에서 심볼이
+// `_getsockname` 으로 mangle 되는데 ws2_32 는 `_getsockname@12`(stdcall) 만 제공 →
+// undefined symbol. (x64/arm64-windows 는 데코레이션이 없어 우연히 매칭돼 통과.)
+// winapi(=x86 에서 stdcall) 규약으로 ws2_32 와 직접 매칭하는 선언을 둔다. Windows 의
+// namelen 인자는 `int*`(i32) — POSIX 의 socklen_t 와 폭이 같아 값은 동일.
+const ws2_32_getsockname = if (builtin.os.tag == .windows)
+    struct {
+        extern "ws2_32" fn getsockname(s: std.posix.fd_t, name: *std.c.sockaddr, namelen: *i32) callconv(.winapi) c_int;
+    }.getsockname
+else {};
+
 /// listen 소켓의 실제 bound port 조회. 0.16 `std.Io.net.Server` 는 bound
 /// address 를 노출하지 않아(listen_address 필드 제거), port 0 (OS-assigned
-/// ephemeral) 케이스를 위해 libc `getsockname` 으로 직접 조회한다. 실패 시
+/// ephemeral) 케이스를 위해 `getsockname` 으로 직접 조회한다. 실패 시
 /// fallback(옵션 지정 port) 을 그대로 반환 — 비-ephemeral 경로는 무영향.
 fn socketBoundPort(handle: std.posix.fd_t, fallback: u16) u16 {
     var addr: std.c.sockaddr.in = undefined;
-    var addrlen: std.c.socklen_t = @sizeOf(std.c.sockaddr.in);
-    if (std.c.getsockname(handle, @ptrCast(&addr), &addrlen) != 0) return fallback;
+    if (builtin.os.tag == .windows) {
+        var addrlen: i32 = @sizeOf(std.c.sockaddr.in);
+        if (ws2_32_getsockname(handle, @ptrCast(&addr), &addrlen) != 0) return fallback;
+    } else {
+        var addrlen: std.c.socklen_t = @sizeOf(std.c.sockaddr.in);
+        if (std.c.getsockname(handle, @ptrCast(&addr), &addrlen) != 0) return fallback;
+    }
     // sockaddr.in.port 는 network byte order(big-endian).
     return std.mem.bigToNative(u16, addr.port);
 }

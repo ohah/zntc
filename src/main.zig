@@ -160,8 +160,19 @@ fn transpileFile(
     if (output_path) |out_path| {
         if (std.fs.path.dirname(out_path)) |dir| {
             std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
-                try stderr.print("zntc: cannot create directory '{s}': {}\n", .{ dir, err });
-                return error.TranspileFailed;
+                // 0.16 createDirPath 는 경로의 최종 컴포넌트가 symlink-to-directory
+                // (예: macOS 의 `/tmp`→`/private/tmp`) 면 PathAlreadyExists 후 lstat
+                // 기반 kind 검사에서 `.sym_link` 를 보고 error.NotDir 를 던진다
+                // (dangling symlink 무한루프 방지 주석). 유효한 디렉토리로의 심링크는
+                // 정상이므로, 이미 디렉토리로 stat(심링크 follow) 되면 통과시킨다.
+                const already_dir = if (std.Io.Dir.cwd().statFile(io, dir, .{})) |st|
+                    st.kind == .directory
+                else |_|
+                    false;
+                if (!already_dir) {
+                    try stderr.print("zntc: cannot create directory '{s}': {}\n", .{ dir, err });
+                    return error.TranspileFailed;
+                }
             };
         }
         std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = result.code }) catch |err| {
