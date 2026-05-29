@@ -13,7 +13,7 @@ pub const LoadOptions = struct {
 
 pub const EnvMap = std.StringHashMap([]const u8);
 
-pub fn loadEnv(allocator: std.mem.Allocator, opts: LoadOptions) !EnvMap {
+pub fn loadEnv(allocator: std.mem.Allocator, io: std.Io, opts: LoadOptions) !EnvMap {
     var merged = EnvMap.init(allocator);
     errdefer deinitMap(&merged, allocator);
 
@@ -26,7 +26,7 @@ pub fn loadEnv(allocator: std.mem.Allocator, opts: LoadOptions) !EnvMap {
     for (files) |name| {
         const path = try std.fs.path.join(allocator, &.{ opts.env_dir, name });
         defer allocator.free(path);
-        const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| switch (err) {
+        const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => return err,
         };
