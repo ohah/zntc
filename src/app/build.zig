@@ -843,7 +843,7 @@ fn copyPublicDirInner(
     var dir = try std.Io.Dir.cwd().openDir(io, abs_dir, .{ .iterate = true });
     defer dir.close(io);
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         const rel = if (rel_dir.len == 0) try allocator.dupe(u8, entry.name) else try std.fs.path.join(allocator, &.{ rel_dir, entry.name });
         defer allocator.free(rel);
         switch (entry.kind) {

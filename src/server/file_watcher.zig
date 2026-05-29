@@ -107,7 +107,8 @@ const KqueueBackend = struct {
 
     /// 0.16: posix.close/Io.File.close(io) — fd 를 File 로 감싸 close.
     fn closeFd(self: *const KqueueBackend, fd: i32) void {
-        const f: std.Io.File = .{ .handle = fd };
+        // 0.16: std.Io.File 은 handle + flags(nonblocking) 필드. watch fd 는 동기.
+        const f: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
         f.close(self.io);
     }
 

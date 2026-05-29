@@ -781,14 +781,14 @@ pub const DevServer = struct {
                 if (gop.found_existing) continue; // dedup
                 changed_paths.append(self.allocator, ev.path) catch {};
 
-                // SSE: watch_change 이벤트
+                // SSE: watch_change 이벤트. 0.16: std.io.fixedBufferStream 제거
+                // → std.Io.Writer.fixed (고정 버퍼 writer, buffered() 로 결과 조회).
                 var ev_buf: [1024]u8 = undefined;
-                var fbs = std.io.fixedBufferStream(&ev_buf);
-                const w = fbs.writer();
+                var w = std.Io.Writer.fixed(&ev_buf);
                 w.writeAll("{\"type\":\"watch_change\",\"file\":\"") catch continue;
-                writeJsonEscaped(w, ev.path) catch continue;
+                writeJsonEscaped(&w, ev.path) catch continue;
                 w.writeAll("\"}") catch continue;
-                self.publishEvent(EventType.watch_change, fbs.getWritten());
+                self.publishEvent(EventType.watch_change, w.buffered());
             }
 
             // issue #3858 — root_dir 의 dir entry 변화 시 rescan. collectCssFiles
