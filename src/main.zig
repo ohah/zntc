@@ -799,7 +799,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (opts.output_file) |out_path| {
-            try checkAllowOverwrite(allocator, stderr, opts.allow_overwrite, abs_entry, out_path);
+            try checkAllowOverwrite(allocator, io, stderr, opts.allow_overwrite, abs_entry, out_path);
         }
 
         // 출력

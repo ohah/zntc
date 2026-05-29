@@ -713,7 +713,7 @@ pub const DevServer = struct {
         };
 
         // OS 네이티브 파일 감시 (kqueue/inotify, 미지원 OS는 mtime 폴백)
-        var watcher = FileWatcher.init(self.allocator) catch return;
+        var watcher = FileWatcher.init(self.allocator, self.io) catch return;
         defer watcher.deinit();
 
         for (initial_paths) |p| {
