@@ -263,7 +263,7 @@ pub const Linker = struct {
     /// 키: makeModuleKeyBuf 형식 (4바이트 module_index + 0x00 + name).
     /// Phase 1(fixpoint) + Phase 2(BFS) 간 중복 resolve를 제거.
     /// re-export chain이 있을 때만 활성화 (단순 그래프에서는 오버헤드).
-    chain_cache: std.StringHashMapUnmanaged(ChainCacheEntry) = .{},
+    chain_cache: std.StringHashMapUnmanaged(ChainCacheEntry) = .empty,
     chain_cache_enabled: bool = false,
 
     /// namespace import export 수집 캐시 (metadata.register_ns_rewrites hot path).
@@ -273,20 +273,20 @@ pub const Linker = struct {
     /// Invariant: metadata 단계에서 append-only (put 만, remove/replace 없음).
     /// 슬라이스는 `allocator.dupe` 한 독립 할당이라 다른 키의 put 으로도 무효화되지 않음 —
     /// lock 해제 후에도 안전하게 읽기 가능.
-    ns_export_cache: std.AutoHashMapUnmanaged(u32, []NsExportPair) = .{},
+    ns_export_cache: std.AutoHashMapUnmanaged(u32, []NsExportPair) = .empty,
     /// buildInlineObjectStr 결과 캐시. 키: target_mod_idx. 값 문자열 linker 소유.
-    ns_inline_cache: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
+    ns_inline_cache: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
     /// target module 별 공유 namespace object var. namespace 를 값으로 쓰는 여러 importer 가
     /// 같은 객체 선언을 중복 emit 하지 않도록 bundle/chunk preamble 에서 한 번만 쓴다.
-    ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .{},
+    ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .empty,
     ns_shared_inline_order: std.ArrayListUnmanaged(u32) = .empty,
-    ns_shared_var_names: std.StringHashMapUnmanaged(void) = .{},
+    ns_shared_var_names: std.StringHashMapUnmanaged(void) = .empty,
     /// (#3966) shared namespace var 이름의 결정적 충돌 해소. 같은 sanitized
     /// base (예: 서로 다른 디렉터리의 `core.js`) 를 갖는 모듈들 중 module_index
     /// (renumber 후 path-sorted, 결정적) 순서의 rank. rank>0 인 모듈만 저장
     /// (충돌 희소) — 부재 시 rank 0. 병렬 emit 의 first-come-first-served
     /// 이름 claim 이 `core_ns`/`core_ns_2` 를 run 마다 뒤바꾸던 비결정 제거.
-    ns_base_rank: std.AutoHashMapUnmanaged(u32, u32) = .{},
+    ns_base_rank: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     ns_base_rank_built: bool = false,
     /// computeCrossChunkLinks(메타데이터 前 실행, chunk graph 보유)가 채우는
     /// "정의자 청크가 다른" namespace re-export target 집합. registerNamespace
@@ -294,7 +294,7 @@ pub const Linker = struct {
     /// (cross-chunk, #3366) vs 비-shared(same-chunk self-contained, 타이밍
     /// 무관) inline 경로를 가른다 (#3367). 비어 있으면(splitting off 등)
     /// 전부 비-shared — 기존 단일번들 동작 유지.
-    ns_cross_chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .{},
+    ns_cross_chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .empty,
     use_shared_ns_preamble: bool = false,
     /// chunked(splitting) emit 경로 여부. 이 경로는 shared ns preamble 을
     /// per-module metadata **이전**에 emit 하므로, same-chunk target 은 정의자
@@ -2111,7 +2111,7 @@ pub const Linker = struct {
             const ns_index_ptr: *const namespace_access.NamespaceAccessIndex = blk: {
                 if (importer.namespace_access_index) |*cached| break :blk cached;
                 // Fallback: 4 kind candidate 의 local_name 만 색인.
-                var interest_set: std.StringHashMapUnmanaged(void) = .{};
+                var interest_set: std.StringHashMapUnmanaged(void) = .empty;
                 defer interest_set.deinit(self.allocator);
                 for (importer.import_bindings) |ib_pre| {
                     if (!self.isNamespaceAnalysisCandidate(importer, ib_pre)) continue;

@@ -1447,7 +1447,8 @@ fn transpileWithCallbackInternal(
     // 8. Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;
     const debug_id: ?[]const u8 = if (options.sourcemap_debug_ids) blk: {
-        SourceMap.generateUuidV4(&debug_id_buf);
+        // 결정론적 debugId — 입력 source 해시 기반 (reproducible build, io 불필요).
+        SourceMap.generateUuidV4(&debug_id_buf, source);
         break :blk &debug_id_buf;
     } else null;
 

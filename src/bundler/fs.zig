@@ -122,7 +122,7 @@ pub fn listDir(alloc: std.mem.Allocator, path: []const u8) FsError![]DirEntry {
 pub const ReadFileCache = if (is_wasm_build) VirtualReadFileCache else RealReadFileCache;
 
 pub const RealReadFileCache = struct {
-    dirs: std.StringHashMapUnmanaged(std.fs.Dir) = .{},
+    dirs: std.StringHashMapUnmanaged(std.fs.Dir) = .empty,
     mutex: std.Thread.Mutex = .{},
 
     pub fn deinit(self: *RealReadFileCache, allocator: std.mem.Allocator) void {

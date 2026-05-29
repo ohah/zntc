@@ -227,7 +227,7 @@ fn decodePropertySignature(ast: *const Ast, sig_idx: NodeIndex) ?PropertySignatu
 /// O(n) — name → write_index HashMap 으로 단일 패스. 첫 등장이면 append, 재등장이면
 /// 이전 슬롯 덮어쓰기 (last-type wins, position 보존).
 fn dedupByName(comptime T: type, list: *std.ArrayList(T), alloc: std.mem.Allocator) !void {
-    var first_idx: std.StringHashMapUnmanaged(usize) = .{};
+    var first_idx: std.StringHashMapUnmanaged(usize) = .empty;
     defer first_idx.deinit(alloc);
 
     var write: usize = 0;

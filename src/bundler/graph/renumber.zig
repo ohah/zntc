@@ -122,7 +122,7 @@ pub fn renumberModulesDeterministically(
         entry.value_ptr.* = @enumFromInt(old_to_new[entry.value_ptr.toU32()]);
     }
 
-    var new_req: std.AutoHashMapUnmanaged(u32, RequestedExports) = .{};
+    var new_req: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty;
     errdefer new_req.deinit(allocator);
     try new_req.ensureTotalCapacity(allocator, @intCast(self.requested_exports.count()));
     var r_it = self.requested_exports.iterator();

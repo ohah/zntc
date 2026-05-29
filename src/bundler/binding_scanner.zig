@@ -289,7 +289,7 @@ pub fn extractExportBindings(
     }
 
     // import local_name → ImportBinding 매핑 (barrel re-export O(1) 조회)
-    var import_by_name: std.StringHashMapUnmanaged(ImportBinding) = .{};
+    var import_by_name: std.StringHashMapUnmanaged(ImportBinding) = .empty;
     defer import_by_name.deinit(allocator);
     for (import_bindings) |ib| {
         try import_by_name.put(allocator, ib.local_name, ib);
@@ -597,7 +597,7 @@ pub fn collectNamespaceAccessesAndBuildIndex(
     if (!has_any_interest) return .{};
 
     // interest set — namespace local + extra (linker 의 named/cjs/esm).
-    var interest: std.StringHashMapUnmanaged(void) = .{};
+    var interest: std.StringHashMapUnmanaged(void) = .empty;
     defer interest.deinit(allocator);
     for (bindings) |ib| {
         if (ib.kind == .namespace and ib.local_name.len > 0) {

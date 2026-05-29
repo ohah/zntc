@@ -60,7 +60,7 @@ pub const Codegen = struct {
     ns_exports: ?std.StringHashMapUnmanaged(void) = null,
     /// top-level에서 선언된 이름 추적 (namespace var 중복 제거용).
     /// function/class/var/let/const/enum 선언 시 등록, namespace 출력 시 이미 있으면 var 생략.
-    declared_names: std.StringHashMapUnmanaged(void) = .{},
+    declared_names: std.StringHashMapUnmanaged(void) = .empty,
     /// keepNames: rename된 함수/클래스 선언 정보. generate() 완료 후 emitter에서 __name() 호출 생성에 사용.
     keep_names_entries: std.ArrayList(KeepNameEntry) = .empty,
     // JSX 필드 제거: Transformer의 jsx_lowering이 JSX → call_expression 변환을 담당.

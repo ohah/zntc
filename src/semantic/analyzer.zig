@@ -98,7 +98,7 @@ pub const SemanticAnalyzer = struct {
     /// numeric const symbol 의 원본 텍스트 사이드테이블 (#2505).
     /// Symbol 에 16B slice 를 박지 않으려고 분리. 보통 numeric const 는 전체 심볼의 극소수.
     /// `setSymbolConstValue` / default-export 경로에서 kind == .number 일 때만 fill.
-    numeric_const_texts: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
+    numeric_const_texts: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
     /// class private name 스택 (중첩 class 지원, oxc 방식).
     /// 각 항목은 해당 class body에서 선언된 private name 집합.

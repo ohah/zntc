@@ -47,7 +47,7 @@ pub fn markUnusedStatements(
     var stmts = try allocator.alloc(StmtInfo, stmt_raw_indices.len);
     defer allocator.free(stmts);
 
-    var name_to_stmt: std.StringHashMapUnmanaged(u32) = .{};
+    var name_to_stmt: std.StringHashMapUnmanaged(u32) = .empty;
     defer name_to_stmt.deinit(allocator);
 
     var removable_count: u32 = 0;

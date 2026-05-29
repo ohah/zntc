@@ -84,7 +84,7 @@ pub const PathInternPool = struct {
     const Shard = struct {
         arena: std.heap.ArenaAllocator,
         /// interned bytes set. key = slice into `arena`. value = void.
-        set: std.StringHashMapUnmanaged(void) = .{},
+        set: std.StringHashMapUnmanaged(void) = .empty,
         mutex: std.Thread.Mutex = .{},
     };
 

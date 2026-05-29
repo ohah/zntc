@@ -635,9 +635,18 @@ test "sourcesContent — JSON escaping" {
 /// 크립토 난수 기반 UUID v4를 생성한다.
 /// RFC 4122: version=4 (bytes[6] 상위 4비트 = 0100), variant=10xx (bytes[8] 상위 2비트).
 /// 결과: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx" (36자).
-pub fn generateUuidV4(buf: *[36]u8) void {
+/// Zig 0.16: std.crypto.random 제거 (난수는 io 를 요구). transpile/emit 경로는
+/// io-free 를 유지해야 하므로 입력 content 의 해시로 UUID 를 만든다 — 같은 입력 →
+/// 같은 debugId (reproducible build, 결정성 epic #3564 와 정합). bundle 의
+/// `//# debugId` 주석과 sourcemap 의 debugId 가 동일 값을 공유하는 Sentry 요건도
+/// 만족 (한 번 생성해 양쪽에 사용). 난수성은 불필요 — 빌드별 유일성만 요구되며
+/// content hash 가 그것을 제공.
+pub fn generateUuidV4(buf: *[36]u8, seed_content: []const u8) void {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    const h0 = std.hash.Wyhash.hash(0x9e3779b97f4a7c15, seed_content);
+    const h1 = std.hash.Wyhash.hash(0xd1b54a32d192ed03, seed_content);
+    std.mem.writeInt(u64, bytes[0..8], h0, .little);
+    std.mem.writeInt(u64, bytes[8..16], h1, .little);
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
     bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
     const hex = "0123456789abcdef";
@@ -673,7 +682,7 @@ test "debugId — not included when null" {
 
 test "generateUuidV4 — format and version/variant" {
     var buf: [36]u8 = undefined;
-    generateUuidV4(&buf);
+    generateUuidV4(&buf, "deterministic-seed-content");
     // 하이픈 위치: 8, 13, 18, 23
     try std.testing.expectEqual(@as(u8, '-'), buf[8]);
     try std.testing.expectEqual(@as(u8, '-'), buf[13]);

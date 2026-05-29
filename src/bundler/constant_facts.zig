@@ -284,7 +284,7 @@ test "constant_facts: numeric const value materializes to numeric literal node" 
     }
     const idx = target_idx orelse return error.MissingIdentifier;
 
-    var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .{};
+    var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .empty;
     defer const_values.deinit(allocator);
     try const_values.put(allocator, 7, .{ .kind = .number, .number_text = "123" });
 
@@ -319,7 +319,7 @@ test "constant_facts: numeric const value does not replace object shorthand key"
     }
     const idx = target_idx orelse return error.MissingIdentifier;
 
-    var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .{};
+    var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .empty;
     defer const_values.deinit(allocator);
     try const_values.put(allocator, 7, .{ .kind = .number, .number_text = "123" });
 
@@ -351,7 +351,7 @@ fn expectMaterializeMinifyNeed(source: []const u8, expected_needs_minify: bool) 
         }
     }
 
-    var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .{};
+    var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .empty;
     defer const_values.deinit(allocator);
     try const_values.put(allocator, 7, .{ .kind = .number, .number_text = "123" });
 

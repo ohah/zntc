@@ -13,17 +13,17 @@ const Kind = @import("../../lexer/token.zig").Kind;
 const Span = @import("../../lexer/token.zig").Span;
 
 pub fn foldNodeBufferCapabilityIfs(allocator: std.mem.Allocator, ast: *Ast) bool {
-    var buffer_names: std.StringHashMapUnmanaged(void) = .{};
+    var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
     defer buffer_names.deinit(allocator);
     collectNodeBufferModuleObjectNames(allocator, ast, &buffer_names) catch return false;
     if (buffer_names.count() == 0) return false;
 
-    var buffer_ctor_names: std.StringHashMapUnmanaged(void) = .{};
+    var buffer_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
     defer buffer_ctor_names.deinit(allocator);
     collectNodeBufferCtorNames(allocator, ast, &buffer_names, &buffer_ctor_names) catch return false;
     if (buffer_ctor_names.count() == 0) return false;
 
-    var dead_fallback_names: std.StringHashMapUnmanaged(void) = .{};
+    var dead_fallback_names: std.StringHashMapUnmanaged(void) = .empty;
     defer dead_fallback_names.deinit(allocator);
 
     var changed = false;

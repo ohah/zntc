@@ -83,7 +83,7 @@ pub const ModuleGraph = struct {
     /// heap chunk — Module 이 수백 바이트라 stack pre-alloc 비효율.
     modules: ModuleList = .{},
     path_to_module: std.StringHashMap(ModuleIndex),
-    requested_exports: std.AutoHashMapUnmanaged(u32, RequestedExports) = .{},
+    requested_exports: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty,
     requested_exports_mutex: std.Thread.Mutex = .{},
     diagnostics: std.ArrayList(BundlerDiagnostic),
     owned_diagnostic_strings: std.ArrayList([]const u8) = .empty,
@@ -100,7 +100,7 @@ pub const ModuleGraph = struct {
     /// `type: "module"` 과 `sideEffects` 를 **한 번의 pkg.json parse** 로 추출 (#1744).
     /// 키는 module_path 의 substring (graph 수명 동안 유효) — dupe 불필요.
     /// scanWorker 병렬 호출 대응으로 Mutex 보호 + double-check pattern.
-    pkg_info_cache: std.StringHashMapUnmanaged(PkgInfo) = .{},
+    pkg_info_cache: std.StringHashMapUnmanaged(PkgInfo) = .empty,
     /// pkg_info_cache 병렬 접근 보호.
     pkg_info_cache_mutex: std.Thread.Mutex = .{},
 

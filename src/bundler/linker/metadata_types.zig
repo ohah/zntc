@@ -38,13 +38,13 @@ pub const LinkingMetadata = struct {
     /// CJS 모듈 내부 require() 호출 치환 맵.
     /// require specifier 문자열 → require_xxx() 함수명.
     /// codegen이 require('path') 호출을 만나면 이 맵으로 치환.
-    require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{},
+    require_rewrites: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// __esm live binding에서 __export getter 값을 override.
     /// local_name → canonical_name. emitter가 __export getter 생성 시 사용.
-    export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .{},
+    export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// symbol_id → ConstValue. 크로스-모듈 상수 인라인용.
     /// import symbol이 canonical export의 const_value를 가지면 codegen이 리터럴로 대체.
-    const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .{},
+    const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .empty,
     /// nested mangling에서 소유권을 이전받은 문자열. deinit에서 해제.
     owned_rename_values: std.ArrayListUnmanaged([]const u8) = .empty,
     /// dev 모드 namespace import 변수명. esm_wrap에서 __esm 바깥으로 호이스팅.
