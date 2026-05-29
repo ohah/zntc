@@ -420,13 +420,13 @@ export fn build_chunks(
     } else {
         if (result.output.len == 0) {
             if (last_error_msg == null) {
-            clearLastError();
-            last_error_msg = std.fmt.allocPrint(
-                wasm_alloc,
-                "× entry \"{s}\" 가 빈 출력을 반환했습니다",
-                .{entry_path},
-            ) catch null;
-        }
+                clearLastError();
+                last_error_msg = std.fmt.allocPrint(
+                    wasm_alloc,
+                    "× entry \"{s}\" 가 빈 출력을 반환했습니다",
+                    .{entry_path},
+                ) catch null;
+            }
             return 0;
         }
         chunks = arena_alloc.alloc(Pair, 1) catch {

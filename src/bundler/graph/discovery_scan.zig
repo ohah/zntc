@@ -159,7 +159,8 @@ pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
                 }
             }
 
-            const resolved = self.resolve_cache.resolveThreadSafe(io, 
+            const resolved = self.resolve_cache.resolveThreadSafe(
+                io,
                 source_dir,
                 record.specifier,
                 record.kind,

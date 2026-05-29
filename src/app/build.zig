@@ -205,7 +205,7 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
     var output_count: usize = 0;
     if (result.outputs) |outs| {
         for (outs) |out| {
-            try writeOutput(allocator, io,outdir, out.path, out.contents);
+            try writeOutput(allocator, io, outdir, out.path, out.contents);
             try addReserved(allocator, &reserved, &reserved_keys, out.path);
             output_count += 1;
             // chunk 별 sourcemap — eager / lazy 두 분기 모두 OutputFile.getSourceMapJSON
@@ -214,17 +214,17 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
                 defer allocator.free(sm);
                 const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out.path});
                 defer allocator.free(map_path);
-                try writeOutput(allocator, io,outdir, map_path, sm);
+                try writeOutput(allocator, io, outdir, map_path, sm);
                 try addReserved(allocator, &reserved, &reserved_keys, map_path);
                 output_count += 1;
             }
         }
     } else {
-        try writeOutput(allocator, io,outdir, "bundle.js", result.output);
+        try writeOutput(allocator, io, outdir, "bundle.js", result.output);
         try addReserved(allocator, &reserved, &reserved_keys, "bundle.js");
         output_count += 1;
         if (result.sourcemap) |sm| {
-            try writeOutput(allocator, io,outdir, "bundle.js.map", sm);
+            try writeOutput(allocator, io, outdir, "bundle.js.map", sm);
             try addReserved(allocator, &reserved, &reserved_keys, "bundle.js.map");
             output_count += 1;
         }
@@ -233,7 +233,7 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
     defer emitted_css.deinit(allocator);
     if (result.asset_outputs) |outs| {
         for (outs) |out| {
-            try writeOutput(allocator, io,outdir, out.path, out.contents);
+            try writeOutput(allocator, io, outdir, out.path, out.contents);
             try addReserved(allocator, &reserved, &reserved_keys, out.path);
             if (std.mem.endsWith(u8, out.path, ".css")) try emitted_css.append(allocator, out.path);
             output_count += 1;
@@ -286,7 +286,7 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
                 defer allocator.free(contents);
                 const rewritten_css = try rewriteCssUrls(allocator, io, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
                 defer allocator.free(rewritten_css);
-                try writeOutput(allocator, io,outdir, rel, rewritten_css);
+                try writeOutput(allocator, io, outdir, rel, rewritten_css);
                 try addReserved(allocator, &reserved, &reserved_keys, rel);
                 output_count += 1;
             }
@@ -318,12 +318,12 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
             defer allocator.free(root_asset_path);
             std.Io.Dir.cwd().access(io, root_asset_path, .{}) catch break :blk parts.path[1..];
             rel_owned = true;
-            break :blk try copyAssetFile(allocator, io,root_asset_path, outdir, &reserved, &reserved_keys, &output_count);
+            break :blk try copyAssetFile(allocator, io, root_asset_path, outdir, &reserved, &reserved_keys, &output_count);
         } else blk: {
             const asset_path = (try resolveHtmlRef(allocator, root, html_dir, ref)) orelse continue;
             defer allocator.free(asset_path);
             rel_owned = true;
-            break :blk try copyAssetFile(allocator, io,asset_path, outdir, &reserved, &reserved_keys, &output_count);
+            break :blk try copyAssetFile(allocator, io, asset_path, outdir, &reserved, &reserved_keys, &output_count);
         };
         defer if (rel_owned) allocator.free(rel_for_url);
         if (rel_for_url.len > 0) {
@@ -338,10 +338,10 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
     if (opts.public_dir) |public_dir| {
         const public_abs = try std.fs.path.resolve(allocator, &.{ root, public_dir });
         defer allocator.free(public_abs);
-        try copyPublicDir(allocator, io,public_abs, outdir, &reserved, &output_count);
+        try copyPublicDir(allocator, io, public_abs, outdir, &reserved, &output_count);
     }
 
-    try writeOutput(allocator, io,outdir, "index.html", html);
+    try writeOutput(allocator, io, outdir, "index.html", html);
     output_count += 1;
     return output_count;
 }
@@ -413,7 +413,7 @@ pub fn prepareDev(allocator: std.mem.Allocator, io: std.Io, opts: AppDevPrepareO
                 defer allocator.free(contents);
                 const rewritten_css = try rewriteCssUrls(allocator, io, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
                 defer allocator.free(rewritten_css);
-                try writeOutput(allocator, io,outdir, rel, rewritten_css);
+                try writeOutput(allocator, io, outdir, rel, rewritten_css);
                 try addReserved(allocator, &reserved, &reserved_keys, rel);
                 output_count += 1;
             }
@@ -427,9 +427,9 @@ pub fn prepareDev(allocator: std.mem.Allocator, io: std.Io, opts: AppDevPrepareO
     if (opts.public_dir) |public_dir| {
         const public_abs = try std.fs.path.resolve(allocator, &.{ root, public_dir });
         defer allocator.free(public_abs);
-        try copyPublicDir(allocator, io,public_abs, outdir, &reserved, &output_count);
+        try copyPublicDir(allocator, io, public_abs, outdir, &reserved, &output_count);
     }
-    try writeOutput(allocator, io,outdir, "index.html", html);
+    try writeOutput(allocator, io, outdir, "index.html", html);
     output_count += 1;
 
     return .{ .entry_path = entry_path, .output_count = output_count };
@@ -756,7 +756,7 @@ fn copyAssetFile(
     if (!reserved.contains(name)) {
         const contents = try std.Io.Dir.cwd().readFileAlloc(io, asset_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024));
         defer allocator.free(contents);
-        try writeOutput(allocator, io,outdir, name, contents);
+        try writeOutput(allocator, io, outdir, name, contents);
         try addReserved(allocator, reserved, reserved_keys, name);
         output_count.* += 1;
     }
@@ -798,7 +798,7 @@ fn rewriteCssUrls(
             const rel_for_url = if (root_absolute) parts.path[1..] else blk: {
                 const asset_path = try std.fs.path.resolve(allocator, &.{ style_dir, parts.path });
                 defer allocator.free(asset_path);
-                break :blk try copyAssetFile(allocator, io,asset_path, outdir, reserved, reserved_keys, output_count);
+                break :blk try copyAssetFile(allocator, io, asset_path, outdir, reserved, reserved_keys, output_count);
             };
             defer if (!root_absolute) allocator.free(rel_for_url);
             const rewritten = try joinBaseUrlWithSuffix(allocator, base, rel_for_url, parts.suffix);
@@ -826,7 +826,7 @@ fn copyPublicDir(
         else => return err,
     };
     defer dir.close(io);
-    try copyPublicDirInner(allocator, io,public_dir, "", outdir, reserved, output_count);
+    try copyPublicDirInner(allocator, io, public_dir, "", outdir, reserved, output_count);
 }
 
 fn copyPublicDirInner(
@@ -847,14 +847,14 @@ fn copyPublicDirInner(
         const rel = if (rel_dir.len == 0) try allocator.dupe(u8, entry.name) else try std.fs.path.join(allocator, &.{ rel_dir, entry.name });
         defer allocator.free(rel);
         switch (entry.kind) {
-            .directory => try copyPublicDirInner(allocator, io,public_dir, rel, outdir, reserved, output_count),
+            .directory => try copyPublicDirInner(allocator, io, public_dir, rel, outdir, reserved, output_count),
             .file => {
                 if (reserved.contains(rel)) return error.PublicDirCollision;
                 const src = try std.fs.path.join(allocator, &.{ public_dir, rel });
                 defer allocator.free(src);
                 const contents = try std.Io.Dir.cwd().readFileAlloc(io, src, allocator, std.Io.Limit.limited(100 * 1024 * 1024));
                 defer allocator.free(contents);
-                try writeOutput(allocator, io,outdir, rel, contents);
+                try writeOutput(allocator, io, outdir, rel, contents);
                 output_count.* += 1;
             },
             else => {},

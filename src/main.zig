@@ -821,7 +821,7 @@ pub fn main(init: std.process.Init) !void {
         if (result.outputs) |outputs| {
             // Code splitting: 다중 파일 출력 → --outdir 필수
             const out_dir = opts.output_dir orelse ".";
-            std.Io.Dir.cwd().createDirPath(io,out_dir) catch {};
+            std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
             for (outputs) |o| {
                 initial_bytes += o.contents.len;
                 const full_path = try std.fs.path.join(allocator, &.{ out_dir, o.path });
@@ -829,11 +829,11 @@ pub fn main(init: std.process.Init) !void {
                 // naming 패턴에 디렉토리가 포함된 경우 (예: chunks/[name]-[hash])
                 // 하위 디렉토리를 생성해야 함
                 if (std.fs.path.dirname(full_path)) |dir| {
-                    std.Io.Dir.cwd().createDirPath(io,dir) catch {};
+                    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
                 }
-                const file = try std.Io.Dir.cwd().createFile(io,full_path, .{});
+                const file = try std.Io.Dir.cwd().createFile(io, full_path, .{});
                 defer file.close(io);
-                try file.writeStreamingAll(io,o.contents);
+                try file.writeStreamingAll(io, o.contents);
                 if (!opts.watch_json) {
                     try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
                 }
@@ -845,11 +845,11 @@ pub fn main(init: std.process.Init) !void {
         } else if (opts.output_file) |out_path| {
             // 단일 파일 출력
             if (std.fs.path.dirname(out_path)) |dir| {
-                std.Io.Dir.cwd().createDirPath(io,dir) catch {};
+                std.Io.Dir.cwd().createDirPath(io, dir) catch {};
             }
-            const file = try std.Io.Dir.cwd().createFile(io,out_path, .{});
+            const file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
             defer file.close(io);
-            try file.writeStreamingAll(io,result.output);
+            try file.writeStreamingAll(io, result.output);
             initial_bytes = result.output.len;
             if (!opts.watch_json) {
                 try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
@@ -875,9 +875,9 @@ pub fn main(init: std.process.Init) !void {
         // metafile 출력
         if (opts.metafile_path) |mf_path| {
             if (result.metafile_json) |mf| {
-                const file = try std.Io.Dir.cwd().createFile(io,mf_path, .{});
+                const file = try std.Io.Dir.cwd().createFile(io, mf_path, .{});
                 defer file.close(io);
-                try file.writeStreamingAll(io,mf);
+                try file.writeStreamingAll(io, mf);
             }
         }
 
@@ -1013,20 +1013,20 @@ pub fn main(init: std.process.Init) !void {
                         output_bytes += o.contents.len;
                         const full_path = std.fs.path.join(allocator, &.{ out_dir, o.path }) catch continue;
                         defer allocator.free(full_path);
-                        if (std.fs.path.dirname(full_path)) |dir| std.Io.Dir.cwd().createDirPath(io,dir) catch {};
-                        const file = std.Io.Dir.cwd().createFile(io,full_path, .{}) catch continue;
+                        if (std.fs.path.dirname(full_path)) |dir| std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+                        const file = std.Io.Dir.cwd().createFile(io, full_path, .{}) catch continue;
                         defer file.close(io);
-                        file.writeStreamingAll(io,o.contents) catch continue;
+                        file.writeStreamingAll(io, o.contents) catch continue;
                     }
                     if (!opts.watch_json) {
                         try stderr.print("[watch] Rebuilt → {d} chunks\n", .{outputs.len});
                     }
                 } else if (opts.output_file) |out_path| {
                     output_bytes = rebuild_result.output.len;
-                    if (std.fs.path.dirname(out_path)) |dir| std.Io.Dir.cwd().createDirPath(io,dir) catch {};
-                    const file = std.Io.Dir.cwd().createFile(io,out_path, .{}) catch continue;
+                    if (std.fs.path.dirname(out_path)) |dir| std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+                    const file = std.Io.Dir.cwd().createFile(io, out_path, .{}) catch continue;
                     defer file.close(io);
-                    file.writeStreamingAll(io,rebuild_result.output) catch continue;
+                    file.writeStreamingAll(io, rebuild_result.output) catch continue;
                     // rebuild 시에도 소스맵 갱신
                     if (rebuild_result.sourcemap) |sm_json| {
                         const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});

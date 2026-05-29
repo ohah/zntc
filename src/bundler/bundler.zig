@@ -917,7 +917,8 @@ pub const Bundler = struct {
         // emit
         var emit_opts = self.makeEmitOptions();
         emit_opts.format = format;
-        const worker_result = try emitter.emitWithTreeShaking(io, 
+        const worker_result = try emitter.emitWithTreeShaking(
+            io,
             arena_alloc,
             &worker_graph,
             &emit_opts,
@@ -1595,7 +1596,8 @@ pub const Bundler = struct {
                 la.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
             }
 
-            const emit_result = try emitter.emitWithTreeShaking(io, 
+            const emit_result = try emitter.emitWithTreeShaking(
+                io,
                 self.allocator,
                 graph,
                 &dev_emit_opts,
@@ -1736,7 +1738,8 @@ pub const Bundler = struct {
                 emit_opts.polyfills = polyfill_entries.items;
                 emit_opts.worker_map_per_module = &worker_map_per_module;
                 if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
-                const emit_result = try emitter.emitWithTreeShaking(io, 
+                const emit_result = try emitter.emitWithTreeShaking(
+                    io,
                     self.allocator,
                     graph,
                     &emit_opts,
@@ -1767,7 +1770,8 @@ pub const Bundler = struct {
             emit_opts.polyfills = polyfill_entries.items;
             emit_opts.worker_map_per_module = &worker_map_per_module;
             if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
-            const emit_result = try emitter.emitWithTreeShaking(io, 
+            const emit_result = try emitter.emitWithTreeShaking(
+                io,
                 self.allocator,
                 graph,
                 &emit_opts,
