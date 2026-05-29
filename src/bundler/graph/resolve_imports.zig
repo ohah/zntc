@@ -437,7 +437,7 @@ fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, idx: Modul
         if (request_changed) {
             // 이미 resolve 된 re-export barrel 에 뒤늦게 namespace/require 요청이 들어오면
             // 하위 lazy barrel 의 미해결 record 까지 다시 전파해야 한다.
-            try resolveDeferredRequestedImportsIfReady(self, record.resolved);
+            try resolveDeferredRequestedImportsIfReady(self, io, record.resolved);
         }
     }
 }
@@ -501,7 +501,7 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
                 if (resolve_result) |plugin_result| {
                     const interned = try self.resolve_cache.internResolvedModule(plugin_result);
                     if (should_link) {
-                        try applyResolveResult(self, mod_idx, rec_i, record, interned, false);
+                        try applyResolveResult(self, io, mod_idx, rec_i, record, interned, false);
                     } else {
                         self.markRecordLazyResolved(mod_idx, rec_i);
                         self.discardResolvedModule(interned);
@@ -518,13 +518,13 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
             record.kind,
         ) catch |err| switch (err) {
             error.ModuleNotFound => {
-                try applyResolveResult(self, mod_idx, rec_i, record, null, true);
+                try applyResolveResult(self, io, mod_idx, rec_i, record, null, true);
                 continue;
             },
             error.OutOfMemory => return error.OutOfMemory,
         };
         if (should_link) {
-            try applyResolveResult(self, mod_idx, rec_i, record, resolved, false);
+            try applyResolveResult(self, io, mod_idx, rec_i, record, resolved, false);
         } else if (resolved) |resolved_module| {
             self.markRecordLazyResolved(mod_idx, rec_i);
             self.discardResolvedModule(resolved_module);

@@ -489,7 +489,7 @@ fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index:
         for (parse_start..parse_end) |i| {
             const m_ptr = self.modules.at(i);
             if (m_ptr.is_disabled or m_ptr.is_external) continue;
-            try graph_resolve_imports.resolveModuleImports(self, @enumFromInt(@as(u32, @intCast(i))));
+            try graph_resolve_imports.resolveModuleImports(self, io, @enumFromInt(@as(u32, @intCast(i))));
             try graph_resolve_imports.applyContextDepResults(self, i);
         }
         parse_start = parse_end;
@@ -786,7 +786,7 @@ pub fn buildIncremental(
             } else {
                 var s_mr = profile.begin(.graph_discover_incr_miss_resolve);
                 defer s_mr.end();
-                try graph_resolve_imports.resolveModuleImports(self, @enumFromInt(@as(u32, @intCast(i))));
+                try graph_resolve_imports.resolveModuleImports(self, io, @enumFromInt(@as(u32, @intCast(i))));
             }
         }
 

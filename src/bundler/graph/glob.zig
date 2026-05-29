@@ -8,7 +8,7 @@ const Span = @import("../../lexer/token.zig").Span;
 /// import.meta.glob 패턴을 파일 시스템에서 확장한다.
 /// 패턴: "./dir/*.ext" — prefix(./dir/) + *와 suffix(.ext)로 분리하여 디렉토리 탐색.
 /// 상대 경로 배열을 반환한다 (예: ["./pages/Home.tsx", "./pages/About.tsx"]).
-fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []const u8) ![]const []const u8 {
+fn expandGlob(allocator: std.mem.Allocator, io: std.Io, source_dir: []const u8, pattern: []const u8) ![]const []const u8 {
     const star_pos = std.mem.indexOf(u8, pattern, "*") orelse return &.{};
     const prefix = pattern[0..star_pos];
     const suffix = pattern[star_pos + 1 ..];
@@ -20,7 +20,7 @@ fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []c
     const glob_dir_abs = try std.fs.path.resolve(allocator, &.{ source_dir, glob_dir_rel });
     defer allocator.free(glob_dir_abs);
 
-    const entries = fs.listDir(allocator, glob_dir_abs) catch return &.{};
+    const entries = fs.listDir(io, allocator, glob_dir_abs) catch return &.{};
     defer {
         for (entries) |e| allocator.free(e.name);
         allocator.free(entries);
@@ -58,10 +58,10 @@ fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []c
 
 /// import_records 배열에서 glob 레코드를 찾아 expandGlob으로 파일 매칭을 수행한다.
 /// scanWorker와 resolveModuleImports 양쪽에서 호출되는 공통 헬퍼.
-pub fn expandGlobRecords(allocator: std.mem.Allocator, records: []types.ImportRecord, source_dir: []const u8) void {
+pub fn expandGlobRecords(allocator: std.mem.Allocator, io: std.Io, records: []types.ImportRecord, source_dir: []const u8) void {
     for (records) |*record| {
         if (record.kind == .glob) {
-            record.glob_matches = expandGlob(allocator, source_dir, record.specifier) catch &.{};
+            record.glob_matches = expandGlob(allocator, io, source_dir, record.specifier) catch &.{};
         }
     }
 }

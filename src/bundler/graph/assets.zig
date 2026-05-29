@@ -270,16 +270,16 @@ pub fn emitAssetRegistryCall(
     const registry_esc = try escapeJsString(source_alloc, input.registry_path);
 
     // scales 배열 직렬화. 일반적으로 [1,2,3] 정도라 스택 버퍼로 충분.
+    // 0.16: std.io.fixedBufferStream 제거 → std.Io.Writer.fixed (고정 버퍼 writer).
     var scales_stack_buf: [128]u8 = undefined;
-    var scales_stream = std.io.fixedBufferStream(&scales_stack_buf);
-    const sw = scales_stream.writer();
+    var sw: std.Io.Writer = .fixed(&scales_stack_buf);
     sw.writeByte('[') catch return error.OutOfMemory;
     for (input.scales, 0..) |s, i| {
         if (i > 0) sw.writeAll(", ") catch return error.OutOfMemory;
-        std.fmt.format(sw, "{d}", .{s}) catch return error.OutOfMemory;
+        sw.print("{d}", .{s}) catch return error.OutOfMemory;
     }
     sw.writeByte(']') catch return error.OutOfMemory;
-    const scales_str = scales_stream.getWritten();
+    const scales_str = sw.buffered();
 
     const source = try std.fmt.allocPrint(source_alloc,
         \\module.exports = require("{s}").registerAsset({{
