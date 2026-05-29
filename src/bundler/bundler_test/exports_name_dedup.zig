@@ -261,3 +261,82 @@ test "ambiguous export*: default 는 export * 비전파라 ambiguous 아님 (#39
     // default 충돌은 ambiguous 진단을 내지 않는다(애초에 namespace 에 포함 안 됨).
     try testing.expect(!hasAmbiguousDiag(&r));
 }
+
+// ============================================================
+// 회귀: `export * as ns` 의 내부 이름이 plain `export *` 의 동명 export 와
+// false-ambiguous 충돌 → 정상 export 가 사라지던 버그 (zod `z.string`===undefined).
+// `export * as ns from` 은 top-level 에 단일 named export `ns` 만 기여하므로,
+// 그 내부 이름은 ambiguity 판정/star resolve 에 절대 참여하면 안 된다.
+// ============================================================
+
+test "namespaced star: inner 이름이 plain star 와 false-ambiguous 아님 — named import 정상 (zod z.string)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // coerce 와 schemas 가 같은 이름 `string` 을 export. coerce 는 `export * as`,
+    // schemas 는 plain `export *` → top-level `string` 은 schemas 것만 유일.
+    try writeFile(tmp.dir, "coerce.js", "export function string() { return 'coerce'; }");
+    try writeFile(tmp.dir, "schemas.js", "export function string() { return 'schema'; }");
+    try writeFile(tmp.dir, "core.js", "export * as coerce from './coerce.js';\nexport * from './schemas.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { string } from './core.js';
+        \\globalThis.z = string();
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    // `string` 은 schemas 단일 소스 → 모호하지 않음. pre-fix 에선 coerce(namespaced)와
+    // false-ambiguous → named import `{ string }` 이 build error → hasErrors/ambiguous diag.
+    // 이 두 단언이 회귀를 가른다(둘 다 pre-fix 에서 실패).
+    try testing.expect(!r.result.hasErrors());
+    try testing.expect(!hasAmbiguousDiag(&r));
+}
+
+test "namespaced star: namespace 멤버가 plain star 정의로 해석 (drop 안 됨, production)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "coerce.js", "export function string() { return 'coerce'; }");
+    try writeFile(tmp.dir, "schemas.js", "export function string() { return 'schema'; }");
+    try writeFile(tmp.dir, "core.js", "export * as coerce from './coerce.js';\nexport * from './schemas.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './core.js';
+        \\globalThis.z = [typeof ns.string, ns.coerce.string()];
+    );
+
+    // 실제 zod 회귀는 production scope-hoist(tree-shake) 경로에서만 재현된다 — dev 번들의
+    // `__export` map 은 버그와 무관하게 멤버를 그대로 emit 하므로 가드가 되지 못한다.
+    // production 에선 `ns.string` 이 schemas 로 정확히 해석돼야 그 factory(`"schema"`)가
+    // live 로 유지된다. pre-fix 는 false-ambiguous 로 멤버 해석이 깨져 schemas 본체가
+    // tree-shake 로 사라지므로 `"schema"` 부재 → 이 단언이 회귀를 가른다.
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.js", .{
+        .scope_hoist = true,
+        .tree_shaking = true,
+    });
+    defer r.deinit();
+    const code = r.code();
+    try testing.expect(!r.result.hasErrors());
+    try testing.expect(!hasAmbiguousDiag(&r));
+    // schemas factory body 가 live (top-level `ns.string` → schemas 해석 증거).
+    try testing.expect(std.mem.indexOf(u8, code, "\"schema\"") != null);
+    // 중첩 `coerce` namespace 도 별도로 보존(coerce factory live).
+    try testing.expect(std.mem.indexOf(u8, code, "\"coerce\"") != null);
+}
+
+test "namespaced star: 2 plain star 동명은 export * as 가 있어도 ambiguous 유지 (over-correction 가드)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // schemas + extra 두 plain star 가 같은 `string` → genuine ambiguous.
+    // `export * as coerce` 가 함께 있어도 ambiguity 는 그대로여야 한다.
+    try writeFile(tmp.dir, "coerce.js", "export function string() { return 'coerce'; }");
+    try writeFile(tmp.dir, "schemas.js", "export function string() { return 'schema'; }");
+    try writeFile(tmp.dir, "extra.js", "export function string() { return 'extra'; }");
+    try writeFile(tmp.dir, "core.js", "export * as coerce from './coerce.js';\nexport * from './schemas.js';\nexport * from './extra.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { string } from './core.js';
+        \\globalThis.z = string();
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    try testing.expect(r.result.hasErrors());
+    try testing.expect(hasAmbiguousDiag(&r));
+}

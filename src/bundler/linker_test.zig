@@ -13,6 +13,18 @@ fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
     return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
+/// 주어진 basename 과 정확히 일치하는 모듈의 인덱스를 찾는다. 테스트에서 graph
+/// 빌드 순서에 의존하지 않고 특정 소스 파일의 모듈을 지목하기 위한 헬퍼.
+/// `std.fs.path.basename` 으로 경로 마지막 컴포넌트를 비교 — suffix 매칭(`endsWith`)이
+/// 아니라 정확 일치라, 예컨대 "core.ts" 질의가 "my-core.ts" 모듈을 잘못 잡지 않는다.
+fn findModuleIdx(graph: *ModuleGraph, basename: []const u8) ?ModuleIndex {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
+        if (std.mem.eql(u8, std.fs.path.basename(m.path), basename)) return m.index;
+    }
+    return null;
+}
+
 fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
     const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
@@ -1077,6 +1089,78 @@ test "export * as: does not pollute parent seen (name collision)" {
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+
+    // 회귀 가드(zod `z.string`===undefined): `export * as regexes` 의 내부 `string` 이
+    // plain `export *`(schemas)의 `string` 과 false-ambiguous 충돌하면 안 된다.
+    // `export * as ns` 는 top-level 에 `ns` 한 이름만 기여하므로 ambiguity 판정 비참여.
+    const core_idx = findModuleIdx(r.graph, "core.ts").?;
+    const schemas_idx = findModuleIdx(r.graph, "schemas.ts").?;
+    try std.testing.expect(!r.linker.isAmbiguousStarExport(core_idx, "string"));
+    const resolved = r.linker.resolveExportChain(core_idx, "string", 0);
+    try std.testing.expect(resolved != null);
+    // schemas(plain star)의 factory 로 해석되어야 한다 — regexes(namespaced)가 아님.
+    try std.testing.expectEqual(@intFromEnum(schemas_idx), @intFromEnum(resolved.?.module_index));
+}
+
+test "export * as: namespaced inner name does not leak to top-level (no false resolve)" {
+    // `export * as regexes` 만 있고 plain `export *` 가 없으면, regexes 의 내부 `string`
+    // 은 core 의 top-level export 가 아니다(ESM: namespaced star 는 `regexes` 한 이름만
+    // 기여). top-level `string` resolve 는 null 이어야 하고 ambiguous 도 아니다.
+    // 회귀 가드: resolveStarExport 가 namespaced re-export 를 따라가면 `string` 을
+    // regexes.string 으로 잘못 해석(leak)했었다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "regexes.ts", "export const string = /^.*$/;");
+    try writeFile(tmp.dir, "core.ts", "export * as regexes from './regexes';\nexport const marker = 1;");
+    try writeFile(tmp.dir, "entry.ts", "import { string } from './core';\nconsole.log(string);");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const core_idx = findModuleIdx(r.graph, "core.ts").?;
+    // top-level `string` 은 존재하지 않음 → resolve null, ambiguous 아님.
+    try std.testing.expect(r.linker.resolveExportChain(core_idx, "string", 0) == null);
+    try std.testing.expect(!r.linker.isAmbiguousStarExport(core_idx, "string"));
+    // `regexes` 자체는 정상 named export 로 해석.
+    try std.testing.expect(r.linker.resolveExportChain(core_idx, "regexes", 0) != null);
+    // named import { string } 는 진짜 missing → 진단.
+    var has_missing = false;
+    for (r.linker.diagnostics.items) |d| {
+        if (d.code == .missing_export) has_missing = true;
+    }
+    try std.testing.expect(has_missing);
+}
+
+test "export * as: genuine 2-plain-star ambiguity preserved despite namespaced star" {
+    // over-correction 가드: plain `export *` 2개(schemas, extra)가 같은 `string` 을
+    // 내보내면 `export * as regexes` 가 함께 있어도 여전히 ESM-ambiguous 여야 한다.
+    // (namespaced star 는 ambiguity 에 영향 없음 — 추가도 제거도 하지 않음.)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "regexes.ts", "export const string = /^.*$/;");
+    try writeFile(tmp.dir, "schemas.ts", "export function string() { return 'schema'; }");
+    try writeFile(tmp.dir, "extra.ts", "export function string() { return 'extra'; }");
+    try writeFile(tmp.dir, "core.ts", "export * as regexes from './regexes';\nexport * from './schemas';\nexport * from './extra';");
+    try writeFile(tmp.dir, "entry.ts", "import { string } from './core';\nconsole.log(string);");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const core_idx = findModuleIdx(r.graph, "core.ts").?;
+    // schemas + extra 두 plain star 가 distinct canonical → ambiguous → resolve null.
+    try std.testing.expect(r.linker.isAmbiguousStarExport(core_idx, "string"));
+    try std.testing.expect(r.linker.resolveExportChain(core_idx, "string", 0) == null);
+    // ambiguous named import → 사용자 노출(fatal) 진단. (missing_export 와 달리
+    // ambiguous_export 는 fatal_diagnostics 에만 기록된다.)
+    var has_ambiguous = false;
+    for (r.linker.fatal_diagnostics.items) |d| {
+        if (d.code == .ambiguous_export) has_ambiguous = true;
+    }
+    try std.testing.expect(has_ambiguous);
 }
 
 // ============================================================
