@@ -23,14 +23,15 @@ pub fn hashHex8(data: []const u8) [8]u8 {
 /// 파일 내용의 Wyhash-64. 파일을 64KB 버퍼로 순회하여 대용량에서도 메모리 부담 없음.
 /// `max_bytes` 초과 시 size+mtime 기반 pseudo-hash로 폴백 (RN 등 vendor 번들/locale JSON 대응 — #1233).
 /// 열기/stat/읽기 실패 시 null.
-pub fn hashFileStreaming(path: []const u8, max_bytes: usize) ?u64 {
+pub fn hashFileStreaming(io: std.Io, path: []const u8, max_bytes: usize) ?u64 {
     // Zig std `toPosixPath` 는 NUL byte 포함 path 를 runtime_safety assertion 으로 panic.
     // ZNTC virtual module id (`\x00zntc:runtime/...` 등) 가 watch 등록 시 hash 시도되어
     // panic 으로 빠지는 회귀 방지 — contract "실패 시 null" 을 모든 경로에서 보장.
     if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
-    const stat = file.stat() catch return null;
+    // 0.16: std.fs.cwd 제거 → std.Io.Dir.cwd + io.
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer file.close(io);
+    const stat = file.stat(io) catch return null;
     if (stat.size > max_bytes) {
         // 거대 파일: 내용 스트리밍 비용을 피하고 size+mtime으로 pseudo-hash.
         // mtime만 갱신될 때 false-positive가 생길 수 있지만 stale output보다 안전.
@@ -40,9 +41,12 @@ pub fn hashFileStreaming(path: []const u8, max_bytes: usize) ?u64 {
         return h.final();
     }
     var hasher = std.hash.Wyhash.init(0);
+    // 0.16: File.read 제거 → File.Reader.readSliceShort (0 = EOF).
+    var rbuf: [64 * 1024]u8 = undefined;
+    var fr = file.reader(io, &rbuf);
     var buf: [64 * 1024]u8 = undefined;
     while (true) {
-        const n = file.read(&buf) catch return null;
+        const n = fr.interface.readSliceShort(&buf) catch return null;
         if (n == 0) break;
         hasher.update(buf[0..n]);
     }

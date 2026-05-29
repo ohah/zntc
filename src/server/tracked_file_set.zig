@@ -21,6 +21,8 @@ const wyhash = @import("../util/wyhash.zig");
 /// `removePath`에서 맞춰 해제한다.
 pub const TrackedFileSet = struct {
     allocator: std.mem.Allocator,
+    /// 0.16: FileWatcher.init / wyhash.hashFileStreaming 에 io 필요. init 에서 보관.
+    io: std.Io,
     watcher: FileWatcher,
     hashes: std.StringHashMap(u64),
     /// issue #3858 — dir 자체를 watch 대상으로 등록한 path 들. addDirPath 가 set.
@@ -30,10 +32,11 @@ pub const TrackedFileSet = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, max_bytes: usize) !Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, max_bytes: usize) !Self {
         return .{
             .allocator = allocator,
-            .watcher = try FileWatcher.init(allocator),
+            .io = io,
+            .watcher = try FileWatcher.init(allocator, io),
             .hashes = std.StringHashMap(u64).init(allocator),
             .dir_paths = std.StringHashMap(void).init(allocator),
             .max_bytes = max_bytes,
@@ -65,7 +68,7 @@ pub const TrackedFileSet = struct {
             };
             gop.key_ptr.* = key;
         }
-        gop.value_ptr.* = wyhash.hashFileStreaming(path, self.max_bytes) orelse 0;
+        gop.value_ptr.* = wyhash.hashFileStreaming(self.io, path, self.max_bytes) orelse 0;
         return true;
     }
 
@@ -130,7 +133,7 @@ pub const TrackedFileSet = struct {
     /// 파일의 현재 내용 해시를 캐시와 비교. 내용이 바뀌었으면 캐시 갱신 후 true.
     /// 읽기 실패/크기 초과 시 false.
     pub fn markIfChanged(self: *Self, path: []const u8) bool {
-        const new_hash = wyhash.hashFileStreaming(path, self.max_bytes) orelse return false;
+        const new_hash = wyhash.hashFileStreaming(self.io, path, self.max_bytes) orelse return false;
         const gop = self.hashes.getOrPut(path) catch return false;
         if (gop.found_existing) {
             if (gop.value_ptr.* == new_hash) return false;
