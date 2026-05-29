@@ -246,7 +246,19 @@ fn renderHeader(writer: anytype, diag: RichDiagnostic, color: bool, unicode: boo
     try writer.writeAll("  ");
     try ansi.styled(writer, style, icon, color);
     try writer.writeByte(' ');
-    try ansi.styled(writer, style, diag.message, color);
+    if (diag.found) |found_tok| {
+        // (#3985) "기대 토큰" 진단: message 는 기대 심볼, found 는 실제 심볼.
+        // "Expected '<message>' but found '<found>'" 로 렌더(이전엔 message 만 →
+        // 컨텍스트 없는 bare 심볼 `× )`). found 가 set 되는 곳은 expect()/
+        // expectSemicolon()/jsx 뿐이며 거기선 message 가 항상 토큰 심볼이다.
+        try ansi.styled(writer, style, "Expected '", color);
+        try ansi.styled(writer, style, diag.message, color);
+        try ansi.styled(writer, style, "' but found '", color);
+        try ansi.styled(writer, style, found_tok, color);
+        try ansi.styled(writer, style, "'", color);
+    } else {
+        try ansi.styled(writer, style, diag.message, color);
+    }
 
     // 에러 코드
     if (diag.code) |code_str| {
@@ -434,6 +446,50 @@ test "render: basic error with code frame" {
     try std.testing.expect(std.mem.indexOf(u8, out, "^^^^^^^^^^^^^^^^") != null);
     // help
     try std.testing.expect(std.mem.indexOf(u8, out, "help: Set target to 'es2022'") != null);
+}
+
+test "render: found 토큰 → 'Expected X but found Y' 헤더 (#3985)" {
+    // expect()/expectSemicolon()/jsx 진단: message=기대 심볼, found=실제 심볼.
+    // 이전엔 message 만 렌더(bare `× )`) → found 가 dead 였음. 렌더 문자열을 직접 검사.
+    const source = "f(a, b ;";
+    const offsets = [_]u32{0};
+    const diag = RichDiagnostic{
+        .severity = .@"error",
+        .message = ")",
+        .found = ";",
+        .span = .{ .start = 7, .end = 8 },
+        .file_path = "t.ts",
+    };
+    const info = SourceInfo{ .source = source, .line_offsets = &offsets };
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
+    const out = fbs.getWritten();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Expected ')' but found ';'") != null);
+    // bare 심볼만 있던 회귀 방지: 헤더 라인이 `× )` 로 끝나지 않아야 함.
+    try std.testing.expect(std.mem.indexOf(u8, out, "but found") != null);
+}
+
+test "render: found 없으면 message 그대로 (회귀 가드 #3985)" {
+    const source = "x";
+    const offsets = [_]u32{0};
+    const diag = RichDiagnostic{
+        .severity = .@"error",
+        .message = "Some plain message",
+        .span = .{ .start = 0, .end = 1 },
+        .file_path = "t.ts",
+    };
+    const info = SourceInfo{ .source = source, .line_offsets = &offsets };
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
+    const out = fbs.getWritten();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Some plain message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Expected '") == null);
 }
 
 test "render: multi-line source with context" {

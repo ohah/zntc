@@ -29,6 +29,10 @@ pub const RichDiagnostic = struct {
     code: ?[]const u8 = null,
     /// 주 메시지 (예: "Top-level await is not available in the configured target environment")
     message: []const u8,
+    /// (#3985) expect()/expectSemicolon()/jsx 처럼 "기대 토큰" 진단일 때 실제로 만난
+    /// 토큰 심볼. non-null 이면 렌더러가 `Expected '<message>' but found '<found>'` 로
+    /// 출력한다(이때 message 는 기대 토큰 심볼). null 이면 message 를 그대로 출력.
+    found: ?[]const u8 = null,
     /// 주 에러 위치 (소스에서의 바이트 범위)
     span: Span,
     /// 에러가 발생한 파일 경로
@@ -124,6 +128,7 @@ pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
         .severity = .@"error",
         .code = if (d.code) |c| c.format() else null,
         .message = d.message,
+        .found = d.found,
         .span = d.span,
         .file_path = file_path,
         .labels = d.labels,
