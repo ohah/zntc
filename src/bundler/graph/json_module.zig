@@ -18,7 +18,7 @@ const ModuleGraph = graph_mod.ModuleGraph;
 /// JSON 모듈: ESM AST로 변환 → 일반 JS와 동일한 파이프라인.
 /// `export default <json_value>;` 형태의 AST를 생성하여
 /// semantic → import_scanner → binding_scanner를 공유한다.
-pub fn parse(self: *ModuleGraph, module: *Module) void {
+pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
     module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
         module.state = .ready;
         return;

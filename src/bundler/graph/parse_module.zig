@@ -1,5 +1,6 @@
 //! JavaScript-like module parsing pipeline for ModuleGraph.
 
+const std = @import("std");
 const types = @import("../types.zig");
 const ModuleIndex = types.ModuleIndex;
 const module_mod = @import("../module.zig");
@@ -46,20 +47,20 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
                 (module.module_type == .css and module.loader == .css) or
                 moduleReadsSourceForAsset(module.loader));
         if (!can_read_mtime_with_source) {
-            module.mtime = getMtime(module.path) catch 0;
+            module.mtime = getMtime(io, module.path) catch 0;
         }
     }
 
     // JSON 모듈: ESM AST로 변환 → 일반 JS와 동일한 파이프라인
     if (module.module_type == .json) {
-        self.parseJsonModule(module);
+        self.parseJsonModule(io, module);
         return;
     }
 
     // Asset 로더: 파일을 읽어서 fake JS 모듈로 변환 (rolldown 방식)
     // 플러그인이 이미 소스를 반환한 경우 건너뜀 (플러그인 우선)
     if (module.loader.isAsset() and module.source.len == 0) {
-        self.parseAssetModule(module);
+        self.parseAssetModule(io, module);
         // asset_registry 모드(.file/.copy)에서만 loader를 .javascript로 전환해
         // 일반 JS 파이프라인이 source의 require()를 ImportRecord로 추출하게 한다.
         // (plugin load hook과 동일한 fall-through 신호)
@@ -68,7 +69,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
 
     // CSS 모듈: @import 추출 → 모듈 그래프에 등록
     if (module.module_type == .css and module.loader == .css) {
-        self.parseCssModule(module);
+        self.parseCssModule(io, module);
         return;
     }
 
