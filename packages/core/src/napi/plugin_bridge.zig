@@ -363,7 +363,7 @@ pub const NapiPlugin = struct {
             return js_ext_obj;
         }
 
-        const resolved = (resolve_cache.resolveThreadSafe(source_dir, source, .static_import) catch return js_null) orelse return js_null;
+        const resolved = (resolve_cache.resolveThreadSafe(common.io(), source_dir, source, .static_import) catch return js_null) orelse return js_null;
         // PR resolve interning: file/disabled 의 path 는 path_pool 소유 (borrow only) — free 금지.
         // virtual/external/custom/dataurl variant 는 cache 가 반환 안 함 (plugin 만 생성, 여기 도달 안 함).
 
@@ -587,11 +587,11 @@ pub const NapiPlugin = struct {
         // deadline. waitTimeout 은 spurious wakeup 도 error.Timeout 으로 반환하므로,
         // deadline 이 아직 미래면 재대기(실제 timeout 만 null 반환).
         const io = common.io();
-        const deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = std.Io.Duration.fromSeconds(30) }).toDeadline(io);
+        const deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = .{ .raw = std.Io.Duration.fromSeconds(30), .clock = .awake } }).toDeadline(io);
         while (true) {
             ctx.done.waitTimeout(io, deadline) catch {
                 if (deadline.toDurationFromNow(io)) |d| {
-                    if (d.toNanoseconds() > 0) continue; // 아직 시간 남음 → spurious, 재대기
+                    if (d.raw.toNanoseconds() > 0) continue; // 아직 시간 남음 → spurious, 재대기
                 }
                 return null; // deadline 경과 → 실제 timeout
             };

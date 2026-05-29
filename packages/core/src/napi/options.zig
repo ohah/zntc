@@ -591,7 +591,7 @@ pub fn parseBuildOptions(
     if (tsconfig_raw) |raw| {
         tsconfig_holder = TsConfig.parseFromString(native_alloc, raw) catch TsConfig{};
     } else if (tsconfig_path_opt) |p| {
-        tsconfig_holder = TsConfig.loadFromPath(native_alloc, p) catch TsConfig{};
+        tsconfig_holder = TsConfig.loadFromPath(native_alloc, common.io(), p) catch TsConfig{};
     }
     defer tsconfig_holder.deinit();
 
