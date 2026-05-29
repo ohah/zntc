@@ -46,7 +46,7 @@ fn expectMinifyOpts(
 
     var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
     const result = try cg.generate(root);
-    const trimmed = std.mem.trimRight(u8, result, "\n");
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
 }
 
@@ -70,7 +70,7 @@ fn expectMergeIdempotent(input: []const u8, expected: []const u8) !void {
 
     var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
-    const trimmed = std.mem.trimRight(u8, result, "\n");
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
 }
 
@@ -807,7 +807,7 @@ test "S4b: convertConstToLet + mergeDecls — const/let 섞임 → let 합침" {
     minify_mod.mergeDecls(transformer.ast, null);
     var cg = Codegen.initWithOptions(a, transformer.ast, .{ .minify_whitespace = true, .minify_syntax = true });
     const result = try cg.generate(root);
-    const trimmed = std.mem.trimRight(u8, result, "\n");
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings("let a=1,b=2,c=3;", trimmed);
 }
 
@@ -1160,7 +1160,7 @@ fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
 
     var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
-    const trimmed = std.mem.trimRight(u8, result, "\n");
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
 }
 
@@ -1443,7 +1443,7 @@ fn expectMinifyTopLevelInlineOpts(
 
     var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
     const result = try cg.generate(root);
-    const trimmed = std.mem.trimRight(u8, result, "\n");
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
 }
 
