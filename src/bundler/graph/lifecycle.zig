@@ -91,6 +91,9 @@ pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
 }
 
 pub fn deinit(self: *ModuleGraph) void {
+    // 0.16: entry_dir 는 graph-owned dupe (build_flow). project_root 는 entry_dir
+    // 로의 borrow 또는 user-set borrow 라 별도 free 안 함.
+    if (self.entry_dir.len > 0) self.allocator.free(self.entry_dir);
     var mod_it = self.modules.iterator(0);
     while (mod_it.next()) |m| {
         // import_records, import_bindings, export_bindings는 parse_arena 소유.
