@@ -14,15 +14,16 @@ const Platform = bundler_mod.Platform;
 
 pub const panic = zntc_lib.crash_handler.panic;
 
-// 0.16: multi-threaded wasm 에서 wasm_allocator/c_allocator(내부 WasmAllocator)는
-// `@compileError("unimplemented")`. 대신 thread-safe `smp_allocator` 사용.
-const wasm_alloc = std.heap.smp_allocator;
+// 0.16: single-threaded wasm 으로 전환(build.zig 참조) → std.heap.wasm_allocator
+// (BrkAllocator) 사용 가능. 멀티스레드 wasm 은 WasmAllocator/Threaded 모두 std 미지원.
+const wasm_alloc = std.heap.wasm_allocator;
 
 /// 0.16: bundler.bundle 등이 io 를 요구. wasm-bundler 는 juicy main 이 없어
-/// 전역 Threaded io 를 lazy 생성 (이 타겟은 +threads 라 async_limit 기본 사용 가능).
+/// 전역 Threaded io 를 lazy 생성. single-threaded 라 async_limit=.nothing(inline) —
+/// 번들러 내부 Io.Group 병렬이 직렬 실행(determinism 유지).
 var wasm_threaded: ?std.Io.Threaded = null;
 fn wasmIo() std.Io {
-    if (wasm_threaded == null) wasm_threaded = std.Io.Threaded.init(wasm_alloc, .{});
+    if (wasm_threaded == null) wasm_threaded = std.Io.Threaded.init(wasm_alloc, .{ .async_limit = .nothing });
     return wasm_threaded.?.io();
 }
 
