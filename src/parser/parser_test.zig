@@ -4407,10 +4407,10 @@ fn assertShiftStressParsesUnder100ms(
     }
     try src.appendSlice(std.testing.allocator, epilogue);
 
-    var timer = try std.time.Timer.start();
+    const start = std.Io.Timestamp.now(std.testing.io, .awake);
     var r = try parseTs(std.testing.allocator, src.items);
     defer r.deinit();
-    const elapsed_ns = timer.read();
+    const elapsed_ns: u64 = @intCast(@max(0, start.untilNow(std.testing.io, .awake).toNanoseconds()));
     try std.testing.expect(elapsed_ns < 100 * std.time.ns_per_ms);
 }
 

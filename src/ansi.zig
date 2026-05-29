@@ -94,11 +94,10 @@ test "Style.code returns valid ANSI sequences" {
 
 test "styled: color enabled wraps text with escape codes" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(&buf);
 
-    try styled(w, .bold_red, "error", true);
-    const out = fbs.getWritten();
+    try styled(&w, .bold_red, "error", true);
+    const out = w.buffered();
 
     // "\x1b[1;31merror\x1b[0m"
     try std.testing.expect(std.mem.startsWith(u8, out, "\x1b[1;31m"));
@@ -108,31 +107,28 @@ test "styled: color enabled wraps text with escape codes" {
 
 test "styled: color disabled outputs plain text" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(&buf);
 
-    try styled(w, .bold_red, "error", false);
-    const out = fbs.getWritten();
+    try styled(&w, .bold_red, "error", false);
+    const out = w.buffered();
 
     try std.testing.expectEqualStrings("error", out);
 }
 
 test "setStyle: emits only escape code" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(&buf);
 
-    try setStyle(w, .cyan, true);
-    const out = fbs.getWritten();
+    try setStyle(&w, .cyan, true);
+    const out = w.buffered();
     try std.testing.expectEqualStrings("\x1b[36m", out);
 }
 
 test "setStyle: no-op when color disabled" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(&buf);
 
-    try setStyle(w, .cyan, false);
-    const out = fbs.getWritten();
+    try setStyle(&w, .cyan, false);
+    const out = w.buffered();
     try std.testing.expectEqualStrings("", out);
 }

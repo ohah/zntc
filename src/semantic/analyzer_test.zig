@@ -2122,7 +2122,7 @@ test "#2474 regression: catch destructure duplicate at index 17+ — diagnostic 
     var i: u32 = 0;
     while (i < 16) : (i += 1) {
         if (i > 0) try src.appendSlice(a, ", ");
-        try src.writer(a).print("k{d}", .{i});
+        try src.print(a, "k{d}", .{i});
     }
     // 17번째와 18번째에 동일 이름 k16. 16-stack 이면 둘 다 names 에 못 들어감 → 진단 누락.
     try src.appendSlice(a, ", k16, k16]) {}");
@@ -2180,7 +2180,7 @@ test "#2474 regression: 20-element catch destructure conflicts with body let —
     var i: u32 = 0;
     while (i < 17) : (i += 1) {
         if (i > 0) try src.appendSlice(a, ", ");
-        try src.writer(a).print("k{d}", .{i});
+        try src.print(a, "k{d}", .{i});
     }
     try src.appendSlice(a, "]) { let k16 = 1; }");
 

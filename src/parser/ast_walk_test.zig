@@ -240,7 +240,7 @@ test "#2473 regression: 500-element array pattern — walker 가 모든 leaf 반
     var i: u32 = 0;
     while (i < 500) : (i += 1) {
         if (i > 0) try src.appendSlice(a, ", ");
-        try src.writer(a).print("a{d}", .{i});
+        try src.print(a, "a{d}", .{i});
     }
     try src.appendSlice(a, "] = arr;");
 

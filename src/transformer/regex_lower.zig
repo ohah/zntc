@@ -431,7 +431,7 @@ test "#2472 regression: 50 named groups + last backref — no truncation" {
     try pat.append(testing.allocator, '/');
     var i: u32 = 0;
     while (i < 50) : (i += 1) {
-        try pat.writer(testing.allocator).print("(?<n{d}>a)", .{i});
+        try pat.print(testing.allocator, "(?<n{d}>a)", .{i});
     }
     // 마지막 named group 의 backref — 50번째 capture 이므로 \50 으로 변환되어야 한다.
     try pat.appendSlice(testing.allocator, "\\k<n49>/");

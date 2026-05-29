@@ -34,9 +34,7 @@ fn loadFile(
 ) ![]u8 {
     const path = try std.fs.path.join(alloc, &.{ SNAPSHOTS_ROOT, suite, sub, name });
     defer alloc.free(path);
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    return try file.readToEndAlloc(alloc, 1 << 20);
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, alloc, std.Io.Limit.limited(1 << 20));
 }
 
 /// `__INTERNAL_VIEW_CONFIG = ` 다음의 object literal (`{...}`) 본체 반환. brace 카운팅 —

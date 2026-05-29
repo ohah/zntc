@@ -23,7 +23,7 @@ test "CJS: single CJS module wrapped with __commonJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -49,7 +49,7 @@ test "CJS: Object.defineProperty(module, exports) wrapped with __commonJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -69,7 +69,7 @@ test "CJS: ESM imports default from CJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -88,7 +88,7 @@ test "CJS: ESM imports named from CJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -114,7 +114,7 @@ test "CJS: import * as ns of ESM-that-export*-from-CJS → __toESM(require()) af
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -140,7 +140,7 @@ test "CJS: namespace of mixed barrel (local export + export*-from-CJS) (#3975)" 
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -169,7 +169,7 @@ test "CJS: namespace of multiple export*-from-CJS barrels (#3975)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -191,7 +191,7 @@ test "CJS: namespace with export*-as-inner from CJS (#3975)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -213,7 +213,7 @@ test "CJS: dev mode namespace of export*-from-CJS — wrapped exports 에 __copy
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -235,7 +235,7 @@ test "CJS: dev mode namespace of export*-as-inner from CJS — __toESM 표현식
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -274,15 +274,15 @@ test "CJS: RN strict order defers named CJS import with inlineRequires" {
         .strict_execution_order = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
 
-    const node_result = std.process.Child.run(.{
-        .allocator = std.testing.allocator,
+    const node_result = std.process.Child.run(std.testing.allocator, std.testing.io, .{
         .argv = &.{ "node", "-e", result.output },
-        .max_output_bytes = 16 * 1024,
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -324,7 +324,7 @@ test "CJS: RN strict order skips named import used only as TS type" {
         .strict_execution_order = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -343,7 +343,7 @@ test "CJS: no runtime helper when no CJS modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -367,7 +367,7 @@ test "CJS: mixed ESM and CJS modules" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -390,7 +390,7 @@ test "CJS: require chain (CJS requires CJS)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -410,7 +410,7 @@ test "CJS: namespace import from CJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -435,7 +435,7 @@ test "CJS: multiple named imports from same CJS module" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -456,7 +456,7 @@ test "CJS: aliased named import from CJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -474,7 +474,7 @@ test "CJS: minified CJS wrapping" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -495,7 +495,7 @@ test "CJS: special characters in module path sanitized" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -519,7 +519,7 @@ test "CJS: ESM module importing from both ESM and CJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -541,7 +541,7 @@ test "CJS: empty CJS module" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -560,7 +560,7 @@ test "CJS: default import from direct module.exports uses require fast path" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -580,7 +580,7 @@ test "CJS: __toESM not applied to named imports" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -599,7 +599,7 @@ test "CJS: ExportsKind promotion — .js required becomes CJS" {
     try writeFile(tmp.dir, "esm_dep.ts", "export const y = 2;");
     try writeFile(tmp.dir, "plain.js", "const x = 1;");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -608,7 +608,7 @@ test "CJS: ExportsKind promotion — .js required becomes CJS" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // graph에서 plain.js 모듈을 찾아서 exports_kind 확인
     var plain_found = false;
@@ -637,7 +637,7 @@ test "CJS: ExportsKind promotion — .js imported becomes ESM" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -660,7 +660,7 @@ test "CJS: __toESM runtime helper injected with __commonJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -680,7 +680,7 @@ test "CJS: __toESM not injected when no CJS" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -701,7 +701,7 @@ test "CJS: require overrides ESM promotion (both import and require same module)
     try writeFile(tmp.dir, "requirer.ts", "const s = require('./shared.js');\nconsole.log(s);");
     try writeFile(tmp.dir, "shared.js", "const x = 1;");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -710,7 +710,7 @@ test "CJS: require overrides ESM promotion (both import and require same module)
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // shared.js는 import와 require 모두로 소비됨 → require가 우선이므로 CJS
     var shared_found = false;
@@ -740,7 +740,7 @@ test "CJS: CJS module with both module.exports and exports.x" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -759,7 +759,7 @@ test "CJS: namespace import from CJS uses __toESM" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -781,7 +781,7 @@ test "CJS: default import keeps __toESM when exports __esModule assignment exist
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -802,7 +802,7 @@ test "CJS: default import keeps __toESM when module.exports __esModule assignmen
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -823,7 +823,7 @@ test "CJS: default import keeps __toESM when defineProperty __esModule marker ex
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -833,7 +833,7 @@ test "CJS: default import keeps __toESM when defineProperty __esModule marker ex
 test "CJS: React Native type module default import uses Babel interop" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("node_modules/pkg");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/pkg");
     try writeFile(tmp.dir, "entry.cjs", "require('pkg');\n");
     try writeFile(tmp.dir, "node_modules/pkg/package.json",
         \\{"type":"module","react-native":"./widget.tsx","main":"./fallback.cjs"}
@@ -853,7 +853,7 @@ test "CJS: React Native type module default import uses Babel interop" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -877,7 +877,7 @@ test "CJS: multiple ESM modules importing same CJS module" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -901,7 +901,7 @@ test "CJS: esm_with_dynamic_fallback module required — promoted to ESM wrap (g
     );
     try writeFile(tmp.dir, "dep.js", "module.exports = 'dep';");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -910,7 +910,7 @@ test "CJS: esm_with_dynamic_fallback module required — promoted to ESM wrap (g
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // hybrid.js: esm_with_dynamic_fallback + require 소비 → WrapKind.esm
     var hybrid_found = false;
@@ -944,7 +944,7 @@ test "CJS: esm_with_dynamic_fallback module required — wrapped in __esm (bundl
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -976,7 +976,7 @@ test "CJS: React Native mixed import plus module.exports uses Metro CJS wrapper"
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1007,7 +1007,7 @@ test "CJS: React Native missing named import is shimmed to undefined" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1035,7 +1035,7 @@ test "CJS: ESM import inside __commonJS wrapper rewritten to require_xxx()" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1063,7 +1063,7 @@ test "CJS: side-effect import inside __commonJS wrapper rewritten to require_xxx
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1089,7 +1089,7 @@ test "CJS: named import inside __commonJS wrapper rewritten to require_xxx()" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1120,7 +1120,7 @@ test "CJS: scope hoisted esm_with_dynamic_fallback — internal require() rewrit
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1144,7 +1144,7 @@ test "ESM wrap: pure ESM module required — WrapKind.esm (graph)" {
         \\export const value = 42;
     );
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -1153,7 +1153,7 @@ test "ESM wrap: pure ESM module required — WrapKind.esm (graph)" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     var it = graph.modulesIterator();
@@ -1175,7 +1175,7 @@ test "ESM wrap: CJS module required — still WrapKind.cjs (graph)" {
     try writeFile(tmp.dir, "entry.ts", "const lib = require('./cjs-mod.js');\nconsole.log(lib);");
     try writeFile(tmp.dir, "cjs-mod.js", "module.exports = { value: 42 };");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -1184,7 +1184,7 @@ test "ESM wrap: CJS module required — still WrapKind.cjs (graph)" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     var it = graph.modulesIterator();
@@ -1206,7 +1206,7 @@ test "ESM wrap: none module required — WrapKind.cjs (graph)" {
     try writeFile(tmp.dir, "entry.ts", "const lib = require('./plain.js');\nconsole.log(lib);");
     try writeFile(tmp.dir, "plain.js", "const x = 1;");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -1215,7 +1215,7 @@ test "ESM wrap: none module required — WrapKind.cjs (graph)" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     var it = graph.modulesIterator();
@@ -1242,7 +1242,7 @@ test "ESM wrap: __esm runtime injected in bundle output" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1265,7 +1265,7 @@ test "ESM wrap: CJS requires ESM — (init_xxx(), __toCommonJS(exports_xxx)) pat
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1289,7 +1289,7 @@ test "ESM wrap: 2-pass promotion — require before import" {
     try writeFile(tmp.dir, "requirer.ts", "const s = require('./shared.js');\nconsole.log(s);");
     try writeFile(tmp.dir, "shared.js", "export const value = 42;");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
@@ -1298,7 +1298,7 @@ test "ESM wrap: 2-pass promotion — require before import" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // shared.js: ESM + require 소비 → WrapKind.esm (import가 CJS로 덮어쓰지 않음)
     var found = false;
@@ -1337,7 +1337,7 @@ test "ESM wrap: CJS wrapper imports scope-hoisted ESM — no raw require" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1371,7 +1371,7 @@ test "ESM wrap: namespace import of __esm module — canonical name direct rewri
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{main_entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1397,7 +1397,7 @@ test "ESM wrap: skip_cjs_exports — no exports.x in __esm wrapper" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1423,7 +1423,7 @@ test "ESM wrap: export default named ref — no duplicate var" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1449,7 +1449,7 @@ test "ESM wrap: export default anonymous expr — var _default" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1476,7 +1476,7 @@ test "ESM wrap: var hoisting + __export outside __esm (esbuild/rolldown 방식)"
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1521,7 +1521,7 @@ test "ESM wrap: Flow type cast + namespace import → ns_member_rewrite 적용" 
         .flow = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1558,7 +1558,7 @@ test "ESM wrap: var hoisting + default export 접근 가능" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1589,7 +1589,7 @@ test "ESM wrap: class declaration hoisted as var (block-scope → assignment)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1620,7 +1620,7 @@ test "TLA: detected in module" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // await 표현식이 번들 출력에 포함되어야 함
@@ -1644,7 +1644,7 @@ test "TLA: not detected inside async function" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // async 함수 내부 await는 TLA가 아님 → 경고 없음
@@ -1669,7 +1669,7 @@ test "TLA: propagated to importer" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // TLA 전파 → CJS에서 경고 주석 포함
@@ -1693,7 +1693,7 @@ test "TLA: not propagated via dynamic import" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // 동적 import는 TLA 전파 안 함 → 경고 없음
@@ -1715,7 +1715,7 @@ test "TLA: warning for CJS output" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002] Top-level await requires ESM output format.") != null);
@@ -1738,7 +1738,7 @@ test "TLA: no warning for ESM output" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // ESM → 경고 없음
@@ -1764,7 +1764,7 @@ test "TLA: for-await-of detected" {
     });
     defer b.deinit();
 
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002]") != null);
@@ -1784,7 +1784,7 @@ test "TLA: await inside object literal at top level" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1805,7 +1805,7 @@ test "TLA: await inside array literal at top level" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1825,7 +1825,7 @@ test "TLA: await inside ternary expression at top level" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1847,7 +1847,7 @@ test "TLA: for_await_of_statement detected via AST tag" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1883,7 +1883,7 @@ test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
     graph.flow = true;
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     var it = graph.modulesIterator();
@@ -1913,7 +1913,7 @@ test "CJS: Flow import typeof with module.exports produces __commonJS wrapper" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .flow = true });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -1938,7 +1938,7 @@ test "CJS: TS import type does not make CJS module ESM" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     var it = graph.modulesIterator();
@@ -1972,7 +1972,7 @@ test "CJS: export type re-export + module.exports stays CJS (regression)" {
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var found = false;
     var it = graph.modulesIterator();
@@ -2014,7 +2014,7 @@ test "ESM re-export: named re-export from CJS binds via require getter (#1425)" 
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2077,7 +2077,7 @@ test "CJS raw require namespace keeps lazy getter require target" {
         .flow = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2121,7 +2121,7 @@ test "ESM re-export: CJS require member access keeps re-export source body" {
         .minify_syntax = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2158,7 +2158,7 @@ test "RN asset registry: scale-only asset keeps Metro base name and scale" {
         .loader_overrides = &.{.{ .ext = ".webp", .loader = .file }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2197,7 +2197,7 @@ test "RN asset registry: base asset import resolves scale-only sibling" {
         .loader_overrides = &.{.{ .ext = ".webp", .loader = .file }},
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2230,7 +2230,7 @@ test "ESM namespace import: CJS named re-export member binds via require getter"
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2260,7 +2260,7 @@ test "ESM re-export: named re-export from ESM binds via exports getter (#1425)" 
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2330,7 +2330,7 @@ test "RN namespace re-export: type-only neighbor keeps value getter live" {
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2381,7 +2381,7 @@ test "ESM re-export: local import alias getter uses source value in RN ESM wrap"
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2414,7 +2414,7 @@ test "ESM re-export: self re-export emits circular_reexport diagnostic (#1425 fo
         .platform = .react_native,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     // self-cycle은 error로 거부
@@ -2450,7 +2450,7 @@ test "CJS: Flow export type alias + module.exports stays CJS (regression)" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .flow = true });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2505,7 +2505,7 @@ test "CJS: ESM-wrapped named import from CJS — namespace rename must survive c
         .dev_mode = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2557,7 +2557,7 @@ test "CJS: ESM-wrapped named import from CJS barrel with getter re-exports stays
         .dev_mode = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2587,7 +2587,7 @@ test "CJS: ESM-wrapped default import from CJS gets preamble assignment" {
         .dev_mode = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2625,7 +2625,7 @@ test "ESM export star: empty CJS-like type barrel does not shadow later star exp
         .dev_mode = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2660,7 +2660,7 @@ test "ESM ns-access: opaque path (bare ref after member access) doesn't leak" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2671,8 +2671,8 @@ test "ESM ns-access: opaque path (bare ref after member access) doesn't leak" {
 test "ESM wrapped static import under strict order does not emit raw require" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("node_modules/@tanstack/react-query/build/modern");
-    try tmp.dir.makePath("node_modules/@tanstack/query-core/build/modern");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/@tanstack/react-query/build/modern");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/@tanstack/query-core/build/modern");
     try writeFile(tmp.dir, "entry.js",
         \\import { useQueries } from '@tanstack/react-query';
         \\console.log(useQueries());
@@ -2739,7 +2739,7 @@ test "ESM wrapped static import under strict order does not emit raw require" {
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2751,8 +2751,8 @@ test "ESM wrapped static import under strict order does not emit raw require" {
 test "ESM wrapped barrel namespace import under strict order does not emit raw require" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("node_modules/@tanstack/react-query/build/modern");
-    try tmp.dir.makePath("node_modules/@tanstack/query-core/build/modern");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/@tanstack/react-query/build/modern");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/@tanstack/query-core/build/modern");
     try writeFile(tmp.dir, "entry.js",
         \\import * as ReactQuery from '@tanstack/react-query';
         \\console.log(ReactQuery.useQueries(), ReactQuery.QueryClientProvider());
@@ -2859,7 +2859,7 @@ test "ESM wrapped barrel namespace import under strict order does not emit raw r
         .minify_identifiers = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2872,7 +2872,7 @@ test "ESM wrapped barrel namespace import under strict order does not emit raw r
 test "ESM wrap: RN non-inlined CJS named import is deconflicted with wrapped locals" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("node_modules/react");
+    try tmp.dir.createDirPath(std.testing.io, "node_modules/react");
     try writeFile(tmp.dir, "node_modules/react/package.json",
         \\{
         \\  "name": "react",
@@ -2910,7 +2910,7 @@ test "ESM wrap: RN non-inlined CJS named import is deconflicted with wrapped loc
         .dev_mode = true,
     });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2937,7 +2937,7 @@ test "CJS convention: `.cjs` 가 top-level `export const` 를 거부" {
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.hasErrors());
@@ -2959,7 +2959,7 @@ test "CJS convention: `.cjs` 의 `module.exports` + `with` 모두 정상 (script
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
@@ -2976,7 +2976,7 @@ test "CJS convention: `.cts` 는 ESM 구문 허용 (TS 가 module.exports 로 tr
 
     var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
-    const result = try b.bundle();
+    const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());

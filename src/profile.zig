@@ -1161,7 +1161,7 @@ test "Scope: 비활성 category 는 zero-cost" {
 
     // 비활성 상태 — begin 은 Timer 없이 null 반환.
     var scope = begin(.parse);
-    try testing.expect(scope.timer == null);
+    try testing.expect(scope.start_ts == null);
     scope.end();
     try testing.expectEqual(@as(u64, 0), totalNs(.parse));
     try testing.expectEqual(@as(u64, 0), selfNs(.parse));
@@ -1171,15 +1171,16 @@ test "Scope: 비활성 category 는 zero-cost" {
 test "Scope: 활성 category 는 시간 누적" {
     resetForTest();
     defer resetForTest();
+    prof_io = std.testing.io;
 
     addFromCsv("parse");
 
     var s1 = begin(.parse);
-    std.Thread.sleep(1_000_000); // 1ms
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(1), .awake) catch {}; // 1ms
     s1.end();
 
     var s2 = begin(.parse);
-    std.Thread.sleep(1_000_000); // 1ms
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(1), .awake) catch {}; // 1ms
     s2.end();
 
     const total = totalNs(.parse);
@@ -1193,6 +1194,7 @@ test "Scope: 활성 category 는 시간 누적" {
 test "Scope: nested 호출 누적" {
     resetForTest();
     defer resetForTest();
+    prof_io = std.testing.io;
 
     addFromCsv("parse");
     addFromCsv("parse.ast_build");
@@ -1200,7 +1202,7 @@ test "Scope: nested 호출 누적" {
     var outer = begin(.parse);
     {
         var inner = begin(.parse_ast_build);
-        std.Thread.sleep(1_000_000);
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(1), .awake) catch {};
         inner.end();
     }
     outer.end();
@@ -1227,15 +1229,16 @@ test "report: table format 기본 구조" {
     resetForTest();
     defer resetForTest();
 
+    prof_io = std.testing.io;
     addFromCsv("parse");
     var s = begin(.parse);
-    std.Thread.sleep(500_000); // 0.5ms
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(500_000), .awake) catch {}; // 0.5ms
     s.end();
 
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try report(fbs.writer(), .table);
-    const output = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try report(&w, .table);
+    const output = w.buffered();
 
     try testing.expect(std.mem.indexOf(u8, output, "=== ZNTC Profile ===") != null);
     try testing.expect(std.mem.indexOf(u8, output, "parse") != null);
@@ -1246,15 +1249,16 @@ test "report: json format 기본 구조" {
     resetForTest();
     defer resetForTest();
 
+    prof_io = std.testing.io;
     addFromCsv("parse");
     var s = begin(.parse);
-    std.Thread.sleep(500_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(500_000), .awake) catch {};
     s.end();
 
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try report(fbs.writer(), .json);
-    const output = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try report(&w, .json);
+    const output = w.buffered();
 
     try testing.expect(std.mem.indexOf(u8, output, "\"profile_version\": 1") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\"total_ms\"") != null);
@@ -1267,15 +1271,16 @@ test "report: csv format 기본 구조" {
     resetForTest();
     defer resetForTest();
 
+    prof_io = std.testing.io;
     addFromCsv("parse");
     var s = begin(.parse);
-    std.Thread.sleep(500_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(500_000), .awake) catch {};
     s.end();
 
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try report(fbs.writer(), .csv);
-    const output = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try report(&w, .csv);
+    const output = w.buffered();
 
     try testing.expect(std.mem.startsWith(u8, output, "phase,total_ms,self_ms,count,pct,self_pct\n"));
     try testing.expect(std.mem.indexOf(u8, output, "parse,") != null);
@@ -1286,9 +1291,9 @@ test "report: 데이터 없을 때 empty message" {
     defer resetForTest();
 
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try report(fbs.writer(), .table);
-    const output = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try report(&w, .table);
+    const output = w.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "no samples") != null);
 }
 
@@ -1296,19 +1301,20 @@ test "report: summary level 은 sub-phase 숨김" {
     resetForTest();
     defer resetForTest();
 
+    prof_io = std.testing.io;
     addFromCsv("parse"); // parse + parse_ast_build 자동 활성
     setLevel(.summary);
 
     var outer = begin(.parse);
     var inner = begin(.parse_ast_build);
-    std.Thread.sleep(100_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(100_000), .awake) catch {};
     inner.end();
     outer.end();
 
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try report(fbs.writer(), .table);
-    const output = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try report(&w, .table);
+    const output = w.buffered();
 
     try testing.expect(std.mem.indexOf(u8, output, "parse.ast.build") == null);
     try testing.expect(std.mem.indexOf(u8, output, "parse ") != null);
@@ -1318,19 +1324,20 @@ test "report: detailed level 은 sub-phase 노출" {
     resetForTest();
     defer resetForTest();
 
+    prof_io = std.testing.io;
     addFromCsv("parse");
     setLevel(.detailed);
 
     var outer = begin(.parse);
     var inner = begin(.parse_ast_build);
-    std.Thread.sleep(100_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(100_000), .awake) catch {};
     inner.end();
     outer.end();
 
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try report(fbs.writer(), .tree);
-    const output = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try report(&w, .tree);
+    const output = w.buffered();
 
     try testing.expect(std.mem.indexOf(u8, output, "parse.ast.build") != null);
 }
@@ -1348,10 +1355,11 @@ test "isTopLevel / isChildOf 헬퍼" {
 }
 
 test "resetForTest 초기화" {
+    prof_io = std.testing.io;
     addFromCsv("all");
     setLevel(.detailed);
     var s = begin(.parse);
-    std.Thread.sleep(100_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(100_000), .awake) catch {};
     s.end();
 
     resetForTest();
@@ -1378,13 +1386,14 @@ test "addFromCsv all enables categories beyond u128 mask boundary" {
 test "takeSnapshot: 활성 category 의 timing 보존" {
     resetForTest();
     defer resetForTest();
+    prof_io = std.testing.io;
     addFromCsv("parse,emit");
 
     var s1 = begin(.parse);
-    std.Thread.sleep(100_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(100_000), .awake) catch {};
     s1.end();
     var s2 = begin(.emit);
-    std.Thread.sleep(50_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(50_000), .awake) catch {};
     s2.end();
 
     const snap = takeSnapshot();
@@ -1410,10 +1419,11 @@ test "takeSnapshot: 비활성 category 는 0" {
 test "takeSnapshot: counter reset 하지 않음 (caller 책임)" {
     resetForTest();
     defer resetForTest();
+    prof_io = std.testing.io;
     addFromCsv("parse");
 
     var s = begin(.parse);
-    std.Thread.sleep(100_000);
+    std.testing.io.sleep(std.Io.Duration.fromNanoseconds(100_000), .awake) catch {};
     s.end();
 
     const snap1 = takeSnapshot();
@@ -1435,9 +1445,9 @@ test "snapshotToJson: 활성 phase 만 JSON 출력" {
     snap.totals_ns[@intFromEnum(Category.parse)] = 2 * std.time.ns_per_ms;
     snap.totals_ns[@intFromEnum(Category.emit)] = 1 * std.time.ns_per_ms;
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try snapshotToJson(snap, fbs.writer(), 0);
-    const json = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try snapshotToJson(snap, &w, 0);
+    const json = w.buffered();
 
     // parse + emit 둘 다 포함
     try testing.expect(std.mem.indexOf(u8, json, "\"parse_ms\":") != null);
@@ -1460,9 +1470,9 @@ test "snapshotToJson: min_ms_threshold 이상만 포함" {
     snap.totals_ns[@intFromEnum(Category.parse)] = 5 * std.time.ns_per_ms;
     snap.totals_ns[@intFromEnum(Category.emit)] = std.time.ns_per_ms / 10;
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try snapshotToJson(snap, fbs.writer(), 1.0); // 1ms threshold
-    const json = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try snapshotToJson(snap, &w, 1.0); // 1ms threshold
+    const json = w.buffered();
 
     // parse 만 포함 (>= 1ms), emit 은 skip
     try testing.expect(std.mem.indexOf(u8, json, "\"parse_ms\":") != null);

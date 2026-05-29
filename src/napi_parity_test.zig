@@ -126,20 +126,22 @@ fn contains(haystack: []const []const u8, needle: []const u8) bool {
 test "schema diff: NAPI exports == TS NativeModule members" {
     const allocator = std.testing.allocator;
 
-    const napi_source = std.fs.cwd().readFileAlloc(
-        allocator,
+    const napi_source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
         "packages/core/src/napi_entry.zig",
-        2 * 1024 * 1024,
+        allocator,
+        std.Io.Limit.limited(2 * 1024 * 1024),
     ) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
     };
     defer allocator.free(napi_source);
 
-    const ts_source = std.fs.cwd().readFileAlloc(
-        allocator,
+    const ts_source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
         "packages/core/index.ts",
-        2 * 1024 * 1024,
+        allocator,
+        std.Io.Limit.limited(2 * 1024 * 1024),
     ) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;

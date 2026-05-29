@@ -431,9 +431,9 @@ test "render: basic error with code frame" {
     const info = SourceInfo{ .source = source, .line_offsets = &offsets };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try render(&w, diag, info, .{ .color = false, .unicode = true });
+    const out = w.buffered();
 
     // 헤더에 아이콘 + 메시지 + 코드
     try std.testing.expect(std.mem.indexOf(u8, out, "Top-level await") != null);
@@ -463,9 +463,9 @@ test "render: found 토큰 → 'Expected X but found Y' 헤더 (#3985)" {
     const info = SourceInfo{ .source = source, .line_offsets = &offsets };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try render(&w, diag, info, .{ .color = false, .unicode = true });
+    const out = w.buffered();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Expected ')' but found ';'") != null);
     // bare 심볼만 있던 회귀 방지: 헤더 라인이 `× )` 로 끝나지 않아야 함.
@@ -484,9 +484,9 @@ test "render: found 없으면 message 그대로 (회귀 가드 #3985)" {
     const info = SourceInfo{ .source = source, .line_offsets = &offsets };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try render(&w, diag, info, .{ .color = false, .unicode = true });
+    const out = w.buffered();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Some plain message") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Expected '") == null);
@@ -504,9 +504,9 @@ test "render: multi-line source with context" {
     const info = SourceInfo{ .source = source, .line_offsets = &offsets };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try render(&w, diag, info, .{ .color = false, .unicode = true });
+    const out = w.buffered();
 
     // 에러 줄 전 컨텍스트 (line 1)
     try std.testing.expect(std.mem.indexOf(u8, out, "const a = 1;") != null);
@@ -528,9 +528,9 @@ test "render: ASCII fallback (unicode=false)" {
     const info = SourceInfo{ .source = source, .line_offsets = &offsets };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = false });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try render(&w, diag, info, .{ .color = false, .unicode = false });
+    const out = w.buffered();
 
     // ASCII 아이콘과 박스 문자
     try std.testing.expect(std.mem.indexOf(u8, out, "x Test error") != null);
@@ -551,9 +551,9 @@ test "render: with note" {
     const info = SourceInfo{ .source = source, .line_offsets = &offsets };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try render(fbs.writer(), diag, info, .{ .color = false, .unicode = true });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try render(&w, diag, info, .{ .color = false, .unicode = true });
+    const out = w.buffered();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "note: debugger statements are removed") != null);
 }
@@ -569,9 +569,9 @@ test "renderSimple: without source" {
     };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try renderSimple(fbs.writer(), diag, .{ .color = false, .unicode = true });
-    const out = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try renderSimple(&w, diag, .{ .color = false, .unicode = true });
+    const out = w.buffered();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Could not resolve") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "[ZNTC0100]") != null);

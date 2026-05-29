@@ -244,19 +244,19 @@ test "optionsFromJson: minify=true 가 whitespace/identifiers/syntax 모두 함�
     const a = arena.allocator();
 
     // `--minify` (통합) → 세 하위 minify 전부 ON. NAPI build 경로(options.zig:750-752)와 일관.
-    const all = try optionsFromJson(a, "{\"minify\":true}", null);
+    const all = try optionsFromJson(a, std.testing.io, "{\"minify\":true}", null);
     try std.testing.expect(all.minify_whitespace);
     try std.testing.expect(all.minify_identifiers);
     try std.testing.expect(all.minify_syntax);
 
     // 개별 플래그는 세분 유지 — minifyIdentifiers 만 켜면 나머지는 false.
-    const only_id = try optionsFromJson(a, "{\"minifyIdentifiers\":true}", null);
+    const only_id = try optionsFromJson(a, std.testing.io, "{\"minifyIdentifiers\":true}", null);
     try std.testing.expect(!only_id.minify_whitespace);
     try std.testing.expect(only_id.minify_identifiers);
     try std.testing.expect(!only_id.minify_syntax);
 
     // minify 미지정 시 전부 off (회귀 가드).
-    const none = try optionsFromJson(a, "{}", null);
+    const none = try optionsFromJson(a, std.testing.io, "{}", null);
     try std.testing.expect(!none.minify_whitespace);
     try std.testing.expect(!none.minify_identifiers);
     try std.testing.expect(!none.minify_syntax);

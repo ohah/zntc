@@ -419,31 +419,31 @@ pub const IncrementalBundler = struct {
 // ── writeJsonEscaped 유닛 테스트 ──
 
 test "writeJsonEscaped: 특수문자 이스케이프" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    const w = buf.writer(std.testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
 
     try writeJsonEscaped(w, "he said \"hello\"\nnew\\line\ttab");
     try std.testing.expectEqualStrings(
         "he said \\\"hello\\\"\\nnew\\\\line\\ttab",
-        buf.items,
+        aw.writer.buffered(),
     );
 }
 
 test "writeJsonEscaped: 빈 문자열" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    const w = buf.writer(std.testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
 
     try writeJsonEscaped(w, "");
-    try std.testing.expectEqual(@as(usize, 0), buf.items.len);
+    try std.testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }
 
 test "writeJsonEscaped: 일반 텍스트" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    const w = buf.writer(std.testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
 
     try writeJsonEscaped(w, "hello world 123");
-    try std.testing.expectEqualStrings("hello world 123", buf.items);
+    try std.testing.expectEqualStrings("hello world 123", aw.writer.buffered());
 }

@@ -104,13 +104,14 @@ const testing = std.testing;
 test "TsconfigCache: 같은 entry_dir 는 1 회만 walk" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "tsconfig.json", .data = "{}" });
-    try tmp.dir.makeDir("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/a.ts", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "src/b.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "tsconfig.json", .data = "{}" });
+    try tmp.dir.createDirPath(testing.io, "src");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "src/a.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "src/b.ts", .data = "" });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     const a = try std.fs.path.join(testing.allocator, &.{ tmp_path, "src", "a.ts" });
     defer testing.allocator.free(a);
     const b = try std.fs.path.join(testing.allocator, &.{ tmp_path, "src", "b.ts" });
@@ -119,8 +120,8 @@ test "TsconfigCache: 같은 entry_dir 는 1 회만 walk" {
     var cache = try TsconfigCache.init(testing.allocator);
     defer cache.deinit();
 
-    const r1 = cache.findTsconfigPath(a);
-    const r2 = cache.findTsconfigPath(b);
+    const r1 = cache.findTsconfigPath(testing.io, a);
+    const r2 = cache.findTsconfigPath(testing.io, b);
     try testing.expect(r1 != null);
     try testing.expect(r2 != null);
     try testing.expectEqualStrings(r1.?, r2.?);
@@ -130,18 +131,19 @@ test "TsconfigCache: 같은 entry_dir 는 1 회만 walk" {
 test "TsconfigCache: tsconfig 없을 때도 negative 결과 캐시" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/a.ts", .data = "" });
+    try tmp.dir.createDirPath(testing.io, "src");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "src/a.ts", .data = "" });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     const a = try std.fs.path.join(testing.allocator, &.{ tmp_path, "src", "a.ts" });
     defer testing.allocator.free(a);
 
     var cache = try TsconfigCache.init(testing.allocator);
     defer cache.deinit();
 
-    const r = cache.findTsconfigPath(a);
+    const r = cache.findTsconfigPath(testing.io, a);
     // tsconfig 없음 (root 까지 올라가도 못 찾음 가정 — 실제 환경에 따라 fallback 가능).
     // 본 테스트는 "negative 결과도 캐시" 만 검증하므로 size==1 만 보장.
     _ = r;
@@ -156,15 +158,16 @@ test "TsconfigCache: 두 인스턴스는 독립 state" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "tsconfig.json", .data = "{}" });
-    try tmp.dir.writeFile(.{ .sub_path = "a.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "tsconfig.json", .data = "{}" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.ts", .data = "" });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     const a = try std.fs.path.join(testing.allocator, &.{ tmp_path, "a.ts" });
     defer testing.allocator.free(a);
 
-    _ = cache_a.findTsconfigPath(a);
+    _ = cache_a.findTsconfigPath(testing.io, a);
     try testing.expectEqual(@as(usize, 1), cache_a.size());
     try testing.expectEqual(@as(usize, 0), cache_b.size());
 
@@ -176,14 +179,15 @@ test "TsconfigCache: 두 인스턴스는 독립 state" {
 test "TsconfigCache: 같은 dirname 의 다른 파일 lookup 도 1 entry" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "tsconfig.json", .data = "{}" });
-    try tmp.dir.makeDir("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/a.ts", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "src/b.ts", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "src/c.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "tsconfig.json", .data = "{}" });
+    try tmp.dir.createDirPath(testing.io, "src");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "src/a.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "src/b.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "src/c.ts", .data = "" });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     const a = try std.fs.path.join(testing.allocator, &.{ tmp_path, "src", "a.ts" });
     defer testing.allocator.free(a);
     const b = try std.fs.path.join(testing.allocator, &.{ tmp_path, "src", "b.ts" });
@@ -194,9 +198,9 @@ test "TsconfigCache: 같은 dirname 의 다른 파일 lookup 도 1 entry" {
     var cache = try TsconfigCache.init(testing.allocator);
     defer cache.deinit();
 
-    const r_a = cache.findTsconfigPath(a);
-    const r_b = cache.findTsconfigPath(b);
-    const r_c = cache.findTsconfigPath(c);
+    const r_a = cache.findTsconfigPath(testing.io, a);
+    const r_b = cache.findTsconfigPath(testing.io, b);
+    const r_c = cache.findTsconfigPath(testing.io, c);
     try testing.expect(r_a != null);
     // 모두 같은 tsconfig.json path 반환
     try testing.expectEqualStrings(r_a.?, r_b.?);
@@ -207,23 +211,24 @@ test "TsconfigCache: 같은 dirname 의 다른 파일 lookup 도 1 entry" {
 test "TsconfigCache: clear 후 같은 dir 다시 lookup 시 정상 재캐시" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "tsconfig.json", .data = "{}" });
-    try tmp.dir.writeFile(.{ .sub_path = "a.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "tsconfig.json", .data = "{}" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.ts", .data = "" });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     const a = try std.fs.path.join(testing.allocator, &.{ tmp_path, "a.ts" });
     defer testing.allocator.free(a);
 
     var cache = try TsconfigCache.init(testing.allocator);
     defer cache.deinit();
 
-    const r1 = cache.findTsconfigPath(a);
+    const r1 = cache.findTsconfigPath(testing.io, a);
     try testing.expect(r1 != null);
     cache.clear();
     try testing.expectEqual(@as(usize, 0), cache.size());
 
-    const r2 = cache.findTsconfigPath(a);
+    const r2 = cache.findTsconfigPath(testing.io, a);
     try testing.expect(r2 != null);
     try testing.expectEqual(@as(usize, 1), cache.size());
     try testing.expectEqualStrings(r1.?, r2.?); // 같은 결과
@@ -234,7 +239,7 @@ test "TsconfigCache: bare filename (no dirname) 안전 처리" {
     // 본 cache 는 실패해도 panic 없이 null 반환해야 함.
     var cache = try TsconfigCache.init(testing.allocator);
     defer cache.deinit();
-    _ = cache.findTsconfigPath("input.js");
+    _ = cache.findTsconfigPath(testing.io, "input.js");
     // 환경에 따라 결과가 있을 수도 없을 수도 있음 — 핵심은 panic 없이 캐시 1 entry.
     try testing.expectEqual(@as(usize, 1), cache.size());
 }
@@ -245,15 +250,16 @@ test "TsconfigCache: clear 후 size 0" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "tsconfig.json", .data = "{}" });
-    try tmp.dir.writeFile(.{ .sub_path = "a.ts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "tsconfig.json", .data = "{}" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.ts", .data = "" });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     const a = try std.fs.path.join(testing.allocator, &.{ tmp_path, "a.ts" });
     defer testing.allocator.free(a);
 
-    _ = cache.findTsconfigPath(a);
+    _ = cache.findTsconfigPath(testing.io, a);
     try testing.expect(cache.size() > 0);
 
     cache.clear();

@@ -164,11 +164,11 @@ const testing = std.testing;
 test "addPath registers watcher + caches hash" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "hello" });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "a.txt");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "hello" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "a.txt", testing.allocator);
     defer testing.allocator.free(path);
 
-    var set = try TrackedFileSet.init(testing.allocator, 1024 * 1024);
+    var set = try TrackedFileSet.init(testing.allocator, testing.io, 1024 * 1024);
     defer set.deinit();
 
     try testing.expect(set.addPath(path, true));
@@ -179,17 +179,17 @@ test "addPath registers watcher + caches hash" {
 test "markIfChanged detects content change, same content returns false" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "v1" });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "a.txt");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "v1" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "a.txt", testing.allocator);
     defer testing.allocator.free(path);
 
-    var set = try TrackedFileSet.init(testing.allocator, 1024 * 1024);
+    var set = try TrackedFileSet.init(testing.allocator, testing.io, 1024 * 1024);
     defer set.deinit();
 
     _ = set.addPath(path, true);
     try testing.expect(!set.markIfChanged(path)); // 같은 내용
 
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "v2-different" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "v2-different" });
     try testing.expect(set.markIfChanged(path)); // 바뀜
     try testing.expect(!set.markIfChanged(path)); // 캐시 갱신됨
 }
@@ -197,18 +197,18 @@ test "markIfChanged detects content change, same content returns false" {
 test "overwrite=false preserves existing hash" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "v1" });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "a.txt");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "v1" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "a.txt", testing.allocator);
     defer testing.allocator.free(path);
 
-    var set = try TrackedFileSet.init(testing.allocator, 1024 * 1024);
+    var set = try TrackedFileSet.init(testing.allocator, testing.io, 1024 * 1024);
     defer set.deinit();
 
     _ = set.addPath(path, true);
     const h1 = set.hashes.get(path).?;
 
     // 파일 내용 변경, overwrite=false — 캐시된 해시가 유지되어야 함 (재-싱크 시맨틱)
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "v2" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "v2" });
     _ = set.addPath(path, false);
     try testing.expectEqual(h1, set.hashes.get(path).?);
 }
@@ -216,11 +216,11 @@ test "overwrite=false preserves existing hash" {
 test "removePath clears from both watcher and hash cache" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "x" });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "a.txt");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "x" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "a.txt", testing.allocator);
     defer testing.allocator.free(path);
 
-    var set = try TrackedFileSet.init(testing.allocator, 1024 * 1024);
+    var set = try TrackedFileSet.init(testing.allocator, testing.io, 1024 * 1024);
     defer set.deinit();
 
     _ = set.addPath(path, true);

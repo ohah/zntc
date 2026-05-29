@@ -12,14 +12,14 @@ const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
 fn buildGraph(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !struct { graph: ModuleGraph, cache: resolve_cache_mod.ResolveCache } {
-    const dp = try tmp.dir.realpathAlloc(allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
     var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     var graph = ModuleGraph.init(allocator, &cache);
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
     return .{ .graph = graph, .cache = cache };
 }
 
@@ -32,7 +32,7 @@ test "emitter: single module" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -50,7 +50,7 @@ test "emitter: two modules exec order" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -69,7 +69,7 @@ test "emitter: minified output" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{ .minify_whitespace = true }, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .minify_whitespace = true }, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -87,7 +87,7 @@ test "emitter: IIFE format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{ .format = .iife }, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .format = .iife }, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -106,7 +106,7 @@ test "emitter: IIFE format — ES5 target uses `function` wrapper" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .iife,
         .unsupported = compat.fromESTarget(.es5),
     }, null);
@@ -126,7 +126,7 @@ test "emitter: CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{ .format = .cjs }, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .format = .cjs }, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -139,7 +139,7 @@ test "emitter: empty graph" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -157,7 +157,7 @@ test "emitter: chain A → B → C order" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -182,7 +182,7 @@ test "emitter: TS enum and interface stripping" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -216,7 +216,7 @@ test "inline (bundle): 함수 body 안 literal — inline" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -239,7 +239,7 @@ test "inline (bundle): top-level const — 보존 (scope=0)" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -269,7 +269,7 @@ test "inline (bundle): 크로스 모듈 — 각 모듈 함수 내부 별개로 i
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -303,7 +303,7 @@ test "inline (bundle): container literal 여러 모듈에 걸쳐" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -331,7 +331,7 @@ test "inline (bundle): minify_syntax 플래그 없어도 inline 실행 (#1552)" 
     defer result.cache.deinit();
 
     // minify_syntax=false (기본) — 그래도 inline 돌아야 함.
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{ .minify_syntax = false }, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .minify_syntax = false }, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -363,7 +363,7 @@ test "inline (bundle): shared module 내부 inline — emitChunks 경로" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -397,7 +397,7 @@ test "inline (bundle): shared module 내부 inline — emitChunks 경로" {
 // ============================================================
 
 fn buildGraphMultiEntry(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_names: []const []const u8) !struct { graph: ModuleGraph, cache: resolve_cache_mod.ResolveCache } {
-    const dp = try tmp.dir.realpathAlloc(allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
 
     var entries: std.ArrayList([]const u8) = .empty;
@@ -411,7 +411,7 @@ fn buildGraphMultiEntry(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, 
 
     var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     var graph = ModuleGraph.init(allocator, &cache);
-    try graph.build(entries.items);
+    try graph.build(std.testing.io, entries.items);
     return .{ .graph = graph, .cache = cache };
 }
 
@@ -424,7 +424,7 @@ test "emitChunks: single chunk produces one OutputFile" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -454,7 +454,7 @@ test "emitChunks: sourcemap.enable=false 시 OutputFile.sourcemap 은 null (#265
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -483,7 +483,7 @@ test "emitChunks: sourcemap.enable=true 시 OutputFile.sourcemap 채워짐 + V3 
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -522,7 +522,7 @@ test "emitChunks: 2 entries + shared module — 각 chunk 가 독립 sourcemap (
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -558,7 +558,7 @@ test "emitChunks: sourcemap.lazy=true → builder 이관, JSON 은 caller 시점
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -593,7 +593,7 @@ test "emitChunks: hash 들어간 chunk filename 의 sourcemap \"file\" 필드가
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -640,7 +640,7 @@ test "emitChunks: sourcemap.mode=linked 시 contents 끝에 //# sourceMappingURL
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -671,7 +671,7 @@ test "emitChunks: sourcemap.mode=external 시 .map 파일은 있지만 주석 �
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -698,7 +698,7 @@ test "emitChunks: lazy + inline_ 조합 시 lazy 무시하고 eager 강제 (sile
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -730,7 +730,7 @@ test "emitChunks: sourcemap.mode=inline_ 시 contents 에 base64 embed + sourcem
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -755,7 +755,8 @@ test "emitChunks: lazy 와 eager 의 JSON 은 바이트 동등 (#2654)" {
     try writeFile(tmp.dir, "index.ts", "const x = 1;\nconst y = x + 2;\nconsole.log(y);");
 
     var dp_buf: [256]u8 = undefined;
-    const dp = try tmp.dir.realpath(".", &dp_buf);
+    const dp_len = try tmp.dir.realPathFile(std.testing.io, ".", &dp_buf);
+    const dp = dp_buf[0..dp_len];
     var entry_buf: [512]u8 = undefined;
     const entry_path = try std.fmt.bufPrint(&entry_buf, "{s}/index.ts", .{dp});
 
@@ -803,7 +804,7 @@ test "emitChunks: two entries with shared module — 3 OutputFiles" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -849,7 +850,7 @@ test "CodeSplitting: dynamic import path rewritten to chunk filename" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -907,7 +908,7 @@ test "CodeSplitting: multiple dynamic imports rewritten" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -954,7 +955,7 @@ test "chunkStem: common chunk uses hex hash, not index" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -1003,7 +1004,7 @@ test "chunkStem: same modules produce same hash (deterministic)" {
     defer result1.graph.deinit();
     defer result1.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -1197,7 +1198,7 @@ test "naming pattern: deep path 안전 (1024+ char dir, ArrayList 자동 grow)" 
     // 기존 [128]u8 stack buf 시대엔 truncation 위험. ArrayList 는 capacity
     // 자동 grow 라 임의 깊이 안전.
     const a = std.testing.allocator;
-    var deep_dir = std.ArrayListUnmanaged(u8){};
+    var deep_dir = std.ArrayListUnmanaged(u8).empty;
     defer deep_dir.deinit(a);
     var n: usize = 0;
     while (n < 50) : (n += 1) {
@@ -1221,7 +1222,7 @@ test "naming pattern: entry-names with hash" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -1259,7 +1260,7 @@ test "naming pattern: chunk-names with directory" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -1305,7 +1306,7 @@ test "content hash: cross-chunk import uses content hash" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -1371,7 +1372,7 @@ test "CJS runtime: __commonJS only in chunks containing CJS modules" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(ep_a);
@@ -1407,7 +1408,7 @@ test "CodeSplitting: static import not rewritten" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dp);
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
@@ -1576,10 +1577,10 @@ fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void 
         \\}
     );
 
-    const result = std.process.Child.run(.{
-        .allocator = std.testing.allocator,
+    const result = std.process.Child.run(std.testing.allocator, std.testing.io, .{
         .argv = &.{ "node", "-e", script.items },
-        .max_output_bytes = 16 * 1024,
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -1629,7 +1630,7 @@ test "banner/footer — basic ESM" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .banner_js = "/* banner */",
         .footer_js = "/* footer */",
     }, null);
@@ -1651,7 +1652,7 @@ test "banner/footer — IIFE format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .iife,
         .banner_js = "// license header",
         .footer_js = "// end",
@@ -1673,7 +1674,7 @@ test "banner/footer — CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .cjs,
         .banner_js = "/* CJS banner */",
     }, null);
@@ -1701,7 +1702,7 @@ test "IIFE + globals: epilogue emits factory call args (#1824)" {
     defer result.cache.deinit();
 
     // globals 비어있음 → 기존 IIFE 경로
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .iife,
         .globals = &.{},
     }, null);
@@ -1721,7 +1722,7 @@ test "globalName — IIFE wrapping" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .iife,
         .global_name = "MyLib",
     }, null);
@@ -1743,7 +1744,7 @@ test "globalName — dotted name warning" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .iife,
         .global_name = "MyApp.Utils",
     }, null);
@@ -1765,7 +1766,7 @@ test "globalName — ignored for non-IIFE" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .esm,
         .global_name = "MyLib",
     }, null);
@@ -1785,7 +1786,7 @@ test "globalName — with banner/footer" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .format = .iife,
         .global_name = "MyLib",
         .banner_js = "/* license */",
@@ -1816,7 +1817,7 @@ test "JSON module — ESM format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{ .format = .esm }, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .format = .esm }, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -1842,7 +1843,7 @@ test "JSON module — CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const emit_result = try emit(std.testing.allocator, &result.graph, &.{ .format = .cjs }, null);
+    const emit_result = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .format = .cjs }, null);
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
@@ -1872,7 +1873,7 @@ test "emitter: lazy_sourcemap 은 eager 경로와 바이트 동등한 JSON 을 �
     // Eager: emit 단계에서 JSON 생성, sourcemap_builder 는 null.
     var eager_opts = base_opts;
     eager_opts.sourcemap.lazy = false;
-    const eager_res = try emit(std.testing.allocator, &result.graph, &eager_opts, null);
+    const eager_res = try emit(std.testing.io, std.testing.allocator, &result.graph, &eager_opts, null);
     defer eager_res.deinit(std.testing.allocator);
     try std.testing.expect(eager_res.sourcemap != null);
     try std.testing.expect(eager_res.sourcemap_builder == null);
@@ -1880,7 +1881,7 @@ test "emitter: lazy_sourcemap 은 eager 경로와 바이트 동등한 JSON 을 �
     // Lazy: emit 단계에서 builder 이관, sourcemap 은 null.
     var lazy_opts = base_opts;
     lazy_opts.sourcemap.lazy = true;
-    const lazy_res = try emit(std.testing.allocator, &result.graph, &lazy_opts, null);
+    const lazy_res = try emit(std.testing.io, std.testing.allocator, &result.graph, &lazy_opts, null);
     defer lazy_res.deinit(std.testing.allocator);
     try std.testing.expect(lazy_res.sourcemap == null);
     try std.testing.expect(lazy_res.sourcemap_builder != null);
@@ -1903,7 +1904,7 @@ test "emitter: lazy_sourcemap 은 sourcemap=false 일 때 builder 도 null" {
     defer result.cache.deinit();
 
     // sourcemap.enable=false 면 lazy 플래그는 무시된다 — builder/json 모두 null.
-    const res = try emit(std.testing.allocator, &result.graph, &.{ .sourcemap = .{ .lazy = true } }, null);
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .sourcemap = .{ .lazy = true } }, null);
     defer res.deinit(std.testing.allocator);
     try std.testing.expect(res.sourcemap == null);
     try std.testing.expect(res.sourcemap_builder == null);
@@ -1928,12 +1929,12 @@ test "emitter: lazy_sourcemap multi-module 바이트 동등성 (eager vs lazy)" 
 
     var eager = base;
     eager.sourcemap.lazy = false;
-    const eager_res = try emit(std.testing.allocator, &result.graph, &eager, null);
+    const eager_res = try emit(std.testing.io, std.testing.allocator, &result.graph, &eager, null);
     defer eager_res.deinit(std.testing.allocator);
 
     var lazy = base;
     lazy.sourcemap.lazy = true;
-    const lazy_res = try emit(std.testing.allocator, &result.graph, &lazy, null);
+    const lazy_res = try emit(std.testing.io, std.testing.allocator, &result.graph, &lazy, null);
     defer lazy_res.deinit(std.testing.allocator);
 
     const lazy_json = try lazy_res.sourcemap_builder.?.generateJSON("bundle.js");
@@ -1951,7 +1952,7 @@ test "emitter: lazy_sourcemap 에서 sourceMappingURL 주석은 항상 붙는다
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true, .lazy = true },
         .output_filename = "bundle.js",
     }, null);
@@ -1971,7 +1972,7 @@ test "emitter: lazy_sourcemap + debug_ids 는 builder 에 UUID 를 보관한다"
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true, .lazy = true, .debug_ids = true },
         .output_filename = "bundle.js",
     }, null);
@@ -2000,7 +2001,7 @@ test "emitter: lazy_sourcemap 은 source_root 를 builder 에 전파" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true, .lazy = true, .source_root = "/src" },
         .output_filename = "bundle.js",
     }, null);
@@ -2019,7 +2020,7 @@ test "emitter: lazy_sourcemap 은 sources_content=false 를 반영해 배열 제
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true, .lazy = true, .sources_content = false },
         .output_filename = "bundle.js",
     }, null);
@@ -2050,7 +2051,7 @@ test "emitter: lazy_sourcemap dev mode — ModuleDevCode.sm_builder 채워지고
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true, .lazy = true },
         .output_filename = "bundle.js",
         .dev_mode = true,
@@ -2095,12 +2096,12 @@ test "emitter: per-module sm_builder lazy/eager JSON 바이트 동등" {
 
     var eager = base;
     eager.sourcemap.lazy = false;
-    const eager_res = try emit(std.testing.allocator, &result.graph, &eager, null);
+    const eager_res = try emit(std.testing.io, std.testing.allocator, &result.graph, &eager, null);
     defer eager_res.deinit(std.testing.allocator);
 
     var lazy = base;
     lazy.sourcemap.lazy = true;
-    const lazy_res = try emit(std.testing.allocator, &result.graph, &lazy, null);
+    const lazy_res = try emit(std.testing.io, std.testing.allocator, &result.graph, &lazy, null);
     defer lazy_res.deinit(std.testing.allocator);
 
     const eager_codes = eager_res.module_codes orelse return error.TestUnexpectedResult;
@@ -2125,7 +2126,7 @@ test "emitter: lazy_sourcemap builder.generateJSON 은 두 번 호출 가능 (�
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true, .lazy = true },
         .output_filename = "bundle.js",
     }, null);
@@ -2148,7 +2149,7 @@ test "emitter: SourceMapOptions 기본값 — 모든 sourcemap 기능 비활성"
     defer result.cache.deinit();
 
     // EmitOptions.{} 기본값에서 sourcemap 은 완전 비활성. output 에 sourceMappingURL 없어야.
-    const res = try emit(std.testing.allocator, &result.graph, &.{}, null);
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
     defer res.deinit(std.testing.allocator);
     try std.testing.expect(res.sourcemap == null);
     try std.testing.expect(res.sourcemap_builder == null);
@@ -2178,7 +2179,7 @@ test "emitter: dev_mode + sourcemap 활성 시 per-module code 끝에 sourceURL 
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         .collect_module_codes = true,
@@ -2214,7 +2215,7 @@ test "emitter: dev_mode + sourcemap 비활성 시 sourceURL 주석 없음" {
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .dev_mode = true,
         .collect_module_codes = true,
     }, null);
@@ -2247,7 +2248,7 @@ test "emitter: multi-module 각각에 고유 sourceURL 포함" {
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         .collect_module_codes = true,
@@ -2281,7 +2282,7 @@ test "emitter: root_dir 설정 시 sourceURL 이 상대경로" {
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "export const x = 1;\n");
 
-    const tmp_abs = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_abs = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_abs);
 
     var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
@@ -2298,7 +2299,7 @@ test "emitter: root_dir 설정 시 sourceURL 이 상대경로" {
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         .collect_module_codes = true,
@@ -2326,7 +2327,7 @@ test "emitter: collect_module_codes=false — per-module code 자체 미수집 (
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         // collect_module_codes 의도적으로 false.
@@ -2360,7 +2361,7 @@ test "emitter: sourceURL 은 IIFE 뒤에 위치 — HMR_PREAMBLE_LINES 오프셋
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         .collect_module_codes = true,
@@ -2396,7 +2397,7 @@ test "emitter: skip_bundle_output 활성 — output 은 모듈 byte 미포함, m
         m.dev_id = "";
     };
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         .collect_module_codes = true,
@@ -2430,7 +2431,7 @@ test "emitter: skip_bundle_output — collect_module_codes=false 면 가드 비�
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const res = try emit(std.testing.allocator, &result.graph, &.{
+    const res = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{
         .sourcemap = .{ .enable = true },
         .dev_mode = true,
         .collect_module_codes = false, // 핵심: false → guard inactive
