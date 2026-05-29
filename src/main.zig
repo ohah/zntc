@@ -309,16 +309,13 @@ pub fn main(init: std.process.Init) !void {
     };
     const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else @import("mimalloc.zig").allocator;
 
-    // stdout/stderr writer (0.16: deprecatedWriter 제거 → File.writer(io,&buf)).
-    // std.process.exit() 는 defer 를 우회하므로, exit 직전엔 stderr.flush() 를 명시 호출.
-    var stdout_buf: [8192]u8 = undefined;
-    var stdout_state = std.Io.File.stdout().writer(io, &stdout_buf);
+    // stdout/stderr writer (0.16: deprecatedWriter 제거 → File.writer(io,buffer)).
+    // length-0 buffer(`&.{}`)는 unbuffered — 쓰기 즉시 drain, flush 는 no-op. 따라서
+    // std.process.exit 가 defer 를 우회해도 에러 메시지 유실이 없다 (std.debug 도 동일 패턴).
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
     const stdout = &stdout_state.interface;
-    var stderr_buf: [4096]u8 = undefined;
-    var stderr_state = std.Io.File.stderr().writer(io, &stderr_buf);
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
     const stderr = &stderr_state.interface;
-    defer stdout.flush() catch {};
-    defer stderr.flush() catch {};
 
     lib.debug_log.initFromEnv(io);
     lib.profile.initFromEnv(io);
