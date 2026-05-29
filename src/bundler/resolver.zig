@@ -983,6 +983,9 @@ pub const Resolver = struct {
                 break :blk pkg_json.resolveExports(self.allocator, exports, exports_subpath, self.conditions);
             };
             if (exports_match) |exports_result| {
+                // (#3981) 매칭된 조건/패턴 target 이 명시적 null → 해석 차단.
+                // main fields/index 폴백 없이 not-found (Node ERR_PACKAGE_PATH_NOT_EXPORTED).
+                if (exports_result.blocked) return null;
                 defer if (exports_result.allocated) self.allocator.free(exports_result.path);
                 const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, exports_result.path }) catch
                     return error.OutOfMemory;
@@ -1032,6 +1035,8 @@ pub const Resolver = struct {
 
                 if (parsed.pkg.imports) |imports| {
                     if (pkg_json.resolveImports(self.allocator, imports, specifier, self.conditions)) |imports_result| {
+                        // (#3981) 매칭된 imports 조건 target 이 null → 차단(not-found).
+                        if (imports_result.blocked) return error.ModuleNotFound;
                         defer if (imports_result.allocated) self.allocator.free(imports_result.path);
 
                         // imports 결과는 패키지 디렉토리 기준 상대 경로

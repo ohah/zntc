@@ -266,6 +266,11 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, pkg_dir_path: []const u8) 
 pub const ExportsResult = struct {
     path: []const u8,
     allocated: bool,
+    /// (#3981) 매칭된 조건/패턴의 target 이 명시적 JSON null → 해석 차단
+    /// (Node ERR_PACKAGE_PATH_NOT_EXPORTED). caller 는 sibling 조건/default/
+    /// main fields/index 로 폴백하지 말고 해석 실패로 처리해야 한다.
+    /// blocked=true 면 path 는 무의미("").
+    blocked: bool = false,
 };
 
 pub fn resolveExports(
@@ -284,9 +289,12 @@ pub fn resolveExports(
                 return resolveSubpathMap(allocator, obj, subpath, conditions);
             }
             if (std.mem.eql(u8, subpath, ".")) {
-                if (resolveConditions(exports, conditions)) |path| {
+                var blocked = false;
+                if (resolveConditions(exports, conditions, &blocked)) |path| {
                     return .{ .path = path, .allocated = false };
                 }
+                // (#3981) "." 의 매칭 조건 target 이 null → 차단.
+                if (blocked) return .{ .path = "", .allocated = false, .blocked = true };
             }
             return null;
         },
@@ -320,9 +328,13 @@ fn resolveSubpathMap(
 ) ?ExportsResult {
     // 1. 정확한 매칭
     if (obj.get(subpath)) |value| {
-        if (resolveConditions(value, conditions)) |path| {
+        var blocked = false;
+        if (resolveConditions(value, conditions, &blocked)) |path| {
             return .{ .path = path, .allocated = false };
         }
+        // (#3981) 매칭된 exact key 의 target 이 null → 차단(폴백 금지).
+        if (blocked) return .{ .path = "", .allocated = false, .blocked = true };
+        // blocked 아니면(조건 미매칭) 기존대로 와일드카드로 진행.
     }
 
     // 2. 와일드카드 매칭 (./* 패턴).
@@ -334,6 +346,7 @@ fn resolveSubpathMap(
     // 건너뛴다 (matched-but-null blocking 은 별도 — #3981).
     var best_resolved: ?[]const u8 = null;
     var best_matched: []const u8 = "";
+    var best_blocked = false;
     var best_prefix_len: usize = 0;
     var best_key_len: usize = 0;
     var have_best = false;
@@ -352,24 +365,32 @@ fn resolveSubpathMap(
             const more_specific = !have_best or prefix.len > best_prefix_len or
                 (prefix.len == best_prefix_len and pattern.len > best_key_len);
             if (!more_specific) continue;
-            const resolved = resolveConditions(entry.value_ptr.*, conditions) orelse continue;
+            var blocked = false;
+            const resolved = resolveConditions(entry.value_ptr.*, conditions, &blocked);
+            // 조건 미매칭(resolved=null, !blocked)은 덜-구체적 패턴을 시도하도록 skip.
+            // (#3981) blocked(null target) 이면 이 패턴을 best 로 채택해 차단 신호 보존.
+            if (resolved == null and !blocked) continue;
             best_resolved = resolved;
-            best_matched = subpath[prefix.len .. subpath.len - suffix.len];
+            best_matched = if (resolved != null) subpath[prefix.len .. subpath.len - suffix.len] else "";
+            best_blocked = blocked;
             best_prefix_len = prefix.len;
             best_key_len = pattern.len;
             have_best = true;
         }
     }
 
-    if (best_resolved) |resolved| {
-        // 결과에서 * 를 매칭된 부분으로 치환
-        if (std.mem.indexOf(u8, resolved, "*")) |res_star| {
-            const before = resolved[0..res_star];
-            const after = resolved[res_star + 1 ..];
-            const substituted = std.mem.concat(allocator, u8, &.{ before, best_matched, after }) catch return null;
-            return .{ .path = substituted, .allocated = true };
+    if (have_best) {
+        if (best_blocked) return .{ .path = "", .allocated = false, .blocked = true };
+        if (best_resolved) |resolved| {
+            // 결과에서 * 를 매칭된 부분으로 치환
+            if (std.mem.indexOf(u8, resolved, "*")) |res_star| {
+                const before = resolved[0..res_star];
+                const after = resolved[res_star + 1 ..];
+                const substituted = std.mem.concat(allocator, u8, &.{ before, best_matched, after }) catch return null;
+                return .{ .path = substituted, .allocated = true };
+            }
+            return .{ .path = resolved, .allocated = false };
         }
-        return .{ .path = resolved, .allocated = false };
     }
 
     return null;
@@ -379,9 +400,17 @@ fn resolveSubpathMap(
 /// conditions 순서대로 매칭 (첫 번째 매칭이 승리).
 /// 배열(fallback array)은 Node.js 스펙에서 지원하며, 순서대로 시도하여 첫 번째 성공을 반환한다.
 /// 예: "./shams": [{"types":"./shams.d.ts","default":"./shams.js"}, "./shams.js"]
-fn resolveConditions(value: std.json.Value, conditions: []const []const u8) ?[]const u8 {
+/// (#3981) `blocked` out-param: 매칭된 조건/타겟이 명시적 JSON null 일 때 true 로 set.
+/// 반환 null 이 "미매칭"(다음 패턴/폴백 시도 가능)인지 "차단"(해석 실패)인지 구별한다.
+/// Node PACKAGE_TARGET_RESOLVE: null target → 차단(ERR_PACKAGE_PATH_NOT_EXPORTED).
+fn resolveConditions(value: std.json.Value, conditions: []const []const u8, blocked: *bool) ?[]const u8 {
     switch (value) {
         .string => |s| return s,
+        // 명시적 null target → 차단 (sibling 조건/default 로 fall-through 금지).
+        .null => {
+            blocked.* = true;
+            return null;
+        },
         .object => |obj| {
             // Node.js 스펙: exports 객체의 key 순서로 탐색하고,
             // 각 key가 conditions set에 포함되는지 확인한다.
@@ -390,25 +419,30 @@ fn resolveConditions(value: std.json.Value, conditions: []const []const u8) ?[]c
                 if (std.mem.eql(u8, key, "default")) continue; // default는 마지막
                 for (conditions) |cond| {
                     if (std.mem.eql(u8, key, cond)) {
-                        if (resolveConditions(obj.get(key).?, conditions)) |result| {
+                        if (resolveConditions(obj.get(key).?, conditions, blocked)) |result| {
                             return result;
                         }
+                        // 매칭된 key 의 target 이 blocked(null) 이면 즉시 차단 —
+                        // sibling 조건이나 default 로 fall-through 하지 않는다.
+                        if (blocked.*) return null;
                         break;
                     }
                 }
             }
             // "default"는 항상 마지막 폴백 (Node.js 스펙)
             if (obj.get("default")) |v| {
-                return resolveConditions(v, conditions);
+                return resolveConditions(v, conditions, blocked);
             }
             return null;
         },
         .array => |arr| {
-            // 폴백 배열: 각 요소를 순서대로 시도, 첫 번째 매칭 반환
+            // 폴백 배열: 각 요소를 순서대로 시도, 첫 번째 매칭 반환.
+            // null/blocked 요소는 skip(다음 요소 시도) — Node 배열 시맨틱.
             for (arr.items) |item| {
-                if (resolveConditions(item, conditions)) |result| {
+                if (resolveConditions(item, conditions, blocked)) |result| {
                     return result;
                 }
+                blocked.* = false; // 배열에서는 block 을 전파하지 않고 다음 후보로
             }
             return null;
         },
