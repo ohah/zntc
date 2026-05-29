@@ -1850,12 +1850,19 @@ pub const Linker = struct {
     /// 첫 매칭에서 멈추지 않고 전 소스를 확인 — 2+ distinct canonical 이면 ambiguous.
     /// resolveExportChainInner step2(named/re-export/tree-shake 경로)와 ambiguity
     /// 진단(resolveImports)이 공유해 스캔 로직 drift 를 방지한다.
+    ///
+    /// plain `export * from`(exported_name=="*")만 따른다. `export * as ns from`
+    /// (re_export_namespace)은 단일 named export `ns`만 기여하고 소스의 *임의* 이름을
+    /// 현재 namespace 로 끌어오지 않는다 — 따라가면 그 inner 이름(예: coerce.string)이
+    /// plain star 소스의 동명 export(schemas.string)와 false-ambiguous 충돌해 정상
+    /// export 가 사라진다(zod `z.string`===undefined 회귀). isReExportAll() 단독은
+    /// 두 종류를 모두 포함하므로 exported_name=="*" 게이트를 함께 적용한다.
     fn resolveStarExport(self: *const Linker, module_idx: ModuleIndex, name: []const u8, depth: u32) StarResolve {
         const m = self.graph.getModule(module_idx) orelse return .none;
         var found: ?SymbolRef = null;
         var found_is_cjs = false;
         for (m.export_bindings) |eb| {
-            if (!eb.kind.isReExportAll()) continue;
+            if (!(eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*"))) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= m.import_records.len) continue;
             const source_mod = m.import_records[rec_idx].resolved;
