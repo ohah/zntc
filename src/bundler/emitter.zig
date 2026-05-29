@@ -317,16 +317,19 @@ pub const EmitResult = struct {
 
 /// 모듈 그래프를 단일 번들로 출력한다.
 pub fn emit(
+    io: std.Io,
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     options: *const EmitOptions,
     linker: ?*const Linker,
 ) !EmitResult {
-    return emitWithTreeShaking(allocator, graph, options, linker, null);
+    return emitWithTreeShaking(io, allocator, graph, options, linker, null);
 }
 
 /// tree-shaking 적용된 번들 출력. shaker가 null이면 모든 모듈 포함 (기존 동작).
+/// 0.16: 병렬 module emit 이 std.Thread.Pool → std.Io.Group 으로 옮겨져 io 필요.
 pub fn emitWithTreeShaking(
+    io: std.Io,
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     options: *const EmitOptions,
@@ -623,22 +626,21 @@ pub fn emitWithTreeShaking(
         @constCast(l).use_shared_ns_preamble = true;
     }
 
-    var use_pool = sorted.items.len >= 2;
-    var pool: std.Thread.Pool = undefined;
+    // 0.16: std.Thread.Pool/WaitGroup 제거 → std.Io.Group. 동시성은 io 의
+    // async_limit 가 결정(--jobs 반영, async_limit=0 이면 inline = 결정적 단일스레드).
+    // results[i] 가 인덱스별 독립 슬롯이라 worker 순서 무관(determinism 불변).
+    // pool.init 실패 분기는 불필요 — Io.Group.async 는 실패하지 않으며 자원 부족
+    // 시 inline 으로 fallback.
+    const use_pool = sorted.items.len >= 2;
     if (use_pool) {
-        use_pool = if (pool.init(.{ .allocator = allocator })) |_| true else |_| false;
-    }
-    defer if (use_pool) pool.deinit();
-
-    if (use_pool) {
-        var wg: std.Thread.WaitGroup = .{};
+        var group: std.Io.Group = .init;
         for (sorted.items, 0..) |m, i| {
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            pool.spawnWg(&wg, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
+            group.async(io, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
         }
-        pool.waitAndWork(&wg);
+        group.await(io) catch {};
     } else {
         for (sorted.items, 0..) |m, i| {
             if (hit_mask[i]) continue;
