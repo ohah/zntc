@@ -410,10 +410,11 @@ test "Baseline JSON round-trip" {
         .stddev_ns = 2_100_000.0,
     });
 
+    // 0.16: std.io.fixedBufferStream 제거 → std.Io.Writer.fixed.
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try writeBaselineJson(fbs.writer(), &bl);
-    const json = fbs.getWritten();
+    var w = std.Io.Writer.fixed(&buf);
+    try writeBaselineJson(&w, &bl);
+    const json = w.buffered();
 
     var roundtrip = try readBaselineJson(allocator, json);
     defer roundtrip.deinit(allocator);

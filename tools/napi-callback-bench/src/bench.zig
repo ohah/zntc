@@ -15,11 +15,21 @@ const c = @cImport({
 var g_tsfn: c.napi_threadsafe_function = null;
 var g_callback_ref: c.napi_ref = null;
 
+// 0.16: NAPI 는 juicy main 이 없어 io 를 받을 수 없다. 전역 Threaded io 를 lazy
+// 생성 (Io.Mutex/Condition, Io.Timestamp 가 io 를 요구). 재사용 핸드오프라
+// one-shot Event 대신 Mutex+Condition.
+var g_threaded: ?std.Io.Threaded = null;
+fn benchIo() std.Io {
+    if (g_threaded == null) g_threaded = std.Io.Threaded.init(std.heap.c_allocator, .{});
+    return g_threaded.?.io();
+}
+
 // per-call worker stack — tsf 모드에서 worker 가 main thread JS 실행을 기다림.
 const CallCtx = struct {
     done: bool = false,
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    // 0.16: std.Thread.Mutex/Condition 제거 → std.Io.Mutex/Condition (io 인자).
+    mutex: std.Io.Mutex = .init,
+    cond: std.Io.Condition = .init,
 };
 
 fn callJsCb(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -28,10 +38,11 @@ fn callJsCb(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*
     _ = c.napi_get_undefined(env, &js_undefined);
     var result: c.napi_value = undefined;
     _ = c.napi_call_function(env, js_undefined, js_callback, 0, null, &result);
-    ctx.mutex.lock();
+    const io = benchIo();
+    ctx.mutex.lockUncancelable(io);
     ctx.done = true;
-    ctx.cond.signal();
-    ctx.mutex.unlock();
+    ctx.cond.signal(io);
+    ctx.mutex.unlock(io);
 }
 
 fn throwError(env: c.napi_env, msg: [*:0]const u8) c.napi_value {
@@ -111,13 +122,15 @@ fn benchSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     var js_undefined: c.napi_value = undefined;
     _ = c.napi_get_undefined(env, &js_undefined);
 
-    const start_ns = std.time.nanoTimestamp();
+    // 0.16: std.time.nanoTimestamp 제거 → Io.Timestamp(awake 단조시계).
+    const sync_io = benchIo();
+    const start_ns = std.Io.Timestamp.now(sync_io, .awake).toNanoseconds();
     var i: u32 = 0;
     while (i < n) : (i += 1) {
         var result: c.napi_value = undefined;
         _ = c.napi_call_function(env, js_undefined, js_cb, 0, null, &result);
     }
-    const elapsed_ns: f64 = @floatFromInt(std.time.nanoTimestamp() - start_ns);
+    const elapsed_ns: f64 = @floatFromInt(std.Io.Timestamp.now(sync_io, .awake).toNanoseconds() - start_ns);
 
     var ms: c.napi_value = undefined;
     _ = c.napi_create_double(env, elapsed_ns / 1e6, &ms);
@@ -136,17 +149,18 @@ fn doWorkBench(_: c.napi_env, data: ?*anyopaque) callconv(.c) void {
     // CallCtx 를 loop 밖에서 1회 init — mutex/cond init 비용을 hot path 에서 제외해
     // napi_call_threadsafe_function 자체 비용만 측정.
     var call_ctx = CallCtx{};
-    const start_ns = std.time.nanoTimestamp();
+    const io = benchIo();
+    const start_ns = std.Io.Timestamp.now(io, .awake).toNanoseconds();
     var i: u32 = 0;
     while (i < ctx.iterations) : (i += 1) {
         call_ctx.done = false;
         const status = c.napi_call_threadsafe_function(g_tsfn, @ptrCast(&call_ctx), c.napi_tsfn_blocking);
         if (status != c.napi_ok) break;
-        call_ctx.mutex.lock();
-        while (!call_ctx.done) call_ctx.cond.wait(&call_ctx.mutex);
-        call_ctx.mutex.unlock();
+        call_ctx.mutex.lockUncancelable(io);
+        while (!call_ctx.done) call_ctx.cond.waitUncancelable(io, &call_ctx.mutex);
+        call_ctx.mutex.unlock(io);
     }
-    ctx.elapsed_ns = std.time.nanoTimestamp() - start_ns;
+    ctx.elapsed_ns = @intCast(std.Io.Timestamp.now(io, .awake).toNanoseconds() - start_ns);
 }
 
 fn completeWorkBench(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(.c) void {
