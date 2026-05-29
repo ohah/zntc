@@ -199,6 +199,50 @@ test "CJS: namespace with export*-as-inner from CJS (#3975)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
 }
 
+test "CJS: dev mode namespace of export*-from-CJS — wrapped exports 에 __copyProps (#3975)" {
+    // dev 모드는 mid 가 __esm 으로 wrap 된다. `export * from <CJS>` 의 동적 멤버를
+    // wrapped exports 객체에 __copyProps 로 복사해야 namespace/named import 가 본다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "exports.alpha = 1;");
+    try writeFile(tmp.dir, "mid.ts", "export const local = 42;\nexport * from './lib.cjs';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './mid.ts';\nglobalThis.z = [ns.local, ns.alpha];");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // wrapped exports 객체에 CJS 멤버를 런타임 복사.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__copyProps(exports_mid, require_lib())") != null);
+}
+
+test "CJS: dev mode namespace of export*-as-inner from CJS — __toESM 표현식 (#3975)" {
+    // dev 모드 `export * as inner from <CJS>`: 빈 cjs_ns={} 대신 멤버 rewrite 가
+    // __toESM(require_lib()) 표현식이어야(접근 시점 평가, ordering 안전).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "exports.alpha = 1;");
+    try writeFile(tmp.dir, "mid.ts", "export * as inner from './lib.cjs';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './mid.ts';\nglobalThis.z = ns.inner.alpha;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 빈 객체 namespace 가 아니라 __toESM(require_lib()) 표현식으로 접근.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+}
+
 test "CJS: RN strict order defers named CJS import with inlineRequires" {
     // RN inlineRequires 에서는 named CJS import 도 Metro 처럼 값 사용 지점에서 평가된다.
     // side-effect import 순서는 유지하지만, named binding 의 require 는 본문 실행 전
