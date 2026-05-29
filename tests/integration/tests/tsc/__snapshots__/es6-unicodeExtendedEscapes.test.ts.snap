@@ -138,14 +138,6 @@ var x = "\\u{10FFFF}";
 "
 `;
 
-exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings07 1`] = `
-"// @target: es5,es6
-// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
-//  1. Assert: 0 ≤ cp ≤ 0x10FFFF.
-var x = "\\u{110000}";
-"
-`;
-
 exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings08 1`] = `
 "// @target: es5,es6
 // ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
@@ -181,12 +173,6 @@ exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings11 1`] =
 // Although we should just get back a single code point value of 0xDC00,
 // this is a useful edge-case test.
 var x = "\\u{DC00}";
-"
-`;
-
-exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings12 1`] = `
-"// @target: es5,es6
-var x = "\\u{FFFFFFFF}";
 "
 `;
 
