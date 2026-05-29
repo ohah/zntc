@@ -78,6 +78,7 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
         bundle_opts.plugins = sync_plugin_storage[0..1];
     }
 
+    common.setJobs(bundle_opts.max_threads); // #4004: --jobs → io async_limit
     var bundler = Bundler.init(native_alloc, bundle_opts);
     defer bundler.deinit();
     var result = bundler.bundle(common.io()) catch |err| {

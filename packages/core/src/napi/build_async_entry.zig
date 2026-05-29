@@ -48,6 +48,7 @@ const BuildAsyncData = struct {
 
 /// 독립 스레드에서 번들링 실행 (libuv 워커 미사용 → TSFN 데드락 방지)
 fn buildWorkerThread(async_data: *BuildAsyncData) void {
+    common.setJobs(async_data.options.max_threads); // #4004: --jobs → io async_limit
     var bundler = Bundler.init(native_alloc, async_data.options);
     defer bundler.deinit();
     async_data.result = bundler.bundle(common.io()) catch |err| {

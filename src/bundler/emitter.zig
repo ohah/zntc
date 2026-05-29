@@ -630,8 +630,9 @@ pub fn emitWithTreeShaking(
     // 결정(async_limit=0 이면 inline = 단일스레드). results[i] 가 인덱스별 독립 슬롯이라
     // worker 순서 무관(determinism 불변). pool.init 실패 분기 불필요 — group.async 는
     // 실패하지 않고 자원 부족 시 inline fallback.
-    // 참고: emit 은 0.15 의 Thread.Pool 도 --jobs 미반영(항상 병렬, #3966)이었고, 0.16
-    // 도 io 기본 async_limit(cpu-1)을 쓴다 — --jobs 연결은 build_flow 주석의 follow-up 참조.
+    // 참고: 0.15 의 Thread.Pool 은 --jobs 미반영(항상 병렬, #3966)이었으나, 0.16 은 io 의
+    // async_limit 을 따르고 진입점이 --jobs 를 거기에 반영하므로(#4004) emit 도 --jobs=1
+    // (.nothing)이면 inline=순차가 된다. determinism 은 index 슬롯으로 무관(#3564).
     const use_pool = sorted.items.len >= 2;
     if (use_pool) {
         var group: std.Io.Group = .init;

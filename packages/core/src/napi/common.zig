@@ -64,6 +64,17 @@ pub fn io() std.Io {
     return g_threaded.?.io();
 }
 
+/// #4004: 빌드 직전 --jobs(JS `options.jobs`)를 공유 io 의 async_limit 에 반영.
+/// g_threaded 가 *Threaded 를 소유하므로 setAsyncLimit(Threaded.mutex 보호) 가능.
+/// ⚠️ 공유 전역 io 라 동시 in-flight 빌드가 서로 다른 jobs 면 마지막 setter 값을
+/// 공유한다(메모리 안전 — mutex 보호, determinism #3564 무관 — byte-identical).
+/// null(jobs=0)=기본 async_limit(cpu-1) 유지.
+pub fn setJobs(max_threads: u32) void {
+    if (@import("zntc_lib").bundler.asyncLimitForJobs(max_threads)) |lim| {
+        if (g_threaded) |*t| t.setAsyncLimit(lim);
+    }
+}
+
 // ── NAPI 환경변수 스냅샷 (0.16) ───────────────────────────────────────────
 // std.process.getEnvVarOwned 제거 → libc environ(std.c.environ) 으로 Map 을
 // 만들어 env_flag 에 등록. Map 은 프로세스 수명 동안 유지(deinit 안 함).

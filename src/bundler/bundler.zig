@@ -94,6 +94,16 @@ pub const OutputExports = enum {
 /// (federation.zig ↔ bundler.zig circular import 회피, types 는 양쪽 공통).
 pub const MfBundleConfig = types.MfBundleConfig;
 
+/// `--jobs`(max_threads) → io 의 `async_limit` 매핑 (#4004). `bundle(io)` 는 io 를
+/// 인터페이스로만 받아 동시성을 못 바꾸므로, io 를 *소유* 한 진입점(CLI main / NAPI
+/// common)에서 빌드 전 `Threaded.setAsyncLimit` 으로 적용한다. `null` 이면 기본값
+/// (생성 시 cpu-1) 유지. async_limit 은 "메인 스레드 제외 최대 풀 크기"라:
+///   0 → 기본 유지 / 1 → `.nothing`(=0, inline 순차, 디버깅) / N → `.limited(N-1)`.
+pub fn asyncLimitForJobs(max_threads: u32) ?std.Io.Limit {
+    if (max_threads == 0) return null;
+    return .limited(max_threads - 1);
+}
+
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
     format: EmitOptions.Format = .esm,

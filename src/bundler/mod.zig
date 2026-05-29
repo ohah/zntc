@@ -69,6 +69,7 @@ pub const ChunkKind = chunk.ChunkKind;
 pub const ChunkGraph = chunk.ChunkGraph;
 pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
+pub const asyncLimitForJobs = bundler_core.asyncLimitForJobs;
 pub const MfBundleConfig = types.MfBundleConfig; // #3318 P1-1
 pub const federation = @import("federation.zig"); // #3318 (mfSharedGlobalName 단일 소스)
 pub const mf_options = @import("mf_options.zig"); // #3318 mf DTO→Bundle + seam 단일 소스(CLI·NAPI 공용)
