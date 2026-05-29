@@ -560,13 +560,33 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 } else {
                     const value_node = self.ast.getNode(value_idx);
                     if (value_node.tag == .assignment_pattern) {
-                        // default: { a = 1 } → var a = _ref.a === void 0 ? 1 : _ref.a
-                        const binding = try self.visitNode(value_node.data.binary.left);
-                        const default_val = try self.visitNode(value_node.data.binary.right);
-                        try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
-                        const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
-                        const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
-                        try self.scratch.append(self.allocator, decl);
+                        const left_node = self.ast.getNode(value_node.data.binary.left);
+                        if (left_node.tag == .object_pattern or left_node.tag == .array_pattern) {
+                            // (#3979) default 가 있는 *중첩* 패턴: { a: { c = 2 } = {} }
+                            //   → var _ref2 = _ref.a === void 0 ? {} : _ref.a; var c = _ref2.c ...
+                            // left 가 패턴이면 visitNode 로 verbatim 방출(invalid ES5)하지 말고
+                            // defaulted 값을 임시변수에 담아 재귀(non-default 중첩 분기와 동일 lowering).
+                            const default_val = try self.visitNode(value_node.data.binary.right);
+                            try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
+                            const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                            const nested_span = try es_helpers.makeTempVarSpan(self);
+                            const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                            const nested_init = if (left_node.tag == .array_pattern)
+                                try buildArrayRead(self, defaulted, left_node, span)
+                            else
+                                defaulted;
+                            const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, nested_init, span);
+                            try self.scratch.append(self.allocator, nested_decl);
+                            try emitPatternDeclarators(self, left_node, nested_span, span);
+                        } else {
+                            // default: { a = 1 } → var a = _ref.a === void 0 ? 1 : _ref.a
+                            const binding = try self.visitNode(value_node.data.binary.left);
+                            const default_val = try self.visitNode(value_node.data.binary.right);
+                            try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
+                            const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                            const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
+                            try self.scratch.append(self.allocator, decl);
+                        }
                     } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
                         // nested: { a: { b } } → var _ref2 = _ref.a; var b = _ref2.b
                         const nested_span = try es_helpers.makeTempVarSpan(self);
@@ -614,24 +634,54 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const elem_access = try makeArrayAccess(self, ref_span, idx, span);
 
                 if (elem.tag == .assignment_pattern) {
-                    // default: [x = 1] → var x = _ref[0] === void 0 ? 1 : _ref[0]
-                    const binding = try self.visitNode(elem.data.binary.left);
-                    const default_val = try self.visitNode(elem.data.binary.right);
-                    try rewritePatternDefaultTDZ(self, default_val, pattern, idx);
-                    const void_zero = try es_helpers.makeVoidZero(self, span);
-                    const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
-                    const eq_check = try self.ast.addNode(.{
-                        .tag = .binary_expression,
-                        .span = span,
-                        .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
-                    });
-                    const conditional = try self.ast.addNode(.{
-                        .tag = .conditional_expression,
-                        .span = span,
-                        .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
-                    });
-                    const decl = try es_helpers.makeDeclarator(self, binding, conditional, span);
-                    try self.scratch.append(self.allocator, decl);
+                    const left_node = self.ast.getNode(elem.data.binary.left);
+                    if (left_node.tag == .object_pattern or left_node.tag == .array_pattern) {
+                        // (#3979) default 가 있는 *중첩* 패턴: [ { a = 1 } = {} ] / [ [c=2] = [] ]
+                        // left 가 패턴이면 verbatim 방출(invalid ES5)하지 말고 defaulted 값을
+                        // 임시변수에 담아 재귀(non-default 중첩 분기와 동일 lowering).
+                        const default_val = try self.visitNode(elem.data.binary.right);
+                        try rewritePatternDefaultTDZ(self, default_val, pattern, idx);
+                        const void_zero = try es_helpers.makeVoidZero(self, span);
+                        const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
+                        const eq_check = try self.ast.addNode(.{
+                            .tag = .binary_expression,
+                            .span = span,
+                            .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                        });
+                        const conditional = try self.ast.addNode(.{
+                            .tag = .conditional_expression,
+                            .span = span,
+                            .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
+                        });
+                        const nested_span = try es_helpers.makeTempVarSpan(self);
+                        const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                        const nested_init = if (left_node.tag == .array_pattern)
+                            try buildArrayRead(self, conditional, left_node, span)
+                        else
+                            conditional;
+                        const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, nested_init, span);
+                        try self.scratch.append(self.allocator, nested_decl);
+                        try emitPatternDeclarators(self, left_node, nested_span, span);
+                    } else {
+                        // default: [x = 1] → var x = _ref[0] === void 0 ? 1 : _ref[0]
+                        const binding = try self.visitNode(elem.data.binary.left);
+                        const default_val = try self.visitNode(elem.data.binary.right);
+                        try rewritePatternDefaultTDZ(self, default_val, pattern, idx);
+                        const void_zero = try es_helpers.makeVoidZero(self, span);
+                        const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
+                        const eq_check = try self.ast.addNode(.{
+                            .tag = .binary_expression,
+                            .span = span,
+                            .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                        });
+                        const conditional = try self.ast.addNode(.{
+                            .tag = .conditional_expression,
+                            .span = span,
+                            .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
+                        });
+                        const decl = try es_helpers.makeDeclarator(self, binding, conditional, span);
+                        try self.scratch.append(self.allocator, decl);
+                    }
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
                     // nested: [[a, b]] → var _ref2 = _ref[0]; var a = _ref2[0]; ...
                     const nested_span = try es_helpers.makeTempVarSpan(self);
