@@ -91,3 +91,92 @@ test "exports name dedup: 단일 사본은 suffix 없이 base 이름" {
     // suffix 가 붙은 인스턴스가 있으면 안 됨
     try testing.expect(std.mem.indexOf(u8, code, "exports_lonely$") == null);
 }
+
+// ============================================================
+// #3982: ambiguous export* (한 이름이 2+ distinct 소스에서 export *)
+// ESM spec ResolveExport ambiguity — named import = error, namespace 멤버 = undefined.
+// diamond(같은 underlying 모듈 2경로)는 ambiguous 아님.
+// ============================================================
+
+fn hasAmbiguousDiag(r: *const helpers.Bundled) bool {
+    const diags = r.result.diagnostics orelse return false;
+    for (diags) |d| {
+        if (d.code == .ambiguous_export) return true;
+    }
+    return false;
+}
+
+test "ambiguous export*: 2개 distinct 소스의 같은 이름 named import 는 build error (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const shared = 'from-a';");
+    try writeFile(tmp.dir, "b.js", "export const shared = 'from-b';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { shared } from './barrel.js';
+        \\globalThis.z = shared;
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    // ESM spec: ambiguous → esbuild/rolldown/Node 처럼 build error 로 surface.
+    try testing.expect(r.result.hasErrors());
+    try testing.expect(hasAmbiguousDiag(&r));
+}
+
+test "ambiguous export*: 한 소스에만 있는 이름은 정상 해석 (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const only_a = 1;\nexport const shared = 'from-a';");
+    try writeFile(tmp.dir, "b.js", "export const only_b = 2;\nexport const shared = 'from-b';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { only_a } from './barrel.js';
+        \\globalThis.z = only_a;
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    // only_a 는 a.js 에만 있음 → 모호하지 않음 → 정상.
+    try testing.expect(!r.result.hasErrors());
+    try testing.expect(!hasAmbiguousDiag(&r));
+}
+
+test "ambiguous export*: diamond(같은 underlying 2경로)는 ambiguous 아님 (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "real.js", "export const shared = 'real';");
+    try writeFile(tmp.dir, "p1.js", "export * from './real.js';");
+    try writeFile(tmp.dir, "p2.js", "export * from './real.js';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './p1.js';\nexport * from './p2.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { shared } from './barrel.js';
+        \\globalThis.z = shared;
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    // shared 가 두 경로로 도달하지만 같은 canonical(real.js) → 모호하지 않음.
+    try testing.expect(!r.result.hasErrors());
+    try testing.expect(!hasAmbiguousDiag(&r));
+}
+
+test "ambiguous export*: namespace 멤버는 undefined — 객체서 제외 + void 0 rewrite (#3982)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const a = 1;\nexport const shared = 'from-a';");
+    try writeFile(tmp.dir, "b.js", "export const b = 2;\nexport const shared = 'from-b';");
+    try writeFile(tmp.dir, "barrel.js", "export * from './a.js';\nexport * from './b.js';");
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './barrel.js';
+        \\globalThis.z = [ns.a, ns.b, ns.shared];
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+    const code = r.code();
+    // namespace 멤버 접근은 에러가 아님(undefined).
+    try testing.expect(!r.result.hasErrors());
+    // materialize 된 ns 객체에 ambiguous `shared` getter 가 없어야 한다(undefined).
+    try testing.expect(std.mem.indexOf(u8, code, "get shared") == null);
+}

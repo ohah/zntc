@@ -619,7 +619,19 @@ test "Re-export: overlapping export * names" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(!result.hasErrors());
+    // (#3982) x 는 a/b 양쪽에서 export * 로 도달 → ESM spec 상 ambiguous → named
+    // import 는 build error(esbuild/rolldown/Node 동형). y(a만)·z(b만)는 정상.
+    try std.testing.expect(result.hasErrors());
+    var found_ambiguous = false;
+    if (result.diagnostics) |diags| {
+        for (diags) |d| {
+            if (d.code == .ambiguous_export) {
+                found_ambiguous = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(found_ambiguous);
 }
 
 // ============================================================

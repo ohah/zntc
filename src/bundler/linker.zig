@@ -1534,6 +1534,27 @@ pub const Linker = struct {
                             }
                         }
                     }
+                    // (#3982) ambiguous export*: 같은 이름이 2+ distinct star 소스에서
+                    // 도달하면 resolveExportChain 이 null 을 주지만 이는 *누락*이 아니라
+                    // *모호*다(ESM spec). named import 는 esbuild/rolldown/Node 처럼 build
+                    // error 로 surface. 값으로 쓰는 import 만(미사용/type-only 제외).
+                    if (value_used and !ib.is_helper and
+                        self.resolveStarExport(source_record.resolved, ib.imported_name, 0) == .ambiguous)
+                    {
+                        const msg = std.fmt.allocPrint(self.allocator, "Ambiguous import \"{s}\" — exported by multiple modules via \"export *\"", .{ib.imported_name}) catch {
+                            continue;
+                        };
+                        self.fatal_diagnostics.append(self.allocator, .{
+                            .code = .ambiguous_export,
+                            .severity = .@"error",
+                            .message = msg,
+                            .file_path = m.path,
+                            .span = ib.local_span,
+                            .step = .link,
+                            .suggestion = ib.imported_name,
+                        }) catch self.allocator.free(msg);
+                        continue;
+                    }
                     const genuine = value_used and !ib.is_helper and !tgt_cjs and !type_only and
                         !self.shim_missing_exports and
                         !self.moduleHasExportName(source_record.resolved, ib.imported_name, 0);
@@ -1734,23 +1755,14 @@ pub const Linker = struct {
             };
         }
 
-        // 2. export * 확인 (re_export_all)
+        // 2. export * 확인 (re_export_all). 모든 star 소스를 스캔해 동일 이름이
+        // 2개 이상의 서로 다른 canonical 에서 도달하면 ESM spec 상 ambiguous(접근 불가)
+        // → null 반환(#3982). diamond(같은 underlying 2경로)는 ambiguous 아님.
         const m = m_any;
-        for (m.export_bindings) |eb| {
-            if (!eb.kind.isReExportAll()) continue;
-            if (eb.import_record_index) |rec_idx| {
-                if (rec_idx < m.import_records.len) {
-                    const source_mod = m.import_records[rec_idx].resolved;
-                    if (!source_mod.isNone()) {
-                        // CJS fallback은 실제 `module.exports`/`exports.*` 소스에만 유효하다.
-                        // 런타임 값이 비어 있는 type barrel이 임의의 이름을 소유하면 안 된다.
-                        // synthetic 도 같은 이유로 star 전파 금지(allow_synthetic=false) — Rollup 동일.
-                        if (self.resolveOrCjsFallback(source_mod, name, depth + 1, false)) |result| {
-                            return result;
-                        }
-                    }
-                }
-            }
+        switch (self.resolveStarExport(module_idx, name, depth)) {
+            .resolved => |result| return result,
+            .ambiguous => return null,
+            .none => {},
         }
 
         // 3. #3664 P2: synthetic_named_exports — 정적/re-export/export* 어디서도 못 찾으면 fallback
@@ -1787,6 +1799,75 @@ pub const Linker = struct {
             if (sm.wrap_kind == .cjs and sm.has_cjs_export_signal) return .{ .module_index = source_mod, .export_name = name };
         }
         return null;
+    }
+
+    /// 두 SymbolRef 가 같은 canonical(동일 정의)을 가리키는지. diamond(같은 underlying
+    /// 모듈이 여러 경로로 re-export)는 ambiguous 가 아니므로 이 비교로 구별한다. #3982
+    fn sameCanonical(a: SymbolRef, b: SymbolRef) bool {
+        if (@intFromEnum(a.module_index) != @intFromEnum(b.module_index)) return false;
+        if (!std.mem.eql(u8, a.export_name, b.export_name)) return false;
+        const am = a.synthetic_member;
+        const bm = b.synthetic_member;
+        if (am == null and bm == null) return true;
+        if (am == null or bm == null) return false;
+        return std.mem.eql(u8, am.?, bm.?);
+    }
+
+    const StarResolve = union(enum) {
+        /// star 소스 어디에서도 못 찾음
+        none,
+        /// 정확히 하나의 canonical 로 해석(또는 diamond — 모두 같은 canonical)
+        resolved: SymbolRef,
+        /// 2개 이상의 서로 다른 canonical 에서 도달 — ESM spec ambiguous
+        ambiguous,
+    };
+
+    /// 모듈이 직접 export 하지 않으면서 2+ distinct `export *` 소스에서 같은 이름이
+    /// 도달하는지(ESM ambiguous). namespace 멤버 rewrite(shared_namespace.zig)가
+    /// ambiguous 멤버를 `void 0` 으로 매핑하기 위해 호출 — named 경로와 동일한
+    /// resolveStarExport 판정을 공유해 drift 를 막는다. #3982
+    /// 직접 export(또는 named re-export)면 그 정의가 우선이라 ambiguous 아님.
+    pub fn isAmbiguousStarExport(self: *const Linker, module_idx: ModuleIndex, name: []const u8) bool {
+        var key_buf: [4096]u8 = undefined;
+        const dk = makeExportKeyBuf(&key_buf, module_idx.toU32(), name);
+        if (self.export_map.contains(dk)) return false;
+        return self.resolveStarExport(module_idx, name, 0) == .ambiguous;
+    }
+
+    /// `export * from` (exported_name=="*") re-export 개수. ambiguity 는 2+ star
+    /// 소스에서만 가능하므로, 흔한 0~1 star 모듈에서 ambiguity 스캔을 건너뛰는 게이트.
+    pub fn starReExportCount(self: *const Linker, module_idx: ModuleIndex) usize {
+        const m = self.graph.getModule(module_idx) orelse return 0;
+        var n: usize = 0;
+        for (m.export_bindings) |eb| {
+            if (eb.kind.isReExportAll() and std.mem.eql(u8, eb.exported_name, "*")) n += 1;
+        }
+        return n;
+    }
+
+    /// 모듈의 모든 `export *` 소스를 스캔해 `name` 의 해석 결과를 반환(#3982).
+    /// 첫 매칭에서 멈추지 않고 전 소스를 확인 — 2+ distinct canonical 이면 ambiguous.
+    /// resolveExportChainInner step2(named/re-export/tree-shake 경로)와 ambiguity
+    /// 진단(resolveImports)이 공유해 스캔 로직 drift 를 방지한다.
+    fn resolveStarExport(self: *const Linker, module_idx: ModuleIndex, name: []const u8, depth: u32) StarResolve {
+        const m = self.graph.getModule(module_idx) orelse return .none;
+        var found: ?SymbolRef = null;
+        for (m.export_bindings) |eb| {
+            if (!eb.kind.isReExportAll()) continue;
+            const rec_idx = eb.import_record_index orelse continue;
+            if (rec_idx >= m.import_records.len) continue;
+            const source_mod = m.import_records[rec_idx].resolved;
+            if (source_mod.isNone()) continue;
+            // CJS fallback은 실제 `module.exports`/`exports.*` 소스에만 유효. synthetic 은
+            // star 전파 금지(allow_synthetic=false) — Rollup 동일.
+            const result = self.resolveOrCjsFallback(source_mod, name, depth + 1, false) orelse continue;
+            if (found) |f| {
+                if (!sameCanonical(f, result)) return .ambiguous;
+            } else {
+                found = result;
+            }
+        }
+        return if (found) |f| .{ .resolved = f } else .none;
     }
 
     /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
