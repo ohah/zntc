@@ -29,7 +29,7 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
             try appendOptionalMissingThrow(allocator, &buf, specifier, true);
             try buf.appendSlice(allocator, "});");
         } else {
-            try buf.writer(allocator).print("var {s} = __commonJS({{\n\t\"{s}\"(exports, module) {{\n\t\t", .{ var_name, wrapper_id });
+            try buf.print(allocator, "var {s} = __commonJS({{\n\t\"{s}\"(exports, module) {{\n\t\t", .{ var_name, wrapper_id });
             try appendOptionalMissingThrow(allocator, &buf, specifier, false);
             try buf.appendSlice(allocator, "\t}\n});\n");
         }
@@ -42,7 +42,7 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
         // #1621: minify 시 __commonJS → $cj 축약. 빈 body — param 0개.
         try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(()=>{});");
     } else {
-        try buf.writer(allocator).print("var {s} = __commonJS({{\n\t\"{s}\"(exports, module) {{\n\t}}\n}});\n", .{ var_name, wrapper_id });
+        try buf.print(allocator, "var {s} = __commonJS({{\n\t\"{s}\"(exports, module) {{\n\t}}\n}});\n", .{ var_name, wrapper_id });
     }
     return try buf.toOwnedSlice(allocator);
 }

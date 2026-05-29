@@ -160,7 +160,7 @@ pub fn emitHostInit(
             try out.appendSlice(allocator, "globalThis.");
             try out.appendSlice(allocator, g);
             try out.appendSlice(allocator, "=__mfm[");
-            try std.fmt.format(out.writer(allocator), "{d}", .{si});
+            try out.print(allocator, "{d}", .{si});
             try out.appendSlice(allocator, "];");
         }
         try out.appendSlice(allocator, "}).then(function(){");
@@ -587,7 +587,7 @@ pub fn wrapContainer(
     // ── container 객체 문자열 빌드(min-무관 compact, 유효 JS) ──
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+    // 0.16: ArrayList.writer 제거 → ArrayList.print(gpa, ...) 직접 사용.
 
     try buf.appendSlice(allocator, "(function(g){var __zntc_mf_container={get:function(e){var M={");
     for (exposes, 0..) |ex, ei| {
@@ -595,12 +595,12 @@ pub fn wrapContainer(
         // MF2 계약: get(expose) ⇒ Promise<factory>, factory() ⇒ Module
         // (webpack remoteEntry: `.then(()=>()=>require(id))`). 모듈 자체가
         // 아니라 thunk resolve — factory() 호출 전엔 미평가(추가 lazy).
-        try w.print(
+        try buf.print(allocator, 
             "\"{s}\":function(){{return __zntc_load_chunk(\"{s}\").then(function(){{return function(){{return __zntc_require(\"{s}\")}}}})}}",
             .{ ex.name, ex.chunk_file, ex.fed_id },
         );
     }
-    try w.print(
+    try buf.print(allocator, 
         "}};if(!M[e])throw new Error(\"Module \\\"\"+e+\"\\\" does not exist in container {s}.\");return M[e]()}},",
         .{name},
     );
@@ -638,7 +638,7 @@ pub fn wrapContainer(
         try buf.appendSlice(allocator, "var SC=(o&&o.shareScopeMap)?o.shareScopeMap[");
         try appendJsonStr(&buf, allocator, se.share_scope);
         try buf.appendSlice(allocator, "]:s;");
-        try w.print(
+        try buf.print(allocator, 
             "if(SC&&SC[\"{s}\"]){{var V=SC[\"{s}\"],K=Object.keys(V);if(K.length){{var e=V[K[0]],L;" ++
                 "if(e){{if(e.lib){{L=(typeof e.lib===\"function\")?e.lib():e.lib;}}" ++
                 "else if(e.get){{var f=await e.get();L=(typeof f===\"function\")?f():f;}}}}" ++
@@ -651,9 +651,9 @@ pub fn wrapContainer(
     // `globalThis["__FEDERATION_<name>:custom__"]` 에서 읽는다(getRemote
     // EntryExports default key, rspack/webpack MF 산출과 동일). 추가로
     // 친화 글로벌(window.<name>)도 — 직접 접근/디버깅용.
-    try w.print("g[\"__FEDERATION_{s}:custom__\"]=__zntc_mf_container;", .{name});
+    try buf.print(allocator, "g[\"__FEDERATION_{s}:custom__\"]=__zntc_mf_container;", .{name});
     if (isJsIdent(name)) {
-        try w.print("g.{s}=__zntc_mf_container;", .{name});
+        try buf.print(allocator, "g.{s}=__zntc_mf_container;", .{name});
     } else {
         try buf.appendSlice(allocator, "g[");
         try emitter.appendJsStringLiteral(allocator, &buf, name);
