@@ -923,11 +923,14 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             };
         } else if (std.mem.startsWith(u8, arg, "--watch-folder=")) {
             const raw = arg["--watch-folder=".len..];
-            const abs = std.Io.Dir.cwd().realPathFileAlloc(io, raw, allocator) catch {
+            // 0.16: realPathFileAlloc 는 [:0]u8(N+1 바이트). []const u8 리스트에 담아 free 하면
+            // sentinel 누락 → DebugAllocator size-mismatch. 정확 길이 dupe (fs.realpath 패턴).
+            const abs_z = std.Io.Dir.cwd().realPathFileAlloc(io, raw, allocator) catch {
                 try stderr.print("zntc: cannot resolve --watch-folder path: {s}\n", .{raw});
                 std.process.exit(1);
             };
-            try opts.watch_roots_list.append(allocator, abs);
+            defer allocator.free(abs_z);
+            try opts.watch_roots_list.append(allocator, try allocator.dupe(u8, abs_z));
         } else if (std.mem.startsWith(u8, arg, "--watch-include=")) {
             try opts.watch_include_list.append(allocator, arg["--watch-include=".len..]);
         } else if (std.mem.startsWith(u8, arg, "--watch-exclude=")) {
@@ -948,17 +951,19 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             const sep_pos = std.mem.indexOfScalar(u8, arg, ':') orelse std.mem.indexOfScalar(u8, arg, '=').?;
             const option_name = arg[0 .. sep_pos + 1];
             const raw_path = arg[sep_pos + 1 ..];
-            const abs = std.Io.Dir.cwd().realPathFileAlloc(io, raw_path, allocator) catch {
+            // 0.16: realPathFileAlloc [:0]u8 → []const u8 리스트 free size-mismatch 방지 dupe.
+            const abs_z = std.Io.Dir.cwd().realPathFileAlloc(io, raw_path, allocator) catch {
                 try stderr.print("zntc: cannot resolve {s} path: {s}\n", .{ option_name, raw_path });
                 std.process.exit(1);
             };
+            defer allocator.free(abs_z);
             const target_list = if (std.mem.startsWith(u8, arg, "--inject:"))
                 &opts.inject_list
             else if (std.mem.startsWith(u8, arg, "--run-before-main="))
                 &opts.run_before_main_list
             else
                 &opts.polyfill_list;
-            try target_list.append(allocator, abs);
+            try target_list.append(allocator, try allocator.dupe(u8, abs_z));
         } else if (std.mem.startsWith(u8, arg, "--global-identifier=")) {
             const name = arg["--global-identifier=".len..];
             if (name.len > 0) {

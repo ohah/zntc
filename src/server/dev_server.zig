@@ -209,10 +209,14 @@ pub const DevServer = struct {
 
         var abs_entry: ?[]const u8 = null;
         if (options.entry_point) |ep| {
-            abs_entry = std.Io.Dir.cwd().realPathFileAlloc(io, ep, allocator) catch |err| {
+            // 0.16: realPathFileAlloc 는 [:0]u8. ?[]const u8 필드로 free 시 sentinel 누락
+            // size-mismatch → 정확 길이 dupe 후 원본 free (fs.realpath 패턴).
+            const ep_z = std.Io.Dir.cwd().realPathFileAlloc(io, ep, allocator) catch |err| {
                 getLog().print("zntc: cannot resolve entry '{s}': {}\n", .{ ep, err }) catch {};
                 return err;
             };
+            defer allocator.free(ep_z);
+            abs_entry = allocator.dupe(u8, ep_z) catch return error.OutOfMemory;
         }
         errdefer if (abs_entry) |ae| allocator.free(ae);
 

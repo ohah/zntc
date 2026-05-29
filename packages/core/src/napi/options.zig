@@ -106,8 +106,11 @@ fn parseOutputExports(env: c.napi_env, obj: c.napi_value) bundler_mod.OutputExpo
 }
 
 fn resolveEntryPoint(alloc: std.mem.Allocator, path: []const u8) ?[]const u8 {
-    const resolved = std.Io.Dir.cwd().realPathFileAlloc(common.io(), path, alloc) catch return alloc.dupe(u8, path) catch null;
-    return resolved;
+    // 0.16: realPathFileAlloc 는 [:0]u8(N+1). owned_strings 가 []const u8 로 free 하므로
+    // sentinel 누락 size-mismatch → 정확 길이 dupe 후 원본 free (양 분기 동일 layout).
+    const z = std.Io.Dir.cwd().realPathFileAlloc(common.io(), path, alloc) catch return alloc.dupe(u8, path) catch null;
+    defer alloc.free(z);
+    return alloc.dupe(u8, z) catch null;
 }
 
 // ─── runtimePolyfillPlan 객체 파싱 헬퍼 ───
