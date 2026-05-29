@@ -158,7 +158,7 @@ pub const PackageJsonCache = struct {
         self.cache.deinit();
     }
 
-    pub fn getOrParse(self: *PackageJsonCache, pkg_dir_path: []const u8) PkgJsonCacheError!*ParsedPackageJson {
+    pub fn getOrParse(self: *PackageJsonCache, io: std.Io, pkg_dir_path: []const u8) PkgJsonCacheError!*ParsedPackageJson {
         // 1. fast path — shared lock 으로 조회.
         {
             self.rwlock.lockShared();
@@ -170,7 +170,7 @@ pub const PackageJsonCache = struct {
         //  error 를 반환하므로 errdefer 가 "성공적으로 캐시한 key" 까지 free 해버려 double-free.)
         var built: ?*ParsedPackageJson = null;
         const new_entry: Entry = blk: {
-            const parsed = parsePackageJson(self.allocator, pkg_dir_path) catch |err| switch (err) {
+            const parsed = parsePackageJson(self.allocator, io, pkg_dir_path) catch |err| switch (err) {
                 error.FileNotFound => break :blk .file_not_found,
                 error.IoError => break :blk .io_error,
                 error.JsonParseError => break :blk .parse_error,

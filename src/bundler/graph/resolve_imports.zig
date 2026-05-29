@@ -532,5 +532,5 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
     }
 
     // require.context context_expansion_deps 도 resolve + addDep.
-    try applyContextDepResults(self, mod_idx);
+    try applyContextDepResults(self, io, mod_idx);
 }

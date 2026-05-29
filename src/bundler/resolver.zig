@@ -491,7 +491,7 @@ pub const Resolver = struct {
                 const saved = self.fallback;
                 self.fallback = &.{};
                 defer self.fallback = saved;
-                return try self.resolve(source_dir, target);
+                return try self.resolve(self.io, source_dir, target);
             }
             // target=null → 빈 모듈 (webpack `false`)
             const path_dup = self.allocator.dupe(u8, specifier) catch return error.OutOfMemory;
@@ -778,7 +778,7 @@ pub const Resolver = struct {
         defer pj_scope.end();
         if (self.pkg_json_cache) |cache| {
             owned_out.* = null;
-            return cache.getOrParse(dir_path);
+            return cache.getOrParse(self.io, dir_path);
         }
         owned_out.* = pkg_json.parsePackageJson(self.allocator, self.io, dir_path) catch |err| switch (err) {
             error.FileNotFound => return error.FileNotFound,
@@ -1168,7 +1168,7 @@ pub const Resolver = struct {
         else blk: {
             var buf: [std.fs.max_path_bytes]u8 = undefined;
             const joined = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ dir_path, std.fs.path.sep, file_name }) catch break :blk false;
-            const stat = fs.statFile(joined) catch break :blk false;
+            const stat = fs.statFile(self.io, joined) catch break :blk false;
             break :blk stat.kind == .file;
         };
         if (audit.on) debug_log.print(.resolve_audit, "exists cache={d} hit={d} dir_len={d} name_len={d} ns={d}\n", .{ @intFromBool(self.dir_cache != null), @intFromBool(result), dir_path.len, file_name.len, audit.elapsedNs() });
@@ -1179,7 +1179,7 @@ pub const Resolver = struct {
         if (self.dir_cache) |cache| {
             return @constCast(cache).dirExists(path);
         }
-        const stat = fs.statFile(path) catch return false;
+        const stat = fs.statFile(self.io, path) catch return false;
         return stat.is_dir;
     }
 };
