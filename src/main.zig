@@ -1188,7 +1188,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (!is_stdin) {
         // statFile로 디렉토리 여부 판별
-        const stat = std.Io.Dir.cwd().statFile(io, input_path_str) catch |err| {
+        const stat = std.Io.Dir.cwd().statFile(io, input_path_str, .{}) catch |err| {
             // statFile이 실패하면 openDir을 시도하여 디렉토리인지 확인
             // (일부 시스템에서 디렉토리에 statFile이 실패할 수 있음)
             var dir = std.Io.Dir.cwd().openDir(io, input_path_str, .{}) catch {
