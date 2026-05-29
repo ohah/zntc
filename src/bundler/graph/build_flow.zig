@@ -340,8 +340,8 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
     // 인덱스는 이후 finalizeGraph 의 renumber 가 remap 한다(renumber.zig).
     for (store.chunks.items) |chk| {
         if (chk.implicitly_loaded_after_one_of.len == 0) continue;
-        const e_idx = resolveExistingModuleIndex(self, source_dir, chk.id) orelse continue;
-        try wireImplicitlyLoaded(self, e_idx, chk.implicitly_loaded_after_one_of, source_dir);
+        const e_idx = resolveExistingModuleIndex(self, io, source_dir, chk.id) orelse continue;
+        try wireImplicitlyLoaded(self, io, e_idx, chk.implicitly_loaded_after_one_of, source_dir);
     }
 }
 
@@ -350,12 +350,12 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
 /// += [parent], parent.implicitly_loaded_before += [E]. getModuleInfo(manualChunks meta)가 보고.
 /// **데이터만** — 이 관계를 chunk 중복제거에 반영하는 최적화는 follow-up. 부모 id 는 이미 graph 에
 /// 있어야 한다(Rollup 도 "유일 chunk 연결" 요구) → 미존재 시 진단(silent drop 금지).
-fn wireImplicitlyLoaded(self: *ModuleGraph, e_idx: ModuleIndex, ids: []const []const u8, source_dir: []const u8) !void {
+fn wireImplicitlyLoaded(self: *ModuleGraph, io: std.Io, e_idx: ModuleIndex, ids: []const []const u8, source_dir: []const u8) !void {
     if (ids.len == 0) return;
     const ei = @intFromEnum(e_idx);
     if (ei >= self.modules.count()) return;
     for (ids) |raw_id| {
-        const parent_idx = resolveExistingModuleIndex(self, source_dir, raw_id) orelse {
+        const parent_idx = resolveExistingModuleIndex(self, io, source_dir, raw_id) orelse {
             self.addDiag(
                 .plugin_error,
                 .@"error",
@@ -384,10 +384,10 @@ fn appendUniqueModuleIndex(allocator: std.mem.Allocator, list: *std.ArrayList(Mo
 
 /// id 를 *이미 graph 에 있는* 모듈 index 로 해석한다 (신규 추가 안 함 — implicit 부모는 존재해야).
 /// graph 키(abs/이미 등록)면 직접, 상대/bare 면 resolve 후 abs 로 lookup. 미존재면 null.
-fn resolveExistingModuleIndex(self: *ModuleGraph, source_dir: []const u8, id: []const u8) ?ModuleIndex {
+fn resolveExistingModuleIndex(self: *ModuleGraph, io: std.Io, source_dir: []const u8, id: []const u8) ?ModuleIndex {
     if (self.path_to_module.get(id)) |idx| return idx;
     if (std.fs.path.isAbsolute(id)) return null; // abs 는 위에서 이미 시도됨
-    const resolved = self.resolve_cache.resolveThreadSafe(source_dir, id, .static_import) catch return null;
+    const resolved = self.resolve_cache.resolveThreadSafe(io, source_dir, id, .static_import) catch return null;
     const m_union = resolved orelse return null;
     switch (m_union) {
         .file => |f| {
