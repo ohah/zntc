@@ -1025,9 +1025,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     const output_text = if (is_first_line and is_last_line)
                         line
                     else if (is_first_line)
-                        std.mem.trimRight(u8, line, " \t")
+                        std.mem.trimEnd(u8, line, " \t")
                     else if (is_last_line)
-                        std.mem.trimLeft(u8, line, " \t")
+                        std.mem.trimStart(u8, line, " \t")
                     else
                         trimmed;
 

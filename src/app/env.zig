@@ -163,7 +163,7 @@ fn parseDotenvInto(allocator: std.mem.Allocator, content: []const u8, map: *EnvM
         if (isQuoted(value)) {
             value = value[1 .. value.len - 1];
         } else if (std.mem.indexOf(u8, value, " #")) |comment| {
-            value = std.mem.trimRight(u8, value[0..comment], " \t");
+            value = std.mem.trimEnd(u8, value[0..comment], " \t");
         }
 
         const owned_key = try allocator.dupe(u8, key);

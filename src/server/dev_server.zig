@@ -456,7 +456,7 @@ pub const DevServer = struct {
             var line_iter = std.mem.splitSequence(u8, headers_section, "\r\n");
             while (line_iter.next()) |line| {
                 if (std.ascii.startsWithIgnoreCase(line, "content-type:")) {
-                    content_type = std.mem.trimLeft(u8, line["content-type:".len..], " ");
+                    content_type = std.mem.trimStart(u8, line["content-type:".len..], " ");
                     break;
                 }
             }
