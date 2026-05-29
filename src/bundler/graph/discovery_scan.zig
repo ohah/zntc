@@ -33,6 +33,19 @@ pub fn scanWorker(self: *ModuleGraph, io: std.Io, idx: ModuleIndex, channel: *Mp
     channel.send(io, self.scanModule(io, idx));
 }
 
+/// 한 워커가 연속 인덱스 구간 [lo, hi) 를 순차 scan 해 모듈당 ScanResult 를 send 한다.
+/// 0.16 std.Io.Group 의 per-task dispatch 비용(태스크당 힙alloc + 전역 mutex + condSignal)
+/// 을 amortize 하기 위해 build_flow 가 모듈당 group.async 대신 청크 단위로 호출한다(#4007).
+/// **불변식**: [lo, hi) 는 호출자(메인 스레드)가 단일스레드로 .state!=.ready 임을 검증한
+/// 연속 구간이다 — 워커는 .state 를 읽지 않으므로 applyScanResult(메인) 와 race 없음.
+/// 모듈당 결과를 개별 send 하므로 recv/applyScanResult/inflight 회계는 per-module 그대로.
+pub fn scanRangeWorker(self: *ModuleGraph, io: std.Io, lo: usize, hi: usize, channel: *MpscChannel(ScanResult)) void {
+    var i = lo;
+    while (i < hi) : (i += 1) {
+        channel.send(io, self.scanModule(io, .fromUsize(i)));
+    }
+}
+
 pub fn scanModuleRangeSequential(self: *ModuleGraph, io: std.Io, start: usize, end: usize) !usize {
     var i = start;
     while (i < end) : (i += 1) {

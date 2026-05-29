@@ -27,6 +27,7 @@ const Chunk = chunk_mod.Chunk;
 const ChunkIndex = types.ChunkIndex;
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const util = @import("../util/mod.zig");
 const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
@@ -635,12 +636,22 @@ pub fn emitWithTreeShaking(
     // (.nothing)이면 inline=순차가 된다. determinism 은 index 슬롯으로 무관(#3564).
     const use_pool = sorted.items.len >= 2;
     if (use_pool) {
+        // #4007: 모듈당 group.async 는 0.16 std.Io.Group 의 per-task dispatch 비용을 모듈 수만큼
+        // 치러 다모듈 그래프에서 emit wall 회귀(0.15 Thread.Pool 대비, synthreal +0.7ms)를 만든다.
+        // 모듈을 ~parallelism*4 청크의 range-task 로 묶어 dispatch 횟수를 N→~chunks 로 amortize.
+        // hit_mask 는 read-only, results[i] 는 인덱스별 독립 슬롯 → worker race 없음, 출력 순서는
+        // exec_index 합류로 worker 수·dispatch 단위와 무관(determinism #3564 불변).
         var group: std.Io.Group = .init;
-        for (sorted.items, 0..) |m, i| {
-            if (hit_mask[i]) continue;
-            const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
-            const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            group.async(io, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
+        const total = sorted.items.len;
+        // graph 와 동일하게 --jobs(graph.max_threads) 우선 — chunk granularity 만 정하고
+        // 실제 병렬도는 io.async_limit(#4004)이 결정. 0 이면 CPU 코어 수 fallback.
+        const parallelism: usize = if (graph.max_threads != 0) graph.max_threads else (std.Thread.getCpuCount() catch 8);
+        const chunk = util.chunkSize(total, parallelism);
+        var s: usize = 0;
+        while (s < total) {
+            const e = @min(s + chunk, total);
+            group.async(io, emitRangeThread, .{ allocator, sorted.items, options, linker, entry_idx, used_names_list, hit_mask, shaker, results, s, e });
+            s = e;
         }
         group.await(io) catch {};
     } else {
@@ -1353,17 +1364,31 @@ pub fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize
     return if (insert_after_pos) |last| position > last else true;
 }
 
-fn emitModuleThread(
+/// 한 워커가 sorted_items[lo..hi) 모듈을 순차 emit 해 각자의 results[i] 슬롯에 쓴다(#4007 —
+/// 0.16 Io.Group per-task dispatch 비용 amortize). hit_mask 는 read-only, results 슬롯은
+/// 인덱스별 독립 → 호출자(emitWithTreeShaking)가 [0,total) 를 청크로 나눠 호출해도 race 없음.
+/// 출력 순서는 이후 exec_index 합류라 dispatch 단위와 무관(determinism #3564 불변).
+fn emitRangeThread(
     allocator: std.mem.Allocator,
-    module: *const Module,
+    sorted_items: []const *const Module,
     options: *const EmitOptions,
     linker: ?*const Linker,
-    is_entry: bool,
-    used_names: ?[]const []const u8,
+    entry_idx: ?u32,
+    used_names_list: []const chunks.UsedNamesEntry,
+    hit_mask: []const bool,
     shaker: ?*const TreeShaker,
-    result: *CompiledModule,
+    results: []CompiledModule,
+    lo: usize,
+    hi: usize,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.names, &result.preamble_lines, &result.fn_map_json, &result.entry_chain, &result.shared_ns_decls) catch null;
+    var i = lo;
+    while (i < hi) : (i += 1) {
+        if (hit_mask[i]) continue;
+        const m = sorted_items[i];
+        const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
+        const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
+        results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch null;
+    }
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.

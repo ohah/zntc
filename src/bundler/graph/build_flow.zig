@@ -16,6 +16,7 @@ const graph_requested_exports = @import("requested_exports.zig");
 const graph_runtime_polyfills = @import("runtime_polyfills.zig");
 const graph_discovery_scan = @import("discovery_scan.zig");
 const renumber = @import("renumber.zig");
+const util = @import("../../util/mod.zig");
 const graph_resolve_imports = @import("resolve_imports.zig");
 const graph_cycles = @import("cycles.zig");
 const graph_finalize = @import("finalize.zig");
@@ -102,29 +103,22 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         var group: std.Io.Group = .init;
         var inflight: usize = 0;
 
-        // Spawn the initial modules: entries, inject files, and run-before-main files.
-        while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
-            const m = self.modules.at(spawned_up_to);
-            if (m.state == .ready) continue; // Skip disabled modules.
-            const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
-            group.async(io, graph_discovery_scan.scanWorker, .{ self, io, idx, &channel });
-            inflight += 1;
-        }
+        // #4007: 모듈당 group.async 는 0.16 std.Io.Group 의 per-task dispatch 비용(태스크당
+        // 힙alloc + 전역 t.mutex lock + condSignal)을 모듈 수만큼 치러 다모듈 그래프에서 wall
+        // 회귀(0.15 Thread.Pool 대비, synthreal 500모듈 +8.6% 실측)를 만든다. pending 비-ready
+        // 모듈을 ~parallelism*4 청크의 range-task 로 묶어 dispatch 횟수를 N→~chunks 로 줄여
+        // amortize 한다. work-stealing(recv 후 신규 모듈 즉시 dispatch)은 청크 단위로 유지.
+        const parallelism: usize = if (self.max_threads != 0) self.max_threads else (std.Thread.getCpuCount() catch 8);
 
-        // Apply each worker result, then immediately dispatch newly discovered modules.
+        // 초기 알려진 모듈(entries/inject/run-before-main) 청크 dispatch.
+        dispatchPendingChunked(self, io, &group, &channel, &spawned_up_to, &inflight, parallelism);
+
+        // Apply each worker result, then dispatch newly discovered modules (chunked).
         while (inflight > 0) {
             const result = channel.recv(io);
             inflight -= 1;
             try graph_discovery_scan.applyScanResult(self, io, result);
-
-            // Dispatch newly discovered modules without waiting for a batch boundary.
-            while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
-                const m = self.modules.at(spawned_up_to);
-                if (m.state == .ready) continue;
-                const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
-                group.async(io, graph_discovery_scan.scanWorker, .{ self, io, idx, &channel });
-                inflight += 1;
-            }
+            dispatchPendingChunked(self, io, &group, &channel, &spawned_up_to, &inflight, parallelism);
         }
 
         // 모든 결과 수신 완료 — worker 함수가 완전히 반환하고 group 리소스 해제될 때까지 대기.
@@ -139,6 +133,45 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     discover_scope.end();
 
     try finalizeGraph(self, entry_points);
+}
+
+/// 현재 pending(=spawned_up_to..modules.count()) 비-ready 모듈을 ~parallelism*4 청크의
+/// range-task 로 묶어 group.async dispatch 한다(#4007 — 0.16 Io.Group per-task dispatch
+/// 비용 amortize). disabled(.ready) 모듈은 메인 스레드가 단일스레드로 건너뛰며 *연속 비-ready
+/// 구간* 만 워커에 넘긴다 → scanRangeWorker 가 .state 를 안 읽어 applyScanResult(메인) 와 race
+/// 없음(#1779 worker race-safety 불변식 유지). inflight 는 per-module 누적(워커가 모듈당 결과
+/// 개별 send) → recv/applyScanResult 회계 불변. determinism(#3564)은 dispatch 단위와 무관.
+fn dispatchPendingChunked(
+    self: *ModuleGraph,
+    io: std.Io,
+    group: *std.Io.Group,
+    channel: *MpscChannel(graph_discovery_scan.ScanResult),
+    spawned_up_to: *usize,
+    inflight: *usize,
+    parallelism: usize,
+) void {
+    const count = self.modules.count();
+    while (spawned_up_to.* < count) {
+        // disabled(.ready) 모듈 스킵 — 메인 스레드 단독 .state 읽기.
+        if (self.modules.at(spawned_up_to.*).state == .ready) {
+            spawned_up_to.* += 1;
+            continue;
+        }
+        // 연속 비-ready 구간 [lo, hi).
+        const lo = spawned_up_to.*;
+        var hi = lo + 1;
+        while (hi < count and self.modules.at(hi).state != .ready) hi += 1;
+        // ~parallelism*4 청크로 분할 (dispatch amortize ↔ load-balance 균형).
+        const chunk = util.chunkSize(hi - lo, parallelism);
+        var s = lo;
+        while (s < hi) {
+            const e = @min(s + chunk, hi);
+            group.async(io, graph_discovery_scan.scanRangeWorker, .{ self, io, s, e, channel });
+            inflight.* += (e - s);
+            s = e;
+        }
+        spawned_up_to.* = hi;
+    }
 }
 
 /// PR7-2b (#1880): plugin `this.emitFile({ type: 'chunk', id })` 로 별도 chunk 요청된 모듈을
