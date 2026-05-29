@@ -14,6 +14,21 @@ const plugin_bridge = @import("plugin_bridge.zig");
 const c = common.c;
 
 const native_alloc = common.nativeAlloc();
+
+/// 0.16: std.time.Timer 제거 → Io.Timestamp(awake 단조시계) 기반 경과시간 측정.
+/// profile/debug 로깅용 (정밀도 비요구). start 시 io 캡처 → read() 가 io 불필요.
+const IoTimer = struct {
+    io: std.Io,
+    start_ns: i128,
+    fn start(io: std.Io) IoTimer {
+        return .{ .io = io, .start_ns = std.Io.Timestamp.now(io, .awake).toNanoseconds() };
+    }
+    fn read(self: *const IoTimer) u64 {
+        const now = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
+        return @intCast(@max(0, now - self.start_ns));
+    }
+};
+
 const throwError = common.throwError;
 const unwrapNapi = common.unwrapNapi;
 const getStringArg = common.getStringArg;
@@ -366,8 +381,9 @@ const WatchRebuildEvent = struct {
 
 /// 파일의 mtime을 가져온다.
 fn getFileMtime(path: []const u8) !i128 {
-    const stat = try std.fs.cwd().statFile(path);
-    return stat.mtime;
+    // 0.16: std.fs.cwd 제거 → Io.Dir.cwd + io; stat.mtime 은 Io.Timestamp.
+    const stat = try std.Io.Dir.cwd().statFile(common.io(), path, .{});
+    return stat.mtime.toNanoseconds();
 }
 
 /// onReady TSFN 콜백 — 메인 스레드에서 실행
@@ -603,6 +619,7 @@ fn addWatchRootFiles(
     }.f;
     zntc_lib.server.watch_scan.scanRoot(
         allocator,
+        common.io(),
         root,
         .{ .include = include, .exclude = exclude },
         Ctx{ .tracked = tracked, .count = count },
@@ -622,11 +639,12 @@ fn addWatchRootDirs(
     // root 자체
     if (tracked.addDirPath(root)) count.* += 1;
 
-    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
-    defer dir.close();
+    // 0.16: std.fs.cwd 제거 → Io.Dir.cwd + io (NAPI 전역 common.io()).
+    var dir = std.Io.Dir.cwd().openDir(common.io(), root, .{ .iterate = true }) catch return;
+    defer dir.close(common.io());
     var walker = dir.walk(allocator) catch return;
     defer walker.deinit();
-    while (walker.next() catch null) |entry| {
+    while (walker.next(common.io()) catch null) |entry| {
         if (entry.kind != .directory) continue;
         // node_modules, .git, .zntc-* 등 skip (watch_scan 의 hasSkippedSegment 와 일관)
         if (std.mem.indexOf(u8, entry.path, "node_modules") != null) continue;
@@ -792,9 +810,8 @@ fn writeSourcemapFile(
     const sm = sourcemap_json orelse return;
     const map_path = std.fmt.allocPrint(allocator, "{s}.map", .{output_filename}) catch return;
     defer allocator.free(map_path);
-    const sm_file = std.fs.cwd().createFile(map_path, .{}) catch return;
-    defer sm_file.close();
-    sm_file.writeAll(sm) catch {};
+    // 0.16: createFile+writeAll+close → Io.Dir.writeFile (one-shot).
+    std.Io.Dir.cwd().writeFile(common.io(), .{ .sub_path = map_path, .data = sm }) catch {};
 }
 
 /// #3795 — `o.path` 를 outdir 와 결합해 최종 path 를 반환. outdir 가 빈 문자열이면 o_path
@@ -817,10 +834,9 @@ fn writeOutputToOutdir(
 ) void {
     const full_path = resolveOutdirPath(allocator, outdir, o_path) catch return;
     defer allocator.free(full_path);
-    if (std.fs.path.dirname(full_path)) |dir| std.fs.cwd().makePath(dir) catch {};
-    const file = std.fs.cwd().createFile(full_path, .{}) catch return;
-    defer file.close();
-    file.writeAll(contents) catch {};
+    // 0.16: makePath→createDirPath, createFile+writeAll+close → Io.Dir.writeFile.
+    if (std.fs.path.dirname(full_path)) |dir| std.Io.Dir.cwd().createDirPath(common.io(), dir) catch {};
+    std.Io.Dir.cwd().writeFile(common.io(), .{ .sub_path = full_path, .data = contents }) catch {};
 }
 
 fn watchWorkerThread(async_data: *WatchAsyncData) void {
@@ -1050,8 +1066,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const first_events = tracked.waitForChanges(watch_poll_timeout_ms) catch &[_]zntc_lib.server.ChangeEvent{};
         if (async_data.stop_flag.load(.acquire)) break;
 
-        var total_timer: ?std.time.Timer = std.time.Timer.start() catch null;
-        var detect_timer: ?std.time.Timer = std.time.Timer.start() catch null;
+        var total_timer: ?IoTimer = IoTimer.start(common.io());
+        var detect_timer: ?IoTimer = IoTimer.start(common.io());
 
         var touched: std.StringHashMap(void) = .init(allocator);
         defer {
@@ -1065,7 +1081,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         // 디바운스: idle 50ms 확보까지 드레인. 지속 변경되는 파일로 인한 기아를 막기 위해
         // 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
-        var debounce_timer: ?std.time.Timer = std.time.Timer.start() catch null;
+        var debounce_timer: ?IoTimer = IoTimer.start(common.io());
         while (!async_data.stop_flag.load(.acquire)) {
             const more = tracked.waitForChanges(watch_debounce_ms) catch break;
             if (more.len == 0) break;
@@ -1256,7 +1272,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
 
         // dev mode: HMR diff
-        var delta_timer = std.time.Timer.start() catch null;
+        var delta_timer: ?IoTimer = IoTimer.start(common.io());
         if (rebuild_result.module_dev_codes) |dev_codes| {
             // 모듈 ID 집합 비교 — graph 변경 감지
             const graph_changed_flag = blk: {
