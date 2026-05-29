@@ -220,7 +220,7 @@ pub const RealReadFileCache = struct {
             .stat = .{
                 .size = stat.size,
                 .is_dir = kind == .directory,
-                .mtime = stat.mtime,
+                .mtime = stat.mtime.toNanoseconds(),
                 .kind = kind,
             },
         };
@@ -360,7 +360,7 @@ pub const RealFS = struct {
             .stat = .{
                 .size = stat.size,
                 .is_dir = kind == .directory,
-                .mtime = stat.mtime,
+                .mtime = stat.mtime.toNanoseconds(),
                 .kind = kind,
             },
         };
@@ -372,7 +372,7 @@ pub const RealFS = struct {
         return .{
             .size = stat.size,
             .is_dir = kind == .directory,
-            .mtime = stat.mtime,
+            .mtime = stat.mtime.toNanoseconds(),
             .kind = kind,
         };
     }

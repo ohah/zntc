@@ -35,7 +35,7 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         self.entry_dir = computeEntryDir(entry_points);
     }
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
-        self.project_root = graph_project_root.findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
+        self.project_root = graph_project_root.findProjectRoot(self.allocator, io, self.entry_dir) catch self.entry_dir;
     }
 
     // --inject 파일을 먼저 모듈 그래프에 추가
@@ -642,7 +642,7 @@ pub fn buildIncremental(
         self.entry_dir = computeEntryDir(entry_points);
     }
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
-        self.project_root = graph_project_root.findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
+        self.project_root = graph_project_root.findProjectRoot(self.allocator, io, self.entry_dir) catch self.entry_dir;
     }
 
     // --inject 파일을 먼저 모듈 그래프에 추가
@@ -871,7 +871,7 @@ pub fn getMtime(io: std.Io, path: []const u8) !i128 {
 /// 필요하다. graph 내부 전용 `moduleAtMut` 호출을 이 graph 메서드 안으로
 /// 가두어, bundler 등 외부 호출자가 raw `moduleAtMut` 를 직접 잡지 않게
 /// 한다 (phase accessor 불변식 — graph.zig accessor 주석 참조).
-pub fn transferModulesToStore(self: *ModuleGraph, store: *module_store.PersistentModuleStore) void {
+pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_store.PersistentModuleStore) void {
     for (0..self.moduleCount()) |i| {
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵

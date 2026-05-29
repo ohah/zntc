@@ -8,12 +8,12 @@ const fs = @import("../fs.zig");
 /// entry가 깊은 곳에 있어도 그 패키지의 루트를 정확히 찾아낸다. 발견 못 하면
 /// caller 입력(start_dir)을 fallback으로 반환.
 /// 반환 slice는 입력 start_dir의 prefix이므로 caller가 free하지 않는다.
-pub fn findProjectRoot(alloc: std.mem.Allocator, start_dir: []const u8) ![]const u8 {
+pub fn findProjectRoot(alloc: std.mem.Allocator, io: std.Io, start_dir: []const u8) ![]const u8 {
     var dir: []const u8 = start_dir;
     while (dir.len > 0) {
         const candidate = try std.fs.path.join(alloc, &.{ dir, "package.json" });
         defer alloc.free(candidate);
-        if (fs.access(candidate)) |_| {
+        if (fs.access(io, candidate)) |_| {
             return dir;
         } else |_| {}
         const parent = std.fs.path.dirname(dir) orelse break;
