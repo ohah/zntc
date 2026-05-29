@@ -44,10 +44,12 @@ pub const FileWatcher = struct {
     else
         MtimeBackend;
 
-    pub fn init(allocator: std.mem.Allocator) !FileWatcher {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !FileWatcher {
         return .{
             .allocator = allocator,
-            .backend = try Backend.init(allocator),
+            // 0.16: 백엔드가 fd close(Io.File.close)/statFile 에 io 를 쓰므로
+            // io 를 backend 가 per-instance 보관 (init 시 1회 전달).
+            .backend = try Backend.init(allocator, io),
         };
     }
 
@@ -87,13 +89,15 @@ pub const FileWatcher = struct {
 // ============================================================
 
 const KqueueBackend = struct {
+    /// 0.16: posix.close 제거 → fd 정리에 Io.File.close(io) 사용. backend 가 io 보관.
+    io: std.Io,
     kq: i32,
     /// 감시 대상: path → fd 매핑
     watch_fds: std.StringHashMap(WatchEntry),
     /// fd → path 역참조 (kqueue 이벤트에서 O(1) 경로 조회)
     fd_to_path: std.AutoHashMap(i32, []const u8),
-    /// kevent 결과 버퍼
-    eventbuf: [64]posix.Kevent = undefined,
+    /// kevent 결과 버퍼. 0.16: posix.Kevent 제거 → std.c.Kevent.
+    eventbuf: [64]std.c.Kevent = undefined,
     /// waitForChanges 결과 버퍼
     result_buf: std.ArrayList(ChangeEvent),
 
@@ -101,9 +105,18 @@ const KqueueBackend = struct {
         fd: i32,
     };
 
-    fn init(allocator: std.mem.Allocator) !KqueueBackend {
-        const kq = try posix.kqueue();
+    /// 0.16: posix.close/Io.File.close(io) — fd 를 File 로 감싸 close.
+    fn closeFd(self: *const KqueueBackend, fd: i32) void {
+        const f: std.Io.File = .{ .handle = fd };
+        f.close(self.io);
+    }
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !KqueueBackend {
+        // 0.16: posix.kqueue 제거 → libc kqueue() 직접 호출.
+        const kq = std.c.kqueue();
+        if (kq < 0) return error.KqueueInitFailed;
         return .{
+            .io = io,
             .kq = kq,
             .watch_fds = std.StringHashMap(WatchEntry).init(allocator),
             .fd_to_path = std.AutoHashMap(i32, []const u8).init(allocator),
@@ -114,29 +127,27 @@ const KqueueBackend = struct {
     fn deinit(self: *KqueueBackend, allocator: std.mem.Allocator) void {
         var it = self.watch_fds.iterator();
         while (it.next()) |entry| {
-            posix.close(entry.value_ptr.fd);
+            self.closeFd(entry.value_ptr.fd);
             allocator.free(entry.key_ptr.*);
         }
         self.watch_fds.deinit();
         self.fd_to_path.deinit();
         self.result_buf.deinit(allocator);
-        posix.close(self.kq);
+        self.closeFd(self.kq);
     }
 
     fn addPath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) !void {
         if (self.watch_fds.contains(path)) return;
 
-        // 파일을 읽기 전용으로 open (kqueue에 fd 필요)
-        const fd = blk: {
-            const path_z = try allocator.dupeZ(u8, path);
-            defer allocator.free(path_z);
-            break :blk std.posix.openZ(path_z, .{ .ACCMODE = .RDONLY }, 0) catch return;
-        };
+        // 파일을 읽기 전용으로 open (kqueue에 fd 필요). 0.16: posix.openZ 제거
+        // → Io.Dir.openFile (fd = file.handle).
+        const file = std.Io.Dir.cwd().openFile(self.io, path, .{}) catch return;
+        const fd: i32 = @intCast(file.handle);
 
         const path_owned = try allocator.dupe(u8, path);
 
         // EVFILT_VNODE으로 파일 변경 감시 등록
-        const changelist = [_]posix.Kevent{.{
+        var changelist = [_]std.c.Kevent{.{
             .ident = @intCast(fd),
             .filter = std.c.EVFILT.VNODE,
             .flags = std.c.EV.ADD | std.c.EV.CLEAR | std.c.EV.ENABLE,
@@ -145,16 +156,21 @@ const KqueueBackend = struct {
             .udata = 0,
         }};
 
-        _ = try posix.kevent(self.kq, &changelist, &.{}, null);
+        // 0.16: posix.kevent 제거 → libc kevent(kq, changelist[*], nchanges, eventlist[*], nevents, timeout).
+        if (std.c.kevent(self.kq, &changelist, 1, &self.eventbuf, 0, null) < 0) {
+            self.closeFd(fd);
+            allocator.free(path_owned);
+            return;
+        }
 
         self.watch_fds.put(path_owned, .{ .fd = fd }) catch {
-            posix.close(fd);
+            self.closeFd(fd);
             allocator.free(path_owned);
             return;
         };
         self.fd_to_path.put(fd, path_owned) catch {
             _ = self.watch_fds.remove(path_owned);
-            posix.close(fd);
+            self.closeFd(fd);
             allocator.free(path_owned);
             return;
         };
@@ -162,7 +178,7 @@ const KqueueBackend = struct {
 
     fn removePath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) void {
         if (self.watch_fds.fetchRemove(path)) |kv| {
-            const changelist = [_]posix.Kevent{.{
+            var changelist = [_]std.c.Kevent{.{
                 .ident = @intCast(kv.value.fd),
                 .filter = std.c.EVFILT.VNODE,
                 .flags = std.c.EV.DELETE,
@@ -170,9 +186,9 @@ const KqueueBackend = struct {
                 .data = 0,
                 .udata = 0,
             }};
-            _ = posix.kevent(self.kq, &changelist, &.{}, null) catch {};
+            _ = std.c.kevent(self.kq, &changelist, 1, &self.eventbuf, 0, null);
             _ = self.fd_to_path.remove(kv.value.fd);
-            posix.close(kv.value.fd);
+            self.closeFd(kv.value.fd);
             allocator.free(kv.key);
         }
     }
@@ -180,7 +196,7 @@ const KqueueBackend = struct {
     fn clearPaths(self: *KqueueBackend, allocator: std.mem.Allocator) void {
         var it = self.watch_fds.iterator();
         while (it.next()) |entry| {
-            posix.close(entry.value_ptr.fd);
+            self.closeFd(entry.value_ptr.fd);
             allocator.free(entry.key_ptr.*);
         }
         self.watch_fds.clearRetainingCapacity();
@@ -190,12 +206,16 @@ const KqueueBackend = struct {
     fn waitForChanges(self: *KqueueBackend, allocator: std.mem.Allocator, timeout_ms: u32) ![]const ChangeEvent {
         self.result_buf.clearRetainingCapacity();
 
-        const timeout = posix.timespec{
+        const timeout = std.c.timespec{
             .sec = @intCast(timeout_ms / 1000),
             .nsec = @intCast((@as(u64, timeout_ms % 1000)) * 1_000_000),
         };
 
-        const n = try posix.kevent(self.kq, &.{}, &self.eventbuf, &timeout);
+        // changelist 없이(nchanges=0) eventlist 수신만. 같은 버퍼를 changelist
+        // 자리에 넘겨도 nchanges=0 이라 미참조(무해).
+        const rc = std.c.kevent(self.kq, &self.eventbuf, 0, &self.eventbuf, self.eventbuf.len, &timeout);
+        if (rc < 0) return error.KeventFailed;
+        const n: usize = @intCast(rc);
 
         for (self.eventbuf[0..n]) |ev| {
             // fd → path O(1) 역참조
@@ -252,9 +272,10 @@ const InotifyBackend = struct {
         std.os.linux.IN.MOVED_FROM |
         std.os.linux.IN.MOVED_TO;
 
-    fn init(allocator: std.mem.Allocator) !InotifyBackend {
+    fn init(allocator: std.mem.Allocator, io: std.Io) !InotifyBackend {
         const fd = try posix.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
         return .{
+            .io = io,
             .inotify_fd = fd,
             .watched_files = std.StringHashMap(void).init(allocator),
             .watched_dirs = std.StringHashMap(void).init(allocator),
@@ -290,7 +311,7 @@ const InotifyBackend = struct {
 
         // issue #3858 — path 가 dir 면 dir-watch (entry 변화 시 dir path emit),
         // file 이면 기존처럼 parent dir watch + watched_files 등록.
-        const stat = std.fs.cwd().statFile(path) catch return;
+        const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return;
         if (stat.kind == .directory) {
             // dir 자체를 inotify_add_watch — IN.CREATE/IN.DELETE/IN.MOVED_* event 받음.
             if (!self.dir_wds.contains(path)) {
@@ -444,8 +465,9 @@ const MtimeBackend = struct {
     paths: std.StringHashMap(i128), // path → mtime
     result_buf: std.ArrayList(ChangeEvent),
 
-    fn init(allocator: std.mem.Allocator) !MtimeBackend {
+    fn init(allocator: std.mem.Allocator, io: std.Io) !MtimeBackend {
         return .{
+            .io = io,
             .paths = std.StringHashMap(i128).init(allocator),
             .result_buf = .empty,
         };
@@ -463,7 +485,7 @@ const MtimeBackend = struct {
     fn addPath(self: *MtimeBackend, allocator: std.mem.Allocator, path: []const u8) !void {
         if (self.paths.contains(path)) return;
         const path_owned = try allocator.dupe(u8, path);
-        const stat = std.fs.cwd().statFile(path) catch {
+        const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch {
             try self.paths.put(path_owned, 0);
             return;
         };
@@ -497,7 +519,7 @@ const MtimeBackend = struct {
 
             var it = self.paths.iterator();
             while (it.next()) |entry| {
-                const stat = std.fs.cwd().statFile(entry.key_ptr.*) catch {
+                const stat = std.Io.Dir.cwd().statFile(self.io, entry.key_ptr.*, .{}) catch {
                     try self.result_buf.append(allocator, .{ .path = entry.key_ptr.*, .kind = .deleted });
                     continue;
                 };
