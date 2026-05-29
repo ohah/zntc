@@ -419,12 +419,12 @@ pub fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, io: std.Io, id
     if (mod_idx >= self.modules.count()) return;
     const m = self.modules.at(mod_idx);
     if (m.state != .ready or m.is_external or m.is_disabled) return;
-    try propagateRequestedExportsFromResolvedReExports(self, idx);
+    try propagateRequestedExportsFromResolvedReExports(self, io, idx);
     if (!graph_requested_exports.hasDeferredRequestedImports(self, mod_idx)) return;
     try resolveModuleImports(self, io, idx);
 }
 
-fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, idx: ModuleIndex) anyerror!void {
+fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) anyerror!void {
     if (idx.isNone()) return;
     const mod_idx = idx.toUsize();
     if (mod_idx >= self.modules.count()) return;
@@ -456,9 +456,9 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
     const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
     // import.meta.glob: glob 레코드를 파일 시스템에서 확장
-    expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
+    expandGlobRecords(self.allocator, io, mod_ptr.import_records, source_dir);
     // require.context: plugin 으로 matches 주입 + context_expansion_deps 로 수집 (#1579 Phase 4).
-    expandRequireContextRecords(self, mod_idx);
+    expandRequireContextRecords(self, io, mod_idx);
 
     const records = mod_ptr.import_records;
     for (records, 0..) |record, rec_i| {
