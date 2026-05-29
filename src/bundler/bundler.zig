@@ -1196,7 +1196,7 @@ pub const Bundler = struct {
                 // 동적 lazy 청크로만). host(exposes 없음)는 경로 불변.
                 const fed = @import("federation.zig");
                 const mf = &self.options.mf.?;
-                const be = try fed.entryWithExposes(self.allocator, mf, self.options.entry_points);
+                const be = try fed.entryWithExposes(io, self.allocator, mf, self.options.entry_points);
                 defer fed.freeStrList(self.allocator, be);
                 try graph.build(io, be);
             } else {
@@ -1209,6 +1209,7 @@ pub const Bundler = struct {
         if (self.options.mf) |*mf| {
             const fed = @import("federation.zig");
             try fed.markBoundary(
+                io,
                 graph,
                 mf,
                 self.allocator,
@@ -1681,7 +1682,7 @@ pub const Bundler = struct {
             if (self.options.mf) |*mf|
                 // #3468: chunk_graph + css_hrefs(planChunkHrefs, 위에서
                 // 계산) 전달 → expose CSS 산출을 manifest assets.css 게시.
-                mf_manifest = try @import("federation_emit.zig").wrapContainer(self.allocator, outputs.?, mf, graph, &chunk_graph, css_hrefs, self.options.public_path);
+                mf_manifest = try @import("federation_emit.zig").wrapContainer(io, self.allocator, outputs.?, mf, graph, &chunk_graph, css_hrefs, self.options.public_path);
 
             // emitChunks 가 href 를 청크 내용으로 복사 완료 → 이제 plan 의
             // path/contents 소유권을 OutputFile 로 이전(plan 컨테이너만 해제).
@@ -2058,10 +2059,17 @@ pub const Bundler = struct {
                     std.log.warn("--mangle-report: cannot create '{s}': {s}", .{ path, @errorName(err) });
                     break :write_blk;
                 };
-                defer file.close();
-                mangle_collector.writeJson(file.deprecatedWriter()) catch |err| {
+                defer file.close(io);
+                // 0.16: deprecatedWriter 제거 → File.writer(io, buffer) + flush.
+                var report_buf: [4096]u8 = undefined;
+                var report_fw = file.writer(io, &report_buf);
+                if (mangle_collector.writeJson(&report_fw.interface)) {
+                    report_fw.interface.flush() catch |err| {
+                        std.log.warn("--mangle-report: flush failed ({s}): {s}", .{ path, @errorName(err) });
+                    };
+                } else |err| {
                     std.log.warn("--mangle-report: write failed ({s}): {s}", .{ path, @errorName(err) });
-                };
+                }
             }
         }
 
