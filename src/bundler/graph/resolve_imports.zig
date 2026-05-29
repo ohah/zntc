@@ -28,7 +28,7 @@ fn appendResolvedDep(
     try mod_ptr.resolved_deps.append(self.allocator, dep);
 }
 
-pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
+pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) !void {
     std.debug.assert(mod_idx < self.modules.count());
     const mod_index = ModuleIndex.fromUsize(mod_idx);
     const mod_ptr = self.modules.at(mod_idx);
@@ -37,7 +37,7 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
         switch (dep.target) {
             .file, .virtual => {
                 var s_am = profile.begin(.graph_discover_incr_replay_add_module);
-                const dep_idx = try self.addModuleWithResolveDir(dep.path.bytes(), if (dep.resolve_dir) |rd| rd.bytes() else null);
+                const dep_idx = try self.addModuleWithResolveDir(io, dep.path.bytes(), if (dep.resolve_dir) |rd| rd.bytes() else null);
                 s_am.end();
                 if (dep.target_is_module_field or mod_ptr.is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
@@ -136,7 +136,7 @@ fn replayLinkResolvedDep(
 /// context_expansion_deps 를 resolve 하고 graph 에 module + dependency 로 등록 (#1579 Phase 4).
 /// scanModules receiver / resolveModuleImports 양쪽 경로에서 호출. SegmentedList 로
 /// append 해도 기존 *Module 포인터는 유효 (#1779 INVARIANTS.md).
-pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
+pub fn applyContextDepResults(self: *ModuleGraph, io: std.Io, mod_idx: usize) !void {
     const mod_index = ModuleIndex.fromUsize(mod_idx);
     const mod_ptr = self.modules.at(mod_idx);
     const context_deps = mod_ptr.context_expansion_deps;
@@ -145,7 +145,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
     const module_path = mod_ptr.path;
     const source_dir = mod_ptr.sourceDir();
     for (context_deps) |dep| {
-        const resolved = self.resolve_cache.resolveThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
+        const resolved = self.resolve_cache.resolveThreadSafe(io, source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
             error.ModuleNotFound => {
                 self.addDiag(
                     .unresolved_import,
@@ -163,7 +163,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
         if (resolved) |m| switch (m) {
             .file => |f| {
                 // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only, free 금지).
-                const dep_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
+                const dep_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
                 _ = try graph_requested_exports.requestAll(self, dep_idx);
                 // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
                 self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
@@ -220,6 +220,7 @@ fn recordResolvedDep(
 
 pub fn applyResolveResult(
     self: *ModuleGraph,
+    io: std.Io,
     mod_idx: usize,
     rec_i: usize,
     record: types.ImportRecord,
@@ -332,7 +333,7 @@ pub fn applyResolveResult(
                     return;
                 }
 
-                const dep_idx = try self.addModuleWithResolveDir(f.path, f.resolve_dir);
+                const dep_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
                 if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
                 }
@@ -367,7 +368,7 @@ pub fn applyResolveResult(
                 // `internResolvedModule` 이 path_pool 에 intern 한 borrow slice → .interned
                 // 로 wrap (PathRef 의미 정합: .interned = path_pool 소유, caller borrow).
                 // putModule 의 clonePathRefIfNeeded 가 .interned → .owned dupe.
-                const dep_idx = try self.addModule(v.path);
+                const dep_idx = try self.addModule(io, v.path);
                 const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, dep_idx);
                 try appendResolvedDep(self, mod_idx, .{
                     .record_index = @intCast(rec_i),
@@ -411,7 +412,7 @@ pub fn applyResolveResult(
     }
 }
 
-pub fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, idx: ModuleIndex) anyerror!void {
+pub fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) anyerror!void {
     if (idx.isNone()) return;
     const mod_idx = idx.toUsize();
     if (mod_idx >= self.modules.count()) return;
@@ -419,7 +420,7 @@ pub fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, idx: ModuleInd
     if (m.state != .ready or m.is_external or m.is_disabled) return;
     try propagateRequestedExportsFromResolvedReExports(self, idx);
     if (!graph_requested_exports.hasDeferredRequestedImports(self, mod_idx)) return;
-    try resolveModuleImports(self, idx);
+    try resolveModuleImports(self, io, idx);
 }
 
 fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, idx: ModuleIndex) anyerror!void {
@@ -442,7 +443,7 @@ fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, idx: Modul
 
 /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.
 /// modules 배열이 커질 수 있으므로, 포인터가 아닌 인덱스로만 접근.
-pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
+pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !void {
     const mod_idx = @intFromEnum(idx);
     if (mod_idx >= self.modules.count()) return;
 
@@ -510,7 +511,7 @@ pub fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
             }
         }
 
-        const resolved = self.resolve_cache.resolve(
+        const resolved = self.resolve_cache.resolve(io, 
             source_dir,
             record.specifier,
             record.kind,

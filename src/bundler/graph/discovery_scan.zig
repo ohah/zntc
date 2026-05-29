@@ -67,14 +67,14 @@ pub fn applyScanResult(self: *ModuleGraph, io: std.Io, result: ScanResult) !void
                 if (resolves[rec_i].resolved) |resolved| self.discardResolvedModule(resolved);
                 continue;
             }
-            try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
+            try self.applyResolveResult(io, mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
         }
     }
     if (self.hasDeferredRequestedImports(mod_idx)) {
         try self.resolveModuleImports(io, result.module_idx);
     }
     // Register require.context matches as graph dependencies (#1579 Phase 4).
-    try self.applyContextDepResults(mod_idx);
+    try self.applyContextDepResults(io, mod_idx);
 }
 
 pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
