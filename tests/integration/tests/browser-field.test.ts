@@ -71,8 +71,12 @@ describe('package.json browser 필드', () => {
     );
     try {
       expect(result.exitCode).toBe(0);
-      // false → 빈 모듈 — namespace import 는 빈 object (혹은 undefined-like).
-      expect(result.runOutput).toBe('{}');
+      // false → 빈 모듈. esbuild parity: disabled 모듈은 빈 CJS 라 `export * as` 가
+      // __toESM 으로 감싸지며 CJS-interop default 가 붙어 `{"default":{}}` 가 된다.
+      // 4-tool 실측: esbuild==zntc==`{"default":{}}` / rolldown==rspack==`{}`.
+      // default-import(`import x from`)는 esbuild/rspack/zntc 모두 `{}`(truthy)로 일치
+      // (rolldown 만 undefined) — 그 truthy no-op 의미가 더 보편적이라 esbuild-parity 유지.
+      expect(result.runOutput).toBe('{"default":{}}');
     } finally {
       await result.cleanup();
     }
@@ -156,7 +160,9 @@ describe('package.json browser 필드', () => {
     );
     try {
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe('{}');
+      // esbuild parity: disabled 모듈 namespace re-export 는 `{"default":{}}` (위 회귀
+      // 테스트 주석 참조 — 빈 CJS + __toESM CJS-interop default).
+      expect(result.runOutput).toBe('{"default":{}}');
     } finally {
       await result.cleanup();
     }
