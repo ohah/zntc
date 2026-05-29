@@ -75,6 +75,15 @@ pub const CompiledModule = struct {
         errdefer if (ec) |c| allocator.free(c);
         const shared = try allocator.alloc(SharedNsDecl, self.shared_ns_decls.len);
         errdefer allocator.free(shared);
+        // (#3983) names 루프와 동일한 부분-채움 누수 가드. 완료된 iteration 의
+        // per-iteration errdefer 는 discharge 되므로, 이후 iteration 의 dupe 가 OOM
+        // 으로 실패하면 shared[0..shared_filled] 에 이미 저장된 문자열 3종이 누수된다.
+        var shared_filled: usize = 0;
+        errdefer for (shared[0..shared_filled]) |d| {
+            allocator.free(d.target_path);
+            allocator.free(d.var_name);
+            allocator.free(d.object_literal);
+        };
         for (self.shared_ns_decls, 0..) |decl, i| {
             const target_path = try allocator.dupe(u8, decl.target_path);
             errdefer allocator.free(target_path);
@@ -87,6 +96,7 @@ pub const CompiledModule = struct {
                 .var_name = var_name,
                 .object_literal = object_literal,
             };
+            shared_filled = i + 1;
         }
         return .{
             .code = code,
@@ -100,3 +110,28 @@ pub const CompiledModule = struct {
         };
     }
 };
+
+test "CompiledModule.dupe: 모든 할당 지점 OOM 에서 누수 없음 (#3983)" {
+    // shared_ns_decls 가 여러 개일 때, iteration 사이 OOM 시 이미 dupe 된
+    // 문자열이 누수되던 버그(shared_filled 가드 부재) 회귀. checkAllAllocationFailures
+    // 가 각 할당 인덱스에서 실패시켜 leak 을 검출한다 — names/shared 루프 둘 다 커버.
+    const src = CompiledModule{
+        .code = "out",
+        .mappings = null,
+        .names = &.{ "alpha", "beta" },
+        .fn_map_json = "fm",
+        .entry_chain = "ec",
+        .shared_ns_decls = &.{
+            .{ .target_path = "p0", .var_name = "v0", .object_literal = "{a:0}" },
+            .{ .target_path = "p1", .var_name = "v1", .object_literal = "{a:1}" },
+            .{ .target_path = "p2", .var_name = "v2", .object_literal = "{a:2}" },
+        },
+    };
+    const Runner = struct {
+        fn run(alloc: std.mem.Allocator, s: CompiledModule) !void {
+            var d = try s.dupe(alloc);
+            d.deinit(alloc);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Runner.run, .{src});
+}
