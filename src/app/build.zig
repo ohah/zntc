@@ -142,7 +142,7 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
     const merged_defines = try mergeDefines(allocator, env_defines, opts.define);
     defer allocator.free(merged_defines);
 
-    var bundler = Bundler.init(allocator, io, .{
+    var bundler = Bundler.init(allocator, .{
         .entry_points = entry_points,
         .format = .esm,
         .platform = .browser,
