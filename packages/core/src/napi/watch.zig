@@ -921,7 +921,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).
     // 실패 시 워치 스레드 진입 직전에 종료한다.
-    var tracked = TrackedFileSet.init(allocator, watch_hash_max_bytes) catch |err| {
+    var tracked = TrackedFileSet.init(allocator, common.io(), watch_hash_max_bytes) catch |err| {
         const event = allocator.create(WatchRebuildEvent) catch {
             _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
             _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
