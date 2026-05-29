@@ -233,7 +233,7 @@ fn walkAndTranspile(
     var file_count: usize = 0;
     var had_errors = false;
 
-    while (walker.next() catch |err| {
+    while (walker.next(io) catch |err| {
         try stderr.print("zntc: error walking directory: {}\n", .{err});
         return error.WalkFailed;
     }) |entry| {
