@@ -220,29 +220,36 @@ pub fn build(b: *std.Build) void {
     }
 
     // ─── WASM bundler 빌드 (#1885 Phase 2) ───
-    // `zig build wasm-bundler` — wasm32-wasip1-threads 타겟. 별도 binary 로 transpile
-    // (wasm32-wasi) 와 분리. threads 가 필요 (bundler 가 worker pool 사용)하지만
-    // SharedArrayBuffer + COOP/COEP 헤더가 필요하므로 transpile 빌드와 호환성 분리.
+    // `zig build wasm-bundler` — wasm32-wasi 타겟. 별도 binary 로 transpile
+    // (wasm_entry.zig) 와 분리.
+    //
+    // 0.16: **single-threaded** 로 전환. Zig 0.16 std 는 멀티스레드 wasm
+    // (wasm32-wasi-threads) 에서 `WasmAllocator`=`@compileError("unimplemented")`
+    // (single_threaded 만 지원) + `std.Io.Threaded` 의 wasm i64/u64 버그로
+    // allocator·io 모두 불가. 따라서 +threads/shared-memory 를 제거하고
+    // single-threaded(BrkAllocator + inline io)로 빌드. 번들러 내부 병렬(Io.Group)은
+    // async_limit=.nothing 으로 inline 실행(직렬, determinism 유지). std 가
+    // wasm-threads 를 지원하면 재도입 가능.
     {
         const wasm_bundler_target = b.resolveTargetQuery(.{
             .cpu_arch = .wasm32,
             .os_tag = .wasi,
             .abi = .musl,
-            .cpu_features_add = std.Target.wasm.featureSet(&.{ .atomics, .bulk_memory, .mutable_globals }),
+            .cpu_features_add = std.Target.wasm.featureSet(&.{ .bulk_memory, .mutable_globals }),
         });
 
         const wasm_bundler_lib_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = wasm_bundler_target,
             .optimize = .ReleaseSmall,
-            .single_threaded = false,
+            .single_threaded = true,
         });
 
         const wasm_bundler_mod = b.createModule(.{
             .root_source_file = b.path("packages/wasm/src/wasm_bundler_entry.zig"),
             .target = wasm_bundler_target,
             .optimize = .ReleaseSmall,
-            .single_threaded = false,
+            .single_threaded = true,
         });
         wasm_bundler_mod.addImport("zntc_lib", wasm_bundler_lib_mod);
 
@@ -252,16 +259,14 @@ pub fn build(b: *std.Build) void {
         });
         wasm_bundler_exe.rdynamic = true;
         wasm_bundler_exe.entry = .disabled;
-        // wasi-libc — Zig 0.15 wasm_allocator 가 multi-threaded 미지원이라
-        // c_allocator (musl thread-safe malloc) 필요. JS 측은 wasi_snapshot_preview1
-        // 의 모든 fn 을 stub 으로 제공 (createWasiImports 확장).
+        // 0.16: single-threaded → std.heap.wasm_allocator(BrkAllocator) 사용 가능
+        // (멀티스레드 c_allocator 우회 불필요). shared_memory 제거.
         wasm_bundler_mod.link_libc = true;
         wasm_bundler_exe.import_memory = true;
-        wasm_bundler_exe.shared_memory = true;
         wasm_bundler_exe.max_memory = 4 * 1024 * 1024 * 1024; // 4 GiB
 
         const wasm_bundler_install = b.addInstallArtifact(wasm_bundler_exe, .{});
-        const wasm_bundler_step = b.step("wasm-bundler", "Build WASM bundler module (wasm32-wasi + threads)");
+        const wasm_bundler_step = b.step("wasm-bundler", "Build WASM bundler module (wasm32-wasi, single-threaded)");
         wasm_bundler_step.dependOn(&wasm_bundler_install.step);
     }
 
