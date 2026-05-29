@@ -27,6 +27,24 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
     const strip_setting: ?bool = if (keep_debug) false else null;
 
+    // `-Dwasm-optimize` 로 WASM 빌드의 최적화 모드를 덮어쓴다 (기본 ReleaseSmall — 배포 사이즈
+    // 우선). wasm 전용 버그 디버깅 시 Debug/ReleaseSafe 로 빌드하기 위한 것으로, NAPI 의
+    // `-Dnapi-optimize` 와 동일한 패리티. CLI/네이티브 빌드의 `-Doptimize` 와는 독립이다.
+    const wasm_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "wasm-optimize",
+        "WASM 모듈 최적화 모드 (기본: ReleaseSmall, 디버깅 시 Debug/ReleaseSafe)",
+    ) orelse .ReleaseSmall;
+
+    // `-Denable-lto=true` 로 WASM 배포 아티팩트에 LTO(full)를 켠다 (기본 off). 컴파일 시간이
+    // 늘지만 코드 사이즈가 줄 수 있어 배포 빌드에서 opt-in 한다. 일반 빌드엔 영향이 없다.
+    const enable_lto = b.option(
+        bool,
+        "enable-lto",
+        "WASM 배포 빌드에 LTO(full) 적용 (기본: false, 사이즈↓·빌드시간↑)",
+    ) orelse false;
+    const wasm_lto: ?std.zig.LtoMode = if (enable_lto) .full else null;
+
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Every executable or library we compile will be based on one or more modules.
@@ -195,13 +213,13 @@ pub fn build(b: *std.Build) void {
         const wasm_lib_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseSmall,
+            .optimize = wasm_optimize,
         });
 
         const wasm_mod = b.createModule(.{
             .root_source_file = b.path("packages/wasm/src/wasm_entry.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseSmall,
+            .optimize = wasm_optimize,
         });
         wasm_mod.addImport("zntc_lib", wasm_lib_mod);
 
@@ -213,6 +231,7 @@ pub fn build(b: *std.Build) void {
         wasm_exe.rdynamic = true;
         // 라이브러리 모드: 엔트리포인트 없이 export 함수만 노출
         wasm_exe.entry = .disabled;
+        wasm_exe.lto = wasm_lto; // -Denable-lto (기본 null = off)
 
         const wasm_install = b.addInstallArtifact(wasm_exe, .{});
         const wasm_step = b.step("wasm", "Build WASM module (wasm32-wasi)");
@@ -241,14 +260,14 @@ pub fn build(b: *std.Build) void {
         const wasm_bundler_lib_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = wasm_bundler_target,
-            .optimize = .ReleaseSmall,
+            .optimize = wasm_optimize,
             .single_threaded = true,
         });
 
         const wasm_bundler_mod = b.createModule(.{
             .root_source_file = b.path("packages/wasm/src/wasm_bundler_entry.zig"),
             .target = wasm_bundler_target,
-            .optimize = .ReleaseSmall,
+            .optimize = wasm_optimize,
             .single_threaded = true,
         });
         wasm_bundler_mod.addImport("zntc_lib", wasm_bundler_lib_mod);
@@ -259,6 +278,7 @@ pub fn build(b: *std.Build) void {
         });
         wasm_bundler_exe.rdynamic = true;
         wasm_bundler_exe.entry = .disabled;
+        wasm_bundler_exe.lto = wasm_lto; // -Denable-lto (기본 null = off)
         // 0.16: single-threaded → std.heap.wasm_allocator(BrkAllocator) 사용 가능
         // (멀티스레드 c_allocator 우회 불필요). shared_memory 제거.
         wasm_bundler_mod.link_libc = true;
