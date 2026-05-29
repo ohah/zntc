@@ -216,4 +216,18 @@ pub const PreambleWriter = struct {
         try self.write(object_literal);
         try self.write(";\n");
     }
+
+    /// (#3975) `export * from <CJS>` 의 동적 멤버를 런타임에 namespace 객체로 복사.
+    /// `__copyProps(<ns>, <req>());` — esbuild `__reExport(ns, __toESM(require()))` 대응.
+    /// plain CJS(`exports.x=`)는 module.exports 에 `default` 키가 없어 raw require() 복사로
+    /// 충분하며 default 누출이 없다(`export *` 는 default 비전파 — spec 일치).
+    pub fn writeNamespaceCopyProps(self: *PreambleWriter, ns_name: []const u8, req_var: []const u8) !void {
+        const copy_props_name: []const u8 = if (self.minify) rt.NAMES.COPY_PROPS_MIN else "__copyProps";
+        try self.write(copy_props_name);
+        try self.write("(");
+        try self.write(ns_name);
+        try self.write(", ");
+        try self.write(req_var);
+        try self.write("());\n");
+    }
 };
