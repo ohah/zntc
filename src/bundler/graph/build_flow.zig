@@ -30,12 +30,20 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
 
     // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
     // esbuild `outbase` 자동 추론과 동치 — 모든 entry 의 dirname 의 longest
-    // common parent.
+    // common parent. 0.16: entry_dir 을 graph-owned 로 dupe (caller entry_points
+    // 수명에 독립 — dangling 방지). 자동 추론 project_root 는 entry_dir 재설정 시 무효화.
     if (entry_points.len > 0) {
-        self.entry_dir = computeEntryDir(entry_points);
+        const ed = computeEntryDir(entry_points);
+        if (self.entry_dir.len > 0) self.allocator.free(self.entry_dir);
+        self.entry_dir = if (ed.len == 0) "" else (self.allocator.dupe(u8, ed) catch "");
+        if (self.project_root_auto) {
+            self.project_root = "";
+            self.project_root_auto = false;
+        }
     }
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
         self.project_root = graph_project_root.findProjectRoot(self.allocator, io, self.entry_dir) catch self.entry_dir;
+        self.project_root_auto = true;
     }
 
     // --inject 파일을 먼저 모듈 그래프에 추가
@@ -642,11 +650,20 @@ pub fn buildIncremental(
     // 추가/삭제 시 stale 회피 (Issue #65). computeEntryDir 는 O(N) pure fn.
     // project_root 는 user-set 옵션 (RN/Metro `projectRoot`) 보존을 위해 강제
     // invalidate 하지 않는다 — 자동 추론은 *최초* 빈 값일 때만.
+    // 0.16: entry_dir graph-owned dupe (free previous → 증분 빌드 leak 방지).
+    // 자동 추론된 project_root 만 entry_dir 재설정 시 무효화(user-set 은 보존).
     if (entry_points.len > 0) {
-        self.entry_dir = computeEntryDir(entry_points);
+        const ed = computeEntryDir(entry_points);
+        if (self.entry_dir.len > 0) self.allocator.free(self.entry_dir);
+        self.entry_dir = if (ed.len == 0) "" else (self.allocator.dupe(u8, ed) catch "");
+        if (self.project_root_auto) {
+            self.project_root = "";
+            self.project_root_auto = false;
+        }
     }
     if (self.project_root.len == 0 and self.entry_dir.len > 0) {
         self.project_root = graph_project_root.findProjectRoot(self.allocator, io, self.entry_dir) catch self.entry_dir;
+        self.project_root_auto = true;
     }
 
     // --inject 파일을 먼저 모듈 그래프에 추가

@@ -1483,7 +1483,9 @@ test "F4 (#65): buildIncremental 가 stale entry_dir 를 강제 재계산" {
     defer graph.deinit();
     // stale entry_dir 시뮬레이션 — 무관한 dir 로 set. 옛 코드는 보존 (bug),
     // 새 코드는 entry_points 로부터 강제 재계산.
-    graph.entry_dir = "/some/stale/parent/dir";
+    // 0.16: entry_dir 는 graph-owned(buildIncremental 가 free 후 재dupe) 이므로
+    // 리터럴이 아닌 allocator dupe 로 set 해야 free 가 안전.
+    graph.entry_dir = try std.testing.allocator.dupe(u8, "/some/stale/parent/dir");
 
     var empty: std.StringHashMap(void) = .init(std.testing.allocator);
     defer empty.deinit();

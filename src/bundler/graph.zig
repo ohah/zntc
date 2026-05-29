@@ -134,11 +134,19 @@ pub const ModuleGraph = struct {
     asset_registry: ?[]const u8 = null,
     /// 엔트리 포인트 기준 디렉토리. [dir] 패턴 치환에 사용.
     /// entry point들의 공통 부모 디렉토리 (esbuild --outbase에 해당).
+    /// 0.16: graph 가 **소유**(build 에서 dupe, deinit 에서 free). 과거엔 caller 의
+    /// entry_points 로의 borrow 였으나, 짧게 사는 entry_points(테스트 헬퍼 등)를
+    /// 일찍 free 하면 dangling → use-after-free 였다(Linux 에서 발현). graph-owned 로
+    /// 모든 caller lifetime 에서 안전.
     entry_dir: []const u8 = "",
     /// Metro `projectRoot` 호환 — asset httpServerLocation 계산의 기준점.
     /// 미설정 시 build() 호출 중 entry_dir에서 위로 올라가며 첫 package.json
     /// 위치를 자동 감지. RN CLI의 기본 동작과 동일.
     project_root: []const u8 = "",
+    /// project_root 가 user-set(옵션)이 아니라 entry_dir 에서 **자동 추론**됐는지.
+    /// auto 면 entry_dir(=project_root 가 borrow 하는 대상) 재설정 시 함께 무효화해
+    /// 재추론(증분 빌드에서 entry_dir free 후 dangling 방지). user-set 은 보존.
+    project_root_auto: bool = false,
     /// --inject 파일 목록. build()에서 모든 엔트리의 의존성으로 추가.
     inject_files: []const []const u8 = &.{},
     /// --run-before-main 파일 목록. inject 뒤, 사용자 엔트리 앞에 실행된다.
