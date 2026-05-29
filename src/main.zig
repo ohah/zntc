@@ -16,6 +16,7 @@ const standalone_modes = @import("cli/standalone.zig");
 const usage_cli = @import("cli/usage.zig");
 const cli_options = @import("cli/options.zig");
 const watch_cli = @import("cli/watch.zig");
+const env_flag = @import("env_flag.zig");
 /// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
 /// root 선언이라야 컴파일러가 safety panic을 여기로 보낸다.
 pub const panic = lib.crash_handler.panic;
@@ -265,11 +266,18 @@ fn walkAndTranspile(
     if (had_errors) return error.WalkFailed;
 }
 
-pub fn main() !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn main(init: std.process.Init) !void {
+    // Zig 0.16: juicy main — io / args / environ 을 Init 에서 받는다 (libc-free,
+    // Zig start 가 채움). args 는 argsAlloc 제거로 Init.minimal.args 이터레이터
+    // 수집, env 는 std.process.getEnvVarOwned 제거로 environ Map 스냅샷 캡처로 대체.
+    const io = init.io;
+    // env 스냅샷을 가장 먼저 등록 — env_flag.Once 가 첫 조회 결과를 캐시하므로
+    // 어떤 env 조회보다 앞서야 한다.
+    env_flag.captureEnviron(init.environ_map);
+
     // ReleaseFast/ReleaseSafe: mimalloc 사용 (스레드별 힙, 페이지 캐싱).
     // Debug: GPA 사용 (leak detection, double-free 감지).
+    // init.gpa 는 무시하고 기존 allocator 전략 유지 (release 의 mimalloc 성능 특성 보존).
     const is_debug = @import("builtin").mode == .Debug;
     var gpa: if (is_debug) std.heap.GeneralPurposeAllocator(.{}) else void =
         if (is_debug) .{} else {};
@@ -278,12 +286,28 @@ pub fn main() !void {
     };
     const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else @import("mimalloc.zig").allocator;
 
-    lib.debug_log.initFromEnv(allocator);
-    lib.profile.initFromEnv(allocator);
+    // stdout/stderr writer (0.16: deprecatedWriter 제거 → File.writer(io,&buf)).
+    // std.process.exit() 는 defer 를 우회하므로, exit 직전엔 stderr.flush() 를 명시 호출.
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_state = std.Io.File.stdout().writer(io, &stdout_buf);
+    const stdout = &stdout_state.interface;
+    var stderr_buf: [4096]u8 = undefined;
+    var stderr_state = std.Io.File.stderr().writer(io, &stderr_buf);
+    const stderr = &stderr_state.interface;
+    defer stdout.flush() catch {};
+    defer stderr.flush() catch {};
 
-    // CLI 인자 파싱
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    lib.debug_log.initFromEnv(io);
+    lib.profile.initFromEnv(io);
+
+    // CLI 인자 파싱 (0.16: argsAlloc 제거 → Init.minimal.args 이터레이터 수집).
+    // initAllocator 는 cross-platform (Windows/Wasi 는 내부 파싱 buffer 를 deinit 에서 해제).
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer arg_it.deinit();
+    var args_buf: std.ArrayList([]const u8) = .empty;
+    defer args_buf.deinit(allocator);
+    while (arg_it.next()) |a| try args_buf.append(allocator, a);
+    const args = args_buf.items;
 
     // Subcommand dispatch — `zntc bench ...` 는 별도 경로.
     if (args.len >= 2 and std.mem.eql(u8, args[1], "bench")) {
