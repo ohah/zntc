@@ -58,8 +58,12 @@ jobs:
           - platform: win32-x64-msvc
             runner: windows-latest
             zig_target: x86_64-windows-msvc
+          # aarch64-windows-msvc: Zig 0.16.0 의 arm64-windows 컴파일러 *바이너리* 가
+          # windows-11-arm 네이티브 러너에서 segfault (upstream — 0.15.2 는 정상).
+          # 타겟 코드젠 자체는 정상이라 x64 호스트에서 cross-compile 하면 회피된다
+          # (byte-identical 산출물). windows-latest(x64) 에서 -Dtarget 으로 빌드.
           - platform: win32-arm64-msvc
-            runner: windows-11-arm
+            runner: windows-latest
             zig_target: aarch64-windows-msvc
           - platform: win32-ia32-msvc
             runner: windows-latest
@@ -130,8 +134,11 @@ jobs:
           - target: x86_64-windows-msvc
             os: windows-latest
             artifact: zntc-x86_64-windows
+          # aarch64-windows-msvc: arm64-windows zig 바이너리가 windows-11-arm 에서
+          # segfault (upstream Zig 0.16.0). 타겟 코드젠은 정상 → windows-latest(x64)
+          # 에서 -Dtarget cross-compile 로 회피.
           - target: aarch64-windows-msvc
-            os: windows-11-arm
+            os: windows-latest
             artifact: zntc-aarch64-windows
           - target: x86-windows-msvc
             os: windows-latest
