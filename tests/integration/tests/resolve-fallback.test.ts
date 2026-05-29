@@ -133,4 +133,28 @@ describe('--fallback', () => {
       await cleanup();
     }
   });
+
+  // #3986: unresolved import 진단 suggestion 이 'did you mean <원본-specifier>' 로
+  // 오도되던 것을 중립 'hint:' 로 교체. (suggestion 은 교정된 이름이 아니라 specifier)
+  test('unresolved import 진단은 misleading "did you mean" 대신 hint 로 렌더 (#3986)', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.ts': `import { foo } from "./does-not-exist.js";\nconsole.log(foo);`,
+    });
+    try {
+      const { stderr, exitCode } = await runZntc([
+        '--bundle',
+        join(dir, 'entry.ts'),
+        '--format=esm',
+        '-o',
+        join(dir, 'out.js'),
+      ]);
+      expect(exitCode).toBe(1); // hard error
+      expect(stderr).toContain('Cannot resolve module');
+      expect(stderr).not.toContain('did you mean'); // 오도 프레이밍 제거
+      expect(stderr).toContain('hint:'); // 중립 hint 로 specifier 표시
+      expect(stderr).toContain('./does-not-exist.js');
+    } finally {
+      await cleanup();
+    }
+  });
 });

@@ -736,9 +736,12 @@ pub fn main() !void {
                     .warning => "warning",
                     .info => "info",
                 };
-                try stderr.print("[{s}] {s}: {s}", .{ sev_str, d.file_path, d.message });
-                if (d.suggestion) |s| try stderr.print(" (did you mean '{s}'?)", .{s});
-                try stderr.print("\n", .{});
+                try stderr.print("[{s}] {s}: {s}\n", .{ sev_str, d.file_path, d.message });
+                // (#3986) suggestion 은 *교정된 이름*이 아니라 unresolved specifier 또는
+                // 조언 문장(producer 가 record.specifier / 전체 문장을 넣음)이다. ZNTC 엔
+                // typo-detector 가 없어 'did you mean' 프레이밍은 항상 오도였다. app
+                // bundle 진단(app/build.zig:719 `hint:`)과 동일하게 중립 hint 로 렌더.
+                if (d.suggestion) |s| try stderr.print("  hint: {s}\n", .{s});
             }
         }
 
