@@ -80,7 +80,7 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
 
     var bundler = Bundler.init(native_alloc, bundle_opts);
     defer bundler.deinit();
-    var result = bundler.bundle() catch |err| {
+    var result = bundler.bundle(common.io()) catch |err| {
         return throwError(env, @errorName(err));
     };
     defer result.deinit(native_alloc);
@@ -212,7 +212,7 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
         plugins_slice = sync_plugin_storage[0..1];
     }
 
-    const output_count = zntc_lib.app.build.buildApp(native_alloc, .{
+    const output_count = zntc_lib.app.build.buildApp(native_alloc, common.io(), .{
         .root = root,
         .outdir = outdir,
         .entry_html = entry_html,
@@ -310,7 +310,7 @@ pub fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callco
         owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
     }
 
-    var result = zntc_lib.app.build.prepareDev(native_alloc, .{
+    var result = zntc_lib.app.build.prepareDev(native_alloc, common.io(), .{
         .root = root,
         .outdir = outdir,
         .entry_html = entry_html,

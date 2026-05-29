@@ -57,12 +57,14 @@ pub fn napiProfileReport(env: c.napi_env, info: c.napi_callback_info) callconv(.
         }
     }
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(native_alloc);
-    profile_mod.report(buf.writer(native_alloc), format) catch return throwError(env, "failed to render profile report");
+    // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating (report 가 *Io.Writer 받음).
+    var aw: std.Io.Writer.Allocating = .init(native_alloc);
+    defer aw.deinit();
+    profile_mod.report(&aw.writer, format) catch return throwError(env, "failed to render profile report");
+    const report_bytes = aw.writer.buffered();
 
     var js_report: c.napi_value = undefined;
-    if (c.napi_create_string_utf8(env, buf.items.ptr, buf.items.len, &js_report) != c.napi_ok) {
+    if (c.napi_create_string_utf8(env, report_bytes.ptr, report_bytes.len, &js_report) != c.napi_ok) {
         return throwError(env, "failed to create profile report");
     }
     return js_report;

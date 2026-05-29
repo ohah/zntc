@@ -79,7 +79,8 @@ const WatchAsyncData = struct {
     /// 까지 완료하면 set. `napiWatchStop` 가 wait 해 caller (closeServerForRestart) 가
     /// child process spawn 전에 부모 worker 가 outdir 쓰기를 완전히 멈췄음을 보장.
     /// fire-and-forget 였던 stop() 의 race window 봉인.
-    stop_complete: std.Thread.ResetEvent = .{},
+    // 0.16: std.Thread.ResetEvent 제거 → std.Io.Event (one-shot set/wait).
+    stop_complete: std.Io.Event = .unset,
     /// Metro watchFolders 호환. 그래프 밖 감시 루트(절대/상대 경로).
     watch_roots: []const []const u8 = &.{},
     /// watch_roots 스캔 시 포함할 파일 glob (루트 기준 상대).
@@ -104,7 +105,7 @@ const WatchAsyncData = struct {
         // 거치므로 한 곳에서 가드). `napiWatchStop` 의 stop_complete.wait() 가 깨어나 caller
         // (closeServerForRestart) 에게 안전 신호. wait 한 thread 는 즉시 return — `self`
         // 메모리 접근 없음, 아래 cleanup 후 free 해도 race 없음.
-        self.stop_complete.set();
+        self.stop_complete.set(common.io());
         // 소유된 문자열 해제
         for (self.owned_strings.items) |s| native_alloc.free(s);
         self.owned_strings.deinit(native_alloc);
@@ -1539,7 +1540,19 @@ fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         // 이었다. caller (closeServerForRestart) 가 child process spawn 전에 부모 worker 의 outdir
         // 쓰기가 완전히 멈췄음을 보장하려면 worker 의 deinit 진입까지 wait 해야 함. 5초 timeout 으로
         // deadlock 방어 — polling timeout (수십~수백ms) 의 충분한 배수.
-        async_data.stop_complete.timedWait(5 * std.time.ns_per_s) catch {};
+        // 0.16: ResetEvent.timedWait 제거 → Io.Event.waitTimeout + 절대 deadline
+        // (spurious wakeup 은 error.Timeout 이므로 deadline 미래면 재대기). best-effort.
+        const stop_io = common.io();
+        const stop_deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = std.Io.Duration.fromSeconds(5) }).toDeadline(stop_io);
+        while (true) {
+            async_data.stop_complete.waitTimeout(stop_io, stop_deadline) catch {
+                if (stop_deadline.toDurationFromNow(stop_io)) |d| {
+                    if (d.toNanoseconds() > 0) continue;
+                }
+                break;
+            };
+            break;
+        }
     }
 
     var js_undefined: c.napi_value = undefined;

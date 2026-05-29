@@ -42,22 +42,29 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     // ReleaseFast 에서는 no-op.
     common.registerLeakDump(env);
 
+    // 0.16: NAPI 전역 io(std.Io.Threaded) + env 스냅샷을 다른 어떤 호출보다 먼저
+    // 1회 등록 (메인 스레드, race-free). env_flag.Once 가 첫 조회를 캐시하므로
+    // env 조회·io 사용 이전에 와야 한다.
+    common.initIo();
+    common.captureEnvironFromLibc();
+    const io = common.io();
+
     // ZNTC_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
     // 개별 build/watch 호출마다 BundleOptions.debug 로 카테고리 추가 가능.
-    @import("zntc_lib").debug_log.initFromEnv(native_alloc);
+    @import("zntc_lib").debug_log.initFromEnv(io);
 
     // ZNTC_PROFILE / ZNTC_PROFILE_LEVEL 도 동일하게 1회 파싱. 개별 build 호출마다
     // `BundleOptions.profile` / `profileLevel` 로 추가 가능.
-    profile_mod.initFromEnv(native_alloc);
+    profile_mod.initFromEnv(io);
 
     // BUNGAE_HMR_PROFILE=1 호환 — 번개의 기존 HMR profile 토글을 새 인프라로 매핑.
-    // 내부적으로 ZNTC_PROFILE=hmr 과 동등.
-    if (std.process.getEnvVarOwned(native_alloc, "BUNGAE_HMR_PROFILE")) |v| {
-        defer native_alloc.free(v);
+    // 내부적으로 ZNTC_PROFILE=hmr 과 동등. 0.16: getEnvVarOwned 제거 → env_flag.get
+    // (captureEnvironFromLibc 로 등록된 environ Map 조회).
+    if (@import("zntc_lib").env_flag.get("BUNGAE_HMR_PROFILE")) |v| {
         if (v.len > 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
             profile_mod.addFromCsv("hmr");
         }
-    } else |_| {}
+    }
 
     var fn_value: c.napi_value = undefined;
     _ = c.napi_create_function(env, "transpile", "transpile".len, transpile_entry.napiTranspile, null, &fn_value);

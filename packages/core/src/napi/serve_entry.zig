@@ -191,7 +191,7 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
         return throwError(env, "startDevServer: out of memory (DevServer alloc)");
     };
 
-    server.* = DevServer.init(native_alloc, .{
+    server.* = DevServer.init(native_alloc, common.io(), .{
         .root_dir = root_dir.?,
         .port = port,
         .host = host.?,
@@ -275,7 +275,7 @@ pub fn napiGetDevServerPort(env: c.napi_env, info: c.napi_callback_info) callcon
     const POLL_MAX_ATTEMPTS: u32 = 100; // 10ms × 100 = 1s 한도
     var attempts: u32 = 0;
     while (!handle.server.listen_ready.load(.acquire) and attempts < POLL_MAX_ATTEMPTS) : (attempts += 1) {
-        std.Thread.sleep(POLL_INTERVAL_NS);
+        common.io().sleep(std.Io.Duration.fromNanoseconds(POLL_INTERVAL_NS), .awake) catch {};
         if (handle.stopped.load(.acquire)) {
             return throwError(env, "getDevServerPort: handle stopped before listen completed");
         }

@@ -50,7 +50,7 @@ const BuildAsyncData = struct {
 fn buildWorkerThread(async_data: *BuildAsyncData) void {
     var bundler = Bundler.init(native_alloc, async_data.options);
     defer bundler.deinit();
-    async_data.result = bundler.bundle() catch |err| {
+    async_data.result = bundler.bundle(common.io()) catch |err| {
         async_data.err_msg = @errorName(err);
         // 완료 TSFN 호출
         _ = c.napi_call_threadsafe_function(async_data.completion_tsfn, @ptrCast(async_data), c.napi_tsfn_blocking);

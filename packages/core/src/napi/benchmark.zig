@@ -48,7 +48,7 @@ pub fn napiBenchmark(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     const source_owned: []const u8 = blk: {
         if (getObjectString(env, opts_obj, "source", arena_alloc)) |s| break :blk s;
         if (getObjectString(env, opts_obj, "file", arena_alloc)) |path| {
-            const loaded = std.fs.cwd().readFileAlloc(arena_alloc, path, 100 * 1024 * 1024) catch {
+            const loaded = std.Io.Dir.cwd().readFileAlloc(common.io(), path, arena_alloc, std.Io.Limit.limited(100 * 1024 * 1024)) catch {
                 return throwError(env, "benchmark: cannot read file");
             };
             break :blk loaded;
