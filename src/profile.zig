@@ -597,6 +597,13 @@ pub fn resetForTest() void {
     zeroCounters();
 }
 
+/// 0.16: begin() 의 timing/count 는 prof_io 가 set 돼야 동작(Io.Timestamp 필요).
+/// 프로덕션은 initFromEnv(io) 가 set 하지만, profiling 을 검증하는 테스트는
+/// 이 헬퍼로 std.testing.io 를 주입해야 한다 (resetForTest 는 prof_io 를 건드리지 않음).
+pub fn setIoForTest(io: std.Io) void {
+    prof_io = io;
+}
+
 /// counters 만 reset (mask 와 level 은 유지).
 /// HMR rebuild 시작 전에 호출 — 이전 rebuild 의 누적치가 이월되지 않도록.
 pub fn resetCounters() void {

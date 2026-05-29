@@ -215,6 +215,7 @@ test "resolve: profile .resolve 활성 시 누적" {
     profile.resetForTest();
     defer profile.resetForTest();
     profile.addFromCsv("resolve");
+    profile.setIoForTest(std.testing.io);
 
     var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
     defer cache.deinit();

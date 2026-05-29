@@ -1449,6 +1449,7 @@ test "Scanner: profile .scan 활성 시 토큰당 누적" {
     profile.resetForTest();
     defer profile.resetForTest();
     profile.addFromCsv("scan");
+    profile.setIoForTest(std.testing.io);
 
     var scanner = try Scanner.init(std.testing.allocator, "const x = 42;");
     defer scanner.deinit();

@@ -824,6 +824,7 @@ test "resolve.alias — symlink package root resolves package entry" {
     defer std.testing.allocator.free(react_root);
 
     var cache = DirEntryCache.init(std.testing.allocator);
+    cache.io = std.testing.io;
     defer cache.deinit();
 
     const aliases: []const AliasEntry = &.{
@@ -859,6 +860,7 @@ test "DirEntryCache: hasFile / hasDir / negative 캐시" {
     defer std.testing.allocator.free(missing_path);
 
     var cache = DirEntryCache.init(std.testing.allocator);
+    cache.io = std.testing.io;
     defer cache.deinit();
 
     // 첫 조회 → readdir, 두 번째 → 캐시 hit. 결과는 동일해야 한다.
@@ -887,6 +889,7 @@ test "DirEntryCache: 동시 조회 — 같은 디렉토리에 여러 스레드" 
     defer std.testing.allocator.free(dir_path);
 
     var cache = DirEntryCache.init(std.testing.allocator);
+    cache.io = std.testing.io;
     defer cache.deinit();
 
     const Worker = struct {

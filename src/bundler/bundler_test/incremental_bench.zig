@@ -14,6 +14,7 @@ test "incremental bench: cold vs warm rebuild parse savings" {
     profile.resetForTest();
     profile.setLevel(.summary);
     profile.addCategories(&.{ "parse", "semantic", "graph_discover", "graph_build", "graph_finalize" });
+    profile.setIoForTest(std.testing.io);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
