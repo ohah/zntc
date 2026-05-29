@@ -38,9 +38,11 @@ fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
 /// BundleResult의 에러 진단을 JSON 문자열로 변환한다.
 fn buildErrorJson(allocator: std.mem.Allocator, result: *const BundleResult) ?[]const u8 {
     const diags = result.getDiagnostics();
-    var msg: std.ArrayList(u8) = .empty;
-    defer msg.deinit(allocator);
-    const w = msg.writer(allocator);
+    // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating. catch-return-null 경로라
+    // errdefer 가 동작 안 하므로 defer deinit + buffered() dupe.
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
 
     w.print("{{\"type\":\"error\",\"errors\":[", .{}) catch return null;
     for (diags, 0..) |d, i| {
@@ -52,7 +54,7 @@ fn buildErrorJson(allocator: std.mem.Allocator, result: *const BundleResult) ?[]
         w.print("\"}}", .{}) catch return null;
     }
     w.print("]}}", .{}) catch return null;
-    return allocator.dupe(u8, msg.items) catch null;
+    return allocator.dupe(u8, aw.writer.buffered()) catch null;
 }
 
 /// 증분 dev 번들러. 모듈별 코드를 캐싱하여 변경 시 부분 재빌드.

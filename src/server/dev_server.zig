@@ -929,15 +929,16 @@ pub const DevServer = struct {
                     // 빠져나가 watch thread 가 silent 종료되는 버그. labeled block + bool 반환
                     // 으로 emit 실패 시 short JSON fallback 사용, loop 는 그대로 유지.
                     const emit_ok: bool = if (result.profile_snapshot) |snap| blk: {
-                        // profile 활성 path — 큰 JSON 가능. ArrayList 동적 할당.
-                        var profile_buf: std.ArrayList(u8) = .empty;
-                        defer profile_buf.deinit(self.allocator);
-                        const w = profile_buf.writer(self.allocator);
+                        // profile 활성 path — 큰 JSON 가능. 0.16: ArrayList.writer 제거 →
+                        // Io.Writer.Allocating (snapshotToJson 이 *Io.Writer 그대로 받음).
+                        var aw: std.Io.Writer.Allocating = .init(self.allocator);
+                        defer aw.deinit();
+                        const w = &aw.writer;
                         w.print("{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2},\"profile\":", .{ build_id, result.paths.len, build_duration_ms }) catch break :blk false;
                         const _profile = @import("../profile.zig");
                         _profile.snapshotToJson(snap, w, 0.1) catch break :blk false; // 0.1ms threshold — sub-100us noise skip
                         w.writeByte('}') catch break :blk false;
-                        self.publishEvent(EventType.bundle_build_done, profile_buf.items);
+                        self.publishEvent(EventType.bundle_build_done, aw.writer.buffered());
                         break :blk true;
                     } else false;
 
@@ -1015,9 +1016,11 @@ pub const DevServer = struct {
     ) ?[]const u8 {
         if (modules.len == 0) return null;
 
-        var msg: std.ArrayList(u8) = .empty;
-        errdefer msg.deinit(allocator);
-        const w = msg.writer(allocator);
+        // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating. defer deinit +
+        // toOwnedSlice(성공 시 소유권 이관 → deinit no-op, catch-return-null 경로는 free).
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
+        const w = &aw.writer;
 
         w.print("{{\"type\":\"update\",\"modules\":[", .{}) catch return null;
         for (modules, 0..) |m, i| {
@@ -1029,7 +1032,7 @@ pub const DevServer = struct {
             w.print("\"}}", .{}) catch return null;
         }
         w.print("]}}", .{}) catch return null;
-        return msg.toOwnedSlice(allocator) catch return null;
+        return aw.toOwnedSlice() catch return null;
     }
 
     /// root_dir에서 .css 파일을 재귀 탐색하여 절대 경로 목록에 추가.
@@ -1283,16 +1286,16 @@ pub const DevServer = struct {
 
             var msg: std.ArrayList(u8) = .empty;
             defer msg.deinit(self.allocator);
-            const w = msg.writer(self.allocator);
-            try w.print("// ZNTC Bundle Error\n", .{});
+            // 0.16: ArrayList.writer 제거 → ArrayList.print(gpa, ...) 직접 사용.
+            try msg.print(self.allocator, "// ZNTC Bundle Error\n", .{});
             for (diags) |d| {
-                try w.print("// [{s}] {s}: {s}\n", .{
+                try msg.print(self.allocator, "// [{s}] {s}: {s}\n", .{
                     @tagName(d.severity),
                     d.file_path,
                     d.message,
                 });
             }
-            try w.print("console.error('ZNTC: bundle failed, see server logs');\n", .{});
+            try msg.print(self.allocator, "console.error('ZNTC: bundle failed, see server logs');\n", .{});
 
             try request.respond(msg.items, .{
                 .status = .internal_server_error,

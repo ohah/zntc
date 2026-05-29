@@ -196,9 +196,11 @@ pub fn writeJsonEscaped(w: anytype, s: []const u8) !void {
 }
 
 pub fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytype) ![]const u8 {
-    var msg: std.ArrayList(u8) = .empty;
-    errdefer msg.deinit(allocator);
-    const w = msg.writer(allocator);
+    // 0.16: ArrayList.writer 제거 → Io.Writer.Allocating (writeJsonEscaped 가
+    // *Io.Writer 를 그대로 받음). toOwnedSlice 가 소유권 이관.
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
     try w.writeAll("{\"type\":\"error\",\"errors\":[");
     for (diags, 0..) |d, i| {
@@ -210,7 +212,7 @@ pub fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytyp
         try w.writeAll("\"}");
     }
     try w.writeAll("]}");
-    return try msg.toOwnedSlice(allocator);
+    return try aw.toOwnedSlice();
 }
 
 // ============================================================

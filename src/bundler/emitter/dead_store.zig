@@ -74,7 +74,7 @@ const DeadStoreRefIndex = struct {
             try index.all_events.append(allocator, event);
             const key: RefKey = .{ .symbol_id = symbol_id, .scope_id = scope_id };
             const gop = try index.by_key.getOrPut(allocator, key);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(allocator, event);
         }
 

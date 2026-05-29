@@ -128,11 +128,11 @@ pub fn emitCjsEntryExports(
         .none => {},
         .default_ => {
             if (has_named or default_local == null) return error.OutputExportsDefaultRequiresSingleDefault;
-            try out.writer(allocator).print("module.exports = {s};\n", .{default_local.?});
+            try out.print(allocator, "module.exports = {s};\n", .{default_local.?});
         },
         .named => {
             for (entries) |e| {
-                try out.writer(allocator).print("exports.{s} = {s};\n", .{ e.exported, e.local });
+                try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
             }
             if (default_local != null) {
                 try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
@@ -142,18 +142,18 @@ pub fn emitCjsEntryExports(
             if (default_local) |dl| {
                 if (!has_named) {
                     // default-only → single module.exports
-                    try out.writer(allocator).print("module.exports = {s};\n", .{dl});
+                    try out.print(allocator, "module.exports = {s};\n", .{dl});
                 } else {
                     // mixed — named 형태 + esModule flag
                     for (entries) |e| {
-                        try out.writer(allocator).print("exports.{s} = {s};\n", .{ e.exported, e.local });
+                        try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
                     }
                     try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
                 }
             } else {
                 // named-only — esModule flag 없음 (Rollup 기본 auto 동작)
                 for (entries) |e| {
-                    try out.writer(allocator).print("exports.{s} = {s};\n", .{ e.exported, e.local });
+                    try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
                 }
             }
         },
