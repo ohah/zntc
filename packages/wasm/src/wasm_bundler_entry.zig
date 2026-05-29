@@ -14,10 +14,17 @@ const Platform = bundler_mod.Platform;
 
 pub const panic = zntc_lib.crash_handler.panic;
 
-// Zig 0.15 의 wasm_allocator 는 multi-threaded 미지원 (page_allocator 도 내부 wasm_allocator
-// 사용) — wasi-musl 의 c_allocator (thread-safe malloc) 사용. JS 측은 wasi_snapshot_preview1
-// 의 모든 fn 을 stub 으로 제공.
-const wasm_alloc = std.heap.c_allocator;
+// 0.16: multi-threaded wasm 에서 wasm_allocator/c_allocator(내부 WasmAllocator)는
+// `@compileError("unimplemented")`. 대신 thread-safe `smp_allocator` 사용.
+const wasm_alloc = std.heap.smp_allocator;
+
+/// 0.16: bundler.bundle 등이 io 를 요구. wasm-bundler 는 juicy main 이 없어
+/// 전역 Threaded io 를 lazy 생성 (이 타겟은 +threads 라 async_limit 기본 사용 가능).
+var wasm_threaded: ?std.Io.Threaded = null;
+fn wasmIo() std.Io {
+    if (wasm_threaded == null) wasm_threaded = std.Io.Threaded.init(wasm_alloc, .{});
+    return wasm_threaded.?.io();
+}
 
 // wasi-musl libc 가 `main` 심볼 강제 — entry=.disabled (reactor 모드) 와 충돌.
 // 미호출 stub 으로 link 통과.
@@ -320,7 +327,7 @@ export fn build(
     applyOptionsJson(arena_alloc, &options, options_json_ptr, options_json_len);
 
     var bundler = Bundler.init(arena_alloc, options);
-    const result = bundler.bundle() catch |err| {
+    const result = bundler.bundle(wasmIo()) catch |err| {
         setLastErrorFromZigError(err);
         return 0;
     };
@@ -392,7 +399,7 @@ export fn build_chunks(
     applyOptionsJson(arena_alloc, &options, options_json_ptr, options_json_len);
 
     var bundler = Bundler.init(arena_alloc, options);
-    const result = bundler.bundle() catch |err| {
+    const result = bundler.bundle(wasmIo()) catch |err| {
         setLastErrorFromZigError(err);
         return 0;
     };
