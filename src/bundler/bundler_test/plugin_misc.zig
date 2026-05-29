@@ -2307,9 +2307,213 @@ test "shimMissingExports: 플래그 꺼져있으면 shim 미생성" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(!result.hasErrors());
     // shim 없으면 void 0 선언이 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "void 0") == null);
+    // shim 이 꺼져 있고 실제로 없는 export 를 값으로 쓰면 esbuild 처럼 진단을 surface 한다
+    try std.testing.expect(result.hasErrors());
+}
+
+test "missing export: 값으로 쓰는 실제 누락 export 는 missing_export 진단을 surface (#3978)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { doesNotExist } from './lib';
+        \\globalThis.z = doesNotExist;
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const existing = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.hasErrors());
+    var found = false;
+    if (result.diagnostics) |diags| {
+        for (diags) |d| {
+            if (d.code == .missing_export) {
+                found = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "missing export: type-only import 는 stripped 이므로 진단을 내지 않는다 (#3978)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import type { Missing } from './lib';
+        \\const x: Missing = null;
+        \\globalThis.z = x;
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const existing = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 타입은 strip 되어 런타임 값 참조가 아니므로 missing_export 진단을 내지 않는다
+    var found = false;
+    if (result.diagnostics) |diags| {
+        for (diags) |d| {
+            if (d.code == .missing_export) {
+                found = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(!found);
+}
+
+test "missing export: CJS 모듈 import 는 동적 exports 라 진단 보수적으로 억제 (#3978)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { maybe } from './lib.cjs';
+        \\globalThis.z = maybe;
+    );
+    try writeFile(tmp.dir, "lib.cjs",
+        \\module.exports.existing = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // CJS exports 는 정적으로 열거 불가 → 거짓 양성을 피하려 missing_export 를 surface 하지 않는다
+    var found = false;
+    if (result.diagnostics) |diags| {
+        for (diags) |d| {
+            if (d.code == .missing_export) {
+                found = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(!found);
+}
+
+/// (#3978) missing_export 게이트의 각 차원을 독립적으로 고정하는 표.
+/// `bundle_src`: entry.ts/lib.ts/extra 파일들. `expect_error`: missing_export
+/// 진단이 surface 되어야 하는가.
+const MissingExportCase = struct {
+    name: []const u8,
+    entry: []const u8,
+    files: []const [2][]const u8, // {파일명, 내용}
+    expect_error: bool,
+};
+
+test "missing export 게이트: export*/named-reexport/unused/default 차원별 동작 (#3978)" {
+    const cases = [_]MissingExportCase{
+        // A. export * 배럴을 통해 *존재하는* 이름 → 재귀로 찾으므로 진단 없음
+        .{
+            .name = "export*-present",
+            .entry = "import { found } from './barrel';\nglobalThis.z = found;",
+            .files = &.{
+                .{ "barrel.ts", "export * from './real';" },
+                .{ "real.ts", "export const found = 1;" },
+            },
+            .expect_error = false,
+        },
+        // B. export * 배럴을 통해 *진짜 없는* 이름 → 현재는 진단 안 함(보수적 한계).
+        //    순수 re-export 배럴은 자신의 exported_names 가 비어 있어(count==0)
+        //    모델-불완전으로 간주, false-positive 를 피하려 억제한다. 배럴은 매우
+        //    흔하므로 의도된 트레이드오프 — 이 동작이 바뀌면 의식적 결정이어야 한다.
+        .{
+            .name = "export*-missing(conservative)",
+            .entry = "import { nope } from './barrel';\nglobalThis.z = nope;",
+            .files = &.{
+                .{ "barrel.ts", "export * from './real';" },
+                .{ "real.ts", "export const found = 1;" },
+            },
+            .expect_error = false,
+        },
+        // C. named re-export(`export { x } from`)로 존재하는 이름 → exported_names 에
+        //    잡히므로 진단 없음
+        .{
+            .name = "named-reexport-present",
+            .entry = "import { x } from './barrel';\nglobalThis.z = x;",
+            .files = &.{
+                .{ "barrel.ts", "export { x } from './real';" },
+                .{ "real.ts", "export const x = 1;" },
+            },
+            .expect_error = false,
+        },
+        // D. import 했으나 값으로 *참조 안 한* 누락 이름 → value_used=false → 진단 없음
+        //    (런타임에 식별자가 emit 되지 않아 ReferenceError 가 없음)
+        .{
+            .name = "unused-missing",
+            .entry = "import { a, ghost } from './lib';\nglobalThis.z = a;",
+            .files = &.{
+                .{ "lib.ts", "export const a = 1;" },
+            },
+            .expect_error = false,
+        },
+        // E. ESM 모듈에 default 가 없는데 default 를 값으로 사용 → 진짜 누락(esbuild parity)
+        .{
+            .name = "esm-default-missing",
+            .entry = "import D from './lib';\nglobalThis.z = D;",
+            .files = &.{
+                .{ "lib.ts", "export const a = 1;" },
+            },
+            .expect_error = true,
+        },
+        // F. CJS 모듈 default → CJS 는 default 를 synthesize 하므로 누락이 아님 → 진단 없음
+        .{
+            .name = "cjs-default",
+            .entry = "import D from './lib.cjs';\nglobalThis.z = D;",
+            .files = &.{
+                .{ "lib.cjs", "module.exports.a = 1;" },
+            },
+            .expect_error = false,
+        },
+    };
+
+    for (cases) |c| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", c.entry);
+        for (c.files) |f| try writeFile(tmp.dir, f[0], f[1]);
+
+        const entry = try absPath(&tmp, "entry.ts");
+        defer std.testing.allocator.free(entry);
+
+        var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+        defer b.deinit();
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+
+        var found = false;
+        if (result.diagnostics) |diags| {
+            for (diags) |d| {
+                if (d.code == .missing_export) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (found != c.expect_error) {
+            std.debug.print("[missing export 게이트] case '{s}': expect_error={} but found={}\n", .{ c.name, c.expect_error, found });
+            return error.MissingExportGateMismatch;
+        }
+    }
 }
 
 test "Self-re-export: default re-export가 자기 자신을 가리킬 때 skip" {
