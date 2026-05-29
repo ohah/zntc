@@ -53,9 +53,13 @@ fn parseBenchArgs(args: []const []const u8) !BenchArgs {
     return result;
 }
 
-pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+    // 0.16: deprecatedWriter 제거. length-0 buffer(`&.{}`) = unbuffered → 쓰기 즉시
+    // drain, std.process.exit 가 defer 우회해도 메시지 유실 없음 (flush 불필요).
+    var stdout_state = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_state.interface;
+    var stderr_state = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_state.interface;
 
     const opts = parseBenchArgs(args) catch |err| {
         try stderr.print("zntc bench: argument error ({s}). See `zntc bench --help`.\n", .{@errorName(err)});
@@ -98,7 +102,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // 소스 읽기 (한 번, iteration 간 동일한 입력 사용).
-    const source = std.fs.cwd().readFileAlloc(allocator, input_file, 100 * 1024 * 1024) catch |err| {
+    const source = std.Io.Dir.cwd().readFileAlloc(io, input_file, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
         try stderr.print("zntc bench: cannot read '{s}': {}\n", .{ input_file, err });
         std.process.exit(1);
     };
@@ -134,7 +138,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     // compare — 먼저 비교 출력, save 는 그 다음.
     if (opts.compare_path) |cmp_path| {
-        const cmp_json = std.fs.cwd().readFileAlloc(allocator, cmp_path, 10 * 1024 * 1024) catch |err| {
+        const cmp_json = std.Io.Dir.cwd().readFileAlloc(io, cmp_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
             try stderr.print("zntc bench: cannot read baseline '{s}': {}\n", .{ cmp_path, err });
             std.process.exit(1);
         };
@@ -160,12 +164,13 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
             const name_dup = try allocator.dupe(u8, name);
             try bl.phases.put(name_dup, stats);
         }
-        const file = std.fs.cwd().createFile(save_path, .{}) catch |err| {
+        const file = std.Io.Dir.cwd().createFile(io, save_path, .{}) catch |err| {
             try stderr.print("zntc bench: cannot create '{s}': {}\n", .{ save_path, err });
             std.process.exit(1);
         };
-        defer file.close();
-        try lib.bench.writeBaselineJson(file.deprecatedWriter(), &bl);
+        defer file.close(io);
+        var bl_writer = file.writer(io, &.{});
+        try lib.bench.writeBaselineJson(&bl_writer.interface, &bl);
         try stderr.print("baseline saved: {s}\n", .{save_path});
     }
 }
