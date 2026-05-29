@@ -2115,7 +2115,7 @@ pub fn applyNamingPatternWithDir(
 }
 
 /// used_names 사전 계산 결과.
-const UsedNamesEntry = struct {
+pub const UsedNamesEntry = struct {
     names: []const []const u8,
     all_used: bool, // true이면 emitModule에 null 전달 (모든 export 사용)
 };
