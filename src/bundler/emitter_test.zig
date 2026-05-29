@@ -1589,7 +1589,7 @@ fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void 
     defer std.testing.allocator.free(result.stderr);
 
     switch (result.term) {
-        .Exited => |code| if (code != 0) {
+        .exited => |code| if (code != 0) {
             std.debug.print("node stderr:\n{s}\n", .{result.stderr});
             return error.TestUnexpectedResult;
         },

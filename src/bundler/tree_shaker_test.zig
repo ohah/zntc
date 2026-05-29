@@ -54,7 +54,7 @@ fn buildAndShakeWithOpts(
     var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     const graph = try allocator.create(ModuleGraph);
     graph.* = ModuleGraph.init(allocator, &cache);
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     for (0..graph.moduleCount()) |i| {
         const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;

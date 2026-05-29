@@ -1201,15 +1201,15 @@ fn rcScanDir(
     const abs_dir = std.fs.path.resolve(allocator, &.{ importer_dir, dir }) catch return null;
     defer allocator.free(abs_dir);
 
-    var d = std.fs.openDirAbsolute(abs_dir, .{ .iterate = true }) catch {
+    var d = std.Io.Dir.cwd().openDir(std.testing.io, abs_dir, .{ .iterate = true }) catch {
         return try allocator.alloc([]const u8, 0);
     };
-    defer d.close();
+    defer d.close(std.testing.io);
 
     var list = std.ArrayList([]const u8).empty;
     defer list.deinit(allocator);
     var it = d.iterate();
-    while (it.next() catch null) |entry| {
+    while (it.next(std.testing.io) catch null) |entry| {
         if (entry.kind != .file) continue;
         const rel = std.fmt.allocPrint(allocator, "./{s}", .{entry.name}) catch continue;
         list.append(allocator, rel) catch continue;
@@ -1232,10 +1232,10 @@ fn rcRecursiveScan(
     const abs_dir = std.fs.path.resolve(allocator, &.{ importer_dir, dir }) catch return null;
     defer allocator.free(abs_dir);
 
-    var d = std.fs.openDirAbsolute(abs_dir, .{ .iterate = true }) catch {
+    var d = std.Io.Dir.cwd().openDir(std.testing.io, abs_dir, .{ .iterate = true }) catch {
         return try allocator.alloc([]const u8, 0);
     };
-    defer d.close();
+    defer d.close(std.testing.io);
 
     var list = std.ArrayList([]const u8).empty;
     defer list.deinit(allocator);

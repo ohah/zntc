@@ -279,7 +279,7 @@ test "graph: require.context invalid_reason → require_context_invalid diagnost
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var has_invalid_diag = false;
     for (graph.diagnostics.items) |d| {
@@ -307,7 +307,7 @@ test "graph: require.context valid + no plugin → require_context_no_handler di
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     var has_no_handler_diag = false;
     for (graph.diagnostics.items) |d| {
@@ -338,7 +338,7 @@ test "graph: require.context with plugin → context_matches populated, no diagn
     const plugins = [_]Plugin{.{ .name = "match", .resolveContext = matchingCallback }};
     graph.plugins = &plugins;
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // record.context_matches 채워졌는지 확인. 메모리는 module.deinit 가 자동 free.
     var found_matches = false;
@@ -377,7 +377,7 @@ test "graph: require.context kind skipped in resolve loop (no module_not_found)"
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    try graph.build(&.{entry});
+    try graph.build(std.testing.io, &.{entry});
 
     // require.context 가 일반 resolve 경로 안 탐 → unresolved_import 없음.
     // (require_context_no_handler 는 plugin 없어서 나올 수 있음 — 그건 OK)
