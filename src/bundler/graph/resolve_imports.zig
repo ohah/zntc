@@ -512,7 +512,8 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
             }
         }
 
-        const resolved = self.resolve_cache.resolve(io, 
+        const resolved = self.resolve_cache.resolve(
+            io,
             source_dir,
             record.specifier,
             record.kind,

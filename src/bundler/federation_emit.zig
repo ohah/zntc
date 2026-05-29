@@ -597,12 +597,14 @@ pub fn wrapContainer(
         // MF2 계약: get(expose) ⇒ Promise<factory>, factory() ⇒ Module
         // (webpack remoteEntry: `.then(()=>()=>require(id))`). 모듈 자체가
         // 아니라 thunk resolve — factory() 호출 전엔 미평가(추가 lazy).
-        try buf.print(allocator, 
+        try buf.print(
+            allocator,
             "\"{s}\":function(){{return __zntc_load_chunk(\"{s}\").then(function(){{return function(){{return __zntc_require(\"{s}\")}}}})}}",
             .{ ex.name, ex.chunk_file, ex.fed_id },
         );
     }
-    try buf.print(allocator, 
+    try buf.print(
+        allocator,
         "}};if(!M[e])throw new Error(\"Module \\\"\"+e+\"\\\" does not exist in container {s}.\");return M[e]()}},",
         .{name},
     );
@@ -640,7 +642,8 @@ pub fn wrapContainer(
         try buf.appendSlice(allocator, "var SC=(o&&o.shareScopeMap)?o.shareScopeMap[");
         try appendJsonStr(&buf, allocator, se.share_scope);
         try buf.appendSlice(allocator, "]:s;");
-        try buf.print(allocator, 
+        try buf.print(
+            allocator,
             "if(SC&&SC[\"{s}\"]){{var V=SC[\"{s}\"],K=Object.keys(V);if(K.length){{var e=V[K[0]],L;" ++
                 "if(e){{if(e.lib){{L=(typeof e.lib===\"function\")?e.lib():e.lib;}}" ++
                 "else if(e.get){{var f=await e.get();L=(typeof f===\"function\")?f():f;}}}}" ++

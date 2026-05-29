@@ -33,7 +33,7 @@ pub fn watchFile(
         if (current_mtime != last_mtime) {
             last_mtime = current_mtime;
             try stdout.print("[watch] File changed: {s}\n", .{file_path});
-            transpileFn(allocator, io,file_path, null, output_path, options) catch |err| {
+            transpileFn(allocator, io, file_path, null, output_path, options) catch |err| {
                 try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
             };
         }
@@ -112,7 +112,7 @@ pub fn watchDirectory(
                 const out_path = try std.fs.path.join(allocator, &.{ output_dir, output_rel });
                 defer allocator.free(out_path);
 
-                transpileFn(allocator, io,path, null, out_path, options) catch |err| {
+                transpileFn(allocator, io, path, null, out_path, options) catch |err| {
                     try stderr.print("zntc: watch re-transpile error: {}\n", .{err});
                 };
 
