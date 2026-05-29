@@ -7,8 +7,11 @@ pub fn MpscChannel(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        mutex: std.Thread.Mutex = .{},
-        cond: std.Thread.Condition = .{},
+        // 0.16: std.Thread.Mutex/Condition 제거 → std.Io.Mutex/Condition (lock/wait 가 io 요구).
+        // ZNTC 는 Threaded io 백엔드라 OS 프리미티브로 동작. 내부 채널이라 cancellation 불필요
+        // → lockUncancelable/waitUncancelable (구 non-erroring lock/wait 의미 보존).
+        mutex: std.Io.Mutex = .init,
+        cond: std.Io.Condition = .init,
         /// 큐 저장소. send()가 뒤에 append, recv()가 앞에서 꺼냄.
         queue: std.ArrayListUnmanaged(T) = .empty,
         allocator: std.mem.Allocator,
@@ -22,19 +25,19 @@ pub fn MpscChannel(comptime T: type) type {
         }
 
         /// 워커 스레드에서 호출. 결과를 큐에 추가하고 메인 스레드에 시그널.
-        pub fn send(self: *Self, item: T) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+        pub fn send(self: *Self, io: std.Io, item: T) void {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             self.queue.append(self.allocator, item) catch return;
-            self.cond.signal();
+            self.cond.signal(io);
         }
 
         /// 메인 스레드에서 호출. 큐가 비어있으면 워커가 send할 때까지 블로킹 대기.
-        pub fn recv(self: *Self) T {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+        pub fn recv(self: *Self, io: std.Io) T {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             while (self.queue.items.len == 0) {
-                self.cond.wait(&self.mutex);
+                self.cond.waitUncancelable(io, &self.mutex);
             }
             return self.queue.swapRemove(0);
         }

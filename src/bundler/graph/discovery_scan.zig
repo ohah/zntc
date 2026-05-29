@@ -29,22 +29,22 @@ pub const ScanResult = struct {
 
 /// Event-queue scan worker: parse and resolve, then send the result to the channel.
 /// It does not mutate graph topology, so the main thread remains the sole writer.
-pub fn scanWorker(self: *ModuleGraph, idx: ModuleIndex, channel: *MpscChannel(ScanResult)) void {
-    channel.send(self.scanModule(idx));
+pub fn scanWorker(self: *ModuleGraph, io: std.Io, idx: ModuleIndex, channel: *MpscChannel(ScanResult)) void {
+    channel.send(io, self.scanModule(io, idx));
 }
 
-pub fn scanModuleRangeSequential(self: *ModuleGraph, start: usize, end: usize) !usize {
+pub fn scanModuleRangeSequential(self: *ModuleGraph, io: std.Io, start: usize, end: usize) !usize {
     var i = start;
     while (i < end) : (i += 1) {
         const m = self.modules.at(i);
         if (m.state == .ready) continue;
-        const result = self.scanModule(.fromUsize(i));
-        try self.applyScanResult(result);
+        const result = self.scanModule(io, .fromUsize(i));
+        try self.applyScanResult(io, result);
     }
     return end;
 }
 
-pub fn applyScanResult(self: *ModuleGraph, result: ScanResult) !void {
+pub fn applyScanResult(self: *ModuleGraph, io: std.Io, result: ScanResult) !void {
     var apply_scope = profile.begin(.graph_discover_apply);
     defer apply_scope.end();
     defer if (result.resolve_outputs.len > 0) self.allocator.free(result.resolve_outputs);
@@ -77,14 +77,14 @@ pub fn applyScanResult(self: *ModuleGraph, result: ScanResult) !void {
     try self.applyContextDepResults(mod_idx);
 }
 
-pub fn scanModule(self: *ModuleGraph, idx: ModuleIndex) ScanResult {
+pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
     var scope = profile.begin(.graph_discover_scan_worker);
     defer scope.end();
 
     {
         var parse_scope = profile.begin(.graph_discover_scan_worker_parse);
         defer parse_scope.end();
-        self.parseModule(idx);
+        self.parseModule(io, idx);
     }
 
     const mod_idx = @intFromEnum(idx);

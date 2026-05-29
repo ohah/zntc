@@ -103,7 +103,7 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         while (inflight > 0) {
             const result = channel.recv(io);
             inflight -= 1;
-            try graph_discovery_scan.applyScanResult(self, result);
+            try graph_discovery_scan.applyScanResult(self, io, result);
 
             // Dispatch newly discovered modules without waiting for a batch boundary.
             while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
