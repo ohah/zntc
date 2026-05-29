@@ -258,7 +258,7 @@ test "BundlerDiagnostic.ErrorCode: require_context_no_handler exists" {
 // D. Graph integration — require.context 가 dep 로 안 들어감 + diagnostic
 // ============================================================
 
-fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
+fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
     return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 

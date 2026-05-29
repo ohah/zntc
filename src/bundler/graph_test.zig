@@ -22,7 +22,7 @@ fn createFile(dir: std.Io.Dir, path: []const u8) !void {
     file.close(std.testing.io);
 }
 
-fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
+fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
     return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 

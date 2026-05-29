@@ -9,7 +9,7 @@ const ModuleIndex = types.ModuleIndex;
 const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
-fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
+fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
     return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
