@@ -849,7 +849,7 @@ pub const Bundler = struct {
     }
 
     /// Worker 파일을 별도 번들로 빌드한다.
-    fn buildWorker(self: *Bundler, worker_path: []const u8) !WorkerBuildResult {
+    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8) !WorkerBuildResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
@@ -896,7 +896,7 @@ pub const Bundler = struct {
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
         const entry_arr: [1][]const u8 = .{entry_path};
-        try worker_graph.build(&entry_arr);
+        try worker_graph.build(io, &entry_arr);
 
         const format = self.workerFormat();
 
@@ -917,7 +917,7 @@ pub const Bundler = struct {
         // emit
         var emit_opts = self.makeEmitOptions();
         emit_opts.format = format;
-        const worker_result = try emitter.emitWithTreeShaking(
+        const worker_result = try emitter.emitWithTreeShaking(io, 
             arena_alloc,
             &worker_graph,
             &emit_opts,
@@ -936,7 +936,7 @@ pub const Bundler = struct {
     }
 
     /// 번들 파이프라인 실행: resolve → graph → emit.
-    pub fn bundle(self: *Bundler) !BundleResult {
+    pub fn bundle(self: *Bundler, io: std.Io) !BundleResult {
         const profile = @import("../profile.zig");
 
         var t_graph: u64 = 0;
@@ -961,7 +961,9 @@ pub const Bundler = struct {
 
         // 타이머는 항상 동작 (watch 관측성용 — HMR phaseDurations 에 노출).
         // 추가로 `profile` 모듈 activation 시 같은 구간에 .graph/.link/.shake/.emit scope 가 기록된다.
-        var timer: ?std.time.Timer = std.time.Timer.start() catch null;
+        // 0.16: std.time.Timer 제거 → Io.Timestamp(.awake monotonic) 로 phase 경과 측정.
+        // reset 패턴 = timer_last 를 현재 시각으로 재설정 (다음 phase 의 기준점).
+        var timer_last: ?std.Io.Timestamp = std.Io.Timestamp.now(io, .awake);
 
         // 0. RN dev mode: InitializeCore prelude 자동 주입.
         // InitializeCore → setUpReactRefresh에서 injectIntoGlobalHook을 호출한다.
@@ -1169,7 +1171,7 @@ pub const Bundler = struct {
             var gb_scope = profile.begin(.graph_build);
             defer gb_scope.end();
             if (self.options.module_store) |store| {
-                const inc_result = try graph.buildIncremental(self.options.entry_points, store, self.options.changed_files);
+                const inc_result = try graph.buildIncremental(io, self.options.entry_points, store, self.options.changed_files);
                 reparsed_count = inc_result.reparsed_indices.len;
                 if (inc_result.reparsed_indices.len > 0) {
                     const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
@@ -1196,9 +1198,9 @@ pub const Bundler = struct {
                 const mf = &self.options.mf.?;
                 const be = try fed.entryWithExposes(self.allocator, mf, self.options.entry_points);
                 defer fed.freeStrList(self.allocator, be);
-                try graph.build(be);
+                try graph.build(io, be);
             } else {
-                try graph.build(self.options.entry_points);
+                try graph.build(io, self.options.entry_points);
             }
         }
 
@@ -1256,7 +1258,7 @@ pub const Bundler = struct {
             for (graph.worker_entries.items) |we| {
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
                 if (!worker_output_map.contains(we.resolved_path)) {
-                    const worker_result = self.buildWorker(we.resolved_path) catch {
+                    const worker_result = self.buildWorker(io, we.resolved_path) catch {
                         continue;
                     };
                     try worker_output_map.put(we.resolved_path, worker_result.filename);
@@ -1277,9 +1279,9 @@ pub const Bundler = struct {
             }
         }
 
-        if (timer) |*t| {
-            t_graph = t.read();
-            t.reset();
+        if (timer_last) |last| {
+            t_graph = @intCast(@max(0, last.untilNow(io, .awake).toNanoseconds()));
+            timer_last = std.Io.Timestamp.now(io, .awake);
         }
         graph_scope.end();
 
@@ -1330,9 +1332,9 @@ pub const Bundler = struct {
         } else null;
         defer if (linker) |*l| l.deinit();
 
-        if (timer) |*t| {
-            t_link = t.read();
-            t.reset();
+        if (timer_last) |last| {
+            t_link = @intCast(@max(0, last.untilNow(io, .awake).toNanoseconds()));
+            timer_last = std.Io.Timestamp.now(io, .awake);
         }
         link_scope.end();
 
@@ -1399,9 +1401,9 @@ pub const Bundler = struct {
             l.tree_shaker = s;
         };
 
-        if (timer) |*t| {
-            t_shake = t.read();
-            t.reset();
+        if (timer_last) |last| {
+            t_shake = @intCast(@max(0, last.untilNow(io, .awake).toNanoseconds()));
+            timer_last = std.Io.Timestamp.now(io, .awake);
         }
         shake_scope.end();
 
@@ -1419,7 +1421,7 @@ pub const Bundler = struct {
         }
         var polyfill_scope = profile.begin(.emit_polyfill);
         for (self.options.polyfills) |poly_path| {
-            const raw = std.fs.cwd().readFileAlloc(self.allocator, poly_path, 10 * 1024 * 1024) catch |err| {
+            const raw = std.Io.Dir.cwd().readFileAlloc(io, poly_path, self.allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
                 std.log.err("zntc: cannot read polyfill file '{s}': {}", .{ poly_path, err });
                 continue;
             };
@@ -1592,7 +1594,7 @@ pub const Bundler = struct {
                 la.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
             }
 
-            const emit_result = try emitter.emitWithTreeShaking(
+            const emit_result = try emitter.emitWithTreeShaking(io, 
                 self.allocator,
                 graph,
                 &dev_emit_opts,
@@ -1733,7 +1735,7 @@ pub const Bundler = struct {
                 emit_opts.polyfills = polyfill_entries.items;
                 emit_opts.worker_map_per_module = &worker_map_per_module;
                 if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
-                const emit_result = try emitter.emitWithTreeShaking(
+                const emit_result = try emitter.emitWithTreeShaking(io, 
                     self.allocator,
                     graph,
                     &emit_opts,
@@ -1764,7 +1766,7 @@ pub const Bundler = struct {
             emit_opts.polyfills = polyfill_entries.items;
             emit_opts.worker_map_per_module = &worker_map_per_module;
             if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
-            const emit_result = try emitter.emitWithTreeShaking(
+            const emit_result = try emitter.emitWithTreeShaking(io, 
                 self.allocator,
                 graph,
                 &emit_opts,
@@ -1777,8 +1779,8 @@ pub const Bundler = struct {
         }
         errdefer self.allocator.free(output);
 
-        if (timer) |*t| {
-            t_emit = t.read();
+        if (timer_last) |last| {
+            t_emit = @intCast(@max(0, last.untilNow(io, .awake).toNanoseconds()));
         }
 
         output_scope.end();
@@ -2018,7 +2020,7 @@ pub const Bundler = struct {
                 var psig: ?[]const u8 = null;
                 errdefer if (psig) |p| self.allocator.free(p);
                 if (self.options.mf_sign_key_path) |keypath| {
-                    const key_txt = std.fs.cwd().readFileAlloc(self.allocator, keypath, 4096) catch
+                    const key_txt = std.Io.Dir.cwd().readFileAlloc(io, keypath, self.allocator, std.Io.Limit.limited(4096)) catch
                         return error.MfSignKeyRead;
                     defer self.allocator.free(key_txt);
                     const trimmed = std.mem.trim(u8, key_txt, " \t\r\n");
@@ -2052,7 +2054,7 @@ pub const Bundler = struct {
             mangle_collector.bundle_size_bytes = total_bytes;
 
             if (self.options.mangle_report_path) |path| write_blk: {
-                const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch |err| {
                     std.log.warn("--mangle-report: cannot create '{s}': {s}", .{ path, @errorName(err) });
                     break :write_blk;
                 };

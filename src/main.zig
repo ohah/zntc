@@ -759,7 +759,7 @@ pub fn main(init: std.process.Init) !void {
         var bundler = Bundler.init(allocator, initial_opts);
         defer bundler.deinit();
 
-        const result = bundler.bundle() catch |err| {
+        const result = bundler.bundle(io) catch |err| {
             try stderr.print("zntc: bundle failed: {}\n", .{err});
             std.process.exit(1);
         };
@@ -982,7 +982,7 @@ pub fn main(init: std.process.Init) !void {
                 var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
                 defer rebundler.deinit(); // resolve_cache는 외부 소유이므로 해제 안 됨
 
-                const rebuild_result = rebundler.bundle() catch |err| {
+                const rebuild_result = rebundler.bundle(io) catch |err| {
                     if (opts.watch_json) {
                         try stdout.print("{{\"type\":\"rebuild\",\"success\":false,\"error\":\"{}\"}}\n", .{err});
                     } else {
