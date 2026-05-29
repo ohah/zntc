@@ -21,8 +21,29 @@ pub const EventType = server_events.EventType;
 const writeJsonEscaped = server_events.writeJsonEscaped;
 const buildErrorJsonFromDiagnostics = server_events.buildErrorJsonFromDiagnostics;
 
-fn getLog() std.fs.File.DeprecatedWriter {
-    return std.fs.File.stderr().deprecatedWriter();
+/// 0.16: `std.fs.File.DeprecatedWriter` 제거. critical 진단/배너는 io 가 없는
+/// 경로(thread 진입 전 init 등)에서도 찍어야 하므로, io 불필요한
+/// `std.debug.print`(잠금 stderr) 로 위임하는 얇은 shim. `getLog().print(fmt, args)
+/// catch {}` 호출 형태를 그대로 유지하려고 `print` 가 `!void` 를 반환한다.
+const DebugLog = struct {
+    pub fn print(_: DebugLog, comptime fmt: []const u8, args: anytype) error{}!void {
+        std.debug.print(fmt, args);
+    }
+};
+fn getLog() DebugLog {
+    return .{};
+}
+
+/// listen 소켓의 실제 bound port 조회. 0.16 `std.Io.net.Server` 는 bound
+/// address 를 노출하지 않아(listen_address 필드 제거), port 0 (OS-assigned
+/// ephemeral) 케이스를 위해 libc `getsockname` 으로 직접 조회한다. 실패 시
+/// fallback(옵션 지정 port) 을 그대로 반환 — 비-ephemeral 경로는 무영향.
+fn socketBoundPort(handle: std.posix.fd_t, fallback: u16) u16 {
+    var addr: std.c.sockaddr.in = undefined;
+    var addrlen: std.c.socklen_t = @sizeOf(std.c.sockaddr.in);
+    if (std.c.getsockname(handle, @ptrCast(&addr), &addrlen) != 0) return fallback;
+    // sockaddr.in.port 는 network byte order(big-endian).
+    return std.mem.bigToNative(u16, addr.port);
 }
 
 pub const DevServer = struct {
@@ -56,7 +77,8 @@ pub const DevServer = struct {
     }
 
     allocator: std.mem.Allocator,
-    root_dir: std.fs.Dir,
+    io: std.Io,
+    root_dir: std.Io.Dir,
     root_path: []const u8,
     /// 실제 listen 중인 port. listen 전엔 init 시점 옵션값, listen 후엔 OS-assigned
     /// port (옵션이 0 이었던 경우) 포함 실제 값. NAPI `getDevServerPort` 가 이 필드 노출.
@@ -65,7 +87,7 @@ pub const DevServer = struct {
     open: bool,
     /// stderr 출력 silence. NAPI embed 등 외부 logger 가 있을 때 true.
     quiet: bool,
-    tcp_server: ?std.net.Server,
+    tcp_server: ?std.Io.net.Server,
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
@@ -168,12 +190,12 @@ pub const DevServer = struct {
         .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
     };
 
-    pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) !DevServer {
         // init 의 진단 로그 — `quiet` 와 **무관** 하게 항상 stderr 출력. 사용자가
         // init failure 를 못 보면 NAPI throwError 의 generic 메시지만 받고 어느
         // 경로/cert/key 가 문제인지 진단 못 함. dev-time critical path 라 quiet 영향
         // 외 (start fatal / deinit UAF 경고도 같은 contract).
-        const root_dir = std.fs.cwd().openDir(options.root_dir, .{ .iterate = true }) catch |err| {
+        const root_dir = std.Io.Dir.cwd().openDir(io, options.root_dir, .{ .iterate = true }) catch |err| {
             getLog().print("zntc: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
         };
@@ -182,12 +204,12 @@ pub const DevServer = struct {
         // 추가될 fallible 자원이 leak 을 발생시키지 않도록 가드 (#2538 4-3 review).
         errdefer {
             var dir_copy = root_dir;
-            dir_copy.close();
+            dir_copy.close(io);
         }
 
         var abs_entry: ?[]const u8 = null;
         if (options.entry_point) |ep| {
-            abs_entry = std.fs.cwd().realpathAlloc(allocator, ep) catch |err| {
+            abs_entry = std.Io.Dir.cwd().realPathFileAlloc(io, ep, allocator) catch |err| {
                 getLog().print("zntc: cannot resolve entry '{s}': {}\n", .{ ep, err }) catch {};
                 return err;
             };
@@ -216,6 +238,7 @@ pub const DevServer = struct {
 
         return .{
             .allocator = allocator,
+            .io = io,
             .root_dir = root_dir,
             .root_path = options.root_dir,
             .port = options.port,
@@ -243,17 +266,18 @@ pub const DevServer = struct {
         // accept() 를 깨움 (macOS/Linux 에서 listen socket close 만으론 accept 안 깨움).
         // 그 뒤 listen socket 정리.
         self.shutdown();
-        if (self.tcp_server) |*s| s.deinit();
+        if (self.tcp_server) |*s| s.deinit(self.io);
         // 살아있는 connection (handleConnection thread) 가 종료할 때까지 wait. 최대
         // 2초 (best-effort) — production 은 process exit 직전 deinit 라 그 시점엔
         // thread 종료된 상태가 일반적. 2초 넘어가면 log + 그대로 진행.
-        const DEINIT_TIMEOUT_MS: u64 = 2000;
-        const start_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
-        const deadline_ns: u128 = start_ns + DEINIT_TIMEOUT_MS * std.time.ns_per_ms;
+        // 0.16: std.time.nanoTimestamp 제거 → Io.Timestamp(awake 단조시계) + toNanoseconds.
+        const DEINIT_TIMEOUT_MS: i128 = 2000;
+        const start_ns: i128 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
+        const deadline_ns: i128 = start_ns + DEINIT_TIMEOUT_MS * std.time.ns_per_ms;
         while (true) {
             const count = self.active_connections.load(.acquire);
             if (count == 0) break;
-            const now_ns: u128 = @intCast(@max(0, std.time.nanoTimestamp()));
+            const now_ns: i128 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
             if (now_ns >= deadline_ns) {
                 // 같은 load 결과 (count) 를 log — re-load 시 사이에 0 으로 떨어졌으면
                 // "0 개 아직 살아있음 (UAF 위험)" 같은 모순적 메시지 (F4 retro).
@@ -266,14 +290,15 @@ pub const DevServer = struct {
                 ) catch {};
                 break;
             }
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
+            self.io.sleep(std.Io.Duration.fromMilliseconds(10), .awake) catch {};
         }
 
         if (self.abs_entry) |ae| self.allocator.free(ae);
         // overlay_client 는 init 에서 반드시 알록된 owned slice (default 미제공).
         self.allocator.free(self.overlay_client);
         if (self.tls_ctx) |*c| c.deinit();
-        self.root_dir.close();
+        self.root_dir.close(self.io);
         self.error_state.deinit(self.allocator);
     }
 
@@ -319,17 +344,21 @@ pub const DevServer = struct {
         return current;
     }
 
-    pub fn start(self: *DevServer) !void {
+    pub fn start(self: *DevServer, io: std.Io) !void {
+        // 0.16: io 는 init 에서 이미 self.io 로 저장됨. caller API 일치를 위해 받되
+        // 동일 io 로 재확인 (thread 진입 함수들이 self.io 를 참조).
+        self.io = io;
         // host 바인딩: "localhost" → 127.0.0.1, "0.0.0.0" → 모든 인터페이스
         const bind_ip = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
         // **critical**: host parse / listen fail 은 dev server 가 출발 자체 못 함 —
         // quiet 와 무관하게 항상 stderr. NAPI 가 host=어디 port=얼마로 실패했는지
         // 진단 못 보면 caller 가 환경 문제 (port 사용 중 등) 추적 불가.
-        const address = std.net.Address.parseIp4(bind_ip, self.port) catch {
+        // 0.16: std.net 제거 → std.Io.net.IpAddress + io 기반 listen.
+        const address = std.Io.net.IpAddress.parseIp4(bind_ip, self.port) catch {
             getLog().print("zntc: invalid host address: {s}\n", .{self.host}) catch {};
             return error.InvalidAddress;
         };
-        self.tcp_server = address.listen(.{
+        self.tcp_server = address.listen(io, .{
             .reuse_address = true,
         }) catch |err| {
             getLog().print("zntc: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
@@ -337,9 +366,10 @@ pub const DevServer = struct {
         };
 
         // port 0 (OS-assigned ephemeral) 였으면 실제 bound port 로 self.port 갱신
-        // — caller (NAPI getDevServerPort 등) 가 실 값 조회 가능.
+        // — caller (NAPI getDevServerPort 등) 가 실 값 조회 가능. 0.16 std.Io.net.Server
+        // 는 bound address accessor 가 없어 getsockname(libc) 으로 직접 조회.
         if (self.tcp_server) |s| {
-            self.port = s.listen_address.getPort();
+            self.port = socketBoundPort(s.socket.handle, self.port);
         }
         // F1: atomic release — self.port 쓰기가 reader 의 acquire load 와 happens-
         // before relation 형성. ARM64 (Apple Silicon) 같은 weakly-ordered 환경에서
@@ -392,11 +422,12 @@ pub const DevServer = struct {
     fn handleProxy(self: *DevServer, request: *http.Server.Request, rule: ProxyRule) !void {
         const allocator = self.allocator;
 
-        const address = std.net.Address.parseIp4(rule.target_host, rule.target_port) catch
+        // 0.16: std.net 제거 → std.Io.net. connect 는 mode 필수(.stream).
+        const address = std.Io.net.IpAddress.parseIp4(rule.target_host, rule.target_port) catch
             return error.InvalidAddress;
-        const backend = std.net.tcpConnectToAddress(address) catch
+        const backend = address.connect(self.io, .{ .mode = .stream }) catch
             return error.ConnectionRefused;
-        defer backend.close();
+        defer backend.close(self.io);
 
         // 요청 구성 (힙 할당 — 스택 오버플로 방지)
         var req: std.ArrayList(u8) = .empty;
@@ -433,26 +464,26 @@ pub const DevServer = struct {
         // NOTE: POST/PUT 바디 전달은 Zig 0.15.2 HTTP Server API 제약으로 미지원.
         // GET/DELETE 프록시는 정상 동작.
 
-        try backend.writeAll(req.items);
+        // 0.16: net.Stream 직접 writeAll/read 제거 → writer/reader 인터페이스.
+        var backend_send_buf: [4096]u8 = undefined;
+        var backend_writer = backend.writer(self.io, &backend_send_buf);
+        try backend_writer.interface.writeAll(req.items);
+        try backend_writer.interface.flush();
 
-        // 백엔드 응답 읽기 (힙 할당, 동적 크기)
-        var response: std.ArrayList(u8) = .empty;
-        defer response.deinit(allocator);
+        // 백엔드 응답 읽기 — Connection: close 라 EOF 까지 allocRemaining (동적 크기).
+        var backend_recv_buf: [4096]u8 = undefined;
+        var backend_reader = backend.reader(self.io, &backend_recv_buf);
+        const response_bytes = backend_reader.interface.allocRemaining(allocator, .unlimited) catch
+            return error.EmptyResponse;
+        defer allocator.free(response_bytes);
 
-        var read_buf: [4096]u8 = undefined;
-        while (true) {
-            const n = backend.read(&read_buf) catch break;
-            if (n == 0) break;
-            try response.appendSlice(allocator, read_buf[0..n]);
-        }
-
-        if (response.items.len == 0) return error.EmptyResponse;
+        if (response_bytes.len == 0) return error.EmptyResponse;
 
         // HTTP 응답 파싱: 헤더에서 Content-Type 추출 + 바디 분리
-        const header_end = std.mem.indexOf(u8, response.items, "\r\n\r\n");
+        const header_end = std.mem.indexOf(u8, response_bytes, "\r\n\r\n");
         if (header_end) |pos| {
-            const body = response.items[pos + 4 ..];
-            const headers_section = response.items[0..pos];
+            const body = response_bytes[pos + 4 ..];
+            const headers_section = response_bytes[0..pos];
             var content_type: []const u8 = "application/json";
             var line_iter = std.mem.splitSequence(u8, headers_section, "\r\n");
             while (line_iter.next()) |line| {
@@ -467,7 +498,7 @@ pub const DevServer = struct {
             };
             try request.respond(body, .{ .extra_headers = &proxy_headers });
         } else {
-            try request.respond(response.items, .{ .extra_headers = &cors_headers });
+            try request.respond(response_bytes, .{ .extra_headers = &cors_headers });
         }
     }
 
@@ -475,25 +506,20 @@ pub const DevServer = struct {
         const scheme: []const u8 = if (self.tls_ctx != null) "https" else "http";
         const url_buf = std.fmt.allocPrint(self.allocator, "{s}://{s}:{d}/", .{ scheme, self.host, self.port }) catch return;
         defer self.allocator.free(url_buf);
-        // macOS: open, Linux: xdg-open
-        var child = std.process.Child.init(
-            &.{ "open", url_buf },
-            self.allocator,
-        );
-        child.spawn() catch {
+        // macOS: open, Linux: xdg-open. 0.16: Child.init/spawn 제거 →
+        // process.spawn(io, options). 반환 Child 는 무시(fire-and-forget) —
+        // dev-time 브라우저 오픈은 best-effort, 프로세스 수명 짧음.
+        _ = std.process.spawn(self.io, .{ .argv = &.{ "open", url_buf } }) catch {
             // Linux fallback
-            var child2 = std.process.Child.init(
-                &.{ "xdg-open", url_buf },
-                self.allocator,
-            );
-            child2.spawn() catch {};
+            _ = std.process.spawn(self.io, .{ .argv = &.{ "xdg-open", url_buf } }) catch {};
         };
     }
 
     fn acceptLoop(self: *DevServer) void {
         while (true) {
             if (self.shutdown_requested.load(.acquire)) return;
-            const connection = self.tcp_server.?.accept() catch |err| {
+            // 0.16: accept 가 Connection 이 아닌 Stream 직접 반환 (io 인자 필요).
+            const stream = self.tcp_server.?.accept(self.io) catch |err| {
                 if (self.shutdown_requested.load(.acquire)) return;
                 self.routineLog("zntc: accept failed: {}\n", .{err});
                 continue;
@@ -503,9 +529,9 @@ pub const DevServer = struct {
             // 보고 일찍 통과 → UAF race window. 여기서 카운트 ownership 잡고 spawn
             // 실패 시만 즉시 감소. 성공 시 handleConnection 의 defer fetchSub 가 처리.
             _ = self.active_connections.fetchAdd(1, .acq_rel);
-            const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, handleConnection, .{ self, connection }) catch {
+            const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, handleConnection, .{ self, stream }) catch {
                 _ = self.active_connections.fetchSub(1, .acq_rel);
-                connection.stream.close();
+                stream.close(self.io);
                 continue;
             };
             thread.detach();
@@ -518,18 +544,21 @@ pub const DevServer = struct {
     /// shutdown_requested 플래그를 보고 종료. 실제 socket close는 deinit에서.
     pub fn shutdown(self: *DevServer) void {
         self.shutdown_requested.store(true, .release);
-        if (self.tcp_server) |*s| {
-            const addr = s.listen_address;
-            const stream = std.net.tcpConnectToAddress(addr) catch return;
-            stream.close();
+        if (self.tcp_server != null) {
+            // 0.16: Server.listen_address 제거 → self.host/self.port 로 self-connect
+            // 재구성해 blocking accept() 를 깨운다 (close 만으론 accept 안 깨움).
+            const bind_ip = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
+            const addr = std.Io.net.IpAddress.parseIp4(bind_ip, self.port) catch return;
+            const stream = addr.connect(self.io, .{ .mode = .stream }) catch return;
+            stream.close(self.io);
         }
     }
 
-    fn handleConnection(self: *DevServer, connection: std.net.Server.Connection) void {
+    fn handleConnection(self: *DevServer, stream: std.Io.net.Stream) void {
         // active_connections 의 fetchAdd 는 acceptLoop 가 이미 수행 (spawn 전 race
         // window 회피). 여기선 defer 로 fetchSub 만 — handleConnection 종료 시 한 번.
         defer _ = self.active_connections.fetchSub(1, .acq_rel);
-        defer connection.stream.close();
+        defer stream.close(self.io);
 
         var send_buf: [8192]u8 = undefined;
         // recv_buf: 32KB stack alloc — typical HTTP request header + body 가 다 fit.
@@ -541,7 +570,8 @@ pub const DevServer = struct {
 
         if (self.tls_ctx) |*ctx| {
             // HTTPS path — SSL_accept handshake 후 TlsReader/TlsWriter 어댑터로 http.Server.
-            var tls_conn = tls.TlsConnection.init(ctx, connection.stream.handle) catch |err| {
+            // 0.16: net.Stream.handle → stream.socket.handle.
+            var tls_conn = tls.TlsConnection.init(ctx, stream.socket.handle) catch |err| {
                 self.routineLog("zntc: TLS handshake failed: {}\n", .{err});
                 return;
             };
@@ -552,10 +582,11 @@ pub const DevServer = struct {
             var server: http.Server = .init(&tls_reader.interface, &tls_writer.interface);
             self.serveOnConnection(&server, &tls_writer.interface);
         } else {
-            // plain HTTP path.
-            var conn_reader = connection.stream.reader(&recv_buf);
-            var conn_writer = connection.stream.writer(&send_buf);
-            var server: http.Server = .init(conn_reader.interface(), &conn_writer.interface);
+            // plain HTTP path. 0.16: net.Stream.reader/writer 는 io 인자 필요,
+            // .interface 는 메서드가 아닌 필드.
+            var conn_reader = stream.reader(self.io, &recv_buf);
+            var conn_writer = stream.writer(self.io, &send_buf);
+            var server: http.Server = .init(&conn_reader.interface, &conn_writer.interface);
             self.serveOnConnection(&server, &conn_writer.interface);
         }
     }
@@ -696,10 +727,10 @@ pub const DevServer = struct {
             css_paths.deinit(self.allocator);
         }
         // root_path의 realpath는 서버 실행 중 불변이므로 1회만 계산
-        const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch null;
+        const root_real = std.Io.Dir.cwd().realPathFileAlloc(self.io, self.root_path, self.allocator) catch null;
         defer if (root_real) |r| self.allocator.free(r);
         if (root_real) |root| {
-            collectCssFiles(self.allocator, self.root_dir, root, &css_paths);
+            collectCssFiles(self.allocator, self.io, self.root_dir, root, &css_paths);
             // issue #3858 — dev mode 중 신규 .css 추가/삭제 감지를 위해 root_dir
             // 자체도 watch. FileWatcher 의 dir-watch (PR-1) 가 dir entry 변화 시
             // ChangeEvent{path=root} emit → watchLoop 가 rescan + 신규 path
@@ -780,7 +811,7 @@ pub const DevServer = struct {
                     for (new_css_paths.items) |p| self.allocator.free(p);
                     new_css_paths.deinit(self.allocator);
                 }
-                collectCssFiles(self.allocator, self.root_dir, root, &new_css_paths);
+                collectCssFiles(self.allocator, self.io, self.root_dir, root, &new_css_paths);
 
                 // new_css_paths set 으로 빠른 lookup
                 var new_set = std.StringHashMap(void).init(self.allocator);
@@ -880,9 +911,10 @@ pub const DevServer = struct {
             // IncrementalBundler 가 graph_discover 의 stat skip + dev_mode 패키지
             // (skip_bundle_output, sourcemap.lazy) 자동 적용. NAPI watch (watch.zig:1135-1142)
             // 와 동일 패턴. emit_concat (~38ms) + emit_sourcemap_finalize (~19ms) 절감.
-            const build_start_ns = std.time.nanoTimestamp();
+            // 0.16: std.time.nanoTimestamp 제거 → Io.Timestamp(awake 단조시계).
+            const build_start_ns = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
             const rebuild_result = inc_bundler.rebuildWithChanges(&changed_set) catch continue;
-            const build_duration_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - build_start_ns)) / std.time.ns_per_ms;
+            const build_duration_ms = @as(f64, @floatFromInt(std.Io.Timestamp.now(self.io, .awake).toNanoseconds() - build_start_ns)) / std.time.ns_per_ms;
             switch (rebuild_result) {
                 .success => |result| {
                     self.error_state.clear(self.allocator);
@@ -1001,17 +1033,17 @@ pub const DevServer = struct {
     }
 
     /// root_dir에서 .css 파일을 재귀 탐색하여 절대 경로 목록에 추가.
-    fn collectCssFiles(allocator: std.mem.Allocator, dir: std.fs.Dir, dir_path: []const u8, out: *std.ArrayList([]const u8)) void {
+    fn collectCssFiles(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, dir_path: []const u8, out: *std.ArrayList([]const u8)) void {
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(io) catch null) |entry| {
             if (entry.kind == .directory) {
                 if (std.mem.eql(u8, entry.name, "node_modules")) continue;
                 if (entry.name.len > 0 and entry.name[0] == '.') continue;
-                var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
-                defer sub_dir.close();
+                var sub_dir = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+                defer sub_dir.close(io);
                 const sub_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
                 defer allocator.free(sub_path);
-                collectCssFiles(allocator, sub_dir, sub_path, out);
+                collectCssFiles(allocator, io, sub_dir, sub_path, out);
             } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".css")) {
                 const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
                 out.append(allocator, full_path) catch {};
@@ -1049,7 +1081,8 @@ pub const DevServer = struct {
 
         // keep-alive: 30초마다 주석 전송. broadcast와 race 방지를 위해 sink mutex 사용.
         while (true) {
-            std.Thread.sleep(30 * std.time.ns_per_s);
+            // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
+            self.io.sleep(std.Io.Duration.fromSeconds(30), .awake) catch {};
             self.sse_clients.mutex.lock();
             const ok = blk: {
                 response.writer.writeAll(": keep-alive\n\n") catch break :blk false;
@@ -1321,10 +1354,12 @@ pub const DevServer = struct {
     /// 설치되어 있지 않으면 noop 폴백을 반환한다.
     fn serveReactRefresh(self: *DevServer, request: *http.Server.Request) !void {
         // node_modules/react-refresh/runtime.js 탐색 (root_dir 기준)
+        // 0.16: readFileAlloc(io, sub_path, gpa, limit) 인자 순서/형태 변경.
         const runtime_code = self.root_dir.readFileAlloc(
-            self.allocator,
+            self.io,
             "node_modules/react-refresh/runtime.js",
-            max_file_size,
+            self.allocator,
+            std.Io.Limit.limited(max_file_size),
         ) catch |err| switch (err) {
             error.FileNotFound => {
                 // react-refresh 미설치 → noop 폴백
@@ -1387,11 +1422,10 @@ pub const DevServer = struct {
     }
 
     fn serveStaticFile(self: *DevServer, request: *http.Server.Request, rel_path: []const u8) !void {
-        const file = try self.root_dir.openFile(rel_path, .{});
-        defer file.close();
-
-        const content = file.readToEndAlloc(self.allocator, max_file_size) catch |err| switch (err) {
-            error.FileTooBig => {
+        // 0.16: openFile + File.readToEndAlloc 제거 → Dir.readFileAlloc(io, ...).
+        // 크기 초과 에러는 FileTooBig → StreamTooLong 로 명칭 변경.
+        const content = self.root_dir.readFileAlloc(self.io, rel_path, self.allocator, std.Io.Limit.limited(max_file_size)) catch |err| switch (err) {
+            error.StreamTooLong => {
                 try request.respond("413 Payload Too Large", .{
                     .status = .payload_too_large,
                     .extra_headers = &cors_headers,
