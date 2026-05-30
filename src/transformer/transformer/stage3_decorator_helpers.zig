@@ -337,10 +337,17 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
     const name_node = self.ast.getNode(info.name);
     const raw_name = self.ast.getText(name_node.data.string_ref);
     // 따옴표 제거: "\"foo\"" → "foo"
-    const member_name = if (raw_name.len >= 2 and raw_name[0] == '"')
+    const stripped = if (raw_name.len >= 2 and raw_name[0] == '"')
         raw_name[1 .. raw_name.len - 1]
     else
         raw_name;
+    // raw_name 이 string_table 슬라이스(synthetic name)면, 아래 has/get/set 가 호출하는
+    // addString("obj")/addString(member_name) 등 후속 addString 이 string_table 을 realloc 해
+    // 이 슬라이스를 dangling 으로 만든다 → addString 의 alias 가드는 *현재* 버퍼만 보호하므로
+    // stale ptr 은 not-in-table 로 분류돼 freed 메모리를 appendSlice → 출력에 0xaa garbage
+    // (`obj.method` → `obj.<0xaa…>`, #3100 동류). 안정 owned 복사로 캡처해 함수 끝까지 유지.
+    const member_name = try self.allocator.dupe(u8, stripped);
+    defer self.allocator.free(member_name);
 
     // identifier-safe 판정: 숫자로 시작하거나 유효하지 않은 식별자면 computed access 사용
     // obj.name (static) vs obj["name"] or obj[0] (computed)

@@ -724,6 +724,29 @@ test "experimentalDecorators + es5: inheritance + all decorators" {
     try std.testing.expectEqual(@as(u32, 4), r.statementCount());
 }
 
+// stage3(TC39) 데코레이터의 access 객체 getter 멤버 이름이 손상되지 않는다.
+// 회귀: buildAccessObject 가 멤버 이름을 string_table 슬라이스로 잡은 뒤 `obj`
+// 파라미터 등 후속 addString 이 string_table 을 realloc 시켜 슬라이스가 dangling
+// → `get: (obj) => obj.<0xaa…>` 로 출력 (Debug/ReleaseSafe 전용). 안정 owned
+// 복사로 캡처해 수정. `"method" in obj`(Span 직접 재사용)는 원래 안전했고
+// `obj.method`(이름 재-addString)만 깨졌었다.
+test "stage3 decorator: access getter 멤버 이름이 손상되지 않는다 (string_table UAF)" {
+    var r = try parseAndTransform(
+        std.testing.allocator,
+        "export default class { @dec method() {} }",
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer r.allocator.free(code);
+
+    // 데코레이터가 __esDecorate 로 lower 되어 access 객체가 생성됐는지 확인.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__esDecorate") != null);
+    // get 접근자가 정확한 멤버 이름을 참조한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "obj.method") != null);
+    // undefined(0xaa) poison 바이트가 출력에 새지 않는다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "\xaa") == null);
+}
+
 // ============================================================
 // 두 옵션 동시 활성화 테스트
 // ============================================================
