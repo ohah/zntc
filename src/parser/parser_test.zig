@@ -2197,6 +2197,33 @@ test "new + optional chain: 유효 형태는 통과" {
     try expectNoParseError("for (var x = a[(\"k\" in a)];;) { break; }");
 }
 
+test "optional chain in assignment target: spine 의 ?. 는 LHS 불가 (SyntaxError)" {
+    // ECMAScript: OptionalChain 은 assignment/update target 이 될 수 없다. 끝 멤버(`a?.b`)뿐
+    // 아니라 체인 *앞쪽* optional(`a?.b.c`)도 거부 — LHS 체인 spine 에 `?.` 가 있으면 invalid.
+    try expectParseError("a?.b = 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.b.c = 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.b.c.d = 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a.b?.c.d = 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.[x].c = 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.b().c = 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.b.c += 1", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.b.c++", .{ .message = "Invalid assignment target" });
+    try expectParseError("a?.b.c &&= 2", .{ .message = "Invalid assignment target" });
+    try expectParseError("[a?.b.c] = x", .{ .message = "Invalid assignment target" });
+    try expectParseError("for (a?.b.c in y) {}", .{ .message = "Invalid assignment target" });
+}
+
+test "optional chain in assignment target: paren 으로 끊기거나 optional 없으면 유효" {
+    // `(a?.b).c = 1` 은 paren 으로 체인이 끊겨 valid. optional 이 *computed key* 안이거나
+    // (`a[b?.c] = 1`) RHS read(`x = a?.b.c`)면 LHS spine 과 무관 → 유효.
+    try expectNoParseError("(a?.b).c = 1");
+    try expectNoParseError("a.b.c = 1");
+    try expectNoParseError("a.b().c = 1"); // call 이지만 optional 없음
+    try expectNoParseError("a[b?.c] = 1"); // optional 이 key 안 (spine 아님)
+    try expectNoParseError("x = a?.b.c"); // RHS read
+    try expectNoParseError("delete a?.b.c"); // delete 는 optional chain 허용
+}
+
 test "ErrorMsg: expect() shows 'found' token" {
     // `if (true]` → Expected ')' but found ']'
     try expectParseError("if (true]", .{ .message = ")", .has_found = true });
