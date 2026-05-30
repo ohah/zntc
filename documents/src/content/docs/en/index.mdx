@@ -43,12 +43,12 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <StatsStrip
   stats={[
-    { value: "13", unit: "ms", label: "Transpile", caption: "1K LOC · TypeScript" },
-    { value: "11", unit: "ms", label: "Bundle", caption: "10 modules" },
-    { value: "19", unit: "×", label: "faster", caption: "vs rolldown (small)" },
+    { value: "4.1", unit: "ms", label: "Transpile", caption: "1K LOC · TypeScript" },
+    { value: "4.3", unit: "ms", label: "Bundle", caption: "10 modules" },
+    { value: "11", unit: "×", label: "faster", caption: "vs rolldown (small)" },
     { value: "340", unit: "+", label: "Doc pages", caption: "ko · en" },
   ]}
-  note="As of 2026-05-25 · darwin arm64 · 20-run median"
+  note="As of 2026-05-30 · darwin arm64 · 50-run median"
 />
 
 <Section padding="py-16">
@@ -60,29 +60,29 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
     <div class="mt-6 grid gap-4 text-sm sm:grid-cols-3">
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">small (10 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">11.4 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1st)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">4.3 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1st)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs esbuild 29.4 · Bun 68.8 · rolldown 219 · rspack 304 ms
+          vs Bun 5.0 · esbuild 6.5 · rolldown 48 · rspack 56 ms
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">medium (1000 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">46.5 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1st)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">16.5 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(tied 1st)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 65.9 · esbuild 88.2 · rolldown 333 · rspack 679 ms
+          vs Bun 16.1 · esbuild 19.7 · rolldown 65 · rspack 82 ms
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">large (5000 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">177 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(2nd)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">67.6 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(2nd)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 174 · esbuild 334 · rolldown 599 · rspack 1279 ms
+          vs Bun 55.2 · esbuild 73 · rolldown 119 · rspack 173 ms
         </div>
       </div>
     </div>
 
     <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
-      2026-05-25 · darwin arm64 · 20-run median · fan-out tree fixture (see <a href="/zntc/en/reference/benchmarks/" class="text-zig-400 hover:underline">full benchmarks →</a>)
+      2026-05-30 · darwin arm64 · 50-run median · fan-out tree fixture (see <a href="/zntc/en/reference/benchmarks/" class="text-zig-400 hover:underline">full benchmarks →</a>)
     </p>
   </div>
 </Section>
@@ -106,9 +106,9 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">effect</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">122 KB</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1st)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">114 KB</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1st)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          <strong>1.16–1.56× smaller</strong> than esbuild 191 KB · rspack 142 KB
+          <strong>1.25–1.69× smaller</strong> than esbuild 191 KB · rspack 142 KB
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
@@ -121,7 +121,7 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
     </div>
 
     <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
-      2026-05-17 · darwin arm64 · 9 real npm libraries · <code>--minify-all</code> (see <a href="/zntc/en/reference/benchmarks/" class="text-zig-400 hover:underline">full benchmarks →</a>)
+      2026-05-30 · darwin arm64 · 9 real npm libraries · <code>--minify-all</code> (see <a href="/zntc/en/reference/benchmarks/" class="text-zig-400 hover:underline">full benchmarks →</a>)
     </p>
   </div>
 </Section>
