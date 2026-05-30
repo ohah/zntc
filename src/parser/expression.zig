@@ -809,6 +809,9 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
     }
 
     var after_optional_chain = false;
+    // argless-new 가 head 인 optional chain 진단은 체인당 1회만 (체인의 head 는 고정이라
+    // 매 `?.` 마다 walk 가 같은 argless new 를 재발견 → 중복 방지). V8 도 1개.
+    var reported_new_optional = false;
 
     while (true) {
         const expr_start = self.ast.getNode(expr).span.start;
@@ -893,6 +896,13 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // optional chaining: a?.b, a?.[b], a?.()
                 if (self.ast.getNode(expr).tag == .super_expression) {
                     try self.addErrorCode(self.ast.getNode(expr).span, "'super' cannot be used as the base of an optional chain", .super_in_optional_chain);
+                }
+                // ECMAScript: OptionalChain 의 base 는 MemberExpression/CallExpression 만 가능.
+                // base 체인 head 가 인자 없는 new(NewExpression)면 SyntaxError(`new new a()?.b`,
+                // `new new a().b?.c`, `new a\`tpl\`?.b`). 인자 있는 new·call·기타 head 는 유효.
+                if (!reported_new_optional and optionalChainBaseIsArglessNew(self, expr)) {
+                    try self.addErrorCode(self.ast.getNode(expr).span, "Invalid optional chain in 'new' expression", .optional_chain_new);
+                    reported_new_optional = true;
                 }
                 try self.advance(); // skip ?.
                 if (self.current() == .l_bracket) {
@@ -1100,9 +1110,40 @@ fn followedByParenOnly(self: *const Parser) bool {
     return self.current() == .l_paren;
 }
 
+/// `?.`(OptionalChain)의 base 체인 head 가 *인자 없는* new(NewExpression)인지 판정.
+/// ECMAScript: OptionalChain 의 base 는 MemberExpression/CallExpression 만 가능하므로,
+/// 비-optional 멤버 접근(`.x`/`[k]`/`#p`)·tagged template 만 거쳐 인자 없는 new 에 도달하면
+/// SyntaxError(`new new a().b?.c`, `new a\`tpl\`?.b` 등). 인자 있는 new(MemberExpression)·
+/// call_expression·그 외 head 에서 멈춘다(유효). 즉시 base 가 argless new 인 `new new a()?.b`
+/// 도 이 walk 의 첫 step 에서 잡힌다. depth 가드로 무한루프 방지(정상 AST 는 짧다).
+fn optionalChainBaseIsArglessNew(self: *const Parser, base: NodeIndex) bool {
+    var cur = base;
+    var guard: u32 = 0;
+    while (guard < 100_000) : (guard += 1) {
+        const node = self.ast.getNode(cur);
+        switch (node.tag) {
+            .static_member_expression,
+            .computed_member_expression,
+            .private_field_expression,
+            .tagged_template_expression,
+            => {
+                // member 의 object / tagged template 의 tag = extra[0].
+                cur = self.ast.readExtraNode(node.data.extra, 0);
+                if (cur.isNone()) return false;
+            },
+            .new_expression => return (self.ast.readExtra(node.data.extra, 3) & ast_mod.CallFlags.had_arguments) == 0,
+            else => return false,
+        }
+    }
+    return false;
+}
+
 fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg_list: NodeList) !NodeIndex {
+    // had_arguments: 인자 절(괄호)이 있는 new = MemberExpression → trailing optional chain
+    // (`new a()?.b`)의 valid base. 무인자 new 경로는 flags=0 으로 두어 `new new a()?.b`/
+    // `new new a().b?.c` 등을 optionalChainBaseIsArglessNew 가 거부.
     const ne = try self.ast.addExtras(&.{
-        @intFromEnum(callee), arg_list.start, arg_list.len, 0,
+        @intFromEnum(callee), arg_list.start, arg_list.len, ast_mod.CallFlags.had_arguments,
     });
     const new_expr = try self.ast.addNode(.{
         .tag = .new_expression,

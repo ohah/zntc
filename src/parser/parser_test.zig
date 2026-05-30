@@ -2140,6 +2140,19 @@ test "new + optional chain: callee 의 optional chain 은 SyntaxError" {
     try expectParseError("new a?.`t`", .{ .message = "Invalid optional chain in 'new' expression" });
     // 중첩 new 의 inner callee optional 도 재귀로 잡힘.
     try expectParseError("new new a?.b()()", .{ .message = "Invalid optional chain in 'new' expression" });
+    // trailing optional chain: 인자 없는 new(NewExpression) 뒤 `?.` 도 거부(#4027).
+    // `new new a()` 의 바깥 new 는 인자 절이 없어 NewExpression → `?.b`/`?.()` 불가.
+    try expectParseError("new new a()?.b", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new new a()?.()", .{ .message = "Invalid optional chain in 'new' expression" });
+    // argless new 와 `?.` 사이에 비-optional 멤버/subscript/tagged-template 이 끼어도
+    // 체인 head 가 argless new 이므로 거부(base 체인을 walk). (max-review 가 적발한 누락.)
+    try expectParseError("new new a().b?.c", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new new a()[0]?.c", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new new a().b.c?.d", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new a`x`?.b", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new new a()`x`?.b", .{ .message = "Invalid optional chain in 'new' expression" });
+    // private-field 가 중간에 끼어도 walk 의 private_field_expression 분기로 head 도달.
+    try expectParseError("new new a().#x?.b", .{ .message = "Invalid optional chain in 'new' expression" });
 }
 
 test "new + optional chain: 진단은 callee 당 정확히 1개 (중복/cascade 노이즈 없음)" {
@@ -2153,6 +2166,10 @@ test "new + optional chain: 진단은 callee 당 정확히 1개 (중복/cascade 
     try expectSingleParseError("new a?.", "Invalid optional chain in 'new' expression");
     try expectSingleParseError("new a?.;", "Invalid optional chain in 'new' expression");
     try expectSingleParseError("new a?.+b", "Invalid optional chain in 'new' expression");
+    // trailing optional 도 단일 진단(멤버 끼인 경우 포함).
+    try expectSingleParseError("new new a()?.b", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new new a()?.b?.c", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new new a().b?.c", "Invalid optional chain in 'new' expression");
 }
 
 test "new + optional chain: 유효 형태는 통과" {
@@ -2166,6 +2183,14 @@ test "new + optional chain: 유효 형태는 통과" {
     // new 표현식 *뒤*의 optional 접근은 유효(`(new a()).b?.c`).
     try expectNoParseError("new a().b?.c");
     try expectNoParseError("(new a())?.b");
+    // 인자 *있는* new(MemberExpression) 뒤 trailing `?.` 는 유효 — argless new(#4027)만 거부.
+    try expectNoParseError("new a()?.b");
+    try expectNoParseError("new new a()()?.b"); // 바깥 new 가 인자 `()` 보유
+    try expectNoParseError("new new a().b"); // 비-optional `.b` 는 NewExpression 뒤에도 유효
+    try expectNoParseError("(new new a())?.b"); // paren 으로 감싼 NewExpression = PrimaryExpression
+    try expectNoParseError("new new a().b()?.c"); // `.b()` 호출 → CallExpression base → 유효
+    try expectNoParseError("new a()`x`?.b"); // 인자 있는 new + tagged template → MemberExpression
+    try expectNoParseError("new a`x`.b"); // 비-optional 접근만 → 유효
     // computed-member subscript 는 [+In] — for-init(allow_in=false) 안에서도 `in` 허용.
     // `new a[k in a]()` 가 오거부되던 pre-existing 버그(F1) 가드.
     try expectNoParseError("for (var x = new a[(\"k\" in a)]();;) { break; }");
