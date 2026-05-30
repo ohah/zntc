@@ -193,8 +193,8 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
         return error.BundleFailed;
     }
 
-    var reserved = std.StringHashMap(void).init(allocator);
-    defer reserved.deinit();
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(allocator);
     var reserved_keys: std.ArrayList([]const u8) = .empty;
     defer {
         for (reserved_keys.items) |key| allocator.free(key);
@@ -375,8 +375,8 @@ pub fn prepareDev(allocator: std.mem.Allocator, io: std.Io, opts: AppDevPrepareO
     defer app_env.deinitMap(&env_map, allocator);
 
     try std.Io.Dir.cwd().createDirPath(io, outdir);
-    var reserved = std.StringHashMap(void).init(allocator);
-    defer reserved.deinit();
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(allocator);
     var reserved_keys: std.ArrayList([]const u8) = .empty;
     defer {
         for (reserved_keys.items) |key| allocator.free(key);
@@ -436,9 +436,9 @@ pub fn prepareDev(allocator: std.mem.Allocator, io: std.Io, opts: AppDevPrepareO
 }
 
 fn mergeDefines(allocator: std.mem.Allocator, env_defines: []const app_env.DefineEntry, user_defines: []const DefineEntry) ![]DefineEntry {
-    var user_keys = std.StringHashMap(void).init(allocator);
-    defer user_keys.deinit();
-    try user_keys.ensureTotalCapacity(@intCast(user_defines.len));
+    var user_keys: std.StringHashMapUnmanaged(void) = .empty;
+    defer user_keys.deinit(allocator);
+    try user_keys.ensureTotalCapacity(allocator, @intCast(user_defines.len));
     for (user_defines) |entry| user_keys.putAssumeCapacity(entry.key, {});
 
     var list: std.ArrayList(DefineEntry) = .empty;
@@ -646,13 +646,13 @@ fn injectModulePreloads(
 
     // path → outputs index 를 한 번만 빌드. 이전엔 recursive walker 가 매 import 마다
     // outputs 를 선형 스캔 (O(N²)) 했음. outputs 자체에 대한 alias 라 owned key 불필요.
-    var by_path = std.StringHashMap(usize).init(allocator);
-    defer by_path.deinit();
-    try by_path.ensureTotalCapacity(@intCast(outputs.len));
+    var by_path: std.StringHashMapUnmanaged(usize) = .empty;
+    defer by_path.deinit(allocator);
+    try by_path.ensureTotalCapacity(allocator, @intCast(outputs.len));
     for (outputs, 0..) |out, i| by_path.putAssumeCapacity(out.path, i);
 
-    var seen = std.StringHashMap(void).init(allocator);
-    defer seen.deinit();
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(allocator);
     var seen_keys: std.ArrayList([]const u8) = .empty;
     defer {
         for (seen_keys.items) |key| allocator.free(key);
@@ -672,10 +672,10 @@ fn injectModulePreloads(
 fn appendModulePreloadImports(
     allocator: std.mem.Allocator,
     outputs: []const bundler_mod.emitter.OutputFile,
-    by_path: *const std.StringHashMap(usize),
+    by_path: *const std.StringHashMapUnmanaged(usize),
     imports: []const []const u8,
     base: []const u8,
-    seen: *std.StringHashMap(void),
+    seen: *std.StringHashMapUnmanaged(void),
     seen_keys: *std.ArrayList([]const u8),
     tags: *std.ArrayList(u8),
 ) !void {
@@ -732,14 +732,14 @@ fn joinBaseUrlWithSuffix(allocator: std.mem.Allocator, base: []const u8, rel: []
 
 fn addReserved(
     allocator: std.mem.Allocator,
-    reserved: *std.StringHashMap(void),
+    reserved: *std.StringHashMapUnmanaged(void),
     reserved_keys: *std.ArrayList([]const u8),
     key: []const u8,
 ) !void {
     if (reserved.contains(key)) return;
     const owned = try allocator.dupe(u8, key);
     errdefer allocator.free(owned);
-    try reserved.put(owned, {});
+    try reserved.put(allocator, owned, {});
     try reserved_keys.append(allocator, owned);
 }
 
@@ -748,7 +748,7 @@ fn copyAssetFile(
     io: std.Io,
     asset_path: []const u8,
     outdir: []const u8,
-    reserved: *std.StringHashMap(void),
+    reserved: *std.StringHashMapUnmanaged(void),
     reserved_keys: *std.ArrayList([]const u8),
     output_count: *usize,
 ) ![]const u8 {
@@ -770,7 +770,7 @@ fn rewriteCssUrls(
     style_path: []const u8,
     outdir: []const u8,
     base: []const u8,
-    reserved: *std.StringHashMap(void),
+    reserved: *std.StringHashMapUnmanaged(void),
     reserved_keys: *std.ArrayList([]const u8),
     output_count: *usize,
 ) ![]const u8 {
@@ -818,7 +818,7 @@ fn copyPublicDir(
     io: std.Io,
     public_dir: []const u8,
     outdir: []const u8,
-    reserved: *std.StringHashMap(void),
+    reserved: *std.StringHashMapUnmanaged(void),
     output_count: *usize,
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, public_dir, .{ .iterate = true }) catch |err| switch (err) {
@@ -835,7 +835,7 @@ fn copyPublicDirInner(
     public_dir: []const u8,
     rel_dir: []const u8,
     outdir: []const u8,
-    reserved: *std.StringHashMap(void),
+    reserved: *std.StringHashMapUnmanaged(void),
     output_count: *usize,
 ) !void {
     const abs_dir = if (rel_dir.len == 0) try allocator.dupe(u8, public_dir) else try std.fs.path.join(allocator, &.{ public_dir, rel_dir });

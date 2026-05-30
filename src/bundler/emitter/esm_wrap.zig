@@ -464,11 +464,11 @@ pub fn emitEsmWrappedModule(
     //   ESM 스펙에 따라 "default"는 제외.
     {
         // star re-export 중복 방지용
-        var direct_exports = std.StringHashMap(void).init(allocator);
-        defer direct_exports.deinit();
+        var direct_exports: std.StringHashMapUnmanaged(void) = .empty;
+        defer direct_exports.deinit(allocator);
         for (module.export_bindings) |eb| {
             if (eb.kind == .local or eb.kind == .re_export) {
-                try direct_exports.put(eb.exported_name, {});
+                try direct_exports.put(allocator, eb.exported_name, {});
             }
         }
 
@@ -488,10 +488,10 @@ pub fn emitEsmWrappedModule(
 
         if (linker) |l| {
             // seen/visited는 루프 밖에서 할당하여 재사용 (export * from이 여러 개일 때 할당 절약)
-            var seen = std.StringHashMap(void).init(allocator);
-            defer seen.deinit();
-            var visited = std.AutoHashMap(u32, void).init(allocator);
-            defer visited.deinit();
+            var seen: std.StringHashMapUnmanaged(void) = .empty;
+            defer seen.deinit(allocator);
+            var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer visited.deinit(allocator);
             var sorted_names: std.ArrayList([]const u8) = .empty;
             defer sorted_names.deinit(allocator);
 
@@ -507,7 +507,7 @@ pub fn emitEsmWrappedModule(
                 if (std.mem.eql(u8, eb.exported_name, "*")) {
                     seen.clearRetainingCapacity();
                     visited.clearRetainingCapacity();
-                    try collectStarExportNames(l, src_i, &seen, &visited);
+                    try collectStarExportNames(allocator, l, src_i, &seen, &visited);
 
                     // hashmap 순회는 비결정 — 사전순 정렬 후 emit 해 namespace getter 출현 순서 결정.
                     sorted_names.clearRetainingCapacity();
@@ -527,7 +527,7 @@ pub fn emitEsmWrappedModule(
                             .name = name,
                             .getter_value = getter_val,
                         });
-                        try direct_exports.put(name, {});
+                        try direct_exports.put(allocator, name, {});
                     }
                 } else {
                     // export * as ns from './dep' → namespace re-export
@@ -546,7 +546,7 @@ pub fn emitEsmWrappedModule(
                             .name = eb.exported_name,
                             .getter_value = getter_val,
                         });
-                        try direct_exports.put(eb.exported_name, {});
+                        try direct_exports.put(allocator, eb.exported_name, {});
                     }
                 }
             }
@@ -900,8 +900,8 @@ pub fn emitEsmWrappedModule(
     defer star_init_buf.deinit(allocator);
     if (linker) |l| {
         // 중복 init 방지 (같은 소스 모듈에 대해 여러 re-export가 있을 수 있음)
-        var re_export_inited = std.AutoHashMap(u32, void).init(allocator);
-        defer re_export_inited.deinit();
+        var re_export_inited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer re_export_inited.deinit(allocator);
 
         for (module.export_bindings) |eb| {
             if (!eb.kind.isReExportAll() and eb.kind != .re_export) continue;
@@ -916,7 +916,7 @@ pub fn emitEsmWrappedModule(
             // dev_mode 등 tree-shaker 미동작 환경은 is_included 비트 신뢰 불가라
             // tree_shaker_active 게이트 (metadata.zig:408,438 동일 정책).
             if (l.tree_shaker_active and !src_mod_ptr.is_included) continue;
-            re_export_inited.put(src_i, {}) catch {};
+            re_export_inited.put(allocator, src_i, {}) catch {};
             if (shouldLazyReExportInit(options, src_mod_ptr)) continue;
 
             try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options, rename_tbl);
@@ -935,7 +935,7 @@ pub fn emitEsmWrappedModule(
             const src_mod = l.graph.getModule(rec.resolved) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
             if (src_mod.wrap_kind != .esm) continue;
-            re_export_inited.put(src_i, {}) catch {};
+            re_export_inited.put(allocator, src_i, {}) catch {};
 
             try appendWrappedInitCall(&star_init_buf, allocator, src_mod, options, rename_tbl);
         }
@@ -1255,20 +1255,21 @@ fn appendExportGetter(
 /// ESM 스펙: export *는 "default"를 제외한 모든 named export를 전파한다.
 /// diamond export * 패턴(A→B,C / B,C→D)에서 무한 재귀를 방지하기 위해 visited로 모듈 추적.
 fn collectStarExportNames(
+    allocator: std.mem.Allocator,
     l: *const Linker,
     mod_idx: u32,
-    seen: *std.StringHashMap(void),
-    visited: *std.AutoHashMap(u32, void),
+    seen: *std.StringHashMapUnmanaged(void),
+    visited: *std.AutoHashMapUnmanaged(u32, void),
 ) !void {
     const m = l.graph.getModule(ModuleIndex.fromUsize(mod_idx)) orelse return;
     if (visited.contains(mod_idx)) return;
-    try visited.put(mod_idx, {});
+    try visited.put(allocator, mod_idx, {});
 
     // 직접 선언된 export 수집 (local + re_export + named re_export_all)
     for (m.export_bindings) |eb| {
         if (eb.kind == .re_export_star) continue;
         if (!seen.contains(eb.exported_name)) {
-            try seen.put(eb.exported_name, {});
+            try seen.put(allocator, eb.exported_name, {});
         }
     }
 
@@ -1280,7 +1281,7 @@ fn collectStarExportNames(
         if (rec_idx >= m.import_records.len) continue;
         const source_mod_idx = m.import_records[rec_idx].resolved;
         if (source_mod_idx.isNone()) continue;
-        try collectStarExportNames(l, @intFromEnum(source_mod_idx), seen, visited);
+        try collectStarExportNames(allocator, l, @intFromEnum(source_mod_idx), seen, visited);
     }
 }
 

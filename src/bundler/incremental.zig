@@ -354,9 +354,9 @@ pub const IncrementalBundler = struct {
         if (old_paths.len != new_paths.len) return false;
 
         // old_paths를 해시셋에 넣고 new_paths 전부가 존재하는지 확인
-        var set = std.StringHashMap(void).init(self.allocator);
-        defer set.deinit();
-        set.ensureTotalCapacity(@intCast(old_paths.len)) catch return false;
+        var set: std.StringHashMapUnmanaged(void) = .empty;
+        defer set.deinit(self.allocator);
+        set.ensureTotalCapacity(self.allocator, @intCast(old_paths.len)) catch return false;
         for (old_paths) |p| {
             set.putAssumeCapacity(p, {});
         }

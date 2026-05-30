@@ -500,12 +500,12 @@ const EntryInfo = struct {
 /// manual chunk 이름을 slot index 로 매핑. 이미 있으면 기존 slot 반환, 없으면 새 slot 생성.
 /// record entries + resolver 동적 결과의 dedup 통합 지점.
 fn ensureNameSlot(
-    name_to_slot: *std.StringHashMap(usize),
+    name_to_slot: *std.StringHashMapUnmanaged(usize),
     effective_names: *std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
     name: []const u8,
 ) !usize {
-    const gop = try name_to_slot.getOrPut(name);
+    const gop = try name_to_slot.getOrPut(allocator, name);
     if (!gop.found_existing) {
         gop.value_ptr.* = effective_names.items.len;
         try effective_names.append(allocator, name);
@@ -705,8 +705,8 @@ pub fn generateChunks(
     // 결과를 순서대로 병합. resolver 가 반환한 name 이 record 와 겹치면 동일 slot.
     var effective_names: std.ArrayList([]const u8) = .empty;
     defer effective_names.deinit(allocator);
-    var name_to_slot = std.StringHashMap(usize).init(allocator);
-    defer name_to_slot.deinit();
+    var name_to_slot: std.StringHashMapUnmanaged(usize) = .empty;
+    defer name_to_slot.deinit(allocator);
     for (manual_chunks) |mc| {
         _ = try ensureNameSlot(&name_to_slot, &effective_names, allocator, mc.name);
     }

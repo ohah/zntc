@@ -154,8 +154,8 @@ pub fn checkPrivateNameStaticConflict(
 
     // private name → (is_static, span) 매핑
     // 같은 이름이 다른 static 상태로 등장하면 에러
-    var declared = std.StringHashMap(PrivateStaticEntry).init(allocator);
-    defer declared.deinit();
+    var declared: std.StringHashMapUnmanaged(PrivateStaticEntry) = .empty;
+    defer declared.deinit(allocator);
 
     for (indices) |raw_idx| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
@@ -197,7 +197,7 @@ fn checkPrivateKeyStaticConflict(
     ast: *const Ast,
     key_idx: NodeIndex,
     is_static: bool,
-    declared: *std.StringHashMap(PrivateStaticEntry),
+    declared: *std.StringHashMapUnmanaged(PrivateStaticEntry),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
@@ -214,7 +214,7 @@ fn checkPrivateKeyStaticConflict(
             try addErrorCodeWithPrevious(errors, allocator, key_node.span, msg, .private_redeclared, existing.span);
         }
     } else {
-        try declared.put(name, .{ .is_static = is_static, .span = key_node.span });
+        try declared.put(allocator, name, .{ .is_static = is_static, .span = key_node.span });
     }
 }
 
@@ -333,8 +333,8 @@ pub fn checkDuplicateParams(
     if (params.start + params.len > ast.extra_data.items.len) return;
 
     // 파라미터 이름 → 첫 선언 위치 매핑
-    var seen = std.StringHashMap(Span).init(allocator);
-    defer seen.deinit();
+    var seen: std.StringHashMapUnmanaged(Span) = .empty;
+    defer seen.deinit(allocator);
 
     const param_indices = ast.extra_data.items[params.start .. params.start + params.len];
     for (param_indices) |raw_idx| {
@@ -346,7 +346,7 @@ pub fn checkDuplicateParams(
 fn recordSeenName(
     name: []const u8,
     span: Span,
-    seen: *std.StringHashMap(Span),
+    seen: *std.StringHashMapUnmanaged(Span),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
@@ -354,7 +354,7 @@ fn recordSeenName(
         const msg = try std.fmt.allocPrint(allocator, "Duplicate parameter name '{s}'", .{name});
         try addErrorCodeWithPrevious(errors, allocator, span, msg, .duplicate_parameter, previous_span);
     } else {
-        try seen.put(name, span);
+        try seen.put(allocator, name, span);
     }
 }
 
@@ -366,7 +366,7 @@ fn recordSeenName(
 fn collectBindingNames(
     ast: *const Ast,
     idx: NodeIndex,
-    seen: *std.StringHashMap(Span),
+    seen: *std.StringHashMapUnmanaged(Span),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
@@ -395,8 +395,8 @@ pub fn checkDuplicateArrowParams(
     if (node.tag == .binding_identifier or node.tag == .identifier_reference or node.tag == .assignment_target_identifier) return;
     if (node.tag == .formal_parameters and node.data.list.len <= 1) return;
 
-    var seen = std.StringHashMap(Span).init(allocator);
-    defer seen.deinit();
+    var seen: std.StringHashMapUnmanaged(Span) = .empty;
+    defer seen.deinit(allocator);
 
     try collectArrowParamNames(ast, param_idx, &seen, errors, allocator);
 }
@@ -405,7 +405,7 @@ pub fn checkDuplicateArrowParams(
 fn collectArrowParamNames(
     ast: *const Ast,
     idx: NodeIndex,
-    seen: *std.StringHashMap(Span),
+    seen: *std.StringHashMapUnmanaged(Span),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
