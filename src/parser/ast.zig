@@ -1837,6 +1837,13 @@ pub const FormalParameterExtra = struct {
 pub const CallFlags = struct {
     pub const is_pure: u32 = 0x01; // @__PURE__ / #__PURE__
     pub const optional_chain: u32 = 0x02; // a?.()
+    /// new_expression 전용: 인자 절(괄호)이 있었는가. `new a()` (= `new MemberExpression
+    /// Arguments`, MemberExpression) 면 set, `new a`/`new new a()` 의 바깥 new (= NewExpression)
+    /// 면 unset. trailing optional chain(`new ...?.x`)의 base 체인 head 가 인자 없는 new 면
+    /// SyntaxError — ECMAScript 상 OptionalChain base 는 MemberExpression/CallExpression 만 가능.
+    /// parse-time 전용(finishNewExpressionWithArgs set, optionalChainBaseIsArglessNew read);
+    /// codegen/transformer 는 미사용.
+    pub const had_arguments: u32 = 0x04;
 };
 
 /// static_member_expression / computed_member_expression / private_field_expression의 flags (D082).
