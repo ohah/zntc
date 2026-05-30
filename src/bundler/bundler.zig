@@ -144,6 +144,10 @@ pub const BundleOptions = struct {
     /// dev mode: 각 모듈을 __zntc_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
+    /// Lazy compilation (dev 전용, 온디맨드 청크 컴파일) — 브라우저가 실제로 요청하는
+    /// 청크만 transform/codegen/emit 한다. `dev_mode + code_splitting` 조합 위에서 동작.
+    /// 현재는 스캐폴딩(미소비) — 동작은 RFC `docs/RFC_LAZY_COMPILATION.md` 의 PR-2~ 에서 추가.
+    lazy_compilation: bool = false,
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.

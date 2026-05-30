@@ -185,6 +185,9 @@ pub const DevServer = struct {
         /// quiet 가드되는 카테고리 전체 리스트는 `DevServer.routineLog` doc 의
         /// CANONICAL SCOPE LIST 참조 (단일 진실 소스).
         quiet: bool = false,
+        /// Lazy compilation — 브라우저가 요청하는 청크만 온디맨드로 컴파일해 dev cold-start 단축.
+        /// 현재는 스캐폴딩(미소비). 동작은 RFC `docs/RFC_LAZY_COMPILATION.md` 의 PR-2~ 에서 추가.
+        lazy_compilation: bool = false,
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
