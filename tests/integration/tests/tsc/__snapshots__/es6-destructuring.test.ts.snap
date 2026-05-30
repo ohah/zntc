@@ -641,7 +641,7 @@ exports[`TSC: es6/destructuring destructuringObjectBindingPatternAndAssignment5 
 "function a() {
 	let x;
 	let y;
-	({ x, ...y } = {});
+	({ x, ...y } = ({}));
 }
 "
 `;

@@ -160,6 +160,95 @@ pub fn unwrapTransparentWrappersAst(ast: *const @import("../parser/ast.zig").Ast
     }
 }
 
+/// member/call spine 을 따라가며 optional chain(`?.`)이 하나라도 있으면 true.
+/// transparent **타입** 래퍼(as/satisfies/non-null/type-assertion/flow/instantiation)는 통과하지만
+/// 괄호(parenthesized_expression)는 통과하지 않고 거기서 멈춘다 — 괄호는 이미 체인을 끊으므로
+/// 그 안쪽 optional 은 바깥 괄호의 보존 여부와 무관하기 때문.
+///
+/// 용도: `(a?.b as T).c` / flow `(a?.b: T).c` 처럼 codegen 이 타입 래퍼를 벗기며 (래퍼가 감싼)
+/// 괄호를 떼려 할 때, 그 괄호가 optional chain 을 *끊는* 의미를 갖는지 판정한다. true 면 괄호를
+/// 유지해야 한다(안 그러면 `(a?.b).c`(nullish 면 `.c` 에서 throw)가 `a?.b.c`(short-circuit)로
+/// 의미가 바뀌고, tagged template 은 `a?.b`x`` 라는 invalid 출력이 된다).
+///
+/// es2020.findOptionalChainBase 와 달리 mid-spine 타입 래퍼(`a?.b!.c` 의 `!`)를 통과한다 —
+/// 그쪽은 lowering 용이라 타입 래퍼에서 멈춰 여기엔 부적합.
+pub fn spineHasOptionalChainThroughTypeWrappers(ast: *const @import("../parser/ast.zig").Ast, idx: NodeIndex) bool {
+    const extras = ast.extra_data.items;
+    var cur = idx;
+    var guard: u32 = 0;
+    while (guard < 100_000) : (guard += 1) {
+        if (cur.isNone()) return false;
+        const n = ast.getNode(cur);
+        // 타입 래퍼는 spine 을 끊지 않으므로 통과 (SSoT: isTransparentTypeWrapper, 괄호는 제외).
+        if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
+            cur = n.data.unary.operand;
+            continue;
+        }
+        switch (n.tag) {
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                const e = n.data.extra;
+                if (e + 2 < extras.len and (extras[e + 2] & ast_mod.MemberFlags.optional_chain) != 0) return true;
+                cur = @enumFromInt(extras[e]); // object
+            },
+            .call_expression => {
+                const e = n.data.extra;
+                if (e + 3 < extras.len and (extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0) return true;
+                cur = @enumFromInt(extras[e]); // callee
+            },
+            else => return false, // identifier / parenthesized_expression(체인 끊김) / 기타 head
+        }
+    }
+    return false;
+}
+
+/// transparent 타입 래퍼(TS as/satisfies/non-null/`<T>`, Flow as/colon-cast)를 벗기며 그 래퍼가
+/// (흡수했거나 감싼) 괄호를 떼려 할 때, operand 가 단독으로 나와도 안전한지 판정한다.
+/// codegen 은 paren-node 기반(명시적 괄호 노드만 출력, 연산자 우선순위로 재유도 안 함)이라
+/// load-bearing 괄호를 떼면 의미가 바뀐다. 안전한 primary/postfix 면 false(괄호 제거 = babel 동형
+/// 최소 출력), 아니면 true(보존). 괄호는 idempotent(우선순위만 높임)라 과보존은 항상 안전 →
+/// "안전한 것만 화이트리스트, 모르는 건 보존" 방향. 선행 타입 래퍼는 통과해 실 operand 로 판정한다.
+/// Flow colon-cast(괄호 흡수)·TS `<T>(expr)`(괄호 unwrap)·node_dispatch 의 `(X as T)` paren 핸들러 공용.
+pub fn castOperandNeedsParen(ast: *const @import("../parser/ast.zig").Ast, operand: NodeIndex) bool {
+    if (operand.isNone()) return false;
+    // 선행 타입 래퍼 통과(`(a as U as T)` 의 a, `(X as T)` 의 X 까지) — whitelist 는 실 operand 기준.
+    var op = operand;
+    var guard: u32 = 0;
+    while (guard < 100_000) : (guard += 1) {
+        if (op.isNone()) return false;
+        if (!ast_mod.Node.Tag.isTransparentTypeWrapper(ast.getNode(op).tag)) break;
+        op = ast.getNode(op).data.unary.operand;
+    }
+    // optional chain 은 괄호가 체인을 *끊는* 의미 → 보존 (member/call optional, mid-spine `!` 포함).
+    if (spineHasOptionalChainThroughTypeWrappers(ast, op)) return true;
+    return switch (ast.getNode(op).tag) {
+        // 단독으로 안전한 primary/postfix — 괄호 불필요(`(obj: T)`→`obj`, `(a.b: T).c`→`a.b.c`).
+        // member/call 은 위 optional 체크가 false 였으니 non-optional → postfix 로 안전.
+        // bigint 은 `n` 접미사가 리터럴을 끝내 `42n.x` 가 유효(numeric 과 달리 안전).
+        .identifier_reference,
+        .this_expression,
+        .super_expression,
+        .boolean_literal,
+        .null_literal,
+        .string_literal,
+        .regexp_literal,
+        .bigint_literal,
+        .template_literal,
+        .array_expression,
+        .tagged_template_expression,
+        .parenthesized_expression,
+        .static_member_expression,
+        .computed_member_expression,
+        .private_field_expression,
+        .call_expression,
+        => false,
+        // numeric_literal 제외: 정수 뒤 멤버(`(42: T).x` → `42.x`)가 float 로 오파싱돼 invalid
+        // (codegen 이 number-then-dot 공백을 안 넣으므로 여기서 괄호 보존). 그 외(binary/logical/
+        // conditional/assignment/sequence/arrow/function/class/object/unary/yield/await/new/update/
+        // spread …)는 precedence·statement-start(`({x:1} as T).c`) 상 괄호가 필요할 수 있어 보존.
+        else => true,
+    };
+}
+
 /// `computed_property_key(identifier_reference(var_span))` 노드 생성.
 /// 임시 변수에 캡쳐된 computed key 식을 다시 key 위치로 참조할 때 사용 (#1511, static field key memoization).
 pub fn makeComputedKeyRef(self: anytype, var_span: Span, span: Span) !NodeIndex {

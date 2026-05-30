@@ -1684,13 +1684,13 @@ var x = \`123\${\`456 \${" | "} 654\`}321 123\${\`456 \${" | "} 654\`}321\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeAssertionOnAddition 1`] = `
 "// @target: es2015
-var x = \`abc\${10 + 10}def\`;
+var x = \`abc\${(10 + 10)}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeAssertionOnAdditionES6 1`] = `
 "// @target: ES6
-var x = \`abc\${10 + 10}def\`;
+var x = \`abc\${(10 + 10)}def\`;
 "
 `;
 

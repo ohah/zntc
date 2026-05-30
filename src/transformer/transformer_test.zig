@@ -1396,6 +1396,172 @@ test "block scoping: optional chain property names are not lexical references" {
     try std.testing.expect(std.mem.indexOf(u8, code, "prototype$") != null);
 }
 
+test "codegen: 타입 래퍼로 감싼 optional chain 의 괄호는 체인을 끊으므로 보존 ((a?.b as T).c)" {
+    // ECMAScript: `(a?.b).c` 는 a 가 nullish 면 `.c` 에서 throw 인데 `a?.b.c` 는 전체
+    // short-circuit → undefined. 타입 래퍼(as/satisfies/non-null/type-assertion/flow)를
+    // 벗길 때 괄호까지 떼면 optional chain 이 이어져 의미가 바뀐다(silent miscompile). 또
+    // `(a?.b as T)`x`` 는 괄호를 떼면 `a?.b`x`` 라는 우리 파서마저 거부하는 출력이 된다.
+    // 따라서 래퍼 안쪽이 optional chain 이면 괄호를 유지한 채 타입만 스트립한다.
+    const Case = struct { src: []const u8, want: []const u8 };
+    const cases = [_]Case{
+        .{ .src = "(a?.b as any).c;", .want = "(a?.b).c" },
+        .{ .src = "(a?.b satisfies any).c;", .want = "(a?.b).c" },
+        .{ .src = "(a?.b!).c;", .want = "(a?.b).c" },
+        .{ .src = "(a?.b as any)`x`;", .want = "(a?.b)`x`" },
+        .{ .src = "(a?.b as any)();", .want = "(a?.b)()" },
+        .{ .src = "(a?.b as any)[c];", .want = "(a?.b)[c]" },
+        .{ .src = "(a?.b.c as any).d;", .want = "(a?.b.c).d" },
+        .{ .src = "(a.b?.c as any).d;", .want = "(a.b?.c).d" },
+        .{ .src = "(a?.() as any).c;", .want = "(a?.()).c" },
+        // mid-spine `!`(TS non-null)도 체인을 끊지 않으므로 spine 을 통과해 optional 검출.
+        .{ .src = "(a?.b!.c as any).d;", .want = "(a?.b.c).d" },
+        .{ .src = "(a?.b!() as any).c;", .want = "(a?.b()).c" },
+        .{ .src = "(a?.b![k] as any).c;", .want = "(a?.b[k]).c" },
+        .{ .src = "(a?.b!.c! as any).d;", .want = "(a?.b.c).d" },
+    };
+    for (cases) |c| {
+        var r = try parseAndTransform(std.testing.allocator, c.src);
+        defer r.deinit();
+        const code = try generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.want) != null);
+    }
+}
+
+test "codegen: optional chain 이 아닌 타입 래퍼 괄호는 종전처럼 제거 ((a.b as T).c → a.b.c)" {
+    // 괄호 유지는 optional chain 일 때만. 일반 멤버/호출은 괄호가 의미 없으므로 제거 유지
+    // (esbuild parity). `(a?.b).c`(paren 으로 이미 끊긴 체인) 도 .c 가 비-optional 이라 제거 OK.
+    const Case = struct { src: []const u8, want: []const u8, deny: []const u8 };
+    const cases = [_]Case{
+        .{ .src = "(a.b as any).c;", .want = "a.b.c", .deny = "(a.b)" },
+        .{ .src = "(f() as any).c;", .want = "f().c", .deny = "(f())" },
+        .{ .src = "((a?.b).c as any).d;", .want = "(a?.b).c.d", .deny = "(a?.b).c).d" },
+        // optional 이 computed key / call 인자 안이면 spine 이 아니므로 괄호 제거 (false-positive 가드).
+        .{ .src = "(a[b?.c] as any).d;", .want = "a[b?.c].d", .deny = "(a[" },
+        .{ .src = "(f(a?.b) as any).c;", .want = "f(a?.b).c", .deny = "(f(" },
+        // 래퍼가 감싼 *소스* 괄호(`((a?.b) as T).c`)는 그 안쪽 괄호가 이미 체인을 끊으므로
+        // 바깥 타입-래퍼 괄호를 새로 만들지 않는다 — 이중 괄호 `((a?.b)).c` 금지.
+        .{ .src = "((a?.b) as any).c;", .want = "(a?.b).c", .deny = "((a?.b)).c" },
+        .{ .src = "((a?.b)! as any).c;", .want = "(a?.b).c", .deny = "((a?.b)).c" },
+    };
+    for (cases) |c| {
+        var r = try parseAndTransform(std.testing.allocator, c.src);
+        defer r.deinit();
+        const code = try generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.want) != null);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.deny) == null);
+    }
+}
+
+test "codegen: TS `(X as T)` 괄호 — numeric/statement-start/arrow 등 load-bearing 보존" {
+    // node_dispatch paren 핸들러도 castOperandNeedsParen 공용. optional chain 외에:
+    //   - numeric: `(42 as T).x` → `(42).x` (`42.x` 는 float 오파싱 invalid)
+    //   - statement-start: `({x:1} as T).c` → `({x:1}).c` (`{x:1}.c` 는 블록 오파싱)
+    //   - arrow/function callee: `(function(){} as T)()` 등
+    const Keep = struct { src: []const u8, want: []const u8 };
+    const keep = [_]Keep{
+        .{ .src = "(42 as number).toFixed(2);", .want = "(42).toFixed(2)" },
+        .{ .src = "(255 as number).toString(16);", .want = "(255).toString(16)" },
+        .{ .src = "({x:1} as any).c;", .want = "({ x: 1 }).c" },
+        .{ .src = "(function(){} as any)();", .want = "(function() {" },
+        .{ .src = "(<any>42).x;", .want = "(42).x" },
+    };
+    for (keep) |c| {
+        var r = try parseAndTransform(std.testing.allocator, c.src);
+        defer r.deinit();
+        const code = try generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.want) != null);
+    }
+    // bigint 은 `n` 접미사가 리터럴을 끝내 `42n.x` 가 유효 → 괄호 제거(최소).
+    var r = try parseAndTransform(std.testing.allocator, "(42n as any).x;");
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "42n.x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "(42n)") == null);
+}
+
+test "codegen: Flow colon-cast `(expr: T)` 는 load-bearing 괄호만 보존 (paren absorb 경로)" {
+    // Flow `(expr: T)` 는 괄호를 노드에 흡수한 단일 flow_type_cast_expression 이라 paren 핸들러를
+    // 우회한다. codegen 은 paren-node 기반이라 우선순위로 괄호를 재유도하지 않으므로,
+    // visitTsExpression 에서 operand 가 load-bearing 이면(precedence/optional-chain/statement-start/
+    // numeric-then-dot) paren 노드를 합성해 보존하고, 안전한 primary/postfix 면 제거(최소 출력).
+    const Case = struct { src: []const u8, want: []const u8 };
+    const keep = [_]Case{
+        // optional chain (괄호가 체인을 끊음)
+        .{ .src = "// @flow\n(a?.b: any).c;", .want = "(a?.b).c" },
+        .{ .src = "// @flow\n(a?.b: any)`x`;", .want = "(a?.b)`x`" },
+        .{ .src = "// @flow\n(a?.b!.c: any).d;", .want = "(a?.b.c).d" }, // mid-spine `!`
+        .{ .src = "// @flow\n(a?.b(): any).c;", .want = "(a?.b()).c" },
+        // operator precedence
+        .{ .src = "// @flow\n(a + b: any) * c;", .want = "(a + b) * c" },
+        .{ .src = "// @flow\n(a || b: any) && c;", .want = "(a || b) && c" },
+        .{ .src = "// @flow\n(c ? x : y: any).z;", .want = "(c ? x : y).z" },
+        // statement-start 모호성 (object literal / new)
+        .{ .src = "// @flow\n({x:1}: any).c;", .want = "({ x: 1 }).c" },
+        .{ .src = "// @flow\n(new C: any).x;", .want = "(new C()).x" },
+        // numeric-then-dot: `42.x` 는 float 오파싱 → invalid. 괄호 보존.
+        .{ .src = "// @flow\n(42: any).x;", .want = "(42).x" },
+    };
+    for (keep) |c| {
+        var r = try parseAndTransform(std.testing.allocator, c.src);
+        defer r.deinit();
+        const code = try generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.want) != null);
+    }
+    // 안전한 primary/postfix 는 괄호 제거(최소 출력, babel 동형).
+    const DropCase = struct { src: []const u8, want: []const u8, deny: []const u8 };
+    const drop = [_]DropCase{
+        .{ .src = "// @flow\n(a.b: any).c;", .want = "a.b.c", .deny = "(a.b)" },
+        .{ .src = "// @flow\n(f(): any).c;", .want = "f().c", .deny = "(f())" },
+        .{ .src = "// @flow\nlet x = (obj: any);", .want = "let x = obj", .deny = "(obj)" },
+        .{ .src = "// @flow\n(\"s\": any).length;", .want = "\"s\".length", .deny = "(\"s\")" },
+    };
+    for (drop) |c| {
+        var r = try parseAndTransform(std.testing.allocator, c.src);
+        defer r.deinit();
+        const code = try generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.want) != null);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.deny) == null);
+    }
+    // 중첩 Flow colon-cast 는 레벨마다 괄호를 쌓지 않는다 — `((a?.b: U): T).c` → `(a?.b).c` 단일.
+    var nr = try parseAndTransform(std.testing.allocator, "// @flow\n((a?.b: U): T).c;");
+    defer nr.deinit();
+    const ncode = try generateCode(&nr);
+    defer std.testing.allocator.free(ncode);
+    try std.testing.expect(std.mem.indexOf(u8, ncode, "(a?.b).c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ncode, "((a?.b)).c") == null);
+}
+
+test "codegen: TS `<T>(expr)` prefix-assertion 도 load-bearing 괄호만 제거" {
+    // `<T>(x)` 특수케이스는 x 가 안전하면 괄호까지 제거(`<T>(obj)`→`obj`). load-bearing 이면
+    // 괄호 유지 — 아니면 `<T>(a+b)*c`→`a+b*c`(precedence), `<T>(a?.b).c`→`a?.b.c`(chain) miscompile.
+    const Keep = struct { src: []const u8, want: []const u8 };
+    const keep = [_]Keep{
+        .{ .src = "<T>(a + b) * c;", .want = "(a + b) * c" },
+        .{ .src = "(<T>(a?.b)).c;", .want = "(a?.b).c" },
+        .{ .src = "<T>(a, b);", .want = "(a,b)" }, // sequence
+    };
+    for (keep) |c| {
+        var r = try parseAndTransform(std.testing.allocator, c.src);
+        defer r.deinit();
+        const code = try generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, c.want) != null);
+    }
+    // 안전한 operand 는 괄호 제거(최소).
+    var r = try parseAndTransform(std.testing.allocator, "let x = <T>(obj);");
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let x = obj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "(obj)") == null);
+}
+
 test "block scoping: super member property names are not lexical references" {
     // `super.foo` 도 `static_member_expression` 이고 left 가 super_expression.
     // outer `value` 와 method body 의 inner `value` 가 shadow 될 때 inner

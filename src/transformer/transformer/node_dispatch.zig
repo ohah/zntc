@@ -219,7 +219,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .spread_element,
         => self.visitUnaryNode(idx),
         .parenthesized_expression => {
-            // (expr as T) → expr: TS expression이면 괄호 불필요
+            // (expr as T) → expr: 타입 래퍼는 noop 이라 보통 괄호가 불필요.
             const inner = node.data.unary.operand;
             if (!inner.isNone()) {
                 const inner_tag = self.ast.getNode(inner).tag;
@@ -230,6 +230,16 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     inner_tag == .flow_as_expression or
                     inner_tag == .flow_type_cast_expression)
                 {
+                    // 단, 타입 래퍼 안쪽 operand 가 load-bearing 이면 괄호를 떼면 의미가 바뀐다:
+                    //   - optional chain: `(a?.b as T).c` 는 `(a?.b).c`(nullish 면 throw) ≠ `a?.b.c`
+                    //   - numeric: `(42 as T).x` 는 `(42).x` — `42.x` 는 float 오파싱 invalid
+                    //   - statement-start: `({x:1} as T).c` 는 `({x:1}).c` — `{x:1}.c` 는 블록 오파싱
+                    //   - arrow 등 저우선순위 callee: `(()=>{} as T)()` 등
+                    // castOperandNeedsParen 이 true 면 괄호 유지(visitUnaryNode 가 `(`+visitNode(inner)+`)`,
+                    // visitNode 가 래퍼를 벗겨 `(a?.b)`/`(42)` 산출). 안전한 primary/postfix 면 제거(최소).
+                    if (es_helpers.castOperandNeedsParen(self.ast, inner)) {
+                        return self.visitUnaryNode(idx);
+                    }
                     return self.visitNode(inner);
                 }
             }
