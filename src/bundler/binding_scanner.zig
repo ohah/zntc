@@ -167,11 +167,11 @@ pub fn extractImportBindings(
     errdefer bindings.deinit(allocator);
 
     // import source span → import_record 인덱스 매핑
-    var source_to_record = std.AutoHashMap(u64, u32).init(allocator);
-    defer source_to_record.deinit();
+    var source_to_record: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+    defer source_to_record.deinit(allocator);
     for (import_records, 0..) |rec, i| {
         const key = types.spanKey(rec.span);
-        try source_to_record.put(key, @intCast(i));
+        try source_to_record.put(allocator, key, @intCast(i));
     }
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
@@ -281,11 +281,11 @@ pub fn extractExportBindings(
     errdefer bindings.deinit(allocator);
 
     // import source span → import_record 인덱스 매핑 (re-export용)
-    var source_to_record = std.AutoHashMap(u64, u32).init(allocator);
-    defer source_to_record.deinit();
+    var source_to_record: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+    defer source_to_record.deinit(allocator);
     for (import_records, 0..) |rec, i| {
         const key = types.spanKey(rec.span);
-        try source_to_record.put(key, @intCast(i));
+        try source_to_record.put(allocator, key, @intCast(i));
     }
 
     // import local_name → ImportBinding 매핑 (barrel re-export O(1) 조회)
@@ -656,7 +656,7 @@ pub fn populateSyntheticSymbols(
     /// 모듈 top-level scope (scope_maps[0]). 일반 .local export의 eb.symbol을
     /// scope_maps에서 lookup해 미리 채우는 데 사용. null이면 skip — linker가
     /// 후속 패스에서 fallback 처리.
-    module_scope: ?std.StringHashMap(usize),
+    module_scope: ?std.StringHashMapUnmanaged(usize),
 ) !void {
     for (export_bindings) |*eb| {
         // codegen이 `_default = <expr>` 할당을 emit하는 export만 synthetic_default 등록.

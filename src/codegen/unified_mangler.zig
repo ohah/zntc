@@ -43,7 +43,7 @@ pub const ImportRef = struct {
 pub const ModuleMangleInput = struct {
     scopes: []const Scope,
     symbols: []const Symbol,
-    scope_maps: []const std.StringHashMap(usize),
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
     references: []const Reference,
     source: []const u8,
     /// scope_maps[0] 의 모든 symbol_id 를 담은 BitSet. `mangle` 이 skip_symbols
@@ -90,7 +90,7 @@ pub const UnifiedMangleInput = struct {
 };
 
 pub const UnifiedMangleResult = struct {
-    renames: std.AutoHashMap(ModuleSymKey, []const u8),
+    renames: std.AutoHashMapUnmanaged(ModuleSymKey, []const u8) = .empty,
     allocator: std.mem.Allocator,
     phase_a: mangler.ManglerStats = .{},
     phase_b_modules: []mangler.ManglerStats = &.{},
@@ -98,7 +98,7 @@ pub const UnifiedMangleResult = struct {
     pub fn deinit(self: *UnifiedMangleResult) void {
         var it = self.renames.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
-        self.renames.deinit();
+        self.renames.deinit(self.allocator);
         self.allocator.free(self.phase_b_modules);
     }
 };
@@ -109,16 +109,16 @@ pub fn mangleAll(
     allocator: std.mem.Allocator,
     input: UnifiedMangleInput,
 ) !UnifiedMangleResult {
-    var renames: std.AutoHashMap(ModuleSymKey, []const u8) = .init(allocator);
+    var renames: std.AutoHashMapUnmanaged(ModuleSymKey, []const u8) = .empty;
     errdefer {
         var vit = renames.valueIterator();
         while (vit.next()) |v| allocator.free(v.*);
-        renames.deinit();
+        renames.deinit(allocator);
     }
 
-    var reserved: std.StringHashMap(void) = .init(allocator);
-    defer reserved.deinit();
-    for (input.global_reserved) |r| try reserved.put(r, {});
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(allocator);
+    for (input.global_reserved) |r| try reserved.put(allocator, r, {});
 
     // ================================================================
     // Phase A — cross-module frequency
@@ -149,10 +149,10 @@ pub fn mangleAll(
     // init pass 와 seed pass 를 분리 — `StringHashMap.init` 자체는 fail 하지 않으므로
     // 두 번째 seed loop 의 `put` 이 OOM 해도 모든 entries 가 이미 init 되어 defer 의
     // `deinit` 이 안전하게 실행된다 (uninit deinit UB 없음).
-    var per_mod_reserved = try allocator.alloc(std.StringHashMap(void), input.modules.len);
-    for (per_mod_reserved) |*s| s.* = std.StringHashMap(void).init(allocator);
+    var per_mod_reserved = try allocator.alloc(std.StringHashMapUnmanaged(void), input.modules.len);
+    for (per_mod_reserved) |*s| s.* = .empty;
     defer {
-        for (per_mod_reserved) |*s| s.deinit();
+        for (per_mod_reserved) |*s| s.deinit(allocator);
         allocator.free(per_mod_reserved);
     }
     // K2-perf (#46): global_reserved (runtime helper 등) 는 모든 모듈에 동일하므로 N×G
@@ -160,9 +160,9 @@ pub fn mangleAll(
     // `external_reserved_global` 인자로 borrow 로 share. lookup 시 internal/per_mod 와
     // 함께 검사된다 (`nextNonReservedBase54NameTwo`). per_mod_reserved 는 이제 *Phase A
     // mangled this-module names + cross-module imports* 만 보유 — 일반적으로 작음.
-    var global_reserved_set: std.StringHashMap(void) = .init(allocator);
-    defer global_reserved_set.deinit();
-    try global_reserved_set.ensureUnusedCapacity(@intCast(input.global_reserved.len));
+    var global_reserved_set: std.StringHashMapUnmanaged(void) = .empty;
+    defer global_reserved_set.deinit(allocator);
+    try global_reserved_set.ensureUnusedCapacity(allocator, @intCast(input.global_reserved.len));
     for (input.global_reserved) |r| global_reserved_set.putAssumeCapacity(r, {});
 
     // J-step2a (RFC #3288): cross-module ref 인 candidate 분류 — 진단 전용.
@@ -219,14 +219,14 @@ pub fn mangleAll(
         if (!std.mem.eql(u8, cand.name, new_name)) {
             const duped = try allocator.dupe(u8, new_name);
             errdefer allocator.free(duped);
-            try renames.put(.{ .module_index = cand.module_index, .symbol_id = cand.symbol_id }, duped);
-            try reserved.put(duped, {});
-            if (has_mod_slot) try per_mod_reserved[cand.module_index].put(duped, {});
+            try renames.put(allocator, .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id }, duped);
+            try reserved.put(allocator, duped, {});
+            if (has_mod_slot) try per_mod_reserved[cand.module_index].put(allocator, duped, {});
             phase_a_renamed += 1;
         } else {
             // 원본과 동일해도 다음 Phase A 후보가 같은 이름을 집지 못하도록 reserved.
-            try reserved.put(cand.name, {});
-            if (has_mod_slot) try per_mod_reserved[cand.module_index].put(cand.name, {});
+            try reserved.put(allocator, cand.name, {});
+            if (has_mod_slot) try per_mod_reserved[cand.module_index].put(allocator, cand.name, {});
         }
     }
 
@@ -237,7 +237,7 @@ pub fn mangleAll(
         for (m.cross_module_imports) |ref| {
             const key: ModuleSymKey = .{ .module_index = ref.source_module_index, .symbol_id = ref.source_symbol_id };
             if (renames.get(key)) |mangled| {
-                try per_mod_reserved[mi].put(mangled, {});
+                try per_mod_reserved[mi].put(allocator, mangled, {});
             }
         }
     }
@@ -283,9 +283,9 @@ pub fn mangleAll(
         errdefer {
             var eit = take.iterator();
             while (eit.next()) |e| allocator.free(e.value_ptr.*);
-            take.deinit();
+            take.deinit(allocator);
         }
-        try renames.ensureUnusedCapacity(take_count);
+        try renames.ensureUnusedCapacity(allocator, take_count);
 
         var it = take.iterator();
         const mod_idx: u32 = @intCast(i);
@@ -309,7 +309,7 @@ pub fn mangleAll(
             const key: ModuleSymKey = .{ .module_index = mod_idx, .symbol_id = entry.key_ptr.* };
             renames.putAssumeCapacity(key, entry.value_ptr.*);
         }
-        take.deinit();
+        take.deinit(allocator);
     }
 
     if (debug_log.enabled(.mangle_audit)) {
@@ -425,7 +425,7 @@ test "mangleAll: Phase B loop runs with empty module (counter carried through)" 
     // 할당되며, counter 가 Phase A 값부터 출발하는지 검증. 실제 mangler.mangle
     // 은 scope_count=0 에서 early-return 하므로 rename 없음 — 이 테스트의 목적은
     // "Phase B 경로가 컴파일/실행되고 result 구조가 올바른지" 다.
-    const empty_scope_maps: []const std.StringHashMap(usize) = &.{};
+    const empty_scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{};
     var bitset = try std.DynamicBitSet.initEmpty(std.testing.allocator, 0);
     defer bitset.deinit();
 

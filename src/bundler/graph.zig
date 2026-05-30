@@ -83,7 +83,7 @@ pub const ModuleGraph = struct {
     /// 않아서 worker race-safety 를 보장한다 (#1779 PR #3). prealloc=0 은 전량
     /// heap chunk — Module 이 수백 바이트라 stack pre-alloc 비효율.
     modules: ModuleList = .{},
-    path_to_module: std.StringHashMap(ModuleIndex),
+    path_to_module: std.StringHashMapUnmanaged(ModuleIndex) = .empty,
     requested_exports: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty,
     requested_exports_mutex: spin.SpinLock = .{},
     diagnostics: std.ArrayList(BundlerDiagnostic),

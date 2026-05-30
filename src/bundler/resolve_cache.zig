@@ -182,7 +182,7 @@ pub const ResolveCache = struct {
 
     /// 패키지 디렉토리별 browser 필드 override 캐시 (disabled + string remap).
     /// pkg_dir_path → BrowserOverrides (null 이면 browser 필드 없음).
-    browser_overrides_cache: std.StringHashMap(?BrowserOverrides),
+    browser_overrides_cache: std.StringHashMapUnmanaged(?BrowserOverrides) = .empty,
     /// `browser_overrides_cache` 접근 보호 — `getBareModuleOverride` 는 어떤 락도 안 쥐고
     /// 호출되므로(`resolveInner` 의 pre-resolve 분기) 두 worker 가 같은 패키지를 처음
     /// 만나면 `.put` 이 동시에 일어나 HashMap 이 깨질 수 있다.
@@ -194,7 +194,7 @@ pub const ResolveCache = struct {
 
     const CacheShard = struct {
         mutex: spin.SpinLock = .{},
-        map: std.StringHashMap(CachedResult),
+        map: std.StringHashMapUnmanaged(CachedResult) = .empty,
     };
 
     fn cacheShardFor(self: *ResolveCache, cache_key: []const u8) *CacheShard {
@@ -207,24 +207,24 @@ pub const ResolveCache = struct {
     /// module_*: 키가 bare name ("fs", "module-a") — specifier 직접 매칭, resolve 전.
     /// [spec: package-browser-field-spec] (#1530).
     const BrowserOverrides = struct {
-        path_disabled: std.StringHashMap(void),
-        path_remap: std.StringHashMap([]const u8),
-        module_disabled: std.StringHashMap(void),
-        module_remap: std.StringHashMap([]const u8),
+        path_disabled: std.StringHashMapUnmanaged(void) = .empty,
+        path_remap: std.StringHashMapUnmanaged([]const u8) = .empty,
+        module_disabled: std.StringHashMapUnmanaged(void) = .empty,
+        module_remap: std.StringHashMapUnmanaged([]const u8) = .empty,
 
         fn deinit(self: *BrowserOverrides, allocator: std.mem.Allocator) void {
-            inline for (&[_]*std.StringHashMap(void){ &self.path_disabled, &self.module_disabled }) |s| {
+            inline for (&[_]*std.StringHashMapUnmanaged(void){ &self.path_disabled, &self.module_disabled }) |s| {
                 var ki = s.keyIterator();
                 while (ki.next()) |k| allocator.free(k.*);
-                s.deinit();
+                s.deinit(allocator);
             }
-            inline for (&[_]*std.StringHashMap([]const u8){ &self.path_remap, &self.module_remap }) |r| {
+            inline for (&[_]*std.StringHashMapUnmanaged([]const u8){ &self.path_remap, &self.module_remap }) |r| {
                 var it = r.iterator();
                 while (it.next()) |e| {
                     allocator.free(e.key_ptr.*);
                     allocator.free(e.value_ptr.*);
                 }
-                r.deinit();
+                r.deinit(allocator);
             }
         }
 
@@ -373,7 +373,7 @@ pub const ResolveCache = struct {
             baseConditionsFor(platform, .require);
         r.conditions = cond_import;
         var cache_shards: [num_resolve_cache_shards]CacheShard = undefined;
-        for (&cache_shards) |*s| s.* = .{ .map = std.StringHashMap(CachedResult).init(allocator) };
+        for (&cache_shards) |*s| s.* = .{ .map = .empty };
         const rc = ResolveCache{
             .allocator = allocator,
             .resolver = r,
@@ -386,7 +386,7 @@ pub const ResolveCache = struct {
             .dir_cache = resolver_mod.DirEntryCache.init(allocator),
             .realpath_cache = resolver_mod.RealpathCache.init(allocator),
             .pkg_json_cache = pkg_json.PackageJsonCache.init(allocator),
-            .browser_overrides_cache = std.StringHashMap(?BrowserOverrides).init(allocator),
+            .browser_overrides_cache = .empty,
             .conditions_import = cond_import,
             .conditions_require = cond_require,
             .conditions_allocated = has_custom,
@@ -405,7 +405,7 @@ pub const ResolveCache = struct {
             while (it.next()) |entry| {
                 self.allocator.free(entry.key_ptr.*);
             }
-            shard.map.deinit();
+            shard.map.deinit(self.allocator);
         }
 
         // PR resolve interning: path pool 일괄 reclaim.
@@ -419,7 +419,7 @@ pub const ResolveCache = struct {
             self.allocator.free(entry.key_ptr.*);
             if (entry.value_ptr.*) |*overrides| overrides.deinit(self.allocator);
         }
-        self.browser_overrides_cache.deinit();
+        self.browser_overrides_cache.deinit(self.allocator);
         if (self.conditions_allocated) {
             self.allocator.free(self.conditions_import);
             self.allocator.free(self.conditions_require);
@@ -713,7 +713,7 @@ pub const ResolveCache = struct {
             self.allocator.free(old.key);
         }
         const key_owned = self.allocator.dupe(u8, cache_key) catch return error.OutOfMemory;
-        map.put(key_owned, value) catch return error.OutOfMemory;
+        map.put(self.allocator, key_owned, value) catch return error.OutOfMemory;
     }
 
     /// 해석된 절대 경로가 package.json "browser" 필드에서 override (disabled / remap) 되었는지 판별.
@@ -805,7 +805,7 @@ pub const ResolveCache = struct {
             if (built) |*b| b.deinit(self.allocator);
             return null;
         };
-        self.browser_overrides_cache.put(key_owned, built) catch {
+        self.browser_overrides_cache.put(self.allocator, key_owned, built) catch {
             self.allocator.free(key_owned);
             if (built) |*b| b.deinit(self.allocator);
             return null;
@@ -822,10 +822,10 @@ pub const ResolveCache = struct {
         const browser_obj = browser_map.object;
 
         var overrides = BrowserOverrides{
-            .path_disabled = std.StringHashMap(void).init(self.allocator),
-            .path_remap = std.StringHashMap([]const u8).init(self.allocator),
-            .module_disabled = std.StringHashMap(void).init(self.allocator),
-            .module_remap = std.StringHashMap([]const u8).init(self.allocator),
+            .path_disabled = .empty,
+            .path_remap = .empty,
+            .module_disabled = .empty,
+            .module_remap = .empty,
         };
 
         var kit = browser_obj.iterator();
@@ -841,7 +841,7 @@ pub const ResolveCache = struct {
                     if (!b) {
                         const owned_key = self.allocator.dupe(u8, normalized_key) catch continue;
                         const target = if (is_relative_path) &overrides.path_disabled else &overrides.module_disabled;
-                        target.put(owned_key, {}) catch self.allocator.free(owned_key);
+                        target.put(self.allocator, owned_key, {}) catch self.allocator.free(owned_key);
                     }
                 },
                 .string => |s| {
@@ -856,7 +856,7 @@ pub const ResolveCache = struct {
                         continue;
                     };
                     const target = if (is_relative_path) &overrides.path_remap else &overrides.module_remap;
-                    target.put(owned_key, owned_val) catch {
+                    target.put(self.allocator, owned_key, owned_val) catch {
                         self.allocator.free(owned_key);
                         self.allocator.free(owned_val);
                     };

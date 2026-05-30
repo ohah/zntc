@@ -321,7 +321,7 @@ pub fn computeInputHash(
 pub const CompiledOutputCache = struct {
     allocator: std.mem.Allocator,
     /// absolute path → entry. key 는 cache 가 owning.
-    entries: std.StringHashMap(Entry),
+    entries: std.StringHashMapUnmanaged(Entry) = .empty,
     /// 디버그: 실측용 hit/miss 카운터. emit 루프 밖에서 주기적으로 읽어 리셋.
     hits: u64 = 0,
     misses: u64 = 0,
@@ -335,7 +335,7 @@ pub const CompiledOutputCache = struct {
     pub fn init(allocator: std.mem.Allocator) CompiledOutputCache {
         return .{
             .allocator = allocator,
-            .entries = std.StringHashMap(Entry).init(allocator),
+            .entries = .empty,
         };
     }
 
@@ -352,7 +352,7 @@ pub const CompiledOutputCache = struct {
 
     pub fn deinit(self: *CompiledOutputCache) void {
         self.clear();
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     /// 모든 엔트리 해제 (key + CompiledModule 소유 자원).
@@ -398,7 +398,7 @@ pub const CompiledOutputCache = struct {
 
         const owned_key = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(owned_key);
-        try self.entries.put(owned_key, .{ .input_hash = input_hash, .compiled = owned });
+        try self.entries.put(self.allocator, owned_key, .{ .input_hash = input_hash, .compiled = owned });
     }
 
     /// 디버그 로그에 hit/miss stats 출력 + 카운터 리셋. `ZNTC_DEBUG=compiled_cache`

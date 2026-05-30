@@ -1075,14 +1075,14 @@ pub const PrivateMethodNames = struct {
 /// function used inside the constructor.
 pub const PrivateNameAllocator = struct {
     allocator: std.mem.Allocator,
-    reserved: std.StringHashMap(void),
-    method_weaksets: std.StringHashMap([]const u8),
+    reserved: std.StringHashMapUnmanaged(void) = .empty,
+    method_weaksets: std.StringHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const ast_mod.Ast) !PrivateNameAllocator {
         var self = PrivateNameAllocator{
             .allocator = allocator,
-            .reserved = std.StringHashMap(void).init(allocator),
-            .method_weaksets = std.StringHashMap([]const u8).init(allocator),
+            .reserved = .empty,
+            .method_weaksets = .empty,
         };
         errdefer self.deinit();
 
@@ -1100,8 +1100,8 @@ pub const PrivateNameAllocator = struct {
         while (keys.next()) |key| {
             self.allocator.free(key.*);
         }
-        self.reserved.deinit();
-        self.method_weaksets.deinit();
+        self.reserved.deinit(self.allocator);
+        self.method_weaksets.deinit(self.allocator);
     }
 
     fn collectExistingIdentifierNames(self: *PrivateNameAllocator, ast: *const ast_mod.Ast) !void {
@@ -1120,7 +1120,7 @@ pub const PrivateNameAllocator = struct {
         if (self.reserved.contains(name)) return;
         const owned = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned);
-        try self.reserved.put(owned, {});
+        try self.reserved.put(self.allocator, owned, {});
     }
 
     fn reserveGenerated(self: *PrivateNameAllocator, name: []const u8) !void {
@@ -1182,7 +1182,7 @@ pub const PrivateNameAllocator = struct {
         else blk: {
             const generated = try self.makePrivateVarName(orig_name);
             errdefer self.allocator.free(generated);
-            try self.method_weaksets.put(orig_name, generated);
+            try self.method_weaksets.put(self.allocator, orig_name, generated);
             break :blk generated;
         };
         errdefer self.allocator.free(weakset_name);

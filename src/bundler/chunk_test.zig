@@ -44,7 +44,7 @@ const TestGraph = struct {
         var it = self.graph.modules.iterator(0);
         while (it.next()) |m| m.deinit(alloc);
         self.graph.modules.deinit(alloc);
-        self.graph.path_to_module.deinit();
+        self.graph.path_to_module.deinit(alloc);
         self.graph.diagnostics.deinit(alloc);
         self.graph.worker_entries.deinit(alloc);
         var pi_it = self.graph.pkg_info_cache.valueIterator();

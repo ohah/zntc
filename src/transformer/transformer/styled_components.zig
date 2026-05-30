@@ -1505,7 +1505,7 @@ fn forwardTemplateInterpolations(
 fn collectModuleLevelBindingsFallback(
     self: *Transformer,
     program_idx: NodeIndex,
-    sink: *std.StringHashMap(void),
+    sink: *std.StringHashMapUnmanaged(void),
 ) Error!void {
     const program = self.ast.getNode(program_idx);
     if (program.tag != .program) return;
@@ -1518,7 +1518,7 @@ fn collectModuleLevelBindingsFallback(
 fn collectBindingsFromStatement(
     self: *Transformer,
     stmt_idx: NodeIndex,
-    sink: *std.StringHashMap(void),
+    sink: *std.StringHashMapUnmanaged(void),
 ) Error!void {
     if (stmt_idx.isNone()) return;
     const node = self.ast.getNode(stmt_idx);
@@ -1533,12 +1533,12 @@ fn collectBindingsFromStatement(
                 const spec = self.ast.getNode(spec_idx);
                 switch (spec.tag) {
                     .import_default_specifier, .import_namespace_specifier => {
-                        try sink.put(self.ast.getText(spec.data.string_ref), {});
+                        try sink.put(self.allocator, self.ast.getText(spec.data.string_ref), {});
                     },
                     .import_specifier => {
                         const local_idx = spec.data.binary.right;
                         if (!local_idx.isNone()) {
-                            try sink.put(self.ast.getText(self.ast.getNode(local_idx).span), {});
+                            try sink.put(self.allocator, self.ast.getText(self.ast.getNode(local_idx).span), {});
                         }
                     },
                     else => {},
@@ -1558,14 +1558,14 @@ fn collectBindingsFromStatement(
                 if (name_idx.isNone()) continue;
                 const name_node = self.ast.getNode(name_idx);
                 if (name_node.tag == .binding_identifier) {
-                    try sink.put(self.ast.getText(name_node.span), {});
+                    try sink.put(self.allocator, self.ast.getText(name_node.span), {});
                 }
             }
         },
         .function_declaration, .class_declaration => {
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
             if (!name_idx.isNone()) {
-                try sink.put(self.ast.getText(self.ast.getNode(name_idx).span), {});
+                try sink.put(self.allocator, self.ast.getText(self.ast.getNode(name_idx).span), {});
             }
         },
         .export_named_declaration => {
@@ -1597,13 +1597,13 @@ fn resolveStyledInjectName(self: *Transformer) Error![]const u8 {
     const state = &self.plugins.styled_components;
     if (state.css_prop_needs_import) return state.css_prop_inject_name;
 
-    var bindings: std.StringHashMap(void) = .init(self.allocator);
-    defer bindings.deinit();
+    var bindings: std.StringHashMapUnmanaged(void) = .empty;
+    defer bindings.deinit(self.allocator);
     if (self.symbols.len > 0) {
         for (self.symbols) |sym| {
             if (sym.scope_id.isNone()) continue;
             if (sym.scope_id.toIndex() != 0) continue;
-            try bindings.put(sym.nameText(self.ast.source), {});
+            try bindings.put(self.allocator, sym.nameText(self.ast.source), {});
         }
     } else {
         const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);

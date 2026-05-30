@@ -11,10 +11,10 @@ pub const LoadOptions = struct {
     prefixes: []const []const u8 = &.{ "VITE_", "ZNTC_" },
 };
 
-pub const EnvMap = std.StringHashMap([]const u8);
+pub const EnvMap = std.StringHashMapUnmanaged([]const u8);
 
 pub fn loadEnv(allocator: std.mem.Allocator, io: std.Io, opts: LoadOptions) !EnvMap {
-    var merged = EnvMap.init(allocator);
+    var merged: EnvMap = .empty;
     errdefer deinitMap(&merged, allocator);
 
     const mode_file = try std.fmt.allocPrint(allocator, ".env.{s}", .{opts.mode});
@@ -34,12 +34,13 @@ pub fn loadEnv(allocator: std.mem.Allocator, io: std.Io, opts: LoadOptions) !Env
         try parseDotenvInto(allocator, content, &merged);
     }
 
-    var filtered = EnvMap.init(allocator);
+    var filtered: EnvMap = .empty;
     errdefer deinitMap(&filtered, allocator);
     var it = merged.iterator();
     while (it.next()) |entry| {
         if (!hasAllowedPrefix(entry.key_ptr.*, opts.prefixes)) continue;
         try filtered.put(
+            allocator,
             try allocator.dupe(u8, entry.key_ptr.*),
             try allocator.dupe(u8, entry.value_ptr.*),
         );
@@ -54,7 +55,7 @@ pub fn deinitMap(map: *EnvMap, allocator: std.mem.Allocator) void {
         allocator.free(entry.key_ptr.*);
         allocator.free(entry.value_ptr.*);
     }
-    map.deinit();
+    map.deinit(allocator);
 }
 
 pub fn envToDefine(
@@ -170,7 +171,7 @@ fn parseDotenvInto(allocator: std.mem.Allocator, content: []const u8, map: *EnvM
         errdefer allocator.free(owned_key);
         const owned_value = try allocator.dupe(u8, value);
         errdefer allocator.free(owned_value);
-        const gop = try map.getOrPut(owned_key);
+        const gop = try map.getOrPut(allocator, owned_key);
         if (gop.found_existing) {
             allocator.free(owned_key);
             allocator.free(gop.value_ptr.*);

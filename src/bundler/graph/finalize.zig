@@ -177,8 +177,8 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
     // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
     // 안에서 defer deinit 되므로 모든 키가 map 보다 오래 산다.
-    var used_names: std.StringHashMap(u32) = std.StringHashMap(u32).init(self.allocator);
-    defer used_names.deinit();
+    var used_names: std.StringHashMapUnmanaged(u32) = .empty;
+    defer used_names.deinit(self.allocator);
 
     // 이미 등록된 모듈 (incremental rebuild) 의 이름을 먼저 seed — 새 모듈이 같은
     // base 를 쓰면 collision 이 재발하므로. seed 후 카운터는 1 (다음 충돌 시 $2 부여).
@@ -188,9 +188,9 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     while (seed_it.next()) |m| {
         if (m.wrap_kind == .none) continue;
         // RFC #3940 L.4c-2a-i: mangle 전 단계 (canonical 미설정) → rt null, synthetic_name 조회.
-        if (m.getInitName(null)) |n| _ = used_names.put(n, 1) catch {};
-        if (m.getExportsName(null)) |n| _ = used_names.put(n, 1) catch {};
-        if (m.getRequireName(null)) |n| _ = used_names.put(n, 1) catch {};
+        if (m.getInitName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
+        if (m.getExportsName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
+        if (m.getRequireName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
     }
 
     var it = self.modules.iterator(0);
@@ -205,7 +205,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 
         if (needs_init) {
             const init_base = types.makeInitVarName(arena, m.path) catch continue;
-            const init_name = uniqueName(arena, init_base, &used_names) catch continue;
+            const init_name = uniqueName(arena, init_base, &used_names, self.allocator) catch continue;
             m.init_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -218,7 +218,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 
         if (needs_exports) {
             const exports_base = types.makeExportsVarName(arena, m.path) catch continue;
-            const exports_name = uniqueName(arena, exports_base, &used_names) catch continue;
+            const exports_name = uniqueName(arena, exports_base, &used_names, self.allocator) catch continue;
             m.exports_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -231,7 +231,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 
         if (needs_require) {
             const require_base = types.makeRequireVarName(arena, m.path) catch continue;
-            const require_name = uniqueName(arena, require_base, &used_names) catch continue;
+            const require_name = uniqueName(arena, require_base, &used_names, self.allocator) catch continue;
             m.require_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -250,17 +250,18 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 fn uniqueName(
     name_arena: std.mem.Allocator,
     base: []const u8,
-    used: *std.StringHashMap(u32),
+    used: *std.StringHashMapUnmanaged(u32),
+    map_alloc: std.mem.Allocator,
 ) std.mem.Allocator.Error![]const u8 {
     if (!used.contains(base)) {
-        try used.put(base, 1);
+        try used.put(map_alloc, base, 1);
         return base;
     }
     var n: u32 = 2;
     while (true) : (n += 1) {
         const candidate = try std.fmt.allocPrint(name_arena, "{s}${d}", .{ base, n });
         if (!used.contains(candidate)) {
-            try used.put(candidate, 1);
+            try used.put(map_alloc, candidate, 1);
             return candidate;
         }
     }

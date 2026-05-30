@@ -792,8 +792,8 @@ pub const DevServer = struct {
             // issue #3858 — event 의 path 가 dir-watch (root_dir) 매치 시 rescan 트리거.
             // PR-1 의 inotify dir-watch 가 file event 와 dir entry event 양쪽 emit 할
             // 수 있어 dedup 가드 (StringHashMap 기반 set).
-            var changed_set = std.StringHashMap(void).init(self.allocator);
-            defer changed_set.deinit();
+            var changed_set: std.StringHashMapUnmanaged(void) = .empty;
+            defer changed_set.deinit(self.allocator);
             var needs_rescan = false;
             for (events) |ev| {
                 self.routineLog("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)});
@@ -803,7 +803,7 @@ pub const DevServer = struct {
                         continue; // dir entry event 는 changed_paths 에 넣지 않음 (caller 가 file path 만 처리).
                     }
                 }
-                const gop = changed_set.getOrPut(ev.path) catch continue;
+                const gop = changed_set.getOrPut(self.allocator, ev.path) catch continue;
                 if (gop.found_existing) continue; // dedup
                 changed_paths.append(self.allocator, ev.path) catch {};
 
@@ -855,7 +855,7 @@ pub const DevServer = struct {
                     css_path_set.put(self.allocator, path_owned, {}) catch {};
                     watcher.addPath(path_owned) catch {};
                     // synthetic event — caller 가 css-update broadcast 트리거하도록
-                    if (changed_set.getOrPut(path_owned) catch null) |gop| {
+                    if (changed_set.getOrPut(self.allocator, path_owned) catch null) |gop| {
                         if (!gop.found_existing) changed_paths.append(self.allocator, path_owned) catch {};
                     }
                     self.routineLog("  [watch] new file added: {s}\n", .{std.fs.path.basename(path_owned)});
@@ -878,7 +878,7 @@ pub const DevServer = struct {
                         self.allocator.free(path_dupe);
                         continue;
                     };
-                    if (changed_set.getOrPut(path_dupe) catch null) |gop| {
+                    if (changed_set.getOrPut(self.allocator, path_dupe) catch null) |gop| {
                         if (!gop.found_existing) changed_paths.append(self.allocator, path_dupe) catch {};
                     }
                     _ = css_path_set.remove(p);

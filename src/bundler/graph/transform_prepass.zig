@@ -244,7 +244,7 @@ fn captureRenamesToPending(
     source: []const u8,
     arena: std.mem.Allocator,
 ) !void {
-    const module_scope: ?*const std.StringHashMap(usize) = if (new_sem.scope_maps.len > 0) &new_sem.scope_maps[0] else null;
+    const module_scope: ?*const std.StringHashMapUnmanaged(usize) = if (new_sem.scope_maps.len > 0) &new_sem.scope_maps[0] else null;
     // old_sem 기준 새 맵을 만들어 교체 — 이전 idx 의 stale entry 누적/오염 방지 (multi-pass).
     var rebuilt: bundler_symbol.RenameTable = .{};
     // `rename_table` (link 시점 = pass0 idx) 폴백은 **첫 capture (pending 비어있음)** 에서만
@@ -374,7 +374,7 @@ fn refreshStableBindingRefsAfterSemanticResync(
     defer binding_refs_scope.end();
 
     const sem = if (module.semantic) |*s| s else return;
-    const scope0: ?std.StringHashMap(usize) =
+    const scope0: ?std.StringHashMapUnmanaged(usize) =
         if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
     for (module.import_bindings) |*ib| {
         ib.local_symbol = bundler_symbol.SymbolRef.invalid;

@@ -95,7 +95,7 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
     // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
     module.ensureAliasTable(self.allocator);
     if (module.semantic) |*sem| {
-        const scope0: ?std.StringHashMap(usize) =
+        const scope0: ?std.StringHashMapUnmanaged(usize) =
             if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
         binding_scanner_mod.populateSyntheticSymbols(
             &module.alias_table.?,

@@ -55,7 +55,7 @@ pub const ChunkEmitCache = struct {
     };
 
     allocator: std.mem.Allocator,
-    entries: std.AutoHashMap(Key, Entry),
+    entries: std.AutoHashMapUnmanaged(Key, Entry) = .empty,
     /// cache hit / miss 카운터 (debug_log.compiled_cache 와 같은 라인). takeStats 가 reset.
     hits: u64 = 0,
     misses: u64 = 0,
@@ -63,13 +63,13 @@ pub const ChunkEmitCache = struct {
     pub fn init(allocator: std.mem.Allocator) ChunkEmitCache {
         return .{
             .allocator = allocator,
-            .entries = std.AutoHashMap(Key, Entry).init(allocator),
+            .entries = .empty,
         };
     }
 
     pub fn deinit(self: *ChunkEmitCache) void {
         self.freeAllEntries();
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     fn freeAllEntries(self: *ChunkEmitCache) void {
@@ -114,7 +114,7 @@ pub const ChunkEmitCache = struct {
             "";
         errdefer if (sm_dup.len > 0) self.allocator.free(sm_dup);
 
-        const gop = try self.entries.getOrPut(key);
+        const gop = try self.entries.getOrPut(self.allocator, key);
         if (gop.found_existing) {
             self.allocator.free(gop.value_ptr.bytes);
             if (gop.value_ptr.sourcemap_bytes.len > 0) {

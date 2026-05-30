@@ -373,7 +373,7 @@ pub const BundleOptions = struct {
     /// 주입되면 `graph.buildIncremental` 이 set 에 없는 모듈의 mtime stat syscall 을 skip
     /// — cached mtime 을 신뢰. 수백 모듈 규모에서 graphDiscover 주 병목이었음.
     /// null 이면 initial build / CLI / 변경 정보 없음 → 전체 stat (기존 동작).
-    changed_files: ?*const std.StringHashMap(void) = null,
+    changed_files: ?*const std.StringHashMapUnmanaged(void) = null,
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
@@ -1257,11 +1257,11 @@ pub const Bundler = struct {
         // codegen.emitNew lookup 용 per-module map. outer key = module 절대 경로 (graph 소유),
         // inner key = import_record specifier (graph 소유), value = worker chunk filename
         // (worker_output_map 소유). 본 map 은 reference 만 보관 — deinit 시 inner 만 정리.
-        var worker_map_per_module = std.StringHashMap(std.StringHashMap([]const u8)).init(self.allocator);
+        var worker_map_per_module: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged([]const u8)) = .empty;
         defer {
             var oit = worker_map_per_module.valueIterator();
-            while (oit.next()) |inner| inner.deinit();
-            worker_map_per_module.deinit();
+            while (oit.next()) |inner| inner.deinit(self.allocator);
+            worker_map_per_module.deinit(self.allocator);
         }
 
         {
@@ -1285,9 +1285,9 @@ pub const Bundler = struct {
                 if (we.record_index >= mod.import_records.len) continue;
                 const spec = mod.import_records[we.record_index].specifier;
 
-                const entry = try worker_map_per_module.getOrPut(mod.path);
-                if (!entry.found_existing) entry.value_ptr.* = std.StringHashMap([]const u8).init(self.allocator);
-                try entry.value_ptr.put(spec, filename);
+                const entry = try worker_map_per_module.getOrPut(self.allocator, mod.path);
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
+                try entry.value_ptr.put(self.allocator, spec, filename);
             }
         }
 

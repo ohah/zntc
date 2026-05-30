@@ -585,7 +585,7 @@ pub fn mergeSmallChunks(
 fn addDynamicEntry(
     allocator: std.mem.Allocator,
     entries: *std.ArrayList(EntryInfo),
-    dynamic_seen: *std.AutoHashMap(u32, void),
+    dynamic_seen: *std.AutoHashMapUnmanaged(u32, void),
     graph: *const ModuleGraph,
     idx: ModuleIndex,
 ) !void {
@@ -593,7 +593,7 @@ fn addDynamicEntry(
         if (m.is_external) return; // external phantom 은 async chunk 불요(번들 외부)
     }
     const di = @intFromEnum(idx);
-    const gop = try dynamic_seen.getOrPut(di);
+    const gop = try dynamic_seen.getOrPut(allocator, di);
     if (gop.found_existing) return;
     for (entries.items) |e| {
         if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) return; // 이미 user entry
@@ -652,8 +652,8 @@ pub fn generateChunks(
     // dynamic import 대상은 별도의 청크 경계를 형성한다 (code splitting의 핵심).
     // `inline_dynamic_imports` 가 true 면 이 단계 전체를 skip → dynamic target 이
     // 별도 chunk 로 나뉘지 않고 Phase 2 BFS 에서 importer 와 같은 chunk 로 흡수.
-    var dynamic_seen: std.AutoHashMap(u32, void) = .init(allocator);
-    defer dynamic_seen.deinit();
+    var dynamic_seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer dynamic_seen.deinit(allocator);
 
     if (!inline_dynamic_imports) {
         var it = graph.modulesIterator();
@@ -1092,15 +1092,15 @@ pub fn generatePreserveModulesChunks(
     errdefer chunk_graph.deinit();
 
     // 엔트리 모듈 인덱스를 미리 수집 (entry_point 청크 판별용)
-    var entry_set: std.AutoHashMap(u32, void) = .init(allocator);
-    defer entry_set.deinit();
+    var entry_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer entry_set.deinit(allocator);
     {
         var it = graph.modulesIterator();
         var i: usize = 0;
         while (it.next()) |m| : (i += 1) {
             for (entry_points) |ep| {
                 if (std.mem.eql(u8, m.path, ep)) {
-                    try entry_set.put(@intCast(i), {});
+                    try entry_set.put(allocator, @intCast(i), {});
                     break;
                 }
             }

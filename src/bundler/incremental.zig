@@ -65,7 +65,7 @@ pub const IncrementalBundler = struct {
     options: BundleOptions,
 
     /// 캐시된 모듈별 dev code (module_id → __zntc_register code)
-    module_cache: std.StringHashMap(CachedModule),
+    module_cache: std.StringHashMapUnmanaged(CachedModule) = .empty,
     /// 마지막 번들의 모듈 경로 목록
     last_paths: ?[]const []const u8 = null,
     /// 전체 재빌드가 필요한지 (첫 빌드 또는 그래프 변경)
@@ -112,7 +112,7 @@ pub const IncrementalBundler = struct {
         return .{
             .allocator = allocator,
             .options = options,
-            .module_cache = std.StringHashMap(CachedModule).init(allocator),
+            .module_cache = .empty,
             .persistent_store = module_store.PersistentModuleStore.init(allocator),
             .compiled_cache = CompiledOutputCache.init(allocator),
         };
@@ -120,7 +120,7 @@ pub const IncrementalBundler = struct {
 
     pub fn deinit(self: *IncrementalBundler) void {
         self.clearCache();
-        self.module_cache.deinit();
+        self.module_cache.deinit(self.allocator);
         self.persistent_store.deinit();
         self.compiled_cache.deinit();
         if (self.resolve_cache) |*rc| rc.deinit();
@@ -173,7 +173,7 @@ pub const IncrementalBundler = struct {
     pub fn rebuildWithChanges(
         self: *IncrementalBundler,
         io: std.Io,
-        changed_files: ?*const std.StringHashMap(void),
+        changed_files: ?*const std.StringHashMapUnmanaged(void),
     ) !RebuildResult {
         if (self.needs_full_rebuild) {
             return self.doBuild(io, true, changed_files);
@@ -185,7 +185,7 @@ pub const IncrementalBundler = struct {
         self: *IncrementalBundler,
         io: std.Io,
         is_first: bool,
-        changed_files: ?*const std.StringHashMap(void),
+        changed_files: ?*const std.StringHashMapUnmanaged(void),
     ) !RebuildResult {
         // (#3751) N rebuild 마다 resolve_cache reset — arena monotonic growth 차단.
         // 빌드 *사이* 에서만 실행 (in-flight CachedResolvedDep 가 모두 store 로 owned-clone
@@ -387,7 +387,7 @@ pub const IncrementalBundler = struct {
                     self.allocator.free(id);
                     continue;
                 };
-                self.module_cache.put(id, .{ .id = id, .code = code }) catch {
+                self.module_cache.put(self.allocator, id, .{ .id = id, .code = code }) catch {
                     self.allocator.free(id);
                     self.allocator.free(code);
                 };

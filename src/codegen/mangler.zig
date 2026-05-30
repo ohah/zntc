@@ -29,7 +29,7 @@ const Span = @import("../lexer/token.zig").Span;
 
 pub const ManglerResult = struct {
     /// symbol_id -> 새 이름. codegen의 linking_metadata.renames에 주입.
-    renames: std.AutoHashMap(u32, []const u8),
+    renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
     allocator: std.mem.Allocator,
     /// 이 호출의 측정값. `--mangle-report` 경로 외엔 무시됨. #1760 property harness.
     stats: ManglerStats = .{},
@@ -37,14 +37,14 @@ pub const ManglerResult = struct {
     pub fn deinit(self: *ManglerResult) void {
         var it = self.renames.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
-        self.renames.deinit();
+        self.renames.deinit(self.allocator);
     }
 
     /// renames의 소유권을 이전하고, 이 결과를 안전하게 해제 가능한 상태로 만든다.
     /// 호출 후 renames의 값 문자열은 호출자가 해제 책임을 진다.
-    pub fn takeRenames(self: *ManglerResult) std.AutoHashMap(u32, []const u8) {
+    pub fn takeRenames(self: *ManglerResult) std.AutoHashMapUnmanaged(u32, []const u8) {
         const taken = self.renames;
-        self.renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+        self.renames = .empty;
         return taken;
     }
 };
@@ -72,7 +72,7 @@ pub const ManglerStats = struct {
 pub const MangleInput = struct {
     scopes: []const Scope,
     symbols: []const Symbol,
-    scope_maps: []const std.StringHashMap(usize),
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
     /// **scope-nesting 전환 후 mangle() 미사용** (과거 liveness graph-coloring 의 per-symbol
     /// liveness 계산 입력이었음). slot 할당은 scope_maps + scope tree 만으로 결정. 호출처 호환
     /// 및 다른 consumer(dead store / property mangle) 용으로 필드는 유지.
@@ -85,13 +85,13 @@ pub const MangleInput = struct {
     starting_name_counter: u32 = 0,
     /// #1760 unified 경로: 외부에서 누적된 reserved set. mangle 시작 시
     /// 내부 reserved_names 에 복사된다. borrowed — caller 소유 유지.
-    external_reserved: ?*const std.StringHashMap(void) = null,
+    external_reserved: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 모든 모듈에 공유되는 reserved (runtime helper 등). 매 모듈마다 복제하면
     /// N×G 알로케이션 — caller 가 한 번만 build 후 borrow 로 share. lookup 시
     /// internal/external_reserved 와 함께 검사하므로 internal copy 안 함.
     /// `external_reserved` 가 *per-module* (예: Phase A 의 이 모듈 mangled 이름)
     /// 라면 본 필드는 *전 모듈 공통* (예: runtime helper 이름) 으로 분리된다.
-    external_reserved_global: ?*const std.StringHashMap(void) = null,
+    external_reserved_global: ?*const std.StringHashMapUnmanaged(void) = null,
 };
 
 /// scope-nesting 기반 mangling.
@@ -107,7 +107,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
 
     if (scope_count == 0 or symbol_count == 0) {
         return .{
-            .renames = std.AutoHashMap(u32, []const u8).init(allocator),
+            .renames = .empty,
             .allocator = allocator,
         };
     }
@@ -130,11 +130,11 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     // mangling 제외 심볼의 원본 이름(shouldSkip/blocksMangling)은 출력에 그대로 남으므로
     // base54 가 같은 이름을 다른 slot 에 재할당하면 중복 선언(#1609)/shadow 오염 → Phase 4
     // 발급에서 reserved 로 회피. #1760: Phase A 누적 예약어(external_reserved)도 seed.
-    var reserved_names = std.StringHashMap(void).init(allocator);
-    defer reserved_names.deinit();
+    var reserved_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved_names.deinit(allocator);
     if (input.external_reserved) |ext| {
         var it = ext.keyIterator();
-        while (it.next()) |k| try reserved_names.put(k.*, {});
+        while (it.next()) |k| try reserved_names.put(allocator, k.*, {});
     }
 
     // slot_refs[slot_id] = 그 slot 을 공유하는 심볼들의 reference_count 합 (Phase 4 빈도 naming).
@@ -150,7 +150,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     const slot_count = slot_refs.items.len;
     if (slot_count == 0) {
         return .{
-            .renames = std.AutoHashMap(u32, []const u8).init(allocator),
+            .renames = .empty,
             .allocator = allocator,
         };
     }
@@ -201,11 +201,11 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     // ================================================================
     // Phase 5: renames 맵 생성
     // ================================================================
-    var renames = std.AutoHashMap(u32, []const u8).init(allocator);
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     errdefer {
         var it = renames.valueIterator();
         while (it.next()) |v| allocator.free(v.*);
-        renames.deinit();
+        renames.deinit(allocator);
     }
 
     for (symbol_to_slot, 0..) |maybe_slot, sym_idx| {
@@ -220,7 +220,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         if (std.mem.eql(u8, orig_name, new_name)) continue;
 
         // 이미 이름이 할당된 slot에서 왔으므로 dupe 필요 (여러 symbol이 같은 slot 공유)
-        try renames.put(@intCast(sym_idx), try allocator.dupe(u8, new_name));
+        try renames.put(allocator, @intCast(sym_idx), try allocator.dupe(u8, new_name));
     }
 
     // slot_names에서 renames로 복사되지 않은 이름 해제
@@ -255,13 +255,13 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
 /// 원본 이름은 `reserved_names` 에 등록.
 fn collectScopeBindings(
     scope_idx: u32,
-    scope_maps: []const std.StringHashMap(usize),
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
     symbols: []const Symbol,
     scopes: []const Scope,
     skip_symbols: ?std.DynamicBitSet,
     symbol_count: usize,
     binding_buf: *std.ArrayListUnmanaged(SymBinding),
-    reserved_names: *std.StringHashMap(void),
+    reserved_names: *std.StringHashMapUnmanaged(void),
     allocator: std.mem.Allocator,
 ) !void {
     binding_buf.items.len = 0;
@@ -277,7 +277,7 @@ fn collectScopeBindings(
             // skip 판정 — 원본 이름이 출력에 살아남는 1글자/arguments 만 reserved.
             if (shouldSkip(sym, name)) {
                 if (name.len <= 1 or std.mem.eql(u8, name, "arguments")) {
-                    try reserved_names.put(name, {});
+                    try reserved_names.put(allocator, name, {});
                 }
                 continue;
             }
@@ -285,7 +285,7 @@ fn collectScopeBindings(
             if (!sym.scope_id.isNone()) {
                 const s_idx = sym.scope_id.toIndex();
                 if (s_idx < scopes.len and scopes[s_idx].blocksMangling()) {
-                    try reserved_names.put(name, {});
+                    try reserved_names.put(allocator, name, {});
                     continue;
                 }
             }
@@ -316,12 +316,12 @@ fn assignSlotsScopeNesting(
     allocator: std.mem.Allocator,
     scopes: []const Scope,
     symbols: []const Symbol,
-    scope_maps: []const std.StringHashMap(usize),
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
     skip_symbols: ?std.DynamicBitSet,
     symbol_count: usize,
     children: ChildrenList,
     symbol_to_slot: []?u32,
-    reserved_names: *std.StringHashMap(void),
+    reserved_names: *std.StringHashMapUnmanaged(void),
 ) !std.ArrayListUnmanaged(u32) {
     var slot_refs: std.ArrayListUnmanaged(u32) = .empty;
     errdefer slot_refs.deinit(allocator);
@@ -541,7 +541,7 @@ pub fn nextBase54Name(counter: *u32, buf: *[8]u8) []const u8 {
 pub fn nextNonReservedBase54Name(
     counter: *u32,
     buf: *[8]u8,
-    reserved: *const std.StringHashMap(void),
+    reserved: *const std.StringHashMapUnmanaged(void),
     skips_1char: *usize,
 ) []const u8 {
     return nextNonReservedBase54NameTwo(counter, buf, reserved, null, skips_1char);
@@ -553,8 +553,8 @@ pub fn nextNonReservedBase54Name(
 pub fn nextNonReservedBase54NameTwo(
     counter: *u32,
     buf: *[8]u8,
-    reserved_a: *const std.StringHashMap(void),
-    reserved_b: ?*const std.StringHashMap(void),
+    reserved_a: *const std.StringHashMapUnmanaged(void),
+    reserved_b: ?*const std.StringHashMapUnmanaged(void),
     skips_1char: *usize,
 ) []const u8 {
     var name = nextBase54Name(counter, buf);
@@ -587,13 +587,13 @@ test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
         },
     };
 
-    var empty_scope = std.StringHashMap(usize).init(allocator);
-    defer empty_scope.deinit();
-    var function_scope = std.StringHashMap(usize).init(allocator);
-    defer function_scope.deinit();
-    try function_scope.put("_this", 0);
+    var empty_scope: std.StringHashMapUnmanaged(usize) = .empty;
+    defer empty_scope.deinit(allocator);
+    var function_scope: std.StringHashMapUnmanaged(usize) = .empty;
+    defer function_scope.deinit(allocator);
+    try function_scope.put(allocator, "_this", 0);
 
-    const scope_maps = [_]std.StringHashMap(usize){ empty_scope, function_scope };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ empty_scope, function_scope };
     const refs = [_]Reference{
         .{
             .node_index = @enumFromInt(0),
@@ -647,15 +647,15 @@ test "mangle: scope-nesting 형제 scope 가 같은 slot 재사용 (충돌 0)" {
             .synthetic_name = "beta",
         },
     };
-    var s_root = std.StringHashMap(usize).init(allocator);
-    defer s_root.deinit();
-    var s1 = std.StringHashMap(usize).init(allocator);
-    defer s1.deinit();
-    try s1.put("alpha", 0);
-    var s2 = std.StringHashMap(usize).init(allocator);
-    defer s2.deinit();
-    try s2.put("beta", 1);
-    const scope_maps = [_]std.StringHashMap(usize){ s_root, s1, s2 };
+    var s_root: std.StringHashMapUnmanaged(usize) = .empty;
+    defer s_root.deinit(allocator);
+    var s1: std.StringHashMapUnmanaged(usize) = .empty;
+    defer s1.deinit(allocator);
+    try s1.put(allocator, "alpha", 0);
+    var s2: std.StringHashMapUnmanaged(usize) = .empty;
+    defer s2.deinit(allocator);
+    try s2.put(allocator, "beta", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ s_root, s1, s2 };
 
     var result = try mangle(allocator, .{
         .scopes = &scopes,
@@ -703,15 +703,15 @@ test "mangle: scope-nesting 자식 binding 은 부모 slot 을 안 받음 (shado
             .synthetic_name = "inner",
         },
     };
-    var s_root = std.StringHashMap(usize).init(allocator);
-    defer s_root.deinit();
-    var s1 = std.StringHashMap(usize).init(allocator);
-    defer s1.deinit();
-    try s1.put("outer", 0);
-    var s2 = std.StringHashMap(usize).init(allocator);
-    defer s2.deinit();
-    try s2.put("inner", 1);
-    const scope_maps = [_]std.StringHashMap(usize){ s_root, s1, s2 };
+    var s_root: std.StringHashMapUnmanaged(usize) = .empty;
+    defer s_root.deinit(allocator);
+    var s1: std.StringHashMapUnmanaged(usize) = .empty;
+    defer s1.deinit(allocator);
+    try s1.put(allocator, "outer", 0);
+    var s2: std.StringHashMapUnmanaged(usize) = .empty;
+    defer s2.deinit(allocator);
+    try s2.put(allocator, "inner", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ s_root, s1, s2 };
 
     var result = try mangle(allocator, .{
         .scopes = &scopes,
@@ -756,13 +756,13 @@ test "mangle: scope-nesting 깊이 3 — grandchild ≠ grandparent, cousin 은 
         };
     }
 
-    var maps: [5]std.StringHashMap(usize) = undefined;
-    for (&maps) |*m| m.* = std.StringHashMap(usize).init(allocator);
-    defer for (&maps) |*m| m.deinit();
-    try maps[1].put("gpvar", 0);
-    try maps[2].put("alpha", 1);
-    try maps[3].put("beta", 2);
-    try maps[4].put("deepv", 3);
+    var maps: [5]std.StringHashMapUnmanaged(usize) = undefined;
+    for (&maps) |*m| m.* = .empty;
+    defer for (&maps) |*m| m.deinit(allocator);
+    try maps[1].put(allocator, "gpvar", 0);
+    try maps[2].put(allocator, "alpha", 1);
+    try maps[3].put(allocator, "beta", 2);
+    try maps[4].put(allocator, "deepv", 3);
 
     var result = try mangle(allocator, .{
         .scopes = &scopes,

@@ -45,7 +45,7 @@ fn clonePathRefIfNeeded(allocator: std.mem.Allocator, ref: PathRef) !PathRef {
 pub const PersistentModuleStore = struct {
     allocator: std.mem.Allocator,
     /// 절대 경로 → 캐시된 모듈. 경로 키는 store allocator 소유.
-    modules: std.StringHashMap(CachedModule),
+    modules: std.StringHashMapUnmanaged(CachedModule) = .empty,
 
     pub const CachedModule = struct {
         /// 캐싱 시점의 파일 mtime (i128 나노초)
@@ -60,7 +60,7 @@ pub const PersistentModuleStore = struct {
     pub fn init(allocator: std.mem.Allocator) PersistentModuleStore {
         return .{
             .allocator = allocator,
-            .modules = std.StringHashMap(CachedModule).init(allocator),
+            .modules = .empty,
         };
     }
 
@@ -70,7 +70,7 @@ pub const PersistentModuleStore = struct {
             self.freeCachedModule(entry.value_ptr);
             self.allocator.free(entry.key_ptr.*);
         }
-        self.modules.deinit();
+        self.modules.deinit(self.allocator);
     }
 
     fn freeCachedModule(self: *PersistentModuleStore, cached: *CachedModule) void {
@@ -199,7 +199,7 @@ pub const PersistentModuleStore = struct {
 
         if (had_existing) {
             // 기존 키 재사용 — put은 값만 업데이트
-            self.modules.put(path, .{
+            self.modules.put(self.allocator, path, .{
                 .mtime = mtime,
                 .module = cached_module,
                 .import_specifiers = specs,
@@ -214,7 +214,7 @@ pub const PersistentModuleStore = struct {
                 return;
             };
 
-            self.modules.put(key, .{
+            self.modules.put(self.allocator, key, .{
                 .mtime = mtime,
                 .module = cached_module,
                 .import_specifiers = specs,

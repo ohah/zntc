@@ -29,8 +29,8 @@ pub fn emitCssBundle(
     var css_modules: std.ArrayListUnmanaged(*const Module) = .empty;
     defer css_modules.deinit(allocator);
 
-    var visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
-    defer visited.deinit();
+    var visited: std.AutoHashMapUnmanaged(ModuleIndex, void) = .empty;
+    defer visited.deinit(allocator);
 
     collectCssModules(allocator, graph, entry_idx, &css_modules, &visited);
 
@@ -123,12 +123,13 @@ const ExternalImportEntry = struct {
 const ExternalImportCollector = struct {
     /// key = "<specifier>\x00<condition_tail>" — `\x00` 은 CSS spec 상 합법
     /// URL/condition 에 등장 불가라 안전한 separator.
-    seen: std.StringHashMap(void),
+    seen: std.StringHashMapUnmanaged(void) = .empty,
     list: std.ArrayListUnmanaged(ExternalImportEntry),
 
     fn init(allocator: std.mem.Allocator) ExternalImportCollector {
+        _ = allocator;
         return .{
-            .seen = std.StringHashMap(void).init(allocator),
+            .seen = .empty,
             .list = .empty,
         };
     }
@@ -136,7 +137,7 @@ const ExternalImportCollector = struct {
     fn deinit(self: *ExternalImportCollector, allocator: std.mem.Allocator) void {
         var kit = self.seen.keyIterator();
         while (kit.next()) |k| allocator.free(k.*);
-        self.seen.deinit();
+        self.seen.deinit(allocator);
         self.list.deinit(allocator);
     }
 
@@ -153,7 +154,7 @@ const ExternalImportCollector = struct {
             if (rec.specifier.len == 0) continue;
             const composite_key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ rec.specifier, rec.css_condition_tail });
             errdefer allocator.free(composite_key);
-            const gop = try self.seen.getOrPut(composite_key);
+            const gop = try self.seen.getOrPut(allocator, composite_key);
             if (gop.found_existing) {
                 allocator.free(composite_key);
                 continue;
@@ -273,12 +274,12 @@ fn collectPrefixDeclsTree(
     graph: *const ModuleGraph,
     idx: ModuleIndex,
     collector: *PrefixDeclCollector,
-    visited: *std.AutoHashMap(ModuleIndex, void),
+    visited: *std.AutoHashMapUnmanaged(ModuleIndex, void),
     allocator: std.mem.Allocator,
 ) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
-    try visited.put(idx, {});
+    try visited.put(allocator, idx, {});
     const mod = graph.getModule(idx) orelse return;
     if (mod.module_type != .css) return;
     for (mod.dependencies.items) |dep| {
@@ -297,12 +298,12 @@ fn collectExternalImportsTree(
     graph: *const ModuleGraph,
     idx: ModuleIndex,
     collector: *ExternalImportCollector,
-    visited: *std.AutoHashMap(ModuleIndex, void),
+    visited: *std.AutoHashMapUnmanaged(ModuleIndex, void),
     allocator: std.mem.Allocator,
 ) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
-    try visited.put(idx, {});
+    try visited.put(allocator, idx, {});
     const mod = graph.getModule(idx) orelse return;
     if (mod.module_type != .css) return;
     for (mod.dependencies.items) |dep| {
@@ -323,13 +324,13 @@ fn emitCssModuleTree(
     graph: *const ModuleGraph,
     idx: ModuleIndex,
     buf: *std.ArrayListUnmanaged(u8),
-    visited: *std.AutoHashMap(ModuleIndex, void),
+    visited: *std.AutoHashMapUnmanaged(ModuleIndex, void),
 ) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
     // 함수가 `!void` 라 OOM 은 propagate — `catch return` 으로 삼키면 silent skip 되어
     // @import 서브트리가 emit 누락된다.
-    try visited.put(idx, {});
+    try visited.put(allocator, idx, {});
     const mod = graph.getModule(idx) orelse return;
     if (mod.module_type != .css) return;
     for (mod.dependencies.items) |dep| {
@@ -377,17 +378,17 @@ pub fn planCssChunks(
     // dedup 은 청크 단위로만(같은 청크 내 같은 CSS 가 여러 JS 모듈 경로로
     // 도달해도 1번). 청크 간 복제는 허용 — 동적 청크가 자기 CSS 를
     // <link> 로 가져가도록 `chunk_css_hrefs` 도 자동으로 채워진다.
-    var chunk_mods = std.AutoHashMap(u32, std.ArrayListUnmanaged(*const Module)).init(allocator);
+    var chunk_mods: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(*const Module)) = .empty;
     defer {
         var vit = chunk_mods.valueIterator();
         while (vit.next()) |list| list.deinit(allocator);
-        chunk_mods.deinit();
+        chunk_mods.deinit(allocator);
     }
     // (chunk_idx, css_module_idx) 쌍 dedup — 한 청크 내 같은 CSS 1회.
-    var chunk_seen = std.AutoHashMap(ChunkCssKey, void).init(allocator);
-    defer chunk_seen.deinit();
-    var visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
-    defer visited.deinit();
+    var chunk_seen: std.AutoHashMapUnmanaged(ChunkCssKey, void) = .empty;
+    defer chunk_seen.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(ModuleIndex, void) = .empty;
+    defer visited.deinit(allocator);
 
     var it = graph.modulesIterator();
     while (it.next()) |m| {
@@ -412,8 +413,8 @@ pub fn planCssChunks(
     }
 
     // @import 인라인 dedup 용 — 청크마다 clear (청크 간엔 복제 허용).
-    var emit_visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
-    defer emit_visited.deinit();
+    var emit_visited: std.AutoHashMapUnmanaged(ModuleIndex, void) = .empty;
+    defer emit_visited.deinit(allocator);
 
     // 청크 인덱스 순회 → 출력 순서가 결정적(HashMap 순회 순서와 무관).
     var chunk_idx: usize = 0;
@@ -446,8 +447,8 @@ pub fn planCssChunks(
         // prefix decl / external collect 는 emit 과 동일 dep 트리 순회 —
         // emitCssModuleTree 가 본문 emit 도중 visited 를 마킹해 같은 dep 가
         // 2번 walk 되지 않으므로 별도 일회 순회.
-        var collect_visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
-        defer collect_visited.deinit();
+        var collect_visited: std.AutoHashMapUnmanaged(ModuleIndex, void) = .empty;
+        defer collect_visited.deinit(allocator);
         for (list.items) |mod| {
             try collectPrefixDeclsTree(graph, mod.index, &prefix_decls, &collect_visited, allocator);
         }
@@ -555,14 +556,14 @@ fn disambiguatePathCollisionsGeneric(
     errdefer for (new_paths) |p| if (p) |s| allocator.free(s);
 
     {
-        var groups = std.StringHashMap(std.ArrayListUnmanaged(usize)).init(allocator);
+        var groups: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
         defer {
             var vit = groups.valueIterator();
             while (vit.next()) |list| list.deinit(allocator);
-            groups.deinit();
+            groups.deinit(allocator);
         }
         for (items, 0..) |e, i| {
-            const gop = try groups.getOrPut(e.path);
+            const gop = try groups.getOrPut(allocator, e.path);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(allocator, i);
         }
@@ -679,25 +680,25 @@ fn walkCssOwner(
     chunk_graph: *const ChunkGraph,
     idx: ModuleIndex,
     ci: ChunkIndex,
-    chunk_mods: *std.AutoHashMap(u32, std.ArrayListUnmanaged(*const Module)),
-    chunk_seen: *std.AutoHashMap(ChunkCssKey, void),
-    visited: *std.AutoHashMap(ModuleIndex, void),
+    chunk_mods: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(*const Module)),
+    chunk_seen: *std.AutoHashMapUnmanaged(ChunkCssKey, void),
+    visited: *std.AutoHashMapUnmanaged(ModuleIndex, void),
 ) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
     // 함수가 `!void` 로 바뀌었으니 visited.put OOM 도 try 로 propagate.
     // 옛 `catch return` 은 silent skip → CSS 서브트리 누락 + 호출자가 OOM 도
     // 감지 못함. 같은 함수 내 chunk_seen/chunk_mods 가 try 를 쓰는 것과도 일관.
-    try visited.put(idx, {});
+    try visited.put(allocator, idx, {});
     const mod = graph.getModule(idx) orelse return;
 
     if (mod.module_type == .css) {
         if (mod.css_data == null) return;
         const ci_u32 = @intFromEnum(ci);
         // 청크 단위 dedup — 같은 청크 안에서 여러 JS 모듈이 같은 CSS 도달해도 1회.
-        const seen_gop = try chunk_seen.getOrPut(.{ .chunk = ci_u32, .css = idx });
+        const seen_gop = try chunk_seen.getOrPut(allocator, .{ .chunk = ci_u32, .css = idx });
         if (seen_gop.found_existing) return;
-        const list_gop = try chunk_mods.getOrPut(ci_u32);
+        const list_gop = try chunk_mods.getOrPut(allocator, ci_u32);
         if (!list_gop.found_existing) list_gop.value_ptr.* = .empty;
         try list_gop.value_ptr.append(allocator, mod);
         return;
@@ -839,12 +840,12 @@ fn collectCssModules(
     graph: *const ModuleGraph,
     idx: ModuleIndex,
     result: *std.ArrayListUnmanaged(*const Module),
-    visited: *std.AutoHashMap(ModuleIndex, void),
+    visited: *std.AutoHashMapUnmanaged(ModuleIndex, void),
 ) void {
     if (idx == .none) return;
     if (visited.contains(idx)) return;
     const mod = graph.getModule(idx) orelse return;
-    visited.put(idx, {}) catch return;
+    visited.put(allocator, idx, {}) catch return;
 
     // 의존성 먼저 방문 (DFS)
     for (mod.dependencies.items) |dep_idx| {

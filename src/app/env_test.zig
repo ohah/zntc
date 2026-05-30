@@ -22,9 +22,9 @@ test "app env loader honors Vite file priority and prefixes" {
 }
 
 test "app env define includes base and import.meta.env object" {
-    var env_map = env.EnvMap.init(std.testing.allocator);
+    var env_map: env.EnvMap = .empty;
     defer env.deinitMap(&env_map, std.testing.allocator);
-    try env_map.put(try std.testing.allocator.dupe(u8, "VITE_API"), try std.testing.allocator.dupe(u8, "ok"));
+    try env_map.put(std.testing.allocator, try std.testing.allocator.dupe(u8, "VITE_API"), try std.testing.allocator.dupe(u8, "ok"));
 
     const defines = try env.envToDefine(std.testing.allocator, &env_map, "development", "/app/");
     defer env.freeDefines(std.testing.allocator, defines);

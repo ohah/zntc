@@ -5,7 +5,7 @@ const runtime_polyfills = @import("../runtime_polyfills.zig");
 pub fn selectModule(
     allocator: std.mem.Allocator,
     selected: *std.ArrayList(runtime_polyfills.ResolvedModule),
-    seen: *std.StringHashMap(void),
+    seen: *std.StringHashMapUnmanaged(void),
     plan: runtime_polyfills.Plan,
     module: runtime_polyfills.ResolvedModule,
     reason: []const u8,
@@ -21,7 +21,7 @@ pub fn selectModule(
         return;
     }
     if (seen.contains(module.module)) return;
-    try seen.put(module.module, {});
+    try seen.put(allocator, module.module, {});
     try selected.append(allocator, module);
     if (debug_log.enabled(.runtime_polyfills)) {
         debug_log.print(

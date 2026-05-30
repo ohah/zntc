@@ -97,14 +97,14 @@ pub const ModuleSemanticData = struct {
     symbols: std.ArrayList(Symbol),
     scopes: []const Scope,
     /// 스코프별 이름→심볼 인덱스 조회. scope_maps[scope_id].get("x") → symbol index.
-    scope_maps: []const std.StringHashMap(usize),
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
     /// export된 이름 목록. exported_names.get("x") → Span.
-    exported_names: std.StringHashMap(Span),
+    exported_names: std.StringHashMapUnmanaged(Span),
     /// 노드 인덱스 → 심볼 인덱스 매핑. 식별자 노드만 유효값.
     symbol_ids: []const ?u32,
     /// 미해결 참조 (unresolved references). 스코프 체인에서 선언을 찾지 못한 이름.
     /// 번들러 linker가 scope hoisting 시 이 이름들을 예약하여 shadowing 방지.
-    unresolved_references: std.StringHashMap(void),
+    unresolved_references: std.StringHashMapUnmanaged(void),
     /// per-reference 배열. 현재 consumer: mangler liveness.
     references: []const Reference = &.{},
     /// `Symbol.const_kind == .number` 인 심볼의 원본 numeric_literal 텍스트 사이드테이블 (#2505).

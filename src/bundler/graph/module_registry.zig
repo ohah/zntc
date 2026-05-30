@@ -107,7 +107,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const
     var s_put = profile.begin(.graph_discover_incr_add_module_put);
     try self.modules.append(self.allocator, module);
     ownership_transferred = true;
-    try self.path_to_module.put(path_owned, index);
+    try self.path_to_module.put(self.allocator, path_owned, index);
     // PR-Z3: lodash-es 평균 3-4 dep / module 로 ArrayList default grow (4→8→16) 가 매
     // build 마다 alloc 1-2회. 사전 capacity 8 로 link 의 grow 회피 (M8 측정 link 98%).
     const mod_ref = self.modules.at(@intFromEnum(index));
@@ -169,7 +169,7 @@ fn addDisabledModuleWithMode(
     module.side_effects = false;
     module.state = .ready;
     try self.modules.append(self.allocator, module);
-    try self.path_to_module.put(disabled_path, index);
+    try self.path_to_module.put(self.allocator, disabled_path, index);
 
     return index;
 }
@@ -190,7 +190,7 @@ pub fn addExternalModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex
     module.side_effects = true;
     module.state = .ready;
     try self.modules.append(self.allocator, module);
-    try self.path_to_module.put(path_owned, index);
+    try self.path_to_module.put(self.allocator, path_owned, index);
     return index;
 }
 
