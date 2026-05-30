@@ -226,10 +226,14 @@ export default function Playground() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [options, setOptions] = useState<Options>({ ...DEFAULT_OPTIONS, ...hashData.options });
-  const [showConfig, setShowConfig] = useState(true);
+  // 데스크탑은 펼침, 모바일(<768px)은 닫힘으로 시작 — 좁은 화면에서 에디터가 가려지지 않게.
+  const [showConfig, setShowConfig] = useState(() =>
+    typeof window === "undefined" ? true : window.innerWidth >= 768,
+  );
   const [outputTab, setOutputTab] = useState<"code" | "sourcemap">("code");
   const transpileFnRef = useRef<TranspileFn | undefined>(undefined);
   const inputEditorRef = useRef<any>(null);
+  const outputEditorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const [sourcemapOutput, setSourcemapOutput] = useState("");
 
@@ -308,6 +312,16 @@ export default function Playground() {
     })();
   }, []);
 
+  // 사이드바 펼침/닫힘으로 에디터 영역 폭이 바뀌면 Monaco 를 즉시 재레이아웃.
+  // (automaticLayout 이 켜져 있어도 transition 직후 한 번 강제로 맞춰 줘야 깔끔하다.)
+  useEffect(() => {
+    const id = setTimeout(() => {
+      inputEditorRef.current?.layout?.();
+      outputEditorRef.current?.layout?.();
+    }, 60);
+    return () => clearTimeout(id);
+  }, [showConfig]);
+
   function handleInputChange(value: string | undefined) {
     const code = value ?? "";
     setInput(code);
@@ -372,6 +386,7 @@ export default function Playground() {
   }
 
   function handleOutputMount(editor: any) {
+    outputEditorRef.current = editor;
     setTimeout(() => {
       editor.layout();
       const m = (window as any).monaco;
@@ -387,10 +402,16 @@ export default function Playground() {
       className="not-content playground-root flex flex-col overflow-hidden bg-surface-950"
       style={{ height: "calc(100vh - 64px)" }}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-surface-800 bg-surface-900 px-4 py-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-surface-800 bg-surface-900 px-4 py-2">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setShowConfig(!showConfig)} className={BTN_CLASS}>
-            {showConfig ? "◀" : "▶"}
+          <button
+            type="button"
+            onClick={() => setShowConfig(!showConfig)}
+            className={BTN_CLASS}
+            aria-label={showConfig ? "옵션 패널 닫기" : "옵션 패널 열기"}
+            aria-expanded={showConfig}
+          >
+            {showConfig ? "✕" : "☰"}
           </button>
           <a href="/zntc/" className="text-sm font-bold text-neutral-200 no-underline">
             ZNTC Playground
@@ -427,9 +448,17 @@ export default function Playground() {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
         {showConfig && (
-          <div className="pg-config w-60 min-w-[15rem] shrink-0 overflow-y-auto border-r border-surface-800 bg-surface-900 p-3 text-[13px]">
+          <>
+            {/* 모바일: 옵션 패널을 오버레이 드로어로 띄우고 뒤 배경 탭하면 닫힘 */}
+            <button
+              type="button"
+              aria-label="옵션 패널 닫기"
+              onClick={() => setShowConfig(false)}
+              className="absolute inset-0 z-30 cursor-default border-0 bg-black/50 p-0 md:hidden"
+            />
+            <div className="pg-config absolute inset-y-0 left-0 z-40 w-60 min-w-0 max-w-[85vw] shrink-0 overflow-y-auto border-r border-surface-800 bg-surface-900 p-3 text-[13px] md:static md:z-auto md:min-w-[15rem] md:max-w-none">
             <Section title="Parser">
               <Sel label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)} options={[["input.tsx","TypeScript+JSX"],["input.ts","TypeScript"],["input.jsx","JavaScript+JSX"],["input.js","JavaScript"]]} />
               <Chk label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
@@ -467,10 +496,11 @@ export default function Playground() {
               <Chk label="console.*" checked={options.dropConsole} onChange={(v) => updateOption("dropConsole", v)} />
               <Chk label="debugger" checked={options.dropDebugger} onChange={(v) => updateOption("dropDebugger", v)} />
             </Section>
-          </div>
+            </div>
+          </>
         )}
 
-        <div className="pg-editors flex flex-1 overflow-hidden">
+        <div className="pg-editors flex min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
           <EditorPanel
             header={
               <span>
@@ -480,7 +510,7 @@ export default function Playground() {
           >
             <Editor height="100%" language={inputLang} theme="vs-dark" value={input} onChange={handleInputChange} onMount={handleInputMount} options={editorOpts} />
           </EditorPanel>
-          <div className="pg-divider w-[2px] shrink-0 bg-surface-800" />
+          <div className="pg-divider h-[2px] w-full shrink-0 bg-surface-800 md:h-auto md:w-[2px]" />
           <EditorPanel
             header={
               <div className="flex w-full items-center justify-between">

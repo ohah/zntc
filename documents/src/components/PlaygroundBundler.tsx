@@ -374,7 +374,10 @@ export default function PlaygroundBundler() {
   const [activeChunkPath, setActiveChunkPath] = useState<string>("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [showSidebar, setShowSidebar] = useState(true);
+  // 데스크탑은 펼침, 모바일(<768px)은 닫힘으로 시작 — 좁은 화면에서 에디터가 가려지지 않게.
+  const [showSidebar, setShowSidebar] = useState(() =>
+    typeof window === "undefined" ? true : window.innerWidth >= 768,
+  );
   const wasmRef = useRef<WasmModule | null>(null);
   const vfsRef = useRef<InstanceType<WasmModule["VirtualFileSystem"]> | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -547,15 +550,16 @@ export default function PlaygroundBundler() {
       className="not-content playground-root flex flex-col overflow-hidden bg-surface-950"
       style={{ height: "calc(100vh - 64px)" }}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-surface-800 bg-surface-900 px-4 py-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-surface-800 bg-surface-900 px-4 py-2">
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setShowSidebar(!showSidebar)}
             className={BTN_CLASS}
-            aria-label="Toggle file panel"
+            aria-label={showSidebar ? "파일 패널 닫기" : "파일 패널 열기"}
+            aria-expanded={showSidebar}
           >
-            {showSidebar ? "◀" : "▶"}
+            {showSidebar ? "✕" : "☰"}
           </button>
           <a href={`${BASE_URL}playground/`} className="text-sm font-bold text-neutral-200 no-underline">
             ZNTC Bundler Playground
@@ -600,9 +604,17 @@ export default function PlaygroundBundler() {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
         {showSidebar && (
-          <div className="w-56 min-w-[14rem] shrink-0 overflow-y-auto border-r border-surface-800 bg-surface-900 p-2 text-[13px]">
+          <>
+            {/* 모바일: 파일/옵션 패널을 오버레이 드로어로 띄우고 뒤 배경 탭하면 닫힘 */}
+            <button
+              type="button"
+              aria-label="파일 패널 닫기"
+              onClick={() => setShowSidebar(false)}
+              className="absolute inset-0 z-30 cursor-default border-0 bg-black/50 p-0 md:hidden"
+            />
+            <div className="absolute inset-y-0 left-0 z-40 w-56 min-w-0 max-w-[85vw] shrink-0 overflow-y-auto border-r border-surface-800 bg-surface-900 p-2 text-[13px] md:static md:z-auto md:min-w-[14rem] md:max-w-none">
             <div className="mb-2 flex items-center justify-between border-b border-surface-800 pb-1">
               <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-neutral-400">
                 Files
@@ -842,10 +854,11 @@ export default function PlaygroundBundler() {
                 />
               </Section>
             </div>
-          </div>
+            </div>
+          </>
         )}
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
           <EditorPanel
             header={
               <span>
@@ -863,7 +876,7 @@ export default function PlaygroundBundler() {
               options={editorOpts}
             />
           </EditorPanel>
-          <div className="w-[2px] shrink-0 bg-surface-800" />
+          <div className="h-[2px] w-full shrink-0 bg-surface-800 md:h-auto md:w-[2px]" />
           <EditorPanel
             header={
               <div className="flex w-full items-center justify-between gap-2">
