@@ -2113,6 +2113,34 @@ fn expectNoParseError(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 }
 
+test "new + optional chain: callee 의 optional chain 은 SyntaxError" {
+    // ECMAScript: new 의 MemberExpression callee 는 OptionalExpression 일 수 없다.
+    // V8/esbuild 와 동일하게 거부. (이전엔 수용하고 `(new obj)?.fn()` 로 오파싱했다.)
+    try expectParseError("new a?.b()", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new a?.b", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new a.b?.c()", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new a.b.c?.d()", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new a?.[0]()", .{ .message = "Invalid optional chain in 'new' expression" });
+    // optional call / tagged template 도 callee optional chain → 거부 (단일 진단으로 recovery).
+    try expectParseError("new a?.()", .{ .message = "Invalid optional chain in 'new' expression" });
+    try expectParseError("new a?.`t`", .{ .message = "Invalid optional chain in 'new' expression" });
+    // 중첩 new 의 inner callee optional 도 재귀로 잡힘.
+    try expectParseError("new new a?.b()()", .{ .message = "Invalid optional chain in 'new' expression" });
+}
+
+test "new + optional chain: 유효 형태는 통과" {
+    // paren 으로 감싼 optional chain 은 new 의 피연산자로 유효.
+    try expectNoParseError("new (a?.b)()");
+    // 일반 member callee.
+    try expectNoParseError("new a.b()");
+    try expectNoParseError("new a.b.c()");
+    // optional chain 이 *인자* 안이면 callee 와 무관 → 유효.
+    try expectNoParseError("new Error(e?.msg)");
+    // new 표현식 *뒤*의 optional 접근은 유효(`(new a()).b?.c`).
+    try expectNoParseError("new a().b?.c");
+    try expectNoParseError("(new a())?.b");
+}
+
 test "ErrorMsg: expect() shows 'found' token" {
     // `if (true]` → Expected ')' but found ']'
     try expectParseError("if (true]", .{ .message = ")", .has_found = true });
