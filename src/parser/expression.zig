@@ -808,7 +808,15 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    var after_optional_chain = false;
+    // optional chain 영역 플래그. `?.` 가 한 번 나오면 그 뒤로 `.x`/`()`/`[i]`/`!` 로 체인이
+    // 이어지는 동안 계속 true 로 유지한다 — ECMAScript(13.3.1.1): `?.` 이후 체인 전체가
+    // OptionalChain 이고, OptionalChain 위의 tagged template(`a?.b.c`x``)은 SyntaxError.
+    // 직전 링크만 보면 중간에 비-optional 링크가 끼는 `a?.b.c`x`` 를 놓친다(node/esbuild 거부).
+    // paren 으로 체인이 끊기면(`(a?.b)`x``) 안쪽은 별도 parseCallExpression 호출이라 false 로
+    // 시작 → 유효.
+    var in_optional_chain = false;
+    // optional chain 위 tagged template SyntaxError 는 체인당 1회만(node/esbuild 동형).
+    var reported_optional_template = false;
     // argless-new 가 head 인 optional chain 진단은 체인당 1회만 (체인의 head 는 고정이라
     // 매 `?.` 마다 walk 가 같은 argless new 를 재발견 → 중복 방지). V8 도 1개.
     var reported_new_optional = false;
@@ -936,7 +944,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                                     .data = .{ .extra = me },
                                 });
                             }
-                            after_optional_chain = true;
+                            in_optional_chain = true;
                             continue;
                         }
                     }
@@ -975,13 +983,16 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                         });
                     }
                 }
-                after_optional_chain = true;
+                in_optional_chain = true;
                 continue;
             },
             .no_substitution_template, .template_head => {
-                // tagged template 금지: a?.b`template` (ECMAScript 12.3.1.1)
-                if (after_optional_chain) {
+                // tagged template 금지: optional chain 위의 tagged template 은 SyntaxError
+                // (ECMAScript 13.3.1.1). `?.` 직후뿐 아니라 그 뒤로 체인이 이어진 경우
+                // (`a?.b.c`x``)도 거부 — in_optional_chain 이 체인 동안 sticky. 진단은 1회.
+                if (in_optional_chain and !reported_optional_template) {
                     try self.addErrorCode(self.currentSpan(), "Tagged template cannot be used in optional chain", .tagged_template_optional);
+                    reported_optional_template = true;
                 }
                 // tagged template: expr`text` 또는 expr`text${...}...`
                 // tagged template에서는 잘못된 이스케이프 허용 (cooked가 undefined)
@@ -1043,7 +1054,6 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
             },
             else => break,
         }
-        after_optional_chain = false;
     }
 
     return expr;
