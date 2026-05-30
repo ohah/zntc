@@ -1770,8 +1770,16 @@ pub const Scanner = struct {
     /// - template_tail: }text` (템플릿 끝)
     /// - syntax_error: 닫히지 않은 템플릿
     fn scanTemplateContinuation(self: *Scanner) !Kind {
-        // 스택에서 현재 템플릿 depth를 pop
-        _ = self.template_depth_stack.pop();
+        // 스택에서 현재 템플릿 depth를 pop.
+        // `pop()` 대신 길이만 감소 — `Parser.restoreState` 는 lookahead/speculation 후
+        // `items.len` 을 되돌려 popped 값을 capacity 내 backing 에서 복구하는 설계인데,
+        // 안전모드 `pop()` 은 제거 슬롯을 `undefined`(Debug 0xaa) 로 덮어써 그 전제를 깬다.
+        // 그러면 복구된 top 이 0xaaaaaaaa 가 되어, template 안 `(x)` 같은 paren 식 lookahead
+        // 직후의 닫는 `}` 가 template continuation 이 아닌 일반 `r_curly` 로 오인식돼
+        // "Expected template continuation"(ZNTC0909) 가 난다 (Debug/ReleaseSafe 전용 회귀).
+        if (self.template_depth_stack.items.len > 0) {
+            self.template_depth_stack.items.len -= 1;
+        }
         return try self.scanTemplateContent(.template_tail, .template_middle);
     }
 
