@@ -827,7 +827,16 @@ pub const Linker = struct {
     /// unified_mangler.mangleAll() 을 호출하기 위한 입력 수집. `(module_index,
     /// symbol_id)` 단위 후보를 개별 생성한다 (이름별 집계 없음). 결과는
     /// caller 가 `deinit` 해야 함.
-    pub fn collectUnifiedInput(self: *const Linker) !UnifiedCollect {
+    /// `chunk_modules` 가 non-null 이면 그 집합에 포함된 모듈만 mangle candidate / Phase B
+    /// 대상으로 삼는다 (#4045 per-chunk mangle). 나머지 모듈은 빈 입력으로 skip (bitset 만
+    /// 보존해 `unified_module_scopes` 인덱싱 유지). `extra_reserved` 는 cross-chunk import 로
+    /// 이 청크에 도입되는 이름 — 청크 내부 mangle 이 그 이름을 재사용하지 않도록 reserved 에
+    /// 합친다. 전역 mangle(`computeMangling`)은 `(null, &.{})` 로 호출해 기존 동작 유지.
+    pub fn collectUnifiedInput(
+        self: *const Linker,
+        chunk_modules: ?*const std.AutoHashMapUnmanaged(ModuleIndex, void),
+        extra_reserved: []const []const u8,
+    ) !UnifiedCollect {
         const um = @import("../codegen/unified_mangler.zig");
         // helper module / dead module / sem-less module 모두 같은 빈 입력으로
         // Phase B 를 skip 시킨다.
@@ -877,6 +886,13 @@ pub const Linker = struct {
         defer exported.deinit(self.allocator);
         var reserved: std.StringHashMapUnmanaged(void) = .empty;
         defer reserved.deinit(self.allocator);
+
+        // #4045: cross-chunk import 로 이 청크에 바인딩되는 이름(import binding local /
+        // deconflict alias). 청크 내부 mangle 이 같은 이름을 다른 binding 의 short name 으로
+        // 부여하면 cross-chunk 참조가 깨진다 → reserved 로 회피.
+        for (extra_reserved) |name| {
+            try reserved.put(self.allocator, name, {});
+        }
 
         // Scope-hoisted output shares one top-level lexical environment. If a
         // minified top-level declaration reuses an unresolved global name
@@ -937,6 +953,16 @@ pub const Linker = struct {
             const sym_count = if (sem_opt) |s| s.symbols.items.len else 0;
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
             created += 1;
+
+            // #4045: per-chunk mangle — 이 청크에 속하지 않은 모듈은 candidate / Phase B
+            // 양쪽 제외 (emptyInput). 다른 청크 모듈의 심볼은 이 청크 mangle 에서 이름을
+            // 받지 않으며, cross-chunk 로 참조되는 이름은 extra_reserved 가 이미 보호한다.
+            if (chunk_modules) |cm| {
+                if (!cm.contains(@as(ModuleIndex, @enumFromInt(mi)))) {
+                    modules[mi] = emptyInput(m.source, bitsets[mi]);
+                    continue;
+                }
+            }
 
             // tree-shake 후 dead 로 판정된 모듈은 후보에서 제외 — 짧은 이름 풀이
             // emit 안 될 binding 으로 잠식되는 회귀 방지. tree_shaker_active=false
@@ -1194,7 +1220,7 @@ pub const Linker = struct {
 
         try self.collectReservedGlobals();
 
-        var collected = try self.collectUnifiedInput();
+        var collected = try self.collectUnifiedInput(null, &.{});
         // bitsets 은 linker 로 이관 후 free, candidates/modules/reserved/import_refs 는 여기서 해제.
         defer {
             self.allocator.free(collected.top_level_candidates);
@@ -2575,6 +2601,71 @@ pub const Linker = struct {
 
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);
+
+        // 3. #4045: production code splitting + minify 시 deconflict 이후 청크 *내부*
+        // 로컬 식별자를 축약(mangle)한다. deconflict(calculateRenames)를 먼저 돌려
+        // 단일 번들의 computeRenames→computeMangling 순서를 그대로 재현 — 1-char
+        // cross-module 충돌 등 mangleAll 이 skip 하는 케이스가 먼저 해소된다.
+        // cross-chunk export 이름은 emit 의 `export { local as public }` 브리지가
+        // 보존하므로 별도 예약 불필요. import 경계 이름만 occupied_names 로 보호.
+        if (self.graph.minify_identifiers and self.graph.code_splitting) {
+            try self.computeChunkMangling(module_indices, occupied_names);
+        }
+    }
+
+    /// 단일 청크(`module_indices`)의 top-level + nested 식별자를 mangle 한다.
+    /// `computeMangling`(전역)의 per-chunk 대응 — `collectUnifiedInput` 을 청크 필터로
+    /// 호출하고 결과 Phase A 를 `rename_table` 에, Phase B 를 `unified_result` 에 보관한다.
+    /// emit 루프는 청크 단위로 순차 실행되므로 청크마다 `unified_result` 를 덮어써도 안전
+    /// (metadata 가 Phase B 값을 dupe 해 소유 — borrowed slice UAF 없음).
+    fn computeChunkMangling(
+        self: *Linker,
+        module_indices: []const ModuleIndex,
+        occupied_names: []const []const u8,
+    ) !void {
+        const um = @import("../codegen/unified_mangler.zig");
+
+        // 이전 청크의 Phase B 산출물 해제 (다음 emit 전 fresh). 첫 청크는 null → no-op.
+        self.clearMangling();
+
+        // 청크 멤버 집합 — collectUnifiedInput candidate 필터.
+        var chunk_set: std.AutoHashMapUnmanaged(ModuleIndex, void) = .empty;
+        defer chunk_set.deinit(self.allocator);
+        try chunk_set.ensureUnusedCapacity(self.allocator, @intCast(module_indices.len));
+        for (module_indices) |mi| chunk_set.putAssumeCapacity(mi, {});
+
+        var collected = try self.collectUnifiedInput(&chunk_set, occupied_names);
+        defer {
+            self.allocator.free(collected.top_level_candidates);
+            self.allocator.free(collected.modules);
+            self.allocator.free(collected.reserved_names);
+            for (collected.import_ref_slices) |s| self.allocator.free(s);
+            self.allocator.free(collected.import_ref_slices);
+        }
+
+        var result = try um.mangleAll(self.allocator, .{
+            .modules = collected.modules,
+            .top_level_candidates = collected.top_level_candidates,
+            .global_reserved = collected.reserved_names,
+        });
+        errdefer result.deinit();
+
+        // Phase A (top-level) 결과를 rename_table 에 주입 (computeMangling 패턴 복제).
+        // dup 는 canonical_strings 가 소유, deconflict 가 먼저 넣은 stale entry 는
+        // assignSymbolCanonical 이 used set 에서 제거 후 덮어쓴다.
+        for (collected.top_level_candidates) |cand| {
+            const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
+            const mangled = result.renames.get(key) orelse continue;
+            const cand_mod = self.getModule(cand.module_index) orelse continue;
+            const sem = cand_mod.semantic orelse continue;
+            if (cand.symbol_id >= sem.symbols.items.len) continue;
+            const dup = try self.allocator.dupe(u8, mangled);
+            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(cand.module_index)), cand.symbol_id);
+            try self.assignSymbolCanonical(id, dup);
+        }
+
+        self.unified_result = result;
+        self.unified_module_scopes = collected.takeBitsets();
     }
 
     pub const makeExportKey = types.makeModuleKey;
