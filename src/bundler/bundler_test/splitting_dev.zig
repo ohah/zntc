@@ -2586,3 +2586,95 @@ test "Profile: pipeline stage timing (dev only, not for CI)" {
         });
     }
 }
+
+// ============================================================
+// Lazy compilation — dev + code_splitting (RFC docs/RFC_LAZY_COMPILATION.md, PR-2)
+// issue #4038: dev init lowering(__zntc_modules[dev_id])이 청크 경계를 못 넘던 버그 수정 검증.
+// ============================================================
+
+test "LazyDevSplitting: dev+split → 프로덕션 init 사용, __zntc_modules 누출 없음 (#4038)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 공유 + 동적 + re-export 바렐까지 섞어 wrapped 모듈 init 경로(esm_wrap:838 re-export 등)도 커버.
+    try writeFile(tmp.dir, "shared.ts", "export const s = 'S';\nconsole.log('shared boot');");
+    try writeFile(tmp.dir, "barrel.ts", "export * from './shared';\nexport const b = 'B';"); // re-export init (#4038)
+    try writeFile(tmp.dir, "heavy.ts", "import { s, b } from './barrel';\nexport function heavy() { return 'HEAVY-' + s + b; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { s, b } from './barrel';
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavy()); }
+        \\console.log('entry boot', s, b);
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    try std.testing.expect(outs.len >= 2); // entry 청크 + 동적 heavy 청크
+
+    var has_register = false;
+    var has_loader = false;
+    var has_require_bootstrap = false; // entry 실행 트리거 (#4038 BUG2 회귀 가드)
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "__zntc_register") != null) has_register = true;
+        if (std.mem.indexOf(u8, o.contents, "__zntc_load_chunk(\"") != null) has_loader = true;
+        if (std.mem.indexOf(u8, o.contents, "__zntc_require(\"") != null) has_require_bootstrap = true;
+        // #4038 BUG1 회귀 가드: dev 단일번들 HMR 레지스트리(__zntc_modules)가 청크에 누출되면 안 됨.
+        // (청크 런타임은 __zntc_mods/__zntc_require 사용. __zntc_modules 는 단일번들 전용.)
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "__zntc_modules") == null);
+        // 빈 dev_id 참조(__zntc_modules[""]) 절대 금지.
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "[\"\"]") == null);
+        // IIFE 청크에 ESM import/export 누출 금지.
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\nexport {") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\nimport {") == null);
+    }
+    try std.testing.expect(has_register);
+    try std.testing.expect(has_loader);
+    try std.testing.expect(has_require_bootstrap); // entry 가 실행되도록 bootstrap require 존재
+
+    // dev_mode 효과: minify 스킵 → 모듈 경계 주석(//#region) 보존.
+    var has_region = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "//#region ") != null) has_region = true;
+    }
+    try std.testing.expect(has_region);
+}
+
+test "LazyDevSplitting: kill-switch — lazy_compilation=false 면 dev 단일 번들 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export function heavy() { return 'H'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavy()); }
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // dev_mode + code_splitting 이지만 lazy_compilation=false → 기존 dev 단일 번들 경로.
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = false,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // 단일 번들 경로: output 존재, outputs 없음(청크 분할 안 함). dev 단일번들은 __zntc_modules 사용.
+    try std.testing.expect(result.output.len > 0);
+    try std.testing.expect(result.outputs == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules") != null);
+}
