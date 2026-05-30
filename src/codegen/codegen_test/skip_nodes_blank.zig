@@ -44,7 +44,7 @@ fn codegenWithSkippedStatements(
 
     var md: LinkingMetadata = .{
         .skip_nodes = skip,
-        .renames = std.AutoHashMap(u32, []const u8).init(a),
+        .renames = .empty,
         .final_exports = null,
         .symbol_ids = &.{},
         .allocator = a,

@@ -49,12 +49,12 @@ pub fn registerNamespaceRewrites(
     owned_rewrite_values: *std.ArrayListUnmanaged([]const u8),
     /// 같은 importer 안에서 여러 namespace import 가 같은 target source 의 inline ns_var
     /// 를 공유하도록 caller 가 owned. `cjs_var_cache` 와 같은 패턴 (`metadata.zig`).
-    ns_target_to_var: *std.AutoHashMap(u32, []const u8),
+    ns_target_to_var: *std.AutoHashMapUnmanaged(u32, []const u8),
     /// PR #3742 (C7 F3 follow-up): nested bindings set 도 caller-owned cache.
     /// 같은 importer 안 N 개 ns import 가 동일한 set 재build 회피 (per-importer 1회).
     /// null 으로 시작, 첫 호출에서 lazy build. caller 가 `defer if (cache) |*c| c.deinit()`.
     /// per-thread — emit thread 마다 별도 buildMetadataForAst → 별도 cache (caller stack frame).
-    nested_bindings_cache: *?std.StringHashMap(void),
+    nested_bindings_cache: *?std.StringHashMapUnmanaged(void),
     force_inline: bool,
     force_target_init: bool,
     importer_mod_idx: u32,
@@ -83,10 +83,10 @@ pub fn registerNamespaceRewrites(
             }
             exports.deinit(self.allocator);
         }
-        var seen = std.StringHashMap(void).init(self.allocator);
-        defer seen.deinit();
-        var visited = std.AutoHashMap(u32, void).init(self.allocator);
-        defer visited.deinit();
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(self.allocator);
+        var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer visited.deinit(self.allocator);
         try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
 
         mutable_self.ns_cache_mutex.lock();
@@ -105,12 +105,12 @@ pub fn registerNamespaceRewrites(
         break :blk owned_slice;
     };
 
-    var seen_exports = std.StringHashMap(void).init(self.allocator);
-    defer seen_exports.deinit();
+    var seen_exports: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen_exports.deinit(self.allocator);
     // PR #3741 (C7 perf): capacity hint — cached_exports.len 만큼 미리 알loc 해서 rehash 회피.
-    try seen_exports.ensureTotalCapacity(@intCast(cached_exports.len));
+    try seen_exports.ensureTotalCapacity(self.allocator, @intCast(cached_exports.len));
     for (cached_exports) |exp| {
-        try seen_exports.put(exp.exported, {});
+        try seen_exports.put(self.allocator, exp.exported, {});
     }
 
     // importer 의 nested binding 과 충돌하는 export 는 inline 시 self-shadow 무한
@@ -121,11 +121,11 @@ pub fn registerNamespaceRewrites(
     // 또한 ns_target_mod 가 있는 export (re_export_namespace 등) 는 target_mod 별
     // hoisted ns_var 를 만들고 inner_map 매핑은 그 변수명으로 둔다 — emitStaticMember
     // 가 access site 마다 객체 literal 을 inline emit 하는 회귀 방지 (#1928).
-    var inner_map = std.StringHashMap([]const u8).init(self.allocator);
+    var inner_map: std.StringHashMapUnmanaged([]const u8) = .empty;
     var inner_map_transferred = false;
-    errdefer if (!inner_map_transferred) inner_map.deinit();
+    errdefer if (!inner_map_transferred) inner_map.deinit(self.allocator);
     // PR #3741 (C7 perf): capacity hint — cached_exports.len entries 예상.
-    try inner_map.ensureTotalCapacity(@intCast(cached_exports.len));
+    try inner_map.ensureTotalCapacity(self.allocator, @intCast(cached_exports.len));
     var has_shadow = false;
     // target_init 은 target_mod_idx 에만 의존하므로 export 마다 재계산할 필요가 없다.
     // dev lazy runtime 에서는 access site 가 package entry 도 깨워야 하므로 target init 을
@@ -140,13 +140,13 @@ pub fn registerNamespaceRewrites(
     // export 마다 반복 → 매번 `allocEsmInitExprForModuleIndex` 가 동일한 init 식을 새로
     // alloc. 호출자가 owned 한 캐시로 1회 alloc + 재사용. null 결과 (source.wrap_kind
     // != .esm) 도 캐시해 이중 lookup 회피. 같은 패턴: `cjs_var_cache` (metadata.zig).
-    var source_init_cache = std.AutoHashMap(u32, ?[]const u8).init(self.allocator);
+    var source_init_cache: std.AutoHashMapUnmanaged(u32, ?[]const u8) = .empty;
     defer {
         var it = source_init_cache.valueIterator();
         while (it.next()) |value_ptr| {
             if (value_ptr.*) |expr| self.allocator.free(expr);
         }
-        source_init_cache.deinit();
+        source_init_cache.deinit(self.allocator);
     }
     // RFC PR-2 (#3399): mangle-safe 경로면 shadow-skip 을 끄고 멤버를 inner_map
     // 에 등록 → `emitStaticMember` 가 `X.member`→exp.local 직접 재작성 →
@@ -161,20 +161,20 @@ pub fn registerNamespaceRewrites(
     if (!ns_rewrite and nested_bindings_cache.* == null) {
         if (self.getModule(importer_mod_idx)) |importer_mod| {
             if (importer_mod.semantic) |sem| {
-                var nb = std.StringHashMap(void).init(self.allocator);
-                errdefer nb.deinit();
+                var nb: std.StringHashMapUnmanaged(void) = .empty;
+                errdefer nb.deinit(self.allocator);
                 // F2: capacity hint — non-module-scope 의 entry 합 추정.
                 var est: usize = 0;
                 for (sem.scope_maps, 0..) |scope_map, scope_idx| {
                     if (scope_idx == 0) continue;
                     est += scope_map.count();
                 }
-                try nb.ensureTotalCapacity(@intCast(est));
+                try nb.ensureTotalCapacity(self.allocator, @intCast(est));
                 for (sem.scope_maps, 0..) |scope_map, scope_idx| {
                     if (scope_idx == 0) continue;
                     var it = scope_map.iterator();
                     while (it.next()) |entry| {
-                        try nb.put(entry.key_ptr.*, {});
+                        try nb.put(self.allocator, entry.key_ptr.*, {});
                     }
                 }
                 nested_bindings_cache.* = nb;
@@ -199,7 +199,7 @@ pub fn registerNamespaceRewrites(
         // namespace 멤버는 undefined. `void 0` 으로 매핑하면 emitStaticMember 가 access
         // 를 `void 0` 으로 재작성(materialize 안 된 inline ns 의 dangling 참조 방지).
         if (ambiguity_possible and self.isAmbiguousStarExport(@enumFromInt(target_mod_idx), exp.exported)) {
-            try inner_map.put(exp.exported, "void 0");
+            try inner_map.put(self.allocator, exp.exported, "void 0");
             continue;
         }
         if (exp.ns_target_mod) |target| {
@@ -217,7 +217,7 @@ pub fn registerNamespaceRewrites(
                     const expr = try std.fmt.allocPrint(self.allocator, "{s}({s}())", .{ toesm, req });
                     errdefer self.allocator.free(expr);
                     try owned_rewrite_values.append(self.allocator, expr);
-                    try inner_map.put(exp.exported, expr);
+                    try inner_map.put(self.allocator, exp.exported, expr);
                     continue;
                 }
             }
@@ -226,11 +226,11 @@ pub fn registerNamespaceRewrites(
             else blk: {
                 if (self.useSharedNsInline(target)) {
                     const ns_var_name = try appendSharedNsInlineEntry(self, ns_inline_list, null, target, &seen_exports);
-                    try ns_target_to_var.put(target, ns_var_name);
+                    try ns_target_to_var.put(self.allocator, target, ns_var_name);
                     break :blk ns_var_name;
                 }
                 const fresh = try makeUniqueNsVarName(self, exp.exported, &seen_exports);
-                try ns_target_to_var.put(target, fresh);
+                try ns_target_to_var.put(self.allocator, target, fresh);
                 const obj_str = try buildInlineObjectStr(self, target, 0);
                 try ns_inline_list.append(self.allocator, .{
                     .symbol_id = null,
@@ -242,7 +242,7 @@ pub fn registerNamespaceRewrites(
             // inner_map 은 ns_inline_list.entry.var_name pointer 를 borrow — ns_inline
             // 이 owner. inner_map.deinit 은 backing 만 해제, value pointer 는 안 건드림 →
             // 같은 메모리 double-free 없음.
-            try inner_map.put(exp.exported, ns_var);
+            try inner_map.put(self.allocator, exp.exported, ns_var);
             continue;
         }
         if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, &source_init_cache)) |rewrite_value| {
@@ -252,12 +252,12 @@ pub fn registerNamespaceRewrites(
             // LinkingMetadata.owned_rename_values 로 이전해 metadata deinit 에서 해제한다.
             try owned_rewrite_values.append(self.allocator, rewrite_value);
             owned_by_list = true;
-            try inner_map.put(exp.exported, rewrite_value);
+            try inner_map.put(self.allocator, exp.exported, rewrite_value);
             continue;
         }
         // exp.local 은 owned=true 면 ns_export_cache 가, 아니면 target module 이 소유한다.
         // metadata map 은 값 포인터만 빌린다.
-        try inner_map.put(exp.exported, exp.local);
+        try inner_map.put(self.allocator, exp.exported, exp.local);
     }
     try ns_rewrite_list.append(self.allocator, .{
         .symbol_id = symbol_id,
@@ -306,18 +306,18 @@ pub fn ensureSharedNsVar(
         if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached| return cached.var_name;
     }
     var exports: std.ArrayList(NsExportPair) = .empty;
-    var seen = std.StringHashMap(void).init(self.allocator);
-    var visited = std.AutoHashMap(u32, void).init(self.allocator);
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer {
         for (exports.items) |e| if (e.owned) self.allocator.free(e.local);
         exports.deinit(self.allocator);
-        seen.deinit();
-        visited.deinit();
+        seen.deinit(self.allocator);
+        visited.deinit(self.allocator);
     }
     try self.collectExportsRecursive(&exports, &seen, &visited, target, 0);
-    var seen_exports = std.StringHashMap(void).init(self.allocator);
-    defer seen_exports.deinit();
-    for (exports.items) |e| try seen_exports.put(e.exported, {});
+    var seen_exports: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen_exports.deinit(self.allocator);
+    for (exports.items) |e| try seen_exports.put(self.allocator, e.exported, {});
     return getOrCreateSharedNamespaceVar(self, target_mod_idx, &seen_exports);
 }
 
@@ -330,7 +330,7 @@ fn appendSharedNsInlineEntry(
     ns_inline_list: *std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
     symbol_id: ?u32,
     target_mod_idx: u32,
-    seen_exports: *std.StringHashMap(void),
+    seen_exports: *std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error![]const u8 {
     const ns_var_name = try getOrCreateSharedNamespaceVar(self, target_mod_idx, seen_exports);
     try ns_inline_list.append(self.allocator, .{
@@ -345,7 +345,7 @@ fn appendSharedNsInlineEntry(
 fn getOrCreateSharedNamespaceVar(
     self: *const Linker,
     target_mod_idx: u32,
-    seen_exports: *std.StringHashMap(void),
+    seen_exports: *std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error![]const u8 {
     const mutable_self = @constCast(self);
 
@@ -620,13 +620,13 @@ pub fn collectSharedNamespaceDecls(
         decls.deinit(allocator);
     }
 
-    var seen = std.AutoHashMap(u32, void).init(allocator);
-    defer seen.deinit();
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(allocator);
 
     for (md.ns_inline_objects.entries) |entry| {
         const target_mod_idx = entry.shared_target_mod_idx orelse continue;
         if (seen.contains(target_mod_idx)) continue;
-        try seen.put(target_mod_idx, {});
+        try seen.put(allocator, target_mod_idx, {});
 
         const target = self.getModule(target_mod_idx) orelse continue;
         @constCast(self).ns_cache_mutex.lock();
@@ -683,11 +683,11 @@ fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
     if (self.ns_base_rank_built) return;
     self.ns_base_rank_built = true;
 
-    var counts = std.StringHashMap(u32).init(self.allocator);
+    var counts: std.StringHashMapUnmanaged(u32) = .empty;
     defer {
         var it = counts.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
-        counts.deinit();
+        counts.deinit(self.allocator);
     }
 
     const n: u32 = @intCast(self.graph.moduleCount());
@@ -695,7 +695,7 @@ fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
     while (idx < n) : (idx += 1) {
         const base = try makeSharedNamespaceBaseName(self, idx);
         defer self.allocator.free(base);
-        const gop = try counts.getOrPut(base);
+        const gop = try counts.getOrPut(self.allocator, base);
         if (!gop.found_existing) {
             gop.key_ptr.* = try self.allocator.dupe(u8, base);
             gop.value_ptr.* = 0;
@@ -715,7 +715,7 @@ fn makeUniqueSharedNsVarNameLocked(
     self: *Linker,
     base: []const u8,
     rank: u32,
-    seen_exports: *std.StringHashMap(void),
+    seen_exports: *std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error![]const u8 {
     var candidate = if (rank == 0)
         try std.fmt.allocPrint(self.allocator, "{s}_ns", .{base})
@@ -733,7 +733,7 @@ fn makeUniqueSharedNsVarNameLocked(
 
 /// namespace preamble 변수명을 export 이름과 충돌하지 않도록 생성.
 /// "z" → "z_ns", 충돌 시 "z_ns2", "z_ns3", ...
-fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const std.StringHashMap(void)) std.mem.Allocator.Error![]const u8 {
+fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const std.StringHashMapUnmanaged(void)) std.mem.Allocator.Error![]const u8 {
     // 첫 시도: base_ns
     const first = try std.mem.concat(self.allocator, u8, &.{ base, "_ns" });
     if (!exports.contains(first)) return first;
@@ -780,23 +780,23 @@ pub fn buildInlineObjectStr(
         }
         exports.deinit(self.allocator);
     }
-    var seen = std.StringHashMap(void).init(self.allocator);
-    defer seen.deinit();
-    var visited = std.AutoHashMap(u32, void).init(self.allocator);
-    defer visited.deinit();
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(self.allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(self.allocator);
     try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
 
     // export * as ns 패턴 수집 (별도 처리 — 재귀 인라인 필요)
     const target = target_any;
-    var ns_re_exports = std.StringHashMap(u32).init(self.allocator); // exported_name → source_mod
-    defer ns_re_exports.deinit();
+    var ns_re_exports: std.StringHashMapUnmanaged(u32) = .empty; // exported_name → source_mod
+    defer ns_re_exports.deinit(self.allocator);
     for (target.export_bindings) |eb| {
         if (eb.kind == .re_export_namespace) {
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < target.import_records.len) {
                     const src = target.import_records[rec_idx].resolved;
                     if (!src.isNone()) {
-                        try ns_re_exports.put(eb.exported_name, @intFromEnum(src));
+                        try ns_re_exports.put(self.allocator, eb.exported_name, @intFromEnum(src));
                     }
                 }
             }
@@ -919,11 +919,11 @@ fn allocNamespaceMemberRewriteValue(
     target_init: ?[]const u8,
     target_mod_idx: u32,
     exp: NsExportPair,
-    source_init_cache: *std.AutoHashMap(u32, ?[]const u8),
+    source_init_cache: *std.AutoHashMapUnmanaged(u32, ?[]const u8),
 ) std.mem.Allocator.Error!?[]const u8 {
     const source_init: ?[]const u8 = if (exp.init_mod) |source_mod_idx| blk: {
         if (source_mod_idx == target_mod_idx) break :blk null;
-        const gop = try source_init_cache.getOrPut(source_mod_idx);
+        const gop = try source_init_cache.getOrPut(self.allocator, source_mod_idx);
         if (!gop.found_existing) {
             // alloc 실패 시 entry 의 value_ptr.* 가 undefined 로 남아 defer 가
             // 잘못 dereference. 미초기화 entry 제거 후 에러 전파.
@@ -1086,8 +1086,8 @@ test "#3966: rank → 결정적 ns var 이름 (rank 0 base_ns, rank N base_ns_{N
     defer graph.deinit();
     defer cache.deinit();
 
-    var seen = std.StringHashMap(void).init(a);
-    defer seen.deinit();
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(a);
 
     // 같은 base("core") 의 rank 0/1/2 → core_ns / core_ns_2 / core_ns_3.
     // 발급 순서를 일부러 rank 역순(2→0→1)으로 호출해도 rank 만으로 이름이
@@ -1116,10 +1116,10 @@ test "#3966: target 자체 export 와 동명 충돌 시 결정적 증가" {
     defer graph.deinit();
     defer cache.deinit();
 
-    var seen = std.StringHashMap(void).init(a);
-    defer seen.deinit();
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(a);
     // 모듈이 `x_ns` 라는 이름을 직접 export → rank 0 후보(x_ns) 충돌 → x_ns_2 로 증가.
-    try seen.put("x_ns", {});
+    try seen.put(a, "x_ns", {});
 
     const got = try makeUniqueSharedNsVarNameLocked(&linker, "x", 0, &seen);
     defer a.free(got);

@@ -146,10 +146,10 @@ pub const Linker = struct {
     format: types.Format,
 
     /// 모듈별 export 맵: "module_index\x00exported_name" → ExportEntry
-    export_map: std.StringHashMap(ExportEntry),
+    export_map: std.StringHashMapUnmanaged(ExportEntry) = .empty,
 
     /// import→export 바인딩 결과: (module_index, local_span_key) → ResolvedBinding
-    resolved_bindings: std.AutoHashMap(BindingKey, ResolvedBinding),
+    resolved_bindings: std.AutoHashMapUnmanaged(BindingKey, ResolvedBinding) = .empty,
 
     diagnostics: std.ArrayList(BundlerDiagnostic),
     /// #1791 사용자 노출용 치명 진단 (예: IIFE 포맷에서 unresolved import).
@@ -166,7 +166,7 @@ pub const Linker = struct {
     canonical_strings: std.ArrayList([]const u8) = .empty,
     /// 충돌 검사용 set. 리네임 후보가 기존 canonical로 사용 중인지 O(1) 확인.
     /// 키는 canonical_strings가 소유 — 이 맵은 borrowed.
-    canonical_names_used: std.StringHashMap(void),
+    canonical_names_used: std.StringHashMapUnmanaged(void) = .empty,
 
     /// RFC #3940 — build-scope `SymbolID → 최종 이름` 테이블. canonical write 단일 sink
     /// (`assignSymbolCanonical`) 가 기록한다. 값 string 은 borrow (canonical_strings 소유, 같은
@@ -176,7 +176,7 @@ pub const Linker = struct {
 
     /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
     /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
-    reserved_globals: std.StringHashMap(void),
+    reserved_globals: std.StringHashMapUnmanaged(void) = .empty,
 
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
@@ -357,11 +357,11 @@ pub const Linker = struct {
             .allocator = allocator,
             .graph = graph,
             .format = format,
-            .export_map = std.StringHashMap(ExportEntry).init(allocator),
-            .resolved_bindings = std.AutoHashMap(BindingKey, ResolvedBinding).init(allocator),
+            .export_map = .empty,
+            .resolved_bindings = .empty,
             .diagnostics = .empty,
-            .canonical_names_used = std.StringHashMap(void).init(allocator),
-            .reserved_globals = std.StringHashMap(void).init(allocator),
+            .canonical_names_used = .empty,
+            .reserved_globals = .empty,
             .global_identifiers = global_identifiers,
         };
     }
@@ -401,13 +401,13 @@ pub const Linker = struct {
         while (eit.next()) |key| {
             self.allocator.free(key.*);
         }
-        self.export_map.deinit();
-        self.resolved_bindings.deinit();
+        self.export_map.deinit(self.allocator);
+        self.resolved_bindings.deinit(self.allocator);
         for (self.canonical_strings.items) |s| self.allocator.free(s);
         self.canonical_strings.deinit(self.allocator);
-        self.canonical_names_used.deinit();
+        self.canonical_names_used.deinit(self.allocator);
         self.rename_table.deinit(self.allocator);
-        self.reserved_globals.deinit();
+        self.reserved_globals.deinit(self.allocator);
         // chain_cache: 키는 allocator로 dupe됨
         var cc_it = self.chain_cache.keyIterator();
         while (cc_it.next()) |key| self.allocator.free(key.*);
@@ -523,7 +523,7 @@ pub const Linker = struct {
     };
 
     /// name_to_owners HashMap의 타입 별칭.
-    pub const NameToOwnersMap = std.StringHashMap(std.ArrayList(NameOwner));
+    pub const NameToOwnersMap = std.StringHashMapUnmanaged(std.ArrayList(NameOwner));
 
     /// name_to_owners에 (name, owner) 항목을 추가한다.
     fn addNameOwner(
@@ -532,7 +532,7 @@ pub const Linker = struct {
         name: []const u8,
         owner: NameOwner,
     ) !void {
-        const entry = try name_to_owners.getOrPut(name);
+        const entry = try name_to_owners.getOrPut(self.allocator, name);
         if (!entry.found_existing) {
             entry.value_ptr.* = .empty;
         }
@@ -746,12 +746,12 @@ pub const Linker = struct {
             const sem = m.semantic orelse continue;
             var it = sem.unresolved_references.iterator();
             while (it.next()) |entry| {
-                try self.reserved_globals.put(entry.key_ptr.*, {});
+                try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
             }
         }
         // 외부 전달된 전역 식별자도 예약 (--global-identifier, RN polyfillGlobal 등)
         for (self.global_identifiers) |name| {
-            try self.reserved_globals.put(name, {});
+            try self.reserved_globals.put(self.allocator, name, {});
         }
     }
 
@@ -765,11 +765,11 @@ pub const Linker = struct {
         try self.collectReservedGlobals();
 
         // 1. 모든 모듈의 top-level export 이름 수집
-        var name_to_owners = NameToOwnersMap.init(self.allocator);
+        var name_to_owners: NameToOwnersMap = .empty;
         defer {
             var vit = name_to_owners.valueIterator();
             while (vit.next()) |list| list.deinit(self.allocator);
-            name_to_owners.deinit();
+            name_to_owners.deinit(self.allocator);
         }
 
         for (0..self.graph.moduleCount()) |i| {
@@ -869,10 +869,10 @@ pub const Linker = struct {
         // inline 처리되어 var 가 안 만들어지더라도 entry source 의 reference 식별자는
         // 그대로 emit 되므로 mangler 가 같은 이름을 다른 binding 의 short name 으로
         // 부여하면 SyntaxError. is_external 무관하게 reserved 에 등록.
-        var exported = std.StringHashMap(void).init(self.allocator);
-        defer exported.deinit();
-        var reserved = std.StringHashMap(void).init(self.allocator);
-        defer reserved.deinit();
+        var exported: std.StringHashMapUnmanaged(void) = .empty;
+        defer exported.deinit(self.allocator);
+        var reserved: std.StringHashMapUnmanaged(void) = .empty;
+        defer reserved.deinit(self.allocator);
 
         // Scope-hoisted output shares one top-level lexical environment. If a
         // minified top-level declaration reuses an unresolved global name
@@ -880,7 +880,7 @@ pub const Linker = struct {
         // hoisted and shadows that global even in modules evaluated earlier.
         var global_it = self.reserved_globals.keyIterator();
         while (global_it.next()) |name| {
-            try reserved.put(name.*, {});
+            try reserved.put(self.allocator, name.*, {});
         }
 
         var mit = self.graph.modulesIterator();
@@ -889,10 +889,10 @@ pub const Linker = struct {
                 for (m.export_bindings) |eb| {
                     const exported_name = eb.exported_name;
                     const local_name = m.exportBindingLocalName(eb);
-                    try exported.put(exported_name, {});
-                    try exported.put(local_name, {});
-                    try reserved.put(exported_name, {});
-                    try reserved.put(local_name, {});
+                    try exported.put(self.allocator, exported_name, {});
+                    try exported.put(self.allocator, local_name, {});
+                    try reserved.put(self.allocator, exported_name, {});
+                    try reserved.put(self.allocator, local_name, {});
                 }
             }
             for (m.import_bindings) |ib| {
@@ -901,9 +901,9 @@ pub const Linker = struct {
                 // import is only preserved for output syntax. In that case the scanner
                 // local name is the external contract we must not mangle.
                 const local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
-                try reserved.put(local_name, {});
+                try reserved.put(self.allocator, local_name, {});
                 if (m.import_records[ib.import_record_index].is_external) {
-                    try exported.put(local_name, {});
+                    try exported.put(self.allocator, local_name, {});
                 }
             }
             // Phase B 는 1-char binding 을 literal 로 보존한다 (mangler.zig
@@ -920,7 +920,7 @@ pub const Linker = struct {
                 for (sem.scope_maps) |smap| {
                     var sm_it = smap.iterator();
                     while (sm_it.next()) |e| {
-                        if (e.key_ptr.len <= 1) try reserved.put(e.key_ptr.*, {});
+                        if (e.key_ptr.len <= 1) try reserved.put(self.allocator, e.key_ptr.*, {});
                     }
                 }
             }
@@ -996,7 +996,7 @@ pub const Linker = struct {
                             // mangle 안 되고 source 그대로 emit 되므로 internal binding 의
                             // mangle 결과로 동일 이름 부여 시 충돌 — three 의 \`class e\` ↔
                             // entry \`const e = new Euler(...)\` 가 그 케이스.
-                            try reserved.put(sym_name, {});
+                            try reserved.put(self.allocator, sym_name, {});
                             continue;
                         }
                         if (std.mem.eql(u8, sym_name, "default")) continue;
@@ -1018,7 +1018,7 @@ pub const Linker = struct {
                         if (key.len <= 1) {
                             // canonical_name 이 sym_name 과 다른 1-char 케이스도 reserve
                             // (위 sym_name 분기와 대칭 — #2965).
-                            try reserved.put(key, {});
+                            try reserved.put(self.allocator, key, {});
                             continue;
                         }
                         if (exported.contains(key)) continue;
@@ -1285,7 +1285,7 @@ pub const Linker = struct {
             if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
         }
         try self.canonical_strings.append(self.allocator, value);
-        try self.canonical_names_used.put(value, {});
+        try self.canonical_names_used.put(self.allocator, value, {});
         if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
     }
 
@@ -1465,7 +1465,7 @@ pub const Linker = struct {
                 if (self.export_map.fetchRemove(key)) |old| {
                     self.allocator.free(old.key);
                 }
-                try self.export_map.put(key, .{
+                try self.export_map.put(self.allocator, key, .{
                     .binding = eb,
                     .module_index = mod_idx,
                 });
@@ -1580,7 +1580,7 @@ pub const Linker = struct {
                     .module_index = @intCast(i),
                     .span_key = types.spanKey(ib.local_span),
                 };
-                try self.resolved_bindings.put(bk, .{
+                try self.resolved_bindings.put(self.allocator, bk, .{
                     .local_name = ib.local_name,
                     .local_span = ib.local_span,
                     .canonical = canonical,
@@ -2293,8 +2293,8 @@ pub const Linker = struct {
     pub fn collectExportsRecursive(
         self: *const Linker,
         exports: *std.ArrayList(NsExportPair),
-        seen: *std.StringHashMap(void),
-        visited: *std.AutoHashMap(u32, void),
+        seen: *std.StringHashMapUnmanaged(void),
+        visited: *std.AutoHashMapUnmanaged(u32, void),
         module_idx: ModuleIndex,
         depth: u32,
     ) std.mem.Allocator.Error!void {
@@ -2303,14 +2303,14 @@ pub const Linker = struct {
         const m = self.graph.getModule(module_idx) orelse return;
         // diamond export * 패턴에서 동일 모듈 재방문 방지
         if (visited.contains(mod_i)) return;
-        try visited.put(mod_i, {});
+        try visited.put(self.allocator, mod_i, {});
 
         // namespace import를 O(1) 조회용 맵으로 수집 (local_name → import_record_index)
-        var ns_imports = std.StringHashMap(u32).init(self.allocator);
-        defer ns_imports.deinit();
+        var ns_imports: std.StringHashMapUnmanaged(u32) = .empty;
+        defer ns_imports.deinit(self.allocator);
         for (m.import_bindings) |mib| {
             if (mib.kind == .namespace) {
-                try ns_imports.put(mib.local_name, mib.import_record_index);
+                try ns_imports.put(self.allocator, mib.local_name, mib.import_record_index);
             }
         }
 
@@ -2319,7 +2319,7 @@ pub const Linker = struct {
             // export * as ns (exported_name != "*") → named export로 포함
             if (eb.kind == .re_export_star) continue;
             if (seen.contains(eb.exported_name)) continue;
-            try seen.put(eb.exported_name, {});
+            try seen.put(self.allocator, eb.exported_name, {});
 
             const eb_local = m.exportBindingLocalName(eb);
             // ns_target_mod: hoisted ns_var 가 필요한 source 모듈 (registerNamespaceRewrites
@@ -2385,7 +2385,7 @@ pub const Linker = struct {
         // ESM 스펙: export *는 "default"를 제외 (ECMAScript 15.2.3.5).
         // seen에 "default"를 추가하여 하위 모듈의 default export가 수집되지 않도록 함.
         // 직접 선언된 export { default }는 위 첫 루프에서 이미 수집됨.
-        try seen.put("default", {});
+        try seen.put(self.allocator, "default", {});
         for (m.export_bindings) |eb| {
             if (!eb.kind.isReExportAll()) continue;
             if (!std.mem.eql(u8, eb.exported_name, "*")) continue; // export * as ns는 skip
@@ -2537,23 +2537,23 @@ pub const Linker = struct {
             const sem = m.semantic orelse continue;
             var urit = sem.unresolved_references.iterator();
             while (urit.next()) |entry| {
-                try self.reserved_globals.put(entry.key_ptr.*, {});
+                try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
             }
         }
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
-        var name_to_owners = NameToOwnersMap.init(self.allocator);
+        var name_to_owners: NameToOwnersMap = .empty;
         defer {
             var vit = name_to_owners.valueIterator();
             while (vit.next()) |list| list.deinit(self.allocator);
-            name_to_owners.deinit();
+            name_to_owners.deinit(self.allocator);
         }
 
         // cross-chunk import 이름을 "점유"로 등록 — exec_index=0 (가장 낮음)으로
         // 등록하여 충돌 시 로컬 심볼이 rename됨 (import 이름이 우선 유지)
         for (occupied_names) |name| {
             if (std.mem.eql(u8, name, "default")) continue;
-            const entry = try name_to_owners.getOrPut(name);
+            const entry = try name_to_owners.getOrPut(self.allocator, name);
             if (!entry.found_existing) {
                 entry.value_ptr.* = .empty;
             }
@@ -2580,12 +2580,12 @@ pub const Linker = struct {
 /// CJS 모듈의 require_xxx 변수명을 캐시에서 가져오거나 새로 생성.
 pub fn getOrCreateRequireVar(
     self: *const Linker,
-    cache: *std.AutoHashMap(u32, []const u8),
+    cache: *std.AutoHashMapUnmanaged(u32, []const u8),
     mod_idx: u32,
 ) ![]const u8 {
     if (cache.get(mod_idx)) |cached| return cached;
     const target_mod = self.getModule(mod_idx).?;
     const name = try target_mod.allocRequireName(self.allocator, &self.rename_table);
-    try cache.put(mod_idx, name);
+    try cache.put(self.allocator, mod_idx, name);
     return name;
 }

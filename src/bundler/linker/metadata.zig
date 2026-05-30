@@ -44,7 +44,7 @@ fn canDeferStaticImportForInlineRequires(
     m: *const Module,
     rec_index: u32,
     target_mod: *const Module,
-    exported_locals: *const std.StringHashMap(void),
+    exported_locals: *const std.StringHashMapUnmanaged(void),
 ) bool {
     if (target_mod.uses_top_level_await) return false;
     if (target_mod.isUserDeclaredSideEffectful()) return false;
@@ -64,7 +64,7 @@ fn canDeferStaticImportForInlineRequires(
 
 fn getOrCreateCjsRequireRef(
     self: *const Linker,
-    cache: *std.AutoHashMap(u32, []const u8),
+    cache: *std.AutoHashMapUnmanaged(u32, []const u8),
     mod_idx: u32,
 ) ![]const u8 {
     if (!self.dev_mode) return getOrCreateRequireVar(self, cache, mod_idx);
@@ -72,7 +72,7 @@ fn getOrCreateCjsRequireRef(
 
     const target_mod = self.getModule(mod_idx).?;
     const ref = try types.fmtDevRequireRef(self.allocator, target_mod.dev_id);
-    try cache.put(mod_idx, ref);
+    try cache.put(self.allocator, mod_idx, ref);
     return ref;
 }
 
@@ -274,10 +274,10 @@ fn markReactNativeWrappedBindingImports(
     if (self.graph.resolve_cache.platform != .react_native) return;
     if (!module.wrap_kind.isWrapped()) return;
 
-    var linked_specifiers = std.StringHashMap(void).init(self.allocator);
-    defer linked_specifiers.deinit();
+    var linked_specifiers: std.StringHashMapUnmanaged(void) = .empty;
+    defer linked_specifiers.deinit(self.allocator);
     for (module.import_records) |rec| {
-        try linked_specifiers.put(rec.specifier, {});
+        try linked_specifiers.put(self.allocator, rec.specifier, {});
     }
     if (linked_specifiers.count() == 0) return;
 
@@ -306,14 +306,14 @@ fn markReactNativeWrappedBindingImports(
 /// 0xAA UAF 발생. dupe + owned 추적으로 회피.
 fn putOwnedRename(
     self: *const Linker,
-    renames: *std.AutoHashMap(u32, []const u8),
+    renames: *std.AutoHashMapUnmanaged(u32, []const u8),
     owned: *std.ArrayListUnmanaged([]const u8),
     sid: u32,
     src: []const u8,
 ) !void {
     const v = try self.allocator.dupe(u8, src);
     try owned.append(self.allocator, v);
-    try renames.put(sid, v);
+    try renames.put(self.allocator, sid, v);
 }
 
 /// identifier 의 첫 byte 가 정상 ASCII (0x21-0x7F) 인지. UAF 시 채워지는 0xAA / 0 등
@@ -328,7 +328,7 @@ fn isValidIdentStartByte(b: u8) bool {
 fn mergeUnifiedPhaseB(
     self: *const Linker,
     module_index: u32,
-    renames: *std.AutoHashMap(u32, []const u8),
+    renames: *std.AutoHashMapUnmanaged(u32, []const u8),
     owned: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     const ur = &(self.unified_result orelse return);
@@ -362,7 +362,7 @@ pub fn buildMetadataForAst(
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
-            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .renames = .empty,
             .final_exports = null,
             .symbol_ids = &.{},
             .allocator = self.allocator,
@@ -381,7 +381,7 @@ pub fn buildMetadataForAst(
         try markReactNativeWrappedBindingImports(self, ast, &m, &skip_nodes);
         return .{
             .skip_nodes = skip_nodes,
-            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .renames = .empty,
             .final_exports = null,
             .symbol_ids = &.{},
             .cjs_import_preamble = null,
@@ -406,8 +406,8 @@ pub fn buildMetadataForAst(
     // 가 같은 노드를 idempotent 하게 set 하므로 RN 헬퍼 호출은 early-return path
     // (semantic == null) 에서만 필요하다.
 
-    var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
-    errdefer renames.deinit();
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    errdefer renames.deinit(self.allocator);
 
     // nested mangling에서 소유권을 이전받은 문자열 추적 (deinit에서 해제)
     var owned_nested_renames: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -434,14 +434,14 @@ pub fn buildMetadataForAst(
     preamble.minify = self.minify_whitespace;
 
     // __esm 모듈의 init_xxx() 호출 중복 방지 (같은 모듈을 여러 binding이 참조할 때)
-    var esm_init_set = std.AutoHashMap(u32, void).init(self.allocator);
-    defer esm_init_set.deinit();
+    var esm_init_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer esm_init_set.deinit(self.allocator);
     defer preamble.deinit();
 
     // namespace member rewrite 엔트리 수집 (esbuild 방식)
     var ns_rewrite_list: std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry) = .empty;
     errdefer {
-        for (ns_rewrite_list.items) |*e| e.map.deinit();
+        for (ns_rewrite_list.items) |*e| e.map.deinit(self.allocator);
         ns_rewrite_list.deinit(self.allocator);
     }
     // namespace 인라인 객체 수집 (값 사용 시)
@@ -457,26 +457,26 @@ pub fn buildMetadataForAst(
     // 같은 importer 안에서 여러 namespace import 가 같은 source 의 hoisted ns_var 를
     // 공유하도록 caller-owned cache. registerNamespaceRewrites 가 source mod_idx 별로
     // ns_var_name 을 dedup. 값 (var_name) 의 owner 는 ns_inline_list — 중복 free 안 함.
-    var ns_target_to_var = std.AutoHashMap(u32, []const u8).init(self.allocator);
-    defer ns_target_to_var.deinit();
+    var ns_target_to_var: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    defer ns_target_to_var.deinit(self.allocator);
 
     // PR #3742 (C7 F3 follow-up): nested bindings set 도 caller-owned cache.
     // 같은 importer 안 N 개 ns import → per-importer 1회 build (lazy init).
-    var nested_bindings_cache: ?std.StringHashMap(void) = null;
-    defer if (nested_bindings_cache) |*c| c.deinit();
+    var nested_bindings_cache: ?std.StringHashMapUnmanaged(void) = null;
+    defer if (nested_bindings_cache) |*c| c.deinit(self.allocator);
 
     // CJS 모듈별 require_xxx 변수명 캐시 (같은 모듈에서 여러 named import 시 중복 생성 방지)
-    var cjs_var_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
+    var cjs_var_cache: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     defer {
         var vit = cjs_var_cache.valueIterator();
         while (vit.next()) |v| self.allocator.free(v.*);
-        cjs_var_cache.deinit();
+        cjs_var_cache.deinit(self.allocator);
     }
 
     // CJS named import는 값 접근을 direct expression으로 유지해도, 정적 import의
     // 평가 효과는 importer 본문 전에 한 번 발생해야 한다.
-    var cjs_static_init_set = std.AutoHashMap(u32, void).init(self.allocator);
-    defer cjs_static_init_set.deinit();
+    var cjs_static_init_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer cjs_static_init_set.deinit(self.allocator);
 
     var ns_var_list: std.ArrayListUnmanaged([]const u8) = .empty;
     // ns_var_list 소유권은 metadata.dev_ns_vars로 이전됨 (정상 경로)
@@ -495,8 +495,8 @@ pub fn buildMetadataForAst(
     }
     // IIFE dedupe 맵은 실제 IIFE 포맷 + unresolved 발생 시에만 lazy init — ESM/CJS
     // 빌드 (실측 99%+ 모듈) 에서 해시맵 backing alloc 비용을 피한다.
-    var iife_diag_seen: ?std.StringHashMap(void) = null;
-    defer if (iife_diag_seen) |*seen_map| seen_map.deinit();
+    var iife_diag_seen: ?std.StringHashMapUnmanaged(void) = null;
+    defer if (iife_diag_seen) |*seen_map| seen_map.deinit(self.allocator);
 
     // namespace import / inline object 캐시는 linker 전역 필드(`self.ns_export_cache`,
     // `self.ns_inline_cache`) 로 이동 — 같은 target 을 여러 모듈이 namespace import 해도
@@ -511,10 +511,10 @@ pub fn buildMetadataForAst(
         const module_scope = sem.scope_maps[0];
 
         // export된 local name을 미리 수집 — namespace import가 re-export되는지 O(1) 확인용
-        var exported_locals = std.StringHashMap(void).init(self.allocator);
-        defer exported_locals.deinit();
+        var exported_locals: std.StringHashMapUnmanaged(void) = .empty;
+        defer exported_locals.deinit(self.allocator);
         for (m.export_bindings) |eb| {
-            if (eb.kind == .local) try exported_locals.put(m.exportBindingLocalName(eb), {});
+            if (eb.kind == .local) try exported_locals.put(self.allocator, m.exportBindingLocalName(eb), {});
         }
 
         if (self.strict_execution_order and m.wrap_kind == .esm) {
@@ -546,14 +546,14 @@ pub fn buildMetadataForAst(
                     .none => {},
                     .cjs => {
                         if (cjs_static_init_set.contains(target_idx)) continue;
-                        try cjs_static_init_set.put(target_idx, {});
+                        try cjs_static_init_set.put(self.allocator, target_idx, {});
                         const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, target_idx);
                         try preamble.write(req_var);
                         try preamble.write("();\n");
                     },
                     .esm => {
                         if (esm_init_set.contains(target_idx)) continue;
-                        try esm_init_set.put(target_idx, {});
+                        try esm_init_set.put(self.allocator, target_idx, {});
                         try appendEsmInitCall(self, &preamble, target_mod);
                     },
                 }
@@ -657,8 +657,8 @@ pub fn buildMetadataForAst(
                         // #1824: --globals 로 매핑된 external 은 위 `is_iife_mapped` 브랜치에서 처리됨.
                         // build-time 에러로 pending_diagnostics 에 쌓고 emitter 가 flush.
                         // specifier 단위로 dedupe — 같은 spec 의 binding 여러 개에 대해 한 번만.
-                        if (iife_diag_seen == null) iife_diag_seen = std.StringHashMap(void).init(self.allocator);
-                        const seen_gop = try iife_diag_seen.?.getOrPut(rec.specifier);
+                        if (iife_diag_seen == null) iife_diag_seen = .empty;
+                        const seen_gop = try iife_diag_seen.?.getOrPut(self.allocator, rec.specifier);
                         if (!seen_gop.found_existing) {
                             const msg = try std.fmt.allocPrint(
                                 self.allocator,
@@ -731,7 +731,7 @@ pub fn buildMetadataForAst(
                             const direct_access = try std.fmt.allocPrint(self.allocator, "{s}" ++ EXPR_RENAME_MARKER ++ "{s}", .{ req_var, ib.imported_name });
                             errdefer self.allocator.free(direct_access);
                             try owned_nested_renames.append(self.allocator, direct_access);
-                            try renames.put(sym_idx, direct_access);
+                            try renames.put(self.allocator, sym_idx, direct_access);
                         }
                     } else {
                         const interop_mode = cjsInteropMode(self, &m);
@@ -854,11 +854,11 @@ pub fn buildMetadataForAst(
                     lazy_esm_import_mod = value_init_mod;
                 }
                 if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {
-                    try esm_init_set.put(@intCast(canonical_mod), {});
+                    try esm_init_set.put(self.allocator, @intCast(canonical_mod), {});
                     try appendEsmInitCall(self, &preamble, target_mod);
                 }
                 if (!lazy_esm_import and value_init_mod_idx != canonical_mod and !esm_init_set.contains(@intCast(value_init_mod_idx))) {
-                    try esm_init_set.put(@intCast(value_init_mod_idx), {});
+                    try esm_init_set.put(self.allocator, @intCast(value_init_mod_idx), {});
                     try appendEsmInitCall(self, &preamble, value_init_mod);
                 }
                 // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
@@ -1063,7 +1063,7 @@ pub fn buildMetadataForAst(
                         errdefer if (!rename_owned_by_list) self.allocator.free(rename_value);
                         try owned_nested_renames.append(self.allocator, rename_value);
                         rename_owned_by_list = true;
-                        try renames.put(sym_idx, rename_value);
+                        try renames.put(self.allocator, sym_idx, rename_value);
                     } else {
                         try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, rename_value);
                     }
@@ -1083,12 +1083,12 @@ pub fn buildMetadataForAst(
         // - scope hoisted 타겟: rename으로 직접 참조 → import 불필요
         // - __esm 모듈: preamble이 init 호출 + CJS require를 처리 → body에서 중복 방지
         if (m.wrap_kind.isWrapped()) {
-            var hoisted_specifiers = std.StringHashMap(void).init(self.allocator);
-            defer hoisted_specifiers.deinit();
-            var linked_specifiers = std.StringHashMap(void).init(self.allocator);
-            defer linked_specifiers.deinit();
+            var hoisted_specifiers: std.StringHashMapUnmanaged(void) = .empty;
+            defer hoisted_specifiers.deinit(self.allocator);
+            var linked_specifiers: std.StringHashMapUnmanaged(void) = .empty;
+            defer linked_specifiers.deinit(self.allocator);
             for (m.import_records, 0..) |rec, rec_i| {
-                try linked_specifiers.put(rec.specifier, {});
+                try linked_specifiers.put(self.allocator, rec.specifier, {});
                 if (rec.resolved.isNone()) {
                     // Lazy barrel tree-shaking can intentionally leave unrequested
                     // static import records unresolved. The source AST still has
@@ -1098,14 +1098,14 @@ pub fn buildMetadataForAst(
                     // original import node when graph linking also decided not to
                     // resolve this record.
                     if (!self.graph.shouldLinkResolvedRecordForModule(module_index, rec_i, rec)) {
-                        try hoisted_specifiers.put(rec.specifier, {});
+                        try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                     }
                     continue;
                 }
                 const tidx = @intFromEnum(rec.resolved);
                 const tmod = self.graph.getModule(rec.resolved) orelse continue;
                 if (tmod.wrap_kind == .none) {
-                    try hoisted_specifiers.put(rec.specifier, {});
+                    try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                 } else if (tmod.wrap_kind == .cjs) {
                     // CJS target의 value import는 metadata rename 또는 preamble에서
                     // 처리한다. 원본 import_declaration을 남기면 body에서 raw
@@ -1115,7 +1115,7 @@ pub fn buildMetadataForAst(
                         if (ib.import_record_index == rec_i) break true;
                     } else false;
                     if (has_binding) {
-                        try hoisted_specifiers.put(rec.specifier, {});
+                        try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                     }
                 } else if (tmod.wrap_kind == .esm and tidx != module_index) {
                     // __esm → __esm live binding: named import만 skip.
@@ -1130,7 +1130,7 @@ pub fn buildMetadataForAst(
                             break true;
                     } else false;
                     if (!has_namespace or (self.tree_shaker_active and !tmod.is_included)) {
-                        try hoisted_specifiers.put(rec.specifier, {});
+                        try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                     }
                 }
             }
@@ -1211,7 +1211,7 @@ pub fn buildMetadataForAst(
                 .cjs => {
                     const target = @intFromEnum(rec.resolved);
                     if (cjs_static_init_set.contains(@intCast(target))) continue;
-                    try cjs_static_init_set.put(@intCast(target), {});
+                    try cjs_static_init_set.put(self.allocator, @intCast(target), {});
                     const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(@intFromEnum(rec.resolved)));
                     try preamble.write(req_var);
                     try preamble.write("();\n");
@@ -1219,7 +1219,7 @@ pub fn buildMetadataForAst(
                 .esm => {
                     const target = @intFromEnum(rec.resolved);
                     if (esm_init_set.contains(@intCast(target))) continue;
-                    try esm_init_set.put(@intCast(target), {});
+                    try esm_init_set.put(self.allocator, @intCast(target), {});
                     const is_tla = target_mod.uses_top_level_await;
                     const guard = target_mod.shouldGuard(self.entry_error_guard);
                     if (is_tla) try preamble.write("await ");
@@ -1434,10 +1434,10 @@ pub fn buildFinalExports(
         for (pairs.items) |p| if (p.owned) self.allocator.free(p.local);
         pairs.deinit(self.allocator);
     }
-    var seen = std.StringHashMap(void).init(self.allocator);
-    defer seen.deinit();
-    var visited = std.AutoHashMap(u32, void).init(self.allocator);
-    defer visited.deinit();
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(self.allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(self.allocator);
 
     try self.collectExportsRecursive(
         &pairs,
@@ -1646,7 +1646,7 @@ pub fn buildDevMetadataForAst(
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
-            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .renames = .empty,
             .final_exports = null,
             .symbol_ids = &.{},
             .allocator = self.allocator,
@@ -1660,7 +1660,7 @@ pub fn buildDevMetadataForAst(
         const node_count = ast.nodes.items.len;
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
-            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .renames = .empty,
             .final_exports = null,
             .symbol_ids = if (m.semantic) |sem| sem.symbol_ids else &.{},
             .cjs_import_preamble = null,
@@ -1757,8 +1757,8 @@ pub fn buildDevMetadataForAst(
     };
 
     // named binding의 symbol_id → "ns_var.imported_name" renames 등록
-    var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
-    errdefer renames.deinit();
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    errdefer renames.deinit(self.allocator);
     var owned_rename_values: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (owned_rename_values.items) |v| self.allocator.free(v);
@@ -1775,7 +1775,7 @@ pub fn buildDevMetadataForAst(
                 const sym_id = findSymbolIdBySpan(sem.symbol_ids, ast, ib.local_span) orelse continue;
                 const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
                 try owned_rename_values.append(self.allocator, rename);
-                try renames.put(sym_id, rename);
+                try renames.put(self.allocator, sym_id, rename);
             }
         }
     }
@@ -1882,7 +1882,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
-            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .renames = .empty,
             .final_exports = null,
             .symbol_ids = &.{},
             .allocator = self.allocator,
@@ -1893,7 +1893,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
     const ast = m.ast orelse {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
-            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .renames = .empty,
             .final_exports = null,
             .symbol_ids = &.{},
             .allocator = self.allocator,
@@ -1902,7 +1902,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
 
     const node_count = ast.nodes.items.len;
     var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
-    var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
 
     // 1. import_declaration → 전체 스킵
     for (ast.nodes.items, 0..) |node, node_idx| {
@@ -1973,7 +1973,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
             const local_name = m.importBindingLocalName(ib);
 
             if (!std.mem.eql(u8, local_name, target_name)) {
-                try renames.put(sym_idx, target_name);
+                try renames.put(self.allocator, sym_idx, target_name);
             }
         }
     }
@@ -1986,7 +1986,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
             const sym_name = scope_entry.key_ptr.*;
             if (self.getCanonicalName(module_index, sym_name)) |renamed| {
                 const sym_idx = scope_entry.value_ptr.*;
-                try renames.put(@intCast(sym_idx), renamed);
+                try renames.put(self.allocator, @intCast(sym_idx), renamed);
             }
         }
     }
