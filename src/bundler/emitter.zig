@@ -94,6 +94,9 @@ pub const EmitOptions = struct {
     /// dev mode: 각 모듈을 __zntc_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
+    /// code splitting emit 경로 여부. dev_mode 의 단일번들 init lowering
+    /// (`__zntc_modules[dev_id]`)을 splitting 시 비활성화하기 위함(issue #4038).
+    code_splitting: bool = false,
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
     /// null이면 절대 경로를 그대로 사용.
     root_dir: ?[]const u8 = null,

@@ -835,7 +835,7 @@ pub fn emitEsmWrappedModule(
                         } else {
                             try reexport_buf.appendSlice(allocator, "(");
                         }
-                        if (options.dev_mode) {
+                        if (options.dev_mode and !options.code_splitting) {
                             try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].fn(), __toCommonJS(__zntc_modules[\"");
@@ -1196,7 +1196,7 @@ fn appendWrappedInitCall(
         .esm => {
             if (is_tla) try buf.appendSlice(allocator, "await ");
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
-            if (options.dev_mode) {
+            if (options.dev_mode and !options.code_splitting) {
                 try buf.appendSlice(allocator, "__zntc_modules[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
@@ -1302,7 +1302,7 @@ fn makeLazyEsmGetterValue(
         return try allocator.dupe(u8, target);
     }
 
-    const init_call = if (options.dev_mode) blk: {
+    const init_call = if (options.dev_mode and !options.code_splitting) blk: {
         break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
     } else blk: {
         const iv = try src_mod.allocInitName(allocator, rename_tbl);

@@ -67,7 +67,8 @@ fn getOrCreateCjsRequireRef(
     cache: *std.AutoHashMapUnmanaged(u32, []const u8),
     mod_idx: u32,
 ) ![]const u8 {
-    if (!self.dev_mode) return getOrCreateRequireVar(self, cache, mod_idx);
+    // splitting 시엔 dev lowering(__zntc_modules[dev_id]) 비활성 — 청크 경계 미지원(#4038).
+    if (!self.dev_mode or self.code_splitting) return getOrCreateRequireVar(self, cache, mod_idx);
     if (cache.get(mod_idx)) |cached| return cached;
 
     const target_mod = self.getModule(mod_idx).?;
@@ -1224,7 +1225,7 @@ pub fn buildMetadataForAst(
                     const guard = target_mod.shouldGuard(self.entry_error_guard);
                     if (is_tla) try preamble.write("await ");
                     if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
-                    if (self.dev_mode) {
+                    if (self.dev_mode and !self.code_splitting) {
                         try preamble.write("__zntc_modules[\"");
                         try preamble.write(target_mod.dev_id);
                         try preamble.write("\"].fn()");
@@ -1376,7 +1377,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            const req_ref = if (self.dev_mode)
+            const req_ref = if (self.dev_mode and !self.code_splitting)
                 try types.fmtDevRequireCallExpr(self.allocator, target_mod.dev_id)
             else
                 try target_mod.allocRequireName(self.allocator, &self.rename_table);
@@ -1386,7 +1387,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            if (self.dev_mode) {
+            if (self.dev_mode and !self.code_splitting) {
                 const call_expr = try types.fmtDevRequireExpr(self.allocator, target_mod.dev_id);
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else {

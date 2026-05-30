@@ -842,6 +842,7 @@ pub const Bundler = struct {
             .worklet_transform = self.options.worklet_transform,
             // codegen_transform 은 graph 만 사용 (load 시점). emitter 에는 전파 안 함.
             .compiled_cache = self.options.compiled_cache,
+            .code_splitting = self.options.code_splitting,
         };
     }
 
@@ -1318,6 +1319,7 @@ pub const Bundler = struct {
             // 실제로 없어도 런타임 값은 ReferenceError가 아니라 undefined가 된다.
             l.shim_missing_exports = self.options.shim_missing_exports or self.options.platform == .react_native;
             l.dev_mode = self.options.dev_mode;
+            l.code_splitting = self.options.code_splitting;
             l.entry_error_guard = self.options.entry_error_guard;
             l.inline_requires = self.options.platform == .react_native;
             l.strict_execution_order = self.options.strict_execution_order;
@@ -1591,7 +1593,13 @@ pub const Bundler = struct {
         // BundleResult 로 이관. NAPI handle 이 캐시하고 `/bundle.js.map` 요청 시 직렬화.
         var dev_sourcemap_builder: ?*@import("../codegen/sourcemap.zig").SourceMapBuilder = null;
 
-        if (self.options.dev_mode) {
+        // Lazy compilation (RFC docs/RFC_LAZY_COMPILATION.md): dev_mode + code_splitting +
+        // lazy_compilation 이면 단일 번들 경로 대신 아래 청크 경로로 우회한다. dev 의 단일번들
+        // init lowering(__zntc_modules[dev_id])은 청크 경계를 못 넘으므로(issue #4038),
+        // linker/emit 의 code_splitting 게이트가 splitting 시 프로덕션 init 으로 fallback 한다.
+        // kill-switch — lazy_compilation=false(또는 code_splitting=false)면 기존 dev 단일 번들 100% 보존.
+        const dev_split = self.options.dev_mode and self.options.code_splitting and self.options.lazy_compilation;
+        if (self.options.dev_mode and !dev_split) {
             // Dev mode: 프로덕션 파이프라인 재사용 (__commonJS/__esm 래핑 + HMR 런타임).
             var dev_emit_opts = self.makeEmitOptions();
             dev_emit_opts.sourcemap.enable = true;
@@ -1653,6 +1661,14 @@ pub const Bundler = struct {
             emit_opts.preserve_modules = self.options.preserve_modules;
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;
             emit_opts.worker_map_per_module = &worker_map_per_module;
+            // Lazy dev-splitting: emitModule 이 dev wrapping(minify skip 등)을 적용하도록
+            // dev_mode 전파. dev init lowering(__zntc_modules)은 emit_opts.code_splitting=true
+            // (makeEmitOptions 가 self.options 에서 set)로 비활성화됨(issue #4038). 모듈별 HMR
+            // (__zntc_make_hot)은 dev_id 미설정이라 아직 미주입(PR-4 에서 추가). sourcemap 은 dev on.
+            if (dev_split) {
+                emit_opts.dev_mode = true;
+                emit_opts.sourcemap.enable = true;
+            }
 
             // CSS 코드스플리팅 계획을 emitChunks *전* 에 세워, 동적 청크가
             // 자기 CSS 를 런타임 <link> 로 로드하는 prologue 를 content-hash

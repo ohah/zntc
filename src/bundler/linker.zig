@@ -186,6 +186,10 @@ pub const Linker = struct {
     /// dev mode: HMR용 모듈 참조를 __zntc_modules["id"].fn()으로 생성.
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
+    /// code splitting emit 경로 여부. dev_mode 의 단일번들 HMR lowering
+    /// (`__zntc_modules[dev_id]`)은 청크 경계를 넘지 못하므로(issue #4038),
+    /// splitting 시엔 dev lowering 을 끄고 프로덕션 init(`init_X()`)을 쓴다.
+    code_splitting: bool = false,
 
     /// Metro inlineRequires 호환 경로. RN에서는 함수 내부에서만 읽히는 import의
     /// module init을 top-level preamble에서 미루고, 참조 지점에서 lazy init한다.

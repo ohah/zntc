@@ -102,7 +102,10 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
     // - RN: circular dep 체인에서 초기화 순서 보장 (Rolldown 호환 lazy loading)
     // - dev mode: HMR을 위해 모든 모듈이 개별 팩토리 함수로 래핑되어야 함
     //   (scope-hoisted flat 모듈은 개별 교체 불가)
-    if (self.resolve_cache.platform == .react_native or self.dev_mode) {
+    // - dev + code_splitting: 단일번들 HMR wrap-all 을 끄고 프로덕션 wrapping 을 쓴다.
+    //   dev 의 cross-module init(__zntc_modules[dev_id])이 청크 경계를 못 넘기 때문(issue #4038).
+    //   → entry 가 scope-hoist(.none)로 인라인 실행되어 BUG2(entry 미실행)도 함께 해소.
+    if (self.resolve_cache.platform == .react_native or (self.dev_mode and !self.code_splitting)) {
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             if (m.wrap_kind != .none) continue;
