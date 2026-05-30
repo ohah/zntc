@@ -1333,9 +1333,105 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "//#region a.tsx") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "//#region b.tsx") != null);
     // `ctx(req)` 가 module exports 를 반환해야 — Metro/webpack require.context semantic.
-    // `fn()` 만 호출하면 init 만 실행되고 exports 가 undefined 로 떨어져서 expo-router 등이
-    // 빈 route module 을 보고 "Unmatched Route" 로 fallback.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toCommonJS(__zntc_modules[") != null);
+    // #4039 fix: production/split 은 wrapped 매치 모듈을 init-call `(init_X(),__toCommonJS(
+    // exports_X))` 로 직접 참조(dev HMR 전용 `__zntc_modules` 는 청크 경계 미지원이라 안 씀 —
+    // 과거엔 production 에서도 런타임에 깨지는 `__zntc_modules` 를 emit 했음).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(),__toCommonJS(") != null);
+}
+
+test "Bundler: require.context + code_splitting → init-call 참조, __zntc_modules 누출 없음 (#4039)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ts = threadSafeArena(&arena);
+    const alloc = ts.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
+    try writeFile(tmp.dir, "pages/a.tsx", "export default function A(){ return 'A'; }");
+    try writeFile(tmp.dir, "pages/b.tsx", "export default function B(){ return 'B'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\const ctx = require.context('./pages', true, /\.tsx?$/, 'sync');
+        \\for (const k of ctx.keys()) console.log(k, ctx(k).default());
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
+    var b = Bundler.init(alloc, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+        .code_splitting = true,
+        .format = .iife,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    var has_init_ref = false;
+    var has_entry_call = false; // wrapped entry trigger (BUG2 회귀 가드)
+    for (outs) |o| {
+        // #4039 회귀 가드: 청크에 dev HMR 전용 `__zntc_modules` 누출 금지.
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "__zntc_modules") == null);
+        // 매치 모듈은 같은 청크 wrapped 모듈 init-call `(init_X(),__toCommonJS(exports_X))` 로 참조.
+        if (std.mem.indexOf(u8, o.contents, "(),__toCommonJS(") != null and
+            std.mem.indexOf(u8, o.contents, "var map={") != null) has_init_ref = true;
+        // require.context 사용으로 CJS-wrap 된 entry 가 factory 안에서 호출돼야 본문 실행(BUG2).
+        if (std.mem.indexOf(u8, o.contents, "require_entry();") != null or
+            std.mem.indexOf(u8, o.contents, "init_entry();") != null) has_entry_call = true;
+        // 원본 require.context 호출 잔존 금지.
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "require.context(") == null);
+    }
+    try std.testing.expect(has_init_ref);
+    try std.testing.expect(has_entry_call);
+}
+
+test "Bundler: require.context + code_splitting — CJS 매치 + minify 형태 (#4039 리뷰 회귀)" {
+    // 리뷰가 잡은 두 케이스: (a) CJS 매치 모듈은 init_X 가 없으니 `require_X()` 로,
+    // (b) minify 시 __toCommonJS 는 `$tC` 로 emit 되어야 한다. 둘 다 wrong 이면 런타임 크래시.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ts = threadSafeArena(&arena);
+    const alloc = ts.allocator();
+
+    inline for (.{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.createDir(std.testing.io, "pages", .default_dir);
+        try writeFile(tmp.dir, "pages/esm.tsx", "export default function E(){ return 'E'; }");
+        try writeFile(tmp.dir, "pages/cjs.js", "module.exports = { default: function(){ return 'C'; } };");
+        try writeFile(tmp.dir, "entry.ts",
+            \\const ctx = require.context('./pages', true, /\.(tsx?|js)$/, 'sync');
+            \\for (const k of ctx.keys()) console.log(ctx(k).default());
+        );
+        const entry = try absPath(&tmp, "entry.ts");
+        defer std.testing.allocator.free(entry);
+        const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
+        var b = Bundler.init(alloc, .{
+            .entry_points = &.{entry},
+            .plugins = &plugins,
+            .code_splitting = true,
+            .format = .iife,
+            .minify_whitespace = minify,
+            .minify_identifiers = minify,
+        });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(alloc);
+        try std.testing.expect(!result.hasErrors());
+        const outs = result.outputs orelse return error.TestUnexpectedResult;
+        for (outs) |o| {
+            // dev HMR 전용 레지스트리 누출 금지(모든 모드).
+            try std.testing.expect(std.mem.indexOf(u8, o.contents, "__zntc_modules") == null);
+            if (minify) {
+                // minify 시 helper 는 `$tC` — 풀네임 `__toCommonJS` 가 raw 로 남으면 undefined 참조.
+                try std.testing.expect(std.mem.indexOf(u8, o.contents, "__toCommonJS") == null);
+            }
+        }
+    }
 }
 
 test "Bundler: require.context emits empty map when no matches" {
@@ -1422,9 +1518,10 @@ test "Bundler: require.context normalizes trailing slash and missing ./" {
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
-    // plugin 이 dot-slash 없이 반환 → key 도 그대로. value 는 __zntc_modules wrapper (#1579 follow-up).
+    // plugin 이 dot-slash 없이 반환 → key 도 그대로. value 는 wrapped 모듈 init-call (#4039).
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"nested/a.tsx\":function()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(),__toCommonJS(") != null);
     // raw `require(./...)` 는 IIFE 안에 없어야 — RN/Hermes runtime 호환.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/") == null);
     // emitJoinedPath 가 중복 slash 안 만들어야.
@@ -1486,10 +1583,11 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
     try std.testing.expect(!result.hasErrors());
 
     // 첫 호출 (./pages) 는 first.tsx 만, 둘째 호출 (./other) 는 second.tsx 만.
-    // matches key (relative) + __zntc_modules wrapper (raw require 회피, #1579 follow-up).
+    // matches key (relative) + wrapped 모듈 init-call (raw require 회피, #4039).
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./first.tsx\":function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./second.tsx\":function()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(),__toCommonJS(") != null);
     // cross-contamination 또는 raw require 없음.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./other/") == null);
@@ -1732,8 +1830,9 @@ test "Bundler: require.context IIFE has no raw require call (RN runtime invarian
         // 같은 정상 호출은 require 와 무관).
         try std.testing.expect(std.mem.indexOf(u8, iife, "return require(") == null);
         try std.testing.expect(std.mem.indexOf(u8, iife, " require(\"./") == null);
-        // 정상 emit 검증: __zntc_modules wrapper 호출.
-        try std.testing.expect(std.mem.indexOf(u8, iife, "__zntc_modules[") != null);
+        // 정상 emit 검증: wrapped 모듈 init-call (#4039 — `__zntc_modules` 미사용).
+        try std.testing.expect(std.mem.indexOf(u8, iife, "__zntc_modules") == null);
+        try std.testing.expect(std.mem.indexOf(u8, iife, "(),__toCommonJS(") != null);
         pos = end + 4;
     }
     try std.testing.expect(found_iife);

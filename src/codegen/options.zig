@@ -144,6 +144,12 @@ pub const CodegenOptions = struct {
     /// `__zntc_modules[<id>]` lookup 이 모듈 등록 ID 와 일치해야 하므로 emitter 가 동일
     /// `root_dir` 을 전달. null 이면 변환 없음 (legacy 절대 경로).
     require_context_module_id_root: ?[]const u8 = null,
+    /// require.context match 의 init-call 참조 문자열 — import_records 와 같은 인덱스로
+    /// [record_index][match_index]. emitter 가 linker 로 미리 계산해 전달
+    /// (`(init_X(),__toCommonJS(exports_X))`). code_splitting / production 단일번들에서
+    /// `__zntc_modules[id]`(dev HMR 전용) 대신 사용(issue #4039 + production require.context).
+    /// 비어있으면(dev 단일번들) codegen 이 `__zntc_modules` fallback. element null = resolve 실패.
+    require_context_init_refs: []const []const ?[]const u8 = &.{},
     /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
     import_records: []const types.ImportRecord = &.{},
     /// Metro x_facebook_sources function map emit 활성화.

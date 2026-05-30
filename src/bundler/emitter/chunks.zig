@@ -873,6 +873,27 @@ pub fn emitChunks(
             }
         }
 
+        // Wrapped entry 모듈은 factory body 안에서 명시적으로 호출해야 본문이 실행된다.
+        // scope-hoist(.none) entry 는 인라인 실행되지만, require.context/CJS-interop 등으로
+        // wrap 된 entry 는 `var require_X=__commonJS(...)`/`var init_X=__esm(...)` 정의만 되고
+        // 호출 안 돼 본문 미실행이었다(issue #4039 / verifier BUG2). bootstrap 의
+        // `__zntc_require("entry-chunk")` 는 factory 를 1회 실행하므로 여기서 wrapped entry
+        // init 을 호출하면 정확히 1회 실행(__commonJS/__esm 가 memoize).
+        if (reg_split and chunk_is_user_entry) {
+            if (entry_mod_idx) |ei| {
+                if (graph.getModule(@enumFromInt(ei))) |em| {
+                    // TLA(.esm + top-level await) entry 는 appendModuleCall 이 `await init_X()`
+                    // 를 내는데, reg_split 청크 factory 는 비-async `function(...)` 이라 top-level
+                    // await = SyntaxError. TLA+reg_split entry 는 이 PR 이전에도 미실행이었으므로
+                    // 여기서 제외(회귀 없음 — 무효 JS 생성 방지). 비-TLA wrapped entry 만 호출.
+                    const tla_entry = em.wrap_kind == .esm and em.uses_top_level_await;
+                    if (em.wrap_kind.isWrapped() and !tla_entry) {
+                        try parent.appendModuleCall(&chunk_output, allocator, em, if (linker) |l| &l.rename_table else null);
+                    }
+                }
+            }
+        }
+
         // IIFE splitting: self-register factory 닫기 + (entry) bootstrap.
         // prefix `(function(g){<INSTALL>({"id":function(exports,module,require){`
         // 의 짝: factory fn `}` + 객체 `}` + register 호출 `)` + `;` + wrapper
