@@ -43,6 +43,39 @@ const spread_trailing_comma = Parser.spread_trailing_comma;
 /// 태그를 변환하고 (setTag) 검증도 수행한다.
 /// 반환값: true면 valid assignment target, false면 에러를 이미 추가했거나 invalid.
 /// is_top이 true면 최상위 호출 (invalid일 때 "Invalid assignment target" 에러 추가).
+/// member/call 체인 spine 에 optional `?.` 가 하나라도 있는지. ECMAScript: optional chain 은
+/// assignment/update target 이 될 수 없다 — `a?.b` 뿐 아니라 `a?.b.c`, `a?.b().c`, `a.b?.c.d`
+/// 처럼 spine *앞쪽* optional 도 거부해야 한다(LeftHandSideExpression 에 OptionalChain 포함 금지).
+/// `(a?.b).c` 는 paren 으로 체인이 끊겨 valid — object 가 parenthesized_expression 등 비-체인
+/// 노드면 walk 가 거기서 멈춰 false 반환.
+fn memberChainHasOptional(self: *const Parser, start: NodeIndex) bool {
+    var cur = start;
+    var guard: u32 = 0;
+    while (guard < 100_000) : (guard += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        const n = self.ast.getNode(cur);
+        switch (n.tag) {
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                if (!self.ast.hasExtra(n.data.extra, 2)) return false;
+                if (self.ast.readExtra(n.data.extra, 2) != 0) return true; // optional member (a?.b / a?.[b])
+                cur = self.ast.readExtraNode(n.data.extra, 0); // object
+            },
+            .call_expression => {
+                if (!self.ast.hasExtra(n.data.extra, 3)) return false;
+                if (self.ast.readExtra(n.data.extra, 3) & ast_mod.CallFlags.optional_chain != 0) return true; // a?.()
+                cur = self.ast.readExtraNode(n.data.extra, 0); // callee
+            },
+            // TS non-null/as/satisfies 는 spine 을 끊지 않는다(`a?.b!.c`, `(a?.b as T).c` 의
+            // `!`/`as` 는 cover 의 top-level 분기가 이미 언래핑) — 내부로 내려가 그 아래
+            // optional 을 본다. paren 은 (위 else 로) 체인을 끊으므로 `(a?.b)!.c` 는 valid.
+            .ts_non_null_expression => cur = n.data.unary.operand,
+            .ts_as_expression, .ts_satisfies_expression => cur = n.data.binary.left,
+            else => return false, // identifier / paren(체인 끊김) / 기타 head
+        }
+    }
+    return false;
+}
+
 pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: bool) ParseError2!bool {
     if (idx.isNone()) return false;
     const node = self.ast.getNode(idx);
@@ -56,12 +89,13 @@ pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: 
             self.ast.setTag(idx, .assignment_target_identifier);
             return true;
         },
-        .private_identifier, .private_field_expression => true,
+        .private_identifier => true,
 
-        // 2) member expression — optional chaining이 아니면 valid (태그 유지)
-        .static_member_expression, .computed_member_expression => {
-            if (self.ast.readExtra(node.data.extra, 2) == 0) return true; // normal (not optional chain)
-            // optional chaining (a?.b, a?.[b])은 assignment target이 아님
+        // 2) member expression — 체인 spine 에 optional `?.` 가 없어야 valid (태그 유지).
+        //    `a?.b`(이 노드 optional) 뿐 아니라 `a?.b.c`/`a?.b().c`(spine 앞쪽 optional)도 거부.
+        //    `(a?.b).c` 는 paren 으로 끊겨 valid. private field(`obj.#x`)도 같은 규칙.
+        .static_member_expression, .computed_member_expression, .private_field_expression => {
+            if (!memberChainHasOptional(self, idx)) return true;
             if (is_top) try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
             return false;
         },
