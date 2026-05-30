@@ -173,12 +173,12 @@ pub fn mangleAll(
     // mangle_audit 비활성 시 set build + per-candidate lookup 전부 skip
     // (production hot path 낭비 회피).
     const audit_enabled = debug_log.enabled(.mangle_audit);
-    var cross_module_ref_set = std.AutoHashMap(ModuleSymKey, void).init(allocator);
-    defer cross_module_ref_set.deinit();
+    var cross_module_ref_set: std.AutoHashMapUnmanaged(ModuleSymKey, void) = .empty;
+    defer cross_module_ref_set.deinit(allocator);
     if (audit_enabled) {
         for (input.modules) |m| {
             for (m.cross_module_imports) |ref| {
-                try cross_module_ref_set.put(.{
+                try cross_module_ref_set.put(allocator, .{
                     .module_index = ref.source_module_index,
                     .symbol_id = ref.source_symbol_id,
                 }, {});

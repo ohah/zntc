@@ -769,9 +769,9 @@ pub const DevServer = struct {
 
         // issue #3858 — rescan 시 빠른 중복 체크용 set. css_paths 의 path 와 동일
         // 인스턴스 참조 (소유 X — css_paths 가 owner).
-        var css_path_set = std.StringHashMap(void).init(self.allocator);
-        defer css_path_set.deinit();
-        for (css_paths.items) |p| css_path_set.put(p, {}) catch {};
+        var css_path_set: std.StringHashMapUnmanaged(void) = .empty;
+        defer css_path_set.deinit(self.allocator);
+        for (css_paths.items) |p| css_path_set.put(self.allocator, p, {}) catch {};
 
         self.routineLog("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()});
 
@@ -840,9 +840,9 @@ pub const DevServer = struct {
                 collectCssFiles(self.allocator, self.io, self.root_dir, root, &new_css_paths);
 
                 // new_css_paths set 으로 빠른 lookup
-                var new_set = std.StringHashMap(void).init(self.allocator);
-                defer new_set.deinit();
-                for (new_css_paths.items) |p| new_set.put(p, {}) catch {};
+                var new_set: std.StringHashMapUnmanaged(void) = .empty;
+                defer new_set.deinit(self.allocator);
+                for (new_css_paths.items) |p| new_set.put(self.allocator, p, {}) catch {};
 
                 // (a) 신규 path detect — new_set 에 있으나 css_path_set 에 없음
                 for (new_css_paths.items) |p| {
@@ -852,7 +852,7 @@ pub const DevServer = struct {
                         self.allocator.free(path_owned);
                         continue;
                     };
-                    css_path_set.put(path_owned, {}) catch {};
+                    css_path_set.put(self.allocator, path_owned, {}) catch {};
                     watcher.addPath(path_owned) catch {};
                     // synthetic event — caller 가 css-update broadcast 트리거하도록
                     if (changed_set.getOrPut(path_owned) catch null) |gop| {

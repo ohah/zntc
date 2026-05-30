@@ -591,8 +591,8 @@ fn dumpModuleStats(graph: *ModuleGraph) void {
     var plain_esm_nm: usize = 0;
     var plain_none_nm: usize = 0;
     var plain_nm_has_sem: usize = 0;
-    var type_hist = std.StringHashMap(usize).init(graph.allocator);
-    defer type_hist.deinit();
+    var type_hist: std.StringHashMapUnmanaged(usize) = .empty;
+    defer type_hist.deinit(graph.allocator);
 
     var it = graph.modulesIterator();
     while (it.next()) |m| {
@@ -626,7 +626,7 @@ fn dumpModuleStats(graph: *ModuleGraph) void {
             }
             if (m.semantic != null) plain_nm_has_sem += 1;
         }
-        const e = type_hist.getOrPut(@tagName(m.module_type)) catch continue;
+        const e = type_hist.getOrPut(graph.allocator, @tagName(m.module_type)) catch continue;
         if (!e.found_existing) e.value_ptr.* = 0;
         e.value_ptr.* += 1;
     }
@@ -1245,11 +1245,11 @@ pub const Bundler = struct {
         }
 
         // Worker 별도 빌드: new Worker(new URL(...)) 패턴에서 수집된 worker 경로를 독립 IIFE로 빌드
-        var worker_output_map = std.StringHashMap([]const u8).init(self.allocator);
+        var worker_output_map: std.StringHashMapUnmanaged([]const u8) = .empty;
         defer {
             var it = worker_output_map.valueIterator();
             while (it.next()) |v| self.allocator.free(v.*);
-            worker_output_map.deinit();
+            worker_output_map.deinit(self.allocator);
         }
         var worker_output_files: std.ArrayList(OutputFile) = .empty;
         defer worker_output_files.deinit(self.allocator);
@@ -1273,7 +1273,7 @@ pub const Bundler = struct {
                     const worker_result = self.buildWorker(io, we.resolved_path) catch {
                         continue;
                     };
-                    try worker_output_map.put(we.resolved_path, worker_result.filename);
+                    try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);
                     try worker_output_files.append(self.allocator, .{
                         .path = try self.allocator.dupe(u8, worker_result.filename),
                         .contents = worker_result.contents,

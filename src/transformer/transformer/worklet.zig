@@ -167,16 +167,16 @@ pub fn collectClosureVars(
     params: ast_mod.NodeList,
     func_name: ?[]const u8,
 ) Error![]const ClosureVar {
-    var locals = std.StringHashMap(void).init(self.allocator);
-    defer locals.deinit();
-    var refs = std.StringHashMap(NodeIndex).init(self.allocator);
-    defer refs.deinit();
-    var new_classes = std.StringHashMap(NodeIndex).init(self.allocator);
-    defer new_classes.deinit();
+    var locals: std.StringHashMapUnmanaged(void) = .empty;
+    defer locals.deinit(self.allocator);
+    var refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
+    defer refs.deinit(self.allocator);
+    var new_classes: std.StringHashMapUnmanaged(NodeIndex) = .empty;
+    defer new_classes.deinit(self.allocator);
 
     // 0. 함수 이름 → locals (자기 참조 제외: JS 스펙상 함수 이름은 body 내에서 접근 가능)
     if (func_name) |name| {
-        if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
+        if (name.len > 0) locals.put(self.allocator, name, {}) catch return error.OutOfMemory;
     }
 
     // 1. 파라미터 이름 수집 (parser가 formal_parameters로 정규화 보장)
@@ -243,12 +243,12 @@ pub fn collectClosureVars(
 /// arrow params without type annotations 는 expression 으로 파싱된 뒤
 /// coverExpressionToAssignmentTarget 로 변환되므로 cover-grammar 결과 (identifier_reference,
 /// assignment_target_identifier, assignment_expression) 도 binding 으로 본다.
-fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void)) Error!void {
+fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMapUnmanaged(void)) Error!void {
     var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{ .cover_grammar_assignment = true });
     defer it.deinit();
     while (try it.next()) |leaf_idx| {
         const name = self.ast.getText(self.ast.getNode(leaf_idx).data.string_ref);
-        if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
+        if (name.len > 0) locals.put(self.allocator, name, {}) catch return error.OutOfMemory;
     }
 }
 
@@ -259,24 +259,24 @@ fn walkScopedBody(
     self: *Transformer,
     body_idx: NodeIndex,
     param_nodes: []const u32,
-    outer_locals: *std.StringHashMap(void),
-    outer_refs: *std.StringHashMap(NodeIndex),
+    outer_locals: *std.StringHashMapUnmanaged(void),
+    outer_refs: *std.StringHashMapUnmanaged(NodeIndex),
 ) Error!void {
-    var inner_locals = std.StringHashMap(void).init(self.allocator);
-    defer inner_locals.deinit();
+    var inner_locals: std.StringHashMapUnmanaged(void) = .empty;
+    defer inner_locals.deinit(self.allocator);
 
     for (param_nodes) |raw| {
         try collectAllIdentifiers(self, @enumFromInt(raw), &inner_locals);
     }
 
-    var inner_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-    defer inner_refs.deinit();
+    var inner_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
+    defer inner_refs.deinit(self.allocator);
     try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs);
 
     var iter = inner_refs.iterator();
     while (iter.next()) |entry| {
         if (!inner_locals.contains(entry.key_ptr.*) and !outer_locals.contains(entry.key_ptr.*)) {
-            outer_refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+            outer_refs.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
         }
     }
 }
@@ -284,7 +284,7 @@ fn walkScopedBody(
 /// 노드 트리에서 모든 identifier (identifier_reference, binding_identifier 등)를 수집.
 /// params에서 binding names를 추출하는 용도. generic pre-order 순회 — 명시 stack 사용으로
 /// 깊이 한도 없음 (#2484: 이전 depth>32 silent return 이 깊은 패턴에서 leaf 누락).
-fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void)) Error!void {
+fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMapUnmanaged(void)) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
     if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
@@ -297,7 +297,7 @@ fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.String
         switch (node.tag) {
             .identifier_reference, .binding_identifier, .assignment_target_identifier => {
                 const name = self.ast.getText(node.data.string_ref);
-                if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
+                if (name.len > 0) locals.put(self.allocator, name, {}) catch return error.OutOfMemory;
                 continue;
             },
             else => {},
@@ -320,9 +320,9 @@ fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.String
 fn walkBodyForClosureAnalysisWithNew(
     self: *Transformer,
     idx: NodeIndex,
-    locals: *std.StringHashMap(void),
-    refs: *std.StringHashMap(NodeIndex),
-    new_classes: *std.StringHashMap(NodeIndex),
+    locals: *std.StringHashMapUnmanaged(void),
+    refs: *std.StringHashMapUnmanaged(NodeIndex),
+    new_classes: *std.StringHashMapUnmanaged(NodeIndex),
 ) Error!void {
     try collectNewExpressionCallees(self, idx, new_classes);
     try walkBodyForClosureAnalysis(self, idx, locals, refs);
@@ -333,7 +333,7 @@ fn walkBodyForClosureAnalysisWithNew(
 fn collectNewExpressionCallees(
     self: *Transformer,
     idx: NodeIndex,
-    new_classes: *std.StringHashMap(NodeIndex),
+    new_classes: *std.StringHashMapUnmanaged(NodeIndex),
 ) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
@@ -353,7 +353,7 @@ fn collectNewExpressionCallees(
                     if (callee.tag == .identifier_reference) {
                         const name = self.ast.getText(callee.data.string_ref);
                         if (name.len > 0) {
-                            new_classes.put(name, callee_idx) catch return error.OutOfMemory;
+                            new_classes.put(self.allocator, name, callee_idx) catch return error.OutOfMemory;
                         }
                     }
                 }
@@ -373,8 +373,8 @@ fn collectNewExpressionCallees(
 fn walkBodyForClosureAnalysis(
     self: *Transformer,
     idx: NodeIndex,
-    locals: *std.StringHashMap(void),
-    refs: *std.StringHashMap(NodeIndex),
+    locals: *std.StringHashMapUnmanaged(void),
+    refs: *std.StringHashMapUnmanaged(NodeIndex),
 ) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
@@ -393,7 +393,7 @@ fn walkBodyForClosureAnalysis(
             .identifier_reference => {
                 const name = self.ast.getText(node.data.string_ref);
                 if (name.len > 0) {
-                    refs.put(name, cur) catch return error.OutOfMemory;
+                    refs.put(self.allocator, name, cur) catch return error.OutOfMemory;
                 }
                 continue;
             },
@@ -412,8 +412,8 @@ fn walkBodyForClosureAnalysis(
                 const plist = self.ast.functionParamsList(node);
                 const p_start = plist.start;
                 const p_len = plist.len;
-                var fn_locals = std.StringHashMap(void).init(self.allocator);
-                defer fn_locals.deinit();
+                var fn_locals: std.StringHashMapUnmanaged(void) = .empty;
+                defer fn_locals.deinit(self.allocator);
                 // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
                 try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e]), &fn_locals);
                 var fpi: u32 = 0;
@@ -421,13 +421,13 @@ fn walkBodyForClosureAnalysis(
                     if (p_start + fpi < self.ast.extra_data.items.len)
                         try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[p_start + fpi]), &fn_locals);
                 }
-                var fn_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-                defer fn_refs.deinit();
+                var fn_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
+                defer fn_refs.deinit(self.allocator);
                 try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs);
                 var fr_iter = fn_refs.iterator();
                 while (fr_iter.next()) |entry| {
                     if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
-                        refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+                        refs.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
                     }
                 }
                 continue;

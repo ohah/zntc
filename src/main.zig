@@ -926,14 +926,14 @@ pub fn main(init: std.process.Init) !void {
             defer persistent_store.deinit();
 
             // dev mode: per-module code 캐시 (HMR diff용)
-            var module_code_cache = std.StringHashMap([]const u8).init(allocator);
+            var module_code_cache: std.StringHashMapUnmanaged([]const u8) = .empty;
             defer {
                 var it = module_code_cache.iterator();
                 while (it.next()) |entry| {
                     allocator.free(entry.key_ptr.*);
                     allocator.free(entry.value_ptr.*);
                 }
-                module_code_cache.deinit();
+                module_code_cache.deinit(allocator);
             }
 
             // 초기 빌드의 module_dev_codes로 캐시 초기화 (첫 rebuild부터 HMR diff 가능)
@@ -944,7 +944,7 @@ pub fn main(init: std.process.Init) !void {
                         allocator.free(id_copy);
                         continue;
                     };
-                    module_code_cache.put(id_copy, code_copy) catch {
+                    module_code_cache.put(allocator, id_copy, code_copy) catch {
                         allocator.free(id_copy);
                         allocator.free(code_copy);
                     };
@@ -957,17 +957,17 @@ pub fn main(init: std.process.Init) !void {
             // 첫 빌드는 module_store 없이 실행되었으므로 두 번째 빌드부터 캐시가 유효함.
 
             // 초기 module_paths에서 mtime 수집
-            var mtime_map = std.StringHashMap(i128).init(allocator);
+            var mtime_map: std.StringHashMapUnmanaged(i128) = .empty;
             defer {
                 var it = mtime_map.keyIterator();
                 while (it.next()) |k| allocator.free(k.*);
-                mtime_map.deinit();
+                mtime_map.deinit(allocator);
             }
 
             // 엔트리 파일도 감시 대상에 추가
             const entry_dupe = try allocator.dupe(u8, abs_entry);
             const entry_mtime = watch_cli.getFileMtime(io, abs_entry) catch 0;
-            try mtime_map.put(entry_dupe, entry_mtime);
+            try mtime_map.put(allocator, entry_dupe, entry_mtime);
 
             if (result.module_paths) |paths| {
                 for (paths) |p| watch_cli.upsertMtimePath(allocator, io, &mtime_map, p);
@@ -1143,7 +1143,7 @@ pub fn main(init: std.process.Init) !void {
                                 allocator.free(id_copy);
                                 continue;
                             };
-                            module_code_cache.put(id_copy, code_copy) catch {
+                            module_code_cache.put(allocator, id_copy, code_copy) catch {
                                 allocator.free(id_copy);
                                 allocator.free(code_copy);
                             };

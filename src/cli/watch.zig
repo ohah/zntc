@@ -56,13 +56,13 @@ pub fn watchDirectory(
     const stdout = &stdout_state.interface;
 
     // mtime 맵: 파일 경로(소유) -> mtime
-    var mtime_map = std.StringHashMap(i128).init(allocator);
+    var mtime_map: std.StringHashMapUnmanaged(i128) = .empty;
     defer {
         var it = mtime_map.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
-        mtime_map.deinit();
+        mtime_map.deinit(allocator);
     }
 
     // 초기 mtime 수집
@@ -74,13 +74,13 @@ pub fn watchDirectory(
         io.sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
 
         // 현재 파일 상태 수집
-        var current_mtimes = std.StringHashMap(i128).init(allocator);
+        var current_mtimes: std.StringHashMapUnmanaged(i128) = .empty;
         defer {
             var it = current_mtimes.iterator();
             while (it.next()) |entry| {
                 allocator.free(entry.key_ptr.*);
             }
-            current_mtimes.deinit();
+            current_mtimes.deinit(allocator);
         }
 
         collectMtimes(allocator, io, input_dir, &current_mtimes) catch continue;
@@ -118,7 +118,7 @@ pub fn watchDirectory(
 
                 // mtime 맵 업데이트 - 키를 복제하여 저장
                 const owned_key = try allocator.dupe(u8, path);
-                if (mtime_map.fetchPut(owned_key, current_mtime) catch null) |old| {
+                if (mtime_map.fetchPut(allocator, owned_key, current_mtime) catch null) |old| {
                     allocator.free(old.key);
                 }
             }
@@ -160,7 +160,7 @@ pub fn getFileMtime(io: std.Io, path: []const u8) !i128 {
 pub fn upsertMtimePath(
     allocator: std.mem.Allocator,
     io: std.Io,
-    map: *std.StringHashMap(i128),
+    map: *std.StringHashMapUnmanaged(i128),
     path: []const u8,
 ) void {
     const mt = getFileMtime(io, path) catch return;
@@ -169,7 +169,7 @@ pub fn upsertMtimePath(
         return;
     }
     const duped = allocator.dupe(u8, path) catch return;
-    map.put(duped, mt) catch allocator.free(duped);
+    map.put(allocator, duped, mt) catch allocator.free(duped);
 }
 
 /// 디렉토리를 순회하며 .ts/.tsx 파일의 mtime을 수집한다.
@@ -178,7 +178,7 @@ pub fn collectMtimes(
     allocator: std.mem.Allocator,
     io: std.Io,
     input_dir: []const u8,
-    mtime_map: *std.StringHashMap(i128),
+    mtime_map: *std.StringHashMapUnmanaged(i128),
 ) !void {
     var dir = try std.Io.Dir.cwd().openDir(io, input_dir, .{ .iterate = true });
     defer dir.close(io);
@@ -206,7 +206,7 @@ pub fn collectMtimes(
         };
 
         // full_path를 키로 소유권 이전
-        mtime_map.put(full_path, mtime) catch {
+        mtime_map.put(allocator, full_path, mtime) catch {
             allocator.free(full_path);
             continue;
         };
@@ -221,13 +221,13 @@ pub fn collectWatchRootMtimes(
     root: []const u8,
     include: []const []const u8,
     exclude: []const []const u8,
-    mtime_map: *std.StringHashMap(i128),
+    mtime_map: *std.StringHashMapUnmanaged(i128),
 ) !void {
     // 0.16: statFile 가 io 를 요구하므로 visitor closure 가 ctx 로 io 를 받는다.
-    const Ctx = struct { map: *std.StringHashMap(i128), io: std.Io };
+    const Ctx = struct { map: *std.StringHashMapUnmanaged(i128), allocator: std.mem.Allocator, io: std.Io };
     const visit = struct {
         fn f(ctx: Ctx, full_path: []const u8) bool {
-            const gop = ctx.map.getOrPut(full_path) catch return false;
+            const gop = ctx.map.getOrPut(ctx.allocator, full_path) catch return false;
             if (gop.found_existing) return false;
             gop.value_ptr.* = getFileMtime(ctx.io, full_path) catch {
                 _ = ctx.map.remove(full_path);
@@ -241,7 +241,7 @@ pub fn collectWatchRootMtimes(
         io,
         root,
         .{ .include = include, .exclude = exclude },
-        Ctx{ .map = mtime_map, .io = io },
+        Ctx{ .map = mtime_map, .allocator = allocator, .io = io },
         visit,
     );
 }
