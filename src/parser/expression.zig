@@ -1166,6 +1166,8 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
             try self.addErrorCode(self.ast.getNode(expr).span, "'import' cannot be used with 'new'", .import_cannot_new);
         }
     }
+    // new callee 에 optional chain(`a?.b`)이 있으면 SyntaxError — 진단은 callee 당 1회만.
+    var reported_optional_new = false;
     while (true) {
         const expr_start = self.ast.getNode(expr).span.start;
         switch (self.current()) {
@@ -1189,7 +1191,12 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
             },
             .l_bracket => {
                 try self.advance();
+                // computed-member subscript 는 항상 [+In] (ECMAScript MemberExpression
+                // `[ Expression ]`). for-init 등 allow_in=false 컨텍스트에서도 `new a[b in c]`
+                // 의 `in` 을 허용해야 한다 — postfix `.l_bracket` 경로와 동일.
+                const cm_saved = self.enterAllowInContext(true);
                 const prop = try parseExpression(self);
+                self.restoreContext(cm_saved);
                 try self.expect(.r_bracket);
                 {
                     const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
@@ -1202,24 +1209,21 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
             },
             .question_dot => {
                 // ECMAScript: new 의 callee(MemberExpression)는 OptionalExpression 일 수 없다
-                // (`new a?.b()` / `new a.b?.c()` = SyntaxError). 진단만 내고 `?.`를 일반 `.`
-                // 처럼 소비해 recovery — 이후 postfix 루프가 `(new ...)?.x` 로 잘못 재해석하는
-                // 것을 막는다. paren 으로 감싼 `new (a?.b)()` 는 `?.`가 paren 내부라 이 루프에
-                // 도달하지 않아 유효하게 통과한다.
-                try self.addErrorCode(self.currentSpan(), "Invalid optional chain in 'new' expression", .optional_chain_new);
-                try self.advance(); // consume `?.`
-                // `?.(` (optional call) / `?.\`tpl\`` 는 멤버명이 없다 — break 하면 상위가
-                // `(`/template 을 args/tagged 로 소비해 단일 진단으로 끝난다. 여기서
-                // parseIdentifierName 을 부르면 "Identifier expected" 2차 에러가 덧붙어 노이즈.
-                if (self.current() == .l_paren or self.current() == .no_substitution_template or
-                    self.current() == .template_head)
-                {
-                    break;
+                // (`new a?.b()` / `new a.b?.c()` = SyntaxError). 진단은 callee 당 1회만 내고
+                // (`reported_optional_new`), `?.`와 뒤따르는 멤버를 일반 멤버처럼 소비해 postfix
+                // 루프가 `(new ...)?.x` 로 잘못 재해석하는 것을 막는다. paren 으로 감싼
+                // `new (a?.b)()` 는 `?.`가 paren 내부라 이 루프에 도달하지 않아 유효 통과.
+                if (!reported_optional_new) {
+                    try self.addErrorCode(self.currentSpan(), "Invalid optional chain in 'new' expression", .optional_chain_new);
+                    reported_optional_new = true;
                 }
-                // `?.[` → computed, 그 외 → 일반 멤버 접근으로 recovery.
+                try self.advance(); // consume `?.`
                 if (self.current() == .l_bracket) {
+                    // `?.[expr]` → computed (subscript 는 [+In]).
                     try self.advance();
+                    const cm_saved = self.enterAllowInContext(true);
                     const prop = try parseExpression(self);
+                    self.restoreContext(cm_saved);
                     try self.expect(.r_bracket);
                     const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
                     expr = try self.ast.addNode(.{
@@ -1227,7 +1231,12 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
                         .data = .{ .extra = me },
                     });
-                } else {
+                } else if (self.current() == .identifier or self.current() == .escaped_keyword or
+                    self.current() == .escaped_strict_reserved or self.current() == .private_identifier or
+                    self.current().isKeyword())
+                {
+                    // `?.name` → 일반 멤버명으로 소비. parseIdentifierName 이 멤버명을 받을 때만
+                    // 호출하므로 "Identifier expected" 2차 에러(노이즈)가 안 붙는다.
                     const prop = try parseIdentifierName(self);
                     const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
                     const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
@@ -1239,6 +1248,11 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
                         .span = .{ .start = expr_start, .end = prop_end },
                         .data = .{ .extra = me },
                     });
+                } else {
+                    // 멤버명 없음(`?.(` optional call / `?.\`tpl\`` / `?.<T>` / EOF / `;` 등) →
+                    // break. 상위가 `(`/template/type-args 를 소비하거나 `new <callee>` 로
+                    // 종료한다. 단일 623 진단 유지(2차 에러·dangling `.invalid` prop 없음).
+                    break;
                 }
             },
             else => break,
