@@ -11,7 +11,7 @@ pub const LinkingMetadata = struct {
     /// 스킵할 AST 노드 인덱스 (import_declaration, export 키워드 등)
     skip_nodes: std.DynamicBitSet,
     /// symbol_id → 새 이름. codegen이 식별자 출력 시 symbol_ids[node_idx]로 조회.
-    renames: std.AutoHashMap(u32, []const u8),
+    renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
     /// dev 모드(`buildDevMetadata`) 가 채우는 모듈 단위 `exports.x = x;` 문자열.
     /// scope-hoisted 번들(`buildMetadataForAst`/`buildMetadata`) 은 `final_export_entries`
     /// 를 채우고 이 필드는 null.
@@ -69,11 +69,11 @@ pub const LinkingMetadata = struct {
 
         pub const Entry = struct {
             symbol_id: u32,
-            map: std.StringHashMap([]const u8),
+            map: std.StringHashMapUnmanaged([]const u8),
         };
 
         /// symbol_id로 매핑 조회.
-        pub fn get(self: *const NsMemberRewrites, sym_id: u32) ?*const std.StringHashMap([]const u8) {
+        pub fn get(self: *const NsMemberRewrites, sym_id: u32) ?*const std.StringHashMapUnmanaged([]const u8) {
             for (self.entries) |*e| {
                 if (e.symbol_id == sym_id) return &e.map;
             }
@@ -120,7 +120,7 @@ pub const LinkingMetadata = struct {
         // nested mangling에서 소유권을 이전받은 문자열 해제
         for (self.owned_rename_values.items) |v| self.allocator.free(v);
         self.owned_rename_values.deinit(self.allocator);
-        self.renames.deinit();
+        self.renames.deinit(self.allocator);
         if (self.final_exports) |fe| self.allocator.free(fe);
         if (self.final_export_entries) |entries| self.allocator.free(entries);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);
@@ -140,7 +140,7 @@ pub const LinkingMetadata = struct {
                 while (vit.next()) |v| {
                     if (v.*.len > 0 and v.*[0] == '{') self.allocator.free(v.*);
                 }
-                m.deinit();
+                m.deinit(self.allocator);
             }
             self.allocator.free(self.ns_member_rewrites.entries);
         }

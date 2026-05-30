@@ -484,18 +484,18 @@ test "isCandidateAvailable: 예약어/글로벌/nested 통합 확인" {
     var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
 
-    var name_to_owners = Linker.NameToOwnersMap.init(std.testing.allocator);
-    defer name_to_owners.deinit();
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    defer name_to_owners.deinit(std.testing.allocator);
 
     // 예약어는 불가
     try std.testing.expect(!linker.isCandidateAvailable("class", 0, &name_to_owners));
     // 일반 이름은 가능
     try std.testing.expect(linker.isCandidateAvailable("foo", 0, &name_to_owners));
     // name_to_owners에 있는 이름은 불가
-    try name_to_owners.put("bar", .empty);
+    try name_to_owners.put(std.testing.allocator, "bar", .empty);
     try std.testing.expect(!linker.isCandidateAvailable("bar", 0, &name_to_owners));
     // reserved_globals에 있는 이름은 불가
-    try linker.reserved_globals.put("console", {});
+    try linker.reserved_globals.put(std.testing.allocator, "console", {});
     try std.testing.expect(!linker.isCandidateAvailable("console", 0, &name_to_owners));
 }
 

@@ -1349,13 +1349,13 @@ fn fanOutModuleExports(
     // collectExportsRecursive 는 lnk.allocator 로 append. OOM 은 named 루프와
     // 일관되게 전파(silent partial-link 방지).
     var exps: std.ArrayList(Linker.NsExportPair) = .empty;
-    var seen_e = std.StringHashMap(void).init(lnk.allocator);
-    var visited_e = std.AutoHashMap(u32, void).init(lnk.allocator);
+    var seen_e: std.StringHashMapUnmanaged(void) = .empty;
+    var visited_e: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer {
         for (exps.items) |e| if (e.owned) lnk.allocator.free(e.local);
         exps.deinit(lnk.allocator);
-        seen_e.deinit();
-        visited_e.deinit();
+        seen_e.deinit(lnk.allocator);
+        visited_e.deinit(lnk.allocator);
     }
     try lnk.collectExportsRecursive(&exps, &seen_e, &visited_e, src_mod, 0);
     for (exps.items) |e|

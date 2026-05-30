@@ -195,8 +195,8 @@ fn e2eEnumWithRename(backing_allocator: std.mem.Allocator, source: []const u8, r
     const enum_symbol_id = transformer.symbol_ids.items[@intFromEnum(enum_name_idx)] orelse return error.MissingEnumSymbol;
 
     const skip = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len);
-    var renames = std.AutoHashMap(u32, []const u8).init(allocator);
-    try renames.put(enum_symbol_id, renamed);
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try renames.put(allocator, enum_symbol_id, renamed);
     var md: LinkingMetadata = .{
         .skip_nodes = skip,
         .renames = renames,

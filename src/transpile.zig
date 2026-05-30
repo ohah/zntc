@@ -1379,7 +1379,10 @@ fn transpileWithCallbackInternal(
         const node_count = transformer.ast.nodes.items.len;
         mangle_metadata = .{
             .skip_nodes = std.DynamicBitSet.initEmpty(arena_alloc, node_count) catch return error.OutOfMemory,
-            .renames = mr.renames,
+            // mr.renames 는 managed map. LinkingMetadata.renames 는 unmanaged 라
+            // backing handle (.unmanaged) 만 빌린다. 소유권은 mr 에 남아 mr.deinit()
+            // 이 해제 — mangle_metadata 는 deinit 되지 않으므로 double-free 없음.
+            .renames = mr.renames.unmanaged,
             .final_exports = null,
             .symbol_ids = if (transformer.symbol_ids.items.len > 0)
                 transformer.symbol_ids.items
