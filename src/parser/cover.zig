@@ -140,18 +140,22 @@ pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: 
         .object_assignment_target,
         => true,
 
-        // 6b) TS as/satisfies expression — 내부 expression을 assignment target으로 검증
-        // (z as any) = 1 → z가 valid target이면 OK (esbuild/TS 호환)
-        // .unary layout(addUnaryNode) 이므로 operand 로 접근 (아래 ts_non_null 과 동일).
-        .ts_as_expression, .ts_satisfies_expression => {
+        // 6b) TS as/satisfies/non-null/type-assertion — 내부 expression을 assignment target으로 검증.
+        // `(z as any) = 1` / `x! = 1` / `a[i]!++` / `(<any>z) = 1` → z/x 가 valid target 이면 OK
+        // (esbuild/TS 호환). 전부 .unary layout(addUnaryNode) 이라 operand 로 접근.
+        // 단, **assignment-target 위치**에서 operand 가 destructuring 패턴이면(`([a,b] as any) = c`,
+        // `({x}!) = c`) parenthesized destructuring(`([a,b]) = c`)과 동일 규칙으로 invalid — 위 paren
+        // arm 의 array/object 가드와 동형. 가드는 `is_top` 으로 게이트: assignment-target 진입과
+        // destructuring 원소 재귀는 is_top=true 지만, **arrow PARAMETER** 위치는 is_top=false 로
+        // 부른다(coverExpressionToArrowParams). `([a,b] as any) => …` 는 valid binding 이므로
+        // arrow param 에서는 통과시켜야 한다(esbuild 동형). 게이트 없으면 arrow param 오거부(회귀).
+        .ts_as_expression, .ts_satisfies_expression, .ts_non_null_expression, .ts_type_assertion => {
             const inner = node.data.unary.operand;
-            return try self.coverExpressionToAssignmentTarget(inner, is_top);
-        },
-
-        // 6c) TS non-null assertion — 같은 원리. `x!--`, `a[i]!++`, `x! = 1` 같은
-        // 패턴이 TS 에선 valid (TS spec: `NonNullExpression` 은 assignment target).
-        .ts_non_null_expression => {
-            const inner = node.data.unary.operand;
+            const inner_tag = self.ast.getNode(inner).tag;
+            if (is_top and (inner_tag == .array_expression or inner_tag == .object_expression)) {
+                try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
+                return false;
+            }
             return try self.coverExpressionToAssignmentTarget(inner, is_top);
         },
 
