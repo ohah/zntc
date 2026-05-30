@@ -52,7 +52,7 @@ pub const TreeShaker = struct {
     graph: *ModuleGraph,
     linker: *const Linker,
     included: std.DynamicBitSet,
-    used_exports: std.StringHashMap(void),
+    used_exports: std.StringHashMapUnmanaged(void) = .empty,
     entry_set: std.DynamicBitSet,
     /// markAllExportsUsed 의 re-export source 확장 방문 여부.
     /// `*` sentinel 은 다른 경로에서 먼저 찍힐 수 있으므로 recursion guard 와 분리한다.
@@ -146,7 +146,7 @@ pub const TreeShaker = struct {
             .graph = graph,
             .linker = linker,
             .included = included,
-            .used_exports = std.StringHashMap(void).init(allocator),
+            .used_exports = .empty,
             .entry_set = entry_set,
             .all_exports_expanded = all_exports_expanded,
         };
@@ -161,7 +161,7 @@ pub const TreeShaker = struct {
         }
         var kit = self.used_exports.keyIterator();
         while (kit.next()) |key| self.allocator.free(key.*);
-        self.used_exports.deinit();
+        self.used_exports.deinit(self.allocator);
         self.included.deinit();
         self.entry_set.deinit();
         self.all_exports_expanded.deinit();
@@ -2314,7 +2314,7 @@ pub const TreeShaker = struct {
         if (self.used_exports.contains(lookup_key)) return;
 
         const key = try types.makeModuleKey(self.allocator, module_index, export_name);
-        try self.used_exports.put(key, {});
+        try self.used_exports.put(self.allocator, key, {});
 
         // O(1) per-module used export 플래그 갱신
         if (module_index < self.has_direct_used_export.len) {

@@ -232,7 +232,7 @@ pub const EmitOptions = struct {
     /// inner key = import_record specifier, value = emit 된 worker chunk filename.
     /// codegen 의 `worker_map` 으로 분배되어 emitNew 가 매칭되면 직접 emit.
     /// null/empty 면 fast-exit — worker 가 없는 빌드에서 추가 비용 0.
-    worker_map_per_module: ?*const std.StringHashMap(std.StringHashMap([]const u8)) = null,
+    worker_map_per_module: ?*const std.StringHashMapUnmanaged(std.StringHashMapUnmanaged([]const u8)) = null,
 
     pub const PolyfillEntry = struct {
         name: []const u8,
@@ -407,8 +407,8 @@ pub fn emitWithTreeShaking(
     const collect_externals = options.format == .umd or options.format == .amd or
         (options.format == .iife and options.globals.len > 0);
     if (collect_externals) {
-        var seen = std.StringHashMap(void).init(allocator);
-        defer seen.deinit();
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(allocator);
         for (sorted.items) |m| {
             for (m.import_records) |rec| {
                 if (!rec.is_external or seen.contains(rec.specifier)) continue;
@@ -419,7 +419,7 @@ pub fn emitWithTreeShaking(
                 else
                     try types.specifierToParamName(allocator, rec.specifier);
                 errdefer allocator.free(param);
-                try seen.put(rec.specifier, {});
+                try seen.put(allocator, rec.specifier, {});
                 try ext_specifiers.append(allocator, rec.specifier);
                 try ext_param_names_buf.append(allocator, param);
             }

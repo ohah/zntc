@@ -100,20 +100,20 @@ fn matchTsPathEntry(entry: @import("../config.zig").TsConfig.PathEntry, specifie
 /// 포인터가 이후 다른 스레드의 삽입(map rehash)에도 dangling 되지 않게 한다.
 pub const DirEntryCache = struct {
     /// 디렉토리 절대 경로 → 엔트리 집합. null이면 디렉토리가 존재하지 않음 (negative 캐시).
-    cache: std.StringHashMap(?*EntrySet),
+    cache: std.StringHashMapUnmanaged(?*EntrySet) = .empty,
     rwlock: spin.SpinRwLock = .{},
     allocator: std.mem.Allocator,
     /// 0.16: listDir 가 io 를 요구. Resolver.resolve 진입 시 주입 (per-instance).
     io: std.Io = undefined,
 
     const EntrySet = struct {
-        files: std.StringHashMap(void),
-        dirs: std.StringHashMap(void),
+        files: std.StringHashMapUnmanaged(void) = .empty,
+        dirs: std.StringHashMapUnmanaged(void) = .empty,
     };
 
     pub fn init(allocator: std.mem.Allocator) DirEntryCache {
         return .{
-            .cache = std.StringHashMap(?*EntrySet).init(allocator),
+            .cache = .empty,
             .allocator = allocator,
         };
     }
@@ -124,16 +124,16 @@ pub const DirEntryCache = struct {
             if (entry.value_ptr.*) |set| self.destroyEntrySet(set);
             self.allocator.free(entry.key_ptr.*);
         }
-        self.cache.deinit();
+        self.cache.deinit(self.allocator);
     }
 
     fn destroyEntrySet(self: *DirEntryCache, set: *EntrySet) void {
         var fit = set.files.keyIterator();
         while (fit.next()) |k| self.allocator.free(k.*);
-        set.files.deinit();
+        set.files.deinit(self.allocator);
         var dit = set.dirs.keyIterator();
         while (dit.next()) |k| self.allocator.free(k.*);
-        set.dirs.deinit();
+        set.dirs.deinit(self.allocator);
         self.allocator.destroy(set);
     }
 
@@ -180,7 +180,7 @@ pub const DirEntryCache = struct {
             if (built) |b| self.destroyEntrySet(b);
             return null;
         };
-        self.cache.put(key, built) catch {
+        self.cache.put(self.allocator, key, built) catch {
             self.allocator.free(key);
             if (built) |b| self.destroyEntrySet(b);
             return null;
@@ -200,20 +200,20 @@ pub const DirEntryCache = struct {
             return null;
         };
         set.* = .{
-            .files = std.StringHashMap(void).init(self.allocator),
-            .dirs = std.StringHashMap(void).init(self.allocator),
+            .files = .empty,
+            .dirs = .empty,
         };
 
         for (entries) |entry| {
             switch (entry.kind) {
-                .file => set.files.put(entry.name, {}) catch self.allocator.free(entry.name),
-                .directory => set.dirs.put(entry.name, {}) catch self.allocator.free(entry.name),
+                .file => set.files.put(self.allocator, entry.name, {}) catch self.allocator.free(entry.name),
+                .directory => set.dirs.put(self.allocator, entry.name, {}) catch self.allocator.free(entry.name),
                 .symlink => {
                     // symlink는 대상이 파일인지 디렉토리인지 readdir만으로 알 수 없으므로 양쪽에 등록.
                     // Linux의 bun install이 node_modules에 symlink 디렉토리를 만들기 때문에 필수.
-                    set.files.put(entry.name, {}) catch {};
+                    set.files.put(self.allocator, entry.name, {}) catch {};
                     const name2 = self.allocator.dupe(u8, entry.name) catch continue;
-                    set.dirs.put(name2, {}) catch self.allocator.free(name2);
+                    set.dirs.put(self.allocator, name2, {}) catch self.allocator.free(name2);
                 },
                 else => self.allocator.free(entry.name),
             }
@@ -259,7 +259,7 @@ pub const RealpathCache = struct {
     io: std.Io = undefined,
 
     const Shard = struct {
-        cache: std.StringHashMap([]const u8),
+        cache: std.StringHashMapUnmanaged([]const u8) = .empty,
         mutex: spin.SpinLock = .{},
     };
 
@@ -269,7 +269,7 @@ pub const RealpathCache = struct {
             .allocator = allocator,
         };
         for (&rc.shards) |*s| {
-            s.* = .{ .cache = std.StringHashMap([]const u8).init(allocator) };
+            s.* = .{ .cache = .empty };
         }
         return rc;
     }
@@ -281,7 +281,7 @@ pub const RealpathCache = struct {
                 self.allocator.free(entry.key_ptr.*);
                 self.allocator.free(entry.value_ptr.*);
             }
-            s.cache.deinit();
+            s.cache.deinit(self.allocator);
         }
     }
 
@@ -321,7 +321,7 @@ pub const RealpathCache = struct {
                 self.allocator.free(new_dir);
                 return error.OutOfMemory;
             };
-            shard.cache.put(key, new_dir) catch {
+            shard.cache.put(self.allocator, key, new_dir) catch {
                 self.allocator.free(key);
                 self.allocator.free(new_dir);
                 return error.OutOfMemory;

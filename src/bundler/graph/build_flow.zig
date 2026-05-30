@@ -461,8 +461,8 @@ fn applyRuntimePolyfills(self: *ModuleGraph, io: std.Io, runtime_indices: *std.A
 
     var selected: std.ArrayList(runtime_polyfills.ResolvedModule) = .empty;
     defer selected.deinit(self.allocator);
-    var seen = std.StringHashMap(void).init(self.allocator);
-    defer seen.deinit();
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(self.allocator);
 
     switch (plan.mode) {
         .entry => {
@@ -682,7 +682,7 @@ pub fn buildIncremental(
     /// null → 현재 변경 정보 없음 (initial build / CLI 모드). 전체 모듈 stat.
     /// non-null → set 에 없는 path 는 mtime stat 을 skip 하고 store 의 cached mtime 을 그대로 신뢰.
     /// 새로 그래프에 추가된 모듈 (`store.modules.contains(path) == false`) 은 강제로 stat (Issue #1727 §3).
-    changed_files: ?*const std.StringHashMap(void),
+    changed_files: ?*const std.StringHashMapUnmanaged(void),
 ) !IncrementalBuildResult {
     // #1961: builtin runtime helper plugin prepend (build() 와 동일).
     graph_plugins.ensureBuiltinPlugins(self);
@@ -732,8 +732,8 @@ pub fn buildIncremental(
 
     var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
     var graph_changed = false;
-    var cache_hit_modules = std.AutoHashMap(u32, void).init(self.allocator);
-    defer cache_hit_modules.deinit();
+    var cache_hit_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer cache_hit_modules.deinit(self.allocator);
 
     var discover_scope = profile.begin(.graph_discover);
 
@@ -801,7 +801,7 @@ pub fn buildIncremental(
                 // 코스트는 무시 가능. (M8 측정 record_dep link 88%).
                 mod.dependencies.ensureTotalCapacity(self.allocator, 8) catch {};
                 mod.importers.ensureTotalCapacity(self.allocator, 8) catch {};
-                try cache_hit_modules.put(@intCast(i), {});
+                try cache_hit_modules.put(self.allocator, @intCast(i), {});
                 // parse_arena 소유권 이전: store → graph.
                 cached.module.parse_arena = null;
                 cached.module.resolve_dir = null;

@@ -162,7 +162,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !
         bl.source_hint = std.fs.path.basename(input_file);
         for (phase_names.items, phase_stats.items) |name, stats| {
             const name_dup = try allocator.dupe(u8, name);
-            try bl.phases.put(name_dup, stats);
+            try bl.phases.put(allocator, name_dup, stats);
         }
         const file = std.Io.Dir.cwd().createFile(io, save_path, .{}) catch |err| {
             try stderr.print("zntc bench: cannot create '{s}': {}\n", .{ save_path, err });

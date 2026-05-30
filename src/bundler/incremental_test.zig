@@ -378,9 +378,9 @@ test "Bundler watch path: changed HMR module rewrites mixed alias imports" {
         \\}
     );
 
-    var touched = std.StringHashMap(void).init(std.testing.allocator);
-    defer touched.deinit();
-    try touched.put(entry, {});
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
 
     var rebuild_opts = initial_opts;
     rebuild_opts.changed_files = &touched;

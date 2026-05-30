@@ -909,8 +909,8 @@ test "buildIncremental: changed_files=empty → stat skip → cache hit even aft
     std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
     try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
 
-    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
-    defer empty.deinit();
+    var empty: std.StringHashMapUnmanaged(void) = .empty;
+    defer empty.deinit(std.testing.allocator);
 
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph2.deinit();
@@ -941,9 +941,9 @@ test "buildIncremental: changed_files contains entry → stat → cache miss aft
     std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
     try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
 
-    var changed: std.StringHashMap(void) = .init(std.testing.allocator);
-    defer changed.deinit();
-    try changed.put(entry, {});
+    var changed: std.StringHashMapUnmanaged(void) = .empty;
+    defer changed.deinit(std.testing.allocator);
+    try changed.put(std.testing.allocator, entry, {});
 
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph2.deinit();
@@ -1014,8 +1014,8 @@ test "buildIncremental: cache-hit modules replay resolved deps without resolver"
     }
 
     counter.count = 0;
-    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
-    defer empty.deinit();
+    var empty: std.StringHashMapUnmanaged(void) = .empty;
+    defer empty.deinit(std.testing.allocator);
 
     var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
     graph2.plugins = &plugins;
@@ -1079,8 +1079,8 @@ test "buildIncremental: changed_files=empty + cache miss (new module) → 강제
     var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
     defer store.deinit();
 
-    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
-    defer empty.deinit();
+    var empty: std.StringHashMapUnmanaged(void) = .empty;
+    defer empty.deinit(std.testing.allocator);
 
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1442,9 +1442,9 @@ test "renumber: orphan modules sorted by path regardless of add order" {
     try graph.modules.append(alloc, Module.init(@enumFromInt(2), "a.ts"));
     // PR-Z4: path_to_module key 는 path_arena 가 owned (graph deinit 시 일괄 해제).
     const arena_alloc = graph.path_arena.allocator();
-    try graph.path_to_module.put(try arena_alloc.dupe(u8, "c.ts"), @enumFromInt(0));
-    try graph.path_to_module.put(try arena_alloc.dupe(u8, "b.ts"), @enumFromInt(1));
-    try graph.path_to_module.put(try arena_alloc.dupe(u8, "a.ts"), @enumFromInt(2));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "c.ts"), @enumFromInt(0));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "b.ts"), @enumFromInt(1));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "a.ts"), @enumFromInt(2));
 
     try renumber_mod.renumberModulesDeterministically(&graph, &.{});
 
@@ -1487,8 +1487,8 @@ test "F4 (#65): buildIncremental 가 stale entry_dir 를 강제 재계산" {
     // 리터럴이 아닌 allocator dupe 로 set 해야 free 가 안전.
     graph.entry_dir = try std.testing.allocator.dupe(u8, "/some/stale/parent/dir");
 
-    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
-    defer empty.deinit();
+    var empty: std.StringHashMapUnmanaged(void) = .empty;
+    defer empty.deinit(std.testing.allocator);
 
     const r = try graph.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);
@@ -1524,8 +1524,8 @@ test "F4 follow-up: buildIncremental 는 user-set project_root 를 보존" {
     const user_project_root = "/repo/monorepo-root";
     graph.project_root = user_project_root;
 
-    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
-    defer empty.deinit();
+    var empty: std.StringHashMapUnmanaged(void) = .empty;
+    defer empty.deinit(std.testing.allocator);
 
     const r = try graph.buildIncremental(std.testing.io, &.{entry}, &store, &empty);
     defer std.testing.allocator.free(r.reparsed_indices);

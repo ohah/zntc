@@ -24,10 +24,10 @@ pub const TrackedFileSet = struct {
     /// 0.16: FileWatcher.init / wyhash.hashFileStreaming 에 io 필요. init 에서 보관.
     io: std.Io,
     watcher: FileWatcher,
-    hashes: std.StringHashMap(u64),
+    hashes: std.StringHashMapUnmanaged(u64) = .empty,
     /// issue #3858 — dir 자체를 watch 대상으로 등록한 path 들. addDirPath 가 set.
     /// caller (watchWorkerThread) 가 isDirPath 로 event dispatch 분기.
-    dir_paths: std.StringHashMap(void),
+    dir_paths: std.StringHashMapUnmanaged(void) = .empty,
     max_bytes: usize,
 
     const Self = @This();
@@ -37,8 +37,8 @@ pub const TrackedFileSet = struct {
             .allocator = allocator,
             .io = io,
             .watcher = try FileWatcher.init(allocator, io),
-            .hashes = std.StringHashMap(u64).init(allocator),
-            .dir_paths = std.StringHashMap(void).init(allocator),
+            .hashes = .empty,
+            .dir_paths = .empty,
             .max_bytes = max_bytes,
         };
     }
@@ -47,10 +47,10 @@ pub const TrackedFileSet = struct {
         self.watcher.deinit();
         var it = self.hashes.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
-        self.hashes.deinit();
+        self.hashes.deinit(self.allocator);
         var dit = self.dir_paths.keyIterator();
         while (dit.next()) |k| self.allocator.free(k.*);
-        self.dir_paths.deinit();
+        self.dir_paths.deinit(self.allocator);
     }
 
     /// 감시 대상 등록 + 해시 캐시 갱신.
@@ -58,7 +58,7 @@ pub const TrackedFileSet = struct {
     /// 반환값: watcher 등록 성공 여부.
     pub fn addPath(self: *Self, path: []const u8, overwrite: bool) bool {
         self.watcher.addPath(path) catch return false;
-        const gop = self.hashes.getOrPut(path) catch return true;
+        const gop = self.hashes.getOrPut(self.allocator, path) catch return true;
         if (gop.found_existing) {
             if (!overwrite) return true;
         } else {
@@ -81,7 +81,7 @@ pub const TrackedFileSet = struct {
         self.watcher.addPath(path) catch return false;
         if (self.dir_paths.contains(path)) return true;
         const key = self.allocator.dupe(u8, path) catch return true;
-        self.dir_paths.put(key, {}) catch {
+        self.dir_paths.put(self.allocator, key, {}) catch {
             self.allocator.free(key);
             return true;
         };
@@ -103,7 +103,7 @@ pub const TrackedFileSet = struct {
     /// 반환값: watcher 등록 성공 여부.
     pub fn addWatcherOnly(self: *Self, path: []const u8) bool {
         self.watcher.addPath(path) catch return false;
-        const gop = self.hashes.getOrPut(path) catch return true;
+        const gop = self.hashes.getOrPut(self.allocator, path) catch return true;
         if (!gop.found_existing) {
             const key = self.allocator.dupe(u8, path) catch {
                 _ = self.hashes.remove(path);
@@ -126,7 +126,7 @@ pub const TrackedFileSet = struct {
         return self.hashes.contains(path);
     }
 
-    pub fn keyIterator(self: *Self) std.StringHashMap(u64).KeyIterator {
+    pub fn keyIterator(self: *Self) std.StringHashMapUnmanaged(u64).KeyIterator {
         return self.hashes.keyIterator();
     }
 
@@ -134,7 +134,7 @@ pub const TrackedFileSet = struct {
     /// 읽기 실패/크기 초과 시 false.
     pub fn markIfChanged(self: *Self, path: []const u8) bool {
         const new_hash = wyhash.hashFileStreaming(self.io, path, self.max_bytes) orelse return false;
-        const gop = self.hashes.getOrPut(path) catch return false;
+        const gop = self.hashes.getOrPut(self.allocator, path) catch return false;
         if (gop.found_existing) {
             if (gop.value_ptr.* == new_hash) return false;
         } else {

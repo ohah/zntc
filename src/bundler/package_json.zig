@@ -118,7 +118,7 @@ pub const ParsedPackageJson = struct {
 pub const PkgJsonCacheError = error{ FileNotFound, IoError, JsonParseError, OutOfMemory };
 
 pub const PackageJsonCache = struct {
-    cache: std.StringHashMap(Entry),
+    cache: std.StringHashMapUnmanaged(Entry) = .empty,
     rwlock: spin.SpinRwLock = .{},
     allocator: std.mem.Allocator,
 
@@ -139,7 +139,7 @@ pub const PackageJsonCache = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) PackageJsonCache {
-        return .{ .cache = std.StringHashMap(Entry).init(allocator), .allocator = allocator };
+        return .{ .cache = .empty, .allocator = allocator };
     }
 
     fn freeBuilt(self: *PackageJsonCache, built: ?*ParsedPackageJson) void {
@@ -155,7 +155,7 @@ pub const PackageJsonCache = struct {
             if (entry.value_ptr.* == .ok) self.freeBuilt(entry.value_ptr.ok);
             self.allocator.free(entry.key_ptr.*);
         }
-        self.cache.deinit();
+        self.cache.deinit(self.allocator);
     }
 
     pub fn getOrParse(self: *PackageJsonCache, io: std.Io, pkg_dir_path: []const u8) PkgJsonCacheError!*ParsedPackageJson {
@@ -197,7 +197,7 @@ pub const PackageJsonCache = struct {
             self.freeBuilt(built);
             return error.OutOfMemory;
         };
-        self.cache.put(key, new_entry) catch {
+        self.cache.put(self.allocator, key, new_entry) catch {
             self.allocator.free(key);
             self.freeBuilt(built);
             return error.OutOfMemory;

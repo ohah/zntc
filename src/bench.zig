@@ -105,18 +105,19 @@ pub const Baseline = struct {
     iterations: u32 = 0,
     warmup: u32 = 0,
     /// phase name → PhaseStats. Allocator 소유.
-    phases: std.StringHashMap(PhaseStats),
+    phases: std.StringHashMapUnmanaged(PhaseStats) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Baseline {
+        _ = allocator;
         return .{
-            .phases = std.StringHashMap(PhaseStats).init(allocator),
+            .phases = .empty,
         };
     }
 
     pub fn deinit(self: *Baseline, allocator: std.mem.Allocator) void {
         var it = self.phases.keyIterator();
         while (it.next()) |k| allocator.free(k.*);
-        self.phases.deinit();
+        self.phases.deinit(allocator);
     }
 };
 
@@ -199,7 +200,7 @@ pub fn readBaselineJson(allocator: std.mem.Allocator, json_text: []const u8) !Ba
                 .integer => |i| @as(usize, @intCast(i)),
                 else => 0,
             } else 0;
-            try bl.phases.put(name, .{
+            try bl.phases.put(allocator, name, .{
                 .samples = samples,
                 .mean_ns = mean_ms * 1_000_000.0,
                 .median_ns = @intFromFloat(median_ms * 1_000_000.0),
@@ -399,7 +400,7 @@ test "Baseline JSON round-trip" {
     defer bl.deinit(allocator);
     bl.iterations = 100;
     bl.warmup = 10;
-    try bl.phases.put(try allocator.dupe(u8, "parse"), .{
+    try bl.phases.put(allocator, try allocator.dupe(u8, "parse"), .{
         .samples = 100,
         .mean_ns = 42_300_000.0,
         .median_ns = 41_800_000,

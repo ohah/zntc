@@ -153,7 +153,7 @@ pub const CodegenOptions = struct {
     /// 매핑 (per-module). emitNew 가 이 맵을 보고 매칭되면 filename + import.meta.url polyfill
     /// 로 직접 emit. bundler 가 모듈별로 sub-map 을 추출해 주입한다 (graph.worker_entries 에서
     /// 도출). null/empty 면 fast-exit - worker 가 없는 모듈에서 추가 비용 0.
-    worker_map: ?*const std.StringHashMap([]const u8) = null,
+    worker_map: ?*const std.StringHashMapUnmanaged([]const u8) = null,
     /// Debug 빌드 전용 내부 invariant. private syntax downlevel 대상인데 transformer 후
     /// raw private AST가 codegen까지 도달하면 사용자 입력 에러가 아니라 transformer 버그다.
     assert_no_raw_private_syntax: bool = false,

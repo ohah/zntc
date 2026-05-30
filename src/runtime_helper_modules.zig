@@ -339,7 +339,7 @@ pub fn isRegisteredHelperBaseName(base_name: []const u8) bool {
 }
 
 /// map 에 들어있는 등록 helper base name 을 제거한다.
-pub fn removeRegisteredHelperBaseNames(map: *std.StringHashMap(void)) void {
+pub fn removeRegisteredHelperBaseNames(map: *std.StringHashMapUnmanaged(void)) void {
     for (MODULES) |m| {
         for (m.helpers) |h| {
             _ = map.remove(h);

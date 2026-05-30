@@ -13,7 +13,7 @@ pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGr
         .allocator = allocator,
         .path_arena = std.heap.ArenaAllocator.init(allocator),
         // modules 는 default (.{}) 로 빈 SegmentedList.
-        .path_to_module = std.StringHashMap(ModuleIndex).init(allocator),
+        .path_to_module = .empty,
         .diagnostics = .empty,
         .resolve_cache = resolve_cache,
     };
@@ -102,7 +102,7 @@ pub fn deinit(self: *ModuleGraph) void {
     }
     self.modules.deinit(self.allocator);
     // PR-Z4: path_to_module key 메모리는 path_arena 가 owned — 개별 free 불요, 일괄 해제.
-    self.path_to_module.deinit();
+    self.path_to_module.deinit(self.allocator);
     self.path_arena.deinit();
     var req_it = self.requested_exports.valueIterator();
     while (req_it.next()) |req| req.deinit(self.allocator);

@@ -93,7 +93,7 @@ pub const SemanticAnalyzer = struct {
 
     /// module의 exported name 추적 (중복 export 검사).
     /// key: 내보낸 이름 (default 포함), value: 첫 선언의 span.
-    exported_names: std.StringHashMap(Span),
+    exported_names: std.StringHashMapUnmanaged(Span) = .empty,
 
     /// numeric const symbol 의 원본 텍스트 사이드테이블 (#2505).
     /// Symbol 에 16B slice 를 박지 않으려고 분리. 보통 numeric const 는 전체 심볼의 극소수.
@@ -102,7 +102,7 @@ pub const SemanticAnalyzer = struct {
 
     /// class private name 스택 (중첩 class 지원, oxc 방식).
     /// 각 항목은 해당 class body에서 선언된 private name 집합.
-    class_private_declared: std.ArrayList(std.StringHashMap(PrivateNameInfo)),
+    class_private_declared: std.ArrayList(std.StringHashMapUnmanaged(PrivateNameInfo)),
 
     /// class private name 참조 스택.
     /// 각 항목은 해당 class body에서 참조된 private name 목록 (검증 대기).
@@ -120,13 +120,13 @@ pub const SemanticAnalyzer = struct {
     /// per-scope 심볼 검색용 HashMap 배열 (O(1) 조회).
     /// scopes 배열과 같은 인덱스를 공유: scope_maps.items[scope_id] = 해당 스코프의 이름→심볼인덱스 맵.
     /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
-    scope_maps: std.ArrayList(std.StringHashMap(usize)),
+    scope_maps: std.ArrayList(std.StringHashMapUnmanaged(usize)),
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
     /// 모듈 top-level 변수가 글로벌을 shadowing하지 않도록 한다 (Rolldown 방식).
     /// key는 소스 코드 슬라이스 (zero-copy).
-    unresolved_references: std.StringHashMap(void),
+    unresolved_references: std.StringHashMapUnmanaged(void) = .empty,
 
     /// Forward reference 지원을 위한 pre-declaration 스코프.
     /// visitProgram에서 첫 번째 패스로 top-level 바인딩 이름을 미리 등록한 후,
@@ -224,13 +224,13 @@ pub const SemanticAnalyzer = struct {
             .ast = ast,
             .scopes = .empty,
             .symbols = .empty,
-            .exported_names = std.StringHashMap(Span).init(allocator),
+            .exported_names = .empty,
             .class_private_declared = .empty,
             .class_private_refs = .empty,
             .labels = .empty,
             .resolved_names = .empty,
             .scope_maps = .empty,
-            .unresolved_references = std.StringHashMap(void).init(allocator),
+            .unresolved_references = .empty,
             .symbol_ids = .empty,
             .references = .empty,
             .errors = .empty,
@@ -247,10 +247,10 @@ pub const SemanticAnalyzer = struct {
         }
         self.scopes.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
-        for (self.scope_maps.items) |*m| m.deinit();
+        for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
-        self.exported_names.deinit();
-        self.unresolved_references.deinit();
+        self.exported_names.deinit(self.allocator);
+        self.unresolved_references.deinit(self.allocator);
         self.labels.deinit(self.allocator);
         // resolvePrivateName에서 할당된 문자열 해제
         for (self.resolved_names.items) |name| {
@@ -262,7 +262,7 @@ pub const SemanticAnalyzer = struct {
         self.helper_scope_map.deinit(self.allocator);
         self.references.deinit(self.allocator);
         self.numeric_const_texts.deinit(self.allocator);
-        for (self.class_private_declared.items) |*map| map.deinit();
+        for (self.class_private_declared.items) |*map| map.deinit(self.allocator);
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
         self.class_private_refs.deinit(self.allocator);
@@ -322,7 +322,7 @@ pub const SemanticAnalyzer = struct {
             .is_strict = is_strict,
         });
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
-        try self.scope_maps.append(self.allocator, std.StringHashMap(usize).init(self.allocator));
+        try self.scope_maps.append(self.allocator, .empty);
         self.current_scope = new_id;
         return parent;
     }
@@ -406,7 +406,7 @@ pub const SemanticAnalyzer = struct {
 
     /// class body 진입 시 private name 스코프를 push한다.
     fn pushClassScope(self: *SemanticAnalyzer) AllocError!void {
-        try self.class_private_declared.append(self.allocator, std.StringHashMap(PrivateNameInfo).init(self.allocator));
+        try self.class_private_declared.append(self.allocator, .empty);
         try self.class_private_refs.append(self.allocator, .empty);
     }
 
@@ -415,7 +415,7 @@ pub const SemanticAnalyzer = struct {
         if (self.class_private_declared.items.len == 0) return;
 
         var declared = self.class_private_declared.pop() orelse return;
-        defer declared.deinit();
+        defer declared.deinit(self.allocator);
         var refs = self.class_private_refs.pop() orelse return;
         defer refs.deinit(self.allocator);
 
@@ -450,10 +450,10 @@ pub const SemanticAnalyzer = struct {
                 return;
             }
             // getter+setter 쌍 확인됨 → accessor_pair로 업데이트
-            try current.put(name, .{ .span = span, .kind = .accessor_pair });
+            try current.put(self.allocator, name, .{ .span = span, .kind = .accessor_pair });
             return;
         }
-        try current.put(name, .{ .span = span, .kind = kind });
+        try current.put(self.allocator, name, .{ .span = span, .kind = kind });
     }
 
     /// identifier 텍스트에서 unicode escape sequence를 해석하여 StringValue를 반환한다.
@@ -641,7 +641,7 @@ pub const SemanticAnalyzer = struct {
             if (!var_scope_for_alias.isNone() and var_scope_for_alias.toIndex() < self.scope_maps.items.len) {
                 if (self.scope_maps.items[var_scope_for_alias.toIndex()].get(name_text)) |x_idx| {
                     if (self.symbols.items[x_idx].kind.isFunctionLike()) {
-                        try self.scope_maps.items[target_scope.toIndex()].put(name_text, x_idx);
+                        try self.scope_maps.items[target_scope.toIndex()].put(self.allocator, name_text, x_idx);
                         if (node_idx) |ni| {
                             if (ni < self.symbol_ids.items.len) {
                                 self.symbol_ids.items[ni] = @intCast(x_idx);
@@ -676,7 +676,7 @@ pub const SemanticAnalyzer = struct {
         // per-scope HashMap에도 등록 (O(1) 검색용)
         if (!target_scope.isNone()) {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
-            try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
+            try self.scope_maps.items[target_scope.toIndex()].put(self.allocator, name_text, sym_index);
         }
 
         // StmtInfo 사전 수집: 선언 위치를 references 에 declare 플래그로 기록. #1669 부터 모든 scope.
@@ -957,7 +957,7 @@ pub const SemanticAnalyzer = struct {
 
         // 스코프 체인을 전부 올라갔는데 선언을 찾지 못함 → 미해결 참조 (글로벌).
         // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
-        self.unresolved_references.put(name, {}) catch {};
+        self.unresolved_references.put(self.allocator, name, {}) catch {};
     }
 
     /// 노드가 식별자 참조이면 resolveIdentifier를 호출하고 true를 반환한다.
@@ -3201,7 +3201,7 @@ pub const SemanticAnalyzer = struct {
             const map = &self.scope_maps.items[target_scope.toIndex()];
             if (map.get(name_text) == null) {
                 self.scopes.items[target_scope.toIndex()].symbol_count += 1;
-                try map.put(name_text, sym_index);
+                try map.put(self.allocator, name_text, sym_index);
             }
         }
 
@@ -3343,7 +3343,7 @@ pub const SemanticAnalyzer = struct {
                     self.symbol_ids.items[ni] = @intCast(sym_index);
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
-                try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
+                try self.scope_maps.items[module_scope.toIndex()].put(self.allocator, "_default", sym_index);
                 // StmtInfo 사전 수집: facade 심볼을 declared 로 기록 (#1669: scope 무관).
                 self.recordDeclareRef(@intCast(sym_index), module_scope);
                 // export default <literal> → facade 심볼에 const_kind + 사이드테이블 텍스트 설정
@@ -3556,7 +3556,7 @@ pub const SemanticAnalyzer = struct {
                 try self.addErrorMsgCodeWithPrevious(span, msg, .duplicate_export, previous_span);
             }
         } else {
-            try self.exported_names.put(name, span);
+            try self.exported_names.put(self.allocator, name, span);
         }
     }
 

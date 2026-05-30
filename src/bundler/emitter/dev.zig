@@ -206,7 +206,7 @@ const TraceResolver = struct {
     module_id: []const u8,
     fallback_source: []const u8,
     parsed_maps: std.ArrayList(source_map_trace.ParsedMap),
-    source_cache: std.StringHashMap(u32),
+    source_cache: std.StringHashMapUnmanaged(u32) = .empty,
     sources_content: bool,
 
     fn init(
@@ -229,7 +229,7 @@ const TraceResolver = struct {
             .module_id = module_id,
             .fallback_source = source,
             .parsed_maps = parsed_maps,
-            .source_cache = std.StringHashMap(u32).init(sm.allocator),
+            .source_cache = .empty,
             .sources_content = sources_content,
         };
     }
@@ -237,7 +237,7 @@ const TraceResolver = struct {
     fn deinit(self: *TraceResolver) void {
         for (self.parsed_maps.items) |*parsed| parsed.deinit();
         self.parsed_maps.deinit(self.sm.allocator);
-        self.source_cache.deinit();
+        self.source_cache.deinit(self.sm.allocator);
     }
 
     fn resolve(self: *TraceResolver, m: SourceMap.Mapping) !ResolvedMapping {
@@ -256,7 +256,7 @@ const TraceResolver = struct {
         if (self.sources_content) {
             try self.sm.addSourceContent(source_content orelse "");
         }
-        try self.source_cache.put(source_name, idx);
+        try self.source_cache.put(self.sm.allocator, source_name, idx);
         return idx;
     }
 };

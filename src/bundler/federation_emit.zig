@@ -310,10 +310,10 @@ pub fn verifyHostContract(
     // 제거. expose 검사는 per-spec 유지(서브경로별 존재 확인 필요).
     // 키는 borrow(src/static_specs/mf.remotes — verifyHostContract
     // 수명 내내 유효). map 내부 alloc OOM 만 전파.
-    var seen_specs = std.StringHashMap(void).init(allocator);
-    defer seen_specs.deinit();
-    var seen_remotes = std.StringHashMap(void).init(allocator);
-    defer seen_remotes.deinit();
+    var seen_specs: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen_specs.deinit(allocator);
+    var seen_remotes: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen_remotes.deinit(allocator);
     var i: usize = 0;
     while (nextRemoteImport(src, mf, &i)) |h|
         try verifyOneRemoteSpec(io, allocator, h.spec, mf, cwd, &seen_specs, &seen_remotes);
@@ -334,11 +334,11 @@ fn verifyOneRemoteSpec(
     spec: []const u8,
     mf: *const types.MfBundleConfig,
     cwd: ?[]const u8,
-    seen_specs: *std.StringHashMap(void),
-    seen_remotes: *std.StringHashMap(void),
+    seen_specs: *std.StringHashMapUnmanaged(void),
+    seen_remotes: *std.StringHashMapUnmanaged(void),
 ) !void {
     if (seen_specs.contains(spec)) return; // 동일 spec(다중/정적∩동적) 1회
-    try seen_specs.put(spec, {});
+    try seen_specs.put(allocator, spec, {});
     const kv = for (mf.remotes) |kv| {
         if (federation.matchesRemoteSpec(spec, kv.key)) break kv;
     } else return;
@@ -356,7 +356,7 @@ fn verifyOneRemoteSpec(
     // integrity-before-expose 불변 유지: remote 첫 encounter 에서 무결성
     // → expose → shared 순(기존 의미·fail-fast 메시지 우선순위 보존).
     const remote_first = !seen_remotes.contains(kv.key);
-    if (remote_first) try seen_remotes.put(kv.key, {});
+    if (remote_first) try seen_remotes.put(allocator, kv.key, {});
     if (remote_first) {
         // P3-3: 무결성 — sidecar(P2-2 SHA-256)/`.sig`(P2-3 Ed25519)와
         // manifest 일치. stale/변조면 fail-fast(D3 런타임가드의 빌드타임

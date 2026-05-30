@@ -93,9 +93,9 @@ const KqueueBackend = struct {
     io: std.Io,
     kq: i32,
     /// 감시 대상: path → fd 매핑
-    watch_fds: std.StringHashMap(WatchEntry),
+    watch_fds: std.StringHashMapUnmanaged(WatchEntry) = .empty,
     /// fd → path 역참조 (kqueue 이벤트에서 O(1) 경로 조회)
-    fd_to_path: std.AutoHashMap(i32, []const u8),
+    fd_to_path: std.AutoHashMapUnmanaged(i32, []const u8) = .empty,
     /// kevent 결과 버퍼. 0.16: posix.Kevent 제거 → std.c.Kevent.
     eventbuf: [64]std.c.Kevent = undefined,
     /// waitForChanges 결과 버퍼
@@ -113,14 +113,15 @@ const KqueueBackend = struct {
     }
 
     fn init(allocator: std.mem.Allocator, io: std.Io) !KqueueBackend {
+        _ = allocator;
         // 0.16: posix.kqueue 제거 → libc kqueue() 직접 호출.
         const kq = std.c.kqueue();
         if (kq < 0) return error.KqueueInitFailed;
         return .{
             .io = io,
             .kq = kq,
-            .watch_fds = std.StringHashMap(WatchEntry).init(allocator),
-            .fd_to_path = std.AutoHashMap(i32, []const u8).init(allocator),
+            .watch_fds = .empty,
+            .fd_to_path = .empty,
             .result_buf = .empty,
         };
     }
@@ -131,8 +132,8 @@ const KqueueBackend = struct {
             self.closeFd(entry.value_ptr.fd);
             allocator.free(entry.key_ptr.*);
         }
-        self.watch_fds.deinit();
-        self.fd_to_path.deinit();
+        self.watch_fds.deinit(allocator);
+        self.fd_to_path.deinit(allocator);
         self.result_buf.deinit(allocator);
         self.closeFd(self.kq);
     }
@@ -164,12 +165,12 @@ const KqueueBackend = struct {
             return;
         }
 
-        self.watch_fds.put(path_owned, .{ .fd = fd }) catch {
+        self.watch_fds.put(allocator, path_owned, .{ .fd = fd }) catch {
             self.closeFd(fd);
             allocator.free(path_owned);
             return;
         };
-        self.fd_to_path.put(fd, path_owned) catch {
+        self.fd_to_path.put(allocator, fd, path_owned) catch {
             _ = self.watch_fds.remove(path_owned);
             self.closeFd(fd);
             allocator.free(path_owned);
@@ -253,16 +254,16 @@ const InotifyBackend = struct {
     io: std.Io,
     inotify_fd: i32,
     /// 감시 대상 파일 경로 (allocator 소유)
-    watched_files: std.StringHashMap(void),
+    watched_files: std.StringHashMapUnmanaged(void) = .empty,
     /// 감시 대상 디렉토리 경로 (allocator 소유). dir 자체가 watch 대상이면
     /// dir entry 변화(IN.CREATE/IN.DELETE/IN.MOVED_*) 시 dir path 의
     /// ChangeEvent emit — caller 가 rescan 으로 신규 file 발견.
     /// issue #3858 — graph 외 .css 파일의 add/delete 감지를 위한 dir-watch.
-    watched_dirs: std.StringHashMap(void),
+    watched_dirs: std.StringHashMapUnmanaged(void) = .empty,
     /// 디렉토리 → wd 매핑
-    dir_wds: std.StringHashMap(i32),
+    dir_wds: std.StringHashMapUnmanaged(i32) = .empty,
     /// wd → 디렉토리 경로 역매핑
-    wd_dirs: std.AutoHashMap(i32, []const u8),
+    wd_dirs: std.AutoHashMapUnmanaged(i32, []const u8) = .empty,
     /// 읽기 버퍼
     read_buf: [8192]u8 = undefined,
     result_buf: std.ArrayList(ChangeEvent),
@@ -292,16 +293,17 @@ const InotifyBackend = struct {
     }
 
     fn init(allocator: std.mem.Allocator, io: std.Io) !InotifyBackend {
+        _ = allocator;
         // 0.16: posix.inotify_init1 제거 → libc inotify_init1.
         const fd = std.c.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
         if (fd < 0) return error.InotifyInitFailed;
         return .{
             .io = io,
             .inotify_fd = fd,
-            .watched_files = std.StringHashMap(void).init(allocator),
-            .watched_dirs = std.StringHashMap(void).init(allocator),
-            .dir_wds = std.StringHashMap(i32).init(allocator),
-            .wd_dirs = std.AutoHashMap(i32, []const u8).init(allocator),
+            .watched_files = .empty,
+            .watched_dirs = .empty,
+            .dir_wds = .empty,
+            .wd_dirs = .empty,
             .result_buf = .empty,
         };
     }
@@ -310,18 +312,18 @@ const InotifyBackend = struct {
         // watched_files 키 해제
         var fit = self.watched_files.keyIterator();
         while (fit.next()) |key| allocator.free(key.*);
-        self.watched_files.deinit();
+        self.watched_files.deinit(allocator);
 
         // watched_dirs 키 해제 (dir_wds 의 키와는 별도 dupe)
         var wdit = self.watched_dirs.keyIterator();
         while (wdit.next()) |key| allocator.free(key.*);
-        self.watched_dirs.deinit();
+        self.watched_dirs.deinit(allocator);
 
         // dir_wds 키 해제 (wd_dirs의 value와 같은 메모리)
         var dit = self.dir_wds.keyIterator();
         while (dit.next()) |key| allocator.free(key.*);
-        self.dir_wds.deinit();
-        self.wd_dirs.deinit();
+        self.dir_wds.deinit(allocator);
+        self.wd_dirs.deinit(allocator);
 
         self.result_buf.deinit(allocator);
         self.closeFd(self.inotify_fd);
@@ -338,11 +340,11 @@ const InotifyBackend = struct {
             if (!self.dir_wds.contains(path)) {
                 const wd = self.addWatch(allocator, path) orelse return;
                 const dir_owned = try allocator.dupe(u8, path);
-                try self.dir_wds.put(dir_owned, wd);
-                try self.wd_dirs.put(wd, dir_owned);
+                try self.dir_wds.put(allocator, dir_owned, wd);
+                try self.wd_dirs.put(allocator, wd, dir_owned);
             }
             const path_owned = try allocator.dupe(u8, path);
-            try self.watched_dirs.put(path_owned, {});
+            try self.watched_dirs.put(allocator, path_owned, {});
             return;
         }
 
@@ -353,12 +355,12 @@ const InotifyBackend = struct {
         if (!self.dir_wds.contains(dir_path)) {
             const wd = self.addWatch(allocator, dir_path) orelse return;
             const dir_owned = try allocator.dupe(u8, dir_path);
-            try self.dir_wds.put(dir_owned, wd);
-            try self.wd_dirs.put(wd, dir_owned);
+            try self.dir_wds.put(allocator, dir_owned, wd);
+            try self.wd_dirs.put(allocator, wd, dir_owned);
         }
 
         const path_owned = try allocator.dupe(u8, path);
-        try self.watched_files.put(path_owned, {});
+        try self.watched_files.put(allocator, path_owned, {});
     }
 
     fn removePath(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) void {
@@ -485,13 +487,14 @@ const InotifyBackend = struct {
 const MtimeBackend = struct {
     /// 0.16: statFile 에 io 필요 (Windows/기타 폴백). init 에서 보관.
     io: std.Io,
-    paths: std.StringHashMap(i128), // path → mtime
+    paths: std.StringHashMapUnmanaged(i128) = .empty, // path → mtime
     result_buf: std.ArrayList(ChangeEvent),
 
     fn init(allocator: std.mem.Allocator, io: std.Io) !MtimeBackend {
+        _ = allocator;
         return .{
             .io = io,
-            .paths = std.StringHashMap(i128).init(allocator),
+            .paths = .empty,
             .result_buf = .empty,
         };
     }
@@ -501,7 +504,7 @@ const MtimeBackend = struct {
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
-        self.paths.deinit();
+        self.paths.deinit(allocator);
         self.result_buf.deinit(allocator);
     }
 
@@ -509,10 +512,10 @@ const MtimeBackend = struct {
         if (self.paths.contains(path)) return;
         const path_owned = try allocator.dupe(u8, path);
         const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch {
-            try self.paths.put(path_owned, 0);
+            try self.paths.put(allocator, path_owned, 0);
             return;
         };
-        try self.paths.put(path_owned, stat.mtime.toNanoseconds());
+        try self.paths.put(allocator, path_owned, stat.mtime.toNanoseconds());
     }
 
     fn removePath(self: *MtimeBackend, allocator: std.mem.Allocator, path: []const u8) void {

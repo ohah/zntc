@@ -125,13 +125,13 @@ const WarmResult = struct {
 fn measureWarm(allocator: std.mem.Allocator, store: *PersistentModuleStore, entry: []const u8, case: Case) !WarmResult {
     profile.resetCounters();
 
-    var changed_set: std.StringHashMap(void) = .init(allocator);
-    defer changed_set.deinit();
+    var changed_set: std.StringHashMapUnmanaged(void) = .empty;
+    defer changed_set.deinit(allocator);
     if (case == .single_entry) {
-        try changed_set.put(entry, {});
+        try changed_set.put(allocator, entry, {});
     }
 
-    const changed_ptr: ?*const std.StringHashMap(void) = switch (case) {
+    const changed_ptr: ?*const std.StringHashMapUnmanaged(void) = switch (case) {
         .empty => &changed_set,
         .single_entry => &changed_set,
         .null_changed => null,

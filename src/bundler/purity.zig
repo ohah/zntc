@@ -28,7 +28,7 @@ const max_depth: u32 = 128;
 /// 모듈별 unresolved 참조 집합 (semantic analyzer 산출).
 /// 이 집합에 속한 이름은 이 모듈 스코프에서 선언/import가 없는 전역 참조.
 /// `new Set()`의 `Set`이 이 집합에 있으면 shadowing 없이 전역 빌트인임이 확정된다.
-pub const GlobalRefSet = std.StringHashMap(void);
+pub const GlobalRefSet = std.StringHashMapUnmanaged(void);
 
 /// 사용자 지정 pure callee hint (`--pure:<callee>` / BuildOptions.pure).
 ///

@@ -139,7 +139,7 @@ pub fn materialize(
         defer synthetic_scope.end();
         module.ensureAliasTable(self.allocator);
         if (module.semantic) |*sem| {
-            const scope0: ?std.StringHashMap(usize) =
+            const scope0: ?std.StringHashMapUnmanaged(usize) =
                 if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
             binding_scanner.populateSyntheticSymbols(
                 &module.alias_table.?,
