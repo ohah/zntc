@@ -2113,6 +2113,20 @@ fn expectNoParseError(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 }
 
+/// 소스를 파싱하고 에러가 *정확히 1개*이며 그 메시지가 일치하는지 검증한다.
+/// 중복/cascade 진단(같은 에러 N회, 2차 "Identifier expected" 노이즈)을 가드 — V8 처럼
+/// 한 SyntaxError 로 끝나는지 확인.
+fn expectSingleParseError(source: []const u8, message: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 1), parser.errors.items.len);
+    try std.testing.expectEqualStrings(message, parser.errors.items[0].message);
+}
+
 test "new + optional chain: callee 의 optional chain 은 SyntaxError" {
     // ECMAScript: new 의 MemberExpression callee 는 OptionalExpression 일 수 없다.
     // V8/esbuild 와 동일하게 거부. (이전엔 수용하고 `(new obj)?.fn()` 로 오파싱했다.)
@@ -2128,6 +2142,19 @@ test "new + optional chain: callee 의 optional chain 은 SyntaxError" {
     try expectParseError("new new a?.b()()", .{ .message = "Invalid optional chain in 'new' expression" });
 }
 
+test "new + optional chain: 진단은 callee 당 정확히 1개 (중복/cascade 노이즈 없음)" {
+    // 체인(`?.b?.c`)이어도 callee 당 623 1개 (V8 동형). 이전엔 `?.` 마다 중복 발생.
+    try expectSingleParseError("new a?.b?.c()", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new a.b?.c?.d()", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new a?.[0]?.[1]()", "Invalid optional chain in 'new' expression");
+    // 멤버명 없는 후속 토큰(optional call/EOF/`;`/연산자)이어도 2차 "Identifier expected"
+    // 노이즈가 안 붙고 623 단일.
+    try expectSingleParseError("new a?.()", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new a?.", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new a?.;", "Invalid optional chain in 'new' expression");
+    try expectSingleParseError("new a?.+b", "Invalid optional chain in 'new' expression");
+}
+
 test "new + optional chain: 유효 형태는 통과" {
     // paren 으로 감싼 optional chain 은 new 의 피연산자로 유효.
     try expectNoParseError("new (a?.b)()");
@@ -2139,6 +2166,10 @@ test "new + optional chain: 유효 형태는 통과" {
     // new 표현식 *뒤*의 optional 접근은 유효(`(new a()).b?.c`).
     try expectNoParseError("new a().b?.c");
     try expectNoParseError("(new a())?.b");
+    // computed-member subscript 는 [+In] — for-init(allow_in=false) 안에서도 `in` 허용.
+    // `new a[k in a]()` 가 오거부되던 pre-existing 버그(F1) 가드.
+    try expectNoParseError("for (var x = new a[(\"k\" in a)]();;) { break; }");
+    try expectNoParseError("for (var x = a[(\"k\" in a)];;) { break; }");
 }
 
 test "ErrorMsg: expect() shows 'found' token" {
