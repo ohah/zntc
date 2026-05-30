@@ -43,12 +43,12 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <StatsStrip
   stats={[
-    { value: "13", unit: "ms", label: "트랜스파일", caption: "1K LOC · TypeScript" },
-    { value: "11", unit: "ms", label: "번들링", caption: "10 modules" },
-    { value: "19", unit: "×", label: "faster", caption: "vs rolldown (small)" },
+    { value: "4.1", unit: "ms", label: "트랜스파일", caption: "1K LOC · TypeScript" },
+    { value: "4.3", unit: "ms", label: "번들링", caption: "10 modules" },
+    { value: "11", unit: "×", label: "faster", caption: "vs rolldown (small)" },
     { value: "340", unit: "+", label: "문서 페이지", caption: "ko · en 지원" },
   ]}
-  note="2026-05-25 기준 · darwin arm64 · 20회 median"
+  note="2026-05-30 기준 · darwin arm64 · 50회 median"
 />
 
 <Section padding="py-16">
@@ -60,29 +60,29 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
     <div class="mt-6 grid gap-4 text-sm sm:grid-cols-3">
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">small (10 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">11.4 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">4.3 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs esbuild 29.4 · Bun 68.8 · rolldown 219 · rspack 304 ms
+          vs Bun 5.0 · esbuild 6.5 · rolldown 48 · rspack 56 ms
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">medium (1000 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">46.5 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">16.5 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(공동 1위)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 65.9 · esbuild 88.2 · rolldown 333 · rspack 679 ms
+          vs Bun 16.1 · esbuild 19.7 · rolldown 65 · rspack 82 ms
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">large (5000 modules)</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">177 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(2위)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">67.6 ms</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(2위)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          vs Bun 174 · esbuild 334 · rolldown 599 · rspack 1279 ms
+          vs Bun 55.2 · esbuild 73 · rolldown 119 · rspack 173 ms
         </div>
       </div>
     </div>
 
     <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
-      2026-05-25 · darwin arm64 · 20회 median · fan-out tree fixture (자세히는 <a href="/zntc/reference/benchmarks/" class="text-zig-400 hover:underline">전체 벤치마크 →</a>)
+      2026-05-30 · darwin arm64 · 50회 median · fan-out tree fixture (자세히는 <a href="/zntc/reference/benchmarks/" class="text-zig-400 hover:underline">전체 벤치마크 →</a>)
     </p>
   </div>
 </Section>
@@ -106,9 +106,9 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
         <div class="mb-1 text-xs uppercase tracking-wide text-[color:var(--sl-color-gray-3)]">effect</div>
-        <div class="font-mono text-lg"><strong class="text-zig-400">122 KB</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
+        <div class="font-mono text-lg"><strong class="text-zig-400">114 KB</strong> <span class="text-xs text-[color:var(--sl-color-gray-3)]">(1위)</span></div>
         <div class="mt-1 text-xs text-[color:var(--sl-color-gray-3)]">
-          esbuild 191 KB · rspack 142 KB 대비 <strong>1.16–1.56× 작음</strong>
+          esbuild 191 KB · rspack 142 KB 대비 <strong>1.25–1.69× 작음</strong>
         </div>
       </div>
       <div class="rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-4">
@@ -121,7 +121,7 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
     </div>
 
     <p class="mt-6 text-center text-xs text-[color:var(--sl-color-gray-3)]">
-      2026-05-17 · darwin arm64 · 9개 실제 npm 라이브러리 · <code>--minify-all</code> (자세히는 <a href="/zntc/reference/benchmarks/" class="text-zig-400 hover:underline">전체 벤치마크 →</a>)
+      2026-05-30 · darwin arm64 · 9개 실제 npm 라이브러리 · <code>--minify-all</code> (자세히는 <a href="/zntc/reference/benchmarks/" class="text-zig-400 hover:underline">전체 벤치마크 →</a>)
     </p>
   </div>
 </Section>

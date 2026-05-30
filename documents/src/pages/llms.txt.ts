@@ -36,19 +36,19 @@ export async function GET() {
 
 ## Core features
 
-- TypeScript / JSX / Flow stripping (~3 ms / 1K lines)
+- TypeScript / JSX / Flow stripping (~4 ms / 1K lines)
 - ES2015+ downleveling (target=es5/es2015/es2020/es2022)
 - Tree-shake + minify (on par with or smaller than rolldown/esbuild/rspack)
 - Bundle (rollup-style + esbuild-style API)
 - React Native (Metro / Hermes compatible)
-- C NAPI in-process calls (Node/Bun, ~50× faster than CLI spawn)
+- C NAPI in-process calls (Node/Bun, ~60× faster than CLI spawn when warmed — no subprocess)
 - Vite / Rollup plugin adapter
 
-## Performance (2026-05-21, darwin arm64, 20-run median)
+## Performance (2026-05-30, darwin arm64, 50-run median)
 
-- Transpile small (100 lines): **1.79 ms** (1st, vs esbuild 3.90 / Bun 5.16)
-- Bundle small (10 modules): **2.62 ms** (1st, vs Bun 8.05 / esbuild 10.8)
-- Bundle medium (1000 modules): **17.0 ms** (1st, vs Bun 23.3 / esbuild 26.8)
+- Transpile small (100 lines): **3.34 ms** (1st, vs Bun 3.59 / esbuild 3.67)
+- Bundle small (10 modules): **4.28 ms** (1st, vs Bun 5.05 / esbuild 6.53)
+- Bundle medium (1000 modules): **16.5 ms** (≈ Bun 16.1 — tied lead, vs esbuild 19.7)
 - Warm incremental rebuild (lodash-es, 641 modules): **21.7 ms** (47.3 → 21.7 ms after graph_discover optimization epic, -54%)
 
 ## Documentation
