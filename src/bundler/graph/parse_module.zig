@@ -182,7 +182,19 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
         analyzer.is_ts = parser.source_mode == .ts;
         analyzer.is_flow = parser.is_flow;
         analyzer.enable_stmt_info = true; // tree_shaker가 AST 재순회 없이 StmtInfo 사용
+        // import 바인딩/namespace 멤버 변형(`ns.x = v`/`delete ns.x`) 검출 — 번들 단계만
+        // (esbuild/rolldown 처럼 bundle 시 에러, single-file transform/transpile 은 통과).
+        analyzer.check_import_mutation = true;
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
+
+        // import-mutation 진단(ZNTC0805)만 사용자 노출 fatal 로 승격. 다른 semantic 에러
+        // (재선언 등)는 기존대로 번들에서 비-fatal 유지 — 코퍼스 회귀 회피, 범위 한정.
+        for (analyzer.errors.items) |sem_err| {
+            if (sem_err.code == .assign_to_import) {
+                const m = if (sem_err.message.len > 0) sem_err.message else "Cannot assign to or delete an imported binding";
+                self.addDiag(.assign_to_import, .@"error", module.path, sem_err.span, .link, m, null);
+            }
+        }
 
         // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)
         if (analyze_ok) {
