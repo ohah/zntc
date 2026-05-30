@@ -68,8 +68,9 @@ fn memberChainHasOptional(self: *const Parser, start: NodeIndex) bool {
             // TS non-null/as/satisfies 는 spine 을 끊지 않는다(`a?.b!.c`, `(a?.b as T).c` 의
             // `!`/`as` 는 cover 의 top-level 분기가 이미 언래핑) — 내부로 내려가 그 아래
             // optional 을 본다. paren 은 (위 else 로) 체인을 끊으므로 `(a?.b)!.c` 는 valid.
-            .ts_non_null_expression => cur = n.data.unary.operand,
-            .ts_as_expression, .ts_satisfies_expression => cur = n.data.binary.left,
+            // ts_as/satisfies/non_null 은 전부 addUnaryNode 로 만든 .unary layout(operand 만
+            // 저장, type 은 스트립). canonical accessor 는 unary.operand.
+            .ts_non_null_expression, .ts_as_expression, .ts_satisfies_expression => cur = n.data.unary.operand,
             else => return false, // identifier / paren(체인 끊김) / 기타 head
         }
     }
@@ -141,8 +142,9 @@ pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: 
 
         // 6b) TS as/satisfies expression — 내부 expression을 assignment target으로 검증
         // (z as any) = 1 → z가 valid target이면 OK (esbuild/TS 호환)
+        // .unary layout(addUnaryNode) 이므로 operand 로 접근 (아래 ts_non_null 과 동일).
         .ts_as_expression, .ts_satisfies_expression => {
-            const inner = node.data.binary.left;
+            const inner = node.data.unary.operand;
             return try self.coverExpressionToAssignmentTarget(inner, is_top);
         },
 
