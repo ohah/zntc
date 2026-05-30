@@ -722,6 +722,12 @@ pub const ImportRecord = struct {
     /// 못 받기 때문에 wrapper module 호출로 emit (#1579 Phase 4 follow-up).
     /// element 가 null = 해당 매치 resolve 실패 (codegen 이 throw stub 으로 emit).
     context_resolved_paths: []const ?[]const u8 = &.{},
+    /// require.context: context_resolved_paths 와 1:1. emitter 가 emit 직전에 linker 로
+    /// 계산한 매치 모듈의 init-call 참조 문자열 — `(init_X(),__toCommonJS(exports_X))`.
+    /// code_splitting / production 단일번들에서 `__zntc_modules[id]`(단일번들 dev HMR 전용,
+    /// 청크 경계 미지원)를 대체한다(issue #4039 + production require.context). null = 미계산
+    /// (dev 단일번들 → codegen 이 `__zntc_modules` fallback). emit 후 emitter 가 free.
+    context_init_refs: []const ?[]const u8 = &.{},
     /// require/dynamic import call 이 function/arrow/method/getter body 안에 있어
     /// 호출 시점에만 평가되는 lazy callback 인지. RN core `index.js` 의
     /// `get DevSettings() { return require(...).default }` 같은 lazy getter 패턴

@@ -1851,6 +1851,62 @@ pub fn emitModule(
     const cjs_ex_name = if (cjs_mangle) CJS_MANGLE_EXPORTS else cg_options.default_cjs_exports_name;
     const cjs_mod_name = if (cjs_mangle) CJS_MANGLE_MODULE else cg_options.default_cjs_module_name;
 
+    // require.context: emit 직전에 매치 모듈의 init-call 참조를 linker 로 계산.
+    // dev 단일번들은 기존 `__zntc_modules` HMR 경로 유지(refs 비움 → codegen fallback).
+    // code_splitting / production 단일번들은 `__zntc_modules`(dev 전용)를 못 쓰므로
+    // 같은 청크/번들 내 wrapped 매치 모듈을 `(init_X(),__toCommonJS(exports_X))` 로 직접
+    // 참조한다(issue #4039 + production require.context). 매치 모듈은 finalize Pass 3b 가
+    // 항상 wrap → init_X/exports_X 존재. arena 할당이라 별도 free 불요.
+    const rc_init_refs: []const []const ?[]const u8 = blk: {
+        if (options.dev_mode and !options.code_splitting) break :blk &.{};
+        const l = linker orelse break :blk &.{};
+        var any = false;
+        for (module.import_records) |rec| {
+            if (rec.kind == .require_context) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) break :blk &.{};
+        const refs = arena_alloc.alloc([]const ?[]const u8, module.import_records.len) catch break :blk &.{};
+        for (module.import_records, 0..) |rec, ri| {
+            if (rec.kind != .require_context or rec.context_resolved_paths.len == 0) {
+                refs[ri] = &.{};
+                continue;
+            }
+            const per = arena_alloc.alloc(?[]const u8, rec.context_resolved_paths.len) catch {
+                refs[ri] = &.{};
+                continue;
+            };
+            for (rec.context_resolved_paths, 0..) |abs_opt, mi| {
+                per[mi] = null;
+                const abs = abs_opt orelse continue;
+                const tgt_idx = l.graph.path_to_module.get(abs) orelse continue;
+                const tgt = l.graph.getModule(tgt_idx) orelse continue;
+                // metadata.zig 의 require lowering 과 동일 dispatch — wrap_kind 별 참조 형태.
+                // .cjs 모듈은 init_X/exports_X 가 없고 require_X 만 있으므로 `require_X()`.
+                // .esm 모듈은 `(init_X(), <toCommonJS>(exports_X))` (minify 시 `$tC`).
+                switch (tgt.wrap_kind) {
+                    .cjs => {
+                        const req_name = tgt.allocRequireName(arena_alloc, &l.rename_table) catch continue;
+                        per[mi] = std.fmt.allocPrint(arena_alloc, "{s}()", .{req_name}) catch null;
+                    },
+                    .esm => {
+                        const init_name = tgt.allocInitName(arena_alloc, &l.rename_table) catch continue;
+                        const exp_name = tgt.allocExportsName(arena_alloc, &l.rename_table) catch continue;
+                        const to_cjs: []const u8 = if (options.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                        per[mi] = std.fmt.allocPrint(arena_alloc, "({s}(),{s}({s}))", .{ init_name, to_cjs, exp_name }) catch null;
+                    },
+                    // .none = wrap 누락(force-wrap 실패 등) → null 로 두면 codegen 이
+                    // __zntc_modules fallback(dev) 또는 throw stub. 정상 경로는 Pass 3b 가 wrap.
+                    .none => per[mi] = null,
+                }
+            }
+            refs[ri] = per;
+        }
+        break :blk refs;
+    };
+
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
         .cjs_exports_name = cjs_ex_name,
@@ -1894,6 +1950,7 @@ pub fn emitModule(
         // dev mode: import.meta.hot → __zntc_make_hot("dev_id")
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
         .require_context_module_id_root = options.root_dir,
+        .require_context_init_refs = rc_init_refs,
         .import_records = module.import_records,
         .worker_map = if (options.worker_map_per_module) |outer| outer.getPtr(module.path) else null,
         .assert_no_raw_private_syntax = options.unsupported.requiresPrivateDownlevel(),

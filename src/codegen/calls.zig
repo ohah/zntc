@@ -145,13 +145,22 @@ fn tryEmitGlobObject(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
 fn tryEmitRequireContextObject(self: anytype, node: Node) !bool {
     if (!self.has_require_context_records) return false;
 
+    var rec_index: usize = 0;
     const rec: *const ImportRecord = blk: {
-        for (self.options.import_records) |*r| {
-            if (r.kind == .require_context and std.meta.eql(r.span, node.span))
+        for (self.options.import_records, 0..) |*r, ri| {
+            if (r.kind == .require_context and std.meta.eql(r.span, node.span)) {
+                rec_index = ri;
                 break :blk r;
+            }
         }
         return false;
     };
+    // emitter 가 미리 계산한 init-call 참조 (code_splitting / production 단일번들 —
+    // `__zntc_modules` 미사용 경로). null/빈 슬라이스면 dev 단일번들 → __zntc_modules fallback.
+    const init_refs: []const ?[]const u8 = if (rec_index < self.options.require_context_init_refs.len)
+        self.options.require_context_init_refs[rec_index]
+    else
+        &.{};
 
     try self.write("(function(){var map={");
     if (rec.context_matches) |matches| {
@@ -167,14 +176,16 @@ fn tryEmitRequireContextObject(self: anytype, node: Node) !bool {
                 rec.context_resolved_paths[i]
             else
                 null;
-            if (resolved_abs) |abs| {
-                // `ctx(req)` 는 Metro/webpack 의 require.context semantic 대로 module
-                // exports 를 반환해야 한다. `fn()` 만 호출하면 init 은 실행되지만 exports
-                // 는 undefined — expo-router 가 `ctx(req)` 반환값을 route module 로 사용해
-                // tree 구성이 실패하고 "Unmatched Route" 로 fallback.
-                // 다른 require 호출과 동일한 `(fn(), __toCommonJS(.exports))` 패턴으로 emit.
-                // `__zntc_modules` 의 key 는 모듈 등록 ID — emitter 가 `dev.makeModuleId`
-                // 로 normalize 해서 등록하므로 lookup 도 동일 normalize 적용 (#2466 follow-up).
+            // emitter 가 init-call 참조를 계산했으면(code_splitting/production 단일번들)
+            // `(init_X(),__toCommonJS(exports_X))` 직접 참조 — `__zntc_modules`(dev 전용,
+            // 청크 경계 미지원)를 우회(issue #4039 + production require.context).
+            const pre_ref: ?[]const u8 = if (i < init_refs.len) init_refs[i] else null;
+            if (pre_ref) |ref| {
+                try self.write(ref);
+            } else if (resolved_abs) |abs| {
+                // dev 단일번들: `ctx(req)` 는 Metro/webpack semantic 대로 module exports 를
+                // 반환해야 한다. `__zntc_modules` 의 key 는 `dev.makeModuleId` normalize 한
+                // 등록 ID (#2466). HMR 런타임(dev_mode)이 `__zntc_modules` 를 주입한다.
                 const id = dev.makeModuleId(abs, self.options.require_context_module_id_root);
                 try self.write("(__zntc_modules[\"");
                 try writeJsStringContent(self, id);

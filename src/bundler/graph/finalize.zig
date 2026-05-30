@@ -126,6 +126,19 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
         }
     }
 
+    // Pass 3b: require.context 매치 모듈(is_context_dep)은 런타임 `ctx(req)` 가 모듈을
+    // init-call(`(init_X(),__toCommonJS(exports_X))`)로 참조하므로 **항상 wrap** 되어
+    // init_X/exports_X 를 가져야 한다. Pass 3 은 dev/RN 게이트라 production·code_splitting
+    // 에선 안 돌아 매치 모듈이 scope-hoist 되어 init_X 가 없었다(issue #4039 + production
+    // require.context). 게이트 무관 별도 pass 로 강제 wrap.
+    {
+        var it = self.modules.iterator(0);
+        while (it.next()) |m| {
+            if (!m.is_context_dep or m.wrap_kind != .none) continue;
+            m.wrap_kind = if (m.exports_kind.isEsm()) .esm else .cjs;
+        }
+    }
+
     // Pass 4: inlineDynamicImports — dynamic-import target 만 __esm 래핑.
     // 일반 모듈은 scope-hoisting 그대로, dynamic target 만 lazy factory 로
     // 묶어서 emitter 가 `import("./x")` 호출을 init/exports 호출로 재작성.
