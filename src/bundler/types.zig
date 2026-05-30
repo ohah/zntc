@@ -766,6 +766,9 @@ pub const BundlerDiagnostic = struct {
         /// 한 이름이 2개 이상의 서로 다른 `export *` 소스에서 도달 — ESM spec(ResolveExport
         /// ambiguity)상 접근 불가. named import = error, namespace 멤버 = undefined. #3982
         ambiguous_export,
+        /// import 바인딩/namespace 멤버 변형(`marker = v`/`ns.x = v`/`delete ns.x`). ESM:
+        /// import 바인딩 read-only, namespace 객체 sealed. esbuild/rolldown parity (#4020).
+        assign_to_import,
         /// 순환 참조 감지
         circular_dependency,
         /// re-export source가 자기 자신으로 resolve (alias/plugin 잘못)

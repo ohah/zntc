@@ -168,6 +168,10 @@ pub const Code = enum(u16) {
     octal_escape_strict = 802,
     delete_identifier_strict = 803,
     use_strict_non_simple = 804,
+    /// import 바인딩/namespace 멤버 변형(`marker = v`/`ns.x = v`/`delete ns.x`/`ns.x++`).
+    /// ESM: import 바인딩은 read-only, namespace 객체는 sealed. 번들 단계 검출(esbuild/
+    /// rolldown parity — 둘 다 bundle 시 에러, transform/transpile 은 통과).
+    assign_to_import = 805,
 
     // ═══════════════════════════════════════════════════════
     // 0900-0999: 파서 — await/yield/템플릿/JSX/TS/Flow
@@ -413,6 +417,7 @@ pub const Code = enum(u16) {
             .octal_literal_strict => "Octal literals are not allowed in strict mode",
             .octal_escape_strict => "Octal escape sequences are not allowed in strict mode",
             .delete_identifier_strict => "Deleting an identifier is not allowed in strict mode",
+            .assign_to_import => "Cannot assign to or delete an imported binding",
             .use_strict_non_simple => "\"use strict\" not allowed in function with non-simple parameters",
             // 파서: await/yield/템플릿/JSX/TS/Flow
             .await_identifier => "'await' cannot be used as identifier in this context",

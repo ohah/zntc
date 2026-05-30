@@ -34,6 +34,7 @@ comptime {
     _ = @import("bundler_test/virtual_ns_treeshake.zig");
     _ = @import("bundler_test/ns_member_shadow.zig");
     _ = @import("bundler_test/exports_name_dedup.zig");
+    _ = @import("bundler_test/import_mutation.zig");
     _ = @import("bundler_test/lowering_rename_leak.zig");
     _ = @import("bundler_test/manual_chunks.zig");
     _ = @import("bundler_test/runtime_helper_shadow.zig");

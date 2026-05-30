@@ -134,8 +134,10 @@ pub const DeclFlags = packed struct(u16) {
     /// inner name binding. ECMA spec: 외부 scope 에서 안 보이고 `.name` 프로퍼티로만
     /// 관찰됨. mangler 가 이 이름을 mangle 하면 `.name` 도 변하므로 (#2197) skip.
     is_class_expr_name: bool = false,
-    /// 나머지 패딩
-    _padding: u1 = 0,
+    /// `import * as ns` 네임스페이스 import 바인딩. is_import 와 함께 set.
+    /// `ns.x = v`/`delete ns.x` 등 namespace 멤버 변형이 ESM-불법(namespace 객체 sealed)
+    /// 인지 판정. named import(`import {obj}`) 멤버 변형(`obj.x=v`)은 합법이라 구분 필요.
+    is_namespace_import: bool = false,
 
     /// 모든 "값(value)" 비트. 재선언 체크에 사용할 전체 마스크.
     pub const all_values: DeclFlags = .{

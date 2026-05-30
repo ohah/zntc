@@ -181,6 +181,10 @@ pub const SemanticAnalyzer = struct {
 
     /// StmtInfo 사전 수집 활성화 여부. 번들러 모드에서만 true.
     enable_stmt_info: bool = false,
+    /// import 바인딩/namespace 멤버 변형(`marker = v`/`ns.x = v`/`delete ns.x`) 검출 활성화.
+    /// 번들 단계(parse_module)에서만 true — esbuild/rolldown 처럼 *bundle* 시에만 에러
+    /// (single-file transpile/transform 은 통과). false 면 checkImportMutation no-op.
+    check_import_mutation: bool = false,
     /// 현재 순회 중인 top-level statement 인덱스. visitProgram 2nd pass 에서만 설정되고
     /// 함수/블록 진입 후에도 유지 — 내부 참조를 enclosing top-level stmt 로 귀속시키는 용도.
     /// tree-shaker `stmt_info` 의 referenced_symbols 분배에 사용된다.
@@ -1187,6 +1191,88 @@ pub const SemanticAnalyzer = struct {
         return false;
     }
 
+    /// 현재 스코프 체인을 따라 name 의 바인딩 DeclFlags 를 순수 조회(reference 미기록).
+    /// shadowing 존중 — 가장 가까운(안쪽) 선언 반환. import 변형 검출용.
+    fn lookupBindingFlags(self: *const SemanticAnalyzer, name: []const u8) ?symbol_mod.DeclFlags {
+        var scope_id = self.current_scope;
+        while (!scope_id.isNone()) {
+            if (self.findSymbolInScope(scope_id, name)) |sym| return sym.decl_flags;
+            const i = scope_id.toIndex();
+            if (i >= self.scopes.items.len) break;
+            scope_id = self.scopes.items[i].parent;
+        }
+        return null;
+    }
+
+    /// import 바인딩/namespace 멤버 변형(assign/update/delete)을 ESM 불법으로 진단(번들 단계만).
+    /// esbuild/rolldown parity: import 바인딩 read-only, namespace 객체 sealed.
+    ///   - target 이 식별자고 import 바인딩(named/namespace) → 에러 (`marker = v`, `delete ns`).
+    ///   - target 이 member 이고 *직접* object 가 namespace import 식별자 → 에러
+    ///     (`ns.x = v`, `delete ns.x`, `ns.x++`). `ns.a.b = v`(중첩)·named import 멤버
+    ///     (`obj.x = v`)는 합법이라 제외. shadowing 된 local 도 lookupBindingFlags 가 제외.
+    /// parenthesized/TS-type wrapper(`(x)`, `x!`, `x as T`)를 벗겨 내부 노드 인덱스 반환.
+    /// 전부 unary.operand 로 내부 표현(transparent type wrapper 는 extern union 으로 동일).
+    fn unwrapTarget(self: *const SemanticAnalyzer, start: NodeIndex) NodeIndex {
+        var idx = start;
+        var guard: u8 = 0;
+        while (guard < 64) : (guard += 1) {
+            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return idx;
+            const n = self.ast.getNode(idx);
+            if (!Tag.isTransparentWrapper(n.tag)) return idx;
+            idx = n.data.unary.operand;
+        }
+        return idx;
+    }
+
+    fn checkImportMutation(self: *SemanticAnalyzer, target_idx: NodeIndex, is_delete: bool) AllocError!void {
+        if (!self.check_import_mutation) return;
+        const ti = self.unwrapTarget(target_idx);
+        if (ti.isNone() or @intFromEnum(ti) >= self.ast.nodes.items.len) return;
+        const t = self.ast.getNode(ti);
+        switch (t.tag) {
+            .identifier_reference, .assignment_target_identifier => {
+                const flags = self.lookupBindingFlags(self.ast.getSourceText(t.span)) orelse return;
+                if (flags.is_import) try self.addImportMutationError(t.span, is_delete);
+            },
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                // object 도 wrapper 언래핑 후 *직접* namespace import 식별자인지. `ns.a.b`(중첩)·
+                // named import 멤버(`obj.x`)는 object 가 namespace import 가 아니라 제외.
+                const obj = self.ast.getNode(self.unwrapTarget(self.ast.readExtraNode(t.data.extra, 0)));
+                if (obj.tag != .identifier_reference) return;
+                const flags = self.lookupBindingFlags(self.ast.getSourceText(obj.span)) orelse return;
+                if (flags.is_namespace_import) try self.addImportMutationError(t.span, is_delete);
+            },
+            // destructuring target — leaf 까지 재귀(visitAsWriteTarget 구조 대응). default 값
+            // (read)은 제외하고 target 부분만 따라간다.
+            .array_assignment_target, .object_assignment_target => {
+                const split = self.ast.nodeListSplitRest(t.data.list);
+                for (split.elements) |raw| try self.checkImportMutation(@enumFromInt(raw), is_delete);
+                if (split.rest_operand) |op| try self.checkImportMutation(op, is_delete);
+            },
+            .assignment_target_property_identifier => try self.checkImportMutation(t.data.binary.left, is_delete),
+            .assignment_target_property_property => try self.checkImportMutation(t.data.binary.right, is_delete),
+            .assignment_target_with_default => try self.checkImportMutation(t.data.binary.left, is_delete),
+            .assignment_target_rest => try self.checkImportMutation(t.data.unary.operand, is_delete),
+            else => {},
+        }
+    }
+
+    fn addImportMutationError(self: *SemanticAnalyzer, span: Span, is_delete: bool) AllocError!void {
+        const msg = try self.allocator.dupe(u8, if (is_delete)
+            "Cannot delete an imported binding or namespace member"
+        else
+            "Cannot assign to an imported binding or namespace member");
+        self.errors.append(self.allocator, .{
+            .span = span,
+            .message = msg,
+            .kind = .semantic,
+            .code = .assign_to_import,
+        }) catch {
+            self.allocator.free(msg);
+            return error.OutOfMemory;
+        };
+    }
+
     // ================================================================
     // 에러 추가
     // ================================================================
@@ -1447,6 +1533,8 @@ pub const SemanticAnalyzer = struct {
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
             .assignment_expression => {
                 const lhs_idx = node.data.binary.left;
+                // ESM(번들): import 바인딩/namespace 멤버 대입 불가 (esbuild/rolldown parity).
+                try self.checkImportMutation(lhs_idx, false);
                 // operator 토큰은 binary.flags 에 저장. compound 면 LHS 는 read+write, 아니면 pure write.
                 const op_kind: token.Kind = @enumFromInt(node.data.binary.flags);
                 const lhs_flags: symbol_mod.ReferenceFlags = if (op_kind.isCompoundAssignment())
@@ -1482,6 +1570,8 @@ pub const SemanticAnalyzer = struct {
                 const extras = self.ast.extra_data.items;
                 if (e < extras.len) {
                     const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+                    // ESM(번들): import 바인딩/namespace 멤버 update(`ns.x++`) 불가.
+                    try self.checkImportMutation(operand_idx, false);
                     if (!self.tryResolveNodeAsRef(operand_idx, .{ .read = true, .write = true })) {
                         if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len and
                             self.ast.getNode(operand_idx).tag == .private_field_expression)
@@ -1496,7 +1586,13 @@ pub const SemanticAnalyzer = struct {
             .unary_expression => {
                 // extra: [operand, operator_and_flags]
                 const e = node.data.extra;
-                if (e < self.ast.extra_data.items.len) {
+                if (e + 1 < self.ast.extra_data.items.len) {
+                    const operand_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    // ESM(번들): `delete ns.x`(namespace 멤버)·`delete importedBinding` 불가.
+                    const op: token.Kind = @enumFromInt(@as(u8, @truncate(self.ast.extra_data.items[e + 1])));
+                    if (op == .kw_delete) try self.checkImportMutation(operand_idx, true);
+                    try self.visitNode(operand_idx);
+                } else if (e < self.ast.extra_data.items.len) {
                     try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
                 }
             },
@@ -2199,6 +2295,17 @@ pub const SemanticAnalyzer = struct {
             // checkStrictBindingName 은 2nd-pass visitImportDeclaration 가 수행
             // (predeclare* 들은 declare 만 하고 strict 검증은 visit 단계 — 일관).
             try self.declareSymbolWithNode(name_span, .import_binding, spec_node.span, @intFromEnum(local_idx));
+            // `import * as ns` 는 namespace 바인딩 표시 — checkImportMutation 의 `ns.x = v`
+            // 판정용. named import(`import {obj}`)는 표시 안 함(객체 멤버 변형은 합법).
+            if (spec_node.tag == .import_namespace_specifier) self.markNamespaceImport(name_span);
+        }
+    }
+
+    /// 방금 선언한 namespace import 심볼에 is_namespace_import 플래그를 set.
+    fn markNamespaceImport(self: *SemanticAnalyzer, name_span: Span) void {
+        const name = self.ast.getSourceText(name_span);
+        if (self.findSymbolIndexInScope(self.current_scope, name)) |si| {
+            self.symbols.items[si].decl_flags.is_namespace_import = true;
         }
     }
 
@@ -2795,6 +2902,10 @@ pub const SemanticAnalyzer = struct {
     fn visitForInOf(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // ternary: { a = left, b = right, c = body }
         const saved = try self.enterScope(.block, self.is_strict_mode);
+        // for-in/of LHS 는 매 iteration 마다 write target — `for(ns.x in y)`/`for(marker of y)`
+        // 처럼 import 바인딩/namespace 멤버를 변형하면 ESM 불법(번들). 선언 head
+        // (`for(let x in y)`)는 variable_declaration 이라 checkImportMutation no-op.
+        try self.checkImportMutation(node.data.ternary.a, false);
         try self.visitNode(node.data.ternary.a);
         try self.visitNode(node.data.ternary.b);
         try self.visitNode(node.data.ternary.c);
@@ -3113,6 +3224,7 @@ pub const SemanticAnalyzer = struct {
                     try self.checkStrictBindingName(spec_node.span);
                     if (self.isInPredeclaredScope()) continue;
                     try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
+                    self.markNamespaceImport(spec_node.span);
                 },
                 .import_specifier => {
                     const local_idx = spec_node.data.binary.right;
