@@ -21,10 +21,6 @@ Zig plugins currently exist only for built-in transforms (worklet, Fast Refresh)
 
 The `vitePlugin()` adapter supports the main Rollup hooks (`resolveId` · `load` · `transform` · `renderChunk` · `generateBundle`) and most fields of `getModuleInfo()`. Remaining items are parts of the plugin context API (`this.parse()` · `this.resolve()` · `this.emitFile()` · `ModuleInfo.meta`) and `ModuleInfo.ast` — an ESTree adapter that exposes each module's **ESTree-compatible AST** to plugins. It depends on converting ZNTC's internal AST to the ESTree shape.
 
-#### Per-chunk CSS splitting
-
-`import './style.css'` auto-emit, `@import` inlining, and Lightning CSS minification already work. Splitting CSS per output chunk during code-splitting is deferred. (`.module.css` class-name hashing / scoping is already built in for app mode — see [Plugin Recipes / CSS Modules](/zntc/en/guides/plugin-recipes/#css-modules).)
-
 #### Refined dead-code elimination (innerGraph)
 
 Straight-line dead stores on local variables are eliminated. Dead-store analysis across `if` / `for` / `try` control flow is in progress.
@@ -111,10 +107,6 @@ These frameworks bake the bundler into the framework itself — RSC payload seri
 ### `.module.css` auto-transform in core `--bundle` mode
 
 App mode (`zntc dev` / `zntc build`) supports `.module.css` class-name hashing / scoping out of the box — see [Plugin Recipes / CSS Modules](/zntc/en/guides/plugin-recipes/#css-modules). Core `--bundle` mode does not auto-transform `.module.css`; go through the Vite adapter or a user plugin (PostCSS Modules / Lightning CSS Modules) instead.
-
-### Per-chunk CSS splitting
-
-CSS is emitted as a single artifact even when JS is code-split. Per-chunk CSS is deferred.
 
 ### Persistent disk cache · Lazy compilation · mangleProps
 
