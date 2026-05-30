@@ -9351,11 +9351,11 @@ var generic2 = (n) => {
 };
 var generic2;
 // <Identifier> ((ParamList) => { ... } ) is a type assertion to an arrow function
-var asserted1 = (n) => [n];
+var asserted1 = ((n) => [n]);
 var asserted1;
-var asserted2 = (n) => {
+var asserted2 = ((n) => {
 	return n;
-};
+});
 var asserted2;
 "
 `;
@@ -10360,10 +10360,10 @@ foo.m?.();
 /*b3*/
 /*b4*/
 // https://github.com/microsoft/TypeScript/issues/50148
-foo?.m.length;
-foo?.m.length;
-foo?.["m"].length;
-foo?.["m"].length;
+(foo?.m).length;
+(foo?.m).length;
+(foo?.["m"]).length;
+(foo?.["m"]).length;
 "
 `;
 
