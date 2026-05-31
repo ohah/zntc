@@ -246,6 +246,10 @@ pub const ModuleGraph = struct {
     /// seed 로 등록한다(아래 `lazy_seeds`). `false`(기본)면 기존 eager 동작 그대로 →
     /// kill-switch 회귀 0. `dev_mode and code_splitting` 와 함께여야 의미 있음.
     lazy_compilation: bool = false,
+    /// PR-3b-ii primitive: lazy_compilation 이어도 이 경로들(resolver resolved 절대경로와
+    /// exact match)의 동적 import 타겟은 deferred 하지 않고 즉시 parse(eager). 슬라이스
+    /// borrow(BundleOptions 소유). 전체 on-demand 는 shared-off + export-all 까지 필요(RFC).
+    lazy_force_parse: []const []const u8 = &.{},
     /// PR-3a: discovery 중 동적 import 경계에서 정지한 타겟. BFS 종료 후 일괄
     /// materialize(`materializeLazySeeds`) — static 으로도 도달했으면 그 파싱 모듈에
     /// link, 아니면 미파싱 seed(`Module.is_lazy_seed`, state=.ready, ast=null)로 등록.

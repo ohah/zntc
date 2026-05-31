@@ -191,10 +191,25 @@ MVP(parse eager)는 "시작 시 전체 그래프를 알므로 cross-chunk 심볼
     (lazy seed 면 force-emit). on-demand 컴파일의 emit 전제. `chunkRestrictSkip` 로 emit
     루프+resolveContentHashes 동일 skip. restrict=null=byte-identical 회귀0. **제약**: lazy
     청크(경로기반 reg_id 참조) 전용 — content-hash cross-ref 청크면 dangling.
-  - **PR-3b-ii**: 세션 graph/Linker 생존(rename_table 조회용) — dev 서버가 빌드 결과를 세션
-    동안 유지. (현재 `serveBundle` 은 요청마다 fresh Bundler.)
-  - **PR-3b-iii**: lazy 라우트 — `/<heavy-pathhash>.js` GET 시 seed parse→closure→`restrict_to_chunk`
-    로 단일청크 emit→`LazyChunkCache`. 단방향 cross-chunk 조회(§2.1). virtual/external 동적
+  - **PR-3b-ii (진행 중 — 접근 (B) 결정론적 재빌드 검증)**: on-demand 를 (A)세션 Linker 생존
+    대신 **(B) 결정론적 재빌드**(요청 seed 만 force-parse + `restrict_to_chunk` 로 단일청크
+    emit, Linker 는 매번 fresh)로 가는지 검증. **force-parse primitive** 추가 완료
+    (`BundleOptions.lazy_force_parse: []const []const u8` — 지정 절대경로 동적타겟을 lazy
+    defer 대신 즉시 parse. resolve_imports gate 에 `!pathInForceParse` 추가). **검증 결과
+    (B)는 2겹 선행 필요**:
+    1. **shared-splitting-off (§6.3)**: force-parse 시 seed 가 entry 와 공유하는 모듈이 공통
+       청크로 추출돼 entry 청크가 달라짐(비결정론). lazy 시 static-entry 비트 보유 모듈의
+       dynamic 비트를 collapse 해 entry 에 고정 → 결정론. (chunk.zig generateChunks Phase3 전.)
+    2. **entry export-all-by-local**: shared-off 로 shared 가 entry 에 hoist 되면, 동적 청크는
+       `__zntc_require("entry.js").<local>` 로 단방향 조회한다. 그런데 cross-chunk export 가
+       **demand-driven**(소비자 있을 때만)이라 초기 lazy 빌드(seed 미파싱)는 그 export 를 안
+       내 → on-demand seed 가 못 찾음. 해법: **lazy 시 entry 청크가 hoisted 모듈 export 를
+       전부 *local(deconflict) name* 으로 노출**(`exports.v=v; exports.v$1=v$1;`). export-name
+       으로는 동명 충돌(shared.v + dup.v)이라 local name 필수. 이건 registry emit 신규 경로
+       (chunks.zig xchunk_exports 의 reg-entry break 를 lazy export-all 로 대체). **미구현.**
+    → 즉 (B)는 viable 하나 `shared-off + export-all-by-local` 선행. PR-3b-ii 잔여 = 이 둘 구현.
+  - **PR-3b-iii**: lazy 라우트 — `/<heavy-pathhash>.js` GET 시 seed force-parse→`restrict_to_chunk`
+    단일청크 emit→`LazyChunkCache`. 이름→seed 역참조는 `graph.lazy_seeds`. virtual/external 동적
     타겟 lazy 도 여기.
 - **PR-4 — watch/HMR + 재귀 lazy**: 활성/미활성 청크 분기. 동적 청크 parse 중 발견한 새 `import()` 를
   seed 로 추가. 그래프 구조 변경 시 entry 청크 재계산.

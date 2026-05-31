@@ -2978,6 +2978,48 @@ test "LazyCompilation PR-3a-ii: 동적 청크 emit-skip + 경로기반 이름은
     }
 }
 
+// PR-3b-ii: lazy_force_parse 가 지정 seed 를 lazy defer 대신 즉시 parse(eager). dev lazy
+// on-demand 가 요청된 청크 seed 만 끌어올리는 primitive. (전체 (B) on-demand 완성은
+// shared-splitting-off + entry export-all-by-local 까지 필요 — RFC §2.1/§6.3 verify 결과.)
+test "LazyCompilation PR-3b-ii: lazy_force_parse 가 지정 seed 를 즉시 parse(eager)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export function heavyMarkerFn() { return 'HEAVY_BODY_MARKER'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavyMarkerFn()); }
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const heavy_abs = try absPath(&tmp, "heavy.ts");
+    defer std.testing.allocator.free(heavy_abs);
+
+    const heavyPresent = struct {
+        fn check(force: []const []const u8, e: []const u8) !bool {
+            var bnd = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{e},
+                .dev_mode = true,
+                .code_splitting = true,
+                .lazy_compilation = true,
+                .lazy_force_parse = force,
+                .format = .iife,
+            });
+            defer bnd.deinit();
+            const result = try bnd.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            const outs = result.outputs orelse return error.TestUnexpectedResult;
+            for (outs) |o| if (std.mem.indexOf(u8, o.contents, "HEAVY_BODY_MARKER") != null) return true;
+            return false;
+        }
+    }.check;
+
+    // force-parse 가 *유일한* 차이 — 같은 lazy 빌드에서 목록만 다르게 두 번 빌드.
+    // 목록 비었을 때: heavy 는 미파싱 seed → 본문 없음. heavy 지정 시: 즉시 parse → 본문 있음.
+    try std.testing.expect(!try heavyPresent(&.{}, entry)); // force-parse 없음 → seed
+    try std.testing.expect(try heavyPresent(&.{heavy_abs}, entry)); // force-parse → eager
+}
+
 test "LazyDevSplitting: kill-switch — lazy_compilation=false 면 dev 단일 번들 보존" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
