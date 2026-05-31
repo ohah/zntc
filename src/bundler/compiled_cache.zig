@@ -100,8 +100,13 @@ pub const InputHasher = struct {
 ///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
 ///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
 ///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
-const expected_emit_options_field_count: usize = 57;
-const intentionally_unhashed_fields = [_][]const u8{"skip_bundle_output"};
+const expected_emit_options_field_count: usize = 58;
+const intentionally_unhashed_fields = [_][]const u8{
+    "skip_bundle_output",
+    // PR-3b-i: 어느 청크를 outputs 로 쓸지(chunk 선택)만 거르고 per-module 컴파일 결과는
+    // 동일하므로 module-level cache key 와 무관 (skip_bundle_output 과 동일 성격).
+    "restrict_to_chunk",
+};
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;

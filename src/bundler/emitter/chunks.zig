@@ -214,11 +214,10 @@ pub fn emitChunks(
 
     for (sorted_indices) |ci| {
         const chunk = &chunk_graph.chunks.items[ci];
-        // 출력에서 제외할 청크는 단일 predicate(`chunkSkippedFromOutput`)로 판정 — emit
-        // 루프와 resolveContentHashes 가 *동일* 하게 skip 해야 outputs↔sorted_indices 매핑이
-        // 어긋나지 않는다(placeholder 치환 누락 회귀 가드). 비워진 청크(mergeSmallChunks/
-        // manualChunks 흡수) + PR-3a-ii lazy seed(미파싱, on-demand) 포함.
-        if (chunkSkippedFromOutput(chunk)) continue;
+        // PR-3b-i: restrict_to_chunk 면 그 청크 하나만 emit(force — lazy seed skip 우회).
+        // 아니면 정상 skip predicate(emit 루프 ↔ resolveContentHashes 동일해야 outputs↔
+        // sorted_indices 정렬 유지). 비워진 청크 + PR-3a-ii lazy seed 제외.
+        if (chunkRestrictSkip(chunk, ci, options.restrict_to_chunk)) continue;
 
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
@@ -1091,7 +1090,7 @@ pub fn emitChunks(
     // 2패스: content hash 계산 및 placeholder 치환.
     // 각 청크의 content에서 placeholder를 찾아 content hash로 교체한다.
     // esbuild도 동일한 2패스 접근을 사용 (placeholder → content hash).
-    try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph);
+    try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph, options.restrict_to_chunk);
 
     // sourcemap finalize: hash 치환 후 final filename 으로 builder generate.
     // mode 별 분기 (lazy / eager / inline_) 는 finalize 안에서 처리.
@@ -1769,6 +1768,7 @@ fn resolveContentHashes(
     outputs: []OutputFile,
     sorted_indices: []const usize,
     chunk_graph: *const ChunkGraph,
+    restrict_to_chunk: ?usize,
 ) !void {
     if (outputs.len == 0) return;
 
@@ -1789,7 +1789,7 @@ fn resolveContentHashes(
         if (out_idx >= outputs.len) break;
         const chunk = &chunk_graph.chunks.items[ci];
         // emit 루프와 *동일* predicate(공유 헬퍼) — outputs↔sorted_indices 정렬 유지.
-        if (chunkSkippedFromOutput(chunk)) continue;
+        if (chunkRestrictSkip(chunk, ci, restrict_to_chunk)) continue;
 
         buildPlaceholder(chunk, &infos[out_idx].placeholder);
         contentHash(outputs[out_idx].contents, &infos[out_idx].real_hash);
@@ -1919,9 +1919,17 @@ fn chunkRegistryId(
 /// 사용 금지 — `chunk.name_dir` 은 PR B-1 이 도입한 분리된 안전 필드.)
 /// 청크를 출력(outputs)에서 제외하는지 단일 판정. emit 루프와 resolveContentHashes 가
 /// *동일* 하게 호출해야 outputs↔sorted_indices 매핑이 어긋나지 않는다(placeholder 치환
-/// 누락 방지). 비워진 청크(mergeSmallChunks/manualChunks 흡수) + PR-3a-ii lazy seed
-/// (미파싱, on-demand 생성)를 제외.
-fn chunkSkippedFromOutput(chunk: *const Chunk) bool {
+/// 누락 방지).
+///   - `restrict_to_chunk`(PR-3b-i) 가 있으면 그 인덱스 청크 *하나만* 남기고 전부 skip.
+///     지정 청크는 lazy seed 라도 force-emit(on-demand 로 파싱된 단일청크) — 비어있을
+///     때만 skip.
+///   - 없으면 비워진 청크(mergeSmallChunks/manualChunks 흡수) + PR-3a-ii lazy seed
+///     (미파싱, on-demand)를 제외.
+fn chunkRestrictSkip(chunk: *const Chunk, ci: usize, restrict_to_chunk: ?usize) bool {
+    if (restrict_to_chunk) |r| {
+        if (ci != r) return true;
+        return chunk.modules.items.len == 0;
+    }
     return chunk.modules.items.len == 0 or chunk.is_lazy_seed;
 }
 

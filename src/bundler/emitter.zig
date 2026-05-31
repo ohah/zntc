@@ -76,6 +76,19 @@ const emitter_tree_shake = @import("emitter/tree_shake.zig");
 const purity = @import("purity.zig");
 
 pub const EmitOptions = struct {
+    /// PR-3b-i (lazy compilation): non-null 이면 이 인덱스의 청크 *하나만* emit 한다
+    /// (나머지는 skip). dev lazy 의 on-demand 단일청크 컴파일에 사용 — 첫 GET 시 해당
+    /// lazy seed 청크만 emit. cross-chunk 컨텍스트(chunk_graph/linker)는 전체가 유지되어
+    /// 이름/심볼 참조는 정확. 그 청크가 `is_lazy_seed`(미파싱→파싱됨)여도 force-emit 한다
+    /// (정상 경로의 lazy skip 우회). 기본 null = 전 청크 emit(기존 동작).
+    ///
+    /// **제약**: 지정 청크가 *다른* 청크를 **content-hash 이름**으로 참조하면, 그 대상
+    /// 청크가 outputs 에 없어 placeholder(`\x00ZH`)가 미치환 dangling 으로 남는다. lazy
+    /// 청크는 entry/shared 를 **경로기반 reg_id**(content-hash 아님)로 참조하고 entry 는
+    /// 이미 로드돼 있으므로 안전 — restrict 는 **lazy 청크 전용**으로만 쓸 것.
+    /// (효율: 단일청크여도 reg_ids/cross-chunk 셋업을 전 청크에 수행 — PR-3b-iii on-demand
+    /// 핫패스 최적화 대상.)
+    restrict_to_chunk: ?usize = null,
     /// transformer pre-pass / emit 단계 transformer.init 양쪽에서 사용하는 옵션 base.
     /// bundler 가 init 시 1회 채움 — graph 와 emitter 가 동일한 매핑 사용 (drift 방지).
     /// per-module override (`react_refresh` / `plugins` / `jsx_transform` /
