@@ -185,8 +185,17 @@ MVP(parse eager)는 "시작 시 전체 그래프를 알므로 cross-chunk 심볼
     (`\x00ZH` placeholder 없음 → resolveContentHashes 무시 → 안정). emit 루프+resolveContentHashes
     공유 predicate(`chunkSkippedFromOutput`)로 skip. entry 는 `heavy-<pathhash>.js` 로 선참조 —
     본문이 바뀌어도 이름 불변(테스트 가드) → PR-3b 가 on-demand 빌드해도 이름 일치.
-- **PR-3b — dev 서버 lazy 라우트**: 청크 첫 GET 시 seed 부터 parse→emit. `LazyChunkCache`. 세션
-  Linker 생존 배선. 단방향 cross-chunk 조회(§2.1).
+- **PR-3b — dev 서버 lazy 라우트**: 두 어려운 전제(세션 Linker 생존 + 단일청크 emit)로
+  **3b-i / 3b-ii / 3b-iii 로 분할**.
+  - **PR-3b-i DONE**: `emitChunks` 가 `EmitOptions.restrict_to_chunk` 로 *단일* 청크만 emit
+    (lazy seed 면 force-emit). on-demand 컴파일의 emit 전제. `chunkRestrictSkip` 로 emit
+    루프+resolveContentHashes 동일 skip. restrict=null=byte-identical 회귀0. **제약**: lazy
+    청크(경로기반 reg_id 참조) 전용 — content-hash cross-ref 청크면 dangling.
+  - **PR-3b-ii**: 세션 graph/Linker 생존(rename_table 조회용) — dev 서버가 빌드 결과를 세션
+    동안 유지. (현재 `serveBundle` 은 요청마다 fresh Bundler.)
+  - **PR-3b-iii**: lazy 라우트 — `/<heavy-pathhash>.js` GET 시 seed parse→closure→`restrict_to_chunk`
+    로 단일청크 emit→`LazyChunkCache`. 단방향 cross-chunk 조회(§2.1). virtual/external 동적
+    타겟 lazy 도 여기.
 - **PR-4 — watch/HMR + 재귀 lazy**: 활성/미활성 청크 분기. 동적 청크 parse 중 발견한 새 `import()` 를
   seed 로 추가. 그래프 구조 변경 시 entry 청크 재계산.
 - **PR-5 — 검증/벤치 + `--lazy` 노출**: cold-start 벤치(§1.3 harness 확장), 로드맵 "미구현" 제거,
