@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFixture, ZNTC_JS_CLI } from './helpers';
 
@@ -212,5 +212,62 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
     const after = await (await fetch(`http://localhost:${port}/${chunkUrl}`)).text();
     expect(after).toContain('HEAVY_KEEP');
     expect(after).not.toContain('SIDE_'); // heavy 청크엔 sidecar 가 섞이지 않음
+  }, 30000);
+
+  // #4079 PR-3 (dev materialize): lazy 청크를 한 번 요청하면 dev 서버가 watch 에 requestLazySeed
+  // 를 호출 → worker 가 그 seed 를 force-parse 해 정식 청크로 outdir 에 emit 한다(이후 정적 서빙
+  // + subtree 감시). 요청 전엔 emit-skip(디스크에 없음), 요청 후엔 디스크에 나타나야 한다.
+  // ⚠️ 이 테스트는 *빌드된* @zntc/core(dist)의 `requestLazySeed` 래퍼 + 최신 NAPI 바이너리를
+  // 요구한다(dist 는 gitignore — `bun run --cwd packages/core build:js` + `zig build napi`).
+  // stale 시 `nativeWatchHandle.requestLazySeed` 가 undefined → `?.` no-op → materialize 안 됨.
+  test('--lazy → lazy 청크 요청 시 watch 가 그 seed 를 materialize(디스크 emit)', async () => {
+    const fixture = await createFixture({
+      'index.html': `<!doctype html><html><head><meta charset="utf-8"/><title>M</title></head><body><div id="root"></div><script type="module" src="/src/main.ts"></script></body></html>`,
+      'src/main.ts': `async function go(){ const m = await import('./heavy'); document.getElementById('root')!.textContent = m.h; }\ngo();`,
+      'src/heavy.ts': `export const h = 'HEAVY_MAT';`,
+    });
+    cleanup = fixture.cleanup;
+    const outdir = join(fixture.dir, '.zntc-dev');
+    const heavyOnDisk = () => {
+      try {
+        return readdirSync(outdir).some((f) => /heavy-[0-9a-f]{8}\.js$/.test(f));
+      } catch {
+        return false;
+      }
+    };
+
+    const port = 5550 + Math.floor(Math.random() * 40);
+    proc = Bun.spawn({
+      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port), '--lazy'],
+      env: { ...process.env, ZNTC_LAZY: '' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    await waitForServer(port);
+
+    const entry = await (await fetch(`http://localhost:${port}/bundle.js`)).text();
+    const chunkUrl = entry.match(/__zntc_load_chunk\("([^"]+)"\)/)![1];
+    expect(heavyOnDisk()).toBe(false); // 요청 전 = emit-skip
+
+    // lazy 청크 요청 → on-demand 즉시 서빙 + watch 에 requestLazySeed.
+    expect(await (await fetch(`http://localhost:${port}/${chunkUrl}`)).text()).toContain(
+      'HEAVY_MAT',
+    );
+
+    // watch 가 force-parse 해 디스크에 materialize 할 때까지 폴링(최대 ~8s).
+    let materialized = false;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      if (heavyOnDisk()) {
+        materialized = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(materialized).toBe(true); // requestLazySeed → watch force-parse → 정식 청크 emit
+    // materialize 후에도 그 URL 이 동일 본문을 서빙(PR-1 path-hash 안정 → 정적 서빙 전환 매끄러움).
+    expect(await (await fetch(`http://localhost:${port}/${chunkUrl}`)).text()).toContain(
+      'HEAVY_MAT',
+    );
   }, 30000);
 });

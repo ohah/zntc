@@ -2165,6 +2165,12 @@ async function runServe(opts, config, { appDev = null } = {}) {
     const pathHash = m[1];
     const seedPath = lazySeedMap.get(pathHash);
     if (!seedPath) return null; // 알 수 없는 hash — 정적 자산일 수 있어 fallback
+    // #4079 PR-3 (dev materialize) — 이 seed 가 방문됐으니 watch worker 가 그것을 force-parse 해
+    // 정식 청크로 emit(이후 정적 서빙) + transitive deps 를 감시(깊은 편집 HMR + warm 재빌드)하게
+    // 한다. native 가 dedup 하므로 매 요청 호출 무해. PR-1 의 path-hash 안정 이름 덕에 on-demand
+    // 청크 URL ↔ watch emit 청크 URL 이 동일해 전환이 매끄럽다. 아래 on-demand build 는 첫 요청
+    // 즉시성용(watch rebuild 는 ≤200ms 비동기). 구 native 바이너리면 메서드 부재 → 옵셔널 no-op.
+    nativeWatchHandle?.requestLazySeed?.(seedPath);
     const cached = lazyChunkCache.get(pathHash);
     if (cached) return cached;
     if (!lazyOnDemandOpts) return null;
