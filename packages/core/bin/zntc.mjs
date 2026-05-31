@@ -1938,6 +1938,27 @@ async function runServe(opts, config, { appDev = null } = {}) {
   let serverHandle = null;
   // #3779 follow-up — restart 시 stop 호출용. opts.bundle+watch+appDev+hmr 분기 안에서만 할당.
   let nativeWatchHandle = null;
+  // #4062 PR-B-2 — JS dev 서버 lazy on-demand 라우트(env ZNTC_LAZY=1 게이트, 실험적).
+  // D105 접근1: native lazy 프리미티브(#4069/#4070, watch lazySeeds + build lazyForceParse)
+  // 위에 JS 서버가 얇게 on-demand 라우팅을 얹는다. lazy 동적 청크는 emit-skip 되므로
+  // (디스크에 없음) 브라우저가 `/<stem>-<8hex>.js` 를 요청하면 그 seed 만 force-parse 한
+  // 단발 build() 로 즉석 생성·캐시해서 서빙한다. 게이트 OFF 면 아래 상태/분기 전부 무시 → 0 영향.
+  const lazyMode = process.env.ZNTC_LAZY === '1';
+  // pathHash(8 hex) → seed 절대경로. watch onReady/onRebuild 의 event.lazySeeds 로 갱신.
+  const lazySeedMap = new Map();
+  // pathHash → { body, type }. on-demand 빌드 결과 캐시. rebuild 마다 무효화(seed 본문 변경 가능).
+  const lazyChunkCache = new Map();
+  // pathHash → in-flight build Promise. 같은 청크 동시 요청을 coalesce(중복 build 회피).
+  const lazyInflight = new Map();
+  // on-demand build() 직렬화 tail. 페이지 로드 시 여러 lazy 청크가 동시 요청돼도 native build()
+  // 를 한 번에 하나씩만 돌려 watch worker 와의 동시 재진입 위험을 없앤다(/code-review Q2).
+  let lazyBuildTail = Promise.resolve();
+  // lazy entry 청크의 디스크 경로(`<entrystem>.js`). served index.html 은 prepareDev 가 non-split
+  // 으로 `/bundle.js` 를 참조하게 rewrite 했지만, watch lazy 빌드의 entry 청크는 stem 이름이라
+  // mismatch → `/bundle.js` 를 이 파일로 alias.
+  let lazyEntryFile = null;
+  // on-demand 단발 build() 옵션 템플릿(watchBuildOpts 와 동일 lazy 설정, callback/outdir 제거).
+  let lazyOnDemandOpts = null;
   const mimeTypes = {
     '.html': 'text/html',
     '.js': 'application/javascript',
@@ -2039,6 +2060,111 @@ async function runServe(opts, config, { appDev = null } = {}) {
     return { status: 200, body, type };
   }
 
+  // #4062 PR-B-2 — lazy 상태 갱신. watch onReady/onRebuild event 의 lazySeeds 로 pathHash→seed
+  // 맵을 다시 채우고, entry 청크 파일을 식별하고, 캐시를 무효화한다(seed 본문 변경 가능).
+  // event.outputs 는 디스크 경로 목록. entry 청크 = entry stem(`<name>.js`)과 basename 이 일치하는
+  // 출력(splitting 의 entry 청크 네이밍). dev 모드는 content-hash off 라 stem 그대로.
+  function captureLazyState(event) {
+    if (!lazyMode || !event) return;
+    lazySeedMap.clear();
+    lazyChunkCache.clear();
+    if (Array.isArray(event.lazySeeds)) {
+      for (const s of event.lazySeeds) {
+        if (s && typeof s.pathHash === 'string' && typeof s.path === 'string') {
+          lazySeedMap.set(s.pathHash, s.path);
+        }
+      }
+    }
+    const entryStem = basename(opts.entryPoints[0] ?? '', extname(opts.entryPoints[0] ?? ''));
+    // event.outputs 는 outdir 기준 bare 파일명("main.js") — serveDir 로 절대화한다(이미 절대면 그대로).
+    const outputs = (Array.isArray(event.outputs) ? event.outputs : [])
+      .filter((p) => typeof p === 'string')
+      .map((p) => resolve(serveDir, p));
+    let entry = outputs.find((p) => basename(p, '.js') === entryStem) ?? null;
+    // fallback: entry stem 매칭 실패 시 `__zntc_load_chunk` 를 포함한 .js 출력(동적 import 보유 청크).
+    if (!entry) {
+      for (const p of outputs) {
+        if (!p.endsWith('.js')) continue;
+        try {
+          if (readFileSync(p, 'utf8').includes('__zntc_load_chunk(')) {
+            entry = p;
+            break;
+          }
+        } catch {
+          // 읽기 실패 — skip
+        }
+      }
+    }
+    lazyEntryFile = entry;
+  }
+
+  // #4062 PR-B-2 — lazy on-demand 라우트. 반환 null = lazy 라우트가 처리 안 함(기존 handleRequest 로).
+  //   ① `/bundle.js` (served index.html 이 참조) → lazy entry 청크 alias.
+  //   ② `/<stem>-<8hex>.js` → seed 역참조 후 그 seed 만 force-parse 한 단발 build() 로 동적 청크 생성.
+  async function tryServeLazy(reqUrl) {
+    if (!lazyMode) return null;
+    let pathname = new URL(reqUrl, 'http://localhost').pathname;
+    if (base && base !== '/' && pathname.startsWith(base)) {
+      pathname = '/' + pathname.slice(base.length);
+    }
+    // ① entry alias — served index.html 의 `/bundle.js` 를 lazy entry 청크로.
+    if ((pathname === '/bundle.js' || pathname === '/index.js') && lazyEntryFile) {
+      try {
+        return {
+          status: 200,
+          body: readFileSync(lazyEntryFile),
+          type: 'application/javascript',
+        };
+      } catch {
+        return null; // 파일 사라짐 — 정적 fallback
+      }
+    }
+    // ② on-demand 동적 청크.
+    const m = pathname.match(/-([0-9a-f]{8})\.js$/);
+    if (!m) return null;
+    const pathHash = m[1];
+    const seedPath = lazySeedMap.get(pathHash);
+    if (!seedPath) return null; // 알 수 없는 hash — 정적 자산일 수 있어 fallback
+    const cached = lazyChunkCache.get(pathHash);
+    if (cached) return cached;
+    if (!lazyOnDemandOpts) return null;
+    // 같은 청크 동시 요청은 진행 중 build 를 공유(coalesce).
+    const existing = lazyInflight.get(pathHash);
+    if (existing) return existing;
+    // tail 에 체인 → on-demand build 들을 직렬화(동시 native build()+watch worker 재진입 회피).
+    const job = lazyBuildTail.then(async () => {
+      // 큐 대기 중 cache 가 채워졌으면(다른 동일 요청이 먼저 완료) 그대로 재사용.
+      const c = lazyChunkCache.get(pathHash);
+      if (c) return c;
+      try {
+        const r = await build({ ...lazyOnDemandOpts, lazyForceParse: [seedPath] });
+        if (r.errors && r.errors.length > 0) return null;
+        // seed 모듈을 포함한 청크를 moduleIds 로 찾는다(force-parse 라 그 seed 가 어느 청크에 인라인됨).
+        const chunk = (r.outputFiles ?? []).find(
+          (f) => Array.isArray(f.moduleIds) && f.moduleIds.includes(seedPath),
+        );
+        if (!chunk) return null;
+        const result = {
+          status: 200,
+          body: chunk.contents,
+          type: 'application/javascript',
+        };
+        lazyChunkCache.set(pathHash, result);
+        return result;
+      } catch (err) {
+        console.error('[serve] lazy chunk build failed:', err);
+        return null;
+      }
+    });
+    lazyBuildTail = job.catch(() => {}); // tail 은 reject 흡수(다음 build 가 멈추지 않게).
+    lazyInflight.set(pathHash, job);
+    try {
+      return await job;
+    } finally {
+      lazyInflight.delete(pathHash);
+    }
+  }
+
   const useTls = opts.certfile && opts.keyfile;
 
   // #3796/#3798 root-cause — watch handle 을 HTTP listen 전에 띄움. cold-start runBundle 제거
@@ -2052,6 +2178,31 @@ async function runServe(opts, config, { appDev = null } = {}) {
       filterCallerPreWarmCss: true,
     });
     watchBuildOpts.devMode = true;
+    // #4062 PR-B-2 — lazy on-demand 활성화. lazy 동적 청크는 (a) code splitting 으로 분리되고
+    // (b) IIFE registry(`__zntc_require`/`__zntc_load_chunk`) 로 로드되어야 한다. dev 단일파일
+    // 기본(applySingleFileDynamicImportDefault 가 splitting 미설정 시 inlineDynamicImports=true)
+    // 을 명시적으로 끄고 splitting+iife 를 강제한다. on-demand 단발 build() 템플릿도 동일 설정으로
+    // 준비(watch callback/outdir 제거 — build() 는 outdir 없으면 in-memory outputFiles 반환).
+    if (lazyMode) {
+      watchBuildOpts.splitting = true;
+      watchBuildOpts.inlineDynamicImports = false;
+      watchBuildOpts.lazyCompilation = true;
+      watchBuildOpts.format = 'iife';
+      lazyOnDemandOpts = {
+        ...watchBuildOpts,
+        splitting: true,
+        inlineDynamicImports: false,
+        lazyCompilation: true,
+        format: 'iife',
+      };
+      delete lazyOnDemandOpts.onReady;
+      delete lazyOnDemandOpts.onRebuild;
+      // outdir/outfile 둘 다 제거 → build() 가 write skip(in-memory outputFiles)해 watch 의
+      // 디스크 출력을 매 요청마다 clobber 하지 않게 한다(/code-review: outfile 누락 footgun).
+      delete lazyOnDemandOpts.outdir;
+      delete lazyOnDemandOpts.outfile;
+      delete lazyOnDemandOpts.watch;
+    }
     // issue #3858 — appDev path 에서 watchFolders 자동 = app root. 사용자가 직접
     // .css 파일을 import 없이 만들었을 때 (graph 외) 신규 file 의 add 감지를
     // native watcher (TrackedFileSet 의 dir-watch) 가 처리하도록 root_dir 등록.
@@ -2082,6 +2233,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         } else {
           hmr.clearError();
         }
+        captureLazyState(event); // #4062 — lazySeed 맵 + entry 청크 식별 (lazyMode 아니면 no-op)
         // #3796 — event.outputs (path 목록) 를 BundleResult shape 으로 변환해 injectBundleCssLinks.
         const mockResult = {
           outputFiles: (event && event.outputs ? event.outputs : []).map((p) => ({ path: p })),
@@ -2100,6 +2252,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
       // 시점 — cold-start 는 watch 1회만).
       void (async () => {
         try {
+          // #4062 PR-B-2 — rebuild 마다 lazy 청크 캐시 무효화(편집으로 seed 본문 변경 가능 →
+          // 다음 요청이 fresh build() 로 재생성). seed 맵은 유지(onRebuild 가 lazySeeds 미노출 —
+          // 신규 seed 갱신은 PR-C). entry alias 는 매 요청 readFileSync 라 자동 fresh.
+          if (lazyMode) lazyChunkCache.clear();
           // issue #3858 — native onRebuild 의 cssChanges 분기는 PR #3859 머지로
           // 도입됐으나, drain (fs.watch) 가 이미 같은 fs event 받아 rebuildAppDevCss
           // (syncDirty + afterBundle, PostCSS incremental) 로 처리. dual watch race
@@ -2154,9 +2310,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
     const serveOpts = {
       port: opts.port,
       hostname: opts.host,
-      fetch(req, server) {
+      async fetch(req, server) {
         const url = new URL(req.url);
         // /__hmr WebSocket upgrade — Bun-native API 사용 (Node 분기는 server.on('upgrade')).
+        // upgrade 는 첫 await 전에 동기 실행돼 async fetch 여도 안전.
         if (hmr && url.pathname === APP_DEV_HMR_WS_PATH) {
           if (server.upgrade(req)) return undefined;
           return new Response('Upgrade required', { status: 426 });
@@ -2166,6 +2323,18 @@ async function runServe(opts, config, { appDev = null } = {}) {
           if (url.pathname.startsWith(prefix)) {
             return fetch(target + url.pathname.slice(prefix.length) + url.search);
           }
+        }
+
+        // #4062 PR-B-2 — lazy 라우트(entry alias + on-demand 동적 청크). null = 정적 처리로.
+        const lazy = await tryServeLazy(req.url);
+        if (lazy) {
+          return new Response(lazy.body, {
+            status: lazy.status,
+            headers: {
+              'Content-Type': lazy.type,
+              'Access-Control-Allow-Origin': '*',
+            },
+          });
         }
 
         const { status, body, type } = handleRequest(req.url, req.headers.get('accept') ?? '');
@@ -2220,6 +2389,17 @@ async function runServe(opts, config, { appDev = null } = {}) {
           }
           return;
         }
+      }
+
+      // #4062 PR-B-2 — lazy 라우트(entry alias + on-demand 동적 청크). null = 정적 처리로.
+      const lazy = await tryServeLazy(req.url);
+      if (lazy) {
+        res.writeHead(lazy.status, {
+          'Content-Type': lazy.type,
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(Buffer.isBuffer(lazy.body) ? lazy.body : Buffer.from(lazy.body));
+        return;
       }
 
       const { status, body, type } = handleRequest(req.url, req.headers.accept ?? '');
