@@ -1,7 +1,9 @@
 # ZNTC - Zig Native Transpiler & Compiler
 
 Zig로 작성하는 JS/TS/Flow 트랜스파일러 + 번들러 (SWC/oxc 수준 목표).
-C NAPI 바인딩으로 Node.js/Bun에서 in-process 사용, Vite/Rollup 플러그인 어댑터 지원.
+C NAPI 바인딩으로 Node.js/Bun에서 in-process 사용.
+**설정/플러그인의 메인은 자체 `zntc.config.{ts,js,json}`** ([docs/CONFIG.md](./docs/CONFIG.md)).
+Vite/Rollup 플러그인 어댑터는 **호환/마이그레이션 목적**(기존 생태계 재사용)일 뿐, 메인 표면이 아니다.
 
 ## Tech Stack
 Zig 0.16.0 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · mise · `zig build`
