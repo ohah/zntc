@@ -214,11 +214,11 @@ pub fn emitChunks(
 
     for (sorted_indices) |ci| {
         const chunk = &chunk_graph.chunks.items[ci];
-        // 비워진 청크는 출력하지 않는다 — mergeSmallChunks 가 비운 common 청크,
-        // manualChunks 가 모듈을 흡수해 비어버린 entry 청크 모두 포함. 동일한
-        // skip 이 resolveContentHashes 에서도 반복돼야 outputs↔sorted_indices
-        // 매핑이 어긋나지 않는다 (placeholder 치환 누락 회귀 가드).
-        if (chunk.modules.items.len == 0) continue;
+        // 출력에서 제외할 청크는 단일 predicate(`chunkSkippedFromOutput`)로 판정 — emit
+        // 루프와 resolveContentHashes 가 *동일* 하게 skip 해야 outputs↔sorted_indices 매핑이
+        // 어긋나지 않는다(placeholder 치환 누락 회귀 가드). 비워진 청크(mergeSmallChunks/
+        // manualChunks 흡수) + PR-3a-ii lazy seed(미파싱, on-demand) 포함.
+        if (chunkSkippedFromOutput(chunk)) continue;
 
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
@@ -1788,7 +1788,8 @@ fn resolveContentHashes(
     for (sorted_indices) |ci| {
         if (out_idx >= outputs.len) break;
         const chunk = &chunk_graph.chunks.items[ci];
-        if (chunk.modules.items.len == 0) continue;
+        // emit 루프와 *동일* predicate(공유 헬퍼) — outputs↔sorted_indices 정렬 유지.
+        if (chunkSkippedFromOutput(chunk)) continue;
 
         buildPlaceholder(chunk, &infos[out_idx].placeholder);
         contentHash(outputs[out_idx].contents, &infos[out_idx].real_hash);
@@ -1916,6 +1917,14 @@ fn chunkRegistryId(
 /// 명시적으로 `[dir]` 토큰을 entry_names/chunk_names 에 넣었을 때만 활성화.
 /// (`chunk.rel_dir` 은 preserve-modules 의 *절대 경로+파일명+ext* misnomer 라
 /// 사용 금지 — `chunk.name_dir` 은 PR B-1 이 도입한 분리된 안전 필드.)
+/// 청크를 출력(outputs)에서 제외하는지 단일 판정. emit 루프와 resolveContentHashes 가
+/// *동일* 하게 호출해야 outputs↔sorted_indices 매핑이 어긋나지 않는다(placeholder 치환
+/// 누락 방지). 비워진 청크(mergeSmallChunks/manualChunks 흡수) + PR-3a-ii lazy seed
+/// (미파싱, on-demand 생성)를 제외.
+fn chunkSkippedFromOutput(chunk: *const Chunk) bool {
+    return chunk.modules.items.len == 0 or chunk.is_lazy_seed;
+}
+
 fn chunkPlaceholderStem(
     chunk: *const Chunk,
     out: *std.ArrayListUnmanaged(u8),
@@ -1936,6 +1945,17 @@ fn chunkPlaceholderStem(
     // static entry 만 name_dir 사용 — dynamic/manual/common 은 entry-relative
     // dir 의미 약함 + Rollup `chunkFileNames` 도 dir 토큰 미사용.
     const dir = if (is_static_entry) (chunk.name_dir orelse "") else "";
+
+    // PR-3a-ii: lazy seed 청크는 미생성(미파싱)이라 content-hash 불가 — `[hash]` 를
+    // 경로 기반 안정 hash 로 치환한다. content-hash placeholder(\x00ZH) prefix 가 없으므로
+    // resolveContentHashes 가 건드리지 않아 그대로 안정 이름이 된다. entry 의
+    // __zntc_load_chunk("<stem>-<pathhash>.js") 가 미생성 청크를 안정 이름으로 선참조.
+    if (chunk.is_lazy_seed) {
+        var path_hash: [HASH_PLACEHOLDER_LEN]u8 = undefined;
+        _ = std.fmt.bufPrint(&path_hash, "{x:0>8}", .{@as(u32, @truncate(chunk.lazy_path_hash))}) catch unreachable;
+        try applyNamingPatternWithDir(out, allocator, pattern, base_name, &path_hash, dir);
+        return;
+    }
 
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);

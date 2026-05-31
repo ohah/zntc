@@ -179,8 +179,12 @@ MVP(parse eager)는 "시작 시 전체 그래프를 알므로 cross-chunk 심볼
     parse 회피), `build_flow.materializeLazySeeds` 가 BFS 종료 후 일괄 등록 — static 도달이면 그
     파싱 모듈에 link, 아니면 미파싱 seed(`Module.is_lazy_seed`, state=.ready, ast=null). 동적 청크는
     seed 본문 없이 emit(stub). **`lazy_compilation=false` = byte-identical 회귀 0**(전 코드경로 게이트).
-  - **PR-3a-ii**: 미파싱 seed 청크 emit-skip + **경로기반 안정 청크 이름**(content-hash 는 청크를
-    만들어야 계산되므로 미생성 동적 청크 참조와 모순). entry 가 미생성 청크를 안정 이름으로 선참조.
+  - **PR-3a-ii DONE**: 미파싱 seed 청크 emit-skip + **경로기반 안정 청크 이름**(content-hash 는
+    청크를 만들어야 계산되므로 미생성 동적 청크 참조와 모순). `Chunk.is_lazy_seed`+`lazy_path_hash`
+    (=Wyhash(entry path)), `chunkPlaceholderStem` 이 lazy seed 면 `[hash]`를 경로 hash 로 치환
+    (`\x00ZH` placeholder 없음 → resolveContentHashes 무시 → 안정). emit 루프+resolveContentHashes
+    공유 predicate(`chunkSkippedFromOutput`)로 skip. entry 는 `heavy-<pathhash>.js` 로 선참조 —
+    본문이 바뀌어도 이름 불변(테스트 가드) → PR-3b 가 on-demand 빌드해도 이름 일치.
 - **PR-3b — dev 서버 lazy 라우트**: 청크 첫 GET 시 seed 부터 parse→emit. `LazyChunkCache`. 세션
   Linker 생존 배선. 단방향 cross-chunk 조회(§2.1).
 - **PR-4 — watch/HMR + 재귀 lazy**: 활성/미활성 청크 분기. 동적 청크 parse 중 발견한 새 `import()` 를

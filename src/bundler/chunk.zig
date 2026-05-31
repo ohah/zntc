@@ -200,6 +200,14 @@ pub const Chunk = struct {
     /// non-null 이면 naming pattern([name]-[hash]) / content-hash placeholder / 확장자 append 를
     /// 모두 우회해 이 문자열을 그대로 출력 파일명·import 경로로 쓴다. emit_store 소유 — 빌림(미해제).
     explicit_file_name: ?[]const u8 = null,
+    /// PR-3a-ii (lazy compilation): 이 청크의 entry 모듈이 미파싱 lazy seed 다
+    /// (`Module.is_lazy_seed`). 미생성(미파싱)이라 emit 에서 skip 되고, 파일명은
+    /// content-hash 가 아닌 `lazy_path_hash`(경로 기반) 로 안정화 — entry 가 아직
+    /// 안 만든 청크를 안정 이름으로 선참조할 수 있게 한다.
+    is_lazy_seed: bool = false,
+    /// lazy seed 청크의 경로 기반 안정 hash (entry 모듈 path 의 Wyhash). content-hash
+    /// 와 달리 청크 본문이 없어도 결정되며, PR-3b 가 on-demand 빌드 시 같은 이름 재현.
+    lazy_path_hash: u64 = 0,
     /// 실행 순서 (exec_index 기준 정렬에 사용)
     exec_order: u32,
     /// preserve-modules: 원본 모듈의 절대 경로 (출력 디렉토리 구조 결정용).
@@ -800,6 +808,12 @@ pub fn generateChunks(
         } }, bits);
         chunk.name = name;
         chunk.explicit_file_name = explicit_file_name;
+        // PR-3a-ii: entry 모듈이 미파싱 lazy seed 면 청크도 lazy — emit-skip + 경로기반
+        // 안정 이름. lazy_path_hash 는 entry path 의 Wyhash(content 무관, PR-3b 재현 가능).
+        if (entry_mod.is_lazy_seed) {
+            chunk.is_lazy_seed = true;
+            chunk.lazy_path_hash = std.hash.Wyhash.hash(0, entry_mod.path);
+        }
 
         // PR B-1: [dir] 토큰 치환용 raw dir. PR B-4b sub-1b: dirname(entry path)
         // 를 *graph.entry_dir 기준 relative* 로 변환해 사용자 머신 절대경로
