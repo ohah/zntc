@@ -131,6 +131,14 @@ pub const DevServer = struct {
     /// **#4063**: 예전엔 detach 라 deinit 이 frees 후에도 watchLoop 가 살아 self.* 를 건드려
     /// UAF(segfault 0xF0). 이제 핸들을 보관해 shutdown 신호 후 join → 모든 자원 해제 전에 종료 보장.
     watch_thread: ?std.Thread = null,
+    /// **#4066**: 활성 connection 의 socket fd 레지스트리. `shutdown()` 이 이들을 SHUT_RDWR 해
+    /// keep-alive 로 blocking read 중인 `handleConnection` 을 깨운다 — 안 그러면 listen close/
+    /// self-connect 가 accept 만 깨우고 수립된 connection 은 2s deinit timeout 너머 잔존 → freed
+    /// 자원 접근 UAF. register/deregister 는 `handleConnection` 이 `mutex` 안에서 수행.
+    conn_registry: struct {
+        mutex: spin.SpinLock = .{},
+        streams: std.ArrayListUnmanaged(std.Io.net.Stream) = .empty,
+    } = .{},
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     base_path: []const u8 = "/",
@@ -422,9 +430,13 @@ pub const DevServer = struct {
         const DEINIT_TIMEOUT_MS: i128 = 2000;
         const start_ns: i128 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
         const deadline_ns: i128 = start_ns + DEINIT_TIMEOUT_MS * std.time.ns_per_ms;
+        var clean = false; // #4066: 좀비 connection 없이 깔끔히 종료됐는지
         while (true) {
             const count = self.active_connections.load(.acquire);
-            if (count == 0) break;
+            if (count == 0) {
+                clean = true;
+                break;
+            }
             const now_ns: i128 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
             if (now_ns >= deadline_ns) {
                 // 같은 load 결과 (count) 를 log — re-load 시 사이에 0 으로 떨어졌으면
@@ -449,6 +461,10 @@ pub const DevServer = struct {
         if (self.tls_ctx) |*c| c.deinit();
         self.root_dir.close(self.io);
         self.error_state.deinit(self.io, self.allocator);
+        // #4066: clean(count==0, 모든 connection deregister 완료) 일 때만 레지스트리 free.
+        // timeout 잔존 thread 가 deregister 로 freed 리스트 접근하는 것 차단 — leak 은 비정상
+        // 경로(2s 안에 connection 미종료) 한정 + 미미(fd 몇 개분 capacity).
+        if (clean) self.conn_registry.streams.deinit(self.allocator);
     }
 
     /// dev overlay client raw template 의 `__ZNTC_HMR_*__` sentinel 들을
@@ -706,6 +722,42 @@ pub const DevServer = struct {
             const stream = addr.connect(self.io, .{ .mode = .stream }) catch return;
             stream.close(self.io);
         }
+
+        // #4066: 기존 keep-alive connection 의 blocking read 를 깨운다. listen close/self-connect
+        // 는 accept 만 깨우고 이미 수립된 connection 은 못 깨운다. socket 을 SHUT_RDWR 하면 그 fd
+        // 의 blocked read(receiveHead/ws/SSE)가 즉시 EOF/err 반환 → handleConnection 종료 →
+        // deinit 의 active_connections wait 가 빠르게 통과(좀비 thread UAF 차단). close 가 아닌
+        // shutdown 이라 fd reuse race 없음. mutex 안에서 수행해 owner 의 deregister+close 와
+        // 직렬화(shutdown 이 mutex 보유 중엔 owner 가 그 fd 를 deregister·close 못 함).
+        // 락을 syscall 들에 걸쳐 보유하지만 dev 서버 connection 수는 소규모(탭 몇 개)라 수용 —
+        // 스냅샷 후 락 밖 shutdown 은 fd reuse race 를 되살리므로 일부러 안 함.
+        self.conn_registry.mutex.lock();
+        defer self.conn_registry.mutex.unlock();
+        for (self.conn_registry.streams.items) |s| {
+            s.shutdown(self.io, .both) catch {};
+        }
+    }
+
+    /// #4066: 활성 connection 등록(handleConnection 진입). best-effort — append 실패해도
+    /// 2s deinit timeout 이 폴백. caller 가 mutex 미보유.
+    fn registerConn(self: *DevServer, stream: std.Io.net.Stream) void {
+        self.conn_registry.mutex.lock();
+        defer self.conn_registry.mutex.unlock();
+        self.conn_registry.streams.append(self.allocator, stream) catch |err|
+            self.routineLog("zntc: connection 등록 실패({}) — shutdown 시 못 깨워 2s timeout 폴백\n", .{err});
+    }
+
+    /// #4066: connection 등록 해제(handleConnection 종료, stream.close 보다 먼저 실행). socket
+    /// handle 로 매칭 — 같은 fd 의 등록분 제거.
+    fn deregisterConn(self: *DevServer, stream: std.Io.net.Stream) void {
+        self.conn_registry.mutex.lock();
+        defer self.conn_registry.mutex.unlock();
+        for (self.conn_registry.streams.items, 0..) |s, i| {
+            if (s.socket.handle == stream.socket.handle) {
+                _ = self.conn_registry.streams.swapRemove(i);
+                break;
+            }
+        }
     }
 
     fn handleConnection(self: *DevServer, stream: std.Io.net.Stream) void {
@@ -713,6 +765,12 @@ pub const DevServer = struct {
         // window 회피). 여기선 defer 로 fetchSub 만 — handleConnection 종료 시 한 번.
         defer _ = self.active_connections.fetchSub(1, .acq_rel);
         defer stream.close(self.io);
+
+        // #4066: shutdown() 이 깨울 수 있도록 fd 등록. deregister 는 defer 역순(뒤에 선언 →
+        // 먼저 실행)으로 stream.close *보다 먼저* 실행되어, shutdown 이 SHUT_RDWR 하는 fd 가
+        // 아직 열려있음을 보장(닫힌/재사용 fd 오접근 방지).
+        self.registerConn(stream);
+        defer self.deregisterConn(stream);
 
         var send_buf: [8192]u8 = undefined;
         // recv_buf: 32KB stack alloc — typical HTTP request header + body 가 다 fit.
@@ -1253,9 +1311,17 @@ pub const DevServer = struct {
         defer self.sse_clients.remove(self.io, &sink);
 
         // keep-alive: 30초마다 주석 전송. broadcast와 race 방지를 위해 sink mutex 사용.
-        while (true) {
-            // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
-            self.io.sleep(std.Io.Duration.fromSeconds(30), .awake) catch {};
+        // #4066: SSE 는 socket read 가 아니라 io.sleep 으로 대기 → shutdown(.both) 가 안 깨운다.
+        // 30s 를 짧게(500ms) 쪼개 sleep 중에도 shutdown_requested 를 폴링 → shutdown 후 ≤500ms
+        // 에 종료(안 그러면 connection thread 가 최대 30s 잔존 → 2s deinit timeout 너머 UAF).
+        while (!self.shutdown_requested.load(.acquire)) {
+            var slept_ms: u64 = 0;
+            while (slept_ms < 30_000) {
+                if (self.shutdown_requested.load(.acquire)) return;
+                // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
+                self.io.sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
+                slept_ms += 500;
+            }
             self.sse_clients.mutex.lockUncancelable(self.io);
             const ok = blk: {
                 response.writer.writeAll(": keep-alive\n\n") catch break :blk false;
