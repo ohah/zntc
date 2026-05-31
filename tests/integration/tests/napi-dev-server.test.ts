@@ -214,3 +214,75 @@ describe('NAPI startDevServer / stopDevServer', () => {
   //   - stopped atomic flag 가 명시 stop 과 finalizer 의 race 차단.
   // production 사용자에게는 명시 stopDevServer 권장 — finalize 는 GC safety net.
 });
+
+// #4063 회귀 + PR-5 통합: entry 모드(번들링 + watch thread) start→fetch→stop 이 좀비 watch
+// thread 로 인한 teardown segfault 없이 완료되는지 + lazyCompilation 옵션이 lazy 모드를
+// 켜는지 동시 검증. 예전엔 watch thread 가 detach 라 deinit frees 후에도 살아 self.* UAF
+// (segfault 0xF0) → 본 describe 가 멀티-사이클로 그 경로를 밟는다(크래시 시 rc=139).
+describe('NAPI startDevServer — entry 모드 teardown(#4063) + lazyCompilation(PR-5)', () => {
+  let lazyRoot: string;
+  let entryAbs: string;
+
+  beforeAll(() => {
+    lazyRoot = mkdtempSync(join(tmpdir(), 'zntc-lazy-opt-'));
+    writeFileSync(join(lazyRoot, 'heavy.ts'), "export const h = 'HEAVY_LAZY_MARKER';\n");
+    writeFileSync(
+      join(lazyRoot, 'entry.ts'),
+      "async function go(){ const m = await import('./heavy'); console.log(m.h); }\ngo();\n",
+    );
+    writeFileSync(join(lazyRoot, 'index.html'), '<script type="module" src="/bundle.js"></script>');
+    entryAbs = join(lazyRoot, 'entry.ts');
+  });
+
+  afterAll(() => {
+    if (lazyRoot) rmSync(lazyRoot, { recursive: true, force: true });
+  });
+
+  async function fetchBundle(opts: Record<string, unknown>): Promise<string> {
+    const handle = native.startDevServer({
+      rootDir: lazyRoot,
+      port: 0,
+      host: '127.0.0.1',
+      entry: entryAbs,
+      quiet: true,
+      ...opts,
+    });
+    try {
+      const port = native.getDevServerPort(handle);
+      await waitUntilReady(`http://127.0.0.1:${port}/bundle.js`);
+      const res = await fetch(`http://127.0.0.1:${port}/bundle.js`, {
+        headers: { Connection: 'close' },
+      });
+      expect(res.status).toBe(200);
+      return await res.text();
+    } finally {
+      native.stopDevServer(handle);
+      // watch thread join 이 끝났는지(좀비 부재) 확인할 시간 — 예전이면 이 창에서 crash.
+      await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+
+  test('lazyCompilation:true → 동적 청크 지연(__zntc_load_chunk), heavy 본문 미포함', async () => {
+    const lazy = await fetchBundle({ lazyCompilation: true });
+    expect(lazy).toContain('__zntc_load_chunk(');
+    expect(lazy).toContain('__zntc_register');
+    expect(lazy).not.toContain('HEAVY_LAZY_MARKER'); // 미파싱 seed → 본문 없음
+  });
+
+  test('lazyCompilation 미지정(기본 false) → 단일 번들에 heavy 인라인', async () => {
+    const eager = await fetchBundle({});
+    expect(eager).toContain('HEAVY_LAZY_MARKER'); // 인라인(지연 안 함)
+  });
+
+  test('entry 모드 반복 start/stop — 좀비 watch thread teardown segfault 없음(#4063)', async () => {
+    // 여러 사이클 — 예전엔 detach 된 watch thread 가 다음 사이클/대기 중 freed 메모리 접근으로 crash
+    // (rc=139). 크래시 없이 3 사이클을 돌고 **이후에도 네이티브 모듈이 정상 동작**하면(아래 마지막
+    // 빌드가 유효 번들 반환) 좀비 thread 가 모듈 상태를 오염시키지 않았다는 신호.
+    let last = '';
+    for (let i = 0; i < 3; i++) {
+      last = await fetchBundle({ lazyCompilation: i % 2 === 0 });
+    }
+    // 마지막 사이클은 lazyCompilation:true(i=2) → lazy 마커가 있어야 함 = 모듈 여전히 기능적.
+    expect(last).toContain('__zntc_load_chunk(');
+  });
+});
