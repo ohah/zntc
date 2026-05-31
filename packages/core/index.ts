@@ -1360,6 +1360,17 @@ export interface WatchReadyEvent {
    * 는 메모리 비용이 커 path 만 노출 — caller 가 fs read 또는 path 기반 분기.
    */
   outputs?: string[];
+  /**
+   * D105 PR-B-1 — lazy 빌드(`lazyCompilation: true`)일 때만. 미파싱 lazy seed 들의
+   * `{ pathHash, path }` (build 결과 {@link NativeBuildResult.lazySeeds} 와 동일 shape).
+   * dev 서버가 watch(lazy)로 HMR 을 유지하며 on-demand lazy 라우팅을 구현하기 위한 **토대 데이터**
+   * — 요청 청크 URL `<stem>-<pathHash>.js` 의 해시로 seed 경로를 역참조해 on-demand 컴파일
+   * (`build({ lazyForceParse: [path] })`)할 수 있다.
+   *
+   * **범위**: *initial* 빌드(onReady)에서만 노출. rebuild(HMR)에서 동적 import 추가/삭제로
+   * seed 집합이 바뀌는 경우의 갱신 전략(델타 vs full-reload)은 PR-B-2(dev 서버 연동)에서 정한다.
+   */
+  lazySeeds?: Array<{ pathHash: string; path: string }>;
 }
 
 export interface WatchRebuildEvent {

@@ -270,6 +270,44 @@ fn copyBytesOrEmpty(alloc: std.mem.Allocator, data_ptr: ?*anyopaque, byte_len: u
     return out;
 }
 
+/// D105: lazy seed 경로 목록 → JS `[{ pathHash, path }]` 배열을 만들어 반환한다.
+/// `pathHash` = `truncate(u32, Wyhash(0, path))` 8-hex — chunk.zig `lazy_path_hash` /
+/// chunks.zig `chunkPlaceholderStem` 과 동일 공식이라, dev 서버가 요청 청크 URL
+/// (`<stem>-<pathHash>.js`)의 hash 로 seed 를 역참조(JS 에서 Wyhash 재구현 없이)한다.
+/// 같은 path 중복은 제거(graph.lazy_seeds 가 중복 보유 가능). **build()/watch() 결과 빌더
+/// 공용** — Wyhash 공식을 한 곳에만 둬 두 경로 간 drift 차단.
+pub fn buildLazySeedsJs(env: c.napi_env, paths: []const []const u8) c.napi_value {
+    var js_seeds: c.napi_value = undefined;
+    _ = c.napi_create_array(env, &js_seeds);
+    var out_idx: u32 = 0;
+    for (paths, 0..) |path, i| {
+        var dup = false;
+        for (paths[0..i]) |prev| if (std.mem.eql(u8, prev, path)) {
+            dup = true;
+            break;
+        };
+        if (dup) continue;
+
+        var js_seed: c.napi_value = undefined;
+        _ = c.napi_create_object(env, &js_seed);
+
+        var hash_buf: [8]u8 = undefined;
+        const h: u32 = @truncate(std.hash.Wyhash.hash(0, path));
+        _ = std.fmt.bufPrint(&hash_buf, "{x:0>8}", .{h}) catch unreachable;
+        var js_hash: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, &hash_buf, hash_buf.len, &js_hash);
+        _ = c.napi_set_named_property(env, js_seed, "pathHash", js_hash);
+
+        var js_path: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, path.ptr, path.len, &js_path);
+        _ = c.napi_set_named_property(env, js_seed, "path", js_path);
+
+        _ = c.napi_set_element(env, js_seeds, out_idx, js_seed);
+        out_idx += 1;
+    }
+    return js_seeds;
+}
+
 /// `alloc(T, len)` 후 일부 element 만 채운 채 `result[0..count]` 를 반환하면
 /// caller 가 그대로 free 시 alloc-size(`len`) vs free-size(`count`) mismatch
 /// (`getStringArg` 와 동일 root cause). 정확히 `count` 길이로 줄여 반환한다.

@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
 import { createFixture, byContent } from './helpers';
-import { init, close, build } from '../../../packages/core/index';
+import { init, close, build, watch } from '../../../packages/core/index';
 
 // D105 PR-A: NAPI build API 에 lazy on-demand 프리미티브 노출.
 // `lazyCompilation` → 동적 import 타겟을 미파싱 seed 로 두고 `lazySeeds: [{pathHash, path}]`
@@ -102,5 +102,42 @@ describe('NAPI lazy compilation primitives (D105 PR-A)', () => {
     expect(r.errors ?? []).toHaveLength(0);
     expect(r.lazySeeds ?? []).toHaveLength(1); // 두 import 가 같은 seed → 1개로 dedup
     expect(r.lazySeeds![0].path.endsWith('heavy.ts')).toBe(true);
+  });
+
+  // PR-B-1: watch() 의 onReady 이벤트도 lazySeeds 를 노출(build 결과와 동일 shape/공식,
+  // common.buildLazySeedsJs 공용). dev 서버가 watch(lazy)로 HMR 유지하며 on-demand 라우팅하는 토대.
+  test('watch() onReady 가 lazySeeds 노출 (HMR 경로용)', async () => {
+    const fixture = await createFixture({
+      'heavy.ts': `export const h = 'HEAVY_PRB';`,
+      'entry.ts': `async function go(){ const m = await import('./heavy'); console.log(m.h); }\ngo();`,
+    });
+    cleanup = fixture.cleanup;
+
+    let handle: ReturnType<typeof watch> | undefined;
+    const ready = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('onReady timeout')), 8000);
+      handle = watch({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        platform: 'browser',
+        devMode: true,
+        splitting: true,
+        lazyCompilation: true,
+        format: 'iife',
+        outdir: join(fixture.dir, 'out'),
+        onReady: (e: any) => {
+          clearTimeout(t);
+          resolve(e);
+        },
+      });
+    });
+    try {
+      const e = await ready;
+      expect(e.lazySeeds).toBeDefined();
+      expect(e.lazySeeds.length).toBe(1);
+      expect(e.lazySeeds[0].pathHash).toMatch(/^[0-9a-f]{8}$/);
+      expect(e.lazySeeds[0].path.endsWith('heavy.ts')).toBe(true);
+    } finally {
+      handle?.stop();
+    }
   });
 });
