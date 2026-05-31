@@ -225,8 +225,17 @@ MVP(parse eager)는 "시작 시 전체 그래프를 알므로 cross-chunk 심볼
       수용; restrict 는 index 선결 필요라 path-restrict 가 필요 → 최적화 후속). ② lazy 청크 소스맵
       라우트 없음(PR-4). ③ seed_paths 비었을 때(첫 GET 전 직접 청크 URL) → static fallback 404.
       ④ aliased export(`export {a as b}`)/re-export 는 export-all 한계(PR-3b-ii)와 동일.
-- **PR-4 — watch/HMR + 재귀 lazy**: 활성/미활성 청크 분기. 동적 청크 parse 중 발견한 새 `import()` 를
-  seed 로 추가. 그래프 구조 변경 시 entry 청크 재계산.
+- **PR-4 DONE — watch/HMR + 재귀 lazy** (i/ii/iii 분할):
+  - **PR-4-i (watch 무효화)**: 파일 변경(코드 변경) 시 lazy 청크 캐시 전체 무효화 → stale 방지.
+    watch 빌드가 eager 라 동적 import 타겟도 watch 대상(편집 감지)임을 테스트로 증명.
+  - **PR-4-ii (재귀 lazy)**: force-parse 한 seed 의 중첩 `import()` 가 새 lazy seed 로 노출 →
+    `addSeedPaths`(union+dedup)로 누적 → 중첩 청크도 역참조. 풀체인 루프 클로저로 검증.
+  - **PR-4-iii (그래프 변경 entry 재계산 + TOCTOU 가드)**: 그래프 변경은 아키텍처가 이미 정합 —
+    `serveBundleLazy` 가 `/bundle.js` GET 마다 fresh 빌드 + `setSeedPaths`(replace), watch
+    `graph_changed`→full-reload→재GET(브라우저가 reload 수신·실행 시). 동적 import 타겟 교체 시
+    seed 집합 재산출 + 누적 stale nested 폐기를 회귀 테스트로 고정. **추가 수정**: on-demand 빌드가
+    락 밖에서 진행되는 동안 watch 무효화가 끼면 stale 바이트로 빈 캐시를 재오염하던 TOCTOU 버그를
+    `epoch` 세대 가드로 차단(빌드 전 epoch 캡처 → 변했으면 캐시 저장 skip).
 - **PR-5 — 검증/벤치 + `--lazy` 노출**: cold-start 벤치(§1.3 harness 확장), 로드맵 "미구현" 제거,
   CLI `--lazy`/JS 옵션 공개.
 
