@@ -172,4 +172,45 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
     expect(ok).toBe(true); // 캐시 무효화 + seed 맵 갱신 → 편집된 본문이 on-demand 로 반영
     expect(await heavyBodyVisible('HEAVY_V1')).toBe(false); // 옛 본문은 사라짐
   }, 30000);
+
+  // 정밀(per-seed) 캐시 무효화: 동적 import 와 무관한 파일을 편집해 rebuild 가 나도, 그 lazy
+  // 청크는 캐시에서 보존돼(변경 파일 ∩ 청크 moduleIds = ∅) 정상 서빙된다. 매 rebuild 전체 clear
+  // 하던 동작은 무관한 편집에도 멀쩡한 청크를 버려 다음 요청이 cold build()(~수초)를 돌게 했다.
+  test('--lazy → 무관한 파일 편집 rebuild 후에도 lazy 청크가 보존·정상 서빙', async () => {
+    const fixture = await createFixture({
+      'index.html': `<!doctype html><html><head><meta charset="utf-8"/><title>P</title></head><body><div id="root"></div><script type="module" src="/src/main.ts"></script></body></html>`,
+      'src/main.ts':
+        `import { s } from './sidecar';\n` +
+        `async function go(){ const m = await import('./heavy'); document.getElementById('root')!.textContent = m.h + s; }\ngo();`,
+      'src/sidecar.ts': `export const s = 'SIDE_A';`,
+      'src/heavy.ts': `export const h = 'HEAVY_KEEP';`,
+    });
+    cleanup = fixture.cleanup;
+
+    const port = 5510 + Math.floor(Math.random() * 40);
+    proc = Bun.spawn({
+      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port), '--lazy'],
+      env: { ...process.env, ZNTC_LAZY: '' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    await waitForServer(port);
+
+    const entry = await (await fetch(`http://localhost:${port}/bundle.js`)).text();
+    const chunkUrl = entry.match(/__zntc_load_chunk\("([^"]+)"\)/)![1];
+    // heavy 청크를 한 번 요청 → 캐시에 적재(moduleIds 기억).
+    expect(await (await fetch(`http://localhost:${port}/${chunkUrl}`)).text()).toContain(
+      'HEAVY_KEEP',
+    );
+
+    // heavy 와 무관한 sidecar.ts 편집 → rebuild. heavy 청크의 moduleIds 에 sidecar 가 없어
+    // 캐시 보존돼야 한다.
+    writeFileSync(join(fixture.dir, 'src/sidecar.ts'), `export const s = 'SIDE_B';`);
+    await new Promise((r) => setTimeout(r, 2500)); // rebuild flush
+
+    // 보존된 heavy 청크가 여전히 올바른 본문을 서빙(무관한 편집이 망가뜨리지 않음).
+    const after = await (await fetch(`http://localhost:${port}/${chunkUrl}`)).text();
+    expect(after).toContain('HEAVY_KEEP');
+    expect(after).not.toContain('SIDE_'); // heavy 청크엔 sidecar 가 섞이지 않음
+  }, 30000);
 });

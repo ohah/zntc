@@ -2075,9 +2075,29 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // (clear 하면 다음 요청이 또 실패할 빌드를 돌려 last-good 청크를 잃는다). onReady event 는
     // success 필드가 없어(undefined) 통과한다.
     if (!lazyMode || !event || event.success === false) return;
-    // 캐시는 매 성공 rebuild 마다 무효화(편집으로 seed 본문 변경 가능) + epoch 증가
-    // (진행 중 on-demand build 가 이 무효화를 넘겨 stale 바이트를 재캐시하지 못하게).
-    lazyChunkCache.clear();
+    // 정밀 캐시 무효화(#4062 후속) — 매 rebuild 전체 clear 하면 무관한 편집에도 멀쩡한 lazy
+    // 청크가 버려져 다음 요청이 cold build()(store 없는 단발이라 ~수초)를 돈다. 대신 변경 파일
+    // (event.changed, 절대경로)이 *닿은* 청크만 버린다 — 캐시 항목의 moduleIds(청크 내 모듈
+    // 절대경로)와 교집합이 있을 때만. graph 모양이 바뀐 rebuild(graphChanged=모듈 추가/제거)는
+    // moduleIds 가 stale 일 수 있어(신규 파일이 옛 moduleIds 에 없음) 전체 clear 로 fallback.
+    // changed 가 없으면(onReady 등) 보수적으로 전체 clear.
+    const changedAbs =
+      Array.isArray(event.changed) && event.changed.length > 0
+        ? new Set(event.changed.map((p) => resolve(p)))
+        : null;
+    if (event.graphChanged || !changedAbs) {
+      lazyChunkCache.clear();
+    } else {
+      for (const [hash, entry] of lazyChunkCache) {
+        const ids = entry.moduleIds;
+        // moduleIds 미보유(방어) 또는 변경 파일과 교집합 → 버림.
+        if (!Array.isArray(ids) || ids.some((id) => changedAbs.has(resolve(id)))) {
+          lazyChunkCache.delete(hash);
+        }
+      }
+    }
+    // epoch 증가는 항상 — 진행 중 on-demand build 가 이 무효화를 넘겨 stale 바이트를 재캐시하지
+    // 못하게(in-flight race backstop). 정밀 delete 와 직교(어떤 항목을 버리든 race 가드는 유지).
     lazyEpoch++;
     // seed 맵은 event.lazySeeds 가 *실제로 올 때만* 교체한다. 일반 편집(동적 import 를 가진
     // 모듈이 cache-hit)은 native 가 graph.lazy_seeds 를 다시 안 쌓아 lazySeeds 가 undefined 로
@@ -2170,6 +2190,9 @@ async function runServe(opts, config, { appDev = null } = {}) {
           status: 200,
           body: chunk.contents,
           type: 'application/javascript',
+          // 정밀 무효화용 — 이 청크에 들어간 모듈 절대경로 집합. rebuild 시 event.changed 와
+          // 교집합이 있을 때만 이 항목을 버린다(무관한 편집엔 보존 → cold 재빌드 회피).
+          moduleIds: Array.isArray(chunk.moduleIds) ? chunk.moduleIds : [],
         };
         // 빌드 도중 rebuild 가 끼지 않았을 때만 캐시(epoch 불변). 끼었으면 이 결과는 옛 소스
         // 기반이라 캐시하지 않고(다음 요청이 fresh 재빌드) 이번 응답으로만 반환.
