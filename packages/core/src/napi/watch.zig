@@ -240,9 +240,17 @@ const WatchReadyEvent = struct {
     /// `success` 는 watch lifecycle 자체에 보존, errors 는 별도 노출. consumer (runServe) 가
     /// reportError 호출.
     errors: ?[]const WatchRebuildEvent.ErrorEntry = null,
+    /// D105 PR-B-1: lazy 빌드의 미파싱 seed 절대경로 목록(`result.lazy_seed_paths` 사본).
+    /// onReady 이벤트가 `lazySeeds: [{pathHash, path}]` 로 노출 → JS dev 서버 lazy 라우팅의 토대.
+    /// null/빈 = lazy 아님. (rebuild 시 seed 변경 갱신은 PR-B-2 범위 — onReady 만 노출.)
+    lazy_seeds: ?[]const []const u8 = null,
 
     fn deinit(self: *WatchReadyEvent, allocator: std.mem.Allocator) void {
         if (self.outputs) |paths| {
+            for (paths) |p| allocator.free(p);
+            allocator.free(paths);
+        }
+        if (self.lazy_seeds) |paths| {
             for (paths) |p| allocator.free(p);
             allocator.free(paths);
         }
@@ -415,6 +423,13 @@ fn watchReadyTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data: 
             _ = c.napi_set_element(env, js_outputs, @intCast(idx), js_str);
         }
         _ = c.napi_set_named_property(env, js_event, "outputs", js_outputs);
+    }
+
+    // D105 PR-B-1: lazySeeds: Array<{pathHash, path}> — lazy 빌드일 때만. build() 결과와
+    // 동일 빌더(common.buildLazySeedsJs)라 pathHash 공식 단일 소스.
+    if (event.lazy_seeds) |paths| {
+        const js_seeds = common.buildLazySeedsJs(env, paths);
+        _ = c.napi_set_named_property(env, js_event, "lazySeeds", js_seeds);
     }
 
     // #3799 root-cause — errors: Array<{file, message}> (initial diagnostics 의 error 목록).
@@ -1049,10 +1064,30 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 }
             }
         }
+        // D105 PR-B-1: lazy seed 경로 사본 (outputs_copy 와 동일 패턴 — partial alloc 실패 시 정리).
+        var lazy_seeds_copy: ?[]const []const u8 = null;
+        if (result.lazy_seed_paths) |lsp| {
+            const arr = allocator.alloc([]const u8, lsp.len) catch null;
+            if (arr) |paths| {
+                var fill: usize = 0;
+                for (lsp) |p| {
+                    const dup = allocator.dupe(u8, p) catch break;
+                    paths[fill] = dup;
+                    fill += 1;
+                }
+                if (fill == lsp.len) {
+                    lazy_seeds_copy = paths;
+                } else {
+                    for (paths[0..fill]) |p| allocator.free(p);
+                    allocator.free(paths);
+                }
+            }
+        }
         ready_event.* = .{
             .files = initial_watch_count,
             .bytes = initial_bytes,
             .outputs = outputs_copy,
+            .lazy_seeds = lazy_seeds_copy,
             // #3799 root-cause — initial build 의 diagnostics 에 error 가 있으면 별도 노출.
             // success/lifecycle 영향 없음, consumer (runServe onReady) 가 reportError 처리.
             .errors = if (result.hasErrors()) collectErrorsFromResult(allocator, &result) else null,
