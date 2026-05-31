@@ -222,6 +222,20 @@ pub fn emitChunks(
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
 
+        // dev+split per-module HMR code (RFC_LAZY_DEV_MODULE_HMR PR-1):
+        // dev_mode and collect_module_codes 일 때 이 청크 내 각 모듈의 wrap 된 HMR code 를
+        // 모은다. 성공 시 OutputFile.module_dev_codes 로 소유권 이전(toOwnedSlice). 그 전까지
+        // errdefer 가 부분 수집분을 해제. 비-dev 면 빈 채로 남아 append 시 null.
+        const collect_dev_codes = options.dev_mode and options.collect_module_codes;
+        var chunk_dev_codes: std.ArrayList(types.ModuleDevCode) = .empty;
+        // 단일 errdefer 블록 — freeItems(항목 메모리) 후 deinit(백킹 slice) 순서.
+        // 두 개의 errdefer 로 나누면 LIFO 실행으로 deinit 가 백킹을 먼저 해제한 뒤
+        // freeItems 가 해제된 배열을 순회 → use-after-free.
+        errdefer {
+            types.ModuleDevCode.freeItems(chunk_dev_codes.items, allocator);
+            chunk_dev_codes.deinit(allocator);
+        }
+
         // chunk 별 sourcemap builder. eager 경로는 stack alloc 으로 zero-overhead.
         // lazy 경로는 chunk 끝에서 heap 으로 이관되어 OutputFile.sourcemap_builder
         // 로 caller 에 전달 — 그때는 본 함수의 defer 가 deinit 을 skip 한다.
@@ -694,6 +708,20 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, "//#endregion\n");
                 if (module_line) |*ml| ml.* += 1;
             }
+
+            // dev+split per-module HMR code 수집 (RFC_LAZY_DEV_MODULE_HMR PR-1).
+            // 단일 번들(emitter.zig)과 *동일* 형식(wrapDevModuleCode)으로 모은다 — HMR
+            // client 가 두 경로 산출을 구분 없이 eval. concat 용 region marker 는 제외하고
+            // rewriteDynamicImports 거친 `code` 를 wrap. PR-1 은 수집(인프라)만 — 글로벌
+            // 레지스트리 부트스트랩/클라이언트 적용은 후속 PR. sourcemap 은 후속(PR 범위 축소).
+            if (collect_dev_codes) {
+                const mod_id = parent.makeModuleId(m.path, options.root_dir);
+                const hmr_code = try parent.wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable);
+                errdefer allocator.free(hmr_code);
+                const id_dup = try allocator.dupe(u8, mod_id);
+                errdefer allocator.free(id_dup);
+                try chunk_dev_codes.append(allocator, .{ .id = id_dup, .code = hmr_code });
+            }
         }
         if (emit_top_level_rbm and !rbm_calls_emitted) {
             const before_len = chunk_output.items.len;
@@ -1090,12 +1118,18 @@ pub fn emitChunks(
             }, null);
         }
 
+        const dev_codes_slice: ?[]const types.ModuleDevCode = if (collect_dev_codes and chunk_dev_codes.items.len > 0)
+            try chunk_dev_codes.toOwnedSlice(allocator)
+        else
+            null;
+
         try outputs.append(allocator, .{
             .path = filename,
             .contents = try chunk_output.toOwnedSlice(allocator),
             .module_ids = module_ids,
             .exports = export_names,
             .sourcemap_builder = chunk_sourcemap_builder,
+            .module_dev_codes = dev_codes_slice,
         });
     }
 
