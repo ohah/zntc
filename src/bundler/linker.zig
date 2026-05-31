@@ -24,6 +24,7 @@ const Span = @import("../lexer/token.zig").Span;
 const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
 const bundler_symbol = @import("symbol.zig");
+const unified_mangler = @import("../codegen/unified_mangler.zig");
 const profile = @import("../profile.zig");
 const debug_log = @import("../debug_log.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
@@ -950,18 +951,21 @@ pub const Linker = struct {
         for (0..mod_count) |mi| {
             const m = self.getModule(@intCast(mi)).?;
             const sem_opt = m.semantic;
-            const sym_count = if (sem_opt) |s| s.symbols.items.len else 0;
+
+            // #4045 per-chunk mangle: 이 청크에 속하지 않은 모듈은 candidate / Phase B
+            // 양쪽 제외 (emptyInput). 다른 청크 모듈의 심볼은 이 청크 mangle 에서 이름을
+            // 받지 않으며, cross-chunk 로 참조되는 이름은 extra_reserved 가 이미 보호한다.
+            // bitset 슬롯은 unified_module_scopes 인덱싱(metadata) 때문에 유지하되, 청크
+            // 비포함 모듈은 그 청크 emit 시 읽히지 않으므로 0-bit 로 할당 — 다청크 빌드에서
+            // 청크마다 전체 모듈 sym_count 만큼 bit storage 를 잡던 비용을 제거한다(#4 효율).
+            const in_chunk = if (chunk_modules) |cm| cm.contains(@as(ModuleIndex, @enumFromInt(mi))) else true;
+            const sym_count = if (in_chunk) (if (sem_opt) |s| s.symbols.items.len else 0) else 0;
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
             created += 1;
 
-            // #4045: per-chunk mangle — 이 청크에 속하지 않은 모듈은 candidate / Phase B
-            // 양쪽 제외 (emptyInput). 다른 청크 모듈의 심볼은 이 청크 mangle 에서 이름을
-            // 받지 않으며, cross-chunk 로 참조되는 이름은 extra_reserved 가 이미 보호한다.
-            if (chunk_modules) |cm| {
-                if (!cm.contains(@as(ModuleIndex, @enumFromInt(mi)))) {
-                    modules[mi] = emptyInput(m.source, bitsets[mi]);
-                    continue;
-                }
+            if (!in_chunk) {
+                modules[mi] = emptyInput(m.source, bitsets[mi]);
+                continue;
             }
 
             // tree-shake 후 dead 로 판정된 모듈은 후보에서 제외 — 짧은 이름 풀이
@@ -1215,13 +1219,29 @@ pub const Linker = struct {
     pub fn computeMangling(self: *Linker) !void {
         var scope = profile.begin(.link_compute_mangling);
         defer scope.end();
-
-        const um = @import("../codegen/unified_mangler.zig");
-
         try self.collectReservedGlobals();
+        // 전역 mangle: 청크 필터 없음(null), cross-chunk 예약 없음.
+        try self.runUnifiedMangle(null, &.{});
+    }
 
-        var collected = try self.collectUnifiedInput(null, &.{});
-        // bitsets 은 linker 로 이관 후 free, candidates/modules/reserved/import_refs 는 여기서 해제.
+    /// `collectUnifiedInput` → `mangleAll` → Phase A 주입 → Phase B 보관 시퀀스.
+    /// 전역(`computeMangling`)과 per-chunk(`computeChunkMangling`)가 공유한다. 호출자가
+    /// `chunk_modules`/`extra_reserved` 와 `reserved_globals`(전역=collectReservedGlobals,
+    /// per-chunk=청크 unresolved)를 미리 세팅한다.
+    fn runUnifiedMangle(
+        self: *Linker,
+        chunk_modules: ?*const std.AutoHashMapUnmanaged(ModuleIndex, void),
+        extra_reserved: []const []const u8,
+    ) !void {
+        var collected = try self.collectUnifiedInput(chunk_modules, extra_reserved);
+        // bitsets 는 성공 시 takeBitsets 로 linker 이관, 그 전에 에러나면 여기서 해제
+        // (mangleAll / dupe OOM 누수 방지). takeBitsets 후엔 collected.bitsets=&.{} 라
+        // errdefer 가 실행돼도 빈 슬라이스 — 단, takeBitsets 뒤엔 try 가 없어 미실행.
+        errdefer {
+            for (collected.bitsets) |*b| b.deinit();
+            self.allocator.free(collected.bitsets);
+        }
+        // candidates/modules/reserved/import_refs 는 성공/실패 공통 해제.
         defer {
             self.allocator.free(collected.top_level_candidates);
             self.allocator.free(collected.modules);
@@ -1230,7 +1250,7 @@ pub const Linker = struct {
             self.allocator.free(collected.import_ref_slices);
         }
 
-        var result = try um.mangleAll(self.allocator, .{
+        var result = try unified_mangler.mangleAll(self.allocator, .{
             .modules = collected.modules,
             .top_level_candidates = collected.top_level_candidates,
             .global_reserved = collected.reserved_names,
@@ -1238,33 +1258,27 @@ pub const Linker = struct {
         // result 소유권을 linker 로 이관 (deinit 은 linker.deinit 이 담당).
         errdefer result.deinit();
 
-        // Phase A 결과 (top-level 심볼) 를 rename_table 에 주입.
-        // dup 는 canonical_strings 가 소유. result.renames 안의 원본 문자열은
-        // linker.deinit 이 해제 — Phase A 값은 이중 보관이지만 단순성 우선.
-        for (collected.top_level_candidates) |cand| {
-            const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
-            const mangled = result.renames.get(key) orelse continue;
-            const cand_mod = self.getModule(cand.module_index) orelse continue;
-            const sem = cand_mod.semantic orelse continue;
-            if (cand.symbol_id >= sem.symbols.items.len) continue;
-            const dup = try self.allocator.dupe(u8, mangled);
-            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(cand.module_index)), cand.symbol_id);
-            try self.assignSymbolCanonical(id, dup);
-        }
+        try self.injectPhaseARenames(collected.top_level_candidates, &result);
 
-        if (self.mangle_report) |r| {
-            r.top_level = result.phase_a;
-            r.top_level_reserved_pool = result.phase_a.reserved_size;
-            for (result.phase_b_modules, 0..) |stats, mi| {
-                const m = self.getModule(@intCast(mi)) orelse continue;
-                try r.recordNested(m.path, stats);
+        // mangle_report / mangle_dump 진단은 *전역* mangle(chunk_modules==null)에서만 낸다.
+        // per-chunk(splitting)에서 내면 top_level 이 청크마다 덮어써지고 recordNested 가
+        // 모듈을 청크 수만큼 중복 기록한다 — 리팩터 전 computeChunkMangling 은 두 블록 다
+        // 없었으므로 동작 보존.
+        if (chunk_modules == null) {
+            if (self.mangle_report) |r| {
+                r.top_level = result.phase_a;
+                r.top_level_reserved_pool = result.phase_a.reserved_size;
+                for (result.phase_b_modules, 0..) |stats, mi| {
+                    const m = self.getModule(@intCast(mi)) orelse continue;
+                    try r.recordNested(m.path, stats);
+                }
             }
         }
 
-        if (debug_log.enabled(.mangle_dump)) {
+        if (chunk_modules == null and debug_log.enabled(.mangle_dump)) {
             debug_log.print(.mangle_dump, "module\tsymbol_id\torig\tmangled\tref_count\tkind\tmod_included\n", .{});
             for (collected.top_level_candidates) |cand| {
-                const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
+                const key: unified_mangler.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
                 const mangled = result.renames.get(key) orelse cand.name;
                 const cand_mod = self.getModule(cand.module_index) orelse continue;
                 const sem = cand_mod.semantic orelse continue;
@@ -1285,6 +1299,26 @@ pub const Linker = struct {
 
         self.unified_result = result;
         self.unified_module_scopes = collected.takeBitsets();
+    }
+
+    /// `mangleAll` 의 Phase A(top-level) 결과를 `rename_table` 에 주입한다.
+    /// dup 는 canonical_strings 가 소유. result.renames 의 원본 문자열은 linker.deinit
+    /// 이 해제 — Phase A 값은 이중 보관이지만 단순성 우선.
+    fn injectPhaseARenames(
+        self: *Linker,
+        candidates: []const unified_mangler.TopLevelCandidate,
+        result: *const unified_mangler.UnifiedMangleResult,
+    ) !void {
+        for (candidates) |cand| {
+            const key: unified_mangler.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
+            const mangled = result.renames.get(key) orelse continue;
+            const cand_mod = self.getModule(cand.module_index) orelse continue;
+            const sem = cand_mod.semantic orelse continue;
+            if (cand.symbol_id >= sem.symbols.items.len) continue;
+            const dup = try self.allocator.dupe(u8, mangled);
+            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(cand.module_index)), cand.symbol_id);
+            try self.assignSymbolCanonical(id, dup);
+        }
     }
 
     /// 다른 모듈의 리네임 대상으로 이미 할당된 이름인지 O(1) 확인.
@@ -2623,8 +2657,6 @@ pub const Linker = struct {
         module_indices: []const ModuleIndex,
         occupied_names: []const []const u8,
     ) !void {
-        const um = @import("../codegen/unified_mangler.zig");
-
         // 이전 청크의 Phase B 산출물 해제 (다음 emit 전 fresh). 첫 청크는 null → no-op.
         self.clearMangling();
 
@@ -2634,38 +2666,10 @@ pub const Linker = struct {
         try chunk_set.ensureUnusedCapacity(self.allocator, @intCast(module_indices.len));
         for (module_indices) |mi| chunk_set.putAssumeCapacity(mi, {});
 
-        var collected = try self.collectUnifiedInput(&chunk_set, occupied_names);
-        defer {
-            self.allocator.free(collected.top_level_candidates);
-            self.allocator.free(collected.modules);
-            self.allocator.free(collected.reserved_names);
-            for (collected.import_ref_slices) |s| self.allocator.free(s);
-            self.allocator.free(collected.import_ref_slices);
-        }
-
-        var result = try um.mangleAll(self.allocator, .{
-            .modules = collected.modules,
-            .top_level_candidates = collected.top_level_candidates,
-            .global_reserved = collected.reserved_names,
-        });
-        errdefer result.deinit();
-
-        // Phase A (top-level) 결과를 rename_table 에 주입 (computeMangling 패턴 복제).
-        // dup 는 canonical_strings 가 소유, deconflict 가 먼저 넣은 stale entry 는
-        // assignSymbolCanonical 이 used set 에서 제거 후 덮어쓴다.
-        for (collected.top_level_candidates) |cand| {
-            const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
-            const mangled = result.renames.get(key) orelse continue;
-            const cand_mod = self.getModule(cand.module_index) orelse continue;
-            const sem = cand_mod.semantic orelse continue;
-            if (cand.symbol_id >= sem.symbols.items.len) continue;
-            const dup = try self.allocator.dupe(u8, mangled);
-            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(cand.module_index)), cand.symbol_id);
-            try self.assignSymbolCanonical(id, dup);
-        }
-
-        self.unified_result = result;
-        self.unified_module_scopes = collected.takeBitsets();
+        // deconflict 가 먼저 넣은 rename_table stale entry 는 injectPhaseARenames 의
+        // assignSymbolCanonical 이 used set 에서 제거 후 덮어쓴다. occupied_names 는
+        // cross-chunk import 경계 → collectUnifiedInput 이 reserved 로 보호.
+        try self.runUnifiedMangle(&chunk_set, occupied_names);
     }
 
     pub const makeExportKey = types.makeModuleKey;
