@@ -61,6 +61,12 @@ pub fn reset(self: *ModuleGraph) void {
     while (req_it.next()) |req| req.deinit(self.allocator);
     self.requested_exports.clearRetainingCapacity();
 
+    // #4074 방어: lazy_seeds 도 per-build 상태다. 현재는 매 rebuild 가 fresh graph 라
+    // 무관하지만, graph persistence(RFC #3933)로 reset() 재사용이 도입되면 비우지 않을 시
+    // 이전 빌드 seed 가 누적돼 materializeLazySeeds 가 fresh module set 에 stale seed 를
+    // 처리한다. path/resolve_dir 은 path_arena 소유라 clearRetainingCapacity 로 충분(개별 free 불요).
+    self.lazy_seeds.clearRetainingCapacity();
+
     self.source_read_cache.deinit(self.allocator);
     self.source_read_cache = .{};
 

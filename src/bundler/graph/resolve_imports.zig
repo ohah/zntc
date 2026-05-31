@@ -45,6 +45,30 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
     for (mod_ptr.resolved_deps.items) |dep| {
         switch (dep.target) {
             .file, .virtual => {
+                // #4074: cache-hit rebuild 의 replay 경로에도 miss 경로(resolveModuleImports:356)
+                // 와 동일한 lazy 게이트를 적용한다. 없으면 동적 import 타겟을 여기서 addModule
+                // (=.reserved 모듈 추가) → discovery 루프가 파싱 → emit 해 *rebuild 마다* 미요청
+                // lazy seed 가 디스크에 떨어진다(첫 빌드는 emit-skip, 첫 rebuild 부터 laziness 손실).
+                // 게이트가 통과하면 addModule/link 대신 lazy_seeds 에 쌓고 continue → 루프 종료 후
+                // materializeLazySeeds 가 미파싱 seed(state=.ready, ast=null, is_lazy_seed)로 처리.
+                // miss 경로와 달리 dep 는 이미 resolved_deps 에 있어 appendResolvedDep 재등록 안 함.
+                // .file 만(virtual/external 동적 타겟은 miss 경로도 eager — PR-3b 범위).
+                if (dep.target == .file and dep.kind == .dynamic_import and
+                    self.lazy_compilation and self.code_splitting and self.dev_mode)
+                {
+                    if (dep.record_index) |rec_idx| {
+                        if (!pathInForceParse(self, dep.path.bytes())) {
+                            const pa = self.path_arena.allocator();
+                            try self.lazy_seeds.append(self.allocator, .{
+                                .from = mod_index,
+                                .rec_i = @intCast(rec_idx),
+                                .path = try pa.dupe(u8, dep.path.bytes()),
+                                .resolve_dir = if (dep.resolve_dir) |rd| try pa.dupe(u8, rd.bytes()) else null,
+                            });
+                            continue;
+                        }
+                    }
+                }
                 var s_am = profile.begin(.graph_discover_incr_replay_add_module);
                 const dep_idx = try self.addModuleWithResolveDir(io, dep.path.bytes(), if (dep.resolve_dir) |rd| rd.bytes() else null);
                 s_am.end();
