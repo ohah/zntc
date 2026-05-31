@@ -2013,11 +2013,12 @@ fn chunkPlaceholderStem(
     // dir 의미 약함 + Rollup `chunkFileNames` 도 dir 토큰 미사용.
     const dir = if (is_static_entry) (chunk.name_dir orelse "") else "";
 
-    // PR-3a-ii: lazy seed 청크는 미생성(미파싱)이라 content-hash 불가 — `[hash]` 를
-    // 경로 기반 안정 hash 로 치환한다. content-hash placeholder(\x00ZH) prefix 가 없으므로
-    // resolveContentHashes 가 건드리지 않아 그대로 안정 이름이 된다. entry 의
-    // __zntc_load_chunk("<stem>-<pathhash>.js") 가 미생성 청크를 안정 이름으로 선참조.
-    if (chunk.is_lazy_seed) {
+    // PR-3a-ii / #4079: lazy 빌드의 동적 import 타겟 청크는 `[hash]` 를 경로 기반 안정 hash 로
+    // 치환한다(content-hash placeholder \x00ZH prefix 가 없어 resolveContentHashes 가 건드리지
+    // 않음 → 안정 이름). lazy seed(미파싱)는 content-hash 불가라 필수고, force-parse 된 동적 타겟
+    // (본문 있음·emit 됨)도 같은 path-hash 를 써 entry 의 __zntc_load_chunk URL 이 lazy↔force-parse
+    // 전환에 불변(#4079). `use_lazy_path_name` = is_lazy_seed ∪ (lazy 빌드 동적 타겟).
+    if (chunk.use_lazy_path_name) {
         var path_hash: [HASH_PLACEHOLDER_LEN]u8 = undefined;
         _ = std.fmt.bufPrint(&path_hash, "{x:0>8}", .{@as(u32, @truncate(chunk.lazy_path_hash))}) catch unreachable;
         try applyNamingPatternWithDir(out, allocator, pattern, base_name, &path_hash, dir);

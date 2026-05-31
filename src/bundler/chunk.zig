@@ -205,6 +205,12 @@ pub const Chunk = struct {
     /// content-hash 가 아닌 `lazy_path_hash`(경로 기반) 로 안정화 — entry 가 아직
     /// 안 만든 청크를 안정 이름으로 선참조할 수 있게 한다.
     is_lazy_seed: bool = false,
+    /// #4079: 파일명을 content-hash 가 아니라 `lazy_path_hash`(경로 기반)로 쓸지 여부.
+    /// `is_lazy_seed`(미파싱·emit-skip)와 분리된 개념 — lazy 빌드의 *동적 import 타겟*
+    /// 청크는 force-parse 되어 본문이 있어도(=emit 됨, is_lazy_seed=false) path-hash
+    /// 이름을 유지해야 브라우저가 박은 `__zntc_load_chunk` URL 이 lazy↔force-parse 전환에
+    /// 불변이다(dev materialize 토대). is_lazy_seed ⊂ use_lazy_path_name.
+    use_lazy_path_name: bool = false,
     /// lazy seed 청크의 경로 기반 안정 hash (entry 모듈 path 의 Wyhash). content-hash
     /// 와 달리 청크 본문이 없어도 결정되며, PR-3b 가 on-demand 빌드 시 같은 이름 재현.
     lazy_path_hash: u64 = 0,
@@ -808,12 +814,16 @@ pub fn generateChunks(
         } }, bits);
         chunk.name = name;
         chunk.explicit_file_name = explicit_file_name;
-        // PR-3a-ii: entry 모듈이 미파싱 lazy seed 면 청크도 lazy — emit-skip + 경로기반
-        // 안정 이름. lazy_path_hash 는 entry path 의 Wyhash(content 무관, PR-3b 재현 가능).
-        if (entry_mod.is_lazy_seed) {
-            chunk.is_lazy_seed = true;
+        // PR-3a-ii / #4079: lazy 빌드의 동적 import 타겟 청크는 parse 여부와 무관히 path-hash
+        // 안정 이름을 쓴다 — 브라우저가 박은 `__zntc_load_chunk("<stem>-<pathhash>.js")` URL 이
+        // lazy(미파싱)↔force-parse(파싱·emit) 전환에도 불변이어야 dev materialize(#4079)가 성립.
+        // emit-skip 은 별개로 is_lazy_seed(미파싱)일 때만 — force-parse 면 본문이 있어 emit 한다.
+        // lazy_path_hash 는 entry path 의 Wyhash(content 무관, on-demand 빌드가 같은 이름 재현).
+        if (entry_mod.is_lazy_seed or (entry.is_dynamic and graph.lazy_compilation)) {
+            chunk.use_lazy_path_name = true;
             chunk.lazy_path_hash = std.hash.Wyhash.hash(0, entry_mod.path);
         }
+        if (entry_mod.is_lazy_seed) chunk.is_lazy_seed = true;
 
         // PR B-1: [dir] 토큰 치환용 raw dir. PR B-4b sub-1b: dirname(entry path)
         // 를 *graph.entry_dir 기준 relative* 로 변환해 사용자 머신 절대경로
