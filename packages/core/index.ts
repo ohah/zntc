@@ -1504,6 +1504,14 @@ export interface WatchRebuildEvent {
   /** Number of modules reparsed in the incremental graph. Counts cache-missed
    * modules only. Not exposed for full builds. */
   reparsedModules?: number;
+  /**
+   * D105 PR-C-1: lazy 빌드의 미파싱 seed 목록 `{ pathHash, path }`
+   * ({@link WatchReadyEvent.lazySeeds} 와 동일 shape/공식). `lazyCompilation` 이 켜진
+   * watch 세션에서 매 rebuild 마다 노출 → dev 서버가 rebuild 중 새로 추가/제거된 동적
+   * import seed 집합을 갱신할 수 있다 (onReady 한정이던 PR-B-1 의 rebuild 확장).
+   * lazy 빌드가 아니거나 동적 import 가 없으면 생략(`undefined`).
+   */
+  lazySeeds?: Array<{ pathHash: string; path: string }>;
 }
 
 export interface WatchHandle {

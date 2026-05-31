@@ -348,6 +348,11 @@ const WatchRebuildEvent = struct {
     /// (`error_msg`) 와 달리 file path + message 둘 다 보존. caller (broadcastRebuildEvent)
     /// 가 우선 사용, 없으면 error_msg fallback.
     errors: ?[]const ErrorEntry = null,
+    /// D105 PR-C-1: rebuild 의 lazy seed 절대경로 목록(`rebuild_result.lazy_seed_paths` 사본).
+    /// onRebuild 이벤트가 `lazySeeds: [{pathHash, path}]` 로 노출 → dev 서버가 rebuild 중 새로
+    /// 추가/제거된 동적 import seed 집합을 갱신(onReady 한정이던 PR-B-1 의 확장). onReady 와
+    /// 동일 빌더(common.buildLazySeedsJs)라 pathHash 공식 단일 소스.
+    lazy_seeds: ?[]const []const u8 = null,
 
     const ModuleUpdate = struct {
         id: []const u8,
@@ -382,6 +387,10 @@ const WatchRebuildEvent = struct {
                 native_alloc.free(e.message);
             }
             native_alloc.free(errs);
+        }
+        if (self.lazy_seeds) |paths| {
+            for (paths) |p| native_alloc.free(p);
+            native_alloc.free(paths);
         }
         native_alloc.destroy(self);
     }
@@ -579,6 +588,14 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
             var js_n: c.napi_value = undefined;
             _ = c.napi_create_int64(env, @intCast(n), &js_n);
             _ = c.napi_set_named_property(env, js_event, "reparsedModules", js_n);
+        }
+
+        // D105 PR-C-1: lazySeeds: Array<{pathHash, path}> — lazy 빌드일 때만. onReady(PR-B-1)
+        // 와 동일 빌더(common.buildLazySeedsJs)라 pathHash 공식 단일 소스. dev 서버가 rebuild 마다
+        // seed 집합을 갱신(신규 동적 import 추가/제거 반영).
+        if (event.lazy_seeds) |paths| {
+            const js_seeds = common.buildLazySeedsJs(env, paths);
+            _ = c.napi_set_named_property(env, js_event, "lazySeeds", js_seeds);
         }
     } else {
         // error: string (catch 분기 — bundle() 자체가 throw 한 케이스)
@@ -1305,6 +1322,27 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                     event.changed = ch_arr[0..valid];
                 } else {
                     allocator.free(ch_arr);
+                }
+            }
+        }
+
+        // D105 PR-C-1: lazy seed 경로 사본 (onReady 의 lazy_seeds_copy 와 동일 패턴 —
+        // partial alloc 실패 시 정리). onRebuild 가 lazySeeds 를 노출해 dev 서버가 rebuild 마다
+        // 신규/제거된 동적 import seed 집합을 갱신할 수 있게 한다.
+        if (rebuild_result.lazy_seed_paths) |lsp| {
+            const arr = allocator.alloc([]const u8, lsp.len) catch null;
+            if (arr) |paths| {
+                var fill: usize = 0;
+                for (lsp) |p| {
+                    const dup = allocator.dupe(u8, p) catch break;
+                    paths[fill] = dup;
+                    fill += 1;
+                }
+                if (fill == lsp.len) {
+                    event.lazy_seeds = paths;
+                } else {
+                    for (paths[0..fill]) |p| allocator.free(p);
+                    allocator.free(paths);
                 }
             }
         }
