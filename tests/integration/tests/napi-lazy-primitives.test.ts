@@ -259,4 +259,70 @@ describe('NAPI lazy compilation primitives (D105 PR-A)', () => {
       handle?.stop();
     }
   });
+
+  // #4074: rebuild 후에도 lazy seed 는 미파싱·emit-skip 으로 유지돼야 한다. cache-hit rebuild 의
+  // replay 경로(resolve_imports.replayCachedResolvedDeps)가 동적 import 타겟을 일반 모듈로
+  // addModule→파싱→emit 하던 버그 — replay 에도 miss 경로의 lazy 게이트를 적용해 수정. 없으면
+  // 무관한 파일 한 번만 편집해도 미요청 lazy 청크가 디스크에 떨어져 laziness 가 사라진다.
+  test('#4074: 무관한 파일 편집 rebuild 후에도 lazy seed 청크가 emit-skip 유지', async () => {
+    const fixture = await createFixture({
+      'heavy.ts': `export const h = 'HEAVY_4074';`,
+      'sidecar.ts': `export const s = 'SIDE_A';`,
+      'entry.ts':
+        `import { s } from './sidecar';\n` +
+        `async function go(){ const m = await import('./heavy'); console.log(m.h, s); }\ngo();`,
+    });
+    cleanup = fixture.cleanup;
+    const outdir = join(fixture.dir, 'out');
+    const heavyChunkOnDisk = () =>
+      readdirSync(outdir).some((f) => /heavy-[0-9a-f]{8}\.js$/.test(f));
+
+    let rebuildResolve: ((e: any) => void) | undefined;
+    const rebuilt: Promise<any> = new Promise((r) => {
+      rebuildResolve = r;
+    });
+    let handle: ReturnType<typeof watch> | undefined;
+    const ready = new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('onReady timeout')), 8000);
+      handle = watch({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        platform: 'browser',
+        devMode: true,
+        splitting: true,
+        lazyCompilation: true,
+        format: 'iife',
+        outdir,
+        onReady: () => {
+          clearTimeout(t);
+          resolve();
+        },
+        onRebuild: (e: any) => rebuildResolve?.(e),
+      });
+    });
+    try {
+      await ready;
+      // 초기: heavy seed 는 emit-skip(디스크에 없음).
+      expect(heavyChunkOnDisk()).toBe(false);
+
+      // 동적 import 와 무관한 sidecar.ts 편집 → cache-hit rebuild(entry 는 replay 경로).
+      writeFileSync(join(fixture.dir, 'sidecar.ts'), `export const s = 'SIDE_B';`);
+      await Promise.race([
+        rebuilt,
+        new Promise((_r, rej) => setTimeout(() => rej(new Error('onRebuild timeout')), 8000)),
+      ]);
+      // rebuild flush 여유.
+      await new Promise((r) => setTimeout(r, 300));
+
+      // rebuild 가 실제로 돌고 *emit 했음* 을 명시 증명 — entry 청크에 sidecar 새 본문(SIDE_B)이
+      // 반영돼야 한다. (이게 없으면 "rebuild 가 아예 안 돌아 heavy 가 없을 뿐" 의 거짓통과 가능.)
+      const entryChunk = readdirSync(outdir).find((f) => /^entry.*\.js$/.test(f));
+      expect(entryChunk).toBeDefined();
+      expect(readFileSync(join(outdir, entryChunk!), 'utf8')).toContain('SIDE_B');
+
+      // 핵심 가드: rebuild 후에도 heavy seed 는 여전히 emit-skip(디스크에 없어야 함).
+      expect(heavyChunkOnDisk()).toBe(false);
+    } finally {
+      handle?.stop();
+    }
+  });
 });
