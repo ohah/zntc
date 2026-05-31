@@ -448,6 +448,12 @@ pub const BundleResult = struct {
     diagnostics: ?[]OwnedDiagnostic,
     /// 번들에 포함된 모든 모듈의 절대 경로. allocator 소유. dev server watch용.
     module_paths: ?[]const []const u8 = null,
+    /// PR-3b-iii (lazy compilation): 이 빌드에서 미파싱 lazy seed 로 남은 동적 import
+    /// 타겟들의 절대 경로(`graph.lazy_seeds[].path`). `lazy_compilation` 빌드에서만 채워짐
+    /// (아니면 null). dev server 가 on-demand 라우트의 *역참조* 에 쓴다 — 요청된 청크 이름
+    /// `<stem>-<pathhash>.js` 의 pathhash(=truncate(Wyhash(path))) 를 이 목록과 매칭해
+    /// force-parse 할 seed 경로를 찾는다. allocator 소유 — `deinit` 이 해제.
+    lazy_seed_paths: ?[]const []const u8 = null,
     /// dev mode: JS 모듈별 __zntc_register(...) 코드. HMR 모듈 단위 업데이트용.
     /// id로 매칭 (module_paths와 인덱스 대응 아님). allocator 소유.
     module_dev_codes: ?[]const ModuleDevCode = null,
@@ -526,6 +532,10 @@ pub const BundleResult = struct {
             allocator.free(diags);
         }
         if (self.module_paths) |paths| {
+            for (paths) |p| allocator.free(p);
+            allocator.free(paths);
+        }
+        if (self.lazy_seed_paths) |paths| {
             for (paths) |p| allocator.free(p);
             allocator.free(paths);
         }
@@ -1870,6 +1880,20 @@ pub const Bundler = struct {
             break :blk paths;
         } else null;
 
+        // PR-3b-iii: lazy seed 경로 스냅샷 — dev server on-demand 역참조용. lazy_compilation
+        // 빌드에서만 채운다(graph 가 deinit 되기 전 dupe). seed 가 없으면 null.
+        const lazy_seed_paths: ?[]const []const u8 = if (self.options.lazy_compilation and graph.lazy_seeds.items.len > 0) blk: {
+            const paths = try self.allocator.alloc([]const u8, graph.lazy_seeds.items.len);
+            errdefer self.allocator.free(paths);
+            var seed_count: usize = 0;
+            errdefer for (paths[0..seed_count]) |p| self.allocator.free(p);
+            for (graph.lazy_seeds.items) |seed| {
+                paths[seed_count] = try self.allocator.dupe(u8, seed.path);
+                seed_count += 1;
+            }
+            break :blk paths;
+        } else null;
+
         // 5.5. Asset 파일 수집 (file/copy 로더 — 출력 디렉토리에 복사할 파일들).
         // scale_variants가 있으면 base + @2x/@3x 각각 별개 OutputFile로 emit해서
         // RN 런타임이 해상도별 파일을 로드할 수 있게 한다.
@@ -2175,6 +2199,7 @@ pub const Bundler = struct {
             .outputs_by_format = outputs_by_format,
             .diagnostics = diagnostics,
             .module_paths = module_paths,
+            .lazy_seed_paths = lazy_seed_paths,
             .module_dev_codes = module_dev_codes,
             .asset_outputs = final_asset_outputs,
             .rn_asset_metadata = rn_asset_metadata_out,
