@@ -1953,6 +1953,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
   // on-demand build() 직렬화 tail. 페이지 로드 시 여러 lazy 청크가 동시 요청돼도 native build()
   // 를 한 번에 하나씩만 돌려 watch worker 와의 동시 재진입 위험을 없앤다(/code-review Q2).
   let lazyBuildTail = Promise.resolve();
+  // #4062 PR-C-2 — 캐시 세대(epoch). rebuild(captureLazyState)가 캐시를 무효화할 때마다 +1.
+  // on-demand build 가 시작 시 epoch 를 캡처하고 완료 후 비교해, 빌드 도중 rebuild 가 끼면
+  // (epoch 변동) 그 결과를 캐시에 넣지 않는다(옛 소스로 만든 stale 바이트가 비워진 캐시를
+  // 재오염하는 것을 막음 — native LazyState.epoch PR-4-iii 패턴 이식).
+  let lazyEpoch = 0;
   // lazy entry 청크의 디스크 경로(`<entrystem>.js`). served index.html 은 prepareDev 가 non-split
   // 으로 `/bundle.js` 를 참조하게 rewrite 했지만, watch lazy 빌드의 entry 청크는 stem 이름이라
   // mismatch → `/bundle.js` 를 이 파일로 alias.
@@ -2069,8 +2074,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // (clear 하면 다음 요청이 또 실패할 빌드를 돌려 last-good 청크를 잃는다). onReady event 는
     // success 필드가 없어(undefined) 통과한다.
     if (!lazyMode || !event || event.success === false) return;
-    // 캐시는 매 성공 rebuild 마다 무효화(편집으로 seed 본문 변경 가능).
+    // 캐시는 매 성공 rebuild 마다 무효화(편집으로 seed 본문 변경 가능) + epoch 증가
+    // (진행 중 on-demand build 가 이 무효화를 넘겨 stale 바이트를 재캐시하지 못하게).
     lazyChunkCache.clear();
+    lazyEpoch++;
     // seed 맵은 event.lazySeeds 가 *실제로 올 때만* 교체한다. 일반 편집(동적 import 를 가진
     // 모듈이 cache-hit)은 native 가 graph.lazy_seeds 를 다시 안 쌓아 lazySeeds 가 undefined 로
     // 온다 — 무조건 clear 하면 직전 유효 맵을 날려(PR-B-2 보다 나쁨) on-demand 라우트가 죽는다.
@@ -2148,6 +2155,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
       // 큐 대기 중 cache 가 채워졌으면(다른 동일 요청이 먼저 완료) 그대로 재사용.
       const c = lazyChunkCache.get(pathHash);
       if (c) return c;
+      // build 시작 직전 세대 캡처 — 완료 후 변동(=빌드 도중 rebuild) 시 캐시 오염 방지.
+      const epoch = lazyEpoch;
       try {
         const r = await build({ ...lazyOnDemandOpts, lazyForceParse: [seedPath] });
         if (r.errors && r.errors.length > 0) return null;
@@ -2161,7 +2170,9 @@ async function runServe(opts, config, { appDev = null } = {}) {
           body: chunk.contents,
           type: 'application/javascript',
         };
-        lazyChunkCache.set(pathHash, result);
+        // 빌드 도중 rebuild 가 끼지 않았을 때만 캐시(epoch 불변). 끼었으면 이 결과는 옛 소스
+        // 기반이라 캐시하지 않고(다음 요청이 fresh 재빌드) 이번 응답으로만 반환.
+        if (lazyEpoch === epoch) lazyChunkCache.set(pathHash, result);
         return result;
       } catch (err) {
         console.error('[serve] lazy chunk build failed:', err);
