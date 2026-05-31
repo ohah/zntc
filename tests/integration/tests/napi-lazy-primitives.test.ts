@@ -76,6 +76,40 @@ describe('NAPI lazy compilation primitives (D105 PR-A)', () => {
     expect(byContent(forced.outputFiles!, 'HEAVY_PRA_MARKER')).toBeDefined(); // 즉시 parse → 본문 존재
   });
 
+  // #4079 PR-1: force-parse 된 동적 청크는 lazy 빌드와 *같은 path-hash 이름*을 유지해야 한다.
+  // 안 그러면 lazy→force-parse 전환 시 entry 의 __zntc_load_chunk URL 이 content-hash 로 바뀌어
+  // 브라우저가 이미 박아둔 path-hash URL 과 어긋난다(dev materialize 의 토대). 동적 청크 네이밍을
+  // is_lazy_seed(미파싱)가 아니라 "lazy 빌드의 동적 타겟"으로 게이트해 parse 여부와 무관히 안정화.
+  test('#4079: force-parse 된 동적 청크가 lazy 빌드와 같은 path-hash 이름 유지', async () => {
+    const fixture = await createFixture({
+      'heavy.ts': `export const h = 'HEAVY_4079';`,
+      'entry.ts': `async function go(){ const m = await import('./heavy'); console.log(m.h); }\ngo();`,
+    });
+    cleanup = fixture.cleanup;
+    const entry = join(fixture.dir, 'entry.ts');
+
+    // 1) lazy 빌드 — entry 가 참조하는 path-hash URL 캡처.
+    const lazy = await build(lazyOpts(entry));
+    expect(lazy.errors ?? []).toHaveLength(0);
+    const lazyEntry = byContent(lazy.outputFiles!, '__zntc_load_chunk(');
+    const lazyUrl = lazyEntry!.text.match(/__zntc_load_chunk\("([^"]+)"\)/)![1];
+    expect(lazyUrl).toMatch(/-[0-9a-f]{8}\.js$/);
+    const seedPath = lazy.lazySeeds![0].path;
+
+    // 2) force-parse 빌드 — entry 의 load_chunk URL 과 emit 된 청크 파일명이 *동일 path-hash* 여야.
+    const forced = await build({ ...lazyOpts(entry), lazyForceParse: [seedPath] });
+    expect(forced.errors ?? []).toHaveLength(0);
+    const forcedEntry = byContent(forced.outputFiles!, '__zntc_load_chunk(');
+    expect(forcedEntry).toBeDefined();
+    const forcedUrl = forcedEntry!.text.match(/__zntc_load_chunk\("([^"]+)"\)/)![1];
+    // 핵심 가드: lazy ↔ force-parse 의 동적 청크 URL 이 동일(path-hash 안정).
+    expect(forcedUrl).toBe(lazyUrl);
+    // 그 URL 이름의 청크가 실제로 emit 되고 heavy 본문을 담아야(force-parse 라 emit-skip 아님).
+    const chunkFile = forced.outputFiles!.find((f) => f.path.endsWith(forcedUrl));
+    expect(chunkFile).toBeDefined();
+    expect(chunkFile!.text).toContain('HEAVY_4079');
+  });
+
   test('lazyCompilation 미지정 → lazySeeds 없음(기존 단일/스플릿 빌드 불변)', async () => {
     const fixture = await createFixture({
       'heavy.ts': `export const h = 'HEAVY_PRA_MARKER';`,
