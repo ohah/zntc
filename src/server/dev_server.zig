@@ -127,6 +127,10 @@ pub const DevServer = struct {
     /// handleConnection 의 fetchAdd/Sub 가 path 분기 전이라 모든 connection (plain
     /// HTTP / SSE / HMR WS) 통일 카운팅.
     active_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// entry 모드의 watch 스레드(`watchLoop`) 핸들. `start()` 가 채우고 `deinit()` 이 join.
+    /// **#4063**: 예전엔 detach 라 deinit 이 frees 후에도 watchLoop 가 살아 self.* 를 건드려
+    /// UAF(segfault 0xF0). 이제 핸들을 보관해 shutdown 신호 후 join → 모든 자원 해제 전에 종료 보장.
+    watch_thread: ?std.Thread = null,
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     base_path: []const u8 = "/",
@@ -400,6 +404,16 @@ pub const DevServer = struct {
         // accept() 를 깨움 (macOS/Linux 에서 listen socket close 만으론 accept 안 깨움).
         // 그 뒤 listen socket 정리.
         self.shutdown();
+        // #4063: watch 스레드를 *자원 해제 전* 에 join. shutdown_requested 를 본 watchLoop 가
+        // 늦어도 한 폴링 주기(500ms) 안에 종료한다. join 후 watchLoop 의 inc_bundler/watcher
+        // (self.allocator·self.io 사용) defer 정리도 끝나 있어, 아래 frees 와 충돌(UAF) 없음.
+        // join 시점엔 abs_entry/lazy_state/root_dir 모두 아직 유효(아래에서 해제). watchLoop 가
+        // 종료 직전 ws_clients.broadcast/lazy_state.mutex 를 잡아도 짧은 임계영역이라 join 지연은
+        // 유한하고, deinit 스레드는 어떤 락도 안 쥐고 join 하므로 deadlock 불가.
+        if (self.watch_thread) |t| {
+            t.join();
+            self.watch_thread = null; // 중복 deinit 시 재join(UB) 방지
+        }
         if (self.tcp_server) |*s| s.deinit(self.io);
         // 살아있는 connection (handleConnection thread) 가 종료할 때까지 wait. 최대
         // 2초 (best-effort) — production 은 process exit 직전 deinit 라 그 시점엔
@@ -539,15 +553,15 @@ pub const DevServer = struct {
             } else |_| {}
         }
 
-        // entry가 있으면 watch 스레드 시작
+        // entry가 있으면 watch 스레드 시작. #4063: detach 대신 핸들을 self 에 보관 →
+        // deinit 이 shutdown 신호 후 join 해 자원 해제 전에 종료 보장(UAF 차단).
         if (self.abs_entry != null) {
-            const watch_thread = std.Thread.spawn(.{}, watchLoop, .{self}) catch |err| {
+            self.watch_thread = std.Thread.spawn(.{}, watchLoop, .{self}) catch |err| {
                 // **critical**: watch thread spawn fail — HMR / file watch 자체 안 됨.
                 // 사용자가 진단 봐야 함. quiet 와 무관 stderr.
                 getLog().print("zntc: failed to start watch thread: {}\n", .{err}) catch {};
                 return err;
             };
-            watch_thread.detach();
         }
 
         self.acceptLoop();
@@ -889,8 +903,11 @@ pub const DevServer = struct {
 
         self.routineLog("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()});
 
-        while (true) {
+        // #4063: shutdown 시 종료. waitForChanges 는 watch_interval_ms(500ms) 타임아웃이라
+        // shutdown 후 늦어도 한 폴링 주기 안에 루프 top 으로 와 빠져나간다(deinit join 이 그만큼만 대기).
+        while (!self.shutdown_requested.load(.acquire)) {
             const events = watcher.waitForChanges(watch_interval_ms) catch continue;
+            if (self.shutdown_requested.load(.acquire)) break; // 폴링 반환 직후 재확인 — rebuild 진입 회피
 
             // Control API 경유 캐시 리셋 요청 처리 — 파일 변경 없어도 다음 rebuild를 전체 빌드로.
             if (self.cache_reset_requested.swap(false, .acquire)) {
