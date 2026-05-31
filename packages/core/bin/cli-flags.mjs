@@ -52,6 +52,9 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--watch', target: 'watch', aliases: ['-w'] },
   { kind: 'bool', flag: '--watch-json', target: 'watchJson', extra: { watch: true } },
   { kind: 'bool', flag: '--open', target: 'open' },
+  // #4062 PR-C-3 — `zntc dev --lazy`: 동적 import 타겟을 on-demand 로 컴파일(미사용 라우트
+  // 미파싱·미emit). dev 서버가 브라우저 요청 시점에 그 청크만 빌드한다. env ZNTC_LAZY=1 와 동치.
+  { kind: 'bool', flag: '--lazy', target: 'lazy' },
   // RN CLI 호환 (#2605 audit P0)
   { kind: 'bool', flag: '--reset-cache', target: 'resetCache' },
   { kind: 'bool', flag: '--sourcemap-use-absolute-path', target: 'sourcemapUseAbsolutePath' },

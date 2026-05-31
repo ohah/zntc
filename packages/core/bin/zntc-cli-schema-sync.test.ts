@@ -300,6 +300,10 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     '--no-emit-disk-sourcemap',
     '--open',
     '--clean',
+    // #4062 PR-C-3 — `zntc dev --lazy`: dev 서버 오케스트레이션 플래그(JS dev 서버가 on-demand
+    // 라우팅에 사용). BuildOptions 의 lazyCompilation/lazyForceParse 는 dev 서버가 내부적으로
+    // 켜며, --lazy 는 그 활성 스위치라 build/transpile 옵션 키와 1:1 매핑되지 않는다.
+    '--lazy',
     // 설정 / 환경
     '--config',
     '--config=',
@@ -452,7 +456,7 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // alias 의 exact-match 변형 — 프로그램틱 build() 전용 (`--alias` 만 CLI 노출).
     'aliasExact',
     // D105 PR-A: lazy on-demand 프리미티브 — build()/watch() 전용, dev 서버가 오케스트레이션.
-    // CLI `--lazy` 노출은 PR-C 예정.
+    // dev 활성 스위치 `zntc dev --lazy`(PR-C-3, cliOnlyFlags) 가 이 둘을 내부적으로 켠다.
     'lazyCompilation',
     'lazyForceParse',
   ]);

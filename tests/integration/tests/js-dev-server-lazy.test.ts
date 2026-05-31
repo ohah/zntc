@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createFixture, ZNTC_JS_CLI } from './helpers';
 
 // #4062 PR-B-2: JS dev 서버(`zntc dev`, app 모드)의 lazy on-demand 라우트.
-// 게이트 = env `ZNTC_LAZY=1`(실험적). native lazy 프리미티브(#4069/#4070 + #4071 watch parity)
+// 게이트 = `zntc dev --lazy`(PR-C-3) 또는 env `ZNTC_LAZY=1`. native lazy 프리미티브(#4069/#4070 + #4071 watch parity)
 // 위에 JS 서버가 얇게 on-demand 라우팅을 얹는다:
 //   ① served index.html 의 `/bundle.js` → watch lazy entry 청크(`__zntc_load_chunk` 포함) alias
 //   ② `/<stem>-<8hex>.js` → 그 seed 만 force-parse 한 단발 build() 로 동적 청크 즉석 생성·서빙
@@ -40,7 +40,7 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
     }
   });
 
-  test('ZNTC_LAZY=1 → entry 가 __zntc_load_chunk, heavy 는 on-demand 로만 서빙', async () => {
+  test('--lazy → entry 가 __zntc_load_chunk, heavy 는 on-demand 로만 서빙', async () => {
     const fixture = await createFixture({
       'index.html': `<!doctype html><html><head><meta charset="utf-8"/><title>L</title></head><body><div id="root"></div><script type="module" src="/src/main.ts"></script></body></html>`,
       'src/main.ts': `async function go(){ const m = await import('./heavy'); document.getElementById('root')!.textContent = m.h; }\ngo();`,
@@ -51,8 +51,9 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
     // 테스트 파일 간 충돌 회피용 고정-대역 포트(다른 dev-server 테스트와 분리).
     const port = 5390 + Math.floor(Math.random() * 40);
     proc = Bun.spawn({
-      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port)],
-      env: { ...process.env, ZNTC_LAZY: '1' },
+      // PR-C-3: 정식 `--lazy` CLI 플래그로 게이트(env ZNTC_LAZY 는 비워 flag 단독 검증).
+      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port), '--lazy'],
+      env: { ...process.env, ZNTC_LAZY: '' },
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -95,7 +96,7 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
     }
   }, 30000);
 
-  test('ZNTC_LAZY 미설정 → 기존 단일 번들(heavy 인라인, on-demand 라우트 비활성)', async () => {
+  test('--lazy/ZNTC_LAZY 미설정 → 기존 단일 번들(heavy 인라인, on-demand 라우트 비활성)', async () => {
     const fixture = await createFixture({
       'index.html': `<!doctype html><html><head><meta charset="utf-8"/><title>E</title></head><body><div id="root"></div><script type="module" src="/src/main.ts"></script></body></html>`,
       'src/main.ts': `async function go(){ const m = await import('./heavy'); document.getElementById('root')!.textContent = m.h; }\ngo();`,
@@ -125,7 +126,7 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
   // PR-C-1: rebuild 후에도 lazy on-demand 라우트가 살아있고(seed 맵 갱신) 청크 캐시가 무효화돼
   // 편집된 seed 본문이 반영돼야 한다. onRebuild 가 captureLazyState(event) 로 seed 맵을
   // event.lazySeeds 로 다시 채우고 캐시를 비운다.
-  test('ZNTC_LAZY=1 → 파일 편집 rebuild 후 on-demand 청크가 새 본문 반영(캐시 무효화)', async () => {
+  test('--lazy → 파일 편집 rebuild 후 on-demand 청크가 새 본문 반영(캐시 무효화)', async () => {
     const fixture = await createFixture({
       'index.html': `<!doctype html><html><head><meta charset="utf-8"/><title>R</title></head><body><div id="root"></div><script type="module" src="/src/main.ts"></script></body></html>`,
       'src/main.ts': `async function go(){ const m = await import('./heavy'); document.getElementById('root')!.textContent = m.h; }\ngo();`,
@@ -135,8 +136,8 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
 
     const port = 5470 + Math.floor(Math.random() * 40);
     proc = Bun.spawn({
-      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port)],
-      env: { ...process.env, ZNTC_LAZY: '1' },
+      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port), '--lazy'],
+      env: { ...process.env, ZNTC_LAZY: '' },
       stdout: 'pipe',
       stderr: 'pipe',
     });
