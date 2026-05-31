@@ -148,6 +148,12 @@ pub const DevServer = struct {
     /// TLS context — `--certfile`/`--keyfile` 양쪽 다 설정된 경우만. null 이면 plain
     /// HTTP. dev server scope 라 1개 cert 만 — SNI multi-cert 는 별도 epic (#2538 4-2).
     tls_ctx: ?tls.TlsContext = null,
+    /// PR-3b-iii: lazy compilation 활성 여부 (`Options.lazy_compilation` 사본). true 면
+    /// serveBundle 이 dev_split(code_splitting+lazy)로 빌드해 *entry 청크만* 서빙하고,
+    /// 동적 import 타겟은 `/<stem>-<pathhash>.js` 라우트에서 on-demand 컴파일한다(RFC A안 (B)).
+    lazy_compilation: bool = false,
+    /// lazy on-demand 상태 — entry 빌드가 수집한 seed 경로 + 컴파일된 청크 캐시.
+    lazy_state: LazyState = .{},
 
     pub const ProxyRule = struct {
         /// 매칭할 경로 prefix (예: "/api")
@@ -158,6 +164,53 @@ pub const DevServer = struct {
         target_host: []const u8,
         /// target에서 추출한 port
         target_port: u16,
+    };
+
+    /// PR-3b-iii: lazy on-demand 컴파일 상태. entry 빌드가 채운 seed 경로 목록(역참조용)과
+    /// 이미 컴파일한 청크 바이트 캐시를 보유한다. 모든 필드는 `mutex` 로 보호 — 여러
+    /// connection thread 가 동시에 lazy 청크를 요청할 수 있다.
+    pub const LazyState = struct {
+        mutex: spin.SpinLock = .{},
+        /// 마지막 entry 빌드의 미파싱 seed 절대경로(`BundleResult.lazy_seed_paths` 사본).
+        /// 요청 청크 이름→seed 경로 역참조에 쓴다. allocator 소유.
+        seed_paths: []const []const u8 = &.{},
+        /// 컴파일된 lazy 청크 캐시: 요청 청크 이름 → 청크 바이트. key/value 모두 allocator 소유.
+        chunk_cache: std.StringHashMapUnmanaged([]const u8) = .empty,
+
+        /// seed 목록을 교체한다(이전 빌드 사본 해제 후 새 사본 보유). entry 가 rebuild 될
+        /// 때마다 호출 — seed 집합이 바뀌었을 수 있다. caller 가 `mutex` 보유 가정.
+        fn setSeedPaths(self: *LazyState, allocator: std.mem.Allocator, paths: []const []const u8) !void {
+            const copy = try allocator.alloc([]const u8, paths.len);
+            errdefer allocator.free(copy);
+            var n: usize = 0;
+            errdefer for (copy[0..n]) |p| allocator.free(p);
+            for (paths) |p| {
+                copy[n] = try allocator.dupe(u8, p);
+                n += 1;
+            }
+            for (self.seed_paths) |p| allocator.free(p);
+            if (self.seed_paths.len > 0) allocator.free(self.seed_paths);
+            self.seed_paths = copy;
+        }
+
+        /// 컴파일된 청크 캐시를 비운다(파일 변경 등으로 stale 시). caller 가 `mutex` 보유 가정.
+        fn invalidateChunks(self: *LazyState, allocator: std.mem.Allocator) void {
+            var it = self.chunk_cache.iterator();
+            while (it.next()) |e| {
+                allocator.free(e.key_ptr.*);
+                allocator.free(e.value_ptr.*);
+            }
+            self.chunk_cache.clearRetainingCapacity();
+        }
+
+        fn deinit(self: *LazyState, allocator: std.mem.Allocator) void {
+            for (self.seed_paths) |p| allocator.free(p);
+            if (self.seed_paths.len > 0) allocator.free(self.seed_paths);
+            self.seed_paths = &.{};
+            self.invalidateChunks(allocator);
+            self.chunk_cache.deinit(allocator);
+            self.chunk_cache = .empty;
+        }
     };
 
     pub const Options = struct {
@@ -282,6 +335,7 @@ pub const DevServer = struct {
             .jsx_fragment = options.jsx_fragment,
             .overlay_client = overlay_client,
             .tls_ctx = tls_ctx,
+            .lazy_compilation = options.lazy_compilation,
         };
     }
 
@@ -319,6 +373,7 @@ pub const DevServer = struct {
         }
 
         if (self.abs_entry) |ae| self.allocator.free(ae);
+        self.lazy_state.deinit(self.allocator);
         // overlay_client 는 init 에서 반드시 알록된 owned slice (default 미제공).
         self.allocator.free(self.overlay_client);
         if (self.tls_ctx) |*c| c.deinit();
@@ -1254,6 +1309,13 @@ pub const DevServer = struct {
                 return;
             }
 
+            // PR-3b-iii: lazy on-demand 청크 라우트. `/<stem>-<pathhash>.js` 가 마지막 entry
+            // 빌드의 seed 와 매칭되면 그 seed 를 force-parse 해 단일 청크로 컴파일·서빙한다.
+            // 매칭 안 되면 (lazy 아님/일반 정적 파일) static fallback 으로 흘려보낸다.
+            if (self.lazy_compilation and self.tryServeLazyChunk(request, rel_path)) {
+                return;
+            }
+
             if (std.mem.eql(u8, rel_path, "index.html")) {
                 self.serveStaticFile(request, rel_path) catch |err| switch (err) {
                     error.FileNotFound => {
@@ -1286,6 +1348,9 @@ pub const DevServer = struct {
 
     fn serveBundle(self: *DevServer, request: *http.Server.Request) !void {
         const abs_entry = self.abs_entry orelse unreachable;
+
+        // PR-3b-iii: lazy 모드는 dev_split(code_splitting+lazy)로 빌드해 entry 청크만 서빙.
+        if (self.lazy_compilation) return self.serveBundleLazy(request);
 
         var bundler = Bundler.init(self.allocator, .{
             .entry_points = &.{abs_entry},
@@ -1351,6 +1416,251 @@ pub const DevServer = struct {
         });
 
         self.routineLog("  200 {s} (bundled)\n", .{bundle_path});
+    }
+
+    /// PR-3b-iii: serveBundle/serveLazyChunk 공용 — 빌드 에러를 진단 주석 JS 로 응답한다
+    /// (브라우저가 console.error 로 표면화). overlay/WS 브로드캐스트도 수행.
+    fn respondBuildError(self: *DevServer, request: *http.Server.Request, result: *BundleResult, label: []const u8) !void {
+        const diags = result.getDiagnostics();
+        if (buildErrorJsonFromDiagnostics(self.allocator, diags)) |err_json| {
+            defer self.allocator.free(err_json);
+            self.error_state.setCopy(self.io, self.allocator, err_json) catch {};
+            self.ws_clients.broadcast(self.io, err_json);
+        } else |_| {}
+
+        var msg: std.ArrayList(u8) = .empty;
+        defer msg.deinit(self.allocator);
+        try msg.print(self.allocator, "// ZNTC Bundle Error\n", .{});
+        for (diags) |d| {
+            try msg.print(self.allocator, "// [{s}] {s}: {s}\n", .{ @tagName(d.severity), d.file_path, d.message });
+        }
+        try msg.print(self.allocator, "console.error('ZNTC: bundle failed, see server logs');\n", .{});
+        try request.respond(msg.items, .{ .status = .internal_server_error, .extra_headers = &js_headers });
+        self.routineLog("  500 {s} (bundle errors)\n", .{label});
+    }
+
+    /// chunk OutputFile 중 `wanted` 절대경로를 `module_ids` 에 포함한 첫 청크 인덱스.
+    /// entry 청크(entry 모듈 포함) 또는 lazy 청크(seed 모듈 포함) 식별에 쓴다.
+    fn findChunkContaining(outputs: []const lib.bundler.emitter.OutputFile, wanted: []const u8) ?usize {
+        for (outputs, 0..) |o, i| {
+            if (o.kind != .chunk) continue;
+            for (o.module_ids) |mid| {
+                if (std.mem.eql(u8, mid, wanted)) return i;
+            }
+        }
+        return null;
+    }
+
+    /// 요청 청크 이름(`<stem>-<pathhash>.js`)을 seed 절대경로로 역참조한다. pathhash =
+    /// `truncate(u32, Wyhash(0, seed_path))` 의 8자리 hex (chunk.zig 의 lazy_path_hash 와 동일
+    /// 공식). **이름의 마지막 `-` 뒤(없으면 stem 전체) 세그먼트가 정확히 8 hex 이고** seed
+    /// 의 hash 와 eql 일 때만 매칭 → `/vendor-deadbeef-styles.js` 같은 정적 자산 오탐 차단
+    /// (substring 매칭이 아님). 매칭 없으면 null → static fallback. **순수 함수** — 단위 테스트 대상.
+    fn resolveLazySeedPath(seed_paths: []const []const u8, requested_name: []const u8) ?[]const u8 {
+        if (!std.mem.endsWith(u8, requested_name, ".js")) return null;
+        const stem = requested_name[0 .. requested_name.len - ".js".len];
+        // hash 세그먼트 = 마지막 '-' 뒤(stem 에 '-' 없으면 stem 전체). [name]-[hash] / [hash] 패턴 모두 수용.
+        const seg = if (std.mem.lastIndexOfScalar(u8, stem, '-')) |i| stem[i + 1 ..] else stem;
+        if (seg.len != 8) return null;
+        for (seg) |c| if (!std.ascii.isHex(c)) return null;
+        for (seed_paths) |sp| {
+            var hash_buf: [8]u8 = undefined;
+            const h: u32 = @truncate(std.hash.Wyhash.hash(0, sp));
+            _ = std.fmt.bufPrint(&hash_buf, "{x:0>8}", .{h}) catch continue;
+            if (std.mem.eql(u8, seg, &hash_buf)) return sp;
+        }
+        return null;
+    }
+
+    /// dev_split(code_splitting+lazy)로 빌드해 **entry 청크만** 서빙한다. 동적 import 타겟은
+    /// 미파싱 seed 로 남아 emit-skip → 브라우저가 `__zntc_load_chunk("<stem>-<pathhash>.js")`
+    /// 요청 시 `tryServeLazyChunk` 가 on-demand 컴파일. 빌드가 수집한 seed 경로를 lazy_state
+    /// 에 저장(역참조용)하고, entry rebuild 라 stale 가능한 청크 캐시를 비운다.
+    fn serveBundleLazy(self: *DevServer, request: *http.Server.Request) !void {
+        const abs_entry = self.abs_entry orelse unreachable;
+        const entries = [_][]const u8{abs_entry};
+
+        var bundler = Bundler.init(self.allocator, .{
+            .entry_points = &entries,
+            .platform = .browser,
+            .dev_mode = true,
+            .root_dir = self.root_path,
+            .react_refresh = true,
+            .plugins = self.plugins,
+            .define = self.define,
+            .jsx_runtime = self.jsx_runtime,
+            .jsx_import_source = self.jsx_import_source,
+            .jsx_factory = self.jsx_factory,
+            .jsx_fragment = self.jsx_fragment,
+            .code_splitting = true,
+            .lazy_compilation = true,
+            // IIFE registry 모델: cross-chunk 참조가 `__zntc_require("entry.js")` 런타임
+            // 조회(네트워크 fetch 아님) → entry 를 /bundle.js 로 서빙해도 정합. 동적 청크는
+            // `__zntc_load_chunk("<stem>-<pathhash>.js")` 로 lazy 라우트를 fetch. (PR-3b-ii
+            // node e2e 로 검증된 모델 — ESM 기본값은 `import "./entry.js"` 로 /entry.js 를
+            // fetch 하려 해 깨짐.)
+            .format = .iife,
+        });
+        defer bundler.deinit();
+
+        var result = try bundler.bundle(self.io);
+        defer result.deinit(self.allocator);
+
+        if (result.hasErrors()) return self.respondBuildError(request, &result, abs_entry);
+        self.error_state.clear(self.io, self.allocator);
+        self.ws_clients.broadcast(self.io, "{\"type\":\"clear-error\"}");
+
+        // seed 목록 갱신 + 청크 캐시 무효화 (entry rebuild → 이전 lazy 청크 stale 가능).
+        // **MVP 범위**: 무효화는 *이 /bundle.js GET 시점* 에만 일어난다. 브라우저는 파일 변경
+        // 시 HMR/full-reload 로 entry 를 다시 받으므로 일반 흐름에선 정합한다. 단 watch 가
+        // /bundle.js 재요청 없이 백그라운드 rebuild 하는 경로는 캐시를 비우지 않아 stale 가능 —
+        // watch 연동 무효화는 PR-4(HMR + 재귀 lazy) 범위. (RFC §4)
+        {
+            self.lazy_state.mutex.lock();
+            defer self.lazy_state.mutex.unlock();
+            self.lazy_state.invalidateChunks(self.allocator);
+            try self.lazy_state.setSeedPaths(self.allocator, result.lazy_seed_paths orelse &.{});
+        }
+
+        const outputs = result.outputs orelse {
+            // code_splitting 인데 outputs 가 없으면 비정상 — 단일 output 으로 폴백.
+            try request.respond(result.output, .{ .extra_headers = &js_headers });
+            self.routineLog("  200 {s} (lazy entry, single)\n", .{bundle_path});
+            return;
+        };
+
+        const entry_idx = findChunkContaining(outputs, abs_entry) orelse {
+            self.routineLog("  500 {s} (lazy: entry 청크 미발견)\n", .{abs_entry});
+            try request.respond("500 Lazy entry chunk not found", .{
+                .status = .internal_server_error,
+                .extra_headers = &cors_headers,
+            });
+            return;
+        };
+
+        // entry 청크 소스맵 캐시 (소유권 이전).
+        if (try outputs[entry_idx].getSourceMapJSON(self.allocator)) |sm| {
+            self.sourcemap_cache.mutex.lock();
+            defer self.sourcemap_cache.mutex.unlock();
+            if (self.sourcemap_cache.data) |old| self.allocator.free(old);
+            self.sourcemap_cache.data = sm;
+        }
+
+        try request.respond(outputs[entry_idx].contents, .{ .extra_headers = &js_headers });
+        self.routineLog("  200 {s} (lazy entry, {d} seeds)\n", .{ bundle_path, self.lazy_state.seed_paths.len });
+    }
+
+    /// `/<stem>-<pathhash>.js` 요청을 처리한다. 마지막 entry 빌드의 seed 와 매칭되면 그
+    /// seed 만 force-parse 해 단일 청크로 컴파일·서빙하고 `true` 반환. 매칭 안 되면(lazy
+    /// 청크 아님) `false` 반환 → caller 가 static fallback. 응답 실패 등 내부 에러도 삼켜
+    /// `true`(처리됨)로 반환 — 라우팅 일관성 유지.
+    ///
+    /// **동시성**: connection 마다 thread 라 다른 thread 의 `serveBundleLazy` 가 entry rebuild
+    /// 로 `seed_paths`/`chunk_cache` 를 교체·해제할 수 있다. 그래서 락 안에서 캐시/seed 를
+    /// *사본* 으로 떠내고 락 밖에서 응답·빌드한다(공유 슬라이스를 락 밖에서 잡지 않음 → UAF 차단).
+    fn tryServeLazyChunk(self: *DevServer, request: *http.Server.Request, rel_path: []const u8) bool {
+        const requested = std.fs.path.basename(rel_path);
+
+        var cached_copy: ?[]u8 = null;
+        var seed_copy: ?[]u8 = null;
+        {
+            self.lazy_state.mutex.lock();
+            defer self.lazy_state.mutex.unlock();
+            if (self.lazy_state.chunk_cache.get(requested)) |cached| {
+                cached_copy = self.allocator.dupe(u8, cached) catch null; // null → 아래서 500
+            } else if (resolveLazySeedPath(self.lazy_state.seed_paths, requested)) |sp| {
+                seed_copy = self.allocator.dupe(u8, sp) catch null; // null → 아래서 500
+            } else {
+                return false; // lazy 청크 아님 → static fallback
+            }
+        }
+
+        // 캐시 히트 — 사본으로 응답.
+        if (cached_copy) |bytes| {
+            defer self.allocator.free(bytes);
+            request.respond(bytes, .{ .extra_headers = &js_headers }) catch {};
+            self.routineLog("  200 /{s} (lazy cache)\n", .{requested});
+            return true;
+        }
+
+        // 캐시 미스 — seed force-parse 빌드.
+        if (seed_copy) |sp| {
+            defer self.allocator.free(sp);
+            self.serveLazyChunkBuild(request, requested, sp) catch |err| {
+                self.routineLog("  500 /{s} (lazy build: {})\n", .{ requested, err });
+                request.respond("500 Lazy chunk build error", .{
+                    .status = .internal_server_error,
+                    .extra_headers = &cors_headers,
+                }) catch {};
+            };
+            return true;
+        }
+
+        // 여기 도달 = lazy 청크로 식별됐으나 dupe OOM. static fallback 말고 500(처리됨).
+        request.respond("500 Lazy chunk OOM", .{
+            .status = .internal_server_error,
+            .extra_headers = &cors_headers,
+        }) catch {};
+        return true;
+    }
+
+    /// seed 를 force-parse 해 그 동적 청크 바이트를 **caller 소유 슬라이스**로 반환한다.
+    /// entry 는 결정론(shared-off + export-all, PR-3b-ii)이라 매 빌드 byte-identical →
+    /// 동적 청크는 `__zntc_require("entry.js").<local>` 단방향 조회로 안전. HTTP 무관 —
+    /// serveLazyChunkBuild 와 단위 테스트 공용.
+    fn buildLazyChunkBytes(self: *DevServer, seed_path: []const u8) ![]u8 {
+        const abs_entry = self.abs_entry orelse return error.NoEntryPoint;
+        const entries = [_][]const u8{abs_entry};
+        const force_parse = [_][]const u8{seed_path};
+
+        var bundler = Bundler.init(self.allocator, .{
+            .entry_points = &entries,
+            .platform = .browser,
+            .dev_mode = true,
+            .root_dir = self.root_path,
+            .react_refresh = true,
+            .plugins = self.plugins,
+            .define = self.define,
+            .jsx_runtime = self.jsx_runtime,
+            .jsx_import_source = self.jsx_import_source,
+            .jsx_factory = self.jsx_factory,
+            .jsx_fragment = self.jsx_fragment,
+            .code_splitting = true,
+            .lazy_compilation = true,
+            .lazy_force_parse = &force_parse,
+            // serveBundleLazy 와 동일 IIFE registry 모델(위 주석 참조).
+            .format = .iife,
+        });
+        defer bundler.deinit();
+
+        var result = try bundler.bundle(self.io);
+        defer result.deinit(self.allocator);
+
+        if (result.hasErrors()) return error.LazyChunkBuildFailed;
+        const outputs = result.outputs orelse return error.LazyChunkNoOutputs;
+        const chunk_idx = findChunkContaining(outputs, seed_path) orelse return error.LazyChunkNotFound;
+        return try self.allocator.dupe(u8, outputs[chunk_idx].contents);
+    }
+
+    /// `buildLazyChunkBytes` 로 컴파일한 청크를 서빙하고 `requested` 이름으로 캐시한다.
+    /// 캐시에는 *독립 사본* 을 둔다 — local `bytes` 는 `defer` 가 항상 해제(이중소유 회피).
+    fn serveLazyChunkBuild(self: *DevServer, request: *http.Server.Request, requested: []const u8, seed_path: []const u8) !void {
+        const bytes = try self.buildLazyChunkBytes(seed_path);
+        defer self.allocator.free(bytes);
+
+        try request.respond(bytes, .{ .extra_headers = &js_headers });
+
+        // 다음 동일 요청은 빌드 없이 히트. race 로 이미 있으면 skip.
+        self.lazy_state.mutex.lock();
+        defer self.lazy_state.mutex.unlock();
+        if (!self.lazy_state.chunk_cache.contains(requested)) {
+            const key = try self.allocator.dupe(u8, requested);
+            errdefer self.allocator.free(key);
+            const val = try self.allocator.dupe(u8, bytes);
+            errdefer self.allocator.free(val);
+            try self.lazy_state.chunk_cache.put(self.allocator, key, val);
+        }
+        self.routineLog("  200 /{s} (lazy built, seed={s})\n", .{ requested, seed_path });
     }
 
     const sourcemap_headers = cors_headers ++ [_]http.Header{
@@ -1558,6 +1868,152 @@ pub fn sanitizePath(raw: []const u8) ?[]const u8 {
 // ──────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────
+
+// PR-3b-iii: lazy on-demand 라우트의 역참조 핵심. 요청 청크 이름의 pathhash 8-hex 가
+// seed 경로의 truncate(Wyhash) 와 일치하면 그 seed 경로를 돌려준다(chunk_names 패턴 무관).
+test "resolveLazySeedPath: 청크 이름의 pathhash 로 seed 역참조" {
+    const testing = std.testing;
+    const seeds = [_][]const u8{ "/abs/src/heavy.ts", "/abs/src/other.ts" };
+
+    // heavy 의 기대 청크 이름 구성: "<stem>-<8hex>.js" (8hex = truncate(u32, Wyhash(path))).
+    var hash_buf: [8]u8 = undefined;
+    const h: u32 = @truncate(std.hash.Wyhash.hash(0, seeds[0]));
+    _ = std.fmt.bufPrint(&hash_buf, "{x:0>8}", .{h}) catch unreachable;
+    var name_buf: [64]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "heavy-{s}.js", .{hash_buf}) catch unreachable;
+
+    const got = DevServer.resolveLazySeedPath(&seeds, name) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings(seeds[0], got);
+
+    // 매칭 seed 없는 8-hex → null (static fallback).
+    try testing.expect(DevServer.resolveLazySeedPath(&seeds, "stranger-12345678.js") == null);
+    // .js 확장자 아님 → null (정적 자산).
+    try testing.expect(DevServer.resolveLazySeedPath(&seeds, "heavy-deadbeef.css") == null);
+    // 빈 seed 목록 → 항상 null.
+    try testing.expect(DevServer.resolveLazySeedPath(&.{}, name) == null);
+
+    // **strict 매칭**: 정확한 hash 가 *마지막 세그먼트가 아니라 stem 중간* 에 있으면 오탐 금지.
+    // (substring 매칭이었으면 hijack 됐을 정적 자산 `<hash>-styles.js` 케이스)
+    var mid_buf: [64]u8 = undefined;
+    const mid = std.fmt.bufPrint(&mid_buf, "{s}-styles.js", .{hash_buf}) catch unreachable; // seg="styles"
+    try testing.expect(DevServer.resolveLazySeedPath(&seeds, mid) == null);
+    // 마지막 세그먼트가 8자 아님(7 hex) → null.
+    try testing.expect(DevServer.resolveLazySeedPath(&seeds, "heavy-deadbee.js") == null);
+}
+
+// PR-3b-iii: LazyState 라이프사이클 — setSeedPaths 가 이전 사본 해제+새 사본 보유,
+// invalidateChunks 가 캐시 엔트리(key/value) 해제, deinit 이 전부 정리. testing.allocator
+// 가 leak/double-free 를 검출한다.
+test "LazyState: setSeedPaths/invalidateChunks/deinit 누수·이중해제 없음" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var st: DevServer.LazyState = .{};
+
+    // 1차 seed 세팅.
+    try st.setSeedPaths(alloc, &.{ "/a/x.ts", "/a/y.ts" });
+    try testing.expectEqual(@as(usize, 2), st.seed_paths.len);
+    try testing.expectEqualStrings("/a/x.ts", st.seed_paths[0]);
+
+    // 2차 세팅 → 이전 사본 해제(누수 없음) + 교체.
+    try st.setSeedPaths(alloc, &.{"/a/z.ts"});
+    try testing.expectEqual(@as(usize, 1), st.seed_paths.len);
+    try testing.expectEqualStrings("/a/z.ts", st.seed_paths[0]);
+
+    // 청크 캐시에 엔트리 2개(key/value 모두 owned dupe).
+    {
+        const k1 = try alloc.dupe(u8, "heavy-00000001.js");
+        const v1 = try alloc.dupe(u8, "chunk-bytes-1");
+        try st.chunk_cache.put(alloc, k1, v1);
+        const k2 = try alloc.dupe(u8, "heavy-00000002.js");
+        const v2 = try alloc.dupe(u8, "chunk-bytes-2");
+        try st.chunk_cache.put(alloc, k2, v2);
+    }
+    try testing.expectEqual(@as(usize, 2), st.chunk_cache.count());
+
+    // 무효화 → 엔트리 해제 + 비움(capacity 유지).
+    st.invalidateChunks(alloc);
+    try testing.expectEqual(@as(usize, 0), st.chunk_cache.count());
+
+    // 무효화 후 재사용 가능.
+    {
+        const k = try alloc.dupe(u8, "heavy-00000003.js");
+        const v = try alloc.dupe(u8, "chunk-bytes-3");
+        try st.chunk_cache.put(alloc, k, v);
+    }
+    try testing.expectEqual(@as(usize, 1), st.chunk_cache.count());
+
+    st.deinit(alloc); // seed_paths + chunk_cache 전부 정리.
+}
+
+// PR-3b-iii: dev server on-demand 컴파일 end-to-end (HTTP 제외). seed(heavy)를 force-parse 해
+// 동적 청크를 빌드하면 heavy 본문 + entry 로의 단방향 require(`__zntc_require`)가 들어있어야
+// 한다 — entry 결정론(shared-off + export-all)이라 동적 청크가 entry 심볼을 단방향 조회.
+test "buildLazyChunkBytes: seed force-parse → 동적 청크 (entry 단방향 require)" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
+
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "shared.ts", .data = "export const v = 'SHARED_V';" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "heavy.ts", .data = "import { v } from './shared';\nexport const h = 'HEAVY_' + v;" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "entry.ts", .data = "import { v as sv } from './shared';\nasync function go(){ const m = await import('./heavy'); console.log(m.h); }\nconsole.log(sv);\ngo();" });
+
+    const entry_abs = try tmp.dir.realPathFileAlloc(testing.io, "entry.ts", testing.allocator);
+    defer testing.allocator.free(entry_abs);
+    const heavy_abs = try tmp.dir.realPathFileAlloc(testing.io, "heavy.ts", testing.allocator);
+    defer testing.allocator.free(heavy_abs);
+
+    var server = try DevServer.init(testing.allocator, testing.io, .{
+        .root_dir = tmp_path,
+        .entry_point = entry_abs,
+        .port = 0,
+        .lazy_compilation = true,
+    });
+    defer server.deinit();
+    server.shutdown();
+
+    const bytes = try server.buildLazyChunkBytes(heavy_abs);
+    defer testing.allocator.free(bytes);
+
+    try testing.expect(std.mem.indexOf(u8, bytes, "HEAVY_") != null);
+    // IIFE registry: heavy 는 "heavy.js" 로 등록하고 entry 를 단방향 require(네트워크 fetch
+    // 아님). 역방향 정적 참조 없음 → entry 결정론과 정합.
+    try testing.expect(std.mem.indexOf(u8, bytes, "__zntc_require(\"entry.js\")") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "__zntc_register") != null);
+
+    // ── 루프 클로저: entry 가 부르는 __zntc_load_chunk("<name>") URL 이 reverse-lookup 으로
+    // heavy seed 로 되돌아와야 한다(브라우저 요청 URL ↔ 라우트 매칭의 핵심 정합). entry 를
+    // force-parse 없이 빌드(serveBundleLazy 와 같은 옵션) → load_chunk 이름 추출 → 역참조.
+    {
+        var bnd = Bundler.init(testing.allocator, .{
+            .entry_points = &.{entry_abs},
+            .platform = .browser,
+            .dev_mode = true,
+            .root_dir = tmp_path,
+            .code_splitting = true,
+            .lazy_compilation = true,
+            .format = .iife,
+        });
+        defer bnd.deinit();
+        var result = try bnd.bundle(testing.io);
+        defer result.deinit(testing.allocator);
+        const outs = result.outputs orelse return error.TestUnexpectedResult;
+        const seeds = result.lazy_seed_paths orelse return error.TestUnexpectedResult;
+
+        var chunk_name: ?[]const u8 = null;
+        for (outs) |o| {
+            const lc = std.mem.indexOf(u8, o.contents, "__zntc_load_chunk(\"") orelse continue;
+            const start = lc + "__zntc_load_chunk(\"".len;
+            const end = std.mem.indexOfScalarPos(u8, o.contents, start, '"') orelse continue;
+            chunk_name = o.contents[start..end];
+            break;
+        }
+        const name = chunk_name orelse return error.TestUnexpectedResult;
+        const resolved = DevServer.resolveLazySeedPath(seeds, name) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(heavy_abs, resolved);
+    }
+}
 
 test "collectCssFiles: .css만 수집하고 .js는 제외" {
     const testing = std.testing;

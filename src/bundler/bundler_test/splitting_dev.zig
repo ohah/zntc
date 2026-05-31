@@ -3020,6 +3020,47 @@ test "LazyCompilation PR-3b-ii: lazy_force_parse 가 지정 seed 를 즉시 pars
     try std.testing.expect(try heavyPresent(&.{heavy_abs}, entry)); // force-parse → eager
 }
 
+// PR-3b-iii: lazy_compilation 빌드가 미파싱 seed 절대경로를 BundleResult.lazy_seed_paths 로
+// 노출 → dev server on-demand 라우트의 역참조 입력. force-parse 한 seed 는 파싱되어 목록에서 빠진다.
+test "LazyCompilation PR-3b-iii: lazy_seed_paths 가 미파싱 seed 경로 노출" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export const h = 'H';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.h); }
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const heavy_abs = try absPath(&tmp, "heavy.ts");
+    defer std.testing.allocator.free(heavy_abs);
+
+    const seedHas = struct {
+        fn check(force: []const []const u8, e: []const u8, want: []const u8) !bool {
+            var bnd = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{e},
+                .dev_mode = true,
+                .code_splitting = true,
+                .lazy_compilation = true,
+                .lazy_force_parse = force,
+                .format = .iife,
+            });
+            defer bnd.deinit();
+            const result = try bnd.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            const seeds = result.lazy_seed_paths orelse return false;
+            for (seeds) |s| if (std.mem.eql(u8, s, want)) return true;
+            return false;
+        }
+    }.check;
+
+    // force-parse 없음 → heavy 는 미파싱 seed → 목록에 포함.
+    try std.testing.expect(try seedHas(&.{}, entry, heavy_abs));
+    // force-parse=[heavy] → heavy 파싱 → seed 아님 → 목록에서 빠짐.
+    try std.testing.expect(!try seedHas(&.{heavy_abs}, entry, heavy_abs));
+}
+
 // PR-3b-ii 잔여: shared-off + entry export-all-by-local → (B) on-demand 성립.
 // shared 를 entry(static) + heavy(dynamic) 둘이 사용. shared-off 로 shared 는 entry 에 남고,
 // entry 가 export-all 로 shared 의 v 를 노출 → heavy 는 __zntc_require("entry.js").v 단방향

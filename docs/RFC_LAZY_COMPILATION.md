@@ -207,9 +207,24 @@ MVP(parse eager)는 "시작 시 전체 그래프를 알므로 cross-chunk 심볼
     **한계(후속)**: export-name≠local name(별칭/re-export/소비모듈 deconflict)은 미정합(crash
     아님, 미해결 참조) — 일반 `export const/function` 케이스만.
     → 즉 (B)는 viable 하나 `shared-off + export-all-by-local` 선행. PR-3b-ii 잔여 = 이 둘 구현.
-  - **PR-3b-iii**: lazy 라우트 — `/<heavy-pathhash>.js` GET 시 seed force-parse→`restrict_to_chunk`
-    단일청크 emit→`LazyChunkCache`. 이름→seed 역참조는 `graph.lazy_seeds`. virtual/external 동적
-    타겟 lazy 도 여기.
+  - **PR-3b-iii DONE — dev 서버 lazy 라우트**: dev 서버가 lazy on-demand 를 실제로 서빙.
+    - **entry 서빙**: `DevServer.Options.lazy_compilation=true` 면 `serveBundle` 이 `serveBundleLazy`
+      로 분기 → dev_split(code_splitting+lazy_compilation, **`.format=.iife` 강제**)로 빌드해
+      entry 청크(`module_ids ∋ abs_entry`)만 `/bundle.js` 로 서빙. IIFE registry 라 cross-chunk 가
+      `__zntc_require("entry.js")` 런타임 조회(네트워크 fetch 아님) → entry 를 /bundle.js 로 줘도
+      정합. (ESM 기본값은 `import "./entry.js"` 로 /entry.js 를 fetch 하려 해 깨짐.)
+    - **역참조**: 빌드가 미파싱 seed 경로를 `BundleResult.lazy_seed_paths` 로 노출 → `lazy_state`
+      에 보관. `resolveLazySeedPath` 는 요청 `<stem>-<pathhash>.js` 의 **마지막 `-` 뒤 8-hex** 가
+      seed 의 `truncate(Wyhash(path))` 와 eql 일 때만 매칭(substring 아님 → 정적 자산 오탐 차단).
+    - **on-demand 빌드**: `/<stem>-<pathhash>.js` GET → `tryServeLazyChunk` → seed 를 `lazy_force_parse`
+      로 빌드(`buildLazyChunkBytes`) → `module_ids ∋ seed_path` 청크를 요청 URL 로 서빙 + `chunk_cache`.
+    - **동시성**: connection-per-thread 라 락 안에서 캐시/seed 를 *사본* 으로 떠내고 락 밖에서
+      응답·빌드(공유 슬라이스 UAF 차단). 캐시 무효화는 `/bundle.js` GET 시점(MVP) — watch 백그라운드
+      rebuild 연동은 PR-4.
+    - **알려진 한계(후속)**: ① `restrict_to_chunk` 미사용 — 청크당 entry 까지 재emit(낭비, dev 라
+      수용; restrict 는 index 선결 필요라 path-restrict 가 필요 → 최적화 후속). ② lazy 청크 소스맵
+      라우트 없음(PR-4). ③ seed_paths 비었을 때(첫 GET 전 직접 청크 URL) → static fallback 404.
+      ④ aliased export(`export {a as b}`)/re-export 는 export-all 한계(PR-3b-ii)와 동일.
 - **PR-4 — watch/HMR + 재귀 lazy**: 활성/미활성 청크 분기. 동적 청크 parse 중 발견한 새 `import()` 를
   seed 로 추가. 그래프 구조 변경 시 entry 청크 재계산.
 - **PR-5 — 검증/벤치 + `--lazy` 노출**: cold-start 벤치(§1.3 harness 확장), 로드맵 "미구현" 제거,
