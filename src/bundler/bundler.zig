@@ -1689,6 +1689,9 @@ pub const Bundler = struct {
             if (dev_split) {
                 emit_opts.dev_mode = true;
                 emit_opts.sourcemap.enable = true;
+                // RFC_LAZY_DEV_MODULE_HMR PR-1: emitChunks 가 per-module HMR code 를
+                // 수집하도록 collect_module_codes 전파(단일번들 경로와 동일 게이트).
+                emit_opts.collect_module_codes = self.options.collect_module_codes;
             }
 
             // CSS 코드스플리팅 계획을 emitChunks *전* 에 세워, 동적 청크가
@@ -1725,9 +1728,41 @@ pub const Bundler = struct {
                 for (outs) |o| {
                     self.allocator.free(o.path);
                     self.allocator.free(o.contents);
+                    // dev+split per-module HMR code (PR-1): 아래 평탄화가 일부 OutputFile
+                    // 만 null 로 비운 뒤 OOM 나면 남은 청크의 dev codes 가 누수되므로 해제.
+                    // 평탄화로 이미 null 된 항목은 no-op.
+                    if (o.module_dev_codes) |codes| types.ModuleDevCode.freeAll(codes, self.allocator);
                 }
                 self.allocator.free(outs);
             };
+
+            // dev+split per-module HMR code 평탄화 (RFC_LAZY_DEV_MODULE_HMR PR-1):
+            // emitChunks 가 청크별로 수집한 module_dev_codes 를 단일 slice 로 모아
+            // BundleResult.module_dev_codes 로 노출 → onRebuild 의 updates 계산이
+            // 단일번들과 동일하게 동작. 각 OutputFile.module_dev_codes 의 소유 메모리는
+            // 여기서 평탄화 slice 로 이전(항목 dupe 없이 move) 후 원본 필드는 비운다 —
+            // OutputFile.deinit 의 이중 해제 방지. dev_split 아닐 땐 전부 null 이라 no-op.
+            if (dev_split) {
+                if (outputs) |outs| {
+                    var flat: std.ArrayList(types.ModuleDevCode) = .empty;
+                    errdefer {
+                        types.ModuleDevCode.freeItems(flat.items, self.allocator);
+                        flat.deinit(self.allocator);
+                    }
+                    for (outs) |*o| {
+                        const codes = o.module_dev_codes orelse continue;
+                        try flat.appendSlice(self.allocator, codes);
+                        // 항목 소유권을 flat 으로 이전 — 백킹 slice 만 해제(항목은 move).
+                        self.allocator.free(codes);
+                        o.module_dev_codes = null;
+                    }
+                    if (flat.items.len > 0) {
+                        module_dev_codes_from_emit = try flat.toOwnedSlice(self.allocator);
+                    } else {
+                        flat.deinit(self.allocator);
+                    }
+                }
+            }
 
             // P1-3 (#3385): MF container emit — entry 청크 부트스트랩을
             // webpack-style container(init/get, globalName 대입)로 후처리

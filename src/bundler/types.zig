@@ -22,13 +22,18 @@ pub const ModuleDevCode = struct {
     /// `map` 과 상호 배타 — lazy 경로에선 `sm_builder` 만, eager 경로에선 `map` 만 채워진다.
     sm_builder: ?*SourceMapBuilder = null,
 
-    pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
+    /// 각 항목의 소유 메모리만 해제 (백킹 slice 는 호출자 소유 — 예: ArrayList).
+    pub fn freeItems(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
         for (codes) |c| {
             allocator.free(c.id);
             allocator.free(c.code);
             if (c.map) |m| allocator.free(m);
             if (c.sm_builder) |sm| sm.destroy(allocator);
         }
+    }
+
+    pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
+        freeItems(codes, allocator);
         allocator.free(codes);
     }
 };
