@@ -151,6 +151,8 @@ interface NativeWatchHandle {
    * dev server 가 `/hmr-map/:moduleId` 요청을 받을 때 호출.
    */
   getHmrSourceMap(moduleId: string): string | null;
+  /** #4079 PR-2 — 요청된 lazy seed 를 force-parse 누적 등록 (dev materialize). */
+  requestLazySeed(path: string): void;
 }
 
 interface NativeTsconfigCacheHandle {
@@ -1537,6 +1539,18 @@ export interface WatchHandle {
    * `null` if `moduleId` was not included in this rebuild.
    */
   getHmrSourceMap(moduleId: string): string | null;
+  /**
+   * #4079 PR-2 — 요청된 lazy seed(동적 import 타겟)를 watch 그래프에서 force-parse 하도록
+   * 누적 등록한다. `path` 는 {@link WatchReadyEvent.lazySeeds} / {@link WatchRebuildEvent.lazySeeds}
+   * 의 *정확한* 절대경로여야 한다(번들러 해석 경로 — `resolve()` 로 재구성 금지).
+   *
+   * 호출 즉시 worker 가 다음 rebuild(파일 변경 없이도, ≤200ms 내)에서 그 seed 를 정식 파싱·
+   * emit 하고 그 transitive 정적 deps 를 감시 대상에 포함시킨다(dev materialize — `--lazy`
+   * 라우트를 방문하면 그 안쪽 파일 편집도 HMR 동작). 중복/`stop()` 후 호출은 no-op.
+   *
+   * `lazyCompilation`+`splitting` watch 세션에서만 의미 있다.
+   */
+  requestLazySeed(path: string): void;
 }
 
 export interface ZntcPlugin {
@@ -3697,6 +3711,9 @@ export function watch(options: BuildOptions): WatchHandle {
     },
     getHmrSourceMap(moduleId: string) {
       return handle.getHmrSourceMap(moduleId);
+    },
+    requestLazySeed(path: string) {
+      handle.requestLazySeed(path);
     },
   };
 }

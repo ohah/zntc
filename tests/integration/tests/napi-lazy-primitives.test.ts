@@ -294,6 +294,64 @@ describe('NAPI lazy compilation primitives (D105 PR-A)', () => {
     }
   });
 
+  // #4079 PR-2: handle.requestLazySeed(seed) → worker 가 그 seed 를 force-parse 누적 집합에 넣고
+  // (파일 변경 없이도) rebuild → 그 seed 가 정식 청크로 emit + 미파싱 seed 목록에서 빠진다.
+  // dev materialize 의 토대 — 요청된 라우트를 watch 그래프에서 컴파일·감시하게 한다.
+  test('#4079 PR-2: requestLazySeed → 다음 rebuild 가 그 seed 를 force-parse(emit + lazySeeds 제거)', async () => {
+    const fixture = await createFixture({
+      'heavy.ts': `export const h = 'HEAVY_PR2';`,
+      'entry.ts': `async function go(){ const m = await import('./heavy'); console.log(m.h); }\ngo();`,
+    });
+    cleanup = fixture.cleanup;
+    const outdir = join(fixture.dir, 'out');
+    const heavyOnDisk = () => readdirSync(outdir).some((f) => /heavy-[0-9a-f]{8}\.js$/.test(f));
+
+    let rebuildResolve: ((e: any) => void) | undefined;
+    const rebuilt: Promise<any> = new Promise((r) => {
+      rebuildResolve = r;
+    });
+    let handle: ReturnType<typeof watch> | undefined;
+    const ready = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('onReady timeout')), 8000);
+      handle = watch({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        platform: 'browser',
+        devMode: true,
+        splitting: true,
+        lazyCompilation: true,
+        format: 'iife',
+        outdir,
+        onReady: (e: any) => {
+          clearTimeout(t);
+          resolve(e);
+        },
+        onRebuild: (e: any) => rebuildResolve?.(e),
+      });
+    });
+    try {
+      const readyEvent = await ready;
+      expect(readyEvent.lazySeeds.length).toBe(1);
+      expect(heavyOnDisk()).toBe(false); // 초기엔 emit-skip(미파싱 seed)
+      const seedPath = readyEvent.lazySeeds[0].path;
+
+      // 요청 — 파일 변경 없이 worker 가 force-parse 집합에 누적 + rebuild 트리거.
+      (handle as any).requestLazySeed(seedPath);
+
+      const rb = await Promise.race([
+        rebuilt,
+        new Promise((_r, rej) => setTimeout(() => rej(new Error('onRebuild timeout')), 8000)),
+      ]);
+      expect(rb.success).toBe(true);
+      await new Promise((r) => setTimeout(r, 300)); // emit flush
+
+      // force-parse 됨: heavy 가 정식 청크로 디스크 emit + 미파싱 seed 목록에서 빠짐.
+      expect(heavyOnDisk()).toBe(true);
+      expect(rb.lazySeeds ?? []).toHaveLength(0);
+    } finally {
+      handle?.stop();
+    }
+  }, 30000);
+
   // #4074: rebuild 후에도 lazy seed 는 미파싱·emit-skip 으로 유지돼야 한다. cache-hit rebuild 의
   // replay 경로(resolve_imports.replayCachedResolvedDeps)가 동적 import 타겟을 일반 모듈로
   // addModule→파싱→emit 하던 버그 — replay 에도 miss 경로의 lazy 게이트를 적용해 수정. 없으면
