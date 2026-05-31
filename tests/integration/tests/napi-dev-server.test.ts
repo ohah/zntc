@@ -12,6 +12,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -204,6 +205,39 @@ describe('NAPI startDevServer / stopDevServer', () => {
       quiet: false,
     });
     native.stopDevServer(handle);
+  });
+
+  test('blocked connection 이 stop 을 2s deinit timeout 으로 막지 않음 (#4066)', async () => {
+    // 원시 소켓으로 연결만 하고 *불완전한* 요청을 보냄 → 서버 handleConnection 이 receiveHead 에서
+    // 블록(결정적 — bun fetch keep-alive 의미에 의존 안 함). 수정 전: shutdown 이 listen 만 깨우고
+    // 기존 connection 은 못 깨워 deinit 가 2s timeout 까지 대기(+ UAF 위험). 수정 후: shutdown(.both)
+    // 로 blocked read 즉시 EOF → 빠른 종료. 정적 모드(no entry)라 watch join(~500ms)도 없어 측정 깔끔.
+    const port = reservePort();
+    const handle = native.startDevServer({
+      rootDir: tmpRoot,
+      port,
+      host: '127.0.0.1',
+      quiet: true,
+    });
+    let sock: ReturnType<typeof connect> | undefined;
+    try {
+      await waitUntilReady(`http://127.0.0.1:${port}/index.html`);
+      sock = connect({ host: '127.0.0.1', port });
+      sock.on('error', () => {}); // shutdown 시 ECONNRESET 등 무시
+      await new Promise<void>((res, rej) => {
+        sock!.once('connect', () => res());
+        sock!.once('error', rej);
+      });
+      sock.write('GET /index.html HTTP/1.1\r\n'); // 헤더 미완성 → 서버는 blank line 까지 더 읽으려 블록
+      await new Promise((r) => setTimeout(r, 150)); // 서버 accept + handleConnection read 블록할 시간
+      const t0 = Date.now();
+      native.stopDevServer(handle);
+      const dt = Date.now() - t0;
+      expect(dt).toBeLessThan(1500); // 수정 전이면 ~2000ms(timeout), 수정 후 수백 ms
+    } finally {
+      if (sock) sock.destroy();
+      native.stopDevServer(handle); // idempotent — finally 안전망
+    }
   });
 
   // GC-only cleanup (no explicit stopDevServer) — finalize callback 가 자동 정리한다는
