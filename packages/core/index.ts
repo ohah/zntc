@@ -218,6 +218,7 @@ interface NativeModule {
     certPath?: string;
     keyPath?: string;
     quiet?: boolean;
+    lazyCompilation?: boolean;
   }): unknown;
   /** startDevServer 가 반환한 handle 로 graceful shutdown. idempotent. */
   stopDevServer(handle: unknown): void;
@@ -591,6 +592,18 @@ export interface StartDevServerOptions {
    * cause 를 추적할 수 있도록 보장.
    */
   quiet?: boolean;
+  /**
+   * Lazy on-demand compilation. Default false. When true, the dev server builds
+   * with code-splitting + lazy mode (IIFE registry): only the entry chunk is
+   * served at `/bundle.js`, and each dynamic `import()` target is compiled on
+   * demand when the browser requests its chunk URL. Reduces cold-start time for
+   * large apps (parse work is deferred to first use).
+   *
+   * **Note**: this is honored by the native (`startDevServer`) dev server only.
+   * The `zntc dev` web CLI runs a separate JS dev server that does not yet
+   * support lazy compilation — tracked as a backlog item.
+   */
+  lazyCompilation?: boolean;
 }
 
 /** Opaque handle from {@link startDevServer}. */
@@ -775,7 +788,13 @@ export interface EmotionOptions {
   importMap?: Record<string, Record<string, { canonicalImport: [string, string] }>>;
 }
 
-/** Vite-style dev server options used by `zntc dev` / `zntc --serve`. */
+/**
+ * Vite-style dev server options used by `zntc dev` / `zntc --serve`.
+ *
+ * Note: `startDevServer()` (native NAPI) accepts extra options such as
+ * `lazyCompilation` — see {@link StartDevServerOptions}. The `zntc dev` web CLI
+ * runs a separate JS dev server and does not honor those yet (backlog).
+ */
 export interface DevServerOptions {
   /** Port to listen on. CLI `--port` overrides this value. */
   port?: number;

@@ -1,6 +1,6 @@
 //! HTTPS-capable dev server NAPI entry.
 //!
-//! `startDevServer({rootDir, port?, host?, entry?, open?, certPath?, keyPath?})`
+//! `startDevServer({rootDir, port?, host?, entry?, open?, certPath?, keyPath?, quiet?, lazyCompilation?})`
 //!   → opaque handle (napi_external).
 //! `stopDevServer(handle)` → undefined. shutdown + thread join + deinit.
 //!
@@ -176,6 +176,8 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
     // 하게 항상 stderr** — 사용자가 throw 메시지 너머 진단 못 보면 NAPI throwError
     // generic 메시지로 root cause 추적 불가.
     const quiet = getObjectBool(env, argv[0], "quiet", true);
+    // PR-5: lazy on-demand 컴파일(Zig DevServer 전용). default false.
+    const lazy_compilation = getObjectBool(env, argv[0], "lazyCompilation", false);
 
     // cert 와 key 둘 다 있거나 둘 다 없거나.
     if ((cert_path == null) != (key_path == null)) {
@@ -198,6 +200,7 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
         .cert_path = cert_path,
         .key_path = key_path,
         .quiet = quiet,
+        .lazy_compilation = lazy_compilation,
     }) catch |err| {
         native_alloc.destroy(server);
         cleanupStrings(root_dir, host, entry, cert_path, key_path);
