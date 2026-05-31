@@ -902,5 +902,14 @@
   - `clonePathRefIfNeeded` (module_store.zig) — `.interned` 만 store-owned 로 clone (others pass-through)
   - resolve_imports.zig:182/350 `unreachable` → `std.debug.panic` (release UB → meaningful diagnostic)
 
+### D105: 웹 CLI lazy 컴파일 = 접근 1(JS dev 서버 + 네이티브 프리미티브) (2026-05-31)
+- **결정**: 웹 CLI(`zntc dev`)의 lazy on-demand 컴파일은 **JS dev 서버(zntc.mjs)가 정본**으로 남고, lazy 의 어려운 로직(parse 지연·shared-off+export-all 결정론·경로해시 네이밍·IIFE registry)은 **네이티브(번들러)에 단일 진실**로 두며, **NAPI `build`/`watch` API 로 프리미티브를 노출**해 JS 가 그 위에 **얇게**(seed맵+청크캐시+라우트) 오케스트레이션한다. Zig DevServer(`startDevServer`)는 RN/임베더/no-JS 경로로 유지(웹 정본 아님). 접근 2(웹 CLI 를 네이티브 Zig 서버로 전환)는 **불채택**.
+- **이유**:
+  1. **포지션이 강제**: zntc 는 Vite/Rspack 형 **수평(남들이 위에 올라타는) 번들러** — 메타프레임워크/앱이 dev 라이프사이클에 JS 미들웨어·SSR·가상모듈·변환을 주입한다. 제품 표면 = **임베드 가능한 JS dev 서버**라 네이티브 서버로는 그 임베더빌리티를 못 준다. (zntc.config.ts 가 메인 설정인 건 vite.config 와 동형이고, Vite/Rollup 어댑터는 호환용.)
+  2. **선례 = Rspack**: Rust 코어 + **JS dev 서버(@rspack/dev-server)** + JS 플러그인. `experiments.lazyCompilation` 도 JS 미들웨어가 Rust 에 컴파일 요청 → 우리 접근 1 과 동형. (네이티브 서버는 Bun/Turbopack 처럼 런타임/프레임워크를 **소유한 수직형**만 정당.)
+  3. **이중화 최소화**: 컴파일 프리미티브·결정론은 번들러에 한 곳. dev 서버는 그 위 얇은 층뿐. 역참조(이름→seed)도 **네이티브가 `pathHash` 제공** → JS 가 Wyhash 재구현 안 함(drift 차단).
+- **노출(PR-A)**: `build`/`watch` 옵션에 `lazyCompilation`(bool), `lazyForceParse`(string[]); 결과에 `lazySeeds: [{ pathHash, path }]`(`pathHash` = `truncate(u32, Wyhash(0,path))` 8-hex, entry 의 `__zntc_load_chunk("<stem>-<pathHash>.js")` 와 매칭). `restrictToChunk` 는 PR-B 로 유보(JS 가 build-all 후 `moduleIds` 로 청크 선택 가능).
+- **후속**: PR-B(JS dev 서버 lazy 라우트+캐시), PR-C(watch/HMR 연동 + `--lazy`).
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)

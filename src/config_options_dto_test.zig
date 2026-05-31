@@ -58,6 +58,9 @@ const bundler_only_fields = [_][]const u8{
     "inlineDynamicImports",
     "minChunkSize",
     "manualChunks",
+    // D105 PR-A: lazy on-demand 프리미티브 (build()/watch() 전용, dev 서버 오케스트레이션).
+    "lazyCompilation",
+    "lazyForceParse",
     "sourcemapMode",
     "outputExports",
     "mf", // Module Federation config 블록 (#3318 P1-0)

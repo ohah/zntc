@@ -1,5 +1,6 @@
 //! NAPI result object builders.
 
+const std = @import("std");
 const zntc_lib = @import("zntc_lib");
 const common = @import("common.zig");
 const options_mod = @import("options.zig");
@@ -209,6 +210,44 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             _ = c.napi_set_element(env, js_paths, @intCast(i), js_p);
         }
         _ = c.napi_set_named_property(env, js_result, "modulePaths", js_paths);
+    }
+
+    // D105 PR-A: lazySeeds — lazy 빌드의 미파싱 seed 를 `{ pathHash, path }` 로 노출.
+    // pathHash = truncate(u32, Wyhash(0, path)) 의 8-hex — entry 가 부르는
+    // `__zntc_load_chunk("<stem>-<pathHash>.js")` 의 해시 세그먼트와 동일(chunk.zig
+    // lazy_path_hash 와 같은 공식). JS dev 서버가 요청 청크 이름의 해시로 seed 경로를
+    // 역참조(Wyhash 재구현 없이)할 수 있게 한다.
+    if (result.lazy_seed_paths) |seeds| {
+        var js_seeds: c.napi_value = undefined;
+        _ = c.napi_create_array(env, &js_seeds); // dedup 후 길이 불확정 → 동적 array
+        var out_idx: u32 = 0;
+        for (seeds, 0..) |path, i| {
+            // dedup: graph.lazy_seeds 가 같은 seed 를 중복 포함할 수 있어 앞선 path 와 같으면 skip.
+            var dup = false;
+            for (seeds[0..i]) |prev| if (std.mem.eql(u8, prev, path)) {
+                dup = true;
+                break;
+            };
+            if (dup) continue;
+
+            var js_seed: c.napi_value = undefined;
+            _ = c.napi_create_object(env, &js_seed);
+
+            var hash_buf: [8]u8 = undefined;
+            const h: u32 = @truncate(std.hash.Wyhash.hash(0, path));
+            _ = std.fmt.bufPrint(&hash_buf, "{x:0>8}", .{h}) catch unreachable;
+            var js_hash: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, &hash_buf, hash_buf.len, &js_hash);
+            _ = c.napi_set_named_property(env, js_seed, "pathHash", js_hash);
+
+            var js_path: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, path.ptr, path.len, &js_path);
+            _ = c.napi_set_named_property(env, js_seed, "path", js_path);
+
+            _ = c.napi_set_element(env, js_seeds, out_idx, js_seed);
+            out_idx += 1;
+        }
+        _ = c.napi_set_named_property(env, js_result, "lazySeeds", js_seeds);
     }
 
     // mjs `rn-asset-copy` 가 release asset 복사를 위해 이 배열을 직접 소비.

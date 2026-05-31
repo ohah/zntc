@@ -449,6 +449,12 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // React Refresh 관련 opt-in — `reactRefresh` 자체가 config-only (CLI flag 없음).
     // hook signature emit (babel/SWC 동등) 도 config 에서만 켠다.
     'reactRefreshHookSignatures',
+    // alias 의 exact-match 변형 — 프로그램틱 build() 전용 (`--alias` 만 CLI 노출).
+    'aliasExact',
+    // D105 PR-A: lazy on-demand 프리미티브 — build()/watch() 전용, dev 서버가 오케스트레이션.
+    // CLI `--lazy` 노출은 PR-C 예정.
+    'lazyCompilation',
+    'lazyForceParse',
   ]);
 
   test('CLI flag 가 BuildOptions / TranspileOptions 키와 매칭되거나 cliOnlyFlags 에 등록', () => {
