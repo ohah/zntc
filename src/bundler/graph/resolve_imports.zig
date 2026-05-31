@@ -16,6 +16,15 @@ const graph_import_usage = @import("import_usage.zig");
 const graph_requested_exports = @import("requested_exports.zig");
 const profile = @import("../../profile.zig");
 
+/// PR-3b-ii: 동적 import 타겟 `path` 가 lazy_force_parse 목록에 있으면 lazy defer 대신
+/// 즉시 parse. on-demand 컴파일이 요청된 lazy 청크 seed 만 eager 로 끌어올린다.
+fn pathInForceParse(self: *const ModuleGraph, path: []const u8) bool {
+    for (self.lazy_force_parse) |fp| {
+        if (std.mem.eql(u8, fp, path)) return true;
+    }
+    return false;
+}
+
 fn appendResolvedDep(
     self: *ModuleGraph,
     mod_idx: usize,
@@ -342,7 +351,9 @@ pub fn applyResolveResult(
                 //   셋 중 하나라도 빠지면 미파싱 seed 가 단일번들/프로덕션 emit 을 깨므로(동적
                 //   로더 미생성) eager 유지 → kill-switch 회귀 0. (virtual/external 동적 타겟은
                 //   이 .file arm 밖이라 PR-3a-i 에선 eager — PR-3b 범위.)
-                if (self.lazy_compilation and self.code_splitting and self.dev_mode and record.kind == .dynamic_import) {
+                // PR-3b-ii: lazy_force_parse 에 든 타겟은 deferred 하지 않고 즉시 parse(eager)
+                // — on-demand 가 그 seed 만 force-parse 한 fresh 빌드로 단일청크를 만든다.
+                if (self.lazy_compilation and self.code_splitting and self.dev_mode and record.kind == .dynamic_import and !pathInForceParse(self, f.path)) {
                     const pa = self.path_arena.allocator();
                     try self.lazy_seeds.append(self.allocator, .{
                         .from = mod_index,

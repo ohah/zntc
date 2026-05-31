@@ -148,6 +148,14 @@ pub const BundleOptions = struct {
     /// 청크만 transform/codegen/emit 한다. `dev_mode + code_splitting` 조합 위에서 동작.
     /// 현재는 스캐폴딩(미소비) — 동작은 RFC `docs/RFC_LAZY_COMPILATION.md` 의 PR-2~ 에서 추가.
     lazy_compilation: bool = false,
+    /// PR-3b-ii primitive: lazy_compilation 이어도 *이 경로들* 의 동적 import 타겟은 미파싱
+    /// seed 로 deferred 하지 않고 즉시 parse(eager) 한다. 빈 slice(기본)면 기존 lazy 동작.
+    /// 경로는 **resolver 가 내는 resolved 절대경로**와 정확히 일치(exact eql)해야 매칭된다
+    /// (불일치 시 silent no-op=lazy 유지). on-demand caller 는 `graph.lazy_seeds[].path`
+    /// (= 같은 resolved 경로)로 넘기면 일치. 슬라이스 borrow(caller 소유).
+    /// 주의: 이 primitive 만으론 on-demand 가 완성되지 않는다 — 전체 (B) 는 shared-splitting-off
+    /// + entry export-all-by-local 까지 필요(RFC §2.1/§6.3, PR-3b-ii 잔여).
+    lazy_force_parse: []const []const u8 = &.{},
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
@@ -1174,6 +1182,7 @@ pub const Bundler = struct {
         graph.minify_identifiers = self.options.minify_identifiers;
         // PR-3a: dev lazy compilation — discovery 가 동적 import 경계 정지(seed 등록).
         graph.lazy_compilation = self.options.lazy_compilation;
+        graph.lazy_force_parse = self.options.lazy_force_parse;
         graph.transform_options_base = self.buildTransformOptionsBase();
         // RFC #3933 Sub-PR-B.2: external_graph 면 deinit skip (caller 보존).
         defer if (!has_external_graph) graph.deinit();
