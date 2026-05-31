@@ -1017,6 +1017,29 @@ pub fn generateChunks(
         }
     }
 
+    // PR-3b-ii (RFC §6.3): lazy(dev on-demand) 면 shared splitting off. static(비-dynamic)
+    // entry 비트가 있는 모듈에서 dynamic entry 비트를 제거 → {E,D}→{E} collapse. 그 모듈은
+    // 공통 청크가 아니라 entry 청크에 남고, 동적 청크는 그것을 __zntc_require 로 단방향 조회
+    // (entry 청크가 lazy 시 hoisted export 를 local name 으로 전부 노출 — emitter
+    // emitLazyEntryExportAll). 효과: 동적 seed 를 나중에 force-parse 해도 entry 청크가
+    // 불변(결정론) → on-demand 단일청크가 초기 entry 와 정합. entry 에 없는 동적 전용 deps 는
+    // 그대로 동적 청크에 남는다(on-demand 는 seed 1개만 parse 라 dynamic-dynamic 공유 미발생).
+    if (graph.lazy_compilation) {
+        for (splitting_info) |*bs| {
+            var has_static = false;
+            for (entries.items, 0..) |e, b| {
+                if (!e.is_dynamic and bs.hasBit(@intCast(b))) {
+                    has_static = true;
+                    break;
+                }
+            }
+            if (!has_static) continue;
+            for (entries.items, 0..) |e, b| {
+                if (e.is_dynamic) bs.clearBit(@intCast(b));
+            }
+        }
+    }
+
     // ── Phase 3: 모듈을 청크에 할당 ──
     // exec_index 순으로 처리하여 청크 내 모듈 순서(=ESM 실행 순서)를 보장.
     // 동일한 BitSet을 가진 모듈들은 같은 청크에 묶인다.

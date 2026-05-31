@@ -726,7 +726,10 @@ pub fn emitChunks(
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
         // preserve-modules에서는 모듈 자체의 export가 유지되므로 cross-chunk export 불필요.
         // linker가 심볼을 rename한 경우 export { local_name as export_name } 형태로 출력.
-        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0) and !options.preserve_modules) xchunk_exports: {
+        // PR-3b-ii: lazy reg(IIFE/CJS) entry 청크는 소비자(동적 청크)가 시작 시 미파싱이라
+        // exports_to 가 비어도 export-all 해야 하므로 별도로 진입한다.
+        const lazy_reg_entry = graph.lazy_compilation and entry_mod_idx != null and (options.format == .cjs or reg_split);
+        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0 or lazy_reg_entry) and !options.preserve_modules) xchunk_exports: {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
             defer export_names.deinit(allocator);
@@ -756,7 +759,16 @@ pub fn emitChunks(
             //    은 이 경로가 cross-chunk `exports.x=local;`. → cjs 와 동일하게
             //    entry 청크는 break(이중정의·module.exports= 손상 방지).
             const reg_fmt = options.format == .cjs or reg_split;
-            if (reg_fmt and entry_mod_idx != null) break :xchunk_exports;
+            if (reg_fmt and entry_mod_idx != null) {
+                // PR-3b-ii: lazy 면 entry 청크가 hoisted 모듈 export 를 local name 으로 전부
+                // 노출(export-all) — on-demand 동적 청크가 시작 시 미파싱 seed 라 어떤 export 를
+                // 참조할지 몰라도 찾게 + demand-driven 이 아니라 결정론(seed force-parse 무관).
+                // 그 외(eager)는 기존대로 break(emitCjsEntryExports 에 일임).
+                if (graph.lazy_compilation) {
+                    try emitLazyEntryExportAll(allocator, &chunk_output, graph, linker, sorted_mods, entry_mod_idx.?, module_count, options.minify_whitespace);
+                }
+                break :xchunk_exports;
+            }
             const cjs_x = reg_fmt;
 
             // 버그 B (#3321 후속): ESM entry/dynamic 청크는 codegen 이 entry
@@ -1925,6 +1937,53 @@ fn chunkRegistryId(
 ///     때만 skip.
 ///   - 없으면 비워진 청크(mergeSmallChunks/manualChunks 흡수) + PR-3a-ii lazy seed
 ///     (미파싱, on-demand)를 제외.
+/// PR-3b-ii: lazy 시 reg(IIFE/CJS) entry 청크가 hoisted 모듈들의 export 를 *local(deconflict)
+/// name* 으로 전부 노출한다 (`exports.<local> = <local>;`). on-demand 동적 청크가 시작 시
+/// 어떤 export 를 참조할지 몰라도(seed 미파싱) 찾을 수 있게 — demand-driven(chunk.exports_to)
+/// 이 아니라 export-all 이라 seed force-parse 유무와 무관히 결정적(초기 lazy 빌드와 동일).
+/// local name 키잉으로 동명 export(shared.v + dup.v, deconflict 로 local 구별) 충돌 회피.
+/// entry 모듈 자신의 export 는 emitCjsEntryExports 담당 → 제외.
+/// **한계(RFC §6.3, 후속)**: export-name 과 local name 이 다른 케이스(① 소비 모듈이 entry
+/// 안에서 deconflict, ② `export { a as b }` 별칭, ③ re-export)는 소비자 imports_from 이
+/// export-name 키라 mismatch — `export const`/`export function` 처럼 export-name==local-name
+/// 인 일반 케이스만 정합(dev on-demand 의 대다수). mismatch 는 crash 가 아니라 미해결 참조.
+fn emitLazyEntryExportAll(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    graph: *const ModuleGraph,
+    linker: ?*Linker,
+    sorted_mods: []const ModuleIndex,
+    entry_mod_idx: usize,
+    module_count: usize,
+    minify_whitespace: bool,
+) !void {
+    const l = linker orelse return;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(allocator);
+    var locals: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer locals.deinit(allocator);
+    for (sorted_mods) |mod_idx| {
+        const mi = @intFromEnum(mod_idx);
+        if (mi >= module_count or mi == entry_mod_idx) continue;
+        const m = graph.getModule(mod_idx) orelse continue;
+        for (m.export_bindings) |eb| {
+            const local = l.getCanonicalName(@intCast(mi), eb.exported_name) orelse m.exportBindingLocalName(eb);
+            if (local.len == 0) continue;
+            const gop = try seen.getOrPut(allocator, local);
+            if (gop.found_existing) continue;
+            try locals.append(allocator, local);
+        }
+    }
+    std.mem.sort([]const u8, locals.items, {}, types.stringLessThan); // 결정론
+    for (locals.items) |local| {
+        try out.appendSlice(allocator, "exports.");
+        try out.appendSlice(allocator, local);
+        try out.appendSlice(allocator, if (minify_whitespace) "=" else " = ");
+        try out.appendSlice(allocator, local);
+        try out.appendSlice(allocator, if (minify_whitespace) ";" else ";\n");
+    }
+}
+
 fn chunkRestrictSkip(chunk: *const Chunk, ci: usize, restrict_to_chunk: ?usize) bool {
     if (restrict_to_chunk) |r| {
         if (ci != r) return true;

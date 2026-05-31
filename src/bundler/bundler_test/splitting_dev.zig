@@ -3020,6 +3020,99 @@ test "LazyCompilation PR-3b-ii: lazy_force_parse 가 지정 seed 를 즉시 pars
     try std.testing.expect(try heavyPresent(&.{heavy_abs}, entry)); // force-parse → eager
 }
 
+// PR-3b-ii 잔여: shared-off + entry export-all-by-local → (B) on-demand 성립.
+// shared 를 entry(static) + heavy(dynamic) 둘이 사용. shared-off 로 shared 는 entry 에 남고,
+// entry 가 export-all 로 shared 의 v 를 노출 → heavy 는 __zntc_require("entry.js").v 단방향
+// 조회. 결정론: heavy force-parse 유무와 무관히 entry 본문 동일(on-demand 정합).
+test "LazyCompilation PR-3b-ii: shared-off + export-all → 결정론 + entry cross-chunk export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts", "export const v = 'SHARED_V';");
+    try writeFile(tmp.dir, "dup.ts", "export const v = 'DUP_V';");
+    try writeFile(tmp.dir, "heavy.ts",
+        \\import { v } from './shared';
+        \\export const h = 'HEAVY_' + v;
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { v as sv } from './shared';
+        \\import { v as dv } from './dup';
+        \\async function go() { const m = await import('./heavy'); console.log(m.h); }
+        \\console.log('boot', sv, dv);
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const heavy_abs = try absPath(&tmp, "heavy.ts");
+    defer std.testing.allocator.free(heavy_abs);
+
+    const H = struct {
+        fn entryNorm(alloc: std.mem.Allocator, outs: []const emitter.OutputFile) !?[]u8 {
+            for (outs) |o| {
+                const lc = std.mem.indexOf(u8, o.contents, "__zntc_load_chunk(\"") orelse continue;
+                const arg = lc + "__zntc_load_chunk(\"".len;
+                const end = std.mem.indexOfScalarPos(u8, o.contents, arg, '"') orelse continue;
+                var b: std.ArrayListUnmanaged(u8) = .empty;
+                errdefer b.deinit(alloc);
+                try b.appendSlice(alloc, o.contents[0..arg]);
+                try b.appendSlice(alloc, "<CHUNK>");
+                try b.appendSlice(alloc, o.contents[end..]);
+                return try b.toOwnedSlice(alloc);
+            }
+            return null;
+        }
+        fn chunkWith(outs: []const emitter.OutputFile, needle: []const u8) ?[]const u8 {
+            for (outs) |o| if (std.mem.indexOf(u8, o.contents, needle) != null) return o.contents;
+            return null;
+        }
+    };
+
+    var b1 = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer b1.deinit();
+    const r1 = try b1.bundle(std.testing.io);
+    defer r1.deinit(std.testing.allocator);
+    try std.testing.expect(!r1.hasErrors());
+    const e1 = (try H.entryNorm(std.testing.allocator, r1.outputs.?)) orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(e1);
+    // 초기 lazy 빌드도 shared 의 v 를 cross-chunk export 해야 on-demand heavy 가 찾는다.
+    // export-all-by-local: shared.v→exports.v, dup.v(deconflict)→exports.v$1 둘 다 노출(충돌 회피).
+    try std.testing.expect(std.mem.indexOf(u8, e1, "exports.v = v") != null);
+    try std.testing.expect(std.mem.indexOf(u8, e1, "exports.v$1 = v$1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, e1, "SHARED_V") != null); // shared 는 entry 에 인라인
+
+    var b2 = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .lazy_force_parse = &.{heavy_abs},
+        .format = .iife,
+    });
+    defer b2.deinit();
+    const r2 = try b2.bundle(std.testing.io);
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(!r2.hasErrors());
+    const e2 = (try H.entryNorm(std.testing.allocator, r2.outputs.?)) orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(e2);
+
+    // 결정론: 동적 청크 이름만 빼면 entry 본문 동일 → on-demand entry 정합.
+    try std.testing.expectEqualStrings(e1, e2);
+    // heavy 청크는 entry 의 v 를 __zntc_require("entry.js") 로 단방향 조회(공통 청크 없음).
+    const heavy_chunk = H.chunkWith(r2.outputs.?, "HEAVY_") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, heavy_chunk, "__zntc_require(\"entry.js\")") != null);
+    // heavy 는 *shared* 의 v(=SHARED_V)를 바인딩(이름 v) — dup 의 v$1 가 아니다(값 정합).
+    try std.testing.expect(std.mem.indexOf(u8, heavy_chunk, "{ v }") != null or
+        std.mem.indexOf(u8, heavy_chunk, "{v}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, heavy_chunk, "v$1") == null);
+    // common 청크가 생기지 않았다(shared-off) — 출력은 entry + heavy 만.
+    try std.testing.expectEqual(@as(usize, 2), r2.outputs.?.len);
+}
+
 test "LazyDevSplitting: kill-switch — lazy_compilation=false 면 dev 단일 번들 보존" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
