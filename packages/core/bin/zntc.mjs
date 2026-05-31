@@ -119,6 +119,7 @@ function usageLines(command) {
       '  --host [host]              Host to listen on (default: localhost)',
       '  --port <port>              Port to listen on (default: 12300)',
       '  --open                     Open the app URL in the browser',
+      '  --lazy                     Compile dynamic import() chunks on demand',
       '  --mode <mode>              Load mode-specific config and .env files',
       '  --base <path>              Base public path',
       '  --entry-html <path>        HTML entry file',
@@ -1938,12 +1939,12 @@ async function runServe(opts, config, { appDev = null } = {}) {
   let serverHandle = null;
   // #3779 follow-up — restart 시 stop 호출용. opts.bundle+watch+appDev+hmr 분기 안에서만 할당.
   let nativeWatchHandle = null;
-  // #4062 PR-B-2 — JS dev 서버 lazy on-demand 라우트(env ZNTC_LAZY=1 게이트, 실험적).
-  // D105 접근1: native lazy 프리미티브(#4069/#4070, watch lazySeeds + build lazyForceParse)
-  // 위에 JS 서버가 얇게 on-demand 라우팅을 얹는다. lazy 동적 청크는 emit-skip 되므로
-  // (디스크에 없음) 브라우저가 `/<stem>-<8hex>.js` 를 요청하면 그 seed 만 force-parse 한
-  // 단발 build() 로 즉석 생성·캐시해서 서빙한다. 게이트 OFF 면 아래 상태/분기 전부 무시 → 0 영향.
-  const lazyMode = process.env.ZNTC_LAZY === '1';
+  // #4062 — JS dev 서버 lazy on-demand 라우트. 게이트 = `--lazy` CLI 플래그(PR-C-3) 또는
+  // env `ZNTC_LAZY=1`(동치 fallback). D105 접근1: native lazy 프리미티브(#4069/#4070, watch
+  // lazySeeds + build lazyForceParse) 위에 JS 서버가 얇게 on-demand 라우팅을 얹는다. lazy 동적
+  // 청크는 emit-skip 되므로(디스크에 없음) 브라우저가 `/<stem>-<8hex>.js` 를 요청하면 그 seed 만
+  // force-parse 한 단발 build() 로 즉석 생성·캐시해서 서빙한다. 게이트 OFF 면 아래 전부 무시 → 0 영향.
+  const lazyMode = opts.lazy === true || process.env.ZNTC_LAZY === '1';
   // pathHash(8 hex) → seed 절대경로. watch onReady/onRebuild 의 event.lazySeeds 로 갱신.
   const lazySeedMap = new Map();
   // pathHash → { body, type }. on-demand 빌드 결과 캐시. rebuild 마다 무효화(seed 본문 변경 가능).
