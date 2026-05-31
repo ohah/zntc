@@ -326,6 +326,14 @@ pub fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, exts)) return null;
     }
 
+    // D105 PR-A: lazyForceParse — lazy 시에도 즉시 parse 할 동적타겟 절대경로 목록.
+    // JS dev 서버의 on-demand 빌드가 요청된 seed 만 끌어올릴 때 쓴다.
+    const lazy_force_parse = getObjectStringArray(env, opts_obj, "lazyForceParse", native_alloc);
+    if (lazy_force_parse) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
     // debug: 활성화할 디버그 로그 카테고리 목록 (ZNTC_DEBUG env 와 합집합).
     const debug_categories = getObjectStringArray(env, opts_obj, "debug", native_alloc);
     if (debug_categories) |cats| {
@@ -789,6 +797,9 @@ pub fn parseBuildOptions(
         // options.zig 의 `if (mfb.exposes.len>0) opts.splitting=true` 미러).
         .code_splitting = getObjectBool(env, opts_obj, "splitting", false) or
             (if (mf_cfg) |m| m.exposes.len > 0 else false),
+        // D105 PR-A: lazy on-demand 프리미티브 (dev_mode + splitting 조합 시 동작).
+        .lazy_compilation = getObjectBool(env, opts_obj, "lazyCompilation", false),
+        .lazy_force_parse = lazy_force_parse orelse &.{},
         .inline_dynamic_imports = getObjectBool(env, opts_obj, "inlineDynamicImports", false),
         .min_chunk_size = @as(usize, getObjectUint32(env, opts_obj, "minChunkSize", 0)),
         .sourcemap = .{

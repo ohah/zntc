@@ -126,6 +126,15 @@ interface NativeBuildResult {
   moduleCodes?: Array<{ id: string; code: string }>;
   modulePaths?: string[];
   rnAssetMetadata?: RnAssetMetadata[];
+  /**
+   * Lazy compilation seeds (only when `lazyCompilation: true`): each unparsed
+   * dynamic-import target deferred to on-demand build. `pathHash` is the 8-hex
+   * `truncate(u32, Wyhash(path))` matching the entry's
+   * `__zntc_load_chunk("<stem>-<pathHash>.js")` reference; `path` is the absolute
+   * seed module path. A dev server maps a requested chunk URL's hash → seed path
+   * (no need to reimplement Wyhash in JS), then rebuilds with `lazyForceParse: [path]`.
+   */
+  lazySeeds?: Array<{ pathHash: string; path: string }>;
 }
 
 interface NativeWatchHandle {
@@ -850,6 +859,29 @@ interface BuildOptionsCommon {
   minifyIdentifiers?: boolean;
   minifySyntax?: boolean;
   splitting?: boolean;
+  /**
+   * Lazy on-demand compilation primitive (dev-only). Requires `splitting: true` +
+   * `devMode: true`. When true, dynamic `import()` targets are left as UNPARSED
+   * "lazy seeds" (emit-skipped); the entry references them by stable path-hash name
+   * (`__zntc_load_chunk("<stem>-<pathHash>.js")`), and the result exposes
+   * {@link NativeBuildResult.lazySeeds}. A dev server compiles each seed on demand
+   * by rebuilding with `lazyForceParse: [seedPath]`. Low-level primitive — the web
+   * CLI dev server orchestrates this; most users use it indirectly.
+   */
+  lazyCompilation?: boolean;
+  /**
+   * Force-parse specific lazy seeds even under `lazyCompilation: true` — array of
+   * dynamic-import target paths to compile eagerly instead of deferring. A dev
+   * server passes the requested seed's path here to materialize exactly that
+   * on-demand chunk. No effect without `lazyCompilation: true`.
+   *
+   * **Contract**: each entry must be the EXACT path from a {@link NativeBuildResult.lazySeeds}
+   * entry's `.path` (the bundler-resolved absolute path — e.g. symlink-resolved
+   * `/private/tmp/...`, not your own `./x` specifier). A path that doesn't match a
+   * seed is **silently ignored** (that seed stays lazy). Source these from a prior
+   * `lazySeeds` result, never reconstruct them.
+   */
+  lazyForceParse?: string[];
   /** Rollup `output.inlineDynamicImports` — absorbs the dynamic import target
    * into the importer's chunk and rewrites the `import("./x")` call into an
    * `__esm` wrapper init/exports call. Combine with `splitting: true`. The
