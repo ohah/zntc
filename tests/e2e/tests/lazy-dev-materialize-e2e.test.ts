@@ -87,4 +87,25 @@ test.describe.serial('lazy dev materialize (브라우저 e2e #4079)', () => {
     );
     await expect(page.getByTestId('out')).toHaveText('UTIL_V2[chart]', { timeout: 15000 });
   });
+
+  // 에픽 수용 기준(RFC_LAZY_DEV_MODULE_HMR §5) — 이상적 fix: 깊은 파일 편집이 *리로드 없이*
+  // 모듈만 hot-replace 되고 앱 state 가 보존돼야 한다(main 번들 HMR 동급). 현재는 full-reload
+  // 폴백이라 window state 가 소실돼 fail → test.fixme 로 목표만 명시. 에픽(split dev 모듈별 HMR,
+  // #4038 재해결) 완료 시 일반 test 로 전환한다.
+  test.fixme('이상적: 깊은 파일 편집이 리로드 없이 hot-replace + 앱 state 보존', async ({
+    page,
+  }) => {
+    await page.goto(`http://localhost:${PORT}/`);
+    await expect(page.getByTestId('out')).toContainText('[chart]', { timeout: 15000 });
+    // 리로드 시 사라지는 사용자 state.
+    await page.evaluate(() => ((window as any).__userState = 'KEEP_ME'));
+
+    writeFileSync(
+      join(dir, 'src/util.ts'),
+      "export function fmt(s: string){ return 'UTIL_V3[' + s + ']'; }",
+    );
+    // (a) 변경 반영 + (b) 리로드 없음(state 생존) = 진짜 module HMR.
+    await expect(page.getByTestId('out')).toHaveText('UTIL_V3[chart]', { timeout: 15000 });
+    expect(await page.evaluate(() => (window as any).__userState)).toBe('KEEP_ME');
+  });
 });
