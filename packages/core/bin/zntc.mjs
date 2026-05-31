@@ -2342,7 +2342,22 @@ async function runServe(opts, config, { appDev = null } = {}) {
                   })),
                 }
               : event;
-          web.broadcastRebuildEvent(hmr, annotated);
+          const outcome = web.broadcastRebuildEvent(hmr, annotated);
+          // #4079: lazy(splitting) dev 는 분할 청크가 dev HMR 모듈 레지스트리에 없어 module-level
+          // HMR 이 불가하다(dev init lowering 이 production init 로 fallback). 그래서 lazy 청크
+          // 안의 모듈을 편집하면 rebuild 는 변경을 감지(event.changed)하지만 module update 를
+          // 못 만들어 broadcastRebuildEvent 가 'noop' 으로 끝나 화면이 안 갱신된다 → full reload 로 갈음.
+          // 단 (a) 'update'(메인 번들 모듈 변경 — 진짜 HMR 적용 가능)와 'full-reload'(graphChanged)
+          //  /'error' 는 제외, (b) CSS 변경은 drain 의 CSS-only HMR(live <link> swap)이 처리하므로
+          //  *비-CSS* 변경이 하나라도 있을 때만 full reload(전부 CSS 면 CSS HMR 보존).
+          // errors 가 있으면(partial build) overlay 가 latch 된 상태 — full reload 는 overlay 를
+          // 숨기고 깨진 상태로 리로드하므로 skip(에러는 그대로 보여줌, 다음 성공 빌드가 갱신).
+          if (lazyMode && event.success && outcome === 'noop' && !event.errors?.length) {
+            const hasNonCss = (event.changed ?? []).some(
+              (p) => !/\.(css|scss|sass|less|styl|pcss|postcss)$/i.test(p),
+            );
+            if (hasNonCss) hmr.broadcast({ type: web.HMR_MSG.FullReload, timestamp: Date.now() });
+          }
         } catch (err) {
           console.error('[serve] hmr broadcast error:', err);
         }
