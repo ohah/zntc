@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createFixture, byContent } from './helpers';
 import { init, close, build, watch } from '../../../packages/core/index';
 
@@ -136,6 +137,54 @@ describe('NAPI lazy compilation primitives (D105 PR-A)', () => {
       expect(e.lazySeeds.length).toBe(1);
       expect(e.lazySeeds[0].pathHash).toMatch(/^[0-9a-f]{8}$/);
       expect(e.lazySeeds[0].path.endsWith('heavy.ts')).toBe(true);
+    } finally {
+      handle?.stop();
+    }
+  });
+
+  // #4071 회귀: watch() 가 *디스크에 쓰는* entry 출력이 build() 와 동일하게 동적 import 를
+  // `__zntc_load_chunk` 로 재작성해야 한다(raw `import("./heavy")` 가 남으면 안 됨). 버그
+  // 원인은 `module_store` 가 주입되는 watch 경로가 `graph.buildIncremental` 을 타는데 거기서
+  // `materializeLazySeeds` 가 호출되지 않아 동적 청크가 안 생기던 것. lazySeeds 노출(위 테스트)
+  // 만으론 못 잡는다 — 실제 emit 산출물을 검증해야 함.
+  test('watch() 가 쓰는 entry 출력이 __zntc_load_chunk 로 재작성됨 (raw import 잔존 금지)', async () => {
+    const fixture = await createFixture({
+      'heavy.ts': `export const h = 'HEAVY_4071';`,
+      'entry.ts': `async function go(){ const m = await import('./heavy'); console.log(m.h); }\ngo();`,
+    });
+    cleanup = fixture.cleanup;
+    const outdir = join(fixture.dir, 'out');
+
+    let handle: ReturnType<typeof watch> | undefined;
+    const ready = new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('onReady timeout')), 8000);
+      handle = watch({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        platform: 'browser',
+        devMode: true,
+        splitting: true,
+        lazyCompilation: true,
+        format: 'iife',
+        outdir,
+        onReady: () => {
+          clearTimeout(t);
+          resolve();
+        },
+      });
+    });
+    try {
+      await ready;
+      // onReady 이후 디스크에 emit 된 .js 들을 읽어 entry 청크를 찾는다.
+      const files = readdirSync(outdir).filter((f) => f.endsWith('.js'));
+      const contents = files.map((f) => readFileSync(join(outdir, f), 'utf8'));
+      const entry = contents.find((c) => c.includes('__zntc_load_chunk('));
+      expect(entry).toBeDefined(); // 동적 청크 로더로 재작성됨 (#4071 핵심 가드)
+      // 어떤 청크에도 raw 동적 import 가 남으면 안 된다(런타임에 존재하지 않는 ./heavy fetch).
+      for (const c of contents) {
+        expect(c).not.toMatch(/import\(["']\.\/heavy["']\)/);
+      }
+      // heavy 본문은 미파싱 seed → 어느 청크에도 인라인 안 됨.
+      expect(contents.some((c) => c.includes('HEAVY_4071'))).toBe(false);
     } finally {
       handle?.stop();
     }

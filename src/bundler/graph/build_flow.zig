@@ -896,6 +896,17 @@ pub fn buildIncremental(
         parse_start = parse_end;
     }
 
+    // #4071: build() 와 동일하게 동적 import seed 를 materialize 한다. buildIncremental
+    // 은 자체 sequential discovery 라 build() 의 `materializeLazySeeds`(위 build_flow:139)
+    // 호출을 공유하지 않는다. 그래서 `module_store` 가 주입되는 watch/dev lazy 경로에선
+    // 동적 import 의 lazy 게이트(resolve_imports:356)가 seed 만 쌓고 materialize 가 안 돼
+    // → 동적 청크가 생성되지 않고 entry 의 `import()` 가 dangling raw 로 남았다(build()
+    // 는 `__zntc_load_chunk` 로 정상 재작성). seed 가 신규 모듈(미파싱 lazy seed)을 추가하면
+    // graph_changed=true 로 표시해 rebuild 가 no-change 로 오판되지 않게 한다.
+    const before_lazy_count = self.modules.count();
+    try materializeLazySeeds(self, io);
+    if (self.modules.count() > before_lazy_count) graph_changed = true;
+
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer runtime_indices.deinit(self.allocator);
     const before_runtime_count = self.modules.count();
