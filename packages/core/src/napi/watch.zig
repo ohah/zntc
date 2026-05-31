@@ -115,6 +115,17 @@ const WatchAsyncData = struct {
     /// 기본 true 유지.
     emit_disk_sourcemap: bool = true,
 
+    /// #4079 PR-2 — `requestLazySeed(path)` 로 런타임에 누적되는 force-parse 경로 집합
+    /// (각 string 은 native_alloc owned dupe). main thread(NAPI 콜백)와 worker thread 가
+    /// 공유하므로 `lazy_force_mutex` 로 직렬화. worker 는 매 rebuild 직전 스냅샷해
+    /// `incremental_opts.lazy_force_parse` 로 주입 — dev 서버가 요청한 동적 라우트를 watch
+    /// 그래프에서 force-parse·감시하게 한다(dev materialize).
+    lazy_force_mutex: zntc_lib.util.SpinLock = .{},
+    lazy_force_accum: std.ArrayList([]const u8) = .empty,
+    /// 파일 변경 없이도 rebuild 를 트리거하는 신호 — requestLazySeed 가 set, worker loop 가
+    /// poll tick(≤200ms)에서 swap-검사. 별도 wakeup fd 불필요(timeout poll 재사용).
+    lazy_force_dirty: std.atomic.Value(bool) = .init(false),
+
     fn deinit(self: *WatchAsyncData) void {
         // #3794 — worker 종료 신호 우선 set (모든 early-return / 정상 종료 path 가 deinit 을
         // 거치므로 한 곳에서 가드). `napiWatchStop` 의 stop_complete.wait() 가 깨어나 caller
@@ -136,6 +147,9 @@ const WatchAsyncData = struct {
         if (self.napi_manual_chunks) |mc| mc.deinit();
         self.compiled_cache.deinit();
         self.sm_cache.deinit(native_alloc);
+        // #4079 PR-2 — requestLazySeed 누적 force-parse 경로(owned dupe)와 컨테이너 해제.
+        for (self.lazy_force_accum.items) |s| native_alloc.free(s);
+        self.lazy_force_accum.deinit(native_alloc);
         native_alloc.destroy(self);
     }
 };
@@ -1130,7 +1144,11 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
         collectTouched(&touched, allocator, first_events);
 
-        if (touched.count() == 0) continue;
+        // #4079 PR-2 — requestLazySeed 가 set 한 dirty 면 파일 변경 없이도 rebuild 한다(누적
+        // force-parse 집합을 그래프에 반영). poll tick(≤200ms)마다 swap-검사라 별도 wakeup fd
+        // 불필요. iteration 당 1회 소비 — 이 iteration 처리 중 새로 set 되면 다음 tick 이 잡는다.
+        const force_dirty = async_data.lazy_force_dirty.swap(false, .acq_rel);
+        if (touched.count() == 0 and !force_dirty) continue;
 
         // 디바운스: idle 50ms 확보까지 드레인. 지속 변경되는 파일로 인한 기아를 막기 위해
         // 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
@@ -1184,7 +1202,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 );
             }
         }
-        if (touched.count() == 0 and deleted.count() == 0) continue;
+        // #4079 PR-2 — force_dirty(위에서 캡처)면 파일 변경이 없어도(touched/deleted 비어도)
+        // rebuild 진행 — 누적 force-parse 집합을 그래프에 반영.
+        if (touched.count() == 0 and deleted.count() == 0 and !force_dirty) continue;
 
         // content hash 필터링. 신규 file 은 markIfChanged 가 첫 hash 등록이라
         // 항상 true 반환 → changed_files 통과.
@@ -1204,7 +1224,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
         const detect_ns: u64 = if (detect_timer) |*t| t.read() else 0;
 
-        if (changed_files.items.len == 0) continue;
+        // #4079 PR-2 — force_dirty 면 변경 파일이 없어도(빈 changed_files) rebuild 진행.
+        if (changed_files.items.len == 0 and !force_dirty) continue;
 
         // Profile counters reset — 이전 rebuild 의 누적치가 이월되지 않도록.
         // mask 와 level 은 유지 (`ZNTC_PROFILE=hmr` 등의 활성 상태는 보존).
@@ -1237,6 +1258,22 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // 조합은 incremental rebuild 시 module_dev_codes 도 비어있어 HMR client 가 받을 데이터 없음
         // — 그 조합은 그 자체로 비정상 사용 (caller responsibility).
         if (bundle_opts.skip_initial_output) incremental_opts.skip_bundle_output = true;
+        // #4079 PR-2 — requestLazySeed 로 누적된 force-parse 집합을 이번 rebuild 에 주입(초기
+        // 옵션 set ∪ 누적). 헤더 배열만 복사(string 은 accum/options 소유) — 동시 append(realloc)
+        // 에도 스냅샷 안정. snapshot 은 이 rebuild 동안만 유효(pathInForceParse=eql 비교, 미보관).
+        var force_snapshot_buf: ?[][]const u8 = null;
+        defer if (force_snapshot_buf) |b| allocator.free(b);
+        incremental_opts.lazy_force_parse = blk: {
+            async_data.lazy_force_mutex.lock();
+            defer async_data.lazy_force_mutex.unlock();
+            if (async_data.lazy_force_accum.items.len == 0) break :blk bundle_opts.lazy_force_parse;
+            const total = bundle_opts.lazy_force_parse.len + async_data.lazy_force_accum.items.len;
+            const snap = allocator.alloc([]const u8, total) catch break :blk bundle_opts.lazy_force_parse;
+            @memcpy(snap[0..bundle_opts.lazy_force_parse.len], bundle_opts.lazy_force_parse);
+            @memcpy(snap[bundle_opts.lazy_force_parse.len..], async_data.lazy_force_accum.items);
+            force_snapshot_buf = snap;
+            break :blk snap;
+        };
         var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
         defer rebundler.deinit();
 
@@ -1608,6 +1645,40 @@ fn napiWatchGetHmrSourceMap(env: c.napi_env, info: c.napi_callback_info) callcon
     return js_str;
 }
 
+/// handle.requestLazySeed(path) — #4079 PR-2. 동적 import 타겟(lazy seed)의 절대경로를 받아
+/// worker 의 force-parse 누적 집합에 넣고(중복 skip) dirty 를 set 한다. worker 가 다음 poll
+/// tick(≤200ms)에서 그 seed 를 force-parse 한 rebuild 를 돌려 watch 그래프에 정식 포함·감시
+/// (dev materialize — 깊은 편집 HMR + warm 재빌드). stop 후/빈 인자/중복은 no-op. 반환 undefined.
+fn napiRequestLazySeed(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 1;
+    var argv: [1]c.napi_value = undefined;
+    var this: c.napi_value = undefined;
+    var js_undef: c.napi_value = undefined;
+    _ = c.napi_get_undefined(env, &js_undef);
+    if (c.napi_get_cb_info(env, info, &argc, &argv, &this, null) != c.napi_ok) return js_undef;
+    if (argc < 1) return js_undef;
+
+    const async_data = unwrapNapi(WatchAsyncData, env, this) orelse return js_undef;
+    // stop 진행 중이면 누적 버퍼가 곧 해제될 수 있어 no-op (deinit race 방어). stop() 은 main
+    // thread 동기 호출이고 napi_remove_wrap 이 1차 가드라, 이 flag 검사는 방어 심층.
+    if (async_data.stop_flag.load(.acquire)) return js_undef;
+
+    const path = getStringArg(env, argv[0], native_alloc) orelse return js_undef;
+    // 성공 append 시 accum 이 소유 — 실패/중복 시 여기서 free.
+    var owned = true;
+    defer if (owned) native_alloc.free(path);
+
+    async_data.lazy_force_mutex.lock();
+    defer async_data.lazy_force_mutex.unlock();
+    for (async_data.lazy_force_accum.items) |existing| {
+        if (std.mem.eql(u8, existing, path)) return js_undef; // 중복 — owned=true → defer free
+    }
+    async_data.lazy_force_accum.append(native_alloc, path) catch return js_undef;
+    owned = false; // accum 으로 소유 이관
+    async_data.lazy_force_dirty.store(true, .release);
+    return js_undef;
+}
+
 /// stop() 네이티브 메서드 — JS에서 handle.stop() 호출 시
 fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
     // this 객체에서 WatchAsyncData 포인터 추출
@@ -1844,6 +1915,12 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     var get_hmr_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "getHmrSourceMap", "getHmrSourceMap".len, napiWatchGetHmrSourceMap, null, &get_hmr_fn);
     _ = c.napi_set_named_property(env, js_handle, "getHmrSourceMap", get_hmr_fn);
+
+    // #4079 PR-2 — requestLazySeed(path) 메서드 추가 (dev materialize: 요청된 동적 라우트를
+    // watch 그래프에서 force-parse·감시).
+    var req_seed_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "requestLazySeed", "requestLazySeed".len, napiRequestLazySeed, null, &req_seed_fn);
+    _ = c.napi_set_named_property(env, js_handle, "requestLazySeed", req_seed_fn);
 
     // 워커 스레드 시작
     const thread = std.Thread.spawn(.{}, watchWorkerThread, .{async_data}) catch {
