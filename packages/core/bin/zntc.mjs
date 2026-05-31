@@ -2065,10 +2065,19 @@ async function runServe(opts, config, { appDev = null } = {}) {
   // event.outputs 는 디스크 경로 목록. entry 청크 = entry stem(`<name>.js`)과 basename 이 일치하는
   // 출력(splitting 의 entry 청크 네이밍). dev 모드는 content-hash off 라 stem 그대로.
   function captureLazyState(event) {
-    if (!lazyMode || !event) return;
-    lazySeedMap.clear();
+    // 실패한 rebuild(event.success===false)는 무시 — 직전 성공 빌드의 seed/cache 를 유지한다
+    // (clear 하면 다음 요청이 또 실패할 빌드를 돌려 last-good 청크를 잃는다). onReady event 는
+    // success 필드가 없어(undefined) 통과한다.
+    if (!lazyMode || !event || event.success === false) return;
+    // 캐시는 매 성공 rebuild 마다 무효화(편집으로 seed 본문 변경 가능).
     lazyChunkCache.clear();
+    // seed 맵은 event.lazySeeds 가 *실제로 올 때만* 교체한다. 일반 편집(동적 import 를 가진
+    // 모듈이 cache-hit)은 native 가 graph.lazy_seeds 를 다시 안 쌓아 lazySeeds 가 undefined 로
+    // 온다 — 무조건 clear 하면 직전 유효 맵을 날려(PR-B-2 보다 나쁨) on-demand 라우트가 죽는다.
+    // 새 seed 집합(동적 import 추가/제거 = importer 재파싱)일 때만 clear+repopulate.
+    // (lazyEntryFile 의 `if (entry)` 보존과 같은 원리.)
     if (Array.isArray(event.lazySeeds)) {
+      lazySeedMap.clear();
       for (const s of event.lazySeeds) {
         if (s && typeof s.pathHash === 'string' && typeof s.path === 'string') {
           lazySeedMap.set(s.pathHash, s.path);
@@ -2095,7 +2104,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
         }
       }
     }
-    lazyEntryFile = entry;
+    // dev rebuild 는 skip_bundle_output 라 event.outputs 가 비어있을 수 있다(#3796). entry 를
+    // 못 찾았으면 직전 값을 유지(entry 청크 파일명은 stem 고정이라 안정 — 매 요청 readFileSync 라
+    // 내용은 자동 fresh). 찾았을 때만 갱신.
+    if (entry) lazyEntryFile = entry;
   }
 
   // #4062 PR-B-2 — lazy on-demand 라우트. 반환 null = lazy 라우트가 처리 안 함(기존 handleRequest 로).
@@ -2252,10 +2264,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
       // 시점 — cold-start 는 watch 1회만).
       void (async () => {
         try {
-          // #4062 PR-B-2 — rebuild 마다 lazy 청크 캐시 무효화(편집으로 seed 본문 변경 가능 →
-          // 다음 요청이 fresh build() 로 재생성). seed 맵은 유지(onRebuild 가 lazySeeds 미노출 —
-          // 신규 seed 갱신은 PR-C). entry alias 는 매 요청 readFileSync 라 자동 fresh.
-          if (lazyMode) lazyChunkCache.clear();
+          // #4062 PR-C-1 — rebuild 마다 lazy 상태 갱신: seed 맵을 event.lazySeeds 로 다시 채우고
+          // (신규 동적 import 추가/제거 반영) 청크 캐시를 무효화한다. captureLazyState 가 실패한
+          // rebuild 는 skip, outputs 가 비면(skip_bundle_output) entry 는 유지한다. (PR-B-2 는
+          // onRebuild 가 lazySeeds 미노출이라 cache.clear 만 했음 — PR-C-1 에서 native 가 노출.)
+          captureLazyState(event);
           // issue #3858 — native onRebuild 의 cssChanges 분기는 PR #3859 머지로
           // 도입됐으나, drain (fs.watch) 가 이미 같은 fs event 받아 rebuildAppDevCss
           // (syncDirty + afterBundle, PostCSS incremental) 로 처리. dual watch race

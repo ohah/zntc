@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createFixture, byContent } from './helpers';
 import { init, close, build, watch } from '../../../packages/core/index';
 
@@ -185,6 +185,76 @@ describe('NAPI lazy compilation primitives (D105 PR-A)', () => {
       }
       // heavy 본문은 미파싱 seed → 어느 청크에도 인라인 안 됨.
       expect(contents.some((c) => c.includes('HEAVY_4071'))).toBe(false);
+    } finally {
+      handle?.stop();
+    }
+  });
+
+  // PR-C-1: watch() 의 onRebuild 이벤트도 lazySeeds 를 노출(onReady 한정이던 PR-B-1 확장).
+  // dev 서버가 rebuild 중 *새로 추가된* 동적 import 의 seed 집합을 갱신할 수 있는 토대 —
+  // 없으면 mid-session 에 추가된 lazy 청크가 full-reload 전까지 404.
+  test('watch() onRebuild 가 lazySeeds 노출 + 신규 동적 import 가 seed 로 추가됨', async () => {
+    const fixture = await createFixture({
+      'heavy.ts': `export const h = 'HEAVY_PRC1';`,
+      'extra.ts': `export const x = 'EXTRA_PRC1';`,
+      'entry.ts': `async function go(){ const m = await import('./heavy'); console.log(m.h); }\ngo();`,
+    });
+    cleanup = fixture.cleanup;
+    const entryPath = join(fixture.dir, 'entry.ts');
+
+    let rebuildResolve: ((e: any) => void) | undefined;
+    let rebuildEvent: Promise<any> = new Promise((r) => {
+      rebuildResolve = r;
+    });
+    let handle: ReturnType<typeof watch> | undefined;
+
+    const ready = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('onReady timeout')), 8000);
+      handle = watch({
+        entryPoints: [entryPath],
+        platform: 'browser',
+        devMode: true,
+        splitting: true,
+        lazyCompilation: true,
+        format: 'iife',
+        outdir: join(fixture.dir, 'out'),
+        onReady: (e: any) => {
+          clearTimeout(t);
+          resolve(e);
+        },
+        onRebuild: (e: any) => {
+          rebuildResolve?.(e);
+        },
+      });
+    });
+    try {
+      const readyEvent = await ready;
+      // 초기엔 seed 1개(heavy).
+      expect(readyEvent.lazySeeds?.length).toBe(1);
+
+      // entry 에 두 번째 동적 import 추가 → rebuild 트리거.
+      writeFileSync(
+        entryPath,
+        `async function go(){ const m = await import('./heavy'); console.log(m.h); }\n` +
+          `async function go2(){ const e = await import('./extra'); console.log(e.x); }\n` +
+          `go(); go2();`,
+      );
+
+      const rebuild = await Promise.race([
+        rebuildEvent,
+        new Promise((_r, rej) => setTimeout(() => rej(new Error('onRebuild timeout')), 8000)),
+      ]);
+      expect(rebuild.success).toBe(true);
+      // onRebuild 가 lazySeeds 를 노출해야 함(PR-C-1 핵심).
+      expect(Array.isArray(rebuild.lazySeeds)).toBe(true);
+      // 이제 동적 import 가 2개 → seed 2개(heavy, extra). 신규 seed 가 갱신돼야.
+      expect(rebuild.lazySeeds.length).toBe(2);
+      const paths = rebuild.lazySeeds.map((s: any) => s.path);
+      expect(paths.some((p: string) => p.endsWith('heavy.ts'))).toBe(true);
+      expect(paths.some((p: string) => p.endsWith('extra.ts'))).toBe(true);
+      for (const s of rebuild.lazySeeds) {
+        expect(s.pathHash).toMatch(/^[0-9a-f]{8}$/);
+      }
     } finally {
       handle?.stop();
     }

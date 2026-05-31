@@ -1,4 +1,6 @@
 import { describe, test, expect, afterEach } from 'bun:test';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createFixture, ZNTC_JS_CLI } from './helpers';
 
 // #4062 PR-B-2: JS dev 서버(`zntc dev`, app 모드)의 lazy on-demand 라우트.
@@ -118,5 +120,55 @@ describe('JS dev server lazy on-demand route (#4062 PR-B-2)', () => {
     expect(entry).toContain('HEAVY_EAGER_BASELINE');
     // lazy 로더 미사용.
     expect(entry).not.toContain('__zntc_load_chunk(');
+  }, 30000);
+
+  // PR-C-1: rebuild 후에도 lazy on-demand 라우트가 살아있고(seed 맵 갱신) 청크 캐시가 무효화돼
+  // 편집된 seed 본문이 반영돼야 한다. onRebuild 가 captureLazyState(event) 로 seed 맵을
+  // event.lazySeeds 로 다시 채우고 캐시를 비운다.
+  test('ZNTC_LAZY=1 → 파일 편집 rebuild 후 on-demand 청크가 새 본문 반영(캐시 무효화)', async () => {
+    const fixture = await createFixture({
+      'index.html': `<!doctype html><html><head><meta charset="utf-8"/><title>R</title></head><body><div id="root"></div><script type="module" src="/src/main.ts"></script></body></html>`,
+      'src/main.ts': `async function go(){ const m = await import('./heavy'); document.getElementById('root')!.textContent = m.h; }\ngo();`,
+      'src/heavy.ts': `export const h = 'HEAVY_V1';`,
+    });
+    cleanup = fixture.cleanup;
+
+    const port = 5470 + Math.floor(Math.random() * 40);
+    proc = Bun.spawn({
+      cmd: ['bun', ZNTC_JS_CLI, 'dev', fixture.dir, '--port', String(port)],
+      env: { ...process.env, ZNTC_LAZY: '1' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    await waitForServer(port);
+
+    // heavy 본문이 보이는지(entry 인라인 또는 동적 청크) — entry 를 재조회해 *현재* 청크 URL 로
+    // 확인한다. 편집된 seed 는 hash 가 바뀔 수 있으므로(content-hash 승격) URL 을 고정하지 않는다.
+    async function heavyBodyVisible(marker: string): Promise<boolean> {
+      const e = await (await fetch(`http://localhost:${port}/bundle.js`)).text();
+      if (e.includes(marker)) return true; // entry 에 인라인/승격
+      const mm = e.match(/__zntc_load_chunk\("([^"]+)"\)/);
+      if (!mm) return false;
+      const c = await (await fetch(`http://localhost:${port}/${mm[1]}`)).text();
+      return c.includes(marker);
+    }
+
+    expect(await heavyBodyVisible('HEAVY_V1')).toBe(true); // 초기 = V1
+
+    // heavy 본문 편집 → rebuild. onRebuild 가 lazySeeds 로 seed 맵 갱신 + 청크 캐시 무효화.
+    writeFileSync(join(fixture.dir, 'src/heavy.ts'), `export const h = 'HEAVY_V2';`);
+
+    // rebuild 후 새 본문이 (현재 entry 가 가리키는 경로로) 보일 때까지 폴링(최대 ~8s).
+    let ok = false;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      if (await heavyBodyVisible('HEAVY_V2')) {
+        ok = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(ok).toBe(true); // 캐시 무효화 + seed 맵 갱신 → 편집된 본문이 on-demand 로 반영
+    expect(await heavyBodyVisible('HEAVY_V1')).toBe(false); // 옛 본문은 사라짐
   }, 30000);
 });
