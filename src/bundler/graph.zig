@@ -51,6 +51,16 @@ const graph_accessors = @import("graph/accessors.zig");
 
 pub const determineExportsKind = graph_parse_helpers.determineExportsKind;
 
+/// Lazy compilation(PR-3a) 의 미파싱 동적 청크 seed. discovery 가 동적 `import()`
+/// 경계에서 정지하며 기록 → BFS 종료 후 materialize. `path`/`resolve_dir` 는
+/// path_arena 소유(개별 free 불요).
+pub const LazySeed = struct {
+    from: ModuleIndex,
+    rec_i: u32,
+    path: []const u8,
+    resolve_dir: ?[]const u8,
+};
+
 pub const ModuleGraph = struct {
     pub const matchSideEffectsPatterns = graph_package_side_effects.matchPatterns;
     const configureParserForModule = graph_parse_helpers.configureParserForModule;
@@ -230,6 +240,17 @@ pub const ModuleGraph = struct {
     /// identifier mangling 활성화. transformer pre-pass 이후 생성된 임시 binding도
     /// mangler 입력에 포함하려고 transformed AST semantic을 재구축할 때 사용.
     minify_identifiers: bool = false,
+
+    /// Lazy compilation (RFC docs/RFC_LAZY_COMPILATION.md, A안). dev 서버 온디맨드
+    /// 청크 컴파일 — BFS discovery 가 동적 `import()` 경계에서 멈추고 타겟을 미파싱
+    /// seed 로 등록한다(아래 `lazy_seeds`). `false`(기본)면 기존 eager 동작 그대로 →
+    /// kill-switch 회귀 0. `dev_mode and code_splitting` 와 함께여야 의미 있음.
+    lazy_compilation: bool = false,
+    /// PR-3a: discovery 중 동적 import 경계에서 정지한 타겟. BFS 종료 후 일괄
+    /// materialize(`materializeLazySeeds`) — static 으로도 도달했으면 그 파싱 모듈에
+    /// link, 아니면 미파싱 seed(`Module.is_lazy_seed`, state=.ready, ast=null)로 등록.
+    /// `path` 는 path_arena 소유(개별 free 불요), 리스트 자체만 deinit.
+    lazy_seeds: std.ArrayListUnmanaged(LazySeed) = .empty,
 
     /// transformer pre-pass 의 옵션 base (#1961). bundler 가 init 시 BundleOptions →
     /// TransformOptions 매핑을 1회 채움. parseModule 이 base 를 복사 후 per-module

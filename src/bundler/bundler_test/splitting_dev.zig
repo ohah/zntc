@@ -2650,6 +2650,269 @@ test "LazyDevSplitting: dev+split → 프로덕션 init 사용, __zntc_modules �
     try std.testing.expect(has_region);
 }
 
+test "LazyCompilation PR-3a: lazy=true 면 동적 import 타겟이 미파싱 seed (본문 미컴파일)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export function heavyMarkerFn() { return 'HEAVY_BODY_MARKER'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavyMarkerFn()); }
+        \\console.log('entry boot');
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // heavy 본문(HEAVY_BODY_MARKER)이 어느 출력에도 없어야 한다 — 미파싱 seed (경계 정지).
+    for (outs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "HEAVY_BODY_MARKER") == null);
+    }
+    // entry 는 정상 컴파일 (boot 로그 + 동적 로더 존재).
+    var has_entry = false;
+    var has_loader = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "entry boot") != null) has_entry = true;
+        if (std.mem.indexOf(u8, o.contents, "__zntc_load_chunk(\"") != null) has_loader = true;
+    }
+    try std.testing.expect(has_entry);
+    try std.testing.expect(has_loader);
+}
+
+// 대조군: lazy=false(eager)면 동적 import 타겟이 정상 컴파일된다 (kill-switch 회귀 0).
+test "LazyCompilation PR-3a: lazy=false 면 동적 import 타겟 본문이 컴파일된다 (eager)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export function heavyMarkerFn() { return 'HEAVY_BODY_MARKER'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavyMarkerFn()); }
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = false,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // lazy=false → 기존 eager 경로. heavy 본문이 출력 어딘가에 존재.
+    const present = if (result.outputs) |outs| blk: {
+        for (outs) |o| if (std.mem.indexOf(u8, o.contents, "HEAVY_BODY_MARKER") != null) break :blk true;
+        break :blk false;
+    } else std.mem.indexOf(u8, result.output, "HEAVY_BODY_MARKER") != null;
+    try std.testing.expect(present);
+}
+
+// 전이적 경계 정지: 동적 타겟이 미파싱이라 그 *정적* deps 도 발견조차 안 된다.
+test "LazyCompilation PR-3a: 동적 타겟의 정적 의존성도 미파싱(전이 경계정지)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavydep.ts", "export const DEP_BODY_MARKER = 'DEP_BODY';");
+    try writeFile(tmp.dir, "heavy.ts",
+        \\import { DEP_BODY_MARKER } from './heavydep';
+        \\export function heavyMarkerFn() { return 'HEAVY_BODY_MARKER' + DEP_BODY_MARKER; }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavyMarkerFn()); }
+        \\console.log('entry boot');
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    for (outs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "HEAVY_BODY_MARKER") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "DEP_BODY") == null); // 전이 deps 도 미발견
+    }
+}
+
+// 핵심 정확성: 정적 + 동적 둘 다로 도달하는 모듈은 *파싱*된다 (deferred materialization 이
+// dedup 으로 static 도달을 우선 — 미파싱 seed 로 잘못 마크하면 안 됨).
+test "LazyCompilation PR-3a: 정적+동적 둘 다 도달하는 모듈은 파싱된다 (dedup)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts", "export const SHARED_BODY_MARKER = 'SHARED_BODY';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { SHARED_BODY_MARKER } from './shared';
+        \\async function go() { const m = await import('./shared'); console.log(m); }
+        \\console.log('entry boot', SHARED_BODY_MARKER);
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // shared 는 entry 의 정적 import 로 도달 → 파싱됨 (동적 타겟이기도 하지만 static 우선).
+    var has_shared = false;
+    for (outs) |o| if (std.mem.indexOf(u8, o.contents, "SHARED_BODY") != null) {
+        has_shared = true;
+    };
+    try std.testing.expect(has_shared);
+}
+
+// 다중 동적 import: 각 타겟이 독립 seed.
+test "LazyCompilation PR-3a: 다중 동적 import 각각 미파싱 seed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const A_BODY_MARKER = 'A_BODY';");
+    try writeFile(tmp.dir, "b.ts", "export const B_BODY_MARKER = 'B_BODY';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() {
+        \\  const a = await import('./a'); const b = await import('./b');
+        \\  console.log(a, b);
+        \\}
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    for (outs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "A_BODY") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "B_BODY") == null);
+    }
+}
+
+// 동적 import 없는 entry: lazy=true 여도 seed 0 → eager 와 동일(안전).
+test "LazyCompilation PR-3a: 동적 import 없으면 lazy=true 여도 정상 (seed 0)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.ts", "export const LIB_BODY_MARKER = 'LIB_BODY';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { LIB_BODY_MARKER } from './lib';
+        \\console.log(LIB_BODY_MARKER);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // 동적 import 없음 → 정적 lib 정상 컴파일.
+    const present = if (result.outputs) |outs| blk: {
+        for (outs) |o| if (std.mem.indexOf(u8, o.contents, "LIB_BODY") != null) break :blk true;
+        break :blk false;
+    } else std.mem.indexOf(u8, result.output, "LIB_BODY") != null;
+    try std.testing.expect(present);
+}
+
+// 게이트: lazy=true 라도 code_splitting=false 면 seed 안 만든다 (단일번들 emit 보호).
+// 미파싱 seed 가 동적 로더 없는 단일번들에 들어가면 런타임이 깨지므로 eager 로 fallback.
+test "LazyCompilation PR-3a: lazy=true + code_splitting=false 면 eager (seed 안 만듦)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export function heavyMarkerFn() { return 'HEAVY_BODY_MARKER'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavyMarkerFn()); }
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = false, // splitting off → lazy 게이트 비활성 → eager
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // 단일번들(code_splitting=false) → heavy 가 eager 로 포함.
+    const present = if (result.outputs) |outs| blk: {
+        for (outs) |o| if (std.mem.indexOf(u8, o.contents, "HEAVY_BODY_MARKER") != null) break :blk true;
+        break :blk false;
+    } else std.mem.indexOf(u8, result.output, "HEAVY_BODY_MARKER") != null;
+    try std.testing.expect(present);
+}
+
+// 게이트: lazy=true + splitting=true 라도 dev_mode=false(프로덕션)면 eager (프로덕션 불변).
+test "LazyCompilation PR-3a: lazy=true + dev_mode=false 면 eager (프로덕션 불변)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "heavy.ts", "export function heavyMarkerFn() { return 'HEAVY_BODY_MARKER'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function go() { const m = await import('./heavy'); console.log(m.heavyMarkerFn()); }
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = false, // production → lazy 게이트 비활성
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 프로덕션 splitting → heavy 가 동적 청크에 eager 로 컴파일.
+    var present = false;
+    for (outs) |o| if (std.mem.indexOf(u8, o.contents, "HEAVY_BODY_MARKER") != null) {
+        present = true;
+    };
+    try std.testing.expect(present);
+}
+
 test "LazyDevSplitting: kill-switch — lazy_compilation=false 면 dev 단일 번들 보존" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -125,4 +125,6 @@ pub fn deinit(self: *ModuleGraph) void {
     self.rn_asset_metadata.deinit(self.allocator);
     if (self.plugins_with_helpers) |p| self.allocator.free(p);
     self.runtime_polyfill_roots.deinit(self.allocator);
+    // PR-3a lazy seeds — path 는 path_arena 소유라 리스트 자체만 해제.
+    self.lazy_seeds.deinit(self.allocator);
 }

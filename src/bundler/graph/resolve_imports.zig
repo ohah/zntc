@@ -334,6 +334,33 @@ pub fn applyResolveResult(
                     return;
                 }
 
+                // PR-3a lazy: 동적 import 타겟은 BFS 경계에서 정지 — addModule(=parse 유발)
+                // 대신 seed 로 deferred 한다. BFS 종료 후 materializeLazySeeds 가 일괄 처리
+                // (static 으로도 도달했으면 그 파싱 모듈에 link, 아니면 미파싱 seed). incremental
+                // 캐시 정합 위해 appendResolvedDep 는 유지.
+                //   게이트는 dev_split(=dev_mode and code_splitting and lazy_compilation)과 동일.
+                //   셋 중 하나라도 빠지면 미파싱 seed 가 단일번들/프로덕션 emit 을 깨므로(동적
+                //   로더 미생성) eager 유지 → kill-switch 회귀 0. (virtual/external 동적 타겟은
+                //   이 .file arm 밖이라 PR-3a-i 에선 eager — PR-3b 범위.)
+                if (self.lazy_compilation and self.code_splitting and self.dev_mode and record.kind == .dynamic_import) {
+                    const pa = self.path_arena.allocator();
+                    try self.lazy_seeds.append(self.allocator, .{
+                        .from = mod_index,
+                        .rec_i = @intCast(rec_i),
+                        .path = try pa.dupe(u8, f.path),
+                        .resolve_dir = if (f.resolve_dir) |d| try pa.dupe(u8, d) else null,
+                    });
+                    try appendResolvedDep(self, mod_idx, .{
+                        .record_index = @intCast(rec_i),
+                        .kind = record.kind,
+                        .target = .file,
+                        .path = .{ .interned = f.path },
+                        .resolve_dir = if (f.resolve_dir) |d| .{ .interned = d } else null,
+                        .target_is_module_field = f.is_module_field,
+                    });
+                    return;
+                }
+
                 const dep_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
                 if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
                     self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;

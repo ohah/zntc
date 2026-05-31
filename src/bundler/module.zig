@@ -359,6 +359,11 @@ pub const Module = struct {
     /// `meta.getModuleInfo` / `info.importedIds` 등 graph traversal API 의 1급 노드로 보이지만
     /// chunk 배정 / emit / tree-shake 에선 제외. AST 없음, source 없음, path = original specifier.
     is_external: bool = false,
+    /// Lazy compilation(PR-3a) 의 미파싱 동적 청크 seed. 동적 `import()` 타겟이
+    /// static 으로 도달되지 않아 미파싱으로 남은 모듈 — state=.ready, ast=null 이지만
+    /// is_external 과 달리 "나중에 첫 GET 시 parse" 대상이다(PR-3b). chunk emit 은
+    /// 이 모듈 코드를 stub 으로 둔다(미파싱이라 본문 없음).
+    is_lazy_seed: bool = false,
     /// tree-shake 결과 — 번들에 포함된 모듈인지 (Rollup `info.isIncluded` 호환).
     /// `TreeShaker.analyze` 가 finalize 후 set. 기본 false 라 tree-shaking 비활성 시
     /// 의미 없음 — chunk gen 단계에서도 `m.side_effects or entry_set.isSet` 으로 항상 alive 처리.
